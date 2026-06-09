@@ -86,7 +86,9 @@ pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, t
         cancel.clone(),
     );
     let bus_clone = state.bus.clone();
-    let http_clone = state.http.clone();
+    // Per-scan client stamped with the scan id (x-huntsman-trace) so outbound
+    // calls correlate to this scan in a proxy/upstream log, mirroring the CLI.
+    let http_clone = crate::util::http::build_client_with_trace(&sid);
     let proxy_clone = std::sync::Arc::clone(&state.proxy_pool);
     let engine = Arc::clone(&state.engine);
     let sem = Arc::clone(&state.scan_semaphore);

@@ -6,7 +6,7 @@
 
 use crate::core::module::ModuleContext;
 use crate::core::scan::{Scan, ScanOptions, Target};
-use crate::util::{http::build_client, keys, uid::scan_id};
+use crate::util::{keys, uid::scan_id};
 
 use super::{
     build_runtime, color_confidence, color_severity, parse_target_kind, split_csv, truncate,
@@ -209,7 +209,9 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     let ctx = ModuleContext {
         scan_id: sid.clone(),
         bus,
-        http: build_client(),
+        // Stamp outbound calls with this scan's id so a proxy/upstream access log
+        // can be matched back to the scan (and its NDJSON logs carry the same id).
+        http: crate::util::http::build_client_with_trace(&sid),
         keys,
         cancel: crate::core::cancel::CancelHandle::new(),
         proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),

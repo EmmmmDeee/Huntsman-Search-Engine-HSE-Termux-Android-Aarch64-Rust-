@@ -163,7 +163,9 @@ impl reqwest::dns::Resolve for SsrfResolver {
     }
 }
 
-pub fn build_client() -> reqwest::Client {
+/// Shared reqwest configuration (SSRF-guarded DNS, redirect policy, timeouts,
+/// pool, UA) used by both the plain and the trace-stamped client builders.
+fn client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .dns_resolver(std::sync::Arc::new(SsrfResolver))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
@@ -184,6 +186,30 @@ pub fn build_client() -> reqwest::Client {
             env!("CARGO_PKG_VERSION"),
             " (+https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-)"
         ))
+}
+
+pub fn build_client() -> reqwest::Client {
+    client_builder()
+        .build()
+        .expect("reqwest client build failed")
+}
+
+/// Like [`build_client`] but stamps every outbound request with a default
+/// `x-huntsman-trace: <trace_id>` header. End-to-end traceability across external
+/// calls (item #3 of the operator program): the same id the NDJSON scan logs
+/// carry in their span chain now rides on the wire, so an outbound request can be
+/// matched to its scan in a proxy's or upstream's access log — closing the loop
+/// logs → services → external calls. The id is non-secret (the scan id). A header
+/// value must be visible ASCII; a non-conforming id falls back to the plain
+/// client rather than panicking.
+pub fn build_client_with_trace(trace_id: &str) -> reqwest::Client {
+    use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+    let mut headers = HeaderMap::new();
+    if let Ok(value) = HeaderValue::from_str(trace_id) {
+        headers.insert(HeaderName::from_static("x-huntsman-trace"), value);
+    }
+    client_builder()
+        .default_headers(headers)
         .build()
         .expect("reqwest client build failed")
 }
@@ -702,6 +728,41 @@ pub fn scan_for_api_keys_with_source(text: &str, source: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn traced_client_sends_x_huntsman_trace_header() {
+        // Prove the trace id rides on the wire: a minimal TCP server reads the
+        // raw request bytes and the header must be present. A literal-IP host
+        // skips DNS, so the SSRF resolver isn't involved.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = sock.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let _ = sock
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await;
+            req
+        });
+        let client = build_client_with_trace("scan-abc123");
+        let _ = client.get(format!("http://{addr}/")).send().await;
+        let req = server.await.unwrap().to_lowercase();
+        assert!(
+            req.contains("x-huntsman-trace: scan-abc123"),
+            "trace header missing; raw request was:\n{req}"
+        );
+    }
+
+    #[test]
+    fn traced_client_builds_and_tolerates_non_ascii_id() {
+        // Construction must not panic; a non-ASCII id can't be a header value, so
+        // it falls back to a plain (header-less) client rather than crashing.
+        let _ = build_client_with_trace("plain-ascii-id");
+        let _ = build_client_with_trace("non-ascii-\u{2022}-id");
+    }
+
     #[test]
     fn ssrf_dns_filter_drops_private_and_metadata() {
         let addrs: Vec<std::net::SocketAddr> = [
