@@ -10,6 +10,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+
+- **Built-in OathNet batch query generator (`hse oathnet-batch`).** A new
+  command + pure `util::oathnet_batch` generator that expands a single seed into
+  a large, de-duplicated array of distinct OathNet queries across three axes:
+  **surface** (breach, plus the stealer corpus for login-indexable selectors),
+  **selector field** (the seed's native field plus derived ones — an email's
+  local part becomes a `username` search and its domain a `domain` search), and
+  **value permutation** (names and email local parts fan out into the handle
+  shapes real accounts use — `first.last`, `flast`, `firstl`, reversed and
+  middle-name blends; phone numbers fan out into their digit-only / AU-E.164 /
+  `+`-prefixed formats). A `john.doe@example.com` seed generates ~20+ distinct
+  queries; a full name, ~12+. The generator is pure and deterministic (seed
+  queries first, then derived, exact duplicates collapsed), so the plan can be
+  previewed for free — `hse oathnet-batch -v <seed>` prints the plan and spends
+  nothing; `--execute` dispatches it, bounded by the shared per-session OathNet
+  budget (the per-scan cap is lifted for the deliberate batch, but the session
+  ceiling still caps daily spend). Flags: `--no-stealer`, `--no-permute`,
+  `--synthesize-emails`, `--max`, `--page-size`, `--json`.
+
 ### Changed
 
 - **DeHashed module migrated to the v2 API.** DeHashed sunset the v1

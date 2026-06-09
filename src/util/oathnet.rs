@@ -85,6 +85,22 @@ pub fn reset_budget() {
     BUDGET.reset_scan();
 }
 
+/// True while the shared OathNet budget can absorb at least one more billable
+/// query (per-scan + per-session room, quota not tripped). Public so the
+/// deliberate `hse oathnet-batch --execute` runner can stop cleanly at the
+/// session ceiling instead of firing calls the budget would silently drop.
+pub fn has_budget() -> bool {
+    BUDGET.remaining()
+}
+
+/// Lift the per-scan OathNet cap for a deliberate batch run, so the batch is
+/// bounded by the per-session ceiling (the operator's daily-quota contract)
+/// rather than the tight per-scan default sized for automated scans. Cleared
+/// by [`reset_budget`].
+pub fn set_scan_cap_override(cap: u32) {
+    BUDGET.set_scan_cap_override(cap);
+}
+
 fn mark_quota_exhausted() {
     BUDGET.mark_exhausted();
     tracing::warn!("OathNet daily quota exhausted — skipping remaining queries");

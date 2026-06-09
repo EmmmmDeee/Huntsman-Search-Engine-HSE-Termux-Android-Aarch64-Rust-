@@ -15,6 +15,7 @@ pub(crate) mod export;
 mod keys_cmd;
 mod live;
 mod modules;
+mod oathnet_batch;
 mod provision;
 mod radar;
 mod scan;
@@ -465,6 +466,47 @@ pub enum Command {
         #[arg(short, long, default_value = "text")]
         format: String,
     },
+
+    /// Generate (and optionally run) a large batch of OathNet queries from one seed.
+    ///
+    /// Fans a single seed out across breach/stealer surfaces, derived selector
+    /// fields (an email's local part → username, its domain → domain), and value
+    /// permutations (names/handles → the handle shapes real accounts use; phone
+    /// numbers → their digit/E.164 formats). Prints the plan by default (free);
+    /// `--execute` dispatches it, bounded by the per-session OathNet budget.
+    #[command(visible_alias = "oathnet-queries", visible_alias = "obatch")]
+    OathnetBatch {
+        /// Seed value (e.g. `john.doe@example.com`, `"John Doe"`, `+61412345678`).
+        #[arg(short, long, allow_hyphen_values = true)]
+        value: String,
+        /// Seed kind (same vocabulary as `scan --kind`). Omit (or `auto`) to
+        /// auto-detect from the value.
+        #[arg(short, long)]
+        kind: Option<String>,
+        /// Don't emit stealer-surface queries (breach only).
+        #[arg(long)]
+        no_stealer: bool,
+        /// Don't fan names / email local parts out into handle permutations.
+        #[arg(long)]
+        no_permute: bool,
+        /// Also synthesise candidate emails (handle/role crossed with common
+        /// providers). Explosive — off by default.
+        #[arg(long)]
+        synthesize_emails: bool,
+        /// Cap the number of queries (after de-duplication). 0 = no cap.
+        #[arg(long, default_value_t = 0)]
+        max: usize,
+        /// Per-query record page size when executing. Default 100.
+        #[arg(long, default_value_t = 100)]
+        page_size: u32,
+        /// Actually dispatch the plan against OathNet (spends credits). Without
+        /// this the command only prints the plan.
+        #[arg(long)]
+        execute: bool,
+        /// Emit JSON instead of the human-readable table.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 pub async fn run() -> Result<()> {
@@ -669,6 +711,30 @@ pub async fn run() -> Result<()> {
             out,
         } => export::cmd_export(scan_id, format, out).await,
         Command::Diff { from, to, format } => diff::cmd_diff(from, to, format),
+        Command::OathnetBatch {
+            value,
+            kind,
+            no_stealer,
+            no_permute,
+            synthesize_emails,
+            max,
+            page_size,
+            execute,
+            json,
+        } => {
+            oathnet_batch::cmd_oathnet_batch(oathnet_batch::BatchCmd {
+                value,
+                kind,
+                no_stealer,
+                no_permute,
+                synthesize_emails,
+                max,
+                page_size,
+                execute,
+                json,
+            })
+            .await
+        }
     }
 }
 

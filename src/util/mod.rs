@@ -24,6 +24,7 @@ pub mod keys;
 pub mod log_capture;
 pub mod netrotate;
 pub mod oathnet;
+pub mod oathnet_batch;
 pub mod oui;
 pub mod postcode_au;
 pub mod preflight;
