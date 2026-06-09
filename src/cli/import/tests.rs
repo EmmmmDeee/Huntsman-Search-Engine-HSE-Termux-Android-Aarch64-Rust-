@@ -297,3 +297,29 @@ fn import_txt_parses_victim_section_in_normal_order() {
             .any(|e| e.kind == EntityKind::IpAddress && e.value == "8.8.8.8")
     );
 }
+
+#[test]
+fn reused_hash_across_entries_is_preserved_for_cross_account_linking() {
+    use crate::core::entity::EntityKind;
+    // The unmasking signal: two DIFFERENT accounts sharing one salted hash. The
+    // parser must not value-dedup the credential away; after dedup-merge the one
+    // credential entity must carry BOTH entries' emails in its evidence, so the
+    // correlator (AU-047) can link the compartmentalised identities.
+    let dossier = "Entry #1:\n   \u{2022} email: a@proton.me\n   \u{2022} hash: $2a$10$SAMEHASHvalueAAAAAAAAAAAAAA\nEntry #2:\n   \u{2022} email: b@gmail.com\n   \u{2022} hash: $2a$10$SAMEHASHvalueAAAAAAAAAAAAAA\n";
+    let (mut ents, _) = super::parse_dossier(dossier, "sid");
+    super::deduplicate_by_uid(&mut ents);
+
+    let cred = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Credential)
+        .expect("a credential entity");
+    let emails: std::collections::BTreeSet<&str> = cred
+        .evidence
+        .iter()
+        .filter_map(|ev| ev.attributes.get("email").map(String::as_str))
+        .collect();
+    assert!(
+        emails.contains("a@proton.me") && emails.contains("b@gmail.com"),
+        "the reused-hash credential must retain BOTH accounts' emails, got {emails:?}"
+    );
+}

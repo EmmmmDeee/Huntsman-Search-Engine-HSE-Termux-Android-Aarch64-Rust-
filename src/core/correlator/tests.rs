@@ -2121,3 +2121,59 @@ fn au046_resolves_an_alias_to_platform_exposed_identifiers() {
         "one platform family is not cross-platform resolution"
     );
 }
+
+#[test]
+fn au047_links_identities_by_a_reused_unique_secret_only() {
+    // The unmasking rule, and its precision gate. A salted hash carried against
+    // two emails links them (same controller); an UNSALTED digest must NOT —
+    // md5("123456") is shared by millions and would manufacture false identities.
+    let cred = |hash: &str, emails: &[&str]| {
+        let mut c = Entity::new(EntityKind::Credential, hash, 0.6, "scan");
+        for em in emails {
+            c.add_evidence(Evidence::new("import:dossier", "breach entry").with_attr("email", *em));
+        }
+        c
+    };
+    let a = Entity::new(EntityKind::Email, "burner1@proton.me", 0.6, "scan");
+    let b = Entity::new(EntityKind::Email, "real.name@gmail.com", 0.6, "scan");
+
+    // Salted bcrypt hash seen against both identities → Critical link.
+    let bcrypt = cred("$2a$10$id3HAw6TcOjKvPH/RK7MS.abcdef", &[&a.value, &b.value]);
+    let hits = super::rules::rule_au_047_reused_secret_identity(
+        &[bcrypt.clone(), a.clone(), b.clone()],
+        "scan",
+        0,
+    );
+    assert_eq!(
+        hits.len(),
+        1,
+        "salted hash across 2 identities must link them"
+    );
+    assert_eq!(hits[0].rule_id, "AU-047");
+    assert_eq!(hits[0].severity, super::Severity::Critical);
+    assert!(hits[0].entity_uids.contains(&bcrypt.uid));
+    assert!(hits[0].entity_uids.contains(&a.uid) && hits[0].entity_uids.contains(&b.uid));
+
+    // PRECISION GATE: an unsalted hex digest across the same two identities must
+    // NOT fire — it could be a common password shared by unrelated people.
+    let unsalted = cred(
+        "00346d91dd87c74089f3bfa88e13de8101000000dcb6",
+        &[&a.value, &b.value],
+    );
+    assert!(
+        super::rules::rule_au_047_reused_secret_identity(
+            &[unsalted, a.clone(), b.clone()],
+            "scan",
+            0
+        )
+        .is_empty(),
+        "an unsalted digest must NOT link people (weak-password collision risk)"
+    );
+
+    // A unique secret seen against only ONE identity is not a link.
+    let single = cred("$2b$12$onlyoneidentityhasthisxx", &[&a.value]);
+    assert!(
+        super::rules::rule_au_047_reused_secret_identity(&[single, a], "scan", 0).is_empty(),
+        "one identity is not a cross-account link"
+    );
+}

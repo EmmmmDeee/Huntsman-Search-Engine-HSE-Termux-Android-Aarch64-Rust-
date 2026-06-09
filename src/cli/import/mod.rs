@@ -192,8 +192,28 @@ pub(crate) fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>
             true
         }
     });
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    entities.retain(|e| seen.insert(e.uid.clone()));
+    // Fold duplicate-uid entities together — MERGE their evidence (GREATEST
+    // semantics), don't drop the later ones. A record that recurs across breach
+    // entries — most importantly one reused password hash appearing under several
+    // different emails — must retain EVERY record it appeared in, or the
+    // cross-account reuse signal (the link that unmasks a compartmentalised
+    // target, AU-047) is silently discarded. First-seen order is preserved.
+    let mut order: Vec<String> = Vec::new();
+    let mut by_uid: std::collections::HashMap<String, crate::core::entity::Entity> =
+        std::collections::HashMap::new();
+    for e in entities.drain(..) {
+        match by_uid.get_mut(&e.uid) {
+            Some(existing) => existing.merge(e),
+            None => {
+                order.push(e.uid.clone());
+                by_uid.insert(e.uid.clone(), e);
+            }
+        }
+    }
+    *entities = order
+        .into_iter()
+        .filter_map(|uid| by_uid.remove(&uid))
+        .collect();
 }
 
 /// Persist a parsed import as a completed scan in the default store — the CLI

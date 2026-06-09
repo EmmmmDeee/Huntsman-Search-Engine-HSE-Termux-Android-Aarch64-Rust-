@@ -202,13 +202,23 @@ fn emit_dossier_entry(
     if let Some(h) = hash {
         // A password hash is an inherently-unique credential artifact (bcrypt
         // `$2a$…`, hex digests). Keep it as a Credential, never a plaintext
-        // Password, and tie it to the same record.
-        if h.len() >= 8 && seen.insert(format!("cr:{h}")) {
+        // Password, and tie it to THIS record. Crucially, do NOT value-dedup the
+        // credential across entries here: when the same hash recurs under a
+        // different email, that recurrence IS the signal — a reused secret across
+        // separate accounts (AU-047). Emit it per entry carrying this entry's
+        // evidence; `deduplicate_by_uid` then MERGES the duplicates into one
+        // credential that retains every record (each entry's email), so the
+        // cross-account reuse is preserved instead of silently collapsed.
+        if h.len() >= 8 {
+            // Count distinct hashes for the stats line (entity dedup is by uid
+            // downstream), but always emit so reuse evidence accumulates.
+            if seen.insert(format!("cr:{h}")) {
+                stats.credentials += 1;
+            }
             push(
                 Entity::new(EntityKind::Credential, h, 0.60, sid),
                 "password-hash",
             );
-            stats.credentials += 1;
         }
     }
     // A dossier entry's `ip` / `phone` / `domain` are first-class pivotable seeds,

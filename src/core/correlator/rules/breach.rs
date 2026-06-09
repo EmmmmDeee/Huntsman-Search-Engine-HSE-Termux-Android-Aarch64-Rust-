@@ -3,6 +3,113 @@
 
 use super::*;
 
+/// True if `s` is a **salted** password-hash digest — bcrypt / sha-crypt /
+/// argon2 / scrypt / yescrypt, all of which embed their salt. This is the
+/// precision gate that makes credential-based identity linking sound: a salted
+/// digest is globally unique by construction, so two identities carrying the
+/// *identical* value share the exact stored credential (the same person reused or
+/// copied it) — not a weak-password coincidence. A bare unsalted hex digest is
+/// deliberately EXCLUDED: `md5("123456")` is shared by millions, and linking
+/// people on it would manufacture false identities, which is the opposite of
+/// finding the real one.
+fn is_salted_hash(s: &str) -> bool {
+    let s = s.trim();
+    s.starts_with("$2") // bcrypt $2a/$2b/$2y
+        || s.starts_with("$argon2")
+        || s.starts_with("$scrypt")
+        || s.starts_with("$y$") // yescrypt
+        || s.starts_with("$7$") // scrypt (crypt format)
+        || s.starts_with("$6$") // sha512crypt
+        || s.starts_with("$5$") // sha256crypt
+}
+
+/// True if `e` is a **globally-unique secret artifact** whose reuse across
+/// distinct identities is near-certain evidence of a single controller: a salted
+/// password hash, a cryptocurrency wallet address, or an API key. These are the
+/// artifacts a privacy-conscious target carries across otherwise-compartmentalised
+/// accounts — the OPSEC seam that unmasks the hardest people to find.
+fn is_unique_secret(e: &Entity) -> bool {
+    match e.kind {
+        EntityKind::Credential => is_salted_hash(&e.value),
+        EntityKind::CryptoAddress | EntityKind::ApiKey => true,
+        _ => false,
+    }
+}
+
+/// AU-047 — Reused-secret identity link.
+///
+/// The unmasking rule for compartmentalised targets. When one globally-unique
+/// secret (a salted password hash, crypto address, or API key — see
+/// [`is_unique_secret`]) is observed against **≥2 distinct identities** (the
+/// email/username the breach record carries in its evidence), those identities
+/// are tied to a single controller: someone reused a secret across accounts they
+/// kept otherwise separate. This is the highest-value link in the whole engine
+/// for finding hard-to-find people, and it is precise *by gate* — it can only
+/// fire on a uniquely-derived artifact, never a common password — so it links
+/// the real person, not phantoms. Critical severity.
+pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::BTreeSet;
+    let mut out = Vec::new();
+    for secret in entities.iter().filter(|e| is_unique_secret(e)) {
+        // The distinct ACCOUNTS this exact secret was seen against. Keyed on the
+        // email — the account identifier — drawn from the breach-record evidence
+        // the importer accumulates onto the secret (one evidence record per
+        // entry). Counting emails (not also usernames) is deliberate: an email
+        // and a username from the SAME record are one account, so admitting both
+        // would false-fire on a single record; the real signal is the secret
+        // spanning ≥2 distinct emails, i.e. ≥2 separate accounts.
+        let emails: BTreeSet<String> = secret
+            .evidence
+            .iter()
+            .filter_map(|ev| ev.attributes.get("email"))
+            .map(|v| v.trim().to_lowercase())
+            .filter(|v| v.contains('@') && !v.is_empty())
+            .collect();
+        if emails.len() < 2 {
+            continue;
+        }
+        // Link the secret plus every implicated identity entity present in scope
+        // (the emails directly, and any username co-located in those records).
+        let usernames: BTreeSet<String> = secret
+            .evidence
+            .iter()
+            .filter_map(|ev| ev.attributes.get("username"))
+            .map(|v| v.trim().to_lowercase())
+            .filter(|v| !v.is_empty())
+            .collect();
+        let mut uids = vec![secret.uid.clone()];
+        for e in entities.iter() {
+            let v = e.value.trim().to_lowercase();
+            if (e.kind == EntityKind::Email && emails.contains(&v))
+                || (e.kind == EntityKind::Username && usernames.contains(&v))
+            {
+                uids.push(e.uid.clone());
+            }
+        }
+        let listed: Vec<&str> = emails.iter().take(6).map(String::as_str).collect();
+        out.push(Correlation {
+            rule_id: "AU-047".into(),
+            rule_name: "Reused-secret identity link".into(),
+            severity: Severity::Critical,
+            description: format!(
+                "A single reused {} ties {} otherwise-separate accounts to one controller (secret reuse across accounts): {}",
+                secret.kind,
+                emails.len(),
+                listed.join(", ")
+            ),
+            entity_uids: uids,
+            scan_id: scan_id.into(),
+            ts,
+            rank: 0.0,
+        });
+    }
+    out
+}
+
 pub(in crate::core::correlator) fn rule_au_001_multi_breach(
     entities: &[Entity],
     scan_id: &str,
