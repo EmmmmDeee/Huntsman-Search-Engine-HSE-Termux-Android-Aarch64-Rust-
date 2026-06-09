@@ -535,7 +535,9 @@ async fn scan_options_allowlist_excludes_module() {
     let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
 
     let result = engine.run(scan, target, ctx).await.unwrap();
-    assert_eq!(result.entity_count, 0, "synthetic should be skipped");
+    // Only the subject anchor (the seed itself); the excluded synthetic module
+    // never ran, so it contributed no entity.
+    assert_eq!(result.entity_count, 1, "synthetic should be skipped");
     // A gate-skip (here: not in the allowlist — the same path as `--exclude`
     // and `hse config module.<name> off`) is counted in `modules_skipped` and
     // never reaches `modules_run`, so a disabled/excluded module is observable
@@ -565,9 +567,71 @@ async fn expansion_depth_zero_is_single_round() {
     // depth=0 — username produced, but never re-dispatched.
     let scan = Scan::new(sid.clone(), target.clone());
     let result = engine.run(scan, target, ctx).await.unwrap();
+    // Subject anchor (seed email) + the username; phone is NOT reached (no
+    // expansion at depth 0).
+    assert_eq!(
+        result.entity_count, 2,
+        "depth 0 should not expand username to phone"
+    );
+}
+
+#[tokio::test]
+async fn seed_is_anchored_as_a_subject_entity_even_with_no_modules() {
+    // G1: the queried subject must always be a node in the result graph — the
+    // hub relations/correlations hang off — even when no module emits anything.
+    // A Coordinates seed (no module in this set produces it) used to vanish
+    // entirely; now it persists as a tagged subject anchor.
+    let (engine, store, sid, target, ctx) = setup(
+        vec![],
+        "seed_anchor",
+        TargetKind::Coordinates,
+        "-27.47,153.02",
+    );
+    let result = engine
+        .run(Scan::new(sid.clone(), target.clone()), target, ctx)
+        .await
+        .unwrap();
     assert_eq!(
         result.entity_count, 1,
-        "depth 0 should not expand username to phone"
+        "the subject anchor is the sole entity"
+    );
+
+    let ents = store.entities_for_scan(&sid).unwrap();
+    let anchor = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("Coordinates subject anchor persisted");
+    // Value is canonicalised by Entity::new (Coordinates → 6-decimal form), the
+    // same normalisation a module-emitted coordinate gets, so the two share a uid
+    // and merge rather than duplicate.
+    assert_eq!(anchor.value, "-27.470000,153.020000");
+    assert!(
+        anchor.has_tag("seed") && anchor.has_tag("subject"),
+        "anchor must carry the seed/subject tags: {:?}",
+        anchor.tags
+    );
+}
+
+#[tokio::test]
+async fn fullname_seed_is_not_engine_anchored_delegated_to_name_intel() {
+    // FullName is the one kind the engine does NOT anchor: name_intel owns the
+    // Person anchor at its own (deliberately Probable-tier) confidence, and the
+    // engine must not duplicate it or override that calibration. With name_intel
+    // absent from this module set, a FullName seed yields nothing — proving the
+    // engine itself adds no Person anchor.
+    let (engine, _store, sid, target, ctx) = setup(
+        vec![],
+        "fullname_no_anchor",
+        TargetKind::FullName,
+        "Jane Smith",
+    );
+    let result = engine
+        .run(Scan::new(sid.clone(), target.clone()), target, ctx)
+        .await
+        .unwrap();
+    assert_eq!(
+        result.entity_count, 0,
+        "engine must delegate the FullName anchor to name_intel, not add its own"
     );
 }
 
@@ -588,8 +652,9 @@ async fn expansion_depth_one_chains_two_modules() {
     };
     let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
     let result = engine.run(scan, target, ctx).await.unwrap();
+    // Subject anchor (seed email) + username + phone (one expansion hop).
     assert_eq!(
-        result.entity_count, 2,
+        result.entity_count, 3,
         "expansion should yield username + phone"
     );
     let entities = store.entities_for_scan(&sid).unwrap();
@@ -719,8 +784,10 @@ async fn expansion_respects_min_expand_confidence() {
     };
     let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
     let result = engine.run(scan, target, ctx).await.unwrap();
+    // Subject anchor (seed email) + the low-confidence username; the username is
+    // below min_expand_confidence so it never expands to phone.
     assert_eq!(
-        result.entity_count, 1,
+        result.entity_count, 2,
         "low-confidence username should not trigger expansion"
     );
 }
@@ -1380,8 +1447,10 @@ async fn user_timeout_override_still_wins_over_module_max() {
     };
     let scan = Scan::new(sid, target.clone()).with_options(opts);
     let result = engine.run(scan, target, ctx).await.unwrap();
+    // Only the subject anchor remains: the slow module is killed at the user's
+    // 500 ms ceiling and contributes no entity.
     assert_eq!(
-        result.entity_count, 0,
+        result.entity_count, 1,
         "user-set 500 ms ceiling must override module's 6 s declaration; \
          slow module's 3.5 s sleep should be killed"
     );
@@ -2033,8 +2102,9 @@ async fn breadth_first_strategy_runs_chain_under_default_confidence() {
     };
     let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
     let result = engine.run(scan, target, ctx).await.unwrap();
+    // Subject anchor (seed email) + username + phone.
     assert_eq!(
-        result.entity_count, 2,
+        result.entity_count, 3,
         "BreadthFirst should still expand username → phone"
     );
     let entities = store.entities_for_scan(&sid).unwrap();

@@ -85,6 +85,57 @@ pub(super) fn enrich_geospatial(entity: &mut crate::core::entity::Entity) {
     }
 }
 
+/// Build the **subject anchor** for a scan seed: the queried identifier itself,
+/// persisted as a root entity so the result graph always has a node for the thing
+/// the operator searched for — the hub every derived relation and correlation
+/// hangs off (the "individualised, subject-as-hub result" the engine is for).
+///
+/// Without this, the subject is a graph node only if some module happens to
+/// re-emit the seed value; a `Coordinates`, `MacAddress`, `Organisation`, … seed
+/// could finish a scan with no node for itself. Pre-inserting the anchor into the
+/// seed round's entity map fixes that uniformly — and because merge is by uid
+/// (GREATEST semantics), a module that re-emits the seed simply accumulates its
+/// evidence onto this anchor rather than creating a duplicate.
+///
+/// `FullName` is intentionally **not** anchored here: `name_intel` already emits
+/// the Person anchor for a name seed at its own deliberately Probable-tier
+/// confidence (a name is inherently ambiguous — many people share one), and the
+/// engine (core) must not reach into a module's calibration. Every other seed
+/// kind is an exact, operator-asserted identifier, so it anchors at high
+/// confidence. Returns `None` for the delegated/!pivotable kinds.
+pub(super) fn seed_anchor_entity(
+    target: &crate::core::scan::Target,
+    scan_id: &str,
+) -> Option<crate::core::entity::Entity> {
+    use crate::core::entity::{Entity, Evidence};
+    use crate::core::scan::TargetKind;
+
+    // name_intel owns the Person anchor for name seeds (see doc comment).
+    if target.kind == TargetKind::FullName {
+        return None;
+    }
+
+    let kind = target.kind.to_entity_kind();
+    // An operator-provided seed is a strong assertion that this identifier is the
+    // subject — ranked above a verified single-source finding (holehe 0.85) but
+    // below certainty, so a seed that later proves a dead end still ranks but
+    // never claims absolute truth.
+    let mut e = Entity::new(kind, &target.value, 0.90, scan_id);
+    // Empty-after-normalisation guard: a blank/placeholder seed must not anchor a
+    // valueless node (Entity::new keeps the raw value, but a normalised-empty
+    // identifier is not a real subject).
+    if e.value.trim().is_empty() {
+        return None;
+    }
+    e.tag("seed");
+    e.tag("subject");
+    e.add_evidence(Evidence::new(
+        "seed",
+        "Scan seed — operator-provided target (subject anchor)",
+    ));
+    Some(e)
+}
+
 /// Harvest any API keys embedded in an entity's value or evidence attributes into
 /// the global key pool (the force-multiplier loop: a key found in breach/leak data
 /// unlocks more modules). Best-effort and side-effecting only on the pool; the

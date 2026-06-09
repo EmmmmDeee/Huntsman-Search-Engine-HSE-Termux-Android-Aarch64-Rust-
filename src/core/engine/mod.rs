@@ -36,7 +36,7 @@ mod timeout;
 // the tests that stayed in this file, so the bridge is test-only.
 #[cfg(test)]
 use dispatch::{dispatch_key, log_module_dispatch, module_skip_reason, run_module_guarded};
-use enrich::{enrich_geospatial, scan_entity_for_keys};
+use enrich::{enrich_geospatial, scan_entity_for_keys, seed_anchor_entity};
 use expansion::{cmp_expansion_candidates, correlation_key, visit_key};
 use timeout::resolve_timeout;
 // Used only by the dispatch-related tests retained in this file.
@@ -381,6 +381,23 @@ impl ScanEngine {
         let mut emitted_corr: HashSet<String> = HashSet::new();
 
         visited.insert(visit_key(&target));
+        // Anchor the queried subject as a root entity BEFORE dispatch, so the
+        // result graph always has a node for what the operator searched for —
+        // the hub every relation/correlation hangs off. Pre-inserting (rather
+        // than appending) means a module that re-emits the seed merges its
+        // evidence onto this anchor by uid instead of duplicating it. `FullName`
+        // is delegated to name_intel's Person anchor (see seed_anchor_entity).
+        // Guard on cancellation: a scan cancelled before it starts does no work
+        // and persists nothing — not even the anchor — so the "pre-cancel is a
+        // clean no-op" invariant holds. A live scan inserts the anchor, then
+        // dispatch may still abort mid-flight, leaving the subject node present
+        // (we always show what was queried), consistent with finalise persisting
+        // collected entities on a clean Aborted.
+        if !ctx.cancel.is_cancelled()
+            && let Some(anchor) = seed_anchor_entity(&target, &scan.id)
+        {
+            entity_map.insert(anchor.uid.clone(), anchor);
+        }
         self.dispatch_target(
             &scan.id,
             &target,
