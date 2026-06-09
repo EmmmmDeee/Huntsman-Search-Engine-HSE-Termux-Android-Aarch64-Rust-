@@ -29,7 +29,9 @@ pub struct BatchCmd {
 pub async fn cmd_oathnet_batch(cmd: BatchCmd) -> Result<()> {
     let value = cmd.value.trim().to_string();
     if value.is_empty() {
-        return Err(Error::Other("oathnet-batch: --value must not be empty".into()));
+        return Err(Error::Other(
+            "oathnet-batch: --value must not be empty".into(),
+        ));
     }
 
     // Resolve the seed kind: explicit `--kind`, else auto-detect from the value.
@@ -97,7 +99,10 @@ fn print_plan(plan: &[BatchQuery], kind: &str, value: &str, json: bool) {
         plan.len(),
         if plan.len() == 1 { "y" } else { "ies" }
     );
-    println!("  {:<8}  {:<10}  {:<20}  VALUE", "SURFACE", "FIELD", "ORIGIN");
+    println!(
+        "  {:<8}  {:<10}  {:<20}  VALUE",
+        "SURFACE", "FIELD", "ORIGIN"
+    );
     println!("  {:-<8}  {:-<10}  {:-<20}  {:-<30}", "", "", "", "");
     for q in plan {
         println!(
@@ -191,10 +196,19 @@ async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result
         rows.len()
     );
     if !rows.is_empty() {
-        println!("\n  {:<8}  {:<10}  {:<20}  VALUE", "RECORDS", "FIELD", "ORIGIN");
+        println!(
+            "\n  {:<8}  {:<10}  {:<20}  VALUE",
+            "RECORDS", "FIELD", "ORIGIN"
+        );
         println!("  {:-<8}  {:-<10}  {:-<20}  {:-<30}", "", "", "", "");
         for (_, q, n) in &rows {
-            println!("  {:<8}  {:<10}  {:<20}  {}", n, q.field, q.origin.label(), q.value);
+            println!(
+                "  {:<8}  {:<10}  {:<20}  {}",
+                n,
+                q.field,
+                q.origin.label(),
+                q.value
+            );
         }
     }
     if stopped_on_budget {

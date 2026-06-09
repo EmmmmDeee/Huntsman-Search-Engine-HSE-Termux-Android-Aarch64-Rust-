@@ -121,7 +121,8 @@ impl Module for IpApi {
             .http
             .get(&url)
             .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
-            .send_tagged(SRC).await?;
+            .send_tagged(SRC)
+            .await?;
 
         if !resp.status().is_success() {
             return Err(Error::module(SRC, format!("HTTP {}", resp.status())));

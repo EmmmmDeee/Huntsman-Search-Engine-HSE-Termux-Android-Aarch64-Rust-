@@ -315,7 +315,10 @@ mod tests {
         let has = |pair: [&str; 2]| a.windows(2).any(|w| w == pair);
         // Protocol allow-list on both the initial request and every redirect hop
         // (blocks file://, gopher://, dict:// SSRF pivots).
-        assert!(has(["--proto", "=http,https"]), "missing --proto allow-list");
+        assert!(
+            has(["--proto", "=http,https"]),
+            "missing --proto allow-list"
+        );
         assert!(
             has(["--proto-redir", "=http,https"]),
             "missing --proto-redir allow-list"

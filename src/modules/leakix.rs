@@ -20,8 +20,8 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::handle_keyed_error;
 use crate::util::http::RequestBuilderExt;
+use crate::util::http::handle_keyed_error;
 
 const KEY_ENV: &str = "HUNTSMAN_LEAKIX_KEY";
 const SRC: &str = "leakix";
@@ -187,7 +187,8 @@ impl Module for LeakIx {
                 .get(&url)
                 .header("api-key", key)
                 .header("Accept", "application/json")
-                .send_tagged(SRC).await?;
+                .send_tagged(SRC)
+                .await?;
             let status = resp.status();
             if status.as_u16() == 404 {
                 return Ok(ModuleResult::new());

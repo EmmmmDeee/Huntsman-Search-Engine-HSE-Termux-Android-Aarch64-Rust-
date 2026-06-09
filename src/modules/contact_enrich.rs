@@ -21,8 +21,8 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::urlencode;
 use crate::util::http::RequestBuilderExt;
+use crate::util::http::urlencode;
 
 // ---------------------------------------------------------------------------
 // Public module struct
@@ -199,10 +199,7 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     // TLS refusal), fall back to HTTP and remember the transport
     // we ended up using.
     let try_url = |url: String| async move {
-        let resp = ctx
-            .http
-            .get(&url)
-            .send_tagged(SRC).await?;
+        let resp = ctx.http.get(&url).send_tagged(SRC).await?;
         let status = resp.status();
         if status.as_u16() == 404 {
             return Ok(None);
@@ -301,10 +298,7 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     // Gravatar's placeholder profiles return 200 + non-JSON body, and
     // the helper would surface that as a `module_error`. The
     // silent-treat-as-empty behaviour below is the documented contract.
-    let resp = ctx
-        .http
-        .get(&url)
-        .send_tagged(SRC).await?;
+    let resp = ctx.http.get(&url).send_tagged(SRC).await?;
 
     let status = resp.status();
     if status.as_u16() == 404 {

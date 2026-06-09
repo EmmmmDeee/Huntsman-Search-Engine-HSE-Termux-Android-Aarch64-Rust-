@@ -170,7 +170,8 @@ impl Module for SunriseSunset {
             .http
             .get(&url)
             .header("Accept", "application/json")
-            .send_tagged(SRC).await?;
+            .send_tagged(SRC)
+            .await?;
 
         if !resp.status().is_success() {
             return Ok(ModuleResult::new());

@@ -233,7 +233,8 @@ impl Module for UrlHaus {
             .post("https://urlhaus-api.abuse.ch/v1/host/")
             .header("Auth-Key", key)
             .form(&[("host", host)])
-            .send_tagged(SRC).await?;
+            .send_tagged(SRC)
+            .await?;
 
         let status = resp.status();
         // A present-but-rejected key (401/403) degrades to a clean skip rather

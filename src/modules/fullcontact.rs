@@ -131,7 +131,8 @@ impl Module for FullContact {
             .header("Authorization", format!("Bearer {key}"))
             .header("Content-Type", "application/json")
             .body(body)
-            .send_tagged(SRC).await?;
+            .send_tagged(SRC)
+            .await?;
 
         // 404 = no person matched — a clean miss, not an error.
         let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {

@@ -25,8 +25,8 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::handle_keyed_error;
 use crate::util::http::RequestBuilderExt;
+use crate::util::http::handle_keyed_error;
 
 const KEY_ENV: &str = "HUNTSMAN_THREATFOX_KEY";
 const SRC: &str = "threatfox";
@@ -236,7 +236,8 @@ impl Module for ThreatFox {
                 .header("Auth-Key", key)
                 .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
                 .json(&body)
-                .send_tagged(SRC).await?;
+                .send_tagged(SRC)
+                .await?;
             let status = resp.status();
             if !status.is_success() {
                 let code = status.as_u16();

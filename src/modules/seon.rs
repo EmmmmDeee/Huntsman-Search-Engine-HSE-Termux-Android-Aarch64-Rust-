@@ -385,7 +385,8 @@ impl Seon {
             .header("X-API-KEY", key)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({ "email": email }))
-            .send_tagged(SRC).await?;
+            .send_tagged(SRC)
+            .await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -429,7 +430,8 @@ impl Seon {
             .header("X-API-KEY", key)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({ "phone": phone }))
-            .send_tagged(SRC).await?;
+            .send_tagged(SRC)
+            .await?;
 
         let status = resp.status();
         if !status.is_success() {

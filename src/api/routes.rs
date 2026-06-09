@@ -728,10 +728,20 @@ mod tests {
             <img src="//cdn.example/pixel.gif">
         "#;
         let hits = external_resource_refs(sample);
-        assert_eq!(hits.len(), 2, "exactly the CDN css + protocol-relative img: {hits:?}");
+        assert_eq!(
+            hits.len(),
+            2,
+            "exactly the CDN css + protocol-relative img: {hits:?}"
+        );
         assert!(hits.iter().any(|h| h.contains("cdn.example/x.css")));
         assert!(hits.iter().any(|h| h.contains("//cdn.example/pixel.gif")));
-        assert!(!hits.iter().any(|h| h.contains("github.com")), "<a> is not a resource");
-        assert!(!hits.iter().any(|h| h.contains("/static/")), "same-origin is fine");
+        assert!(
+            !hits.iter().any(|h| h.contains("github.com")),
+            "<a> is not a resource"
+        );
+        assert!(
+            !hits.iter().any(|h| h.contains("/static/")),
+            "same-origin is fine"
+        );
     }
 }

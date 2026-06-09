@@ -64,10 +64,7 @@ impl Module for WafDetect {
             _ => return Ok(result),
         };
 
-        let resp = ctx
-            .http
-            .head(&url)
-            .send_tagged(SRC).await?;
+        let resp = ctx.http.head(&url).send_tagged(SRC).await?;
 
         let headers = resp.headers();
         let mut detections: Vec<(&str, &str)> = Vec::with_capacity(4);

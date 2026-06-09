@@ -19,8 +19,8 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::geo::is_valid_coords;
-use crate::util::http::error_snippet;
 use crate::util::http::RequestBuilderExt;
+use crate::util::http::error_snippet;
 use crate::util::termux::termux_cmd;
 
 // ── WiGLE credentials ──────────────────────────────────────────────────
@@ -291,7 +291,8 @@ async fn query_wigle_detail(
         .get(&url)
         .basic_auth(user, Some(token))
         .header("Accept", "application/json")
-        .send_tagged(SOURCE).await?;
+        .send_tagged(SOURCE)
+        .await?;
 
     let status = resp.status();
     if status.as_u16() == 429 {

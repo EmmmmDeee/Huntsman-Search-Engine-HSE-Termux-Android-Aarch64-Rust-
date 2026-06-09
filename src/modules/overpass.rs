@@ -188,7 +188,8 @@ out body;"#
             .post("https://overpass-api.de/api/interpreter")
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(format!("data={}", crate::util::http::urlencode(&query)))
-            .send_tagged(SRC).await?;
+            .send_tagged(SRC)
+            .await?;
 
         let status = resp.status();
         if status.as_u16() == 429 {

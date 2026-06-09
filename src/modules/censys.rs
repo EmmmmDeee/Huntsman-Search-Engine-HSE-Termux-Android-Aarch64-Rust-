@@ -17,8 +17,8 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::geo::is_valid_coords;
-use crate::util::http::{handle_keyed_error, urlencode};
 use crate::util::http::RequestBuilderExt;
+use crate::util::http::{handle_keyed_error, urlencode};
 
 const ID_ENV: &str = "HUNTSMAN_CENSYS_ID";
 const SECRET_ENV: &str = "HUNTSMAN_CENSYS_SECRET";
@@ -136,7 +136,8 @@ impl Module for Censys {
                 .get(&url)
                 .basic_auth(api_id, Some(api_secret))
                 .header("Accept", "application/json")
-                .send_tagged(SRC).await?;
+                .send_tagged(SRC)
+                .await?;
 
             let status = resp.status();
 

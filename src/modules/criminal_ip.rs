@@ -17,8 +17,8 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::handle_keyed_error;
 use crate::util::http::RequestBuilderExt;
+use crate::util::http::handle_keyed_error;
 
 const KEY_ENV: &str = "HUNTSMAN_CRIMINALIP_KEY";
 
@@ -147,7 +147,8 @@ impl Module for CriminalIp {
                 .http
                 .get(&url)
                 .header("x-api-key", key)
-                .send_tagged(SRC).await?;
+                .send_tagged(SRC)
+                .await?;
             let status = resp.status();
             if !status.is_success() {
                 let code = status.as_u16();

@@ -769,10 +769,7 @@ pub async fn json_scanned<T: DeserializeOwned>(
 /// `resp.json().await` path used by endpoints whose body is not retained. It
 /// folds the `.map_err(|e| Error::module(module, e.to_string()))` that the
 /// keyed modules repeated verbatim into one named, module-tagged decode.
-pub async fn json_decode<T: DeserializeOwned>(
-    module: &str,
-    resp: reqwest::Response,
-) -> Result<T> {
+pub async fn json_decode<T: DeserializeOwned>(module: &str, resp: reqwest::Response) -> Result<T> {
     resp.json::<T>()
         .await
         .map_err(|e| Error::module(module, e.to_string()))
@@ -849,7 +846,10 @@ mod tests {
             assert!(super::is_keyed_error_status(code), "{code} is a key error");
         }
         for code in [200, 400, 404, 418, 500, 502, 503] {
-            assert!(!super::is_keyed_error_status(code), "{code} is not a key error");
+            assert!(
+                !super::is_keyed_error_status(code),
+                "{code} is not a key error"
+            );
         }
     }
 
@@ -870,7 +870,13 @@ mod tests {
                 .unwrap(),
         );
         let v: V = super::json_decode("test_mod", ok).await.unwrap();
-        assert_eq!(v, V { a: 7, b: "x".into() });
+        assert_eq!(
+            v,
+            V {
+                a: 7,
+                b: "x".into()
+            }
+        );
 
         // A malformed body never panics — it surfaces a module-tagged error.
         let bad = reqwest::Response::from(

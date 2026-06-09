@@ -20,8 +20,8 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::http::urlencode;
 use crate::util::http::RequestBuilderExt;
+use crate::util::http::urlencode;
 
 const KEY_ENV: &str = "HUNTSMAN_SHODAN_KEY";
 
@@ -284,10 +284,7 @@ impl Shodan {
             urlencode(ip),
             urlencode(key),
         );
-        let resp = ctx
-            .http
-            .get(&url)
-            .send_tagged(SRC).await?;
+        let resp = ctx.http.get(&url).send_tagged(SRC).await?;
         let status = resp.status();
         if status.as_u16() == 404 {
             return Ok(());

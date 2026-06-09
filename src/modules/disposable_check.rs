@@ -122,7 +122,8 @@ impl Module for DisposableCheck {
             .http
             .get(&url)
             .timeout(std::time::Duration::from_secs(5))
-            .send_tagged(SRC).await?;
+            .send_tagged(SRC)
+            .await?;
 
         if !resp.status().is_success() {
             return Ok(ModuleResult::new());

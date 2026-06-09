@@ -24,8 +24,8 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
 use crate::util::budget::{BudgetSnapshot, QuotaBudget};
+use crate::util::http::RequestBuilderExt;
 
 // WiGLE credentials (env names + embedded fallbacks) are resolved by the
 // single-sourced `crate::util::keys::wigle_credentials`.
@@ -640,7 +640,8 @@ async fn fetch_wigle_typed(
         .get(&url)
         .basic_auth(user, Some(token))
         .header("Accept", "application/json")
-        .send_tagged(SRC).await?;
+        .send_tagged(SRC)
+        .await?;
 
     let status = resp.status();
     if status.as_u16() == 429 {

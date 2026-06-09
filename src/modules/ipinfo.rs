@@ -175,7 +175,8 @@ impl Module for IpInfo {
             .http
             .get(&url)
             .timeout(std::time::Duration::from_secs(6))
-            .send_tagged(SRC).await?;
+            .send_tagged(SRC)
+            .await?;
 
         if !resp.status().is_success() {
             return Ok(ModuleResult::new());

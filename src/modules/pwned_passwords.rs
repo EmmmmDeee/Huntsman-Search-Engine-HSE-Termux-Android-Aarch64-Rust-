@@ -84,7 +84,8 @@ impl Module for PwnedPasswords {
             .http
             .get(&url)
             .header("Add-Padding", "true")
-            .send_tagged(SRC).await?;
+            .send_tagged(SRC)
+            .await?;
 
         if !resp.status().is_success() {
             return Ok(ModuleResult::new());

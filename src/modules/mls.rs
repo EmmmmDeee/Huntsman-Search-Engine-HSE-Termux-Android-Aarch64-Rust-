@@ -101,11 +101,7 @@ impl Module for Mls {
             "fallbacks": { "lacf": false, "ipf": false },
         });
 
-        let resp = ctx
-            .http
-            .post(&url)
-            .json(&body)
-            .send_tagged(SRC).await?;
+        let resp = ctx.http.post(&url).json(&body).send_tagged(SRC).await?;
 
         if !resp.status().is_success() {
             return Ok(ModuleResult::new());

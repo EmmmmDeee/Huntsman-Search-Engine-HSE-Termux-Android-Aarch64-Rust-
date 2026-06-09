@@ -20,8 +20,8 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::urlencode;
 use crate::util::http::RequestBuilderExt;
+use crate::util::http::urlencode;
 
 #[derive(Deserialize)]
 struct RdapResp {
@@ -244,7 +244,8 @@ impl Module for RdapDomain {
             .get(&url)
             .header("Accept", "application/rdap+json")
             .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
-            .send_tagged(SRC).await?;
+            .send_tagged(SRC)
+            .await?;
 
         let status = resp.status();
         if status.as_u16() == 404 {

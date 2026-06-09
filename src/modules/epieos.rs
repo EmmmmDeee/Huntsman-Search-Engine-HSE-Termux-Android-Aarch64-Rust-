@@ -270,7 +270,8 @@ impl Module for Epieos {
             .bearer_auth(key)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({ "email": email }))
-            .send_tagged(SRC).await?;
+            .send_tagged(SRC)
+            .await?;
 
         let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
             return Ok(ModuleResult::new());

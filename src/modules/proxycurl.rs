@@ -35,8 +35,8 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::domains::is_freemail;
-use crate::util::http::urlencode;
 use crate::util::http::RequestBuilderExt;
+use crate::util::http::urlencode;
 use crate::util::str_util::truncate_safe;
 
 const KEY_ENV: &str = "HUNTSMAN_PROXYCURL_KEY";
@@ -388,7 +388,8 @@ impl Module for Proxycurl {
             .get(&api_url)
             .bearer_auth(key)
             .header("Accept", "application/json")
-            .send_tagged(SRC).await?;
+            .send_tagged(SRC)
+            .await?;
 
         let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
             return Ok(ModuleResult::new());

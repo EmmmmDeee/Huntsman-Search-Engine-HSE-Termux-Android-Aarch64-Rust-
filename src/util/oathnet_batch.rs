@@ -337,7 +337,13 @@ fn gen_username(out: &mut Vec<BatchQuery>, opts: &BatchOptions, native: &'static
     }
     if opts.synthesize_emails {
         for d in FREEMAIL {
-            add(out, opts, FIELD_EMAIL, &format!("{v}@{d}"), Origin::EmailCandidate);
+            add(
+                out,
+                opts,
+                FIELD_EMAIL,
+                &format!("{v}@{d}"),
+                Origin::EmailCandidate,
+            );
         }
     }
 }
@@ -355,7 +361,13 @@ fn gen_name(out: &mut Vec<BatchQuery>, opts: &BatchOptions, native: &'static str
     if opts.synthesize_emails {
         for h in &handles {
             for d in FREEMAIL {
-                add(out, opts, FIELD_EMAIL, &format!("{h}@{d}"), Origin::EmailCandidate);
+                add(
+                    out,
+                    opts,
+                    FIELD_EMAIL,
+                    &format!("{h}@{d}"),
+                    Origin::EmailCandidate,
+                );
             }
         }
     }
@@ -366,7 +378,13 @@ fn gen_domain(out: &mut Vec<BatchQuery>, opts: &BatchOptions, native: &'static s
     add_breach(out, native, &d, Origin::Seed);
     if opts.synthesize_emails && !is_freemail(&d) {
         for role in ROLE_LOCALPARTS {
-            add(out, opts, FIELD_EMAIL, &format!("{role}@{d}"), Origin::EmailCandidate);
+            add(
+                out,
+                opts,
+                FIELD_EMAIL,
+                &format!("{role}@{d}"),
+                Origin::EmailCandidate,
+            );
         }
     }
 }
@@ -504,7 +522,10 @@ mod tests {
         let qs = generate(TargetKind::FullName, "John Doe", &BatchOptions::default());
         // Free-text name search is breach-only.
         assert!(has(&qs, Surface::Breach, "q", "John Doe"));
-        assert!(!qs.iter().any(|q| q.surface == Surface::Stealer && q.field == "q"));
+        assert!(
+            !qs.iter()
+                .any(|q| q.surface == Surface::Stealer && q.field == "q")
+        );
         // Handle permutations on both surfaces.
         assert!(has(&qs, Surface::Breach, "username", "john.doe"));
         assert!(has(&qs, Surface::Stealer, "username", "jdoe"));
@@ -513,14 +534,22 @@ mod tests {
 
     #[test]
     fn middle_name_adds_blended_handles() {
-        let qs = generate(TargetKind::FullName, "John Michael Doe", &BatchOptions::default());
+        let qs = generate(
+            TargetKind::FullName,
+            "John Michael Doe",
+            &BatchOptions::default(),
+        );
         assert!(has(&qs, Surface::Breach, "username", "johnmichaeldoe"));
         assert!(has(&qs, Surface::Breach, "username", "jmdoe"));
     }
 
     #[test]
     fn phone_seed_expands_distinct_formats_breach_only() {
-        let qs = generate(TargetKind::Phone, "+61 412 345 678", &BatchOptions::default());
+        let qs = generate(
+            TargetKind::Phone,
+            "+61 412 345 678",
+            &BatchOptions::default(),
+        );
         // Raw, digits-only, and AU E.164 forms are all present and distinct.
         assert!(has(&qs, Surface::Breach, "phone", "+61 412 345 678"));
         assert!(has(&qs, Surface::Breach, "phone", "61412345678"));
@@ -551,7 +580,11 @@ mod tests {
         assert!(has(&qs, Surface::Stealer, "email", "info@acme.io"));
 
         let names = generate(TargetKind::FullName, "John Doe", &opts);
-        assert!(names.iter().any(|q| q.field == "email" && q.value.ends_with("@gmail.com")));
+        assert!(
+            names
+                .iter()
+                .any(|q| q.field == "email" && q.value.ends_with("@gmail.com"))
+        );
     }
 
     #[test]
@@ -593,8 +626,16 @@ mod tests {
 
     #[test]
     fn output_is_deterministic_and_duplicate_free() {
-        let a = generate(TargetKind::Email, "john.doe@example.com", &BatchOptions::default());
-        let b = generate(TargetKind::Email, "john.doe@example.com", &BatchOptions::default());
+        let a = generate(
+            TargetKind::Email,
+            "john.doe@example.com",
+            &BatchOptions::default(),
+        );
+        let b = generate(
+            TargetKind::Email,
+            "john.doe@example.com",
+            &BatchOptions::default(),
+        );
         assert_eq!(a, b, "same input must yield identical output");
         // No exact (surface, field, value) duplicate survives.
         let mut seen = HashSet::new();
@@ -751,7 +792,11 @@ mod tests {
         // Non-ASCII chars act as separators (handles are ASCII), so the name
         // still yields ASCII handle permutations — accents are dropped, not
         // transliterated (documented limitation), and nothing panics.
-        let qs = generate(TargetKind::FullName, "Renée Dubois", &BatchOptions::default());
+        let qs = generate(
+            TargetKind::FullName,
+            "Renée Dubois",
+            &BatchOptions::default(),
+        );
         assert!(qs.iter().any(|q| q.field == "username"));
         // Only the free-text `q` query may carry the original non-ASCII value.
         assert!(qs.iter().all(|q| q.field == "q" || q.value.is_ascii()));
@@ -772,15 +817,27 @@ mod tests {
             )
         };
         assert_eq!(cap(0).len(), n, "0 means no cap");
-        assert_eq!(cap(n + 100).len(), n, "a cap above the plan size is a no-op");
+        assert_eq!(
+            cap(n + 100).len(),
+            n,
+            "a cap above the plan size is a no-op"
+        );
         let one = cap(1);
         assert_eq!(one.len(), 1);
-        assert_eq!(one[0].origin, Origin::Seed, "the survivor is the seed query");
+        assert_eq!(
+            one[0].origin,
+            Origin::Seed,
+            "the survivor is the seed query"
+        );
     }
 
     #[test]
     fn leading_and_trailing_whitespace_is_trimmed() {
-        let qs = generate(TargetKind::Email, "  jane@example.com  ", &BatchOptions::default());
+        let qs = generate(
+            TargetKind::Email,
+            "  jane@example.com  ",
+            &BatchOptions::default(),
+        );
         assert!(has(&qs, Surface::Breach, "email", "jane@example.com"));
         assert!(qs.iter().all(|q| q.value == q.value.trim()));
     }

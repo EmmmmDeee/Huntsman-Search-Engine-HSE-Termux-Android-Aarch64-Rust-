@@ -23,8 +23,8 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::http::{error_snippet, urlencode};
 use crate::util::http::RequestBuilderExt;
+use crate::util::http::{error_snippet, urlencode};
 
 const SRC: &str = "hibp";
 const KEY_ENV: &str = "HUNTSMAN_HIBP_KEY";
@@ -154,7 +154,8 @@ impl Hibp {
                 .header("hibp-api-key", key)
                 .header("Accept", "application/json")
                 .timeout(Duration::from_secs(15))
-                .send_tagged(SRC).await?;
+                .send_tagged(SRC)
+                .await?;
 
             let status = resp.status().as_u16();
             match status {

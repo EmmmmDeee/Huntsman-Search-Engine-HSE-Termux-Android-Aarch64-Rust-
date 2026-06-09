@@ -61,7 +61,8 @@ impl Module for SocialLocation {
         let body = ctx
             .http
             .get(url)
-            .send_tagged(SRC).await?
+            .send_tagged(SRC)
+            .await?
             .text()
             .await
             .map_err(|e| Error::module(SRC, e.to_string()))?;

@@ -1131,7 +1131,10 @@ mod tests {
         assert!(should_skip_preflight(TargetKind::Url, "https://x.com"));
 
         // Real inputs that must pass through to a query.
-        assert!(!should_skip_preflight(TargetKind::Email, "jane.doe@example.com"));
+        assert!(!should_skip_preflight(
+            TargetKind::Email,
+            "jane.doe@example.com"
+        ));
         assert!(!should_skip_preflight(TargetKind::Username, "bob_smith"));
         assert!(!should_skip_preflight(TargetKind::Phone, "+61412345678"));
         assert!(!should_skip_preflight(TargetKind::FullName, "John Doe"));

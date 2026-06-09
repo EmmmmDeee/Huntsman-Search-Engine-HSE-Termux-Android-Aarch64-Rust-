@@ -21,8 +21,8 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::urlencode;
 use crate::util::http::RequestBuilderExt;
+use crate::util::http::urlencode;
 
 const KEY_ENV: &str = "HUNTSMAN_EMAILREP_KEY";
 const SRC: &str = "emailrep";
