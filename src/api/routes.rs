@@ -146,6 +146,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/keys/status", get(handlers::keys_status))
         .route("/keys/pool", get(handlers::keys_pool_get))
         .route("/keys/pool/revoke", post(handlers::keys_pool_revoke))
+        .route("/keys/pool/rotate", post(handlers::keys_pool_rotate))
         // ── scans ──
         .route(
             "/scans",

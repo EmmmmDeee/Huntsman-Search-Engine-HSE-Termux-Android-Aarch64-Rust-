@@ -479,6 +479,7 @@ const API = {
   // the device — the raw values come from `hse keys export` in the shell.
   poolGet:    ()=>API._req('/api/v1/keys/pool'),
   poolRevoke: body=>API._req('/api/v1/keys/pool/revoke',{method:'POST',body}),
+  poolRotate: body=>API._req('/api/v1/keys/pool/rotate',{method:'POST',body}),
   togglesGet: ()=>API._req('/api/v1/settings/toggles'),
   togglesPut: body=>API._req('/api/v1/settings/toggles',{method:'PUT',body}),
   stats:     ()=>API._req('/api/v1/stats'),
@@ -2087,13 +2088,23 @@ async function renderOpts(v){
   `;
 
   if (data.write_enabled) wireKeyEditor();
-  // Key-pool revoke buttons (reference keys by non-secret id).
+  // Key-pool revoke/rotate buttons (reference keys by non-secret id).
   $$('button[data-revoke]').forEach(b=>b.addEventListener('click', ()=>{
     const service = b.dataset.revoke, id = b.dataset.revokeId;
     alertify.confirm('Revoke key', `Revoke this ${service} key? It is kept for audit but never used again.`, async()=>{
       try { await API.poolRevoke({service, id}); toast('Key revoked'); renderOpts($('#view')); }
       catch(e){ alertify.error(e.message); }
     }, ()=>{});
+  }));
+  $$('button[data-rotate]').forEach(b=>b.addEventListener('click', ()=>{
+    const service = b.dataset.rotate, id = b.dataset.rotateId;
+    alertify.prompt(`Rotate ${service} key`, 'Paste the NEW key value. The old key is revoked (kept for audit) and the new one takes its place in the same environment.', '',
+      async(_e, val)=>{
+        const next = (val||'').trim();
+        if (!next){ alertify.error('No new value entered'); return; }
+        try { await API.poolRotate({service, id, new: next}); toast('Key rotated'); renderOpts($('#view')); }
+        catch(e){ alertify.error(e.message); }
+      }, ()=>{});
   }));
   wireToggles();
   wireToggleFilter();
@@ -2222,7 +2233,8 @@ function poolPanel(pool, writeEnabled){
       <td><span class="tag">${esc(k.environment)}</span></td>
       <td class="text-right text-muted" style="font-size:11px">uses ${k.use_count} · ${esc(k.tier)}</td>
       <td class="text-right">${(writeEnabled && k.status!=='revoked')
-        ? `<button class="btn btn-danger btn-xs" data-revoke="${attr(svc.service)}" data-revoke-id="${attr(k.id)}">Revoke</button>` : ''}</td>
+        ? `<button class="btn btn-default btn-xs" data-rotate="${attr(svc.service)}" data-rotate-id="${attr(k.id)}">Rotate</button>
+           <button class="btn btn-danger btn-xs" data-revoke="${attr(svc.service)}" data-revoke-id="${attr(k.id)}">Revoke</button>` : ''}</td>
     </tr>`).join('')}`).join('');
   return `
     <div class="panel panel-default">

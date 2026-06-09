@@ -1850,3 +1850,24 @@ async fn keys_pool_get_is_masked_and_revoke_is_write_gated() {
         "pool revoke must require --allow-key-write"
     );
 }
+
+#[tokio::test]
+async fn keys_pool_rotate_is_write_gated() {
+    // Rotation is a write — refused without --allow-key-write (test_app default),
+    // never a silent no-op.
+    use std::net::SocketAddr;
+    let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    let app = test_app("keys-pool-rotate");
+    let mut post = Request::builder()
+        .method("POST")
+        .uri("/api/v1/keys/pool/rotate")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"service":"shodan","id":"deadbeef","new":"NEW-VAL"}"#,
+        ))
+        .unwrap();
+    post.extensions_mut()
+        .insert(axum::extract::ConnectInfo(loopback));
+    let resp = app.oneshot(post).await.unwrap();
+    assert_eq!(resp.status(), http::StatusCode::FORBIDDEN);
+}

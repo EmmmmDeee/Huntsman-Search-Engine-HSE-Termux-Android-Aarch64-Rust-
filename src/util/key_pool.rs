@@ -276,6 +276,24 @@ impl KeyPool {
         false
     }
 
+    /// Rotate the key in `service` whose [`key_id`] matches `id` to `new` — the
+    /// web/API counterpart to [`Self::rotate`], identifying the old key by its
+    /// non-secret id so its plaintext never has to be sent back to rotate it.
+    /// Returns true if a key with that id was found.
+    pub fn rotate_by_id(&self, service: &str, id: &str, new: &str) -> bool {
+        let old = {
+            let data = self.data.lock();
+            data.services
+                .get(&service.to_lowercase())
+                .and_then(|es| es.iter().find(|e| key_id(&e.value) == id))
+                .map(|e| e.value.clone())
+        };
+        match old {
+            Some(old) => self.rotate(service, &old, new),
+            None => false,
+        }
+    }
+
     /// Rotate a key: revoke `old` and add `new` in one step, carrying the old
     /// key's environment and notes so provenance survives the swap and the new
     /// key lands in the same context. Returns true if `old` was found.
@@ -677,6 +695,33 @@ mod tests {
             !only_prod.contains("default-key"),
             "env filter must exclude other environments"
         );
+    }
+
+    #[test]
+    fn revoke_and_rotate_by_id_reference_keys_without_plaintext() {
+        let pool = KeyPool::new();
+        let mut p = KeyEntry::new("old-secret");
+        p.environment = Some("prod".into());
+        pool.add("shodan", p);
+        let id = key_id("old-secret");
+        assert_ne!(id, "old-secret", "id is a hash, not the value");
+
+        // Rotate by id: old revoked (retained), new added in the same env, served.
+        assert!(pool.rotate_by_id("shodan", &id, "new-secret"));
+        let snap = pool.snapshot();
+        let entries = &snap.services["shodan"];
+        let old = entries.iter().find(|e| e.value == "old-secret").unwrap();
+        let new = entries.iter().find(|e| e.value == "new-secret").unwrap();
+        assert_eq!(old.status, KeyStatus::Revoked);
+        assert_eq!(new.environment(), "prod");
+        assert_eq!(pool.next_key("shodan").as_deref(), Some("new-secret"));
+
+        // Revoke the new key by its id.
+        assert!(pool.revoke_by_id("shodan", &key_id("new-secret")));
+        assert_eq!(pool.next_key("shodan"), None);
+        // Unknown id is a no-op.
+        assert!(!pool.revoke_by_id("shodan", "00ff00ff00ff"));
+        assert!(!pool.rotate_by_id("shodan", "00ff00ff00ff", "x"));
     }
 
     #[test]

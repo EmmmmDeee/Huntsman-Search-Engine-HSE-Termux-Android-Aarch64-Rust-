@@ -570,6 +570,16 @@ pub struct KeysPoolRevokeRequest {
     pub id: String,
 }
 
+/// Body for `POST /keys/pool/rotate` — the old key by non-secret id, plus the
+/// new plaintext value to install (sent over the same loopback channel as
+/// `settings/keys` PUT).
+#[derive(Deserialize)]
+pub struct KeysPoolRotateRequest {
+    pub service: String,
+    pub id: String,
+    pub new: String,
+}
+
 #[derive(Deserialize)]
 pub struct KeysPutRequest {
     #[serde(default)]
@@ -697,6 +707,53 @@ pub async fn keys_pool_revoke(
         (
             StatusCode::OK,
             Json(json!({ "status": "revoked", "service": req.service })),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "no key with that id in that service" })),
+        )
+            .into_response()
+    }
+}
+
+/// `POST /api/v1/keys/pool/rotate` — rotate a pooled key (identified by its
+/// non-secret `id`) to a new value: the old key is revoked (kept for audit) and
+/// the new one added in the same environment. A write, gated exactly like
+/// `settings/keys` (loopback + `--allow-key-write`). The new value is sent in the
+/// body — the same loopback channel `settings/keys` PUT already uses for new keys.
+pub async fn keys_pool_rotate(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(req): Json<KeysPoolRotateRequest>,
+) -> impl IntoResponse {
+    if !s.allow_key_write {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "key writes disabled; restart with `hse serve --allow-key-write`"
+            })),
+        )
+            .into_response();
+    }
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "key writes are loopback-only" })),
+        )
+            .into_response();
+    }
+    if req.service.trim().is_empty() || req.id.trim().is_empty() || req.new.trim().is_empty() {
+        return bad_request("service, id and new value are required");
+    }
+    let pool = crate::util::key_pool::global_pool();
+    if pool.rotate_by_id(&req.service, &req.id, req.new.trim()) {
+        crate::util::key_pool::save_pool_best_effort(&pool);
+        tracing::info!(service = %req.service, id = %req.id, "key pool: rotated via web");
+        (
+            StatusCode::OK,
+            Json(json!({ "status": "rotated", "service": req.service })),
         )
             .into_response()
     } else {
