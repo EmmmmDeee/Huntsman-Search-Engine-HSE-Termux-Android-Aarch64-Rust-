@@ -20,9 +20,31 @@
 //!
 //! The generator is **pure** (no IO, no quota) so the full plan can be previewed
 //! for free and is exhaustively unit-testable; the CLI layer is what actually
-//! dispatches it (and is what spends OathNet credits). Output is deterministic:
-//! the seed's own queries come first, then derived ones in a fixed order, with
-//! exact `(surface, field, lowercased-value)` duplicates collapsed.
+//! dispatches it (and is what spends OathNet credits).
+//!
+//! # Guarantees
+//!
+//! [`generate`] returns a `Vec<BatchQuery>` that is:
+//!
+//! * **deterministic** — the same input always yields the same vec, in the same
+//!   order (no `HashMap` iteration order leaks in);
+//! * **seed-first** — the seed's own queries precede every derived query;
+//! * **de-duplicated** — no two queries share a `(surface, field, value)` triple
+//!   when compared case-insensitively on the value;
+//! * **well-formed** — every query's `value` is trimmed and non-empty and its
+//!   `field` is one of OathNet's selector fields; and
+//! * **bounded** — at most `opts.max_queries` queries when that cap is non-zero.
+//!
+//! These are enforced by the test suite, not merely intended.
+//!
+//! # Limitations
+//!
+//! Handle permutation is **ASCII-only**: [`name_tokens`] treats any non-ASCII
+//! character as a separator, so an accented name (`"Renée"`) loses the accented
+//! run rather than being transliterated. This is deliberate — account handles
+//! are overwhelmingly ASCII and a fold table would add a dependency for little
+//! real-world recall — but it means non-Latin seeds fall back to the free-text
+//! `q` search only.
 
 use std::collections::HashSet;
 
@@ -71,14 +93,32 @@ impl Origin {
 /// A single generated query: one surface × one selector field × one value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchQuery {
+    /// Which OathNet corpus this query targets.
     pub surface: Surface,
     /// OathNet selector field (`email`, `username`, `phone`, `domain`, `ip`, `q`).
     pub field: &'static str,
+    /// The value to search for — always trimmed and non-empty.
     pub value: String,
+    /// Why this query was generated — its provenance back to the seed.
     pub origin: Origin,
 }
 
 /// Knobs controlling how aggressively the seed is expanded.
+///
+/// Build from [`BatchOptions::default`] and override the fields you need:
+///
+/// ```
+/// use huntsman_search_engine::util::oathnet_batch::BatchOptions;
+///
+/// // Breach-only, no speculative handle permutations, capped at 8 queries.
+/// let opts = BatchOptions {
+///     include_stealer: false,
+///     permute_handles: false,
+///     max_queries: 8,
+///     ..BatchOptions::default()
+/// };
+/// assert!(!opts.synthesize_emails); // the conservative default is preserved
+/// ```
 #[derive(Debug, Clone)]
 pub struct BatchOptions {
     /// Also emit stealer-surface queries for login-indexable selectors
@@ -279,9 +319,10 @@ fn gen_email(out: &mut Vec<BatchQuery>, opts: &BatchOptions, native: &'static st
                 }
             }
         }
-        // A domain search on a free provider is noise; everything else is a
-        // legitimate org-wide pivot.
-        if !domain.is_empty() && !is_freemail(&domain) {
+        // Only pivot on a plausibly-real domain: a free provider is noise, and a
+        // malformed host (no dot, or a stray `@` from a double-`@` address) is
+        // not a domain worth a query. The dot check also subsumes "non-empty".
+        if domain.contains('.') && !domain.contains('@') && !is_freemail(&domain) {
             add_breach(out, FIELD_DOMAIN, &domain, Origin::EmailDomain);
         }
     }
@@ -331,8 +372,42 @@ fn gen_domain(out: &mut Vec<BatchQuery>, opts: &BatchOptions, native: &'static s
 }
 
 /// Generate the full, de-duplicated batch of OathNet queries for `value`
-/// interpreted as `kind`. Returns an empty vec for a blank value or a kind
-/// OathNet does not index (per [`oathnet::selector_field`]).
+/// interpreted as `kind`.
+///
+/// Returns an empty vec for a blank `value`, or for a `kind` OathNet does not
+/// index (per [`oathnet::selector_field`]). See the [module docs](self) for the
+/// full list of guarantees the returned vec upholds.
+///
+/// # Examples
+///
+/// An email seed fans out across surfaces, derived fields, and handle shapes:
+///
+/// ```
+/// use huntsman_search_engine::util::oathnet_batch::{generate, BatchOptions, Surface};
+/// use huntsman_search_engine::core::scan::TargetKind;
+///
+/// let plan = generate(TargetKind::Email, "jane.doe@example.com", &BatchOptions::default());
+///
+/// // The seed is searched first, on both corpora.
+/// assert_eq!(plan[0].field, "email");
+/// assert_eq!(plan[0].value, "jane.doe@example.com");
+/// assert!(plan.iter().any(|q| q.surface == Surface::Stealer));
+///
+/// // The local part fans out into username handles — a "large array".
+/// assert!(plan.iter().any(|q| q.field == "username" && q.value == "jdoe"));
+/// assert!(plan.len() > 10);
+/// ```
+///
+/// `max_queries` caps the plan, keeping the highest-priority queries:
+///
+/// ```
+/// use huntsman_search_engine::util::oathnet_batch::{generate, BatchOptions};
+/// use huntsman_search_engine::core::scan::TargetKind;
+///
+/// let opts = BatchOptions { max_queries: 3, ..BatchOptions::default() };
+/// let plan = generate(TargetKind::Email, "jane.doe@example.com", &opts);
+/// assert_eq!(plan.len(), 3);
+/// ```
 #[must_use]
 pub fn generate(kind: TargetKind, value: &str, opts: &BatchOptions) -> Vec<BatchQuery> {
     let mut out = Vec::new();
@@ -356,9 +431,14 @@ pub fn generate(kind: TargetKind, value: &str, opts: &BatchOptions) -> Vec<Batch
         }
         TargetKind::IpAddress => add_breach(&mut out, native, v, Origin::Seed),
         TargetKind::Domain => gen_domain(&mut out, opts, native, v),
-        // `native` is `Some` only for the kinds above, so this is unreachable;
-        // it keeps the match exhaustive over `TargetKind`.
-        _ => {}
+        // `native` is `Some` only for the kinds above, so reaching here means
+        // `selector_field` learned a kind `generate` hasn't — a single-source
+        // drift. Surface it in tests/debug; no-op (drop the kind) in release.
+        _ => debug_assert!(
+            false,
+            "oathnet::selector_field returned Some for {kind:?} but \
+             oathnet_batch::generate does not handle it",
+        ),
     }
 
     // Collapse exact (surface, field, lowercased-value) duplicates, keeping the
@@ -570,5 +650,138 @@ mod tests {
     fn surface_paths_match_oathnet_constants() {
         assert_eq!(Surface::Breach.path(), oathnet::paths::BREACH);
         assert_eq!(Surface::Stealer.path(), oathnet::paths::STEALER);
+    }
+
+    // ── Invariants the module docs promise, checked across every indexed kind ──
+
+    /// Every kind OathNet indexes, with a representative seed and the most
+    /// expansive options, so the structural invariants are exercised broadly.
+    fn all_kind_cases() -> [(TargetKind, &'static str); 6] {
+        [
+            (TargetKind::Email, "jane.doe@example.com"),
+            (TargetKind::Username, "jane.doe"),
+            (TargetKind::FullName, "Jane Q Doe"),
+            (TargetKind::Phone, "+61 412 345 678"),
+            (TargetKind::IpAddress, "8.8.8.8"),
+            (TargetKind::Domain, "acme.io"),
+        ]
+    }
+
+    #[test]
+    fn every_query_is_well_formed() {
+        const FIELDS: &[&str] = &["email", "username", "phone", "domain", "ip", "q"];
+        let opts = BatchOptions {
+            synthesize_emails: true,
+            ..BatchOptions::default()
+        };
+        for (kind, value) in all_kind_cases() {
+            let qs = generate(kind, value, &opts);
+            assert!(!qs.is_empty(), "{kind:?} produced no queries");
+            for q in &qs {
+                assert!(
+                    FIELDS.contains(&q.field),
+                    "{kind:?} produced an unknown field {:?}",
+                    q.field
+                );
+                assert_eq!(q.value, q.value.trim(), "value not trimmed: {:?}", q.value);
+                assert!(!q.value.is_empty(), "empty value for {kind:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn seed_queries_precede_every_derived_query() {
+        for (kind, value) in all_kind_cases() {
+            let qs = generate(kind, value, &BatchOptions::default());
+            let last_seed = qs.iter().rposition(|q| q.origin == Origin::Seed);
+            let first_derived = qs.iter().position(|q| q.origin != Origin::Seed);
+            if let (Some(ls), Some(fd)) = (last_seed, first_derived) {
+                assert!(ls < fd, "a seed query followed a derived one for {kind:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_stealer_query_mirrors_a_breach_query() {
+        // `add` always pushes breach first, then (when indexable) stealer — so a
+        // stealer query must always have a breach twin on the same field+value.
+        let opts = BatchOptions {
+            synthesize_emails: true,
+            ..BatchOptions::default()
+        };
+        for (kind, value) in all_kind_cases() {
+            let qs = generate(kind, value, &opts);
+            for s in qs.iter().filter(|q| q.surface == Surface::Stealer) {
+                assert!(
+                    qs.iter().any(|b| b.surface == Surface::Breach
+                        && b.field == s.field
+                        && b.value == s.value),
+                    "stealer query without a breach twin: {s:?}"
+                );
+            }
+        }
+    }
+
+    // ── Edge cases ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn malformed_emails_do_not_panic_or_emit_junk_domains() {
+        // No '@': only the email selector applies — no local/domain derivation.
+        let q1 = generate(TargetKind::Email, "not-an-email", &BatchOptions::default());
+        assert!(q1.iter().all(|q| q.field == "email"));
+
+        // Double '@' leaves a stray '@' in the host — must NOT become a domain query.
+        let q2 = generate(TargetKind::Email, "a@@b.com", &BatchOptions::default());
+        assert!(
+            q2.iter().all(|q| q.field != "domain"),
+            "a stray-@ host must not be searched as a domain"
+        );
+
+        // Empty local part: no username derivation, no panic.
+        let q3 = generate(TargetKind::Email, "@example.com", &BatchOptions::default());
+        assert!(q3.iter().any(|q| q.field == "email"));
+
+        // A host with no dot is not a real domain.
+        let q4 = generate(TargetKind::Email, "x@localhost", &BatchOptions::default());
+        assert!(q4.iter().all(|q| q.field != "domain"));
+    }
+
+    #[test]
+    fn non_ascii_name_yields_ascii_handles_only() {
+        // Non-ASCII chars act as separators (handles are ASCII), so the name
+        // still yields ASCII handle permutations — accents are dropped, not
+        // transliterated (documented limitation), and nothing panics.
+        let qs = generate(TargetKind::FullName, "Renée Dubois", &BatchOptions::default());
+        assert!(qs.iter().any(|q| q.field == "username"));
+        // Only the free-text `q` query may carry the original non-ASCII value.
+        assert!(qs.iter().all(|q| q.field == "q" || q.value.is_ascii()));
+    }
+
+    #[test]
+    fn max_queries_boundaries() {
+        let seed = "jane.doe@example.com";
+        let n = generate(TargetKind::Email, seed, &BatchOptions::default()).len();
+        let cap = |m| {
+            generate(
+                TargetKind::Email,
+                seed,
+                &BatchOptions {
+                    max_queries: m,
+                    ..BatchOptions::default()
+                },
+            )
+        };
+        assert_eq!(cap(0).len(), n, "0 means no cap");
+        assert_eq!(cap(n + 100).len(), n, "a cap above the plan size is a no-op");
+        let one = cap(1);
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].origin, Origin::Seed, "the survivor is the seed query");
+    }
+
+    #[test]
+    fn leading_and_trailing_whitespace_is_trimmed() {
+        let qs = generate(TargetKind::Email, "  jane@example.com  ", &BatchOptions::default());
+        assert!(has(&qs, Surface::Breach, "email", "jane@example.com"));
+        assert!(qs.iter().all(|q| q.value == q.value.trim()));
     }
 }

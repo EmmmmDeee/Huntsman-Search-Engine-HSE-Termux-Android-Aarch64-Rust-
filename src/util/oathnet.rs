@@ -283,6 +283,13 @@ pub mod paths {
 // lockstep — a kind added or a field renamed updates both consumers at once.
 
 /// An OathNet search surface — the typed companion to the [`paths`] constants.
+///
+/// ```
+/// use huntsman_search_engine::util::oathnet::{Surface, paths};
+///
+/// assert_eq!(Surface::Breach.label(), "breach");
+/// assert_eq!(Surface::Breach.path(), paths::BREACH);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Surface {
     /// Breach corpus ([`paths::BREACH`]).
@@ -314,6 +321,15 @@ impl Surface {
 /// The OathNet selector field a target kind searches on, or `None` for a kind
 /// OathNet does not index. The breach corpus indexes all of these; the stealer
 /// corpus only those for which [`stealer_indexable`] is true.
+///
+/// ```
+/// use huntsman_search_engine::util::oathnet::selector_field;
+/// use huntsman_search_engine::core::scan::TargetKind;
+///
+/// assert_eq!(selector_field(TargetKind::Email), Some("email"));
+/// assert_eq!(selector_field(TargetKind::FullName), Some("q"));
+/// assert_eq!(selector_field(TargetKind::Url), None); // OathNet doesn't index URLs
+/// ```
 #[must_use]
 pub fn selector_field(kind: crate::core::scan::TargetKind) -> Option<&'static str> {
     use crate::core::scan::TargetKind;
@@ -331,6 +347,14 @@ pub fn selector_field(kind: crate::core::scan::TargetKind) -> Option<&'static st
 /// True for selector fields the stealer corpus indexes — it is keyed on login
 /// credentials, so only `email` / `username` resolve there. Phone / name /
 /// domain / IP are breach-only.
+///
+/// ```
+/// use huntsman_search_engine::util::oathnet::stealer_indexable;
+///
+/// assert!(stealer_indexable("email"));
+/// assert!(stealer_indexable("username"));
+/// assert!(!stealer_indexable("phone")); // breach-only
+/// ```
 #[must_use]
 pub fn stealer_indexable(field: &str) -> bool {
     matches!(field, "email" | "username")

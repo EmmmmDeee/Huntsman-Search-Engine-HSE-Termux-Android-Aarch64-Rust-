@@ -28,7 +28,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   nothing; `--execute` dispatches it, bounded by the shared per-session OathNet
   budget (the per-scan cap is lifted for the deliberate batch, but the session
   ceiling still caps daily spend). Flags: `--no-stealer`, `--no-permute`,
-  `--synthesize-emails`, `--max`, `--page-size`, `--json`.
+  `--synthesize-emails`, `--max`, `--page-size`, `--json`. The generator's public
+  API carries runnable doc examples, its guarantees (determinism, seed-first
+  ordering, de-duplication, well-formed/bounded output) are documented *and*
+  enforced by invariant tests, and malformed email hosts are guarded — a stray
+  `@` (from a double-`@` address) or a dotless host is no longer searched as a
+  domain.
 
 ### Changed
 
