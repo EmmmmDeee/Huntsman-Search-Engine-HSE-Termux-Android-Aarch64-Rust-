@@ -10,6 +10,25 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+
+- **WiGLE account introspection now actually detects the email-unverified
+  throttle.** `refresh_account_status` deserialised the `/api/v2/profile/user`
+  response with the wrong field names — it read `user`/`verified`, but the
+  WiGLE `Person` object (per the published swagger schema, confirmed live)
+  names them `userid` and `emailVerified`. Both therefore always parsed to
+  `None`, so `is_unverified()` could never fire and `hse doctor` reported
+  `email-verified: unknown — /profile/user not reachable` even when the
+  endpoint was reachable and the account was plainly unverified — defeating
+  the entire purpose of the check (WiGLE silently throttles DB queries until
+  the email is confirmed). The parser now reads the real fields and trims the
+  trailing space WiGLE pads onto `userid`. Additionally, the second poll to
+  `/api/v2/profile/apiUsage` was removed: that path has never existed (it
+  always 404'd), so the `daily_api_calls`/`monthly_api_calls` fields it fed
+  were structurally always `null`. They are dropped from `WigleAccountStatus`,
+  the `/api/v1/stats` `wigle.account` block, and `hse doctor` output. Locked in
+  with a regression test that parses the real `Person` wire shape.
+
 ## [1.4.0] — 2026-06-09
 
 ### Added

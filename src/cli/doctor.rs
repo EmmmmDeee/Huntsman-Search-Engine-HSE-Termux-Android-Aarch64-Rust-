@@ -120,10 +120,10 @@ pub(super) async fn cmd_doctor() -> Result<()> {
     }
 
     // ── WiGLE account health (network call, best-effort) ──────────────
-    // Poll /api/v2/profile/user + /apiUsage. Surfaces the
-    // "email unverified → throttled" warning that the WiGLE account
-    // page calls out but which our queries don't otherwise expose
-    // until they start silently returning fewer results.
+    // Poll /api/v2/profile/user. Surfaces the "email unverified →
+    // throttled" warning that the WiGLE account page calls out but which
+    // our queries don't otherwise expose until they start silently
+    // returning fewer results.
     println!("\nWiGLE account:");
     let wigle_user = loaded
         .get("HUNTSMAN_WIGLE_USER")
@@ -145,12 +145,6 @@ pub(super) async fn cmd_doctor() -> Result<()> {
     }
     if let Some(user) = status.user.as_deref() {
         println!("  user:           {user}");
-    }
-    if let Some(daily) = status.daily_api_calls {
-        println!("  daily calls:    {daily}");
-    }
-    if let Some(monthly) = status.monthly_api_calls {
-        println!("  monthly calls:  {monthly}");
     }
 
     Ok(())

@@ -849,38 +849,39 @@ const GENERIC_SSIDS: &[&str] = &[
     "test", "hidden", "unknown", "unnamed",
 ];
 
-// ── Account introspection: profile/user + profile/apiUsage ─────────────────
+// ── Account introspection: profile/user ────────────────────────────────────
 //
-// Two non-counting WiGLE endpoints that surface operator-visible state:
+// One non-counting WiGLE endpoint that surfaces operator-visible state:
 //
 //   GET /api/v2/profile/user
-//     → returns { user, verified, ... }. The `verified: false` case
-//       means WiGLE throttles database queries until email confirm —
-//       a silent operational hazard the operator probably doesn't
-//       know about until queries start failing. `hse doctor` and
-//       the diagnostic block on `/api/v1/stats` surface this.
+//     → returns the `Person` object: { userid, email, emailVerified, ... }
+//       (per the published swagger `Person` schema — NOT `user`/`verified`,
+//       which an earlier build mis-parsed, silently yielding None for both).
+//       `emailVerified: false` means WiGLE throttles database queries until
+//       the email-confirm step — a silent operational hazard the operator
+//       probably doesn't know about until queries start returning fewer
+//       results. `hse doctor` and the diagnostic block on `/api/v1/stats`
+//       surface it.
 //
-//   GET /api/v2/profile/apiUsage
-//     → returns { dailyApiCalls, monthlyApiCalls, ... }. Lets us
-//       expose authoritative remaining-quota numbers rather than
-//       relying solely on our local per-process counters.
+// WiGLE's v2 API exposes no machine-readable per-call usage/quota endpoint
+// (an earlier build polled `/profile/apiUsage`, a path that has never
+// existed and always 404'd), so account introspection reports verification
+// state only.
 //
-// Both calls are intentionally NOT charged against any of the four
-// observation-type budgets — they're metadata, dispatched once per
-// process and cached in `ACCOUNT_STATUS_CACHE` for subsequent reads.
+// The call is intentionally NOT charged against any of the four
+// observation-type budgets — it's metadata, dispatched once per process and
+// cached in `ACCOUNT_STATUS_CACHE` for subsequent reads.
 
 /// Operator-visible WiGLE account state.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct WigleAccountStatus {
-    /// True if the `/profile/user` lookup confirmed `verified == true`.
+    /// True if the `/profile/user` lookup reported `emailVerified == true`.
     /// `None` if the endpoint hasn't been polled this process.
     pub verified: Option<bool>,
-    /// Username on the WiGLE side (matches the operator's account).
+    /// Username on the WiGLE side — the `userid` field, matching the
+    /// operator's account (WiGLE pads it with a trailing space, which we
+    /// trim).
     pub user: Option<String>,
-    /// Today's API calls so far (per the `apiUsage` endpoint).
-    pub daily_api_calls: Option<u64>,
-    /// This-month API calls so far.
-    pub monthly_api_calls: Option<u64>,
     /// Last refresh time (unix seconds) — `None` if never polled.
     pub last_polled_ts: Option<u64>,
 }
@@ -901,26 +902,38 @@ pub fn account_status() -> WigleAccountStatus {
         .unwrap_or_default()
 }
 
+/// Subset of the WiGLE `Person` object (`GET /api/v2/profile/user`) we
+/// act on. The account name lives in `userid` and the email-verification
+/// gate in `emailVerified` — the field names from the published swagger
+/// `Person` schema, confirmed against the live endpoint. Parsing `user`
+/// /`verified` (as an earlier build did) silently produced None for both,
+/// so the throttling hazard below was never detected.
 #[derive(serde::Deserialize)]
 struct ProfileUserResp {
     #[serde(default)]
-    user: Option<String>,
-    #[serde(default)]
-    verified: Option<bool>,
+    userid: Option<String>,
+    #[serde(default, rename = "emailVerified")]
+    email_verified: Option<bool>,
 }
 
-#[derive(serde::Deserialize)]
-struct ProfileApiUsageResp {
-    #[serde(default, rename = "dailyApiCalls")]
-    daily_api_calls: Option<u64>,
-    #[serde(default, rename = "monthlyApiCalls")]
-    monthly_api_calls: Option<u64>,
+/// Pure mapping from a parsed `/profile/user` body to the cached account
+/// status. WiGLE pads `userid` with a trailing space (`"MattDieg "`), so
+/// trim it and treat an all-whitespace name as absent. Split out from the
+/// network path so the field mapping is unit-testable.
+fn status_from_profile(body: ProfileUserResp, polled_ts: u64) -> WigleAccountStatus {
+    WigleAccountStatus {
+        verified: body.email_verified,
+        user: body
+            .userid
+            .map(|u| u.trim().to_string())
+            .filter(|u| !u.is_empty()),
+        last_polled_ts: Some(polled_ts),
+    }
 }
 
-/// One-shot poll of `profile/user` + `profile/apiUsage`, caching
-/// results in `ACCOUNT_STATUS_CACHE`. Failures are silent — the
-/// cache stays empty (`verified: None`) and callers treat that as
-/// "unknown, keep going".
+/// One-shot poll of `profile/user`, caching the result in
+/// `ACCOUNT_STATUS_CACHE`. Failures are silent — the cache stays empty
+/// (`verified: None`) and callers treat that as "unknown, keep going".
 ///
 /// Does NOT consume any of the four observation-type budgets.
 pub async fn refresh_account_status(
@@ -928,9 +941,9 @@ pub async fn refresh_account_status(
     user: &str,
     token: &str,
 ) -> WigleAccountStatus {
-    // profile/user
+    let now = crate::core::entity::unix_now();
     let mut status = WigleAccountStatus {
-        last_polled_ts: Some(crate::core::entity::unix_now()),
+        last_polled_ts: Some(now),
         ..Default::default()
     };
     if let Ok(resp) = http
@@ -942,21 +955,7 @@ pub async fn refresh_account_status(
         && resp.status().is_success()
         && let Ok(body) = resp.json::<ProfileUserResp>().await
     {
-        status.user = body.user;
-        status.verified = body.verified;
-    }
-    // profile/apiUsage
-    if let Ok(resp) = http
-        .get("https://api.wigle.net/api/v2/profile/apiUsage")
-        .basic_auth(user, Some(token))
-        .header("Accept", "application/json")
-        .send()
-        .await
-        && resp.status().is_success()
-        && let Ok(body) = resp.json::<ProfileApiUsageResp>().await
-    {
-        status.daily_api_calls = body.daily_api_calls;
-        status.monthly_api_calls = body.monthly_api_calls;
+        status = status_from_profile(body, now);
     }
     if let Ok(mut g) = account_status_cache().lock() {
         *g = status.clone();
@@ -1331,8 +1330,6 @@ mod tests {
         let s = WigleAccountStatus::default();
         assert!(s.verified.is_none());
         assert!(s.user.is_none());
-        assert!(s.daily_api_calls.is_none());
-        assert!(s.monthly_api_calls.is_none());
         assert!(s.last_polled_ts.is_none());
 
         if let Ok(mut g) = account_status_cache().lock() {
@@ -1358,19 +1355,57 @@ mod tests {
             *g = WigleAccountStatus {
                 verified: Some(true),
                 user: Some("MattDieg".into()),
-                daily_api_calls: Some(42),
-                monthly_api_calls: Some(1337),
                 last_polled_ts: Some(1000),
             };
         }
         let s = account_status();
         assert_eq!(s.verified, Some(true));
         assert_eq!(s.user.as_deref(), Some("MattDieg"));
-        assert_eq!(s.daily_api_calls, Some(42));
-        assert_eq!(s.monthly_api_calls, Some(1337));
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"verified\":true"));
-        assert!(json.contains("\"daily_api_calls\":42"));
+        assert!(json.contains("\"user\":\"MattDieg\""));
+    }
+
+    #[test]
+    fn profile_user_resp_parses_real_wigle_person_shape() {
+        // Regression guard for the field-name bug: the live
+        // `/api/v2/profile/user` `Person` object names the account `userid`
+        // (padded with a trailing space) and the gate `emailVerified` — NOT
+        // `user`/`verified`. Parsing the wrong names silently yielded None
+        // for both, so the email-unverified throttling hazard the account
+        // page warns about was never detected.
+        let json = r#"{
+            "userid": "MattDieg ",
+            "email": "x@example.com",
+            "donate": "Y",
+            "flags": 0,
+            "emailVerified": false,
+            "admin": false,
+            "success": "true"
+        }"#;
+        let body: ProfileUserResp = serde_json::from_str(json).unwrap();
+        assert_eq!(body.userid.as_deref(), Some("MattDieg "));
+        assert_eq!(body.email_verified, Some(false));
+
+        // The pure mapping trims WiGLE's trailing space and surfaces the
+        // unverified gate, so is_unverified() can finally fire.
+        let status = status_from_profile(body, 1234);
+        assert_eq!(status.user.as_deref(), Some("MattDieg"));
+        assert_eq!(status.verified, Some(false));
+        assert_eq!(status.last_polled_ts, Some(1234));
+    }
+
+    #[test]
+    fn status_from_profile_treats_absent_and_blank_userid_as_none() {
+        // A missing userid, or one that is only WiGLE's padding whitespace,
+        // must map to None rather than an empty/space-only username.
+        let blank: ProfileUserResp = serde_json::from_str(r#"{"userid": "   "}"#).unwrap();
+        assert!(status_from_profile(blank, 0).user.is_none());
+
+        let absent: ProfileUserResp = serde_json::from_str(r#"{"emailVerified": true}"#).unwrap();
+        let status = status_from_profile(absent, 0);
+        assert!(status.user.is_none());
+        assert_eq!(status.verified, Some(true));
     }
 
     // ── BSSID dispatcher fallback chain ────────────────────────────────
