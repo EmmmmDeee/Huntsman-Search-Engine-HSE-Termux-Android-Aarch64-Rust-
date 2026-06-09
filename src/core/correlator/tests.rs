@@ -2400,8 +2400,9 @@ fn au052_tight_multisource_footprint_is_a_high_location_fix() {
     assert_eq!(hits[0].severity, super::Severity::High);
     assert!(hits[0].description.contains("centroid"));
     assert!(hits[0].description.contains("tight"));
-    // The robust single-point fix (min-enclosing-circle centre) is reported with
-    // its uncertainty radius.
+    // The headline fix is the outlier-robust geometric median; the Chebyshev
+    // centre is retained as the bounding circle with its uncertainty radius.
+    assert!(hits[0].description.contains("geometric median"));
     assert!(hits[0].description.contains("Chebyshev centre"));
     assert!(hits[0].description.contains("±"));
 }

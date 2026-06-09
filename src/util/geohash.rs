@@ -629,6 +629,75 @@ pub fn min_enclosing_circle(points: &[(f64, f64)]) -> Option<EnclosingCircle> {
     Some(EnclosingCircle { center, radius_km })
 }
 
+/// The **geometric median** (Weber point) of observed coordinates — the location
+/// that minimises the *sum* of great-circle distances to every sighting (the L1
+/// facility-location optimum), found with **Weiszfeld's algorithm**.
+///
+/// This is the most outlier-robust single-point location estimate available: a
+/// plain centroid (L2) or a Chebyshev centre (L∞, the min-enclosing-circle
+/// centre) is dragged toward a lone faraway sighting — a trip, a VPN exit, a
+/// planted address — whereas the geometric median has a breakdown point of 0.5
+/// (up to half the points can be arbitrarily corrupted before it moves far). For
+/// "where does this person actually live", it is the estimator to trust.
+///
+/// Deterministic: initialised at the centroid and iterated a fixed bounded number
+/// of times (no randomness); when an iterate lands on a data point — Weiszfeld's
+/// singularity — it snaps to that point, which is the median in that case. Fitted
+/// in planar (lon, lat) degree space, consistent with the other geometry helpers.
+///
+/// ```
+/// use huntsman_search_engine::util::geohash::geometric_median;
+///
+/// // Three tight points plus a far outlier: the median stays with the cluster.
+/// let pts = [(0.0, 0.0), (0.0, 0.01), (0.01, 0.0), (10.0, 10.0)];
+/// let m = geometric_median(&pts).unwrap();
+/// assert!(m.0.abs() < 1.0 && m.1.abs() < 1.0, "robust to the outlier: {m:?}");
+/// ```
+pub fn geometric_median(points: &[(f64, f64)]) -> Option<(f64, f64)> {
+    if points.is_empty() {
+        return None;
+    }
+    if points.len() == 1 {
+        return Some(points[0]);
+    }
+    // Work in (x = lon, y = lat).
+    let pts: Vec<(f64, f64)> = points.iter().map(|&(lat, lon)| (lon, lat)).collect();
+    let n = pts.len() as f64;
+    let mut x = pts.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
+    x = (x.0 / n, x.1 / n);
+
+    const MAX_ITERS: usize = 128;
+    const CONVERGED: f64 = 1e-10; // degrees
+    const ON_POINT: f64 = 1e-12;
+    for _ in 0..MAX_ITERS {
+        let mut num = (0.0_f64, 0.0_f64);
+        let mut den = 0.0_f64;
+        let mut snapped: Option<(f64, f64)> = None;
+        for &p in &pts {
+            let d = ((x.0 - p.0).powi(2) + (x.1 - p.1).powi(2)).sqrt();
+            if d < ON_POINT {
+                snapped = Some(p);
+                break;
+            }
+            let w = 1.0 / d;
+            num.0 += p.0 * w;
+            num.1 += p.1 * w;
+            den += w;
+        }
+        if let Some(p) = snapped {
+            x = p;
+            break;
+        }
+        let next = (num.0 / den, num.1 / den);
+        let moved = ((next.0 - x.0).powi(2) + (next.1 - x.1).powi(2)).sqrt();
+        x = next;
+        if moved < CONVERGED {
+            break;
+        }
+    }
+    Some((x.1, x.0)) // back to (lat, lon)
+}
+
 /// Confidence-weighted centroid of observed coordinates — the **convex
 /// combination** `Σ wᵢ·pᵢ / Σ wᵢ` of the points `pᵢ` by non-negative weights
 /// `wᵢ` (each sighting's `c_effective`). Because the weights are non-negative and
@@ -1117,6 +1186,59 @@ mod tests {
             mec.radius_km,
             centroid_worst
         );
+    }
+
+    #[test]
+    fn geometric_median_basics_and_robustness() {
+        // Empty → None; single → itself.
+        assert!(geometric_median(&[]).is_none());
+        assert_eq!(geometric_median(&[(12.0, 34.0)]), Some((12.0, 34.0)));
+
+        // The defining property: robust to an outlier. Three tight points near
+        // the origin plus one far outlier. The geometric median must stay with
+        // the cluster, while the plain mean is dragged a quarter of the way to
+        // the outlier.
+        let pts = [(0.0, 0.0), (0.0, 0.02), (0.02, 0.0), (10.0, 10.0)];
+        let med = geometric_median(&pts).unwrap();
+        let mean = (
+            pts.iter().map(|p| p.0).sum::<f64>() / 4.0,
+            pts.iter().map(|p| p.1).sum::<f64>() / 4.0,
+        );
+        let dist0 = |q: (f64, f64)| haversine_km(0.0, 0.0, q.0, q.1);
+        assert!(dist0(med) < 5.0, "median stays with the cluster: {med:?}");
+        assert!(
+            dist0(med) < dist0(mean),
+            "median ({:.1}km) must beat the mean ({:.1}km) on outlier robustness",
+            dist0(med),
+            dist0(mean)
+        );
+    }
+
+    #[test]
+    fn geometric_median_minimises_total_distance() {
+        // Against a small random sample, the Weiszfeld solution's summed distance
+        // must be ≤ that of any input point (the optimum beats every vertex).
+        let pts = [
+            (-33.87, 151.21),
+            (-33.80, 151.10),
+            (-33.95, 151.20),
+            (-33.70, 151.30),
+            (-33.88, 151.00),
+        ];
+        let med = geometric_median(&pts).unwrap();
+        let total = |q: (f64, f64)| {
+            pts.iter()
+                .map(|&p| haversine_km(q.0, q.1, p.0, p.1))
+                .sum::<f64>()
+        };
+        let med_total = total(med);
+        for &p in &pts {
+            assert!(
+                med_total <= total(p) + 1e-6,
+                "median total {med_total} must be ≤ vertex total {}",
+                total(p)
+            );
+        }
     }
 
     #[test]

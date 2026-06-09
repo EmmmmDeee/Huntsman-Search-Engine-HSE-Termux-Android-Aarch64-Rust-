@@ -474,12 +474,14 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
         .map(|(e, ll)| (*ll, e.c_effective()))
         .collect();
     let centroid = crate::util::geohash::weighted_centroid(&weighted).unwrap_or(fp.centroid);
-    // The Chebyshev centre (minimum-enclosing-circle centre) is the robust
-    // single-point location fix: it minimises the worst-case distance to any
-    // sighting, and its radius is the honest uncertainty around it. Reported
-    // alongside the weighted centroid, while the in-area tightness classification
-    // still uses the hull. `min_enclosing_circle` returns `Some` for any
-    // non-empty set.
+    // The geometric median (Weber point) is the headline location fix: it
+    // minimises the SUM of distances to the sightings and has a 0.5 breakdown
+    // point, so a lone travel/VPN/planted outlier can't drag it off the
+    // subject's real base — the property the centroid and Chebyshev centre lack.
+    let gmed = crate::util::geohash::geometric_median(&points).unwrap_or(centroid);
+    // The Chebyshev centre (minimum-enclosing-circle centre) is retained as the
+    // bounding circle: its radius is the honest worst-case uncertainty around the
+    // footprint. `min_enclosing_circle` returns `Some` for any non-empty set.
     let mec = crate::util::geohash::min_enclosing_circle(&points);
     let (center, radius_km) = mec
         .map(|c| (c.center, c.radius_km))
@@ -499,8 +501,9 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
         severity,
         format!(
             "{} coordinates from {} sources bound a {}-vertex area ({}); confidence-weighted \
-             centroid {:.4},{:.4}, diameter {:.1} km — {kind}. Best location fix (Chebyshev \
-             centre): {:.4},{:.4} ± {:.1} km",
+             centroid {:.4},{:.4}, diameter {:.1} km — {kind}. Best location fix (geometric \
+             median, outlier-robust): {:.4},{:.4}; bounding circle (Chebyshev centre): \
+             {:.4},{:.4} ± {:.1} km",
             parsed.len(),
             sources.len(),
             fp.hull.len(),
@@ -508,6 +511,8 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
             centroid.0,
             centroid.1,
             fp.diameter_km,
+            gmed.0,
+            gmed.1,
             center.0,
             center.1,
             radius_km,
