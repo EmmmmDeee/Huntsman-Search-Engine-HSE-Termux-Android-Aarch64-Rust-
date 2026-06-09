@@ -396,6 +396,51 @@ fn expansion_weight_respects_confidence() {
 }
 
 #[test]
+fn convex_budget_lifts_identity_above_saturated_infrastructure() {
+    // Completes the convex (optionality / barbell) budget feature: proves the
+    // engine's exact composition — base weight × optionality_multiplier — does
+    // what the flag claims, not just that the multiplier math is right in
+    // isolation. Models the canonical case the feature exists for: a cheap,
+    // information-rich, uncertain, single-source IDENTITY lead vs an expensive,
+    // saturated, heavily-corroborated INFRASTRUCTURE domain.
+    use crate::core::convex::optionality_multiplier;
+    let strat = ExpansionStrategy::BreadthFirst;
+
+    // Base ranking (no --convex-budget): the engine multiplies the strategy
+    // weight by the corroboration prior. Expected value favours the saturated,
+    // well-corroborated domain over the uncertain single-source email.
+    let id_base = expansion_weight_for_strategy(
+        strat,
+        TargetKind::Email,
+        0.55,
+        "jordan@gmail.com",
+        false,
+        0.9,
+    ) * corroboration_prior(1);
+    let infra_base =
+        expansion_weight_for_strategy(strat, TargetKind::Domain, 0.95, "example.com", false, 0.6)
+            * corroboration_prior(6);
+    assert!(
+        infra_base > id_base,
+        "without convex budget, expected value ranks infra above identity ({infra_base:.3} vs {id_base:.3})"
+    );
+
+    // With --convex-budget the engine multiplies in the optionality factor
+    // (convexity premium ÷ dispatch cost). It must flip the order — and the tilt
+    // toward identity is monotone (the identity:infra ratio strictly increases).
+    let id_final = id_base * optionality_multiplier(TargetKind::Email, 1, 0.55, 0.9);
+    let infra_final = infra_base * optionality_multiplier(TargetKind::Domain, 6, 0.95, 0.6);
+    assert!(
+        id_final > infra_final,
+        "convex budget must lift the cheap rich identity lead above saturated infra ({id_final:.3} vs {infra_final:.3})"
+    );
+    assert!(
+        id_final / infra_final > id_base / infra_base,
+        "convex re-weighting must strictly increase the identity:infra ratio"
+    );
+}
+
+#[test]
 fn corroboration_prior_is_neutral_at_one_source_and_grows_diminishingly() {
     // Single source must not penalise vs today's behaviour: exactly 1.0.
     assert!((corroboration_prior(1) - 1.0).abs() < 1e-12);
