@@ -20,6 +20,20 @@
 
 use super::geohash::haversine_km;
 
+/// Longitude-anisotropy scale at a reference latitude — the equirectangular
+/// correction. A degree of longitude spans `cos(lat)` of a degree of latitude on
+/// the ground (≈0.72 at 43°N, 0.5 at 60°N), so scaling longitude by this factor
+/// before any *metric*-dependent planar geometry (the geometric median, the
+/// enclosing circle) makes the planar distance approximate true ground distance
+/// rather than raw degrees. Without it those estimators are biased away from the
+/// equator. Clamped above zero so a near-polar reference can't collapse the axis.
+///
+/// Not needed for the convex hull (membership is invariant under any positive
+/// axis scaling) nor the centroid (a mean factors the scale straight back out).
+fn lon_scale(lat_ref_deg: f64) -> f64 {
+    lat_ref_deg.to_radians().cos().max(1e-6)
+}
+
 /// The convex geographic footprint of a set of observed coordinates: the hull
 /// polygon that bounds every point, the area's centroid (the single best
 /// point-estimate of the subject's base), and its diameter (the greatest
@@ -219,11 +233,16 @@ pub fn min_enclosing_circle(points: &[(f64, f64)]) -> Option<EnclosingCircle> {
         })
     };
 
-    // Points in (x=lon, y=lat) order. Deduplicate so collinear/coincident inputs
-    // don't stall the incremental passes.
+    // Equirectangular correction: scale longitude by cos(mean-latitude) so the
+    // disk is fitted in an isotropic frame (a degree of lon and a degree of lat
+    // cover the same ground), removing the high-latitude bias. Unscaled at the
+    // end. Points in (x=lon·s, y=lat) order, deduplicated so collinear/coincident
+    // inputs don't stall the incremental passes.
+    let lat_ref = points.iter().map(|&(lat, _)| lat).sum::<f64>() / points.len().max(1) as f64;
+    let s = lon_scale(lat_ref);
     let mut p: Vec<(f64, f64)> = Vec::with_capacity(points.len());
     for &(lat, lon) in points {
-        let q = (lon, lat);
+        let q = (lon * s, lat);
         if !p.contains(&q) {
             p.push(q);
         }
@@ -260,9 +279,9 @@ pub fn min_enclosing_circle(points: &[(f64, f64)]) -> Option<EnclosingCircle> {
             }
         }
     }
-    // Report the centre as (lat, lon) and the radius as the true great-circle
-    // distance to the farthest original point.
-    let center = (d.y, d.x);
+    // Report the centre as (lat, lon) — unscaling the longitude axis — and the
+    // radius as the true great-circle distance to the farthest original point.
+    let center = (d.y, d.x / s);
     let radius_km = points
         .iter()
         .map(|&(lat, lon)| haversine_km(center.0, center.1, lat, lon))
@@ -322,14 +341,29 @@ pub fn weighted_geometric_median(weighted: &[((f64, f64), f64)]) -> Option<(f64,
     }
     // Convert to (x = lon, y = lat). If no weight is positive, weight uniformly.
     let any_pos = weighted.iter().any(|&(_, w)| w > 0.0);
+    // Reference latitude for the equirectangular correction: the (weighted) mean
+    // latitude of the contributing points. Longitude is scaled by `cos(lat_ref)`
+    // throughout so Weiszfeld minimises approximate true ground distance, not
+    // anisotropic degree distance; the result's longitude is unscaled at the end.
+    let lat_ref = {
+        let (mut slat, mut sw) = (0.0_f64, 0.0_f64);
+        for &((lat, _), w) in weighted {
+            let w = if any_pos { w.max(0.0) } else { 1.0 };
+            slat += w * lat;
+            sw += w;
+        }
+        if sw > 0.0 { slat / sw } else { 0.0 }
+    };
+    let s = lon_scale(lat_ref);
+    // Work in (x = lon·s, y = lat): an isotropic planar frame.
     let pts: Vec<((f64, f64), f64)> = weighted
         .iter()
-        .map(|&((lat, lon), w)| ((lon, lat), if any_pos { w.max(0.0) } else { 1.0 }))
+        .map(|&((lat, lon), w)| ((lon * s, lat), if any_pos { w.max(0.0) } else { 1.0 }))
         .filter(|&(_, w)| w > 0.0)
         .collect();
     if pts.len() == 1 {
         let ((x, y), _) = pts[0];
-        return Some((y, x));
+        return Some((y, x / s));
     }
     // Initialise at the weighted centroid.
     let sw: f64 = pts.iter().map(|&(_, w)| w).sum();
@@ -367,7 +401,7 @@ pub fn weighted_geometric_median(weighted: &[((f64, f64), f64)]) -> Option<(f64,
             break;
         }
     }
-    Some((x.1, x.0)) // back to (lat, lon)
+    Some((x.1, x.0 / s)) // back to (lat, lon): unscale the longitude axis
 }
 
 /// The **median** great-circle distance (km) from `center` to `points` — a
@@ -754,6 +788,57 @@ mod tests {
             median_distance_km(fix.geometric_median, &pts)
         );
         assert_eq!(fix.enclosing, min_enclosing_circle(&pts).unwrap());
+    }
+
+    #[test]
+    fn geometric_median_is_equirectangular_corrected_at_high_latitude() {
+        // At 60°N a degree of longitude is half a degree of latitude on the
+        // ground. The corrected median must beat the naive raw-degree median on
+        // TRUE (haversine) total distance. We recompute the raw-degree median
+        // here to prove the production code's correction actually helps.
+        let pts = [
+            (60.00, 10.00),
+            (60.05, 10.80),
+            (60.02, 9.20),
+            (59.97, 10.40),
+        ];
+        let corrected = geometric_median(&pts).unwrap();
+
+        // Naive median: identical Weiszfeld but WITHOUT the cos(lat) scale.
+        let naive = {
+            let p: Vec<(f64, f64)> = pts.iter().map(|&(lat, lon)| (lon, lat)).collect();
+            let n = p.len() as f64;
+            let mut x = p.iter().fold((0.0, 0.0), |a, q| (a.0 + q.0, a.1 + q.1));
+            x = (x.0 / n, x.1 / n);
+            for _ in 0..128 {
+                let mut num = (0.0, 0.0);
+                let mut den = 0.0;
+                for &q in &p {
+                    let d = ((x.0 - q.0).powi(2) + (x.1 - q.1).powi(2)).sqrt();
+                    if d < 1e-12 {
+                        continue;
+                    }
+                    let f = 1.0 / d;
+                    num.0 += q.0 * f;
+                    num.1 += q.1 * f;
+                    den += f;
+                }
+                x = (num.0 / den, num.1 / den);
+            }
+            (x.1, x.0)
+        };
+
+        let total = |q: (f64, f64)| {
+            pts.iter()
+                .map(|&p| haversine_km(q.0, q.1, p.0, p.1))
+                .sum::<f64>()
+        };
+        assert!(
+            total(corrected) <= total(naive) + 1e-6,
+            "equirectangular-corrected median ({:.4} km) must beat the naive one ({:.4} km)",
+            total(corrected),
+            total(naive)
+        );
     }
 
     #[test]
