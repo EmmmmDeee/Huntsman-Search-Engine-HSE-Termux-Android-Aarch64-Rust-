@@ -464,6 +464,15 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
     let Some(fp) = crate::util::geohash::geo_footprint(&points) else {
         return Vec::new(); // fewer than 3 distinct, or all collinear → no area
     };
+    // The Chebyshev centre (minimum-enclosing-circle centre) is the robust
+    // single-point location fix: it minimises the worst-case distance to any
+    // sighting, and its radius is the honest uncertainty around it. Reported
+    // alongside the hull centroid, which the in-area tightness classification
+    // still uses. `min_enclosing_circle` returns `Some` for any non-empty set.
+    let mec = crate::util::geohash::min_enclosing_circle(&points);
+    let (center, radius_km) = mec
+        .map(|c| (c.center, c.radius_km))
+        .unwrap_or((fp.centroid, fp.diameter_km / 2.0));
 
     let mut uids: Vec<String> = parsed.iter().map(|(e, _)| e.uid.clone()).collect();
     uids.sort_unstable();
@@ -479,7 +488,8 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
         severity,
         format!(
             "{} coordinates from {} sources bound a {}-vertex area ({}); centroid \
-             {:.4},{:.4}, diameter {:.1} km — {kind}; centroid is the best location estimate",
+             {:.4},{:.4}, diameter {:.1} km — {kind}. Best location fix (Chebyshev centre): \
+             {:.4},{:.4} ± {:.1} km",
             parsed.len(),
             sources.len(),
             fp.hull.len(),
@@ -487,6 +497,9 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
             fp.centroid.0,
             fp.centroid.1,
             fp.diameter_km,
+            center.0,
+            center.1,
+            radius_km,
         ),
         uids,
         scan_id,
