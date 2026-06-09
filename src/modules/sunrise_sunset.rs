@@ -177,10 +177,7 @@ impl Module for SunriseSunset {
             return Ok(ModuleResult::new());
         }
 
-        let body: SsResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let body: SsResp = crate::util::http::json_decode(SRC, resp).await?;
 
         if body.status.as_deref() != Some("OK") {
             return Ok(ModuleResult::new());

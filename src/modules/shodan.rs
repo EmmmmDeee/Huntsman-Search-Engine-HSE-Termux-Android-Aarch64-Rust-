@@ -298,10 +298,7 @@ impl Shodan {
             crate::util::http::note_keyed_error(code, SRC, key, ctx);
             return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
-        let body: HostResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let body: HostResp = crate::util::http::json_decode(SRC, resp).await?;
 
         let mut entity = target_entity(ip, &ctx.scan_id);
         entity.tag("shodan");

@@ -144,10 +144,7 @@ impl Module for EmailRep {
             return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
-        let body: RepResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let body: RepResp = crate::util::http::json_decode(SRC, resp).await?;
 
         let mut result = ModuleResult::new();
         result.push(build_email_entity(target, &body, &ctx.scan_id));

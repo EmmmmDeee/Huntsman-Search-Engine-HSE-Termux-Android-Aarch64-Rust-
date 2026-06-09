@@ -239,10 +239,7 @@ impl Module for DeHashed {
                 // so surface it verbatim for the operator.
                 return Err(crate::util::http::http_status_error(SRC, resp).await);
             }
-            break resp
-                .json()
-                .await
-                .map_err(|e| Error::module(SRC, e.to_string()))?;
+            break crate::util::http::json_decode(SRC, resp).await?;
         };
 
         let entries = body.entries.unwrap_or_default();

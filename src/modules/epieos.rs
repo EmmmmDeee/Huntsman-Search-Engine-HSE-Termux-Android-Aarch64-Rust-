@@ -283,10 +283,7 @@ impl Module for Epieos {
             return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
-        let body: EpieosResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let body: EpieosResp = crate::util::http::json_decode(SRC, resp).await?;
 
         let mut result = ModuleResult::new();
         for e in build_entities(target, &body, &ctx.scan_id) {

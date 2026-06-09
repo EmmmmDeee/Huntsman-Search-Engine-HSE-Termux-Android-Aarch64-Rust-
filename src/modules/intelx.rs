@@ -252,10 +252,7 @@ impl Module for IntelX {
                 .map_err(|e| Error::module(SRC, e.to_string()))?;
             let status = resp.status();
             if status.is_success() {
-                break resp
-                    .json()
-                    .await
-                    .map_err(|e| Error::module(SRC, e.to_string()))?;
+                break crate::util::http::json_decode(SRC, resp).await?;
             }
             let code = status.as_u16();
             if code == 429 && retries < 2 {

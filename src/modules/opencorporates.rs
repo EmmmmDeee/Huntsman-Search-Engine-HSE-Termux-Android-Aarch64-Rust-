@@ -224,10 +224,7 @@ impl Module for OpenCorporates {
             return Err(Error::module(SRC, format!("HTTP {status}")));
         }
 
-        let body: OcResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let body: OcResp = crate::util::http::json_decode(SRC, resp).await?;
 
         let Some(results) = body.results else {
             return Ok(ModuleResult::new());

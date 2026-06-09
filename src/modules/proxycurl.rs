@@ -401,10 +401,7 @@ impl Module for Proxycurl {
             return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
-        let profile: LinkedInProfile = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let profile: LinkedInProfile = crate::util::http::json_decode(SRC, resp).await?;
 
         Ok(build_entities(&profile, target, &ctx.scan_id))
     }

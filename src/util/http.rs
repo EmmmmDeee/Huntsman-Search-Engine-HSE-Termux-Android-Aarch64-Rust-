@@ -730,6 +730,22 @@ pub async fn json_scanned<T: DeserializeOwned>(
     serde_json::from_str(&text).map_err(|e| format!("{module}: {e}"))
 }
 
+/// Decode a response body as JSON, tagging any decode failure with `module`.
+///
+/// The raw-decode counterpart to [`json_scanned`]: where that helper retains
+/// the body in the raw archive and scans it for leaked keys, this is the plain
+/// `resp.json().await` path used by endpoints whose body is not retained. It
+/// folds the `.map_err(|e| Error::module(module, e.to_string()))` that the
+/// keyed modules repeated verbatim into one named, module-tagged decode.
+pub async fn json_decode<T: DeserializeOwned>(
+    module: &str,
+    resp: reqwest::Response,
+) -> Result<T> {
+    resp.json::<T>()
+        .await
+        .map_err(|e| Error::module(module, e.to_string()))
+}
+
 /// Scan arbitrary text for API key patterns and store any discoveries
 /// in the global key pool. Call on any raw text that passes through the
 /// system — HTTP response bodies, WHOIS output, certificate fields, etc.
@@ -783,6 +799,39 @@ mod tests {
         for code in [200, 400, 404, 418, 500, 502, 503] {
             assert!(!super::is_keyed_error_status(code), "{code} is not a key error");
         }
+    }
+
+    #[tokio::test]
+    async fn json_decode_parses_ok_and_tags_decode_errors_with_module() {
+        use serde::Deserialize;
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct V {
+            a: u32,
+            b: String,
+        }
+
+        // A well-formed body decodes to the typed value.
+        let ok = reqwest::Response::from(
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"a":7,"b":"x"}"#.to_string())
+                .unwrap(),
+        );
+        let v: V = super::json_decode("test_mod", ok).await.unwrap();
+        assert_eq!(v, V { a: 7, b: "x".into() });
+
+        // A malformed body never panics — it surfaces a module-tagged error.
+        let bad = reqwest::Response::from(
+            http::Response::builder()
+                .status(200)
+                .body("not json".to_string())
+                .unwrap(),
+        );
+        let err = super::json_decode::<V>("test_mod", bad).await.unwrap_err();
+        assert!(
+            err.to_string().contains("test_mod"),
+            "decode error must name the module: {err}"
+        );
     }
 
     #[tokio::test]

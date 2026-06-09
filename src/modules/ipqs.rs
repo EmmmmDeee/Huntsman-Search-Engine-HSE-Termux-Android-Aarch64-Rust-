@@ -245,10 +245,7 @@ impl Module for IpQs {
                 }
                 return Err(crate::util::http::http_status_error("ipqs", resp).await);
             }
-            break resp
-                .json()
-                .await
-                .map_err(|e| Error::module(SRC, e.to_string()))?;
+            break crate::util::http::json_decode(SRC, resp).await?;
         };
         if body.success == Some(false) {
             return Ok(ModuleResult::new());

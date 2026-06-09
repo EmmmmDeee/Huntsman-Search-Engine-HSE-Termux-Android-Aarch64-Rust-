@@ -246,10 +246,7 @@ impl Module for ThreatFox {
                 }
                 return Err(crate::util::http::http_status_error(SRC, resp).await);
             }
-            break resp
-                .json()
-                .await
-                .map_err(|e| Error::module(SRC, e.to_string()))?;
+            break crate::util::http::json_decode(SRC, resp).await?;
         };
 
         // abuse.ch's anonymous tier returns HTTP 200 + `query_status:

@@ -200,10 +200,7 @@ impl Module for LeakIx {
                 }
                 return Err(crate::util::http::http_status_error(SRC, resp).await);
             }
-            break resp
-                .json()
-                .await
-                .map_err(|e| Error::module(SRC, e.to_string()))?;
+            break crate::util::http::json_decode(SRC, resp).await?;
         };
         if body.services.is_empty() && body.leaks.is_empty() {
             return Ok(ModuleResult::new());

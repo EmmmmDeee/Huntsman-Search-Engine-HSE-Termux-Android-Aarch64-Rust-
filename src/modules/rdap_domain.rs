@@ -255,10 +255,7 @@ impl Module for RdapDomain {
             return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
-        let body: RdapResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let body: RdapResp = crate::util::http::json_decode(SRC, resp).await?;
 
         let mut result = ModuleResult::new();
         result.push(build_domain_entity(domain, &body, &ctx.scan_id));

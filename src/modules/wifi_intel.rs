@@ -324,10 +324,7 @@ async fn query_wigle_detail(
         ));
     }
 
-    let body: DetailResp = resp
-        .json()
-        .await
-        .map_err(|e| Error::module(SOURCE, e.to_string()))?;
+    let body: DetailResp = crate::util::http::json_decode(SOURCE, resp).await?;
 
     if body.success != Some(true) {
         return Ok(None);

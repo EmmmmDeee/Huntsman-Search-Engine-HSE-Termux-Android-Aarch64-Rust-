@@ -157,10 +157,7 @@ impl Module for CriminalIp {
                 }
                 return Err(crate::util::http::http_status_error("criminal_ip", resp).await);
             }
-            break resp
-                .json()
-                .await
-                .map_err(|e| Error::module(SRC, e.to_string()))?;
+            break crate::util::http::json_decode(SRC, resp).await?;
         };
         if body.status != Some(200) {
             return Ok(ModuleResult::new());

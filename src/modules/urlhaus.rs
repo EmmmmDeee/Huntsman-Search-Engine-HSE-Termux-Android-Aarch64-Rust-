@@ -247,10 +247,7 @@ impl Module for UrlHaus {
             return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
-        let body: UrlhausResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let body: UrlhausResp = crate::util::http::json_decode(SRC, resp).await?;
 
         // "no_results" is the common case for clean hosts — not an error.
         if body.query_status != "ok" {

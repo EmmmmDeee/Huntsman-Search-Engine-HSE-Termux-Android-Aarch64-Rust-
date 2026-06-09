@@ -213,10 +213,7 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
             crate::util::http::note_keyed_error(code, "numverify", key, ctx);
             return Err(crate::util::http::http_status_error("contact_enrich", resp).await);
         }
-        let data: NumverifyResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let data: NumverifyResp = crate::util::http::json_decode(SRC, resp).await?;
         Ok(Some(data))
     };
 
