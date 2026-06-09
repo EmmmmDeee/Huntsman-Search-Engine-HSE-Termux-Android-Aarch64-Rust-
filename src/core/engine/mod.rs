@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{info, warn};
 
+mod circuit;
 mod dispatch;
 mod enrich;
 mod expansion;

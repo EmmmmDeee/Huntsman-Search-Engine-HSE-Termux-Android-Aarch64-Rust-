@@ -126,6 +126,15 @@ pub(super) fn module_skip_reason(
     if opts.exclude_modules.iter().any(|n| n == name) {
         return Some("excluded");
     }
+    // Circuit breaker: a module that already hit a rate-limit/quota wall or
+    // failed repeatedly this run is skipped until its cooldown elapses. Retrying
+    // a 429'd or quota-exhausted provider on the next target is guaranteed waste
+    // (and extends the ban); skipping it hands that dispatch slot to a source
+    // that still works — the budget the alias scan needs to find more. Checked
+    // here (not as a hard exclusion) so it auto-recovers when the window passes.
+    if super::circuit::is_open(name) {
+        return Some("circuit-open — rate-limited/quota/repeated failure (cooling down)");
+    }
     // Persistent per-module toggle (universal toggleability): `hse config
     // module.<name> off` disables a module across ALL scans until re-enabled.
     // Default on, so an unset module behaves exactly as before.
@@ -228,6 +237,9 @@ impl super::ScanEngine {
         match result {
             Err(_) => {
                 stats.timed_out += 1;
+                // A timeout carries no message to classify, so it's a soft
+                // failure: trips only after a streak (one slow round is transient).
+                super::circuit::record_soft_failure(name);
                 warn!(module = name, "timeout");
                 self.emit(
                     scan_id,
@@ -258,6 +270,9 @@ impl super::ScanEngine {
             }
             Ok(Err(e)) => {
                 stats.errored += 1;
+                // Feed the breaker: a rate-limit/quota message trips immediately;
+                // any other hard error counts toward the soft streak.
+                super::circuit::record_error(name, &e.to_string());
                 warn!(module = name, error = %e, "module error");
                 self.emit(
                     scan_id,
@@ -268,6 +283,10 @@ impl super::ScanEngine {
                 );
             }
             Ok(Ok(mut mr)) => {
+                // A completed dispatch (even an empty one) proves the provider is
+                // reachable — clear any failure streak so a recovered source is
+                // trusted again immediately.
+                super::circuit::record_success(name);
                 let mut found = 0usize;
                 for entity in mr.entities.drain(..) {
                     if let Some(min) = min_confidence

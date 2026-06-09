@@ -391,6 +391,43 @@ fn pub_target() -> Target {
     Target::new(TargetKind::IpAddress, "1.1.1.1")
 }
 
+#[test]
+fn circuit_breaker_trip_skips_the_module_at_the_dispatch_gate() {
+    // Wiring proof for the circuit breaker: once a module trips (a rate-limit /
+    // quota wall, as the debug log showed hackertarget/urlscan hitting every
+    // round), `module_skip_reason` must skip it so the rest of the scan stops
+    // re-dispatching a dead provider and hands that budget to working sources.
+    // A unique module name keeps this independent of the process-global breaker
+    // state the circuit unit tests touch.
+    let m = StubModule {
+        name: "test_circuit_gate",
+        cost: ModuleCost::Free,
+        passive: false,
+    };
+    let opts = ScanOptions::default();
+
+    // Healthy → not skipped for circuit reasons.
+    assert!(
+        module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none(),
+        "a healthy module must not be gated"
+    );
+
+    // Trip it as a 429/quota response would, then the gate skips it.
+    super::circuit::record_rate_limit(m.name());
+    assert_eq!(
+        module_skip_reason(&m, &pub_target(), &opts, false, 0),
+        Some("circuit-open — rate-limited/quota/repeated failure (cooling down)"),
+        "a tripped module must be skipped at the dispatch gate"
+    );
+
+    // A success clears the trip — the gate trusts a recovered provider again.
+    super::circuit::record_success(m.name());
+    assert!(
+        module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none(),
+        "a recovered module must dispatch again"
+    );
+}
+
 fn free_active() -> StubModule {
     StubModule {
         name: "test_free",
