@@ -417,6 +417,30 @@ fn is_infrastructure_geo(e: &Entity) -> bool {
     !sources.iter().any(|s| ANCHORING_GEO_SOURCES.contains(s))
 }
 
+/// The coordinates admissible to a *person's* geo footprint: confirmed
+/// `Coordinates` (confidence ≥ 0.50) that pass the person-anchor gate
+/// ([`is_infrastructure_geo`]), parsed to `(lat, lon)`. Shared by AU-052 and
+/// AU-053 so both rules operate on exactly the same admissible set.
+fn person_anchored_coords(entities: &[Entity]) -> Vec<(&Entity, (f64, f64))> {
+    entities_of_kind(entities, EntityKind::Coordinates)
+        .into_iter()
+        .filter(|e| e.confidence >= 0.50)
+        .filter(|e| !is_infrastructure_geo(e))
+        .filter_map(|c| crate::util::geohash::parse_coords(&c.value).map(|ll| (c, ll)))
+        .collect()
+}
+
+/// Number of distinct corroborating sources across a set of admissible
+/// coordinates. The multi-source gate (≥2) ensures a single device's own GPS
+/// track can't assert a footprint; AU-052 also reports the count.
+fn distinct_geo_sources(parsed: &[(&Entity, (f64, f64))]) -> usize {
+    let mut sources: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for (e, _) in parsed {
+        sources.extend(e.corroborating_sources());
+    }
+    sources.len()
+}
+
 /// AU-052 — Geographic area of operation (convex footprint).
 ///
 /// Where AU-017 reports *that* coordinates cluster and AU-030 reports *how many
@@ -447,24 +471,14 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let parsed: Vec<(&Entity, (f64, f64))> = entities_of_kind(entities, EntityKind::Coordinates)
-        .into_iter()
-        .filter(|e| e.confidence >= 0.50)
-        .filter(|e| !is_infrastructure_geo(e))
-        .filter_map(|c| crate::util::geohash::parse_coords(&c.value).map(|ll| (c, ll)))
-        .collect();
+    let parsed = person_anchored_coords(entities);
     if parsed.len() < 3 {
         return Vec::new();
     }
     // Multi-source gate: the points must come from ≥2 distinct corroborating
     // sources, so a single GPS-logging device's track can't assert a "footprint".
-    let mut sources: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    for (e, _) in &parsed {
-        for src in e.corroborating_sources() {
-            sources.insert(src);
-        }
-    }
-    if sources.len() < 2 {
+    let source_count = distinct_geo_sources(&parsed);
+    if source_count < 2 {
         return Vec::new();
     }
     // Bundle every convex estimator — weighted centroid, geometric median + its
@@ -498,7 +512,7 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
              median, outlier-robust): {:.4},{:.4} ± {:.1} km (robust); bounding circle \
              (Chebyshev centre): {:.4},{:.4} ± {:.1} km",
             parsed.len(),
-            sources.len(),
+            source_count,
             fp.hull.len(),
             if fp.is_tight() { "tight" } else { "dispersed" },
             fix.weighted_centroid.0,
@@ -542,24 +556,12 @@ pub(in crate::core::correlator) fn rule_au_053_out_of_area_location(
     use crate::util::geohash::haversine_km;
     use crate::util::geometry::{geo_footprint, point_in_convex_hull, weighted_centroid};
 
-    let parsed: Vec<(&Entity, (f64, f64))> = entities_of_kind(entities, EntityKind::Coordinates)
-        .into_iter()
-        .filter(|e| e.confidence >= 0.50)
-        .filter(|e| !is_infrastructure_geo(e))
-        .filter_map(|c| crate::util::geohash::parse_coords(&c.value).map(|ll| (c, ll)))
-        .collect();
+    let parsed = person_anchored_coords(entities);
     // Need an established area (≥3) plus at least one candidate outlier.
     if parsed.len() < 4 {
         return Vec::new();
     }
-    // Multi-source gate, identical to AU-052.
-    let mut sources: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    for (e, _) in &parsed {
-        for src in e.corroborating_sources() {
-            sources.insert(src);
-        }
-    }
-    if sources.len() < 2 {
+    if distinct_geo_sources(&parsed) < 2 {
         return Vec::new();
     }
 
