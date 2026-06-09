@@ -2218,3 +2218,151 @@ fn au048_links_accounts_sharing_a_public_key() {
         "AU-048 only fires on key-tagged credentials"
     );
 }
+
+// ─── Associates / household family (AU-049 … AU-051) ─────────────────────────
+
+#[cfg(test)]
+fn person_at(name: &str, addr: &str) -> Entity {
+    let mut e = Entity::new(EntityKind::Person, name, 0.62, "s");
+    e.add_evidence(Evidence::new("import:dossier", "breach entry").with_attr("address", addr));
+    e
+}
+
+#[cfg(test)]
+fn person_with_phone(name: &str, phone: &str) -> Entity {
+    let mut e = Entity::new(EntityKind::Person, name, 0.62, "s");
+    e.add_evidence(Evidence::new("import:dossier", "breach entry").with_attr("phone", phone));
+    e
+}
+
+#[test]
+fn au049_fires_on_two_people_one_residence() {
+    // Two distinct people whose breach records carry the same specific residence
+    // (in inconsistent formatting) form one household cluster.
+    let ents = vec![
+        person_at("Jordan Meyers", "123 Main St, Springfield, IL"),
+        person_at("Dana Meyers", "123 Main St Springfield IL"),
+    ];
+    let hits = super::rules::rule_au_049_shared_address_association(&ents, "s", 0);
+    assert_eq!(hits.len(), 1, "one household cluster expected");
+    assert_eq!(hits[0].rule_id, "AU-049");
+    assert!(hits[0].description.contains("2 people"));
+}
+
+#[test]
+fn au049_single_person_and_region_only_do_not_fire() {
+    let one = vec![person_at("Jordan Meyers", "123 Main St, Springfield, IL")];
+    assert!(super::rules::rule_au_049_shared_address_association(&one, "s", 0).is_empty());
+    // A bare region shared by strangers must never fuse a household.
+    let region = vec![
+        person_at("Jordan Meyers", "California"),
+        person_at("Unrelated Stranger", "California"),
+    ];
+    assert!(super::rules::rule_au_049_shared_address_association(&region, "s", 0).is_empty());
+}
+
+#[test]
+fn au049_one_persons_two_emails_is_not_a_household() {
+    // Two emails + one named person at an address is the SAME person's handles,
+    // not an association — must not fire.
+    let mut e1 = Entity::new(EntityKind::Email, "jordan@gmail.com", 0.72, "s");
+    e1.add_evidence(
+        Evidence::new("import:dossier", "e").with_attr("address", "123 Main St, Springfield"),
+    );
+    let mut e2 = Entity::new(EntityKind::Email, "j.meyers@work.com", 0.72, "s");
+    e2.add_evidence(
+        Evidence::new("import:dossier", "e").with_attr("address", "123 Main St, Springfield"),
+    );
+    let ents = vec![
+        person_at("Jordan Meyers", "123 Main St, Springfield"),
+        e1,
+        e2,
+    ];
+    assert!(super::rules::rule_au_049_shared_address_association(&ents, "s", 0).is_empty());
+}
+
+#[test]
+fn au049_references_address_node_and_reachable_handles() {
+    let mut email = Entity::new(EntityKind::Email, "dana@gmail.com", 0.72, "s");
+    email.add_evidence(
+        Evidence::new("import:dossier", "e").with_attr("address", "123 Main St, Springfield"),
+    );
+    let addr = Entity::new(EntityKind::Address, "123 Main St, Springfield", 0.58, "s");
+    let addr_uid = addr.uid.clone();
+    let email_uid = email.uid.clone();
+    let ents = vec![
+        person_at("Jordan Meyers", "123 Main St, Springfield"),
+        person_at("Dana Meyers", "123 Main St, Springfield"),
+        email,
+        addr,
+    ];
+    let hits = super::rules::rule_au_049_shared_address_association(&ents, "s", 0);
+    assert_eq!(hits.len(), 1);
+    assert!(
+        hits[0].entity_uids.contains(&addr_uid),
+        "address node referenced"
+    );
+    assert!(
+        hits[0].entity_uids.contains(&email_uid),
+        "reachable handle referenced"
+    );
+}
+
+#[test]
+fn au050_shared_phone_links_two_people_and_rejects_placeholders() {
+    // Formatting variants of the same line collapse to one association.
+    let ents = vec![
+        person_with_phone("Jordan Meyers", "+1 (415) 555-0100"),
+        person_with_phone("Casey Lin", "14155550100"),
+    ];
+    let hits = super::rules::rule_au_050_shared_phone_association(&ents, "s", 0);
+    assert_eq!(
+        hits.len(),
+        1,
+        "formatting variants must collapse to one line"
+    );
+    assert_eq!(hits[0].rule_id, "AU-050");
+    assert!(hits[0].description.contains("0100"), "masked tail shown");
+
+    // All-same-digit placeholder is not a subscriber line.
+    let placeholder = vec![
+        person_with_phone("Jordan Meyers", "+00000000000"),
+        person_with_phone("Casey Lin", "+00000000000"),
+    ];
+    assert!(super::rules::rule_au_050_shared_phone_association(&placeholder, "s", 0).is_empty());
+}
+
+#[test]
+fn au051_shared_surname_at_residence_is_kin() {
+    let ents = vec![
+        person_at("Jordan Meyers", "123 Main St, Springfield"),
+        person_at("Dana Meyers", "123 Main St, Springfield"),
+    ];
+    let hits = super::rules::rule_au_051_shared_surname_kin(&ents, "s", 0);
+    assert_eq!(hits.len(), 1, "shared surname + residence = kin");
+    assert_eq!(hits[0].rule_id, "AU-051");
+    assert_eq!(hits[0].severity, super::Severity::Critical);
+    assert!(hits[0].description.contains("meyers"));
+}
+
+#[test]
+fn au051_requires_shared_residence_and_distinguishes_roommates() {
+    // Same surname, different homes: two unrelated people must NOT link.
+    let apart = vec![
+        person_at("Jordan Meyers", "123 Main St, Springfield"),
+        person_at("Dana Meyers", "987 Oak Ave, Portland"),
+    ];
+    assert!(super::rules::rule_au_051_shared_surname_kin(&apart, "s", 0).is_empty());
+
+    // Same residence, different families: AU-049 fires (household) but AU-051
+    // (kin) does not.
+    let roommates = vec![
+        person_at("Jordan Meyers", "123 Main St, Springfield"),
+        person_at("Casey Lin", "123 Main St, Springfield"),
+    ];
+    assert_eq!(
+        super::rules::rule_au_049_shared_address_association(&roommates, "s", 0).len(),
+        1
+    );
+    assert!(super::rules::rule_au_051_shared_surname_kin(&roommates, "s", 0).is_empty());
+}
