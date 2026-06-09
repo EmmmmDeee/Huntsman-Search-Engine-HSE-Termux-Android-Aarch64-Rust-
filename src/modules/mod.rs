@@ -43,6 +43,7 @@ pub mod github_user;
 pub mod gleif_lei;
 pub mod gravatar;
 pub mod greynoise;
+pub mod hacker_news;
 pub mod hackertarget;
 pub mod hibp;
 pub mod hudsonrock;
@@ -231,6 +232,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(username_search::UsernameSearch),
         Arc::new(username_variants::UsernameVariants),
         Arc::new(github_user::GithubUser),
+        Arc::new(hacker_news::HackerNews),
         Arc::new(gravatar::Gravatar),
         Arc::new(pgp::Pgp),
         Arc::new(psbdmp::Psbdmp),

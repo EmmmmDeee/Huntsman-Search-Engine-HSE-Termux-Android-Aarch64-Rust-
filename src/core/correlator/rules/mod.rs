@@ -235,6 +235,7 @@ pub(super) fn source_family(source: &str) -> &'static str {
     } else if has(&[
         "github",
         "gitlab",
+        "hacker_news",
         "social_probe",
         "twitter",
         "instagram",
