@@ -383,6 +383,33 @@ pub(in crate::core::correlator) fn rule_au_030_geo_convergence_score(
     )]
 }
 
+/// Geolocation sources that resolve an *IP/host*, not a person: a coordinate
+/// backed only by these is a datacenter/ISP/anycast location, never a residence.
+/// A coordinate that *also* carries a person-anchored source (EXIF GPS, Wi-Fi,
+/// a geocoded street address) is kept — it just can't rest on infra geo alone.
+const INFRA_GEO_SOURCES: &[&str] = &[
+    "ip_geo",
+    "ipapi",
+    "ipinfo",
+    "ip2location",
+    "ipquery",
+    "ip_whois_geo",
+    "ripestat",
+    "ip_reputation",
+];
+
+/// True when a `Coordinates` entity locates infrastructure rather than the
+/// subject: it is `hosting`-tagged (a CDN/cloud edge), or *every* corroborating
+/// source is an IP/WHOIS geolocator ([`INFRA_GEO_SOURCES`]). See AU-052 for why
+/// these must not enter a person's footprint.
+fn is_infrastructure_geo(e: &Entity) -> bool {
+    if e.has_tag(crate::core::tags::HOSTING) {
+        return true;
+    }
+    let sources = e.corroborating_sources();
+    !sources.is_empty() && sources.iter().all(|s| INFRA_GEO_SOURCES.contains(s))
+}
+
 /// AU-052 — Geographic area of operation (convex footprint).
 ///
 /// Where AU-017 reports *that* coordinates cluster and AU-030 reports *how many
@@ -398,6 +425,16 @@ pub(in crate::core::correlator) fn rule_au_030_geo_convergence_score(
 /// a real area (non-collinear — see [`crate::util::geohash::geo_footprint`]). A
 /// *tight* footprint (≤25 km, one metro) is a High-severity residence/base fix;
 /// a dispersed one is Medium and describes a travel pattern rather than a home.
+///
+/// **Infrastructure exclusion** (learned from a live `peekyou.com`-pivoted
+/// scan): a person's coordinates must geolocate the *person*, not the web hosts
+/// in their orbit. Datacenter/CDN coordinates — tagged [`tags::HOSTING`], or
+/// derived *solely* from IP/WHOIS geolocators ([`INFRA_GEO_SOURCES`]) — are
+/// dropped. Without this the hull spanned four continents of Cloudflare edges
+/// (Toronto/Montreal/SF/Tennessee) and reported a fictitious "travel footprint"
+/// for a subject who never left Australia. Admissible coordinates need ≥1
+/// corroborating source that anchors to the person (a photo's EXIF GPS, a Wi-Fi
+/// sighting, a geocoded street address), not an anycast edge.
 pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
     entities: &[Entity],
     scan_id: &str,
@@ -406,6 +443,7 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
     let parsed: Vec<(&Entity, (f64, f64))> = entities_of_kind(entities, EntityKind::Coordinates)
         .into_iter()
         .filter(|e| e.confidence >= 0.50)
+        .filter(|e| !is_infrastructure_geo(e))
         .filter_map(|c| crate::util::geohash::parse_coords(&c.value).map(|ll| (c, ll)))
         .collect();
     if parsed.len() < 3 {

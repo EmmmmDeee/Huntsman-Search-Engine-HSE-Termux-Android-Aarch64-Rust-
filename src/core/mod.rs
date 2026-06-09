@@ -42,6 +42,10 @@ pub mod tags {
     pub const GEOINT: &str = "geoint";
     pub const GEOLOCATION_LEAD: &str = "geolocation-lead";
     pub const COARSE: &str = "coarse";
+    /// Datacenter / CDN / cloud-host location, not a residence. Carried by
+    /// coordinates that geolocate a hosting IP (e.g. a Cloudflare edge), so the
+    /// area-of-operation rule (AU-052) can exclude them from a person's footprint.
+    pub const HOSTING: &str = "hosting";
 
     // Device / local
     pub const WIFI_AP: &str = "wifi-ap";

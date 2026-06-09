@@ -2376,12 +2376,21 @@ fn coord_from(value: &str, source: &str) -> Entity {
     e
 }
 
+/// A coordinate tagged `hosting` (a CDN/datacenter edge) — infrastructure, not a
+/// person, even if it carries several sources.
+#[cfg(test)]
+fn hosting_coord(value: &str, source: &str) -> Entity {
+    let mut e = coord_from(value, source);
+    e.tag(crate::core::tags::HOSTING);
+    e
+}
+
 #[test]
 fn au052_tight_multisource_footprint_is_a_high_location_fix() {
-    // Three sightings around one suburb from three independent sources → a
-    // tight, High-severity area-of-operation fix with a centroid.
+    // Three person-anchored sightings around one suburb (photo EXIF, Wi-Fi,
+    // geocoded address) → a tight, High-severity fix with a centroid.
     let ents = vec![
-        coord_from("-33.8700,151.2100", "ip_geo"),
+        coord_from("-33.8700,151.2100", "geocode"),
         coord_from("-33.8720,151.2150", "exif_geo"),
         coord_from("-33.8680,151.2080", "wigle"),
     ];
@@ -2397,7 +2406,7 @@ fn au052_tight_multisource_footprint_is_a_high_location_fix() {
 fn au052_requires_three_points_and_two_sources() {
     // Two points: no area.
     let two = vec![
-        coord_from("-33.8700,151.2100", "ip_geo"),
+        coord_from("-33.8700,151.2100", "geocode"),
         coord_from("-33.8720,151.2150", "exif_geo"),
     ];
     assert!(super::rules::rule_au_052_geographic_area_of_operation(&two, "s", 0).is_empty());
@@ -2405,19 +2414,19 @@ fn au052_requires_three_points_and_two_sources() {
     // Three points but all from ONE source (a single device's track) → not
     // multi-source convergence, must not assert a footprint.
     let one_source = vec![
-        coord_from("-33.8700,151.2100", "ip_geo"),
-        coord_from("-33.8720,151.2150", "ip_geo"),
-        coord_from("-33.8680,151.2080", "ip_geo"),
+        coord_from("-33.8700,151.2100", "exif_geo"),
+        coord_from("-33.8720,151.2150", "exif_geo"),
+        coord_from("-33.8680,151.2080", "exif_geo"),
     ];
     assert!(super::rules::rule_au_052_geographic_area_of_operation(&one_source, "s", 0).is_empty());
 }
 
 #[test]
 fn au052_dispersed_footprint_is_medium_travel_pattern() {
-    // Sightings hundreds of km apart from independent sources → a dispersed,
+    // Person-anchored sightings hundreds of km apart → a dispersed,
     // Medium-severity travel footprint (not a single-residence fix).
     let ents = vec![
-        coord_from("-33.8700,151.2100", "ip_geo"),   // Sydney
+        coord_from("-33.8700,151.2100", "geocode"),  // Sydney
         coord_from("-37.8100,144.9600", "exif_geo"), // Melbourne
         coord_from("-27.4700,153.0200", "wigle"),    // Brisbane
     ];
@@ -2425,4 +2434,34 @@ fn au052_dispersed_footprint_is_medium_travel_pattern() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].severity, super::Severity::Medium);
     assert!(hits[0].description.contains("dispersed"));
+}
+
+#[test]
+fn au052_excludes_infrastructure_geo_live_peekyou_case() {
+    // Regression from a real peekyou.com-pivoted scan: every coordinate
+    // geolocated the target's web HOST, not the target. A Cloudflare edge
+    // (hosting-tagged) plus two IP/WHOIS-only datacenter coords must NOT form a
+    // person's footprint — otherwise the hull spans four continents of CDN.
+    let ents = vec![
+        hosting_coord("43.6532,-79.3832", "ip_geo"), // Toronto CF edge (hosting)
+        coord_from("37.7621,-122.3971", "ipinfo"),   // SF — IP-geo only
+        coord_from("36.0345,-89.3856", "ip_whois_geo"), // Tennessee — WHOIS-geo only
+    ];
+    assert!(
+        super::rules::rule_au_052_geographic_area_of_operation(&ents, "s", 0).is_empty(),
+        "infrastructure coordinates must not form a person's area of operation"
+    );
+
+    // But a real person-anchored coordinate mixed in is kept: if the same scan
+    // ALSO held three EXIF/Wi-Fi/geocode sightings in one suburb, those — and
+    // only those — would fix the location.
+    let mixed = vec![
+        hosting_coord("43.6532,-79.3832", "ip_geo"),
+        coord_from("-33.8700,151.2100", "exif_geo"),
+        coord_from("-33.8720,151.2150", "wigle"),
+        coord_from("-33.8680,151.2080", "geocode"),
+    ];
+    let hits = super::rules::rule_au_052_geographic_area_of_operation(&mixed, "s", 0);
+    assert_eq!(hits.len(), 1, "the three real sightings fix the location");
+    assert!(hits[0].description.contains("tight"));
 }
