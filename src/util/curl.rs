@@ -60,6 +60,24 @@ pub(crate) const CURL_MAX_DOWNLOAD_BYTES: &str = "33554432";
 // running first, `--proto-redir =http,https` (no `file://`/`gopher://` hops), and
 // `--max-redirs 5`.
 
+/// Per-fetch hardening flags shared by both curl paths — the free-function
+/// [`curl_exec`] and `curl_client::CurlClient::exec`. Restrict the wire protocol
+/// to http/https on the initial request (`--proto`) *and* every redirect hop
+/// (`--proto-redir`, blocking `file://`/`gopher://`/`dict://` pivots), cap
+/// redirects at 5, and bound the download via `--max-filesize` (see
+/// [`CURL_MAX_DOWNLOAD_BYTES`]). Single-sourced so the two invocations can never
+/// drift apart — each is a security property that must hold on both, or neither.
+pub(crate) const FETCH_HARDENING_ARGS: &[&str] = &[
+    "--proto",
+    "=http,https",
+    "--proto-redir",
+    "=http,https",
+    "--max-redirs",
+    "5",
+    "--max-filesize",
+    CURL_MAX_DOWNLOAD_BYTES,
+];
+
 /// Internal: run curl with full parameter control.
 ///
 /// When the `HUNTSMAN_SEARCH_PROXY` environment variable is set
@@ -172,19 +190,7 @@ async fn curl_exec(
         }
     }
 
-    cmd.args([
-        "--proto",
-        "=http,https",
-        "--proto-redir",
-        "=http,https",
-        "--max-redirs",
-        "5",
-        // Bound the download so a hostile upstream can't OOM the device — see
-        // CURL_MAX_DOWNLOAD_BYTES. (Redirect-hop IP vetting is a documented
-        // residual — see the SSRF-residual note above the constant.)
-        "--max-filesize",
-        CURL_MAX_DOWNLOAD_BYTES,
-    ]);
+    cmd.args(FETCH_HARDENING_ARGS);
     cmd.args(["-L", "--", url]);
     cmd.kill_on_drop(true);
 
@@ -298,6 +304,29 @@ mod tests {
     #[test]
     fn ua_pool_has_four_entries() {
         assert_eq!(UA_POOL.len(), 4);
+    }
+
+    #[test]
+    fn fetch_hardening_pins_protocols_and_bounds_redirects_and_size() {
+        // Locks the security-critical content of the single-sourced hardening
+        // args so a careless future edit that loosens the protocol allow-list,
+        // unbounds redirects, or drops the size cap fails here.
+        let a = FETCH_HARDENING_ARGS;
+        let has = |pair: [&str; 2]| a.windows(2).any(|w| w == pair);
+        // Protocol allow-list on both the initial request and every redirect hop
+        // (blocks file://, gopher://, dict:// SSRF pivots).
+        assert!(has(["--proto", "=http,https"]), "missing --proto allow-list");
+        assert!(
+            has(["--proto-redir", "=http,https"]),
+            "missing --proto-redir allow-list"
+        );
+        // Redirects bounded (defence-in-depth against redirect loops / chains).
+        assert!(has(["--max-redirs", "5"]), "redirects not bounded");
+        // Download size capped via the single-sourced constant.
+        assert!(
+            has(["--max-filesize", CURL_MAX_DOWNLOAD_BYTES]),
+            "download size not capped"
+        );
     }
 
     #[test]
