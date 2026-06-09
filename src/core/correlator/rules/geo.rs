@@ -383,6 +383,79 @@ pub(in crate::core::correlator) fn rule_au_030_geo_convergence_score(
     )]
 }
 
+/// AU-052 — Geographic area of operation (convex footprint).
+///
+/// Where AU-017 reports *that* coordinates cluster and AU-030 reports *how many
+/// sources* produced geo, this rule reports the *shape and centre* of the
+/// subject's geographic footprint: the convex hull bounding every confirmed
+/// sighting, its centroid — the single best point-estimate of the subject's
+/// base — and its great-circle diameter. The centroid of several independent
+/// geo sources is one of the strongest location fixes an investigation can
+/// derive, which is exactly the convex-hull method requested.
+///
+/// Precision discipline: requires ≥3 confirmed `Coordinates` from ≥2 *distinct*
+/// sources (one device's own track is not multi-source convergence) that bound
+/// a real area (non-collinear — see [`crate::util::geohash::geo_footprint`]). A
+/// *tight* footprint (≤25 km, one metro) is a High-severity residence/base fix;
+/// a dispersed one is Medium and describes a travel pattern rather than a home.
+pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let parsed: Vec<(&Entity, (f64, f64))> = entities_of_kind(entities, EntityKind::Coordinates)
+        .into_iter()
+        .filter(|e| e.confidence >= 0.50)
+        .filter_map(|c| crate::util::geohash::parse_coords(&c.value).map(|ll| (c, ll)))
+        .collect();
+    if parsed.len() < 3 {
+        return Vec::new();
+    }
+    // Multi-source gate: the points must come from ≥2 distinct corroborating
+    // sources, so a single GPS-logging device's track can't assert a "footprint".
+    let mut sources: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for (e, _) in &parsed {
+        for src in e.corroborating_sources() {
+            sources.insert(src);
+        }
+    }
+    if sources.len() < 2 {
+        return Vec::new();
+    }
+    let points: Vec<(f64, f64)> = parsed.iter().map(|(_, ll)| *ll).collect();
+    let Some(fp) = crate::util::geohash::geo_footprint(&points) else {
+        return Vec::new(); // fewer than 3 distinct, or all collinear → no area
+    };
+
+    let mut uids: Vec<String> = parsed.iter().map(|(e, _)| e.uid.clone()).collect();
+    uids.sort_unstable();
+    uids.dedup();
+    let (severity, kind) = if fp.is_tight() {
+        (Severity::High, "tight fix on a residence/base")
+    } else {
+        (Severity::Medium, "dispersed travel footprint")
+    };
+    vec![Correlation::new(
+        "AU-052",
+        "Geographic area of operation (convex footprint)",
+        severity,
+        format!(
+            "{} coordinates from {} sources bound a {}-vertex area ({}); centroid \
+             {:.4},{:.4}, diameter {:.1} km — {kind}; centroid is the best location estimate",
+            parsed.len(),
+            sources.len(),
+            fp.hull.len(),
+            if fp.is_tight() { "tight" } else { "dispersed" },
+            fp.centroid.0,
+            fp.centroid.1,
+            fp.diameter_km,
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
 /// AU-032 — Geographic co-location cluster (graph-aware). Walks the
 /// `CoLocatedWith` edge graph and reports each connected component of
 /// `COLOCATION_CLUSTER_MIN`+ Coordinates entities — i.e. three or more

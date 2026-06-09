@@ -2366,3 +2366,63 @@ fn au051_requires_shared_residence_and_distinguishes_roommates() {
     );
     assert!(super::rules::rule_au_051_shared_surname_kin(&roommates, "s", 0).is_empty());
 }
+
+// ─── Geo convex footprint (AU-052) ───────────────────────────────────────────
+
+#[cfg(test)]
+fn coord_from(value: &str, source: &str) -> Entity {
+    let mut e = Entity::new(EntityKind::Coordinates, value, 0.70, "s");
+    e.add_evidence(Evidence::new(source, "geo sighting"));
+    e
+}
+
+#[test]
+fn au052_tight_multisource_footprint_is_a_high_location_fix() {
+    // Three sightings around one suburb from three independent sources → a
+    // tight, High-severity area-of-operation fix with a centroid.
+    let ents = vec![
+        coord_from("-33.8700,151.2100", "ip_geo"),
+        coord_from("-33.8720,151.2150", "exif_geo"),
+        coord_from("-33.8680,151.2080", "wigle"),
+    ];
+    let hits = super::rules::rule_au_052_geographic_area_of_operation(&ents, "s", 0);
+    assert_eq!(hits.len(), 1, "three multi-source coords bound an area");
+    assert_eq!(hits[0].rule_id, "AU-052");
+    assert_eq!(hits[0].severity, super::Severity::High);
+    assert!(hits[0].description.contains("centroid"));
+    assert!(hits[0].description.contains("tight"));
+}
+
+#[test]
+fn au052_requires_three_points_and_two_sources() {
+    // Two points: no area.
+    let two = vec![
+        coord_from("-33.8700,151.2100", "ip_geo"),
+        coord_from("-33.8720,151.2150", "exif_geo"),
+    ];
+    assert!(super::rules::rule_au_052_geographic_area_of_operation(&two, "s", 0).is_empty());
+
+    // Three points but all from ONE source (a single device's track) → not
+    // multi-source convergence, must not assert a footprint.
+    let one_source = vec![
+        coord_from("-33.8700,151.2100", "ip_geo"),
+        coord_from("-33.8720,151.2150", "ip_geo"),
+        coord_from("-33.8680,151.2080", "ip_geo"),
+    ];
+    assert!(super::rules::rule_au_052_geographic_area_of_operation(&one_source, "s", 0).is_empty());
+}
+
+#[test]
+fn au052_dispersed_footprint_is_medium_travel_pattern() {
+    // Sightings hundreds of km apart from independent sources → a dispersed,
+    // Medium-severity travel footprint (not a single-residence fix).
+    let ents = vec![
+        coord_from("-33.8700,151.2100", "ip_geo"),   // Sydney
+        coord_from("-37.8100,144.9600", "exif_geo"), // Melbourne
+        coord_from("-27.4700,153.0200", "wigle"),    // Brisbane
+    ];
+    let hits = super::rules::rule_au_052_geographic_area_of_operation(&ents, "s", 0);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].severity, super::Severity::Medium);
+    assert!(hits[0].description.contains("dispersed"));
+}

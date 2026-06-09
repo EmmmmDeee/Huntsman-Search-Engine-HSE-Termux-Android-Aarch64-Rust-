@@ -379,6 +379,130 @@ pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     2.0 * R * a.sqrt().atan2((1.0 - a).sqrt())
 }
 
+/// The convex geographic footprint of a set of observed coordinates: the hull
+/// polygon that bounds every point, the area's centroid (the single best
+/// point-estimate of the subject's base), and its diameter (the greatest
+/// great-circle span across the points, in km).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GeoFootprint {
+    /// Convex-hull vertices in counter-clockwise order as `(lat, lon)`. For one
+    /// or two distinct points the "hull" is just those points.
+    pub hull: Vec<(f64, f64)>,
+    /// Mean of the hull vertices, `(lat, lon)` — the area's centre of mass.
+    pub centroid: (f64, f64),
+    /// Greatest great-circle distance between any two input points, in km.
+    pub diameter_km: f64,
+}
+
+impl GeoFootprint {
+    /// A footprint is *tight* when every point lies within a single metropolitan
+    /// span (diameter ≤ 25 km). A tight cluster of independent geo sources is a
+    /// strong fix on a residence/base; a wide one describes a travel pattern.
+    pub fn is_tight(&self) -> bool {
+        self.diameter_km <= 25.0
+    }
+}
+
+/// Compute the [`GeoFootprint`] of a set of `(lat, lon)` points: the convex hull
+/// (via Andrew's monotone-chain algorithm), the centroid of the hull, and the
+/// great-circle diameter. Returns `None` for fewer than three *distinct* points
+/// (a hull needs three non-collinear vertices to bound an area; with one or two
+/// distinct points there is no polygon to report).
+///
+/// The hull is computed in planar (lon, lat) degree space. At the city/region
+/// scales OSINT geolocation operates over, the planar hull and the spherical
+/// hull share the same vertex set, so this stays dependency-free and exact for
+/// the bounding question; the *diameter* is measured with the spherical
+/// [`haversine_km`] so the reported span is true great-circle kilometres.
+///
+/// ```
+/// use huntsman_search_engine::util::geohash::geo_footprint;
+///
+/// // A tight cluster of three independent sightings around one suburb.
+/// let pts = [(-33.870, 151.210), (-33.872, 151.215), (-33.868, 151.208)];
+/// let fp = geo_footprint(&pts).expect("three points bound an area");
+/// assert!(fp.is_tight(), "a few-hundred-metre spread is a tight fix");
+/// ```
+pub fn geo_footprint(points: &[(f64, f64)]) -> Option<GeoFootprint> {
+    // Deduplicate identical coordinates first; the hull and the distinct-count
+    // guard must both see unique points.
+    let mut pts: Vec<(f64, f64)> = Vec::with_capacity(points.len());
+    for &p in points {
+        if !pts.contains(&p) {
+            pts.push(p);
+        }
+    }
+    if pts.len() < 3 {
+        return None;
+    }
+    let hull = convex_hull_latlon(&pts);
+    if hull.len() < 3 {
+        // All points collinear — no bounded area.
+        return None;
+    }
+    let n = hull.len() as f64;
+    let centroid = (
+        hull.iter().map(|p| p.0).sum::<f64>() / n,
+        hull.iter().map(|p| p.1).sum::<f64>() / n,
+    );
+    // Diameter: greatest pairwise great-circle distance. The point count is
+    // bounded (a scan holds tens of coordinates), so the O(n²) scan is trivial.
+    let mut diameter_km = 0.0_f64;
+    for i in 0..pts.len() {
+        for j in (i + 1)..pts.len() {
+            let d = haversine_km(pts[i].0, pts[i].1, pts[j].0, pts[j].1);
+            if d > diameter_km {
+                diameter_km = d;
+            }
+        }
+    }
+    Some(GeoFootprint {
+        hull,
+        centroid,
+        diameter_km,
+    })
+}
+
+/// Andrew's monotone-chain convex hull over `(lat, lon)` points, returned
+/// counter-clockwise. Treats `lon` as x and `lat` as y. Collinear points on a
+/// hull edge are excluded (strict turns only), so a degenerate all-collinear
+/// input yields fewer than three vertices and the caller reports "no area".
+fn convex_hull_latlon(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut pts: Vec<(f64, f64)> = points.to_vec();
+    // Sort by lon (x) then lat (y). Total order via partial_cmp is safe: scan
+    // coordinates are finite (parse_coords range-validates, no NaN).
+    pts.sort_by(|a, b| {
+        a.1.partial_cmp(&b.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+    });
+
+    // 2D cross product of OA×OB for points O, A, B. >0 ⇒ counter-clockwise turn.
+    let cross = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| -> f64 {
+        (a.1 - o.1) * (b.0 - o.0) - (a.0 - o.0) * (b.1 - o.1)
+    };
+
+    let mut lower: Vec<(f64, f64)> = Vec::new();
+    for &p in &pts {
+        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 0.0 {
+            lower.pop();
+        }
+        lower.push(p);
+    }
+    let mut upper: Vec<(f64, f64)> = Vec::new();
+    for &p in pts.iter().rev() {
+        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], p) <= 0.0 {
+            upper.pop();
+        }
+        upper.push(p);
+    }
+    // Concatenate, dropping each chain's last point (it's the first of the other).
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
+
 /// Parsed components of a free-form address string.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AddressComponents {
@@ -674,6 +798,58 @@ mod tests {
             // Identity: a point is zero distance from itself.
             assert_eq!(haversine_km(lat1, lon1, lat1, lon1), 0.0);
         }
+    }
+
+    #[test]
+    fn footprint_needs_three_distinct_noncollinear_points() {
+        // Fewer than three distinct points: no bounded area.
+        assert!(geo_footprint(&[]).is_none());
+        assert!(geo_footprint(&[(0.0, 0.0)]).is_none());
+        assert!(geo_footprint(&[(0.0, 0.0), (1.0, 1.0)]).is_none());
+        // Duplicates collapse — three records of two places is still two points.
+        assert!(geo_footprint(&[(0.0, 0.0), (0.0, 0.0), (1.0, 1.0)]).is_none());
+        // Three collinear points bound no area.
+        assert!(geo_footprint(&[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)]).is_none());
+    }
+
+    #[test]
+    fn footprint_hull_centroid_and_diameter() {
+        // A unit square (plus an interior point that must NOT become a vertex).
+        let pts = [
+            (0.0, 0.0),
+            (0.0, 1.0),
+            (1.0, 1.0),
+            (1.0, 0.0),
+            (0.5, 0.5), // interior — excluded from the hull
+        ];
+        let fp = geo_footprint(&pts).expect("square has an area");
+        assert_eq!(fp.hull.len(), 4, "interior point must not be a hull vertex");
+        // Centroid of the four corners is the square's centre.
+        assert!((fp.centroid.0 - 0.5).abs() < 1e-9 && (fp.centroid.1 - 0.5).abs() < 1e-9);
+        // Diameter is a diagonal of the square (~157 km at the equator), strictly
+        // greater than a side (~111 km).
+        assert!(
+            fp.diameter_km > 111.0 && fp.diameter_km < 160.0,
+            "{}",
+            fp.diameter_km
+        );
+        assert!(!fp.is_tight(), "a ~1° square is not a single-metro fix");
+    }
+
+    #[test]
+    fn footprint_tight_cluster_is_a_location_fix() {
+        // Three sightings within a few hundred metres of one suburb.
+        let pts = [
+            (-33.8700, 151.2100),
+            (-33.8720, 151.2150),
+            (-33.8680, 151.2080),
+        ];
+        let fp = geo_footprint(&pts).expect("three points bound an area");
+        assert!(
+            fp.is_tight(),
+            "diameter {} should be <=25km",
+            fp.diameter_km
+        );
     }
 
     #[test]
