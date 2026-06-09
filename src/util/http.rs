@@ -746,6 +746,26 @@ pub async fn json_decode<T: DeserializeOwned>(
         .map_err(|e| Error::module(module, e.to_string()))
 }
 
+/// Extension on [`reqwest::RequestBuilder`] that sends the request and maps any
+/// transport error to a module-tagged [`Error`]. Folds the
+/// `.send().await.map_err(|e| Error::module(module, e.to_string()))` tail that
+/// ~40 modules repeated verbatim into `builder.send_tagged(module).await`.
+///
+/// Crate-internal (`pub(crate)`), so the `async fn` carries no public auto-trait
+/// caveat: callers invoke it on the concrete `RequestBuilder`, whose future is
+/// `Send`, so it composes inside their `async_trait` module methods.
+pub(crate) trait RequestBuilderExt {
+    async fn send_tagged(self, module: &'static str) -> Result<reqwest::Response>;
+}
+
+impl RequestBuilderExt for reqwest::RequestBuilder {
+    async fn send_tagged(self, module: &'static str) -> Result<reqwest::Response> {
+        self.send()
+            .await
+            .map_err(|e| Error::module(module, e.to_string()))
+    }
+}
+
 /// Scan arbitrary text for API key patterns and store any discoveries
 /// in the global key pool. Call on any raw text that passes through the
 /// system — HTTP response bodies, WHOIS output, certificate fields, etc.
@@ -831,6 +851,23 @@ mod tests {
         assert!(
             err.to_string().contains("test_mod"),
             "decode error must name the module: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_tagged_maps_transport_errors_to_the_module() {
+        use super::RequestBuilderExt;
+        // An unsupported scheme fails inside send() with no network I/O, so this
+        // deterministically exercises the transport-error -> module-tagged Error
+        // mapping that ~40 modules relied on inline.
+        let err = reqwest::Client::new()
+            .get("ftp://example.invalid/")
+            .send_tagged("test_mod")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("test_mod"),
+            "transport error must name the module: {err}"
         );
     }
 

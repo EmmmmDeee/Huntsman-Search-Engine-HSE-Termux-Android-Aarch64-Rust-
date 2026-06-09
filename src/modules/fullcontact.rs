@@ -25,6 +25,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "fullcontact";
 const KEY_ENV: &str = "HUNTSMAN_FULLCONTACT_KEY";
@@ -130,9 +131,7 @@ impl Module for FullContact {
             .header("Authorization", format!("Bearer {key}"))
             .header("Content-Type", "application/json")
             .body(body)
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC).await?;
 
         let status = resp.status();
         // 404 = no person matched — a clean miss, not an error.

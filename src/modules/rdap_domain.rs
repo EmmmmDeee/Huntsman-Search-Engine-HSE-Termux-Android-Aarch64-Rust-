@@ -16,11 +16,12 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::urlencode;
+use crate::util::http::RequestBuilderExt;
 
 #[derive(Deserialize)]
 struct RdapResp {
@@ -243,9 +244,7 @@ impl Module for RdapDomain {
             .get(&url)
             .header("Accept", "application/rdap+json")
             .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC).await?;
 
         let status = resp.status();
         if status.as_u16() == 404 {

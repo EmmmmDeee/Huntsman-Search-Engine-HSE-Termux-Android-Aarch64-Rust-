@@ -15,12 +15,13 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
 use crate::util::http::urlencode;
+use crate::util::http::RequestBuilderExt;
 
 const KEY_ENV: &str = "HUNTSMAN_SHODAN_KEY";
 
@@ -286,9 +287,7 @@ impl Shodan {
         let resp = ctx
             .http
             .get(&url)
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC).await?;
         let status = resp.status();
         if status.as_u16() == 404 {
             return Ok(());

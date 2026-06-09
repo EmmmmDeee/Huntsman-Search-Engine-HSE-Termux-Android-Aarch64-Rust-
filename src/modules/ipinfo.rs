@@ -16,6 +16,7 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "ipinfo";
 
@@ -174,9 +175,7 @@ impl Module for IpInfo {
             .http
             .get(&url)
             .timeout(std::time::Duration::from_secs(6))
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC).await?;
 
         if !resp.status().is_success() {
             return Ok(ModuleResult::new());

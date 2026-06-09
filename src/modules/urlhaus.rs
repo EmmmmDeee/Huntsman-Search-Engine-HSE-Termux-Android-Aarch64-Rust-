@@ -18,10 +18,11 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "urlhaus";
 
@@ -232,9 +233,7 @@ impl Module for UrlHaus {
             .post("https://urlhaus-api.abuse.ch/v1/host/")
             .header("Auth-Key", key)
             .form(&[("host", host)])
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC).await?;
 
         let status = resp.status();
         // A present-but-rejected key (401/403) degrades to a clean skip rather

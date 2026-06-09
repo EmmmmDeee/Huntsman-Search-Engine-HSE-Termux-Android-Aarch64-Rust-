@@ -20,6 +20,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::http::urlencode;
+use crate::util::http::RequestBuilderExt;
 
 // ── Nominatim response types (forward) ──────────────────────────────
 
@@ -181,9 +182,7 @@ impl Geocode {
             .http
             .get(&url)
             .header("Accept", "application/json")
-            .send()
-            .await
-            .map_err(|e| Error::module("geocode", e.to_string()))?;
+            .send_tagged("geocode").await?;
 
         if !resp.status().is_success() {
             return Err(Error::module("geocode", format!("HTTP {}", resp.status())));

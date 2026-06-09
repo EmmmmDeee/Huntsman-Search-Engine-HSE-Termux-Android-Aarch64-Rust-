@@ -21,12 +21,13 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
 use crate::util::http::handle_keyed_error;
+use crate::util::http::RequestBuilderExt;
 
 const KEY_ENV: &str = "HUNTSMAN_DEHASHED_KEY";
 
@@ -224,9 +225,7 @@ impl Module for DeHashed {
                 .header("Dehashed-Api-Key", key)
                 .header("Accept", "application/json")
                 .json(&payload)
-                .send()
-                .await
-                .map_err(|e| Error::module(SRC, e.to_string()))?;
+                .send_tagged(SRC).await?;
             let status = resp.status();
             if !status.is_success() {
                 let code = status.as_u16();

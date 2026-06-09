@@ -18,6 +18,7 @@ use crate::core::{
     tags,
 };
 use crate::util::http::urlencode;
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "hackertarget";
 const BASE: &str = "https://api.hackertarget.com";
@@ -100,9 +101,7 @@ impl HackerTarget {
             .http
             .get(url)
             .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC).await?;
 
         if !resp.status().is_success() {
             return Err(Error::module(SRC, format!("HTTP {}", resp.status())));

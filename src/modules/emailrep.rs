@@ -17,11 +17,12 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::urlencode;
+use crate::util::http::RequestBuilderExt;
 
 const KEY_ENV: &str = "HUNTSMAN_EMAILREP_KEY";
 const SRC: &str = "emailrep";
@@ -130,9 +131,7 @@ impl Module for EmailRep {
                 "User-Agent",
                 "huntsman-search-engine (+https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-)",
             )
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC).await?;
 
         let status = resp.status();
         if status.as_u16() == 404 {

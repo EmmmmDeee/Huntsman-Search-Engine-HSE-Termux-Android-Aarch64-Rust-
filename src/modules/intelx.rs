@@ -56,6 +56,7 @@ use crate::core::{
     tags,
 };
 use crate::util::http::error_snippet;
+use crate::util::http::RequestBuilderExt;
 
 const KEY_ENV: &str = "HUNTSMAN_INTELX_KEY";
 const BASE: &str = "https://2.intelx.io";
@@ -247,9 +248,7 @@ impl Module for IntelX {
                 .header("x-key", key)
                 .header("Accept", "application/json")
                 .json(&body)
-                .send()
-                .await
-                .map_err(|e| Error::module(SRC, e.to_string()))?;
+                .send_tagged(SRC).await?;
             let status = resp.status();
             if status.is_success() {
                 break crate::util::http::json_decode(SRC, resp).await?;

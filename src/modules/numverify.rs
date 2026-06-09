@@ -22,6 +22,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::http::urlencode;
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "numverify";
 const KEY_ENV: &str = "HUNTSMAN_NUMVERIFY_KEY";
@@ -88,9 +89,7 @@ impl Module for NumVerify {
             .http
             .get(&url)
             .header("apikey", key)
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC).await?;
 
         let status = resp.status();
         if !status.is_success() {

@@ -24,6 +24,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::RequestBuilderExt;
 
 const KEY_ENV: &str = "HUNTSMAN_SEON_KEY";
 const SRC: &str = "seon";
@@ -384,9 +385,7 @@ impl Seon {
             .header("X-API-KEY", key)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({ "email": email }))
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC).await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -430,9 +429,7 @@ impl Seon {
             .header("X-API-KEY", key)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({ "phone": phone }))
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC).await?;
 
         let status = resp.status();
         if !status.is_success() {

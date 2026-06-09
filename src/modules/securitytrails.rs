@@ -17,6 +17,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::http::handle_keyed_error;
+use crate::util::http::RequestBuilderExt;
 
 const KEY_ENV: &str = "HUNTSMAN_SECTRAILS_KEY";
 const SRC: &str = "securitytrails";
@@ -217,9 +218,7 @@ impl SecurityTrails {
                 .get(url)
                 .header("APIKEY", key)
                 .header("Accept", "application/json")
-                .send()
-                .await
-                .map_err(|e| Error::module(SRC, e.to_string()))?;
+                .send_tagged(SRC).await?;
             let status = resp.status();
             if status.as_u16() == 404 {
                 return Err(Error::module(SRC, "404 Not Found"));

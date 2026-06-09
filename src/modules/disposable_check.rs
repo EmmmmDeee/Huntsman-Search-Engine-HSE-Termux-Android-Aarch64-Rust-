@@ -18,6 +18,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "disposable_check";
 
@@ -121,9 +122,7 @@ impl Module for DisposableCheck {
             .http
             .get(&url)
             .timeout(std::time::Duration::from_secs(5))
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC).await?;
 
         if !resp.status().is_success() {
             return Ok(ModuleResult::new());

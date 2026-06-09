@@ -11,10 +11,11 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "sunrise_sunset";
 
@@ -169,9 +170,7 @@ impl Module for SunriseSunset {
             .http
             .get(&url)
             .header("Accept", "application/json")
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC).await?;
 
         if !resp.status().is_success() {
             return Ok(ModuleResult::new());

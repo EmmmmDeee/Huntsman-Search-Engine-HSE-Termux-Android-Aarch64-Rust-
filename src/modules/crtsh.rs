@@ -19,6 +19,7 @@ use crate::core::{
     tags,
 };
 use crate::util::http::urlencode;
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "crtsh";
 
@@ -181,9 +182,7 @@ impl Module for CrtSh {
             .get(&url)
             .header("Accept", "application/json")
             .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC).await?;
 
         let status = resp.status();
         if !status.is_success() {
