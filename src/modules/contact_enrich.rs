@@ -210,9 +210,7 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         }
         if !status.is_success() {
             let code = status.as_u16();
-            if code == 429 || code == 401 || code == 403 {
-                ctx.report_key_exhausted("numverify", key, code);
-            }
+            crate::util::http::note_keyed_error(code, "numverify", key, ctx);
             return Err(Error::module(
                 "contact_enrich",
                 format!("HTTP {status}: {}", error_snippet(resp).await),

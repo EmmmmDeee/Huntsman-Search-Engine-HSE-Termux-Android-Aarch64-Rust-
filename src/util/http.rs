@@ -613,6 +613,35 @@ pub async fn handle_keyed_error(
     }
 }
 
+/// HTTP status codes that indicate an API-key problem: unauthorized (401),
+/// forbidden (403), or rate-limited / quota-exhausted (429). The single source
+/// of the "which response codes count against a key" classification, shared by
+/// [`note_keyed_error`] and matched (with per-code actions) by
+/// [`handle_keyed_error`].
+#[must_use]
+pub fn is_keyed_error_status(code: u16) -> bool {
+    matches!(code, 401 | 403 | 429)
+}
+
+/// Mark `key` exhausted (so the key pool / rotation can react) when `code` is a
+/// key-problem status per [`is_keyed_error_status`]; a no-op otherwise.
+///
+/// This is the non-retrying counterpart to [`handle_keyed_error`]: it does NOT
+/// sleep, back off, or return a retry signal. It centralises the
+/// `if 401/403/429 { ctx.report_key_exhausted(..) }` block that many keyed
+/// modules — which surface the error immediately rather than retrying — had
+/// hand-rolled identically.
+pub fn note_keyed_error(
+    code: u16,
+    module: &str,
+    key: &str,
+    ctx: &crate::core::module::ModuleContext,
+) {
+    if is_keyed_error_status(code) {
+        ctx.report_key_exhausted(module, key, code);
+    }
+}
+
 /// Keyed GET: fetch JSON from a URL that requires an API key header.
 /// Handles 401/403/429 uniformly via report_key_exhausted, maps 404
 /// to Ok(None). Consolidates the error handling pattern duplicated
@@ -735,6 +764,17 @@ pub fn scan_for_api_keys_with_source(text: &str, source: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn keyed_error_status_classification() {
+        // The single-sourced "which HTTP codes count against an API key" set.
+        for code in [401, 403, 429] {
+            assert!(super::is_keyed_error_status(code), "{code} is a key error");
+        }
+        for code in [200, 400, 404, 418, 500, 502, 503] {
+            assert!(!super::is_keyed_error_status(code), "{code} is not a key error");
+        }
+    }
+
     #[tokio::test]
     async fn traced_client_sends_x_huntsman_trace_header() {
         // Prove the trace id rides on the wire: a minimal TCP server reads the
