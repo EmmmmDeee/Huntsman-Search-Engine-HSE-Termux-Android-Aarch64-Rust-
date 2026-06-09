@@ -10,7 +10,49 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-06-09
+
 ### Added
+
+- **Five-method "hardest-to-find people" lane.** A coherent set of correlation
+  rules for the intersection of *works on a target who is hiding* and *works on
+  the average person*: **AU-047** reused-secret identity linkage (a globally
+  unique salted hash / key seen against ≥2 emails links them), **AU-048** shared
+  public-key linkage (cryptographic proof of one controller), **AU-049**
+  shared-address household, **AU-050** shared-phone association, and **AU-051**
+  shared-surname kin (likely relatives). Fed by new keyless harvesters —
+  GitHub commit-author email extraction and SSH-key fingerprints — and by
+  promoting a breach record's `address` to a first-class `Address` entity. Every
+  link is precision-gated (unique artifacts / distinct named people only) so it
+  never fuses unrelated strangers.
+
+- **Convex geographic location toolkit (`util::geometry`).** Pure, deterministic,
+  dependency-free computational geometry over coordinates: convex hull (Andrew's
+  monotone chain), minimum enclosing circle (Welzl — the Chebyshev centre),
+  geometric median (Weiszfeld — now **confidence-weighted** and
+  **equirectangular-corrected** for longitude anisotropy), weighted centroid,
+  point-in-hull, a robust median-distance radius, and a `LocationFix` bundle.
+  Surfaced by **AU-052** (geographic area of operation — the footprint plus a
+  robust+confidence-weighted location fix with both a robust and a worst-case
+  radius) and **AU-053** (out-of-area location anomaly via hull membership). A
+  positive **person-anchor gate** keeps infrastructure coordinates (CDN /
+  datacenter, IP/WHOIS geo, chronolocation, Overpass map POIs) out of a subject's
+  footprint — hardened against two live scans where they would otherwise have
+  manufactured a fictitious location.
+
+- **Convex (optionality / barbell) budget allocation (`--convex-budget`).** Opt-in
+  expansion re-weighting (`core::convex`) by a convexity premium for heavy-tailed
+  upside over per-kind dispatch cost, steering the bounded Termux budget toward
+  cheap, high-optionality identity leads and away from saturated infrastructure.
+  Off by default — the base expected-value ranking is unchanged.
+
+- **`name_intel` email recall ranked by P(handle) × P(provider).** The email
+  permuter no longer sprays one handle shape across every provider before trying
+  the next; it ranks the full handle×provider cross-product by the product of
+  handle commonality and provider market share, and the default provider set
+  covers the mainstream consumer mailboxes (incl. older demographics — `live.com`,
+  `aol.com`). Spends the bounded budget where the median person's real address
+  actually lives.
 
 - **Full pipeline transparency — no black-box decisions.** Every pivot the
   expansion engine *declines* to follow now emits an `entity_excluded` event with
