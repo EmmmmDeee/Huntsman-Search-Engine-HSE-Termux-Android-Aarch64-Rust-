@@ -508,8 +508,9 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
         severity,
         format!(
             "{} coordinates from {} sources bound a {}-vertex area ({}); confidence-weighted \
-             centroid {:.4},{:.4}, diameter {:.1} km — {kind}. Best location fix (geometric \
-             median, outlier-robust): {:.4},{:.4} ± {:.1} km (robust); bounding circle \
+             centroid {:.4},{:.4}, diameter {:.1} km — {kind}. Best location fix (confidence- \
+             weighted geometric median, outlier-robust): {:.4},{:.4} ± {:.1} km (robust); \
+             bounding circle \
              (Chebyshev centre): {:.4},{:.4} ± {:.1} km",
             parsed.len(),
             source_count,

@@ -6,8 +6,11 @@
 //!
 //!   * [`geo_footprint`] — convex hull (Andrew's monotone chain) + centroid + diameter
 //!   * [`min_enclosing_circle`] — Welzl's 1-centre (Chebyshev / L∞)
-//!   * [`geometric_median`] — Weiszfeld's algorithm (Weber point / L1, robust)
+//!   * [`geometric_median`] / [`weighted_geometric_median`] — Weiszfeld's
+//!     algorithm (Weber point / L1, robust; the weighted form is also
+//!     confidence-aware)
 //!   * [`weighted_centroid`] — confidence-weighted convex combination
+//!   * [`location_fix`] — every estimator bundled, with consistent fallbacks
 //!   * [`point_in_convex_hull`] — hull-membership test
 //!
 //! The hull and circle are fitted in planar (lon, lat) degree space — exact for
@@ -292,17 +295,48 @@ pub fn min_enclosing_circle(points: &[(f64, f64)]) -> Option<EnclosingCircle> {
 /// assert!(m.0.abs() < 1.0 && m.1.abs() < 1.0, "robust to the outlier: {m:?}");
 /// ```
 pub fn geometric_median(points: &[(f64, f64)]) -> Option<(f64, f64)> {
-    if points.is_empty() {
+    // The unweighted Weber point is the uniform-weight special case.
+    let wp: Vec<((f64, f64), f64)> = points.iter().map(|&p| (p, 1.0)).collect();
+    weighted_geometric_median(&wp)
+}
+
+/// The **confidence-weighted geometric median**: the location minimising
+/// `Σ wᵢ·‖x − pᵢ‖` over confidence-weighted sightings, via weighted Weiszfeld.
+///
+/// This combines the two properties a single location estimate should have but
+/// the others each lack one of: it is **outlier-robust** like the unweighted
+/// median (breakdown point 0.5 — a lone trip/VPN/planted point can't drag it
+/// off the base), *and* it is **confidence-aware** like the weighted centroid (a
+/// GPS-exact photo pulls harder than a coarse IP-geo guess). It is the estimator
+/// to trust for "where does this person actually live".
+///
+/// Weights are clamped non-negative; zero-weight sightings drop out of the
+/// objective. If every weight is zero the points are weighted uniformly so a
+/// degenerate confidence set still yields the (unweighted) Weber point rather
+/// than nothing. Deterministic: initialised at the weighted centroid, iterated a
+/// fixed bounded number of times, snapping to a data point at Weiszfeld's
+/// singularity. Returns `None` only for an empty input.
+pub fn weighted_geometric_median(weighted: &[((f64, f64), f64)]) -> Option<(f64, f64)> {
+    if weighted.is_empty() {
         return None;
     }
-    if points.len() == 1 {
-        return Some(points[0]);
+    // Convert to (x = lon, y = lat). If no weight is positive, weight uniformly.
+    let any_pos = weighted.iter().any(|&(_, w)| w > 0.0);
+    let pts: Vec<((f64, f64), f64)> = weighted
+        .iter()
+        .map(|&((lat, lon), w)| ((lon, lat), if any_pos { w.max(0.0) } else { 1.0 }))
+        .filter(|&(_, w)| w > 0.0)
+        .collect();
+    if pts.len() == 1 {
+        let ((x, y), _) = pts[0];
+        return Some((y, x));
     }
-    // Work in (x = lon, y = lat).
-    let pts: Vec<(f64, f64)> = points.iter().map(|&(lat, lon)| (lon, lat)).collect();
-    let n = pts.len() as f64;
-    let mut x = pts.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
-    x = (x.0 / n, x.1 / n);
+    // Initialise at the weighted centroid.
+    let sw: f64 = pts.iter().map(|&(_, w)| w).sum();
+    let init = pts
+        .iter()
+        .fold((0.0, 0.0), |a, &((px, py), w)| (a.0 + w * px, a.1 + w * py));
+    let mut x = (init.0 / sw, init.1 / sw);
 
     const MAX_ITERS: usize = 128;
     const CONVERGED: f64 = 1e-10; // degrees
@@ -311,16 +345,16 @@ pub fn geometric_median(points: &[(f64, f64)]) -> Option<(f64, f64)> {
         let mut num = (0.0_f64, 0.0_f64);
         let mut den = 0.0_f64;
         let mut snapped: Option<(f64, f64)> = None;
-        for &p in &pts {
-            let d = ((x.0 - p.0).powi(2) + (x.1 - p.1).powi(2)).sqrt();
+        for &((px, py), w) in &pts {
+            let d = ((x.0 - px).powi(2) + (x.1 - py).powi(2)).sqrt();
             if d < ON_POINT {
-                snapped = Some(p);
+                snapped = Some((px, py));
                 break;
             }
-            let w = 1.0 / d;
-            num.0 += p.0 * w;
-            num.1 += p.1 * w;
-            den += w;
+            let f = w / d; // weight ÷ distance
+            num.0 += px * f;
+            num.1 += py * f;
+            den += f;
         }
         if let Some(p) = snapped {
             x = p;
@@ -451,7 +485,8 @@ pub struct LocationFix {
     pub footprint: GeoFootprint,
     /// Confidence-weighted convex combination (pulled toward trusted sightings).
     pub weighted_centroid: (f64, f64),
-    /// The **headline** estimate: the geometric median (L1, outlier-robust).
+    /// The **headline** estimate: the confidence-weighted geometric median
+    /// (L1, outlier-robust *and* confidence-aware).
     pub geometric_median: (f64, f64),
     /// Robust uncertainty around the median — the median distance to the
     /// sightings (same 0.5 breakdown point as the median).
@@ -473,7 +508,7 @@ pub fn location_fix(weighted_points: &[((f64, f64), f64)]) -> Option<LocationFix
     let points: Vec<(f64, f64)> = weighted_points.iter().map(|&(p, _)| p).collect();
     let footprint = geo_footprint(&points)?;
     let weighted_centroid = weighted_centroid(weighted_points).unwrap_or(footprint.centroid);
-    let geometric_median = geometric_median(&points).unwrap_or(weighted_centroid);
+    let geometric_median = weighted_geometric_median(weighted_points).unwrap_or(weighted_centroid);
     let median_radius_km = median_distance_km(geometric_median, &points);
     let enclosing = min_enclosing_circle(&points).unwrap_or(EnclosingCircle {
         center: footprint.centroid,
@@ -635,6 +670,41 @@ mod tests {
     }
 
     #[test]
+    fn weighted_geometric_median_reduces_to_unweighted_under_uniform_weights() {
+        let pts = [(-33.87, 151.21), (-33.80, 151.10), (-33.95, 151.20)];
+        let uniform: Vec<((f64, f64), f64)> = pts.iter().map(|&p| (p, 1.0)).collect();
+        let w = weighted_geometric_median(&uniform).unwrap();
+        let u = geometric_median(&pts).unwrap();
+        assert!(
+            (w.0 - u.0).abs() < 1e-9 && (w.1 - u.1).abs() < 1e-9,
+            "{w:?} vs {u:?}"
+        );
+        // Empty → None; all-zero weights → falls back to uniform (not None).
+        assert!(weighted_geometric_median(&[]).is_none());
+        let zero: Vec<((f64, f64), f64)> = pts.iter().map(|&p| (p, 0.0)).collect();
+        assert!(weighted_geometric_median(&zero).is_some());
+    }
+
+    #[test]
+    fn weighted_geometric_median_pulls_toward_high_confidence() {
+        // Three sightings; weight the first heavily. The weighted Weber point must
+        // sit closer to it than the unweighted median does — robust AND confidence-
+        // aware at once.
+        let a = (0.0, 0.0);
+        let pts = [a, (0.0, 1.0), (0.8, 0.5)];
+        let unweighted = geometric_median(&pts).unwrap();
+        let weighted =
+            weighted_geometric_median(&[(a, 12.0), (pts[1], 1.0), (pts[2], 1.0)]).unwrap();
+        let d = |p: (f64, f64)| haversine_km(a.0, a.1, p.0, p.1);
+        assert!(
+            d(weighted) < d(unweighted),
+            "confidence weight must pull the fix toward the trusted point: {} !< {}",
+            d(weighted),
+            d(unweighted)
+        );
+    }
+
+    #[test]
     fn median_distance_is_robust_to_an_outlier() {
         assert_eq!(median_distance_km((0.0, 0.0), &[]), 0.0);
         // Three sightings ~tight around a point, plus one far outlier. The MEDIAN
@@ -675,7 +745,10 @@ mod tests {
         let fix = location_fix(&wp).expect("three points bound an area");
         assert_eq!(fix.footprint, geo_footprint(&pts).unwrap());
         assert_eq!(fix.weighted_centroid, weighted_centroid(&wp).unwrap());
-        assert_eq!(fix.geometric_median, geometric_median(&pts).unwrap());
+        assert_eq!(
+            fix.geometric_median,
+            weighted_geometric_median(&wp).unwrap()
+        );
         assert_eq!(
             fix.median_radius_km,
             median_distance_km(fix.geometric_median, &pts)
