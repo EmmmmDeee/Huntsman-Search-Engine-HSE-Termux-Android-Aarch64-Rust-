@@ -169,6 +169,12 @@ pub enum Command {
         /// (default 0.75 new entities per dispatched target).
         #[arg(long)]
         max_roi: bool,
+        /// Convex (optionality / barbell) budget allocation: re-weight expansion
+        /// candidates by a convexity premium for heavy-tailed upside over
+        /// per-kind dispatch cost, so the bounded budget favours cheap,
+        /// high-optionality identity leads over saturated infrastructure.
+        #[arg(long)]
+        convex_budget: bool,
         /// Australian-focused regional searching is ON by default: the search
         /// module adds minimal `.au` / AU-directory dorks on top of the
         /// geolocation-neutral base (a seed with no region signal defaults to
@@ -555,6 +561,7 @@ pub async fn run() -> Result<()> {
             max_concurrent,
             adaptive,
             max_roi,
+            convex_budget,
             no_regional,
             min_marginal_yield,
             expansion_strategy,
@@ -586,6 +593,7 @@ pub async fn run() -> Result<()> {
                 max_concurrent,
                 adaptive,
                 max_roi: max_roi && !full,
+                convex_budget,
                 // AU-focused regional searching is on unless explicitly disabled.
                 regional_search: !no_regional,
                 min_marginal_yield,

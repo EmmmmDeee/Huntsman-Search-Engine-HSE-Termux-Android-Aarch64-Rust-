@@ -675,6 +675,15 @@ pub struct ScanOptions {
     #[serde(default)]
     pub max_roi: bool,
 
+    /// Enable **convex (optionality / barbell) budget allocation**: re-weight
+    /// expansion candidates by a convexity premium for heavy-tailed upside
+    /// divided by per-kind dispatch cost (see [`crate::core::convex`]), so the
+    /// bounded budget favours cheap, high-optionality identity leads over
+    /// expensive, saturated infrastructure. Off by default (the base
+    /// expected-value ranking is unchanged).
+    #[serde(default)]
+    pub convex_budget: bool,
+
     /// Australian-focused regional searching. **On by default** — the search
     /// module adds a minimal set of `.au`/AU-directory dorks on top of the
     /// geolocation-neutral base for every seed (one carrying no region signal of
@@ -858,6 +867,7 @@ impl Default for ScanOptions {
             webhook_url: None,
             profile: None,
             max_roi: false,
+            convex_budget: false,
             // AU-focused by default: every scan adds Australian-source dorks
             // (`.au` TLDs, AU directories) on top of the geo-neutral base, so the
             // tool favours Australian results out of the box. Opt out with

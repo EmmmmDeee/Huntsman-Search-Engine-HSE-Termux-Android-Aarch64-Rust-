@@ -900,14 +900,29 @@ impl ScanEngine {
                     // a lead confirmed by N independent sources is dispatched
                     // ahead of an equally-confident single-source lead (its
                     // dispatch is likelier to yield genuine children).
-                    let weight = crate::core::scan::expansion_weight_for_strategy(
-                        opts.expansion_strategy,
-                        tk,
-                        entity.c_effective(),
-                        &entity.value,
-                        has_paid,
-                        richness,
-                    ) * crate::core::scan::corroboration_prior(entity.source_count());
+                    let mut weight =
+                        crate::core::scan::expansion_weight_for_strategy(
+                            opts.expansion_strategy,
+                            tk,
+                            entity.c_effective(),
+                            &entity.value,
+                            has_paid,
+                            richness,
+                        ) * crate::core::scan::corroboration_prior(entity.source_count());
+                    // Convex (optionality / barbell) budget allocation, opt-in:
+                    // multiply by a convexity premium for heavy-tailed upside over
+                    // per-kind dispatch cost, so the bounded budget favours cheap,
+                    // high-optionality identity leads over saturated infrastructure.
+                    // Neutral (×≈1) for the confident cheap core, so it only
+                    // re-sorts the uncertain tail and the expensive infra.
+                    if opts.convex_budget {
+                        weight *= crate::core::convex::optionality_multiplier(
+                            tk,
+                            entity.source_count(),
+                            entity.c_effective(),
+                            richness,
+                        );
+                    }
                     next.push((new_target, weight, entity.uid.clone()));
                 } else {
                     // This exact target was already dispatched (or queued) this
