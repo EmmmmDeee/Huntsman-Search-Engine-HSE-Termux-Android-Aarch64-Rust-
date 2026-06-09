@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::{sleep, timeout};
-use tracing::{debug, info, warn};
+use tracing::{Instrument, debug, info, warn};
 
 use super::{DispatchLog, ModuleStats};
 use crate::core::entity::{Entity, normalise};
@@ -496,11 +496,22 @@ impl super::ScanEngine {
                 },
             );
 
+            // Per-module trace span: every log emitted inside `process()` —
+            // including the external HTTP calls in `util::http` — inherits
+            // {scan_id, module, target} in its NDJSON span chain, so a finding,
+            // the provider call that produced it, and the log line are followable
+            // end-to-end. scan_id is the correlation id (unique per scan).
             let result = run_module_guarded(
                 super::resolve_timeout(opts, &**module),
                 name,
                 module.process(target, ctx),
             )
+            .instrument(tracing::info_span!(
+                "module",
+                module = name,
+                scan_id,
+                target = %target.value
+            ))
             .await;
 
             self.finalise_module_result(
@@ -604,6 +615,12 @@ impl super::ScanEngine {
                 name,
                 module.process(target, ctx),
             )
+            .instrument(tracing::info_span!(
+                "module",
+                module = name,
+                scan_id,
+                target = %target.value
+            ))
             .await;
             self.finalise_module_result(
                 scan_id,
@@ -697,8 +714,19 @@ impl super::ScanEngine {
                     },
                 );
 
+                // `.instrument()` (not an ambient span) because a spawned task
+                // does NOT inherit the dispatcher's current span — without it the
+                // external HTTP logs from this concurrently-running module would
+                // be context-less. Carries {scan_id, module, target} for the same
+                // end-to-end trace the sequential path gets.
                 let result =
                     run_module_guarded(module_timeout_ms, name, module_arc.process(&target, &ctx))
+                        .instrument(tracing::info_span!(
+                            "module",
+                            module = name,
+                            scan_id = %sid,
+                            target = %target.value
+                        ))
                         .await;
 
                 if throttle_ms > 0 {
