@@ -25,7 +25,6 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::budget::{BudgetSnapshot, QuotaBudget};
-use crate::util::http::error_snippet;
 
 // WiGLE credentials (env names + embedded fallbacks) are resolved by the
 // single-sourced `crate::util::keys::wigle_credentials`.
@@ -657,10 +656,7 @@ async fn fetch_wigle_typed(
         return Err(Error::module(SRC, "rate-limited (429)"));
     }
     if !status.is_success() {
-        return Err(Error::module(
-            SRC,
-            format!("HTTP {status}: {}", error_snippet(resp).await),
-        ));
+        return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
 
     // Via json_scanned: retain the paid WiGLE response in the raw archive +

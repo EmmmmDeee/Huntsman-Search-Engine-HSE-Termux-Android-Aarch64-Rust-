@@ -23,7 +23,6 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::error_snippet;
 
 const SRC: &str = "github_user";
 
@@ -118,10 +117,7 @@ impl Module for GithubUser {
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {
-            return Err(Error::module(
-                "github_user",
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
+            return Err(crate::util::http::http_status_error("github_user", resp).await);
         }
 
         let user: GhUser = resp

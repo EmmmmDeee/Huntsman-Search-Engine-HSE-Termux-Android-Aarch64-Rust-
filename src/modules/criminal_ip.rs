@@ -17,7 +17,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{error_snippet, handle_keyed_error};
+use crate::util::http::handle_keyed_error;
 
 const KEY_ENV: &str = "HUNTSMAN_CRIMINALIP_KEY";
 
@@ -155,10 +155,7 @@ impl Module for CriminalIp {
                 if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
                     continue;
                 }
-                return Err(Error::module(
-                    "criminal_ip",
-                    format!("HTTP {status}: {}", error_snippet(resp).await),
-                ));
+                return Err(crate::util::http::http_status_error("criminal_ip", resp).await);
             }
             break resp
                 .json()

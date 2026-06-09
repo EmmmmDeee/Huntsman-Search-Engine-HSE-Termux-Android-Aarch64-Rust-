@@ -22,7 +22,6 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::error_snippet;
 
 const SRC: &str = "urlhaus";
 
@@ -245,10 +244,7 @@ impl Module for UrlHaus {
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {
-            return Err(Error::module(
-                SRC,
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
         let body: UrlhausResp = resp

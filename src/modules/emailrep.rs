@@ -21,7 +21,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{error_snippet, urlencode};
+use crate::util::http::urlencode;
 
 const KEY_ENV: &str = "HUNTSMAN_EMAILREP_KEY";
 const SRC: &str = "emailrep";
@@ -141,10 +141,7 @@ impl Module for EmailRep {
         if !status.is_success() {
             let code = status.as_u16();
             crate::util::http::note_keyed_error(code, SRC, key, ctx);
-            return Err(Error::module(
-                SRC,
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
         let body: RepResp = resp

@@ -20,7 +20,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{error_snippet, urlencode};
+use crate::util::http::urlencode;
 
 #[derive(Deserialize)]
 struct RdapResp {
@@ -252,10 +252,7 @@ impl Module for RdapDomain {
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {
-            return Err(Error::module(
-                SRC,
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
         let body: RdapResp = resp

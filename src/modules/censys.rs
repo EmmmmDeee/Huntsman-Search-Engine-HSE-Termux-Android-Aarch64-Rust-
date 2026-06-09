@@ -17,7 +17,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::geo::is_valid_coords;
-use crate::util::http::{error_snippet, handle_keyed_error, urlencode};
+use crate::util::http::{handle_keyed_error, urlencode};
 
 const ID_ENV: &str = "HUNTSMAN_CENSYS_ID";
 const SECRET_ENV: &str = "HUNTSMAN_CENSYS_SECRET";
@@ -151,10 +151,7 @@ impl Module for Censys {
                 if handle_keyed_error(code, resp.headers(), &mut retries, SRC, api_id, ctx).await {
                     continue;
                 }
-                return Err(Error::module(
-                    "censys",
-                    format!("HTTP {status}: {}", error_snippet(resp).await),
-                ));
+                return Err(crate::util::http::http_status_error("censys", resp).await);
             }
 
             break resp

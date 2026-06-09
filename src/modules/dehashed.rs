@@ -26,7 +26,7 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::http::{error_snippet, handle_keyed_error};
+use crate::util::http::handle_keyed_error;
 
 const KEY_ENV: &str = "HUNTSMAN_DEHASHED_KEY";
 
@@ -237,10 +237,7 @@ impl Module for DeHashed {
                 // "You need a search subscription and API credits to use the
                 // API" that an account without an active search plan returns —
                 // so surface it verbatim for the operator.
-                return Err(Error::module(
-                    SRC,
-                    format!("HTTP {status}: {}", error_snippet(resp).await),
-                ));
+                return Err(crate::util::http::http_status_error(SRC, resp).await);
             }
             break resp
                 .json()

@@ -18,7 +18,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{error_snippet, handle_keyed_error, urlencode};
+use crate::util::http::{handle_keyed_error, urlencode};
 
 const KEY_ENV: &str = "HUNTSMAN_IPQS_KEY";
 
@@ -243,10 +243,7 @@ impl Module for IpQs {
                 if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
                     continue;
                 }
-                return Err(Error::module(
-                    "ipqs",
-                    format!("HTTP {status}: {}", error_snippet(resp).await),
-                ));
+                return Err(crate::util::http::http_status_error("ipqs", resp).await);
             }
             break resp
                 .json()

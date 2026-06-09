@@ -21,7 +21,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{error_snippet, urlencode};
+use crate::util::http::urlencode;
 
 // ---------------------------------------------------------------------------
 // Public module struct
@@ -211,10 +211,7 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         if !status.is_success() {
             let code = status.as_u16();
             crate::util::http::note_keyed_error(code, "numverify", key, ctx);
-            return Err(Error::module(
-                "contact_enrich",
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
+            return Err(crate::util::http::http_status_error("contact_enrich", resp).await);
         }
         let data: NumverifyResp = resp
             .json()
@@ -321,10 +318,7 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         return Ok(ModuleResult::new());
     }
     if !status.is_success() {
-        return Err(Error::module(
-            "contact_enrich",
-            format!("HTTP {status}: {}", error_snippet(resp).await),
-        ));
+        return Err(crate::util::http::http_status_error("contact_enrich", resp).await);
     }
 
     let data: ProfileResp = match crate::util::http::json_scanned(resp, SRC).await {

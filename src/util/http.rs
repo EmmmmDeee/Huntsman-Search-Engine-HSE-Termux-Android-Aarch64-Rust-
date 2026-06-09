@@ -642,6 +642,16 @@ pub fn note_keyed_error(
     }
 }
 
+/// Build the uniform `Error::module` for a non-success HTTP response —
+/// `"HTTP <status>: <body snippet>"` — consuming `resp` to read a bounded body
+/// snippet via [`error_snippet`]. The single source of the HTTP-status error
+/// construction that ~20 keyed modules repeated verbatim.
+pub async fn http_status_error(module: &str, resp: reqwest::Response) -> Error {
+    let status = resp.status();
+    let snippet = error_snippet(resp).await;
+    Error::module(module, format!("HTTP {status}: {snippet}"))
+}
+
 /// Keyed GET: fetch JSON from a URL that requires an API key header.
 /// Handles 401/403/429 uniformly via report_key_exhausted, maps 404
 /// to Ok(None). Consolidates the error handling pattern duplicated
