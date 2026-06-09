@@ -385,29 +385,36 @@ pub(in crate::core::correlator) fn rule_au_030_geo_convergence_score(
 
 /// Geolocation sources that resolve an *IP/host*, not a person: a coordinate
 /// backed only by these is a datacenter/ISP/anycast location, never a residence.
-/// A coordinate that *also* carries a person-anchored source (EXIF GPS, Wi-Fi,
-/// a geocoded street address) is kept — it just can't rest on infra geo alone.
-const INFRA_GEO_SOURCES: &[&str] = &[
-    "ip_geo",
-    "ipapi",
-    "ipinfo",
-    "ip2location",
-    "ipquery",
-    "ip_whois_geo",
-    "ripestat",
-    "ip_reputation",
-];
+/// Geo sources that locate the **person**, not an IP/host or a map feature: a
+/// geocoded street address (`geocode`/`photon`), a photo's GPS (`exif_geo`), or
+/// an observed Wi-Fi access point (`wigle`/`mylnikov`). A coordinate must carry
+/// at least one of these to enter a subject's footprint.
+///
+/// This is a deliberate *allowlist*, not an infra exclude-list. A live scan
+/// showed why the exclusion must be positive: an Overpass pass attaches ~20
+/// nearby map POIs (surveillance cameras, cell towers) to one IP-geolocated
+/// point, and IP-geo/chronolocation sources (`ip_geo`, `ipinfo`,
+/// `ip_whois_geo`, `sunrise_sunset`, `overpass`) are *not* sightings of the
+/// person. An exclude-list silently admits any source it forgot to name (it had
+/// no `overpass` entry, so it would have built a tight footprint out of traffic
+/// cameras); an allowlist admits only what genuinely anchors to the subject.
+const ANCHORING_GEO_SOURCES: &[&str] = &["geocode", "photon", "exif_geo", "wigle", "mylnikov"];
 
-/// True when a `Coordinates` entity locates infrastructure rather than the
-/// subject: it is `hosting`-tagged (a CDN/cloud edge), or *every* corroborating
-/// source is an IP/WHOIS geolocator ([`INFRA_GEO_SOURCES`]). See AU-052 for why
-/// these must not enter a person's footprint.
+/// True when a `Coordinates` entity does **not** locate the subject and must be
+/// kept out of their footprint: it is `hosting`-tagged (a CDN/cloud edge), it
+/// carries an `infra:` map-feature tag (an Overpass POI — a camera, a cell tower
+/// — scraped near a geolocated point), or it has no person-anchoring
+/// corroborating source at all ([`ANCHORING_GEO_SOURCES`]) — i.e. it rests purely
+/// on IP/WHOIS geo, chronolocation, or POI enrichment. See AU-052.
 fn is_infrastructure_geo(e: &Entity) -> bool {
     if e.has_tag(crate::core::tags::HOSTING) {
         return true;
     }
+    if e.tags.iter().any(|t| t.starts_with("infra:")) {
+        return true;
+    }
     let sources = e.corroborating_sources();
-    !sources.is_empty() && sources.iter().all(|s| INFRA_GEO_SOURCES.contains(s))
+    !sources.iter().any(|s| ANCHORING_GEO_SOURCES.contains(s))
 }
 
 /// AU-052 — Geographic area of operation (convex footprint).
@@ -426,15 +433,15 @@ fn is_infrastructure_geo(e: &Entity) -> bool {
 /// *tight* footprint (≤25 km, one metro) is a High-severity residence/base fix;
 /// a dispersed one is Medium and describes a travel pattern rather than a home.
 ///
-/// **Infrastructure exclusion** (learned from a live `peekyou.com`-pivoted
-/// scan): a person's coordinates must geolocate the *person*, not the web hosts
-/// in their orbit. Datacenter/CDN coordinates — tagged [`tags::HOSTING`], or
-/// derived *solely* from IP/WHOIS geolocators ([`INFRA_GEO_SOURCES`]) — are
-/// dropped. Without this the hull spanned four continents of Cloudflare edges
-/// (Toronto/Montreal/SF/Tennessee) and reported a fictitious "travel footprint"
-/// for a subject who never left Australia. Admissible coordinates need ≥1
-/// corroborating source that anchors to the person (a photo's EXIF GPS, a Wi-Fi
-/// sighting, a geocoded street address), not an anycast edge.
+/// **Person-anchor gate** (learned from two live scans): a subject's coordinates
+/// must geolocate the *person*, not the infrastructure in their orbit.
+/// Admissible coordinates need ≥1 corroborating source from
+/// [`ANCHORING_GEO_SOURCES`] (a photo's EXIF GPS, a Wi-Fi sighting, a geocoded
+/// street address) and must not be `hosting`-tagged or carry an `infra:`
+/// map-feature tag. The first scan showed CDN edges geolocating to four
+/// continents; the second showed ~20 Overpass POIs (traffic cameras, cell
+/// towers) clustered around one IP point — an *exclude*-list silently admitted
+/// the latter, so the gate is a positive allowlist instead.
 pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
     entities: &[Entity],
     scan_id: &str,

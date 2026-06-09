@@ -2385,6 +2385,42 @@ fn hosting_coord(value: &str, source: &str) -> Entity {
     e
 }
 
+/// An Overpass map-POI coordinate: a camera / cell tower scraped near a
+/// geolocated point, tagged `infra:*` and sourced only from `overpass`. Not a
+/// sighting of the person.
+#[cfg(test)]
+fn overpass_poi(value: &str, infra_tag: &str) -> Entity {
+    let mut e = Entity::new(EntityKind::Coordinates, value, 0.55, "s");
+    e.add_evidence(Evidence::new("overpass", "nearby map feature"));
+    e.tag(infra_tag);
+    e
+}
+
+#[test]
+fn au052_excludes_overpass_poi_cluster_live_toronto_case() {
+    // Regression from a real scan: ~20 Overpass POIs (surveillance cameras, cell
+    // towers) cluster tightly around one IP-geolocated point. They are map
+    // features, not sightings — an exclude-list missed `overpass` and would have
+    // built a tight downtown footprint with a geometric median on a traffic
+    // camera. The positive person-anchor allowlist drops them all.
+    let mut ents: Vec<Entity> = (0..20)
+        .map(|i| {
+            let lat = 43.650 + (i as f64) * 0.0003;
+            overpass_poi(&format!("{lat:.4},-79.3830"), "infra:surveillance")
+        })
+        .collect();
+    // Plus the central IP-geo point (hosting) — also excluded.
+    ents.push(hosting_coord("43.6532,-79.3832", "ip_geo"));
+    assert!(
+        super::rules::rule_au_052_geographic_area_of_operation(&ents, "s", 0).is_empty(),
+        "Overpass POIs must not form a person's footprint"
+    );
+    assert!(
+        super::rules::rule_au_053_out_of_area_location(&ents, "s", 0).is_empty(),
+        "Overpass POIs must not establish an area for the anomaly rule either"
+    );
+}
+
 #[test]
 fn au052_tight_multisource_footprint_is_a_high_location_fix() {
     // Three person-anchored sightings around one suburb (photo EXIF, Wi-Fi,
