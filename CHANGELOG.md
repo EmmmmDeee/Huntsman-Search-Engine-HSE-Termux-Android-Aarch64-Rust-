@@ -37,6 +37,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Intelligence X selector coverage widened to match the API.** IntelX
+  auto-classifies a search term across its full `SelectorType` table, but the
+  module only accepted email / username / phone / name / domain / IP. It now
+  also accepts **URL, CIDR, MAC address, and crypto (Bitcoin) address** — all
+  kinds IntelX has dedicated selectors for and that other modules already emit
+  as entities, so an expansion can now pivot them through IntelX. Coverage is
+  defined once in a new single-sourced `intelx_selector` map that drives
+  `accepts` (and is documented + exhaustively tested, including a compile-time
+  tripwire that forces any newly-added `TargetKind` to be classified); kinds
+  IntelX cannot resolve (ASN, coordinates, ABN/ACN, organisation, address, API
+  key) are still declined so a paid query is never wasted. `produces` was
+  extended to match. No change to the (already-correct) two-phase search/poll.
+
 - **Single-sourced the OathNet query vocabulary.** The surface↔path mapping
   (`Surface`) and the target-kind↔selector-field mapping (`selector_field`,
   `stealer_indexable`) now live once in `util::oathnet` and are consumed by both

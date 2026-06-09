@@ -32,6 +32,15 @@
 //! the record count + per-bucket breakdown + media-type breakdown; per project
 //! invariant we do NOT pull the raw document bodies (those frequently contain
 //! credentials).
+//!
+//! Selector coverage: IntelX auto-classifies the search term against its
+//! `SelectorType` table, so this module forwards every target kind IntelX has a
+//! selector for — email, domain, URL, IPv4/IPv6, CIDR, phone, crypto (Bitcoin)
+//! address, and MAC — plus username and full-name as general text searches.
+//! Kinds IntelX cannot resolve (ASN, coordinates, ABN/ACN, organisation,
+//! address, API key) are declined so a paid query is never spent on a term
+//! IntelX would reject. The single-sourced [`intelx_selector`] map is the one
+//! place this coverage is defined; [`IntelX::accepts`] is derived from it.
 
 use std::time::Duration;
 
@@ -131,6 +140,33 @@ fn bucket_family(bucket: &str) -> &str {
     bucket.split('.').next().unwrap_or(bucket)
 }
 
+/// The Intelligence X selector a target kind maps to, or `None` for a kind
+/// IntelX has no selector for. **Single source of truth** for this module's
+/// coverage: [`IntelX::accepts`] is `intelx_selector(kind).is_some()`, so the
+/// accept gate and the documented selector list can never drift.
+///
+/// IntelX auto-classifies the search term, so the returned label is descriptive
+/// (it isn't sent to the API): the structured selectors carry their own name,
+/// while `username` / `full_name` resolve as general `text` searches. Kinds with
+/// no IntelX selector (`asn`, `coordinates`, `abn_acn`, `organisation`,
+/// `address`, `api_key`) return `None` so a paid query is never spent on a term
+/// IntelX would reject.
+fn intelx_selector(kind: TargetKind) -> Option<&'static str> {
+    Some(match kind {
+        TargetKind::Email => "email",
+        TargetKind::Domain => "domain",
+        TargetKind::Url => "url",
+        TargetKind::IpAddress => "ip",
+        TargetKind::Cidr => "cidr",
+        TargetKind::Phone => "phone",
+        TargetKind::CryptoAddress => "crypto-address",
+        TargetKind::MacAddress => "mac",
+        // No structured selector — IntelX runs these as a general text search.
+        TargetKind::Username | TargetKind::FullName => "text",
+        _ => return None,
+    })
+}
+
 #[async_trait]
 impl Module for IntelX {
     fn name(&self) -> &'static str {
@@ -146,15 +182,11 @@ impl Module for IntelX {
         ModuleCost::Paid
     }
     fn accepts(&self, t: &Target) -> bool {
-        matches!(
-            t.kind,
-            TargetKind::Email
-                | TargetKind::Username
-                | TargetKind::Phone
-                | TargetKind::FullName
-                | TargetKind::Domain
-                | TargetKind::IpAddress
-        )
+        // Derived from the single-sourced selector map so coverage stays in one
+        // place. IntelX has dedicated selectors for URL / CIDR / MAC / crypto
+        // address in addition to the email/domain/IP/phone set, and resolves
+        // username/full-name as general text searches.
+        intelx_selector(t.kind).is_some()
     }
     fn max_timeout_ms(&self) -> u64 {
         15_000
@@ -166,6 +198,9 @@ impl Module for IntelX {
 
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
         use crate::core::entity::EntityKind;
+        // The module re-emits the scanned target as its own entity (it does not
+        // extract child entities — see the no-document-bodies invariant), so it
+        // produces exactly the entity kinds for the target kinds it accepts.
         const KINDS: &[EntityKind] = &[
             EntityKind::Email,
             EntityKind::Username,
@@ -173,6 +208,10 @@ impl Module for IntelX {
             EntityKind::Person,
             EntityKind::Domain,
             EntityKind::IpAddress,
+            EntityKind::Url,
+            EntityKind::Cidr,
+            EntityKind::MacAddress,
+            EntityKind::CryptoAddress,
         ];
         KINDS
     }
@@ -401,18 +440,105 @@ impl Module for IntelX {
 mod tests {
     use super::*;
 
+    /// Every `TargetKind` variant. Listing them exhaustively makes the
+    /// agreement tests below a compile-time tripwire: a new kind added to the
+    /// enum forces a decision here (accept with a selector, or decline).
+    const ALL_KINDS: &[TargetKind] = &[
+        TargetKind::Email,
+        TargetKind::Username,
+        TargetKind::Phone,
+        TargetKind::FullName,
+        TargetKind::IpAddress,
+        TargetKind::Domain,
+        TargetKind::Url,
+        TargetKind::Asn,
+        TargetKind::Cidr,
+        TargetKind::Coordinates,
+        TargetKind::Address,
+        TargetKind::Organisation,
+        TargetKind::AbnAcn,
+        TargetKind::MacAddress,
+        TargetKind::ApiKey,
+        TargetKind::CryptoAddress,
+    ];
+
     #[test]
-    fn accepts_six_kinds() {
+    fn accepts_every_kind_intelx_has_a_selector_for() {
         let m = IntelX;
         for k in [
             TargetKind::Email,
             TargetKind::Username,
             TargetKind::Phone,
+            TargetKind::FullName,
             TargetKind::Domain,
             TargetKind::IpAddress,
-            TargetKind::FullName,
+            TargetKind::Url,
+            TargetKind::Cidr,
+            TargetKind::MacAddress,
+            TargetKind::CryptoAddress,
         ] {
-            assert!(m.accepts(&Target::new(k, "x")));
+            assert!(m.accepts(&Target::new(k, "x")), "should accept {k:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_kinds_intelx_cannot_resolve() {
+        let m = IntelX;
+        for k in [
+            TargetKind::Asn,
+            TargetKind::Coordinates,
+            TargetKind::Address,
+            TargetKind::Organisation,
+            TargetKind::AbnAcn,
+            TargetKind::ApiKey,
+        ] {
+            assert!(!m.accepts(&Target::new(k, "x")), "should reject {k:?}");
+            assert_eq!(intelx_selector(k), None);
+        }
+    }
+
+    #[test]
+    fn accepts_is_exactly_the_selector_map() {
+        // accepts() and the selector map must agree for EVERY kind — no drift
+        // between the gate and the single-sourced coverage definition.
+        let m = IntelX;
+        for &k in ALL_KINDS {
+            assert_eq!(
+                m.accepts(&Target::new(k, "x")),
+                intelx_selector(k).is_some(),
+                "accepts/selector disagree for {k:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn selector_labels_are_descriptive() {
+        assert_eq!(intelx_selector(TargetKind::Email), Some("email"));
+        assert_eq!(intelx_selector(TargetKind::Url), Some("url"));
+        assert_eq!(intelx_selector(TargetKind::Cidr), Some("cidr"));
+        assert_eq!(intelx_selector(TargetKind::MacAddress), Some("mac"));
+        assert_eq!(
+            intelx_selector(TargetKind::CryptoAddress),
+            Some("crypto-address")
+        );
+        // Unstructured kinds resolve as a general text search.
+        assert_eq!(intelx_selector(TargetKind::Username), Some("text"));
+        assert_eq!(intelx_selector(TargetKind::FullName), Some("text"));
+    }
+
+    #[test]
+    fn produces_covers_every_accepted_kind() {
+        // The module re-emits the scanned target, so every accepted kind's
+        // entity kind must be declared in produces().
+        let produced = IntelX.produces();
+        for &k in ALL_KINDS {
+            if intelx_selector(k).is_some() {
+                let ek = k.to_entity_kind();
+                assert!(
+                    produced.contains(&ek),
+                    "accepts {k:?} but produces() omits its entity kind {ek:?}"
+                );
+            }
         }
     }
 
