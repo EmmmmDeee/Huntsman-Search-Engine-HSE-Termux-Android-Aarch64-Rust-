@@ -1435,6 +1435,20 @@ async fn spa_references_only_registered_api_endpoints() {
     );
 
     for base in &bases {
+        // `/entities/{uid}` (cross-scan entity pivot) is resource-style: every
+        // uid that isn't present returns the handler's own 404, so a parameter-
+        // free probe can't distinguish "route registered" from "no such entity"
+        // by status alone. Confirm the route is wired by checking the body is the
+        // handler's `not found`, NOT the api fallback's `endpoint not found`.
+        if base == "entities" {
+            let (_, body) = fetch_text(&app, "/api/v1/entities/__nonexistent__").await;
+            assert!(
+                !body.contains("endpoint not found"),
+                "SPA calls /api/v1/entities/{{uid}} but it hit the api fallback \
+                 (route not registered): {body}"
+            );
+            continue;
+        }
         // A representative, parameter-free URL for this endpoint family.
         let url = match base.as_str() {
             "health" => "/api/v1/health".to_string(),

@@ -482,7 +482,18 @@ const API = {
   liveCreate: body=>API._req('/api/v1/live',{method:'POST',body}),
   liveStop:   id=>API._req('/api/v1/live/'+encodeURIComponent(id),{method:'DELETE'}),
   selftest:   ()=>API._req('/api/v1/selftest'),
-  logsUrl:    ()=>'/api/v1/logs'
+  logsUrl:    ()=>'/api/v1/logs',
+  // Batch: queue many scans in one request (array of ScanRequest). Returns
+  // {scans:[{scan_id,status}|{error}], count}.
+  batch:      reqs=>API._req('/api/v1/scans/batch',{method:'POST',body:reqs}),
+  // Temporal diff of two stored scans of the same subject → what the later run
+  // added/removed/re-scored. {added,removed,common,confidence_shifts}.
+  diff:       (a,b)=>API._req('/api/v1/scans/'+encodeURIComponent(a)+'/diff/'+encodeURIComponent(b)),
+  // Module capability graph: which input kinds flow to which produced kinds.
+  modulesGraph: ()=>API._req('/api/v1/modules/graph'),
+  // Cross-scan entity pivot: everywhere an identifier appears, across every
+  // scan. {entity, scan_ids:[…], observation_count}.
+  entityGet:  uid=>API._req('/api/v1/entities/'+encodeURIComponent(uid))
 };
 
 /* ─── Router (hash-based, mirrors SpiderFoot's path semantics) ─── */
@@ -501,6 +512,7 @@ function parseHash(){
   if (segs[0]==='search')                   return {name:'search', params:{}, query};
   if (segs[0]==='live')                     return {name:'live', params:{}, query};
   if (segs[0]==='engines')                  return {name:'engines', params:{}, query};
+  if (segs[0]==='diff')                     return {name:'diff', params:{a:query.a||'', b:query.b||''}, query};
   if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'status'}, query};
   return {name:'dash', params:{}, query};
 }
@@ -529,6 +541,7 @@ async function render(){
     if (S.route.name==='search')   return await renderSearch(v);
     if (S.route.name==='live')     return await renderLive(v);
     if (S.route.name==='engines')  return await renderEngines(v);
+    if (S.route.name==='diff')     return await renderDiff(v);
   } catch(e){
     v.innerHTML = `<div class="alert alert-danger"><strong>Error.</strong> ${esc(e.message)}
                    <button class="btn btn-default btn-sm" style="margin-left:12px" onclick="render()">Retry</button></div>`;
@@ -629,6 +642,7 @@ async function renderScans(v){
     <h2>Scans &nbsp;<small class="text-muted">${stats.total} scan${stats.total===1?'':'s'} on record</small>
         <div class="pull-right">
           <button class="btn btn-default btn-sm" onclick="render()"><i class="glyphicon glyphicon-refresh"></i>&nbsp;Refresh</button>
+          <a class="btn btn-default btn-sm" href="#/diff" title="Compare two scans of the same subject over time"><i class="glyphicon glyphicon-transfer"></i>&nbsp;Compare</a>
           <a class="btn btn-danger btn-sm" href="#/newscan"><i class="glyphicon glyphicon-plus"></i>&nbsp;New Scan</a>
         </div>
     </h2>
@@ -729,6 +743,78 @@ function wireScansTable(){
   }));
 }
 
+/* ═══════════ Page: DIFF (#/diff?a=X&b=Y) — temporal scan comparison ═══════════ */
+async function renderDiff(v){
+  const data = await API.scans();
+  const scans = (data.scans||[]).filter(s=>s.status==='complete'||s.status==='aborted');
+  let {a, b} = S.route.params;
+  // Default the picker to the two most recent scans of the SAME subject, so the
+  // common case (re-scan drift) is one click away.
+  if (!a && !b && scans.length>=2){
+    const bySubject = {};
+    scans.forEach(s=>{ const k=(s.target?.value||'')+'|'+(s.target?.kind||''); (bySubject[k]||(bySubject[k]=[])).push(s); });
+    const pair = Object.values(bySubject).find(g=>g.length>=2);
+    if (pair){ b = pair[0].id; a = pair[1].id; }
+  }
+  const opt = (sel)=>scans.map(s=>`<option value="${attr(s.id)}"${s.id===sel?' selected':''}>${esc(s.target?.value||s.id)} — ${esc(fmtDate(s.started_at))} (${s.entity_count||0})</option>`).join('');
+  v.innerHTML = `
+    <div class="crumbs"><a href="#/scans">Scans</a> &raquo; Compare</div>
+    <h2>Compare Scans <small class="text-muted">temporal diff — what changed between two runs</small></h2>
+    <hr style="margin:8px 0 14px 0">
+    ${scans.length<2 ? `<div class="empty-state"><h3>Need at least two finished scans</h3>
+       <p>Run a subject twice (or <a href="#/newscan">rescan</a> an existing one) to see what drifted between runs.</p></div>` : `
+    <div class="row" style="margin-bottom:12px">
+      <div class="col-sm-5"><label class="text-muted" style="font-size:11px">BASELINE (earlier)</label>
+        <select id="d-a" class="form-control input-sm">${opt(a)}</select></div>
+      <div class="col-sm-5"><label class="text-muted" style="font-size:11px">LATER</label>
+        <select id="d-b" class="form-control input-sm">${opt(b)}</select></div>
+      <div class="col-sm-2" style="padding-top:18px">
+        <button id="d-go" class="btn btn-primary btn-sm btn-block"><i class="glyphicon glyphicon-transfer"></i>&nbsp;Compare</button></div>
+    </div>
+    <div id="diff-body"></div>`}
+  `;
+  if (scans.length<2) return;
+  const run = async()=>{
+    const av = $('#d-a').value, bv = $('#d-b').value;
+    const host = $('#diff-body');
+    if (av===bv){ host.innerHTML = '<div class="alert alert-warning">Pick two different scans.</div>'; return; }
+    nav(`#/diff?a=${encodeURIComponent(av)}&b=${encodeURIComponent(bv)}`); // shareable URL
+    host.innerHTML = '<p class="text-muted">Computing diff…</p>';
+    try {
+      const d = await API.diff(av, bv);
+      host.innerHTML = renderDiffResult(d);
+    } catch(e){ host.innerHTML = `<div class="alert alert-danger">${esc(e.message)}</div>`; }
+  };
+  $('#d-go').addEventListener('click', run);
+  if (a && b) run();
+}
+function diffRow(e){
+  return `<tr><td>${kindPill(e.kind)}</td><td style="word-break:break-word"><code>${extLink(e.value)}</code></td>
+    <td class="text-right"><code>${(e.c_effective!=null?Number(e.c_effective):0).toFixed(3)}</code></td></tr>`;
+}
+function renderDiffResult(d){
+  const added = d.added||[], removed = d.removed||[], shifts = d.confidence_shifts||[];
+  if (!added.length && !removed.length && !shifts.length){
+    return `<div class="empty-state"><h3>Identical</h3><p>The two scans found the same entities at the same confidence — ${d.common||0} in common.</p></div>`;
+  }
+  const tbl = (title, color, rows, mk) => rows.length ? `
+    <div class="panel panel-default"><div class="panel-heading" style="font-weight:600;color:${color}">${title} <span class="badge">${rows.length}</span></div>
+      <div class="table-responsive"><table class="table table-condensed table-striped">
+        <thead><tr><th>Type</th><th>Value</th><th class="text-right">${title==='Re-scored'?'Before → After':'C_eff'}</th></tr></thead>
+        <tbody>${rows.map(mk).join('')}</tbody></table></div></div>` : '';
+  const shiftRow = s=>`<tr><td>${kindPill(s.kind)}</td><td style="word-break:break-word"><code>${extLink(s.value)}</code></td>
+    <td class="text-right"><code>${Number(s.before).toFixed(3)} → ${Number(s.after).toFixed(3)}</code>
+      <span style="color:${s.after>=s.before?'#3c763d':'#a94442'}">${s.after>=s.before?'▲':'▼'}</span></td></tr>`;
+  return `<div class="row" style="margin-bottom:10px">
+      <div class="col-xs-4"><div class="stat-card"><div class="lab">Added</div><div class="val" style="color:#3c763d">+${added.length}</div></div></div>
+      <div class="col-xs-4"><div class="stat-card"><div class="lab">Removed</div><div class="val" style="color:#a94442">−${removed.length}</div></div></div>
+      <div class="col-xs-4"><div class="stat-card"><div class="lab">In common</div><div class="val">${d.common||0}</div></div></div>
+    </div>
+    ${tbl('Added','#3c763d',added,diffRow)}
+    ${tbl('Removed','#a94442',removed,diffRow)}
+    ${tbl('Re-scored','#8a6d3b',shifts,shiftRow)}`;
+}
+
 /* ═══════════ Page: NEWSCAN (#/newscan) ═══════════ */
 async function renderNewScan(v){
   if (!S.modules){ const m = await API.modules(); S.modules = m.modules || []; }
@@ -748,6 +834,22 @@ async function renderNewScan(v){
         <input type="file" id="dossier-file" accept=".txt,.json,.html,text/plain,application/json,text/html" style="display:inline-block;max-width:60%">
         <button class="btn btn-primary btn-sm" type="button" onclick="uploadDossier()">Import</button>
         <span id="import-status" class="text-muted" style="margin-left:8px"></span>
+      </div>
+    </div>
+
+    <div class="panel panel-default" style="margin-bottom:14px">
+      <div class="panel-heading" style="cursor:pointer" onclick="var b=document.getElementById('batch-body');b.style.display=b.style.display==='none'?'':'none'">
+        <i class="glyphicon glyphicon-th-list"></i>&nbsp;<b>Batch scan</b>
+        <small class="text-muted">— queue up to 50 targets at once (one per line), using the options selected below</small>
+        <span class="pull-right text-muted">&#9662;</span>
+      </div>
+      <div class="panel-body" id="batch-body" style="display:none">
+        <p class="text-muted" style="margin-bottom:6px">Each line is one target. The <b>Target Type</b> selected below applies to all
+          (use <i>Auto-detect</i> for mixed kinds). Per-line <code>kind value</code> is also accepted, e.g. <code>email bob@x.com</code>.</p>
+        <textarea id="batch-targets" class="form-control" rows="5" spellcheck="false" autocapitalize="off"
+          placeholder="example.com&#10;1.2.3.4&#10;bob@example.com&#10;email alice@example.com"></textarea>
+        <button class="btn btn-primary btn-sm" type="button" style="margin-top:8px" onclick="submitBatch()"><i class="glyphicon glyphicon-play"></i>&nbsp;Queue batch</button>
+        <span id="batch-status" class="text-muted" style="margin-left:8px"></span>
       </div>
     </div>
 
@@ -994,10 +1096,11 @@ async function uploadDossier(){
   }
 }
 
-async function submitWizard(){
+/* Build the ScanOptions payload from the wizard's current state. Shared by the
+   single-target submit and the batch submit so they can never drift on which
+   options a scan launched from this page carries. */
+function buildWizardOptions(){
   const W = S.wizard;
-  const target = (W.value||'').trim();
-  if (!target){ alertify.error('Target value is required'); $('#scantarget').focus(); return; }
   const base = USE_CASES[W.usecase].options(W.modules);
   const opts = {
     ...base,
@@ -1017,6 +1120,14 @@ async function submitWizard(){
   if (tagsStr.trim()) opts.scan_tags = tagsStr.split(',').map(t=>t.trim()).filter(Boolean);
   const notesStr = ($('#w-notes')||{}).value||'';
   if (notesStr.trim()) opts.notes = notesStr.trim();
+  return opts;
+}
+
+async function submitWizard(){
+  const W = S.wizard;
+  const target = (W.value||'').trim();
+  if (!target){ alertify.error('Target value is required'); $('#scantarget').focus(); return; }
+  const opts = buildWizardOptions();
 
   const btn = $('#btn-run-scan');
   btn.disabled = true; btn.innerHTML = '<i class="glyphicon glyphicon-refresh glyphicon-spin"></i>&nbsp;Queuing…';
@@ -1031,6 +1142,41 @@ async function submitWizard(){
     btn.disabled = false; btn.innerHTML = '<i class="glyphicon glyphicon-play"></i>&nbsp;Run Scan Now';
     alertify.error(e.message);
   }
+}
+
+/* Queue many scans in one request (POST /scans/batch). Reuses the wizard's
+   selected options so a batch behaves exactly like N single scans. Each line is
+   one target; an optional leading kind token (`email bob@x.com`) overrides the
+   form's Target Type, else the form kind (or auto-detect) applies. */
+async function submitBatch(){
+  const W = S.wizard;
+  const raw = ($('#batch-targets')||{}).value||'';
+  const lines = raw.split('\n').map(l=>l.trim()).filter(Boolean);
+  const st = $('#batch-status');
+  if (!lines.length){ st.textContent = 'Enter at least one target.'; return; }
+  if (lines.length > 50){ st.textContent = `Too many (${lines.length}); max 50 per batch.`; return; }
+  const kinds = new Set(TARGET_KINDS.map(k=>k.v).filter(v=>v!=='auto'));
+  const opts = buildWizardOptions();
+  const reqs = lines.map(line=>{
+    const sp = line.indexOf(' ');
+    let kind = W.kind, value = line;
+    if (sp > 0){
+      const head = line.slice(0, sp).toLowerCase();
+      if (kinds.has(head)){ kind = head; value = line.slice(sp+1).trim(); }
+    }
+    // 'auto' → omit kind so the server detects it from the value.
+    return (kind==='auto' || !kind) ? {value, options: opts} : {kind, value, options: opts};
+  }).filter(r=>r.value);
+  st.textContent = `Queuing ${reqs.length}…`;
+  try {
+    const r = await API.batch(reqs);
+    const ok = (r.scans||[]).filter(x=>x.scan_id).length;
+    const errs = (r.scans||[]).filter(x=>x.error);
+    st.textContent = `Queued ${ok} of ${r.count}.` + (errs.length?` ${errs.length} rejected.`:'');
+    toast(`Batch: ${ok} scan${ok===1?'':'s'} queued`);
+    if (errs.length) alertify.warning(errs.map(e=>e.error).slice(0,3).join('; '));
+    if (ok) nav('#/scans');
+  } catch(e){ st.textContent = 'Batch failed: ' + e.message; alertify.error(e.message); }
 }
 
 /* ═══════════ Page: SCANINFO (#/scaninfo?id=X[&tab=Y]) ═══════════ */
@@ -1414,7 +1560,10 @@ function renderBrowseTable(rows){
       <td><span class="text-muted" style="font-family:monospace;font-size:11px">${esc(fmtDate(e.observed_at))}</span></td>
     </tr>
     <tr class="entity-detail-row" style="display:none"><td colspan="8"><div class="entity-detail">
-      <div style="margin-bottom:4px"><b>UID:</b> <code style="font-size:10px">${esc(e.uid||'')}</code></div>
+      <div style="margin-bottom:4px"><b>UID:</b> <code style="font-size:10px">${esc(e.uid||'')}</code>
+        <button class="btn btn-default btn-xs" style="margin-left:8px" onclick="event.stopPropagation();entityPivot('${attr(e.uid||'')}',this)"
+                title="Find every scan this exact identifier appears in"><i class="glyphicon glyphicon-globe"></i>&nbsp;Seen across scans</button>
+        <span class="pivot-out" style="margin-left:8px"></span></div>
       <div style="margin-bottom:6px"><b>${(e.evidence||[]).length} evidence entries:</b></div>
       ${evDetail || '<span class="text-muted">No evidence attached</span>'}
     </div></td></tr>`;
@@ -1425,6 +1574,25 @@ function renderBrowseTable(rows){
       <th class="text-right">Corr</th><th>Tier</th>
       <th class="sorter-false">Tags</th><th class="sorter-false">Sources</th><th>Observed</th>
     </tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+/* Cross-scan entity pivot: resolve an entity's UID to every scan it appears in
+   (GET /entities/{uid}). Turns a single finding into "everywhere this identifier
+   was ever seen" — the correlation the operator actually wants. */
+async function entityPivot(uid, btn){
+  const out = btn.parentElement.querySelector('.pivot-out');
+  if (!uid){ out.innerHTML = '<span class="text-danger">no uid</span>'; return; }
+  out.innerHTML = '<span class="text-muted">resolving…</span>';
+  try {
+    const r = await API.entityGet(uid);
+    const ids = r.scan_ids||[];
+    const here = S.scan ? S.scan.id : null;
+    const links = ids.map(sid=>{
+      const cur = sid===here ? ' (this scan)' : '';
+      return `<a href="#/scaninfo?id=${encodeURIComponent(sid)}&tab=browse" class="tag" style="text-decoration:none">${esc(String(sid).slice(0,18))}${esc(cur)}</a>`;
+    }).join(' ');
+    out.innerHTML = `<b>${r.observation_count||0}</b> observation${(r.observation_count===1)?'':'s'} across <b>${ids.length}</b> scan${ids.length===1?'':'s'}: ${links||'<span class="text-muted">none</span>'}`;
+  } catch(e){ out.innerHTML = `<span class="text-danger">${esc(e.message)}</span>`; }
 }
 
 /* ── Correlations tab ── */
@@ -2171,10 +2339,43 @@ async function renderEngines(v){
     <div class="table-responsive"><table class="table table-striped table-condensed">
       <thead><tr><th>Engine</th><th>Status</th><th class="text-right">Latency</th><th class="text-right">Results</th><th>Diagnosis</th><th class="text-right">Action</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="6" class="text-center text-muted">No engines</td></tr>'}</tbody>
-    </table></div>`;
+    </table></div>
+    <div id="modgraph-host"></div>`;
   wireEngineToggles();
+  renderModuleGraph($('#modgraph-host'));
   clearEnginesTimer();
   S.enginesTimer = setInterval(refreshEngines, 30000);
+}
+
+/* Module capability map (GET /modules/graph): for every seed/target kind, how
+   many modules consume it and the resulting graph richness — i.e. what an
+   operator can expect to discover from each kind of seed before launching a
+   scan. The graph is static for a build, so it's fetched once and cached. */
+async function renderModuleGraph(host){
+  if (!host) return;
+  try {
+    if (!S.modGraph) S.modGraph = await API.modulesGraph();
+  } catch(e){ host.innerHTML = `<p class="text-muted" style="margin-top:18px">Capability map unavailable: ${esc(e.message)}</p>`; return; }
+  const g = S.modGraph;
+  const kinds = (g.kinds||[]).filter(k=>k.module_count>0);
+  const rows = kinds.map(k=>`<tr style="cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'':'none'">
+      <td>${kindPill(k.kind)}</td>
+      <td class="text-right"><code>${k.module_count}</code></td>
+      <td class="text-right"><code>${(k.richness!=null?Number(k.richness):0).toFixed(2)}</code></td>
+      <td class="text-muted" style="font-size:11px">${(k.modules||[]).slice(0,6).map(esc).join(', ')}${(k.modules||[]).length>6?` +${k.modules.length-6}`:''}</td>
+    </tr>
+    <tr style="display:none"><td colspan="4" style="background:#fafafa"><div style="padding:6px 4px">
+      <b>${esc(k.kind)}</b> is consumed by ${(k.modules||[]).length} module(s): ${(k.modules||[]).map(m=>`<span class="tag">${esc(m)}</span>`).join(' ')}</div></td></tr>`).join('');
+  host.innerHTML = `
+    <div class="page-header" style="margin-top:26px;border-bottom:1px solid #eee;padding-bottom:8px">
+      <h3 style="margin:0"><i class="glyphicon glyphicon-random"></i>&nbsp;Module capability map
+        <small class="text-muted">${g.module_count||0} modules · produces ${(g.produced_kinds||[]).length} entity kinds</small></h3>
+    </div>
+    <p class="text-muted">What each seed type can discover — module coverage and graph richness per target kind. Tap a row for the full module list.</p>
+    <div class="table-responsive"><table class="table table-striped table-condensed">
+      <thead><tr><th>Seed / target kind</th><th class="text-right">Modules</th><th class="text-right">Richness</th><th>Top modules</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4" class="text-center text-muted">No capability data</td></tr>'}</tbody>
+    </table></div>`;
 }
 /* Inline Enable/Disable on each liveness row → PUT /settings/toggles, then
    re-render so the row (and the Disabled tally) reflects the new state. */
