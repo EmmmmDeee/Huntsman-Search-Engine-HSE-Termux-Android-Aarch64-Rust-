@@ -144,6 +144,8 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // ── key-detector catalogue (v1.4+) ──
         .route("/keys/patterns", get(handlers::keys_patterns))
         .route("/keys/status", get(handlers::keys_status))
+        .route("/keys/pool", get(handlers::keys_pool_get))
+        .route("/keys/pool/revoke", post(handlers::keys_pool_revoke))
         // ── scans ──
         .route(
             "/scans",

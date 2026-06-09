@@ -13,6 +13,17 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
+/// Non-secret short identifier for a key value — the first 12 hex chars of its
+/// SHA-256. Lets the web UI / API reference a specific pooled key (to revoke it)
+/// without the plaintext secret ever crossing the wire. Stable for a given value
+/// and collision-safe within a service's handful of keys.
+#[must_use]
+pub fn key_id(value: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(value.as_bytes());
+    hex::encode(&digest[..6])
+}
+
 // ── Key entry ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,6 +252,22 @@ impl KeyPool {
         if let Some(entries) = data.services.get_mut(&service.to_lowercase()) {
             for e in entries.iter_mut() {
                 if e.value == value {
+                    e.status = KeyStatus::Revoked;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Revoke the key in `service` whose [`key_id`] matches `id`. Lets the web UI
+    /// revoke a key by its non-secret short id without ever transmitting the
+    /// plaintext value. Returns true if found.
+    pub fn revoke_by_id(&self, service: &str, id: &str) -> bool {
+        let mut data = self.data.lock();
+        if let Some(entries) = data.services.get_mut(&service.to_lowercase()) {
+            for e in entries.iter_mut() {
+                if key_id(&e.value) == id {
                     e.status = KeyStatus::Revoked;
                     return true;
                 }

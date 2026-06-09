@@ -474,6 +474,11 @@ const API = {
   debugUrl:  id=>'/api/v1/scans/'+encodeURIComponent(id)+'/debug.txt',
   keysGet:   ()=>API._req('/api/v1/settings/keys'),
   keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body}),
+  // Key POOL (multi-key per service): masked list + revoke-by-non-secret-id.
+  // Loopback-only; revoke also needs --allow-key-write. Plaintext never leaves
+  // the device — the raw values come from `hse keys export` in the shell.
+  poolGet:    ()=>API._req('/api/v1/keys/pool'),
+  poolRevoke: body=>API._req('/api/v1/keys/pool/revoke',{method:'POST',body}),
   togglesGet: ()=>API._req('/api/v1/settings/toggles'),
   togglesPut: body=>API._req('/api/v1/settings/toggles',{method:'PUT',body}),
   stats:     ()=>API._req('/api/v1/stats'),
@@ -1989,6 +1994,10 @@ function renderInfo(host, scan){
 async function renderOpts(v){
   const [data, toggles] = await Promise.all([API.keysGet(), API.togglesGet()]);
   S.settings = data;
+  // The key pool is loopback-only and may be empty / forbidden — never let it
+  // block the rest of Settings from rendering.
+  let pool = null;
+  try { pool = await API.poolGet(); } catch { pool = null; }
 
   v.innerHTML = `
     <h2>Settings</h2>
@@ -2019,6 +2028,8 @@ async function renderOpts(v){
           </div>` : ''}
       </div>
     </div>
+
+    ${poolPanel(pool, data.write_enabled)}
 
     <div class="panel panel-default">
       <div class="panel-heading"><b>Capability toggles</b>
@@ -2076,6 +2087,14 @@ async function renderOpts(v){
   `;
 
   if (data.write_enabled) wireKeyEditor();
+  // Key-pool revoke buttons (reference keys by non-secret id).
+  $$('button[data-revoke]').forEach(b=>b.addEventListener('click', ()=>{
+    const service = b.dataset.revoke, id = b.dataset.revokeId;
+    alertify.confirm('Revoke key', `Revoke this ${service} key? It is kept for audit but never used again.`, async()=>{
+      try { await API.poolRevoke({service, id}); toast('Key revoked'); renderOpts($('#view')); }
+      catch(e){ alertify.error(e.message); }
+    }, ()=>{});
+  }));
   wireToggles();
   wireToggleFilter();
   updateGroupCounts();
@@ -2187,6 +2206,37 @@ function keyRow(k, writeEnabled){
       </div>
     ` : ''}
   </div>`;
+}
+/* Key-pool panel: multi-key-per-service entries (discovered keys, imported pools)
+   shown MASKED with status/environment, and a Revoke button per usable key. The
+   plaintext never reaches the browser — keys are referenced by a non-secret id.
+   Import/export and rotation live in the `hse keys` CLI (shell-access-gated). */
+function poolPanel(pool, writeEnabled){
+  if (!pool || !(pool.services||[]).length) return '';
+  const tierBadge = s => `<span class="status-pill s-${s==='revoked'?'failed':(s==='active'?'complete':'pending')}">${esc(s)}</span>`;
+  const rows = pool.services.map(svc=>`
+    <tr><td colspan="5" style="background:#fafafa;font-weight:600">${esc(svc.service)}</td></tr>
+    ${svc.keys.map(k=>`<tr data-svc="${attr(svc.service)}" data-id="${attr(k.id)}">
+      <td><code>${esc(k.masked)}</code></td>
+      <td>${tierBadge(k.status)}</td>
+      <td><span class="tag">${esc(k.environment)}</span></td>
+      <td class="text-right text-muted" style="font-size:11px">uses ${k.use_count} · ${esc(k.tier)}</td>
+      <td class="text-right">${(writeEnabled && k.status!=='revoked')
+        ? `<button class="btn btn-danger btn-xs" data-revoke="${attr(svc.service)}" data-revoke-id="${attr(k.id)}">Revoke</button>` : ''}</td>
+    </tr>`).join('')}`).join('');
+  return `
+    <div class="panel panel-default">
+      <div class="panel-heading"><b>Key pool</b>
+        <span class="text-muted pull-right" style="font-size:12px">multi-key per service · masked · loopback-only</span>
+      </div>
+      <div class="panel-body">
+        <p class="text-muted" style="font-size:12px">Keys discovered during scans or imported via <code>hse keys import-json</code>, grouped by service and environment. Revoke a compromised key here (retained for audit, never used again); raw values, import/export and rotation are in the <code>hse keys</code> CLI.</p>
+        <div class="table-responsive"><table class="table table-condensed">
+          <thead><tr><th>Key</th><th>Status</th><th>Env</th><th class="text-right">Usage</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>
+      </div>
+    </div>`;
 }
 function wireKeyEditor(){
   const pending = {updates:{}, deletes:new Set()};

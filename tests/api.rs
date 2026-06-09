@@ -1453,6 +1453,7 @@ async fn spa_references_only_registered_api_endpoints() {
         let url = match base.as_str() {
             "health" => "/api/v1/health".to_string(),
             "version" => "/api/v1/version".to_string(),
+            "keys" => "/api/v1/keys/pool".to_string(),
             "modules" => "/api/v1/modules".to_string(),
             "engines" => "/api/v1/engines/health".to_string(),
             "stats" => "/api/v1/stats".to_string(),
@@ -1807,5 +1808,45 @@ async fn logs_endpoint_serves_downloadable_text_attachment() {
     assert!(
         String::from_utf8_lossy(&bytes).contains("Huntsman Search Engine"),
         "dump carries its header"
+    );
+}
+
+#[tokio::test]
+async fn keys_pool_get_is_masked_and_revoke_is_write_gated() {
+    // The web key-pool surface: GET returns a masked, loopback-only view; revoke
+    // is a write, so it's refused unless the server was started with key-write.
+    // ConnectInfo is injected via request extensions (no real TCP listener).
+    use std::net::SocketAddr;
+    let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    let app = test_app("keys-pool");
+
+    let mut get = Request::builder()
+        .uri("/api/v1/keys/pool")
+        .body(Body::empty())
+        .unwrap();
+    get.extensions_mut()
+        .insert(axum::extract::ConnectInfo(loopback));
+    let resp = app.clone().oneshot(get).await.unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(
+        body.get("services").is_some(),
+        "pool returns a services list"
+    );
+
+    // Revoke without --allow-key-write (test_app default) must be forbidden.
+    let mut post = Request::builder()
+        .method("POST")
+        .uri("/api/v1/keys/pool/revoke")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"service":"shodan","id":"deadbeef"}"#))
+        .unwrap();
+    post.extensions_mut()
+        .insert(axum::extract::ConnectInfo(loopback));
+    let resp = app.oneshot(post).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        http::StatusCode::FORBIDDEN,
+        "pool revoke must require --allow-key-write"
     );
 }
