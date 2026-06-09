@@ -2037,3 +2037,37 @@ fn au045_multi_service_identity_requires_cross_family_agreement() {
         "AU-045 binds identity kinds only"
     );
 }
+
+#[test]
+fn au011_counts_independent_platform_module_confirmations() {
+    // Three independent username-keyed modules (github_user + reddit_user +
+    // hacker_news) confirming one handle is a 3-platform footprint even though no
+    // single module reported a `platforms_count` — the cross-service signal the
+    // keyless social modules produce must light up AU-011.
+    let mut u = Entity::new(EntityKind::Username, "kylo4kylo", 0.6, "scan");
+    for s in ["github_user", "reddit_user", "hacker_news"] {
+        u.add_evidence(Evidence::new(s, "confirmed account"));
+    }
+    let hits = super::rules::rule_au_011_cross_platform_username(&[u], "scan", 0);
+    assert_eq!(
+        hits.len(),
+        1,
+        "3 independent platform modules must fire AU-011"
+    );
+    assert_eq!(hits[0].rule_id, "AU-011");
+    assert!(
+        hits[0].description.contains("3 platforms"),
+        "got: {}",
+        hits[0].description
+    );
+
+    // Two platform modules is below the threshold.
+    let mut u2 = Entity::new(EntityKind::Username, "lonely", 0.6, "scan");
+    for s in ["github_user", "reddit_user"] {
+        u2.add_evidence(Evidence::new(s, "x"));
+    }
+    assert!(
+        super::rules::rule_au_011_cross_platform_username(&[u2], "scan", 0).is_empty(),
+        "two platforms must not fire"
+    );
+}

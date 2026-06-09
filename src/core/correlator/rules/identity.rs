@@ -164,6 +164,16 @@ pub(in crate::core::correlator) fn rule_au_011_cross_platform_username(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    // Username-keyed account modules: each one that independently confirms a
+    // handle is a distinct PLATFORM, so three of them agreeing is a genuine
+    // cross-platform footprint even when no single module reported a count.
+    const PLATFORM_SOURCES: &[&str] = &[
+        "github_user",
+        "reddit_user",
+        "hacker_news",
+        "keybase",
+        "gravatar",
+    ];
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::Username)
@@ -181,14 +191,34 @@ pub(in crate::core::correlator) fn rule_au_011_cross_platform_username(
                     best_list = ev.attributes.get("platforms").map(String::as_str);
                 }
             }
-            if max_count >= 3 {
+            // Distinct independent platform-module confirmations (github_user +
+            // reddit_user + hacker_news + …). Folded in with `max` so a handle
+            // confirmed on three platforms by three SEPARATE modules surfaces the
+            // same footprint as one module reporting three — the cross-service
+            // signal the keyless social modules produce.
+            let mut platform_srcs: Vec<&str> = e
+                .corroborating_sources()
+                .into_iter()
+                .filter(|s| PLATFORM_SOURCES.contains(s))
+                .collect();
+            platform_srcs.sort_unstable();
+            let src_count = platform_srcs.len() as u64;
+            let owned_list;
+            let count = if src_count > max_count {
+                owned_list = platform_srcs.join(", ");
+                best_list = Some(owned_list.as_str());
+                src_count
+            } else {
+                max_count
+            };
+            if count >= 3 {
                 let detail = best_list.map(|s| format!(": {s}")).unwrap_or_default();
                 Some(Correlation {
                     rule_id: "AU-011".into(),
                     rule_name: "Cross-platform username footprint".into(),
                     severity: Severity::Medium,
                     description: format!(
-                        "Username '{}' present on {max_count} platforms{detail}",
+                        "Username '{}' present on {count} platforms{detail}",
                         e.value
                     ),
                     entity_uids: vec![e.uid.clone()],
