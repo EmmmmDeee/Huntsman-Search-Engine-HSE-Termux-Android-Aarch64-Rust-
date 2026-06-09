@@ -679,6 +679,33 @@ async fn dossier_upload_creates_a_complete_scan_with_entities() {
 }
 
 #[tokio::test]
+async fn dossier_upload_derives_and_persists_entity_relations() {
+    // An imported scan must carry the same deterministic relation graph a live
+    // scan would (structural/geo/DNS/WHOIS/name-lineage). This dossier yields a
+    // URL and its host domain, which `derive_all` links — so the import path is
+    // no longer relation-blind and the graph/GEXF views work on uploads.
+    let app = test_app("import-rel");
+    let dossier = "Entry #1:\n   \u{2022} email: ops@acme-corp.io\n   \u{2022} name: Ops Lead\n   \u{2022} domain: acme-corp.io\nhttp://acme-corp.io/login\n";
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import")
+        .header("content-type", "text/plain")
+        .body(Body::from(dossier))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["status"], "complete");
+    assert!(
+        json["relation_count"]
+            .as_u64()
+            .expect("relation_count field")
+            >= 1,
+        "the URL→domain structural edge must be derived and persisted: {json}"
+    );
+}
+
+#[tokio::test]
 async fn dossier_upload_rejects_unrecognised_format() {
     let app = test_app("import-bad");
     let req = Request::builder()

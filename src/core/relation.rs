@@ -429,6 +429,24 @@ pub fn derive_name_lineage(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
     out
 }
 
+/// Derive every deterministic, evidence-grounded relation the engine knows how
+/// to reconstruct from a persisted entity set alone — structural ownership, geo
+/// co-location, DNS resolution, WHOIS registration and name lineage — in a
+/// single stable order. This is the lineage-free counterpart to the live scan's
+/// relation pass: the import paths (CLI `hse import` and the web `scan_import`
+/// upload) have no in-flight expansion edges, but every edge derivable from the
+/// entities + their evidence still applies, so an imported dossier gets the same
+/// graph a live scan would. One definition so the live and import paths can't
+/// drift on which relations a finished scan carries.
+pub fn derive_all(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    let mut out = derive_structural(entities, scan_id);
+    out.extend(derive_colocation(entities, scan_id));
+    out.extend(derive_resolution(entities, scan_id));
+    out.extend(derive_registration(entities, scan_id));
+    out.extend(derive_name_lineage(entities, scan_id));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,6 +493,37 @@ mod tests {
 
         // No Person present → no edges (and no panic).
         assert!(derive_name_lineage(&[uname, email], "s").is_empty());
+    }
+
+    #[test]
+    fn derive_all_aggregates_every_structural_derivation() {
+        use crate::core::entity::Evidence;
+        // A mixed set exercising two independent derivations: a subdomain edge
+        // (structural) and a name-lineage edge. `derive_all` must surface both,
+        // and exactly the union of the individual passes — so the import paths
+        // and the live scan can't diverge on which edges a finished scan carries.
+        let parent = ent(EntityKind::Domain, "acme.com", 0.7);
+        let sub = ent(EntityKind::Domain, "mail.acme.com", 0.6);
+        let person = ent(EntityKind::Person, "Jane Smith", 0.6);
+        let mut handle = ent(EntityKind::Username, "jsmith", 0.38);
+        handle.tag("name-derived");
+        handle.add_evidence(
+            Evidence::new("name_intel", "derived").with_attr("source_name", "Jane Smith"),
+        );
+
+        let ents = vec![parent, sub, person, handle];
+        let all = derive_all(&ents, "s");
+        let expected = derive_structural(&ents, "s").len()
+            + derive_colocation(&ents, "s").len()
+            + derive_resolution(&ents, "s").len()
+            + derive_registration(&ents, "s").len()
+            + derive_name_lineage(&ents, "s").len();
+        assert_eq!(all.len(), expected, "derive_all is the union of every pass");
+        assert!(all.iter().any(|r| r.kind == RelationKind::SubdomainOf));
+        assert!(all.iter().any(|r| r.kind == RelationKind::DerivedFrom));
+
+        // No entities → no edges, no panic.
+        assert!(derive_all(&[], "s").is_empty());
     }
 
     #[test]

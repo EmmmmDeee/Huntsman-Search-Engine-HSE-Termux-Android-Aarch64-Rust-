@@ -10,7 +10,7 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
     let is_txt = path.ends_with(".txt") && !is_html;
 
     if is_html {
-        return cmd_import_html(&body, output);
+        return cmd_import_html(&body, output).await;
     }
     if is_txt {
         // A breach/dossier compilation (`Entry #N:` blocks of `• key: value`
@@ -19,9 +19,9 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
         // dossier parser, which correlates each entry's fields into individualised
         // entities carrying the full record (name, birthdate, country, hash, …).
         if looks_like_dossier(&body) {
-            return cmd_import_dossier(&body, output);
+            return cmd_import_dossier(&body, output).await;
         }
-        return cmd_import_txt(&body, output);
+        return cmd_import_txt(&body, output).await;
     }
 
     let doc: serde_json::Value =
@@ -46,6 +46,7 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
     let (mut entities, stats) = parse_oathnet_json(&doc, &sid).await;
     deduplicate_by_uid(&mut entities);
     print_import_stats(&stats, entities.len(), output);
+    persist_and_report(&sid, &entities, output).await;
     import_json_output(&entities, &stats, query, date, path, output)
 }
 
@@ -564,7 +565,7 @@ fn render_import_entities(entities: &[crate::core::entity::Entity], output: &str
     }
 }
 
-fn cmd_import_html(body: &str, output: &str) -> Result<()> {
+async fn cmd_import_html(body: &str, output: &str) -> Result<()> {
     use crate::core::entity::EntityKind;
 
     note(output, "Importing OathNet HTML export...");
@@ -597,6 +598,7 @@ fn cmd_import_html(body: &str, output: &str) -> Result<()> {
         ),
     );
 
+    persist_and_report(&sid, &entities, output).await;
     render_import_entities(&entities, output);
     Ok(())
 }
@@ -949,13 +951,14 @@ pub(crate) async fn entities_from_upload(
     Ok((entities, label))
 }
 
-fn cmd_import_dossier(body: &str, output: &str) -> Result<()> {
+async fn cmd_import_dossier(body: &str, output: &str) -> Result<()> {
     note(output, "Importing breach/dossier compilation...");
     let sid = format!("import-dossier-{}", crate::core::entity::unix_now());
     let (mut entities, stats) = parse_dossier(body, &sid);
     deduplicate_by_uid(&mut entities);
     print_import_stats(&stats, entities.len(), output);
 
+    persist_and_report(&sid, &entities, output).await;
     render_import_entities(&entities, output);
     Ok(())
 }
@@ -1201,7 +1204,7 @@ fn parse_oathnet_txt(body: &str, sid: &str) -> (Vec<crate::core::entity::Entity>
     (entities, stats)
 }
 
-fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
+async fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
     note(output, "Importing OathNet TXT export...");
     let sid = format!("import-txt-{}", crate::core::entity::unix_now());
     let (mut entities, stats) = parse_oathnet_txt(body, &sid);
@@ -1219,6 +1222,7 @@ fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
         crate::util::key_pool::save_pool_best_effort(&crate::util::key_pool::global_pool());
     }
 
+    persist_and_report(&sid, &entities, output).await;
     render_import_entities(&entities, output);
     Ok(())
 }
@@ -1280,6 +1284,83 @@ pub(crate) fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>
     });
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     entities.retain(|e| seen.insert(e.uid.clone()));
+}
+
+/// Persist a parsed import as a completed scan in the default store — the CLI
+/// counterpart to the web `scan_import` handler — so `hse import` is no longer a
+/// print-and-discard: the imported scan appears in `hse list`, every view/export
+/// (entities, dossier, debug bundle, GEXF) works on it, and expansion seeds can
+/// later re-scan its pivots. Derives the deterministic entity relations and runs
+/// the correlator, exactly as the live scan finalise does, so an imported dossier
+/// carries the same graph a live scan would. Best-effort on relations and
+/// correlations: an import whose entities already persisted must not fail on a
+/// hiccup there. Returns `(relations, correlations)` persisted, for the summary.
+async fn persist_import(
+    sid: &str,
+    entities: &[crate::core::entity::Entity],
+) -> Result<(usize, usize)> {
+    use crate::core::StoragePort;
+    use crate::core::entity::{EntityKind, unix_now};
+    use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
+    use std::sync::Arc;
+
+    // A readable scan label: the strongest identity in the file, else generic —
+    // matches the web upload handler so the two paths label imports identically.
+    let label = entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .or_else(|| entities.iter().find(|e| e.kind == EntityKind::Email))
+        .map(|e| e.value.clone())
+        .unwrap_or_else(|| "imported dossier".to_string());
+
+    let store: Arc<dyn StoragePort> =
+        Arc::new(crate::storage::Store::open(&crate::default_db_path())?);
+
+    let mut scan = Scan::new(sid.to_string(), Target::new(TargetKind::FullName, label));
+    scan.status = ScanStatus::Complete;
+    scan.finished_at = Some(unix_now());
+    scan.entity_count = entities.len();
+    store.upsert_scan(&scan)?;
+    store.upsert_entities_batch(entities)?;
+
+    let mut relations = 0usize;
+    for r in &crate::core::relation::derive_all(entities, sid) {
+        if store.upsert_relation(r).is_ok() {
+            relations += 1;
+        }
+    }
+
+    let mut correlations = 0usize;
+    let correlator = crate::core::correlator::Correlator::new(Arc::clone(&store));
+    if let Ok(hits) = correlator.run(sid) {
+        for c in &hits {
+            if store.upsert_correlation(c).is_ok() {
+                correlations += 1;
+            }
+        }
+    }
+
+    Ok((relations, correlations))
+}
+
+/// Persist a parsed import and emit a one-line summary on the appropriate stream.
+/// Shared tail for every CLI import path so persistence and its reporting can't
+/// drift between formats. A persistence failure is surfaced as a warning, never
+/// fatal — the entities were already rendered to the operator.
+async fn persist_and_report(sid: &str, entities: &[crate::core::entity::Entity], output: &str) {
+    match persist_import(sid, entities).await {
+        Ok((relations, correlations)) => note(
+            output,
+            format!(
+                "  Stored:    scan {sid} ({} entities, {relations} relations, {correlations} correlations) — view with `hse list`",
+                entities.len()
+            ),
+        ),
+        Err(e) => note(
+            output,
+            format!("  Warning:   could not persist import: {e}"),
+        ),
+    }
 }
 
 fn detect_and_create_api_key_entity(
@@ -1705,10 +1786,15 @@ PASSWORDS:
         // (`&body[vs..victim_end]` with start > end), aborting `hse import` —
         // the CLI path has no catch_unwind. The end marker is now sought after
         // the start, so the slice is always well-formed.
+        // Tested against the pure parser (the panic was in parsing, not
+        // persistence) so the test stays hermetic — it never touches the default
+        // store that `cmd_import_txt` now writes to.
         let body = "=== OSINT ENRICHMENT ===\nstuff\n=== INFECTED MACHINES ===\nIPs: 8.8.8.8\n";
+        let (ents, _) = super::parse_oathnet_txt(body, "sid");
         assert!(
-            super::cmd_import_txt(body, "table").is_ok(),
-            "misordered section markers must not panic the importer"
+            ents.iter()
+                .any(|e| e.kind == EntityKind::IpAddress && e.value == "8.8.8.8"),
+            "misordered section markers must parse, not panic"
         );
     }
 
@@ -1716,6 +1802,10 @@ PASSWORDS:
     fn import_txt_parses_victim_section_in_normal_order() {
         // Happy path unaffected: INFECTED before OSINT still parses cleanly.
         let body = "=== INFECTED MACHINES ===\nIPs: 8.8.8.8\n=== OSINT ENRICHMENT ===\nMore: x\n";
-        assert!(super::cmd_import_txt(body, "table").is_ok());
+        let (ents, _) = super::parse_oathnet_txt(body, "sid");
+        assert!(
+            ents.iter()
+                .any(|e| e.kind == EntityKind::IpAddress && e.value == "8.8.8.8")
+        );
     }
 }

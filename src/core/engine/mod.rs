@@ -597,29 +597,16 @@ impl ScanEngine {
     /// Endpoints are entity UIDs already persisted above; upserts are
     /// idempotent on the deterministic edge id.
     fn persist_relations(&self, scan_id: &str, entities: &[Entity], lineage: &[Relation]) {
-        let structural = crate::core::relation::derive_structural(entities, scan_id);
-        let colocation = crate::core::relation::derive_colocation(entities, scan_id);
-        let resolution = crate::core::relation::derive_resolution(entities, scan_id);
-        let registration = crate::core::relation::derive_registration(entities, scan_id);
-        let name_lineage = crate::core::relation::derive_name_lineage(entities, scan_id);
-        if lineage.is_empty()
-            && structural.is_empty()
-            && colocation.is_empty()
-            && resolution.is_empty()
-            && registration.is_empty()
-            && name_lineage.is_empty()
-        {
+        // The lineage-free structural set (structural/colocation/resolution/
+        // registration/name-lineage) is derived identically here and on the
+        // import paths via `derive_all`, so a live scan and an imported dossier
+        // can't drift on which edges a finished scan carries.
+        let derived = crate::core::relation::derive_all(entities, scan_id);
+        if lineage.is_empty() && derived.is_empty() {
             return;
         }
         let mut persisted = 0usize;
-        for r in lineage
-            .iter()
-            .chain(structural.iter())
-            .chain(colocation.iter())
-            .chain(resolution.iter())
-            .chain(registration.iter())
-            .chain(name_lineage.iter())
-        {
+        for r in lineage.iter().chain(derived.iter()) {
             match self.store.upsert_relation(r) {
                 Ok(()) => persisted += 1,
                 Err(e) => warn!(scan_id, relation = %r.id, error = %e, "relation persist failed"),
@@ -628,11 +615,7 @@ impl ScanEngine {
         info!(
             scan_id,
             lineage = lineage.len(),
-            structural = structural.len(),
-            colocation = colocation.len(),
-            resolution = resolution.len(),
-            registration = registration.len(),
-            name_lineage = name_lineage.len(),
+            derived = derived.len(),
             persisted,
             "entity relations persisted"
         );
