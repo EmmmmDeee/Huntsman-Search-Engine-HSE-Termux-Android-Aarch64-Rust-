@@ -37,6 +37,25 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Airtight, offline-by-construction local web console (Termux/phone
+  hardening).** The embedded UI already shipped a strict CSP, security-header
+  middleware, vendored same-origin assets, and a `data:` favicon — so it makes
+  no external requests. This locks that guarantee so it can't silently regress
+  and tightens it for the phone:
+  - Added a restrictive **`Permissions-Policy`** denying every powerful browser
+    feature (camera, microphone, geolocation, USB, Bluetooth, serial, HID, MIDI,
+    motion sensors, payment) with empty `()` allowlists, plus `interest-cohort=()`.
+    The SPA uses none of these APIs, so denial is free; on the phone target it
+    means a hypothetical injection still can't reach the device's sensors.
+  - Added source-level tripwires: the CSP is asserted to name **no** external
+    origin or `*` wildcard (closing the hole that a substring check like
+    `contains("connect-src 'self'")` leaves open against
+    `connect-src 'self' https://exfil`), every CSP directive token is checked to
+    be `'self'`/`'unsafe-inline'`/`'none'`/`data:` only, and the embedded SPA is
+    scanned to prove it auto-loads no external `<script>`/`<link>`/`<img>`
+    resource (the scanner is itself tested against a CDN sample). The served
+    `Permissions-Policy` is asserted in the API integration tests.
+
 - **Intelligence X selector coverage widened to match the API.** IntelX
   auto-classifies a search term across its full `SelectorType` table, but the
   module only accepted email / username / phone / name / domain / IP. It now

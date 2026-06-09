@@ -218,6 +218,15 @@ async fn responses_carry_security_headers() {
             "no-referrer",
             "{uri}: Referrer-Policy"
         );
+        // Phone defence-in-depth: the browser must deny the device's camera,
+        // mic, and GPS to the console (which uses none of them).
+        let pp = hv("permissions-policy");
+        for feature in ["camera=()", "microphone=()", "geolocation=()"] {
+            assert!(
+                pp.contains(feature),
+                "{uri}: Permissions-Policy must deny {feature}: {pp:?}"
+            );
+        }
     }
 }
 
