@@ -140,8 +140,11 @@ impl Module for WifiIntel {
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let user = ctx.key_opt(USER_ENV).unwrap_or(HARDCODED_USER);
-        let token = ctx.key_opt(TOKEN_ENV).unwrap_or(HARDCODED_TOKEN);
+        // Single-sourced credential policy (see `keys::resolve_or_default`): a
+        // non-empty configured key wins, else the embedded default — and a
+        // present-but-empty env value falls back rather than failing auth.
+        let user = crate::util::keys::resolve_or_default(ctx.key_opt(USER_ENV), HARDCODED_USER);
+        let token = crate::util::keys::resolve_or_default(ctx.key_opt(TOKEN_ENV), HARDCODED_TOKEN);
 
         // ── Single termux-wifi-scaninfo call ────────────────────────────
         let Some(stdout) = termux_cmd("termux-wifi-scaninfo", &[], 5000).await else {

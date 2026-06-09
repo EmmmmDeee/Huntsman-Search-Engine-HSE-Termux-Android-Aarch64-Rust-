@@ -625,6 +625,18 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn resolve_or_default_policy() {
+        // The single-sourced "explicit non-empty key wins, else the embedded
+        // default" policy every zero-config keyed module shares.
+        assert_eq!(resolve_or_default(Some("real-key"), "default"), "real-key");
+        assert_eq!(resolve_or_default(None, "default"), "default");
+        // A present-but-empty value falls back to the default rather than being
+        // used verbatim — the bug the wigle/wifi_intel/mls modules had before
+        // they were routed through this function.
+        assert_eq!(resolve_or_default(Some(""), "default"), "default");
+    }
+
+    #[test]
     fn own_api_keys_includes_embedded_and_splits_csv_rotation_lists() {
         let own = own_api_keys();
         // Every embedded auth key is present (so it's excluded from findings).

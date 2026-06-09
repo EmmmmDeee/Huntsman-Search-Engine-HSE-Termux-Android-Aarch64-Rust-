@@ -199,8 +199,11 @@ impl Module for Wigle {
         // by the operator's daily allowance. Each sub-budget is
         // independent and env-tunable.
 
-        let user = ctx.key_opt(USER_ENV).unwrap_or(HARDCODED_USER);
-        let token = ctx.key_opt(TOKEN_ENV).unwrap_or(HARDCODED_TOKEN);
+        // Single-sourced credential policy (see `keys::resolve_or_default`): a
+        // non-empty configured key wins, else the embedded default — and a
+        // present-but-empty env value falls back rather than failing auth.
+        let user = crate::util::keys::resolve_or_default(ctx.key_opt(USER_ENV), HARDCODED_USER);
+        let token = crate::util::keys::resolve_or_default(ctx.key_opt(TOKEN_ENV), HARDCODED_TOKEN);
 
         if target.kind == TargetKind::MacAddress {
             if !BSSID_BUDGET.try_increment() {

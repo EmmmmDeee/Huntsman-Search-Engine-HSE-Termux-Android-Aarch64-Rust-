@@ -81,7 +81,9 @@ impl Module for Mls {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = ctx.key_opt(KEY_ENV).unwrap_or(DEFAULT_KEY);
+        // Single-sourced credential policy (see `keys::resolve_or_default`): a
+        // non-empty configured key wins, else Mozilla's public `test` key.
+        let key = crate::util::keys::resolve_or_default(ctx.key_opt(KEY_ENV), DEFAULT_KEY);
         let url = format!("https://location.services.mozilla.com/v1/geolocate?key={key}");
 
         // MLS prefers ≥2 access points for triangulation; with one we
