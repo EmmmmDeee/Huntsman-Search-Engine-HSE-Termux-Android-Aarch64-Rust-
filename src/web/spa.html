@@ -1542,6 +1542,11 @@ function renderBrowse(host){
     sel.value = (sel.value === k) ? '' : k;  // toggle drill-down, SpiderFoot-style
     refresh();
   }));
+  // Deep-link: a `q` query param (e.g. from a correlation-member pivot) pre-fills
+  // the value filter so the browser lands focused on that entity.
+  if (S.route.query.q){
+    $('#b-q').value = S.route.query.q;
+  }
   refresh();
 }
 function renderBrowseTable(rows){
@@ -1620,7 +1625,11 @@ function renderCorrelations(host){
     const uids = c.entity_uids || [];
     const members = uids.map(u=>{
       const e = byUid[u];
-      return e ? `<div class="corr-member">${kindPill(e.kind)} <code>${esc(e.raw_value||e.value)}</code></div>`
+      // A resolved member is clickable: pivot to it in the Browse tab (the
+      // cross-reference becomes navigable). stopPropagation so it doesn't also
+      // toggle the card.
+      return e ? `<div class="corr-member" style="cursor:pointer" title="Show '${attr(e.value)}' in Browse"
+                    onclick="event.stopPropagation();pivotToEntity('${attr(e.value)}')">${kindPill(e.kind)} <code>${esc(e.raw_value||e.value)}</code></div>`
                : `<div class="corr-member"><code class="text-muted" style="font-size:10px">${esc(String(u).slice(0,16))}…</code></div>`;
     }).join('');
     return `<div class="corr-card cv-${attr(sev)}" onclick="toggleCorrMembers(this)" style="cursor:pointer" title="Click to show the ${uids.length} linked entit${uids.length===1?'y':'ies'}">
@@ -1634,6 +1643,14 @@ function renderCorrelations(host){
 function toggleCorrMembers(card){
   const m = card.querySelector('.corr-members');
   if (m) m.style.display = (m.style.display==='none') ? '' : 'none';
+}
+/* Pivot from a correlation member (or anywhere) to that entity in the Browse
+   tab, pre-filtered to its value — turns a "these are linked" insight into a
+   one-click drill-in. */
+function pivotToEntity(value){
+  const id = S.route.params.id;
+  if (!id) return;
+  nav(`#/scaninfo?id=${encodeURIComponent(id)}&tab=browse&q=${encodeURIComponent(value)}`);
 }
 
 /* ── Graph tab (D3 v3 force layout — matches Spiderfoot's stack) ── */
