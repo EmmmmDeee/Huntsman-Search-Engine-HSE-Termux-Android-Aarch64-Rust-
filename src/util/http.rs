@@ -951,6 +951,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn curl_download_cap_mirrors_the_json_body_cap() {
+        // curl.rs documents CURL_MAX_DOWNLOAD_BYTES as "Mirrors http::JSON_BODY_CAP",
+        // but the two size caps (the reqwest JSON path here vs the curl-subprocess
+        // path) are defined separately — usize arithmetic vs a curl-arg string — so
+        // nothing stops one being bumped without the other. Pin their equality: a
+        // body refused on one path must be refused on the other.
+        let curl_cap: usize = crate::util::curl::CURL_MAX_DOWNLOAD_BYTES
+            .parse()
+            .expect("CURL_MAX_DOWNLOAD_BYTES must be a decimal byte count");
+        assert_eq!(
+            curl_cap,
+            super::JSON_BODY_CAP,
+            "the curl --max-filesize cap and the reqwest JSON body cap must stay equal"
+        );
+    }
+
     #[tokio::test]
     async fn traced_client_sends_x_huntsman_trace_header() {
         // Prove the trace id rides on the wire: a minimal TCP server reads the
