@@ -34,7 +34,7 @@ records. The engine knows nothing else — every module is a one-file change.
 |---|---|---|---|---|---|
 | `oathnet_pro` | email, username, phone, full_name, ip_address, domain | paid | no | 127 | email, username, phone, person, ip_address, address, url, domain |
 | `name_intel` | full_name | free | **yes** | 97 | username, email, url |
-| `wikidata` | full_name, organisation | free | no | 96 | person, organisation, domain, username |
+| `wikidata` | full_name, organisation | free | no | 96 | person, organisation, domain, username, url |
 | `seon` | email, phone | key_gated | no | 95 | person |
 | `pgp` | email | free | no | 91 | person, email |
 | `employer_pivot` | email, domain | free | no | 92 | address, phone, email, url |

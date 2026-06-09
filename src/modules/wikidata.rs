@@ -50,6 +50,10 @@ const ORG_PRIMARY: f64 = 0.80;
 const CANDIDATE: f64 = 0.40;
 const DOMAIN_CONF: f64 = 0.58;
 const HANDLE_CONF: f64 = 0.55;
+/// Confidence for the Wikidata P18 image URL. Moderate: the image authentically
+/// depicts the matched subject, but the URL is a derived pointer, not a direct
+/// finding about the subject's accounts.
+const IMAGE_CONF: f64 = 0.60;
 
 /// Wikidata properties whose value is *itself* a social handle/username (a plain
 /// string, no entity-id resolution needed) → emitted as `Username` for
@@ -235,6 +239,38 @@ fn primary_entities(
         }
     }
 
+    // Image (P18) → the canonical Wikimedia Commons image URL — an approved,
+    // keyless "image search": the official record's photo of the matched subject.
+    // Emitted as a `Url` tagged `image`/`avatar` so the metadata pipeline picks
+    // it up: `Special:FilePath/<file>.jpg` ends in an image extension, so
+    // `exif_geo` accepts it during expansion and mines EXIF — GPS, camera,
+    // capture time — normalising any geotag into `Coordinates` the geo
+    // correlators consume. Commons normalises spaces↔underscores, so the
+    // space→underscore form is a valid, stable URL needing no extra API call.
+    for filename in claim_strings(entity, "P18") {
+        let f = filename.trim();
+        if f.is_empty() {
+            continue;
+        }
+        let img_url = format!(
+            "https://commons.wikimedia.org/wiki/Special:FilePath/{}",
+            f.replace(' ', "_")
+        );
+        let mut img = Entity::new(EntityKind::Url, &img_url, IMAGE_CONF, scan_id);
+        img.tag(SRC);
+        img.tag("wikidata");
+        img.tag("image");
+        img.tag("avatar");
+        img.add_evidence(
+            Evidence::new(SRC, format!("Wikimedia Commons image of {label}"))
+                .with_attr("commons_file", f)
+                .with_attr("wikidata_id", qid)
+                .with_attr("image_source", "wikidata_p18"),
+        );
+        out.push(img);
+        break; // one canonical image is sufficient
+    }
+
     // Social handles → Username (capped).
     let mut emitted = 0usize;
     for (pid, platform) in HANDLE_PROPS {
@@ -317,6 +353,7 @@ impl Module for Wikidata {
             EntityKind::Organisation,
             EntityKind::Domain,
             EntityKind::Username,
+            EntityKind::Url,
         ];
         KINDS
     }
@@ -479,6 +516,38 @@ mod tests {
             .find(|e| e.kind == EntityKind::Username && e.value == "torvalds")
             .unwrap();
         assert!(gh.tags.iter().any(|t| t == "github"));
+    }
+
+    #[test]
+    fn primary_emits_commons_image_url_for_p18() {
+        // P18 image claim → a normalized Url tagged image/avatar pointing at the
+        // official Commons Special:FilePath endpoint, ending in an image
+        // extension so exif_geo will mine its metadata during expansion.
+        let body = serde_json::json!({
+            "labels": {"en": {"value": "Jane Doe"}},
+            "claims": {
+                "P18": [{"mainsnak": {"datavalue": {"value": "Jane Doe portrait.jpg"}}}]
+            }
+        });
+        let ents = primary_entities("Q1", "Jane Doe", &body, TargetKind::FullName, "s");
+        let img = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Url)
+            .expect("a Url image entity from P18");
+        assert_eq!(
+            img.value,
+            "https://commons.wikimedia.org/wiki/Special:FilePath/Jane_Doe_portrait.jpg"
+        );
+        assert!(img.tags.iter().any(|t| t == "image"));
+        assert!(img.tags.iter().any(|t| t == "avatar"));
+        assert!(
+            img.value.to_lowercase().ends_with(".jpg"),
+            "must end in an image extension so exif_geo accepts it"
+        );
+        // No P18 → no image url.
+        let none = serde_json::json!({"labels": {"en": {"value": "No Pic"}}, "claims": {}});
+        let ents2 = primary_entities("Q2", "No Pic", &none, TargetKind::FullName, "s");
+        assert!(ents2.iter().all(|e| e.kind != EntityKind::Url));
     }
 
     #[test]
