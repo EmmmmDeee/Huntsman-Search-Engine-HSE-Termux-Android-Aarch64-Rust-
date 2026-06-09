@@ -6,10 +6,12 @@
 //!   * **Login permutations** — ~40 `first`/`middle`/`last`/`number` handle
 //!     shapes (`first.last`, `flast`, `firstl`, `last.first`, hyphen/underscore
 //!     joins, middle-initial blends, year suffixes).
-//!   * **Email permutations** — the highest-signal handle shapes crossed with a
-//!     configurable provider set (NAMINT's iCloud/Yahoo/Hotmail/MSN plus the
-//!     ubiquitous Gmail/Outlook/Proton), bounded so a single name target never
-//!     floods the entity graph.
+//!   * **Email permutations** — likely handle shapes crossed with a configurable
+//!     provider set (the mainstream consumer mailboxes ordinary people actually
+//!     hold — Gmail, the Microsoft outlook/hotmail/live family, Yahoo, iCloud,
+//!     AOL, Proton), ranked by `P(handle) × P(provider)` so the bounded budget
+//!     is spent on the addresses the *median* person is likeliest to hold, and
+//!     capped so a single name target never floods the entity graph.
 //!   * **Gravatar avatars** — the MD5-over-email primitive NAMINT uses, computed
 //!     with the crate's existing `md-5`/`hex` deps (no new dependency, no C).
 //!   * **Search-query pivots** — ready-to-click Google/Bing/DuckDuckGo/Yandex
@@ -27,7 +29,7 @@ pub(super) const MAX_USERNAMES: usize = 24;
 /// lowest-signal permutation — pure guesses across mailbox providers. Capped
 /// tighter than usernames so a name seed doesn't flood the Browse table with
 /// near-duplicate addresses.
-pub(super) const MAX_EMAILS: usize = 8;
+pub(super) const MAX_EMAILS: usize = 12;
 pub(super) const MAX_PIVOTS: usize = 18;
 
 // ── Confidence weights ──────────────────────────────────────────────────────
@@ -63,11 +65,34 @@ pub(super) const SUBJECT_CONF: f64 = 0.60;
 const DEFAULT_DOMAINS: &[&str] = &[
     "gmail.com",
     "outlook.com",
-    "icloud.com",
-    "yahoo.com",
     "hotmail.com",
+    "yahoo.com",
+    "icloud.com",
+    "live.com",
+    "aol.com",
     "proton.me",
 ];
+
+/// Real-world consumer-mailbox share, used to rank `handle@provider` guesses so
+/// the budget (`MAX_EMAILS`) is spent on the addresses an *arbitrary* person is
+/// most likely to actually hold. Gmail dwarfs every other consumer provider;
+/// the Microsoft family (outlook/hotmail/live) and Yahoo form the next tier;
+/// Apple iCloud and the legacy AOL base trail; privacy-focused Proton is rare in
+/// the general population. Domains supplied via `HUNTSMAN_EMAIL_DOMAINS` that we
+/// don't recognise get a neutral mid weight so an operator's custom provider is
+/// still tried, just not ranked above Gmail.
+fn provider_weight(domain: &str) -> f64 {
+    match domain {
+        "gmail.com" | "googlemail.com" => 1.0,
+        "outlook.com" | "hotmail.com" | "live.com" | "msn.com" => 0.6,
+        "yahoo.com" | "ymail.com" => 0.5,
+        "icloud.com" | "me.com" | "mac.com" => 0.45,
+        "aol.com" => 0.4,
+        "gmx.com" | "gmx.net" | "mail.com" => 0.35,
+        "proton.me" | "protonmail.com" | "pm.me" | "tutanota.com" => 0.3,
+        _ => 0.4,
+    }
+}
 
 /// A parsed personal name plus an optional trailing number (e.g. a birth year).
 ///
@@ -271,9 +296,17 @@ pub fn usernames(p: &ParsedName) -> Vec<ScoredHandle> {
     dedup_top(raw, MAX_USERNAMES)
 }
 
-/// Generate speculative emails: the highest-signal handle shapes crossed with
-/// `domains`, capped at [`MAX_EMAILS`]. Handle-major ordering so the most
-/// probable patterns appear across providers first.
+/// Generate speculative emails: likely handle shapes crossed with `domains`,
+/// ranked by **P(handle) × P(provider)** and capped at [`MAX_EMAILS`].
+///
+/// The previous handle-major ordering sprayed the single shape `first.last`
+/// across *every* provider before trying any other shape — so a budget of 8
+/// over six providers spent five slots on `first.last@{icloud,yahoo,proton,…}`
+/// and never reached `firstlast@gmail.com`, even though, for an arbitrary
+/// person, the latter is far likelier to exist. Ranking the full cross-product
+/// by the product of handle commonality and provider market share puts the
+/// budget where the median person's real address actually lives (top shapes on
+/// Gmail and the Microsoft/Yahoo tier) before spending it on long-tail combos.
 pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<String> {
     // Non-Latin names ASCII-fold to empty handle tokens; there are no
     // meaningful login/email permutations without a first+last handle.
@@ -285,36 +318,44 @@ pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<String> {
     let fi = initial(f);
     let li = initial(l);
 
-    let mut logins: Vec<String> = vec![
-        format!("{f}.{l}"),
-        format!("{f}{l}"),
-        format!("{fi}{l}"),
-        format!("{f}_{l}"),
-        format!("{l}.{f}"),
-        format!("{f}{li}"),
+    // (handle, commonality weight) — the shapes real mailboxes most often take,
+    // weighted by how common each is. `first.last`/`firstlast` dominate; the
+    // initial-blends and reversed/number forms trail.
+    let mut logins: Vec<(String, f64)> = vec![
+        (format!("{f}.{l}"), 1.00),
+        (format!("{f}{l}"), 0.95),
+        (format!("{fi}{l}"), 0.70),
+        (format!("{f}_{l}"), 0.60),
+        (format!("{f}{li}"), 0.45),
+        (format!("{l}.{f}"), 0.40),
     ];
     if let Some(m) = p.middle.as_deref() {
-        logins.push(format!("{f}{m}{l}"));
+        logins.push((format!("{f}{m}{l}"), 0.50));
     }
     if let Some(n) = p.number.as_deref() {
-        logins.push(format!("{f}.{l}{n}"));
-        logins.push(format!("{f}{l}{n}"));
+        logins.push((format!("{f}.{l}{n}"), 0.45));
+        logins.push((format!("{f}{l}{n}"), 0.42));
     }
 
-    let mut out = Vec::with_capacity(MAX_EMAILS);
+    // Full cross-product scored by P(handle) × P(provider), then taken best
+    // first. A stable sort keeps the (handle, provider) declaration order as the
+    // deterministic tie-break so identical scores resolve identically.
+    let mut scored: Vec<(f64, String)> = Vec::with_capacity(logins.len() * domains.len());
     let mut seen = std::collections::HashSet::new();
-    for login in &logins {
+    for (login, hw) in &logins {
         for dom in domains {
-            if out.len() >= MAX_EMAILS {
-                return out;
-            }
             let addr = format!("{login}@{dom}");
             if seen.insert(addr.clone()) {
-                out.push(addr);
+                scored.push((hw * provider_weight(dom), addr));
             }
         }
     }
-    out
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored
+        .into_iter()
+        .take(MAX_EMAILS)
+        .map(|(_, addr)| addr)
+        .collect()
 }
 
 /// Gravatar avatar URL for an email — `MD5(lowercased, trimmed email)`.
@@ -760,6 +801,29 @@ mod tests {
         assert!(e.contains(&"jordan.meyers@proton.me".to_string()));
         assert!(e.iter().all(|a| a.contains('@')));
         assert!(e.len() <= MAX_EMAILS);
+    }
+
+    #[test]
+    fn emails_rank_common_provider_and_shape_first() {
+        // The average person's address is far likelier to be a top shape on a
+        // mainstream provider than `first.last` on a rare one. With Gmail and
+        // Proton both available, every Gmail guess must outrank the Proton one,
+        // and `firstlast@gmail` (a top shape on the modal provider) must beat
+        // `first.last@proton` (top shape, long-tail provider).
+        let domains = vec!["proton.me".to_string(), "gmail.com".to_string()];
+        let e = emails(&p("Jordan Meyers"), &domains);
+        let pos = |needle: &str| e.iter().position(|a| a == needle);
+        let gmail_flat = pos("jordanmeyers@gmail.com").expect("firstlast@gmail present");
+        let proton_dot = pos("jordan.meyers@proton.me").expect("first.last@proton present");
+        assert!(
+            gmail_flat < proton_dot,
+            "firstlast@gmail must rank above first.last@proton; got {e:?}"
+        );
+        // first.last@gmail — top shape × top provider — is the single best guess.
+        assert_eq!(
+            e.first().map(String::as_str),
+            Some("jordan.meyers@gmail.com")
+        );
     }
 
     #[test]
