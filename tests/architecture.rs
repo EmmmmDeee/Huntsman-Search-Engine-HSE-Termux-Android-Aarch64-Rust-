@@ -16,6 +16,13 @@ fn scan_dir(dir: &Path, patterns: &[&str], violations: &mut Vec<String>) {
         let path = entry.path();
         if path.is_dir() {
             scan_dir(&path, patterns, violations);
+        } else if path.file_name().is_some_and(|n| n == "tests.rs") {
+            // A dedicated `tests.rs` submodule file is entirely test code — it's
+            // declared `#[cfg(test)] mod tests;` in its parent, so the gating
+            // `#[cfg(test)]` marker isn't inside the file for the line-scanner to
+            // see. Test code is allowed to reach into `util`, so skip it whole,
+            // exactly as the inline-`#[cfg(test)]`-module case already is.
+            continue;
         } else if path.extension().is_some_and(|e| e == "rs") {
             let content = fs::read_to_string(&path).unwrap();
             let mut in_test = false;
