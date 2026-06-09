@@ -652,6 +652,38 @@ pub async fn http_status_error(module: &str, resp: reqwest::Response) -> Error {
     Error::module(module, format!("HTTP {status}: {snippet}"))
 }
 
+/// Classify a keyed-API response by status — the full post-send operation that
+/// the keyed modules repeat. `404` -> `Ok(None)` (a clean "not in this dataset"
+/// miss the caller maps to empty findings); any other non-2xx ->
+/// [`note_keyed_error`] (so 401/403/429 burn the key) then `Err` via
+/// [`http_status_error`]; `2xx` -> `Ok(Some(resp))` for the caller to decode.
+///
+/// Composes the keyed-error building blocks so the policy — which codes are a
+/// miss, which burn a key, which are a hard error — lives in one tested place.
+/// Pairs with `let-else`:
+///
+/// ```ignore
+/// let Some(resp) = http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
+///     return Ok(ModuleResult::new());
+/// };
+/// ```
+pub async fn keyed_ok_or_404(
+    module: &str,
+    key: &str,
+    ctx: &crate::core::module::ModuleContext,
+    resp: reqwest::Response,
+) -> Result<Option<reqwest::Response>> {
+    let status = resp.status();
+    if status.as_u16() == 404 {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        note_keyed_error(status.as_u16(), module, key, ctx);
+        return Err(http_status_error(module, resp).await);
+    }
+    Ok(Some(resp))
+}
+
 /// Keyed GET: fetch JSON from a URL that requires an API key header.
 /// Handles 401/403/429 uniformly via report_key_exhausted, maps 404
 /// to Ok(None). Consolidates the error handling pattern duplicated
@@ -868,6 +900,54 @@ mod tests {
         assert!(
             err.to_string().contains("test_mod"),
             "transport error must name the module: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn keyed_ok_or_404_classifies_miss_success_and_error() {
+        use std::collections::HashMap;
+        // A minimal context. Its key-pool side effects are only reached on a
+        // keyed status (401/403/429) — note_keyed_error's tested responsibility —
+        // which this test deliberately avoids so it stays hermetic (no global
+        // key-pool mutation / disk persistence).
+        let (bus, _rx) = tokio::sync::broadcast::channel(1);
+        let ctx = crate::core::module::ModuleContext {
+            scan_id: "test".into(),
+            bus,
+            http: reqwest::Client::new(),
+            keys: HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+            proxy_pool: Default::default(),
+        };
+        let resp = |code: u16| {
+            reqwest::Response::from(
+                http::Response::builder()
+                    .status(code)
+                    .body(String::new())
+                    .unwrap(),
+            )
+        };
+
+        // 404 -> a clean miss the caller maps to empty findings.
+        let miss = super::keyed_ok_or_404("test_mod", "k", &ctx, resp(404))
+            .await
+            .unwrap();
+        assert!(miss.is_none(), "404 must classify as a miss");
+
+        // 2xx -> the response is handed back for the caller to decode.
+        let ok = super::keyed_ok_or_404("test_mod", "k", &ctx, resp(200))
+            .await
+            .unwrap();
+        assert!(ok.is_some(), "2xx must hand back the response");
+
+        // Other non-2xx -> a module-tagged hard error. 500 is not a keyed status,
+        // so no key-pool mutation occurs and the test stays hermetic.
+        let err = super::keyed_ok_or_404("test_mod", "k", &ctx, resp(500))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("test_mod"),
+            "non-2xx error must name the module: {err}"
         );
     }
 

@@ -133,15 +133,9 @@ impl Module for EmailRep {
             )
             .send_tagged(SRC).await?;
 
-        let status = resp.status();
-        if status.as_u16() == 404 {
+        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
             return Ok(ModuleResult::new());
-        }
-        if !status.is_success() {
-            let code = status.as_u16();
-            crate::util::http::note_keyed_error(code, SRC, key, ctx);
-            return Err(crate::util::http::http_status_error(SRC, resp).await);
-        }
+        };
 
         let body: RepResp = crate::util::http::json_decode(SRC, resp).await?;
 
