@@ -376,6 +376,23 @@ impl GithubUser {
             created_at: Option<String>,
             #[serde(default, rename = "type")]
             event_type: Option<String>,
+            #[serde(default)]
+            payload: Option<GhPayload>,
+        }
+        #[derive(serde::Deserialize)]
+        struct GhPayload {
+            #[serde(default)]
+            commits: Vec<GhCommit>,
+        }
+        #[derive(serde::Deserialize)]
+        struct GhCommit {
+            #[serde(default)]
+            author: Option<GhCommitAuthor>,
+        }
+        #[derive(serde::Deserialize)]
+        struct GhCommitAuthor {
+            #[serde(default)]
+            email: Option<String>,
         }
 
         let events: Vec<GhEvent> = match crate::util::http::json_scanned(resp, SRC).await {
@@ -434,7 +451,65 @@ impl GithubUser {
 
             first.add_evidence(ev);
         }
+
+        // Commit-author email leak: a user's PUBLIC push events embed the email
+        // configured in `git`'s author field for each commit. This is a
+        // high-value, operator-published handle→email link — one of the most
+        // reliable real-email discoveries in OSINT. GitHub's own privacy
+        // `…@users.noreply.github.com` placeholders carry no identity, so they're
+        // excluded. Dedup by value; cap to keep a busy account bounded.
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for event in &events {
+            let Some(payload) = event.payload.as_ref() else {
+                continue;
+            };
+            for commit in &payload.commits {
+                let Some(raw) = commit.author.as_ref().and_then(|a| a.email.as_deref()) else {
+                    continue;
+                };
+                let Some(email) = usable_commit_email(raw) else {
+                    continue;
+                };
+                if !seen.insert(email.clone()) {
+                    continue;
+                }
+                if seen.len() > 10 {
+                    break;
+                }
+                let mut e = Entity::new(EntityKind::Email, &email, 0.82, &ctx.scan_id);
+                e.tag("github");
+                e.tag("commit-email");
+                e.tag("public-profile");
+                e.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("Email from @{login}'s public commit author field"),
+                    )
+                    .with_attr("github_login", login)
+                    .with_attr("source", "commit_author"),
+                );
+                result.push(e);
+            }
+        }
     }
+}
+
+/// Normalise and vet a commit-author email for emission: trimmed + lowercased,
+/// must be a plausible address, and must NOT be one of GitHub's privacy
+/// placeholders (`…@users.noreply.github.com`, any `noreply`/`*.github.com`
+/// address) which carry no real identity. Returns the clean address, or `None`
+/// to drop it.
+fn usable_commit_email(raw: &str) -> Option<String> {
+    let email = raw.trim().to_lowercase();
+    if email.len() < 5
+        || !email.contains('@')
+        || email.contains("noreply")
+        || email.ends_with("@github.com")
+        || email.ends_with(".github.com")
+    {
+        return None;
+    }
+    Some(email)
 }
 
 /// Top-`n` event types formatted as `type=count`, ranked by count descending
@@ -580,6 +655,28 @@ mod tests {
     fn blog_non_http_ignored() {
         let blog = "alice.dev";
         assert!(!blog.starts_with("http://") && !blog.starts_with("https://"));
+    }
+
+    #[test]
+    fn commit_email_filter_keeps_real_drops_github_placeholders() {
+        // Real personal addresses are kept (normalised); GitHub's privacy
+        // placeholders and noreply forms are dropped — they carry no identity.
+        assert_eq!(
+            usable_commit_email("  Alice@Example.com "),
+            Some("alice@example.com".to_string())
+        );
+        assert_eq!(
+            usable_commit_email("dev@personal.dev"),
+            Some("dev@personal.dev".to_string())
+        );
+        assert_eq!(
+            usable_commit_email("12345+alice@users.noreply.github.com"),
+            None
+        );
+        assert_eq!(usable_commit_email("noreply@github.com"), None);
+        assert_eq!(usable_commit_email("actions@github.com"), None);
+        assert_eq!(usable_commit_email("not-an-email"), None);
+        assert_eq!(usable_commit_email("a@b"), None); // too short
     }
 
     #[test]
