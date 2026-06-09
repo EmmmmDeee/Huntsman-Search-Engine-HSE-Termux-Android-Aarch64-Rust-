@@ -1985,12 +1985,29 @@ fn shared_tracking_id_fires_only_across_multiple_sites() {
 #[test]
 fn au045_multi_service_identity_requires_cross_family_agreement() {
     use super::rules::source_family;
-    // Classifier maps real module names to the expected families.
-    assert_eq!(source_family("github_user"), "social");
+    // Classifier maps real module names to the expected families. Code-hosting,
+    // forums and social media are distinct independent families.
+    assert_eq!(source_family("github_user"), "code");
+    assert_eq!(source_family("reddit_user"), "forum");
+    assert_eq!(source_family("hacker_news"), "forum");
+    assert_eq!(source_family("social_probe"), "social");
     assert_eq!(source_family("hibp"), "breach");
     assert_eq!(source_family("username_search"), "presence");
     assert_eq!(source_family("dns_intel"), "infra");
     assert_eq!(source_family("totally_unknown_src"), "other");
+
+    // The payoff: an alias confirmed on GitHub (code) + Reddit (forum) — two
+    // independent provider families — now fires AU-045, where before the three
+    // social modules were one family and never did.
+    let mut handle = Entity::new(EntityKind::Username, "kylo4kylo", 0.6, "scan");
+    for s in ["github_user", "reddit_user"] {
+        handle.add_evidence(Evidence::new(s, "confirmed"));
+    }
+    assert_eq!(
+        super::rules::rule_au_045_multi_service_identity(&[handle], "scan", 0).len(),
+        1,
+        "code + forum are independent families and must fire AU-045"
+    );
 
     // A username confirmed by breach + social + presence → 3 families → fires.
     let mut u = Entity::new(EntityKind::Username, "kylo4kylo", 0.6, "scan");
