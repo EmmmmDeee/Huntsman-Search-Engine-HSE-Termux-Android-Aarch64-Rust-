@@ -508,10 +508,7 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
         severity,
         format!(
             "{} coordinates from {} sources bound a {}-vertex area ({}); confidence-weighted \
-             centroid {:.4},{:.4}, diameter {:.1} km — {kind}. Best location fix (confidence- \
-             weighted geometric median, outlier-robust): {:.4},{:.4} ± {:.1} km (robust); \
-             bounding circle \
-             (Chebyshev centre): {:.4},{:.4} ± {:.1} km",
+             centroid {:.4},{:.4}, diameter {:.1} km — {kind}. {}",
             parsed.len(),
             source_count,
             fp.hull.len(),
@@ -519,12 +516,7 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
             fix.weighted_centroid.0,
             fix.weighted_centroid.1,
             fp.diameter_km,
-            fix.geometric_median.0,
-            fix.geometric_median.1,
-            fix.median_radius_km,
-            fix.enclosing.center.0,
-            fix.enclosing.center.1,
-            fix.enclosing.radius_km,
+            fix.location_summary(),
         ),
         uids,
         scan_id,

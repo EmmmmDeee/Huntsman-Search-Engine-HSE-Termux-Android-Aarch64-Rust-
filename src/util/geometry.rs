@@ -529,6 +529,27 @@ pub struct LocationFix {
     pub enclosing: EnclosingCircle,
 }
 
+impl LocationFix {
+    /// A one-line, operator-facing rendering of the location estimates: the
+    /// headline robust+confidence-weighted geometric median with its robust
+    /// radius, then the worst-case Chebyshev bounding circle. The rendering lives
+    /// with the data so every consumer (a correlation description, a future
+    /// export or API field) describes the fix identically.
+    pub fn location_summary(&self) -> String {
+        format!(
+            "best location fix (confidence-weighted geometric median, outlier-robust): \
+             {:.4},{:.4} ± {:.1} km (robust); bounding circle (Chebyshev centre): \
+             {:.4},{:.4} ± {:.1} km",
+            self.geometric_median.0,
+            self.geometric_median.1,
+            self.median_radius_km,
+            self.enclosing.center.0,
+            self.enclosing.center.1,
+            self.enclosing.radius_km,
+        )
+    }
+}
+
 /// Compute the full [`LocationFix`] for confidence-weighted `(point, weight)`
 /// sightings, or `None` when they don't bound an area (fewer than three distinct
 /// non-collinear points — see [`geo_footprint`]).
@@ -761,6 +782,21 @@ mod tests {
             max > 3000.0,
             "max radius is dominated by the outlier: {max}km"
         );
+    }
+
+    #[test]
+    fn location_fix_summary_describes_the_estimates() {
+        let wp = [
+            ((-33.8700, 151.2100), 0.9),
+            ((-33.8720, 151.2150), 0.6),
+            ((-33.8680, 151.2080), 0.7),
+        ];
+        let s = location_fix(&wp).unwrap().location_summary();
+        assert!(s.contains("geometric median"));
+        assert!(s.contains("Chebyshev centre"));
+        assert!(s.contains('±'));
+        // Renders the median coordinate to 4 dp (the suburb is ~-33.87, 151.21).
+        assert!(s.contains("-33.8") && s.contains("151.2"), "{s}");
     }
 
     #[test]
