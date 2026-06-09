@@ -301,6 +301,18 @@ pub fn resolve_or_default<'a>(ctx_key: Option<&'a str>, default: &'a str) -> &'a
     }
 }
 
+/// Resolve the WiGLE HTTP-Basic credentials (API name + token) from the module
+/// context, each falling back to the embedded default via [`resolve_or_default`].
+/// Single-sources the WiGLE credential env-var names and defaults that the
+/// `wigle` and `wifi_intel` modules both need — they authenticate against the
+/// same WiGLE API, so this resolution previously lived in two places.
+#[must_use]
+pub fn wigle_credentials(ctx: &crate::core::module::ModuleContext) -> (&str, &str) {
+    let user = resolve_or_default(ctx.key_opt("HUNTSMAN_WIGLE_USER"), WIGLE_DEFAULT_USER);
+    let token = resolve_or_default(ctx.key_opt("HUNTSMAN_WIGLE_TOKEN"), WIGLE_DEFAULT_TOKEN);
+    (user, token)
+}
+
 /// Every API-key/token value HSE uses to authenticate its OWN queries: the
 /// embedded defaults, every superseded default (so a rotated-out auth key is
 /// never reported as a finding), and every live `HUNTSMAN_*_KEY` / `*_TOKEN` /

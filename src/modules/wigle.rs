@@ -27,11 +27,8 @@ use crate::core::{
 use crate::util::budget::{BudgetSnapshot, QuotaBudget};
 use crate::util::http::error_snippet;
 
-const USER_ENV: &str = "HUNTSMAN_WIGLE_USER";
-const TOKEN_ENV: &str = "HUNTSMAN_WIGLE_TOKEN";
-// Embedded fallback: single source of truth lives in `util::keys`.
-const HARDCODED_USER: &str = crate::util::keys::WIGLE_DEFAULT_USER;
-const HARDCODED_TOKEN: &str = crate::util::keys::WIGLE_DEFAULT_TOKEN;
+// WiGLE credentials (env names + embedded fallbacks) are resolved by the
+// single-sourced `crate::util::keys::wigle_credentials`.
 
 #[derive(Deserialize)]
 struct Resp {
@@ -199,11 +196,7 @@ impl Module for Wigle {
         // by the operator's daily allowance. Each sub-budget is
         // independent and env-tunable.
 
-        // Single-sourced credential policy (see `keys::resolve_or_default`): a
-        // non-empty configured key wins, else the embedded default — and a
-        // present-but-empty env value falls back rather than failing auth.
-        let user = crate::util::keys::resolve_or_default(ctx.key_opt(USER_ENV), HARDCODED_USER);
-        let token = crate::util::keys::resolve_or_default(ctx.key_opt(TOKEN_ENV), HARDCODED_TOKEN);
+        let (user, token) = crate::util::keys::wigle_credentials(ctx);
 
         if target.kind == TargetKind::MacAddress {
             if !BSSID_BUDGET.try_increment() {

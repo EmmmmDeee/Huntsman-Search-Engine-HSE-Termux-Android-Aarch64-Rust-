@@ -24,11 +24,8 @@ use crate::util::termux::termux_cmd;
 
 // ── WiGLE credentials ──────────────────────────────────────────────────
 
-const USER_ENV: &str = "HUNTSMAN_WIGLE_USER";
-const TOKEN_ENV: &str = "HUNTSMAN_WIGLE_TOKEN";
-// Embedded fallback: single source of truth lives in `util::keys`.
-const HARDCODED_USER: &str = crate::util::keys::WIGLE_DEFAULT_USER;
-const HARDCODED_TOKEN: &str = crate::util::keys::WIGLE_DEFAULT_TOKEN;
+// Env names + embedded fallbacks are resolved by the single-sourced
+// `crate::util::keys::wigle_credentials` (shared with the `wigle` module).
 
 /// How many of the strongest APs to query WiGLE for.
 const MAX_BSSIDS: usize = 5;
@@ -140,11 +137,7 @@ impl Module for WifiIntel {
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        // Single-sourced credential policy (see `keys::resolve_or_default`): a
-        // non-empty configured key wins, else the embedded default — and a
-        // present-but-empty env value falls back rather than failing auth.
-        let user = crate::util::keys::resolve_or_default(ctx.key_opt(USER_ENV), HARDCODED_USER);
-        let token = crate::util::keys::resolve_or_default(ctx.key_opt(TOKEN_ENV), HARDCODED_TOKEN);
+        let (user, token) = crate::util::keys::wigle_credentials(ctx);
 
         // ── Single termux-wifi-scaninfo call ────────────────────────────
         let Some(stdout) = termux_cmd("termux-wifi-scaninfo", &[], 5000).await else {
