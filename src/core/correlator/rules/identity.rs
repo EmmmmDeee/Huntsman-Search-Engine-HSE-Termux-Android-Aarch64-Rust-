@@ -119,6 +119,88 @@ pub(in crate::core::correlator) fn rule_au_045_multi_service_identity(
         .collect()
 }
 
+/// AU-046 — Cross-platform identity resolution.
+///
+/// The investigative payoff of the keyless account modules: when an alias
+/// (a Username confirmed across **≥2 distinct platform families** — code/forum/
+/// social/presence) has also yielded real-world identifiers (an Email or Person)
+/// *from those platform accounts*, the handle is no longer just "present on N
+/// sites" — it is **resolved to an identity**. This links the alias to the
+/// email(s)/person(s) its GitHub/npm/Reddit/Keybase profiles expose, producing
+/// the individualised, subject-as-hub result an alias investigation is for.
+///
+/// Distinct from AU-045 (which only confirms the handle exists across families)
+/// and AU-002 (which needs email+username+phone all present): AU-046 is the
+/// *handle → identity* edge, drawn only from identifiers a platform account
+/// itself published, so it can't fuse unrelated breach-dump strangers.
+pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolution(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::BTreeSet;
+    // Platform-account provider families — the ones where a confirmed handle is
+    // an account a person controls (not infra/breach corpora).
+    let is_platform = |f: &str| matches!(f, "code" | "forum" | "social" | "presence");
+    let platform_families = |e: &Entity| -> BTreeSet<&'static str> {
+        e.corroborating_sources()
+            .iter()
+            .map(|s| source_family(s))
+            .filter(|f| is_platform(f))
+            .collect()
+    };
+
+    // The alias: a username controlled across ≥2 distinct platform families.
+    let aliases: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username && platform_families(e).len() >= 2)
+        .collect();
+    if aliases.is_empty() {
+        return Vec::new();
+    }
+
+    // Real-world identifiers the platform accounts themselves exposed.
+    let resolved: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::Email | EntityKind::Person))
+        .filter(|e| {
+            e.corroborating_sources()
+                .iter()
+                .any(|s| matches!(source_family(s), "code" | "forum" | "social"))
+        })
+        .collect();
+    if resolved.is_empty() {
+        return Vec::new();
+    }
+
+    let resolved_uids: Vec<String> = resolved.iter().map(|e| e.uid.clone()).collect();
+    aliases
+        .iter()
+        .map(|alias| {
+            let fams = platform_families(alias);
+            let fam_list: Vec<&str> = fams.iter().copied().collect();
+            let mut uids = vec![alias.uid.clone()];
+            uids.extend(resolved_uids.iter().cloned());
+            Correlation {
+                rule_id: "AU-046".into(),
+                rule_name: "Cross-platform identity resolution".into(),
+                severity: Severity::High,
+                description: format!(
+                    "Alias '{}' (confirmed across {}: {}) resolves to {} real-world identifier(s) via its platform accounts",
+                    alias.value,
+                    fam_list.len(),
+                    fam_list.join(", "),
+                    resolved.len()
+                ),
+                entity_uids: uids,
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            }
+        })
+        .collect()
+}
+
 pub(in crate::core::correlator) fn rule_au_003_high_corroboration(
     entities: &[Entity],
     scan_id: &str,

@@ -238,6 +238,7 @@ const RULES: &[RuleFn] = &[
     rule_au_043_paste_exposure,
     rule_au_044_shared_tracking_id,
     rule_au_045_multi_service_identity,
+    rule_au_046_cross_platform_identity_resolution,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

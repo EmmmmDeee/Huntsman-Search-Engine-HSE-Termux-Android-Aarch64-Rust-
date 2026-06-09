@@ -2088,3 +2088,36 @@ fn au011_counts_independent_platform_module_confirmations() {
         "two platforms must not fire"
     );
 }
+
+#[test]
+fn au046_resolves_an_alias_to_platform_exposed_identifiers() {
+    // The alias confirmed across two platform families (npm=code, reddit=forum),
+    // plus an email its npm account exposed → AU-046 links handle to identity.
+    let mut handle = Entity::new(EntityKind::Username, "kylo4kylo", 0.6, "scan");
+    for s in ["npm_author", "reddit_user"] {
+        handle.add_evidence(Evidence::new(s, "confirmed account"));
+    }
+    let mut email = Entity::new(EntityKind::Email, "k@example.com", 0.7, "scan");
+    email.add_evidence(Evidence::new("npm_author", "maintainer email"));
+
+    let hits = super::rules::rule_au_046_cross_platform_identity_resolution(
+        &[handle.clone(), email.clone()],
+        "scan",
+        0,
+    );
+    assert_eq!(hits.len(), 1, "alias + platform-exposed email must resolve");
+    assert_eq!(hits[0].rule_id, "AU-046");
+    assert_eq!(hits[0].severity, super::Severity::High);
+    // The correlation links the alias AND the resolved identifier.
+    assert!(hits[0].entity_uids.contains(&handle.uid));
+    assert!(hits[0].entity_uids.contains(&email.uid));
+
+    // Single-family handle (only npm) does NOT resolve — needs ≥2 platforms.
+    let mut one = Entity::new(EntityKind::Username, "solo", 0.6, "scan");
+    one.add_evidence(Evidence::new("npm_author", "x"));
+    assert!(
+        super::rules::rule_au_046_cross_platform_identity_resolution(&[one, email], "scan", 0)
+            .is_empty(),
+        "one platform family is not cross-platform resolution"
+    );
+}
