@@ -11,6 +11,7 @@ pub mod diagnostics;
 pub mod domains;
 pub mod found_keys;
 pub mod geohash;
+pub mod geometry;
 pub mod html;
 pub mod http;
 pub mod key_pool;

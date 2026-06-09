@@ -429,7 +429,7 @@ fn is_infrastructure_geo(e: &Entity) -> bool {
 ///
 /// Precision discipline: requires ≥3 confirmed `Coordinates` from ≥2 *distinct*
 /// sources (one device's own track is not multi-source convergence) that bound
-/// a real area (non-collinear — see [`crate::util::geohash::geo_footprint`]). A
+/// a real area (non-collinear — see [`crate::util::geometry::geo_footprint`]). A
 /// *tight* footprint (≤25 km, one metro) is a High-severity residence/base fix;
 /// a dispersed one is Medium and describes a travel pattern rather than a home.
 ///
@@ -468,7 +468,7 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
         return Vec::new();
     }
     let points: Vec<(f64, f64)> = parsed.iter().map(|(_, ll)| *ll).collect();
-    let Some(fp) = crate::util::geohash::geo_footprint(&points) else {
+    let Some(fp) = crate::util::geometry::geo_footprint(&points) else {
         return Vec::new(); // fewer than 3 distinct, or all collinear → no area
     };
     // Confidence-weighted centroid: the convex combination of the sightings by
@@ -480,16 +480,16 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
         .iter()
         .map(|(e, ll)| (*ll, e.c_effective()))
         .collect();
-    let centroid = crate::util::geohash::weighted_centroid(&weighted).unwrap_or(fp.centroid);
+    let centroid = crate::util::geometry::weighted_centroid(&weighted).unwrap_or(fp.centroid);
     // The geometric median (Weber point) is the headline location fix: it
     // minimises the SUM of distances to the sightings and has a 0.5 breakdown
     // point, so a lone travel/VPN/planted outlier can't drag it off the
     // subject's real base — the property the centroid and Chebyshev centre lack.
-    let gmed = crate::util::geohash::geometric_median(&points).unwrap_or(centroid);
+    let gmed = crate::util::geometry::geometric_median(&points).unwrap_or(centroid);
     // The Chebyshev centre (minimum-enclosing-circle centre) is retained as the
     // bounding circle: its radius is the honest worst-case uncertainty around the
     // footprint. `min_enclosing_circle` returns `Some` for any non-empty set.
-    let mec = crate::util::geohash::min_enclosing_circle(&points);
+    let mec = crate::util::geometry::min_enclosing_circle(&points);
     let (center, radius_km) = mec
         .map(|c| (c.center, c.radius_km))
         .unwrap_or((fp.centroid, fp.diameter_km / 2.0));
@@ -541,7 +541,7 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
 /// person-anchored coordinates (same infrastructure exclusion as AU-052), take
 /// the *dominant* cluster (≥3 points) as the established area, build its convex
 /// hull, and flag any other coordinate that is **not** inside that hull
-/// ([`crate::util::geohash::point_in_convex_hull`]) *and* lies a guarded distance
+/// ([`crate::util::geometry::point_in_convex_hull`]) *and* lies a guarded distance
 /// beyond it (`max(50 km, 2× the area's diameter)` from the area's
 /// confidence-weighted centroid). The hull supplies the shape; the guard ensures
 /// a flagged point is genuinely a *different place*, not a hull vertex a few km
@@ -552,9 +552,8 @@ pub(in crate::core::correlator) fn rule_au_053_out_of_area_location(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    use crate::util::geohash::{
-        geo_footprint, haversine_km, point_in_convex_hull, weighted_centroid,
-    };
+    use crate::util::geohash::haversine_km;
+    use crate::util::geometry::{geo_footprint, point_in_convex_hull, weighted_centroid};
 
     let parsed: Vec<(&Entity, (f64, f64))> = entities_of_kind(entities, EntityKind::Coordinates)
         .into_iter()

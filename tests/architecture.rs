@@ -90,6 +90,10 @@ fn core_does_not_import_util_directly() {
                 && !line.contains("util::key_pool")
                 && !line.contains("util::key_roi")
                 && !line.contains("util::geohash")
+                // Pure, offline computational geometry (convex hull, geometric
+                // median, …) — the geo correlation rules' location estimators.
+                // Same justification as `util::geohash`: no I/O, no deps.
+                && !line.contains("util::geometry")
                 && !line.contains("util::preflight")
                 && !line.contains("util::keys::signup_hint")
                 && !line.contains("util::oathnet::reset_budget")
