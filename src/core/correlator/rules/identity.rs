@@ -201,6 +201,70 @@ pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolutio
         .collect()
 }
 
+/// AU-048 — Shared public key links accounts (cryptographic proof of control).
+///
+/// The strongest cross-account link in the engine. A public key (SSH or PGP)
+/// published on two accounts proves the **same person holds the matching private
+/// key** — stronger than password reuse, because there is no plaintext two
+/// unrelated people could coincidentally share. When one key-tagged Credential
+/// (fingerprinted by `github_user`/keyserver modules so the same key folds to one
+/// uid) carries ≥2 distinct producing accounts in its evidence, those accounts
+/// are one controller. Exactly the seam that links a target's rotated/burner
+/// handles when they didn't regenerate their key. Critical.
+pub(in crate::core::correlator) fn rule_au_048_shared_public_key(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::BTreeSet;
+    let mut out = Vec::new();
+    for key in entities.iter().filter(|e| {
+        e.kind == EntityKind::Credential && (e.has_tag("ssh-key") || e.has_tag("pgp-key"))
+    }) {
+        // Distinct accounts that published this exact key, from the evidence the
+        // key-emitting modules attach (a github login, username, or email).
+        let accounts: BTreeSet<String> = key
+            .evidence
+            .iter()
+            .flat_map(|ev| {
+                ["github_login", "username", "email"]
+                    .iter()
+                    .filter_map(|k| ev.attributes.get(*k))
+            })
+            .map(|v| v.trim().to_lowercase())
+            .filter(|v| !v.is_empty())
+            .collect();
+        if accounts.len() < 2 {
+            continue;
+        }
+        let mut uids = vec![key.uid.clone()];
+        for e in entities
+            .iter()
+            .filter(|e| matches!(e.kind, EntityKind::Username | EntityKind::Email))
+        {
+            if accounts.contains(&e.value.trim().to_lowercase()) {
+                uids.push(e.uid.clone());
+            }
+        }
+        let listed: Vec<&str> = accounts.iter().take(6).map(String::as_str).collect();
+        out.push(Correlation {
+            rule_id: "AU-048".into(),
+            rule_name: "Shared public key links accounts".into(),
+            severity: Severity::Critical,
+            description: format!(
+                "A reused public key proves one person controls {} accounts (same private key): {}",
+                accounts.len(),
+                listed.join(", ")
+            ),
+            entity_uids: uids,
+            scan_id: scan_id.into(),
+            ts,
+            rank: 0.0,
+        });
+    }
+    out
+}
+
 pub(in crate::core::correlator) fn rule_au_003_high_corroboration(
     entities: &[Entity],
     scan_id: &str,

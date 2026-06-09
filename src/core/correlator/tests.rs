@@ -2177,3 +2177,44 @@ fn au047_links_identities_by_a_reused_unique_secret_only() {
         "one identity is not a cross-account link"
     );
 }
+
+#[test]
+fn au048_links_accounts_sharing_a_public_key() {
+    // A public key published by two accounts → cryptographic proof of one
+    // controller (same private key). Single account → no link.
+    let key = |fp: &str, logins: &[&str]| {
+        let mut e = Entity::new(EntityKind::Credential, fp, 0.85, "scan");
+        e.tag("ssh-key");
+        for l in logins {
+            e.add_evidence(
+                Evidence::new("github_user", format!("SSH key published by @{l}"))
+                    .with_attr("github_login", *l),
+            );
+        }
+        e
+    };
+    let a = Entity::new(EntityKind::Username, "ghost91", 0.6, "scan");
+    let b = Entity::new(EntityKind::Username, "jsmith_work", 0.6, "scan");
+
+    let shared = key("ssh:deadbeefcafef00d", &["ghost91", "jsmith_work"]);
+    let hits = super::rules::rule_au_048_shared_public_key(
+        &[shared.clone(), a.clone(), b.clone()],
+        "scan",
+        0,
+    );
+    assert_eq!(hits.len(), 1, "a key on two accounts must link them");
+    assert_eq!(hits[0].rule_id, "AU-048");
+    assert_eq!(hits[0].severity, super::Severity::Critical);
+    assert!(hits[0].entity_uids.contains(&a.uid) && hits[0].entity_uids.contains(&b.uid));
+
+    // A key on a single account is not a link; a non-key Credential is ignored.
+    let solo = key("ssh:only0neacct", &["ghost91"]);
+    assert!(super::rules::rule_au_048_shared_public_key(&[solo, a.clone()], "scan", 0).is_empty());
+    let mut pw = Entity::new(EntityKind::Credential, "$2a$10$x", 0.6, "scan");
+    pw.add_evidence(Evidence::new("import", "x").with_attr("github_login", "a"));
+    pw.add_evidence(Evidence::new("import", "y").with_attr("github_login", "b"));
+    assert!(
+        super::rules::rule_au_048_shared_public_key(&[pw], "scan", 0).is_empty(),
+        "AU-048 only fires on key-tagged credentials"
+    );
+}

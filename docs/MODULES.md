@@ -23,7 +23,7 @@ records. The engine knows nothing else — every module is a one-file change.
 |---|---|---|---|---|---|
 | `username_search` | username | free | no | 111 | url, username |
 | `social_probe` | username, full_name | free | no | 108 | url, username, person, domain |
-| `github_user` | username | free | no | 107 | person, email, username, domain, url, organisation, address |
+| `github_user` | username | free | no | 107 | person, email, username, domain, url, organisation, address, credential |
 | `hacker_news` | username | free | no | 106 | username, email, url |
 | `reddit_user` | username | free | no | 105 | username, email, url |
 | `npm_author` | username | free | no | 104 | username, email, url, domain |

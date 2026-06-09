@@ -79,6 +79,7 @@ impl Module for GithubUser {
             EntityKind::Url,
             EntityKind::Organisation,
             EntityKind::Address,
+            EntityKind::Credential,
         ];
         KINDS
     }
@@ -351,6 +352,33 @@ impl GithubUser {
                 .with_attr("ssh_keys", key_summaries.join("; ")),
             );
         }
+
+        // Emit each SSH public key as a fingerprinted, CORRELATABLE artifact. A
+        // public key published on two accounts proves the same person holds the
+        // private key — the strongest cross-account link there is. The artifact
+        // value is `ssh:<fp>` (a hash of algo+base64, comment dropped), so two
+        // accounts sharing a key produce the SAME uid and the engine merges them
+        // into one artifact carrying both logins — which AU-048 then links.
+        for key in keys.iter().take(10) {
+            let Some(fp) = key.key.as_deref().and_then(ssh_fingerprint) else {
+                continue;
+            };
+            let mut e = Entity::new(EntityKind::Credential, &fp, 0.85, &ctx.scan_id);
+            e.tag("ssh-key");
+            e.tag("public-key");
+            e.tag("github");
+            let algo = key
+                .key
+                .as_deref()
+                .and_then(|k| k.split_whitespace().next())
+                .unwrap_or("ssh");
+            e.add_evidence(
+                Evidence::new(SRC, format!("SSH public key published by @{login}"))
+                    .with_attr("github_login", login)
+                    .with_attr("key_type", algo),
+            );
+            result.push(e);
+        }
     }
 
     async fn fetch_events(&self, login: &str, ctx: &ModuleContext, result: &mut ModuleResult) {
@@ -494,6 +522,23 @@ impl GithubUser {
     }
 }
 
+/// Stable fingerprint of an SSH public key for cross-account correlation:
+/// `ssh:<first-16-hex of SHA-256(algo + " " + base64)>`. The trailing comment
+/// (`user@host`) is dropped — it varies between machines while the key material
+/// is the identity, so the same key on two accounts yields the same fingerprint.
+/// Returns `None` for a malformed key (missing algo/base64).
+fn ssh_fingerprint(raw: &str) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let mut parts = raw.split_whitespace();
+    let algo = parts.next()?;
+    let blob = parts.next()?;
+    if blob.len() < 16 {
+        return None; // not a plausible key body
+    }
+    let digest = Sha256::digest(format!("{algo} {blob}").as_bytes());
+    Some(format!("ssh:{}", hex::encode(&digest[..8])))
+}
+
 /// Normalise and vet a commit-author email for emission: trimmed + lowercased,
 /// must be a plausible address, and must NOT be one of GitHub's privacy
 /// placeholders (`…@users.noreply.github.com`, any `noreply`/`*.github.com`
@@ -528,6 +573,22 @@ fn top_event_types(event_types: std::collections::HashMap<String, u32>, n: usize
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ssh_fingerprint_is_comment_invariant_and_key_specific() {
+        // The same key with different trailing comments (user@host) must yield the
+        // SAME fingerprint — that is what links one key across two accounts; a
+        // different key must differ; malformed input is dropped.
+        let base = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAExampleKeyMaterialHere";
+        let a = super::ssh_fingerprint(&format!("{base} ghost@laptop")).unwrap();
+        let b = super::ssh_fingerprint(&format!("{base} jsmith@work-pc")).unwrap();
+        assert_eq!(a, b, "comment must not change the fingerprint");
+        assert!(a.starts_with("ssh:"));
+        let other = super::ssh_fingerprint("ssh-rsa AAAAB3DifferentKeyMaterialXX").unwrap();
+        assert_ne!(a, other);
+        assert!(super::ssh_fingerprint("malformed").is_none());
+        assert!(super::ssh_fingerprint("ssh-rsa short").is_none());
+    }
+
     use super::*;
 
     #[test]
