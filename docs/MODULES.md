@@ -26,6 +26,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `github_user` | username | free | no | 107 | person, email, username, domain, url, organisation, address |
 | `hacker_news` | username | free | no | 106 | username, email, url |
 | `reddit_user` | username | free | no | 105 | username, email, url |
+| `npm_author` | username | free | no | 104 | username, email, url, domain |
 | `keybase` | username | free | no | 100 | person, username, email, domain, address |
 | `username_variants` | username | free | **yes** | 98 | username |
 

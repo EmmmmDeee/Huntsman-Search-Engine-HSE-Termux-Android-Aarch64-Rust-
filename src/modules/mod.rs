@@ -65,6 +65,7 @@ pub mod mls;
 pub mod mylnikov;
 pub mod name_intel;
 pub mod netblock;
+pub mod npm_author;
 pub mod numverify;
 pub mod oathnet_pro;
 pub mod opencorporates;
@@ -234,6 +235,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(username_variants::UsernameVariants),
         Arc::new(github_user::GithubUser),
         Arc::new(hacker_news::HackerNews),
+        Arc::new(npm_author::NpmAuthor),
         Arc::new(reddit_user::RedditUser),
         Arc::new(gravatar::Gravatar),
         Arc::new(pgp::Pgp),

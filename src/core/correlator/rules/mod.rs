@@ -232,7 +232,15 @@ pub(super) fn source_family(source: &str) -> &'static str {
         "stealer",
     ]) {
         "breach"
-    } else if has(&["github", "gitlab", "bitbucket", "sourceforge", "codeberg"]) {
+    } else if has(&[
+        "github",
+        "gitlab",
+        "bitbucket",
+        "sourceforge",
+        "codeberg",
+        "npm_author",
+        "npm",
+    ]) {
         // Code-hosting is its own provider family: a handle present here is an
         // independent signal from a forum or social account (different platforms,
         // different populations) — so it counts toward cross-service diversity.
