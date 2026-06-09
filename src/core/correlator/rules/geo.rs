@@ -467,37 +467,18 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
     if sources.len() < 2 {
         return Vec::new();
     }
-    let points: Vec<(f64, f64)> = parsed.iter().map(|(_, ll)| *ll).collect();
-    let Some(fp) = crate::util::geometry::geo_footprint(&points) else {
-        return Vec::new(); // fewer than 3 distinct, or all collinear → no area
-    };
-    // Confidence-weighted centroid: the convex combination of the sightings by
-    // each one's `c_effective`, so a GPS-exact photo pulls the centre harder than
-    // a shaky IP-geo point. Being a convex combination it always lies inside the
-    // hull. Falls back to the unweighted hull centroid only if the helper can't
-    // form one (it can, given ≥1 point).
+    // Bundle every convex estimator — weighted centroid, geometric median + its
+    // robust radius, and the Chebyshev bounding circle — in one call. The rule
+    // owns the *policy* (which coordinates qualify); `util::geometry` owns the
+    // *geometry* (how to estimate the location from them).
     let weighted: Vec<((f64, f64), f64)> = parsed
         .iter()
         .map(|(e, ll)| (*ll, e.c_effective()))
         .collect();
-    let centroid = crate::util::geometry::weighted_centroid(&weighted).unwrap_or(fp.centroid);
-    // The geometric median (Weber point) is the headline location fix: it
-    // minimises the SUM of distances to the sightings and has a 0.5 breakdown
-    // point, so a lone travel/VPN/planted outlier can't drag it off the
-    // subject's real base — the property the centroid and Chebyshev centre lack.
-    let gmed = crate::util::geometry::geometric_median(&points).unwrap_or(centroid);
-    // Robust uncertainty for that fix: the MEDIAN distance from it to the
-    // sightings. Same 0.5 breakdown point as the median itself, so a lone
-    // outlier can't inflate it — the honest "± km" around the real base, paired
-    // with an outlier-robust location instead of the worst-case Chebyshev radius.
-    let gmed_spread = crate::util::geometry::median_distance_km(gmed, &points);
-    // The Chebyshev centre (minimum-enclosing-circle centre) is retained as the
-    // bounding circle: its radius is the honest worst-case uncertainty around the
-    // footprint. `min_enclosing_circle` returns `Some` for any non-empty set.
-    let mec = crate::util::geometry::min_enclosing_circle(&points);
-    let (center, radius_km) = mec
-        .map(|c| (c.center, c.radius_km))
-        .unwrap_or((fp.centroid, fp.diameter_km / 2.0));
+    let Some(fix) = crate::util::geometry::location_fix(&weighted) else {
+        return Vec::new(); // fewer than 3 distinct, or all collinear → no area
+    };
+    let fp = &fix.footprint;
 
     let mut uids: Vec<String> = parsed.iter().map(|(e, _)| e.uid.clone()).collect();
     uids.sort_unstable();
@@ -520,15 +501,15 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
             sources.len(),
             fp.hull.len(),
             if fp.is_tight() { "tight" } else { "dispersed" },
-            centroid.0,
-            centroid.1,
+            fix.weighted_centroid.0,
+            fix.weighted_centroid.1,
             fp.diameter_km,
-            gmed.0,
-            gmed.1,
-            gmed_spread,
-            center.0,
-            center.1,
-            radius_km,
+            fix.geometric_median.0,
+            fix.geometric_median.1,
+            fix.median_radius_km,
+            fix.enclosing.center.0,
+            fix.enclosing.center.1,
+            fix.enclosing.radius_km,
         ),
         uids,
         scan_id,

@@ -441,6 +441,53 @@ pub fn point_in_convex_hull(hull: &[(f64, f64)], p: (f64, f64)) -> bool {
     (0..n).all(|i| cross(hull[i], hull[(i + 1) % n]) >= EPS)
 }
 
+/// A consolidated location estimate from a set of confidence-weighted sightings:
+/// every convex estimator this module offers, computed once with consistent
+/// fallbacks. Bundling them keeps the orchestration (which estimator, which
+/// fallback) in one tested place rather than scattered across a caller.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocationFix {
+    /// The convex hull, centroid, and diameter of the sightings.
+    pub footprint: GeoFootprint,
+    /// Confidence-weighted convex combination (pulled toward trusted sightings).
+    pub weighted_centroid: (f64, f64),
+    /// The **headline** estimate: the geometric median (L1, outlier-robust).
+    pub geometric_median: (f64, f64),
+    /// Robust uncertainty around the median — the median distance to the
+    /// sightings (same 0.5 breakdown point as the median).
+    pub median_radius_km: f64,
+    /// The minimum enclosing circle: Chebyshev centre + worst-case radius.
+    pub enclosing: EnclosingCircle,
+}
+
+/// Compute the full [`LocationFix`] for confidence-weighted `(point, weight)`
+/// sightings, or `None` when they don't bound an area (fewer than three distinct
+/// non-collinear points — see [`geo_footprint`]).
+///
+/// This is the single entry point a caller needs for "where is the subject":
+/// it runs the weighted centroid, the geometric median, its robust radius, and
+/// the enclosing circle, applying the same deterministic fallbacks throughout (a
+/// degenerate estimator falls back to the hull centroid / half-diameter) so the
+/// result is always fully populated once a footprint exists.
+pub fn location_fix(weighted_points: &[((f64, f64), f64)]) -> Option<LocationFix> {
+    let points: Vec<(f64, f64)> = weighted_points.iter().map(|&(p, _)| p).collect();
+    let footprint = geo_footprint(&points)?;
+    let weighted_centroid = weighted_centroid(weighted_points).unwrap_or(footprint.centroid);
+    let geometric_median = geometric_median(&points).unwrap_or(weighted_centroid);
+    let median_radius_km = median_distance_km(geometric_median, &points);
+    let enclosing = min_enclosing_circle(&points).unwrap_or(EnclosingCircle {
+        center: footprint.centroid,
+        radius_km: footprint.diameter_km / 2.0,
+    });
+    Some(LocationFix {
+        footprint,
+        weighted_centroid,
+        geometric_median,
+        median_radius_km,
+        enclosing,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,6 +657,30 @@ mod tests {
             max > 3000.0,
             "max radius is dominated by the outlier: {max}km"
         );
+    }
+
+    #[test]
+    fn location_fix_bundles_every_estimator_consistently() {
+        // Fewer than 3 distinct points → no area → None.
+        assert!(location_fix(&[((0.0, 0.0), 1.0), ((1.0, 1.0), 1.0)]).is_none());
+
+        // A tight suburb cluster: the bundle's fields agree with the standalone
+        // estimators, proving location_fix just orchestrates them.
+        let wp = [
+            ((-33.8700, 151.2100), 0.9),
+            ((-33.8720, 151.2150), 0.6),
+            ((-33.8680, 151.2080), 0.7),
+        ];
+        let pts: Vec<(f64, f64)> = wp.iter().map(|&(p, _)| p).collect();
+        let fix = location_fix(&wp).expect("three points bound an area");
+        assert_eq!(fix.footprint, geo_footprint(&pts).unwrap());
+        assert_eq!(fix.weighted_centroid, weighted_centroid(&wp).unwrap());
+        assert_eq!(fix.geometric_median, geometric_median(&pts).unwrap());
+        assert_eq!(
+            fix.median_radius_km,
+            median_distance_km(fix.geometric_median, &pts)
+        );
+        assert_eq!(fix.enclosing, min_enclosing_circle(&pts).unwrap());
     }
 
     #[test]
