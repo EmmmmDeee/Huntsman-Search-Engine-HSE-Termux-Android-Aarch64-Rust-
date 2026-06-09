@@ -200,6 +200,12 @@ pub enum Command {
         /// `--full`. Default keeps the gate on; excluded aliases are logged.
         #[arg(long)]
         expand_all_identities: bool,
+        /// Preset bundle (recommended | passive | footprint | investigate | fast).
+        /// `recommended` is the zero-setup out-of-box default: free/keyless sources,
+        /// one expansion round for cross-service correlation, phone-safe budgets.
+        /// Sets depth/free-only/budgets; `--modules`/`--exclude`/`--output` still apply.
+        #[arg(long)]
+        profile: Option<String>,
         /// Output format: table | json | dossier. "dossier" shows full intel grouped by category.
         #[arg(short, long, default_value = "table")]
         output: String,
@@ -554,6 +560,7 @@ pub async fn run() -> Result<()> {
             expansion_strategy,
             seeknow_scan_cap,
             expand_all_identities,
+            profile,
             output,
         } => {
             let value = resolve_seed(value, keys::default_seed())?;
@@ -588,6 +595,7 @@ pub async fn run() -> Result<()> {
                 // wrong-identity gate is lifted alongside the other narrowing
                 // filters it already drops.
                 expand_all_identities: expand_all_identities || full,
+                profile,
                 output,
             })
             .await
