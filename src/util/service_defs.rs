@@ -112,14 +112,12 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         key_header: KeyPlacement::Header("hibp-api-key"),
         rate_limit_reset_secs: 6,
     },
-    ServiceDef {
-        name: "dehashed",
-        env_var: "HUNTSMAN_DEHASHED_KEY",
-        category: "breach",
-        test_url: "https://api.dehashed.com/search?query=email:test@example.com&size=1",
-        key_header: KeyPlacement::BasicAuth,
-        rate_limit_reset_secs: 60,
-    },
+    // NOTE: DeHashed is intentionally absent. Its v2 API is POST-only
+    // (`POST /v2/search` with a `Dehashed-Api-Key` header), which the
+    // GET-based key validator here cannot probe without spending a paid
+    // search credit — and the legacy v1 `GET /search` URL it used now 404s.
+    // The `dehashed` module reads HUNTSMAN_DEHASHED_KEY from the env directly,
+    // so a validator def would only ever mis-report a valid key as invalid.
     ServiceDef {
         name: "threatfox",
         env_var: "HUNTSMAN_THREATFOX_KEY",
@@ -248,14 +246,8 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         key_header: KeyPlacement::BasicAuth,
         rate_limit_reset_secs: 3,
     },
-    ServiceDef {
-        name: "dehashed_user",
-        env_var: "HUNTSMAN_DEHASHED_USER",
-        category: "breach",
-        test_url: "https://api.dehashed.com/search?query=email:test@example.com&size=1",
-        key_header: KeyPlacement::BasicAuth,
-        rate_limit_reset_secs: 60,
-    },
+    // (DeHashed v2 is key-only; the former `dehashed_user` account-email def
+    // is obsolete — see the note where the `dehashed` def used to live.)
     ServiceDef {
         name: "binaryedge",
         env_var: "HUNTSMAN_BINARYEDGE_KEY",

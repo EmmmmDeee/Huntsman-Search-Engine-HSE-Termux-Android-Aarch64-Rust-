@@ -10,6 +10,28 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Changed
+
+- **DeHashed module migrated to the v2 API.** DeHashed sunset the v1
+  `GET https://api.dehashed.com/search` endpoint (HTTP Basic with an account
+  email + key) — it now returns **404**, so the module was dead for everyone.
+  It now calls `POST https://api.dehashed.com/v2/search` with the key in a
+  `Dehashed-Api-Key` header and a JSON body (`{"query","page","size"}`). v2 is
+  **key-only**, so the obsolete `HUNTSMAN_DEHASHED_USER` account-email variable
+  is removed across the module, `KNOWN_KEYS`, the env templates, and the
+  service registry (its GET-based key validator can't probe a POST-only
+  endpoint, so the two now-unprobeable DeHashed service defs were dropped
+  rather than left mis-reporting valid keys as invalid). Response parsing
+  follows the v2 shape: `database_name` is read as an array (folded into the
+  top-databases aggregate), the new top-level `balance` is surfaced as
+  `credit_balance`, and the v1-only `obtained_from`/`created_at` aggregates are
+  dropped. The no-credentials-in-evidence invariant is preserved and now
+  regression-tested against the real v2 wire shape (an entry's
+  `password`/`hashed_password` are never bound). Note: DeHashed v2 requires an
+  **active search subscription** in addition to API credits — without it the
+  endpoint returns `401 "You need a search subscription and API credits to use
+  the API"`, which the module now surfaces verbatim.
+
 ### Fixed
 
 - **WiGLE account introspection now actually detects the email-unverified
