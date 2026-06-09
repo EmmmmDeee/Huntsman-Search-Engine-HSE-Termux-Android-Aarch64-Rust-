@@ -242,6 +242,21 @@ fn emit_dossier_entry(
         push(Entity::new(EntityKind::Phone, ph, 0.62, sid), "breach");
         stats.phones += 1;
     }
+    // A dossier's `address` is the strongest associate-pivot seed there is: the
+    // residence that ties a person to the people they live with. Promote it from
+    // a buried evidence attribute to a first-class Address entity so it surfaces
+    // in Browse, feeds the validated-address / co-location rules, and lets the
+    // shared-address association rule (AU-049) cluster co-residents into a
+    // household. Gated on specificity — a bare country/state ("USA") names a
+    // region thousands of strangers share and would fabricate a household, so we
+    // require a street-number signal (a digit) and ≥3 tokens before emitting.
+    if let Some(addr) = get("address")
+        && is_specific_address(addr)
+        && seen.insert(format!("ad:{}", addr.to_ascii_lowercase()))
+    {
+        push(Entity::new(EntityKind::Address, addr, 0.58, sid), "breach");
+        stats.addresses += 1;
+    }
     // A dossier's `_domain` is usually the email's OWN host (gmail.com) —
     // freemail/mega-domains are useless pivots (deep-expanding them maps a
     // platform, not the subject), so gate them out exactly as the engine's
@@ -258,6 +273,22 @@ fn emit_dossier_entry(
         stats.domains += 1;
     }
     entry.clear();
+}
+
+/// True when a breach-record `address` field is specific enough to identify a
+/// *residence* rather than a region. Requires a street-number signal (an ASCII
+/// digit) and at least three whitespace/comma tokens, so `"123 Main St,
+/// Springfield"` qualifies while `"USA"` / `"California"` do not. This is the
+/// same precision gate the AU-049 household rule applies — emitting a bare
+/// region as an Address would let unrelated strangers fuse into a false
+/// household downstream.
+fn is_specific_address(raw: &str) -> bool {
+    let tokens = raw
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|t| !t.is_empty())
+        .count();
+    let has_digit = raw.bytes().any(|b| b.is_ascii_digit());
+    tokens >= 3 && has_digit && raw.trim().len() >= 8
 }
 
 /// Emit an entity for a single `-> value` line under a `USERNAMES:`/`EMAILS:`/

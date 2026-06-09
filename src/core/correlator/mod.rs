@@ -241,6 +241,7 @@ const RULES: &[RuleFn] = &[
     rule_au_046_cross_platform_identity_resolution,
     rule_au_047_reused_secret_identity,
     rule_au_048_shared_public_key,
+    rule_au_049_shared_address_association,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
