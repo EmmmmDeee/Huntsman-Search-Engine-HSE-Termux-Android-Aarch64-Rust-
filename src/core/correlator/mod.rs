@@ -237,6 +237,7 @@ const RULES: &[RuleFn] = &[
     rule_au_042_pgp_email_identity,
     rule_au_043_paste_exposure,
     rule_au_044_shared_tracking_id,
+    rule_au_045_multi_service_identity,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

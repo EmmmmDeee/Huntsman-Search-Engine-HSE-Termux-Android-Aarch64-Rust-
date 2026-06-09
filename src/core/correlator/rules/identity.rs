@@ -56,6 +56,69 @@ pub(in crate::core::correlator) fn rule_au_002_identity_cluster(
     }]
 }
 
+/// AU-045 — Multi-service identity confirmation.
+///
+/// An identity value (email / username / person) whose corroborating sources
+/// span **two or more distinct service families** (breach, social, presence,
+/// search, email-intel, identity-registry, infra) is independently confirmed
+/// across the system, not merely echoed by one kind of provider. This is the
+/// strongest honest signal for an alias investigation and the explicit
+/// cross-service cross-reference the operator program asks for: it differs from
+/// AU-003 (which counts distinct sources regardless of kind) by requiring
+/// *diversity of provider family* — a handle confirmed by GitHub AND a breach DB
+/// AND a search engine is far stronger evidence of a real identity than three
+/// breach DBs that may all quote one leaked record. Directly counters the
+/// single-source fragility a result-matrix analysis surfaced: it rewards genuine
+/// cross-provider agreement and makes it a first-class, ranked finding.
+pub(in crate::core::correlator) fn rule_au_045_multi_service_identity(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::BTreeSet;
+    const MIN_FAMILIES: usize = 2;
+    entities
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.kind,
+                EntityKind::Email | EntityKind::Username | EntityKind::Person
+            )
+        })
+        .filter_map(|e| {
+            // Distinct provider families across this entity's corroborating
+            // sources, ignoring the unclassified `other` bucket so a stray
+            // unknown source can't fabricate diversity.
+            let families: BTreeSet<&'static str> = e
+                .corroborating_sources()
+                .iter()
+                .map(|s| source_family(s))
+                .filter(|f| *f != "other")
+                .collect();
+            if families.len() < MIN_FAMILIES {
+                return None;
+            }
+            let listed: Vec<&str> = families.iter().copied().collect();
+            Some(Correlation {
+                rule_id: "AU-045".into(),
+                rule_name: "Multi-service identity confirmation".into(),
+                severity: Severity::High,
+                description: format!(
+                    "{} '{}' independently confirmed across {} service families: {}",
+                    e.kind,
+                    e.value,
+                    listed.len(),
+                    listed.join(", ")
+                ),
+                entity_uids: vec![e.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            })
+        })
+        .collect()
+}
+
 pub(in crate::core::correlator) fn rule_au_003_high_corroboration(
     entities: &[Entity],
     scan_id: &str,

@@ -1463,11 +1463,14 @@ fn ground_truth_erik_diegmann_scan_yields_only_real_correlations() {
         .map(|c| (c.rule_id.as_str(), c.description.as_str()))
         .collect();
 
-    // Exactly four correlations — the real ones, nothing fabricated.
+    // Exactly five real correlations — nothing fabricated. The fifth is AU-045:
+    // "Erik Diegmann" is corroborated by oathnet_pro (breach) AND social_probe
+    // (social) — two independent service families — which is precisely the
+    // cross-service identity confirmation the correlation upgrade surfaces.
     assert_eq!(
         firings.len(),
-        4,
-        "expected 4 real correlations, got: {summary:#?}"
+        5,
+        "expected 5 real correlations, got: {summary:#?}"
     );
 
     let fired: HashSet<&str> = firings.iter().map(|c| c.rule_id.as_str()).collect();
@@ -1477,6 +1480,10 @@ fn ground_truth_erik_diegmann_scan_yields_only_real_correlations() {
     );
     assert!(fired.contains("AU-010"), "peekyou infrastructure consensus");
     assert!(fired.contains("AU-013"), "local Wi-Fi AP discovery");
+    assert!(
+        fired.contains("AU-045"),
+        "Erik Diegmann confirmed across breach + social families"
+    );
 
     // The fix holds: no geo over-fire, no fused identity/location from guesses.
     for absent in ["AU-002", "AU-014", "AU-018", "AU-030"] {
@@ -1972,5 +1979,61 @@ fn shared_tracking_id_fires_only_across_multiple_sites() {
     assert!(
         rule_au_044_shared_tracking_id(std::slice::from_ref(&single), "scan", 0).is_empty(),
         "single-site id must not fire"
+    );
+}
+
+#[test]
+fn au045_multi_service_identity_requires_cross_family_agreement() {
+    use super::rules::source_family;
+    // Classifier maps real module names to the expected families.
+    assert_eq!(source_family("github_user"), "social");
+    assert_eq!(source_family("hibp"), "breach");
+    assert_eq!(source_family("username_search"), "presence");
+    assert_eq!(source_family("dns_intel"), "infra");
+    assert_eq!(source_family("totally_unknown_src"), "other");
+
+    // A username confirmed by breach + social + presence → 3 families → fires.
+    let mut u = Entity::new(EntityKind::Username, "kylo4kylo", 0.6, "scan");
+    for s in ["hibp", "github_user", "username_search"] {
+        u.add_evidence(Evidence::new(s, "found"));
+    }
+    let hits = super::rules::rule_au_045_multi_service_identity(&[u], "scan", 0);
+    assert_eq!(hits.len(), 1, "cross-family identity must fire AU-045");
+    assert_eq!(hits[0].rule_id, "AU-045");
+    assert_eq!(hits[0].severity, super::Severity::High);
+    assert!(
+        hits[0].description.contains("3 service families"),
+        "got: {}",
+        hits[0].description
+    );
+
+    // Same family only (two breach DBs) → not independent → must NOT fire.
+    let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.6, "scan");
+    for s in ["hibp", "dehashed"] {
+        e.add_evidence(Evidence::new(s, "found"));
+    }
+    assert!(
+        super::rules::rule_au_045_multi_service_identity(&[e], "scan", 0).is_empty(),
+        "same-family corroboration must not count as multi-service"
+    );
+
+    // An unclassified source can't fabricate diversity on its own.
+    let mut p = Entity::new(EntityKind::Person, "Kylo Ren", 0.6, "scan");
+    for s in ["hibp", "totally_unknown_src"] {
+        p.add_evidence(Evidence::new(s, "x"));
+    }
+    assert!(
+        super::rules::rule_au_045_multi_service_identity(&[p], "scan", 0).is_empty(),
+        "the 'other' bucket is excluded from family diversity"
+    );
+
+    // Non-identity kinds are ignored even when cross-family.
+    let mut d = Entity::new(EntityKind::Domain, "acme.com", 0.6, "scan");
+    for s in ["dns_intel", "github_user"] {
+        d.add_evidence(Evidence::new(s, "x"));
+    }
+    assert!(
+        super::rules::rule_au_045_multi_service_identity(&[d], "scan", 0).is_empty(),
+        "AU-045 binds identity kinds only"
     );
 }

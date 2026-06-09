@@ -207,6 +207,112 @@ fn is_breach_exposed_wallet(e: &Entity) -> bool {
     })
 }
 
+/// Coarse provenance *family* of an evidence/module source name. Used to measure
+/// CROSS-SERVICE agreement, which is stronger than a raw source count: two
+/// sources in the same family (e.g. two breach DBs) can echo the same leaked
+/// record, so they corroborate weakly; agreement ACROSS families (a breach DB +
+/// a social platform + a search engine all naming one identifier) is genuinely
+/// independent confirmation. `"other"` is the catch-all for unclassified sources
+/// and is excluded from family-diversity counts. Matching is lowercase-substring
+/// over the module names actually in the registry, most-specific first.
+pub(super) fn source_family(source: &str) -> &'static str {
+    let s = source.to_ascii_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|n| s.contains(n));
+    if has(&[
+        "hibp",
+        "dehashed",
+        "oathnet",
+        "xposed",
+        "leakcheck",
+        "leakix",
+        "snusbase",
+        "intelx",
+        "pwned",
+        "breach",
+        "stealer",
+    ]) {
+        "breach"
+    } else if has(&[
+        "github",
+        "gitlab",
+        "social_probe",
+        "twitter",
+        "instagram",
+        "tiktok",
+        "reddit",
+        "mastodon",
+        "keybase",
+        "gravatar",
+    ]) {
+        "social"
+    } else if has(&[
+        "username_search",
+        "see_know",
+        "holehe",
+        "epieos",
+        "sherlock",
+        "maigret",
+        "whatsmyname",
+    ]) {
+        "presence"
+    } else if has(&[
+        "google",
+        "bing",
+        "duckduckgo",
+        "yandex",
+        "brave",
+        "mojeek",
+        "startpage",
+        "searx",
+        "search_engines",
+    ]) {
+        "search"
+    } else if has(&[
+        "smtp",
+        "disposable",
+        "email_parse",
+        "emailrep",
+        "hunter",
+        "mailbox",
+    ]) {
+        "email_intel"
+    } else if has(&[
+        "name_intel",
+        "proxycurl",
+        "opencorporates",
+        "linkedin",
+        "abn",
+        "whoisxml",
+    ]) {
+        "identity_registry"
+    } else if has(&[
+        "dns",
+        "doh",
+        "whois",
+        "rdap",
+        "crtsh",
+        "cert",
+        "shodan",
+        "censys",
+        "greynoise",
+        "hackertarget",
+        "urlscan",
+        "webserver",
+        "waf",
+        "ip_",
+        "ipinfo",
+        "ipquery",
+        "geo",
+        "wigle",
+        "overpass",
+        "registry",
+    ]) {
+        "infra"
+    } else {
+        "other"
+    }
+}
+
 mod breach;
 mod crypto;
 mod geo;
