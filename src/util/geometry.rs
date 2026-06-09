@@ -336,6 +336,34 @@ pub fn geometric_median(points: &[(f64, f64)]) -> Option<(f64, f64)> {
     Some((x.1, x.0)) // back to (lat, lon)
 }
 
+/// The **median** great-circle distance (km) from `center` to `points` — a
+/// robust radius of spread to pair with the [`geometric_median`].
+///
+/// Where a min-enclosing-circle radius is the *worst-case* distance (set by the
+/// single farthest sighting, so a lone trip or VPN exit inflates it), the median
+/// distance has the same 0.5 breakdown point as the geometric median itself:
+/// half the points could be arbitrarily far without moving it. Reporting the
+/// robust location with a robust radius keeps the uncertainty honest — `± this`
+/// is where the subject actually is, not where their farthest outlier was.
+/// Returns `0.0` for an empty input.
+pub fn median_distance_km(center: (f64, f64), points: &[(f64, f64)]) -> f64 {
+    if points.is_empty() {
+        return 0.0;
+    }
+    let mut d: Vec<f64> = points
+        .iter()
+        .map(|&(lat, lon)| haversine_km(center.0, center.1, lat, lon))
+        .collect();
+    d.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = d.len();
+    if n % 2 == 1 {
+        d[n / 2]
+    } else {
+        // Even count: mean of the two central order statistics.
+        (d[n / 2 - 1] + d[n / 2]) / 2.0
+    }
+}
+
 /// Confidence-weighted centroid of observed coordinates — the **convex
 /// combination** `Σ wᵢ·pᵢ / Σ wᵢ` of the points `pᵢ` by non-negative weights
 /// `wᵢ` (each sighting's `c_effective`). Because the weights are non-negative and
@@ -556,6 +584,31 @@ mod tests {
             "median ({:.1}km) must beat the mean ({:.1}km) on outlier robustness",
             dist0(med),
             dist0(mean)
+        );
+    }
+
+    #[test]
+    fn median_distance_is_robust_to_an_outlier() {
+        assert_eq!(median_distance_km((0.0, 0.0), &[]), 0.0);
+        // Three sightings ~tight around a point, plus one far outlier. The MEDIAN
+        // distance reflects the tight cluster, NOT the outlier — unlike a max
+        // (enclosing-circle) radius, which the outlier would dominate.
+        let center = (-33.8700, 151.2100);
+        let pts = [
+            (-33.8700, 151.2100),
+            (-33.8720, 151.2150),
+            (-33.8680, 151.2080),
+            (-31.9520, 115.8570), // Perth, ~3300 km
+        ];
+        let med = median_distance_km(center, &pts);
+        let max = pts
+            .iter()
+            .map(|&(la, lo)| haversine_km(center.0, center.1, la, lo))
+            .fold(0.0_f64, f64::max);
+        assert!(med < 5.0, "robust radius stays with the cluster: {med}km");
+        assert!(
+            max > 3000.0,
+            "max radius is dominated by the outlier: {max}km"
         );
     }
 

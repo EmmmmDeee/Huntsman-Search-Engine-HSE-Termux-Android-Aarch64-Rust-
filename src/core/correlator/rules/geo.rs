@@ -486,6 +486,11 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
     // point, so a lone travel/VPN/planted outlier can't drag it off the
     // subject's real base — the property the centroid and Chebyshev centre lack.
     let gmed = crate::util::geometry::geometric_median(&points).unwrap_or(centroid);
+    // Robust uncertainty for that fix: the MEDIAN distance from it to the
+    // sightings. Same 0.5 breakdown point as the median itself, so a lone
+    // outlier can't inflate it — the honest "± km" around the real base, paired
+    // with an outlier-robust location instead of the worst-case Chebyshev radius.
+    let gmed_spread = crate::util::geometry::median_distance_km(gmed, &points);
     // The Chebyshev centre (minimum-enclosing-circle centre) is retained as the
     // bounding circle: its radius is the honest worst-case uncertainty around the
     // footprint. `min_enclosing_circle` returns `Some` for any non-empty set.
@@ -509,8 +514,8 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
         format!(
             "{} coordinates from {} sources bound a {}-vertex area ({}); confidence-weighted \
              centroid {:.4},{:.4}, diameter {:.1} km — {kind}. Best location fix (geometric \
-             median, outlier-robust): {:.4},{:.4}; bounding circle (Chebyshev centre): \
-             {:.4},{:.4} ± {:.1} km",
+             median, outlier-robust): {:.4},{:.4} ± {:.1} km (robust); bounding circle \
+             (Chebyshev centre): {:.4},{:.4} ± {:.1} km",
             parsed.len(),
             sources.len(),
             fp.hull.len(),
@@ -520,6 +525,7 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
             fp.diameter_km,
             gmed.0,
             gmed.1,
+            gmed_spread,
             center.0,
             center.1,
             radius_km,
