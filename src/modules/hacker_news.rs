@@ -1,0 +1,234 @@
+//! Hacker News user lookup. Free, no key — the official public Firebase API.
+//!
+//! Endpoint: `GET https://hacker-news.firebaseio.com/v0/user/{id}.json`
+//! (documented at <https://github.com/HackerNews/API>). Returns the public
+//! account JSON, or the literal `null` for an unknown handle:
+//!
+//! ```json
+//! {"id":"pg","created":1160418092,"karma":157222,"about":"…html…","submitted":[…]}
+//! ```
+//!
+//! Why it earns its place in the keyless-API set: it resolves a *username* to a
+//! confirmed real account with rich, structured metadata — creation date, karma,
+//! and a free-text `about` bio that frequently carries the subject's email or
+//! personal site. That makes HN an independent provider in the **social/dev**
+//! family, so a handle confirmed here adds genuine cross-service agreement to the
+//! correlator's AU-045 "multi-service identity confirmation" (rather than echoing
+//! a single source). Official, stable, and rate-limit-free.
+
+use std::sync::OnceLock;
+
+use async_trait::async_trait;
+use regex::Regex;
+use serde::Deserialize;
+
+use crate::core::{
+    entity::{Entity, EntityKind, Evidence},
+    error::Result,
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
+    scan::{Target, TargetKind},
+};
+use crate::util::http::fetch_json;
+
+const SRC: &str = "hacker_news";
+
+pub struct HackerNews;
+
+#[derive(Deserialize)]
+struct HnUser {
+    id: String,
+    #[serde(default)]
+    created: Option<u64>,
+    #[serde(default)]
+    karma: Option<i64>,
+    #[serde(default)]
+    about: Option<String>,
+    #[serde(default)]
+    submitted: Option<Vec<i64>>,
+}
+
+/// Email + http(s) URL extractors for the free-text `about` bio. Compiled once
+/// (codebase convention) — the bio is small but the module runs per scan.
+fn bio_patterns() -> &'static (Regex, Regex) {
+    static RES: OnceLock<(Regex, Regex)> = OnceLock::new();
+    RES.get_or_init(|| {
+        (
+            Regex::new(r"[\w.+-]+@[\w-]+\.[\w.-]+").unwrap(),
+            Regex::new(r#"https?://[^\s"'<>)]+"#).unwrap(),
+        )
+    })
+}
+
+#[async_trait]
+impl Module for HackerNews {
+    fn name(&self) -> &'static str {
+        "hacker_news"
+    }
+
+    fn description(&self) -> &'static str {
+        "Hacker News account lookup (karma, created, bio) via the official public API"
+    }
+
+    fn priority(&self) -> u8 {
+        106
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Username)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Social
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Username, EntityKind::Email, EntityKind::Url];
+        KINDS
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        6_000
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let handle = target.value.trim();
+        // HN handles are 2–15 chars of [A-Za-z0-9_-]. Reject anything else
+        // before spending an HTTP round-trip.
+        if handle.len() < 2
+            || handle.len() > 15
+            || !handle
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Ok(ModuleResult::new());
+        }
+
+        let url = format!("https://hacker-news.firebaseio.com/v0/user/{handle}.json");
+        // The API returns JSON `null` for an unknown user → deserialize as Option
+        // so "not found" is a clean empty result, not an error.
+        let user: Option<HnUser> = fetch_json(&ctx.http, SRC, &url).await?;
+        let Some(user) = user else {
+            return Ok(ModuleResult::new());
+        };
+
+        let mut result = ModuleResult::new();
+
+        // The confirmed-on-HN username, carrying account metadata as evidence.
+        let mut u = Entity::new(EntityKind::Username, &user.id, 0.90, &ctx.scan_id);
+        u.tag("hacker-news");
+        let mut ev = Evidence::new(SRC, format!("Hacker News account '{}'", user.id)).with_attr(
+            "profile_url",
+            format!("https://news.ycombinator.com/user?id={}", user.id),
+        );
+        if let Some(k) = user.karma {
+            ev = ev.with_attr("karma", k.to_string());
+        }
+        if let Some(c) = user.created {
+            ev = ev.with_attr("created_unix", c.to_string());
+        }
+        let submissions = user.submitted.as_ref().map_or(0, Vec::len);
+        ev = ev.with_attr("submissions", submissions.to_string());
+        u.add_evidence(ev);
+        result.push(u);
+
+        // Mine the free-text bio for identity: an email or personal site here is
+        // a high-value, operator-published link from the handle to a real
+        // identifier — exactly the cross-reference the correlator wants.
+        if let Some(about) = user.about.as_deref() {
+            let (email_re, url_re) = bio_patterns();
+            if let Some(m) = email_re.find(about) {
+                let email = m.as_str().to_lowercase();
+                let mut e = Entity::new(EntityKind::Email, &email, 0.78, &ctx.scan_id);
+                e.tag("hacker-news");
+                e.tag("public-profile");
+                e.add_evidence(
+                    Evidence::new(SRC, format!("Email in HN bio of '{}'", user.id))
+                        .with_attr("source", "hn_bio"),
+                );
+                result.push(e);
+            }
+            if let Some(m) = url_re.find(about) {
+                let link = m.as_str().trim_end_matches(['.', ',', ')']);
+                let mut url_e = Entity::new(EntityKind::Url, link, 0.72, &ctx.scan_id);
+                url_e.tag("hacker-news");
+                url_e.tag("personal-site");
+                url_e.add_evidence(
+                    Evidence::new(SRC, format!("Link in HN bio of '{}'", user.id))
+                        .with_attr("source", "hn_bio"),
+                );
+                result.push(url_e);
+            }
+        }
+
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_only_username() {
+        let m = HackerNews;
+        assert!(m.accepts(&Target::new(TargetKind::Username, "pg")));
+        assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+        assert!(!m.accepts(&Target::new(TargetKind::Domain, "ycombinator.com")));
+    }
+
+    #[test]
+    fn metadata() {
+        let m = HackerNews;
+        assert_eq!(m.name(), "hacker_news");
+        assert!(!m.description().is_empty());
+        assert!(m.produces().contains(&EntityKind::Username));
+    }
+
+    #[test]
+    fn deserializes_account_and_null() {
+        let json = r#"{"id":"pg","created":1160418092,"karma":157222,
+            "about":"Reach me at paul@example.com or https://paulgraham.com/",
+            "submitted":[1,2,3]}"#;
+        let u: Option<HnUser> = serde_json::from_str(json).unwrap();
+        let u = u.unwrap();
+        assert_eq!(u.id, "pg");
+        assert_eq!(u.karma, Some(157222));
+        assert_eq!(u.submitted.as_ref().unwrap().len(), 3);
+        // The literal `null` (unknown handle) is a clean None.
+        let none: Option<HnUser> = serde_json::from_str("null").unwrap();
+        assert!(none.is_none());
+    }
+
+    #[test]
+    fn bio_extracts_email_and_url() {
+        let (email_re, url_re) = bio_patterns();
+        let about = "Contact: Paul@Example.com — site https://paulgraham.com/bio.html.";
+        assert_eq!(
+            email_re.find(about).unwrap().as_str().to_lowercase(),
+            "paul@example.com"
+        );
+        let link = url_re
+            .find(about)
+            .unwrap()
+            .as_str()
+            .trim_end_matches(['.', ',', ')']);
+        assert_eq!(link, "https://paulgraham.com/bio.html");
+    }
+
+    #[test]
+    fn handle_validation() {
+        let valid = |s: &str| -> bool {
+            s.len() >= 2
+                && s.len() <= 15
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        };
+        assert!(valid("pg"));
+        assert!(valid("kylo4kylo"));
+        assert!(valid("user_name-1"));
+        assert!(!valid("a")); // too short
+        assert!(!valid("this_handle_is_too_long"));
+        assert!(!valid("has space"));
+        assert!(!valid("emoji😀"));
+    }
+}

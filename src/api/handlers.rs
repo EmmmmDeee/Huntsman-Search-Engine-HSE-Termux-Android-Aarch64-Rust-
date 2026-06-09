@@ -86,7 +86,9 @@ pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, t
         cancel.clone(),
     );
     let bus_clone = state.bus.clone();
-    let http_clone = state.http.clone();
+    // Per-scan client stamped with the scan id (x-huntsman-trace) so outbound
+    // calls correlate to this scan in a proxy/upstream log, mirroring the CLI.
+    let http_clone = crate::util::http::build_client_with_trace(&sid);
     let proxy_clone = std::sync::Arc::clone(&state.proxy_pool);
     let engine = Arc::clone(&state.engine);
     let sem = Arc::clone(&state.scan_semaphore);
@@ -280,6 +282,7 @@ pub(crate) struct ServiceQuota {
     pub exhausted: usize,
     pub invalid: usize,
     pub untested: usize,
+    pub revoked: usize,
     pub uses: u64,
     pub errors: u64,
 }
@@ -304,6 +307,7 @@ pub(crate) fn summarize_pool(data: &crate::util::key_pool::PoolData) -> Vec<Serv
                     KeyStatus::Exhausted => q.exhausted += 1,
                     KeyStatus::Invalid => q.invalid += 1,
                     KeyStatus::Untested => q.untested += 1,
+                    KeyStatus::Revoked => q.revoked += 1,
                 }
                 q.uses += e.use_count;
                 q.errors += e.error_count;
@@ -560,6 +564,24 @@ pub async fn settings_keys_get(State(s): State<Arc<AppState>>) -> impl IntoRespo
     .into_response()
 }
 
+/// Body for `POST /keys/pool/revoke` — identify a pooled key by its non-secret
+/// short id (never the plaintext).
+#[derive(Deserialize)]
+pub struct KeysPoolRevokeRequest {
+    pub service: String,
+    pub id: String,
+}
+
+/// Body for `POST /keys/pool/rotate` — the old key by non-secret id, plus the
+/// new plaintext value to install (sent over the same loopback channel as
+/// `settings/keys` PUT).
+#[derive(Deserialize)]
+pub struct KeysPoolRotateRequest {
+    pub service: String,
+    pub id: String,
+    pub new: String,
+}
+
 #[derive(Deserialize)]
 pub struct KeysPutRequest {
     #[serde(default)]
@@ -611,6 +633,156 @@ pub async fn settings_keys_put(
         }
         Err(e) => bad_request(e.to_string()),
     }
+}
+
+/// `GET /api/v1/keys/pool` — the key POOL contents for the web Settings page:
+/// every pooled key MASKED, with its non-secret `id` (for revocation), service,
+/// environment, status, tier and use count. Loopback-only — it reveals which
+/// services/environments you hold keys for (not the plaintext). The plaintext is
+/// never serialised; an operator who wants the raw values uses `hse keys export`
+/// on the device shell.
+pub async fn keys_pool_get(ConnectInfo(peer): ConnectInfo<SocketAddr>) -> impl IntoResponse {
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "key pool is loopback-only" })),
+        )
+            .into_response();
+    }
+    let snap = crate::util::key_pool::global_pool().snapshot();
+    let mut services: Vec<Value> = snap
+        .services
+        .iter()
+        .map(|(service, entries)| {
+            let keys: Vec<Value> = entries
+                .iter()
+                .map(|e| {
+                    json!({
+                        "id": crate::util::key_pool::key_id(&e.value),
+                        "masked": mask_secret(&e.value),
+                        "status": e.status.as_str(),
+                        "environment": e.environment(),
+                        "tier": e.tier.as_str(),
+                        "use_count": e.use_count,
+                    })
+                })
+                .collect();
+            json!({ "service": service, "keys": keys })
+        })
+        .collect();
+    services.sort_by(|a, b| a["service"].as_str().cmp(&b["service"].as_str()));
+    (StatusCode::OK, Json(json!({ "services": services }))).into_response()
+}
+
+/// `POST /api/v1/keys/pool/revoke` — revoke a pooled key by its non-secret `id`
+/// (from `keys_pool_get`). A write, so it's gated exactly like `settings/keys`:
+/// loopback-only AND requires the operator to have started with
+/// `--allow-key-write`. The key is retained for audit, never used again.
+pub async fn keys_pool_revoke(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(req): Json<KeysPoolRevokeRequest>,
+) -> impl IntoResponse {
+    if !s.allow_key_write {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "key writes disabled; restart with `hse serve --allow-key-write`"
+            })),
+        )
+            .into_response();
+    }
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "key writes are loopback-only" })),
+        )
+            .into_response();
+    }
+    if req.service.trim().is_empty() || req.id.trim().is_empty() {
+        return bad_request("service and id are required");
+    }
+    let pool = crate::util::key_pool::global_pool();
+    if pool.revoke_by_id(&req.service, &req.id) {
+        crate::util::key_pool::save_pool_best_effort(&pool);
+        tracing::info!(service = %req.service, id = %req.id, "key pool: revoked via web");
+        (
+            StatusCode::OK,
+            Json(json!({ "status": "revoked", "service": req.service })),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "no key with that id in that service" })),
+        )
+            .into_response()
+    }
+}
+
+/// `POST /api/v1/keys/pool/rotate` — rotate a pooled key (identified by its
+/// non-secret `id`) to a new value: the old key is revoked (kept for audit) and
+/// the new one added in the same environment. A write, gated exactly like
+/// `settings/keys` (loopback + `--allow-key-write`). The new value is sent in the
+/// body — the same loopback channel `settings/keys` PUT already uses for new keys.
+pub async fn keys_pool_rotate(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(req): Json<KeysPoolRotateRequest>,
+) -> impl IntoResponse {
+    if !s.allow_key_write {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "key writes disabled; restart with `hse serve --allow-key-write`"
+            })),
+        )
+            .into_response();
+    }
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "key writes are loopback-only" })),
+        )
+            .into_response();
+    }
+    if req.service.trim().is_empty() || req.id.trim().is_empty() || req.new.trim().is_empty() {
+        return bad_request("service, id and new value are required");
+    }
+    let pool = crate::util::key_pool::global_pool();
+    if pool.rotate_by_id(&req.service, &req.id, req.new.trim()) {
+        crate::util::key_pool::save_pool_best_effort(&pool);
+        tracing::info!(service = %req.service, id = %req.id, "key pool: rotated via web");
+        (
+            StatusCode::OK,
+            Json(json!({ "status": "rotated", "service": req.service })),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "no key with that id in that service" })),
+        )
+            .into_response()
+    }
+}
+
+/// Mask a secret to a non-reversible hint: first 4 + last 4 chars (char-safe).
+fn mask_secret(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    if chars.len() <= 8 {
+        return "•".repeat(chars.len().max(1));
+    }
+    let head: String = chars.iter().take(4).collect();
+    let tail: String = chars
+        .iter()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{head}…{tail}")
 }
 
 /// `GET /api/v1/settings/toggles` — the full capability-toggle catalogue

@@ -158,6 +158,17 @@ pub async fn scan_import(State(s): State<Arc<AppState>>, body: String) -> impl I
     if let Err(e) = s.store.upsert_entities_batch(&entities) {
         return internal_error(&e);
     }
+    // Derive and persist the deterministic entity relations (structural/geo/
+    // DNS/WHOIS/name-lineage) so the imported scan carries the same graph a live
+    // scan would — the dossier/graph/debug views and GEXF export all read these
+    // edges. Best-effort: an import whose entities persisted must not fail on a
+    // relation hiccup. Mirrors the engine's finalise-time `persist_relations`.
+    let mut relation_count = 0usize;
+    for r in &crate::core::relation::derive_all(&entities, &sid) {
+        if s.store.upsert_relation(r).is_ok() {
+            relation_count += 1;
+        }
+    }
     // Run the correlator so cross-entry handle-reuse / breach clusters surface,
     // exactly as they would for a live scan. Best-effort — a correlator hiccup
     // must not fail an otherwise-successful import.
@@ -178,6 +189,7 @@ pub async fn scan_import(State(s): State<Arc<AppState>>, body: String) -> impl I
             "scan_id": sid,
             "format": format,
             "entity_count": entities.len(),
+            "relation_count": relation_count,
             "correlation_count": correlation_count,
             "status": "complete",
         })),

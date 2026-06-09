@@ -16,6 +16,13 @@ fn scan_dir(dir: &Path, patterns: &[&str], violations: &mut Vec<String>) {
         let path = entry.path();
         if path.is_dir() {
             scan_dir(&path, patterns, violations);
+        } else if path.file_name().is_some_and(|n| n == "tests.rs") {
+            // A dedicated `tests.rs` submodule file is entirely test code — it's
+            // declared `#[cfg(test)] mod tests;` in its parent, so the gating
+            // `#[cfg(test)]` marker isn't inside the file for the line-scanner to
+            // see. Test code is allowed to reach into `util`, so skip it whole,
+            // exactly as the inline-`#[cfg(test)]`-module case already is.
+            continue;
         } else if path.extension().is_some_and(|e| e == "rs") {
             let content = fs::read_to_string(&path).unwrap();
             let mut in_test = false;
@@ -376,8 +383,29 @@ fn every_declared_module_is_registered() {
     );
 }
 
-/// Every correlation rule defined in `rules.rs` must be wired into a dispatch
-/// array in `mod.rs` (`RULES` or `RELATION_RULES`). A `pub(super) fn rule_au_*`
+/// Concatenated source of every correlation-rule file. The rules live in a
+/// `rules/` module split into thematic families (breach/identity/infra/geo/org/
+/// crypto) plus `mod.rs`; the rule-wiring and rule-id guards scan the union, so
+/// they keep working regardless of how the rules are partitioned across files.
+fn correlator_rules_source() -> String {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core/correlator/rules");
+    let mut out = String::new();
+    let mut files: Vec<_> = fs::read_dir(&dir)
+        .expect("correlator/rules/ must exist")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .collect();
+    files.sort(); // deterministic concatenation order
+    for p in files {
+        out.push_str(&fs::read_to_string(&p).expect("rule file readable"));
+        out.push('\n');
+    }
+    out
+}
+
+/// Every correlation rule defined in the `rules/` module must be wired into a
+/// dispatch array in `mod.rs` (`RULES` or `RELATION_RULES`). A `rule_au_*` fn
 /// that is never added to an array compiles cleanly (it's referenced by the
 /// glob `use rules::*;`, so it isn't even a dead-code warning) and silently
 /// never fires — the analyst simply never sees that correlation, with no error
@@ -385,11 +413,7 @@ fn every_declared_module_is_registered() {
 /// (the same failure mode that left `pwned_passwords` dead at runtime).
 #[test]
 fn every_defined_correlation_rule_is_dispatched() {
-    let rules_src = fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/core/correlator/rules.rs"
-    ))
-    .expect("rules.rs must exist");
+    let rules_src = correlator_rules_source();
     let mod_src = fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/core/correlator/mod.rs"
@@ -451,11 +475,7 @@ fn every_defined_correlation_rule_is_dispatched() {
 /// `Correlation::new("AU-NNN", …)` — are covered.
 #[test]
 fn correlation_rule_ids_match_their_function_number() {
-    let src = fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/core/correlator/rules.rs"
-    ))
-    .expect("rules.rs must exist");
+    let src = correlator_rules_source();
 
     // Digit run starting at byte `from` in `s` (empty if none).
     fn digits_at(s: &str, from: usize) -> &str {

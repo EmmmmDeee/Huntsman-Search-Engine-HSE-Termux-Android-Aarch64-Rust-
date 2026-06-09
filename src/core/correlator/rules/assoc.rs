@@ -1,0 +1,356 @@
+//! AU correlation rules — associates / household family. See `super`
+//! (rules/mod.rs) for the shared helpers; every rule reaches them through
+//! `use super::*`.
+//!
+//! This family implements the professional move against a target who has gone
+//! dark: you do not find *them*, you find the people around them who are not
+//! hiding. A shared residence is the strongest such seam — co-residents,
+//! relatives, and associates leak the footprint the individual has scrubbed.
+//! It works on a true ghost (the network leaks what the person doesn't) and it
+//! works on the average person (almost everyone shares an address with someone),
+//! which is exactly the intersection this rule set targets.
+
+use super::*;
+
+/// Normalise a free-form postal address for grouping: lowercase, fold commas to
+/// spaces, drop the punctuation that varies between records (`#`, `.`, `-`), and
+/// collapse runs of whitespace. Two records that name the same residence with
+/// inconsistent formatting (`"123 Main St, Apt 4"` vs `"123 main st apt 4"`)
+/// must collapse to one key, or the household never forms.
+fn normalise_address(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut last_space = true; // trims leading space
+    for c in raw.chars() {
+        let c = if c == ',' || c.is_whitespace() {
+            ' '
+        } else if matches!(c, '#' | '.' | '-' | '/' | '\\') {
+            continue;
+        } else {
+            c.to_ascii_lowercase()
+        };
+        if c == ' ' {
+            if !last_space {
+                out.push(' ');
+            }
+            last_space = true;
+        } else {
+            out.push(c);
+            last_space = false;
+        }
+    }
+    if out.ends_with(' ') {
+        out.pop();
+    }
+    out
+}
+
+/// True when an address string is specific enough to identify a *residence*
+/// rather than a region. A bare country/state/city ("USA", "California", "New
+/// York") names a place thousands of unrelated people share — clustering on it
+/// would fuse strangers into a false household. We require a street-number
+/// signal (an ASCII digit) and at least three tokens, which admits
+/// `"123 Main St, Springfield"` while rejecting `"United States"`. Precision
+/// over recall: a missed digit-less address is far cheaper than a fabricated
+/// link between unrelated people.
+fn is_residence_address(normalised: &str) -> bool {
+    let tokens = normalised.split(' ').filter(|t| !t.is_empty()).count();
+    let has_digit = normalised.bytes().any(|b| b.is_ascii_digit());
+    tokens >= 3 && has_digit && normalised.len() >= 8
+}
+
+/// Pull every specific residence address attached to an entity's evidence
+/// (breach/dossier records carry the subject's postal address under an
+/// `address` attribute). Returns the *normalised* keys, deduplicated.
+fn entity_residences(e: &Entity) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for ev in &e.evidence {
+        if let Some(raw) = ev.attributes.get("address") {
+            let key = normalise_address(raw);
+            if is_residence_address(&key) && !out.contains(&key) {
+                out.push(key);
+            }
+        }
+    }
+    out
+}
+
+/// Digits-only comparison key for a phone string. A leading `+`, spaces,
+/// dashes and parens are dropped so the same line written `+1 (415) 555-0100`
+/// and `14155550100` collapses to one key. Returns `None` for a run shorter
+/// than 8 digits (short codes / fragments) or an all-same-digit placeholder
+/// (`+00000000`), neither of which identifies a real subscriber line.
+fn normalise_phone(raw: &str) -> Option<String> {
+    let digits: String = raw.chars().filter(char::is_ascii_digit).collect();
+    if digits.len() < 8 {
+        return None;
+    }
+    let first = digits.as_bytes()[0];
+    if digits.bytes().all(|b| b == first) {
+        return None;
+    }
+    Some(digits)
+}
+
+/// Pull every plausible subscriber phone attached to an entity's evidence
+/// (breach/dossier records carry it under a `phone` attribute). Normalised,
+/// deduplicated keys.
+fn entity_phones(e: &Entity) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for ev in &e.evidence {
+        if let Some(raw) = ev.attributes.get("phone")
+            && let Some(key) = normalise_phone(raw)
+            && !out.contains(&key)
+        {
+            out.push(key);
+        }
+    }
+    out
+}
+
+/// The surname (family-name) token of a person value — the last alphabetic
+/// whitespace token, lowercased. `None` when the trailing token is too short to
+/// be a real family name. Used by the kin rule to tell relatives (shared family
+/// name *and* residence) from unrelated co-residents.
+fn surname(name_value: &str) -> Option<String> {
+    let last = name_value.split_whitespace().last()?;
+    let s: String = last
+        .chars()
+        .filter(char::is_ascii_alphabetic)
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    (s.len() >= 2).then_some(s)
+}
+
+/// A cluster of identities sharing one grouping key (a residence or a phone):
+/// the distinct named persons (value → uid), any directly-reachable handle uids
+/// (emails/phones), and the uid of the first-class anchor node (the Address or
+/// Phone entity) for that key, when one is present.
+#[derive(Default)]
+struct Group {
+    persons: std::collections::BTreeMap<String, String>,
+    handles: Vec<String>,
+    anchor_uid: Option<String>,
+}
+
+impl Group {
+    fn add_identity(&mut self, e: &Entity) {
+        match e.kind {
+            EntityKind::Person => {
+                self.persons
+                    .entry(e.value.clone())
+                    .or_insert_with(|| e.uid.clone());
+            }
+            EntityKind::Email | EntityKind::Phone => {
+                if !self.handles.contains(&e.uid) {
+                    self.handles.push(e.uid.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Deterministic firing uid list: anchor node, then sorted person uids, then
+    /// a bounded, sorted set of reachable handles.
+    fn firing_uids(&self) -> Vec<String> {
+        let mut uids: Vec<String> = Vec::new();
+        if let Some(u) = &self.anchor_uid {
+            uids.push(u.clone());
+        }
+        let mut person_uids: Vec<String> = self.persons.values().cloned().collect();
+        person_uids.sort_unstable();
+        uids.extend(person_uids);
+        let mut handles = self.handles.clone();
+        handles.sort_unstable();
+        uids.extend(handles.into_iter().take(8));
+        uids
+    }
+}
+
+/// Group every identity entity by the residence(s) recorded in its evidence,
+/// pre-seeding anchor nodes from first-class `Address` entities. Shared by the
+/// household (AU-049) and kin (AU-051) rules so they cluster identically.
+fn residence_groups(entities: &[Entity]) -> std::collections::BTreeMap<String, Group> {
+    let mut groups: std::collections::BTreeMap<String, Group> = std::collections::BTreeMap::new();
+    for a in entities_of_kind(entities, EntityKind::Address) {
+        let key = normalise_address(&a.value);
+        if is_residence_address(&key) {
+            groups
+                .entry(key)
+                .or_default()
+                .anchor_uid
+                .get_or_insert(a.uid.clone());
+        }
+    }
+    for e in entities {
+        for key in entity_residences(e) {
+            groups.entry(key).or_default().add_identity(e);
+        }
+    }
+    groups
+}
+
+/// AU-049 — Shared-address association (household / associate cluster).
+///
+/// Groups identity-bearing entities by the specific residence address recorded
+/// in their evidence and fires when **two or more distinct persons** share one
+/// address. That is the associate seam: the named co-residents are the pivot to
+/// reach a subject who has otherwise scrubbed their own footprint. Any emails /
+/// phones recorded at the same address ride along in the firing as the directly
+/// reachable handles for those co-residents.
+///
+/// Precision discipline (mirrors AU-047): the address must be specific enough to
+/// be a residence (see [`is_residence_address`]) and the cluster must contain
+/// ≥2 *distinct person names* — two of one person's own emails at one address is
+/// not an association, so the anchor is named people, not raw handle count.
+pub(in crate::core::correlator) fn rule_au_049_shared_address_association(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let mut out = Vec::new();
+    for (addr, g) in residence_groups(entities) {
+        if g.persons.len() < 2 {
+            continue;
+        }
+        let mut names: Vec<&str> = g.persons.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        out.push(Correlation::new(
+            "AU-049",
+            "Shared-address association (household)",
+            Severity::High,
+            format!(
+                "{} people recorded at one residence ('{}'): {} — household / associate \
+                 cluster; co-residents are the pivot to reach the subject",
+                names.len(),
+                addr,
+                names.join(", ")
+            ),
+            g.firing_uids(),
+            scan_id,
+            ts,
+        ));
+    }
+    out
+}
+
+/// AU-050 — Shared-phone association (associate cluster).
+///
+/// The phone-number analogue of AU-049: a number shared by two or more distinct
+/// named persons (family plan, shared landline, a relative's contact line) is an
+/// associate seam independent of address — it links people who may live in
+/// different cities. Keyed purely on the phone, so it reaches associations the
+/// residence rule never sees.
+///
+/// Same precision discipline: the number must be a plausible subscriber line
+/// (≥8 digits, not an all-same-digit placeholder — see [`normalise_phone`]) and
+/// the cluster must contain ≥2 *distinct person names*, never one person's two
+/// addresses on a single line.
+pub(in crate::core::correlator) fn rule_au_050_shared_phone_association(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let mut groups: std::collections::BTreeMap<String, Group> = std::collections::BTreeMap::new();
+    // Pre-seed anchor nodes from first-class Phone entities.
+    for ph in entities_of_kind(entities, EntityKind::Phone) {
+        if let Some(key) = normalise_phone(&ph.value) {
+            groups
+                .entry(key)
+                .or_default()
+                .anchor_uid
+                .get_or_insert(ph.uid.clone());
+        }
+    }
+    for e in entities {
+        for key in entity_phones(e) {
+            groups.entry(key).or_default().add_identity(e);
+        }
+    }
+
+    let mut out = Vec::new();
+    for (phone, g) in groups {
+        if g.persons.len() < 2 {
+            continue;
+        }
+        let mut names: Vec<&str> = g.persons.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        out.push(Correlation::new(
+            "AU-050",
+            "Shared-phone association",
+            Severity::High,
+            format!(
+                "{} people share one phone line (…{}): {} — associate cluster; the line is \
+                 a direct pivot to reach the subject",
+                names.len(),
+                &phone[phone.len().saturating_sub(4)..],
+                names.join(", ")
+            ),
+            g.firing_uids(),
+            scan_id,
+            ts,
+        ));
+    }
+    out
+}
+
+/// AU-051 — Shared-surname kin signal (likely relatives).
+///
+/// A strict escalation of AU-049: when two or more co-residents at one address
+/// also share a **family name**, they are very likely *relatives*, not merely
+/// roommates — the kin link that lets an investigator walk a family tree to a
+/// target who is themselves dark. Requires both a shared residence (so two
+/// unrelated people named "Smith" never link) and a shared surname, and fires
+/// Critical because a confirmed kin relationship is the highest-value pivot in
+/// this family.
+pub(in crate::core::correlator) fn rule_au_051_shared_surname_kin(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let mut out = Vec::new();
+    for (addr, g) in residence_groups(entities) {
+        if g.persons.len() < 2 {
+            continue;
+        }
+        // Bucket the residence's named persons by surname; a bucket with ≥2
+        // distinct people is a kin set.
+        let mut by_surname: std::collections::BTreeMap<String, Vec<(&str, &str)>> =
+            std::collections::BTreeMap::new();
+        for (name, uid) in &g.persons {
+            if let Some(sn) = surname(name) {
+                by_surname.entry(sn).or_default().push((name, uid));
+            }
+        }
+        for (sn, members) in by_surname {
+            if members.len() < 2 {
+                continue;
+            }
+            let mut names: Vec<&str> = members.iter().map(|(n, _)| *n).collect();
+            names.sort_unstable();
+            let mut uids: Vec<String> = Vec::new();
+            if let Some(u) = &g.anchor_uid {
+                uids.push(u.clone());
+            }
+            let mut kin_uids: Vec<String> = members.iter().map(|(_, u)| u.to_string()).collect();
+            kin_uids.sort_unstable();
+            uids.extend(kin_uids);
+            out.push(Correlation::new(
+                "AU-051",
+                "Shared-surname kin (likely relatives)",
+                Severity::Critical,
+                format!(
+                    "{} people sharing the family name '{}' co-located at one residence ('{}'): \
+                     {} — likely relatives; kin pivot to reach the subject",
+                    names.len(),
+                    sn,
+                    addr,
+                    names.join(", ")
+                ),
+                uids,
+                scan_id,
+                ts,
+            ));
+        }
+    }
+    out
+}

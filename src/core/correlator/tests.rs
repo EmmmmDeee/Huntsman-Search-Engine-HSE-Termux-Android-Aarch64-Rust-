@@ -1463,11 +1463,14 @@ fn ground_truth_erik_diegmann_scan_yields_only_real_correlations() {
         .map(|c| (c.rule_id.as_str(), c.description.as_str()))
         .collect();
 
-    // Exactly four correlations — the real ones, nothing fabricated.
+    // Exactly five real correlations — nothing fabricated. The fifth is AU-045:
+    // "Erik Diegmann" is corroborated by oathnet_pro (breach) AND social_probe
+    // (social) — two independent service families — which is precisely the
+    // cross-service identity confirmation the correlation upgrade surfaces.
     assert_eq!(
         firings.len(),
-        4,
-        "expected 4 real correlations, got: {summary:#?}"
+        5,
+        "expected 5 real correlations, got: {summary:#?}"
     );
 
     let fired: HashSet<&str> = firings.iter().map(|c| c.rule_id.as_str()).collect();
@@ -1477,6 +1480,10 @@ fn ground_truth_erik_diegmann_scan_yields_only_real_correlations() {
     );
     assert!(fired.contains("AU-010"), "peekyou infrastructure consensus");
     assert!(fired.contains("AU-013"), "local Wi-Fi AP discovery");
+    assert!(
+        fired.contains("AU-045"),
+        "Erik Diegmann confirmed across breach + social families"
+    );
 
     // The fix holds: no geo over-fire, no fused identity/location from guesses.
     for absent in ["AU-002", "AU-014", "AU-018", "AU-030"] {
@@ -1973,4 +1980,389 @@ fn shared_tracking_id_fires_only_across_multiple_sites() {
         rule_au_044_shared_tracking_id(std::slice::from_ref(&single), "scan", 0).is_empty(),
         "single-site id must not fire"
     );
+}
+
+#[test]
+fn au045_multi_service_identity_requires_cross_family_agreement() {
+    use super::rules::source_family;
+    // Classifier maps real module names to the expected families. Code-hosting,
+    // forums and social media are distinct independent families.
+    assert_eq!(source_family("github_user"), "code");
+    assert_eq!(source_family("reddit_user"), "forum");
+    assert_eq!(source_family("hacker_news"), "forum");
+    assert_eq!(source_family("social_probe"), "social");
+    assert_eq!(source_family("hibp"), "breach");
+    assert_eq!(source_family("username_search"), "presence");
+    assert_eq!(source_family("dns_intel"), "infra");
+    assert_eq!(source_family("totally_unknown_src"), "other");
+
+    // The payoff: an alias confirmed on GitHub (code) + Reddit (forum) — two
+    // independent provider families — now fires AU-045, where before the three
+    // social modules were one family and never did.
+    let mut handle = Entity::new(EntityKind::Username, "kylo4kylo", 0.6, "scan");
+    for s in ["github_user", "reddit_user"] {
+        handle.add_evidence(Evidence::new(s, "confirmed"));
+    }
+    assert_eq!(
+        super::rules::rule_au_045_multi_service_identity(&[handle], "scan", 0).len(),
+        1,
+        "code + forum are independent families and must fire AU-045"
+    );
+
+    // A username confirmed by breach + social + presence → 3 families → fires.
+    let mut u = Entity::new(EntityKind::Username, "kylo4kylo", 0.6, "scan");
+    for s in ["hibp", "github_user", "username_search"] {
+        u.add_evidence(Evidence::new(s, "found"));
+    }
+    let hits = super::rules::rule_au_045_multi_service_identity(&[u], "scan", 0);
+    assert_eq!(hits.len(), 1, "cross-family identity must fire AU-045");
+    assert_eq!(hits[0].rule_id, "AU-045");
+    assert_eq!(hits[0].severity, super::Severity::High);
+    assert!(
+        hits[0].description.contains("3 service families"),
+        "got: {}",
+        hits[0].description
+    );
+
+    // Same family only (two breach DBs) → not independent → must NOT fire.
+    let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.6, "scan");
+    for s in ["hibp", "dehashed"] {
+        e.add_evidence(Evidence::new(s, "found"));
+    }
+    assert!(
+        super::rules::rule_au_045_multi_service_identity(&[e], "scan", 0).is_empty(),
+        "same-family corroboration must not count as multi-service"
+    );
+
+    // An unclassified source can't fabricate diversity on its own.
+    let mut p = Entity::new(EntityKind::Person, "Kylo Ren", 0.6, "scan");
+    for s in ["hibp", "totally_unknown_src"] {
+        p.add_evidence(Evidence::new(s, "x"));
+    }
+    assert!(
+        super::rules::rule_au_045_multi_service_identity(&[p], "scan", 0).is_empty(),
+        "the 'other' bucket is excluded from family diversity"
+    );
+
+    // Non-identity kinds are ignored even when cross-family.
+    let mut d = Entity::new(EntityKind::Domain, "acme.com", 0.6, "scan");
+    for s in ["dns_intel", "github_user"] {
+        d.add_evidence(Evidence::new(s, "x"));
+    }
+    assert!(
+        super::rules::rule_au_045_multi_service_identity(&[d], "scan", 0).is_empty(),
+        "AU-045 binds identity kinds only"
+    );
+}
+
+#[test]
+fn au011_counts_independent_platform_module_confirmations() {
+    // Three independent username-keyed modules (github_user + reddit_user +
+    // hacker_news) confirming one handle is a 3-platform footprint even though no
+    // single module reported a `platforms_count` — the cross-service signal the
+    // keyless social modules produce must light up AU-011.
+    let mut u = Entity::new(EntityKind::Username, "kylo4kylo", 0.6, "scan");
+    for s in ["github_user", "reddit_user", "hacker_news"] {
+        u.add_evidence(Evidence::new(s, "confirmed account"));
+    }
+    let hits = super::rules::rule_au_011_cross_platform_username(&[u], "scan", 0);
+    assert_eq!(
+        hits.len(),
+        1,
+        "3 independent platform modules must fire AU-011"
+    );
+    assert_eq!(hits[0].rule_id, "AU-011");
+    assert!(
+        hits[0].description.contains("3 platforms"),
+        "got: {}",
+        hits[0].description
+    );
+
+    // Two platform modules is below the threshold.
+    let mut u2 = Entity::new(EntityKind::Username, "lonely", 0.6, "scan");
+    for s in ["github_user", "reddit_user"] {
+        u2.add_evidence(Evidence::new(s, "x"));
+    }
+    assert!(
+        super::rules::rule_au_011_cross_platform_username(&[u2], "scan", 0).is_empty(),
+        "two platforms must not fire"
+    );
+}
+
+#[test]
+fn au046_resolves_an_alias_to_platform_exposed_identifiers() {
+    // The alias confirmed across two platform families (npm=code, reddit=forum),
+    // plus an email its npm account exposed → AU-046 links handle to identity.
+    let mut handle = Entity::new(EntityKind::Username, "kylo4kylo", 0.6, "scan");
+    for s in ["npm_author", "reddit_user"] {
+        handle.add_evidence(Evidence::new(s, "confirmed account"));
+    }
+    let mut email = Entity::new(EntityKind::Email, "k@example.com", 0.7, "scan");
+    email.add_evidence(Evidence::new("npm_author", "maintainer email"));
+
+    let hits = super::rules::rule_au_046_cross_platform_identity_resolution(
+        &[handle.clone(), email.clone()],
+        "scan",
+        0,
+    );
+    assert_eq!(hits.len(), 1, "alias + platform-exposed email must resolve");
+    assert_eq!(hits[0].rule_id, "AU-046");
+    assert_eq!(hits[0].severity, super::Severity::High);
+    // The correlation links the alias AND the resolved identifier.
+    assert!(hits[0].entity_uids.contains(&handle.uid));
+    assert!(hits[0].entity_uids.contains(&email.uid));
+
+    // Single-family handle (only npm) does NOT resolve — needs ≥2 platforms.
+    let mut one = Entity::new(EntityKind::Username, "solo", 0.6, "scan");
+    one.add_evidence(Evidence::new("npm_author", "x"));
+    assert!(
+        super::rules::rule_au_046_cross_platform_identity_resolution(&[one, email], "scan", 0)
+            .is_empty(),
+        "one platform family is not cross-platform resolution"
+    );
+}
+
+#[test]
+fn au047_links_identities_by_a_reused_unique_secret_only() {
+    // The unmasking rule, and its precision gate. A salted hash carried against
+    // two emails links them (same controller); an UNSALTED digest must NOT —
+    // md5("123456") is shared by millions and would manufacture false identities.
+    let cred = |hash: &str, emails: &[&str]| {
+        let mut c = Entity::new(EntityKind::Credential, hash, 0.6, "scan");
+        for em in emails {
+            c.add_evidence(Evidence::new("import:dossier", "breach entry").with_attr("email", *em));
+        }
+        c
+    };
+    let a = Entity::new(EntityKind::Email, "burner1@proton.me", 0.6, "scan");
+    let b = Entity::new(EntityKind::Email, "real.name@gmail.com", 0.6, "scan");
+
+    // Salted bcrypt hash seen against both identities → Critical link.
+    let bcrypt = cred("$2a$10$id3HAw6TcOjKvPH/RK7MS.abcdef", &[&a.value, &b.value]);
+    let hits = super::rules::rule_au_047_reused_secret_identity(
+        &[bcrypt.clone(), a.clone(), b.clone()],
+        "scan",
+        0,
+    );
+    assert_eq!(
+        hits.len(),
+        1,
+        "salted hash across 2 identities must link them"
+    );
+    assert_eq!(hits[0].rule_id, "AU-047");
+    assert_eq!(hits[0].severity, super::Severity::Critical);
+    assert!(hits[0].entity_uids.contains(&bcrypt.uid));
+    assert!(hits[0].entity_uids.contains(&a.uid) && hits[0].entity_uids.contains(&b.uid));
+
+    // PRECISION GATE: an unsalted hex digest across the same two identities must
+    // NOT fire — it could be a common password shared by unrelated people.
+    let unsalted = cred(
+        "00346d91dd87c74089f3bfa88e13de8101000000dcb6",
+        &[&a.value, &b.value],
+    );
+    assert!(
+        super::rules::rule_au_047_reused_secret_identity(
+            &[unsalted, a.clone(), b.clone()],
+            "scan",
+            0
+        )
+        .is_empty(),
+        "an unsalted digest must NOT link people (weak-password collision risk)"
+    );
+
+    // A unique secret seen against only ONE identity is not a link.
+    let single = cred("$2b$12$onlyoneidentityhasthisxx", &[&a.value]);
+    assert!(
+        super::rules::rule_au_047_reused_secret_identity(&[single, a], "scan", 0).is_empty(),
+        "one identity is not a cross-account link"
+    );
+}
+
+#[test]
+fn au048_links_accounts_sharing_a_public_key() {
+    // A public key published by two accounts → cryptographic proof of one
+    // controller (same private key). Single account → no link.
+    let key = |fp: &str, logins: &[&str]| {
+        let mut e = Entity::new(EntityKind::Credential, fp, 0.85, "scan");
+        e.tag("ssh-key");
+        for l in logins {
+            e.add_evidence(
+                Evidence::new("github_user", format!("SSH key published by @{l}"))
+                    .with_attr("github_login", *l),
+            );
+        }
+        e
+    };
+    let a = Entity::new(EntityKind::Username, "ghost91", 0.6, "scan");
+    let b = Entity::new(EntityKind::Username, "jsmith_work", 0.6, "scan");
+
+    let shared = key("ssh:deadbeefcafef00d", &["ghost91", "jsmith_work"]);
+    let hits = super::rules::rule_au_048_shared_public_key(
+        &[shared.clone(), a.clone(), b.clone()],
+        "scan",
+        0,
+    );
+    assert_eq!(hits.len(), 1, "a key on two accounts must link them");
+    assert_eq!(hits[0].rule_id, "AU-048");
+    assert_eq!(hits[0].severity, super::Severity::Critical);
+    assert!(hits[0].entity_uids.contains(&a.uid) && hits[0].entity_uids.contains(&b.uid));
+
+    // A key on a single account is not a link; a non-key Credential is ignored.
+    let solo = key("ssh:only0neacct", &["ghost91"]);
+    assert!(super::rules::rule_au_048_shared_public_key(&[solo, a.clone()], "scan", 0).is_empty());
+    let mut pw = Entity::new(EntityKind::Credential, "$2a$10$x", 0.6, "scan");
+    pw.add_evidence(Evidence::new("import", "x").with_attr("github_login", "a"));
+    pw.add_evidence(Evidence::new("import", "y").with_attr("github_login", "b"));
+    assert!(
+        super::rules::rule_au_048_shared_public_key(&[pw], "scan", 0).is_empty(),
+        "AU-048 only fires on key-tagged credentials"
+    );
+}
+
+// ─── Associates / household family (AU-049 … AU-051) ─────────────────────────
+
+#[cfg(test)]
+fn person_at(name: &str, addr: &str) -> Entity {
+    let mut e = Entity::new(EntityKind::Person, name, 0.62, "s");
+    e.add_evidence(Evidence::new("import:dossier", "breach entry").with_attr("address", addr));
+    e
+}
+
+#[cfg(test)]
+fn person_with_phone(name: &str, phone: &str) -> Entity {
+    let mut e = Entity::new(EntityKind::Person, name, 0.62, "s");
+    e.add_evidence(Evidence::new("import:dossier", "breach entry").with_attr("phone", phone));
+    e
+}
+
+#[test]
+fn au049_fires_on_two_people_one_residence() {
+    // Two distinct people whose breach records carry the same specific residence
+    // (in inconsistent formatting) form one household cluster.
+    let ents = vec![
+        person_at("Jordan Meyers", "123 Main St, Springfield, IL"),
+        person_at("Dana Meyers", "123 Main St Springfield IL"),
+    ];
+    let hits = super::rules::rule_au_049_shared_address_association(&ents, "s", 0);
+    assert_eq!(hits.len(), 1, "one household cluster expected");
+    assert_eq!(hits[0].rule_id, "AU-049");
+    assert!(hits[0].description.contains("2 people"));
+}
+
+#[test]
+fn au049_single_person_and_region_only_do_not_fire() {
+    let one = vec![person_at("Jordan Meyers", "123 Main St, Springfield, IL")];
+    assert!(super::rules::rule_au_049_shared_address_association(&one, "s", 0).is_empty());
+    // A bare region shared by strangers must never fuse a household.
+    let region = vec![
+        person_at("Jordan Meyers", "California"),
+        person_at("Unrelated Stranger", "California"),
+    ];
+    assert!(super::rules::rule_au_049_shared_address_association(&region, "s", 0).is_empty());
+}
+
+#[test]
+fn au049_one_persons_two_emails_is_not_a_household() {
+    // Two emails + one named person at an address is the SAME person's handles,
+    // not an association — must not fire.
+    let mut e1 = Entity::new(EntityKind::Email, "jordan@gmail.com", 0.72, "s");
+    e1.add_evidence(
+        Evidence::new("import:dossier", "e").with_attr("address", "123 Main St, Springfield"),
+    );
+    let mut e2 = Entity::new(EntityKind::Email, "j.meyers@work.com", 0.72, "s");
+    e2.add_evidence(
+        Evidence::new("import:dossier", "e").with_attr("address", "123 Main St, Springfield"),
+    );
+    let ents = vec![
+        person_at("Jordan Meyers", "123 Main St, Springfield"),
+        e1,
+        e2,
+    ];
+    assert!(super::rules::rule_au_049_shared_address_association(&ents, "s", 0).is_empty());
+}
+
+#[test]
+fn au049_references_address_node_and_reachable_handles() {
+    let mut email = Entity::new(EntityKind::Email, "dana@gmail.com", 0.72, "s");
+    email.add_evidence(
+        Evidence::new("import:dossier", "e").with_attr("address", "123 Main St, Springfield"),
+    );
+    let addr = Entity::new(EntityKind::Address, "123 Main St, Springfield", 0.58, "s");
+    let addr_uid = addr.uid.clone();
+    let email_uid = email.uid.clone();
+    let ents = vec![
+        person_at("Jordan Meyers", "123 Main St, Springfield"),
+        person_at("Dana Meyers", "123 Main St, Springfield"),
+        email,
+        addr,
+    ];
+    let hits = super::rules::rule_au_049_shared_address_association(&ents, "s", 0);
+    assert_eq!(hits.len(), 1);
+    assert!(
+        hits[0].entity_uids.contains(&addr_uid),
+        "address node referenced"
+    );
+    assert!(
+        hits[0].entity_uids.contains(&email_uid),
+        "reachable handle referenced"
+    );
+}
+
+#[test]
+fn au050_shared_phone_links_two_people_and_rejects_placeholders() {
+    // Formatting variants of the same line collapse to one association.
+    let ents = vec![
+        person_with_phone("Jordan Meyers", "+1 (415) 555-0100"),
+        person_with_phone("Casey Lin", "14155550100"),
+    ];
+    let hits = super::rules::rule_au_050_shared_phone_association(&ents, "s", 0);
+    assert_eq!(
+        hits.len(),
+        1,
+        "formatting variants must collapse to one line"
+    );
+    assert_eq!(hits[0].rule_id, "AU-050");
+    assert!(hits[0].description.contains("0100"), "masked tail shown");
+
+    // All-same-digit placeholder is not a subscriber line.
+    let placeholder = vec![
+        person_with_phone("Jordan Meyers", "+00000000000"),
+        person_with_phone("Casey Lin", "+00000000000"),
+    ];
+    assert!(super::rules::rule_au_050_shared_phone_association(&placeholder, "s", 0).is_empty());
+}
+
+#[test]
+fn au051_shared_surname_at_residence_is_kin() {
+    let ents = vec![
+        person_at("Jordan Meyers", "123 Main St, Springfield"),
+        person_at("Dana Meyers", "123 Main St, Springfield"),
+    ];
+    let hits = super::rules::rule_au_051_shared_surname_kin(&ents, "s", 0);
+    assert_eq!(hits.len(), 1, "shared surname + residence = kin");
+    assert_eq!(hits[0].rule_id, "AU-051");
+    assert_eq!(hits[0].severity, super::Severity::Critical);
+    assert!(hits[0].description.contains("meyers"));
+}
+
+#[test]
+fn au051_requires_shared_residence_and_distinguishes_roommates() {
+    // Same surname, different homes: two unrelated people must NOT link.
+    let apart = vec![
+        person_at("Jordan Meyers", "123 Main St, Springfield"),
+        person_at("Dana Meyers", "987 Oak Ave, Portland"),
+    ];
+    assert!(super::rules::rule_au_051_shared_surname_kin(&apart, "s", 0).is_empty());
+
+    // Same residence, different families: AU-049 fires (household) but AU-051
+    // (kin) does not.
+    let roommates = vec![
+        person_at("Jordan Meyers", "123 Main St, Springfield"),
+        person_at("Casey Lin", "123 Main St, Springfield"),
+    ];
+    assert_eq!(
+        super::rules::rule_au_049_shared_address_association(&roommates, "s", 0).len(),
+        1
+    );
+    assert!(super::rules::rule_au_051_shared_surname_kin(&roommates, "s", 0).is_empty());
 }

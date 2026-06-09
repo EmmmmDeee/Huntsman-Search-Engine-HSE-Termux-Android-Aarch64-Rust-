@@ -79,6 +79,7 @@ impl Module for GithubUser {
             EntityKind::Url,
             EntityKind::Organisation,
             EntityKind::Address,
+            EntityKind::Credential,
         ];
         KINDS
     }
@@ -351,6 +352,33 @@ impl GithubUser {
                 .with_attr("ssh_keys", key_summaries.join("; ")),
             );
         }
+
+        // Emit each SSH public key as a fingerprinted, CORRELATABLE artifact. A
+        // public key published on two accounts proves the same person holds the
+        // private key — the strongest cross-account link there is. The artifact
+        // value is `ssh:<fp>` (a hash of algo+base64, comment dropped), so two
+        // accounts sharing a key produce the SAME uid and the engine merges them
+        // into one artifact carrying both logins — which AU-048 then links.
+        for key in keys.iter().take(10) {
+            let Some(fp) = key.key.as_deref().and_then(ssh_fingerprint) else {
+                continue;
+            };
+            let mut e = Entity::new(EntityKind::Credential, &fp, 0.85, &ctx.scan_id);
+            e.tag("ssh-key");
+            e.tag("public-key");
+            e.tag("github");
+            let algo = key
+                .key
+                .as_deref()
+                .and_then(|k| k.split_whitespace().next())
+                .unwrap_or("ssh");
+            e.add_evidence(
+                Evidence::new(SRC, format!("SSH public key published by @{login}"))
+                    .with_attr("github_login", login)
+                    .with_attr("key_type", algo),
+            );
+            result.push(e);
+        }
     }
 
     async fn fetch_events(&self, login: &str, ctx: &ModuleContext, result: &mut ModuleResult) {
@@ -376,6 +404,23 @@ impl GithubUser {
             created_at: Option<String>,
             #[serde(default, rename = "type")]
             event_type: Option<String>,
+            #[serde(default)]
+            payload: Option<GhPayload>,
+        }
+        #[derive(serde::Deserialize)]
+        struct GhPayload {
+            #[serde(default)]
+            commits: Vec<GhCommit>,
+        }
+        #[derive(serde::Deserialize)]
+        struct GhCommit {
+            #[serde(default)]
+            author: Option<GhCommitAuthor>,
+        }
+        #[derive(serde::Deserialize)]
+        struct GhCommitAuthor {
+            #[serde(default)]
+            email: Option<String>,
         }
 
         let events: Vec<GhEvent> = match crate::util::http::json_scanned(resp, SRC).await {
@@ -434,7 +479,82 @@ impl GithubUser {
 
             first.add_evidence(ev);
         }
+
+        // Commit-author email leak: a user's PUBLIC push events embed the email
+        // configured in `git`'s author field for each commit. This is a
+        // high-value, operator-published handle→email link — one of the most
+        // reliable real-email discoveries in OSINT. GitHub's own privacy
+        // `…@users.noreply.github.com` placeholders carry no identity, so they're
+        // excluded. Dedup by value; cap to keep a busy account bounded.
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for event in &events {
+            let Some(payload) = event.payload.as_ref() else {
+                continue;
+            };
+            for commit in &payload.commits {
+                let Some(raw) = commit.author.as_ref().and_then(|a| a.email.as_deref()) else {
+                    continue;
+                };
+                let Some(email) = usable_commit_email(raw) else {
+                    continue;
+                };
+                if !seen.insert(email.clone()) {
+                    continue;
+                }
+                if seen.len() > 10 {
+                    break;
+                }
+                let mut e = Entity::new(EntityKind::Email, &email, 0.82, &ctx.scan_id);
+                e.tag("github");
+                e.tag("commit-email");
+                e.tag("public-profile");
+                e.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("Email from @{login}'s public commit author field"),
+                    )
+                    .with_attr("github_login", login)
+                    .with_attr("source", "commit_author"),
+                );
+                result.push(e);
+            }
+        }
     }
+}
+
+/// Stable fingerprint of an SSH public key for cross-account correlation:
+/// `ssh:<first-16-hex of SHA-256(algo + " " + base64)>`. The trailing comment
+/// (`user@host`) is dropped — it varies between machines while the key material
+/// is the identity, so the same key on two accounts yields the same fingerprint.
+/// Returns `None` for a malformed key (missing algo/base64).
+fn ssh_fingerprint(raw: &str) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let mut parts = raw.split_whitespace();
+    let algo = parts.next()?;
+    let blob = parts.next()?;
+    if blob.len() < 16 {
+        return None; // not a plausible key body
+    }
+    let digest = Sha256::digest(format!("{algo} {blob}").as_bytes());
+    Some(format!("ssh:{}", hex::encode(&digest[..8])))
+}
+
+/// Normalise and vet a commit-author email for emission: trimmed + lowercased,
+/// must be a plausible address, and must NOT be one of GitHub's privacy
+/// placeholders (`…@users.noreply.github.com`, any `noreply`/`*.github.com`
+/// address) which carry no real identity. Returns the clean address, or `None`
+/// to drop it.
+fn usable_commit_email(raw: &str) -> Option<String> {
+    let email = raw.trim().to_lowercase();
+    if email.len() < 5
+        || !email.contains('@')
+        || email.contains("noreply")
+        || email.ends_with("@github.com")
+        || email.ends_with(".github.com")
+    {
+        return None;
+    }
+    Some(email)
 }
 
 /// Top-`n` event types formatted as `type=count`, ranked by count descending
@@ -453,6 +573,22 @@ fn top_event_types(event_types: std::collections::HashMap<String, u32>, n: usize
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ssh_fingerprint_is_comment_invariant_and_key_specific() {
+        // The same key with different trailing comments (user@host) must yield the
+        // SAME fingerprint — that is what links one key across two accounts; a
+        // different key must differ; malformed input is dropped.
+        let base = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAExampleKeyMaterialHere";
+        let a = super::ssh_fingerprint(&format!("{base} ghost@laptop")).unwrap();
+        let b = super::ssh_fingerprint(&format!("{base} jsmith@work-pc")).unwrap();
+        assert_eq!(a, b, "comment must not change the fingerprint");
+        assert!(a.starts_with("ssh:"));
+        let other = super::ssh_fingerprint("ssh-rsa AAAAB3DifferentKeyMaterialXX").unwrap();
+        assert_ne!(a, other);
+        assert!(super::ssh_fingerprint("malformed").is_none());
+        assert!(super::ssh_fingerprint("ssh-rsa short").is_none());
+    }
+
     use super::*;
 
     #[test]
@@ -580,6 +716,28 @@ mod tests {
     fn blog_non_http_ignored() {
         let blog = "alice.dev";
         assert!(!blog.starts_with("http://") && !blog.starts_with("https://"));
+    }
+
+    #[test]
+    fn commit_email_filter_keeps_real_drops_github_placeholders() {
+        // Real personal addresses are kept (normalised); GitHub's privacy
+        // placeholders and noreply forms are dropped — they carry no identity.
+        assert_eq!(
+            usable_commit_email("  Alice@Example.com "),
+            Some("alice@example.com".to_string())
+        );
+        assert_eq!(
+            usable_commit_email("dev@personal.dev"),
+            Some("dev@personal.dev".to_string())
+        );
+        assert_eq!(
+            usable_commit_email("12345+alice@users.noreply.github.com"),
+            None
+        );
+        assert_eq!(usable_commit_email("noreply@github.com"), None);
+        assert_eq!(usable_commit_email("actions@github.com"), None);
+        assert_eq!(usable_commit_email("not-an-email"), None);
+        assert_eq!(usable_commit_email("a@b"), None); // too short
     }
 
     #[test]

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::{sleep, timeout};
-use tracing::{debug, info, warn};
+use tracing::{Instrument, debug, info, warn};
 
 use super::{DispatchLog, ModuleStats};
 use crate::core::entity::{Entity, normalise};
@@ -126,6 +126,15 @@ pub(super) fn module_skip_reason(
     if opts.exclude_modules.iter().any(|n| n == name) {
         return Some("excluded");
     }
+    // Circuit breaker: a module that already hit a rate-limit/quota wall or
+    // failed repeatedly this run is skipped until its cooldown elapses. Retrying
+    // a 429'd or quota-exhausted provider on the next target is guaranteed waste
+    // (and extends the ban); skipping it hands that dispatch slot to a source
+    // that still works — the budget the alias scan needs to find more. Checked
+    // here (not as a hard exclusion) so it auto-recovers when the window passes.
+    if super::circuit::is_open(name) {
+        return Some("circuit-open — rate-limited/quota/repeated failure (cooling down)");
+    }
     // Persistent per-module toggle (universal toggleability): `hse config
     // module.<name> off` disables a module across ALL scans until re-enabled.
     // Default on, so an unset module behaves exactly as before.
@@ -228,6 +237,9 @@ impl super::ScanEngine {
         match result {
             Err(_) => {
                 stats.timed_out += 1;
+                // A timeout carries no message to classify, so it's a soft
+                // failure: trips only after a streak (one slow round is transient).
+                super::circuit::record_soft_failure(name);
                 warn!(module = name, "timeout");
                 self.emit(
                     scan_id,
@@ -258,6 +270,9 @@ impl super::ScanEngine {
             }
             Ok(Err(e)) => {
                 stats.errored += 1;
+                // Feed the breaker: a rate-limit/quota message trips immediately;
+                // any other hard error counts toward the soft streak.
+                super::circuit::record_error(name, &e.to_string());
                 warn!(module = name, error = %e, "module error");
                 self.emit(
                     scan_id,
@@ -268,6 +283,10 @@ impl super::ScanEngine {
                 );
             }
             Ok(Ok(mut mr)) => {
+                // A completed dispatch (even an empty one) proves the provider is
+                // reachable — clear any failure streak so a recovered source is
+                // trusted again immediately.
+                super::circuit::record_success(name);
                 let mut found = 0usize;
                 for entity in mr.entities.drain(..) {
                     if let Some(min) = min_confidence
@@ -477,11 +496,22 @@ impl super::ScanEngine {
                 },
             );
 
+            // Per-module trace span: every log emitted inside `process()` —
+            // including the external HTTP calls in `util::http` — inherits
+            // {scan_id, module, target} in its NDJSON span chain, so a finding,
+            // the provider call that produced it, and the log line are followable
+            // end-to-end. scan_id is the correlation id (unique per scan).
             let result = run_module_guarded(
                 super::resolve_timeout(opts, &**module),
                 name,
                 module.process(target, ctx),
             )
+            .instrument(tracing::info_span!(
+                "module",
+                module = name,
+                scan_id,
+                target = %target.value
+            ))
             .await;
 
             self.finalise_module_result(
@@ -585,6 +615,12 @@ impl super::ScanEngine {
                 name,
                 module.process(target, ctx),
             )
+            .instrument(tracing::info_span!(
+                "module",
+                module = name,
+                scan_id,
+                target = %target.value
+            ))
             .await;
             self.finalise_module_result(
                 scan_id,
@@ -678,8 +714,19 @@ impl super::ScanEngine {
                     },
                 );
 
+                // `.instrument()` (not an ambient span) because a spawned task
+                // does NOT inherit the dispatcher's current span — without it the
+                // external HTTP logs from this concurrently-running module would
+                // be context-less. Carries {scan_id, module, target} for the same
+                // end-to-end trace the sequential path gets.
                 let result =
                     run_module_guarded(module_timeout_ms, name, module_arc.process(&target, &ctx))
+                        .instrument(tracing::info_span!(
+                            "module",
+                            module = name,
+                            scan_id = %sid,
+                            target = %target.value
+                        ))
                         .await;
 
                 if throttle_ms > 0 {

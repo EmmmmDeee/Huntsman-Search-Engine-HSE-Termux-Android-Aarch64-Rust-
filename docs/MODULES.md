@@ -23,7 +23,11 @@ records. The engine knows nothing else — every module is a one-file change.
 |---|---|---|---|---|---|
 | `username_search` | username | free | no | 111 | url, username |
 | `social_probe` | username, full_name | free | no | 108 | url, username, person, domain |
-| `github_user` | username | free | no | 107 | person, email, username, domain, url, organisation, address |
+| `github_user` | username | free | no | 107 | person, email, username, domain, url, organisation, address, credential |
+| `hacker_news` | username | free | no | 106 | username, email, url |
+| `reddit_user` | username | free | no | 105 | username, email, url |
+| `npm_author` | username | free | no | 104 | username, email, url, domain |
+| `crates_io` | username | free | no | 103 | username, person, url |
 | `keybase` | username | free | no | 100 | person, username, email, domain, address |
 | `username_variants` | username | free | **yes** | 98 | username |
 
@@ -33,7 +37,7 @@ records. The engine knows nothing else — every module is a one-file change.
 |---|---|---|---|---|---|
 | `oathnet_pro` | email, username, phone, full_name, ip_address, domain | paid | no | 127 | email, username, phone, person, ip_address, address, url, domain |
 | `name_intel` | full_name | free | **yes** | 97 | username, email, url |
-| `wikidata` | full_name, organisation | free | no | 96 | person, organisation, domain, username |
+| `wikidata` | full_name, organisation | free | no | 96 | person, organisation, domain, username, url |
 | `seon` | email, phone | key_gated | no | 95 | person |
 | `pgp` | email | free | no | 91 | person, email |
 | `employer_pivot` | email, domain | free | no | 92 | address, phone, email, url |

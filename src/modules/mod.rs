@@ -17,6 +17,7 @@ pub mod cert_intel;
 pub mod chain_intel;
 pub mod cloud_storage;
 pub mod contact_enrich;
+pub mod crates_io;
 pub mod criminal_ip;
 pub mod crtsh;
 pub mod dehashed;
@@ -43,6 +44,7 @@ pub mod github_user;
 pub mod gleif_lei;
 pub mod gravatar;
 pub mod greynoise;
+pub mod hacker_news;
 pub mod hackertarget;
 pub mod hibp;
 pub mod hudsonrock;
@@ -64,6 +66,7 @@ pub mod mls;
 pub mod mylnikov;
 pub mod name_intel;
 pub mod netblock;
+pub mod npm_author;
 pub mod numverify;
 pub mod oathnet_pro;
 pub mod opencorporates;
@@ -79,6 +82,7 @@ pub mod psbdmp;
 pub mod pwned_passwords;
 pub mod qld_unclaimed;
 pub mod rdap_domain;
+pub mod reddit_user;
 pub mod ripestat;
 pub mod search_engines;
 pub mod securitytrails;
@@ -231,6 +235,10 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(username_search::UsernameSearch),
         Arc::new(username_variants::UsernameVariants),
         Arc::new(github_user::GithubUser),
+        Arc::new(hacker_news::HackerNews),
+        Arc::new(npm_author::NpmAuthor),
+        Arc::new(crates_io::CratesIo),
+        Arc::new(reddit_user::RedditUser),
         Arc::new(gravatar::Gravatar),
         Arc::new(pgp::Pgp),
         Arc::new(psbdmp::Psbdmp),

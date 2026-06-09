@@ -126,10 +126,43 @@ impl super::Store {
             let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
             rows.filter_map(std::result::Result::ok).collect()
         };
-        Ok(raw
+        let mut entities: Vec<Entity> = raw
             .into_iter()
             .filter_map(|s| serde_json::from_str(&s).ok())
-            .collect())
+            .collect();
+        // The SQL `ORDER BY confidence` above is only a stable pre-order; the
+        // authoritative operator-facing ranking is applied here in Rust (the same
+        // SQL-preorder + Rust-authoritative-sort idiom `correlations_for_scan`
+        // uses), because the two signals that actually matter can't be expressed
+        // in SQL:
+        //   1. `c_effective()` — the corroboration-aware confidence. A finding
+        //      confirmed by N distinct sources must outrank an equally-(raw)-
+        //      confident single-source one; ordering by the stored `confidence`
+        //      column threw that signal away, burying corroborated identity under
+        //      single-source breach noise of the same nominal confidence.
+        //   2. subject-relevance. A CDN/anycast edge IP or a mega/shared-infra
+        //      domain is legitimately high-confidence (many sources agree it
+        //      exists) but it's the haystack, not the needle — so it's demoted
+        //      beneath subject-relevant findings regardless of how corroborated
+        //      its mere existence is.
+        // Deterministic total order (relevance, then C_eff, then raw confidence,
+        // then uid) so identical inputs always serialise identically.
+        entities.sort_by(|a, b| {
+            is_incidental_infra(a)
+                .cmp(&is_incidental_infra(b)) // false (relevant) sorts before true
+                .then_with(|| {
+                    b.c_effective()
+                        .partial_cmp(&a.c_effective())
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| {
+                    b.confidence
+                        .partial_cmp(&a.confidence)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| a.uid.cmp(&b.uid))
+        });
+        Ok(entities)
     }
 
     pub fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>> {
@@ -293,5 +326,27 @@ impl super::Store {
             .map(|t| format!("\"{}\"*", t.replace('"', "")))
             .collect::<Vec<_>>()
             .join(" ")
+    }
+}
+
+/// True if `e` is incidentally-discovered *shared infrastructure* — a CDN/anycast
+/// edge IP or a mega/shared-infra domain — rather than something tied to the
+/// subject. Such nodes are legitimately high-confidence (many independent probes
+/// agree they exist), so they would otherwise dominate a `c_effective`-ordered
+/// result list; but they're the haystack, not the needle, so the operator-facing
+/// ranking in [`Store::entities_for_scan`] demotes them beneath subject-relevant
+/// findings of equal effective confidence.
+///
+/// Reuses the canonical predicates the expansion gate uses
+/// ([`crate::core::validation::is_cdn_edge_ip`] /
+/// [`crate::core::scan::is_noncentral_domain`]) so "shared infrastructure" means
+/// exactly one thing across the engine — a ranking that demoted an IP the
+/// expander still pivoted on (or vice-versa) would be an inconsistency.
+fn is_incidental_infra(e: &Entity) -> bool {
+    use crate::core::entity::EntityKind;
+    match e.kind {
+        EntityKind::IpAddress => crate::core::validation::is_cdn_edge_ip(&e.value),
+        EntityKind::Domain => crate::core::scan::is_noncentral_domain(&e.value),
+        _ => false,
     }
 }

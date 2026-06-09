@@ -6,7 +6,7 @@
 
 use crate::core::module::ModuleContext;
 use crate::core::scan::{Scan, ScanOptions, Target};
-use crate::util::{http::build_client, keys, uid::scan_id};
+use crate::util::{keys, uid::scan_id};
 
 use super::{
     build_runtime, color_confidence, color_severity, parse_target_kind, split_csv, truncate,
@@ -40,6 +40,7 @@ pub(super) struct ScanCmd {
     pub expansion_strategy: String,
     pub seeknow_scan_cap: Option<u32>,
     pub expand_all_identities: bool,
+    pub profile: Option<String>,
     pub output: String,
 }
 
@@ -163,6 +164,35 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         expand_all_identities: cmd.expand_all_identities,
     }
     .clamp_depth();
+
+    // `--profile <name>` overlays a preset's tuning (depth / free-only / passive /
+    // expansion threshold / concurrency / budgets) on top of the per-flag options,
+    // leaving the orthogonal selection/output flags (`--modules`, `--exclude`,
+    // `--output`, `--throttle`, webhook) intact. `recommended` is the zero-setup
+    // out-of-box bundle. Resolution is shared with the API via `core::profiles`,
+    // so CLI and web agree on what a profile means.
+    let options = if let Some(name) = cmd.profile.as_deref() {
+        let p = crate::core::profiles::resolve_profile(name).ok_or_else(|| {
+            crate::core::error::Error::Other(format!(
+                "unknown --profile '{name}' (try: recommended, passive, footprint, investigate, fast)"
+            ))
+        })?;
+        eprintln!("profile: {name}");
+        ScanOptions {
+            free_only: p.free_only,
+            passive_only: p.passive_only,
+            depth: p.depth,
+            min_expand_confidence: p.min_expand_confidence,
+            max_concurrent: p.max_concurrent,
+            max_entities: p.max_entities,
+            max_wall_time_secs: p.max_wall_time_secs,
+            ..options
+        }
+        .clamp_depth()
+    } else {
+        options
+    };
+
     if cmd.max_roi {
         eprintln!(
             "max-roi: convergence-pruning + top-K gate + adaptive-depth (floor={:.2})",
@@ -179,7 +209,9 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     let ctx = ModuleContext {
         scan_id: sid.clone(),
         bus,
-        http: build_client(),
+        // Stamp outbound calls with this scan's id so a proxy/upstream access log
+        // can be matched back to the scan (and its NDJSON logs carry the same id).
+        http: crate::util::http::build_client_with_trace(&sid),
         keys,
         cancel: crate::core::cancel::CancelHandle::new(),
         proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),

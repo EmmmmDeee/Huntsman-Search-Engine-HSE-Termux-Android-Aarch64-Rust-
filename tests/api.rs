@@ -679,6 +679,33 @@ async fn dossier_upload_creates_a_complete_scan_with_entities() {
 }
 
 #[tokio::test]
+async fn dossier_upload_derives_and_persists_entity_relations() {
+    // An imported scan must carry the same deterministic relation graph a live
+    // scan would (structural/geo/DNS/WHOIS/name-lineage). This dossier yields a
+    // URL and its host domain, which `derive_all` links — so the import path is
+    // no longer relation-blind and the graph/GEXF views work on uploads.
+    let app = test_app("import-rel");
+    let dossier = "Entry #1:\n   \u{2022} email: ops@acme-corp.io\n   \u{2022} name: Ops Lead\n   \u{2022} domain: acme-corp.io\nhttp://acme-corp.io/login\n";
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import")
+        .header("content-type", "text/plain")
+        .body(Body::from(dossier))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["status"], "complete");
+    assert!(
+        json["relation_count"]
+            .as_u64()
+            .expect("relation_count field")
+            >= 1,
+        "the URL→domain structural edge must be derived and persisted: {json}"
+    );
+}
+
+#[tokio::test]
 async fn dossier_upload_rejects_unrecognised_format() {
     let app = test_app("import-bad");
     let req = Request::builder()
@@ -1408,10 +1435,25 @@ async fn spa_references_only_registered_api_endpoints() {
     );
 
     for base in &bases {
+        // `/entities/{uid}` (cross-scan entity pivot) is resource-style: every
+        // uid that isn't present returns the handler's own 404, so a parameter-
+        // free probe can't distinguish "route registered" from "no such entity"
+        // by status alone. Confirm the route is wired by checking the body is the
+        // handler's `not found`, NOT the api fallback's `endpoint not found`.
+        if base == "entities" {
+            let (_, body) = fetch_text(&app, "/api/v1/entities/__nonexistent__").await;
+            assert!(
+                !body.contains("endpoint not found"),
+                "SPA calls /api/v1/entities/{{uid}} but it hit the api fallback \
+                 (route not registered): {body}"
+            );
+            continue;
+        }
         // A representative, parameter-free URL for this endpoint family.
         let url = match base.as_str() {
             "health" => "/api/v1/health".to_string(),
             "version" => "/api/v1/version".to_string(),
+            "keys" => "/api/v1/keys/pool".to_string(),
             "modules" => "/api/v1/modules".to_string(),
             "engines" => "/api/v1/engines/health".to_string(),
             "stats" => "/api/v1/stats".to_string(),
@@ -1767,4 +1809,65 @@ async fn logs_endpoint_serves_downloadable_text_attachment() {
         String::from_utf8_lossy(&bytes).contains("Huntsman Search Engine"),
         "dump carries its header"
     );
+}
+
+#[tokio::test]
+async fn keys_pool_get_is_masked_and_revoke_is_write_gated() {
+    // The web key-pool surface: GET returns a masked, loopback-only view; revoke
+    // is a write, so it's refused unless the server was started with key-write.
+    // ConnectInfo is injected via request extensions (no real TCP listener).
+    use std::net::SocketAddr;
+    let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    let app = test_app("keys-pool");
+
+    let mut get = Request::builder()
+        .uri("/api/v1/keys/pool")
+        .body(Body::empty())
+        .unwrap();
+    get.extensions_mut()
+        .insert(axum::extract::ConnectInfo(loopback));
+    let resp = app.clone().oneshot(get).await.unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(
+        body.get("services").is_some(),
+        "pool returns a services list"
+    );
+
+    // Revoke without --allow-key-write (test_app default) must be forbidden.
+    let mut post = Request::builder()
+        .method("POST")
+        .uri("/api/v1/keys/pool/revoke")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"service":"shodan","id":"deadbeef"}"#))
+        .unwrap();
+    post.extensions_mut()
+        .insert(axum::extract::ConnectInfo(loopback));
+    let resp = app.oneshot(post).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        http::StatusCode::FORBIDDEN,
+        "pool revoke must require --allow-key-write"
+    );
+}
+
+#[tokio::test]
+async fn keys_pool_rotate_is_write_gated() {
+    // Rotation is a write — refused without --allow-key-write (test_app default),
+    // never a silent no-op.
+    use std::net::SocketAddr;
+    let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    let app = test_app("keys-pool-rotate");
+    let mut post = Request::builder()
+        .method("POST")
+        .uri("/api/v1/keys/pool/rotate")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"service":"shodan","id":"deadbeef","new":"NEW-VAL"}"#,
+        ))
+        .unwrap();
+    post.extensions_mut()
+        .insert(axum::extract::ConnectInfo(loopback));
+    let resp = app.oneshot(post).await.unwrap();
+    assert_eq!(resp.status(), http::StatusCode::FORBIDDEN);
 }

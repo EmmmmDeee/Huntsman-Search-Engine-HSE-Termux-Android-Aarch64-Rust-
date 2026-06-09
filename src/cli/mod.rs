@@ -200,6 +200,12 @@ pub enum Command {
         /// `--full`. Default keeps the gate on; excluded aliases are logged.
         #[arg(long)]
         expand_all_identities: bool,
+        /// Preset bundle (recommended | passive | footprint | investigate | fast).
+        /// `recommended` is the zero-setup out-of-box default: free/keyless sources,
+        /// one expansion round for cross-service correlation, phone-safe budgets.
+        /// Sets depth/free-only/budgets; `--modules`/`--exclude`/`--output` still apply.
+        #[arg(long)]
+        profile: Option<String>,
         /// Output format: table | json | dossier. "dossier" shows full intel grouped by category.
         #[arg(short, long, default_value = "table")]
         output: String,
@@ -464,37 +470,63 @@ pub async fn run() -> Result<()> {
     //
     // Logs go to STDERR so stdout carries only the requested payload — without
     // this, log lines interleave into `--output json` (and live/export
-    // streams), producing output downstream parsers cannot consume. `with_target`
-    // and line numbers are on so each raw line shows its module-path + site.
-    // Default filter: HSE's own crate at TRACE (raw logs for every module,
-    // curl call, parse, retry), but the TLS/HTTP plumbing crates capped at
-    // INFO — at TRACE, hyper/h2/rustls/reqwest emit per-frame/per-byte IO spam
-    // that buries the project's own raw logs (observed ~160 dep lines vs ~260
-    // HSE lines on a single IP lookup). This keeps "the entire project outputs
-    // raw logs" meaningful: maximal verbosity for HSE, signal not framing noise
-    // from its dependencies. An explicit `RUST_LOG` overrides this wholesale.
+    // streams), producing output downstream parsers cannot consume.
+    //
+    // FORMAT: one JSON object per line (NDJSON) — a single structured format
+    // across the whole system, machine-readable and ingestible by virtually any
+    // LLM or log pipeline without a bespoke parser. Each line carries the
+    // metadata needed for debugging AND cross-correlation: `timestamp`, `level`,
+    // `target` (module path) + `line_number` (call site), the event's own fields
+    // flattened to the top level, and the enclosing span chain (`span`/`spans`)
+    // — so the `scan_id`/`module` context an event was emitted under travels with
+    // it and disparate lines can be correlated back to one scan/target/module.
+    //
+    // Default filter: HSE's own crate at TRACE (raw logs for every module, curl
+    // call, parse, retry), but the noisy plumbing crates capped at INFO. At TRACE,
+    // the TLS/HTTP stack (hyper/h2/rustls/reqwest) AND the DNS resolver
+    // (hickory_*) emit per-frame/per-byte/per-record IO spam that buries the
+    // project's own logs — a real debug bundle was 96% hickory DNS trace with
+    // 1.5M lines dropped, drowning the ~50 lines that actually explained the scan.
+    // Capping them keeps "the entire project outputs raw logs" meaningful: maximal
+    // verbosity for HSE, signal not framing noise. An explicit `RUST_LOG`
+    // overrides this wholesale.
     const DEFAULT_RAW_LOG: &str = "trace,\
         hyper=info,hyper_util=info,h2=info,rustls=info,reqwest=info,\
-        tokio_util=info,tower=info,want=info,mio=info";
+        tokio_util=info,tower=info,want=info,mio=info,\
+        hickory_resolver=info,hickory_proto=info,hickory_net=info,trust_dns_proto=info";
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_RAW_LOG));
-    // Two fmt layers behind one EnvFilter: the operator's stderr console
-    // (ANSI auto-detected) and a clean no-ANSI tee into the in-memory ring
-    // buffer, so the same raw-verbose stream is downloadable from the Web UI
-    // (`GET /api/v1/logs`) / `hse logs` without polluting the console output.
+    // One JSON event format, two writers behind one EnvFilter: the operator's
+    // stderr console and a tee into the in-memory ring buffer, so the identical
+    // NDJSON stream is downloadable from the Web UI (`GET /api/v1/logs`) /
+    // `hse logs` and is byte-for-byte the same as what scrolled past.
+    // NOTE: the two JSON layers are written out in full rather than built by a
+    // shared closure: each `fmt::layer()` is generic over the subscriber it wraps,
+    // and the two wrap different subscriber types (the second sits atop the
+    // first), so a single closure can't produce both — it would fix that generic
+    // on first use. `flatten_event` puts event fields at the top level;
+    // `with_current_span`/`with_span_list` carry the scan_id/module span context
+    // for cross-correlation.
     tracing_subscriber::registry()
         .with(filter)
         .with(
             tracing_subscriber::fmt::layer()
+                .json()
+                .flatten_event(true)
+                .with_current_span(true)
+                .with_span_list(true)
                 .with_target(true)
                 .with_line_number(true)
                 .with_writer(std::io::stderr),
         )
         .with(
             tracing_subscriber::fmt::layer()
-                .with_ansi(false)
+                .json()
+                .flatten_event(true)
+                .with_current_span(true)
+                .with_span_list(true)
                 .with_target(true)
                 .with_line_number(true)
                 .with_writer(crate::util::log_capture::RingMakeWriter),
@@ -528,6 +560,7 @@ pub async fn run() -> Result<()> {
             expansion_strategy,
             seeknow_scan_cap,
             expand_all_identities,
+            profile,
             output,
         } => {
             let value = resolve_seed(value, keys::default_seed())?;
@@ -562,6 +595,7 @@ pub async fn run() -> Result<()> {
                 // wrong-identity gate is lifted alongside the other narrowing
                 // filters it already drops.
                 expand_all_identities: expand_all_identities || full,
+                profile,
                 output,
             })
             .await
