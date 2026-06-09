@@ -23,6 +23,10 @@ pub enum KeyStatus {
     Exhausted,
     Invalid,
     RateLimited,
+    /// Operator-revoked (compromised, retired, or rotated away). Retained in the
+    /// pool for audit/history but never selected for use — a one-way terminal
+    /// state distinct from `Invalid` (which the validator can set automatically).
+    Revoked,
 }
 
 impl KeyStatus {
@@ -33,6 +37,7 @@ impl KeyStatus {
             Self::Exhausted => "exhausted",
             Self::Invalid => "invalid",
             Self::RateLimited => "rate_limited",
+            Self::Revoked => "revoked",
         }
     }
 }
@@ -84,6 +89,15 @@ pub struct KeyEntry {
     pub discovered_in_scan: Option<String>,
     #[serde(default)]
     pub source_entity: Option<String>,
+    /// Deployment environment this key belongs to (e.g. "prod", "dev",
+    /// "personal"). `None` ⇒ the implicit `default` environment. Lets one pool
+    /// hold keys for several contexts and lets export/list filter by context.
+    #[serde(default)]
+    pub environment: Option<String>,
+    /// Unix seconds when this key was created by a `rotate` (replacing a prior,
+    /// now-revoked key). `None` for a key added directly.
+    #[serde(default)]
+    pub rotated_at: Option<u64>,
 }
 
 impl KeyEntry {
@@ -102,7 +116,15 @@ impl KeyEntry {
             discovered_by: None,
             discovered_in_scan: None,
             source_entity: None,
+            environment: None,
+            rotated_at: None,
         }
+    }
+
+    /// This key's environment label, defaulting to `"default"` when unset.
+    #[must_use]
+    pub fn environment(&self) -> &str {
+        self.environment.as_deref().unwrap_or("default")
     }
 
     pub fn is_usable(&self) -> bool {
@@ -115,7 +137,7 @@ impl KeyEntry {
                     true
                 }
             }
-            KeyStatus::Exhausted | KeyStatus::Invalid => false,
+            KeyStatus::Exhausted | KeyStatus::Invalid | KeyStatus::Revoked => false,
         }
     }
 
@@ -174,6 +196,96 @@ impl KeyPool {
         }
         entries.push(key);
         true
+    }
+
+    /// Serialize the whole pool to pretty JSON — the same shape `save_pool`
+    /// persists, so an export round-trips through `import_json`. The output
+    /// contains **plaintext key values**; callers must treat it as a secret
+    /// (write `0600`, never log it). Optionally restrict to one `environment`.
+    pub fn export_json(&self, environment: Option<&str>) -> serde_json::Result<String> {
+        let mut data = self.snapshot();
+        if let Some(env) = environment {
+            for entries in data.services.values_mut() {
+                entries.retain(|e| e.environment() == env);
+            }
+            data.services.retain(|_, entries| !entries.is_empty());
+        }
+        serde_json::to_string_pretty(&data)
+    }
+
+    /// Merge keys from an exported pool JSON into this pool. Dedup is by value
+    /// within a service (identical to `add`), so re-importing an export is
+    /// idempotent. An `environment` override stamps every imported key with that
+    /// label (useful for slotting a teammate's export into your "shared" env).
+    /// Returns the number of keys newly added.
+    pub fn import_json(&self, json: &str, environment: Option<&str>) -> serde_json::Result<usize> {
+        let incoming: PoolData = serde_json::from_str(json)?;
+        let mut added = 0usize;
+        for (service, entries) in incoming.services {
+            for mut entry in entries {
+                if let Some(env) = environment {
+                    entry.environment = Some(env.to_string());
+                }
+                if self.add(&service, entry) {
+                    added += 1;
+                }
+            }
+        }
+        Ok(added)
+    }
+
+    /// Revoke a key: a one-way move to `Revoked` so it's retained for audit but
+    /// never selected again (compromised / retired). Returns true if found.
+    pub fn revoke(&self, service: &str, value: &str) -> bool {
+        let mut data = self.data.lock();
+        if let Some(entries) = data.services.get_mut(&service.to_lowercase()) {
+            for e in entries.iter_mut() {
+                if e.value == value {
+                    e.status = KeyStatus::Revoked;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Rotate a key: revoke `old` and add `new` in one step, carrying the old
+    /// key's environment and notes so provenance survives the swap and the new
+    /// key lands in the same context. Returns true if `old` was found.
+    pub fn rotate(&self, service: &str, old: &str, new: &str) -> bool {
+        let lower = service.to_lowercase();
+        let carried = {
+            let data = self.data.lock();
+            data.services
+                .get(&lower)
+                .and_then(|es| es.iter().find(|e| e.value == old))
+                .map(|e| (e.environment.clone(), e.notes.clone()))
+        };
+        let Some((env, notes)) = carried else {
+            return false;
+        };
+        self.revoke(service, old);
+        let mut entry = KeyEntry::new(new);
+        entry.environment = env;
+        entry.notes = notes;
+        entry.rotated_at = Some(crate::core::entity::unix_now());
+        self.add(service, entry);
+        true
+    }
+
+    /// Assign a key to an `environment` (e.g. "prod"/"dev"). Returns true if
+    /// found.
+    pub fn set_environment(&self, service: &str, value: &str, env: &str) -> bool {
+        let mut data = self.data.lock();
+        if let Some(entries) = data.services.get_mut(&service.to_lowercase()) {
+            for e in entries.iter_mut() {
+                if e.value == value {
+                    e.environment = Some(env.to_string());
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Select the optimal key for a service. Prefers higher-tier keys with
@@ -350,6 +462,13 @@ pub fn save_pool(pool: &KeyPool) -> std::io::Result<()> {
     crate::util::atomic_file::write(&path, json.as_bytes())
 }
 
+/// Write secret text (an exported key pool) to an arbitrary path with `0600`
+/// permissions, atomically. Shared by `hse keys export --out` so an exported
+/// secret is never left world-readable.
+pub fn write_secret_file(path: &str, contents: &str) -> std::io::Result<()> {
+    crate::util::atomic_file::write(std::path::Path::new(path), contents.as_bytes())
+}
+
 /// Persist the pool, logging (not propagating) any failure.
 ///
 /// Use this at the fire-and-forget sites that harvest keys during a scan: a
@@ -493,6 +612,93 @@ pub fn global_pool() -> Arc<KeyPool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_import_roundtrips_and_is_idempotent() {
+        let src = KeyPool::new();
+        let mut a = KeyEntry::new("key-a");
+        a.environment = Some("prod".into());
+        src.add("shodan", a);
+        src.add("intelx", KeyEntry::new("key-b")); // default env
+
+        let json = src.export_json(None).unwrap();
+        let dst = KeyPool::new();
+        assert_eq!(
+            dst.import_json(&json, None).unwrap(),
+            2,
+            "both keys imported"
+        );
+        // Re-import is idempotent (dedup by value).
+        assert_eq!(dst.import_json(&json, None).unwrap(), 0, "no duplicates");
+        // Environment survives the round-trip.
+        let snap = dst.snapshot();
+        assert_eq!(snap.services["shodan"][0].environment(), "prod");
+        assert_eq!(snap.services["intelx"][0].environment(), "default");
+    }
+
+    #[test]
+    fn export_filters_by_environment() {
+        let pool = KeyPool::new();
+        let mut p = KeyEntry::new("prod-key");
+        p.environment = Some("prod".into());
+        pool.add("shodan", p);
+        pool.add("shodan", KeyEntry::new("default-key")); // default env
+
+        let only_prod = pool.export_json(Some("prod")).unwrap();
+        assert!(only_prod.contains("prod-key"));
+        assert!(
+            !only_prod.contains("default-key"),
+            "env filter must exclude other environments"
+        );
+    }
+
+    #[test]
+    fn revoke_makes_a_key_unusable_but_retained() {
+        let pool = KeyPool::new();
+        pool.add("shodan", KeyEntry::new("compromised"));
+        assert_eq!(pool.next_key("shodan").as_deref(), Some("compromised"));
+        assert!(pool.revoke("shodan", "compromised"));
+        // Retained for audit…
+        assert_eq!(pool.snapshot().services["shodan"].len(), 1);
+        assert_eq!(
+            pool.snapshot().services["shodan"][0].status,
+            KeyStatus::Revoked
+        );
+        // …but never selected again.
+        assert_eq!(
+            pool.next_key("shodan"),
+            None,
+            "revoked key must not be used"
+        );
+        assert!(!pool.revoke("shodan", "nonexistent"));
+    }
+
+    #[test]
+    fn rotate_revokes_old_adds_new_carrying_environment() {
+        let pool = KeyPool::new();
+        let mut old = KeyEntry::new("old-key");
+        old.environment = Some("prod".into());
+        old.notes = Some("primary".into());
+        pool.add("shodan", old);
+
+        assert!(pool.rotate("shodan", "old-key", "new-key"));
+        let snap = pool.snapshot();
+        let entries = &snap.services["shodan"];
+        let old_e = entries.iter().find(|e| e.value == "old-key").unwrap();
+        let new_e = entries.iter().find(|e| e.value == "new-key").unwrap();
+        assert_eq!(old_e.status, KeyStatus::Revoked, "old key revoked");
+        assert_eq!(new_e.environment(), "prod", "new key inherits environment");
+        assert_eq!(
+            new_e.notes.as_deref(),
+            Some("primary"),
+            "provenance carried"
+        );
+        assert!(new_e.rotated_at.is_some(), "rotation timestamp stamped");
+        // The pool now serves the new key, not the revoked old one.
+        assert_eq!(pool.next_key("shodan").as_deref(), Some("new-key"));
+        // Rotating a missing key is a no-op.
+        assert!(!pool.rotate("shodan", "ghost", "x"));
+    }
 
     #[test]
     fn add_and_cycle() {

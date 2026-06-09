@@ -20,11 +20,56 @@ pub enum KeysAction {
         /// Optional notes (e.g. "free tier", "expires 2026-12").
         #[arg(long)]
         notes: Option<String>,
+        /// Environment this key belongs to (e.g. prod, dev, personal).
+        #[arg(long)]
+        env: Option<String>,
     },
     /// List all keys in the pool.
     List {
         /// Filter by service name.
         service: Option<String>,
+        /// Filter by environment (e.g. prod, dev). Omit for all.
+        #[arg(long)]
+        env: Option<String>,
+    },
+    /// Export the pool (or one environment) to JSON for backup / transfer.
+    ///
+    /// Writes the SAME shape `import-json` reads, so an export round-trips. The
+    /// output contains PLAINTEXT key values — it is written `0600` to a file, or
+    /// to stdout with a stderr warning. Treat the result as a secret.
+    Export {
+        /// Destination file. Omit to write JSON to stdout.
+        #[arg(long)]
+        out: Option<String>,
+        /// Export only this environment (e.g. prod). Omit for the whole pool.
+        #[arg(long)]
+        env: Option<String>,
+    },
+    /// Import keys from a JSON export (merges; dedup by value, idempotent).
+    ImportJson {
+        /// Path to the JSON file produced by `keys export`.
+        file: String,
+        /// Stamp every imported key with this environment label.
+        #[arg(long)]
+        env: Option<String>,
+    },
+    /// Revoke a key — retained for audit but never used again (compromised /
+    /// retired).
+    Revoke {
+        /// Service name.
+        service: String,
+        /// Key value to revoke.
+        key: String,
+    },
+    /// Rotate a key: revoke the old value and add a new one in the same
+    /// environment, preserving provenance.
+    Rotate {
+        /// Service name.
+        service: String,
+        /// The current (old) key value to revoke.
+        old: String,
+        /// The new key value to add.
+        new: String,
     },
     /// Validate keys against live endpoints.
     Validate {
@@ -79,6 +124,7 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             service,
             key,
             notes,
+            env,
         } => {
             if key_pool::find_service(&service).is_none() {
                 let names: Vec<&str> = key_pool::service_defs().iter().map(|s| s.name).collect();
@@ -87,6 +133,7 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             }
             let mut entry = KeyEntry::new(&key);
             entry.notes = notes;
+            entry.environment = env;
             if pool.add(&service, entry) {
                 key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save: {e}")))?;
                 println!(
@@ -98,7 +145,7 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             }
         }
 
-        KeysAction::List { service } => {
+        KeysAction::List { service, env } => {
             let snap = pool.snapshot();
             let services: Vec<(&String, &Vec<KeyEntry>)> = if let Some(ref s) = service {
                 let lower = s.to_lowercase();
@@ -113,18 +160,27 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             }
 
             for (svc, entries) in &services {
-                println!("\n[{svc}] ({} keys)", entries.len());
-                for (i, e) in entries.iter().enumerate() {
+                // Apply the optional environment filter per service.
+                let shown: Vec<&KeyEntry> = entries
+                    .iter()
+                    .filter(|e| env.as_deref().is_none_or(|want| e.environment() == want))
+                    .collect();
+                if shown.is_empty() {
+                    continue;
+                }
+                println!("\n[{svc}] ({} keys)", shown.len());
+                for (i, e) in shown.iter().enumerate() {
                     // Char-aware truncation: byte-indexing panics on
                     // multi-byte UTF-8 keys (rare but real for
                     // imported test tokens).
                     let masked = mask_key(&e.value);
                     let notes = e.notes.as_deref().unwrap_or("");
                     println!(
-                        "  {}: {} [{}] uses={} {}",
+                        "  {}: {} [{}] env={} uses={} {}",
                         i + 1,
                         masked,
                         e.status.as_str(),
+                        e.environment(),
                         e.use_count,
                         notes
                     );
@@ -191,6 +247,67 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
                 println!("Removed key from '{service}' pool.");
             } else {
                 println!("Key not found in '{service}' pool.");
+            }
+        }
+
+        KeysAction::Export { out, env } => {
+            let json = pool
+                .export_json(env.as_deref())
+                .map_err(|e| Error::Other(format!("export: {e}")))?;
+            match out {
+                Some(path) => {
+                    // Reuse the pool's own `0600` writer so an exported secret is
+                    // never left world-readable.
+                    key_pool::write_secret_file(&path, &json)
+                        .map_err(|e| Error::Other(format!("write {path}: {e}")))?;
+                    eprintln!(
+                        "Exported {} to {path} (mode 0600). It contains PLAINTEXT keys — keep it secret.",
+                        env.as_deref().map_or_else(
+                            || "the key pool".to_string(),
+                            |e| format!("environment '{e}'")
+                        )
+                    );
+                }
+                None => {
+                    eprintln!(
+                        "# WARNING: the JSON below contains PLAINTEXT API keys — treat as a secret."
+                    );
+                    println!("{json}");
+                }
+            }
+        }
+
+        KeysAction::ImportJson { file, env } => {
+            let json = std::fs::read_to_string(&file)
+                .map_err(|e| Error::Other(format!("read {file}: {e}")))?;
+            let added = pool
+                .import_json(&json, env.as_deref())
+                .map_err(|e| Error::Other(format!("parse {file}: {e}")))?;
+            if added > 0 {
+                key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save: {e}")))?;
+            }
+            println!(
+                "Imported {added} new key(s) from {file}{}.",
+                env.as_deref()
+                    .map_or_else(String::new, |e| format!(" into environment '{e}'"))
+            );
+        }
+
+        KeysAction::Revoke { service, key } => {
+            if pool.revoke(&service, &key) {
+                key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save: {e}")))?;
+                println!("Revoked key in '{service}' pool (retained for audit, never used again).");
+            } else {
+                println!("Key not found in '{service}' pool.");
+            }
+        }
+
+        KeysAction::Rotate { service, old, new } => {
+            if pool.rotate(&service, &old, &new) {
+                key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save: {e}")))?;
+                println!("Rotated '{service}' key: old value revoked, new value added.");
+            } else {
+                println!("Old key not found in '{service}' pool — nothing rotated.");
             }
         }
 

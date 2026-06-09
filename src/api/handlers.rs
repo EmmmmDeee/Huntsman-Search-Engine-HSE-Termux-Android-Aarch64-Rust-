@@ -280,6 +280,7 @@ pub(crate) struct ServiceQuota {
     pub exhausted: usize,
     pub invalid: usize,
     pub untested: usize,
+    pub revoked: usize,
     pub uses: u64,
     pub errors: u64,
 }
@@ -304,6 +305,7 @@ pub(crate) fn summarize_pool(data: &crate::util::key_pool::PoolData) -> Vec<Serv
                     KeyStatus::Exhausted => q.exhausted += 1,
                     KeyStatus::Invalid => q.invalid += 1,
                     KeyStatus::Untested => q.untested += 1,
+                    KeyStatus::Revoked => q.revoked += 1,
                 }
                 q.uses += e.use_count;
                 q.errors += e.error_count;
