@@ -2469,3 +2469,48 @@ fn au052_excludes_infrastructure_geo_live_peekyou_case() {
     assert_eq!(hits.len(), 1, "the three real sightings fix the location");
     assert!(hits[0].description.contains("tight"));
 }
+
+// ─── Geo out-of-area anomaly (AU-053) ────────────────────────────────────────
+
+#[test]
+fn au053_flags_a_sighting_outside_the_established_area() {
+    // Three tight Sydney sightings (the established area) + one Perth sighting
+    // ~3300 km away. AU-053 flags Perth as out-of-area; the Sydney points, being
+    // the dominant cluster, are never themselves flagged.
+    let ents = vec![
+        coord_from("-33.8700,151.2100", "geocode"),
+        coord_from("-33.8720,151.2150", "exif_geo"),
+        coord_from("-33.8680,151.2080", "wigle"),
+        coord_from("-31.9520,115.8570", "exif_geo"), // Perth
+    ];
+    let hits = super::rules::rule_au_053_out_of_area_location(&ents, "s", 0);
+    assert_eq!(hits.len(), 1, "the Perth sighting is out of area");
+    assert_eq!(hits[0].rule_id, "AU-053");
+    assert_eq!(hits[0].severity, super::Severity::Medium);
+    assert!(hits[0].description.contains("outside"));
+}
+
+#[test]
+fn au053_does_not_fire_on_a_single_coherent_area() {
+    // Four tight sightings in one suburb — no outlier, no anomaly.
+    let ents = vec![
+        coord_from("-33.8700,151.2100", "geocode"),
+        coord_from("-33.8720,151.2150", "exif_geo"),
+        coord_from("-33.8680,151.2080", "wigle"),
+        coord_from("-33.8710,151.2120", "geocode"),
+    ];
+    assert!(super::rules::rule_au_053_out_of_area_location(&ents, "s", 0).is_empty());
+}
+
+#[test]
+fn au053_ignores_infrastructure_and_needs_an_established_area() {
+    // The live peekyou.com case: infra coords are excluded, leaving too few
+    // person-anchored points to form an established area → no anomaly fires.
+    let ents = vec![
+        hosting_coord("43.6532,-79.3832", "ip_geo"),
+        coord_from("37.7621,-122.3971", "ipinfo"),
+        coord_from("36.0345,-89.3856", "ip_whois_geo"),
+        coord_from("-33.8700,151.2100", "exif_geo"), // one real point
+    ];
+    assert!(super::rules::rule_au_053_out_of_area_location(&ents, "s", 0).is_empty());
+}

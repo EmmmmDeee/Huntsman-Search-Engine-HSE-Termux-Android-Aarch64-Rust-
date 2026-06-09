@@ -518,6 +518,133 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
     )]
 }
 
+/// AU-053 — Out-of-area location anomaly (convex-hull membership).
+///
+/// Consumes the convex machinery to answer a question AU-052 doesn't: once a
+/// subject has an *established* area, does any sighting fall **outside** it? Such
+/// a point is a secondary base, a travel event, or planted/bad data — each a
+/// lead worth surfacing on its own.
+///
+/// The test is principled, not a tunable radius: cluster the admissible
+/// person-anchored coordinates (same infrastructure exclusion as AU-052), take
+/// the *dominant* cluster (≥3 points) as the established area, build its convex
+/// hull, and flag any other coordinate that is **not** inside that hull
+/// ([`crate::util::geohash::point_in_convex_hull`]) *and* lies a guarded distance
+/// beyond it (`max(50 km, 2× the area's diameter)` from the area's
+/// confidence-weighted centroid). The hull supplies the shape; the guard ensures
+/// a flagged point is genuinely a *different place*, not a hull vertex a few km
+/// out. Dominant cluster and outliers are disjoint sets, so this never degenerates
+/// the way a leave-one-out hull test would.
+pub(in crate::core::correlator) fn rule_au_053_out_of_area_location(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use crate::util::geohash::{
+        geo_footprint, haversine_km, point_in_convex_hull, weighted_centroid,
+    };
+
+    let parsed: Vec<(&Entity, (f64, f64))> = entities_of_kind(entities, EntityKind::Coordinates)
+        .into_iter()
+        .filter(|e| e.confidence >= 0.50)
+        .filter(|e| !is_infrastructure_geo(e))
+        .filter_map(|c| crate::util::geohash::parse_coords(&c.value).map(|ll| (c, ll)))
+        .collect();
+    // Need an established area (≥3) plus at least one candidate outlier.
+    if parsed.len() < 4 {
+        return Vec::new();
+    }
+    // Multi-source gate, identical to AU-052.
+    let mut sources: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for (e, _) in &parsed {
+        for src in e.corroborating_sources() {
+            sources.insert(src);
+        }
+    }
+    if sources.len() < 2 {
+        return Vec::new();
+    }
+
+    // Cluster by 0.5° boxes (same locality grain as AU-017), tracking indices.
+    let mut clusters: Vec<Vec<usize>> = Vec::new();
+    for (idx, (_, (lat, lon))) in parsed.iter().enumerate() {
+        let mut placed = false;
+        for cl in &mut clusters {
+            let (_, (rl, ro)) = parsed[cl[0]];
+            if (lat - rl).abs() < 0.5 && (lon - ro).abs() < 0.5 {
+                cl.push(idx);
+                placed = true;
+                break;
+            }
+        }
+        if !placed {
+            clusters.push(vec![idx]);
+        }
+    }
+    // Dominant cluster = the largest; it must hold ≥3 points to be an established
+    // area that bounds a hull. Ties resolve to the lowest first-index for
+    // determinism.
+    let Some(dominant) = clusters
+        .iter()
+        .max_by(|a, b| a.len().cmp(&b.len()).then(b[0].cmp(&a[0])))
+        .filter(|c| c.len() >= 3)
+        .cloned()
+    else {
+        return Vec::new();
+    };
+    let in_dominant: std::collections::HashSet<usize> = dominant.iter().copied().collect();
+
+    let dom_pts: Vec<(f64, f64)> = dominant.iter().map(|&i| parsed[i].1).collect();
+    let Some(fp) = geo_footprint(&dom_pts) else {
+        return Vec::new(); // dominant area collinear → no hull
+    };
+    let dom_weighted: Vec<((f64, f64), f64)> = dominant
+        .iter()
+        .map(|&i| (parsed[i].1, parsed[i].0.c_effective()))
+        .collect();
+    let dom_centroid = weighted_centroid(&dom_weighted).unwrap_or(fp.centroid);
+    let guard_km = (2.0 * fp.diameter_km).max(50.0);
+
+    // Outliers: admissible points not in the dominant area that are both outside
+    // its hull and beyond the guard distance from its centroid.
+    let mut outliers: Vec<(&Entity, (f64, f64))> = Vec::new();
+    for (idx, &(e, p)) in parsed.iter().enumerate() {
+        if in_dominant.contains(&idx) {
+            continue;
+        }
+        let outside = !point_in_convex_hull(&fp.hull, p);
+        let far = haversine_km(dom_centroid.0, dom_centroid.1, p.0, p.1) > guard_km;
+        if outside && far {
+            outliers.push((e, p));
+        }
+    }
+    if outliers.is_empty() {
+        return Vec::new();
+    }
+
+    let mut uids: Vec<String> = dominant.iter().map(|&i| parsed[i].0.uid.clone()).collect();
+    uids.extend(outliers.iter().map(|(e, _)| e.uid.clone()));
+    uids.sort_unstable();
+    uids.dedup();
+    vec![Correlation::new(
+        "AU-053",
+        "Out-of-area location anomaly",
+        Severity::Medium,
+        format!(
+            "Subject's established area is {} sightings around {:.4},{:.4}; {} sighting(s) fall \
+             outside it (>{:.0} km away) — secondary location, travel, or planted data",
+            dominant.len(),
+            dom_centroid.0,
+            dom_centroid.1,
+            outliers.len(),
+            guard_km,
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
 /// AU-032 — Geographic co-location cluster (graph-aware). Walks the
 /// `CoLocatedWith` edge graph and reports each connected component of
 /// `COLOCATION_CLUSTER_MIN`+ Coordinates entities — i.e. three or more
