@@ -599,6 +599,57 @@ fn non_high_value_module_unaffected_by_source_gate() {
     assert!(module_skip_reason(&m, &pub_target(), &opts, true, 0).is_none());
 }
 
+fn wigle() -> StubModule {
+    StubModule {
+        name: "wigle",
+        cost: ModuleCost::KeyGated,
+        passive: false,
+    }
+}
+
+fn coords_target() -> Target {
+    Target::new(TargetKind::Coordinates, "-27.47,153.02")
+}
+
+#[test]
+fn wigle_finaliser_gated_on_uncorroborated_coordinate() {
+    // The GEOINT-finaliser rule: on EXPANSION, WiGLE must not spend a query on
+    // a Coordinates target the free geo layer hasn't corroborated (>=2 distinct
+    // sources). 0 or 1 source → skip; >=2 (recursion agreed, high confidence)
+    // → allowed.
+    let m = wigle();
+    let opts = ScanOptions::default();
+    assert_eq!(
+        module_skip_reason(&m, &coords_target(), &opts, true, 1),
+        Some("WiGLE finaliser — awaiting GEOINT corroboration (>=2 geo sources)"),
+        "single-source coordinate must not reach the paid WiGLE finaliser"
+    );
+    assert!(module_skip_reason(&m, &coords_target(), &opts, true, 0).is_some());
+    assert!(
+        module_skip_reason(&m, &coords_target(), &opts, true, 2).is_none(),
+        "a coordinate >=2 geo sources agree on (high confidence) reaches WiGLE"
+    );
+}
+
+#[test]
+fn wigle_runs_on_seed_coordinate_and_on_any_bssid() {
+    let m = wigle();
+    let opts = ScanOptions::default();
+    // Seed round: a Coordinates seed is the operator's explicit target.
+    assert!(
+        module_skip_reason(&m, &coords_target(), &opts, false, 0).is_none(),
+        "WiGLE runs on a coordinate SEED regardless of corroboration"
+    );
+    // A MacAddress/BSSID is WiGLE's PRIMARY pivot — exempt from the
+    // geo-corroboration precondition even on expansion at 0 sources (its own
+    // BSSID budget bounds it). The universal-preflight gate doesn't touch MACs.
+    let mac = Target::new(TargetKind::MacAddress, "aa:bb:cc:dd:ee:ff");
+    assert!(
+        module_skip_reason(&m, &mac, &opts, true, 0).is_none(),
+        "a discovered BSSID must reach WiGLE — it is the primary resolver"
+    );
+}
+
 #[test]
 fn skip_reason_allowlist_takes_priority_over_exclude() {
     let m = free_active();

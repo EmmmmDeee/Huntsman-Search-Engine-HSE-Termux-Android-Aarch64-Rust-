@@ -172,6 +172,27 @@ pub(super) fn module_skip_reason(
     {
         return Some("high-value API — awaiting cross-correlation (>=2 sources)");
     }
+    // WiGLE is the paid GEOINT *finaliser*: it spends a query to confirm and
+    // enrich a coordinate with real WiFi-density observations. On a discovered
+    // `Coordinates` target it must fire only AFTER the free GEOINT layer
+    // (ip_geo / geocode / overpass / mylnikov / breach lat-lon) has produced
+    // and recursion has CORROBORATED that coordinate — i.e. ≥
+    // `CROSS_CORRELATION_MIN_SOURCES` distinct sources agree on it (high
+    // confidence) — so the daily WiGLE allowance is spent confirming the
+    // subject's real location, not chasing every single-source coordinate a
+    // scan throws off. A `MacAddress`/BSSID target is exempt: WiGLE is the
+    // PRIMARY resolver there (nothing else geolocates a BSSID), so the
+    // cross-correlation precondition can never be met and gating it would
+    // disable the pivot entirely; its own BSSID sub-budget bounds it instead.
+    // The seed round is exempt (a `Coordinates` seed is the operator's explicit
+    // target), exactly as the oathnet gate admits the seed.
+    if is_expansion
+        && name == "wigle"
+        && target.kind == TargetKind::Coordinates
+        && target_distinct_sources < CROSS_CORRELATION_MIN_SOURCES
+    {
+        return Some("WiGLE finaliser — awaiting GEOINT corroboration (>=2 geo sources)");
+    }
     // ── Universal preflight: reject private IPs / local domains for
     // modules that talk to external APIs. Sensor modules opt out via
     // LOCAL_PASSIVE_MODULES — they legitimately scan the local
