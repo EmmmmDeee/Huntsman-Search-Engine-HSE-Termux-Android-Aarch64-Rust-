@@ -130,19 +130,17 @@ impl Module for EmailParse {
                     }
                 }
 
+                // "Corporate" = not a consumer mailbox. Use the SAME shared
+                // freemail list the domain-extraction step above uses, not a
+                // second, shorter inline list. The inline list held only 8 of
+                // the ~40 freemail/ISP providers `is_freemail` knows, so
+                // country/ISP webmail (bigpond, comcast, gmx, yandex.ru, …) was
+                // scored as corporate (0.70 confidence) AND had a Person inferred
+                // from `firstname.lastname` — fabricating a real name from a
+                // throwaway consumer address, and disagreeing with the very
+                // freemail check that skipped the Domain two blocks up.
                 let email_domain = target.value.split('@').nth(1).unwrap_or("").to_lowercase();
-                let is_corporate = ![
-                    "gmail.com",
-                    "hotmail.com",
-                    "yahoo.com",
-                    "outlook.com",
-                    "live.com",
-                    "icloud.com",
-                    "protonmail.com",
-                    "aol.com",
-                ]
-                .iter()
-                .any(|d| email_domain == *d);
+                let is_corporate = !is_freemail(&email_domain);
                 let uname_conf = if is_corporate { 0.70 } else { 0.55 };
                 for candidate in candidates {
                     let mut entity =
@@ -324,6 +322,60 @@ mod tests {
         use crate::util::domains::is_role_localpart;
         assert!(is_role_localpart("dns") && is_role_localpart("no-reply"));
         assert!(!is_role_localpart("jane.doe") && !is_role_localpart("matthewdiegmann"));
+    }
+
+    #[tokio::test]
+    async fn isp_freemail_outside_inline_list_infers_no_person() {
+        // Regression: the username/Person step once used a stale 8-domain inline
+        // freemail list, so an ISP/consumer mailbox absent from it (bigpond,
+        // comcast, gmx, yandex.ru) was treated as corporate — inferring a Person
+        // "John Doe" from `john.doe@…` and scoring usernames at the corporate
+        // 0.70. These ARE freemail per the shared list, so: no Person, and
+        // usernames at the freemail confidence (0.55).
+        for addr in [
+            "john.doe@bigpond.com",
+            "john.doe@comcast.net",
+            "john.doe@gmx.com",
+            "john.doe@yandex.ru",
+        ] {
+            let r = EmailParse
+                .process(&Target::new(TargetKind::Email, addr), &ctx())
+                .await
+                .unwrap();
+            assert!(
+                !r.entities.iter().any(|e| e.kind == EntityKind::Person),
+                "{addr}: consumer mailbox must not infer a Person"
+            );
+            for e in r.entities.iter().filter(|e| e.kind == EntityKind::Username) {
+                assert!(
+                    (e.confidence - 0.55).abs() < 1e-9,
+                    "{addr}: freemail username confidence should be 0.55, got {}",
+                    e.confidence
+                );
+            }
+        }
+
+        // A genuine corporate domain still infers the Person at 0.70 usernames.
+        let r = EmailParse
+            .process(
+                &Target::new(TargetKind::Email, "john.doe@acme-corp.com"),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            r.entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Person && e.value == "John Doe"),
+            "corporate address should still infer the Person"
+        );
+        assert!(
+            r.entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::Username)
+                .all(|e| (e.confidence - 0.70).abs() < 1e-9),
+            "corporate username confidence should be 0.70"
+        );
     }
 
     #[tokio::test]
