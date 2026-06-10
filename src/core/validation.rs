@@ -379,10 +379,42 @@ fn is_placeholder_person(name: &str) -> bool {
     )
 }
 
+/// Canonical documentation/template email **local-parts** — the `firstname` in
+/// `firstname@gmail.com`, the `your.email` in `your.email@domain`, … These are
+/// form-field templates and tutorial placeholders scraped from web pages, never
+/// a real person's mailbox, yet their host is a real provider (`gmail.com`), so
+/// the domain check alone can't catch them. A live `firstname@gmail.com` reached
+/// VERIFIED (0.85) before this gate. Deliberately tight — only unambiguous
+/// templates, compared both verbatim and separator-stripped (so `first.last`,
+/// `first_last` and `firstlast` all match) — so a real handle like `matt` or a
+/// real `john.smith` is never rejected.
+fn is_placeholder_email_local(local: &str) -> bool {
+    let l = local.trim().to_ascii_lowercase();
+    let stripped: String = l.chars().filter(char::is_ascii_alphanumeric).collect();
+    const TEMPLATE: &[&str] = &[
+        "firstname",
+        "lastname",
+        "firstnamelastname",
+        "firstlast",
+        "namesurname",
+        "yourname",
+        "fullname",
+        "youremail",
+        "emailaddress",
+        "yourusername",
+        "johndoe",
+        "janedoe",
+        "example",
+        "sample",
+    ];
+    TEMPLATE.contains(&l.as_str()) || TEMPLATE.contains(&stripped.as_str())
+}
+
 /// True if a discovered entity is a documentation/placeholder artifact that
 /// should never enter the graph — `example.com`, `jordan@example.com`,
-/// `http://example.com`, the `example` username, `John Doe`, … Enforced at the
-/// engine's admission gate alongside [`is_bogus_ip`] so it covers every module.
+/// `firstname@gmail.com`, `http://example.com`, the `example` username,
+/// `John Doe`, … Enforced at the engine's admission gate alongside
+/// [`is_bogus_ip`] so it covers every module.
 ///
 /// Exception (the operator's rule): kinds whose VALUE is inherently unique —
 /// passwords, API keys, raw credentials — are NEVER rejected, even if the value
@@ -393,9 +425,9 @@ pub fn is_placeholder_entity(kind: &EntityKind, value: &str) -> bool {
         // Inherently-unique secrets: always kept.
         EntityKind::Password | EntityKind::ApiKey | EntityKind::Credential => false,
         EntityKind::Domain => is_placeholder_domain(value),
-        EntityKind::Email => value
-            .rsplit_once('@')
-            .is_some_and(|(_, host)| is_placeholder_domain(host)),
+        EntityKind::Email => value.rsplit_once('@').is_some_and(|(local, host)| {
+            is_placeholder_domain(host) || is_placeholder_email_local(local)
+        }),
         EntityKind::Url => url_host_is_placeholder(value),
         EntityKind::Username => crate::util::preflight::is_placeholder_username(value),
         EntityKind::Person => is_placeholder_person(value),
@@ -628,9 +660,19 @@ mod tests {
         ));
         assert!(is_placeholder_entity(&Username, "example"));
         assert!(is_placeholder_entity(&Person, "John Doe"));
-        // Real values pass through.
+        // Template local-parts on a REAL provider domain (regression: a live
+        // scan surfaced `firstname@gmail.com` at VERIFIED 0.85).
+        assert!(is_placeholder_entity(&Email, "firstname@gmail.com"));
+        assert!(is_placeholder_entity(&Email, "first.last@outlook.com"));
+        assert!(is_placeholder_entity(&Email, "your.email@company.com"));
+        assert!(is_placeholder_entity(&Email, "john.doe@gmail.com"));
+        // Real values pass through — including real mailboxes that merely START
+        // with a template-ish token.
         assert!(!is_placeholder_entity(&Domain, "cloudflare.com"));
         assert!(!is_placeholder_entity(&Email, "matthewdiegmann@gmail.com"));
+        assert!(!is_placeholder_entity(&Email, "matt@gmail.com"));
+        assert!(!is_placeholder_entity(&Email, "john.smith@gmail.com"));
+        assert!(!is_placeholder_entity(&Email, "firstnations@gmail.com"));
         assert!(!is_placeholder_entity(&Person, "Matthew Diegmann"));
         // Inherently-unique secrets are NEVER filtered, even containing "example".
         assert!(!is_placeholder_entity(&Password, "example.com"));
