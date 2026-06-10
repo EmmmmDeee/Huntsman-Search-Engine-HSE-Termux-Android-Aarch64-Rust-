@@ -786,3 +786,72 @@ pub(in crate::core::correlator) fn rule_au_044_shared_tracking_id(
         })
         .collect()
 }
+
+/// AU-054 — PII exposed on a data broker (removal target).
+///
+/// When the scan surfaced a `Url` whose host is a known people-search /
+/// data-broker site (Spokeo, BeenVerified, Whitepages, …), the subject is
+/// *publicly listed* there — an actionable privacy exposure. Each such broker
+/// becomes one discrete, rankable finding carrying the broker's public opt-out
+/// URL, so the operator can file a removal request per site. This is the
+/// takedown counterpart to the engine's expansion gate, which already treats
+/// these domains as aggregator noise: here that same recognition is turned into
+/// "your subject is on this site — remove them here".
+///
+/// Matches `Url` entities only (a profile URL with a host is a real listing),
+/// not a bare broker `Domain` (no specific record to remove). One firing per
+/// distinct broker, in registry (alphabetical-by-domain) order; entity_uids are
+/// every URL on that broker, sorted, so the output is deterministic.
+pub(in crate::core::correlator) fn rule_au_054_data_broker_exposure(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use crate::core::data_broker::{BROKERS, broker_for_host};
+
+    // broker domain → the uids of Url entities listed on it.
+    let mut by_broker: HashMap<&'static str, Vec<String>> = HashMap::new();
+    for e in entities.iter().filter(|e| e.kind == EntityKind::Url) {
+        if let Some(host) = url::Url::parse(&e.value)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string))
+            && let Some(broker) = broker_for_host(&host)
+        {
+            by_broker
+                .entry(broker.domain)
+                .or_default()
+                .push(e.uid.clone());
+        }
+    }
+    if by_broker.is_empty() {
+        return Vec::new();
+    }
+
+    // Iterate BROKERS (sorted by domain) so firings are emitted deterministically.
+    BROKERS
+        .iter()
+        .filter_map(|broker| {
+            let mut uids = by_broker.remove(broker.domain)?;
+            uids.sort_unstable();
+            uids.dedup();
+            let n = uids.len();
+            Some(Correlation {
+                rule_id: "AU-054".into(),
+                rule_name: "Data-broker PII exposure (removal target)".into(),
+                severity: Severity::High,
+                description: format!(
+                    "Subject is publicly listed on {} ({} URL{}) — file a removal \
+                     request: {}",
+                    broker.name,
+                    n,
+                    if n == 1 { "" } else { "s" },
+                    broker.optout_url
+                ),
+                entity_uids: uids,
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            })
+        })
+        .collect()
+}

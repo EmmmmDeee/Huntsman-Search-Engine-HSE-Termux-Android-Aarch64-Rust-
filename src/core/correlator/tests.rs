@@ -1463,14 +1463,16 @@ fn ground_truth_erik_diegmann_scan_yields_only_real_correlations() {
         .map(|c| (c.rule_id.as_str(), c.description.as_str()))
         .collect();
 
-    // Exactly five real correlations — nothing fabricated. The fifth is AU-045:
-    // "Erik Diegmann" is corroborated by oathnet_pro (breach) AND social_probe
-    // (social) — two independent service families — which is precisely the
-    // cross-service identity confirmation the correlation upgrade surfaces.
+    // Exactly six real correlations — nothing fabricated. AU-045: "Erik
+    // Diegmann" is corroborated by oathnet_pro (breach) AND social_probe
+    // (social) — two independent service families. AU-054: the subject's own
+    // listing at peekyou.com/erik-diegmann is a genuine data-broker exposure
+    // and an actionable removal target — exactly the takedown signal the rule
+    // exists to surface (not a fabrication: the URL is the subject's page).
     assert_eq!(
         firings.len(),
-        5,
-        "expected 5 real correlations, got: {summary:#?}"
+        6,
+        "expected 6 real correlations, got: {summary:#?}"
     );
 
     let fired: HashSet<&str> = firings.iter().map(|c| c.rule_id.as_str()).collect();
@@ -1483,6 +1485,20 @@ fn ground_truth_erik_diegmann_scan_yields_only_real_correlations() {
     assert!(
         fired.contains("AU-045"),
         "Erik Diegmann confirmed across breach + social families"
+    );
+    // The takedown surface: subject listed on a people-search site → a removal
+    // target carrying PeekYou's opt-out URL.
+    let au054 = firings
+        .iter()
+        .find(|c| c.rule_id == "AU-054")
+        .expect("subject listed on peekyou.com → AU-054 removal target");
+    assert!(
+        au054.description.contains("PeekYou")
+            && au054
+                .description
+                .contains("peekyou.com/about/contact/optout"),
+        "AU-054 must name the broker and its opt-out URL: {}",
+        au054.description
     );
 
     // The fix holds: no geo over-fire, no fused identity/location from guesses.
@@ -1970,6 +1986,67 @@ fn au_042_groups_pgp_linked_emails() {
     assert_eq!(out.len(), 1, "one grouped firing");
     assert_eq!(out[0].entity_uids.len(), 2, "only the pgp-linked emails");
     assert_eq!(out[0].severity, Severity::High);
+}
+
+#[test]
+fn au_054_emits_one_removal_target_per_broker_with_optout_url() {
+    use super::rules::rule_au_054_data_broker_exposure;
+    let ents = vec![
+        // Subject listed on two distinct brokers (two URLs on Spokeo, one on
+        // Whitepages) plus an unrelated public URL that must NOT fire.
+        mk_tagged(
+            EntityKind::Url,
+            "https://www.spokeo.com/John-Doe",
+            "search_engines",
+            &[],
+        ),
+        mk_tagged(
+            EntityKind::Url,
+            "https://www.spokeo.com/John-Doe/2",
+            "search_engines",
+            &[],
+        ),
+        mk_tagged(
+            EntityKind::Url,
+            "https://www.whitepages.com/name/John-Doe",
+            "search_engines",
+            &[],
+        ),
+        mk_tagged(
+            EntityKind::Url,
+            "https://github.com/jdoe",
+            "github_user",
+            &[],
+        ),
+    ];
+    let out = rule_au_054_data_broker_exposure(&ents, "scan", 0);
+    assert_eq!(out.len(), 2, "one finding per distinct broker, not per URL");
+    assert!(
+        out.iter()
+            .all(|c| c.rule_id == "AU-054" && c.severity == super::Severity::High)
+    );
+    // Deterministic order: brokers sorted by domain → spokeo before whitepages.
+    assert!(out[0].description.contains("Spokeo"));
+    assert!(out[0].description.contains("https://www.spokeo.com/optout"));
+    assert_eq!(
+        out[0].entity_uids.len(),
+        2,
+        "both Spokeo URLs grouped under one finding"
+    );
+    assert!(out[1].description.contains("Whitepages"));
+    assert!(
+        out[1]
+            .description
+            .contains("https://www.whitepages.com/suppression-requests")
+    );
+    // No broker exposure → no finding.
+    let clean = vec![mk_tagged(
+        EntityKind::Url,
+        "https://github.com/jdoe",
+        "github_user",
+        &[],
+    )];
+    assert!(rule_au_054_data_broker_exposure(&clean, "scan", 0).is_empty());
 }
 
 #[test]
