@@ -2447,6 +2447,47 @@ fn au047_links_on_reused_plaintext_password_and_session_token() {
 }
 
 #[test]
+fn au027_chains_only_the_dominant_coherent_location() {
+    use super::rules::rule_au_027_address_coordinates_chain;
+    // Regression from a deep "Haigen Bamford" scan: a Brisbane subject also
+    // picked up a Cairns coordinate ~1700 km away, and AU-027 fused all of them
+    // into one continent-spanning "validated chain". It must anchor on the
+    // dominant coherent cluster (Brisbane) and exclude the far Cairns point.
+    let coord = |v: &str| {
+        let mut e = Entity::new(EntityKind::Coordinates, v, 0.75, "scan");
+        e.tag("geocoded");
+        e
+    };
+    let mut brisbane_addr = Entity::new(EntityKind::Address, "Brisbane, QLD", 0.80, "scan");
+    brisbane_addr.tag("geoint");
+    let cairns_uid = coord("-16.9186,145.7781").uid;
+    let ents = vec![
+        brisbane_addr,
+        coord("-27.4698,153.0251"), // Brisbane CBD
+        coord("-27.4690,153.0235"), // Brisbane CBD (~0.2 km away)
+        coord("-16.9186,145.7781"), // Cairns, ~1700 km north
+    ];
+    let out = rule_au_027_address_coordinates_chain(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-027");
+    // Dominant cluster = Brisbane's 2 coords, anchored near Brisbane; Cairns out.
+    assert!(
+        out[0].description.contains("2 coordinate set(s)"),
+        "dominant cluster only: {}",
+        out[0].description
+    );
+    assert!(
+        out[0].description.contains("-27.4"),
+        "anchored near Brisbane: {}",
+        out[0].description
+    );
+    assert!(
+        !out[0].entity_uids.contains(&cairns_uid),
+        "the far Cairns coordinate must not be in the chain"
+    );
+}
+
+#[test]
 fn au048_links_accounts_sharing_a_public_key() {
     // A public key published by two accounts → cryptographic proof of one
     // controller (same private key). Single account → no link.
