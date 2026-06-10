@@ -476,6 +476,32 @@ impl Entity {
 
     // ── GREATEST-semantics merge ─────────────────────────────────────────────
 
+    /// Put this entity's evidence and tags into a deterministic order so the
+    /// PERSISTED/EXPORTED result does not depend on the order modules happened to
+    /// run in. Concurrent dispatch (the default, `max_concurrent > 0`) merges
+    /// module results in completion order, which would otherwise leak into the
+    /// evidence/tags ordering of the stored entity and make two runs' dossiers
+    /// differ for no real reason (Determinism Requirement). Evidence is sorted by
+    /// its dedup key — `(source, summary)`, already unique per entity — and tags
+    /// lexicographically. Membership (`has_tag`) and the GREATEST
+    /// confidence/corroboration are unaffected; only display/serialisation order
+    /// is normalised. Called once per entity at scan finalisation, so it is not on
+    /// the per-merge hot path.
+    ///
+    /// `raw_value` is likewise made order-independent by [`Entity::merge`],
+    /// which keeps the lexicographically smaller spelling when two same-UID
+    /// entities differ only in original casing/spacing (`Foo@Bar.com` vs
+    /// `foo@bar.com`). Because `min` is commutative, the stored display value no
+    /// longer depends on which module's result merged first.
+    pub fn canonicalize_order(&mut self) {
+        self.evidence.sort_by(|a, b| {
+            a.source
+                .cmp(&b.source)
+                .then_with(|| a.summary.cmp(&b.summary))
+        });
+        self.tags.sort();
+    }
+
     /// Merge `other` into `self` using GREATEST-semantics.
     ///
     /// This is the deduplication primitive: two entities with the same `uid`
@@ -509,32 +535,6 @@ impl Entity {
     /// assert!(a.has_tag("breach") && a.has_tag("paste-exposed")); // tags unioned
     /// assert_eq!(a.evidence.len(), 2);  // distinct evidence both kept
     /// ```
-    /// Put this entity's evidence and tags into a deterministic order so the
-    /// PERSISTED/EXPORTED result does not depend on the order modules happened to
-    /// run in. Concurrent dispatch (the default, `max_concurrent > 0`) merges
-    /// module results in completion order, which would otherwise leak into the
-    /// evidence/tags ordering of the stored entity and make two runs' dossiers
-    /// differ for no real reason (Determinism Requirement). Evidence is sorted by
-    /// its dedup key — `(source, summary)`, already unique per entity — and tags
-    /// lexicographically. Membership (`has_tag`) and the GREATEST
-    /// confidence/corroboration are unaffected; only display/serialisation order
-    /// is normalised. Called once per entity at scan finalisation, so it is not on
-    /// the per-merge hot path.
-    ///
-    /// `raw_value` is likewise made order-independent by [`Entity::merge`],
-    /// which keeps the lexicographically smaller spelling when two same-UID
-    /// entities differ only in original casing/spacing (`Foo@Bar.com` vs
-    /// `foo@bar.com`). Because `min` is commutative, the stored display value no
-    /// longer depends on which module's result merged first.
-    pub fn canonicalize_order(&mut self) {
-        self.evidence.sort_by(|a, b| {
-            a.source
-                .cmp(&b.source)
-                .then_with(|| a.summary.cmp(&b.summary))
-        });
-        self.tags.sort();
-    }
-
     pub fn merge(&mut self, other: Self) {
         debug_assert_eq!(self.uid, other.uid, "merge: UID mismatch");
         if self.uid != other.uid {
@@ -680,8 +680,14 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             s
         }
         EntityKind::Phone => {
-            let mut out = String::with_capacity(value.len());
-            let mut chars = value.chars().peekable();
+            // Trim BEFORE the leading-`+` check: every other arm trims, and a
+            // scraped value with leading whitespace (" +61 412 …") would
+            // otherwise fail the first-char test and silently drop the
+            // country-code `+`, fragmenting one number across two UIDs
+            // ("61412…" vs "+61412…").
+            let trimmed = value.trim();
+            let mut out = String::with_capacity(trimmed.len());
+            let mut chars = trimmed.chars().peekable();
             if chars.peek() == Some(&'+') {
                 out.push('+');
                 chars.next();
@@ -739,7 +745,18 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             if let Some((lat_s, lon_s)) = trimmed.split_once(',')
                 && let (Ok(lat), Ok(lon)) =
                     (lat_s.trim().parse::<f64>(), lon_s.trim().parse::<f64>())
+                && lat.is_finite()
+                && lon.is_finite()
             {
+                // Round to 6 dp first, then `+ 0.0` to collapse IEEE negative
+                // zero: formatting `-0.0000001` directly yields "-0.000000",
+                // which is the same point as "0.000000" but a different UID —
+                // coordinates straddling the equator/meridian must not
+                // fragment on the sign of zero. Non-finite values (NaN/inf)
+                // fall through to the raw string instead of a formatted
+                // pseudo-coordinate.
+                let lat = (lat * 1e6).round() / 1e6 + 0.0;
+                let lon = (lon * 1e6).round() / 1e6 + 0.0;
                 return format!("{lat:.6},{lon:.6}");
             }
             trimmed.to_string()

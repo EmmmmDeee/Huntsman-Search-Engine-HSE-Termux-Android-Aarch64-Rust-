@@ -354,6 +354,48 @@ fn normalise_phone_strips_formatting() {
 }
 
 #[test]
+fn normalise_phone_trims_before_plus_check() {
+    // Leading whitespace must not eat the country-code `+`: the `+` check runs
+    // on the first char, so an untrimmed " +61…" used to normalise to "61…",
+    // splitting one number across two UIDs.
+    assert_eq!(
+        normalise(&EntityKind::Phone, "  +61 412 345 678 "),
+        "+61412345678"
+    );
+    assert_eq!(
+        normalise(&EntityKind::Phone, "  +61 412 345 678 "),
+        normalise(&EntityKind::Phone, "+61412345678")
+    );
+}
+
+#[test]
+fn normalise_coordinates_collapses_negative_zero() {
+    // -0.0000001 rounds to zero at 6 dp; it must canonicalise to "0.000000",
+    // not "-0.000000" — same point, and it must be the same UID.
+    assert_eq!(
+        normalise(&EntityKind::Coordinates, "-0.0000001,0.0"),
+        "0.000000,0.000000"
+    );
+    assert_eq!(
+        normalise(&EntityKind::Coordinates, "-0.0,-0.0"),
+        "0.000000,0.000000"
+    );
+    // Real negative coordinates are untouched.
+    assert_eq!(
+        normalise(&EntityKind::Coordinates, "-27.5,153.0"),
+        "-27.500000,153.000000"
+    );
+}
+
+#[test]
+fn normalise_coordinates_rejects_non_finite() {
+    // NaN/inf must not be formatted into a pseudo-coordinate string; the raw
+    // (trimmed) value falls through so validity gates see it untouched.
+    assert_eq!(normalise(&EntityKind::Coordinates, "NaN,NaN"), "NaN,NaN");
+    assert_eq!(normalise(&EntityKind::Coordinates, " inf,5 "), "inf,5");
+}
+
+#[test]
 fn normalise_domain_strips_trailing_dot() {
     assert_eq!(
         normalise(&EntityKind::Domain, "example.com."),
@@ -749,6 +791,9 @@ const NORM_CORPUS: &[&str] = &[
     "http://A.B/",
     "1.23456789,-2.5",
     "-0.0,0.0",
+    "-0.0000001,179.9999999",
+    "NaN,NaN",
+    "  +61 412 345 678 ",
     "AA-BB-CC-DD-EE-FF",
     "+1 (555) 234-9999",
     "::ffff:1.2.3.4",
