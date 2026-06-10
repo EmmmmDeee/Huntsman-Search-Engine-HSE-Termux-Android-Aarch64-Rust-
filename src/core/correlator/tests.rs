@@ -2931,3 +2931,81 @@ fn severity_as_canonical_matches_serde() {
         assert_eq!(json.trim_matches('"'), sev.as_canonical(), "{sev:?}");
     }
 }
+
+#[test]
+fn au_056_corroborates_when_coord_and_address_agree_on_state() {
+    use super::rules::rule_au_056_jurisdiction_cross_check;
+
+    // A Brisbane coordinate (tagged au-state:QLD by the geo builders) and a QLD
+    // address independently name the same state → High corroboration.
+    let ents = vec![
+        mk_tagged(
+            EntityKind::Coordinates,
+            "-27.4766,153.0166",
+            "geocode",
+            &["geoint", "au-relevant", "au-state:QLD"],
+        ),
+        mk_tagged(
+            EntityKind::Address,
+            "12 Mary Street, Brisbane City QLD 4000",
+            "see_know",
+            &[],
+        ),
+    ];
+    let out = rule_au_056_jurisdiction_cross_check(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-056");
+    assert_eq!(out[0].severity, super::Severity::High);
+    assert!(out[0].description.contains("QLD"));
+    assert!(out[0].description.contains("corroborated"));
+    assert_eq!(out[0].entity_uids.len(), 2);
+}
+
+#[test]
+fn au_056_flags_conflict_when_states_disagree() {
+    use super::rules::rule_au_056_jurisdiction_cross_check;
+
+    // Coordinate says QLD, the address says VIC → disjoint → Medium conflict.
+    let ents = vec![
+        mk_tagged(
+            EntityKind::Coordinates,
+            "-27.4766,153.0166",
+            "geocode",
+            &["geoint", "au-state:QLD"],
+        ),
+        mk_tagged(
+            EntityKind::Address,
+            "5 Collins Street, Melbourne VIC 3000",
+            "see_know",
+            &[],
+        ),
+    ];
+    let out = rule_au_056_jurisdiction_cross_check(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].severity, super::Severity::Medium);
+    assert!(out[0].rule_name.contains("conflict") || out[0].description.contains("travel"));
+    assert!(out[0].description.contains("QLD") && out[0].description.contains("VIC"));
+}
+
+#[test]
+fn au_056_silent_without_both_signal_classes() {
+    use super::rules::rule_au_056_jurisdiction_cross_check;
+
+    // Only a coordinate (no address) → nothing to cross-check.
+    let coord_only = vec![mk_tagged(
+        EntityKind::Coordinates,
+        "-27.4766,153.0166",
+        "geocode",
+        &["au-state:QLD"],
+    )];
+    assert!(rule_au_056_jurisdiction_cross_check(&coord_only, "scan", 0).is_empty());
+
+    // Only an address → likewise nothing.
+    let addr_only = vec![mk_tagged(
+        EntityKind::Address,
+        "12 Mary Street, Brisbane City QLD 4000",
+        "see_know",
+        &[],
+    )];
+    assert!(rule_au_056_jurisdiction_cross_check(&addr_only, "scan", 0).is_empty());
+}

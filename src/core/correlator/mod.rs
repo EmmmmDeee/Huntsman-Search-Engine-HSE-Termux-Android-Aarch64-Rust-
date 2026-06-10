@@ -248,6 +248,7 @@ const RULES: &[RuleFn] = &[
     rule_au_053_out_of_area_location,
     rule_au_054_data_broker_exposure,
     rule_au_055_primary_source_accounts,
+    rule_au_056_jurisdiction_cross_check,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

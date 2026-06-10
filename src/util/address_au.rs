@@ -155,6 +155,70 @@ fn is_plausible_postcode(state: &str, postcode: &str) -> bool {
     }
 }
 
+/// Map a 4-digit Australian postcode to its state/territory, or `None` when the
+/// number falls in no assigned range. Iterates [`STATES`] in declared order so
+/// the ACT (whose 2600–2618 / 2900–2920 ranges sit *inside* the NSW 2000–2999
+/// span) is matched before NSW and isn't swallowed by it.
+#[must_use]
+pub fn state_for_postcode(postcode: &str) -> Option<&'static str> {
+    STATES
+        .iter()
+        .copied()
+        .find(|s| is_plausible_postcode(s, postcode))
+}
+
+/// Full state/territory names paired with their canonical abbreviation. Longest
+/// names first so a substring scan matches "New South Wales" before the bare
+/// "Wales" / "WA" could mislead.
+const STATE_NAMES: &[(&str, &str)] = &[
+    ("australian capital territory", "ACT"),
+    ("new south wales", "NSW"),
+    ("northern territory", "NT"),
+    ("south australia", "SA"),
+    ("western australia", "WA"),
+    ("queensland", "QLD"),
+    ("tasmania", "TAS"),
+    ("victoria", "VIC"),
+];
+
+/// Best-effort canonical AU state/territory code for a free-text fragment
+/// (`"Brisbane City, Queensland, Australia"`, `"… QLD 4000"`, `"4017"`).
+///
+/// Resolution order, most authoritative first: a whole-token state abbreviation
+/// (`QLD`), then a full state name (`Queensland`), then a 4-digit postcode via
+/// [`state_for_postcode`]. Returns `None` when nothing in the text names a
+/// state. Whole-token / whole-word matching avoids the classic false positives
+/// (the `WA` in "Walesby", the `SA` in "Sandgate"). Pure; no I/O.
+#[must_use]
+pub fn state_code(text: &str) -> Option<&'static str> {
+    let lower = text.to_lowercase();
+    // 1) Whole-token abbreviation (case-insensitive), split on non-alphanumerics.
+    for tok in text.split(|c: char| !c.is_ascii_alphanumeric()) {
+        if tok.len() == 2 || tok.len() == 3 {
+            let up = tok.to_ascii_uppercase();
+            if let Some(s) = STATES.iter().copied().find(|s| *s == up) {
+                return Some(s);
+            }
+        }
+    }
+    // 2) Full state name as a substring (names are distinctive multi-word or
+    //    long single words; ordered longest-first in STATE_NAMES).
+    for (name, code) in STATE_NAMES {
+        if lower.contains(name) {
+            return Some(code);
+        }
+    }
+    // 3) Any 4-digit run that maps to a postcode range.
+    for tok in text.split(|c: char| !c.is_ascii_digit()) {
+        if tok.len() == 4
+            && let Some(s) = state_for_postcode(tok)
+        {
+            return Some(s);
+        }
+    }
+    None
+}
+
 /// AU phone-number normaliser: returns E.164 form (`+61…`) when the
 /// input is a recognisable Australian number (08/02/03/04/07/13/1300/1800).
 ///
@@ -327,6 +391,37 @@ mod tests {
         assert_eq!(geo.postcode, "2000");
         assert!(extract_first("1 George Street, Sydney NSW 1234").is_some()); // LVR range
         assert!(extract_first("1 George Street, Sydney NSW 3000").is_none()); // VIC range
+    }
+
+    #[test]
+    fn state_for_postcode_maps_ranges_and_prefers_act_inside_nsw() {
+        assert_eq!(state_for_postcode("4000"), Some("QLD"));
+        assert_eq!(state_for_postcode("3000"), Some("VIC"));
+        assert_eq!(state_for_postcode("2000"), Some("NSW"));
+        // 2600 falls inside the NSW span but is an ACT range — ACT wins.
+        assert_eq!(state_for_postcode("2600"), Some("ACT"));
+        assert_eq!(state_for_postcode("0800"), Some("NT"));
+        assert_eq!(state_for_postcode("9000"), Some("QLD")); // QLD PO-box range
+        assert_eq!(state_for_postcode("0100"), None); // 100 → no assigned range
+    }
+
+    #[test]
+    fn state_code_resolves_abbrev_fullname_and_postcode() {
+        // Abbreviation, whole-token.
+        assert_eq!(state_code("Brisbane City QLD 4000"), Some("QLD"));
+        // Full name.
+        assert_eq!(
+            state_code("Brisbane City, Queensland, Australia"),
+            Some("QLD")
+        );
+        assert_eq!(state_code("Sydney, New South Wales"), Some("NSW"));
+        // Postcode-only fallback.
+        assert_eq!(state_code("PO Box, 3001"), Some("VIC"));
+        // No state signal.
+        assert_eq!(state_code("just some text"), None);
+        // Whole-word discipline: a suburb containing "wa"/"sa" must not match.
+        assert_eq!(state_code("Wagga Wagga"), None);
+        assert_eq!(state_code("Sandgate"), None);
     }
 
     #[test]
