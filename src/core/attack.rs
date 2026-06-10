@@ -74,6 +74,10 @@ pub const RECONNAISSANCE: &[Technique] = &[
         name: "IP Addresses",
     },
     Technique {
+        id: "T1590.006",
+        name: "Network Security Appliances",
+    },
+    Technique {
         id: "T1591",
         name: "Gather Victim Org Information",
     },
@@ -126,10 +130,6 @@ pub const RECONNAISSANCE: &[Technique] = &[
         name: "Scanning IP Blocks",
     },
     Technique {
-        id: "T1595.002",
-        name: "Vulnerability Scanning",
-    },
-    Technique {
         id: "T1596",
         name: "Search Open Technical Databases",
     },
@@ -144,6 +144,10 @@ pub const RECONNAISSANCE: &[Technique] = &[
     Technique {
         id: "T1596.003",
         name: "Digital Certificates",
+    },
+    Technique {
+        id: "T1596.004",
+        name: "CDNs",
     },
     Technique {
         id: "T1596.005",

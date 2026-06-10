@@ -42,6 +42,13 @@ impl Module for WafDetect {
         ModuleCategory::Web
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Fingerprints WAFs (network security appliances) and CDNs from HTTP
+        // headers — ATT&CK Network Security Appliances (T1590.006) and CDNs
+        // (T1596.004), not the Web category default. Both are free/keyless.
+        &["T1590.006", "T1596.004"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Domain];
         KINDS
