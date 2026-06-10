@@ -150,8 +150,7 @@ impl Geocode {
             && crate::util::geo::is_valid_coords(lat, lon)
         {
             let coords = format!("{lat:.6},{lon:.6}");
-            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.65, &ctx.scan_id);
-            e.tag("geocoded");
+            let mut e = build_forward_entity(lat, lon, &coords, &ctx.scan_id);
             let mut ev = Evidence::new(SRC, format!("Geocoded \"{addr}\" \u{2192} {coords}"))
                 .with_attr("input_address", addr)
                 .with_attr("latitude", lat_str)
@@ -198,6 +197,27 @@ impl Geocode {
         result.push(build_reverse_entity(lat, lon, &data, &ctx.scan_id));
         Ok(result)
     }
+}
+
+/// Build the forward-geocode Coordinates entity, shaping confidence and tags by
+/// AU relevance of the resolved point (offline [`crate::util::geo::is_in_australia`]):
+/// a fix that lands in Australia is a strong on-region anchor (0.70,
+/// `au-relevant`); one abroad is demoted to a candidate (0.40, `off-region` +
+/// `candidate`) so it sits below the 0.50 expansion floor and is quarantined
+/// from confirmed correlations — an ambiguous address string can't drag an
+/// AU-focused scan off-region. Pure (no I/O); the caller attaches evidence.
+fn build_forward_entity(lat: f64, lon: f64, coords: &str, scan_id: &str) -> Entity {
+    let in_au = crate::util::geo::is_in_australia(lat, lon);
+    let confidence = if in_au { 0.70 } else { 0.40 };
+    let mut e = Entity::new(EntityKind::Coordinates, coords, confidence, scan_id);
+    e.tag("geocoded");
+    if in_au {
+        e.tag("au-relevant");
+    } else {
+        e.tag("off-region");
+        e.tag("candidate");
+    }
+    e
 }
 
 /// AU-relevance verdict for a reverse-geocoded coordinate, deciding how much an
@@ -379,6 +399,23 @@ mod tests {
 
     fn resp(json: serde_json::Value) -> NominatimResp {
         serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn forward_geocode_shapes_confidence_by_au_relevance() {
+        // An AU result is a strong on-region anchor; a foreign one is a demoted
+        // candidate that won't be expanded or counted as confirmed.
+        let au = build_forward_entity(-27.4766, 153.0166, "-27.476600,153.016600", "scan");
+        assert!((au.confidence - 0.70).abs() < 1e-9);
+        assert!(au.has_tag("au-relevant"));
+        assert!(au.has_tag("geocoded"));
+        assert!(!au.has_tag("candidate"));
+
+        let foreign = build_forward_entity(51.5074, -0.1278, "51.507400,-0.127800", "scan");
+        assert!((foreign.confidence - 0.40).abs() < 1e-9);
+        assert!(foreign.has_tag("off-region"));
+        assert!(foreign.has_tag("candidate"));
+        assert!(!foreign.has_tag("au-relevant"));
     }
 
     #[test]

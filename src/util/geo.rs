@@ -143,6 +143,12 @@ pub fn is_plausible_provider_coord(lat: f64, lon: f64) -> bool {
 /// non-finite), letting the caller gate its whole emit block with
 /// `if let Some(mut ce) = coarse_provider_coords(..) { ce.tag(provider); .. }`.
 /// The caller adds its own provider tag and evidence.
+///
+/// Every fix is additionally tagged for AU relevance via the offline
+/// [`is_in_australia`] bounding box — `au-relevant` inside the box, `off-region`
+/// outside it — so an Australia-focused scan can prefer on-region fixes and
+/// flag the rest without any extra network call. Confidence stays the caller's
+/// (provider-specific) decision; only the explanatory tag is added here.
 #[must_use]
 pub fn coarse_provider_coords(
     lat: f64,
@@ -160,6 +166,11 @@ pub fn coarse_provider_coords(
         scan_id,
     );
     e.tag(crate::core::tags::GEOINT);
+    e.tag(if is_in_australia(lat, lon) {
+        "au-relevant"
+    } else {
+        "off-region"
+    });
     Some(e)
 }
 
@@ -239,7 +250,15 @@ mod tests {
         assert_eq!(e.kind, EntityKind::Coordinates);
         assert_eq!(e.raw_value, "-27.4766,153.0166"); // 4-decimal coarse format
         assert!(e.has_tag(crate::core::tags::GEOINT));
+        // The Brisbane fix is inside the AU box → tagged on-region.
+        assert!(e.has_tag("au-relevant"));
+        assert!(!e.has_tag("off-region"));
         assert!((e.confidence - 0.58).abs() < 1e-9);
+        // A plausible but foreign fix (London) is flagged off-region.
+        let foreign = coarse_provider_coords(51.5074, -0.1278, 0.58, "scan-x")
+            .expect("a plausible foreign fix still yields an entity");
+        assert!(foreign.has_tag("off-region"));
+        assert!(!foreign.has_tag("au-relevant"));
         // An implausible fix (null-island band / out-of-range) gates the whole
         // emit block to None.
         assert!(coarse_provider_coords(0.001, 0.001, 0.58, "scan-x").is_none());
