@@ -253,6 +253,62 @@ fn every_module_maps_to_valid_attack_reconnaissance_techniques() {
 }
 
 #[test]
+fn attack_overrides_attribute_collection_modules_precisely() {
+    // Modules whose coarse category default mis- or over-attributed their ATT&CK
+    // Reconnaissance technique now declare the precise one. This pins the
+    // intended attribution (and guards against a regression to the category
+    // default) so the per-scan coverage report is accurate.
+    let modules = huntsman_search_engine::modules::registry();
+    let techniques = |name: &str| -> Vec<&'static str> {
+        modules
+            .iter()
+            .find(|m| m.name() == name)
+            .map(|m| m.attack_techniques().to_vec())
+            .unwrap_or_default()
+    };
+
+    // Code repositories — NOT social media (T1593.001).
+    for name in ["github_user", "crates_io", "npm_author"] {
+        assert_eq!(
+            techniques(name),
+            vec!["T1593.003"],
+            "{name} → Code Repositories"
+        );
+        assert!(
+            !techniques(name).contains(&"T1593.001"),
+            "{name} must no longer claim Social Media"
+        );
+    }
+    // DnsRecon family — each its specific technique, not the whole bundle.
+    assert_eq!(techniques("crtsh"), vec!["T1596.003"]); // Digital Certificates
+    assert_eq!(techniques("cert_intel"), vec!["T1596.003"]);
+    assert_eq!(techniques("whois"), vec!["T1596.002"]); // WHOIS
+    assert_eq!(techniques("rdap_domain"), vec!["T1596.002"]);
+    assert_eq!(techniques("dns_intel"), vec!["T1590.002"]); // DNS
+    assert_eq!(techniques("securitytrails"), vec!["T1596.001"]); // Passive DNS
+    assert_eq!(techniques("hackertarget"), vec!["T1590.002", "T1596.001"]);
+    assert_eq!(techniques("subdomain_takeover"), vec!["T1590.001"]); // Domain Properties
+
+    // Every overridden ID is still a real catalogue entry (no typos).
+    for name in [
+        "github_user",
+        "crtsh",
+        "whois",
+        "dns_intel",
+        "securitytrails",
+        "hackertarget",
+        "subdomain_takeover",
+    ] {
+        for id in techniques(name) {
+            assert!(
+                huntsman_search_engine::core::attack::technique(id).is_some(),
+                "{name} → unknown technique {id}"
+            );
+        }
+    }
+}
+
+#[test]
 fn skiptrace_focus_maps_to_the_right_real_modules() {
     // The `skiptrace` profile restricts dispatch by category. This guard pins
     // that the focus resolves to a healthy, correct set of REAL modules — so a

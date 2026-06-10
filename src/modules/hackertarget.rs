@@ -53,6 +53,11 @@ impl Module for HackerTarget {
         ModuleCategory::DnsRecon
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // DNS lookups + passive-DNS — ATT&CK DNS (T1590.002) and DNS/Passive DNS (T1596.001).
+        &["T1590.002", "T1596.001"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress];
         KINDS

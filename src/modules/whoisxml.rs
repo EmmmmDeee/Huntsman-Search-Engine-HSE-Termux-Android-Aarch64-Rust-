@@ -114,6 +114,11 @@ impl Module for WhoisXml {
         ModuleCategory::DnsRecon
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // WHOIS registration data — ATT&CK WHOIS (T1596.002).
+        &["T1596.002"]
+    }
+
     fn priority(&self) -> u8 {
         58
     }

@@ -69,6 +69,11 @@ impl Module for CratesIo {
         ModuleCategory::Social
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // crates.io author packages — ATT&CK Code Repositories (T1593.003).
+        &["T1593.003"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Username, EntityKind::Person, EntityKind::Url];
         KINDS

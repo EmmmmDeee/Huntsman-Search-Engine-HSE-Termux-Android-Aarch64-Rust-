@@ -207,6 +207,11 @@ impl Module for RdapDomain {
         ModuleCategory::DnsRecon
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // RDAP registration data — ATT&CK WHOIS (T1596.002).
+        &["T1596.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Domain];
         KINDS
