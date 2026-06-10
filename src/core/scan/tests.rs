@@ -919,6 +919,37 @@ fn expansion_strategy_default_is_geo_converge() {
 }
 
 #[test]
+fn target_kind_canonical_str_matches_serde() {
+    // CONVENTIONS.md §3: canonical_str is the persisted `scans.target_kind`
+    // column, a scan_id hash input, and the event/API wire label — and its
+    // doc explicitly promises it equals the serde form. Pin every variant so
+    // a future TargetKind rename can't split the hand-written string from the
+    // derive. Iterates the canonical list, so a new variant is forced through.
+    for &k in crate::core::dependency::ALL_TARGET_KINDS {
+        let json = serde_json::to_string(&k).unwrap();
+        assert_eq!(json.trim_matches('"'), k.canonical_str(), "{k:?}");
+    }
+}
+
+#[test]
+fn scan_status_as_str_matches_serde() {
+    // §3 pin. as_str is the persisted `scans.status` value AND
+    // `latest_completed_scan` hard-codes the string in its SQL
+    // `json_extract(...) = 'complete'` probe — a drift between as_str and the
+    // serde form would silently break that query (no Complete scan found).
+    for st in [
+        ScanStatus::Pending,
+        ScanStatus::Running,
+        ScanStatus::Complete,
+        ScanStatus::Failed,
+        ScanStatus::Aborted,
+    ] {
+        let json = serde_json::to_string(&st).unwrap();
+        assert_eq!(json.trim_matches('"'), st.as_str(), "{st:?}");
+    }
+}
+
+#[test]
 fn expansion_strategy_round_trips_json() {
     for s in [
         ExpansionStrategy::GeoConverge,

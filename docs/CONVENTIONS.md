@@ -42,17 +42,24 @@ a reviewed decision rather than a silent drift.
 ## 3. Single-source vocabularies
 
 When a type has a canonical string form, the **type owns it** (`as_str` /
-`as_canonical`) and a test pins it to the serde wire format so the two cannot
-drift. Never re-state a mapping at a call site. Pinned instances:
-`ModuleCost`, `ModuleCategory`, `Classification`, `RelationKind`, and
-`Severity::as_canonical` (the last two especially: each is a persisted DB
-column, and `Severity`'s strings are additionally hard-coded in the
-`correlations_for_scan` SQL `ORDER BY CASE`). `core::tags` is a constants
-module (the strings *are* the source). The classification ladder is likewise
-single-sourced (`Classification::{VERIFIED_MIN, PROBABLE_MIN, from_c_eff}` — a
-tier threshold literal outside `entity.rs` is a bug). Human-display variants
-(the CLI's hyphenated `key-gated`) are allowed but must be documented as
-presentation, anchored against the canonical form.
+`as_canonical` / `canonical_str`) and a test pins it to the serde wire format
+so the two cannot drift. Never re-state a mapping at a call site. Pinned
+instances: `ModuleCost`, `ModuleCategory`, `Classification`, `RelationKind`,
+`ExpansionStrategy`, `Severity::as_canonical`, `TargetKind::canonical_str`,
+and `ScanStatus::as_str`. Several are extra load-bearing because the same
+string is *also* hard-coded in SQL: `Severity` in the `correlations_for_scan`
+`ORDER BY CASE`, `ScanStatus` in `latest_completed_scan`'s `= 'complete'`
+probe — there a drift wouldn't just mislabel, it would break the query.
+`core::tags` is a constants module (the strings *are* the source). The
+classification ladder is likewise single-sourced
+(`Classification::{VERIFIED_MIN, PROBABLE_MIN, from_c_eff}` — a tier threshold
+literal outside `entity.rs` is a bug).
+
+**Display variants** are allowed but must be documented as presentation and
+*not* serde-pinned: the CLI's hyphenated `key-gated` (vs canonical
+`key_gated`), and `TimelineEventKind::as_str`, whose `Generic => "event"`
+deliberately differs from serde's `"generic"`. Each carries a doc comment
+saying so, so the absence of a pin is a recorded decision, not an oversight.
 
 ## 4. Normalisation defines identity — delegate, never copy
 

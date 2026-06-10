@@ -49,6 +49,12 @@ pub enum TimelineEventKind {
 }
 
 impl TimelineEventKind {
+    /// Human-display label for the timeline UI/export. **Deliberately NOT the
+    /// serde wire form** (CONVENTIONS.md §3, display-variant clause): every
+    /// arm matches the `snake_case` serde tag *except* `Generic`, which
+    /// renders as the friendlier `"event"` rather than serde's `"generic"`.
+    /// Do not "align" it to serde — the divergence is intentional, which is
+    /// why this type has no serde-agreement pin.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::BreachExposure => "breach_exposure",
