@@ -303,8 +303,12 @@ impl Module for PhoneIntl {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        // Strip every char except digits (drop +, spaces, dashes, parens).
-        let digits = crate::util::str_util::ascii_digits(&target.value);
+        // Country-code attribution requires an EXPLICIT international form (see
+        // `international_digits`). Without it the leading digits are ambiguous,
+        // and guessing fabricates a wrong country + a bogus "+E.164" number.
+        let Some(digits) = international_digits(&target.value) else {
+            return Ok(ModuleResult::new());
+        };
         if digits.len() < 7 || digits.len() > 15 {
             // E.164 mandates 7–15 digits total (incl. country code).
             return Ok(ModuleResult::new());
@@ -333,6 +337,40 @@ impl Module for PhoneIntl {
         let mut result = ModuleResult::new();
         result.push(entity);
         Ok(result)
+    }
+}
+
+/// Reduce a phone string to its E.164 digit string (country code + national
+/// number) **iff** it is written in an explicit international form: a leading
+/// `+` (E.164) or the ITU `00` international-call prefix. Returns `None` for a
+/// national or otherwise ambiguous number.
+///
+/// This gate is what keeps the country lookup honest. The leading digits of a
+/// bare national number are indistinguishable from a country code — a US
+/// national `202-555-0100` begins with `202`, which would otherwise match `20`
+/// (Egypt) — so without an explicit marker any attribution is a guess. The old
+/// code stripped the `+` and matched regardless, fabricating a wrong country
+/// and a bogus `+2025550100` canonical at 0.85 confidence: a false GEOINT lead.
+/// A national/ambiguous number is simply out of this offline parser's scope.
+///
+/// ```
+/// use huntsman_search_engine::modules::phone_intl::international_digits;
+///
+/// assert_eq!(international_digits("+61 400 000 000").as_deref(), Some("61400000000"));
+/// assert_eq!(international_digits("0061 400 000 000").as_deref(), Some("61400000000"));
+/// assert_eq!(international_digits("202-555-0100"), None); // US national, no marker
+/// ```
+#[must_use]
+pub fn international_digits(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let digits = crate::util::str_util::ascii_digits(raw);
+    if raw.starts_with('+') {
+        Some(digits)
+    } else {
+        // ITU '00' international-call prefix → strip it to expose the country
+        // code. National trunk prefixes are a single '0', never '00', so this
+        // never mistakes a national number for an international one.
+        digits.strip_prefix("00").map(str::to_string)
     }
 }
 
@@ -382,6 +420,35 @@ mod tests {
     #[test]
     fn unknown_prefix() {
         assert!(match_country("000000000").is_none());
+    }
+
+    #[test]
+    fn international_digits_requires_explicit_marker() {
+        // Explicit '+' (E.164) → the country-code-leading digit string.
+        assert_eq!(
+            international_digits("+1 876 456 7890").as_deref(),
+            Some("18764567890")
+        );
+        assert_eq!(
+            international_digits(" +61 (4) 0000 0000 ").as_deref(),
+            Some("61400000000")
+        );
+        // ITU '00' international-call prefix → stripped to expose the code.
+        assert_eq!(
+            international_digits("0061 400 000 000").as_deref(),
+            Some("61400000000")
+        );
+        // No marker → None, even though the leading digits LOOK like a country
+        // code. This is the regression: a US national number begins with an
+        // area code (202, 415, 650 …) that the old all-digits match mis-read as
+        // Egypt (+20), Switzerland (+41), Singapore (+65) and emitted a bogus
+        // "+E.164" number. A national/ambiguous number must resolve to nothing.
+        assert_eq!(international_digits("202-555-0100"), None);
+        assert_eq!(international_digits("(415) 555-0100"), None);
+        assert_eq!(international_digits("650 555 0100"), None);
+        // A national trunk '0' is a single zero, not the '00' international
+        // prefix, so it is correctly treated as national (no attribution).
+        assert_eq!(international_digits("0400 000 000"), None);
     }
 
     #[test]

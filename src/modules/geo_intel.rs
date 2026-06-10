@@ -252,9 +252,16 @@ async fn process_phone_prefix_only(target: &Target, ctx: &ModuleContext) -> Resu
     let mut result = ModuleResult::new();
     let mut seen = HashSet::new();
 
-    // Extract country from E.164 phone prefix
-    let phone = target.value.trim().trim_start_matches('+');
-    if let Some((country, cc, lat, lon)) = phone_prefix_to_country(phone) {
+    // Country geolocation requires an EXPLICIT international form ('+' or the
+    // '00' prefix) — shared with `phone_intl` so both agree on what counts as
+    // international. Without it the leading digits are ambiguous: a US national
+    // number ("202-555-0100") begins with an area code that the bare-prefix
+    // scan would otherwise read as a country code ("20" → Egypt) and emit a
+    // wrong-country coordinate. National/ambiguous → no coarse geo.
+    let Some(phone) = crate::modules::phone_intl::international_digits(&target.value) else {
+        return Ok(result);
+    };
+    if let Some((country, cc, lat, lon)) = phone_prefix_to_country(&phone) {
         let coords = format!("{lat:.4},{lon:.4}");
         if seen.insert(format!("@phone-geo:{coords}")) {
             let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.52, &ctx.scan_id);
@@ -466,6 +473,39 @@ mod tests {
     #[test]
     fn phone_prefix_unknown() {
         assert!(phone_prefix_to_country("000").is_none());
+    }
+
+    fn offline_ctx() -> ModuleContext {
+        let (bus, _rx) = tokio::sync::broadcast::channel(8);
+        ModuleContext {
+            scan_id: "t".into(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::default(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn national_number_without_marker_yields_no_coordinate() {
+        // Regression: a US national number ("202-555-0100") has no '+'/'00'
+        // marker. The old code stripped a (absent) '+' and matched "20" → Egypt,
+        // emitting Cairo coordinates. It must now emit nothing.
+        let ctx = offline_ctx();
+        let t = Target::new(TargetKind::Phone, "202-555-0100");
+        let out = process_phone_prefix_only(&t, &ctx).await.unwrap();
+        assert!(
+            out.entities.is_empty(),
+            "national number must not produce a (wrong-country) coordinate: {:?}",
+            out.entities
+        );
+
+        // An explicit E.164 number still geolocates (here Egypt, correctly).
+        let t = Target::new(TargetKind::Phone, "+20 100 000 0000");
+        let out = process_phone_prefix_only(&t, &ctx).await.unwrap();
+        assert_eq!(out.entities.len(), 1);
+        assert!(out.entities[0].has_tag("country:EG"));
     }
 
     #[test]
