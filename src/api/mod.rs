@@ -11,6 +11,7 @@
 pub mod handlers;
 pub mod routes;
 pub mod scan_handlers;
+pub mod settings_handlers;
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -47,7 +47,7 @@ use serde_json::json;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 
-use super::{AppState, handlers, scan_handlers};
+use super::{AppState, handlers, scan_handlers, settings_handlers};
 
 /// Embedded SPA — single self-contained HTML file with inline CSS + JS.
 /// Lives in `src/web/spa.html` and is compiled into the binary at build time
@@ -142,11 +142,17 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/selftest", get(handlers::selftest_run))
         .route("/logs", get(handlers::logs_download))
         // ── key-detector catalogue (v1.4+) ──
-        .route("/keys/patterns", get(handlers::keys_patterns))
-        .route("/keys/status", get(handlers::keys_status))
-        .route("/keys/pool", get(handlers::keys_pool_get))
-        .route("/keys/pool/revoke", post(handlers::keys_pool_revoke))
-        .route("/keys/pool/rotate", post(handlers::keys_pool_rotate))
+        .route("/keys/patterns", get(settings_handlers::keys_patterns))
+        .route("/keys/status", get(settings_handlers::keys_status))
+        .route("/keys/pool", get(settings_handlers::keys_pool_get))
+        .route(
+            "/keys/pool/revoke",
+            post(settings_handlers::keys_pool_revoke),
+        )
+        .route(
+            "/keys/pool/rotate",
+            post(settings_handlers::keys_pool_rotate),
+        )
         // ── scans ──
         .route(
             "/scans",
@@ -222,11 +228,12 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // ── settings (v0.10+) ──
         .route(
             "/settings/keys",
-            get(handlers::settings_keys_get).put(handlers::settings_keys_put),
+            get(settings_handlers::settings_keys_get).put(settings_handlers::settings_keys_put),
         )
         .route(
             "/settings/toggles",
-            get(handlers::settings_toggles_get).put(handlers::settings_toggles_put),
+            get(settings_handlers::settings_toggles_get)
+                .put(settings_handlers::settings_toggles_put),
         )
         .fallback(api_not_found);
 
