@@ -291,28 +291,63 @@ impl Module for SocialProbe {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
 
-        // Add summary to the target entity
-        if found_count > 0 || checked_count > 0 {
-            let mut summary = target.to_entity(0.82, &ctx.scan_id);
-            summary.tag("social-probed");
-            if found_count >= 3 {
-                summary.tag("multi-platform");
-            }
-            found_platforms.sort_unstable();
-            summary.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Probed {checked_count} platforms, found {found_count} profiles"),
-                )
-                .with_attr("checked", checked_count.to_string())
-                .with_attr("found", found_count.to_string())
-                .with_attr("platforms", found_platforms.join(", ")),
-            );
+        // Add a summary echo of the target ONLY when at least one profile was
+        // actually confirmed (see `should_echo_target`). The negative result is
+        // still recorded in the dispatch log; it just must not vouch for the seed.
+        found_platforms.sort_unstable();
+        if let Some(summary) = build_target_summary(
+            target,
+            found_count,
+            checked_count,
+            &found_platforms,
+            &ctx.scan_id,
+        ) {
             result.push(summary);
         }
 
         Ok(result)
     }
+}
+
+/// Whether a completed probe run should echo the target back as a corroborating
+/// entity. Only a run that actually confirmed at least one profile may vouch for
+/// the seed: a "probed N, found 0" run retrieved nothing, so echoing the seed
+/// would let a module that confirmed nothing count as an independent
+/// corroborating source — inflating `C_eff` to VERIFIED and firing "confirmed
+/// across the social family" on phantom evidence (observed on a network-blocked
+/// self-scan).
+#[must_use]
+fn should_echo_target(found_count: u32) -> bool {
+    found_count > 0
+}
+
+/// Build the target-echo summary entity for a probe run, or `None` when the run
+/// confirmed nothing (see [`should_echo_target`]).
+fn build_target_summary(
+    target: &Target,
+    found_count: u32,
+    checked_count: u32,
+    found_platforms: &[&str],
+    scan_id: &str,
+) -> Option<Entity> {
+    if !should_echo_target(found_count) {
+        return None;
+    }
+    let mut summary = target.to_entity(0.82, scan_id);
+    summary.tag("social-probed");
+    if found_count >= 3 {
+        summary.tag("multi-platform");
+    }
+    summary.add_evidence(
+        Evidence::new(
+            SRC,
+            format!("Probed {checked_count} platforms, found {found_count} profiles"),
+        )
+        .with_attr("checked", checked_count.to_string())
+        .with_attr("found", found_count.to_string())
+        .with_attr("platforms", found_platforms.join(", ")),
+    );
+    Some(summary)
 }
 
 async fn probe_url(url: &str) -> u16 {
@@ -361,5 +396,30 @@ mod tests {
     fn platform_count() {
         assert!(USERNAME_PLATFORMS.len() >= 28);
         assert!(NAME_PLATFORMS.len() >= 2);
+    }
+
+    #[test]
+    fn probe_with_no_hits_does_not_echo_the_seed() {
+        // A run that checked platforms but confirmed nothing must NOT vouch for
+        // the target — otherwise it counts as an independent corroborating
+        // source and inflates the seed to VERIFIED on phantom evidence.
+        assert!(!should_echo_target(0));
+        let t = Target::new(TargetKind::Username, "haigenb");
+        assert!(build_target_summary(&t, 0, 28, &[], "scan").is_none());
+    }
+
+    #[test]
+    fn probe_with_a_hit_echoes_the_seed_as_corroboration() {
+        assert!(should_echo_target(1));
+        let t = Target::new(TargetKind::Username, "haigenb");
+        let summary = build_target_summary(&t, 1, 28, &["github"], "scan")
+            .expect("a confirmed profile must echo the seed");
+        assert_eq!(summary.value, "haigenb");
+        assert!(summary.has_tag("social-probed"));
+        assert!(!summary.has_tag("multi-platform"));
+        // Three or more confirmed profiles flags the multi-platform footprint.
+        let multi = build_target_summary(&t, 3, 28, &["github", "reddit", "twitch"], "scan")
+            .expect("entity");
+        assert!(multi.has_tag("multi-platform"));
     }
 }
