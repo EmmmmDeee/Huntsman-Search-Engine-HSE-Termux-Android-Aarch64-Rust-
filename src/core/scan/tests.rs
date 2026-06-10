@@ -1056,3 +1056,29 @@ fn validate_url() {
             .is_err()
     );
 }
+
+/// An `options` object that omits a field must behave like omitting the whole
+/// `options` object: both are "operator expressed no preference". The depth
+/// field already had this guard (default_scan_depth); max_concurrent silently
+/// fell back to 0/sequential from `"options": {}` while an options-less
+/// request ran at the product default of 2.
+#[test]
+fn empty_options_object_matches_product_defaults() {
+    let from_empty: ScanOptions = serde_json::from_str("{}").unwrap();
+    let product = ScanOptions::default();
+    assert_eq!(
+        from_empty.max_concurrent, product.max_concurrent,
+        "omitted max_concurrent must deserialise to the product default"
+    );
+    assert_eq!(
+        from_empty.min_expand_confidence,
+        product.min_expand_confidence
+    );
+    assert_eq!(from_empty.regional_search, product.regional_search);
+    // depth is the one DOCUMENTED divergence: library Default is 0 (inert,
+    // deterministic for programmatic callers), serde default is the product 2.
+    assert_eq!(from_empty.depth, DEFAULT_SCAN_DEPTH);
+    // An explicit 0 is still honoured as fully-sequential.
+    let explicit: ScanOptions = serde_json::from_str(r#"{"max_concurrent":0}"#).unwrap();
+    assert_eq!(explicit.max_concurrent, 0);
+}

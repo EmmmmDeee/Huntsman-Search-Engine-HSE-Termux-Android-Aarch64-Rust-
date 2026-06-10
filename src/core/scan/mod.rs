@@ -610,9 +610,13 @@ pub struct ScanOptions {
     #[serde(default)]
     pub throttle_ms: u64,
 
-    /// Concurrent module cap. 0 = sequential (default for v0.1).
-    /// Reserved for v0.3+ parallel dispatcher.
-    #[serde(default)]
+    /// Concurrent module cap. 0 = fully sequential dispatch; the default is
+    /// the product's deliberately-gentle 2 (see [`Default`] and the CLI's
+    /// `--max-concurrent`). The serde default matches, so an API request whose
+    /// `options` object omits the field gets the same dispatch mode as one
+    /// that omits `options` entirely — previously `"options": {}` silently
+    /// fell back to 0/sequential while `{}`-less requests ran concurrent.
+    #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
 
     /// Per-module timeout override (ms). None = `MODULE_TIMEOUT_MS`.
@@ -853,7 +857,8 @@ impl Default for ScanOptions {
             // modules paces dispatch so a deep/everything scan does not flood
             // the link or trip provider rate limits. Operators can raise it
             // with `--max-concurrent` when they know the network can take it.
-            max_concurrent: 2,
+            // Single-sourced with the serde default so the two can't diverge.
+            max_concurrent: default_max_concurrent(),
             module_timeout_ms: None,
             min_confidence: None,
             free_only: false,
@@ -883,6 +888,14 @@ impl Default for ScanOptions {
 
 fn default_min_expand_confidence() -> f64 {
     0.50
+}
+
+/// Serde default for [`ScanOptions::max_concurrent`] — the product's gentle
+/// concurrency (2), matching `ScanOptions::default()` and the CLI flag default,
+/// so omitting the field inside an `options` object behaves identically to
+/// omitting the `options` object altogether.
+fn default_max_concurrent() -> usize {
+    2
 }
 
 /// Serde default for [`ScanOptions::regional_search`] — AU-focused on by default
