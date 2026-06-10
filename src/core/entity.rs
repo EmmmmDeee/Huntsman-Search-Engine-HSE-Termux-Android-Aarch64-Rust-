@@ -154,6 +154,34 @@ pub enum Classification {
 }
 
 impl Classification {
+    /// Lower bound of the Verified tier: `C_eff ≥ VERIFIED_MIN`.
+    ///
+    /// The tier ladder's single source of truth (with [`Self::PROBABLE_MIN`]).
+    /// Consumed by [`Self::from_c_eff`] / `Entity::classify`, the CLI's
+    /// confidence colouring, the engine's subject-identity gate ("every
+    /// VERIFIED identity"), and the wrong-identity pivot gate ("below the
+    /// Verified tier") — previously each re-stated `0.75` as a bare literal,
+    /// so a recalibration would have silently diverged them.
+    pub const VERIFIED_MIN: f64 = 0.75;
+    /// Lower bound of the Probable tier: `C_eff ≥ PROBABLE_MIN` (and below
+    /// [`Self::VERIFIED_MIN`]). Below this is Candidate.
+    pub const PROBABLE_MIN: f64 = 0.40;
+
+    /// The tier for an effective confidence — the canonical ladder. A
+    /// non-finite `c_eff` (never produced by `c_effective`, which clamps)
+    /// fails both bounds and lands in `Candidate`, the conservative tier.
+    #[inline]
+    #[must_use]
+    pub fn from_c_eff(c_eff: f64) -> Self {
+        if c_eff >= Self::VERIFIED_MIN {
+            Self::Verified
+        } else if c_eff >= Self::PROBABLE_MIN {
+            Self::Probable
+        } else {
+            Self::Candidate
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Candidate => "CANDIDATE",
@@ -380,7 +408,8 @@ impl Entity {
     }
 
     /// Derived classification tier from [`Self::c_effective`]: `Verified` at
-    /// ≥ 0.75, `Probable` at ≥ 0.40, else `Candidate`.
+    /// ≥ [`Classification::VERIFIED_MIN`] (0.75), `Probable` at ≥
+    /// [`Classification::PROBABLE_MIN`] (0.40), else `Candidate`.
     ///
     /// Never stored — always recomputed, so a tier can only ever rise as merges
     /// add corroboration.
@@ -395,11 +424,7 @@ impl Entity {
     /// ```
     #[inline]
     pub fn classify(&self) -> Classification {
-        match self.c_effective() {
-            c if c >= 0.75 => Classification::Verified,
-            c if c >= 0.40 => Classification::Probable,
-            _ => Classification::Candidate,
-        }
+        Classification::from_c_eff(self.c_effective())
     }
 
     /// The entity's current confidence tier — alias for [`Self::classify`] that

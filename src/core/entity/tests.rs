@@ -937,3 +937,25 @@ fn scan_id_different_kinds_differ() {
     let b = scan_id("domain", "x");
     assert_ne!(a, b);
 }
+
+#[test]
+fn classification_ladder_is_single_sourced_and_boundary_exact() {
+    use Classification as C;
+    // The documented tier values — a recalibration must be deliberate (update
+    // this pin alongside the constants), never an accidental drift.
+    assert!((C::VERIFIED_MIN - 0.75).abs() < 1e-12);
+    assert!((C::PROBABLE_MIN - 0.40).abs() < 1e-12);
+    // Boundary-exact: the lower bounds are inclusive.
+    assert_eq!(C::from_c_eff(C::VERIFIED_MIN), C::Verified);
+    assert_eq!(C::from_c_eff(C::VERIFIED_MIN - 1e-9), C::Probable);
+    assert_eq!(C::from_c_eff(C::PROBABLE_MIN), C::Probable);
+    assert_eq!(C::from_c_eff(C::PROBABLE_MIN - 1e-9), C::Candidate);
+    // Non-finite lands in the conservative tier (c_effective clamps, so this
+    // is defensive only).
+    assert_eq!(C::from_c_eff(f64::NAN), C::Candidate);
+    // Entity::classify is exactly from_c_eff over c_effective.
+    for conf in [0.1, 0.40, 0.5, 0.74, 0.75, 0.9] {
+        let e = Entity::new(EntityKind::Email, "x@example.com", conf, "s");
+        assert_eq!(e.classify(), C::from_c_eff(e.c_effective()), "conf {conf}");
+    }
+}

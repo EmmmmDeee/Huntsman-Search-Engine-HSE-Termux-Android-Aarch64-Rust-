@@ -728,12 +728,13 @@ impl ScanEngine {
             // round so confirmed aliases widen the identity as the scan learns.
             let subject_identities: Vec<String> = std::iter::once(seed.value.clone())
                 .chain(entity_map.values().filter_map(|e| {
-                    use crate::core::entity::EntityKind;
+                    use crate::core::entity::{Classification, EntityKind};
                     let is_identity = matches!(
                         e.kind,
                         EntityKind::Username | EntityKind::Person | EntityKind::Email
                     );
-                    (is_identity && e.c_effective() >= 0.75).then(|| e.value.clone())
+                    (is_identity && e.c_effective() >= Classification::VERIFIED_MIN)
+                        .then(|| e.value.clone())
                 }))
                 .collect();
 

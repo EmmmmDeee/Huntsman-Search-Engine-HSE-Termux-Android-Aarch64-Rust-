@@ -789,16 +789,20 @@ pub(super) fn use_color() -> bool {
     std::io::stdout().is_terminal()
 }
 
+/// Colour a value by its confidence TIER (green Verified / yellow Probable /
+/// red Candidate) — driven by the canonical
+/// [`Classification`](crate::core::entity::Classification) ladder rather than
+/// re-stated threshold literals, so a tier recalibration recolours the CLI
+/// automatically.
 pub(super) fn color_confidence(c_eff: f64, text: &str, color: bool) -> String {
+    use crate::core::entity::Classification;
     if !color {
         return text.to_string();
     }
-    if c_eff >= 0.75 {
-        format!("\x1b[32m{text}\x1b[0m")
-    } else if c_eff >= 0.40 {
-        format!("\x1b[33m{text}\x1b[0m")
-    } else {
-        format!("\x1b[31m{text}\x1b[0m")
+    match Classification::from_c_eff(c_eff) {
+        Classification::Verified => format!("\x1b[32m{text}\x1b[0m"),
+        Classification::Probable => format!("\x1b[33m{text}\x1b[0m"),
+        Classification::Candidate => format!("\x1b[31m{text}\x1b[0m"),
     }
 }
 
