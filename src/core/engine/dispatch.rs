@@ -379,6 +379,20 @@ impl super::ScanEngine {
                         self.emit_excluded(scan_id, &entity, "fragment_value");
                         continue;
                     }
+                    // Drop an implausible phone at admission. A value that CLAIMS
+                    // E.164 (leading `+`) but fails the country-code/length rules
+                    // — e.g. "+1240893", a NANP number with only 6 national
+                    // digits — is a scrape artifact, never a dialable number.
+                    // Gated here so it holds for every module and every expansion
+                    // round; national/ambiguous (no `+`) phones are left alone,
+                    // since the modules already emit E.164.
+                    if entity.kind == crate::core::entity::EntityKind::Phone
+                        && entity.value.starts_with('+')
+                        && !crate::core::validation::validate_phone_e164(&entity.value).valid
+                    {
+                        self.emit_excluded(scan_id, &entity, "implausible_phone");
+                        continue;
+                    }
                     self.emit(
                         scan_id,
                         EventKind::EntityFound {

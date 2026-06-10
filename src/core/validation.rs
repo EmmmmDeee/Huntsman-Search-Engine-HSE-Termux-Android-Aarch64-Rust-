@@ -698,6 +698,15 @@ mod tests {
         );
         assert_eq!(validate_phone_e164("+abc").reason, "e164.non_digit");
         assert_eq!(validate_phone_e164("+1234").reason, "e164.length");
+        // Regression: a +1 (NANP) number with only 6 national digits — a scrape
+        // artifact a live scan surfaced as a PROBABLE Phone — is too short (7
+        // total < 8) and must be rejected. The engine admission gate drops any
+        // `+`-prefixed Phone that fails here, codebase-wide.
+        assert_eq!(validate_phone_e164("+1240893").reason, "e164.length");
+        // ...while the genuine 11-digit numbers the same scan also found stay
+        // valid (the gate must keep these).
+        assert!(validate_phone_e164("+12069156775").valid);
+        assert!(validate_phone_e164("+971555542290").valid);
         assert_eq!(
             validate_phone_e164("+1234567890123456").reason,
             "e164.length"
