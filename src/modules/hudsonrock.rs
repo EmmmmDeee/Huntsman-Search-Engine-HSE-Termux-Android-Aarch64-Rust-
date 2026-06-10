@@ -87,7 +87,13 @@ impl Module for HudsonRock {
     }
 
     fn category(&self) -> ModuleCategory {
-        ModuleCategory::Infrastructure
+        // Stealer-log / infostealer intelligence — a breach-corpus source, not
+        // network infrastructure. The `Breach` category is documented as
+        // "breach corpora, paste exposure, stealer logs, leaked credentials",
+        // and the correlator already lists hudsonrock among its breach sources
+        // (rules/breach.rs), so this aligns the catalogue label with how the
+        // rest of the engine treats it.
+        ModuleCategory::Breach
     }
 
     fn max_timeout_ms(&self) -> u64 {

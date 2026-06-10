@@ -120,17 +120,14 @@ impl Relation {
 }
 
 /// Normalise a host/domain string the same way `EntityKind::Domain` does for
-/// entity values: lowercase, strip a leading `www.`, strip a trailing dot.
-/// Used so an Email/Url's domain matches the stored Domain entity value.
+/// entity values, so an Email/Url's domain matches the stored Domain entity
+/// value. Delegates to the entity normaliser itself rather than re-implementing
+/// it: a hand-rolled copy here had already drifted (single `www.` strip vs the
+/// normaliser's fixed-point strip, ASCII-only vs full Unicode lowercase), so a
+/// `www.www.example.com` URL host silently failed to match the `example.com`
+/// Domain entity and the edge was never derived.
 fn domain_key(raw: &str) -> String {
-    let mut s = raw.trim().to_ascii_lowercase();
-    if let Some(stripped) = s.strip_suffix('.') {
-        s = stripped.to_string();
-    }
-    if let Some(stripped) = s.strip_prefix("www.") {
-        s = stripped.to_string();
-    }
-    s
+    crate::core::entity::normalise(&EntityKind::Domain, raw)
 }
 
 /// Derive the structural relations for a scan's entity set.
@@ -396,11 +393,25 @@ pub fn derive_registration(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
 pub fn derive_name_lineage(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     use std::collections::HashMap;
 
-    let persons: HashMap<String, &Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Person)
-        .map(|e| (e.value.trim().to_lowercase(), e))
-        .collect();
+    // Person values are NOT case-folded at normalisation ("Jane Smith" and
+    // "jane smith" are distinct entities), but this lookup folds them — so two
+    // Persons can collide on one key. A plain last-write-wins collect made the
+    // edge target depend on the caller's (HashMap-randomised) entity order,
+    // breaking this module's determinism invariant. Resolve collisions with a
+    // stable rule instead: highest confidence wins, ties broken by smaller uid.
+    let mut persons: HashMap<String, &Entity> = HashMap::new();
+    for e in entities.iter().filter(|e| e.kind == EntityKind::Person) {
+        persons
+            .entry(e.value.trim().to_lowercase())
+            .and_modify(|cur| {
+                let better = e.confidence > cur.confidence
+                    || (e.confidence == cur.confidence && e.uid < cur.uid);
+                if better {
+                    *cur = e;
+                }
+            })
+            .or_insert(e);
+    }
     if persons.is_empty() {
         return Vec::new();
     }
@@ -450,6 +461,27 @@ pub fn derive_all(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relation_kind_as_str_matches_serde() {
+        // CONVENTIONS.md §3: the type owns its canonical string and a test
+        // pins it to the serde wire form so the two can't drift. as_str is the
+        // stored `relations.kind` column and the API edge label; the serde
+        // derive is what crosses the wire — a rename that touched only one
+        // would silently split the DB form from the JSON form.
+        for k in [
+            RelationKind::SubdomainOf,
+            RelationKind::BelongsToDomain,
+            RelationKind::HostedOn,
+            RelationKind::ResolvesTo,
+            RelationKind::RegisteredBy,
+            RelationKind::CoLocatedWith,
+            RelationKind::DerivedFrom,
+        ] {
+            let json = serde_json::to_string(&k).unwrap();
+            assert_eq!(json.trim_matches('"'), k.as_str(), "{k:?}");
+        }
+    }
     use crate::core::entity::{Entity, EntityKind};
 
     fn ent(kind: EntityKind, value: &str, conf: f64) -> Entity {
@@ -623,6 +655,52 @@ mod tests {
         assert_eq!(hosted.len(), 1);
         assert_eq!(hosted[0].from_uid, entities[0].uid);
         assert_eq!(hosted[0].to_uid, entities[1].uid);
+    }
+
+    #[test]
+    fn url_host_matches_domain_exactly_like_entity_normalisation() {
+        // domain_key must be the SAME normalisation Domain entities get —
+        // including the fixed-point `www.` strip. A hand-rolled single strip
+        // left `www.www.example.com` unmatched against `example.com`.
+        let entities = vec![
+            ent(EntityKind::Url, "https://www.www.example.com/x", 0.6),
+            ent(EntityKind::Domain, "example.com", 0.9),
+        ];
+        let hosted: Vec<_> = derive_structural(&entities, "s")
+            .into_iter()
+            .filter(|r| r.kind == RelationKind::HostedOn)
+            .collect();
+        assert_eq!(hosted.len(), 1, "stacked www. labels must still match");
+    }
+
+    #[test]
+    fn name_lineage_collision_is_deterministic_under_entity_order() {
+        use crate::core::entity::Evidence;
+        // Person values are not case-folded at normalisation, so two distinct
+        // Person entities can share one folded lookup key. The edge target must
+        // not depend on input order: highest confidence wins, ties by uid.
+        let strong = ent(EntityKind::Person, "Jane Smith", 0.8);
+        let weak = ent(EntityKind::Person, "jane smith", 0.4);
+        let mut handle = ent(EntityKind::Username, "jsmith", 0.38);
+        handle.tag("name-derived");
+        handle.add_evidence(
+            Evidence::new("name_intel", "derived").with_attr("source_name", "JANE SMITH"),
+        );
+
+        let fwd = vec![strong.clone(), weak.clone(), handle.clone()];
+        let rev = vec![weak.clone(), strong.clone(), handle.clone()];
+        let r1 = derive_name_lineage(&fwd, "s");
+        let r2 = derive_name_lineage(&rev, "s");
+        assert_eq!(r1.len(), 1);
+        assert_eq!(r2.len(), 1);
+        assert_eq!(
+            r1[0].to_uid, strong.uid,
+            "the higher-confidence Person must win the collision"
+        );
+        assert_eq!(
+            r1[0].to_uid, r2[0].to_uid,
+            "edge target must be identical regardless of entity order"
+        );
     }
 
     #[test]

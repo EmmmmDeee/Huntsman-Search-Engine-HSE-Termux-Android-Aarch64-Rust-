@@ -140,7 +140,14 @@ pub struct LiveRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<crate::core::scan::TargetKind>,
     pub value: String,
-    #[serde(default)]
+    /// Per-iteration scan options. Defaults to the same product defaults a
+    /// [`crate::core::scan::ScanRequest`] gets (depth 2, gentle concurrency) —
+    /// a bare `#[serde(default)]` here used `ScanOptions::default()` (depth 0)
+    /// instead, so `{"value":"x"}` ran zero-expansion iterations while the
+    /// identical request with an empty `"options": {}` object recursed two
+    /// hops (field-level serde defaults). Two spellings of "no preference"
+    /// must mean the same thing, and live must match scan.
+    #[serde(default = "crate::core::scan::default_scan_options")]
     pub options: ScanOptions,
     #[serde(default)]
     pub live: LiveOptions,
@@ -539,6 +546,21 @@ mod tests {
         assert_eq!(req.resolved_kind(), TargetKind::Domain);
         assert_eq!(req.live.interval_secs, crate::LIVE_DEFAULT_INTERVAL_SECS);
         assert!(req.live.iterations.is_none());
+    }
+
+    #[test]
+    fn live_request_omitted_options_match_empty_object_and_scan_defaults() {
+        // Two spellings of "operator expressed no scan-option preference" must
+        // be identical — a bare #[serde(default)] gave the omitted form depth 0
+        // (ScanOptions::default()) while "options": {} got the field-level
+        // product defaults (depth 2), so the same intent ran zero-expansion or
+        // two-hop iterations depending on serialisation style.
+        let omitted: LiveRequest = serde_json::from_str(r#"{"value":"x.com"}"#).unwrap();
+        let empty: LiveRequest = serde_json::from_str(r#"{"value":"x.com","options":{}}"#).unwrap();
+        assert_eq!(omitted.options.depth, empty.options.depth);
+        assert_eq!(omitted.options.max_concurrent, empty.options.max_concurrent);
+        // And live matches scan: the shared product default (depth 2).
+        assert_eq!(omitted.options.depth, crate::core::scan::DEFAULT_SCAN_DEPTH);
     }
 
     #[test]

@@ -368,3 +368,37 @@ pub fn find_service(name: &str) -> Option<&'static ServiceDef> {
     let lower = name.to_lowercase();
     SERVICE_DEFS.iter().find(|s| s.name == lower)
 }
+
+/// True if `service` is a recognised keyed provider whose key the engine's
+/// key-cascade can actually **reuse** — i.e. it appears in [`service_defs`], so
+/// `hot_inject_keys` (which iterates `service_defs`) will pull a pooled key for
+/// it on a later round.
+///
+/// This is the gate for what may enter the rotation **pool**. A discovered
+/// secret for any *other* "service" — the `generic_hex` catch-all, `jwt_token`,
+/// a `crypto_*` wallet tag, a foreign consumer login — is still surfaced as an
+/// `ApiKey` entity (the intel), but must NOT be pooled: nothing ever injects it,
+/// so pooling only grows `key_pool.json` without bound. A live run accumulated
+/// **8668** `generic_hex` blobs → a 4 MB pool that overflowed the web pool view.
+#[must_use]
+pub fn is_poolable_service(service: &str) -> bool {
+    find_service(service).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn poolable_only_for_recognised_providers() {
+        // Recognised keyed providers (in SERVICE_DEFS) are poolable...
+        assert!(is_poolable_service("shodan"));
+        assert!(is_poolable_service("SHODAN")); // case-insensitive
+        // ...while catch-all / non-service "key" tags are NOT — these were the
+        // unbounded pool-bloat source (8668 `generic_hex` blobs → 4 MB pool).
+        assert!(!is_poolable_service("generic_hex"));
+        assert!(!is_poolable_service("jwt_token"));
+        assert!(!is_poolable_service("crypto_sol"));
+        assert!(!is_poolable_service("unknown"));
+    }
+}

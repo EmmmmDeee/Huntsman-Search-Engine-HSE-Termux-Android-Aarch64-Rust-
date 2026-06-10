@@ -1,6 +1,8 @@
 //! End-to-end smoke tests: synthetic modules, real engine, real SQLite.
 //! Proves the trait + engine + store + autonomous-expansion wire together.
 
+mod common;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -1106,7 +1108,6 @@ async fn radar_persistent_ledger_does_not_re_query_paid_apis_on_covered_seeds() 
     use std::sync::atomic::Ordering;
 
     let tmp = tempfile_path("radar-ledger");
-    let _ = std::fs::remove_file(&tmp);
     let store = Arc::new(Store::open(&tmp).unwrap());
     let (bus, _rx) = tokio::sync::broadcast::channel(64);
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1563,32 +1564,11 @@ fn setup(
     kind: TargetKind,
     value: &str,
 ) -> (ScanEngine, Arc<Store>, String, Target, ModuleContext) {
-    let tmp = tempfile_path(suffix);
-    let _ = std::fs::remove_file(&tmp);
-    let store = Arc::new(Store::open(&tmp).unwrap());
-    let (bus, _rx) = tokio::sync::broadcast::channel(64);
-    let engine = ScanEngine::new(
-        modules,
-        Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
-        bus.clone(),
-    );
-    let sid = scan_id(kind.canonical_str(), value);
-    let target = Target::new(kind, value.to_string());
-    let ctx = ModuleContext {
-        scan_id: sid.clone(),
-        bus,
-        http: build_client(),
-        keys: Default::default(),
-        cancel: Default::default(),
-        proxy_pool: Default::default(),
-    };
-    (engine, store, sid, target, ctx)
+    common::engine_setup("smoke", modules, suffix, kind, value)
 }
 
 fn tempfile_path(suffix: &str) -> String {
-    let mut p = std::env::temp_dir();
-    p.push(format!("hse-smoke-{}-{}.db", std::process::id(), suffix));
-    p.to_string_lossy().into_owned()
+    common::tmp_db("smoke", suffix)
 }
 
 // ── Live mode tests ────────────────────────────────────────────────────────
@@ -1598,7 +1578,6 @@ async fn live_session_runs_two_iterations_and_completes() {
     use huntsman_search_engine::core::live::{LiveOptions, LiveScanner, LiveStatus};
 
     let tmp = tempfile_path("live-2iter");
-    let _ = std::fs::remove_file(&tmp);
     let store = Arc::new(Store::open(&tmp).unwrap());
     let (bus, _rx) = tokio::sync::broadcast::channel(256);
     let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
@@ -1643,7 +1622,6 @@ async fn live_session_stops_on_explicit_cancel() {
     use huntsman_search_engine::core::live::{LiveOptions, LiveScanner, LiveStatus};
 
     let tmp = tempfile_path("live-cancel");
-    let _ = std::fs::remove_file(&tmp);
     let store = Arc::new(Store::open(&tmp).unwrap());
     let (bus, _rx) = tokio::sync::broadcast::channel(256);
     let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
@@ -2536,7 +2514,6 @@ impl StoragePort for CountingStore {
 #[tokio::test]
 async fn entities_are_checkpointed_each_round_for_durability() {
     let tmp = tempfile_path("durability");
-    let _ = std::fs::remove_file(&tmp);
     let store = Arc::new(Store::open(&tmp).unwrap());
     let batch_calls = Arc::new(AtomicUsize::new(0));
     let counting = Arc::new(CountingStore {
@@ -2750,5 +2727,58 @@ async fn bogus_ips_are_dropped_at_admission() {
     assert!(
         ips.iter().any(|v| v == "192.168.1.5"),
         "private IP must be kept (local-sensor finding)"
+    );
+}
+
+/// KeyGated module with no key configured — enters the dispatch ledger at the
+/// gate, then cleanly opts out with `MissingKey`.
+struct KeyGatedNeedsKey;
+
+#[async_trait]
+impl Module for KeyGatedNeedsKey {
+    fn name(&self) -> &'static str {
+        "keygated_needs_key"
+    }
+    fn priority(&self) -> u8 {
+        90
+    }
+    fn cost(&self) -> huntsman_search_engine::core::module::ModuleCost {
+        huntsman_search_engine::core::module::ModuleCost::KeyGated
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, _t: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
+        Err(huntsman_search_engine::core::error::Error::MissingKey(
+            "HUNTSMAN_VIRUSTOTAL_KEY".into(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn missing_key_releases_the_dispatch_ledger_entry() {
+    use huntsman_search_engine::core::engine::DispatchLog;
+
+    // The dedup contract is "each API key/service is utilised at most once per
+    // target" — a module that opted out for want of a key utilised NOTHING, so
+    // its ledger entry must be released. Otherwise a key discovered later by
+    // the hot-inject cascade could never be applied to this target for the
+    // rest of the scan (or the whole radar session).
+    let (engine, _store, sid, target, ctx) = setup(
+        vec![Arc::new(KeyGatedNeedsKey)],
+        "needs-key-ledger",
+        TargetKind::Email,
+        "alice@contoso.com",
+    );
+    let scan = Scan::new(sid.clone(), target.clone());
+    let mut ledger: DispatchLog = DispatchLog::new();
+    engine
+        .run_with_ledger(scan, target, ctx, &mut ledger)
+        .await
+        .unwrap();
+    assert!(
+        ledger.is_empty(),
+        "a MissingKey opt-out spent no query — its ledger entry must be \
+         released so a hot-injected key can retry the target"
     );
 }

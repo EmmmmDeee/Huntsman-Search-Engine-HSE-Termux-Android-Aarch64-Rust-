@@ -307,6 +307,7 @@ pub(in crate::modules::search_engines) fn is_navigation_path(s: &str) -> bool {
         "create",
         "creator",
         "creators",
+        "dir",
         "download",
         "events",
         "explore",
@@ -334,6 +335,10 @@ pub(in crate::modules::search_engines) fn is_navigation_path(s: &str) -> bool {
         "popular",
         "posts",
         "privacy",
+        // LinkedIn directory prefix: `linkedin.com/pub/dir/First/Last` is a
+        // people-search URL, not a profile — its first path segment `pub`
+        // (with `dir`) must never become a "username".
+        "pub",
         "reel",
         "reels",
         "settings",

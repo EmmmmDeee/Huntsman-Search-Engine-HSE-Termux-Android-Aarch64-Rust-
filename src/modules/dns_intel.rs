@@ -189,6 +189,11 @@ impl Module for DnsIntel {
         ModuleCategory::DnsRecon
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Live DNS records — ATT&CK Gather Victim Network Information: DNS (T1590.002).
+        &["T1590.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] =
             &[EntityKind::IpAddress, EntityKind::Domain, EntityKind::Email];

@@ -33,7 +33,7 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::core::entity::EntityKind;
-use crate::core::module::{Module, ModuleCost};
+use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
 
 /// Every `TargetKind` variant — used by both the dispatch-index builder
@@ -118,12 +118,27 @@ impl ModuleGraph {
         let mut producer_index: HashMap<EntityKind, Vec<usize>> = HashMap::new();
 
         for (idx, m) in modules.iter().enumerate() {
+            // Deduplicate each module's declared kinds. `consumes()`/`produces()`
+            // are module-supplied (the trait default probes uniquely, but a
+            // hand-written override is free to list a kind twice). A duplicate
+            // would push the same module index into a dispatch bucket twice — and
+            // since free modules are exempt from the per-scan DispatchLog dedup,
+            // that module would then run twice on every target in a round (double
+            // work, double evidence) AND inflate its kind's consumer_count, which
+            // skews richness. Index each (module, kind) at most once.
+            let mut seen_consumes: HashSet<TargetKind> = HashSet::new();
             for kind in m.consumes() {
+                if !seen_consumes.insert(kind) {
+                    continue;
+                }
                 dispatch_index.entry(kind).or_default().push(idx);
                 *consumer_count.entry(kind).or_default() += 1;
             }
+            let mut seen_produces: HashSet<EntityKind> = HashSet::new();
             for ek in m.produces() {
-                producer_index.entry(ek.clone()).or_default().push(idx);
+                if seen_produces.insert(ek.clone()) {
+                    producer_index.entry(ek.clone()).or_default().push(idx);
+                }
             }
         }
 
@@ -211,7 +226,7 @@ impl ModuleGraph {
             .map(|m| PivotEdge {
                 module: m.name(),
                 category: m.category().as_str(),
-                cost: cost_str(m.cost()),
+                cost: m.cost().as_str(),
                 passive: m.is_passive(),
                 consumes: m
                     .consumes()
@@ -230,14 +245,6 @@ impl ModuleGraph {
             kinds: consumers_by_kind,
             edges,
         }
-    }
-}
-
-fn cost_str(c: ModuleCost) -> &'static str {
-    match c {
-        ModuleCost::Free => "free",
-        ModuleCost::KeyGated => "key_gated",
-        ModuleCost::Paid => "paid",
     }
 }
 
@@ -446,6 +453,57 @@ mod tests {
             .expect("email_to_domain edge");
         assert_eq!(etd.consumes, vec!["email"]);
         assert_eq!(etd.produces, vec!["domain"]);
+    }
+
+    /// A module whose `consumes()`/`produces()` override repeats a kind must be
+    /// indexed at most once per kind — otherwise a free module would be
+    /// dispatched twice per target (it is exempt from the DispatchLog dedup) and
+    /// its consumer_count would be inflated, skewing richness.
+    struct DuplicateKindModule;
+    #[async_trait]
+    impl Module for DuplicateKindModule {
+        fn name(&self) -> &'static str {
+            "duplicate_kind"
+        }
+        fn priority(&self) -> u8 {
+            60
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain)
+        }
+        async fn process(
+            &self,
+            _t: &Target,
+            _ctx: &ModuleContext,
+        ) -> crate::core::error::Result<ModuleResult> {
+            Ok(ModuleResult::new())
+        }
+        fn consumes(&self) -> Vec<TargetKind> {
+            // Pathological override: the same kind listed twice.
+            vec![TargetKind::Domain, TargetKind::Domain]
+        }
+        fn produces(&self) -> &'static [EntityKind] {
+            const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::IpAddress];
+            KINDS
+        }
+    }
+
+    #[test]
+    fn build_dedups_repeated_kinds_within_a_module() {
+        let modules: Vec<Arc<dyn Module>> = vec![Arc::new(DuplicateKindModule)];
+        let g = ModuleGraph::build(&modules);
+        // The module's index appears ONCE in the Domain bucket, not twice.
+        assert_eq!(
+            g.modules_for(TargetKind::Domain),
+            &[0],
+            "a module that lists a kind twice must be indexed once"
+        );
+        assert_eq!(g.module_count_for(TargetKind::Domain), 1);
+        // Richness reflects the deduped count (1 of max 1 = full), not an
+        // inflated 2.
+        assert!((g.richness_for(TargetKind::Domain) - 1.0).abs() < f64::EPSILON);
+        // Produced-kind index is likewise deduped to a single entry.
+        assert_eq!(g.produced_kinds(), vec![EntityKind::IpAddress]);
     }
 
     #[test]

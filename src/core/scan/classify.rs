@@ -124,9 +124,9 @@ pub(crate) fn is_wrong_identity_pivot(
     value: &str,
     subject_identities: &[String],
 ) -> bool {
-    use crate::core::entity::EntityKind;
+    use crate::core::entity::{Classification, EntityKind};
     matches!(kind, EntityKind::Username | EntityKind::Person)
-        && c_effective < 0.75
+        && c_effective < Classification::VERIFIED_MIN
         && source_count <= 1
         && !subject_identities
             .iter()

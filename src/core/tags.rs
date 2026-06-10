@@ -1,0 +1,49 @@
+//! Canonical entity tag string constants. One definition so a tag a
+//! module emits and a correlator rule matches on can't drift in spelling.
+
+pub const BREACH: &str = "breach";
+pub const STEALER_LOG: &str = "stealer-log";
+pub const WEB: &str = "web";
+pub const CRAWLED: &str = "crawled";
+pub const SUBDOMAIN: &str = "subdomain";
+pub const EXTERNAL: &str = "external";
+pub const WEB_SCRAPED: &str = "web-scraped";
+pub const CT_LOG: &str = "ct-log";
+pub const PTR: &str = "ptr";
+pub const HIGH_EXPOSURE: &str = "high-exposure";
+pub const PASTE_EXPOSED: &str = "paste-exposed";
+pub const PASSWORD_AT_RISK: &str = "password-at-risk";
+pub const MULTI_DEVICE: &str = "multi-device";
+pub const MISSING_SECURITY_HEADERS: &str = "missing-security-headers";
+
+// Geolocation
+pub const GEOINT: &str = "geoint";
+pub const GEOLOCATION_LEAD: &str = "geolocation-lead";
+pub const COARSE: &str = "coarse";
+/// Datacenter / CDN / cloud-host location, not a residence. Carried by
+/// coordinates that geolocate a hosting IP (e.g. a Cloudflare edge), so the
+/// area-of-operation rule (AU-052) can exclude them from a person's footprint.
+pub const HOSTING: &str = "hosting";
+
+// Device / local
+pub const WIFI_AP: &str = "wifi-ap";
+pub const CELL_TOWER: &str = "cell-tower";
+pub const LOCAL_ARP: &str = "local-arp";
+pub const LOCAL_INTERFACE: &str = "local-interface";
+
+// Reputation / threat
+pub const THREAT_INTEL: &str = "threat-intel";
+pub const MALICIOUS: &str = "malicious";
+pub const TOR_EXIT: &str = "tor-exit";
+pub const PROXY: &str = "proxy";
+pub const VPN: &str = "vpn";
+pub const VULNERABLE: &str = "vulnerable";
+
+// Identity
+pub const DERIVED: &str = "derived";
+pub const SOCIAL_PROFILE: &str = "social-profile";
+pub const CANDIDATE: &str = "candidate";
+
+// Discovery method
+pub const SEARCH_DISCOVERED: &str = "search-discovered";
+pub const BREACH_DERIVED: &str = "breach-derived";

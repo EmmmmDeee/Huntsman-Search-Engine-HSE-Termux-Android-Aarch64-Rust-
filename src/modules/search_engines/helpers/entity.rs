@@ -131,7 +131,20 @@ pub(in crate::modules::search_engines) fn normalise_address_key(addr: &str) -> S
         }
     }
     s.retain(|c| c.is_alphanumeric() || c == ' ');
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
+    // Drop trailing postcode token(s) so "City, STATE" and "City, STATE 2582"
+    // (one locality, two granularities) share a dedup key and collapse into a
+    // single Address entity — even when each form arrives from a different
+    // search result. A postcode is a 4-(AU)/5-(US) digit run; it is always
+    // trailing, so a leading street number (also numeric) is never stripped.
+    let mut tokens: Vec<&str> = s.split_whitespace().collect();
+    while tokens.len() > 1
+        && tokens
+            .last()
+            .is_some_and(|t| (4..=5).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_digit()))
+    {
+        tokens.pop();
+    }
+    tokens.join(" ")
 }
 
 // ─── Entity building ────────────────────────────────────────────────────────
@@ -621,6 +634,14 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
         None
     };
 
+    // Append the postcode that follows a "City, STATE" as a more-specific
+    // variant. The bare and postcode-qualified forms are ONE locality, so they
+    // must not become two Address entities — `normalise_address_key` strips the
+    // trailing postcode, collapsing them to a single dedup key at emission
+    // (build.rs), which is where addresses across multiple search results are
+    // already merged. (Emitting both strings here is harmless given that dedup,
+    // and avoids guessing whether a trailing 4-digit run is a postcode or, say,
+    // a year — "Houston, Texas since 2020".)
     for r in &addrs.clone() {
         let after_idx = text.find(r.as_str()).unwrap_or(0) + r.len();
         if after_idx < text.len() {

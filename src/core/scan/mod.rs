@@ -606,13 +606,27 @@ pub struct ScanOptions {
     #[serde(default)]
     pub exclude_modules: Vec<String>,
 
+    /// Restrict dispatch to modules in these functional categories. Empty (the
+    /// default) means *no restriction* — every accepting module runs. When
+    /// non-empty, a module whose [`crate::core::module::ModuleCategory`] is not
+    /// listed is skipped on every round. Selection is by the type-owned category
+    /// rather than a brittle module-name list, so a focused profile (e.g.
+    /// `skiptrace`, which targets the person-locating categories) can't drift as
+    /// modules are renamed and automatically includes new modules in-category.
+    #[serde(default)]
+    pub category_focus: Vec<crate::core::module::ModuleCategory>,
+
     /// Delay between module dispatches, in milliseconds. 0 = no throttle.
     #[serde(default)]
     pub throttle_ms: u64,
 
-    /// Concurrent module cap. 0 = sequential (default for v0.1).
-    /// Reserved for v0.3+ parallel dispatcher.
-    #[serde(default)]
+    /// Concurrent module cap. 0 = fully sequential dispatch; the default is
+    /// the product's deliberately-gentle 2 (see [`Default`] and the CLI's
+    /// `--max-concurrent`). The serde default matches, so an API request whose
+    /// `options` object omits the field gets the same dispatch mode as one
+    /// that omits `options` entirely — previously `"options": {}` silently
+    /// fell back to 0/sequential while `{}`-less requests ran concurrent.
+    #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
 
     /// Per-module timeout override (ms). None = `MODULE_TIMEOUT_MS`.
@@ -848,12 +862,14 @@ impl Default for ScanOptions {
         Self {
             modules: None,
             exclude_modules: Vec::new(),
+            category_focus: Vec::new(),
             throttle_ms: 0,
             // Deliberately gentle (2, not the old 4): two concurrent network
             // modules paces dispatch so a deep/everything scan does not flood
             // the link or trip provider rate limits. Operators can raise it
             // with `--max-concurrent` when they know the network can take it.
-            max_concurrent: 2,
+            // Single-sourced with the serde default so the two can't diverge.
+            max_concurrent: default_max_concurrent(),
             module_timeout_ms: None,
             min_confidence: None,
             free_only: false,
@@ -885,6 +901,14 @@ fn default_min_expand_confidence() -> f64 {
     0.50
 }
 
+/// Serde default for [`ScanOptions::max_concurrent`] — the product's gentle
+/// concurrency (2), matching `ScanOptions::default()` and the CLI flag default,
+/// so omitting the field inside an `options` object behaves identically to
+/// omitting the `options` object altogether.
+fn default_max_concurrent() -> usize {
+    2
+}
+
 /// Serde default for [`ScanOptions::regional_search`] — AU-focused on by default
 /// so API/web requests that omit it still favour Australian sources (matches the
 /// CLI `hse scan` default; opt out with the Settings toggle).
@@ -901,7 +925,9 @@ fn default_scan_depth() -> u32 {
 /// Serde default for [`ScanRequest::options`] — used when a request omits the
 /// whole `options` object, so it still gets the product default depth (2)
 /// rather than the inert library `ScanOptions::default()` (depth 0).
-fn default_scan_options() -> ScanOptions {
+/// `pub(crate)` because [`crate::core::live::LiveRequest`] shares it: a live
+/// request that omits `options` must behave like a scan request that does.
+pub(crate) fn default_scan_options() -> ScanOptions {
     ScanOptions {
         depth: DEFAULT_SCAN_DEPTH,
         ..Default::default()

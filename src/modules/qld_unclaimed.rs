@@ -25,7 +25,7 @@ use serde_json::{Map, Value};
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleContext, ModuleCost, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::ckan::{Response as CkanResp, field_str};
@@ -353,6 +353,14 @@ impl Module for QldUnclaimed {
 
     fn cost(&self) -> ModuleCost {
         ModuleCost::Free
+    }
+
+    fn category(&self) -> ModuleCategory {
+        // Person-centric record lookup: resolves a name to a government
+        // register entry and its Address/Coordinates. Previously uncategorised
+        // (defaulted to `Other`), which excluded it from any category-focused
+        // scan (e.g. `skiptrace`) despite being a direct person-locator.
+        ModuleCategory::People
     }
 
     fn accepts(&self, t: &Target) -> bool {

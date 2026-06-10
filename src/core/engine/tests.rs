@@ -5,6 +5,44 @@
 
 use super::*;
 
+#[test]
+fn consolidate_address_localities_folds_postcode_variants_codebase_wide() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    // Two granularities of ONE suburb, from DIFFERENT modules (as if one came
+    // from search_engines and the postcode form from a geocode API in a later
+    // expansion round) — plus a genuinely different locality that must survive.
+    let mut bare = Entity::new(EntityKind::Address, "Murrumbateman, NSW", 0.45, "s");
+    bare.add_evidence(Evidence::new("search_engines", "near truelocal"));
+    let mut withpc = Entity::new(EntityKind::Address, "Murrumbateman, NSW 2582", 0.50, "s");
+    withpc.add_evidence(Evidence::new("geocode", "geocoded"));
+    let other = Entity::new(EntityKind::Address, "Brisbane, QLD 4000", 0.45, "s");
+    let unrelated = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
+
+    let mut entities = vec![bare, withpc, other, unrelated];
+    consolidate_address_localities(&mut entities);
+
+    let addrs: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address)
+        .collect();
+    // The two Murrumbateman variants collapse to ONE; Brisbane survives → 2.
+    assert_eq!(addrs.len(), 2, "postcode variants must fold: {addrs:?}");
+    let murrum = addrs
+        .iter()
+        .find(|e| e.value.contains("Murrumbateman"))
+        .expect("murrumbateman survives");
+    // The most-specific (postcode-bearing) spelling is kept...
+    assert_eq!(murrum.value, "Murrumbateman, NSW 2582");
+    // ...and BOTH sources' evidence folded in (confidence took the max).
+    let srcs: std::collections::BTreeSet<&str> =
+        murrum.evidence.iter().map(|e| e.source.as_str()).collect();
+    assert!(srcs.contains("search_engines") && srcs.contains("geocode"));
+    assert!((murrum.confidence - 0.50).abs() < 1e-9);
+    // The unrelated email is untouched.
+    assert!(entities.iter().any(|e| e.kind == EntityKind::Email));
+}
+
 /// FTA invariant (cuts MCS-A): the local/environmental sensor modules read
 /// the OPERATOR's own device/network, so they must never engage on a
 /// remote-subject seed — otherwise the operator's GPS/Wi-Fi/cell/LAN data is
@@ -496,6 +534,45 @@ fn skip_reason_excluded() {
 }
 
 #[test]
+fn skip_reason_outside_category_focus() {
+    // A non-empty category focus that omits the module's category skips it on
+    // every round. `free_active` is a StubModule, whose `category()` defaults to
+    // `Other`; a focus of People/Phone/Geo therefore excludes it.
+    use crate::core::module::ModuleCategory;
+    let m = free_active();
+    let opts = ScanOptions {
+        category_focus: vec![
+            ModuleCategory::People,
+            ModuleCategory::Phone,
+            ModuleCategory::Geo,
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        module_skip_reason(&m, &pub_target(), &opts, false, 0),
+        Some("outside category focus")
+    );
+}
+
+#[test]
+fn skip_reason_inside_category_focus_passes() {
+    // The same module passes when its category IS in the focus, and an empty
+    // focus (the default) never restricts.
+    use crate::core::module::ModuleCategory;
+    let m = free_active(); // category() defaults to Other
+    let focused = ScanOptions {
+        category_focus: vec![ModuleCategory::Other],
+        ..Default::default()
+    };
+    assert!(module_skip_reason(&m, &pub_target(), &focused, false, 0).is_none());
+    let unfocused = ScanOptions {
+        category_focus: Vec::new(),
+        ..Default::default()
+    };
+    assert!(module_skip_reason(&m, &pub_target(), &unfocused, false, 0).is_none());
+}
+
+#[test]
 fn skip_reason_free_only_skips_keygated() {
     let m = keygated();
     let opts = ScanOptions {
@@ -597,6 +674,91 @@ fn non_high_value_module_unaffected_by_source_gate() {
     let m = free_active();
     let opts = ScanOptions::default();
     assert!(module_skip_reason(&m, &pub_target(), &opts, true, 0).is_none());
+}
+
+fn wigle() -> StubModule {
+    StubModule {
+        name: "wigle",
+        cost: ModuleCost::KeyGated,
+        passive: false,
+    }
+}
+
+fn coords_target() -> Target {
+    Target::new(TargetKind::Coordinates, "-27.47,153.02")
+}
+
+#[test]
+fn wigle_finaliser_gated_on_uncorroborated_coordinate() {
+    // The GEOINT-finaliser rule: on EXPANSION, WiGLE must not spend a query on
+    // a Coordinates target the free geo layer hasn't corroborated (>=2 distinct
+    // sources). 0 or 1 source → skip; >=2 (recursion agreed, high confidence)
+    // → allowed.
+    let m = wigle();
+    let opts = ScanOptions::default();
+    assert_eq!(
+        module_skip_reason(&m, &coords_target(), &opts, true, 1),
+        Some("WiGLE finaliser — awaiting GEOINT corroboration (>=2 geo sources)"),
+        "single-source coordinate must not reach the paid WiGLE finaliser"
+    );
+    assert!(module_skip_reason(&m, &coords_target(), &opts, true, 0).is_some());
+    assert!(
+        module_skip_reason(&m, &coords_target(), &opts, true, 2).is_none(),
+        "a coordinate >=2 geo sources agree on (high confidence) reaches WiGLE"
+    );
+}
+
+#[test]
+fn target_distinct_sources_excludes_geo_normalize_enrichment() {
+    // The WiGLE finaliser gate keys on this count. A Coordinates entity always
+    // receives a `geo_normalize` evidence row from the enrichment pass, but that
+    // is deterministic self-enrichment, NOT an independent geo source — so a
+    // coordinate produced by ONE real module must count as 1, not 2. Counting
+    // raw evidence_sources would credit it as 2 and fire WiGLE on an
+    // uncorroborated coordinate, defeating the gate.
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use std::collections::HashMap;
+
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.8, "s");
+    coord.add_evidence(Evidence::new("ip_geo", "Geolocation for 1.2.3.4"));
+    coord.add_evidence(Evidence::new("geo_normalize", "Geospatial enrichment"));
+    let mut map: HashMap<String, Entity> = HashMap::new();
+    map.insert(coord.uid.clone(), coord.clone());
+
+    let target = Target::new(TargetKind::Coordinates, "-27.470000,153.020000");
+    assert_eq!(
+        target_distinct_sources(&map, &target),
+        1,
+        "one real geo source + geo_normalize must count as 1, not 2"
+    );
+
+    // A genuine second geo source lifts it to 2 → WiGLE may fire.
+    let e = map.get_mut(&coord.uid).unwrap();
+    e.add_evidence(Evidence::new("geocode", "reverse geocode"));
+    assert_eq!(target_distinct_sources(&map, &target), 2);
+
+    // An absent target is 0.
+    let absent = Target::new(TargetKind::Coordinates, "10.0,20.0");
+    assert_eq!(target_distinct_sources(&map, &absent), 0);
+}
+
+#[test]
+fn wigle_runs_on_seed_coordinate_and_on_any_bssid() {
+    let m = wigle();
+    let opts = ScanOptions::default();
+    // Seed round: a Coordinates seed is the operator's explicit target.
+    assert!(
+        module_skip_reason(&m, &coords_target(), &opts, false, 0).is_none(),
+        "WiGLE runs on a coordinate SEED regardless of corroboration"
+    );
+    // A MacAddress/BSSID is WiGLE's PRIMARY pivot — exempt from the
+    // geo-corroboration precondition even on expansion at 0 sources (its own
+    // BSSID budget bounds it). The universal-preflight gate doesn't touch MACs.
+    let mac = Target::new(TargetKind::MacAddress, "aa:bb:cc:dd:ee:ff");
+    assert!(
+        module_skip_reason(&m, &mac, &opts, true, 0).is_none(),
+        "a discovered BSSID must reach WiGLE — it is the primary resolver"
+    );
 }
 
 #[test]
@@ -790,32 +952,6 @@ fn dispatch_log_allows_different_modules_on_same_target() {
     assert!(log.insert(dispatch_key("greynoise", &t)));
 }
 
-#[test]
-fn dispatch_log_evicts_oldest_when_capped() {
-    // Small cap to exercise FIFO eviction without inserting 100k keys
-    // (same-module test, so the private fields are reachable).
-    let mut log = DispatchLog {
-        seen: HashSet::new(),
-        order: VecDeque::new(),
-        cap: 3,
-    };
-    let k = |v: &str| ("hibp", TargetKind::Email, v.to_string());
-    assert!(log.insert(k("a")));
-    assert!(log.insert(k("b")));
-    assert!(log.insert(k("c")));
-    assert!(log.insert(k("d"))); // over cap → evicts the oldest ("a")
-    assert!(
-        log.len() <= 3,
-        "ledger ({}) must stay within the cap",
-        log.len()
-    );
-    // Recently-seen keys are still deduped (retained — never re-queried)...
-    assert!(!log.insert(k("d")));
-    assert!(!log.insert(k("c")));
-    // ...but the long-evicted oldest seed legitimately dispatches again.
-    assert!(log.insert(k("a")), "evicted key must be treated as new");
-}
-
 // ── End-to-end engine throughput benchmark (ignored; opt-in) ──────────────
 //
 // Drives a full multi-round expansion scan over the in-memory store with a
@@ -942,4 +1078,36 @@ async fn bench_end_to_end_scan_scaling() {
             best.as_secs_f64() * 1e3
         );
     }
+}
+
+/// ROI truncation must RELEASE the visited keys of the candidates it cuts.
+/// A cut candidate was queued but never dispatched, so leaving its key in
+/// `visited` excluded the same lead as `already_dispatched_this_scan` in
+/// every later round — a lead whose weight rises with corroboration was
+/// silently lost for the rest of the scan. The kept (still-queued) heads
+/// stay visited.
+#[test]
+fn roi_cutoff_releases_visited_keys_of_truncated_candidates() {
+    let mk = |v: &str| Target::new(TargetKind::Domain, v.to_string());
+    let mut next: Vec<(Target, f64, String)> = vec![
+        (mk("leader.com"), 50.0, "p".to_string()),
+        (mk("kept.com"), 40.0, "p".to_string()),
+        (mk("tail-a.com"), 0.5, "p".to_string()),
+        (mk("tail-b.com"), 0.2, "p".to_string()),
+    ];
+    let mut visited: HashSet<(TargetKind, String)> =
+        next.iter().map(|(t, _, _)| visit_key(t)).collect();
+
+    apply_roi_cutoff(&mut next, &mut visited, 0);
+
+    // Knee at 5% of the leader (2.5): the two tail candidates are cut even
+    // though top-K (10 at max_concurrent=0) would have kept them.
+    assert_eq!(next.len(), 2, "knee should cut the sub-2.5-weight tail");
+    assert!(visited.contains(&visit_key(&mk("leader.com"))));
+    assert!(visited.contains(&visit_key(&mk("kept.com"))));
+    assert!(
+        !visited.contains(&visit_key(&mk("tail-a.com"))),
+        "cut candidate must be released to compete in a later round"
+    );
+    assert!(!visited.contains(&visit_key(&mk("tail-b.com"))));
 }

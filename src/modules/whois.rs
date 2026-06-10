@@ -57,6 +57,11 @@ impl Module for Whois {
         ModuleCategory::DnsRecon
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // WHOIS registration data — ATT&CK WHOIS (T1596.002).
+        &["T1596.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::Domain,

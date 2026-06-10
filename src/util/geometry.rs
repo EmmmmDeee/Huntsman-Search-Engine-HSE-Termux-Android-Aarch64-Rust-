@@ -95,11 +95,7 @@ pub fn geo_footprint(points: &[(f64, f64)]) -> Option<GeoFootprint> {
         // All points collinear — no bounded area.
         return None;
     }
-    let n = hull.len() as f64;
-    let centroid = (
-        hull.iter().map(|p| p.0).sum::<f64>() / n,
-        hull.iter().map(|p| p.1).sum::<f64>() / n,
-    );
+    let centroid = polygon_centroid_latlon(&hull);
     // Diameter: greatest pairwise great-circle distance. The point count is
     // bounded (a scan holds tens of coordinates), so the O(n²) scan is trivial.
     let mut diameter_km = 0.0_f64;
@@ -116,6 +112,48 @@ pub fn geo_footprint(points: &[(f64, f64)]) -> Option<GeoFootprint> {
         centroid,
         diameter_km,
     })
+}
+
+/// Area centroid (centre of mass) of a convex polygon whose vertices are
+/// `(lat, lon)` in CCW order — the documented `GeoFootprint::centroid`.
+///
+/// This is the **true polygon centroid** (the shoelace/area-weighted formula),
+/// not the mean of the vertices. The two differ whenever the hull is
+/// asymmetric: the vertex mean drifts toward whichever side carries more
+/// vertices (the exact bias the [`EnclosingCircle`] rationale calls out), while
+/// the area centroid is the honest centre of mass the field promises and is the
+/// reference point the out-of-area guard (AU-053) measures from. Computed in
+/// planar `(x = lon, y = lat)` space, consistent with the hull builder.
+///
+/// Falls back to the vertex mean only for a degenerate (near-zero-area) polygon,
+/// which `geo_footprint` already excludes — a defensive guard against a
+/// divide-by-near-zero, never reached on a real non-collinear hull.
+fn polygon_centroid_latlon(hull: &[(f64, f64)]) -> (f64, f64) {
+    let n = hull.len();
+    // x = lon (.1), y = lat (.0).
+    let mut area2 = 0.0_f64; // twice the signed area
+    let mut cx = 0.0_f64;
+    let mut cy = 0.0_f64;
+    for i in 0..n {
+        let (y0, x0) = hull[i];
+        let (y1, x1) = hull[(i + 1) % n];
+        let cross = x0 * y1 - x1 * y0;
+        area2 += cross;
+        cx += (x0 + x1) * cross;
+        cy += (y0 + y1) * cross;
+    }
+    if area2.abs() < 1e-12 {
+        // Degenerate area: fall back to the vertex mean (never reached for a
+        // non-collinear hull, which is all geo_footprint passes in).
+        let m = n as f64;
+        return (
+            hull.iter().map(|p| p.0).sum::<f64>() / m,
+            hull.iter().map(|p| p.1).sum::<f64>() / m,
+        );
+    }
+    let cx = cx / (3.0 * area2); // lon
+    let cy = cy / (3.0 * area2); // lat
+    (cy, cx) // back to (lat, lon)
 }
 
 /// Andrew's monotone-chain convex hull over `(lat, lon)` points, returned
@@ -616,6 +654,55 @@ mod tests {
             fp.diameter_km
         );
         assert!(!fp.is_tight(), "a ~1° square is not a single-metro fix");
+    }
+
+    #[test]
+    fn footprint_centroid_is_the_polygon_area_centre_not_the_vertex_mean() {
+        // An asymmetric trapezoid — all four points are hull vertices (no
+        // interior point to collapse it to a triangle, where the two
+        // definitions would coincide). A trapezoid's area centroid is pulled
+        // toward its longer parallel edge, away from the vertex mean.
+        //   (lat, lon): long bottom edge (lat 0), shorter top edge (lat 2).
+        let pts = [
+            (0.0, 0.0),
+            (0.0, 4.0), // long bottom edge spans lon 0..4
+            (2.0, 3.0),
+            (2.0, 0.0), // top edge spans lon 0..3
+        ];
+        let fp = geo_footprint(&pts).unwrap();
+        assert_eq!(fp.hull.len(), 4, "all four points must be hull vertices");
+
+        // Independent shoelace reference over the returned hull (x=lon, y=lat).
+        let h = &fp.hull;
+        let n = h.len();
+        let (mut a2, mut cx, mut cy) = (0.0, 0.0, 0.0);
+        for i in 0..n {
+            let (y0, x0) = h[i];
+            let (y1, x1) = h[(i + 1) % n];
+            let cr = x0 * y1 - x1 * y0;
+            a2 += cr;
+            cx += (x0 + x1) * cr;
+            cy += (y0 + y1) * cr;
+        }
+        let area_centroid = (cy / (3.0 * a2), cx / (3.0 * a2));
+        assert!(
+            (fp.centroid.0 - area_centroid.0).abs() < 1e-9
+                && (fp.centroid.1 - area_centroid.1).abs() < 1e-9,
+            "centroid must be the polygon area centroid: {:?} vs {:?}",
+            fp.centroid,
+            area_centroid
+        );
+
+        // And it must genuinely DIFFER from the naive vertex mean (else the test
+        // proves nothing) — the area centroid sits farther right (toward the
+        // open span), not dragged left by the three bunched vertices.
+        let vm_lon = h.iter().map(|p| p.1).sum::<f64>() / n as f64;
+        assert!(
+            (fp.centroid.1 - vm_lon).abs() > 1e-3,
+            "area centroid lon {} should differ from vertex-mean lon {}",
+            fp.centroid.1,
+            vm_lon
+        );
     }
 
     #[test]

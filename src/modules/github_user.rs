@@ -70,6 +70,11 @@ impl Module for GithubUser {
         ModuleCategory::Social
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // A code-hosting profile — ATT&CK Code Repositories (T1593.003), not the Social-Media default its category implies.
+        &["T1593.003"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::Person,

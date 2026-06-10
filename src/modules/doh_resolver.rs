@@ -234,6 +234,11 @@ impl Module for DohResolver {
         ModuleCategory::DnsRecon
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // DNS-over-HTTPS resolution — ATT&CK DNS (T1590.002).
+        &["T1590.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Domain];
         KINDS

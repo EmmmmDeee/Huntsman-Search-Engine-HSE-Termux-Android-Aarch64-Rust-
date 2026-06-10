@@ -237,6 +237,22 @@ pub(in crate::core::correlator) fn rule_au_048_shared_public_key(
         if accounts.len() < 2 {
             continue;
         }
+        // Distinct CONTROLLER handles, not just distinct identifier spellings:
+        // the attrs mix identifier types (login / username / email), so a
+        // single account whose key evidence carries both its login and its
+        // email ("alice" + "alice@x.com") is two strings but ONE account —
+        // firing a Critical "controls 2 accounts" on that is a false positive.
+        // Fold each identifier to its canonical handle (email local-part,
+        // separator-insensitive, same comparison AU-034 uses) and require two
+        // to actually differ. Genuinely distinct handles sharing a key
+        // ("ghost91" + "jsmith_work", or "@alice" + "bob@x.com") still fire.
+        let handles: BTreeSet<String> = accounts
+            .iter()
+            .map(|a| canonical_handle(a.split('@').next().unwrap_or(a)))
+            .collect();
+        if handles.len() < 2 {
+            continue;
+        }
         let mut uids = vec![key.uid.clone()];
         for e in entities
             .iter()
@@ -769,4 +785,167 @@ pub(in crate::core::correlator) fn rule_au_044_shared_tracking_id(
             ))
         })
         .collect()
+}
+
+/// AU-054 — PII located on data broker(s).
+///
+/// When the scan surfaced a `Url` whose host is a known people-search /
+/// data-broker site (Spokeo, BeenVerified, Whitepages, …), the subject's PII is
+/// being brokered/redistributed there — a location finding: *where the
+/// subject's data lives*. This is the locating counterpart to the engine's
+/// expansion gate, which already treats these domains as aggregator noise.
+///
+/// **Brokers are low-credibility OSINT and are NOT preferenced over other
+/// sources.** A people-search listing aggregates (frequently from other
+/// brokers), goes stale, and a single one proves little — so a lone broker
+/// fires at `Low`, ranked *below* any corroborated identity/geo finding.
+/// Listings across ≥2 *independent* brokers corroborate more, but because
+/// brokers cross-source each other the ceiling is `Medium` — on par with other
+/// corroborated OSINT, never above it (never `High`/`Critical`). The finding
+/// says so explicitly: it is a lead to verify against primary sources, not
+/// confirmation.
+///
+/// One grouped finding so cross-broker corroboration drives the severity.
+/// Matches `Url` entities only (a profile URL is a real listing), not a bare
+/// broker `Domain`. Broker names and uids are sorted, so output is deterministic.
+pub(in crate::core::correlator) fn rule_au_054_data_broker_exposure(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use crate::core::data_broker::broker_for_host;
+    use std::collections::BTreeSet;
+
+    // Distinct brokers (by display name, sorted) the subject is listed on, and
+    // every broker-URL uid backing the finding.
+    let mut brokers: BTreeSet<&'static str> = BTreeSet::new();
+    let mut uids: Vec<String> = Vec::new();
+    for e in entities.iter().filter(|e| e.kind == EntityKind::Url) {
+        if let Some(host) = url::Url::parse(&e.value)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string))
+            && let Some(broker) = broker_for_host(&host)
+        {
+            brokers.insert(broker.name);
+            uids.push(e.uid.clone());
+        }
+    }
+    if brokers.is_empty() {
+        return Vec::new();
+    }
+    uids.sort_unstable();
+    uids.dedup();
+    let names: Vec<&str> = brokers.iter().copied().collect();
+
+    // Corroboration-scaled, capped at Medium so brokers never outrank other
+    // OSINT: one broker = Low (weak, not credible alone); ≥2 independent
+    // brokers = Medium (corroborated, but brokers cross-source — not High).
+    let severity = if names.len() >= 2 {
+        Severity::Medium
+    } else {
+        Severity::Low
+    };
+
+    vec![Correlation {
+        rule_id: "AU-054".into(),
+        rule_name: "PII located on data broker(s)".into(),
+        severity,
+        description: format!(
+            "Subject's PII is brokered on {} people-search site(s): {} — data-broker \
+             listings aggregate (often from each other) and corroborate weakly; treat \
+             as a lead to verify against primary sources, not confirmation",
+            names.len(),
+            names.join(", ")
+        ),
+        entity_uids: uids,
+        scan_id: scan_id.into(),
+        ts,
+        rank: 0.0,
+    }]
+}
+
+/// AU-055 — Subject's primary-source accounts located.
+///
+/// The affirmative primary-source finding, and the counterweight to AU-054:
+/// the accounts the subject actually CONTROLS are first-class, high-credibility
+/// intelligence — far stronger than any second-hand broker listing. A `Url`
+/// directly confirmed as the subject's own account/profile (`social-profile`
+/// from a direct platform probe, `confirmed-profile` from engine-corroborated
+/// search, `public-profile` from a code/forum account API, or `personal-site`)
+/// is a primary source.
+///
+/// Unlike AU-038 (which only fires on ≥2 *social* platforms), this fires from a
+/// SINGLE confirmed account — one verified primary source is credible on its
+/// own — and spans code hosts, forums and personal sites too. Crucially it
+/// EXCLUDES broker hosts: a `social-profile`-tagged URL on a people-search site
+/// is the broker's listing, not the subject's account, and belongs to AU-054
+/// (low-credibility), never here.
+///
+/// Severity puts primary sources above brokers by construction: High for one or
+/// two confirmed accounts, Critical for a confirmed footprint across ≥3 distinct
+/// platforms — always outranking AU-054's Low/Medium broker findings.
+pub(in crate::core::correlator) fn rule_au_055_primary_source_accounts(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use crate::core::data_broker::broker_for_host;
+    use std::collections::BTreeSet;
+
+    const OWNED_ACCOUNT_TAGS: &[&str] = &[
+        "social-profile",
+        "confirmed-profile",
+        "public-profile",
+        "personal-site",
+    ];
+
+    // Distinct platform hosts (www-stripped) of confirmed owned-account URLs,
+    // and the backing uids. Broker hosts are excluded — a broker listing is not
+    // an account the subject controls.
+    let mut platforms: BTreeSet<String> = BTreeSet::new();
+    let mut uids: Vec<String> = Vec::new();
+    for e in entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Url && OWNED_ACCOUNT_TAGS.iter().any(|t| e.has_tag(t)))
+    {
+        let Some(host) = url::Url::parse(&e.value).ok().and_then(|u| {
+            u.host_str()
+                .map(|h| h.trim_start_matches("www.").to_lowercase())
+        }) else {
+            continue;
+        };
+        if broker_for_host(&host).is_some() {
+            continue; // a broker's listing page, not the subject's account
+        }
+        platforms.insert(host);
+        uids.push(e.uid.clone());
+    }
+    if platforms.is_empty() {
+        return Vec::new();
+    }
+    uids.sort_unstable();
+    uids.dedup();
+    let hosts: Vec<&str> = platforms.iter().map(String::as_str).collect();
+
+    let severity = if hosts.len() >= 3 {
+        Severity::Critical
+    } else {
+        Severity::High
+    };
+
+    vec![Correlation {
+        rule_id: "AU-055".into(),
+        rule_name: "Primary-source accounts located".into(),
+        severity,
+        description: format!(
+            "Subject's own confirmed account(s)/profile(s) located across {} platform(s): {} \
+             — primary sources the subject controls (direct probe / engine-corroborated)",
+            hosts.len(),
+            hosts.join(", ")
+        ),
+        entity_uids: uids,
+        scan_id: scan_id.into(),
+        ts,
+        rank: 0.0,
+    }]
 }

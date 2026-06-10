@@ -202,6 +202,31 @@ fn address_extractor_finds_au_postcode() {
 }
 
 #[test]
+fn address_key_collapses_postcode_variants() {
+    // Regression from a live self-scan: one suburb surfaced as BOTH
+    // "Murrumbateman, NSW" and "Murrumbateman, NSW 2582", becoming two Address
+    // entities for a single place (AU-018 then reported a person co-located with
+    // "2" addresses). The dedup key (build.rs) must fold "City, STATE" and
+    // "City, STATE POSTCODE" together so the variants — even from two different
+    // search results — collapse into one entity.
+    assert_eq!(
+        normalise_address_key("Murrumbateman, NSW"),
+        normalise_address_key("Murrumbateman, NSW 2582"),
+    );
+    // US 5-digit ZIP folds too.
+    assert_eq!(
+        normalise_address_key("Springfield, Illinois"),
+        normalise_address_key("Springfield, Illinois 62704"),
+    );
+    // A leading street number (also numeric) is NOT stripped — only the trailing
+    // postcode is — so two genuinely different street addresses stay distinct.
+    assert_ne!(
+        normalise_address_key("12 Mary St, Brisbane QLD"),
+        normalise_address_key("99 Mary St, Brisbane QLD"),
+    );
+}
+
+#[test]
 fn address_extractor_ignores_non_au_4digit() {
     let text = "Error code 1234 in the system at Houston, Texas";
     let addrs = extract_addresses_from_text(text);
@@ -877,6 +902,19 @@ fn navigation_path_catches_extensions() {
 }
 
 #[test]
+fn navigation_path_rejects_linkedin_directory_prefixes() {
+    // Regression from a live self-scan: `linkedin.com/pub/dir/Matthew/Diegmann`
+    // is a people-search URL, so its first path segment `pub` was emitted as a
+    // discovered username. `pub` and `dir` are structural directory prefixes,
+    // never handles, and must be filtered.
+    assert!(is_navigation_path("pub"));
+    assert!(is_navigation_path("dir"));
+    // A genuine handle that merely starts with those letters is unaffected.
+    assert!(!is_navigation_path("publius"));
+    assert!(!is_navigation_path("director_steve"));
+}
+
+#[test]
 fn fullname_query_includes_geolocation() {
     let t = Target::new(TargetKind::FullName, "Jane Doe");
     let q = build_queries(&t);
@@ -1115,6 +1153,26 @@ fn bigram_similarity_partial() {
 fn bigram_similarity_unrelated() {
     let sim = bigram_similarity("jdespal", "elephant");
     assert!(sim < 0.2, "unrelated strings, got {sim}");
+}
+
+#[test]
+fn bigram_similarity_repeated_bigrams_stay_within_unit_interval() {
+    // Regression: the Dice coefficient is a MULTISET intersection. The old
+    // "is this bigram present?" count overcounted when a bigram repeated more
+    // often in `a` than in `b`, pushing the score above 1.0. "aaaa" has the
+    // bigram (a,a) three times; "aaa" has it twice → min(3,2)=2 matches →
+    // 2*2/(3+2)=0.8, never 1.2.
+    let sim = bigram_similarity("aaaa", "aaa");
+    assert!(
+        (0.0..=1.0).contains(&sim),
+        "similarity must stay in [0,1], got {sim}"
+    );
+    assert!(
+        (sim - 0.8).abs() < 1e-9,
+        "expected exact Dice 0.8, got {sim}"
+    );
+    // Self-similarity of a repetitive string is still exactly 1.0.
+    assert!((bigram_similarity("aaaa", "aaaa") - 1.0).abs() < 1e-9);
 }
 
 #[test]

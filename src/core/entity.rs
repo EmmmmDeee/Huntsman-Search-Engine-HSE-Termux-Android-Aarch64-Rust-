@@ -154,6 +154,34 @@ pub enum Classification {
 }
 
 impl Classification {
+    /// Lower bound of the Verified tier: `C_eff ≥ VERIFIED_MIN`.
+    ///
+    /// The tier ladder's single source of truth (with [`Self::PROBABLE_MIN`]).
+    /// Consumed by [`Self::from_c_eff`] / `Entity::classify`, the CLI's
+    /// confidence colouring, the engine's subject-identity gate ("every
+    /// VERIFIED identity"), and the wrong-identity pivot gate ("below the
+    /// Verified tier") — previously each re-stated `0.75` as a bare literal,
+    /// so a recalibration would have silently diverged them.
+    pub const VERIFIED_MIN: f64 = 0.75;
+    /// Lower bound of the Probable tier: `C_eff ≥ PROBABLE_MIN` (and below
+    /// [`Self::VERIFIED_MIN`]). Below this is Candidate.
+    pub const PROBABLE_MIN: f64 = 0.40;
+
+    /// The tier for an effective confidence — the canonical ladder. A
+    /// non-finite `c_eff` (never produced by `c_effective`, which clamps)
+    /// fails both bounds and lands in `Candidate`, the conservative tier.
+    #[inline]
+    #[must_use]
+    pub fn from_c_eff(c_eff: f64) -> Self {
+        if c_eff >= Self::VERIFIED_MIN {
+            Self::Verified
+        } else if c_eff >= Self::PROBABLE_MIN {
+            Self::Probable
+        } else {
+            Self::Candidate
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Candidate => "CANDIDATE",
@@ -380,7 +408,8 @@ impl Entity {
     }
 
     /// Derived classification tier from [`Self::c_effective`]: `Verified` at
-    /// ≥ 0.75, `Probable` at ≥ 0.40, else `Candidate`.
+    /// ≥ [`Classification::VERIFIED_MIN`] (0.75), `Probable` at ≥
+    /// [`Classification::PROBABLE_MIN`] (0.40), else `Candidate`.
     ///
     /// Never stored — always recomputed, so a tier can only ever rise as merges
     /// add corroboration.
@@ -395,11 +424,7 @@ impl Entity {
     /// ```
     #[inline]
     pub fn classify(&self) -> Classification {
-        match self.c_effective() {
-            c if c >= 0.75 => Classification::Verified,
-            c if c >= 0.40 => Classification::Probable,
-            _ => Classification::Candidate,
-        }
+        Classification::from_c_eff(self.c_effective())
     }
 
     /// The entity's current confidence tier — alias for [`Self::classify`] that
@@ -476,6 +501,32 @@ impl Entity {
 
     // ── GREATEST-semantics merge ─────────────────────────────────────────────
 
+    /// Put this entity's evidence and tags into a deterministic order so the
+    /// PERSISTED/EXPORTED result does not depend on the order modules happened to
+    /// run in. Concurrent dispatch (the default, `max_concurrent > 0`) merges
+    /// module results in completion order, which would otherwise leak into the
+    /// evidence/tags ordering of the stored entity and make two runs' dossiers
+    /// differ for no real reason (Determinism Requirement). Evidence is sorted by
+    /// its dedup key — `(source, summary)`, already unique per entity — and tags
+    /// lexicographically. Membership (`has_tag`) and the GREATEST
+    /// confidence/corroboration are unaffected; only display/serialisation order
+    /// is normalised. Called once per entity at scan finalisation, so it is not on
+    /// the per-merge hot path.
+    ///
+    /// `raw_value` is likewise made order-independent by [`Entity::merge`],
+    /// which keeps the lexicographically smaller spelling when two same-UID
+    /// entities differ only in original casing/spacing (`Foo@Bar.com` vs
+    /// `foo@bar.com`). Because `min` is commutative, the stored display value no
+    /// longer depends on which module's result merged first.
+    pub fn canonicalize_order(&mut self) {
+        self.evidence.sort_by(|a, b| {
+            a.source
+                .cmp(&b.source)
+                .then_with(|| a.summary.cmp(&b.summary))
+        });
+        self.tags.sort();
+    }
+
     /// Merge `other` into `self` using GREATEST-semantics.
     ///
     /// This is the deduplication primitive: two entities with the same `uid`
@@ -509,43 +560,11 @@ impl Entity {
     /// assert!(a.has_tag("breach") && a.has_tag("paste-exposed")); // tags unioned
     /// assert_eq!(a.evidence.len(), 2);  // distinct evidence both kept
     /// ```
-    /// Put this entity's evidence and tags into a deterministic order so the
-    /// PERSISTED/EXPORTED result does not depend on the order modules happened to
-    /// run in. Concurrent dispatch (the default, `max_concurrent > 0`) merges
-    /// module results in completion order, which would otherwise leak into the
-    /// evidence/tags ordering of the stored entity and make two runs' dossiers
-    /// differ for no real reason (Determinism Requirement). Evidence is sorted by
-    /// its dedup key — `(source, summary)`, already unique per entity — and tags
-    /// lexicographically. Membership (`has_tag`) and the GREATEST
-    /// confidence/corroboration are unaffected; only display/serialisation order
-    /// is normalised. Called once per entity at scan finalisation, so it is not on
-    /// the per-merge hot path.
-    ///
-    /// `raw_value` is likewise made order-independent by [`Entity::merge`],
-    /// which keeps the lexicographically smaller spelling when two same-UID
-    /// entities differ only in original casing/spacing (`Foo@Bar.com` vs
-    /// `foo@bar.com`). Because `min` is commutative, the stored display value no
-    /// longer depends on which module's result merged first.
-    pub fn canonicalize_order(&mut self) {
-        self.evidence.sort_by(|a, b| {
-            a.source
-                .cmp(&b.source)
-                .then_with(|| a.summary.cmp(&b.summary))
-        });
-        self.tags.sort();
-    }
-
     pub fn merge(&mut self, other: Self) {
         debug_assert_eq!(self.uid, other.uid, "merge: UID mismatch");
         if self.uid != other.uid {
             return;
         }
-        self.confidence = f64::max(self.confidence, other.confidence).clamp(0.0, 1.0);
-        self.corroboration = self
-            .corroboration
-            .saturating_add(other.corroboration)
-            .max(1);
-        self.observed_at = u64::max(self.observed_at, other.observed_at);
         // Canonical display value: pick the lexicographically smaller raw_value
         // so the stored spelling is independent of merge order. Two modules can
         // emit the same value with different original casing/spacing
@@ -555,8 +574,30 @@ impl Entity {
         // (Determinism Requirement). `min` is commutative, so any merge order —
         // and any pairing — yields the same raw_value.
         if other.raw_value < self.raw_value {
-            self.raw_value = other.raw_value;
+            self.raw_value = other.raw_value.clone();
         }
+        self.absorb(other);
+    }
+
+    /// Fold another entity's corroborating **signal** into this one — confidence
+    /// (max), corroboration (sum), recency (max), deduplicated evidence and tags
+    /// — without touching identity (`uid`/`value`/`raw_value`).
+    ///
+    /// This is the identity-preserving core of [`merge`](Self::merge), exposed
+    /// for the rare case of intentionally combining two entities with DIFFERENT
+    /// UIDs that nonetheless denote the same real-world thing — e.g. collapsing
+    /// `Address` entities for one locality (`"X, NSW"` and `"X, NSW 2582"`),
+    /// which `merge` would refuse because their UIDs differ. The caller is
+    /// responsible for having decided the two are the same; `absorb` only fuses
+    /// their evidence. Commutative in confidence/corroboration/evidence/tags, so
+    /// folding a group in any order yields the same result.
+    pub(crate) fn absorb(&mut self, other: Self) {
+        self.confidence = f64::max(self.confidence, other.confidence).clamp(0.0, 1.0);
+        self.corroboration = self
+            .corroboration
+            .saturating_add(other.corroboration)
+            .max(1);
+        self.observed_at = u64::max(self.observed_at, other.observed_at);
         // Deduplicate evidence by (source, summary) to prevent accumulation
         // across live mode iterations or re-scans.
         for ev in other.evidence {
@@ -680,8 +721,14 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             s
         }
         EntityKind::Phone => {
-            let mut out = String::with_capacity(value.len());
-            let mut chars = value.chars().peekable();
+            // Trim BEFORE the leading-`+` check: every other arm trims, and a
+            // scraped value with leading whitespace (" +61 412 …") would
+            // otherwise fail the first-char test and silently drop the
+            // country-code `+`, fragmenting one number across two UIDs
+            // ("61412…" vs "+61412…").
+            let trimmed = value.trim();
+            let mut out = String::with_capacity(trimmed.len());
+            let mut chars = trimmed.chars().peekable();
             if chars.peek() == Some(&'+') {
                 out.push('+');
                 chars.next();
@@ -739,7 +786,18 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             if let Some((lat_s, lon_s)) = trimmed.split_once(',')
                 && let (Ok(lat), Ok(lon)) =
                     (lat_s.trim().parse::<f64>(), lon_s.trim().parse::<f64>())
+                && lat.is_finite()
+                && lon.is_finite()
             {
+                // Round to 6 dp first, then `+ 0.0` to collapse IEEE negative
+                // zero: formatting `-0.0000001` directly yields "-0.000000",
+                // which is the same point as "0.000000" but a different UID —
+                // coordinates straddling the equator/meridian must not
+                // fragment on the sign of zero. Non-finite values (NaN/inf)
+                // fall through to the raw string instead of a formatted
+                // pseudo-coordinate.
+                let lat = (lat * 1e6).round() / 1e6 + 0.0;
+                let lon = (lon * 1e6).round() / 1e6 + 0.0;
                 return format!("{lat:.6},{lon:.6}");
             }
             trimmed.to_string()

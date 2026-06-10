@@ -131,10 +131,20 @@ pub(in crate::core::correlator) fn rule_au_017_multi_geo_convergence(
     // Parse once through the canonical, range-validating helper so out-of-range
     // junk ("200,300") is dropped here rather than silently clustered. Each
     // surviving entity carries its (lat, lon) so the inner loop never re-parses.
-    let parsed: Vec<(&Entity, (f64, f64))> = coords
+    let mut parsed: Vec<(&Entity, (f64, f64))> = coords
         .iter()
         .filter_map(|c| crate::util::geohash::parse_coords(&c.value).map(|ll| (*c, ll)))
         .collect();
+    // Deterministic clustering: the greedy single-link assignment below
+    // compares each point against the FIRST member of each cluster, so both
+    // which point founds a cluster and which cluster a borderline point joins
+    // depend on iteration order. The live pass feeds entities in HashMap
+    // (randomised) order, so a chain geometry (A–B close, B–C close, A–C far)
+    // clustered as {A,B} on one run and {A,B,C} on another — different uid
+    // sets that the live and finalise passes then both persist as distinct
+    // AU-017 rows. Sort by uid so identical entity sets always cluster
+    // identically, whatever order the caller iterated.
+    parsed.sort_by(|a, b| a.0.uid.cmp(&b.0.uid));
     let mut clusters: Vec<Vec<(&Entity, (f64, f64))>> = Vec::new();
     for &(c, (lat, lon)) in &parsed {
         let mut found = false;

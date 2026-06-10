@@ -22,7 +22,7 @@
 //!   * `N > 0` → up to N modules in flight concurrently via
 //!     `tokio::sync::Semaphore`.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -32,13 +32,20 @@ mod circuit;
 mod dispatch;
 mod enrich;
 mod expansion;
+mod ledger;
 mod timeout;
+pub use ledger::DispatchLog;
 // The dispatch loops now live in `dispatch`; these items are referenced only by
 // the tests that stayed in this file, so the bridge is test-only.
 #[cfg(test)]
-use dispatch::{dispatch_key, log_module_dispatch, module_skip_reason, run_module_guarded};
+use dispatch::{
+    dispatch_key, log_module_dispatch, module_skip_reason, run_module_guarded,
+    target_distinct_sources,
+};
 use enrich::{enrich_geospatial, scan_entity_for_keys, seed_anchor_entity};
-use expansion::{cmp_expansion_candidates, correlation_key, visit_key};
+use expansion::{
+    apply_roi_cutoff, budget_check, cmp_expansion_candidates, correlation_key, visit_key,
+};
 use timeout::resolve_timeout;
 // Used only by the dispatch-related tests retained in this file.
 #[cfg(test)]
@@ -91,86 +98,6 @@ pub(crate) struct ModuleStats {
     /// out because a required API key is absent. Counted separately from
     /// `errored` so an unconfigured optional provider is never a failure.
     pub skipped: usize,
-}
-
-/// Per-scan log of (module_name, target_kind, normalised_value) triples
-/// already dispatched. Prevents the same keyed API from being invoked on
-/// the same normalised target across expansion rounds — the primary
-/// mechanism that ensures each API key/service is utilised at most once
-/// per (target, module) pair in a pivot pipeline.
-///
-/// Free modules are exempt: their cost is zero and re-running them on the
-/// same target across rounds can corroborate entities with fresh evidence.
-///
-/// Public so a long-running continuous mode (radar) can own ONE ledger and
-/// thread it across iterations via [`ScanEngine::run_with_ledger`] — keeping a
-/// keyed/paid module from re-querying a seed it has already covered, the
-/// "don't be aggressive with the APIs" guarantee for real-time radar.
-/// A dispatch key: (module name, target kind, normalised target value).
-type DispatchKey = (&'static str, TargetKind, String);
-
-/// Upper bound on a [`DispatchLog`]'s size. A per-scan ledger never approaches
-/// it; the cap exists for the radar ledger, which persists across iterations of
-/// a potentially multi-day session. At ~100k (module, target) triples this is a
-/// few MB — well within the 4 GB device budget — and FIFO eviction means only
-/// seeds covered long ago can ever be re-queried; recent coverage is retained.
-const DISPATCH_LOG_CAP: usize = 100_000;
-
-/// Set of already-dispatched keyed-module/target pairs, bounded with FIFO
-/// eviction so a long-lived radar ledger can't grow without limit. The only
-/// operation callers need is [`DispatchLog::insert`] (dedup via its bool).
-#[derive(Debug, Clone)]
-pub struct DispatchLog {
-    seen: HashSet<DispatchKey>,
-    order: VecDeque<DispatchKey>,
-    cap: usize,
-}
-
-impl Default for DispatchLog {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl DispatchLog {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            seen: HashSet::new(),
-            order: VecDeque::new(),
-            cap: DISPATCH_LOG_CAP,
-        }
-    }
-
-    /// Record a dispatch. Returns `true` if the key was newly inserted (the
-    /// caller should dispatch), `false` if it was already present (skip — the
-    /// dedup contract, identical to `HashSet::insert`). When the cap is
-    /// exceeded the oldest-inserted key is evicted, so a re-encounter of a
-    /// long-evicted seed legitimately dispatches again.
-    pub fn insert(&mut self, key: DispatchKey) -> bool {
-        if !self.seen.insert(key.clone()) {
-            return false;
-        }
-        self.order.push_back(key);
-        if self.order.len() > self.cap
-            && let Some(evicted) = self.order.pop_front()
-        {
-            self.seen.remove(&evicted);
-        }
-        true
-    }
-
-    /// Number of keys currently tracked.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.seen.len()
-    }
-
-    /// True if no keys are tracked.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.seen.is_empty()
-    }
 }
 
 impl StopReason {
@@ -399,17 +326,28 @@ impl ScanEngine {
         {
             entity_map.insert(anchor.uid.clone(), anchor);
         }
-        self.dispatch_target(
-            &scan.id,
-            &target,
-            &mut ctx,
-            &opts,
-            &mut entity_map,
-            false,
-            &mut stats,
-            dispatched,
-        )
-        .await?;
+        // Seed-dispatch errors are warn-and-continue, exactly like
+        // expansion-round dispatch below: propagating here returned before
+        // finalise_scan (losing every collected entity and leaving the scan
+        // row stuck `Running`) AND leaked the wall-time watchdog, which then
+        // fired `cancel()` on the caller's context long after this scan was
+        // gone — poisoning the shared token under a long-lived serve/radar.
+        // Per-module failures are already surfaced as ModuleError events.
+        if let Err(e) = self
+            .dispatch_target(
+                &scan.id,
+                &target,
+                &mut ctx,
+                &opts,
+                &mut entity_map,
+                false,
+                &mut stats,
+                dispatched,
+            )
+            .await
+        {
+            warn!(scan_id = %scan.id, error = %e, "seed dispatch failed (continuing to finalise)");
+        }
 
         // Checkpoint + correlate the seed round from a single snapshot: the
         // entities are made durable before expansion begins (crash-safety) and
@@ -485,6 +423,14 @@ impl ScanEngine {
             }
         }
         let mut entities: Vec<Entity> = entity_map.into_values().collect();
+        // Codebase-wide address-locality consolidation. The UID merge above
+        // dedups by exact normalised value, so "X, NSW" and "X, NSW 2582" (one
+        // place at two granularities) survive as two Address entities — which
+        // double-counts the location in the geo correlations. This runs once,
+        // AFTER every module (APIs included) and every expansion round has
+        // contributed, folding such variants into the most-specific one. It is
+        // the engine-level backstop to the per-module dedup in `search_engines`.
+        consolidate_address_localities(&mut entities);
         // Determinism: normalise each entity's evidence/tags ordering before
         // persist, so concurrent dispatch's completion-order merging can't leak
         // into the stored/exported result (see `Entity::canonicalize_order`).
@@ -793,12 +739,13 @@ impl ScanEngine {
             // round so confirmed aliases widen the identity as the scan learns.
             let subject_identities: Vec<String> = std::iter::once(seed.value.clone())
                 .chain(entity_map.values().filter_map(|e| {
-                    use crate::core::entity::EntityKind;
+                    use crate::core::entity::{Classification, EntityKind};
                     let is_identity = matches!(
                         e.kind,
                         EntityKind::Username | EntityKind::Person | EntityKind::Email
                     );
-                    (is_identity && e.c_effective() >= 0.75).then(|| e.value.clone())
+                    (is_identity && e.c_effective() >= Classification::VERIFIED_MIN)
+                        .then(|| e.value.clone())
                 }))
                 .collect();
 
@@ -950,11 +897,7 @@ impl ScanEngine {
             // a flood of low-weight domains from a single SERP and the
             // dampened mega-domain noise that survives top-K on a thin round.
             if opts.max_roi {
-                let weights: Vec<f64> = next.iter().map(|(_, w, _)| *w).collect();
-                let keep = crate::core::roi::effective_cutoff(&weights, opts.max_concurrent);
-                if next.len() > keep {
-                    next.truncate(keep);
-                }
+                apply_roi_cutoff(&mut next, visited, opts.max_concurrent);
             }
             let dispatched_this_round = next.len();
             let next: Vec<(Target, String)> = next.into_iter().map(|(t, _, p)| (t, p)).collect();
@@ -1074,6 +1017,77 @@ impl ScanEngine {
     }
 }
 
+/// Collapse `Address` entities that denote the **same locality** — differing
+/// only by a trailing postcode, case or punctuation — into a single entity,
+/// keeping the most specific spelling and folding the rest's evidence and
+/// corroboration into it.
+///
+/// Why at finalise, not in a module: the engine's per-entity UID merge keys on
+/// the exact normalised value, so `"Murrumbateman, NSW"` and `"Murrumbateman,
+/// NSW 2582"` hash to different UIDs and survive as two Address entities for one
+/// place — inflating the location count in the geo correlations (a live scan
+/// showed AU-018 reporting a subject co-located with "2" addresses for one
+/// suburb). Running here, after every module (API sources included) and every
+/// expansion round has folded into `entities`, makes this the codebase-wide,
+/// recursion-spanning backstop to the per-module dedup in `search_engines`.
+///
+/// The survivor is the longest value in the locality group (the postcode-bearing
+/// form), with a lexicographic tie-break for determinism; only addresses sharing
+/// a [`crate::util::address_au::locality_key`] are merged, so a street address is
+/// never folded into a bare suburb.
+fn consolidate_address_localities(entities: &mut Vec<Entity>) {
+    use crate::core::entity::EntityKind;
+    use std::collections::HashMap;
+
+    let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, e) in entities.iter().enumerate() {
+        if e.kind == EntityKind::Address {
+            let key = crate::util::address_au::locality_key(&e.value);
+            if !key.is_empty() {
+                groups.entry(key).or_default().push(i);
+            }
+        }
+    }
+
+    let mut remove = vec![false; entities.len()];
+    let mut folds: Vec<(usize, Entity)> = Vec::new();
+    for idxs in groups.values() {
+        if idxs.len() < 2 {
+            continue;
+        }
+        // Most specific = longest value; tie → lexicographically smallest, so
+        // the survivor is independent of discovery order (Determinism).
+        let survivor = *idxs
+            .iter()
+            .max_by(|&&a, &&b| {
+                entities[a]
+                    .value
+                    .len()
+                    .cmp(&entities[b].value.len())
+                    .then_with(|| entities[b].value.cmp(&entities[a].value))
+            })
+            .expect("group is non-empty");
+        for &victim in idxs {
+            if victim != survivor {
+                folds.push((survivor, entities[victim].clone()));
+                remove[victim] = true;
+            }
+        }
+    }
+    if folds.is_empty() {
+        return;
+    }
+    for (survivor, victim) in folds {
+        entities[survivor].absorb(victim);
+    }
+    let mut idx = 0;
+    entities.retain(|_| {
+        let keep = !remove[idx];
+        idx += 1;
+        keep
+    });
+}
+
 /// Pull any newly-available pooled API key into `keys` for every service that
 /// doesn't already have one. This is the key-cascade that makes recursion pay
 /// off: a key a module just discovered (oathnet breach data, api_key_probe
@@ -1099,20 +1113,6 @@ fn hot_inject_keys(keys: &mut HashMap<String, String>) {
             keys.insert(svc.env_var.to_string(), key);
         }
     }
-}
-
-fn budget_check(opts: &ScanOptions, started: Instant, current_count: usize) -> Option<StopReason> {
-    if let Some(max) = opts.max_entities
-        && current_count >= max
-    {
-        return Some(StopReason::MaxEntities(max));
-    }
-    if let Some(max_secs) = opts.max_wall_time_secs
-        && started.elapsed() >= Duration::from_secs(max_secs)
-    {
-        return Some(StopReason::MaxWallTime(max_secs));
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------

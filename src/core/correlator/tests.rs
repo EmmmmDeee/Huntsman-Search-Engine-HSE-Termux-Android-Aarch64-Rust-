@@ -1463,14 +1463,16 @@ fn ground_truth_erik_diegmann_scan_yields_only_real_correlations() {
         .map(|c| (c.rule_id.as_str(), c.description.as_str()))
         .collect();
 
-    // Exactly five real correlations — nothing fabricated. The fifth is AU-045:
-    // "Erik Diegmann" is corroborated by oathnet_pro (breach) AND social_probe
-    // (social) — two independent service families — which is precisely the
-    // cross-service identity confirmation the correlation upgrade surfaces.
+    // Exactly six real correlations — nothing fabricated. AU-045: "Erik
+    // Diegmann" is corroborated by oathnet_pro (breach) AND social_probe
+    // (social) — two independent service families. AU-054: the subject's own
+    // listing at peekyou.com/erik-diegmann is a genuine data-location finding —
+    // the subject's PII is brokered there (not a fabrication: the URL is the
+    // subject's page).
     assert_eq!(
         firings.len(),
-        5,
-        "expected 5 real correlations, got: {summary:#?}"
+        6,
+        "expected 6 real correlations, got: {summary:#?}"
     );
 
     let fired: HashSet<&str> = firings.iter().map(|c| c.rule_id.as_str()).collect();
@@ -1483,6 +1485,16 @@ fn ground_truth_erik_diegmann_scan_yields_only_real_correlations() {
     assert!(
         fired.contains("AU-045"),
         "Erik Diegmann confirmed across breach + social families"
+    );
+    // The location finding: subject's PII brokered on a people-search site.
+    let au054 = firings
+        .iter()
+        .find(|c| c.rule_id == "AU-054")
+        .expect("subject's PII located on peekyou.com → AU-054");
+    assert!(
+        au054.description.contains("PeekYou") && au054.description.contains("brokered on"),
+        "AU-054 must name the broker as a data-location finding: {}",
+        au054.description
     );
 
     // The fix holds: no geo over-fire, no fused identity/location from guesses.
@@ -1581,6 +1593,44 @@ fn rule_017_no_fire_for_distant_coords() {
     let c2 = Entity::new(EntityKind::Coordinates, "-33.86,151.20", 0.65, "s");
     let firings = rule_au_017_multi_geo_convergence(&[c1, c2], "s", 0);
     assert!(firings.is_empty());
+}
+
+#[test]
+fn rule_017_clustering_is_order_independent() {
+    // Chain geometry: A-B within 0.5 deg, B-C within 0.5 deg, A-C beyond it.
+    // The greedy assignment compares against each cluster's FOUNDING member,
+    // so without a deterministic pre-sort the input order decided whether the
+    // chain clustered as {A,B}+{C} or {A,B,C} — and the live pass feeds
+    // entities in HashMap (randomised) order, persisting conflicting AU-017
+    // uid sets across rounds. Every permutation must now produce identical
+    // firings.
+    let a = Entity::new(EntityKind::Coordinates, "0.00,0.00", 0.60, "s");
+    let b = Entity::new(EntityKind::Coordinates, "0.40,0.00", 0.60, "s");
+    let c = Entity::new(EntityKind::Coordinates, "0.80,0.00", 0.60, "s");
+    let uid_sets = |ents: &[Entity]| -> Vec<Vec<String>> {
+        rule_au_017_multi_geo_convergence(ents, "s", 0)
+            .into_iter()
+            .map(|f| {
+                let mut u = f.entity_uids;
+                u.sort();
+                u
+            })
+            .collect()
+    };
+    let baseline = uid_sets(&[a.clone(), b.clone(), c.clone()]);
+    for perm in [
+        vec![a.clone(), c.clone(), b.clone()],
+        vec![b.clone(), a.clone(), c.clone()],
+        vec![b.clone(), c.clone(), a.clone()],
+        vec![c.clone(), a.clone(), b.clone()],
+        vec![c.clone(), b.clone(), a.clone()],
+    ] {
+        assert_eq!(
+            uid_sets(&perm),
+            baseline,
+            "AU-017 clusters must not depend on entity iteration order"
+        );
+    }
 }
 
 #[test]
@@ -1935,6 +1985,155 @@ fn au_042_groups_pgp_linked_emails() {
 }
 
 #[test]
+fn au_054_locates_pii_corroboration_scaled_never_high() {
+    use super::rules::rule_au_054_data_broker_exposure;
+
+    // Subject across TWO distinct brokers (2 Spokeo URLs + 1 Whitepages) plus an
+    // unrelated public URL that must NOT count. One grouped finding.
+    let multi = vec![
+        mk_tagged(
+            EntityKind::Url,
+            "https://www.spokeo.com/John-Doe",
+            "search_engines",
+            &[],
+        ),
+        mk_tagged(
+            EntityKind::Url,
+            "https://www.spokeo.com/John-Doe/2",
+            "search_engines",
+            &[],
+        ),
+        mk_tagged(
+            EntityKind::Url,
+            "https://www.whitepages.com/name/John-Doe",
+            "search_engines",
+            &[],
+        ),
+        mk_tagged(
+            EntityKind::Url,
+            "https://github.com/jdoe",
+            "github_user",
+            &[],
+        ),
+    ];
+    let out = rule_au_054_data_broker_exposure(&multi, "scan", 0);
+    assert_eq!(out.len(), 1, "one grouped finding, not one per broker");
+    assert_eq!(out[0].rule_id, "AU-054");
+    // ≥2 independent brokers → Medium (corroborated), but NEVER High/Critical —
+    // brokers are not preferenced over other OSINT.
+    assert_eq!(out[0].severity, super::Severity::Medium);
+    assert!(out[0].description.contains("Spokeo") && out[0].description.contains("Whitepages"));
+    assert!(out[0].description.contains("brokered on"));
+    assert!(
+        out[0].description.contains("not confirmation"),
+        "must caveat broker data as a lead, not confirmation"
+    );
+    assert!(
+        !out[0].description.contains("http"),
+        "location finding only — no opt-out/takedown surface"
+    );
+    assert_eq!(
+        out[0].entity_uids.len(),
+        3,
+        "all broker URLs (2 Spokeo + 1 Whitepages) under one finding"
+    );
+
+    // A LONE broker is weak/uncorroborated → Low, so it never outranks real
+    // OSINT and is never treated as credible in isolation.
+    let single = vec![mk_tagged(
+        EntityKind::Url,
+        "https://www.spokeo.com/John-Doe",
+        "search_engines",
+        &[],
+    )];
+    let out = rule_au_054_data_broker_exposure(&single, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(
+        out[0].severity,
+        super::Severity::Low,
+        "a single broker listing is low-credibility, never preferenced"
+    );
+
+    // No broker exposure → no finding.
+    let clean = vec![mk_tagged(
+        EntityKind::Url,
+        "https://github.com/jdoe",
+        "github_user",
+        &[],
+    )];
+    assert!(rule_au_054_data_broker_exposure(&clean, "scan", 0).is_empty());
+}
+
+#[test]
+fn au_055_flags_owned_primary_accounts_excluding_brokers() {
+    use super::rules::rule_au_055_primary_source_accounts;
+
+    // A single confirmed primary-source profile fires (AU-038 needs ≥2 platforms,
+    // so a lone owned account was previously invisible) — High, outranking the
+    // Low/Medium broker findings of AU-054.
+    let single = vec![mk_tagged(
+        EntityKind::Url,
+        "https://github.com/jdoe",
+        "github_user",
+        &["public-profile"],
+    )];
+    let out = rule_au_055_primary_source_accounts(&single, "scan", 0);
+    assert_eq!(out.len(), 1, "one grouped finding");
+    assert_eq!(out[0].rule_id, "AU-055");
+    assert_eq!(out[0].severity, super::Severity::High);
+    assert!(out[0].description.contains("github.com"));
+    assert!(out[0].description.contains("primary source"));
+    assert_eq!(out[0].entity_uids.len(), 1);
+
+    // ≥3 distinct platforms → Critical.
+    let many = vec![
+        mk_tagged(
+            EntityKind::Url,
+            "https://github.com/jdoe",
+            "github_user",
+            &["public-profile"],
+        ),
+        mk_tagged(
+            EntityKind::Url,
+            "https://twitter.com/jdoe",
+            "search_engines",
+            &["social-profile"],
+        ),
+        mk_tagged(
+            EntityKind::Url,
+            "https://jdoe.dev/",
+            "web_crawler",
+            &["personal-site"],
+        ),
+    ];
+    let out = rule_au_055_primary_source_accounts(&many, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].severity, super::Severity::Critical);
+    assert_eq!(out[0].entity_uids.len(), 3);
+
+    // A broker listing tagged as a profile is NOT an owned account — excluded.
+    let broker = vec![mk_tagged(
+        EntityKind::Url,
+        "https://www.spokeo.com/John-Doe",
+        "search_engines",
+        &["social-profile"],
+    )];
+    assert!(
+        rule_au_055_primary_source_accounts(&broker, "scan", 0).is_empty(),
+        "broker host must not count as a subject-controlled account"
+    );
+
+    // No owned-account URL → no finding.
+    let none = vec![mk_tagged(
+        EntityKind::Url,
+        "https://github.com/jdoe",
+        "github_user",
+        &[],
+    )];
+    assert!(rule_au_055_primary_source_accounts(&none, "scan", 0).is_empty());
+}
+
+#[test]
 fn au_043_fires_on_paste_exposure() {
     let ents = vec![
         mk_tagged(
@@ -2179,6 +2378,75 @@ fn au047_links_identities_by_a_reused_unique_secret_only() {
 }
 
 #[test]
+fn au047_links_on_reused_plaintext_password_and_session_token() {
+    // Password reuse, session/cookie tokens and raw credentials are all valid
+    // cross-correlation join-keys. AU-047 must link on a reused HIGH-ENTROPY
+    // plaintext password (High — slight coincidence risk) and a reused
+    // session/cookie token (Critical — random by construction), while still
+    // refusing a common/weak password (no false identities).
+    let cred = |value: &str, tags: &[&str], emails: &[&str]| {
+        let mut c = Entity::new(EntityKind::Credential, value, 0.6, "scan");
+        for t in tags {
+            c.tag(*t);
+        }
+        for em in emails {
+            c.add_evidence(Evidence::new("import:dossier", "breach entry").with_attr("email", *em));
+        }
+        c
+    };
+    let a = Entity::new(EntityKind::Email, "burner1@proton.me", 0.6, "scan");
+    let b = Entity::new(EntityKind::Email, "real.name@gmail.com", 0.6, "scan");
+
+    // Reused high-entropy plaintext password → High link.
+    let pw = cred(
+        "Tr0ub4dor&3xK9!q",
+        &["plaintext-credential"],
+        &[&a.value, &b.value],
+    );
+    let hits =
+        super::rules::rule_au_047_reused_secret_identity(&[pw, a.clone(), b.clone()], "scan", 0);
+    assert_eq!(hits.len(), 1, "reused strong password must link accounts");
+    assert_eq!(hits[0].severity, super::Severity::High);
+    assert!(hits[0].description.contains("password"));
+
+    // Reused session/cookie token → Critical link.
+    let tok = cred(
+        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+        &["session-token"],
+        &[&a.value, &b.value],
+    );
+    let hits =
+        super::rules::rule_au_047_reused_secret_identity(&[tok, a.clone(), b.clone()], "scan", 0);
+    assert_eq!(hits.len(), 1, "reused session token must link accounts");
+    assert_eq!(hits[0].severity, super::Severity::Critical);
+    assert!(hits[0].description.contains("session/cookie token"));
+
+    // PRECISION: a reused COMMON password must NOT link (millions share it).
+    let weak = cred(
+        "password123",
+        &["plaintext-credential"],
+        &[&a.value, &b.value],
+    );
+    assert!(
+        super::rules::rule_au_047_reused_secret_identity(&[weak, a.clone(), b.clone()], "scan", 0)
+            .is_empty(),
+        "a common password must not manufacture an identity link"
+    );
+
+    // PRECISION: a bare hex digest WITHOUT session-token provenance stays
+    // unlinkable (it may be an unsalted hash of a common password).
+    let bare_hex = cred(
+        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+        &[], // no session-token tag
+        &[&a.value, &b.value],
+    );
+    assert!(
+        super::rules::rule_au_047_reused_secret_identity(&[bare_hex, a, b], "scan", 0).is_empty(),
+        "an untagged hex digest must not link (unsalted-hash collision risk)"
+    );
+}
+
+#[test]
 fn au048_links_accounts_sharing_a_public_key() {
     // A public key published by two accounts → cryptographic proof of one
     // controller (same private key). Single account → no link.
@@ -2217,6 +2485,35 @@ fn au048_links_accounts_sharing_a_public_key() {
         super::rules::rule_au_048_shared_public_key(&[pw], "scan", 0).is_empty(),
         "AU-048 only fires on key-tagged credentials"
     );
+
+    // ONE account whose key evidence carries both its login and its email is
+    // two identifier strings but a single controller — it must NOT fire a
+    // Critical "controls 2 accounts". The canonical-handle fold collapses
+    // "alice" and "alice@x.com" to one handle.
+    let mut same_acct = Entity::new(EntityKind::Credential, "ssh:1acct2attrs", 0.85, "scan");
+    same_acct.tag("ssh-key");
+    same_acct.add_evidence(
+        Evidence::new("github_user", "SSH key published by @alice")
+            .with_attr("github_login", "alice")
+            .with_attr("email", "alice@x.com"),
+    );
+    assert!(
+        super::rules::rule_au_048_shared_public_key(&[same_acct], "scan", 0).is_empty(),
+        "login + email of ONE account must not count as two accounts"
+    );
+
+    // A genuine cross-identifier link (a login and a DIFFERENT person-handle
+    // email sharing one key) still fires.
+    let mut cross = Entity::new(EntityKind::Credential, "ssh:2realaccts", 0.85, "scan");
+    cross.tag("pgp-key");
+    cross.add_evidence(
+        Evidence::new("github_user", "key published by @alice").with_attr("github_login", "alice"),
+    );
+    cross.add_evidence(
+        Evidence::new("pgp", "key bound to bob@x.com").with_attr("email", "bob@x.com"),
+    );
+    let hits = super::rules::rule_au_048_shared_public_key(&[cross], "scan", 0);
+    assert_eq!(hits.len(), 1, "distinct handles sharing a key must link");
 }
 
 // ─── Associates / household family (AU-049 … AU-051) ─────────────────────────
@@ -2550,4 +2847,22 @@ fn au053_ignores_infrastructure_and_needs_an_established_area() {
         coord_from("-33.8700,151.2100", "exif_geo"), // one real point
     ];
     assert!(super::rules::rule_au_053_out_of_area_location(&ents, "s", 0).is_empty());
+}
+
+#[test]
+fn severity_as_canonical_matches_serde() {
+    // CONVENTIONS.md §3 pin. as_canonical feeds the persisted
+    // `correlations.severity` column AND the SQL ORDER BY CASE in
+    // `correlations_for_scan` hard-codes these exact strings, so a drift
+    // between as_canonical and the serde wire form would silently desync the
+    // stored value from the query that ranks it.
+    for sev in [
+        Severity::Low,
+        Severity::Medium,
+        Severity::High,
+        Severity::Critical,
+    ] {
+        let json = serde_json::to_string(&sev).unwrap();
+        assert_eq!(json.trim_matches('"'), sev.as_canonical(), "{sev:?}");
+    }
 }

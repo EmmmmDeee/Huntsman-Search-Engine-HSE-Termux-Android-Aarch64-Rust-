@@ -87,10 +87,18 @@ pub(super) struct DispatchOutcome {
     pub(super) result: TimeoutResult,
 }
 
-/// Distinct corroborating evidence-source count for the entity a `target`
+/// Distinct *corroborating* evidence-source count for the entity a `target`
 /// resolves to (0 if it isn't in the working set yet). Drives the high-value-API
 /// gate: a discovered entity must reach real cross-correlation, not just a bumped
 /// corroboration counter, before the heaviest paid modules fire on it.
+///
+/// Uses [`Entity::corroborating_sources`], NOT `evidence_sources`: the
+/// deterministic `geo_normalize` enrichment pass writes a source to every
+/// `Coordinates`/`Address` entity, so counting raw evidence sources would credit
+/// a one-real-source coordinate as two — letting the WiGLE finaliser gate fire on
+/// an uncorroborated coordinate (the very thing it exists to prevent). For the
+/// oathnet gate's Email/Person/Domain targets this is a no-op (they never carry
+/// an enrichment source), so the count is unchanged there.
 pub(super) fn target_distinct_sources(
     entity_map: &HashMap<String, Entity>,
     target: &Target,
@@ -100,7 +108,7 @@ pub(super) fn target_distinct_sources(
     let uid = crate::core::entity::derive_uid(&entity_kind, &normalised);
     entity_map
         .get(&uid)
-        .map_or(0, |e| e.evidence_sources().len())
+        .map_or(0, |e| e.corroborating_sources().len())
 }
 
 pub(super) fn module_skip_reason(
@@ -125,6 +133,15 @@ pub(super) fn module_skip_reason(
     }
     if opts.exclude_modules.iter().any(|n| n == name) {
         return Some("excluded");
+    }
+    // Category focus: when a profile restricts the scan to a set of functional
+    // categories (e.g. `skiptrace` → person-locating: People/Phone/Geo/Email/
+    // Social/Corporate/Search), a module outside that set is skipped on every
+    // round. Empty focus = no restriction. Gated by the type-owned
+    // `module.category()`, so the focus follows module renames and automatically
+    // picks up new in-category modules.
+    if !opts.category_focus.is_empty() && !opts.category_focus.contains(&module.category()) {
+        return Some("outside category focus");
     }
     // Circuit breaker: a module that already hit a rate-limit/quota wall or
     // failed repeatedly this run is skipped until its cooldown elapses. Retrying
@@ -171,6 +188,27 @@ pub(super) fn module_skip_reason(
         && target_distinct_sources < CROSS_CORRELATION_MIN_SOURCES
     {
         return Some("high-value API — awaiting cross-correlation (>=2 sources)");
+    }
+    // WiGLE is the paid GEOINT *finaliser*: it spends a query to confirm and
+    // enrich a coordinate with real WiFi-density observations. On a discovered
+    // `Coordinates` target it must fire only AFTER the free GEOINT layer
+    // (ip_geo / geocode / overpass / mylnikov / breach lat-lon) has produced
+    // and recursion has CORROBORATED that coordinate — i.e. ≥
+    // `CROSS_CORRELATION_MIN_SOURCES` distinct sources agree on it (high
+    // confidence) — so the daily WiGLE allowance is spent confirming the
+    // subject's real location, not chasing every single-source coordinate a
+    // scan throws off. A `MacAddress`/BSSID target is exempt: WiGLE is the
+    // PRIMARY resolver there (nothing else geolocates a BSSID), so the
+    // cross-correlation precondition can never be met and gating it would
+    // disable the pivot entirely; its own BSSID sub-budget bounds it instead.
+    // The seed round is exempt (a `Coordinates` seed is the operator's explicit
+    // target), exactly as the oathnet gate admits the seed.
+    if is_expansion
+        && name == "wigle"
+        && target.kind == TargetKind::Coordinates
+        && target_distinct_sources < CROSS_CORRELATION_MIN_SOURCES
+    {
+        return Some("WiGLE finaliser — awaiting GEOINT corroboration (>=2 geo sources)");
     }
     // ── Universal preflight: reject private IPs / local domains for
     // modules that talk to external APIs. Sensor modules opt out via
@@ -224,14 +262,17 @@ impl super::ScanEngine {
     /// emitted entities into the per-scan `entity_map`. Shared by
     /// `dispatch_target_sequential` and `dispatch_target_concurrent`
     /// so the event payload shape is identical between the two paths.
+    #[allow(clippy::too_many_arguments)]
     fn finalise_module_result(
         &self,
         scan_id: &str,
         name: &'static str,
+        target: &Target,
         min_confidence: Option<f64>,
         entity_map: &mut HashMap<String, Entity>,
         result: TimeoutResult,
         stats: &mut ModuleStats,
+        dispatched: &mut DispatchLog,
     ) {
         stats.run += 1;
         match result {
@@ -255,6 +296,15 @@ impl super::ScanEngine {
                 // known) instead of a scary module error, and count it under
                 // `skipped` rather than `errored`.
                 stats.skipped += 1;
+                // Release the dedup-ledger entry: the dedup contract is "each
+                // API key/service is utilised at most once per target", and a
+                // module that opted out for want of a key utilised NOTHING.
+                // Leaving the entry blocked the retry for the whole scan (and
+                // the whole radar session), so a key discovered later by the
+                // hot-inject cascade could never be applied to this target —
+                // defeating the cascade's purpose. No-op for free modules,
+                // which never enter the ledger.
+                dispatched.remove(&dispatch_key(name, target));
                 let reason = match crate::util::keys::signup_hint(&key) {
                     Some(hint) => format!("needs API key {key} — {hint}"),
                     None => format!("needs API key {key}"),
@@ -292,6 +342,9 @@ impl super::ScanEngine {
                     if let Some(min) = min_confidence
                         && entity.confidence < min
                     {
+                        // Visible like every other admission drop ("never a
+                        // black box") — this was the one silent rejection.
+                        self.emit_excluded(scan_id, &entity, "below_min_confidence");
                         continue;
                     }
                     // Drop guaranteed-bogus IPs (documentation / reserved /
@@ -324,6 +377,20 @@ impl super::ScanEngine {
                     // that somehow slip through (`fragment-values`).
                     if crate::core::validation::is_fragment_value(&entity.kind, &entity.value) {
                         self.emit_excluded(scan_id, &entity, "fragment_value");
+                        continue;
+                    }
+                    // Drop an implausible phone at admission. A value that CLAIMS
+                    // E.164 (leading `+`) but fails the country-code/length rules
+                    // — e.g. "+1240893", a NANP number with only 6 national
+                    // digits — is a scrape artifact, never a dialable number.
+                    // Gated here so it holds for every module and every expansion
+                    // round; national/ambiguous (no `+`) phones are left alone,
+                    // since the modules already emit E.164.
+                    if entity.kind == crate::core::entity::EntityKind::Phone
+                        && entity.value.starts_with('+')
+                        && !crate::core::validation::validate_phone_e164(&entity.value).valid
+                    {
+                        self.emit_excluded(scan_id, &entity, "implausible_phone");
                         continue;
                     }
                     self.emit(
@@ -517,10 +584,12 @@ impl super::ScanEngine {
             self.finalise_module_result(
                 scan_id,
                 name,
+                target,
                 opts.min_confidence,
                 entity_map,
                 result,
                 stats,
+                dispatched,
             );
 
             super::hot_inject_keys(&mut ctx.keys);
@@ -582,6 +651,12 @@ impl super::ScanEngine {
             if ctx.cancel.is_cancelled() {
                 break;
             }
+            // Same entity-budget short-circuit the sequential path and Phase 2
+            // apply. Without it, a scan already AT max_entities kept burning
+            // the most expensive dispatches there are — paid per-query APIs.
+            if opts.max_entities.is_some_and(|cap| entity_map.len() >= cap) {
+                break;
+            }
             let name = module.name();
             if !module.accepts(target) {
                 continue;
@@ -625,10 +700,12 @@ impl super::ScanEngine {
             self.finalise_module_result(
                 scan_id,
                 name,
+                target,
                 opts.min_confidence,
                 entity_map,
                 result,
                 stats,
+                dispatched,
             );
             // Hot-inject discovered keys so Phase 2 modules can use them.
             // Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl etc.)
@@ -759,10 +836,12 @@ impl super::ScanEngine {
             self.finalise_module_result(
                 scan_id,
                 outcome.name,
+                target,
                 opts.min_confidence,
                 entity_map,
                 outcome.result,
                 stats,
+                dispatched,
             );
         }
         Ok(())

@@ -2,8 +2,10 @@
 //! `TargetKind::detect` to recognise CIDR / MAC / phone / domain / company /
 //! address inputs before the structured-kind fall-through. No scan state.
 
-/// Six 2-hex-digit octets joined by ':' or '-' (`aa:bb:cc:dd:ee:ff`). A 6-group
-/// colon form is not a valid IPv6 address (which needs 8 groups or `::`), so the
+/// Six 2-hex-digit octets joined by ':' or '-' (`aa:bb:cc:dd:ee:ff`), or the
+/// Cisco dotted form of three 4-hex-digit groups (`aabb.ccdd.eeff`) — the same
+/// separator set `Target::validate` accepts for MacAddress. A 6-group colon
+/// form is not a valid IPv6 address (which needs 8 groups or `::`), so the
 /// IP check ahead of this in [`super::TargetKind::detect`] never steals a real MAC.
 /// A CIDR network block: `IP/prefix` where `IP` parses and `prefix` is within
 /// the address family's width (≤32 for v4, ≤128 for v6). Pure.
@@ -23,6 +25,21 @@ pub(super) fn is_mac_shaped(v: &str) -> bool {
         ':'
     } else if v.contains('-') {
         '-'
+    } else if v.contains('.') {
+        // Cisco dotted form: three 4-hex-digit groups (`aabb.ccdd.eeff`).
+        // `Target::validate` for MacAddress explicitly accepts '.'-separated
+        // MACs, so detection must recognise the same form — without this arm a
+        // dotted MAC fell through to the LATER shape checks and was
+        // misclassified as a Domain (`aabb.ccdd.eeff` — 3 labels, alphabetic
+        // hex "TLD") or a Username (when a group carries a digit), scanning a
+        // device identifier as a junk host. Precedence over Domain is
+        // deliberate: an all-hex 4.4.4 string in OSINT input is overwhelmingly
+        // a Cisco-format MAC, not a registrable host.
+        let groups: Vec<&str> = v.split('.').collect();
+        return groups.len() == 3
+            && groups
+                .iter()
+                .all(|g| g.len() == 4 && g.bytes().all(|b| b.is_ascii_hexdigit()));
     } else {
         return false;
     };

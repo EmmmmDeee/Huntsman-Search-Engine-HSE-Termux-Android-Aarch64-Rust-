@@ -628,6 +628,8 @@ async function renderDash(v){
       </div>
     </div>
 
+    ${apiBudgetsPanel(s)}
+
     <div class="panel panel-default" style="margin-top:12px">
       <div class="panel-heading"><b>Recent Scans</b>
         <a href="#/scans" class="pull-right" style="font-size:12px">View all &rarr;</a>
@@ -683,6 +685,50 @@ async function renderScans(v){
     $('#scans-table-host').innerHTML = renderScansTable(rows);
     wireScansTable();
   });
+}
+/* Daily API-quota dashboard from GET /api/v1/stats. Surfaces session
+   consumption for the budget-bounded paid providers (SeekNow / OathNet /
+   WiGLE) so the operator can see "maximum API effectiveness" at a glance, and
+   — critically — the WiGLE account email-verification flag: an unverified
+   WiGLE account silently fails every database query, so we flag it loudly. */
+function budgetBar(b){
+  if(!b) return '<span class="text-muted">n/a</span>';
+  const used=b.session_used||0, cap=b.session_cap||0;
+  const pct = cap>0 ? Math.min(100, Math.round(used*100/cap)) : 0;
+  const col = b.quota_exhausted ? '#a94442' : (pct>=80?'#8a6d3b':'#3c763d');
+  const lab = cap>0 ? `${used} / ${cap}` : `${used}`;
+  return `<div style="display:flex;align-items:center;gap:6px">
+    <div style="flex:1;background:#eee;border-radius:3px;height:8px;overflow:hidden">
+      <div style="width:${pct}%;height:100%;background:${col}"></div></div>
+    <span class="text-muted" style="font-size:11px;min-width:64px;text-align:right">${esc(lab)}${b.quota_exhausted?' <b style="color:#a94442">FULL</b>':''}</span>
+  </div>`;
+}
+function apiBudgetsPanel(s){
+  const w = s.wigle||{}, acct = w.account||{};
+  // verified === false is the silent-failure case; null = not yet polled.
+  const verBadge = acct.verified===false
+    ? '<span class="label label-danger" title="Email-verification not confirmed — WiGLE database queries will fail until the account email is verified at wigle.net">account UNVERIFIED</span>'
+    : acct.verified===true
+      ? '<span class="label label-success">account verified</span>'
+      : '<span class="label label-default" title="Not yet polled this session">account status unknown</span>';
+  const rows = [
+    ['SeekNow', budgetBar(s.seeknow)],
+    ['OathNet', budgetBar(s.oathnet)],
+    ['WiGLE · WiFi geo', budgetBar(w.geo)],
+    ['WiGLE · BSSID', budgetBar(w.bssid)],
+    ['WiGLE · cell', budgetBar(w.cell)],
+    ['WiGLE · bluetooth', budgetBar(w.bluetooth)],
+  ];
+  return `<div class="panel panel-default" style="margin-top:12px">
+    <div class="panel-heading"><b>API Budgets</b>
+      <span class="pull-right" style="font-size:12px">WiGLE ${verBadge}</span></div>
+    <div class="panel-body">
+      <table class="table table-condensed" style="margin-bottom:0">
+        ${rows.map(([k,v])=>`<tr><td style="width:160px;white-space:nowrap">${k}</td><td>${v}</td></tr>`).join('')}
+      </table>
+      <p class="text-muted" style="margin:8px 0 0;font-size:11px">Session quota consumed so far. Paid GEOINT (WiGLE) is gated to fire only after the free geo layer corroborates a coordinate through recursion (≥2 sources), so the daily allowance is spent confirming the subject's real location, not chasing noise.</p>
+    </div>
+  </div>`;
 }
 function scanStats(scans){
   let running=0,complete=0,failed=0,entities=0;

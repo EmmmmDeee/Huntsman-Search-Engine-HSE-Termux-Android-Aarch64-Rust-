@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::{
     entity::{Entity, EntityKind},
@@ -25,6 +25,22 @@ pub enum ModuleCost {
     Paid,
 }
 
+impl ModuleCost {
+    /// Stable snake_case identifier (matches serde output) — the canonical
+    /// machine-readable form, owned by the type exactly as
+    /// [`ModuleCategory::as_str`] is. (Previously this mapping lived as a
+    /// private helper in `dependency.rs`, a second source of truth beside the
+    /// serde derive that could drift.) The CLI's hyphenated "key-gated" table
+    /// label is a deliberate human-display variant, not this identifier.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Free => "free",
+            Self::KeyGated => "key_gated",
+            Self::Paid => "paid",
+        }
+    }
+}
+
 /// Coarse functional category for a module. Drives UI grouping in the
 /// module-picker and the module-graph view. Spiderfoot 4.0 ships
 /// equivalent labels (`Footprint`, `Investigate`, `Passive`) attached
@@ -34,7 +50,7 @@ pub enum ModuleCost {
 /// dispatch on them. They exist so the operator can filter the module
 /// catalogue (`hse modules --category geo`) and so the SPA can render
 /// the registry as a tabbed grid rather than one long list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModuleCategory {
     /// DNS, certificate transparency, WHOIS, subdomain enumeration.
@@ -119,6 +135,12 @@ pub struct ModuleInfo {
     /// module hasn't declared its output. Used by the UI to render the
     /// pivot-chain flow.
     pub produces: Vec<String>,
+    /// MITRE ATT&CK® Reconnaissance (TA0043) technique IDs this module's
+    /// collection implements (e.g. `["T1596.002"]` for WHOIS). Lets a finding be
+    /// reported in ATT&CK terms and the catalogue's Reconnaissance coverage be
+    /// assessed. Defaults from the module's category; see
+    /// [`Module::attack_techniques`].
+    pub attack_techniques: Vec<&'static str>,
 }
 
 /// All modules implement this trait. Default methods give sensible answers
@@ -229,6 +251,21 @@ pub trait Module: Send + Sync {
         &[]
     }
 
+    /// The MITRE ATT&CK® Reconnaissance (TA0043) technique IDs this module's
+    /// collection implements.
+    ///
+    /// Default: derived from the module's [`category`](Module::category) via
+    /// [`crate::core::attack::techniques_for_category`] — the category already
+    /// encodes what kind of OSINT collection the module performs, so the mapping
+    /// lives in one place. Override only when the category is too coarse for the
+    /// module's actual technique (e.g. an *active* scanner sitting in the
+    /// `Infrastructure` category maps to Active Scanning, not Search Open
+    /// Technical Databases). Returned IDs must exist in
+    /// [`crate::core::attack::RECONNAISSANCE`]; an architecture test enforces it.
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        crate::core::attack::techniques_for_category(self.category())
+    }
+
     /// Built from the other methods — don't override.
     fn info(&self) -> ModuleInfo {
         ModuleInfo {
@@ -248,6 +285,7 @@ pub trait Module: Send + Sync {
                 .iter()
                 .map(std::string::ToString::to_string)
                 .collect(),
+            attack_techniques: self.attack_techniques().to_vec(),
         }
     }
 }
@@ -463,6 +501,17 @@ mod tests {
     // ── ModuleCost serde ────────────────────────────────────────────────
 
     #[test]
+    fn module_cost_as_str_matches_serde() {
+        // The canonical identifier and the serde wire form must agree —
+        // as_str exists so dependency.rs/the API need no second mapping, and
+        // this pin stops the two from drifting (same guard ModuleCategory has).
+        for cost in [ModuleCost::Free, ModuleCost::KeyGated, ModuleCost::Paid] {
+            let json = serde_json::to_string(&cost).unwrap();
+            assert_eq!(json.trim_matches('"'), cost.as_str());
+        }
+    }
+
+    #[test]
     fn module_cost_serializes_to_snake_case() {
         assert_eq!(
             serde_json::to_string(&ModuleCost::Free).unwrap(),
@@ -518,6 +567,8 @@ mod tests {
             crate::core::dependency::ALL_TARGET_KINDS.len()
         );
         assert!(info.produces.is_empty());
+        // Category Other claims no ATT&CK Reconnaissance technique.
+        assert!(info.attack_techniques.is_empty());
     }
 
     struct CategorisedModule;
@@ -551,6 +602,17 @@ mod tests {
         assert_eq!(info.category, ModuleCategory::DnsRecon);
         assert_eq!(info.consumes, vec!["domain"]);
         assert_eq!(info.produces, vec!["ip_address", "domain"]);
+        // ATT&CK techniques default from the category (DnsRecon → DNS/WHOIS/cert
+        // open-technical-database recon), with every ID a real catalogue entry.
+        assert_eq!(
+            info.attack_techniques,
+            crate::core::attack::techniques_for_category(ModuleCategory::DnsRecon)
+        );
+        assert!(
+            info.attack_techniques
+                .iter()
+                .all(|id| crate::core::attack::technique(id).is_some())
+        );
     }
 
     #[test]

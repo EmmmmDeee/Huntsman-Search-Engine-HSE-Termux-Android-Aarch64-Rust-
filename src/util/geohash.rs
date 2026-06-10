@@ -473,11 +473,17 @@ pub fn parse_address(input: &str) -> AddressComponents {
     // Scan every part for state codes and postal patterns. A part like
     // "QLD 4000" carries both — split on space and try each token.
     for part in &parts {
-        for token in part.split_whitespace() {
-            // Australian state code
-            if out.state.is_none()
-                && let Some(s) = au_state_norm(token)
-            {
+        // Match a state either as the WHOLE part ("New South Wales",
+        // "Queensland") or as a token within it ("QLD 4000" → "QLD"). The
+        // whole-part check is essential: a multi-word state name is never a
+        // single token, so the previous token-only scan silently dropped every
+        // spelled-out multi-word state ("New South Wales", "Western Australia")
+        // while still accepting the abbreviations and single-word names ("NSW",
+        // "Queensland") — an inconsistency a user pasting a full address hits.
+        if out.state.is_none() {
+            let matched =
+                au_state_norm(part).or_else(|| part.split_whitespace().find_map(au_state_norm));
+            if let Some(s) = matched {
                 out.state = Some(s.to_string());
                 if out.iso_country.is_none() {
                     out.iso_country = Some("AU".to_string());
@@ -515,10 +521,12 @@ pub fn parse_address(input: &str) -> AddressComponents {
         if out.country.as_deref() == Some(p) {
             continue;
         }
-        // "QLD 4000"-style parts: skip if the entire part is a state token,
-        // a postal, or "state postal" combination.
+        // Skip a part that is a state designation, so it is never mistaken for
+        // the city: the whole part ("New South Wales") OR its leading token
+        // ("QLD 4000" → "QLD"). Without the whole-part check a spelled-out
+        // multi-word state would fall through and be captured as the city.
         let first_token = p.split_whitespace().next().unwrap_or("");
-        if au_state_norm(first_token).is_some() {
+        if au_state_norm(p).is_some() || au_state_norm(first_token).is_some() {
             continue;
         }
         if iso_for(p).is_some() {
@@ -615,6 +623,31 @@ mod tests {
         assert_eq!(a.city.as_deref(), Some("Brisbane"));
         assert_eq!(a.state.as_deref(), Some("QLD"));
         assert_eq!(a.postal_code.as_deref(), Some("4000"));
+    }
+
+    #[test]
+    fn parse_address_handles_spelled_out_multiword_states() {
+        // Regression: au_state_norm defines multi-word arms ("new south
+        // wales", "western australia", …) but the state loop only ever passed
+        // single whitespace-split tokens, so a spelled-out state silently
+        // failed to parse while its abbreviation succeeded. Both must work.
+        let a = parse_address("Sydney, New South Wales, Australia");
+        assert_eq!(a.city.as_deref(), Some("Sydney"));
+        assert_eq!(a.state.as_deref(), Some("NSW"));
+        assert_eq!(a.country.as_deref(), Some("Australia"));
+
+        // Multi-word state alone still infers the AU country, and is not
+        // misread as the city.
+        let b = parse_address("Perth, Western Australia");
+        assert_eq!(b.state.as_deref(), Some("WA"));
+        assert_eq!(b.city.as_deref(), Some("Perth"));
+        assert_eq!(b.iso_country.as_deref(), Some("AU"));
+
+        // Abbreviation and combined "STATE postcode" forms are unchanged.
+        assert_eq!(
+            parse_address("Brisbane, QLD 4000").state.as_deref(),
+            Some("QLD")
+        );
     }
 
     #[test]

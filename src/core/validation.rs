@@ -151,21 +151,14 @@ pub fn validate_coordinates(lat: f64, lon: f64) -> ValidationReport {
 // IP address routability (centralised from `oathnet_pro::is_private_ip`)
 // ---------------------------------------------------------------------------
 
-/// True if `s` parses to a non-routable or otherwise un-queryable IP. Covers
-/// RFC1918 private, loopback, link-local, CGN, broadcast, unspecified,
-/// multicast, IPv6 ULA — **plus** the reserved/unrealistic ranges that leak in
-/// from scraped pages and tutorials and would only waste expansion budget:
-/// RFC5737 documentation (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`),
-/// RFC2544 benchmarking (`198.18.0.0/15`), IETF protocol (`192.0.0.0/24`),
-/// "this-host" (`0.0.0.0/8`), reserved/future (`240.0.0.0/4`), and IPv6
-/// documentation (`2001:db8::/32`). No external OSINT source can resolve any of
-/// these, so the engine must never pivot on them.
 /// The "can never be a real host *anywhere*" ranges shared by [`is_bogus_ip`]
 /// and [`is_non_routable_ip`]: RFC5737 documentation (`192.0.2.0/24`,
 /// `198.51.100.0/24`, `203.0.113.0/24`), RFC2544 benchmarking (`198.18.0.0/15`),
-/// IETF-protocol (`192.0.0.0/24`), this-host (`0.0.0.0/8`), reserved/future
-/// (`240.0.0.0/4`, which also covers the v4 broadcast), and IPv6 documentation
-/// (`2001:db8::/32`).
+/// IETF-protocol (`192.0.0.0/24`), the deprecated 6to4 relay (`192.88.99.0/24`,
+/// RFC 7526), this-host (`0.0.0.0/8`), reserved/future (`240.0.0.0/4`, which
+/// also covers the v4 broadcast), IPv6 documentation (`2001:db8::/32` plus the
+/// RFC 9637 `3fff::/20` allocation), and IPv6 benchmarking (`2001:2::/48`).
+/// IPv4-mapped IPv6 spellings (`::ffff:a.b.c.d`) classify as their v4 address.
 ///
 /// Single source of truth for the documentation/reserved set so the two callers
 /// can never drift on which ranges count — a new RFC reservation is added here
@@ -178,20 +171,44 @@ fn is_documentation_or_reserved(addr: &IpAddr) -> bool {
                 || o[0] >= 240                                   // 240/4 reserved/future + broadcast
                 || (o[0] == 192 && o[1] == 0 && o[2] == 0)       // 192.0.0.0/24 IETF protocol
                 || (o[0] == 192 && o[1] == 0 && o[2] == 2)       // 192.0.2.0/24 TEST-NET-1
+                || (o[0] == 192 && o[1] == 88 && o[2] == 99)     // 192.88.99.0/24 6to4 relay (deprecated, RFC 7526)
                 || (o[0] == 198 && o[1] == 51 && o[2] == 100)    // 198.51.100.0/24 TEST-NET-2
                 || (o[0] == 203 && o[1] == 0 && o[2] == 113)     // 203.0.113.0/24 TEST-NET-3
                 || (o[0] == 198 && (o[1] & 0xFE) == 18) // 198.18.0.0/15 benchmarking
         }
         IpAddr::V6(v6) => {
+            // An IPv4-mapped spelling (::ffff:192.0.2.1) is the SAME address as
+            // its v4 form and must classify identically — otherwise the v6
+            // spelling of a documentation IP walks straight through the gate.
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_documentation_or_reserved(&IpAddr::V4(v4));
+            }
             let o = v6.octets();
-            o[0] == 0x20 && o[1] == 0x01 && o[2] == 0x0d && o[3] == 0xb8 // 2001:db8::/32 doc
+            (o[0] == 0x20 && o[1] == 0x01 && o[2] == 0x0d && o[3] == 0xb8) // 2001:db8::/32 doc
+                || (o[0] == 0x3f && o[1] == 0xff && (o[2] & 0xF0) == 0)    // 3fff::/20 doc (RFC 9637)
+                || (o[0] == 0x20 && o[1] == 0x01 && o[2] == 0 && o[3] == 2
+                    && o[4] == 0 && o[5] == 0) // 2001:2::/48 benchmarking (RFC 5180)
         }
     }
 }
 
+/// True if `s` parses to a non-routable or otherwise un-queryable IP. Covers
+/// RFC1918 private, loopback, link-local, CGN, broadcast, unspecified,
+/// multicast, IPv6 ULA — **plus** every documentation/reserved range in
+/// [`is_documentation_or_reserved`] (RFC5737 TEST-NETs, RFC2544 benchmarking,
+/// IETF protocol, this-host, reserved/future, IPv6 documentation). No external
+/// OSINT source can resolve any of these, so the engine must never pivot on
+/// them.
 pub fn is_non_routable_ip(s: &str) -> bool {
     let Ok(addr) = s.parse::<IpAddr>() else {
         return false;
+    };
+    // Unmap an IPv4-mapped spelling (::ffff:192.168.1.1) so it classifies
+    // exactly like its v4 form — the v6 branch below has no private/CGN logic,
+    // so the mapped spelling of a private address would otherwise pass.
+    let addr = match addr {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(addr, IpAddr::V4),
+        v4 => v4,
     };
     // Documentation/reserved ranges (shared with is_bogus_ip) PLUS the private /
     // local addresses that a non-routable check additionally rejects.
@@ -237,8 +254,16 @@ pub fn is_non_routable_ip(s: &str) -> bool {
 /// stray IP that drifts out of the list simply isn't gated (graceful, never a
 /// false skip of a non-CDN host).
 pub fn is_cdn_edge_ip(s: &str) -> bool {
-    let Ok(IpAddr::V4(v4)) = s.parse::<IpAddr>() else {
-        return false;
+    // The v4 ranges below, with an IPv4-mapped v6 spelling (::ffff:104.16.0.1)
+    // unmapped first so it gates identically to its v4 form. Native v6
+    // addresses return false by design (see above).
+    let v4 = match s.parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => v4,
+        Ok(IpAddr::V6(v6)) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4,
+            None => return false,
+        },
+        Err(_) => return false,
     };
     let o = v4.octets();
     // Cloudflare (cloudflare.com/ips-v4) keyed on the first octet; Fastly's
@@ -354,10 +379,42 @@ fn is_placeholder_person(name: &str) -> bool {
     )
 }
 
+/// Canonical documentation/template email **local-parts** — the `firstname` in
+/// `firstname@gmail.com`, the `your.email` in `your.email@domain`, … These are
+/// form-field templates and tutorial placeholders scraped from web pages, never
+/// a real person's mailbox, yet their host is a real provider (`gmail.com`), so
+/// the domain check alone can't catch them. A live `firstname@gmail.com` reached
+/// VERIFIED (0.85) before this gate. Deliberately tight — only unambiguous
+/// templates, compared both verbatim and separator-stripped (so `first.last`,
+/// `first_last` and `firstlast` all match) — so a real handle like `matt` or a
+/// real `john.smith` is never rejected.
+fn is_placeholder_email_local(local: &str) -> bool {
+    let l = local.trim().to_ascii_lowercase();
+    let stripped: String = l.chars().filter(char::is_ascii_alphanumeric).collect();
+    const TEMPLATE: &[&str] = &[
+        "firstname",
+        "lastname",
+        "firstnamelastname",
+        "firstlast",
+        "namesurname",
+        "yourname",
+        "fullname",
+        "youremail",
+        "emailaddress",
+        "yourusername",
+        "johndoe",
+        "janedoe",
+        "example",
+        "sample",
+    ];
+    TEMPLATE.contains(&l.as_str()) || TEMPLATE.contains(&stripped.as_str())
+}
+
 /// True if a discovered entity is a documentation/placeholder artifact that
 /// should never enter the graph — `example.com`, `jordan@example.com`,
-/// `http://example.com`, the `example` username, `John Doe`, … Enforced at the
-/// engine's admission gate alongside [`is_bogus_ip`] so it covers every module.
+/// `firstname@gmail.com`, `http://example.com`, the `example` username,
+/// `John Doe`, … Enforced at the engine's admission gate alongside
+/// [`is_bogus_ip`] so it covers every module.
 ///
 /// Exception (the operator's rule): kinds whose VALUE is inherently unique —
 /// passwords, API keys, raw credentials — are NEVER rejected, even if the value
@@ -368,9 +425,9 @@ pub fn is_placeholder_entity(kind: &EntityKind, value: &str) -> bool {
         // Inherently-unique secrets: always kept.
         EntityKind::Password | EntityKind::ApiKey | EntityKind::Credential => false,
         EntityKind::Domain => is_placeholder_domain(value),
-        EntityKind::Email => value
-            .rsplit_once('@')
-            .is_some_and(|(_, host)| is_placeholder_domain(host)),
+        EntityKind::Email => value.rsplit_once('@').is_some_and(|(local, host)| {
+            is_placeholder_domain(host) || is_placeholder_email_local(local)
+        }),
         EntityKind::Url => url_host_is_placeholder(value),
         EntityKind::Username => crate::util::preflight::is_placeholder_username(value),
         EntityKind::Person => is_placeholder_person(value),
@@ -433,9 +490,12 @@ pub fn is_fragment_value(kind: &EntityKind, value: &str) -> bool {
                 None => true,
             }
         }
-        // A bare freemail PROVIDER as a "domain" finding (gmail.com) is the
-        // "@gmail"-style incomplete reference in domain form; a label with no dot
-        // (or shorter than the shortest real registrable domain) is a fragment.
+        // A label with no dot ("gmail" — the "@gmail" fragment in domain form)
+        // or shorter than the shortest real registrable domain ("a.b") is a
+        // fragment. A COMPLETE freemail provider domain (gmail.com) is
+        // deliberately kept: it is a verifiable host — keeping the subject off
+        // it is the expansion gate's job (`is_noncentral_domain`), not
+        // admission's.
         EntityKind::Domain => v.len() < 4 || !v.contains('.'),
         // A leading `@` is a real truncation only on non-handle kinds — usernames
         // are normalised to strip a `@handle` prefix, so by the time a Username
@@ -600,9 +660,19 @@ mod tests {
         ));
         assert!(is_placeholder_entity(&Username, "example"));
         assert!(is_placeholder_entity(&Person, "John Doe"));
-        // Real values pass through.
+        // Template local-parts on a REAL provider domain (regression: a live
+        // scan surfaced `firstname@gmail.com` at VERIFIED 0.85).
+        assert!(is_placeholder_entity(&Email, "firstname@gmail.com"));
+        assert!(is_placeholder_entity(&Email, "first.last@outlook.com"));
+        assert!(is_placeholder_entity(&Email, "your.email@company.com"));
+        assert!(is_placeholder_entity(&Email, "john.doe@gmail.com"));
+        // Real values pass through — including real mailboxes that merely START
+        // with a template-ish token.
         assert!(!is_placeholder_entity(&Domain, "cloudflare.com"));
         assert!(!is_placeholder_entity(&Email, "matthewdiegmann@gmail.com"));
+        assert!(!is_placeholder_entity(&Email, "matt@gmail.com"));
+        assert!(!is_placeholder_entity(&Email, "john.smith@gmail.com"));
+        assert!(!is_placeholder_entity(&Email, "firstnations@gmail.com"));
         assert!(!is_placeholder_entity(&Person, "Matthew Diegmann"));
         // Inherently-unique secrets are NEVER filtered, even containing "example".
         assert!(!is_placeholder_entity(&Password, "example.com"));
@@ -628,6 +698,15 @@ mod tests {
         );
         assert_eq!(validate_phone_e164("+abc").reason, "e164.non_digit");
         assert_eq!(validate_phone_e164("+1234").reason, "e164.length");
+        // Regression: a +1 (NANP) number with only 6 national digits — a scrape
+        // artifact a live scan surfaced as a PROBABLE Phone — is too short (7
+        // total < 8) and must be rejected. The engine admission gate drops any
+        // `+`-prefixed Phone that fails here, codebase-wide.
+        assert_eq!(validate_phone_e164("+1240893").reason, "e164.length");
+        // ...while the genuine 11-digit numbers the same scan also found stay
+        // valid (the gate must keep these).
+        assert!(validate_phone_e164("+12069156775").valid);
+        assert!(validate_phone_e164("+971555542290").valid);
         assert_eq!(
             validate_phone_e164("+1234567890123456").reason,
             "e164.length"
@@ -706,7 +785,12 @@ mod tests {
             "0.1.2.3",
             "240.0.0.1",
             "255.255.255.255",
+            "192.88.99.1", // deprecated 6to4 relay (RFC 7526)
             "2001:db8::1",
+            "3fff::1",          // IPv6 documentation (RFC 9637)
+            "3fff:fff:ffff::1", // top of 3fff::/20
+            "2001:2::1",        // benchmarking (RFC 5180)
+            "::ffff:192.0.2.1", // v4-mapped spelling of a documentation IP
         ] {
             assert!(is_bogus_ip(ip), "{ip} should be bogus");
         }
@@ -722,10 +806,33 @@ mod tests {
             "8.8.8.8",
             "1.1.1.1",
             "2606:4700:4700::1111",
+            "3fff:1000::1",       // just past 3fff::/20
+            "::ffff:8.8.8.8",     // v4-mapped spelling of a real host
+            "::ffff:192.168.1.5", // v4-mapped private — sensors surface these
             "not-an-ip",
         ] {
             assert!(!is_bogus_ip(ip), "{ip} should NOT be bogus");
         }
+    }
+
+    /// An IPv4-mapped IPv6 spelling (::ffff:a.b.c.d) is the SAME address as its
+    /// v4 form, so every IP classifier must gate both spellings identically —
+    /// otherwise the mapped spelling walks through admission/expansion/CDN
+    /// gates its v4 form is rejected by.
+    #[test]
+    fn ipv4_mapped_spellings_classify_like_their_v4_form() {
+        // Private/CGN → non-routable (but NOT bogus — sensors surface these).
+        assert!(is_non_routable_ip("::ffff:192.168.1.1"));
+        assert!(is_non_routable_ip("::ffff:10.0.0.1"));
+        assert!(is_non_routable_ip("::ffff:100.64.0.1"));
+        // Documentation → non-routable AND bogus.
+        assert!(is_non_routable_ip("::ffff:192.0.2.1"));
+        // CDN edge → gated like the v4 form.
+        assert!(is_cdn_edge_ip("::ffff:104.16.0.1"));
+        assert!(is_cdn_edge_ip("::ffff:151.101.1.1"));
+        // Mapped spellings of real public hosts stay valid everywhere.
+        assert!(!is_non_routable_ip("::ffff:8.8.8.8"));
+        assert!(!is_cdn_edge_ip("::ffff:8.8.8.8"));
     }
 
     #[test]

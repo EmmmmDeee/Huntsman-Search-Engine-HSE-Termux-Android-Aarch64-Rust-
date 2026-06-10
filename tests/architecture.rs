@@ -106,6 +106,11 @@ fn core_does_not_import_util_directly() {
                 // number in the unified-scan auto-detector.
                 && !line.contains("util::abn::is_valid_abn")
                 && !line.contains("util::abn::is_valid_acn")
+                // Pure, dependency-free address locality dedup key — same leaf
+                // category as the ABN checksums: no state, no I/O. The engine's
+                // finalise step uses it to collapse postcode-variant Address
+                // entities (e.g. "X, NSW" / "X, NSW 2582") into one.
+                && !line.contains("util::address_au::locality_key")
                 // Pure, dependency-free digit-only normaliser — the same leaf
                 // category as the ABN checksums above; `core::scan` uses it in
                 // the target auto-detector to strip separators from a candidate
@@ -191,6 +196,197 @@ fn modules_md_lists_every_registered_module() {
         "modules missing from docs/MODULES.md (regenerate the catalogue from \
          `hse modules --json`): {missing:?}"
     );
+}
+
+#[test]
+fn every_module_maps_to_valid_attack_reconnaissance_techniques() {
+    // Every registered module declares the MITRE ATT&CK Reconnaissance technique
+    // IDs its collection implements (defaulted from category, overridden where
+    // the category is too coarse). This guard pins that across ALL modules:
+    //   1. every declared ID is a real catalogue entry (no typo / stale ID);
+    //   2. the active scanner maps to Active Scanning, not passive DB search;
+    //   3. the catalogue's coverage spans the core OSINT-collection techniques,
+    //      so the ATT&CK alignment is substantive rather than vacuous.
+    use huntsman_search_engine::core::attack;
+    let modules = huntsman_search_engine::modules::registry();
+
+    let mut covered = std::collections::BTreeSet::new();
+    for m in &modules {
+        // Systematic enrichment: EVERY collection module must declare at least
+        // one ATT&CK Reconnaissance technique, so none silently contributes
+        // nothing to the per-scan coverage report. A new module added without a
+        // mapping (its category defaulting to `Other` → empty) fails here.
+        assert!(
+            !m.attack_techniques().is_empty(),
+            "module `{}` has no ATT&CK Reconnaissance technique — add a category \
+             mapping or an attack_techniques() override",
+            m.name()
+        );
+        for id in m.attack_techniques() {
+            assert!(
+                attack::technique(id).is_some(),
+                "module `{}` claims ATT&CK technique `{id}` absent from the catalogue",
+                m.name()
+            );
+            covered.insert(*id);
+        }
+    }
+
+    // The active scanner is the deliberate per-module override away from its
+    // (passive) category default.
+    let portscan = modules
+        .iter()
+        .find(|m| m.name() == "portscan")
+        .expect("portscan registered");
+    assert!(
+        portscan.attack_techniques().contains(&"T1595.001"),
+        "portscan must map to Active Scanning (T1595.001), got {:?}",
+        portscan.attack_techniques()
+    );
+
+    // Coverage must span the backbone Reconnaissance techniques — if any of
+    // these is uncovered, a whole class of collection has silently dropped out.
+    for id in [
+        "T1589.001", // Credentials (breach)
+        "T1589.002", // Email Addresses
+        "T1590.002", // DNS
+        "T1591.001", // Physical Locations (geo)
+        "T1593.001", // Social Media
+        "T1593.002", // Search Engines
+        "T1596.002", // WHOIS
+    ] {
+        assert!(
+            covered.contains(id),
+            "no module covers ATT&CK Reconnaissance technique {id} — collection gap"
+        );
+    }
+}
+
+#[test]
+fn attack_overrides_attribute_collection_modules_precisely() {
+    // Modules whose coarse category default mis- or over-attributed their ATT&CK
+    // Reconnaissance technique now declare the precise one. This pins the
+    // intended attribution (and guards against a regression to the category
+    // default) so the per-scan coverage report is accurate.
+    let modules = huntsman_search_engine::modules::registry();
+    let techniques = |name: &str| -> Vec<&'static str> {
+        modules
+            .iter()
+            .find(|m| m.name() == name)
+            .map(|m| m.attack_techniques().to_vec())
+            .unwrap_or_default()
+    };
+
+    // Code repositories — NOT social media (T1593.001).
+    for name in ["github_user", "crates_io", "npm_author"] {
+        assert_eq!(
+            techniques(name),
+            vec!["T1593.003"],
+            "{name} → Code Repositories"
+        );
+        assert!(
+            !techniques(name).contains(&"T1593.001"),
+            "{name} must no longer claim Social Media"
+        );
+    }
+    // DnsRecon family — each its specific technique, not the whole bundle.
+    assert_eq!(techniques("crtsh"), vec!["T1596.003"]); // Digital Certificates
+    assert_eq!(techniques("cert_intel"), vec!["T1596.003"]);
+    assert_eq!(techniques("whois"), vec!["T1596.002"]); // WHOIS
+    assert_eq!(techniques("rdap_domain"), vec!["T1596.002"]);
+    assert_eq!(techniques("dns_intel"), vec!["T1590.002"]); // DNS
+    assert_eq!(techniques("securitytrails"), vec!["T1596.001"]); // Passive DNS
+    assert_eq!(techniques("hackertarget"), vec!["T1590.002", "T1596.001"]);
+    assert_eq!(techniques("subdomain_takeover"), vec!["T1590.001"]); // Domain Properties
+
+    // Every overridden ID is still a real catalogue entry (no typos).
+    for name in [
+        "github_user",
+        "crtsh",
+        "whois",
+        "dns_intel",
+        "securitytrails",
+        "hackertarget",
+        "subdomain_takeover",
+    ] {
+        for id in techniques(name) {
+            assert!(
+                huntsman_search_engine::core::attack::technique(id).is_some(),
+                "{name} → unknown technique {id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn skiptrace_focus_maps_to_the_right_real_modules() {
+    // The `skiptrace` profile restricts dispatch by category. This guard pins
+    // that the focus resolves to a healthy, correct set of REAL modules — so a
+    // future category change (or a regression of the hudsonrock/qld_unclaimed
+    // categorisations) can't silently gut or pollute debtor-location scans.
+    use huntsman_search_engine::core::module::ModuleCategory;
+    use huntsman_search_engine::core::profiles::SKIPTRACE_CATEGORIES;
+
+    let modules = huntsman_search_engine::modules::registry();
+    let category_of = |name: &str| -> Option<ModuleCategory> {
+        modules
+            .iter()
+            .find(|m| m.name() == name)
+            .map(|m| m.category())
+    };
+    let in_focus = |name: &str| -> bool {
+        category_of(name).is_some_and(|c| SKIPTRACE_CATEGORIES.contains(&c))
+    };
+
+    // Every focused category must be populated — an empty category would mean
+    // the focus silently narrows the scan with nothing to show for it.
+    for cat in SKIPTRACE_CATEGORIES {
+        assert!(
+            modules.iter().any(|m| m.category() == *cat),
+            "skiptrace focus category {cat:?} maps to no registered module"
+        );
+    }
+
+    // The core person-locators MUST be in focus (incl. the two whose categories
+    // were corrected: hudsonrock → Breach, qld_unclaimed → People).
+    for name in [
+        "employer_pivot",  // People — where they work / ability to pay
+        "qld_unclaimed",   // People — name → government register + address
+        "geocode",         // Geo — address → coordinates
+        "geo_intel",       // Geo
+        "phone_intl",      // Phone — contactability + country
+        "social_probe",    // Social — owned accounts / aliases
+        "username_search", // Social — cross-platform handle hunt
+        "opencorporates",  // Corporate — directorships / assets
+        "abn_lookup",      // Corporate — AU business / assets
+        "search_engines",  // Search — open-web address/phone/associate scrape
+        "dehashed",        // Breach — leaked phone/address/credentials
+        "hudsonrock",      // Breach — stealer-log intel
+        "email_parse",     // Email — identity bridge
+    ] {
+        assert!(
+            in_focus(name),
+            "skip-trace needs `{name}` ({:?}) in the category focus",
+            category_of(name)
+        );
+    }
+
+    // Pure-noise-for-people modules MUST be excluded — running them on a debtor
+    // search is wasted budget.
+    for name in [
+        "shodan",         // Infrastructure
+        "censys",         // Infrastructure
+        "threatfox",      // Threat
+        "urlhaus",        // Threat
+        "device_sensors", // Sensor (the operator's own device)
+        "portscan",       // Infrastructure
+    ] {
+        assert!(
+            !in_focus(name),
+            "skip-trace must NOT spend budget on `{name}` ({:?})",
+            category_of(name)
+        );
+    }
 }
 
 #[test]
@@ -545,6 +741,39 @@ fn readme_module_overview_count_matches_registry() {
         "README '## Module Overview (N modules ...)' must cite the live registry \
          size ({n}); update README.md after adding/removing a module"
     );
+
+    // The heading check alone proved insufficient: the intro blurb and the
+    // `hse modules` usage comment each carry their own hand-written count and
+    // both rotted to a stale figure while the heading stayed correct. Sweep
+    // EVERY "<digits> modules" mention in the README against the registry.
+    let stale: Vec<&str> = readme
+        .lines()
+        .filter(|line| {
+            let mut rest = *line;
+            while let Some(pos) = rest.find(" modules") {
+                let prefix = &rest[..pos];
+                let digits: String = prefix
+                    .chars()
+                    .rev()
+                    .take_while(char::is_ascii_digit)
+                    .collect();
+                if !digits.is_empty() {
+                    let count: usize = digits.chars().rev().collect::<String>().parse().unwrap();
+                    // Only headline totals can match the registry; sub-counts
+                    // ("81 free", …) are smaller and skipped via a floor.
+                    if count > n / 2 && count != n {
+                        return true;
+                    }
+                }
+                rest = &rest[pos + " modules".len()..];
+            }
+            false
+        })
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "README cites a stale module total (registry holds {n}): {stale:?}"
+    );
 }
 
 /// Runtime AI-independence guard (the `RUNTIME_INDEPENDENCE` charter): the
@@ -674,5 +903,81 @@ fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
         "coarse IP/WiFi-geo provider(s) {offenders:?} do not gate coordinates on \
          is_plausible_provider_coord / coarse_provider_coords — a null-island placeholder could become a \
          false geoint fix. Use crate::util::geo::is_plausible_provider_coord."
+    );
+}
+
+/// CONVENTIONS.md §2 — hubs declare, never house. Outside `#[cfg(test)]`
+/// code, a module body belongs in its own file: `pub mod name;` in the hub,
+/// code in `name.rs`. This pin turns the convention into a mechanical check
+/// (the same treatment the AI-independence charter got), so the consistency
+/// bought by extracting every inline module from core/mod.rs and util/mod.rs
+/// can't erode one "harmless exception" at a time. The only permitted inline
+/// bodies are trivial wrappers that would be NOISE as files, allow-listed
+/// here by (path-suffix, module-name) so adding one is a reviewed decision.
+#[test]
+fn no_inline_module_bodies_outside_allowed_exceptions() {
+    // (path suffix, module name) → why it is legitimately inline.
+    const ALLOWED: &[(&str, &str)] = &[
+        // 3-line include! wrapper for the build.rs-generated source manifest.
+        ("src/lib.rs", "source_manifest"),
+        // 5-line path-constants shim local to the oathnet util.
+        ("src/util/oathnet.rs", "paths"),
+    ];
+
+    fn visit(dir: &Path, offenders: &mut Vec<String>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(&path, offenders);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs")
+                || path.file_name().is_some_and(|n| n == "tests.rs")
+            {
+                continue;
+            }
+            let content = fs::read_to_string(&path).unwrap();
+            let rel = path.display().to_string().replace('\\', "/");
+            // Once the first `#[cfg(test)]` appears, the rest of the file is
+            // test scaffolding by this tree's layout convention (test modules
+            // come last) — same simplification the layering scanner uses.
+            let mut in_test = false;
+            for (i, line) in content.lines().enumerate() {
+                let t = line.trim();
+                if t == "#[cfg(test)]" {
+                    in_test = true;
+                }
+                if in_test || !t.ends_with('{') {
+                    continue;
+                }
+                let rest = ["pub(crate) mod ", "pub(super) mod ", "pub mod ", "mod "]
+                    .iter()
+                    .find_map(|p| t.strip_prefix(p));
+                let Some(rest) = rest else { continue };
+                let Some(name) = rest.strip_suffix('{').map(str::trim) else {
+                    continue;
+                };
+                if name == "tests"
+                    || ALLOWED
+                        .iter()
+                        .any(|(suf, m)| rel.ends_with(suf) && *m == name)
+                {
+                    continue;
+                }
+                offenders.push(format!("{rel}:{}: inline `mod {name}`", i + 1));
+            }
+        }
+    }
+
+    let mut offenders = Vec::new();
+    visit(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut offenders,
+    );
+    assert!(
+        offenders.is_empty(),
+        "inline module bodies outside the allow-list (CONVENTIONS.md §2 — \
+         move the body to its own file, or allow-list a trivial wrapper \
+         with a justification): {offenders:#?}"
     );
 }

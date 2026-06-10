@@ -124,6 +124,11 @@ impl Module for SecurityTrails {
         ModuleCategory::DnsRecon
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Historical/passive DNS database — ATT&CK DNS/Passive DNS (T1596.001).
+        &["T1596.001"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Domain];
         KINDS

@@ -1335,3 +1335,62 @@ fn search_entities_never_errors_on_adversarial_queries() {
     assert!(!store.search_entities("jordan", 10).unwrap().is_empty());
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn delete_scan_syncs_fts_so_rowid_reuse_cannot_poison_search() {
+    // A contentless-external FTS5 index never observes a bare DELETE on its
+    // content table. If delete_scan purges orphaned entities without emitting
+    // the FTS 'delete' commands, the stale posting survives — and once SQLite
+    // reuses the freed rowid for a new entity, a search for the DELETED value
+    // returns that unrelated entity. Reproduce exactly that rowid-reuse
+    // scenario and prove the index stays clean.
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+
+    insert_scan(&store, "scan-old");
+    store
+        .upsert_entity(&Entity::new(
+            EntityKind::Person,
+            "Jordan Meyer",
+            0.9,
+            "scan-old",
+        ))
+        .unwrap();
+    assert_eq!(store.search_entities("jordan", 10).unwrap().len(), 1);
+
+    // Purge the scan — the entity is orphaned and deleted; its rowid (the
+    // table's highest) is freed for reuse.
+    assert!(store.delete_scan("scan-old").unwrap());
+
+    // New entity takes the freed rowid.
+    insert_scan(&store, "scan-new");
+    store
+        .upsert_entity(&Entity::new(
+            EntityKind::Person,
+            "Casey Smith",
+            0.9,
+            "scan-new",
+        ))
+        .unwrap();
+
+    // The deleted value must match NOTHING — a stale posting would join the
+    // reused rowid and hand back "Casey Smith" for a "jordan" query.
+    assert!(
+        store.search_entities("jordan", 10).unwrap().is_empty(),
+        "deleted entity's text must not resolve to the entity that reused its rowid"
+    );
+    // The new entity is still searchable normally.
+    let hits = store.search_entities("casey", 10).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].value, "Casey Smith");
+    // And FTS5's own structural audit agrees the index matches the content
+    // table ('integrity-check' errors on any desync).
+    {
+        let conn = store.conn.lock();
+        conn.execute_batch(
+            "INSERT INTO entities_fts(entities_fts, rank) VALUES('integrity-check', 1);",
+        )
+        .expect("FTS index must match the entities content table after delete_scan");
+    }
+    let _ = std::fs::remove_file(&path);
+}

@@ -389,6 +389,29 @@ fn expansion_weight_address_beats_mega_domain() {
 }
 
 #[test]
+fn cidr_is_geo_convergent_and_outranks_its_parent_asn() {
+    // A CIDR enumerates into host IPs that geo-resolve, so it must carry a
+    // geo-proximity boost — not fall through to the non-geo 1.0 default, which
+    // ranked it BELOW the ASN that produced it (inverted ordering, since a Cidr
+    // is one hop CLOSER to coordinates than its ASN). At equal confidence the
+    // geo-convergence ladder must read ASN < Cidr < IpAddress.
+    let asn = expansion_weight(TargetKind::Asn, 0.8, "AS13335", false);
+    let cidr = expansion_weight(TargetKind::Cidr, 0.8, "192.0.2.0/24", false);
+    let ip = expansion_weight(TargetKind::IpAddress, 0.8, "192.0.2.10", false);
+    assert!(
+        asn < cidr && cidr < ip,
+        "geo-convergence ladder must be ASN ({asn:.2}) < Cidr ({cidr:.2}) < IP ({ip:.2})"
+    );
+    // And a Cidr must beat a non-geo terminal kind of equal confidence — proof
+    // it is no longer treated as non-geo (boost 1.0).
+    let crypto = expansion_weight(TargetKind::CryptoAddress, 0.8, "bc1qxyz", false);
+    assert!(
+        cidr > crypto,
+        "Cidr ({cidr:.2}) is geo-convergent vs crypto ({crypto:.2})"
+    );
+}
+
+#[test]
 fn expansion_weight_respects_confidence() {
     let high = expansion_weight(TargetKind::Domain, 0.90, "example.com", false);
     let low = expansion_weight(TargetKind::Domain, 0.45, "example.com", false);
@@ -574,6 +597,11 @@ fn detect_classifies_structured_kinds() {
         ("2001:4860:4860::8888", IpAddress),
         ("aa:bb:cc:dd:ee:ff", MacAddress),
         ("AA-BB-CC-DD-EE-FF", MacAddress),
+        // Cisco dotted form — accepted by Target::validate(MacAddress), so
+        // detect must classify it too (it previously fell through to Domain
+        // for letters-only hex, or Username when a group carried a digit).
+        ("aabb.ccdd.eeff", MacAddress),
+        ("AB12.CD34.EF56", MacAddress),
         ("-33.8688,151.2093", Coordinates),
         ("AS13335", Asn),
         ("as15169", Asn),
@@ -891,6 +919,37 @@ fn expansion_strategy_default_is_geo_converge() {
 }
 
 #[test]
+fn target_kind_canonical_str_matches_serde() {
+    // CONVENTIONS.md §3: canonical_str is the persisted `scans.target_kind`
+    // column, a scan_id hash input, and the event/API wire label — and its
+    // doc explicitly promises it equals the serde form. Pin every variant so
+    // a future TargetKind rename can't split the hand-written string from the
+    // derive. Iterates the canonical list, so a new variant is forced through.
+    for &k in crate::core::dependency::ALL_TARGET_KINDS {
+        let json = serde_json::to_string(&k).unwrap();
+        assert_eq!(json.trim_matches('"'), k.canonical_str(), "{k:?}");
+    }
+}
+
+#[test]
+fn scan_status_as_str_matches_serde() {
+    // §3 pin. as_str is the persisted `scans.status` value AND
+    // `latest_completed_scan` hard-codes the string in its SQL
+    // `json_extract(...) = 'complete'` probe — a drift between as_str and the
+    // serde form would silently break that query (no Complete scan found).
+    for st in [
+        ScanStatus::Pending,
+        ScanStatus::Running,
+        ScanStatus::Complete,
+        ScanStatus::Failed,
+        ScanStatus::Aborted,
+    ] {
+        let json = serde_json::to_string(&st).unwrap();
+        assert_eq!(json.trim_matches('"'), st.as_str(), "{st:?}");
+    }
+}
+
+#[test]
 fn expansion_strategy_round_trips_json() {
     for s in [
         ExpansionStrategy::GeoConverge,
@@ -1055,4 +1114,30 @@ fn validate_url() {
             .validate()
             .is_err()
     );
+}
+
+/// An `options` object that omits a field must behave like omitting the whole
+/// `options` object: both are "operator expressed no preference". The depth
+/// field already had this guard (default_scan_depth); max_concurrent silently
+/// fell back to 0/sequential from `"options": {}` while an options-less
+/// request ran at the product default of 2.
+#[test]
+fn empty_options_object_matches_product_defaults() {
+    let from_empty: ScanOptions = serde_json::from_str("{}").unwrap();
+    let product = ScanOptions::default();
+    assert_eq!(
+        from_empty.max_concurrent, product.max_concurrent,
+        "omitted max_concurrent must deserialise to the product default"
+    );
+    assert_eq!(
+        from_empty.min_expand_confidence,
+        product.min_expand_confidence
+    );
+    assert_eq!(from_empty.regional_search, product.regional_search);
+    // depth is the one DOCUMENTED divergence: library Default is 0 (inert,
+    // deterministic for programmatic callers), serde default is the product 2.
+    assert_eq!(from_empty.depth, DEFAULT_SCAN_DEPTH);
+    // An explicit 0 is still honoured as fully-sequential.
+    let explicit: ScanOptions = serde_json::from_str(r#"{"max_concurrent":0}"#).unwrap();
+    assert_eq!(explicit.max_concurrent, 0);
 }

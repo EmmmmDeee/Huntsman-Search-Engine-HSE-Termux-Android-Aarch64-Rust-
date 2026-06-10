@@ -354,6 +354,48 @@ fn normalise_phone_strips_formatting() {
 }
 
 #[test]
+fn normalise_phone_trims_before_plus_check() {
+    // Leading whitespace must not eat the country-code `+`: the `+` check runs
+    // on the first char, so an untrimmed " +61…" used to normalise to "61…",
+    // splitting one number across two UIDs.
+    assert_eq!(
+        normalise(&EntityKind::Phone, "  +61 412 345 678 "),
+        "+61412345678"
+    );
+    assert_eq!(
+        normalise(&EntityKind::Phone, "  +61 412 345 678 "),
+        normalise(&EntityKind::Phone, "+61412345678")
+    );
+}
+
+#[test]
+fn normalise_coordinates_collapses_negative_zero() {
+    // -0.0000001 rounds to zero at 6 dp; it must canonicalise to "0.000000",
+    // not "-0.000000" — same point, and it must be the same UID.
+    assert_eq!(
+        normalise(&EntityKind::Coordinates, "-0.0000001,0.0"),
+        "0.000000,0.000000"
+    );
+    assert_eq!(
+        normalise(&EntityKind::Coordinates, "-0.0,-0.0"),
+        "0.000000,0.000000"
+    );
+    // Real negative coordinates are untouched.
+    assert_eq!(
+        normalise(&EntityKind::Coordinates, "-27.5,153.0"),
+        "-27.500000,153.000000"
+    );
+}
+
+#[test]
+fn normalise_coordinates_rejects_non_finite() {
+    // NaN/inf must not be formatted into a pseudo-coordinate string; the raw
+    // (trimmed) value falls through so validity gates see it untouched.
+    assert_eq!(normalise(&EntityKind::Coordinates, "NaN,NaN"), "NaN,NaN");
+    assert_eq!(normalise(&EntityKind::Coordinates, " inf,5 "), "inf,5");
+}
+
+#[test]
 fn normalise_domain_strips_trailing_dot() {
     assert_eq!(
         normalise(&EntityKind::Domain, "example.com."),
@@ -749,6 +791,9 @@ const NORM_CORPUS: &[&str] = &[
     "http://A.B/",
     "1.23456789,-2.5",
     "-0.0,0.0",
+    "-0.0000001,179.9999999",
+    "NaN,NaN",
+    "  +61 412 345 678 ",
     "AA-BB-CC-DD-EE-FF",
     "+1 (555) 234-9999",
     "::ffff:1.2.3.4",
@@ -891,4 +936,26 @@ fn scan_id_different_kinds_differ() {
     let a = scan_id("email", "x");
     let b = scan_id("domain", "x");
     assert_ne!(a, b);
+}
+
+#[test]
+fn classification_ladder_is_single_sourced_and_boundary_exact() {
+    use Classification as C;
+    // The documented tier values — a recalibration must be deliberate (update
+    // this pin alongside the constants), never an accidental drift.
+    assert!((C::VERIFIED_MIN - 0.75).abs() < 1e-12);
+    assert!((C::PROBABLE_MIN - 0.40).abs() < 1e-12);
+    // Boundary-exact: the lower bounds are inclusive.
+    assert_eq!(C::from_c_eff(C::VERIFIED_MIN), C::Verified);
+    assert_eq!(C::from_c_eff(C::VERIFIED_MIN - 1e-9), C::Probable);
+    assert_eq!(C::from_c_eff(C::PROBABLE_MIN), C::Probable);
+    assert_eq!(C::from_c_eff(C::PROBABLE_MIN - 1e-9), C::Candidate);
+    // Non-finite lands in the conservative tier (c_effective clamps, so this
+    // is defensive only).
+    assert_eq!(C::from_c_eff(f64::NAN), C::Candidate);
+    // Entity::classify is exactly from_c_eff over c_effective.
+    for conf in [0.1, 0.40, 0.5, 0.74, 0.75, 0.9] {
+        let e = Entity::new(EntityKind::Email, "x@example.com", conf, "s");
+        assert_eq!(e.classify(), C::from_c_eff(e.c_effective()), "conf {conf}");
+    }
 }

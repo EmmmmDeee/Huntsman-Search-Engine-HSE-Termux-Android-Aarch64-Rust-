@@ -59,6 +59,13 @@ impl Module for ApiKeyProbe {
         ModuleCategory::Other
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Confirms which discovered API keys are live against their provider —
+        // gathering/validating the subject's exposed credentials. ATT&CK
+        // Gather Victim Identity Information: Credentials (T1589.001).
+        &["T1589.001"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::ApiKey, EntityKind::Domain];
         KINDS

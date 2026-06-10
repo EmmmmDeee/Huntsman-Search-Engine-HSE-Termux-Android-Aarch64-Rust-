@@ -63,6 +63,11 @@ impl Module for Typosquat {
         ModuleCategory::DnsRecon
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Look-alike domain properties — ATT&CK Domain Properties (T1590.001).
+        &["T1590.001"]
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain)
     }

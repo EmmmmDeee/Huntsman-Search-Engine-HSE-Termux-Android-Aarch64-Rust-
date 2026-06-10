@@ -43,6 +43,11 @@ impl Module for SubdomainTakeover {
         ModuleCategory::DnsRecon
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Subdomain/domain-property inspection — ATT&CK Domain Properties (T1590.001).
+        &["T1590.001"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Domain];
         KINDS

@@ -5,6 +5,8 @@
 //!   - `-o json` output discipline: stdout must be a single JSON document, with
 //!     all human-readable progress/summary on stderr, so `| jq` works.
 
+mod common;
+
 use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_hse");
@@ -29,8 +31,7 @@ fn diff_wiring_self_compare_is_empty_and_json_clean() {
     // by id, and the `-f json` render. Comparing a scan to itself must yield zero
     // added/removed (a non-empty self-diff would mean the load or the set math is
     // broken), and stdout must be one clean JSON document.
-    let dir = std::env::temp_dir().join(format!("hse-diff-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::tmp_dir("diff");
 
     // One offline scan so there's a `latest` to compare against itself.
     let scan = Command::new(BIN)
@@ -120,8 +121,7 @@ fn scan_json_stdout_is_pure_json() {
     // and the "full dossier:" notice on stderr. Offline modules only (no network)
     // so the test is hermetic. Guards the same stdout/stderr discipline the import
     // fix established, across the command an operator is most likely to pipe.
-    let dir = std::env::temp_dir().join(format!("hse-scan-json-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::tmp_dir("scan-json");
 
     let out = Command::new(BIN)
         .args([
@@ -160,8 +160,7 @@ fn import_json_stdout_is_pure_json_summary_on_stderr() {
     // human-readable "Imported N entities" summary belongs on stderr. The summary
     // used to be println!'d to stdout ahead of the JSON, so a consumer parsing
     // stdout failed. Spawn the real binary and prove the contract end-to-end.
-    let dir = std::env::temp_dir().join(format!("hse-import-json-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::tmp_dir("import-json");
     let file = dir.join("dossier.txt");
     std::fs::write(
         &file,

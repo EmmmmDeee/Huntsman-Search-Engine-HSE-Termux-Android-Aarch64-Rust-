@@ -151,6 +151,11 @@ impl Module for CrtSh {
         ModuleCategory::DnsRecon
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Certificate Transparency — ATT&CK Digital Certificates (T1596.003).
+        &["T1596.003"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::Domain,

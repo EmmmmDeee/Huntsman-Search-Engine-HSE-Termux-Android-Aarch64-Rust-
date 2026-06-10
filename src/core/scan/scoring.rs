@@ -269,6 +269,15 @@ fn geo_proximity_boost(kind: TargetKind) -> f64 {
         TargetKind::MacAddress => 2.0,
         // IP → ip_geo/ipinfo → Coordinates. Single hop, highly reliable.
         TargetKind::IpAddress => 1.8,
+        // CIDR → enumerated host IPs → ip_geo → Coordinates. Two hops — one
+        // further than a bare IP, but firmly geo-convergent: a discovered block
+        // resolves to its hosts' locations. Without an explicit arm a Cidr fell
+        // through to the non-geo 1.0 default, ranking it BELOW the ASN (1.2)
+        // that produced it even though it is one hop CLOSER to coordinates — an
+        // inverted ordering. Placed alongside the other two-hop kinds (Phone),
+        // restoring ASN(1.2) < Cidr(1.5) < IP(1.8). Consistent with geo_npv /
+        // seed_marginal_yield, which already group IpAddress | Cidr as geo-rich.
+        TargetKind::Cidr => 1.5,
         // Phone → phone_area_geo/phone_carrier_geo → Country/State. Two hops.
         TargetKind::Phone => 1.5,
         // Organisation → opencorporates → registered address → Coords. Two hops.

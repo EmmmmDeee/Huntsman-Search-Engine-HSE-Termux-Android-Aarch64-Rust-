@@ -55,7 +55,7 @@ pub fn should_skip_external_ip(ip: &str) -> bool {
 /// (0.0.0.0/8) / broadcast / multicast.
 ///
 /// IPv6: loopback (::1) / unspecified (::) / multicast (ff00::/8) / unique-local
-/// (fc00::/7) / link-local (fe80::/10).
+/// (fc00::/7) / link-local (fe80::/10) / deprecated site-local (fec0::/10).
 ///
 /// **Embedded-IPv4 v6 forms.** Several v6 representations carry an IPv4 address
 /// the host may route to the underlying v4 — including internal ranges. These
@@ -79,6 +79,11 @@ pub fn is_private_addr(addr: std::net::IpAddr) -> bool {
                 || (v6.octets()[0] == 0xfc || v6.octets()[0] == 0xfd)
                 // Link-local (fe80::/10)
                 || (v6.octets()[0] == 0xfe && (v6.octets()[1] & 0xC0) == 0x80)
+                // Deprecated site-local (fec0::/10, RFC 3879) — withdrawn, but
+                // legacy gear still routes it as internal space, and the
+                // link-local mask (& 0xC0 == 0x80) does NOT cover it, so
+                // fec0::1 previously classified as public.
+                || (v6.octets()[0] == 0xfe && (v6.octets()[1] & 0xC0) == 0xC0)
                 // v6 forms embedding a routable IPv4 (NAT64 / 6to4 /
                 // IPv4-compatible): judge the embedded v4 by the v4 rules.
                 || embedded_ipv4(v6).is_some_and(is_private_v4)
@@ -107,9 +112,10 @@ fn is_private_v4(v4: std::net::Ipv4Addr) -> bool {
 }
 
 /// Extract the IPv4 address embedded in a v6 address that the host may route to
-/// the underlying v4 — NAT64 (`64:ff9b::/96`), 6to4 (`2002::/16`), and the
-/// deprecated IPv4-compatible (`::a.b.c.d`). IPv4-MAPPED (`::ffff:/96`) is
-/// already folded by `to_canonical` before [`is_private_addr`]'s V6 arm.
+/// the underlying v4 — NAT64 (well-known `64:ff9b::/96` and the RFC 8215
+/// local-use `64:ff9b:1::/48`), 6to4 (`2002::/16`), and the deprecated
+/// IPv4-compatible (`::a.b.c.d`). IPv4-MAPPED (`::ffff:/96`) is already folded
+/// by `to_canonical` before [`is_private_addr`]'s V6 arm.
 fn embedded_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
     let o = v6.octets();
     let v4 = |a, b, c, d| std::net::Ipv4Addr::new(a, b, c, d);
@@ -122,6 +128,16 @@ fn embedded_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
         && o[4..12].iter().all(|&b| b == 0)
     {
         return Some(v4(o[12], o[13], o[14], o[15]));
+    }
+
+    // Local-use NAT64 prefix 64:ff9b:1::/48 (RFC 8215) — reserved specifically
+    // for PRIVATE-network NAT64 deployments, so it is exactly the embedded-v4
+    // SSRF vector this function exists to close; only the well-known /96 was
+    // decoded before. RFC 6052's /48 layout places the v4 around the zero `u`
+    // octet (o[8]): high half at octets 6–7, low half at 9–10.
+    if o[0] == 0x00 && o[1] == 0x64 && o[2] == 0xff && o[3] == 0x9b && o[4] == 0x00 && o[5] == 0x01
+    {
+        return Some(v4(o[6], o[7], o[9], o[10]));
     }
 
     // 6to4 2002::/16 → bits 16..48 hold the v4.
@@ -357,6 +373,42 @@ mod tests {
         assert!(
             !is_private_ip("64:ff9b::101:101"),
             "NAT64 1.1.1.1 is public"
+        );
+    }
+
+    #[test]
+    fn deprecated_site_local_v6_rejected() {
+        // fec0::/10 (RFC 3879) is withdrawn but legacy gear still routes it as
+        // internal space; the link-local mask (& 0xC0 == 0x80) does not cover
+        // it, so these previously classified as public.
+        for ip in ["fec0::1", "fec0::a:b", "feff:ffff::1"] {
+            assert!(is_private_ip(ip), "expected site-local {ip} private");
+        }
+        // The boundary just below the site-local block: fe80::/10 (link-local)
+        // is already private; fe00::/9 outside both masks stays unclassified.
+        assert!(!is_private_ip("fe00::1"), "fe00::/9 is not site/link-local");
+    }
+
+    #[test]
+    fn local_use_nat64_embedded_private_v4_rejected() {
+        // RFC 8215 local-use NAT64 (64:ff9b:1::/48) exists precisely for
+        // private-network NAT64; RFC 6052's /48 layout puts the v4 at octets
+        // 6-7 and 9-10 (around the zero `u` octet). Embedded 127.0.0.1:
+        // groups = 64:ff9b:1:7f00:0:100:: (0x7f00 | u=00,0x00 | 0x01,..).
+        assert!(
+            is_private_ip("64:ff9b:1:7f00:0:100::"),
+            "local-use NAT64 embedding 127.0.0.1 must be refused"
+        );
+        // Embedded 169.254.169.254 → o6,7=0xa9fe; o9,10=0xa9,0xfe.
+        assert!(
+            is_private_ip("64:ff9b:1:a9fe:0:a9fe::"),
+            "local-use NAT64 embedding cloud metadata must be refused"
+        );
+        // Embedded PUBLIC 8.8.8.8 → allowed (the gate judges the v4, it does
+        // not blanket-ban the prefix).
+        assert!(
+            !is_private_ip("64:ff9b:1:808:0:808::"),
+            "local-use NAT64 embedding a public v4 stays allowed"
         );
     }
 

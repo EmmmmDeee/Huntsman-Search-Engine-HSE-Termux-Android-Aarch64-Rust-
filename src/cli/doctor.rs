@@ -98,23 +98,23 @@ pub(super) async fn cmd_doctor() -> Result<()> {
         println!("  (none set; all free modules still work)");
     }
 
-    // ── Unset keys + where to get them (mostly free) ──────────────────
+    // ── Unset keys + where to get them (mostly free), ranked by acquisition ──
     // The "failing modules" in a scan are usually just these — unconfigured
-    // optional providers, which now skip cleanly rather than erroring. List
-    // each missing key with its free-signup hint so enabling one is a copy-paste.
-    let missing: Vec<&&str> = keys::KNOWN_KEYS
-        .iter()
-        .filter(|k| !loaded.contains_key(**k))
-        .collect();
+    // optional providers, which skip cleanly rather than erroring. Ranked by
+    // ROI tier (see `rank_unset_keys`) so the operator registers the keys that
+    // unlock the most collection first, each with its free-signup hint.
+    let missing = rank_unset_keys(|k| loaded.contains_key(k));
     if !missing.is_empty() {
         println!(
-            "\nUnset keys ({}): modules needing these skip cleanly (not errors).",
+            "\nUnset keys ({}), ranked by acquisition value — modules needing \
+             these skip cleanly (not errors). Register multiplier-tier keys first:",
             missing.len()
         );
-        for k in missing {
+        for (k, roi) in missing {
+            let tier = roi.label();
             match keys::signup_hint(k) {
-                Some(hint) => println!("  - {k}\n      → {hint}"),
-                None => println!("  - {k}"),
+                Some(hint) => println!("  - [{tier:<10}] {k}\n      → {hint}"),
+                None => println!("  - [{tier:<10}] {k}"),
             }
         }
     }
@@ -154,4 +154,98 @@ pub(super) async fn cmd_doctor() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Rank every unset `KNOWN_KEYS` env var by acquisition ROI, highest first.
+///
+/// `key_roi` tiers a service by how far a key cascades into more collection:
+/// a **Multiplier** (Shodan, Hunter, the breach pools, …) discovers
+/// infrastructure / identities / credentials that feed back into MORE modules
+/// and MORE keys; **Expansion** adds depth without chaining; **Terminal** is
+/// one-and-done. So the operator who registers a multiplier-tier key first
+/// unlocks the most downstream acquisition per signup. Ties within a tier sort
+/// by name for stable, run-to-run-identical output.
+///
+/// Pure over an `is_present` predicate (true if the env var is already set) so
+/// it is unit-testable without touching the filesystem or environment.
+fn rank_unset_keys(
+    is_present: impl Fn(&str) -> bool,
+) -> Vec<(&'static str, crate::util::key_roi::KeyRoi)> {
+    let env_to_service: std::collections::HashMap<&str, &str> =
+        crate::util::service_defs::service_defs()
+            .iter()
+            .map(|d| (d.env_var, d.name))
+            .collect();
+    let mut missing: Vec<(&'static str, crate::util::key_roi::KeyRoi)> = keys::KNOWN_KEYS
+        .iter()
+        .copied()
+        .filter(|k| !is_present(k))
+        .map(|k| {
+            // Map env var → service for tiering; an env var with no service_defs
+            // entry classifies via its own string, which key_roi defaults to the
+            // middle (Expansion) tier — never silently dropped from the ranking.
+            let svc = env_to_service.get(k).copied().unwrap_or(k);
+            (k, crate::util::key_roi::classify(svc))
+        })
+        .collect();
+    // Highest ROI first (Terminal < Expansion < Multiplier), ties broken by name.
+    missing.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    missing
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::key_roi::KeyRoi;
+
+    #[test]
+    fn unset_keys_rank_multiplier_first_then_name() {
+        // Nothing configured → every KNOWN_KEY is unset and ranked.
+        let ranked = rank_unset_keys(|_| false);
+        assert_eq!(ranked.len(), keys::KNOWN_KEYS.len());
+
+        // Tiers are non-increasing across the whole list (Multiplier block,
+        // then Expansion, then Terminal — never a higher tier after a lower).
+        for w in ranked.windows(2) {
+            assert!(
+                w[0].1 >= w[1].1,
+                "ROI must be non-increasing: {:?} ({:?}) before {:?} ({:?})",
+                w[0].0,
+                w[0].1,
+                w[1].0,
+                w[1].1
+            );
+        }
+        // Within a tier, names are ascending.
+        for w in ranked.windows(2) {
+            if w[0].1 == w[1].1 {
+                assert!(w[0].0 < w[1].0, "within-tier ties sort by name");
+            }
+        }
+
+        // A known multiplier (Shodan) must outrank a known terminal
+        // (IP2Location) — the whole point of the ranking.
+        let pos = |env: &str| ranked.iter().position(|(k, _)| *k == env);
+        if let (Some(shodan), Some(ip2)) =
+            (pos("HUNTSMAN_SHODAN_KEY"), pos("HUNTSMAN_IP2LOCATION_KEY"))
+        {
+            assert!(
+                shodan < ip2,
+                "multiplier Shodan must precede terminal IP2Location"
+            );
+        }
+        // The first entry is multiplier-tier (there are several).
+        assert_eq!(ranked[0].1, KeyRoi::Multiplier);
+    }
+
+    #[test]
+    fn present_keys_are_excluded_from_the_ranking() {
+        let first = keys::KNOWN_KEYS[0];
+        let ranked = rank_unset_keys(|k| k == first);
+        assert!(
+            !ranked.iter().any(|(k, _)| *k == first),
+            "a configured key must not appear in the unset ranking"
+        );
+        assert_eq!(ranked.len(), keys::KNOWN_KEYS.len() - 1);
+    }
 }

@@ -4,7 +4,26 @@
 //! provides equivalent named configurations that operators can select via
 //! CLI (`--profile passive`) or API (`"profile": "passive"`).
 
+use crate::core::module::ModuleCategory;
 use crate::core::scan::ScanOptions;
+
+/// The functional categories a skip-trace (debtor-location) scan runs. Person
+/// identity, contact (phone/email), physical location (geo), social/web
+/// accounts, corporate/asset records, open-web search, and breach corpora —
+/// everything that helps fix *where a person is and how to reach/recover from
+/// them*. Deliberately excludes the categories that are pure noise for locating
+/// a human: DNS/cert recon, network infrastructure, threat intel, and the
+/// operator's own local sensors. Shared with the focus guard test.
+pub const SKIPTRACE_CATEGORIES: &[ModuleCategory] = &[
+    ModuleCategory::People,
+    ModuleCategory::Phone,
+    ModuleCategory::Geo,
+    ModuleCategory::Email,
+    ModuleCategory::Social,
+    ModuleCategory::Corporate,
+    ModuleCategory::Search,
+    ModuleCategory::Breach,
+];
 
 pub fn resolve_profile(name: &str) -> Option<ScanOptions> {
     match name {
@@ -14,6 +33,8 @@ pub fn resolve_profile(name: &str) -> Option<ScanOptions> {
         "footprint" => Some(footprint()),
         "investigate" => Some(investigate()),
         "fast" => Some(fast()),
+        // `locate` is an alias for the skip-trace (debtor-location) profile.
+        "skiptrace" | "locate" => Some(skiptrace()),
         _ => None,
     }
 }
@@ -37,6 +58,13 @@ pub fn list_profiles() -> Vec<(&'static str, &'static str)> {
         (
             "fast",
             "Depth-0, free-only, 8 concurrent — quick surface scan",
+        ),
+        (
+            "skiptrace",
+            "Debtor / person location: focuses person, contact, geo, social, \
+             corporate-asset, search and breach modules; geo-converging \
+             expansion to fix current address, phone, employer and associates \
+             (alias: locate)",
         ),
     ]
 }
@@ -109,6 +137,44 @@ fn fast() -> ScanOptions {
     }
 }
 
+/// Skip-trace / debtor-location profile — find *where a person is and how to
+/// reach or recover from them*.
+///
+/// The objective differs from a security investigation: the prize is the
+/// subject's **current address, phone, employer, assets and associates**, not
+/// their infrastructure. So this profile:
+///   * **Focuses** dispatch on the person-locating categories
+///     ([`SKIPTRACE_CATEGORIES`]) — person/contact/geo/social/corporate/search/
+///     breach — and skips DNS, network-infrastructure, threat-intel and local
+///     sensor modules that contribute nothing to locating a human. The focus is
+///     by category, so it can't drift as modules are renamed and picks up new
+///     in-category sources automatically.
+///   * **Expands geo-convergently** ([`crate::core::scan::ExpansionStrategy::GeoConverge`]): each
+///     round prioritises the candidates one hop from an Address/Coordinates, so
+///     the scan converges on the residence rather than fanning out — exactly the
+///     skip-tracer's "tighten the net around where they live" instinct.
+///   * Runs **depth 3** at a slightly relaxed `min_expand_confidence` (0.45) so
+///     softer-but-on-topic leads — an alias, a relative sharing a surname, a
+///     prior address — are still chased, then re-scanned for *their* contacts.
+///   * Leaves `free_only` off so keyed people-search / breach providers run when
+///     a key is present and degrade gracefully when not, and keeps
+///     `regional_search` on (AU directories like the white pages are prime
+///     skip-trace sources). Entity/wall-time caps stay phone-safe for Termux.
+fn skiptrace() -> ScanOptions {
+    use crate::core::scan::ExpansionStrategy;
+    ScanOptions {
+        category_focus: SKIPTRACE_CATEGORIES.to_vec(),
+        depth: 3,
+        min_expand_confidence: 0.45,
+        max_concurrent: 4,
+        max_entities: Some(800),
+        max_wall_time_secs: Some(420),
+        expansion_strategy: ExpansionStrategy::GeoConverge,
+        regional_search: true,
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,10 +216,49 @@ mod tests {
     #[test]
     fn list_profiles_returns_all() {
         let profiles = list_profiles();
-        assert_eq!(profiles.len(), 5);
+        assert_eq!(profiles.len(), 6);
         assert!(profiles.iter().any(|(n, _)| *n == "recommended"));
         assert!(profiles.iter().any(|(n, _)| *n == "passive"));
         assert!(profiles.iter().any(|(n, _)| *n == "footprint"));
+        assert!(profiles.iter().any(|(n, _)| *n == "skiptrace"));
+    }
+
+    #[test]
+    fn skiptrace_focuses_person_location_and_geo_converges() {
+        let opts = resolve_profile("skiptrace").unwrap();
+        // Focused on the person-locating categories — and pointedly NOT on the
+        // noise categories (infra/threat/DNS/sensor).
+        assert_eq!(opts.category_focus, SKIPTRACE_CATEGORIES.to_vec());
+        for want in [
+            ModuleCategory::People,
+            ModuleCategory::Phone,
+            ModuleCategory::Geo,
+            ModuleCategory::Corporate,
+            ModuleCategory::Breach,
+        ] {
+            assert!(opts.category_focus.contains(&want), "must focus {want:?}");
+        }
+        for noise in [
+            ModuleCategory::Infrastructure,
+            ModuleCategory::Threat,
+            ModuleCategory::DnsRecon,
+            ModuleCategory::Sensor,
+        ] {
+            assert!(
+                !opts.category_focus.contains(&noise),
+                "must NOT spend budget on {noise:?}"
+            );
+        }
+        // Converges on where the person lives, expands a few hops, stays bounded.
+        assert_eq!(
+            opts.expansion_strategy,
+            crate::core::scan::ExpansionStrategy::GeoConverge
+        );
+        assert_eq!(opts.depth, 3);
+        assert!(opts.min_expand_confidence <= 0.45);
+        assert!(opts.max_entities.is_some() && opts.max_wall_time_secs.is_some());
+        // `locate` is an alias for the same profile.
+        assert_eq!(resolve_profile("locate").unwrap().depth, opts.depth);
     }
 
     #[test]
