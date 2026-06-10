@@ -111,6 +111,12 @@ fn core_does_not_import_util_directly() {
                 // finalise step uses it to collapse postcode-variant Address
                 // entities (e.g. "X, NSW" / "X, NSW 2582") into one.
                 && !line.contains("util::address_au::locality_key")
+                // Pure, dependency-free AU state/territory resolver (abbrev /
+                // full name / postcode → canonical code). Same leaf category as
+                // `locality_key`: no state, no I/O. AU-056 uses it to derive the
+                // jurisdiction an Address asserts, to cross-check it against the
+                // `au-state:` tag a Coordinates entity carries.
+                && !line.contains("util::address_au::state_code")
                 // Pure, dependency-free digit-only normaliser — the same leaf
                 // category as the ABN checksums above; `core::scan` uses it in
                 // the target auto-detector to strip separators from a candidate
