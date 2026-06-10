@@ -299,6 +299,55 @@ fn import_txt_parses_victim_section_in_normal_order() {
 }
 
 #[test]
+fn dossier_plaintext_password_and_session_token_become_linkable_credentials() {
+    use crate::core::entity::EntityKind;
+    // Stealer-log fields — a reused plaintext `password` and a `session` token —
+    // must surface as Credential entities tagged for AU-047, carrying each
+    // entry's email so the reused-secret link can fire. Like the hash path,
+    // reuse across entries must survive the uid-merge (both emails on one
+    // credential), not be value-deduped away.
+    let dossier = "Entry #1:\n   \u{2022} email: a@corp.io\n   \
+                   \u{2022} password: Tr0ub4dor&3xK9!q\n   \
+                   \u{2022} session: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15\n\
+                   Entry #2:\n   \u{2022} email: b@other.io\n   \
+                   \u{2022} password: Tr0ub4dor&3xK9!q\n";
+    let (mut ents, stats) = super::parse_dossier(dossier, "sid");
+    super::deduplicate_by_uid(&mut ents);
+
+    // The reused password is one merged Credential tagged plaintext-credential
+    // carrying BOTH accounts' emails (so AU-047 links them).
+    let pw = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Credential && e.value == "Tr0ub4dor&3xK9!q")
+        .expect("plaintext password credential");
+    assert!(pw.has_tag("plaintext-credential"));
+    let emails: std::collections::BTreeSet<&str> = pw
+        .evidence
+        .iter()
+        .filter_map(|ev| ev.attributes.get("email").map(String::as_str))
+        .collect();
+    assert!(
+        emails.contains("a@corp.io") && emails.contains("b@other.io"),
+        "reused password must retain both accounts' emails, got {emails:?}"
+    );
+
+    // The session token surfaces tagged session-token.
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Credential && e.has_tag("session-token")),
+        "session token must surface as a session-token credential"
+    );
+    assert!(stats.credentials >= 2);
+
+    // End-to-end: the correlator links the two accounts on the reused password.
+    let hits = crate::core::correlator::correlate_entities(&ents, "sid");
+    assert!(
+        hits.iter().any(|c| c.rule_id == "AU-047"),
+        "reused plaintext password across two entries must fire AU-047"
+    );
+}
+
+#[test]
 fn dossier_entry_address_field_becomes_a_first_class_entity() {
     use crate::core::entity::EntityKind;
     // Regression: `address` was missing from the entry field whitelist, so the

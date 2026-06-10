@@ -2378,6 +2378,75 @@ fn au047_links_identities_by_a_reused_unique_secret_only() {
 }
 
 #[test]
+fn au047_links_on_reused_plaintext_password_and_session_token() {
+    // Password reuse, session/cookie tokens and raw credentials are all valid
+    // cross-correlation join-keys. AU-047 must link on a reused HIGH-ENTROPY
+    // plaintext password (High — slight coincidence risk) and a reused
+    // session/cookie token (Critical — random by construction), while still
+    // refusing a common/weak password (no false identities).
+    let cred = |value: &str, tags: &[&str], emails: &[&str]| {
+        let mut c = Entity::new(EntityKind::Credential, value, 0.6, "scan");
+        for t in tags {
+            c.tag(*t);
+        }
+        for em in emails {
+            c.add_evidence(Evidence::new("import:dossier", "breach entry").with_attr("email", *em));
+        }
+        c
+    };
+    let a = Entity::new(EntityKind::Email, "burner1@proton.me", 0.6, "scan");
+    let b = Entity::new(EntityKind::Email, "real.name@gmail.com", 0.6, "scan");
+
+    // Reused high-entropy plaintext password → High link.
+    let pw = cred(
+        "Tr0ub4dor&3xK9!q",
+        &["plaintext-credential"],
+        &[&a.value, &b.value],
+    );
+    let hits =
+        super::rules::rule_au_047_reused_secret_identity(&[pw, a.clone(), b.clone()], "scan", 0);
+    assert_eq!(hits.len(), 1, "reused strong password must link accounts");
+    assert_eq!(hits[0].severity, super::Severity::High);
+    assert!(hits[0].description.contains("password"));
+
+    // Reused session/cookie token → Critical link.
+    let tok = cred(
+        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+        &["session-token"],
+        &[&a.value, &b.value],
+    );
+    let hits =
+        super::rules::rule_au_047_reused_secret_identity(&[tok, a.clone(), b.clone()], "scan", 0);
+    assert_eq!(hits.len(), 1, "reused session token must link accounts");
+    assert_eq!(hits[0].severity, super::Severity::Critical);
+    assert!(hits[0].description.contains("session/cookie token"));
+
+    // PRECISION: a reused COMMON password must NOT link (millions share it).
+    let weak = cred(
+        "password123",
+        &["plaintext-credential"],
+        &[&a.value, &b.value],
+    );
+    assert!(
+        super::rules::rule_au_047_reused_secret_identity(&[weak, a.clone(), b.clone()], "scan", 0)
+            .is_empty(),
+        "a common password must not manufacture an identity link"
+    );
+
+    // PRECISION: a bare hex digest WITHOUT session-token provenance stays
+    // unlinkable (it may be an unsalted hash of a common password).
+    let bare_hex = cred(
+        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+        &[], // no session-token tag
+        &[&a.value, &b.value],
+    );
+    assert!(
+        super::rules::rule_au_047_reused_secret_identity(&[bare_hex, a, b], "scan", 0).is_empty(),
+        "an untagged hex digest must not link (unsalted-hash collision risk)"
+    );
+}
+
+#[test]
 fn au048_links_accounts_sharing_a_public_key() {
     // A public key published by two accounts → cryptographic proof of one
     // controller (same private key). Single account → no link.

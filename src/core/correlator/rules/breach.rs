@@ -23,30 +23,170 @@ fn is_salted_hash(s: &str) -> bool {
         || s.starts_with("$5$") // sha256crypt
 }
 
-/// True if `e` is a **globally-unique secret artifact** whose reuse across
-/// distinct identities is near-certain evidence of a single controller: a salted
-/// password hash, a cryptocurrency wallet address, or an API key. These are the
-/// artifacts a privacy-conscious target carries across otherwise-compartmentalised
-/// accounts — the OPSEC seam that unmasks the hardest people to find.
-fn is_unique_secret(e: &Entity) -> bool {
+/// All-ASCII-hex of digest length — the shape of an **unsalted** password hash
+/// (md5/sha1/sha256/ntlm) or a raw hex token. Never treated as a plaintext
+/// password: an unsalted digest may be the hash of a *common* password, so
+/// linking identities on it manufactures false positives (the original AU-047
+/// gate refused exactly these). A genuinely-random hex token links only via
+/// explicit `session-token` provenance, not this shape.
+fn is_hex_digest(s: &str) -> bool {
+    let s = s.trim();
+    s.len() >= 16 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Estimated search-space entropy in bits: `len × log2(alphabet present)`. A
+/// deliberately conservative proxy for "how rare is this exact string", used
+/// only to decide whether a reused plaintext credential / token is unique enough
+/// that sharing it across accounts is a real controller link rather than a
+/// common-password coincidence.
+fn estimated_entropy_bits(s: &str) -> f64 {
+    let mut alphabet = 0u32;
+    if s.chars().any(|c| c.is_ascii_lowercase()) {
+        alphabet += 26;
+    }
+    if s.chars().any(|c| c.is_ascii_uppercase()) {
+        alphabet += 26;
+    }
+    if s.chars().any(|c| c.is_ascii_digit()) {
+        alphabet += 10;
+    }
+    if s.chars()
+        .any(|c| !c.is_ascii_alphanumeric() && !c.is_whitespace())
+    {
+        alphabet += 33; // ASCII punctuation/symbols
+    }
+    if alphabet == 0 {
+        return 0.0;
+    }
+    s.chars().count() as f64 * f64::from(alphabet).log2()
+}
+
+/// The handful of ubiquitous passwords whose reuse links nobody — millions share
+/// them, so identity-linking on them is a false positive even when they clear
+/// the entropy floor. Compared lowercased. (Most are short enough to fail the
+/// length/entropy gate anyway; this catches the long, common ones.)
+fn is_common_password(s: &str) -> bool {
+    const COMMON: &[&str] = &[
+        "password",
+        "password1",
+        "password123",
+        "passw0rd",
+        "123456",
+        "1234567",
+        "12345678",
+        "123456789",
+        "1234567890",
+        "qwerty",
+        "qwerty123",
+        "qwertyuiop",
+        "1q2w3e4r",
+        "abc123",
+        "111111",
+        "000000",
+        "123123",
+        "iloveyou",
+        "admin",
+        "admin123",
+        "letmein",
+        "welcome",
+        "welcome1",
+        "monkey",
+        "sunshine",
+        "princess",
+        "dragon",
+        "football",
+        "baseball",
+        "superman",
+        "trustno1",
+        "master",
+        "hello123",
+        "changeme",
+        "secret",
+        "starwars",
+    ];
+    COMMON.contains(&s.trim().to_ascii_lowercase().as_str())
+}
+
+/// A **reused plaintext password** rare enough that two accounts carrying the
+/// identical value share one controller. Excludes hex digests (unsalted hashes —
+/// possibly of a common password), the ubiquitous-password denylist, and
+/// low-variety strings (`aaaaaaaaaa`); requires ≥10 chars, ≥6 distinct chars and
+/// ≥50 bits of estimated entropy.
+fn is_reusable_password(s: &str) -> bool {
+    let s = s.trim();
+    if s.chars().count() < 10 || is_hex_digest(s) || is_common_password(s) {
+        return false;
+    }
+    let distinct = s.chars().collect::<std::collections::BTreeSet<_>>().len();
+    distinct >= 6 && estimated_entropy_bits(s) >= 50.0
+}
+
+/// A **session / cookie token** substantial enough to be a unique controller
+/// key: a long, high-variety random string. Tokens are random by construction,
+/// so (unlike a password) a hex/base64 shape is expected and allowed — the
+/// `session-token` tag is the provenance that distinguishes it from an unsalted
+/// password hash. Requires ≥16 chars, ≥8 distinct chars and ≥64 bits.
+fn is_substantial_token(s: &str) -> bool {
+    let s = s.trim();
+    let distinct = s.chars().collect::<std::collections::BTreeSet<_>>().len();
+    s.chars().count() >= 16 && distinct >= 8 && estimated_entropy_bits(s) >= 64.0
+}
+
+/// True if `e` is a secret artifact unique enough that its **reuse across
+/// distinct identities** is strong evidence of a single controller. These are
+/// the OPSEC seams that unmask the hardest people to find:
+///   * a **salted** password hash, a crypto wallet address, or an API key —
+///     globally unique by construction (near-certain);
+///   * a **reused high-entropy plaintext password** ([`is_reusable_password`]) —
+///     password reuse across otherwise-separate accounts;
+///   * a **session / cookie token** ([`is_substantial_token`], carried with the
+///     `session-token` tag) — a captured session identifier shared across
+///     accounts/sites.
+///
+/// All three are legitimate cross-correlation join-keys; the entropy/denylist
+/// gates keep a *common* password from manufacturing false identities.
+fn is_linkable_secret(e: &Entity) -> bool {
     match e.kind {
-        EntityKind::Credential => is_salted_hash(&e.value),
+        EntityKind::Credential => {
+            is_salted_hash(&e.value)
+                || (e.has_tag("session-token") && is_substantial_token(&e.value))
+                || is_reusable_password(&e.value)
+        }
         EntityKind::CryptoAddress | EntityKind::ApiKey => true,
         _ => false,
     }
 }
 
+/// Human label for the reused artifact, for the AU-047 description.
+fn secret_label(e: &Entity) -> &'static str {
+    if e.has_tag("session-token") {
+        return "session/cookie token";
+    }
+    match e.kind {
+        EntityKind::Credential if is_salted_hash(&e.value) => "password hash",
+        EntityKind::Credential => "password",
+        EntityKind::CryptoAddress => "wallet address",
+        EntityKind::ApiKey => "API key",
+        _ => "secret",
+    }
+}
+
 /// AU-047 — Reused-secret identity link.
 ///
-/// The unmasking rule for compartmentalised targets. When one globally-unique
-/// secret (a salted password hash, crypto address, or API key — see
-/// [`is_unique_secret`]) is observed against **≥2 distinct identities** (the
-/// email/username the breach record carries in its evidence), those identities
-/// are tied to a single controller: someone reused a secret across accounts they
-/// kept otherwise separate. This is the highest-value link in the whole engine
-/// for finding hard-to-find people, and it is precise *by gate* — it can only
-/// fire on a uniquely-derived artifact, never a common password — so it links
-/// the real person, not phantoms. Critical severity.
+/// The unmasking rule for compartmentalised targets. When one linkable secret
+/// (see [`is_linkable_secret`]) is observed against **≥2 distinct identities**
+/// (the email/username the breach record carries in its evidence), those
+/// identities are tied to a single controller: someone reused a secret across
+/// accounts they kept otherwise separate. The linkable set covers all three of
+/// the legitimate cross-correlation join-keys — a salted hash / crypto address /
+/// API key, a **reused high-entropy plaintext password**, and a **session /
+/// cookie token** — while the entropy + denylist gates keep a *common* password
+/// from manufacturing phantom identities.
+///
+/// Severity reflects coincidence risk: a salted hash, crypto address, API key or
+/// random session token is globally unique by construction (**Critical**); a
+/// reused plaintext password is a strong but marginally less certain link, since
+/// two people could conceivably pick the same strong password (**High**).
 pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
     entities: &[Entity],
     scan_id: &str,
@@ -54,7 +194,7 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
 ) -> Vec<Correlation> {
     use std::collections::BTreeSet;
     let mut out = Vec::new();
-    for secret in entities.iter().filter(|e| is_unique_secret(e)) {
+    for secret in entities.iter().filter(|e| is_linkable_secret(e)) {
         // The distinct ACCOUNTS this exact secret was seen against. Keyed on the
         // email — the account identifier — drawn from the breach-record evidence
         // the importer accumulates onto the secret (one evidence record per
@@ -90,14 +230,25 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
                 uids.push(e.uid.clone());
             }
         }
+        // A reused PLAINTEXT password is a strong but marginally less certain
+        // link than a construction-unique artifact (salted hash / crypto / API
+        // key / random session token), so it lands one tier lower.
+        let plaintext_password = secret.kind == EntityKind::Credential
+            && !secret.has_tag("session-token")
+            && !is_salted_hash(&secret.value);
+        let severity = if plaintext_password {
+            Severity::High
+        } else {
+            Severity::Critical
+        };
         let listed: Vec<&str> = emails.iter().take(6).map(String::as_str).collect();
         out.push(Correlation {
             rule_id: "AU-047".into(),
             rule_name: "Reused-secret identity link".into(),
-            severity: Severity::Critical,
+            severity,
             description: format!(
                 "A single reused {} ties {} otherwise-separate accounts to one controller (secret reuse across accounts): {}",
-                secret.kind,
+                secret_label(secret),
                 emails.len(),
                 listed.join(", ")
             ),

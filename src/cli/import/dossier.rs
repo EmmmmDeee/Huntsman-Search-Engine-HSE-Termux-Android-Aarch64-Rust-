@@ -102,6 +102,14 @@ pub(super) fn parse_dossier(
                 // was never accumulated into the entry, so that whole block was
                 // dead code and every dossier address was silently dropped.
                 "address",
+                // Stealer-log / breach credential artifacts — first-class
+                // cross-correlation join-keys for AU-047 (reused-secret identity
+                // link). A plaintext `password` reused, or a `cookie`/`session`
+                // token shared, across separate accounts ties them to one
+                // controller. Surfaced as Credential entities below.
+                "password",
+                "cookie",
+                "session",
             ];
             if !val.is_empty() && FIELDS.contains(&key.as_str()) {
                 entry.push((key, val.to_string()));
@@ -225,6 +233,29 @@ fn emit_dossier_entry(
                 Entity::new(EntityKind::Credential, h, 0.60, sid),
                 "password-hash",
             );
+        }
+    }
+    // Plaintext credential reuse and session/cookie tokens are first-class
+    // cross-correlation join-keys (AU-047): the same high-entropy password, or
+    // the same session token, across separate accounts ties them to one
+    // controller — and stealer-log compilations carry exactly these. Emit each
+    // as a Credential carrying THIS entry's full evidence (so the implicated
+    // email travels with it) and — exactly like the hash above — never
+    // value-dedup here, so reuse across entries survives to the uid-merge that
+    // gathers every account's email onto the one secret. AU-047's entropy gate
+    // decides linkability; a weak/common password is recorded but links nobody.
+    for (field, tag, min_len) in [
+        ("password", "plaintext-credential", 6usize),
+        ("cookie", "session-token", 12usize),
+        ("session", "session-token", 12usize),
+    ] {
+        if let Some(v) = get(field)
+            && v.chars().count() >= min_len
+        {
+            if seen.insert(format!("cr:{v}")) {
+                stats.credentials += 1;
+            }
+            push(Entity::new(EntityKind::Credential, v, 0.55, sid), tag);
         }
     }
     // A dossier entry's `ip` / `phone` / `domain` are first-class pivotable seeds,
