@@ -194,6 +194,60 @@ fn modules_md_lists_every_registered_module() {
 }
 
 #[test]
+fn every_module_maps_to_valid_attack_reconnaissance_techniques() {
+    // Every registered module declares the MITRE ATT&CK Reconnaissance technique
+    // IDs its collection implements (defaulted from category, overridden where
+    // the category is too coarse). This guard pins that across ALL modules:
+    //   1. every declared ID is a real catalogue entry (no typo / stale ID);
+    //   2. the active scanner maps to Active Scanning, not passive DB search;
+    //   3. the catalogue's coverage spans the core OSINT-collection techniques,
+    //      so the ATT&CK alignment is substantive rather than vacuous.
+    use huntsman_search_engine::core::attack;
+    let modules = huntsman_search_engine::modules::registry();
+
+    let mut covered = std::collections::BTreeSet::new();
+    for m in &modules {
+        for id in m.attack_techniques() {
+            assert!(
+                attack::technique(id).is_some(),
+                "module `{}` claims ATT&CK technique `{id}` absent from the catalogue",
+                m.name()
+            );
+            covered.insert(*id);
+        }
+    }
+
+    // The active scanner is the deliberate per-module override away from its
+    // (passive) category default.
+    let portscan = modules
+        .iter()
+        .find(|m| m.name() == "portscan")
+        .expect("portscan registered");
+    assert!(
+        portscan.attack_techniques().contains(&"T1595.001"),
+        "portscan must map to Active Scanning (T1595.001), got {:?}",
+        portscan.attack_techniques()
+    );
+
+    // Coverage must span the backbone Reconnaissance techniques — if any of
+    // these is uncovered, a whole class of collection has silently dropped out.
+    for id in [
+        "T1589.001", // Credentials (breach)
+        "T1589.002", // Email Addresses
+        "T1590.002", // DNS
+        "T1591.001", // Physical Locations (geo)
+        "T1593.001", // Social Media
+        "T1593.002", // Search Engines
+        "T1596.002", // WHOIS
+    ] {
+        assert!(
+            covered.contains(id),
+            "no module covers ATT&CK Reconnaissance technique {id} — collection gap"
+        );
+    }
+}
+
+#[test]
 fn skiptrace_focus_maps_to_the_right_real_modules() {
     // The `skiptrace` profile restricts dispatch by category. This guard pins
     // that the focus resolves to a healthy, correct set of REAL modules — so a

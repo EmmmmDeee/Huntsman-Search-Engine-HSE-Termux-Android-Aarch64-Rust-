@@ -88,6 +88,14 @@ impl Module for PortScan {
         ModuleCategory::Infrastructure
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Active, target-touching scanning — ATT&CK T1595 Active Scanning, NOT
+        // the passive "search open technical databases" the Infrastructure
+        // category defaults to. This is the case the per-module override exists
+        // for: the functional category is too coarse for the actual technique.
+        &["T1595", "T1595.001"]
+    }
+
     fn is_passive(&self) -> bool {
         // Touches the target — excluded from `--passive-only` scans.
         false

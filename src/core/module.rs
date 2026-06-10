@@ -135,6 +135,12 @@ pub struct ModuleInfo {
     /// module hasn't declared its output. Used by the UI to render the
     /// pivot-chain flow.
     pub produces: Vec<String>,
+    /// MITRE ATT&CK® Reconnaissance (TA0043) technique IDs this module's
+    /// collection implements (e.g. `["T1596.002"]` for WHOIS). Lets a finding be
+    /// reported in ATT&CK terms and the catalogue's Reconnaissance coverage be
+    /// assessed. Defaults from the module's category; see
+    /// [`Module::attack_techniques`].
+    pub attack_techniques: Vec<&'static str>,
 }
 
 /// All modules implement this trait. Default methods give sensible answers
@@ -245,6 +251,21 @@ pub trait Module: Send + Sync {
         &[]
     }
 
+    /// The MITRE ATT&CK® Reconnaissance (TA0043) technique IDs this module's
+    /// collection implements.
+    ///
+    /// Default: derived from the module's [`category`](Module::category) via
+    /// [`crate::core::attack::techniques_for_category`] — the category already
+    /// encodes what kind of OSINT collection the module performs, so the mapping
+    /// lives in one place. Override only when the category is too coarse for the
+    /// module's actual technique (e.g. an *active* scanner sitting in the
+    /// `Infrastructure` category maps to Active Scanning, not Search Open
+    /// Technical Databases). Returned IDs must exist in
+    /// [`crate::core::attack::RECONNAISSANCE`]; an architecture test enforces it.
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        crate::core::attack::techniques_for_category(self.category())
+    }
+
     /// Built from the other methods — don't override.
     fn info(&self) -> ModuleInfo {
         ModuleInfo {
@@ -264,6 +285,7 @@ pub trait Module: Send + Sync {
                 .iter()
                 .map(std::string::ToString::to_string)
                 .collect(),
+            attack_techniques: self.attack_techniques().to_vec(),
         }
     }
 }
@@ -545,6 +567,8 @@ mod tests {
             crate::core::dependency::ALL_TARGET_KINDS.len()
         );
         assert!(info.produces.is_empty());
+        // Category Other claims no ATT&CK Reconnaissance technique.
+        assert!(info.attack_techniques.is_empty());
     }
 
     struct CategorisedModule;
@@ -578,6 +602,17 @@ mod tests {
         assert_eq!(info.category, ModuleCategory::DnsRecon);
         assert_eq!(info.consumes, vec!["domain"]);
         assert_eq!(info.produces, vec!["ip_address", "domain"]);
+        // ATT&CK techniques default from the category (DnsRecon → DNS/WHOIS/cert
+        // open-technical-database recon), with every ID a real catalogue entry.
+        assert_eq!(
+            info.attack_techniques,
+            crate::core::attack::techniques_for_category(ModuleCategory::DnsRecon)
+        );
+        assert!(
+            info.attack_techniques
+                .iter()
+                .all(|id| crate::core::attack::technique(id).is_some())
+        );
     }
 
     #[test]
