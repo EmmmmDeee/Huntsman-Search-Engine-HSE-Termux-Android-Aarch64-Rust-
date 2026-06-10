@@ -301,6 +301,7 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Common errors + fixes |
 | [`docs/FAULT_TREE_ANALYSIS.md`](docs/FAULT_TREE_ANALYSIS.md) | System-wide FTA: failure modes, controls + open risks |
 | [`docs/RUNTIME_INDEPENDENCE.md`](docs/RUNTIME_INDEPENDENCE.md) | Runtime AI-independence, parity & reproducibility charter |
+| [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) | Source-tree conventions: layering, one-module-per-file, single-source vocabularies, determinism, drift-guards |
 | [`CHANGELOG.md`](CHANGELOG.md) | Version history |
 
 ---
