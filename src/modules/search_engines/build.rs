@@ -340,7 +340,15 @@ pub(super) fn build_entities(
             {
                 let name = username.replace(['_', '-'], " ");
                 let name_key = name.to_lowercase();
-                if seen_domains.insert(format!("@person:{name_key}")) {
+                // The people-search path encodes a name only if it's the
+                // SUBJECT's: these aggregator result pages cross-link to
+                // unrelated index entries (a "Haigen Bamford" search surfaced
+                // `peekyou.com/_bochary` → a phantom Person "bochary"). Require
+                // the extracted name to share a target term before trusting it.
+                let on_target = terms
+                    .iter()
+                    .any(|t| t.len() >= 3 && name_key.split_whitespace().any(|w| w == t));
+                if on_target && seen_domains.insert(format!("@person:{name_key}")) {
                     let mut e = Entity::new(EntityKind::Person, &name, 0.50, scan_id);
                     e.tag("search-discovered");
                     e.tag("people-search");
