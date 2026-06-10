@@ -99,6 +99,53 @@ pub fn is_in_australia(lat: f64, lon: f64) -> bool {
     is_valid_coords(lat, lon) && (-44.0..=-10.0).contains(&lat) && (112.0..=154.0).contains(&lon)
 }
 
+/// Resolve a coordinate to the Australian state/territory whose bounding box
+/// contains it, returning the canonical abbreviation (`QLD`, `NSW`, `VIC`,
+/// `SA`, `WA`, `TAS`, `NT`, `ACT`) or `None` when the point is outside
+/// Australia. A coarse, **offline** companion to [`is_in_australia`]: it lets a
+/// raw coordinate seed be attributed to a state with no network call, so an
+/// AU-focused scan can sharpen "somewhere in Australia" to a jurisdiction and
+/// cross-check it against state-derived signals (postcodes, addresses).
+///
+/// These are rectangular approximations, not polygons, so points near a shared
+/// border can be misattributed and the boxes overlap. The ACT (a small enclave
+/// inside NSW) is therefore tested first so it isn't swallowed by the NSW box;
+/// the remaining states are mostly disjoint in longitude/latitude. This is a
+/// hint to prioritise on-region leads, never proof of jurisdiction.
+///
+/// ```
+/// use huntsman_search_engine::util::geo::au_state_for_coords;
+///
+/// assert_eq!(au_state_for_coords(-27.4766, 153.0166), Some("QLD")); // Brisbane
+/// assert_eq!(au_state_for_coords(-31.9523, 115.8613), Some("WA"));  // Perth
+/// assert_eq!(au_state_for_coords(-35.2809, 149.1300), Some("ACT")); // Canberra
+/// assert_eq!(au_state_for_coords(40.7128, -74.0060), None);         // New York
+/// ```
+#[must_use]
+pub fn au_state_for_coords(lat: f64, lon: f64) -> Option<&'static str> {
+    if !is_in_australia(lat, lon) {
+        return None;
+    }
+    // (state, lat_min, lat_max, lon_min, lon_max). ACT first: it sits inside the
+    // NSW box, so a NSW-first scan would never reach it.
+    const BOXES: &[(&str, f64, f64, f64, f64)] = &[
+        ("ACT", -35.92, -35.12, 148.76, 149.40),
+        ("QLD", -29.18, -10.0, 138.0, 153.55),
+        ("NSW", -37.51, -28.16, 140.99, 153.64),
+        ("VIC", -39.20, -33.98, 140.96, 150.04),
+        ("TAS", -43.65, -39.20, 143.82, 148.50),
+        ("SA", -38.07, -26.0, 129.0, 141.0),
+        ("NT", -26.0, -10.96, 129.0, 138.0),
+        ("WA", -35.14, -13.69, 112.92, 129.0),
+    ];
+    for &(state, lat_min, lat_max, lon_min, lon_max) in BOXES {
+        if (lat_min..=lat_max).contains(&lat) && (lon_min..=lon_max).contains(&lon) {
+            return Some(state);
+        }
+    }
+    None
+}
+
 /// Magnitude (in degrees) below which a *coarse* geolocation provider's
 /// coordinate component is treated as that provider's "no fix" placeholder
 /// rather than a real position. Several IP/WiFi-geo APIs return `0.0000` or a
@@ -166,11 +213,12 @@ pub fn coarse_provider_coords(
         scan_id,
     );
     e.tag(crate::core::tags::GEOINT);
-    e.tag(if is_in_australia(lat, lon) {
-        "au-relevant"
+    if let Some(state) = au_state_for_coords(lat, lon) {
+        e.tag("au-relevant");
+        e.tag(format!("au-state:{state}"));
     } else {
-        "off-region"
-    });
+        e.tag("off-region");
+    }
     Some(e)
 }
 
@@ -235,6 +283,22 @@ mod tests {
     }
 
     #[test]
+    fn au_state_for_coords_attributes_capitals_and_rejects_foreign() {
+        assert_eq!(au_state_for_coords(-27.4766, 153.0166), Some("QLD")); // Brisbane
+        assert_eq!(au_state_for_coords(-33.8688, 151.2093), Some("NSW")); // Sydney
+        assert_eq!(au_state_for_coords(-37.8136, 144.9631), Some("VIC")); // Melbourne
+        assert_eq!(au_state_for_coords(-34.9285, 138.6007), Some("SA")); // Adelaide
+        assert_eq!(au_state_for_coords(-31.9523, 115.8613), Some("WA")); // Perth
+        assert_eq!(au_state_for_coords(-42.8821, 147.3272), Some("TAS")); // Hobart
+        assert_eq!(au_state_for_coords(-12.4634, 130.8456), Some("NT")); // Darwin
+        // Canberra: inside the NSW box, but the ACT box is tested first.
+        assert_eq!(au_state_for_coords(-35.2809, 149.1300), Some("ACT"));
+        // Outside Australia → no state.
+        assert_eq!(au_state_for_coords(-36.8485, 174.7633), None); // Auckland
+        assert_eq!(au_state_for_coords(0.0, 0.0), None); // null island
+    }
+
+    #[test]
     fn plausible_provider_coord_keeps_real_fixes() {
         assert!(is_plausible_provider_coord(-27.4766, 153.0166)); // Brisbane
         assert!(is_plausible_provider_coord(51.5074, -0.1278)); // London
@@ -250,8 +314,9 @@ mod tests {
         assert_eq!(e.kind, EntityKind::Coordinates);
         assert_eq!(e.raw_value, "-27.4766,153.0166"); // 4-decimal coarse format
         assert!(e.has_tag(crate::core::tags::GEOINT));
-        // The Brisbane fix is inside the AU box → tagged on-region.
+        // The Brisbane fix is inside the AU box → tagged on-region + state.
         assert!(e.has_tag("au-relevant"));
+        assert!(e.has_tag("au-state:QLD"));
         assert!(!e.has_tag("off-region"));
         assert!((e.confidence - 0.58).abs() < 1e-9);
         // A plausible but foreign fix (London) is flagged off-region.
