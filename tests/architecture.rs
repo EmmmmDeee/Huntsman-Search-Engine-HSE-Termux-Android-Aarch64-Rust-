@@ -212,6 +212,16 @@ fn every_module_maps_to_valid_attack_reconnaissance_techniques() {
 
     let mut covered = std::collections::BTreeSet::new();
     for m in &modules {
+        // Systematic enrichment: EVERY collection module must declare at least
+        // one ATT&CK Reconnaissance technique, so none silently contributes
+        // nothing to the per-scan coverage report. A new module added without a
+        // mapping (its category defaulting to `Other` → empty) fails here.
+        assert!(
+            !m.attack_techniques().is_empty(),
+            "module `{}` has no ATT&CK Reconnaissance technique — add a category \
+             mapping or an attack_techniques() override",
+            m.name()
+        );
         for id in m.attack_techniques() {
             assert!(
                 attack::technique(id).is_some(),

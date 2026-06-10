@@ -102,6 +102,13 @@ impl Module for ChainIntel {
         ModuleCategory::Other
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Queries public blockchain explorers for a wallet's activity/links —
+        // ATT&CK Search Open Technical Databases (T1596); the explorer is the
+        // queryable open technical database. (Other category has no default.)
+        &["T1596"]
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         12_000
     }
