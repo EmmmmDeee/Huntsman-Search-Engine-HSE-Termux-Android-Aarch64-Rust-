@@ -213,6 +213,9 @@ fn build_forward_entity(lat: f64, lon: f64, coords: &str, scan_id: &str) -> Enti
     e.tag("geocoded");
     if in_au {
         e.tag("au-relevant");
+        if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
+            e.tag(format!("au-state:{state}"));
+        }
     } else {
         e.tag("off-region");
         e.tag("candidate");
@@ -268,6 +271,9 @@ fn build_reverse_entity(lat: f64, lon: f64, data: &NominatimResp, scan_id: &str)
         AuRelevance::InAustralia => {
             entity.tag("country:AU");
             entity.tag("au-relevant");
+            if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
+                entity.tag(format!("au-state:{state}"));
+            }
         }
         AuRelevance::OffRegion => entity.tag("candidate"),
         AuRelevance::Unknown => {}
@@ -408,6 +414,7 @@ mod tests {
         let au = build_forward_entity(-27.4766, 153.0166, "-27.476600,153.016600", "scan");
         assert!((au.confidence - 0.70).abs() < 1e-9);
         assert!(au.has_tag("au-relevant"));
+        assert!(au.has_tag("au-state:QLD")); // Brisbane
         assert!(au.has_tag("geocoded"));
         assert!(!au.has_tag("candidate"));
 
@@ -428,6 +435,7 @@ mod tests {
         assert!((e.confidence - 0.78).abs() < 1e-9);
         assert!(e.has_tag("au-relevant"));
         assert!(e.has_tag("country:AU"));
+        assert!(e.has_tag("au-state:QLD"));
         assert!(!e.has_tag("candidate"));
     }
 
