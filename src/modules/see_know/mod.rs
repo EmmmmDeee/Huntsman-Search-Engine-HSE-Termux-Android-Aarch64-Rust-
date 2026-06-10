@@ -1271,12 +1271,12 @@ mod tests {
         // device fingerprints, extra social handles, a multi-part address, and
         // an unrecognised field. Every one must become a pivotable node.
         let item = json!({
-            "first_name": "Matthew",
-            "last_name": "Diegmann",
+            "first_name": "Jordan",
+            "last_name": "Avery",
             "company": "Acme Pty Ltd",
             "mac_address": "DC:44:27:AA:BB:CC",
             "hwid": "WIN-ABC123XYZ",
-            "telegram": "mattdieg",
+            "telegram": "javery",
             "city": "Brisbane",
             "state": "QLD",
             "postal": "4000",
@@ -1300,7 +1300,7 @@ mod tests {
             result.entities.iter().any(|e| e.kind == k && pred(e))
         };
         // Composed Person from first+last.
-        assert!(has(EntityKind::Person, &|e| e.value == "Matthew Diegmann"));
+        assert!(has(EntityKind::Person, &|e| e.value == "Jordan Avery"));
         // Organisation.
         assert!(has(EntityKind::Organisation, &|e| e.value == "Acme Pty Ltd"));
         // Device fingerprints.
@@ -1311,7 +1311,7 @@ mod tests {
         assert!(has(EntityKind::DeviceId, &|e| e.value == "WIN-ABC123XYZ"
             && e.has_tag("stealer")));
         // Extra social handle as a platform-prefixed Username.
-        assert!(has(EntityKind::Username, &|e| e.value == "telegram:mattdieg"));
+        assert!(has(EntityKind::Username, &|e| e.value == "telegram:javery"));
         // Composed multi-part address (parts + country).
         assert!(has(EntityKind::Address, &|e| e.value.contains("Brisbane")
             && e.value.contains("AU")

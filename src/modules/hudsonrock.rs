@@ -75,7 +75,7 @@ impl Module for HudsonRock {
 
     fn accepts(&self, t: &Target) -> bool {
         // `search-by-login` validates its login as an email — a bare handle
-        // 400s with "Email is required" (observed live on a `mdieg123`
+        // 400s with "Email is required" (observed live on a `javery88`
         // username scan) — and `search-by-domain` takes a domain. So the
         // honest input set is Email + Domain only. A Username seed is never
         // routed here: the engine surfaces discovered emails as Email targets,
@@ -266,12 +266,12 @@ mod tests {
         assert!(m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
         assert!(m.accepts(&Target::new(TargetKind::Domain, "b.com")));
         // Usernames are NEVER routed here — search-by-login 400s ("Email is
-        // required") on a bare handle (seen live on the `mdieg123` scan), and
+        // required") on a bare handle (seen live on the `javery88` scan), and
         // the engine surfaces real emails as Email targets. Reject both a bare
         // handle AND an email-shaped one so `accepts()` stays value-independent
         // (the property the two registry-dispatch invariants rely on).
-        assert!(!m.accepts(&Target::new(TargetKind::Username, "mdieg123")));
-        assert!(!m.accepts(&Target::new(TargetKind::Username, "mdieg123@gmail.com")));
+        assert!(!m.accepts(&Target::new(TargetKind::Username, "javery88")));
+        assert!(!m.accepts(&Target::new(TargetKind::Username, "javery88@gmail.com")));
         assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
     }
 
@@ -289,7 +289,7 @@ mod tests {
             proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
         };
         let r = HudsonRock
-            .process(&Target::new(TargetKind::Username, "mdieg123"), &ctx)
+            .process(&Target::new(TargetKind::Username, "javery88"), &ctx)
             .await
             .unwrap();
         assert!(

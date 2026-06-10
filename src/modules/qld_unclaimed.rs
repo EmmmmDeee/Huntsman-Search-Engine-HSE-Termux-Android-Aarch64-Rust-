@@ -61,7 +61,7 @@ fn postcode(rec: &Map<String, Value>) -> Option<String> {
 }
 
 /// The register's full-text search ANDs multi-word queries, so seeding a full
-/// name (`"Matthew Diegmann"`) only matches a row whose owner contains *both*
+/// name (`"Jordan Avery"`) only matches a row whose owner contains *both*
 /// tokens — which silently misses the deceased-estate funds the register mostly
 /// holds, where the money is owed to a *relative* (a different given name, same
 /// surname). For a multi-token `FullName` we therefore search the **surname**
@@ -83,7 +83,7 @@ fn derive_query(target: &Target) -> &str {
 /// True if `owner` contains every token of the seed name as a *whole word*
 /// (case-insensitive) — i.e. this row is the seeded person, not merely a
 /// surname-match relative. Whole-word (not substring) matching so a seed token
-/// like `"M"` doesn't match inside `"DIEGMANN"`, or `"ANN"` inside `"JOANNE"`,
+/// like `"M"` doesn't match inside `"AVERY"`, or `"ANN"` inside `"JOANNE"`,
 /// which would wrongly upgrade a relative to `exact-name-match`. Tokenises on
 /// non-alphanumeric boundaries and compares with `eq_ignore_ascii_case` (no
 /// per-token `String` allocation).
@@ -454,14 +454,14 @@ mod tests {
     use super::*;
 
     fn sample() -> CkanResp {
-        // The exact shape returned by datastore_search for q=Diegmann.
+        // The exact shape returned by datastore_search for q=Avery.
         let raw = r#"{
             "result": {
                 "total": 3,
                 "records": [
-                    {"_id":1938437,"ClientId_ActNo":"210580670460","Owner":"HAYLEY DIEGMANN & CURT DIEGMANN","Amount":"545.74","SenderName":"INSURANCE AUSTRALIA GROUP LIMITED","DateRec":"2024-03-14","PCode":"4557","rank":0.0706241},
-                    {"_id":913780,"ClientId_ActNo":"207768336631","Owner":"CURT DIEGMANN","Amount":"0.92","SenderName":"REMUNERATION SERVICES","DateRec":"2015-03-31","PCode":"4555","rank":0.057308756},
-                    {"_id":1082370,"ClientId_ActNo":"208285682789","Owner":"ERIK DIEGMANN","Amount":"115.45","SenderName":"UNCM DEPT OF TPT AND MAIN ROADS - MAIN ROAD","DateRec":"2016-10-17","PCode":"4552","rank":0.057308756}
+                    {"_id":1938437,"ClientId_ActNo":"210580670460","Owner":"HAYLEY AVERY & CURT AVERY","Amount":"545.74","SenderName":"INSURANCE AUSTRALIA GROUP LIMITED","DateRec":"2024-03-14","PCode":"4557","rank":0.0706241},
+                    {"_id":913780,"ClientId_ActNo":"207768336631","Owner":"CURT AVERY","Amount":"0.92","SenderName":"REMUNERATION SERVICES","DateRec":"2015-03-31","PCode":"4555","rank":0.057308756},
+                    {"_id":1082370,"ClientId_ActNo":"208285682789","Owner":"ERIK AVERY","Amount":"115.45","SenderName":"UNCM DEPT OF TPT AND MAIN ROADS - MAIN ROAD","DateRec":"2016-10-17","PCode":"4552","rank":0.057308756}
                 ]
             }
         }"#;
@@ -471,7 +471,7 @@ mod tests {
     #[test]
     fn accepts_fullname_and_org_only() {
         let m = QldUnclaimed;
-        assert!(m.accepts(&Target::new(TargetKind::FullName, "Matthew Diegmann")));
+        assert!(m.accepts(&Target::new(TargetKind::FullName, "Jordan Avery")));
         assert!(m.accepts(&Target::new(TargetKind::Organisation, "ACME Pty Ltd")));
         assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
         assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
@@ -489,12 +489,12 @@ mod tests {
     fn derive_query_broadens_full_name_to_surname() {
         // Full name → surname (so the AND search surfaces relatives' estate funds).
         assert_eq!(
-            derive_query(&Target::new(TargetKind::FullName, "Matthew Diegmann")),
-            "Diegmann"
+            derive_query(&Target::new(TargetKind::FullName, "Jordan Avery")),
+            "Avery"
         );
         assert_eq!(
-            derive_query(&Target::new(TargetKind::FullName, "  Curt   Diegmann  ")),
-            "Diegmann"
+            derive_query(&Target::new(TargetKind::FullName, "  Curt   Avery  ")),
+            "Avery"
         );
         // Single-token name → verbatim.
         assert_eq!(
@@ -514,8 +514,8 @@ mod tests {
         let result = resp.result.unwrap();
 
         // Seeding the user's full name (no register row contains "MATTHEW"):
-        // every Diegmann row is a family candidate, none an exact match.
-        let fam = records_to_entities(&result.records, 3, "Matthew Diegmann", true, "s");
+        // every Avery row is a family candidate, none an exact match.
+        let fam = records_to_entities(&result.records, 3, "Jordan Avery", true, "s");
         assert!(
             fam.iter()
                 .all(|e| e.tags.iter().any(|t| t.as_str() == "family-candidate")),
@@ -526,13 +526,13 @@ mod tests {
                 .all(|e| !e.tags.iter().any(|t| t.as_str() == "exact-name-match"))
         );
 
-        // Seeding "Curt Diegmann": the two Curt rows are exact, Erik is family.
+        // Seeding "Curt Avery": the two Curt rows are exact, Erik is family.
         let resp2 = sample();
         let result2 = resp2.result.unwrap();
-        let curt = records_to_entities(&result2.records, 3, "Curt Diegmann", true, "s");
+        let curt = records_to_entities(&result2.records, 3, "Curt Avery", true, "s");
         let exact = |e: &Entity| e.tags.iter().any(|t| t.as_str() == "exact-name-match");
         assert!(exact(&curt[0]), "HAYLEY & CURT row is an exact Curt match");
-        assert!(exact(&curt[1]), "CURT DIEGMANN row is an exact Curt match");
+        assert!(exact(&curt[1]), "CURT AVERY row is an exact Curt match");
         assert!(!exact(&curt[2]), "ERIK row is only a surname match");
         // Exact hits outrank family candidates on confidence.
         assert!(curt[1].confidence > curt[2].confidence);
@@ -667,16 +667,16 @@ mod tests {
         // The fan-out collapse: a surname-broadened search enumerates suburbs
         // ONLY for the seeded person's own (exact-name) postcode — never every
         // relative's. With the sample register (ERIK@4552, CURT@4555,
-        // HAYLEY&CURT@4557), seeding "Erik Diegmann" yields just 4552.
+        // HAYLEY&CURT@4557), seeding "Erik Avery" yields just 4552.
         let recs = sample().result.unwrap().records;
-        assert_eq!(exact_postcodes(&recs, "Erik Diegmann", true), vec!["4552"]);
+        assert_eq!(exact_postcodes(&recs, "Erik Avery", true), vec!["4552"]);
         // Seeding a surname whose full name matches no row → no suburb fan-out
         // at all (relatives' postcodes are not the seed's residence).
-        assert!(exact_postcodes(&recs, "Matthew Diegmann", true).is_empty());
+        assert!(exact_postcodes(&recs, "Jordan Avery", true).is_empty());
         // A verbatim (non-broadened) search treats every row as a direct hit,
         // so all distinct postcodes qualify (first-seen order).
         assert_eq!(
-            exact_postcodes(&recs, "Diegmann", false),
+            exact_postcodes(&recs, "Avery", false),
             vec!["4557", "4555", "4552"]
         );
     }
@@ -687,7 +687,7 @@ mod tests {
         // Even an exact-name hit is a Candidate-tier, `coarse`-tagged Address;
         // its register evidence carries the actual weight.
         let recs = sample().result.unwrap().records;
-        let erik = records_to_entities(&recs, 3, "Erik Diegmann", true, "s");
+        let erik = records_to_entities(&recs, 3, "Erik Avery", true, "s");
         let addr = erik
             .iter()
             .find(|e| e.kind == EntityKind::Address && e.value.contains("4552"))
@@ -748,16 +748,16 @@ mod tests {
     fn owner_match_is_whole_word_not_substring() {
         // Whole-word matching: a short seed token must NOT substring-match inside
         // an owner word (the bug flagged in review).
-        assert!(!owner_matches_full_name("CURT DIEGMANN", "M Diegmann")); // "M" ⊄ word
+        assert!(!owner_matches_full_name("CURT AVERY", "M Avery")); // "M" ⊄ word
         assert!(!owner_matches_full_name("JOANNE CITIZEN", "Ann Citizen")); // "ANN" ⊄ JOANNE
         // True whole-word matches still hold, order-independent, punctuation-split.
         assert!(owner_matches_full_name(
-            "HAYLEY DIEGMANN & CURT DIEGMANN",
-            "Curt Diegmann"
+            "HAYLEY AVERY & CURT AVERY",
+            "Curt Avery"
         ));
         assert!(owner_matches_full_name("MS SILVA KAREEM", "silva kareem"));
         // A relative (surname only) is not an exact match.
-        assert!(!owner_matches_full_name("ERIK DIEGMANN", "Curt Diegmann"));
+        assert!(!owner_matches_full_name("ERIK AVERY", "Curt Avery"));
     }
 
     #[test]
@@ -870,7 +870,7 @@ mod tests {
         let ents = records_to_entities(
             &result.records,
             result.total.unwrap(),
-            "Diegmann",
+            "Avery",
             true,
             "scan-1",
         );
@@ -894,7 +894,7 @@ mod tests {
                 .find(|(a, _)| a.as_str() == k)
                 .map(|(_, v)| v.as_str())
         };
-        assert_eq!(attr("owner"), Some("HAYLEY DIEGMANN & CURT DIEGMANN"));
+        assert_eq!(attr("owner"), Some("HAYLEY AVERY & CURT AVERY"));
         assert_eq!(attr("amount_aud"), Some("545.74"));
         assert_eq!(attr("sender"), Some("INSURANCE AUSTRALIA GROUP LIMITED"));
         assert_eq!(attr("postcode"), Some("4557"));

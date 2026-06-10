@@ -66,8 +66,8 @@ pub(crate) fn identity_norm(s: &str) -> String {
 }
 
 /// Minimum shared-substring length for two identities to be considered the same
-/// person. 4 ties real aliases to the subject (`matt`↔`matthewdiegmann`,
-/// `dieg`↔`diegmann`) while rejecting unrelated handles (`arizonambb`).
+/// person. 4 ties real aliases to the subject (`matt`↔`jordanavery`,
+/// `becky`↔`avery`) while rejecting unrelated handles (`arizonambb`).
 pub(crate) const IDENTITY_OVERLAP_MIN: usize = 4;
 
 /// True if two identity strings share a common substring of at least

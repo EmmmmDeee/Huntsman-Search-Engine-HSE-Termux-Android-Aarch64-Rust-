@@ -8,15 +8,9 @@ use super::*;
 #[test]
 fn sanitise_strips_surrounding_quotes_and_stray_punctuation() {
     // The exact real failure: a full_name target arrived quoted.
-    assert_eq!(
-        sanitise_target_input("\"Matthew Diegmann\""),
-        "Matthew Diegmann"
-    );
+    assert_eq!(sanitise_target_input("\"Jordan Avery\""), "Jordan Avery");
     // Quote + trailing comma (CSV/list paste).
-    assert_eq!(
-        sanitise_target_input("\"Matthew Diegmann\","),
-        "Matthew Diegmann"
-    );
+    assert_eq!(sanitise_target_input("\"Jordan Avery\","), "Jordan Avery");
     assert_eq!(sanitise_target_input("'jdoe'"), "jdoe");
     assert_eq!(sanitise_target_input("  jdoe ;"), "jdoe");
     // Unicode smart quotes.
@@ -29,8 +23,8 @@ fn sanitise_strips_surrounding_quotes_and_stray_punctuation() {
     assert_eq!(sanitise_target_input("o'brien"), "o'brien");
     // Idempotent on already-clean input; doesn't mangle structured kinds.
     assert_eq!(
-        sanitise_target_input("matthewdiegmann@gmail.com"),
-        "matthewdiegmann@gmail.com"
+        sanitise_target_input("jordanavery@gmail.com"),
+        "jordanavery@gmail.com"
     );
     assert_eq!(sanitise_target_input(""), "");
 }
@@ -39,8 +33,8 @@ fn sanitise_strips_surrounding_quotes_and_stray_punctuation() {
 fn target_new_sanitises_quoted_full_name() {
     // End-to-end through the user-input boundary: the quotes never reach
     // the stored value (and thus never reach name permutations).
-    let t = Target::new(TargetKind::FullName, "\"Matthew Diegmann\"");
-    assert_eq!(t.value, "Matthew Diegmann");
+    let t = Target::new(TargetKind::FullName, "\"Jordan Avery\"");
+    assert_eq!(t.value, "Jordan Avery");
 }
 
 #[test]
@@ -234,33 +228,30 @@ fn auto_min_expand_confidence_rises_with_depth_within_band() {
 
 #[test]
 fn identity_overlap_ties_aliases_and_rejects_strangers() {
-    let subject = "matthewdiegmann@gmail.com";
+    let subject = "jordanavery@gmail.com";
     // Real aliases share a ≥4 substring with the subject handle.
-    assert!(identity_overlaps(subject, "matthewdiegmann"));
-    assert!(identity_overlaps(subject, "therealfatmatt")); // "matt"
-    assert!(identity_overlaps(subject, "matt.diegmann")); // "diegmann"/"matt"
-    assert!(identity_overlaps("Matthew Diegmann", "diego.diegmann")); // "diegmann"
+    assert!(identity_overlaps(subject, "jordanavery"));
+    assert!(identity_overlaps(subject, "therealfatjordan")); // "jordan"
+    assert!(identity_overlaps(subject, "jord.avery")); // "avery"/"jord"
+    assert!(identity_overlaps("Jordan Avery", "becky.avery")); // "avery"
     // Unrelated handles do NOT — the wrong-identity rabbit holes.
     assert!(!identity_overlaps(subject, "arizonambb"));
     assert!(!identity_overlaps(subject, "centenario"));
     assert!(!identity_overlaps(subject, "ideasfactory009"));
     // Symmetry + email-local extraction.
-    assert!(identity_overlaps(
-        "matthewdiegmann",
-        "matthewdiegmann@x.org"
-    ));
+    assert!(identity_overlaps("jordanavery", "jordanavery@x.org"));
     // Short identities must match exactly.
     assert!(identity_overlaps("abc", "abc"));
     assert!(!identity_overlaps("abc", "abd"));
     // Empty / punctuation-only never matches.
-    assert!(!identity_overlaps("", "matthewdiegmann"));
-    assert!(!identity_overlaps("...", "matthewdiegmann"));
+    assert!(!identity_overlaps("", "jordanavery"));
+    assert!(!identity_overlaps("...", "jordanavery"));
 }
 
 #[test]
 fn wrong_identity_pivot_gates_only_unrelated_weak_single_source_identities() {
     use crate::core::entity::EntityKind;
-    let subject = vec!["matthewdiegmann".to_string()];
+    let subject = vec!["jordanavery".to_string()];
 
     // The canonical rabbit hole: an unrelated, weak, single-source handle.
     assert!(is_wrong_identity_pivot(
@@ -276,7 +267,7 @@ fn wrong_identity_pivot_gates_only_unrelated_weak_single_source_identities() {
         &EntityKind::Username,
         0.50,
         1,
-        "therealfatmatt", // shares "matt"
+        "therealfatjordan", // shares "jordan"
         &subject
     ));
 
@@ -320,7 +311,7 @@ fn wrong_identity_pivot_gates_only_unrelated_weak_single_source_identities() {
 
 #[test]
 fn identity_norm_strips_to_email_local_and_alnum() {
-    assert_eq!(identity_norm("Matt.Diegmann@gmail.com"), "mattdiegmann");
+    assert_eq!(identity_norm("Matt.Avery@gmail.com"), "mattavery");
     assert_eq!(identity_norm("the_real-matt"), "therealmatt");
 }
 
@@ -630,7 +621,7 @@ fn detect_classifies_free_text() {
     use TargetKind::*;
     assert_eq!(TargetKind::detect("jsmith"), Username);
     assert_eq!(TargetKind::detect("shinigami_jerome"), Username);
-    assert_eq!(TargetKind::detect("Matthew Diegmann"), FullName);
+    assert_eq!(TargetKind::detect("Jordan Avery"), FullName);
     assert_eq!(TargetKind::detect("Acme Pty Ltd"), Organisation);
     assert_eq!(TargetKind::detect("Globex Corporation"), Organisation);
     assert_eq!(TargetKind::detect("123 Main St, Springfield"), Address);
@@ -685,7 +676,7 @@ fn detect_then_validate_round_trips_clean_values() {
         "8.8.8.8",
         "AS13335",
         "+61400123456",
-        "Matthew Diegmann",
+        "Jordan Avery",
         "jsmith",
         "https://cloudflare.com/p",
     ] {
@@ -703,9 +694,9 @@ fn target_detect_resolves_and_normalises() {
     assert_eq!(t.kind, TargetKind::Email);
     assert_eq!(t.value, "alice@example.com"); // email normalisation lowercases
     // Quoted name: detection sees through the quotes; value is sanitised.
-    let t2 = Target::detect("\"Matthew Diegmann\"");
+    let t2 = Target::detect("\"Jordan Avery\"");
     assert_eq!(t2.kind, TargetKind::FullName);
-    assert_eq!(t2.value, "Matthew Diegmann");
+    assert_eq!(t2.value, "Jordan Avery");
 }
 
 #[test]

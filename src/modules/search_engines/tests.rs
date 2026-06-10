@@ -961,7 +961,7 @@ fn navigation_path_catches_extensions() {
 
 #[test]
 fn navigation_path_rejects_linkedin_directory_prefixes() {
-    // Regression from a live self-scan: `linkedin.com/pub/dir/Matthew/Diegmann`
+    // Regression from a live self-scan: `linkedin.com/pub/dir/Jordan/Avery`
     // is a people-search URL, so its first path segment `pub` was emitted as a
     // discovered username. `pub` and `dir` are structural directory prefixes,
     // never handles, and must be filtered.

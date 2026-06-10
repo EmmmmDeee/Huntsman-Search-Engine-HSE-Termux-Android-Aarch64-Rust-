@@ -84,7 +84,7 @@ hse scan [OPTIONS] --kind <KIND> --value <VALUE>
 hse scan -v example.com              # → domain
 hse scan -v alice@example.com        # → email
 hse scan -v 8.8.8.8                  # → ip_address
-hse scan -v "Matthew Diegmann"       # → full_name
+hse scan -v "Jordan Avery"       # → full_name
 hse scan -v AS13335                  # → asn
 
 # Plain single-shot scan against a domain (explicit kind)

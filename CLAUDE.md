@@ -3,7 +3,7 @@
 ## Working with the user
 
 - The user identifies as **Haigen Bamford**. Address them accordingly, with respect.
-- **Do not use `matthewdiegmann@gmail.com`** — that email is no longer the user's and is not applicable to anything. For an authorised self-test, seed on the name **Haigen Bamford** (the current email is unknown/forgotten).
+- Do **not** use the user's former name or any email/handle derived from it — none of it is applicable any more. For an authorised self-test, seed on the name **Haigen Bamford** (the current email is unknown/forgotten). `jordanavery@gmail.com` / `Jordan Avery` are synthetic placeholders used only in test fixtures, not the user's identity.
 
 ## Verification gate (must match CI before committing)
 

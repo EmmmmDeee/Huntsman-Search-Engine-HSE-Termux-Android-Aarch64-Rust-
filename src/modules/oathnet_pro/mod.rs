@@ -421,9 +421,9 @@ fn extract_breach_entities(
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.len() >= 3)
         .collect();
-    // Multi-term targets (a full name like "Matthew Diegmann", or an email)
+    // Multi-term targets (a full name like "Jordan Avery", or an email)
     // must match EVERY significant term within a single field — not just one —
-    // so a row for "Matthew Parker" no longer counts as the target on the
+    // so a row for "Jordan Parker" no longer counts as the target on the
     // shared first name (the dominant junk source on name scans). Single-term
     // targets keep substring-contains matching.
     let require_all_terms = target_terms.len() >= 2;
@@ -920,7 +920,7 @@ mod tests {
     #[test]
     fn non_target_email_and_domain_are_quarantined_as_candidates() {
         use serde_json::json;
-        // The exact junk pattern from the "Matthew Diegmann" name scan: a breach
+        // The exact junk pattern from the "Jordan Avery" name scan: a breach
         // row for a stranger (a bank employee) returned by the broad search. The
         // email AND its domain must be demoted to candidate — previously they
         // were emitted at full 0.70/0.55 confidence with no `candidate` tag,
@@ -934,7 +934,7 @@ mod tests {
         let mut result = ModuleResult::new();
         extract_breach_entities(
             &item,
-            "Matthew Diegmann",
+            "Jordan Avery",
             "scan",
             "oathnet.org:test",
             &mut seen,
@@ -966,15 +966,15 @@ mod tests {
     #[test]
     fn full_name_matcher_requires_all_terms_not_just_one() {
         use serde_json::json;
-        // "Matthew Parker" shares only the first name with the target — it must
+        // "Jordan Parker" shares only the first name with the target — it must
         // NOT count as the target row (the old any-term match treated every
-        // "Matthew …" as a hit, the dominant false-positive on name scans).
-        let parker = json!({ "full_name": "Matthew Parker", "source": "X" });
+        // "Jordan …" as a hit, the dominant false-positive on name scans).
+        let parker = json!({ "full_name": "Jordan Parker", "source": "X" });
         let mut seen = HashSet::new();
         let mut result = ModuleResult::new();
         extract_breach_entities(
             &parker,
-            "Matthew Diegmann",
+            "Jordan Avery",
             "scan",
             "oathnet.org:test",
             &mut seen,
@@ -992,11 +992,11 @@ mod tests {
         );
 
         // The real person — both terms present — is a confirmed target row.
-        let diegmann = json!({ "full_name": "Matthew Diegmann", "source": "X" });
+        let avery = json!({ "full_name": "Jordan Avery", "source": "X" });
         let (mut seen2, mut r2) = (HashSet::new(), ModuleResult::new());
         extract_breach_entities(
-            &diegmann,
-            "Matthew Diegmann",
+            &avery,
+            "Jordan Avery",
             "scan",
             "oathnet.org:test",
             &mut seen2,

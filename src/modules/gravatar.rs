@@ -308,33 +308,33 @@ mod tests {
             "preferredUsername": "matt",
             "thumbnailUrl": "https://gravatar.com/avatar/abc",
             "displayName": "Matt D",
-            "name": { "formatted": "Matthew Diegmann", "givenName": "Matthew", "familyName": "Diegmann" },
+            "name": { "formatted": "Jordan Avery", "givenName": "Jordan", "familyName": "Avery" },
             "currentLocation": "Brisbane, QLD",
             "accounts": [
-                { "shortname": "github", "username": "mattdieg", "url": "https://github.com/mattdieg", "verified": "true" },
+                { "shortname": "github", "username": "javery", "url": "https://github.com/javery", "verified": "true" },
                 { "shortname": "twitter", "username": "mattd", "url": "https://twitter.com/mattd", "verified": "false" }
             ],
-            "urls": [ { "value": "https://mattdieg.dev", "title": "Blog" } ]
+            "urls": [ { "value": "https://javery.dev", "title": "Blog" } ]
         });
         let entry: Entry = serde_json::from_value(json).unwrap();
         let mut r = ModuleResult::new();
         extract_entry(&entry, "abc", "scan", &mut r);
 
         let has = |k: EntityKind, v: &str| r.entities.iter().any(|e| e.kind == k && e.value == v);
-        assert!(has(EntityKind::Person, "Matthew Diegmann"));
+        assert!(has(EntityKind::Person, "Jordan Avery"));
         assert!(has(EntityKind::Username, "matt"));
         assert!(has(EntityKind::Address, "Brisbane, QLD"));
         assert!(has(EntityKind::Url, "https://gravatar.com/matt"));
-        assert!(has(EntityKind::Url, "https://mattdieg.dev"));
+        assert!(has(EntityKind::Url, "https://javery.dev"));
         // Platform-prefixed account usernames + their URLs.
-        assert!(has(EntityKind::Username, "github:mattdieg"));
+        assert!(has(EntityKind::Username, "github:javery"));
         assert!(has(EntityKind::Username, "twitter:mattd"));
-        assert!(has(EntityKind::Url, "https://github.com/mattdieg"));
+        assert!(has(EntityKind::Url, "https://github.com/javery"));
         // Verified flag carried as a tag.
         assert!(
             r.entities
                 .iter()
-                .any(|e| e.value == "github:mattdieg" && e.has_tag("verified"))
+                .any(|e| e.value == "github:javery" && e.has_tag("verified"))
         );
         assert!(
             !r.entities
