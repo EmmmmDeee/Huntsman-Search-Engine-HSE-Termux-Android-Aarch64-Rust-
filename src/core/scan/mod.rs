@@ -606,6 +606,16 @@ pub struct ScanOptions {
     #[serde(default)]
     pub exclude_modules: Vec<String>,
 
+    /// Restrict dispatch to modules in these functional categories. Empty (the
+    /// default) means *no restriction* — every accepting module runs. When
+    /// non-empty, a module whose [`crate::core::module::ModuleCategory`] is not
+    /// listed is skipped on every round. Selection is by the type-owned category
+    /// rather than a brittle module-name list, so a focused profile (e.g.
+    /// `skiptrace`, which targets the person-locating categories) can't drift as
+    /// modules are renamed and automatically includes new modules in-category.
+    #[serde(default)]
+    pub category_focus: Vec<crate::core::module::ModuleCategory>,
+
     /// Delay between module dispatches, in milliseconds. 0 = no throttle.
     #[serde(default)]
     pub throttle_ms: u64,
@@ -852,6 +862,7 @@ impl Default for ScanOptions {
         Self {
             modules: None,
             exclude_modules: Vec::new(),
+            category_focus: Vec::new(),
             throttle_ms: 0,
             // Deliberately gentle (2, not the old 4): two concurrent network
             // modules paces dispatch so a deep/everything scan does not flood

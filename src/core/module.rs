@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::{
     entity::{Entity, EntityKind},
@@ -50,7 +50,7 @@ impl ModuleCost {
 /// dispatch on them. They exist so the operator can filter the module
 /// catalogue (`hse modules --category geo`) and so the SPA can render
 /// the registry as a tabbed grid rather than one long list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModuleCategory {
     /// DNS, certificate transparency, WHOIS, subdomain enumeration.

@@ -134,6 +134,15 @@ pub(super) fn module_skip_reason(
     if opts.exclude_modules.iter().any(|n| n == name) {
         return Some("excluded");
     }
+    // Category focus: when a profile restricts the scan to a set of functional
+    // categories (e.g. `skiptrace` → person-locating: People/Phone/Geo/Email/
+    // Social/Corporate/Search), a module outside that set is skipped on every
+    // round. Empty focus = no restriction. Gated by the type-owned
+    // `module.category()`, so the focus follows module renames and automatically
+    // picks up new in-category modules.
+    if !opts.category_focus.is_empty() && !opts.category_focus.contains(&module.category()) {
+        return Some("outside category focus");
+    }
     // Circuit breaker: a module that already hit a rate-limit/quota wall or
     // failed repeatedly this run is skipped until its cooldown elapses. Retrying
     // a 429'd or quota-exhausted provider on the next target is guaranteed waste

@@ -143,6 +143,9 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     let options = ScanOptions {
         modules: split_csv(cmd.modules),
         exclude_modules,
+        // No CLI flag yet; a category focus is supplied by a profile (e.g.
+        // `--profile skiptrace`) and overlaid below.
+        category_focus: Vec::new(),
         throttle_ms: cmd.throttle_ms,
         max_concurrent,
         module_timeout_ms: cmd.module_timeout_ms,
@@ -176,7 +179,8 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     let options = if let Some(name) = cmd.profile.as_deref() {
         let p = crate::core::profiles::resolve_profile(name).ok_or_else(|| {
             crate::core::error::Error::Other(format!(
-                "unknown --profile '{name}' (try: recommended, passive, footprint, investigate, fast)"
+                "unknown --profile '{name}' (try: recommended, passive, footprint, \
+                 investigate, fast, skiptrace)"
             ))
         })?;
         eprintln!("profile: {name}");
@@ -188,6 +192,10 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             max_concurrent: p.max_concurrent,
             max_entities: p.max_entities,
             max_wall_time_secs: p.max_wall_time_secs,
+            // A profile's category focus has no per-flag equivalent, so carry it
+            // through the overlay — otherwise `--profile skiptrace` would lose
+            // the very focus that defines it.
+            category_focus: p.category_focus,
             ..options
         }
         .clamp_depth()

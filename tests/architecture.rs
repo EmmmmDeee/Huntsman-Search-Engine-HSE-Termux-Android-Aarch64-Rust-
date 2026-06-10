@@ -194,6 +194,77 @@ fn modules_md_lists_every_registered_module() {
 }
 
 #[test]
+fn skiptrace_focus_maps_to_the_right_real_modules() {
+    // The `skiptrace` profile restricts dispatch by category. This guard pins
+    // that the focus resolves to a healthy, correct set of REAL modules — so a
+    // future category change (or a regression of the hudsonrock/qld_unclaimed
+    // categorisations) can't silently gut or pollute debtor-location scans.
+    use huntsman_search_engine::core::module::ModuleCategory;
+    use huntsman_search_engine::core::profiles::SKIPTRACE_CATEGORIES;
+
+    let modules = huntsman_search_engine::modules::registry();
+    let category_of = |name: &str| -> Option<ModuleCategory> {
+        modules
+            .iter()
+            .find(|m| m.name() == name)
+            .map(|m| m.category())
+    };
+    let in_focus = |name: &str| -> bool {
+        category_of(name).is_some_and(|c| SKIPTRACE_CATEGORIES.contains(&c))
+    };
+
+    // Every focused category must be populated — an empty category would mean
+    // the focus silently narrows the scan with nothing to show for it.
+    for cat in SKIPTRACE_CATEGORIES {
+        assert!(
+            modules.iter().any(|m| m.category() == *cat),
+            "skiptrace focus category {cat:?} maps to no registered module"
+        );
+    }
+
+    // The core person-locators MUST be in focus (incl. the two whose categories
+    // were corrected: hudsonrock → Breach, qld_unclaimed → People).
+    for name in [
+        "employer_pivot",  // People — where they work / ability to pay
+        "qld_unclaimed",   // People — name → government register + address
+        "geocode",         // Geo — address → coordinates
+        "geo_intel",       // Geo
+        "phone_intl",      // Phone — contactability + country
+        "social_probe",    // Social — owned accounts / aliases
+        "username_search", // Social — cross-platform handle hunt
+        "opencorporates",  // Corporate — directorships / assets
+        "abn_lookup",      // Corporate — AU business / assets
+        "search_engines",  // Search — open-web address/phone/associate scrape
+        "dehashed",        // Breach — leaked phone/address/credentials
+        "hudsonrock",      // Breach — stealer-log intel
+        "email_parse",     // Email — identity bridge
+    ] {
+        assert!(
+            in_focus(name),
+            "skip-trace needs `{name}` ({:?}) in the category focus",
+            category_of(name)
+        );
+    }
+
+    // Pure-noise-for-people modules MUST be excluded — running them on a debtor
+    // search is wasted budget.
+    for name in [
+        "shodan",         // Infrastructure
+        "censys",         // Infrastructure
+        "threatfox",      // Threat
+        "urlhaus",        // Threat
+        "device_sensors", // Sensor (the operator's own device)
+        "portscan",       // Infrastructure
+    ] {
+        assert!(
+            !in_focus(name),
+            "skip-trace must NOT spend budget on `{name}` ({:?})",
+            category_of(name)
+        );
+    }
+}
+
+#[test]
 fn non_passive_modules_budget_above_default() {
     let default = huntsman_search_engine::MODULE_TIMEOUT_MS;
     let modules = huntsman_search_engine::modules::registry();

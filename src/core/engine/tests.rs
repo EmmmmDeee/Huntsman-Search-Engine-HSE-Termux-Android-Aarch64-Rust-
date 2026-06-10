@@ -496,6 +496,45 @@ fn skip_reason_excluded() {
 }
 
 #[test]
+fn skip_reason_outside_category_focus() {
+    // A non-empty category focus that omits the module's category skips it on
+    // every round. `free_active` is a StubModule, whose `category()` defaults to
+    // `Other`; a focus of People/Phone/Geo therefore excludes it.
+    use crate::core::module::ModuleCategory;
+    let m = free_active();
+    let opts = ScanOptions {
+        category_focus: vec![
+            ModuleCategory::People,
+            ModuleCategory::Phone,
+            ModuleCategory::Geo,
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        module_skip_reason(&m, &pub_target(), &opts, false, 0),
+        Some("outside category focus")
+    );
+}
+
+#[test]
+fn skip_reason_inside_category_focus_passes() {
+    // The same module passes when its category IS in the focus, and an empty
+    // focus (the default) never restricts.
+    use crate::core::module::ModuleCategory;
+    let m = free_active(); // category() defaults to Other
+    let focused = ScanOptions {
+        category_focus: vec![ModuleCategory::Other],
+        ..Default::default()
+    };
+    assert!(module_skip_reason(&m, &pub_target(), &focused, false, 0).is_none());
+    let unfocused = ScanOptions {
+        category_focus: Vec::new(),
+        ..Default::default()
+    };
+    assert!(module_skip_reason(&m, &pub_target(), &unfocused, false, 0).is_none());
+}
+
+#[test]
 fn skip_reason_free_only_skips_keygated() {
     let m = keygated();
     let opts = ScanOptions {
