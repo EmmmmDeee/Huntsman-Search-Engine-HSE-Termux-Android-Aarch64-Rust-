@@ -2962,6 +2962,29 @@ fn au_056_corroborates_when_coord_and_address_agree_on_state() {
 }
 
 #[test]
+fn au_056_derives_coord_state_from_latlong_without_a_tag() {
+    use super::rules::rule_au_056_jurisdiction_cross_check;
+
+    // Regression from a live scan: a Brisbane coordinate produced by
+    // geo_normalize/search_engines carries NO au-state tag, yet the rule must
+    // still derive QLD from the lat/long and corroborate the QLD address.
+    let ents = vec![
+        mk_tagged(
+            EntityKind::Coordinates,
+            "-27.4698,153.0251",
+            "geo_normalize",
+            &["geoint"], // deliberately no au-state: tag
+        ),
+        mk_tagged(EntityKind::Address, "Brisbane, QLD", "search_engines", &[]),
+    ];
+    let out = rule_au_056_jurisdiction_cross_check(&ents, "scan", 0);
+    assert_eq!(out.len(), 1, "cross-check must fire on a tag-less AU coord");
+    assert_eq!(out[0].rule_id, "AU-056");
+    assert!(out[0].description.contains("QLD"));
+    assert!(out[0].rule_name.contains("corroborated"));
+}
+
+#[test]
 fn au_056_flags_conflict_when_states_disagree() {
     use super::rules::rule_au_056_jurisdiction_cross_check;
 

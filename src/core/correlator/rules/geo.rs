@@ -3,19 +3,30 @@
 
 use super::*;
 
-/// The AU state/territory a confirmed `Coordinates` entity asserts, read from
-/// the `au-state:XX` tag the geo builders attach (see
-/// [`crate::util::geo::au_state_for_coords`]). Only confirmed fixes (≥0.50)
-/// count, so an off-region candidate can't assert a jurisdiction.
+/// The AU state/territory a confirmed `Coordinates` entity asserts. Prefers the
+/// `au-state:XX` tag the geo builders attach, but falls back to deriving the
+/// state straight from the lat/long via [`crate::util::geo::au_state_for_coords`]
+/// when the tag is absent — a coordinate enters the graph from many modules
+/// (`geo_normalize`, `search_engines`, `exif_geo`, …), only three of which tag
+/// it, so a tag-only read silently dropped most real fixes (seen on a live
+/// scan: a Brisbane coordinate from `geo_normalize` carried no tag and the
+/// jurisdiction cross-check never fired). Only confirmed fixes (≥0.50) count, so
+/// an off-region candidate can't assert a jurisdiction.
 fn coord_state(e: &Entity) -> Option<&'static str> {
     if e.kind != EntityKind::Coordinates || e.confidence < 0.50 {
         return None;
     }
     const AU_STATES: [&str; 8] = ["ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"];
-    e.tags
+    if let Some(state) = e
+        .tags
         .iter()
         .find_map(|t| t.strip_prefix("au-state:"))
         .and_then(|code| AU_STATES.into_iter().find(|s| *s == code))
+    {
+        return Some(state);
+    }
+    crate::util::geohash::parse_coords(&e.value)
+        .and_then(|(lat, lon)| crate::util::geo::au_state_for_coords(lat, lon))
 }
 
 /// AU-056 — Jurisdiction cross-check (coordinate state vs address state).
