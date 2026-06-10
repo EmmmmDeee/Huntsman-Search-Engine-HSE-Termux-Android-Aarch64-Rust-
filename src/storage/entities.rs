@@ -334,7 +334,7 @@ impl super::Store {
 /// subject. Such nodes are legitimately high-confidence (many independent probes
 /// agree they exist), so they would otherwise dominate a `c_effective`-ordered
 /// result list; but they're the haystack, not the needle, so the operator-facing
-/// ranking in [`Store::entities_for_scan`] demotes them beneath subject-relevant
+/// ranking in [`crate::storage::Store::entities_for_scan`] demotes them beneath subject-relevant
 /// findings of equal effective confidence.
 ///
 /// Reuses the canonical predicates the expansion gate uses

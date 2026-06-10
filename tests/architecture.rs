@@ -545,6 +545,39 @@ fn readme_module_overview_count_matches_registry() {
         "README '## Module Overview (N modules ...)' must cite the live registry \
          size ({n}); update README.md after adding/removing a module"
     );
+
+    // The heading check alone proved insufficient: the intro blurb and the
+    // `hse modules` usage comment each carry their own hand-written count and
+    // both rotted to a stale figure while the heading stayed correct. Sweep
+    // EVERY "<digits> modules" mention in the README against the registry.
+    let stale: Vec<&str> = readme
+        .lines()
+        .filter(|line| {
+            let mut rest = *line;
+            while let Some(pos) = rest.find(" modules") {
+                let prefix = &rest[..pos];
+                let digits: String = prefix
+                    .chars()
+                    .rev()
+                    .take_while(char::is_ascii_digit)
+                    .collect();
+                if !digits.is_empty() {
+                    let count: usize = digits.chars().rev().collect::<String>().parse().unwrap();
+                    // Only headline totals can match the registry; sub-counts
+                    // ("81 free", …) are smaller and skipped via a floor.
+                    if count > n / 2 && count != n {
+                        return true;
+                    }
+                }
+                rest = &rest[pos + " modules".len()..];
+            }
+            false
+        })
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "README cites a stale module total (registry holds {n}): {stale:?}"
+    );
 }
 
 /// Runtime AI-independence guard (the `RUNTIME_INDEPENDENCE` charter): the
