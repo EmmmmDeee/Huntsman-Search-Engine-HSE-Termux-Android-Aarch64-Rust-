@@ -1108,7 +1108,6 @@ async fn radar_persistent_ledger_does_not_re_query_paid_apis_on_covered_seeds() 
     use std::sync::atomic::Ordering;
 
     let tmp = tempfile_path("radar-ledger");
-    let _ = std::fs::remove_file(&tmp);
     let store = Arc::new(Store::open(&tmp).unwrap());
     let (bus, _rx) = tokio::sync::broadcast::channel(64);
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1579,7 +1578,6 @@ async fn live_session_runs_two_iterations_and_completes() {
     use huntsman_search_engine::core::live::{LiveOptions, LiveScanner, LiveStatus};
 
     let tmp = tempfile_path("live-2iter");
-    let _ = std::fs::remove_file(&tmp);
     let store = Arc::new(Store::open(&tmp).unwrap());
     let (bus, _rx) = tokio::sync::broadcast::channel(256);
     let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
@@ -1624,7 +1622,6 @@ async fn live_session_stops_on_explicit_cancel() {
     use huntsman_search_engine::core::live::{LiveOptions, LiveScanner, LiveStatus};
 
     let tmp = tempfile_path("live-cancel");
-    let _ = std::fs::remove_file(&tmp);
     let store = Arc::new(Store::open(&tmp).unwrap());
     let (bus, _rx) = tokio::sync::broadcast::channel(256);
     let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
@@ -2517,7 +2514,6 @@ impl StoragePort for CountingStore {
 #[tokio::test]
 async fn entities_are_checkpointed_each_round_for_durability() {
     let tmp = tempfile_path("durability");
-    let _ = std::fs::remove_file(&tmp);
     let store = Arc::new(Store::open(&tmp).unwrap());
     let batch_calls = Arc::new(AtomicUsize::new(0));
     let counting = Arc::new(CountingStore {

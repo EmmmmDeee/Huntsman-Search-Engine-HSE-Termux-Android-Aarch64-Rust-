@@ -65,3 +65,12 @@ pub fn engine_setup(
     };
     (engine, store, sid, target, ctx)
 }
+
+/// Fresh per-test scratch DIRECTORY under the OS temp dir:
+/// `hse-<prefix>-<pid>/`. For tests that write output files (exports,
+/// dossiers) rather than a database; created if absent.
+pub fn tmp_dir(prefix: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("hse-{prefix}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
