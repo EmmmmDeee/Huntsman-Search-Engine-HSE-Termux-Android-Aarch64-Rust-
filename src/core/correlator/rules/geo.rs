@@ -205,8 +205,15 @@ pub(in crate::core::correlator) fn rule_au_018_email_address_colocation(
     if emails.is_empty() || addresses.is_empty() {
         return Vec::new();
     }
-    let mut uids: Vec<String> = emails.iter().take(10).map(|e| e.uid.clone()).collect();
-    uids.extend(addresses.iter().take(5).map(|e| e.uid.clone()));
+    // Include the FULL member set (no `take` cap). Entities only grow during a
+    // scan, so the live-pass set is a strict subset of the finalize set — which
+    // lets `upsert_correlation`'s containment dedup supersede the live partial
+    // with the finalize row. A capped sample (`take(5)`) of a growing collection
+    // produced DISJOINT live/finalize sets (different 5 addresses), which the
+    // superset-supersede couldn't fold together, so AU-018 persisted twice
+    // ("co-located with 6" and "with 9") for one scan.
+    let mut uids: Vec<String> = emails.iter().map(|e| e.uid.clone()).collect();
+    uids.extend(addresses.iter().map(|e| e.uid.clone()));
     vec![Correlation {
         rule_id: "AU-018".into(),
         rule_name: "Email + physical location co-located".into(),
