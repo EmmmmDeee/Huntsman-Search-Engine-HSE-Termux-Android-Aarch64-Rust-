@@ -299,7 +299,7 @@ mod tests {
         // Trailing dot / case tolerance.
         assert!(is_infrastructure_email("Abuse@Cloudflare.com."));
         // Genuine personal mail is NOT infrastructure.
-        assert!(!is_infrastructure_email("matthewdiegmann@gmail.com"));
+        assert!(!is_infrastructure_email("jordanavery@gmail.com"));
         assert!(!is_infrastructure_email("jane.doe@example.org"));
         // Malformed input is safely false.
         assert!(!is_infrastructure_email("not-an-email"));
@@ -309,7 +309,7 @@ mod tests {
     fn role_localpart_basics() {
         assert!(is_role_localpart("dns") && is_role_localpart("no-reply"));
         assert!(is_role_localpart("postmaster") && is_role_localpart("abuse"));
-        assert!(!is_role_localpart("matthewdiegmann") && !is_role_localpart("jane.doe"));
+        assert!(!is_role_localpart("jordanavery") && !is_role_localpart("jane.doe"));
     }
 
     #[test]

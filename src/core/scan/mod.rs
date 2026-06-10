@@ -250,12 +250,12 @@ pub struct Target {
 }
 
 /// Strip shell/CSV quoting and stray surrounding punctuation a user (or a pasted
-/// list) commonly leaves on a target value, e.g. `"Matthew Diegmann",` →
-/// `Matthew Diegmann`. Applied only at the user-input boundary ([`Target::new`])
+/// list) commonly leaves on a target value, e.g. `"Jordan Avery",` →
+/// `Jordan Avery`. Applied only at the user-input boundary ([`Target::new`])
 /// so module-discovered entity values are left untouched; kind-specific
 /// normalisation (`entity::normalise`) runs afterwards.
 ///
-/// Real cause this fixes: a `full_name` scan came in as `"\"Matthew Diegmann\""`
+/// Real cause this fixes: a `full_name` scan came in as `"\"Jordan Avery\""`
 /// (literal quotes), which the `_` arm of `normalise` only whitespace-trimmed —
 /// the quotes then leaked into name permutations and every derived artifact.
 ///
@@ -741,7 +741,7 @@ pub struct ScanOptions {
     /// The default (`false`) keeps the wrong-identity gate active: such a
     /// candidate is recorded but not pivoted on, because chasing it pulls a
     /// stranger's whole footprint into the scan (the canonical `arizonambb`
-    /// off an `matthewdiegmann` seed). The gate is the right default for a
+    /// off an `jordanavery` seed). The gate is the right default for a
     /// focused investigation, but it is by design conservative and can drop a
     /// genuine alias whose handle looks unrelated (a pseudonym, an initials
     /// handle, a married name). An operator who would rather over-collect and

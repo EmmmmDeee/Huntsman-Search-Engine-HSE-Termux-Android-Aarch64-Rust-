@@ -256,7 +256,7 @@ mod tests {
 
     fn fixture() -> FcResp {
         let json = serde_json::json!({
-            "fullName": "Matthew Diegmann",
+            "fullName": "Jordan Avery",
             "location": "Brisbane, Queensland, Australia",
             "title": "Engineer",
             "organization": "Acme Pty Ltd",
@@ -265,7 +265,7 @@ mod tests {
                 "employment": [{ "name": "Acme Pty Ltd" }, { "name": "Globex" }],
                 "profiles": {
                     "twitter": { "username": "mattd", "url": "https://twitter.com/mattd" },
-                    "linkedin": { "username": "matthew-diegmann", "url": "https://linkedin.com/in/matthew-diegmann" }
+                    "linkedin": { "username": "matthew-avery", "url": "https://linkedin.com/in/matthew-avery" }
                 }
             }
         });
@@ -277,15 +277,15 @@ mod tests {
         let r = fixture();
         let es = build_entities(&r, "scan");
         let has = |k: EntityKind, v: &str| es.iter().any(|e| e.kind == k && e.value == v);
-        assert!(has(EntityKind::Person, "Matthew Diegmann"));
+        assert!(has(EntityKind::Person, "Jordan Avery"));
         assert!(has(EntityKind::Organisation, "Acme Pty Ltd"));
         assert!(has(EntityKind::Organisation, "Globex"));
         assert!(has(EntityKind::Address, "Brisbane, Queensland, Australia"));
         assert!(has(EntityKind::Username, "twitter:mattd"));
-        assert!(has(EntityKind::Username, "linkedin:matthew-diegmann"));
+        assert!(has(EntityKind::Username, "linkedin:matthew-avery"));
         assert!(has(
             EntityKind::Url,
-            "https://linkedin.com/in/matthew-diegmann"
+            "https://linkedin.com/in/matthew-avery"
         ));
         // Every entity carries the source tag.
         assert!(es.iter().all(|e| e.has_tag("fullcontact")));

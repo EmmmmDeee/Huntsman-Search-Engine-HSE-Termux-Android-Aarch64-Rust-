@@ -735,7 +735,7 @@ impl ScanEngine {
             // ANY of these — and is uncorroborated — is almost certainly a
             // different person, and pivoting on it pulls a stranger's whole
             // footprint into the scan (a real run chased `arizonambb` —
-            // Arizona basketball — off an `matthewdiegmann` seed). Rebuilt each
+            // Arizona basketball — off an `jordanavery` seed). Rebuilt each
             // round so confirmed aliases widen the identity as the scan learns.
             let subject_identities: Vec<String> = std::iter::once(seed.value.clone())
                 .chain(entity_map.values().filter_map(|e| {

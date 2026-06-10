@@ -32,10 +32,10 @@ fn ent(kind: &str, value: &str, c_eff: f64, corroboration: u32, tags: &[&str]) -
 /// (recall blind spot) — alongside benign dedup exclusions that stay INFO-only.
 fn fixture() -> (Vec<AuditEntity>, LogSignals) {
     let entities = vec![
-        ent("email", "matthewdiegmann@gmail.com", 1.0, 4, &[]),
-        ent("person", "Matthew Diegmann", 0.80, 2, &[]),
-        ent("username", "matthewdiegmann", 1.0, 3, &[]),
-        ent("url", "https://github.com/matthewdiegmann", 0.70, 1, &[]),
+        ent("email", "jordanavery@gmail.com", 1.0, 4, &[]),
+        ent("person", "Jordan Avery", 0.80, 2, &[]),
+        ent("username", "jordanavery", 1.0, 3, &[]),
+        ent("url", "https://github.com/jordanavery", 0.70, 1, &[]),
         ent("coordinates", "-27.470000,153.020000", 0.70, 2, &["geoint"]),
         // Weakness 1: a Cloudflare anycast edge IP (104.16.0.0/13).
         ent("ip_address", "104.16.1.1", 0.50, 1, &[]),

@@ -321,7 +321,7 @@ mod tests {
         }
         use crate::util::domains::is_role_localpart;
         assert!(is_role_localpart("dns") && is_role_localpart("no-reply"));
-        assert!(!is_role_localpart("jane.doe") && !is_role_localpart("matthewdiegmann"));
+        assert!(!is_role_localpart("jane.doe") && !is_role_localpart("jordanavery"));
     }
 
     #[tokio::test]

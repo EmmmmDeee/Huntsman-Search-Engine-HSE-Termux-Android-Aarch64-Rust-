@@ -1177,12 +1177,12 @@ fn evaluate_rules_fires_expected_subset() {
 }
 
 /// Ground-truth regression guard (real data as a fixture, operator-
-/// confirmed): the `matthewdiegmann@gmail.com` identity and the
+/// confirmed): the `jordanavery@gmail.com` identity and the
 /// Maleny/Booroobin (QLD 4552) locality are the accurate results, and the
 /// engine must cross-correlate them. This pins the full path so a future
 /// refactor of the rule set can't silently sever it.
 #[test]
-fn ground_truth_matthew_diegmann_identity_and_booroobin_geo() {
+fn ground_truth_jordan_avery_identity_and_booroobin_geo() {
     let scan = "ground-truth";
     let id = |kind, val: &str, sources: &[&str]| -> Entity {
         let mut e = Entity::new(kind, val, 0.80, scan);
@@ -1196,16 +1196,16 @@ fn ground_truth_matthew_diegmann_identity_and_booroobin_geo() {
     // modules, plus the username and phone that complete the cluster.
     let email = id(
         EntityKind::Email,
-        "matthewdiegmann@gmail.com",
+        "jordanavery@gmail.com",
         &["oathnet_pro", "name_intel"],
     );
     let username = id(
         EntityKind::Username,
-        "mdieg123",
+        "javery88",
         &["username_search", "oathnet_pro"],
     );
     let phone = id(EntityKind::Phone, "+61400000111", &["oathnet_pro"]);
-    let person = id(EntityKind::Person, "Matthew Diegmann", &["name_intel"]);
+    let person = id(EntityKind::Person, "Jordan Avery", &["name_intel"]);
 
     // qld_unclaimed surfaces Booroobin at *candidate* confidence (0.40,
     // below the 0.50 expand floor) — a coarse postcode-centroid lead.
@@ -1245,7 +1245,7 @@ fn ground_truth_matthew_diegmann_identity_and_booroobin_geo() {
     );
     assert!(
         au002.entity_uids.contains(&username.uid),
-        "cluster must include mdieg123"
+        "cluster must include javery88"
     );
 
     // AU-003 flags the two-source email as high cross-source corroboration.
@@ -1287,7 +1287,7 @@ fn ground_truth_matthew_diegmann_identity_and_booroobin_geo() {
         .expect("email-location linkage (AU-018) must fire once geo is corroborated");
     assert!(
         au018.entity_uids.contains(&email.uid),
-        "linkage must include matthewdiegmann@gmail.com"
+        "linkage must include jordanavery@gmail.com"
     );
     assert!(
         au018.entity_uids.contains(&booroobin_confirmed.uid),
@@ -1305,7 +1305,7 @@ fn ground_truth_matthew_diegmann_identity_and_booroobin_geo() {
 /// single-source candidate guesses (suburbs / permuted handles+emails) into a
 /// false identity (AU-002) or identity↔location (AU-018) cluster.
 #[test]
-fn ground_truth_erik_diegmann_scan_yields_only_real_correlations() {
+fn ground_truth_erik_avery_scan_yields_only_real_correlations() {
     use std::collections::HashMap;
 
     let mk = |kind, value: &str, conf: f64, sources: &[&str], tags: &[&str]| -> Entity {
@@ -1323,7 +1323,7 @@ fn ground_truth_erik_diegmann_scan_yields_only_real_correlations() {
     // ── Genuine cross-source signal ──
     ents.push(mk(
         EntityKind::Person,
-        "Erik Diegmann",
+        "Erik Avery",
         0.90,
         &["oathnet_pro", "social_probe"],
         &["breach", "social-probed"],
@@ -1351,7 +1351,7 @@ fn ground_truth_erik_diegmann_scan_yields_only_real_correlations() {
     ));
     ents.push(mk(
         EntityKind::Url,
-        "https://www.peekyou.com/erik-diegmann",
+        "https://www.peekyou.com/erik-avery",
         0.80,
         &["social_probe"],
         &["social-profile"],
@@ -1428,13 +1428,7 @@ fn ground_truth_erik_diegmann_scan_yields_only_real_correlations() {
         ));
     }
     // ── name_intel permutations (single-source Candidate guesses) ──
-    for u in [
-        "erikdiegmann",
-        "ediegmann",
-        "erik_diegmann",
-        "erik.diegmann",
-        "erikd",
-    ] {
+    for u in ["erikavery", "eavery", "erik_avery", "erik.avery", "erikd"] {
         ents.push(mk(
             EntityKind::Username,
             u,
@@ -1444,9 +1438,9 @@ fn ground_truth_erik_diegmann_scan_yields_only_real_correlations() {
         ));
     }
     for em in [
-        "erikdiegmann@gmail.com",
-        "erik.diegmann@gmail.com",
-        "ediegmann@gmail.com",
+        "erikavery@gmail.com",
+        "erik.avery@gmail.com",
+        "eavery@gmail.com",
     ] {
         ents.push(mk(
             EntityKind::Email,
@@ -1464,9 +1458,9 @@ fn ground_truth_erik_diegmann_scan_yields_only_real_correlations() {
         .collect();
 
     // Exactly six real correlations — nothing fabricated. AU-045: "Erik
-    // Diegmann" is corroborated by oathnet_pro (breach) AND social_probe
+    // Avery" is corroborated by oathnet_pro (breach) AND social_probe
     // (social) — two independent service families. AU-054: the subject's own
-    // listing at peekyou.com/erik-diegmann is a genuine data-location finding —
+    // listing at peekyou.com/erik-avery is a genuine data-location finding —
     // the subject's PII is brokered there (not a fabrication: the URL is the
     // subject's page).
     assert_eq!(
@@ -1484,7 +1478,7 @@ fn ground_truth_erik_diegmann_scan_yields_only_real_correlations() {
     assert!(fired.contains("AU-013"), "local Wi-Fi AP discovery");
     assert!(
         fired.contains("AU-045"),
-        "Erik Diegmann confirmed across breach + social families"
+        "Erik Avery confirmed across breach + social families"
     );
     // The location finding: subject's PII brokered on a people-search site.
     let au054 = firings
@@ -1903,7 +1897,7 @@ fn au_039_links_wallet_to_identity() {
             "chain_intel",
             &["crypto-address"],
         ),
-        mk_tagged(EntityKind::Person, "Matthew Diegmann", "see_know", &[]),
+        mk_tagged(EntityKind::Person, "Jordan Avery", "see_know", &[]),
     ];
     let out = rule_au_039_wallet_identity(&ents, "scan", 0);
     assert_eq!(out.len(), 1);

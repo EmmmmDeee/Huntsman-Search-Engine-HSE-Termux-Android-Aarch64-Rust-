@@ -133,6 +133,28 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
     let _ = writeln!(s, "api key origins: {}", join_or_dash(key_origins.iter()));
     let _ = writeln!(s, "sources/sites  : {}", join_or_dash(sources.iter()));
 
+    // MITRE ATT&CK Reconnaissance (TA0043) coverage — the techniques this scan's
+    // collection exercised, resolved from the modules that produced the
+    // evidence. Persisted here so the archived investigation reads in the
+    // framework's vocabulary, not just the live CLI/JSON view.
+    let module_sources: BTreeSet<&str> = entities
+        .iter()
+        .flat_map(|e| e.evidence.iter().map(|ev| ev.source.as_str()))
+        .collect();
+    let attack_cov = crate::modules::reconnaissance_coverage(module_sources.iter().copied());
+    if !attack_cov.is_empty() {
+        let _ = writeln!(
+            s,
+            "\n── MITRE ATT&CK {} ({}) — {} technique(s) exercised ──",
+            crate::core::attack::TACTIC_NAME,
+            crate::core::attack::TACTIC_ID,
+            attack_cov.len()
+        );
+        for t in &attack_cov {
+            let _ = writeln!(s, "  {:<11} {}", t.id, t.name);
+        }
+    }
+
     // Foreign API keys retrieved from endpoint data — surfaced up front because
     // a leaked third-party credential is the highest-signal finding in a scan.
     // These are ApiKey entities tagged `foreign-key`: recognised VENDOR keys

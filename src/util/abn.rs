@@ -382,7 +382,7 @@ mod tests {
         assert!(looks_like_company("SMITH & CO"));
         // Individuals and joint individuals are not companies.
         assert!(!looks_like_company("JOHN SMITH"));
-        assert!(!looks_like_company("HAYLEY DIEGMANN & CURT DIEGMANN"));
+        assert!(!looks_like_company("HAYLEY AVERY & CURT AVERY"));
         assert!(!looks_like_company("KAREEM AYALA"));
         // No false match inside a word.
         assert!(!looks_like_company("INCANDESCENT BAY"));

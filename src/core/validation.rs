@@ -501,6 +501,11 @@ pub fn is_fragment_value(kind: &EntityKind, value: &str) -> bool {
         // are normalised to strip a `@handle` prefix, so by the time a Username
         // reaches here a leading `@` would be a genuine fragment.
         EntityKind::Username => v.starts_with('@'),
+        // A real address always carries an alphabetic locality — a suburb or
+        // street name. A value with NO alphabetic character is a breach record's
+        // numeric `city` field (a postcode) glued to a street number, e.g.
+        // "4125, 327" (seen from an ashleymadison `city=4125` row); not a place.
+        EntityKind::Address => !v.chars().any(char::is_alphabetic),
         _ => false,
     }
 }
@@ -599,15 +604,25 @@ mod tests {
         assert!(is_fragment_value(&K::Domain, "gmail")); // no dot
         assert!(is_fragment_value(&K::Domain, "a.b")); // < 4 chars
         assert!(is_fragment_value(&K::Username, "@handle")); // unstripped sigil
-        assert!(is_fragment_value(&K::Person, "Matthew Dieg…")); // ellipsis
+        assert!(is_fragment_value(&K::Person, "Jordan Ave…")); // ellipsis
         assert!(is_fragment_value(&K::Email, "   "));
+        // Address with no alphabetic locality — a breach numeric `city` (a
+        // postcode) glued to a street number, e.g. "4125, 327".
+        assert!(is_fragment_value(&K::Address, "4125, 327"));
+        assert!(is_fragment_value(&K::Address, "4110, 327"));
 
         // Complete, verifiable values — must be kept.
-        assert!(!is_fragment_value(&K::Email, "matthewdiegmann@gmail.com"));
+        assert!(!is_fragment_value(&K::Email, "jordanavery@gmail.com"));
         assert!(!is_fragment_value(&K::Domain, "goatlegal.com.au"));
         assert!(!is_fragment_value(&K::Domain, "x.co"));
-        assert!(!is_fragment_value(&K::Username, "matthewdiegmann"));
-        assert!(!is_fragment_value(&K::Person, "Matthew Diegmann"));
+        assert!(!is_fragment_value(&K::Username, "jordanavery"));
+        assert!(!is_fragment_value(&K::Person, "Jordan Avery"));
+        // Genuine addresses (alphabetic locality present) are kept.
+        assert!(!is_fragment_value(&K::Address, "Brisbane, QLD"));
+        assert!(!is_fragment_value(
+            &K::Address,
+            "327 Main St, Brisbane QLD 4125"
+        ));
 
         // Inherently-unique secrets are never fragments even if oddly shaped.
         assert!(!is_fragment_value(&K::Password, "@p"));
@@ -669,11 +684,11 @@ mod tests {
         // Real values pass through — including real mailboxes that merely START
         // with a template-ish token.
         assert!(!is_placeholder_entity(&Domain, "cloudflare.com"));
-        assert!(!is_placeholder_entity(&Email, "matthewdiegmann@gmail.com"));
+        assert!(!is_placeholder_entity(&Email, "jordanavery@gmail.com"));
         assert!(!is_placeholder_entity(&Email, "matt@gmail.com"));
         assert!(!is_placeholder_entity(&Email, "john.smith@gmail.com"));
         assert!(!is_placeholder_entity(&Email, "firstnations@gmail.com"));
-        assert!(!is_placeholder_entity(&Person, "Matthew Diegmann"));
+        assert!(!is_placeholder_entity(&Person, "Jordan Avery"));
         // Inherently-unique secrets are NEVER filtered, even containing "example".
         assert!(!is_placeholder_entity(&Password, "example.com"));
         assert!(!is_placeholder_entity(
