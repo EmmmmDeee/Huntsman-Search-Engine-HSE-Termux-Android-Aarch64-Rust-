@@ -1985,11 +1985,12 @@ fn au_042_groups_pgp_linked_emails() {
 }
 
 #[test]
-fn au_054_locates_pii_one_finding_per_broker() {
+fn au_054_locates_pii_corroboration_scaled_never_high() {
     use super::rules::rule_au_054_data_broker_exposure;
-    let ents = vec![
-        // Subject listed on two distinct brokers (two URLs on Spokeo, one on
-        // Whitepages) plus an unrelated public URL that must NOT fire.
+
+    // Subject across TWO distinct brokers (2 Spokeo URLs + 1 Whitepages) plus an
+    // unrelated public URL that must NOT count. One grouped finding.
+    let multi = vec![
         mk_tagged(
             EntityKind::Url,
             "https://www.spokeo.com/John-Doe",
@@ -2015,26 +2016,44 @@ fn au_054_locates_pii_one_finding_per_broker() {
             &[],
         ),
     ];
-    let out = rule_au_054_data_broker_exposure(&ents, "scan", 0);
-    assert_eq!(out.len(), 2, "one finding per distinct broker, not per URL");
+    let out = rule_au_054_data_broker_exposure(&multi, "scan", 0);
+    assert_eq!(out.len(), 1, "one grouped finding, not one per broker");
+    assert_eq!(out[0].rule_id, "AU-054");
+    // ≥2 independent brokers → Medium (corroborated), but NEVER High/Critical —
+    // brokers are not preferenced over other OSINT.
+    assert_eq!(out[0].severity, super::Severity::Medium);
+    assert!(out[0].description.contains("Spokeo") && out[0].description.contains("Whitepages"));
+    assert!(out[0].description.contains("brokered on"));
     assert!(
-        out.iter()
-            .all(|c| c.rule_id == "AU-054" && c.severity == super::Severity::High)
+        out[0].description.contains("not confirmation"),
+        "must caveat broker data as a lead, not confirmation"
     );
-    // Deterministic order: brokers sorted by domain → spokeo before whitepages.
-    // Location finding — names the broker, carries NO removal/opt-out surface
-    // (that is a later phase, deliberately absent).
-    assert!(out[0].description.contains("Spokeo") && out[0].description.contains("brokered on"));
     assert!(
         !out[0].description.contains("http"),
-        "AU-054 is a location finding, not a takedown — no opt-out URL"
+        "location finding only — no opt-out/takedown surface"
     );
     assert_eq!(
         out[0].entity_uids.len(),
-        2,
-        "both Spokeo URLs grouped under one finding"
+        3,
+        "all broker URLs (2 Spokeo + 1 Whitepages) under one finding"
     );
-    assert!(out[1].description.contains("Whitepages"));
+
+    // A LONE broker is weak/uncorroborated → Low, so it never outranks real
+    // OSINT and is never treated as credible in isolation.
+    let single = vec![mk_tagged(
+        EntityKind::Url,
+        "https://www.spokeo.com/John-Doe",
+        "search_engines",
+        &[],
+    )];
+    let out = rule_au_054_data_broker_exposure(&single, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(
+        out[0].severity,
+        super::Severity::Low,
+        "a single broker listing is low-credibility, never preferenced"
+    );
+
     // No broker exposure → no finding.
     let clean = vec![mk_tagged(
         EntityKind::Url,

@@ -787,71 +787,79 @@ pub(in crate::core::correlator) fn rule_au_044_shared_tracking_id(
         .collect()
 }
 
-/// AU-054 — PII located on a data broker.
+/// AU-054 — PII located on data broker(s).
 ///
 /// When the scan surfaced a `Url` whose host is a known people-search /
 /// data-broker site (Spokeo, BeenVerified, Whitepages, …), the subject's PII is
-/// being brokered/redistributed there — a concrete location finding: *this is
-/// where the subject's data lives*. Each such broker becomes one discrete,
-/// rankable finding. This is the locating counterpart to the engine's expansion
-/// gate, which already treats these domains as aggregator noise: here that same
-/// recognition is turned into "your subject's data is exposed on this site".
-/// (What to do about it — a removal request — is a later phase, deliberately not
-/// surfaced here.)
+/// being brokered/redistributed there — a location finding: *where the
+/// subject's data lives*. This is the locating counterpart to the engine's
+/// expansion gate, which already treats these domains as aggregator noise.
 ///
-/// Matches `Url` entities only (a profile URL with a host is a real listing),
-/// not a bare broker `Domain` (no specific record located). One firing per
-/// distinct broker, in registry (alphabetical-by-domain) order; entity_uids are
-/// every URL on that broker, sorted, so the output is deterministic.
+/// **Brokers are low-credibility OSINT and are NOT preferenced over other
+/// sources.** A people-search listing aggregates (frequently from other
+/// brokers), goes stale, and a single one proves little — so a lone broker
+/// fires at `Low`, ranked *below* any corroborated identity/geo finding.
+/// Listings across ≥2 *independent* brokers corroborate more, but because
+/// brokers cross-source each other the ceiling is `Medium` — on par with other
+/// corroborated OSINT, never above it (never `High`/`Critical`). The finding
+/// says so explicitly: it is a lead to verify against primary sources, not
+/// confirmation.
+///
+/// One grouped finding so cross-broker corroboration drives the severity.
+/// Matches `Url` entities only (a profile URL is a real listing), not a bare
+/// broker `Domain`. Broker names and uids are sorted, so output is deterministic.
 pub(in crate::core::correlator) fn rule_au_054_data_broker_exposure(
     entities: &[Entity],
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    use crate::core::data_broker::{BROKERS, broker_for_host};
+    use crate::core::data_broker::broker_for_host;
+    use std::collections::BTreeSet;
 
-    // broker domain → the uids of Url entities listed on it.
-    let mut by_broker: HashMap<&'static str, Vec<String>> = HashMap::new();
+    // Distinct brokers (by display name, sorted) the subject is listed on, and
+    // every broker-URL uid backing the finding.
+    let mut brokers: BTreeSet<&'static str> = BTreeSet::new();
+    let mut uids: Vec<String> = Vec::new();
     for e in entities.iter().filter(|e| e.kind == EntityKind::Url) {
         if let Some(host) = url::Url::parse(&e.value)
             .ok()
             .and_then(|u| u.host_str().map(str::to_string))
             && let Some(broker) = broker_for_host(&host)
         {
-            by_broker
-                .entry(broker.domain)
-                .or_default()
-                .push(e.uid.clone());
+            brokers.insert(broker.name);
+            uids.push(e.uid.clone());
         }
     }
-    if by_broker.is_empty() {
+    if brokers.is_empty() {
         return Vec::new();
     }
+    uids.sort_unstable();
+    uids.dedup();
+    let names: Vec<&str> = brokers.iter().copied().collect();
 
-    // Iterate BROKERS (sorted by domain) so firings are emitted deterministically.
-    BROKERS
-        .iter()
-        .filter_map(|broker| {
-            let mut uids = by_broker.remove(broker.domain)?;
-            uids.sort_unstable();
-            uids.dedup();
-            let n = uids.len();
-            Some(Correlation {
-                rule_id: "AU-054".into(),
-                rule_name: "PII located on data broker".into(),
-                severity: Severity::High,
-                description: format!(
-                    "Subject's PII is brokered on {} ({} listing{}) — a people-search \
-                     site redistributing the subject's data",
-                    broker.name,
-                    n,
-                    if n == 1 { "" } else { "s" }
-                ),
-                entity_uids: uids,
-                scan_id: scan_id.into(),
-                ts,
-                rank: 0.0,
-            })
-        })
-        .collect()
+    // Corroboration-scaled, capped at Medium so brokers never outrank other
+    // OSINT: one broker = Low (weak, not credible alone); ≥2 independent
+    // brokers = Medium (corroborated, but brokers cross-source — not High).
+    let severity = if names.len() >= 2 {
+        Severity::Medium
+    } else {
+        Severity::Low
+    };
+
+    vec![Correlation {
+        rule_id: "AU-054".into(),
+        rule_name: "PII located on data broker(s)".into(),
+        severity,
+        description: format!(
+            "Subject's PII is brokered on {} people-search site(s): {} — data-broker \
+             listings aggregate (often from each other) and corroborate weakly; treat \
+             as a lead to verify against primary sources, not confirmation",
+            names.len(),
+            names.join(", ")
+        ),
+        entity_uids: uids,
+        scan_id: scan_id.into(),
+        ts,
+        rank: 0.0,
+    }]
 }
