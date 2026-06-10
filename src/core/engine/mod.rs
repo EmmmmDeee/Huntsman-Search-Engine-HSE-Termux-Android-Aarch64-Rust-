@@ -160,6 +160,19 @@ impl DispatchLog {
         true
     }
 
+    /// Remove a key — used when a keyed module dispatched but cleanly opted
+    /// out without spending its query (`MissingKey`), so a later round (after
+    /// the key-cascade hot-injects the missing key) may legitimately
+    /// re-dispatch the same (module, target). Removes from both the set and
+    /// the FIFO order so eviction accounting stays exact: leaving a stale
+    /// order entry would make a future eviction of that entry delete a
+    /// *re-inserted* live key from `seen`.
+    pub fn remove(&mut self, key: &DispatchKey) {
+        if self.seen.remove(key) {
+            self.order.retain(|k| k != key);
+        }
+    }
+
     /// Number of keys currently tracked.
     #[must_use]
     pub fn len(&self) -> usize {

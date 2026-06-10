@@ -2752,3 +2752,56 @@ async fn bogus_ips_are_dropped_at_admission() {
         "private IP must be kept (local-sensor finding)"
     );
 }
+
+/// KeyGated module with no key configured — enters the dispatch ledger at the
+/// gate, then cleanly opts out with `MissingKey`.
+struct KeyGatedNeedsKey;
+
+#[async_trait]
+impl Module for KeyGatedNeedsKey {
+    fn name(&self) -> &'static str {
+        "keygated_needs_key"
+    }
+    fn priority(&self) -> u8 {
+        90
+    }
+    fn cost(&self) -> huntsman_search_engine::core::module::ModuleCost {
+        huntsman_search_engine::core::module::ModuleCost::KeyGated
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, _t: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
+        Err(huntsman_search_engine::core::error::Error::MissingKey(
+            "HUNTSMAN_VIRUSTOTAL_KEY".into(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn missing_key_releases_the_dispatch_ledger_entry() {
+    use huntsman_search_engine::core::engine::DispatchLog;
+
+    // The dedup contract is "each API key/service is utilised at most once per
+    // target" — a module that opted out for want of a key utilised NOTHING, so
+    // its ledger entry must be released. Otherwise a key discovered later by
+    // the hot-inject cascade could never be applied to this target for the
+    // rest of the scan (or the whole radar session).
+    let (engine, _store, sid, target, ctx) = setup(
+        vec![Arc::new(KeyGatedNeedsKey)],
+        "needs-key-ledger",
+        TargetKind::Email,
+        "alice@contoso.com",
+    );
+    let scan = Scan::new(sid.clone(), target.clone());
+    let mut ledger: DispatchLog = DispatchLog::new();
+    engine
+        .run_with_ledger(scan, target, ctx, &mut ledger)
+        .await
+        .unwrap();
+    assert!(
+        ledger.is_empty(),
+        "a MissingKey opt-out spent no query — its ledger entry must be \
+         released so a hot-injected key can retry the target"
+    );
+}

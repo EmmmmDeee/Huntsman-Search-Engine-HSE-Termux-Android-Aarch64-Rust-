@@ -224,14 +224,17 @@ impl super::ScanEngine {
     /// emitted entities into the per-scan `entity_map`. Shared by
     /// `dispatch_target_sequential` and `dispatch_target_concurrent`
     /// so the event payload shape is identical between the two paths.
+    #[allow(clippy::too_many_arguments)]
     fn finalise_module_result(
         &self,
         scan_id: &str,
         name: &'static str,
+        target: &Target,
         min_confidence: Option<f64>,
         entity_map: &mut HashMap<String, Entity>,
         result: TimeoutResult,
         stats: &mut ModuleStats,
+        dispatched: &mut DispatchLog,
     ) {
         stats.run += 1;
         match result {
@@ -255,6 +258,15 @@ impl super::ScanEngine {
                 // known) instead of a scary module error, and count it under
                 // `skipped` rather than `errored`.
                 stats.skipped += 1;
+                // Release the dedup-ledger entry: the dedup contract is "each
+                // API key/service is utilised at most once per target", and a
+                // module that opted out for want of a key utilised NOTHING.
+                // Leaving the entry blocked the retry for the whole scan (and
+                // the whole radar session), so a key discovered later by the
+                // hot-inject cascade could never be applied to this target —
+                // defeating the cascade's purpose. No-op for free modules,
+                // which never enter the ledger.
+                dispatched.remove(&dispatch_key(name, target));
                 let reason = match crate::util::keys::signup_hint(&key) {
                     Some(hint) => format!("needs API key {key} — {hint}"),
                     None => format!("needs API key {key}"),
@@ -292,6 +304,9 @@ impl super::ScanEngine {
                     if let Some(min) = min_confidence
                         && entity.confidence < min
                     {
+                        // Visible like every other admission drop ("never a
+                        // black box") — this was the one silent rejection.
+                        self.emit_excluded(scan_id, &entity, "below_min_confidence");
                         continue;
                     }
                     // Drop guaranteed-bogus IPs (documentation / reserved /
@@ -517,10 +532,12 @@ impl super::ScanEngine {
             self.finalise_module_result(
                 scan_id,
                 name,
+                target,
                 opts.min_confidence,
                 entity_map,
                 result,
                 stats,
+                dispatched,
             );
 
             super::hot_inject_keys(&mut ctx.keys);
@@ -582,6 +599,12 @@ impl super::ScanEngine {
             if ctx.cancel.is_cancelled() {
                 break;
             }
+            // Same entity-budget short-circuit the sequential path and Phase 2
+            // apply. Without it, a scan already AT max_entities kept burning
+            // the most expensive dispatches there are — paid per-query APIs.
+            if opts.max_entities.is_some_and(|cap| entity_map.len() >= cap) {
+                break;
+            }
             let name = module.name();
             if !module.accepts(target) {
                 continue;
@@ -625,10 +648,12 @@ impl super::ScanEngine {
             self.finalise_module_result(
                 scan_id,
                 name,
+                target,
                 opts.min_confidence,
                 entity_map,
                 result,
                 stats,
+                dispatched,
             );
             // Hot-inject discovered keys so Phase 2 modules can use them.
             // Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl etc.)
@@ -759,10 +784,12 @@ impl super::ScanEngine {
             self.finalise_module_result(
                 scan_id,
                 outcome.name,
+                target,
                 opts.min_confidence,
                 entity_map,
                 outcome.result,
                 stats,
+                dispatched,
             );
         }
         Ok(())
