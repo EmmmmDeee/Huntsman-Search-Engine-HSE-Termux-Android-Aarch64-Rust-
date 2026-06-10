@@ -16,11 +16,12 @@
 //! module map references exists in the catalogue here, so the two can't diverge.
 
 use crate::core::module::ModuleCategory;
+use serde::Serialize;
 
 /// One ATT&CK Reconnaissance technique (or sub-technique) HSE's collection maps
 /// to. `id` is the canonical ATT&CK identifier (`T1596.002`); sub-techniques
 /// use the dotted form.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Technique {
     /// Canonical ATT&CK ID, e.g. `T1589.002`.
     pub id: &'static str,
@@ -164,6 +165,19 @@ pub fn technique(id: &str) -> Option<&'static Technique> {
     RECONNAISSANCE.iter().find(|t| t.id == id)
 }
 
+/// Resolve a set of technique IDs into their catalogue entries, deduplicated
+/// and sorted by ID; unknown IDs are dropped. The shared reducer behind every
+/// "which Reconnaissance techniques did this exercise" report — the module
+/// catalogue view (`hse modules`) and the per-scan coverage view both funnel
+/// through here, so a covered-technique list is computed one way everywhere.
+#[must_use]
+pub fn coverage<'a>(ids: impl IntoIterator<Item = &'a str>) -> Vec<&'static Technique> {
+    let mut out: Vec<&'static Technique> = ids.into_iter().filter_map(technique).collect();
+    out.sort_unstable_by_key(|t| t.id);
+    out.dedup_by_key(|t| t.id);
+    out
+}
+
 /// The ATT&CK Reconnaissance technique IDs a module's functional
 /// [`ModuleCategory`] implements — the **default** mapping every module inherits
 /// (a module whose category is too coarse, e.g. an active scanner sitting in
@@ -258,6 +272,14 @@ mod tests {
             Some("Search Engines")
         );
         assert_eq!(technique("T9999"), None);
+    }
+
+    #[test]
+    fn coverage_dedupes_sorts_and_drops_unknown() {
+        let cov = coverage(["T1596.002", "T1589.002", "T1596.002", "T9999"]);
+        let ids: Vec<&str> = cov.iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec!["T1589.002", "T1596.002"]);
+        assert!(coverage(std::iter::empty::<&str>()).is_empty());
     }
 
     #[test]
