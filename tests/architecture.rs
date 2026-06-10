@@ -117,6 +117,12 @@ fn core_does_not_import_util_directly() {
                 // jurisdiction an Address asserts, to cross-check it against the
                 // `au-state:` tag a Coordinates entity carries.
                 && !line.contains("util::address_au::state_code")
+                // Pure, dependency-free coordinate -> AU state/territory
+                // bounding-box classifier (no I/O). AU-056 uses it to derive a
+                // coordinate's jurisdiction when the `au-state:` tag is absent
+                // (most fixes — only three builders tag), so the cross-check
+                // works for coordinates from any module.
+                && !line.contains("util::geo::au_state_for_coords")
                 // Pure, dependency-free digit-only normaliser — the same leaf
                 // category as the ABN checksums above; `core::scan` uses it in
                 // the target auto-detector to strip separators from a candidate
