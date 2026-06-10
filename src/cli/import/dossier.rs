@@ -96,6 +96,12 @@ pub(super) fn parse_dossier(
                 "country",
                 "gender",
                 "phone",
+                // `address` MUST be whitelisted here: `emit_dossier_entry` reads
+                // `get("address")` and emits a first-class Address entity (the
+                // associate/household pivot, AU-049). Without this key the field
+                // was never accumulated into the entry, so that whole block was
+                // dead code and every dossier address was silently dropped.
+                "address",
             ];
             if !val.is_empty() && FIELDS.contains(&key.as_str()) {
                 entry.push((key, val.to_string()));

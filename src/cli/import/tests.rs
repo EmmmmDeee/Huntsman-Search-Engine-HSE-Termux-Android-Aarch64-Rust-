@@ -299,6 +299,47 @@ fn import_txt_parses_victim_section_in_normal_order() {
 }
 
 #[test]
+fn dossier_entry_address_field_becomes_a_first_class_entity() {
+    use crate::core::entity::EntityKind;
+    // Regression: `address` was missing from the entry field whitelist, so the
+    // `address:` line was never accumulated and `emit_dossier_entry`'s Address
+    // block (the household / co-location pivot, AU-049) was dead code — every
+    // dossier address was silently dropped during parsing.
+    let dossier = "Entry #1:\n   \u{2022} email: a@corp.io\n   \
+                   \u{2022} address: 12 Mary Street, Brisbane QLD 4000\n";
+    let (mut ents, stats) = super::parse_dossier(dossier, "sid");
+    super::deduplicate_by_uid(&mut ents);
+
+    let addr = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("a specific residence address must be emitted");
+    assert_eq!(addr.value, "12 Mary Street, Brisbane QLD 4000");
+    assert!(addr.has_tag("breach") && addr.has_tag("dossier"));
+    assert_eq!(stats.addresses, 1);
+
+    // The full record still travels as evidence on the email (correlation intact).
+    let email = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Email && e.value == "a@corp.io")
+        .expect("entry email");
+    assert_eq!(
+        email.evidence[0]
+            .attributes
+            .get("address")
+            .map(String::as_str),
+        Some("12 Mary Street, Brisbane QLD 4000"),
+    );
+
+    // A bare, non-specific locality ("USA") names a region thousands share and
+    // must NOT fabricate a residence entity.
+    let vague = "Entry #2:\n   \u{2022} email: b@corp.io\n   \u{2022} address: USA\n";
+    let (ents2, stats2) = super::parse_dossier(vague, "sid");
+    assert!(!ents2.iter().any(|e| e.kind == EntityKind::Address));
+    assert_eq!(stats2.addresses, 0);
+}
+
+#[test]
 fn reused_hash_across_entries_is_preserved_for_cross_account_linking() {
     use crate::core::entity::EntityKind;
     // The unmasking signal: two DIFFERENT accounts sharing one salted hash. The
