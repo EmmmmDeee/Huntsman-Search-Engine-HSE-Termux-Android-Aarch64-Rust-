@@ -709,3 +709,79 @@ fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
          false geoint fix. Use crate::util::geo::is_plausible_provider_coord."
     );
 }
+
+/// CONVENTIONS.md §2 — hubs declare, never house. Outside `#[cfg(test)]`
+/// code, a module body belongs in its own file: `pub mod name;` in the hub,
+/// code in `name.rs`. This pin turns the convention into a mechanical check
+/// (the same treatment the AI-independence charter got), so the consistency
+/// bought by extracting every inline module from core/mod.rs and util/mod.rs
+/// can't erode one "harmless exception" at a time. The only permitted inline
+/// bodies are trivial wrappers that would be NOISE as files, allow-listed
+/// here by (path-suffix, module-name) so adding one is a reviewed decision.
+#[test]
+fn no_inline_module_bodies_outside_allowed_exceptions() {
+    // (path suffix, module name) → why it is legitimately inline.
+    const ALLOWED: &[(&str, &str)] = &[
+        // 3-line include! wrapper for the build.rs-generated source manifest.
+        ("src/lib.rs", "source_manifest"),
+        // 5-line path-constants shim local to the oathnet util.
+        ("src/util/oathnet.rs", "paths"),
+    ];
+
+    fn visit(dir: &Path, offenders: &mut Vec<String>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(&path, offenders);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs")
+                || path.file_name().is_some_and(|n| n == "tests.rs")
+            {
+                continue;
+            }
+            let content = fs::read_to_string(&path).unwrap();
+            let rel = path.display().to_string().replace('\\', "/");
+            // Once the first `#[cfg(test)]` appears, the rest of the file is
+            // test scaffolding by this tree's layout convention (test modules
+            // come last) — same simplification the layering scanner uses.
+            let mut in_test = false;
+            for (i, line) in content.lines().enumerate() {
+                let t = line.trim();
+                if t == "#[cfg(test)]" {
+                    in_test = true;
+                }
+                if in_test || !t.ends_with('{') {
+                    continue;
+                }
+                let rest = ["pub(crate) mod ", "pub(super) mod ", "pub mod ", "mod "]
+                    .iter()
+                    .find_map(|p| t.strip_prefix(p));
+                let Some(rest) = rest else { continue };
+                let Some(name) = rest.strip_suffix('{').map(str::trim) else {
+                    continue;
+                };
+                if name == "tests"
+                    || ALLOWED
+                        .iter()
+                        .any(|(suf, m)| rel.ends_with(suf) && *m == name)
+                {
+                    continue;
+                }
+                offenders.push(format!("{rel}:{}: inline `mod {name}`", i + 1));
+            }
+        }
+    }
+
+    let mut offenders = Vec::new();
+    visit(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut offenders,
+    );
+    assert!(
+        offenders.is_empty(),
+        "inline module bodies outside the allow-list (CONVENTIONS.md §2 — \
+         move the body to its own file, or allow-list a trivial wrapper \
+         with a justification): {offenders:#?}"
+    );
+}

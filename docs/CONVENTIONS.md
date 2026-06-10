@@ -33,7 +33,11 @@ There are no size-based exceptions (even 17-line utilities get their own file �
   `scan_handlers` = scan data, `settings_handlers` = keys/settings/toggles).
 
 Inline modules are permitted only for trivial wrappers (a build-script
-`include!`, a ≤5-line constants shim) and `#[cfg(test)] mod tests`.
+`include!`, a ≤5-line constants shim) and `#[cfg(test)] mod tests`. Each
+non-test exception is allow-listed by `(path, module-name)`, so adding one is
+a reviewed decision rather than a silent drift.
+*Enforced:* `no_inline_module_bodies_outside_allowed_exceptions` in
+`tests/architecture.rs`.
 
 ## 3. Single-source vocabularies
 
