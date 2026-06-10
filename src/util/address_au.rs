@@ -207,6 +207,11 @@ pub fn normalise_phone(s: &str) -> Option<String> {
 /// place at two granularities — share a key and can be recognised as the same
 /// locality regardless of which module or scan round produced each form.
 ///
+/// AU state abbreviations are normalised to their full names as WHOLE tokens, so
+/// `"Kuraby, QLD"` and `"Kuraby, Queensland"` (one place, two spellings) share a
+/// key. Whole-token replacement is deliberate — a naive substring expansion
+/// turns the `wa` inside `wales` into `western australia`.
+///
 /// The postcode is always *trailing*, so a leading street number (also numeric)
 /// is never stripped — `"12 Main St, Brisbane QLD"` and `"99 Main St, Brisbane
 /// QLD"` keep distinct keys. Pure; no I/O.
@@ -215,6 +220,7 @@ pub fn normalise_phone(s: &str) -> Option<String> {
 /// use huntsman_search_engine::util::address_au::locality_key;
 ///
 /// assert_eq!(locality_key("Murrumbateman, NSW"), locality_key("Murrumbateman, NSW 2582"));
+/// assert_eq!(locality_key("Kuraby, QLD"), locality_key("Kuraby, Queensland"));
 /// assert_ne!(locality_key("12 Main St, Brisbane QLD"), locality_key("99 Main St, Brisbane QLD"));
 /// ```
 #[must_use]
@@ -232,7 +238,24 @@ pub fn locality_key(addr: &str) -> String {
     {
         tokens.pop();
     }
-    tokens.join(" ")
+    // Normalise AU state abbreviations to their full names, token-wise (never
+    // substring — so the `wa` in `wales` is left alone), so "QLD" and
+    // "Queensland" produce the same key.
+    let mut out: Vec<&str> = Vec::with_capacity(tokens.len() + 2);
+    for t in tokens {
+        match t {
+            "nsw" => out.extend(["new", "south", "wales"]),
+            "qld" => out.push("queensland"),
+            "vic" => out.push("victoria"),
+            "tas" => out.push("tasmania"),
+            "act" => out.extend(["australian", "capital", "territory"]),
+            "sa" => out.extend(["south", "australia"]),
+            "wa" => out.extend(["western", "australia"]),
+            "nt" => out.extend(["northern", "territory"]),
+            other => out.push(other),
+        }
+    }
+    out.join(" ")
 }
 
 /// Crude AU phone scanner — pulls all plausible numbers out of a text
@@ -333,6 +356,18 @@ mod tests {
             locality_key("Brisbane QLD"),
             locality_key("12 Main St, Brisbane QLD")
         );
+        // State abbreviation ↔ full name fold to one key (a live name-scan
+        // surfaced "Kuraby, QLD" and "Kuraby, Queensland" as two entities).
+        assert_eq!(
+            locality_key("Kuraby, QLD"),
+            locality_key("Kuraby, Queensland")
+        );
+        // Whole-token only: the `wa` inside "wales" must NOT expand (regression
+        // guard for the naive substring-replace trap).
+        assert_eq!(locality_key("Newcastle, NSW"), "newcastle new south wales");
+        // Distinct states stay distinct (a mis-paired "Brisbane, VIC" is not
+        // merged into the real "Brisbane, QLD").
+        assert_ne!(locality_key("Brisbane VIC"), locality_key("Brisbane QLD"));
     }
 
     #[test]
