@@ -877,6 +877,19 @@ fn navigation_path_catches_extensions() {
 }
 
 #[test]
+fn navigation_path_rejects_linkedin_directory_prefixes() {
+    // Regression from a live self-scan: `linkedin.com/pub/dir/Matthew/Diegmann`
+    // is a people-search URL, so its first path segment `pub` was emitted as a
+    // discovered username. `pub` and `dir` are structural directory prefixes,
+    // never handles, and must be filtered.
+    assert!(is_navigation_path("pub"));
+    assert!(is_navigation_path("dir"));
+    // A genuine handle that merely starts with those letters is unaffected.
+    assert!(!is_navigation_path("publius"));
+    assert!(!is_navigation_path("director_steve"));
+}
+
+#[test]
 fn fullname_query_includes_geolocation() {
     let t = Target::new(TargetKind::FullName, "Jane Doe");
     let q = build_queries(&t);
