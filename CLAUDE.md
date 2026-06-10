@@ -3,15 +3,26 @@
 ## Working with the user
 
 - The user identifies as **Haigen Bamford**. Address them accordingly, with respect.
+- **Do not use `matthewdiegmann@gmail.com`** — that email is no longer the user's and is not applicable to anything. For an authorised self-test, seed on the name **Haigen Bamford** (the current email is unknown/forgotten).
 
-## Verification gate (run before committing)
+## Verification gate (must match CI before committing)
+
+CI's `Check & test` job runs clippy with `-D warnings` on a newer toolchain and
+docs with `--document-private-items` plus extra rustdoc lints. Match it locally:
 
 ```
-cargo fmt
-cargo clippy --all-targets
-RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc --no-deps
+cargo fmt --all -- --check
+cargo clippy --all-targets --locked -- -D warnings
+RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::bare_urls -D rustdoc::invalid_html_tags" \
+  cargo doc --no-deps --document-private-items --locked
 cargo test
 ```
+
+Notes:
+- `--document-private-items` matters: a broken intra-doc link in a *private* item
+  (e.g. a `fn`'s doc) only fails under it. Fully-qualify cross-module links.
+- The CI clippy toolchain is newer than the local one, so some lints
+  (e.g. `collapsible_match`) only surface in CI; treat clippy failures there as real.
 
 ## Conventions
 
