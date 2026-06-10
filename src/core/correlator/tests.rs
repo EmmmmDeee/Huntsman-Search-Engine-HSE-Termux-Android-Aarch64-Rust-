@@ -2447,6 +2447,36 @@ fn au047_links_on_reused_plaintext_password_and_session_token() {
 }
 
 #[test]
+fn au018_includes_full_member_set_so_finalize_supersedes_live() {
+    use super::rules::rule_au_018_email_address_colocation;
+    // Regression: a live "Haigen Bamford" scan persisted AU-018 twice
+    // ("co-located with 6" and "with 9"). The rule sampled take(5) of a growing
+    // address set, so the live and finalize rows had DISJOINT 5-address samples
+    // that storage's superset-supersede dedup couldn't fold. The member set must
+    // be the FULL set, so the (monotonically growing) finalize set is a superset
+    // of the live set and supersedes it.
+    let mut email = Entity::new(EntityKind::Email, "haigen@visionhomesqld.com.au", 0.70, "s");
+    email.add_evidence(Evidence::new("see_know", "x"));
+    let mut ents = vec![email];
+    for i in 0..7 {
+        let mut a = Entity::new(EntityKind::Address, format!("Suburb {i}, QLD"), 0.60, "s");
+        a.tag("geoint");
+        ents.push(a);
+    }
+    let out = rule_au_018_email_address_colocation(&ents, "s", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-018");
+    // 1 email + all 7 addresses — not capped at take(5) — so a later superset
+    // (more addresses) strictly contains this set and supersedes it in storage.
+    assert_eq!(
+        out[0].entity_uids.len(),
+        8,
+        "full member set, not a take(5) sample: {:?}",
+        out[0].entity_uids
+    );
+}
+
+#[test]
 fn au027_chains_only_the_dominant_coherent_location() {
     use super::rules::rule_au_027_address_coordinates_chain;
     // Regression from a deep "Haigen Bamford" scan: a Brisbane subject also
