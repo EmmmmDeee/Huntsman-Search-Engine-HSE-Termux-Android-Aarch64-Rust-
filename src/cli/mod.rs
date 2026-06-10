@@ -748,6 +748,10 @@ pub(super) fn parse_target_kind(s: &str) -> Result<TargetKind> {
     }
 }
 
+/// Human-display form of a module cost for CLI tables ("key-gated", hyphen).
+/// Deliberately distinct from the canonical machine identifier
+/// [`ModuleCost::as_str`] ("key_gated"), which serde/the API/the module graph
+/// emit — this is presentation, that is wire format.
 pub(super) fn cost_label(c: ModuleCost) -> &'static str {
     match c {
         ModuleCost::Free => "free",

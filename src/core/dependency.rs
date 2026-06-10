@@ -33,7 +33,7 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::core::entity::EntityKind;
-use crate::core::module::{Module, ModuleCost};
+use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
 
 /// Every `TargetKind` variant — used by both the dispatch-index builder
@@ -226,7 +226,7 @@ impl ModuleGraph {
             .map(|m| PivotEdge {
                 module: m.name(),
                 category: m.category().as_str(),
-                cost: cost_str(m.cost()),
+                cost: m.cost().as_str(),
                 passive: m.is_passive(),
                 consumes: m
                     .consumes()
@@ -245,14 +245,6 @@ impl ModuleGraph {
             kinds: consumers_by_kind,
             edges,
         }
-    }
-}
-
-fn cost_str(c: ModuleCost) -> &'static str {
-    match c {
-        ModuleCost::Free => "free",
-        ModuleCost::KeyGated => "key_gated",
-        ModuleCost::Paid => "paid",
     }
 }
 

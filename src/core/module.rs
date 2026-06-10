@@ -25,6 +25,22 @@ pub enum ModuleCost {
     Paid,
 }
 
+impl ModuleCost {
+    /// Stable snake_case identifier (matches serde output) — the canonical
+    /// machine-readable form, owned by the type exactly as
+    /// [`ModuleCategory::as_str`] is. (Previously this mapping lived as a
+    /// private helper in `dependency.rs`, a second source of truth beside the
+    /// serde derive that could drift.) The CLI's hyphenated "key-gated" table
+    /// label is a deliberate human-display variant, not this identifier.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Free => "free",
+            Self::KeyGated => "key_gated",
+            Self::Paid => "paid",
+        }
+    }
+}
+
 /// Coarse functional category for a module. Drives UI grouping in the
 /// module-picker and the module-graph view. Spiderfoot 4.0 ships
 /// equivalent labels (`Footprint`, `Investigate`, `Passive`) attached
@@ -461,6 +477,17 @@ mod tests {
     }
 
     // ── ModuleCost serde ────────────────────────────────────────────────
+
+    #[test]
+    fn module_cost_as_str_matches_serde() {
+        // The canonical identifier and the serde wire form must agree —
+        // as_str exists so dependency.rs/the API need no second mapping, and
+        // this pin stops the two from drifting (same guard ModuleCategory has).
+        for cost in [ModuleCost::Free, ModuleCost::KeyGated, ModuleCost::Paid] {
+            let json = serde_json::to_string(&cost).unwrap();
+            assert_eq!(json.trim_matches('"'), cost.as_str());
+        }
+    }
 
     #[test]
     fn module_cost_serializes_to_snake_case() {
