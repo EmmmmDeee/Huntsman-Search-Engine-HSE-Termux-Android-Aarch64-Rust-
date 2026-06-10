@@ -201,6 +201,40 @@ pub fn normalise_phone(s: &str) -> Option<String> {
     None
 }
 
+/// A **locality dedup key** for an address value: lowercased, punctuation
+/// folded to spaces, a trailing 4-(AU)/5-(US) digit postcode dropped, whitespace
+/// collapsed. So `"Murrumbateman, NSW"` and `"Murrumbateman, NSW 2582"` — one
+/// place at two granularities — share a key and can be recognised as the same
+/// locality regardless of which module or scan round produced each form.
+///
+/// The postcode is always *trailing*, so a leading street number (also numeric)
+/// is never stripped — `"12 Main St, Brisbane QLD"` and `"99 Main St, Brisbane
+/// QLD"` keep distinct keys. Pure; no I/O.
+///
+/// ```
+/// use huntsman_search_engine::util::address_au::locality_key;
+///
+/// assert_eq!(locality_key("Murrumbateman, NSW"), locality_key("Murrumbateman, NSW 2582"));
+/// assert_ne!(locality_key("12 Main St, Brisbane QLD"), locality_key("99 Main St, Brisbane QLD"));
+/// ```
+#[must_use]
+pub fn locality_key(addr: &str) -> String {
+    let cleaned: String = addr
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect();
+    let mut tokens: Vec<&str> = cleaned.split_whitespace().collect();
+    while tokens.len() > 1
+        && tokens
+            .last()
+            .is_some_and(|t| (4..=5).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_digit()))
+    {
+        tokens.pop();
+    }
+    tokens.join(" ")
+}
+
 /// Crude AU phone scanner — pulls all plausible numbers out of a text
 /// blob, returning normalised E.164 forms (deduplicated).
 pub fn extract_phones(text: &str) -> Vec<String> {
@@ -270,6 +304,35 @@ mod tests {
         assert_eq!(geo.postcode, "2000");
         assert!(extract_first("1 George Street, Sydney NSW 1234").is_some()); // LVR range
         assert!(extract_first("1 George Street, Sydney NSW 3000").is_none()); // VIC range
+    }
+
+    #[test]
+    fn locality_key_folds_postcode_variants_but_keeps_streets_distinct() {
+        // Same suburb, two granularities → one key.
+        assert_eq!(
+            locality_key("Murrumbateman, NSW"),
+            locality_key("Murrumbateman, NSW 2582")
+        );
+        // Case / punctuation insensitive.
+        assert_eq!(
+            locality_key("murrumbateman nsw"),
+            locality_key("Murrumbateman, NSW")
+        );
+        // US 5-digit ZIP folds too.
+        assert_eq!(
+            locality_key("Springfield, Illinois"),
+            locality_key("Springfield, Illinois 62704")
+        );
+        // Leading street number preserved → distinct street addresses stay distinct.
+        assert_ne!(
+            locality_key("12 Main St, Brisbane QLD"),
+            locality_key("99 Main St, Brisbane QLD")
+        );
+        // A street address is NOT folded into the bare suburb.
+        assert_ne!(
+            locality_key("Brisbane QLD"),
+            locality_key("12 Main St, Brisbane QLD")
+        );
     }
 
     #[test]

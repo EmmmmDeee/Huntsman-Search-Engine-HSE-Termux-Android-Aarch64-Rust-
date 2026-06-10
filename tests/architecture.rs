@@ -106,6 +106,11 @@ fn core_does_not_import_util_directly() {
                 // number in the unified-scan auto-detector.
                 && !line.contains("util::abn::is_valid_abn")
                 && !line.contains("util::abn::is_valid_acn")
+                // Pure, dependency-free address locality dedup key — same leaf
+                // category as the ABN checksums: no state, no I/O. The engine's
+                // finalise step uses it to collapse postcode-variant Address
+                // entities (e.g. "X, NSW" / "X, NSW 2582") into one.
+                && !line.contains("util::address_au::locality_key")
                 // Pure, dependency-free digit-only normaliser — the same leaf
                 // category as the ABN checksums above; `core::scan` uses it in
                 // the target auto-detector to strip separators from a candidate

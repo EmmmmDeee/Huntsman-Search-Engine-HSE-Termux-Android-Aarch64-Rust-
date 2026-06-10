@@ -565,12 +565,6 @@ impl Entity {
         if self.uid != other.uid {
             return;
         }
-        self.confidence = f64::max(self.confidence, other.confidence).clamp(0.0, 1.0);
-        self.corroboration = self
-            .corroboration
-            .saturating_add(other.corroboration)
-            .max(1);
-        self.observed_at = u64::max(self.observed_at, other.observed_at);
         // Canonical display value: pick the lexicographically smaller raw_value
         // so the stored spelling is independent of merge order. Two modules can
         // emit the same value with different original casing/spacing
@@ -580,8 +574,30 @@ impl Entity {
         // (Determinism Requirement). `min` is commutative, so any merge order —
         // and any pairing — yields the same raw_value.
         if other.raw_value < self.raw_value {
-            self.raw_value = other.raw_value;
+            self.raw_value = other.raw_value.clone();
         }
+        self.absorb(other);
+    }
+
+    /// Fold another entity's corroborating **signal** into this one — confidence
+    /// (max), corroboration (sum), recency (max), deduplicated evidence and tags
+    /// — without touching identity (`uid`/`value`/`raw_value`).
+    ///
+    /// This is the identity-preserving core of [`merge`](Self::merge), exposed
+    /// for the rare case of intentionally combining two entities with DIFFERENT
+    /// UIDs that nonetheless denote the same real-world thing — e.g. collapsing
+    /// `Address` entities for one locality (`"X, NSW"` and `"X, NSW 2582"`),
+    /// which `merge` would refuse because their UIDs differ. The caller is
+    /// responsible for having decided the two are the same; `absorb` only fuses
+    /// their evidence. Commutative in confidence/corroboration/evidence/tags, so
+    /// folding a group in any order yields the same result.
+    pub(crate) fn absorb(&mut self, other: Self) {
+        self.confidence = f64::max(self.confidence, other.confidence).clamp(0.0, 1.0);
+        self.corroboration = self
+            .corroboration
+            .saturating_add(other.corroboration)
+            .max(1);
+        self.observed_at = u64::max(self.observed_at, other.observed_at);
         // Deduplicate evidence by (source, summary) to prevent accumulation
         // across live mode iterations or re-scans.
         for ev in other.evidence {

@@ -5,6 +5,44 @@
 
 use super::*;
 
+#[test]
+fn consolidate_address_localities_folds_postcode_variants_codebase_wide() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    // Two granularities of ONE suburb, from DIFFERENT modules (as if one came
+    // from search_engines and the postcode form from a geocode API in a later
+    // expansion round) — plus a genuinely different locality that must survive.
+    let mut bare = Entity::new(EntityKind::Address, "Murrumbateman, NSW", 0.45, "s");
+    bare.add_evidence(Evidence::new("search_engines", "near truelocal"));
+    let mut withpc = Entity::new(EntityKind::Address, "Murrumbateman, NSW 2582", 0.50, "s");
+    withpc.add_evidence(Evidence::new("geocode", "geocoded"));
+    let other = Entity::new(EntityKind::Address, "Brisbane, QLD 4000", 0.45, "s");
+    let unrelated = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
+
+    let mut entities = vec![bare, withpc, other, unrelated];
+    consolidate_address_localities(&mut entities);
+
+    let addrs: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address)
+        .collect();
+    // The two Murrumbateman variants collapse to ONE; Brisbane survives → 2.
+    assert_eq!(addrs.len(), 2, "postcode variants must fold: {addrs:?}");
+    let murrum = addrs
+        .iter()
+        .find(|e| e.value.contains("Murrumbateman"))
+        .expect("murrumbateman survives");
+    // The most-specific (postcode-bearing) spelling is kept...
+    assert_eq!(murrum.value, "Murrumbateman, NSW 2582");
+    // ...and BOTH sources' evidence folded in (confidence took the max).
+    let srcs: std::collections::BTreeSet<&str> =
+        murrum.evidence.iter().map(|e| e.source.as_str()).collect();
+    assert!(srcs.contains("search_engines") && srcs.contains("geocode"));
+    assert!((murrum.confidence - 0.50).abs() < 1e-9);
+    // The unrelated email is untouched.
+    assert!(entities.iter().any(|e| e.kind == EntityKind::Email));
+}
+
 /// FTA invariant (cuts MCS-A): the local/environmental sensor modules read
 /// the OPERATOR's own device/network, so they must never engage on a
 /// remote-subject seed — otherwise the operator's GPS/Wi-Fi/cell/LAN data is

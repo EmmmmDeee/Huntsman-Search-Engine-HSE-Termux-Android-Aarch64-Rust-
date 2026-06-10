@@ -423,6 +423,14 @@ impl ScanEngine {
             }
         }
         let mut entities: Vec<Entity> = entity_map.into_values().collect();
+        // Codebase-wide address-locality consolidation. The UID merge above
+        // dedups by exact normalised value, so "X, NSW" and "X, NSW 2582" (one
+        // place at two granularities) survive as two Address entities — which
+        // double-counts the location in the geo correlations. This runs once,
+        // AFTER every module (APIs included) and every expansion round has
+        // contributed, folding such variants into the most-specific one. It is
+        // the engine-level backstop to the per-module dedup in `search_engines`.
+        consolidate_address_localities(&mut entities);
         // Determinism: normalise each entity's evidence/tags ordering before
         // persist, so concurrent dispatch's completion-order merging can't leak
         // into the stored/exported result (see `Entity::canonicalize_order`).
@@ -1007,6 +1015,77 @@ impl ScanEngine {
         }
         StopReason::DepthExhausted
     }
+}
+
+/// Collapse `Address` entities that denote the **same locality** — differing
+/// only by a trailing postcode, case or punctuation — into a single entity,
+/// keeping the most specific spelling and folding the rest's evidence and
+/// corroboration into it.
+///
+/// Why at finalise, not in a module: the engine's per-entity UID merge keys on
+/// the exact normalised value, so `"Murrumbateman, NSW"` and `"Murrumbateman,
+/// NSW 2582"` hash to different UIDs and survive as two Address entities for one
+/// place — inflating the location count in the geo correlations (a live scan
+/// showed AU-018 reporting a subject co-located with "2" addresses for one
+/// suburb). Running here, after every module (API sources included) and every
+/// expansion round has folded into `entities`, makes this the codebase-wide,
+/// recursion-spanning backstop to the per-module dedup in `search_engines`.
+///
+/// The survivor is the longest value in the locality group (the postcode-bearing
+/// form), with a lexicographic tie-break for determinism; only addresses sharing
+/// a [`crate::util::address_au::locality_key`] are merged, so a street address is
+/// never folded into a bare suburb.
+fn consolidate_address_localities(entities: &mut Vec<Entity>) {
+    use crate::core::entity::EntityKind;
+    use std::collections::HashMap;
+
+    let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, e) in entities.iter().enumerate() {
+        if e.kind == EntityKind::Address {
+            let key = crate::util::address_au::locality_key(&e.value);
+            if !key.is_empty() {
+                groups.entry(key).or_default().push(i);
+            }
+        }
+    }
+
+    let mut remove = vec![false; entities.len()];
+    let mut folds: Vec<(usize, Entity)> = Vec::new();
+    for idxs in groups.values() {
+        if idxs.len() < 2 {
+            continue;
+        }
+        // Most specific = longest value; tie → lexicographically smallest, so
+        // the survivor is independent of discovery order (Determinism).
+        let survivor = *idxs
+            .iter()
+            .max_by(|&&a, &&b| {
+                entities[a]
+                    .value
+                    .len()
+                    .cmp(&entities[b].value.len())
+                    .then_with(|| entities[b].value.cmp(&entities[a].value))
+            })
+            .expect("group is non-empty");
+        for &victim in idxs {
+            if victim != survivor {
+                folds.push((survivor, entities[victim].clone()));
+                remove[victim] = true;
+            }
+        }
+    }
+    if folds.is_empty() {
+        return;
+    }
+    for (survivor, victim) in folds {
+        entities[survivor].absorb(victim);
+    }
+    let mut idx = 0;
+    entities.retain(|_| {
+        let keep = !remove[idx];
+        idx += 1;
+        keep
+    });
 }
 
 /// Pull any newly-available pooled API key into `keys` for every service that
