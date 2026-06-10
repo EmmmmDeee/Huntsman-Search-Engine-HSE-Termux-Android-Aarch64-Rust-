@@ -14,6 +14,7 @@ mod engines;
 pub(crate) mod export;
 mod keys_cmd;
 mod live;
+mod modules;
 mod provision;
 mod radar;
 mod scan;
@@ -33,7 +34,7 @@ use crate::{
         engine::ScanEngine,
         error::{Error, Result},
         module::ModuleCost,
-        scan::{Target, TargetKind},
+        scan::TargetKind,
     },
     default_db_path,
     modules::registry,
@@ -608,7 +609,7 @@ pub async fn run() -> Result<()> {
             })
             .await
         }
-        Command::Modules { category, json } => cmd_modules(category, json),
+        Command::Modules { category, json } => modules::cmd_modules(category, json),
         Command::Engines { json } => engines::cmd_engines(json).await,
         Command::Config { key, value } => config::cmd_config(key, value),
         Command::Diagnostics { json } => diagnostics::cmd_diagnostics(json).await,
@@ -717,90 +718,6 @@ fn cmd_set_key(name: String, value: String) -> Result<()> {
 
 pub(crate) mod import;
 use import::cmd_import;
-
-fn cmd_modules(category_filter: Option<String>, as_json: bool) -> Result<()> {
-    let mut mods = registry();
-    mods.sort_by_key(|m| std::cmp::Reverse(m.priority()));
-
-    // Optional category filter — case-insensitive exact match against
-    // the snake_case category name (e.g. `--category geo`, `--category
-    // dns_recon`). Pre-strip the operator's input to match the
-    // canonical form ModuleCategory::as_str returns.
-    let category_filter_lc = category_filter.as_ref().map(|s| s.to_lowercase());
-    let filtered: Vec<_> = mods
-        .iter()
-        .filter(|m| match &category_filter_lc {
-            Some(needle) => m.category().as_str() == needle.as_str(),
-            None => true,
-        })
-        .collect();
-
-    if as_json {
-        // Same shape as /api/v1/modules — operators can `jq` the
-        // output the same way they'd `jq` the HTTP endpoint.
-        let infos: Vec<_> = filtered.iter().map(|m| m.info()).collect();
-        let body = serde_json::to_string_pretty(&serde_json::json!({
-            "modules": infos,
-            "count": infos.len(),
-        }))
-        .map_err(|e| Error::Other(format!("json: {e}")))?;
-        println!("{body}");
-        return Ok(());
-    }
-
-    println!(
-        "{:<26} {:>4}  {:<14} {:<10} {:<8} ACCEPTS",
-        "MODULE", "PRI", "CATEGORY", "COST", "PASSIVE"
-    );
-    println!("{}", "-".repeat(96));
-
-    let target_kinds = [
-        ("email", TargetKind::Email),
-        ("username", TargetKind::Username),
-        ("phone", TargetKind::Phone),
-        ("domain", TargetKind::Domain),
-        ("url", TargetKind::Url),
-        ("ip", TargetKind::IpAddress),
-        ("cidr", TargetKind::Cidr),
-        ("asn", TargetKind::Asn),
-        ("name", TargetKind::FullName),
-        ("coords", TargetKind::Coordinates),
-        ("address", TargetKind::Address),
-        ("org", TargetKind::Organisation),
-        ("abn", TargetKind::AbnAcn),
-        ("apikey", TargetKind::ApiKey),
-    ];
-
-    for m in &filtered {
-        let accepts: Vec<&str> = target_kinds
-            .iter()
-            .filter(|(_, k)| m.accepts(&Target::new(*k, "")))
-            .map(|(label, _)| *label)
-            .collect();
-        let cost = cost_label(m.cost());
-        let passive = if m.is_passive() { "yes" } else { "no" };
-        println!(
-            "{:<26} {:>4}  {:<14} {:<10} {:<8} {}",
-            m.name(),
-            m.priority(),
-            m.category().as_str(),
-            cost,
-            passive,
-            accepts.join(",")
-        );
-    }
-    if filtered.is_empty() {
-        if let Some(f) = category_filter {
-            eprintln!("\nNo modules in category '{f}'.");
-            eprintln!(
-                "Valid: dns_recon / breach / infrastructure / search / geo / social /\n       email / phone / corporate / threat / sensor / people / web / other"
-            );
-        }
-    } else {
-        println!("\n{} module(s) total.", filtered.len());
-    }
-    Ok(())
-}
 
 // ─── Shared helpers (used by subcommand files) ─────────────────────────────
 
