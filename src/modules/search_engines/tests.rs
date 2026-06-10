@@ -1118,6 +1118,26 @@ fn bigram_similarity_unrelated() {
 }
 
 #[test]
+fn bigram_similarity_repeated_bigrams_stay_within_unit_interval() {
+    // Regression: the Dice coefficient is a MULTISET intersection. The old
+    // "is this bigram present?" count overcounted when a bigram repeated more
+    // often in `a` than in `b`, pushing the score above 1.0. "aaaa" has the
+    // bigram (a,a) three times; "aaa" has it twice → min(3,2)=2 matches →
+    // 2*2/(3+2)=0.8, never 1.2.
+    let sim = bigram_similarity("aaaa", "aaa");
+    assert!(
+        (0.0..=1.0).contains(&sim),
+        "similarity must stay in [0,1], got {sim}"
+    );
+    assert!(
+        (sim - 0.8).abs() < 1e-9,
+        "expected exact Dice 0.8, got {sim}"
+    );
+    // Self-similarity of a repetitive string is still exactly 1.0.
+    assert!((bigram_similarity("aaaa", "aaaa") - 1.0).abs() < 1e-9);
+}
+
+#[test]
 fn score_username_promotes_seed_variant_over_cooccurrence() {
     // Potentiated username scoring: a handle sharing the seed's stem (a likely
     // ALIAS of the same person) must outrank — and reach a higher tier than —

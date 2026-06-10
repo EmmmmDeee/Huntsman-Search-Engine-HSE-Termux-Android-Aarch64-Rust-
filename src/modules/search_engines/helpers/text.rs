@@ -172,6 +172,14 @@ pub(in crate::modules::search_engines) fn extract_key_phrase(snippet: &str, quer
 
 /// Semantic similarity between two strings using character bigram
 /// overlap (Dice coefficient). Returns 0.0–1.0.
+///
+/// The intersection is over **multisets**: a bigram that occurs `m` times in
+/// `a` and `n` times in `b` contributes `min(m, n)` matches, not `m`. The naive
+/// "is this bigram present in `b`?" count overcounts whenever a bigram repeats
+/// more often in `a` than in `b` (e.g. `"aaaa"` vs `"aaa"`), which pushed the
+/// score above 1.0 and falsely inflated the similarity of repetitive handles —
+/// `score_username` then promoted unrelated usernames to PROBABLE on that
+/// inflated score. Multiset intersection keeps the result in `[0.0, 1.0]`.
 pub(in crate::modules::search_engines) fn bigram_similarity(a: &str, b: &str) -> f64 {
     fn bigrams(s: &str) -> Vec<(char, char)> {
         let chars: Vec<char> = s.to_lowercase().chars().collect();
@@ -182,7 +190,23 @@ pub(in crate::modules::search_engines) fn bigram_similarity(a: &str, b: &str) ->
     if ba.is_empty() || bb.is_empty() {
         return 0.0;
     }
-    let matches = ba.iter().filter(|bg| bb.contains(bg)).count();
+    // Multiset intersection: count each shared bigram by the lower of its two
+    // multiplicities. Build a frequency map of `b`'s bigrams, then consume one
+    // unit of credit per matching bigram in `a`.
+    let mut bb_freq: std::collections::HashMap<(char, char), usize> =
+        std::collections::HashMap::new();
+    for bg in &bb {
+        *bb_freq.entry(*bg).or_insert(0) += 1;
+    }
+    let mut matches = 0usize;
+    for bg in &ba {
+        if let Some(n) = bb_freq.get_mut(bg)
+            && *n > 0
+        {
+            *n -= 1;
+            matches += 1;
+        }
+    }
     (2 * matches) as f64 / (ba.len() + bb.len()) as f64
 }
 
