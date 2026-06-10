@@ -461,6 +461,27 @@ pub fn derive_all(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relation_kind_as_str_matches_serde() {
+        // CONVENTIONS.md §3: the type owns its canonical string and a test
+        // pins it to the serde wire form so the two can't drift. as_str is the
+        // stored `relations.kind` column and the API edge label; the serde
+        // derive is what crosses the wire — a rename that touched only one
+        // would silently split the DB form from the JSON form.
+        for k in [
+            RelationKind::SubdomainOf,
+            RelationKind::BelongsToDomain,
+            RelationKind::HostedOn,
+            RelationKind::ResolvesTo,
+            RelationKind::RegisteredBy,
+            RelationKind::CoLocatedWith,
+            RelationKind::DerivedFrom,
+        ] {
+            let json = serde_json::to_string(&k).unwrap();
+            assert_eq!(json.trim_matches('"'), k.as_str(), "{k:?}");
+        }
+    }
     use crate::core::entity::{Entity, EntityKind};
 
     fn ent(kind: EntityKind, value: &str, conf: f64) -> Entity {

@@ -2618,3 +2618,21 @@ fn au053_ignores_infrastructure_and_needs_an_established_area() {
     ];
     assert!(super::rules::rule_au_053_out_of_area_location(&ents, "s", 0).is_empty());
 }
+
+#[test]
+fn severity_as_canonical_matches_serde() {
+    // CONVENTIONS.md §3 pin. as_canonical feeds the persisted
+    // `correlations.severity` column AND the SQL ORDER BY CASE in
+    // `correlations_for_scan` hard-codes these exact strings, so a drift
+    // between as_canonical and the serde wire form would silently desync the
+    // stored value from the query that ranks it.
+    for sev in [
+        Severity::Low,
+        Severity::Medium,
+        Severity::High,
+        Severity::Critical,
+    ] {
+        let json = serde_json::to_string(&sev).unwrap();
+        assert_eq!(json.trim_matches('"'), sev.as_canonical(), "{sev:?}");
+    }
+}

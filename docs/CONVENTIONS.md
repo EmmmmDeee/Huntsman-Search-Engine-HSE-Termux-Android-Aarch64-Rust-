@@ -41,13 +41,17 @@ a reviewed decision rather than a silent drift.
 
 ## 3. Single-source vocabularies
 
-When a type has a canonical string form, the **type owns it** (`as_str`) and a
-test pins it to the serde wire format so the two cannot drift. Never re-state a
-mapping at a call site. Existing instances: `ModuleCost`, `ModuleCategory`,
-`Severity::as_canonical`, `RelationKind`, `core::tags`, and the classification
-ladder (`Classification::{VERIFIED_MIN, PROBABLE_MIN, from_c_eff}` — a tier
-threshold literal outside `entity.rs` is a bug). Human-display variants (the
-CLI's hyphenated `key-gated`) are allowed but must be documented as
+When a type has a canonical string form, the **type owns it** (`as_str` /
+`as_canonical`) and a test pins it to the serde wire format so the two cannot
+drift. Never re-state a mapping at a call site. Pinned instances:
+`ModuleCost`, `ModuleCategory`, `Classification`, `RelationKind`, and
+`Severity::as_canonical` (the last two especially: each is a persisted DB
+column, and `Severity`'s strings are additionally hard-coded in the
+`correlations_for_scan` SQL `ORDER BY CASE`). `core::tags` is a constants
+module (the strings *are* the source). The classification ladder is likewise
+single-sourced (`Classification::{VERIFIED_MIN, PROBABLE_MIN, from_c_eff}` — a
+tier threshold literal outside `entity.rs` is a bug). Human-display variants
+(the CLI's hyphenated `key-gated`) are allowed but must be documented as
 presentation, anchored against the canonical form.
 
 ## 4. Normalisation defines identity — delegate, never copy
