@@ -1584,6 +1584,44 @@ fn rule_017_no_fire_for_distant_coords() {
 }
 
 #[test]
+fn rule_017_clustering_is_order_independent() {
+    // Chain geometry: A-B within 0.5 deg, B-C within 0.5 deg, A-C beyond it.
+    // The greedy assignment compares against each cluster's FOUNDING member,
+    // so without a deterministic pre-sort the input order decided whether the
+    // chain clustered as {A,B}+{C} or {A,B,C} — and the live pass feeds
+    // entities in HashMap (randomised) order, persisting conflicting AU-017
+    // uid sets across rounds. Every permutation must now produce identical
+    // firings.
+    let a = Entity::new(EntityKind::Coordinates, "0.00,0.00", 0.60, "s");
+    let b = Entity::new(EntityKind::Coordinates, "0.40,0.00", 0.60, "s");
+    let c = Entity::new(EntityKind::Coordinates, "0.80,0.00", 0.60, "s");
+    let uid_sets = |ents: &[Entity]| -> Vec<Vec<String>> {
+        rule_au_017_multi_geo_convergence(ents, "s", 0)
+            .into_iter()
+            .map(|f| {
+                let mut u = f.entity_uids;
+                u.sort();
+                u
+            })
+            .collect()
+    };
+    let baseline = uid_sets(&[a.clone(), b.clone(), c.clone()]);
+    for perm in [
+        vec![a.clone(), c.clone(), b.clone()],
+        vec![b.clone(), a.clone(), c.clone()],
+        vec![b.clone(), c.clone(), a.clone()],
+        vec![c.clone(), a.clone(), b.clone()],
+        vec![c.clone(), b.clone(), a.clone()],
+    ] {
+        assert_eq!(
+            uid_sets(&perm),
+            baseline,
+            "AU-017 clusters must not depend on entity iteration order"
+        );
+    }
+}
+
+#[test]
 fn rule_017_drops_out_of_range_coordinates() {
     // Junk coordinates (lat/lon outside Earth's range) must be rejected by the
     // range-validating parse_coords helper, not clustered as a convergence.
