@@ -202,6 +202,31 @@ fn address_extractor_finds_au_postcode() {
 }
 
 #[test]
+fn address_key_collapses_postcode_variants() {
+    // Regression from a live self-scan: one suburb surfaced as BOTH
+    // "Murrumbateman, NSW" and "Murrumbateman, NSW 2582", becoming two Address
+    // entities for a single place (AU-018 then reported a person co-located with
+    // "2" addresses). The dedup key (build.rs) must fold "City, STATE" and
+    // "City, STATE POSTCODE" together so the variants — even from two different
+    // search results — collapse into one entity.
+    assert_eq!(
+        normalise_address_key("Murrumbateman, NSW"),
+        normalise_address_key("Murrumbateman, NSW 2582"),
+    );
+    // US 5-digit ZIP folds too.
+    assert_eq!(
+        normalise_address_key("Springfield, Illinois"),
+        normalise_address_key("Springfield, Illinois 62704"),
+    );
+    // A leading street number (also numeric) is NOT stripped — only the trailing
+    // postcode is — so two genuinely different street addresses stay distinct.
+    assert_ne!(
+        normalise_address_key("12 Mary St, Brisbane QLD"),
+        normalise_address_key("99 Mary St, Brisbane QLD"),
+    );
+}
+
+#[test]
 fn address_extractor_ignores_non_au_4digit() {
     let text = "Error code 1234 in the system at Houston, Texas";
     let addrs = extract_addresses_from_text(text);
