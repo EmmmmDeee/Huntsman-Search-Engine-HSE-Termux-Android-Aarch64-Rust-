@@ -597,6 +597,11 @@ fn detect_classifies_structured_kinds() {
         ("2001:4860:4860::8888", IpAddress),
         ("aa:bb:cc:dd:ee:ff", MacAddress),
         ("AA-BB-CC-DD-EE-FF", MacAddress),
+        // Cisco dotted form — accepted by Target::validate(MacAddress), so
+        // detect must classify it too (it previously fell through to Domain
+        // for letters-only hex, or Username when a group carried a digit).
+        ("aabb.ccdd.eeff", MacAddress),
+        ("AB12.CD34.EF56", MacAddress),
         ("-33.8688,151.2093", Coordinates),
         ("AS13335", Asn),
         ("as15169", Asn),
