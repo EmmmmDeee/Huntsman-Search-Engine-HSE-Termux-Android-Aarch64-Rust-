@@ -698,20 +698,27 @@ pub fn scan_for_api_keys(text: &str) {
     scan_for_api_keys_with_source(text, "http_response");
 }
 
+/// Separators that bound a key-candidate token in arbitrary scanned text.
+/// No real API key contains any of these, so splitting on them can never
+/// break a key — but omitting one corrupts the harvest: without `&`/`?` a
+/// query-string echo (`?api_key=AKIA…&b=2`, the most common shape an upstream
+/// reflects) tokenised to `AKIA…&b` — which still PASSED the vendor-prefix
+/// match (`starts_with` + min-length) and was stored in the pool with the
+/// trailing `&b=2` garbage attached: a corrupted key that can never
+/// authenticate. `,` similarly bounds CSV-style dump rows.
+fn is_key_token_separator(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(
+            c,
+            '"' | '\'' | '`' | '>' | '<' | '=' | ';' | '&' | '?' | ','
+        )
+}
+
 pub fn scan_for_api_keys_with_source(text: &str, source: &str) {
     use crate::modules::oathnet_pro::key_harvest::identify_api_key;
     let pool = crate::util::key_pool::global_pool();
     let now = crate::core::entity::unix_now();
-    for word in text.split(|c: char| {
-        c.is_whitespace()
-            || c == '"'
-            || c == '\''
-            || c == '`'
-            || c == '>'
-            || c == '<'
-            || c == '='
-            || c == ';'
-    }) {
+    for word in text.split(is_key_token_separator) {
         let t = word.trim();
         if t.len() >= 16
             && t.len() <= 200
@@ -1014,6 +1021,44 @@ mod tests {
         // key_tail keeps whole chars and never panics.
         assert_eq!(key_tail("clé"), "clé");
         assert_eq!(key_tail("k😀😀😀😀").chars().count(), 4);
+    }
+
+    #[test]
+    fn key_scan_tokeniser_bounds_query_string_keys_cleanly() {
+        // The most common echo shape an upstream reflects: a key in a URL
+        // query string followed by another parameter. The tokeniser must
+        // yield the BARE key — without '&'/'?' as separators, the token was
+        // `AKIA…&b` which still passed the vendor prefix match and was
+        // pooled with trailing garbage (a corrupted, never-authenticating key).
+        let body = r#"error at https://api.example.com/v1?api_key=AKIAJK28SLQQV61MNG9X&b=2"#;
+        let tokens: Vec<&str> = body.split(super::is_key_token_separator).collect();
+        assert!(
+            tokens.contains(&"AKIAJK28SLQQV61MNG9X"),
+            "bare key must be its own token: {tokens:?}"
+        );
+        assert!(
+            !tokens.iter().any(|t| t.contains('&') || t.contains('?')),
+            "no token may carry query separators: {tokens:?}"
+        );
+        // And the clean token round-trips through the identifier as exactly
+        // the key — not key-plus-garbage.
+        use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+        let (svc, val) = identify_api_key("AKIAJK28SLQQV61MNG9X").expect("real-shape AWS key");
+        assert_eq!(svc, "aws");
+        assert_eq!(val, "AKIAJK28SLQQV61MNG9X");
+        // Why the tokeniser is load-bearing: the identifier's vendor-prefix
+        // branch passes its token through VERBATIM (starts_with + min-length),
+        // so a `key&garbage` token would be pooled as-is — the corruption the
+        // old splitter produced. The tokeniser is the only guard.
+        assert!(
+            identify_api_key("AKIAJK28SLQQV61MNG9X&b=2").is_some_and(|(_, v)| v.contains('&')),
+            "identifier passes tokens through verbatim — the tokeniser must pre-split"
+        );
+        // CSV-style dump rows split too.
+        let csv: Vec<&str> = "AKIAJK28SLQQV61MNG9X,other"
+            .split(super::is_key_token_separator)
+            .collect();
+        assert_eq!(csv, vec!["AKIAJK28SLQQV61MNG9X", "other"]);
     }
 
     #[test]
