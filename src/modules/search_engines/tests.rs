@@ -864,6 +864,26 @@ fn address_extraction_us_state() {
 }
 
 #[test]
+fn us_state_address_never_gets_an_au_postcode_appended() {
+    // Regression from a live "Haigen Bamford" name-scan: a US "City, State"
+    // grabbed a trailing 4-digit YEAR as if it were an AU postcode, surfacing
+    // "Ames, Iowa 2011" at high confidence. The AU-postcode pass must only
+    // attach to AU-state addresses.
+    let addrs = extract_addresses_from_text("relocated to Ames, Iowa 2011 for work");
+    assert!(
+        !addrs.iter().any(|a| a.contains("2011")),
+        "no AU postcode (here a year) on a US-state address: {addrs:?}"
+    );
+    assert!(addrs.iter().any(|a| a == "Ames, Iowa"));
+    // The AU case still attaches its genuine postcode.
+    let au = extract_addresses_from_text("based in Nundah, Queensland 4012 now");
+    assert!(
+        au.iter().any(|a| a.contains("4012")),
+        "AU postcode kept: {au:?}"
+    );
+}
+
+#[test]
 fn address_extraction_rejects_noise() {
     let text = "arguments, got nothing back from the server";
     let addrs = extract_addresses_from_text(text);
