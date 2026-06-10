@@ -389,6 +389,29 @@ fn expansion_weight_address_beats_mega_domain() {
 }
 
 #[test]
+fn cidr_is_geo_convergent_and_outranks_its_parent_asn() {
+    // A CIDR enumerates into host IPs that geo-resolve, so it must carry a
+    // geo-proximity boost — not fall through to the non-geo 1.0 default, which
+    // ranked it BELOW the ASN that produced it (inverted ordering, since a Cidr
+    // is one hop CLOSER to coordinates than its ASN). At equal confidence the
+    // geo-convergence ladder must read ASN < Cidr < IpAddress.
+    let asn = expansion_weight(TargetKind::Asn, 0.8, "AS13335", false);
+    let cidr = expansion_weight(TargetKind::Cidr, 0.8, "192.0.2.0/24", false);
+    let ip = expansion_weight(TargetKind::IpAddress, 0.8, "192.0.2.10", false);
+    assert!(
+        asn < cidr && cidr < ip,
+        "geo-convergence ladder must be ASN ({asn:.2}) < Cidr ({cidr:.2}) < IP ({ip:.2})"
+    );
+    // And a Cidr must beat a non-geo terminal kind of equal confidence — proof
+    // it is no longer treated as non-geo (boost 1.0).
+    let crypto = expansion_weight(TargetKind::CryptoAddress, 0.8, "bc1qxyz", false);
+    assert!(
+        cidr > crypto,
+        "Cidr ({cidr:.2}) is geo-convergent vs crypto ({crypto:.2})"
+    );
+}
+
+#[test]
 fn expansion_weight_respects_confidence() {
     let high = expansion_weight(TargetKind::Domain, 0.90, "example.com", false);
     let low = expansion_weight(TargetKind::Domain, 0.45, "example.com", false);
