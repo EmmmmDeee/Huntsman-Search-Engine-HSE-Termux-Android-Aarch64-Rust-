@@ -399,17 +399,28 @@ impl ScanEngine {
         {
             entity_map.insert(anchor.uid.clone(), anchor);
         }
-        self.dispatch_target(
-            &scan.id,
-            &target,
-            &mut ctx,
-            &opts,
-            &mut entity_map,
-            false,
-            &mut stats,
-            dispatched,
-        )
-        .await?;
+        // Seed-dispatch errors are warn-and-continue, exactly like
+        // expansion-round dispatch below: propagating here returned before
+        // finalise_scan (losing every collected entity and leaving the scan
+        // row stuck `Running`) AND leaked the wall-time watchdog, which then
+        // fired `cancel()` on the caller's context long after this scan was
+        // gone — poisoning the shared token under a long-lived serve/radar.
+        // Per-module failures are already surfaced as ModuleError events.
+        if let Err(e) = self
+            .dispatch_target(
+                &scan.id,
+                &target,
+                &mut ctx,
+                &opts,
+                &mut entity_map,
+                false,
+                &mut stats,
+                dispatched,
+            )
+            .await
+        {
+            warn!(scan_id = %scan.id, error = %e, "seed dispatch failed (continuing to finalise)");
+        }
 
         // Checkpoint + correlate the seed round from a single snapshot: the
         // entities are made durable before expansion begins (crash-safety) and
@@ -950,11 +961,7 @@ impl ScanEngine {
             // a flood of low-weight domains from a single SERP and the
             // dampened mega-domain noise that survives top-K on a thin round.
             if opts.max_roi {
-                let weights: Vec<f64> = next.iter().map(|(_, w, _)| *w).collect();
-                let keep = crate::core::roi::effective_cutoff(&weights, opts.max_concurrent);
-                if next.len() > keep {
-                    next.truncate(keep);
-                }
+                apply_roi_cutoff(&mut next, visited, opts.max_concurrent);
             }
             let dispatched_this_round = next.len();
             let next: Vec<(Target, String)> = next.into_iter().map(|(t, _, p)| (t, p)).collect();
@@ -1098,6 +1105,33 @@ fn hot_inject_keys(keys: &mut HashMap<String, String>) {
             );
             keys.insert(svc.env_var.to_string(), key);
         }
+    }
+}
+
+/// ROI top-K + knee cutoff over a weight-sorted candidate round, releasing the
+/// visited keys of everything it cuts.
+///
+/// The release is the load-bearing half: `visited` means "dispatched (or still
+/// queued)", but a candidate cut here is *neither* — it was queued, then
+/// dropped before any dispatch. Leaving its key in `visited` excluded the same
+/// lead as `already_dispatched_this_scan` in every later round, so a lead whose
+/// weight rises as corroboration accrues could never compete again — silently
+/// lost for the rest of the scan. Releasing the key lets it re-enter a later
+/// round's ranking on its new weight. Halting is unaffected: rounds are capped
+/// by `depth`, each round dispatches at most the cutoff, and a re-queued
+/// candidate either dispatches (entering `visited` for good) or is cut again.
+fn apply_roi_cutoff(
+    next: &mut Vec<(Target, f64, String)>,
+    visited: &mut HashSet<(TargetKind, String)>,
+    max_concurrent: usize,
+) {
+    let weights: Vec<f64> = next.iter().map(|(_, w, _)| *w).collect();
+    let keep = crate::core::roi::effective_cutoff(&weights, max_concurrent);
+    if next.len() > keep {
+        for (t, _, _) in &next[keep..] {
+            visited.remove(&visit_key(t));
+        }
+        next.truncate(keep);
     }
 }
 

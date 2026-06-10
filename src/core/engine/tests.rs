@@ -943,3 +943,35 @@ async fn bench_end_to_end_scan_scaling() {
         );
     }
 }
+
+/// ROI truncation must RELEASE the visited keys of the candidates it cuts.
+/// A cut candidate was queued but never dispatched, so leaving its key in
+/// `visited` excluded the same lead as `already_dispatched_this_scan` in
+/// every later round — a lead whose weight rises with corroboration was
+/// silently lost for the rest of the scan. The kept (still-queued) heads
+/// stay visited.
+#[test]
+fn roi_cutoff_releases_visited_keys_of_truncated_candidates() {
+    let mk = |v: &str| Target::new(TargetKind::Domain, v.to_string());
+    let mut next: Vec<(Target, f64, String)> = vec![
+        (mk("leader.com"), 50.0, "p".to_string()),
+        (mk("kept.com"), 40.0, "p".to_string()),
+        (mk("tail-a.com"), 0.5, "p".to_string()),
+        (mk("tail-b.com"), 0.2, "p".to_string()),
+    ];
+    let mut visited: HashSet<(TargetKind, String)> =
+        next.iter().map(|(t, _, _)| visit_key(t)).collect();
+
+    apply_roi_cutoff(&mut next, &mut visited, 0);
+
+    // Knee at 5% of the leader (2.5): the two tail candidates are cut even
+    // though top-K (10 at max_concurrent=0) would have kept them.
+    assert_eq!(next.len(), 2, "knee should cut the sub-2.5-weight tail");
+    assert!(visited.contains(&visit_key(&mk("leader.com"))));
+    assert!(visited.contains(&visit_key(&mk("kept.com"))));
+    assert!(
+        !visited.contains(&visit_key(&mk("tail-a.com"))),
+        "cut candidate must be released to compete in a later round"
+    );
+    assert!(!visited.contains(&visit_key(&mk("tail-b.com"))));
+}
