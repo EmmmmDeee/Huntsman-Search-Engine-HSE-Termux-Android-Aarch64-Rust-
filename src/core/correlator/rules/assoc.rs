@@ -136,10 +136,8 @@ impl Group {
                     .entry(e.value.clone())
                     .or_insert_with(|| e.uid.clone());
             }
-            EntityKind::Email | EntityKind::Phone => {
-                if !self.handles.contains(&e.uid) {
-                    self.handles.push(e.uid.clone());
-                }
+            EntityKind::Email | EntityKind::Phone if !self.handles.contains(&e.uid) => {
+                self.handles.push(e.uid.clone());
             }
             _ => {}
         }
