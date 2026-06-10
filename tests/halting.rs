@@ -19,6 +19,8 @@
 //! `StoragePort` lives behind `#[cfg(test)]` in the library and isn't visible to
 //! this integration crate).
 
+mod common;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -32,7 +34,6 @@ use huntsman_search_engine::{
         scan::{Scan, ScanOptions, ScanStatus, Target, TargetKind},
     },
     storage::Store,
-    util::{http::build_client, uid::scan_id},
 };
 
 /// A deterministic mock module: when dispatched on a target whose value is a
@@ -90,33 +91,7 @@ fn setup(
     kind: TargetKind,
     value: &str,
 ) -> (ScanEngine, Arc<Store>, String, Target, ModuleContext) {
-    let mut p = std::env::temp_dir();
-    p.push(format!("hse-halting-{}-{}.db", std::process::id(), suffix));
-    let tmp = p.to_string_lossy().to_string();
-    // Remove the main DB *and* its WAL/SHM sidecars — in WAL mode a stale
-    // `-wal`/`-shm` left from a prior run can resurrect old state or corrupt
-    // the fresh handle, making tests flaky.
-    let _ = std::fs::remove_file(&tmp);
-    let _ = std::fs::remove_file(format!("{tmp}-wal"));
-    let _ = std::fs::remove_file(format!("{tmp}-shm"));
-    let store = Arc::new(Store::open(&tmp).unwrap());
-    let (bus, _rx) = tokio::sync::broadcast::channel(256);
-    let engine = ScanEngine::new(
-        modules,
-        Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
-        bus.clone(),
-    );
-    let sid = scan_id(kind.canonical_str(), value);
-    let target = Target::new(kind, value.to_string());
-    let ctx = ModuleContext {
-        scan_id: sid.clone(),
-        bus,
-        http: build_client(),
-        keys: Default::default(),
-        cancel: Default::default(),
-        proxy_pool: Default::default(),
-    };
-    (engine, store, sid, target, ctx)
+    common::engine_setup("halting", modules, suffix, kind, value)
 }
 
 /// Build a finite, ACYCLIC mock graph whose closure is computable by hand:

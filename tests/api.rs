@@ -1,6 +1,8 @@
 //! API handler integration tests — exercises every HTTP endpoint
 //! through axum's test utilities with a real SQLite store.
 
+mod common;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -55,13 +57,7 @@ impl Module for SyntheticModule {
 
 /// Return a fresh temp-db path, removing any leftover files from prior runs.
 fn tmp_db(suffix: &str) -> String {
-    let mut p = std::env::temp_dir();
-    p.push(format!("hse-api-{}-{}.db", std::process::id(), suffix));
-    let s = p.to_string_lossy().into_owned();
-    let _ = std::fs::remove_file(&s);
-    let _ = std::fs::remove_file(format!("{s}-wal"));
-    let _ = std::fs::remove_file(format!("{s}-shm"));
-    s
+    common::tmp_db("api", suffix)
 }
 
 /// Build a complete axum `Router` backed by a fresh SQLite store.

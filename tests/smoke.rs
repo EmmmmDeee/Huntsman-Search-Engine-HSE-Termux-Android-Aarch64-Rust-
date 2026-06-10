@@ -1,6 +1,8 @@
 //! End-to-end smoke tests: synthetic modules, real engine, real SQLite.
 //! Proves the trait + engine + store + autonomous-expansion wire together.
 
+mod common;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -1563,32 +1565,11 @@ fn setup(
     kind: TargetKind,
     value: &str,
 ) -> (ScanEngine, Arc<Store>, String, Target, ModuleContext) {
-    let tmp = tempfile_path(suffix);
-    let _ = std::fs::remove_file(&tmp);
-    let store = Arc::new(Store::open(&tmp).unwrap());
-    let (bus, _rx) = tokio::sync::broadcast::channel(64);
-    let engine = ScanEngine::new(
-        modules,
-        Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
-        bus.clone(),
-    );
-    let sid = scan_id(kind.canonical_str(), value);
-    let target = Target::new(kind, value.to_string());
-    let ctx = ModuleContext {
-        scan_id: sid.clone(),
-        bus,
-        http: build_client(),
-        keys: Default::default(),
-        cancel: Default::default(),
-        proxy_pool: Default::default(),
-    };
-    (engine, store, sid, target, ctx)
+    common::engine_setup("smoke", modules, suffix, kind, value)
 }
 
 fn tempfile_path(suffix: &str) -> String {
-    let mut p = std::env::temp_dir();
-    p.push(format!("hse-smoke-{}-{}.db", std::process::id(), suffix));
-    p.to_string_lossy().into_owned()
+    common::tmp_db("smoke", suffix)
 }
 
 // ── Live mode tests ────────────────────────────────────────────────────────
