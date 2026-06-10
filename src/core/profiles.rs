@@ -149,7 +149,7 @@ fn fast() -> ScanOptions {
 ///     sensor modules that contribute nothing to locating a human. The focus is
 ///     by category, so it can't drift as modules are renamed and picks up new
 ///     in-category sources automatically.
-///   * **Expands geo-convergently** ([`ExpansionStrategy::GeoConverge`]): each
+///   * **Expands geo-convergently** ([`crate::core::scan::ExpansionStrategy::GeoConverge`]): each
 ///     round prioritises the candidates one hop from an Address/Coordinates, so
 ///     the scan converges on the residence rather than fanning out — exactly the
 ///     skip-tracer's "tighten the net around where they live" instinct.
