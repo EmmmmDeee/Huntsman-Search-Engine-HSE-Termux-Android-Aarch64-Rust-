@@ -72,6 +72,33 @@ pub fn is_valid_coords(lat: f64, lon: f64) -> bool {
         && !(lat == 0.0 && lon == 0.0)
 }
 
+/// True if a coordinate falls within the bounding box of the Australian
+/// mainland plus Tasmania. A coarse, **offline** AU-relevance gate: it lets a
+/// raw `Coordinates` seed be classified as on-region before (or without) a
+/// network reverse-geocode, so an AU-focused scan can keep AU fixes as strong
+/// anchors and down-weight everything else.
+///
+/// The box (lat −44.0..=−10.0, lon 112.0..=154.0) covers the continent and
+/// Tasmania. It deliberately excludes the far external territories (Christmas
+/// Island, Cocos, Norfolk, Macquarie) — including them would stretch the box
+/// far enough to swallow large tracts of ocean and neighbouring countries,
+/// trading a tiny recall gain for real false positives. A point still must be
+/// [`is_valid_coords`]; null island and out-of-range values are never "in AU".
+///
+/// ```
+/// use huntsman_search_engine::util::geo::is_in_australia;
+///
+/// assert!(is_in_australia(-27.4766, 153.0166)); // Brisbane
+/// assert!(is_in_australia(-42.8821, 147.3272));  // Hobart, Tasmania
+/// assert!(!is_in_australia(40.7128, -74.0060));  // New York
+/// assert!(!is_in_australia(-36.8485, 174.7633)); // Auckland, NZ
+/// assert!(!is_in_australia(0.0, 0.0));           // null island
+/// ```
+#[must_use]
+pub fn is_in_australia(lat: f64, lon: f64) -> bool {
+    is_valid_coords(lat, lon) && (-44.0..=-10.0).contains(&lat) && (112.0..=154.0).contains(&lon)
+}
+
 /// Magnitude (in degrees) below which a *coarse* geolocation provider's
 /// coordinate component is treated as that provider's "no fix" placeholder
 /// rather than a real position. Several IP/WiFi-geo APIs return `0.0000` or a
@@ -180,6 +207,20 @@ mod tests {
         assert!(!is_valid_coords(10.0, 181.0)); // lon out of range
         assert!(!is_valid_coords(f64::NAN, 10.0)); // non-finite
         assert!(!is_valid_coords(10.0, f64::INFINITY));
+    }
+
+    #[test]
+    fn in_australia_box_covers_continent_and_tasmania_only() {
+        assert!(is_in_australia(-27.4766, 153.0166)); // Brisbane
+        assert!(is_in_australia(-33.8688, 151.2093)); // Sydney
+        assert!(is_in_australia(-31.9523, 115.8613)); // Perth
+        assert!(is_in_australia(-42.8821, 147.3272)); // Hobart
+        // Outside: neighbours, distant cities, and bad fixes are never in-box.
+        assert!(!is_in_australia(-36.8485, 174.7633)); // Auckland, NZ
+        assert!(!is_in_australia(-6.2088, 106.8456)); // Jakarta
+        assert!(!is_in_australia(40.7128, -74.0060)); // New York
+        assert!(!is_in_australia(0.0, 0.0)); // null island
+        assert!(!is_in_australia(91.0, 130.0)); // out of range
     }
 
     #[test]
