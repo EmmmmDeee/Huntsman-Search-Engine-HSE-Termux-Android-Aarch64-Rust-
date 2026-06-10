@@ -17,7 +17,7 @@
 //! **when** — without opening it:
 //!
 //! ```text
-//! see-know__stealer__matthewdiegmann_at_gmail.com__20260606T061409Z__0001.json
+//! see-know__stealer__jordanavery_at_gmail.com__20260606T061409Z__0001.json
 //! see-know__search-email__vanamill_at_hotmail.com__20260606T061410Z__0002.json
 //! oathnet__breach-search__MattDieg__20260606T061411Z__0003.json
 //! ```
@@ -460,11 +460,11 @@ mod tests {
     #[test]
     fn slug_is_human_legible_and_filesystem_safe() {
         assert_eq!(
-            slug("matthewdiegmann@gmail.com", 80),
-            "matthewdiegmann_at_gmail.com"
+            slug("jordanavery@gmail.com", 80),
+            "jordanavery_at_gmail.com"
         );
-        assert_eq!(slug("Matthew Diegmann", 80), "Matthew_Diegmann");
-        assert_eq!(slug("mattdieg123", 80), "mattdieg123");
+        assert_eq!(slug("Jordan Avery", 80), "Jordan_Avery");
+        assert_eq!(slug("javery88", 80), "javery88");
         // No path traversal, no slashes survive.
         assert_eq!(slug("../../etc/passwd", 80), "etc_passwd");
         // Blank / separator-only input never yields an empty component.
@@ -486,17 +486,17 @@ mod tests {
         let name = build_filename(
             "see_know",
             "stealer",
-            "matthewdiegmann@gmail.com",
+            "jordanavery@gmail.com",
             1_780_726_449,
             7,
         );
         assert_eq!(
             name,
-            "see_know__stealer__matthewdiegmann_at_gmail.com__20260606T061409Z__0007.json"
+            "see_know__stealer__jordanavery_at_gmail.com__20260606T061409Z__0007.json"
         );
         // A human (and the OS sort) can read who/what/when straight off the name.
         assert!(name.starts_with("see_know__stealer__"));
-        assert!(name.contains("matthewdiegmann_at_gmail.com"));
+        assert!(name.contains("jordanavery_at_gmail.com"));
         assert!(name.ends_with("__0007.json"));
     }
 

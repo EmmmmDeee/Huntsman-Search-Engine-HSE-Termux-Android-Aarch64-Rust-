@@ -298,6 +298,8 @@ fn attack_overrides_attribute_collection_modules_precisely() {
     assert_eq!(techniques("securitytrails"), vec!["T1596.001"]); // Passive DNS
     assert_eq!(techniques("hackertarget"), vec!["T1590.002", "T1596.001"]);
     assert_eq!(techniques("subdomain_takeover"), vec!["T1590.001"]); // Domain Properties
+    // WAF/CDN fingerprinting → Network Security Appliances + CDNs (not the Web default).
+    assert_eq!(techniques("waf_detect"), vec!["T1590.006", "T1596.004"]);
 
     // Every overridden ID is still a real catalogue entry (no typos).
     for name in [

@@ -795,11 +795,11 @@ mod tests {
     #[test]
     fn clean_individualised_scan_scores_high() {
         let ents = vec![
-            ent("email", "matthewdiegmann@gmail.com", 1.0, 4, &[]),
-            ent("username", "matthewdiegmann", 1.0, 3, &[]),
-            ent("person", "Matthew Diegmann", 0.8, 2, &[]),
+            ent("email", "jordanavery@gmail.com", 1.0, 4, &[]),
+            ent("username", "jordanavery", 1.0, 3, &[]),
+            ent("person", "Jordan Avery", 0.8, 2, &[]),
             ent("address", "Ellington, Connecticut", 0.7, 2, &[]),
-            ent("url", "https://gravatar.com/matthewdiegmann", 0.6, 1, &[]),
+            ent("url", "https://gravatar.com/jordanavery", 0.6, 1, &[]),
         ];
         let r = audit(&ents, LogSignals::default());
         assert!(

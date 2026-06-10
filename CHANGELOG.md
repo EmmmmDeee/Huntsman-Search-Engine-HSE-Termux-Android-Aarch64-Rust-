@@ -89,8 +89,8 @@ versions can include breaking changes; patch versions are bug-fix-only.
   that slip through (`fragment-values`).
 
 - **`@handle` and `handle` are now one identity.** Username normalisation strips a
-  leading `@` sigil, so a profile scraped as `@matthewdiegmann` and one parsed as
-  `matthewdiegmann` dedup to a single UID instead of fragmenting into two — and
+  leading `@` sigil, so a profile scraped as `@jordanavery` and one parsed as
+  `jordanavery` dedup to a single UID instead of fragmenting into two — and
   the `@`-prefixed copy no longer trips the fragment auditor.
 
 - **No false geolocation from CDN/anycast edge IPs in `ipquery`/`ip2location`.**
@@ -464,7 +464,7 @@ versions can include breaking changes; patch versions are bug-fix-only.
   in a single banner-sectioned pass, exiting non-zero if any section fails.
   Aliases: `diag`, `check`. The individual commands remain (the Web UI/API still
   call them). `provision` gains a `setup` alias. Verified live: a real scan of
-  `matthewdiegmann@gmail.com` returned a breach-source correlation (AU-001) and
+  `jordanavery@gmail.com` returned a breach-source correlation (AU-001) and
   derived-handle/social pivots; a name scan surfaced breach passwords (AU-037);
   the Web UI's scan-detail endpoints (entities/correlations/relations, CSV +
   GEXF export) all serve real data.
@@ -1637,12 +1637,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   returns breach rows for many different people. The ingester only confidence-
   gated phone/person/IP rows; **emails, usernames, domains, and social handles
   from non-matching rows were emitted at full 0.70 confidence with no
-  `candidate` tag**, so a "Matthew Diegmann" scan surfaced 90+ unrelated
+  `candidate` tag**, so a "Jordan Avery" scan surfaced 90+ unrelated
   bank-employee emails and 78 unrelated bank/credit-union domains as if they
   were the target's. The relevance gate is now centralised and applied to
   **every** breach-derived kind, and `full_name` (and other multi-term) targets
   must match **all** name terms in a single field — so `"Matthew Parker"` no
-  longer counts as `"Matthew Diegmann"` on the shared first name. Non-matching
+  longer counts as `"Jordan Avery"` on the shared first name. Non-matching
   rows are preserved as quarantined `candidate` leads (demoted to 0.25), never
   discarded. On the reported scan this takes the default view from 445 → ~53
   entities (~88% junk → ~0%).
@@ -1670,7 +1670,7 @@ versions can include breaking changes; patch versions are bug-fix-only.
   key must be supplied for SeekNow to return data.)*
 
 - **Target values keeping shell/CSV quoting.** A `full_name` target submitted as
-  `"Matthew Diegmann"` (literal quotes) reached the pipeline with the quotes
+  `"Jordan Avery"` (literal quotes) reached the pipeline with the quotes
   intact, polluting every name-derived permutation. Targets are now sanitised at
   the input boundary — surrounding quotes (incl. smart quotes) and stray list
   punctuation are stripped before normalisation.

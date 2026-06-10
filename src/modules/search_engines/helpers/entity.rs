@@ -642,7 +642,35 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
     // already merged. (Emitting both strings here is harmless given that dedup,
     // and avoids guessing whether a trailing 4-digit run is a postcode or, say,
     // a year — "Houston, Texas since 2020".)
+    // An AU postcode only attaches to an AU-STATE address. Without this gate a
+    // US "City, State" picked up a trailing 4-digit YEAR as if it were an AU
+    // postcode — a live name-scan produced "Ames, Iowa 2011" at high confidence.
+    // Match the state SEGMENT whole (after the last comma), never as a suffix:
+    // "Ames, Iowa" ends with "wa" but its state is "iowa", not Western Australia.
+    const AU_STATES: &[&str] = &[
+        "nsw",
+        "qld",
+        "vic",
+        "tas",
+        "act",
+        "sa",
+        "wa",
+        "nt",
+        "new south wales",
+        "queensland",
+        "victoria",
+        "tasmania",
+        "australian capital territory",
+        "south australia",
+        "western australia",
+        "northern territory",
+        "australia",
+    ];
     for r in &addrs.clone() {
+        let state_seg = r.rsplit(',').next().unwrap_or("").trim().to_lowercase();
+        if !AU_STATES.contains(&state_seg.as_str()) {
+            continue;
+        }
         let after_idx = text.find(r.as_str()).unwrap_or(0) + r.len();
         if after_idx < text.len() {
             // Walk the end forward to a char boundary so multi-byte

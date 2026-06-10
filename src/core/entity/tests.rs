@@ -693,24 +693,24 @@ fn normalise_username_lowercases_and_trims() {
 
 #[test]
 fn normalise_username_strips_leading_handle_sigil_for_dedup() {
-    // `@matthewdiegmann` and `matthewdiegmann` are the same account: both must
+    // `@jordanavery` and `jordanavery` are the same account: both must
     // normalise (and therefore derive the same UID) to the bare handle.
     assert_eq!(
-        normalise(&EntityKind::Username, "@MatthewDiegmann"),
-        "matthewdiegmann"
+        normalise(&EntityKind::Username, "@JordanAvery"),
+        "jordanavery"
     );
     assert_eq!(
-        normalise(&EntityKind::Username, "  @ matthewdiegmann "),
-        "matthewdiegmann"
+        normalise(&EntityKind::Username, "  @ jordanavery "),
+        "jordanavery"
     );
     assert_eq!(
         derive_uid(
             &EntityKind::Username,
-            &normalise(&EntityKind::Username, "@matthewdiegmann")
+            &normalise(&EntityKind::Username, "@jordanavery")
         ),
         derive_uid(
             &EntityKind::Username,
-            &normalise(&EntityKind::Username, "matthewdiegmann")
+            &normalise(&EntityKind::Username, "jordanavery")
         ),
         "@handle and handle must share a UID"
     );
@@ -781,7 +781,7 @@ const NORM_CORPUS: &[&str] = &[
     "ÉRIC",
     "İstanbul",
     "Ηandle",
-    "Matthew.Diegmann+tag@Gmail.COM",
+    "Jordan.Avery+tag@Gmail.COM",
     "  spaced@x.com  ",
     "WWW.Example.COM.",
     "www.WWW.com",

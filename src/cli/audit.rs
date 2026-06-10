@@ -386,14 +386,14 @@ mod tests {
     fn csv_parses_old_format_header_driven() {
         let csv = "kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,tags\n\
             ip_address,172.66.147.185,172.66.147.185,0.950,1.000,258,VERIFIED,1780814281,dns_intel|shodan,cloudflare|hosting\n\
-            email,matthewdiegmann@gmail.com,matthewdiegmann@gmail.com,0.850,1.000,4,VERIFIED,1780814282,oathnet_pro|smtp_vrfy,verified\n";
+            email,jordanavery@gmail.com,jordanavery@gmail.com,0.850,1.000,4,VERIFIED,1780814282,oathnet_pro|smtp_vrfy,verified\n";
         let ents = parse_csv(csv).unwrap();
         assert_eq!(ents.len(), 2);
         assert_eq!(ents[0].kind, "ip_address");
         assert_eq!(ents[0].corroboration, 258);
         assert_eq!(ents[0].sources, vec!["dns_intel", "shodan"]);
         assert!(ents[0].tags.contains(&"cloudflare".to_string()));
-        assert_eq!(ents[1].value, "matthewdiegmann@gmail.com");
+        assert_eq!(ents[1].value, "jordanavery@gmail.com");
     }
 
     #[test]

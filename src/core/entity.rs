@@ -688,8 +688,8 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
         }
         EntityKind::Username => {
             // Same total Unicode case-fold as Email, plus stripping a leading `@`
-            // handle sigil: a profile scraped as `@matthewdiegmann` and one parsed
-            // as `matthewdiegmann` are the SAME account and must dedup to one UID.
+            // handle sigil: a profile scraped as `@jordanavery` and one parsed
+            // as `jordanavery` are the SAME account and must dedup to one UID.
             // Without this they fragmented into two identities, and the `@`-prefixed
             // copy also looked like a truncated value to the fragment auditor.
             value.trim().trim_start_matches('@').trim().to_lowercase()

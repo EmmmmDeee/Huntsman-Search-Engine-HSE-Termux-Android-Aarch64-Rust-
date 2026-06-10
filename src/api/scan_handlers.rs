@@ -438,7 +438,7 @@ pub async fn scan_relations(
     // showed opaque SHA hashes (e.g. `91cceeaccaaa11e9…`) for any endpoint whose
     // entity hadn't been paged into the browser's entity map — on a 397-entity
     // scan that was most of the graph. Joining here makes every edge verifiable
-    // on its own: "matthewdiegmann@gmail.com (email) → gmail.com (domain)".
+    // on its own: "jordanavery@gmail.com (email) → gmail.com (domain)".
     let rels = match s.store.relations_for_scan(&id) {
         Ok(rels) => rels,
         Err(e) => return internal_error(&e),
@@ -844,7 +844,7 @@ mod tests {
         store
             .upsert_scan(&Scan::new(
                 sid,
-                Target::new(TargetKind::FullName, "Matthew Diegmann"),
+                Target::new(TargetKind::FullName, "Jordan Avery"),
             ))
             .unwrap();
         store
@@ -963,23 +963,20 @@ mod tests {
     #[test]
     fn csv_carries_verifiable_evidence_urls_and_summaries() {
         use crate::core::entity::{Entity, EntityKind, Evidence};
-        let mut e = Entity::new(EntityKind::Username, "matthewdiegmann", 0.80, "src");
+        let mut e = Entity::new(EntityKind::Username, "jordanavery", 0.80, "src");
         e.add_evidence(
-            Evidence::new(
-                "username_search",
-                "@matthewdiegmann has a profile on GitHub",
-            )
-            .with_attr("url", "https://github.com/matthewdiegmann"),
+            Evidence::new("username_search", "@jordanavery has a profile on GitHub")
+                .with_attr("url", "https://github.com/jordanavery"),
         );
-        e.add_evidence(Evidence::new("github_user", "12 public events").with_attr(
-            "profile_url",
-            "https://github.com/matthewdiegmann?tab=overview",
-        ));
+        e.add_evidence(
+            Evidence::new("github_user", "12 public events")
+                .with_attr("profile_url", "https://github.com/jordanavery?tab=overview"),
+        );
         let csv = entities_to_csv(&[e]);
         let row = csv.lines().nth(1).unwrap();
         // The full, clickable source URLs are present (no reconstruction needed).
         assert!(
-            row.contains("https://github.com/matthewdiegmann"),
+            row.contains("https://github.com/jordanavery"),
             "evidence URL missing: {row}"
         );
         assert!(
