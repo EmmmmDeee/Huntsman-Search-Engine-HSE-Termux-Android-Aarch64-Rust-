@@ -787,19 +787,20 @@ pub(in crate::core::correlator) fn rule_au_044_shared_tracking_id(
         .collect()
 }
 
-/// AU-054 — PII exposed on a data broker (removal target).
+/// AU-054 — PII located on a data broker.
 ///
 /// When the scan surfaced a `Url` whose host is a known people-search /
-/// data-broker site (Spokeo, BeenVerified, Whitepages, …), the subject is
-/// *publicly listed* there — an actionable privacy exposure. Each such broker
-/// becomes one discrete, rankable finding carrying the broker's public opt-out
-/// URL, so the operator can file a removal request per site. This is the
-/// takedown counterpart to the engine's expansion gate, which already treats
-/// these domains as aggregator noise: here that same recognition is turned into
-/// "your subject is on this site — remove them here".
+/// data-broker site (Spokeo, BeenVerified, Whitepages, …), the subject's PII is
+/// being brokered/redistributed there — a concrete location finding: *this is
+/// where the subject's data lives*. Each such broker becomes one discrete,
+/// rankable finding. This is the locating counterpart to the engine's expansion
+/// gate, which already treats these domains as aggregator noise: here that same
+/// recognition is turned into "your subject's data is exposed on this site".
+/// (What to do about it — a removal request — is a later phase, deliberately not
+/// surfaced here.)
 ///
 /// Matches `Url` entities only (a profile URL with a host is a real listing),
-/// not a bare broker `Domain` (no specific record to remove). One firing per
+/// not a bare broker `Domain` (no specific record located). One firing per
 /// distinct broker, in registry (alphabetical-by-domain) order; entity_uids are
 /// every URL on that broker, sorted, so the output is deterministic.
 pub(in crate::core::correlator) fn rule_au_054_data_broker_exposure(
@@ -837,15 +838,14 @@ pub(in crate::core::correlator) fn rule_au_054_data_broker_exposure(
             let n = uids.len();
             Some(Correlation {
                 rule_id: "AU-054".into(),
-                rule_name: "Data-broker PII exposure (removal target)".into(),
+                rule_name: "PII located on data broker".into(),
                 severity: Severity::High,
                 description: format!(
-                    "Subject is publicly listed on {} ({} URL{}) — file a removal \
-                     request: {}",
+                    "Subject's PII is brokered on {} ({} listing{}) — a people-search \
+                     site redistributing the subject's data",
                     broker.name,
                     n,
-                    if n == 1 { "" } else { "s" },
-                    broker.optout_url
+                    if n == 1 { "" } else { "s" }
                 ),
                 entity_uids: uids,
                 scan_id: scan_id.into(),

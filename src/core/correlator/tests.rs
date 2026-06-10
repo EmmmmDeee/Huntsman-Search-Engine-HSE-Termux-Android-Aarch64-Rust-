@@ -1466,9 +1466,9 @@ fn ground_truth_erik_diegmann_scan_yields_only_real_correlations() {
     // Exactly six real correlations — nothing fabricated. AU-045: "Erik
     // Diegmann" is corroborated by oathnet_pro (breach) AND social_probe
     // (social) — two independent service families. AU-054: the subject's own
-    // listing at peekyou.com/erik-diegmann is a genuine data-broker exposure
-    // and an actionable removal target — exactly the takedown signal the rule
-    // exists to surface (not a fabrication: the URL is the subject's page).
+    // listing at peekyou.com/erik-diegmann is a genuine data-location finding —
+    // the subject's PII is brokered there (not a fabrication: the URL is the
+    // subject's page).
     assert_eq!(
         firings.len(),
         6,
@@ -1486,18 +1486,14 @@ fn ground_truth_erik_diegmann_scan_yields_only_real_correlations() {
         fired.contains("AU-045"),
         "Erik Diegmann confirmed across breach + social families"
     );
-    // The takedown surface: subject listed on a people-search site → a removal
-    // target carrying PeekYou's opt-out URL.
+    // The location finding: subject's PII brokered on a people-search site.
     let au054 = firings
         .iter()
         .find(|c| c.rule_id == "AU-054")
-        .expect("subject listed on peekyou.com → AU-054 removal target");
+        .expect("subject's PII located on peekyou.com → AU-054");
     assert!(
-        au054.description.contains("PeekYou")
-            && au054
-                .description
-                .contains("peekyou.com/about/contact/optout"),
-        "AU-054 must name the broker and its opt-out URL: {}",
+        au054.description.contains("PeekYou") && au054.description.contains("brokered on"),
+        "AU-054 must name the broker as a data-location finding: {}",
         au054.description
     );
 
@@ -1989,7 +1985,7 @@ fn au_042_groups_pgp_linked_emails() {
 }
 
 #[test]
-fn au_054_emits_one_removal_target_per_broker_with_optout_url() {
+fn au_054_locates_pii_one_finding_per_broker() {
     use super::rules::rule_au_054_data_broker_exposure;
     let ents = vec![
         // Subject listed on two distinct brokers (two URLs on Spokeo, one on
@@ -2026,19 +2022,19 @@ fn au_054_emits_one_removal_target_per_broker_with_optout_url() {
             .all(|c| c.rule_id == "AU-054" && c.severity == super::Severity::High)
     );
     // Deterministic order: brokers sorted by domain → spokeo before whitepages.
-    assert!(out[0].description.contains("Spokeo"));
-    assert!(out[0].description.contains("https://www.spokeo.com/optout"));
+    // Location finding — names the broker, carries NO removal/opt-out surface
+    // (that is a later phase, deliberately absent).
+    assert!(out[0].description.contains("Spokeo") && out[0].description.contains("brokered on"));
+    assert!(
+        !out[0].description.contains("http"),
+        "AU-054 is a location finding, not a takedown — no opt-out URL"
+    );
     assert_eq!(
         out[0].entity_uids.len(),
         2,
         "both Spokeo URLs grouped under one finding"
     );
     assert!(out[1].description.contains("Whitepages"));
-    assert!(
-        out[1]
-            .description
-            .contains("https://www.whitepages.com/suppression-requests")
-    );
     // No broker exposure → no finding.
     let clean = vec![mk_tagged(
         EntityKind::Url,
