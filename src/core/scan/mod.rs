@@ -914,7 +914,9 @@ fn default_scan_depth() -> u32 {
 /// Serde default for [`ScanRequest::options`] — used when a request omits the
 /// whole `options` object, so it still gets the product default depth (2)
 /// rather than the inert library `ScanOptions::default()` (depth 0).
-fn default_scan_options() -> ScanOptions {
+/// `pub(crate)` because [`crate::core::live::LiveRequest`] shares it: a live
+/// request that omits `options` must behave like a scan request that does.
+pub(crate) fn default_scan_options() -> ScanOptions {
     ScanOptions {
         depth: DEFAULT_SCAN_DEPTH,
         ..Default::default()
