@@ -277,13 +277,16 @@ pub(in crate::core::correlator) fn rule_au_026_validated_address(
 
 /// AU-027 — Address ↔ coordinates geolocation chain.
 ///
-/// Co-presence signal: fires when the scan holds both geo-tagged `Address` and
-/// `Coordinates` entities (confidence ≥ 0.55). It asserts that multiple geo
-/// artefacts were derived for the subject, NOT that a given address geocodes to
-/// a given coordinate — the correlator runs in `core` and cannot call the
-/// `util::geohash` distance helpers (the `core_does_not_import_util` layering
-/// invariant), so cross-kind proximity is intentionally not verified here.
-/// Spatial proximity between coordinate sets is AU-017's job.
+/// Fires when the scan holds both geo-tagged `Address` and `Coordinates`
+/// entities (confidence ≥ 0.55) that resolve to ONE coherent place. A "validated
+/// geolocation chain" is a single location, so the coordinates are clustered by
+/// great-circle distance ([`crate::util::geohash::haversine_km`], permitted in
+/// `core` — AU-017 already uses `geohash`) and the chain is anchored on the
+/// DOMINANT cluster. Without this, deep recursion that surfaced a second city's
+/// coordinates (a Brisbane subject also picking up a Cairns result ~1700 km
+/// away) chained both into one continent-spanning "chain". Per-cluster spatial
+/// convergence is AU-017's job; this asserts the *primary* address↔coordinate
+/// location.
 pub(in crate::core::correlator) fn rule_au_027_address_coordinates_chain(
     entities: &[Entity],
     scan_id: &str,
@@ -309,16 +312,53 @@ pub(in crate::core::correlator) fn rule_au_027_address_coordinates_chain(
     if !addr_has_geo_tag && !coords_has_geo_tag {
         return Vec::new();
     }
+
+    // Geographic coherence. Parse the coordinates and greedy single-link cluster
+    // them within COHERENCE_KM (one metro + surrounding region). Sort by uid so
+    // the clustering is independent of the caller's (HashMap-random) iteration
+    // order — the same determinism guard AU-017 uses.
+    const COHERENCE_KM: f64 = 150.0;
+    let mut parsed: Vec<(&Entity, (f64, f64))> = coords
+        .iter()
+        .filter_map(|c| crate::util::geohash::parse_coords(&c.value).map(|ll| (*c, ll)))
+        .collect();
+    if parsed.is_empty() {
+        return Vec::new();
+    }
+    parsed.sort_by(|a, b| a.0.uid.cmp(&b.0.uid));
+    let mut clusters: Vec<Vec<(&Entity, (f64, f64))>> = Vec::new();
+    for &(c, (lat, lon)) in &parsed {
+        let joined = clusters.iter_mut().find(|cl| {
+            let (_, (rl, ro)) = cl[0];
+            crate::util::geohash::haversine_km(lat, lon, rl, ro) <= COHERENCE_KM
+        });
+        match joined {
+            Some(cl) => cl.push((c, (lat, lon))),
+            None => clusters.push(vec![(c, (lat, lon))]),
+        }
+    }
+    // Anchor on the dominant (largest) cluster; tie-break on the smallest
+    // founding uid so the choice is deterministic across runs.
+    let dominant = clusters
+        .iter()
+        .max_by(|a, b| {
+            a.len()
+                .cmp(&b.len())
+                .then_with(|| b[0].0.uid.cmp(&a[0].0.uid))
+        })
+        .expect("parsed is non-empty, so at least one cluster exists");
+    let (anchor_lat, anchor_lon) = dominant[0].1;
+
     let mut uids: Vec<String> = addresses.iter().take(3).map(|a| a.uid.clone()).collect();
-    uids.extend(coords.iter().take(3).map(|c| c.uid.clone()));
+    uids.extend(dominant.iter().take(3).map(|(c, _)| c.uid.clone()));
     vec![Correlation::new(
         "AU-027",
         "Address-coordinates geolocation chain",
         Severity::High,
         format!(
-            "{} address(es) and {} coordinate set(s) form a validated geolocation chain",
+            "{} address(es) and {} coordinate set(s) form a validated geolocation chain near ({anchor_lat:.3}, {anchor_lon:.3})",
             addresses.len(),
-            coords.len()
+            dominant.len(),
         ),
         uids,
         scan_id,
