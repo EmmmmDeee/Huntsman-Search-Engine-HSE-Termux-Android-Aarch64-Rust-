@@ -21,9 +21,16 @@ fn is_base58(c: char) -> bool {
 
 /// Bech32 data charset (BIP-173): lowercase alphanumerics minus `b`, `i`, `o`,
 /// `1`. Applied to the payload after a human-readable prefix (`bc1`, `ltc1`).
+///
+/// The canonical charset is `qpzry9x8gf2tvdw0s3jn54khce6mua7l` — note it
+/// contains no `b`. The `'a'..='h'` span used previously silently re-admitted
+/// `b`, so the payload check accepted a character the encoder can never emit,
+/// widening the false-positive surface (a non-bech32 string carrying a `b` could
+/// pass). `b` is now excluded as the doc and the spec require; no real address
+/// contains it, so nothing valid is rejected.
 fn is_bech32_payload(c: char) -> bool {
     matches!(c.to_ascii_lowercase(),
-        'a'..='h' | 'j'..='n' | 'p'..='z' | '0' | '2'..='9'
+        'a' | 'c'..='h' | 'j'..='n' | 'p'..='z' | '0' | '2'..='9'
     )
 }
 
@@ -175,6 +182,34 @@ mod tests {
         ); // vitalik.eth
         assert_eq!(chain_label("crypto_btc"), "btc");
         assert_eq!(chain_label("crypto_eth"), "eth");
+    }
+
+    #[test]
+    fn bech32_payload_excludes_the_full_b_i_o_1_set() {
+        // BIP-173's data charset is qpzry9x8gf2tvdw0s3jn54khce6mua7l — it
+        // contains no b/i/o and no digit 1. Every excluded symbol must be
+        // rejected; every included one accepted. Guards the off-by-one that
+        // let 'b' through ('a'..='h' spanned it).
+        for excluded in ['b', 'i', 'o', '1', 'B', 'I', 'O'] {
+            assert!(
+                !is_bech32_payload(excluded),
+                "{excluded} is not in the bech32 charset"
+            );
+        }
+        for included in "qpzry9x8gf2tvdw0s3jn54khce6mua7l".chars() {
+            assert!(
+                is_bech32_payload(included),
+                "{included} IS in the bech32 charset"
+            );
+        }
+        // End to end: a bc1 string whose payload carries a 'b' is not a valid
+        // bech32 address and must not be classified (the canonical genesis
+        // bech32 address, which has no 'b', still classifies — see other tests).
+        assert_eq!(
+            classify_crypto_address("bc1qbbr0srrr7xfkvy5l643lydnw9re59gtzzwf5md"),
+            None,
+            "a 'b' in the payload is outside the bech32 charset"
+        );
     }
 
     #[test]
