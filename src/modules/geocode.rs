@@ -195,61 +195,114 @@ impl Geocode {
             .map_err(|e| Error::module(SRC, e))?;
 
         let mut result = ModuleResult::new();
-
-        let display = data.display_name.as_deref().unwrap_or("-");
-
-        let mut entity = Entity::new(EntityKind::Address, display, 0.72, &ctx.scan_id);
-        entity.tag("geoint");
-        entity.tag("reverse-geocoded");
-
-        let mut ev = Evidence::new(SRC, format!("Reverse geocode for {lat},{lon}"))
-            .with_attr("latitude", lat.to_string())
-            .with_attr("longitude", lon.to_string())
-            .with_attr("source", "OpenStreetMap Nominatim");
-
-        if let Some(addr) = &data.address {
-            let city = addr
-                .city
-                .as_deref()
-                .or(addr.town.as_deref())
-                .or(addr.village.as_deref())
-                .or(addr.municipality.as_deref());
-
-            if let Some(c) = city {
-                ev = ev.with_attr("city", c);
-            }
-            if let Some(s) = addr.state.as_deref() {
-                ev = ev.with_attr("state", s);
-            }
-            if let Some(c) = addr.country.as_deref() {
-                ev = ev.with_attr("country", c);
-            }
-            if let Some(cc) = addr.country_code.as_deref() {
-                ev = ev.with_attr("country_code", cc.to_uppercase());
-                entity.tag(format!("country:{}", cc.to_uppercase()));
-            }
-            if let Some(p) = addr.postcode.as_deref() {
-                ev = ev.with_attr("postcode", p);
-            }
-            if let Some(r) = addr.road.as_deref() {
-                let street = match addr.house_number.as_deref() {
-                    Some(n) => format!("{n} {r}"),
-                    None => r.to_string(),
-                };
-                ev = ev.with_attr("street", street);
-            }
-            if let Some(sub) = addr.suburb.as_deref() {
-                ev = ev.with_attr("suburb", sub);
-            }
-            if let Some(county) = addr.county.as_deref() {
-                ev = ev.with_attr("county", county);
-            }
-        }
-
-        entity.add_evidence(ev);
-        result.push(entity);
+        result.push(build_reverse_entity(lat, lon, &data, &ctx.scan_id));
         Ok(result)
     }
+}
+
+/// AU-relevance verdict for a reverse-geocoded coordinate, deciding how much an
+/// off-region fix may anchor an Australia-focused scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuRelevance {
+    /// Resolved in Australia (by Nominatim country code, or by bounding box when
+    /// the code is absent) — a strong, on-region anchor.
+    InAustralia,
+    /// Resolved to a known country that is not Australia — a candidate-grade
+    /// lead that AU-focused correlation rules (confidence ≥ 0.50) must not
+    /// anchor on, so it can't pull an investigation off-region.
+    OffRegion,
+    /// Region could not be determined (no country code, not in the AU box) —
+    /// kept at a neutral, middling confidence.
+    Unknown,
+}
+
+/// Classify a reverse-geocoded fix for AU relevance. The Nominatim country code
+/// is authoritative when present; otherwise we fall back to the offline
+/// [`crate::util::geo::is_in_australia`] bounding box so a bare coordinate seed
+/// is still gated.
+fn au_relevance(lat: f64, lon: f64, addr: Option<&NominatimAddr>) -> AuRelevance {
+    match addr.and_then(|a| a.country_code.as_deref()) {
+        Some(cc) if cc.eq_ignore_ascii_case("au") => AuRelevance::InAustralia,
+        Some(_) => AuRelevance::OffRegion,
+        None if crate::util::geo::is_in_australia(lat, lon) => AuRelevance::InAustralia,
+        None => AuRelevance::Unknown,
+    }
+}
+
+/// Build the reverse-geocode Address entity, shaping confidence and tags by
+/// [`au_relevance`]. Pure (no I/O) so the AU-gating is unit-tested directly.
+fn build_reverse_entity(lat: f64, lon: f64, data: &NominatimResp, scan_id: &str) -> Entity {
+    let display = data.display_name.as_deref().unwrap_or("-");
+    let relevance = au_relevance(lat, lon, data.address.as_ref());
+
+    let confidence = match relevance {
+        AuRelevance::InAustralia => 0.78,
+        AuRelevance::Unknown => 0.55,
+        AuRelevance::OffRegion => 0.40,
+    };
+
+    let mut entity = Entity::new(EntityKind::Address, display, confidence, scan_id);
+    entity.tag("geoint");
+    entity.tag("reverse-geocoded");
+    match relevance {
+        AuRelevance::InAustralia => {
+            entity.tag("country:AU");
+            entity.tag("au-relevant");
+        }
+        AuRelevance::OffRegion => entity.tag("candidate"),
+        AuRelevance::Unknown => {}
+    }
+
+    let mut ev = Evidence::new(SRC, format!("Reverse geocode for {lat},{lon}"))
+        .with_attr("latitude", lat.to_string())
+        .with_attr("longitude", lon.to_string())
+        .with_attr("source", "OpenStreetMap Nominatim");
+
+    if let Some(addr) = &data.address {
+        let city = addr
+            .city
+            .as_deref()
+            .or(addr.town.as_deref())
+            .or(addr.village.as_deref())
+            .or(addr.municipality.as_deref());
+
+        if let Some(c) = city {
+            ev = ev.with_attr("city", c);
+        }
+        if let Some(s) = addr.state.as_deref() {
+            ev = ev.with_attr("state", s);
+        }
+        if let Some(c) = addr.country.as_deref() {
+            ev = ev.with_attr("country", c);
+        }
+        if let Some(cc) = addr.country_code.as_deref() {
+            ev = ev.with_attr("country_code", cc.to_uppercase());
+            // The on-region `country:AU` tag is set above; for off-region fixes
+            // record the resolved country so the lead stays explainable.
+            if !cc.eq_ignore_ascii_case("au") {
+                entity.tag(format!("country:{}", cc.to_uppercase()));
+            }
+        }
+        if let Some(p) = addr.postcode.as_deref() {
+            ev = ev.with_attr("postcode", p);
+        }
+        if let Some(r) = addr.road.as_deref() {
+            let street = match addr.house_number.as_deref() {
+                Some(n) => format!("{n} {r}"),
+                None => r.to_string(),
+            };
+            ev = ev.with_attr("street", street);
+        }
+        if let Some(sub) = addr.suburb.as_deref() {
+            ev = ev.with_attr("suburb", sub);
+        }
+        if let Some(county) = addr.county.as_deref() {
+            ev = ev.with_attr("county", county);
+        }
+    }
+
+    entity.add_evidence(ev);
+    entity
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -320,5 +373,52 @@ mod tests {
         assert_eq!(m.name(), "geocode");
         assert_eq!(m.priority(), 21);
         assert_eq!(m.max_timeout_ms(), 8_000);
+    }
+
+    // -- AU-relevance shaping of reverse geocode --------------------------
+
+    fn resp(json: serde_json::Value) -> NominatimResp {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn reverse_in_australia_by_country_code_is_a_strong_anchor() {
+        let data = resp(serde_json::json!({
+            "display_name": "Brisbane City, QLD, Australia",
+            "address": { "city": "Brisbane", "state": "Queensland", "country_code": "au" }
+        }));
+        let e = build_reverse_entity(-27.4766, 153.0166, &data, "scan");
+        assert!((e.confidence - 0.78).abs() < 1e-9);
+        assert!(e.has_tag("au-relevant"));
+        assert!(e.has_tag("country:AU"));
+        assert!(!e.has_tag("candidate"));
+    }
+
+    #[test]
+    fn reverse_off_region_by_country_code_is_a_candidate() {
+        let data = resp(serde_json::json!({
+            "display_name": "Manhattan, New York, USA",
+            "address": { "city": "New York", "country_code": "us" }
+        }));
+        let e = build_reverse_entity(40.7128, -74.0060, &data, "scan");
+        assert!((e.confidence - 0.40).abs() < 1e-9);
+        assert!(e.has_tag("candidate"));
+        assert!(e.has_tag("country:US"));
+        assert!(!e.has_tag("au-relevant"));
+    }
+
+    #[test]
+    fn reverse_without_country_code_falls_back_to_the_bounding_box() {
+        // No country code: an AU coordinate is still recognised on-region via
+        // the offline bounding box, while a foreign one stays Unknown (neutral).
+        let bare = resp(serde_json::json!({ "display_name": "somewhere" }));
+        let au = build_reverse_entity(-33.8688, 151.2093, &bare, "scan");
+        assert!((au.confidence - 0.78).abs() < 1e-9);
+        assert!(au.has_tag("au-relevant"));
+
+        let foreign = build_reverse_entity(48.8566, 2.3522, &bare, "scan");
+        assert!((foreign.confidence - 0.55).abs() < 1e-9);
+        assert!(!foreign.has_tag("au-relevant"));
+        assert!(!foreign.has_tag("candidate"));
     }
 }
