@@ -484,6 +484,35 @@ impl Store {
         )?;
         tx.execute("DELETE FROM events WHERE scan_id = ?1", params![scan_id])?;
         tx.execute("DELETE FROM relations WHERE scan_id = ?1", params![scan_id])?;
+        // FTS sync: a contentless-external FTS5 index never observes a bare
+        // DELETE on its content table, so each orphaned row's text must be
+        // removed with an explicit 'delete' command BEFORE the row goes away.
+        // Without this the stale posting outlives the row, and once SQLite
+        // reuses the freed rowid for a NEW entity, a full-text search for the
+        // deleted value silently returns that unrelated entity — breaking the
+        // 'always-synchronized index' invariant the write path maintains
+        // (see merge_and_persist_entity).
+        let orphans: Vec<(i64, String, String)> = {
+            let mut stmt = tx.prepare(
+                "SELECT rowid, value, kind FROM entities
+                 WHERE uid NOT IN (SELECT DISTINCT entity_uid FROM entity_observations)",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+        for (rowid, value, kind) in orphans {
+            tx.execute(
+                "INSERT INTO entities_fts(entities_fts, rowid, value, kind)
+                 VALUES('delete', ?1, ?2, ?3)",
+                params![rowid, value, kind],
+            )?;
+        }
         tx.execute(
             "DELETE FROM entities
              WHERE uid NOT IN (SELECT DISTINCT entity_uid FROM entity_observations)",
