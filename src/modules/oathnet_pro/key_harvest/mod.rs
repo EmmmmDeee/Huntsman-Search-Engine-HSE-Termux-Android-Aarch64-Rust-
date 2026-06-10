@@ -735,6 +735,15 @@ fn emit_key(
         return;
     }
 
+    // Pool ONLY a recognised keyed provider's key — one the cascade can reuse.
+    // The `generic_hex` catch-all (and `jwt_token`, `crypto_*`, foreign logins)
+    // is surfaced as the ApiKey entity above but is never injected by
+    // `hot_inject_keys`, so pooling it just grew key_pool.json without bound
+    // (a live run accumulated 8668 `generic_hex` blobs → a 4 MB pool).
+    if !crate::util::service_defs::is_poolable_service(service) {
+        return;
+    }
+
     let pool = crate::util::key_pool::global_pool();
     let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
     entry.notes = Some(format!(
