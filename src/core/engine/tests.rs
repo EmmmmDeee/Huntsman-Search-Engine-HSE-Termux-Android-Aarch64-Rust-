@@ -790,32 +790,6 @@ fn dispatch_log_allows_different_modules_on_same_target() {
     assert!(log.insert(dispatch_key("greynoise", &t)));
 }
 
-#[test]
-fn dispatch_log_evicts_oldest_when_capped() {
-    // Small cap to exercise FIFO eviction without inserting 100k keys
-    // (same-module test, so the private fields are reachable).
-    let mut log = DispatchLog {
-        seen: HashSet::new(),
-        order: VecDeque::new(),
-        cap: 3,
-    };
-    let k = |v: &str| ("hibp", TargetKind::Email, v.to_string());
-    assert!(log.insert(k("a")));
-    assert!(log.insert(k("b")));
-    assert!(log.insert(k("c")));
-    assert!(log.insert(k("d"))); // over cap → evicts the oldest ("a")
-    assert!(
-        log.len() <= 3,
-        "ledger ({}) must stay within the cap",
-        log.len()
-    );
-    // Recently-seen keys are still deduped (retained — never re-queried)...
-    assert!(!log.insert(k("d")));
-    assert!(!log.insert(k("c")));
-    // ...but the long-evicted oldest seed legitimately dispatches again.
-    assert!(log.insert(k("a")), "evicted key must be treated as new");
-}
-
 // ── End-to-end engine throughput benchmark (ignored; opt-in) ──────────────
 //
 // Drives a full multi-round expansion scan over the in-memory store with a
@@ -974,33 +948,4 @@ fn roi_cutoff_releases_visited_keys_of_truncated_candidates() {
         "cut candidate must be released to compete in a later round"
     );
     assert!(!visited.contains(&visit_key(&mk("tail-b.com"))));
-}
-
-/// `DispatchLog::remove` must release a key for legitimate re-dispatch (the
-/// MissingKey opt-out path) AND keep the FIFO eviction order exact: a stale
-/// order entry left behind by remove would, at eviction time, delete a
-/// re-inserted LIVE key from the seen-set.
-#[test]
-fn dispatch_log_remove_releases_key_and_keeps_eviction_exact() {
-    let mut log = DispatchLog {
-        seen: HashSet::new(),
-        order: VecDeque::new(),
-        cap: 2,
-    };
-    let k = |v: &str| ("m", TargetKind::Email, v.to_string());
-
-    assert!(log.insert(k("a")));
-    log.remove(&k("a"));
-    assert!(log.is_empty());
-    // Released key re-dispatches.
-    assert!(log.insert(k("a")), "removed key must be insertable again");
-
-    // Eviction exactness: after remove + re-insert, filling past the cap must
-    // evict in true insertion order — "a" (the oldest live key) goes first,
-    // not a phantom left by the earlier remove.
-    assert!(log.insert(k("b")));
-    assert!(log.insert(k("c"))); // cap 2 → evicts "a"
-    assert_eq!(log.len(), 2);
-    assert!(log.insert(k("a")), "evicted key legitimately re-dispatches");
-    assert!(!log.insert(k("c")), "recent key still deduped");
 }

@@ -32,16 +32,6 @@ use crate::core::error::{Error, Result};
 /// slot for the module's entire (often double-digit) total budget.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Build a fresh reqwest client. Cheap to call per scan.
-///
-/// User-Agent uses the conventional `name/version (+url)` form. Bare
-/// short UAs like `HSE/0.8.0` are frequently rejected by anti-bot WAFs
-/// (HudsonRock's cavalier API among them — observed returning HTTP 400
-/// on Termux). The `+https://` contact link is the format recommended
-/// by RFC 7231 §5.5.3 and accepted by most rate-limiters.
-///
-/// No client-level total timeout — see module docstring. A short
-/// `connect_timeout` is set so unreachable hosts fail fast.
 /// True if a redirect's next-hop `host` must be refused as an SSRF risk — i.e.
 /// it is a private/reserved IP literal (cloud-metadata 169.254.169.254,
 /// loopback, RFC1918, ULA, …). Hostnames are not judged here (they are resolved
@@ -188,6 +178,16 @@ fn client_builder() -> reqwest::ClientBuilder {
         ))
 }
 
+/// Build a fresh reqwest client. Cheap to call per scan.
+///
+/// User-Agent uses the conventional `name/version (+url)` form. Bare
+/// short UAs like `HSE/0.8.0` are frequently rejected by anti-bot WAFs
+/// (HudsonRock's cavalier API among them — observed returning HTTP 400
+/// on Termux). The `+https://` contact link is the format recommended
+/// by RFC 7231 §5.5.3 and accepted by most rate-limiters.
+///
+/// No client-level total timeout — see module docstring. A short
+/// `connect_timeout` is set so unreachable hosts fail fast.
 pub fn build_client() -> reqwest::Client {
     client_builder()
         .build()

@@ -151,15 +151,6 @@ pub fn validate_coordinates(lat: f64, lon: f64) -> ValidationReport {
 // IP address routability (centralised from `oathnet_pro::is_private_ip`)
 // ---------------------------------------------------------------------------
 
-/// True if `s` parses to a non-routable or otherwise un-queryable IP. Covers
-/// RFC1918 private, loopback, link-local, CGN, broadcast, unspecified,
-/// multicast, IPv6 ULA — **plus** the reserved/unrealistic ranges that leak in
-/// from scraped pages and tutorials and would only waste expansion budget:
-/// RFC5737 documentation (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`),
-/// RFC2544 benchmarking (`198.18.0.0/15`), IETF protocol (`192.0.0.0/24`),
-/// "this-host" (`0.0.0.0/8`), reserved/future (`240.0.0.0/4`), and IPv6
-/// documentation (`2001:db8::/32`). No external OSINT source can resolve any of
-/// these, so the engine must never pivot on them.
 /// The "can never be a real host *anywhere*" ranges shared by [`is_bogus_ip`]
 /// and [`is_non_routable_ip`]: RFC5737 documentation (`192.0.2.0/24`,
 /// `198.51.100.0/24`, `203.0.113.0/24`), RFC2544 benchmarking (`198.18.0.0/15`),
@@ -201,6 +192,13 @@ fn is_documentation_or_reserved(addr: &IpAddr) -> bool {
     }
 }
 
+/// True if `s` parses to a non-routable or otherwise un-queryable IP. Covers
+/// RFC1918 private, loopback, link-local, CGN, broadcast, unspecified,
+/// multicast, IPv6 ULA — **plus** every documentation/reserved range in
+/// [`is_documentation_or_reserved`] (RFC5737 TEST-NETs, RFC2544 benchmarking,
+/// IETF protocol, this-host, reserved/future, IPv6 documentation). No external
+/// OSINT source can resolve any of these, so the engine must never pivot on
+/// them.
 pub fn is_non_routable_ip(s: &str) -> bool {
     let Ok(addr) = s.parse::<IpAddr>() else {
         return false;
