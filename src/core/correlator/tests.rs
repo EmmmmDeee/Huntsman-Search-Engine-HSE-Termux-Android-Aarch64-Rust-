@@ -2217,6 +2217,35 @@ fn au048_links_accounts_sharing_a_public_key() {
         super::rules::rule_au_048_shared_public_key(&[pw], "scan", 0).is_empty(),
         "AU-048 only fires on key-tagged credentials"
     );
+
+    // ONE account whose key evidence carries both its login and its email is
+    // two identifier strings but a single controller — it must NOT fire a
+    // Critical "controls 2 accounts". The canonical-handle fold collapses
+    // "alice" and "alice@x.com" to one handle.
+    let mut same_acct = Entity::new(EntityKind::Credential, "ssh:1acct2attrs", 0.85, "scan");
+    same_acct.tag("ssh-key");
+    same_acct.add_evidence(
+        Evidence::new("github_user", "SSH key published by @alice")
+            .with_attr("github_login", "alice")
+            .with_attr("email", "alice@x.com"),
+    );
+    assert!(
+        super::rules::rule_au_048_shared_public_key(&[same_acct], "scan", 0).is_empty(),
+        "login + email of ONE account must not count as two accounts"
+    );
+
+    // A genuine cross-identifier link (a login and a DIFFERENT person-handle
+    // email sharing one key) still fires.
+    let mut cross = Entity::new(EntityKind::Credential, "ssh:2realaccts", 0.85, "scan");
+    cross.tag("pgp-key");
+    cross.add_evidence(
+        Evidence::new("github_user", "key published by @alice").with_attr("github_login", "alice"),
+    );
+    cross.add_evidence(
+        Evidence::new("pgp", "key bound to bob@x.com").with_attr("email", "bob@x.com"),
+    );
+    let hits = super::rules::rule_au_048_shared_public_key(&[cross], "scan", 0);
+    assert_eq!(hits.len(), 1, "distinct handles sharing a key must link");
 }
 
 // ─── Associates / household family (AU-049 … AU-051) ─────────────────────────

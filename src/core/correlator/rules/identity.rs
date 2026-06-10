@@ -237,6 +237,22 @@ pub(in crate::core::correlator) fn rule_au_048_shared_public_key(
         if accounts.len() < 2 {
             continue;
         }
+        // Distinct CONTROLLER handles, not just distinct identifier spellings:
+        // the attrs mix identifier types (login / username / email), so a
+        // single account whose key evidence carries both its login and its
+        // email ("alice" + "alice@x.com") is two strings but ONE account —
+        // firing a Critical "controls 2 accounts" on that is a false positive.
+        // Fold each identifier to its canonical handle (email local-part,
+        // separator-insensitive, same comparison AU-034 uses) and require two
+        // to actually differ. Genuinely distinct handles sharing a key
+        // ("ghost91" + "jsmith_work", or "@alice" + "bob@x.com") still fire.
+        let handles: BTreeSet<String> = accounts
+            .iter()
+            .map(|a| canonical_handle(a.split('@').next().unwrap_or(a)))
+            .collect();
+        if handles.len() < 2 {
+            continue;
+        }
         let mut uids = vec![key.uid.clone()];
         for e in entities
             .iter()
