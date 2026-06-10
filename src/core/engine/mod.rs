@@ -40,7 +40,9 @@ pub use ledger::DispatchLog;
 #[cfg(test)]
 use dispatch::{dispatch_key, log_module_dispatch, module_skip_reason, run_module_guarded};
 use enrich::{enrich_geospatial, scan_entity_for_keys, seed_anchor_entity};
-use expansion::{cmp_expansion_candidates, correlation_key, visit_key};
+use expansion::{
+    apply_roi_cutoff, budget_check, cmp_expansion_candidates, correlation_key, visit_key,
+};
 use timeout::resolve_timeout;
 // Used only by the dispatch-related tests retained in this file.
 #[cfg(test)]
@@ -1028,47 +1030,6 @@ fn hot_inject_keys(keys: &mut HashMap<String, String>) {
             keys.insert(svc.env_var.to_string(), key);
         }
     }
-}
-
-/// ROI top-K + knee cutoff over a weight-sorted candidate round, releasing the
-/// visited keys of everything it cuts.
-///
-/// The release is the load-bearing half: `visited` means "dispatched (or still
-/// queued)", but a candidate cut here is *neither* — it was queued, then
-/// dropped before any dispatch. Leaving its key in `visited` excluded the same
-/// lead as `already_dispatched_this_scan` in every later round, so a lead whose
-/// weight rises as corroboration accrues could never compete again — silently
-/// lost for the rest of the scan. Releasing the key lets it re-enter a later
-/// round's ranking on its new weight. Halting is unaffected: rounds are capped
-/// by `depth`, each round dispatches at most the cutoff, and a re-queued
-/// candidate either dispatches (entering `visited` for good) or is cut again.
-fn apply_roi_cutoff(
-    next: &mut Vec<(Target, f64, String)>,
-    visited: &mut HashSet<(TargetKind, String)>,
-    max_concurrent: usize,
-) {
-    let weights: Vec<f64> = next.iter().map(|(_, w, _)| *w).collect();
-    let keep = crate::core::roi::effective_cutoff(&weights, max_concurrent);
-    if next.len() > keep {
-        for (t, _, _) in &next[keep..] {
-            visited.remove(&visit_key(t));
-        }
-        next.truncate(keep);
-    }
-}
-
-fn budget_check(opts: &ScanOptions, started: Instant, current_count: usize) -> Option<StopReason> {
-    if let Some(max) = opts.max_entities
-        && current_count >= max
-    {
-        return Some(StopReason::MaxEntities(max));
-    }
-    if let Some(max_secs) = opts.max_wall_time_secs
-        && started.elapsed() >= Duration::from_secs(max_secs)
-    {
-        return Some(StopReason::MaxWallTime(max_secs));
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------

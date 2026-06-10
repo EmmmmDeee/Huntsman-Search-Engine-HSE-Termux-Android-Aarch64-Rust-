@@ -3,8 +3,13 @@
 //! order over expansion candidates. No engine state — split out so the loop reads
 //! as control flow while the key/ordering policy lives in one place.
 
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
+
 use crate::core::entity::normalise;
-use crate::core::scan::{Target, TargetKind};
+use crate::core::scan::{ScanOptions, Target, TargetKind};
+
+use super::StopReason;
 
 /// Stable dedup key for a correlation: rule id + its entity uids (sorted), joined
 /// with control characters that can't appear in either, so two correlations are
@@ -44,4 +49,51 @@ pub(super) fn cmp_expansion_candidates(
     by_weight
         .then_with(|| a.0.kind.canonical_str().cmp(b.0.kind.canonical_str()))
         .then_with(|| a.0.value.cmp(&b.0.value))
+}
+
+/// ROI top-K + knee cutoff over a weight-sorted candidate round, releasing the
+/// visited keys of everything it cuts.
+///
+/// The release is the load-bearing half: `visited` means "dispatched (or still
+/// queued)", but a candidate cut here is *neither* — it was queued, then
+/// dropped before any dispatch. Leaving its key in `visited` excluded the same
+/// lead as `already_dispatched_this_scan` in every later round, so a lead whose
+/// weight rises as corroboration accrues could never compete again — silently
+/// lost for the rest of the scan. Releasing the key lets it re-enter a later
+/// round's ranking on its new weight. Halting is unaffected: rounds are capped
+/// by `depth`, each round dispatches at most the cutoff, and a re-queued
+/// candidate either dispatches (entering `visited` for good) or is cut again.
+pub(super) fn apply_roi_cutoff(
+    next: &mut Vec<(Target, f64, String)>,
+    visited: &mut HashSet<(TargetKind, String)>,
+    max_concurrent: usize,
+) {
+    let weights: Vec<f64> = next.iter().map(|(_, w, _)| *w).collect();
+    let keep = crate::core::roi::effective_cutoff(&weights, max_concurrent);
+    if next.len() > keep {
+        for (t, _, _) in &next[keep..] {
+            visited.remove(&visit_key(t));
+        }
+        next.truncate(keep);
+    }
+}
+
+/// Stop the expansion when an entity- or wall-time budget is hit. Pure over
+/// `ScanOptions` + the round's start instant and current entity count.
+pub(super) fn budget_check(
+    opts: &ScanOptions,
+    started: Instant,
+    current_count: usize,
+) -> Option<StopReason> {
+    if let Some(max) = opts.max_entities
+        && current_count >= max
+    {
+        return Some(StopReason::MaxEntities(max));
+    }
+    if let Some(max_secs) = opts.max_wall_time_secs
+        && started.elapsed() >= Duration::from_secs(max_secs)
+    {
+        return Some(StopReason::MaxWallTime(max_secs));
+    }
+    None
 }
