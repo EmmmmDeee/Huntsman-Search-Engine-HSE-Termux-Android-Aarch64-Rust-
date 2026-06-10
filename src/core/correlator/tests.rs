@@ -2065,6 +2065,75 @@ fn au_054_locates_pii_corroboration_scaled_never_high() {
 }
 
 #[test]
+fn au_055_flags_owned_primary_accounts_excluding_brokers() {
+    use super::rules::rule_au_055_primary_source_accounts;
+
+    // A single confirmed primary-source profile fires (AU-038 needs ≥2 platforms,
+    // so a lone owned account was previously invisible) — High, outranking the
+    // Low/Medium broker findings of AU-054.
+    let single = vec![mk_tagged(
+        EntityKind::Url,
+        "https://github.com/jdoe",
+        "github_user",
+        &["public-profile"],
+    )];
+    let out = rule_au_055_primary_source_accounts(&single, "scan", 0);
+    assert_eq!(out.len(), 1, "one grouped finding");
+    assert_eq!(out[0].rule_id, "AU-055");
+    assert_eq!(out[0].severity, super::Severity::High);
+    assert!(out[0].description.contains("github.com"));
+    assert!(out[0].description.contains("primary source"));
+    assert_eq!(out[0].entity_uids.len(), 1);
+
+    // ≥3 distinct platforms → Critical.
+    let many = vec![
+        mk_tagged(
+            EntityKind::Url,
+            "https://github.com/jdoe",
+            "github_user",
+            &["public-profile"],
+        ),
+        mk_tagged(
+            EntityKind::Url,
+            "https://twitter.com/jdoe",
+            "search_engines",
+            &["social-profile"],
+        ),
+        mk_tagged(
+            EntityKind::Url,
+            "https://jdoe.dev/",
+            "web_crawler",
+            &["personal-site"],
+        ),
+    ];
+    let out = rule_au_055_primary_source_accounts(&many, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].severity, super::Severity::Critical);
+    assert_eq!(out[0].entity_uids.len(), 3);
+
+    // A broker listing tagged as a profile is NOT an owned account — excluded.
+    let broker = vec![mk_tagged(
+        EntityKind::Url,
+        "https://www.spokeo.com/John-Doe",
+        "search_engines",
+        &["social-profile"],
+    )];
+    assert!(
+        rule_au_055_primary_source_accounts(&broker, "scan", 0).is_empty(),
+        "broker host must not count as a subject-controlled account"
+    );
+
+    // No owned-account URL → no finding.
+    let none = vec![mk_tagged(
+        EntityKind::Url,
+        "https://github.com/jdoe",
+        "github_user",
+        &[],
+    )];
+    assert!(rule_au_055_primary_source_accounts(&none, "scan", 0).is_empty());
+}
+
+#[test]
 fn au_043_fires_on_paste_exposure() {
     let ents = vec![
         mk_tagged(

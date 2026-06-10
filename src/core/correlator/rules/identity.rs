@@ -863,3 +863,89 @@ pub(in crate::core::correlator) fn rule_au_054_data_broker_exposure(
         rank: 0.0,
     }]
 }
+
+/// AU-055 — Subject's primary-source accounts located.
+///
+/// The affirmative primary-source finding, and the counterweight to AU-054:
+/// the accounts the subject actually CONTROLS are first-class, high-credibility
+/// intelligence — far stronger than any second-hand broker listing. A `Url`
+/// directly confirmed as the subject's own account/profile (`social-profile`
+/// from a direct platform probe, `confirmed-profile` from engine-corroborated
+/// search, `public-profile` from a code/forum account API, or `personal-site`)
+/// is a primary source.
+///
+/// Unlike AU-038 (which only fires on ≥2 *social* platforms), this fires from a
+/// SINGLE confirmed account — one verified primary source is credible on its
+/// own — and spans code hosts, forums and personal sites too. Crucially it
+/// EXCLUDES broker hosts: a `social-profile`-tagged URL on a people-search site
+/// is the broker's listing, not the subject's account, and belongs to AU-054
+/// (low-credibility), never here.
+///
+/// Severity puts primary sources above brokers by construction: High for one or
+/// two confirmed accounts, Critical for a confirmed footprint across ≥3 distinct
+/// platforms — always outranking AU-054's Low/Medium broker findings.
+pub(in crate::core::correlator) fn rule_au_055_primary_source_accounts(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use crate::core::data_broker::broker_for_host;
+    use std::collections::BTreeSet;
+
+    const OWNED_ACCOUNT_TAGS: &[&str] = &[
+        "social-profile",
+        "confirmed-profile",
+        "public-profile",
+        "personal-site",
+    ];
+
+    // Distinct platform hosts (www-stripped) of confirmed owned-account URLs,
+    // and the backing uids. Broker hosts are excluded — a broker listing is not
+    // an account the subject controls.
+    let mut platforms: BTreeSet<String> = BTreeSet::new();
+    let mut uids: Vec<String> = Vec::new();
+    for e in entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Url && OWNED_ACCOUNT_TAGS.iter().any(|t| e.has_tag(t)))
+    {
+        let Some(host) = url::Url::parse(&e.value).ok().and_then(|u| {
+            u.host_str()
+                .map(|h| h.trim_start_matches("www.").to_lowercase())
+        }) else {
+            continue;
+        };
+        if broker_for_host(&host).is_some() {
+            continue; // a broker's listing page, not the subject's account
+        }
+        platforms.insert(host);
+        uids.push(e.uid.clone());
+    }
+    if platforms.is_empty() {
+        return Vec::new();
+    }
+    uids.sort_unstable();
+    uids.dedup();
+    let hosts: Vec<&str> = platforms.iter().map(String::as_str).collect();
+
+    let severity = if hosts.len() >= 3 {
+        Severity::Critical
+    } else {
+        Severity::High
+    };
+
+    vec![Correlation {
+        rule_id: "AU-055".into(),
+        rule_name: "Primary-source accounts located".into(),
+        severity,
+        description: format!(
+            "Subject's own confirmed account(s)/profile(s) located across {} platform(s): {} \
+             — primary sources the subject controls (direct probe / engine-corroborated)",
+            hosts.len(),
+            hosts.join(", ")
+        ),
+        entity_uids: uids,
+        scan_id: scan_id.into(),
+        ts,
+        rank: 0.0,
+    }]
+}
