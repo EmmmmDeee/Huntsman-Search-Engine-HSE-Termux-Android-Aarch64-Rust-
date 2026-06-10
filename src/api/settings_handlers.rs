@@ -329,7 +329,11 @@ pub async fn keys_pool_rotate(
 /// Mask a secret to a non-reversible hint: first 4 + last 4 chars (char-safe).
 fn mask_secret(value: &str) -> String {
     let chars: Vec<char> = value.chars().collect();
-    if chars.len() <= 8 {
+    // Only reveal a 4+4 head/tail hint for secrets long enough that 8 exposed
+    // characters are a small fraction. Below 16, fully mask — a 9-12 char secret
+    // would otherwise leak almost all of itself (e.g. 8 of 9). The hint is only
+    // an operator recognition aid, never enough to reconstruct the value.
+    if chars.len() < 16 {
         return "•".repeat(chars.len().max(1));
     }
     let head: String = chars.iter().take(4).collect();

@@ -494,8 +494,8 @@ impl Store {
         // (see merge_and_persist_entity).
         let orphans: Vec<(i64, String, String)> = {
             let mut stmt = tx.prepare(
-                "SELECT rowid, value, kind FROM entities
-                 WHERE uid NOT IN (SELECT DISTINCT entity_uid FROM entity_observations)",
+                "SELECT rowid, value, kind FROM entities e
+                 WHERE NOT EXISTS (SELECT 1 FROM entity_observations o WHERE o.entity_uid = e.uid)",
             )?;
             let rows = stmt.query_map([], |r| {
                 Ok((
@@ -515,7 +515,7 @@ impl Store {
         }
         tx.execute(
             "DELETE FROM entities
-             WHERE uid NOT IN (SELECT DISTINCT entity_uid FROM entity_observations)",
+             WHERE NOT EXISTS (SELECT 1 FROM entity_observations o WHERE o.entity_uid = entities.uid)",
             [],
         )?;
         tx.commit()?;
