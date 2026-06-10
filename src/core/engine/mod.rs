@@ -38,7 +38,10 @@ pub use ledger::DispatchLog;
 // The dispatch loops now live in `dispatch`; these items are referenced only by
 // the tests that stayed in this file, so the bridge is test-only.
 #[cfg(test)]
-use dispatch::{dispatch_key, log_module_dispatch, module_skip_reason, run_module_guarded};
+use dispatch::{
+    dispatch_key, log_module_dispatch, module_skip_reason, run_module_guarded,
+    target_distinct_sources,
+};
 use enrich::{enrich_geospatial, scan_entity_for_keys, seed_anchor_entity};
 use expansion::{
     apply_roi_cutoff, budget_check, cmp_expansion_candidates, correlation_key, visit_key,

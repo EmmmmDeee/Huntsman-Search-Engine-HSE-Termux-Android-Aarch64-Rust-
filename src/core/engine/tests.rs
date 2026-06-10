@@ -632,6 +632,40 @@ fn wigle_finaliser_gated_on_uncorroborated_coordinate() {
 }
 
 #[test]
+fn target_distinct_sources_excludes_geo_normalize_enrichment() {
+    // The WiGLE finaliser gate keys on this count. A Coordinates entity always
+    // receives a `geo_normalize` evidence row from the enrichment pass, but that
+    // is deterministic self-enrichment, NOT an independent geo source — so a
+    // coordinate produced by ONE real module must count as 1, not 2. Counting
+    // raw evidence_sources would credit it as 2 and fire WiGLE on an
+    // uncorroborated coordinate, defeating the gate.
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use std::collections::HashMap;
+
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.8, "s");
+    coord.add_evidence(Evidence::new("ip_geo", "Geolocation for 1.2.3.4"));
+    coord.add_evidence(Evidence::new("geo_normalize", "Geospatial enrichment"));
+    let mut map: HashMap<String, Entity> = HashMap::new();
+    map.insert(coord.uid.clone(), coord.clone());
+
+    let target = Target::new(TargetKind::Coordinates, "-27.470000,153.020000");
+    assert_eq!(
+        target_distinct_sources(&map, &target),
+        1,
+        "one real geo source + geo_normalize must count as 1, not 2"
+    );
+
+    // A genuine second geo source lifts it to 2 → WiGLE may fire.
+    let e = map.get_mut(&coord.uid).unwrap();
+    e.add_evidence(Evidence::new("geocode", "reverse geocode"));
+    assert_eq!(target_distinct_sources(&map, &target), 2);
+
+    // An absent target is 0.
+    let absent = Target::new(TargetKind::Coordinates, "10.0,20.0");
+    assert_eq!(target_distinct_sources(&map, &absent), 0);
+}
+
+#[test]
 fn wigle_runs_on_seed_coordinate_and_on_any_bssid() {
     let m = wigle();
     let opts = ScanOptions::default();

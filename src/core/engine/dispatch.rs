@@ -87,10 +87,18 @@ pub(super) struct DispatchOutcome {
     pub(super) result: TimeoutResult,
 }
 
-/// Distinct corroborating evidence-source count for the entity a `target`
+/// Distinct *corroborating* evidence-source count for the entity a `target`
 /// resolves to (0 if it isn't in the working set yet). Drives the high-value-API
 /// gate: a discovered entity must reach real cross-correlation, not just a bumped
 /// corroboration counter, before the heaviest paid modules fire on it.
+///
+/// Uses [`Entity::corroborating_sources`], NOT `evidence_sources`: the
+/// deterministic `geo_normalize` enrichment pass writes a source to every
+/// `Coordinates`/`Address` entity, so counting raw evidence sources would credit
+/// a one-real-source coordinate as two — letting the WiGLE finaliser gate fire on
+/// an uncorroborated coordinate (the very thing it exists to prevent). For the
+/// oathnet gate's Email/Person/Domain targets this is a no-op (they never carry
+/// an enrichment source), so the count is unchanged there.
 pub(super) fn target_distinct_sources(
     entity_map: &HashMap<String, Entity>,
     target: &Target,
@@ -100,7 +108,7 @@ pub(super) fn target_distinct_sources(
     let uid = crate::core::entity::derive_uid(&entity_kind, &normalised);
     entity_map
         .get(&uid)
-        .map_or(0, |e| e.evidence_sources().len())
+        .map_or(0, |e| e.corroborating_sources().len())
 }
 
 pub(super) fn module_skip_reason(
