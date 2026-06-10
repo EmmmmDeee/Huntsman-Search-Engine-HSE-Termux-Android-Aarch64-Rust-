@@ -825,6 +825,44 @@ fn username_seed_emits_profile_urls_not_bare_external_domains() {
 }
 
 #[test]
+fn people_search_name_extraction_requires_on_target_relation() {
+    // Regression from a live "Haigen Bamford" scan: a PeekYou results page for
+    // an UNRELATED index entry (`peekyou.com/_bochary`) fabricated a Person
+    // "bochary". The people-search path only encodes a name worth trusting when
+    // it's the SUBJECT's — require an overlap with the target's terms.
+    let target = Target::new(TargetKind::FullName, "Haigen Bamford");
+    let mk = |url: &str| SearchResult {
+        url: url.to_string(),
+        title: "profile".to_string(),
+        snippet: "people search".to_string(),
+        engine: "yahoo",
+        query: "Haigen Bamford".to_string(),
+    };
+    let res = build_entities(
+        &target,
+        "s",
+        &[
+            mk("https://www.peekyou.com/_bochary"),
+            mk("https://www.peekyou.com/haigen_bamford"),
+        ],
+    );
+    let persons: Vec<&str> = res
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        !persons.iter().any(|p| p.to_lowercase().contains("bochary")),
+        "an unrelated people-search index entry must not become a Person: {persons:?}"
+    );
+    assert!(
+        persons.iter().any(|p| p.to_lowercase().contains("haigen")),
+        "the on-target name IS extracted: {persons:?}"
+    );
+}
+
+#[test]
 fn captcha_page_detection() {
     assert!(is_captcha_page(
         "<html><body>captcha-delivery.com script</body></html>"
@@ -861,6 +899,26 @@ fn address_extraction_us_state() {
     let addrs = extract_addresses_from_text(text);
     assert!(!addrs.is_empty());
     assert_eq!(addrs[0], "Houston, Texas");
+}
+
+#[test]
+fn us_state_address_never_gets_an_au_postcode_appended() {
+    // Regression from a live "Haigen Bamford" name-scan: a US "City, State"
+    // grabbed a trailing 4-digit YEAR as if it were an AU postcode, surfacing
+    // "Ames, Iowa 2011" at high confidence. The AU-postcode pass must only
+    // attach to AU-state addresses.
+    let addrs = extract_addresses_from_text("relocated to Ames, Iowa 2011 for work");
+    assert!(
+        !addrs.iter().any(|a| a.contains("2011")),
+        "no AU postcode (here a year) on a US-state address: {addrs:?}"
+    );
+    assert!(addrs.iter().any(|a| a == "Ames, Iowa"));
+    // The AU case still attaches its genuine postcode.
+    let au = extract_addresses_from_text("based in Nundah, Queensland 4012 now");
+    assert!(
+        au.iter().any(|a| a.contains("4012")),
+        "AU postcode kept: {au:?}"
+    );
 }
 
 #[test]

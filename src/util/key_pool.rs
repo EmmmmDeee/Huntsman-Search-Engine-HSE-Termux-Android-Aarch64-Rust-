@@ -200,6 +200,17 @@ impl KeyPool {
     }
 
     pub fn add(&self, service: &str, key: KeyEntry) -> bool {
+        // The rotation pool only holds keys the cascade can REUSE — recognised
+        // keyed providers (see `service_defs::is_poolable_service`). Reject
+        // everything else (the `generic_hex` catch-all, `crypto_*` wallet tags,
+        // `jwt_token`, `<svc>_login` pseudo-services, foreign consumer keys) at
+        // this single chokepoint, so NO ingest path — harvest in search_engines/
+        // web_crawler/key_harvest, import, or validate — can bloat it. A live
+        // name-scan otherwise pooled 12 499 `generic_hex` blobs (6 MB) because
+        // only one of the harvest paths was gated.
+        if !crate::util::service_defs::is_poolable_service(service) {
+            return false;
+        }
         let mut data = self.data.lock();
         let entries = data.services.entry(service.to_lowercase()).or_default();
         if entries.iter().any(|e| e.value == key.value) {
@@ -892,10 +903,10 @@ mod tests {
         let mut premium = KeyEntry::new("premium-key");
         premium.tier = KeyTier::Premium;
         premium.status = KeyStatus::Active;
-        pool.add("test_svc", basic);
-        pool.add("test_svc", premium);
+        pool.add("shodan", basic);
+        pool.add("shodan", premium);
 
-        let k = pool.next_key("test_svc").unwrap();
+        let k = pool.next_key("shodan").unwrap();
         assert_eq!(k, "premium-key", "should prefer higher-tier key");
     }
 
@@ -908,21 +919,39 @@ mod tests {
         let mut bad = KeyEntry::new("bad-key");
         bad.status = KeyStatus::Active;
         bad.error_count = 50;
-        pool.add("test_svc", good);
-        pool.add("test_svc", bad);
+        pool.add("shodan", good);
+        pool.add("shodan", bad);
 
-        let k = pool.next_key("test_svc").unwrap();
+        let k = pool.next_key("shodan").unwrap();
         assert_eq!(k, "good-key", "should prefer key with fewer errors");
+    }
+
+    #[test]
+    fn add_rejects_non_poolable_services() {
+        // The pool only holds reusable provider keys; the harvest catch-alls
+        // (generic_hex, crypto_*, jwt_token, <svc>_login) must never enter it,
+        // regardless of which ingest path calls add() — this is the chokepoint
+        // that stopped a 6 MB generic_hex pool.
+        let pool = KeyPool::new();
+        assert!(
+            pool.add("shodan", KeyEntry::new("real")),
+            "provider key pools"
+        );
+        assert!(!pool.add("generic_hex", KeyEntry::new("deadbeefdeadbeef")));
+        assert!(!pool.add("crypto_sol", KeyEntry::new("So11111111111111")));
+        assert!(!pool.add("shodan_login", KeyEntry::new("user:pass")));
+        assert_eq!(pool.service_count("generic_hex"), 0);
+        assert_eq!(pool.service_count("shodan"), 1);
     }
 
     #[test]
     fn record_error_increments() {
         let pool = KeyPool::new();
-        pool.add("svc", KeyEntry::new("k1"));
-        pool.record_error("svc", "k1");
-        pool.record_error("svc", "k1");
+        pool.add("shodan", KeyEntry::new("k1"));
+        pool.record_error("shodan", "k1");
+        pool.record_error("shodan", "k1");
         let snap = pool.snapshot();
-        assert_eq!(snap.services["svc"][0].error_count, 2);
+        assert_eq!(snap.services["shodan"][0].error_count, 2);
     }
 
     #[test]
@@ -943,13 +972,13 @@ mod tests {
         let mut bad = KeyEntry::new("bad");
         bad.use_count = 100;
         bad.error_count = 90;
-        pool.add("svc", good);
-        pool.add("svc", bad);
+        pool.add("shodan", good);
+        pool.add("shodan", bad);
 
         let pruned = pool.prune_degraded(0.50, 10);
         assert_eq!(pruned, 1);
-        assert_eq!(pool.service_count("svc"), 1);
-        assert!(pool.next_key("svc").unwrap() == "good");
+        assert_eq!(pool.service_count("shodan"), 1);
+        assert!(pool.next_key("shodan").unwrap() == "good");
     }
 
     #[test]
@@ -958,7 +987,7 @@ mod tests {
         let mut new_key = KeyEntry::new("new");
         new_key.use_count = 2;
         new_key.error_count = 2;
-        pool.add("svc", new_key);
+        pool.add("shodan", new_key);
 
         let pruned = pool.prune_degraded(0.50, 10);
         assert_eq!(pruned, 0, "keys below min_uses should be spared");
