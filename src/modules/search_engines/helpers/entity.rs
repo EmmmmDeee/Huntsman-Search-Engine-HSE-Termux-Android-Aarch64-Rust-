@@ -945,3 +945,54 @@ pub(in crate::modules::search_engines) fn extract_phones_from_text(text: &str) -
     }
     phones
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_emails_basic_and_trailing_punctuation() {
+        assert_eq!(
+            extract_emails_from_text("reach jane.doe@example.com today"),
+            vec!["jane.doe@example.com"]
+        );
+        // A trailing sentence dot is not part of the domain.
+        assert_eq!(
+            extract_emails_from_text("mail: a.b@c.org."),
+            vec!["a.b@c.org"]
+        );
+        // Two distinct mailboxes in one blob.
+        assert_eq!(
+            extract_emails_from_text("a@b.com and c@d.net"),
+            vec!["a@b.com", "c@d.net"]
+        );
+    }
+
+    #[test]
+    fn extract_emails_rejects_url_and_asset_false_positives() {
+        // The documented viewtopic.php glue bug: a script extension in the local
+        // part means the @ was glued to a CMS URL fragment, not a mailbox.
+        assert!(extract_emails_from_text("viewtopic.phprose.cl@onet.eu").is_empty());
+        // Retina / image asset names that look like addresses.
+        assert!(extract_emails_from_text("logo@2x.png").is_empty());
+        assert!(extract_emails_from_text("sprite@example.svg").is_empty());
+        // No TLD dot → not an email.
+        assert!(extract_emails_from_text("user@localhost").is_empty());
+    }
+
+    #[test]
+    fn extract_phones_only_international_and_within_e164_length() {
+        // AU mobile and US number with separators are normalised to digits + '+'.
+        assert_eq!(
+            extract_phones_from_text("call +61 400 000 000 now"),
+            vec!["+61400000000"]
+        );
+        assert_eq!(
+            extract_phones_from_text("+1 (202) 555-0100"),
+            vec!["+12025550100"]
+        );
+        // Too few digits (<7) and non-'+' national forms are not matched.
+        assert!(extract_phones_from_text("+12345").is_empty());
+        assert!(extract_phones_from_text("0400 000 000").is_empty());
+    }
+}
