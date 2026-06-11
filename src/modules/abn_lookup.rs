@@ -236,6 +236,35 @@ async fn fetch_jsonp(url: &str) -> Result<Option<Value>> {
     Ok(parse_jsonp_body(&body))
 }
 
+/// Build the AU business-address entity from the registry's state + postcode.
+/// **Pure**. The Australian Business Register is authoritative, so the address
+/// carries `geoint` + `au-relevant` + the canonical `au-state:` tag (resolved
+/// from the registry's two/three-letter state code) so it feeds the AU-056 /
+/// AU-060 correlators directly — no geocode round-trip. `state` must be
+/// non-empty (the caller's gate).
+fn au_business_address(
+    state: &str,
+    postcode: &str,
+    confidence: f64,
+    evidence: Evidence,
+    scan_id: &str,
+) -> Entity {
+    let addr = if postcode.is_empty() {
+        format!("{state}, Australia")
+    } else {
+        format!("{postcode}, {state}, Australia")
+    };
+    let mut e = Entity::new(EntityKind::Address, &addr, confidence, scan_id);
+    e.tag("abr");
+    e.tag(crate::core::tags::GEOINT);
+    e.tag(crate::core::tags::AU_RELEVANT);
+    if let Some(st) = crate::core::tags::au_state_tag(&state.to_ascii_uppercase()) {
+        e.tag(st);
+    }
+    e.add_evidence(evidence);
+    e
+}
+
 fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleResult) {
     if data
         .get("Message")
@@ -292,18 +321,13 @@ fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleResult) {
     }
 
     if !state.is_empty() {
-        let addr = if postcode.is_empty() {
-            format!("{state}, Australia")
-        } else {
-            format!("{postcode}, {state}, Australia")
-        };
-        let mut addr_entity = Entity::new(EntityKind::Address, &addr, 0.75, scan_id);
-        addr_entity.tag("abr");
-        addr_entity.add_evidence(Evidence::new(
-            SRC,
-            format!("Business address for {entity_name}"),
+        result.push(au_business_address(
+            &state,
+            &postcode,
+            0.75,
+            Evidence::new(SRC, format!("Business address for {entity_name}")),
+            scan_id,
         ));
-        result.push(addr_entity);
     }
 
     if let Some(names) = data.get("BusinessName").and_then(|v| v.as_array()) {
@@ -389,15 +413,13 @@ fn parse_name_results(data: &Value, query: &str, scan_id: &str, result: &mut Mod
         result.push(abn_entity);
 
         if !state.is_empty() {
-            let addr = if postcode.is_empty() {
-                format!("{state}, Australia")
-            } else {
-                format!("{postcode}, {state}, Australia")
-            };
-            let mut addr_entity = Entity::new(EntityKind::Address, &addr, 0.65, scan_id);
-            addr_entity.tag("abr");
-            addr_entity.add_evidence(Evidence::new(SRC, format!("Location for {name}")));
-            result.push(addr_entity);
+            result.push(au_business_address(
+                &state,
+                &postcode,
+                0.65,
+                Evidence::new(SRC, format!("Location for {name}")),
+                scan_id,
+            ));
         }
     }
 }
@@ -463,6 +485,11 @@ mod tests {
             .find(|e| e.kind == EntityKind::Address)
             .unwrap();
         assert!(addr.value.contains("VIC"));
+        // ABR is authoritative: the address feeds the AU correlator with the
+        // canonical geoint / au-relevant / au-state tags (no geocode needed).
+        assert!(addr.has_tag("geoint"));
+        assert!(addr.has_tag("au-relevant"));
+        assert!(addr.has_tag("au-state:VIC"));
     }
 
     #[test]
