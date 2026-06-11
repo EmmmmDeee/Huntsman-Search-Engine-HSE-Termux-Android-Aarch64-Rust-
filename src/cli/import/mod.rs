@@ -353,8 +353,13 @@ fn create_geolocation_entities(
     {
         let coords = format!("{la:.4},{lo:.4}");
         let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.70, sid);
-        ce.tag("geoint");
+        ce.tag(crate::core::tags::GEOINT);
         ce.tag("import");
+        if crate::util::geo::is_in_australia(la, lo) {
+            for t in crate::util::geo::au_coord_tags(la, lo) {
+                ce.tag(t);
+            }
+        }
         ce.add_evidence(Evidence::new(
             "import:oathnet",
             format!(

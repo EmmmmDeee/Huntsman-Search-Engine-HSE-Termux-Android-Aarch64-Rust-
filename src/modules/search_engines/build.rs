@@ -429,7 +429,7 @@ pub(super) fn build_entities(
                     let corr_boost = (*corr as f64 - 1.0).max(0.0) * 0.08;
                     let geo_conf = ((conf * 0.82) + corr_boost).min(0.75);
                     let mut ce = Entity::new(EntityKind::Coordinates, &coords, geo_conf, scan_id);
-                    ce.tag("geoint");
+                    ce.tag(crate::core::tags::GEOINT);
                     ce.tag("search-geocoded");
                     ce.add_evidence(
                         Evidence::new(

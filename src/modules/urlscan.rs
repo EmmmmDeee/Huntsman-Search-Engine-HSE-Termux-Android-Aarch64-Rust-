@@ -218,7 +218,7 @@ impl Module for UrlScan {
                 &ctx.scan_id,
             );
             ae.tag("urlscan");
-            ae.tag("geoint");
+            ae.tag(crate::core::tags::GEOINT);
             ae.add_evidence(Evidence::new(
                 SRC,
                 format!("Hosting country from URLScan.io scans of {}", &target.value),

@@ -111,7 +111,7 @@ impl Module for SocialLocation {
             if !trimmed.is_empty() && trimmed.len() <= 200 {
                 let confidence = platform_confidence(&host);
                 let mut e = Entity::new(EntityKind::Address, trimmed, confidence, &ctx.scan_id);
-                e.tag("geoint");
+                e.tag(crate::core::tags::GEOINT);
                 e.tag("self-reported");
                 e.tag("social-profile");
                 for tag in au_location_tags(trimmed) {

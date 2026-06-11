@@ -320,7 +320,7 @@ fn records_to_entities(resp: &GleifResp, query: &str, scan_id: &str) -> Vec<Enti
             if let Some(j) = entity.jurisdiction.as_deref() {
                 e.tag(format!("country:{j}"));
             }
-            e.tag("geoint");
+            e.tag(crate::core::tags::GEOINT);
             e.tag("registered-address");
             let mut aev = Evidence::new(SRC, format!("Registered address for {name}"))
                 .with_attr("org", &name)
