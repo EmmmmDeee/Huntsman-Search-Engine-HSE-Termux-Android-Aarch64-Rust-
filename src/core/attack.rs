@@ -228,6 +228,163 @@ pub fn techniques_for_category(cat: ModuleCategory) -> &'static [&'static str] {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MITRE ATT&CK Navigator layer export.
+//
+// The ATT&CK Navigator (mitre-attack.github.io/attack-navigator) renders a
+// "layer" JSON as a coloured technique matrix. Emitting a layer lets an operator
+// drop a scan's Reconnaissance coverage straight into the official Navigator and
+// see a heatmap of which TA0043 techniques the collection exercised — and, just
+// as usefully, which it did NOT (the gaps). The schema is the long-stable 4.x
+// layer format; the app ignores unknown fields, so this stays forward-compatible.
+// Pure data → serde_json: no I/O, no new dependency, trivially small — the right
+// shape for the Termux/web-UI target where it is downloaded over a mobile link.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// ATT&CK Navigator layer-format version emitted (stable 4.x line).
+pub const NAVIGATOR_LAYER_VERSION: &str = "4.5";
+/// Enterprise ATT&CK spec version the technique IDs are drawn from.
+pub const NAVIGATOR_ATTACK_VERSION: &str = "14";
+/// Navigator app version the layer declares compatibility with.
+pub const NAVIGATOR_APP_VERSION: &str = "4.9.1";
+/// ATT&CK domain — every technique here is enterprise Reconnaissance.
+pub const NAVIGATOR_DOMAIN: &str = "enterprise-attack";
+/// The `x-mitre-shortname` of [`TACTIC_ID`], used in each technique row.
+pub const TACTIC_SHORTNAME: &str = "reconnaissance";
+
+/// One scored technique cell in a [`NavigatorLayer`]. Field names serialise to
+/// the Navigator schema (`techniqueID`, `tactic`, `score`, `enabled`, `comment`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NavigatorTechnique {
+    /// Canonical ATT&CK ID this cell colours, e.g. `T1589.002`.
+    #[serde(rename = "techniqueID")]
+    pub technique_id: &'static str,
+    /// Tactic shortname the cell sits under — always [`TACTIC_SHORTNAME`].
+    pub tactic: &'static str,
+    /// Heat value (collection volume). `0` for an un-exercised technique.
+    pub score: u32,
+    /// Always `true` — every catalogued technique is shown.
+    pub enabled: bool,
+    /// Human technique name, surfaced as the cell's hover comment.
+    pub comment: String,
+}
+
+/// Navigator `versions` block — pins the layer/attack/app schema triple.
+#[derive(Debug, Clone, Serialize)]
+struct NavigatorVersions {
+    attack: &'static str,
+    navigator: &'static str,
+    layer: &'static str,
+}
+
+/// Navigator `gradient` block — the white→blue heat ramp and its bounds.
+#[derive(Debug, Clone, Serialize)]
+struct NavigatorGradient {
+    colors: [&'static str; 3],
+    #[serde(rename = "minValue")]
+    min_value: u32,
+    #[serde(rename = "maxValue")]
+    max_value: u32,
+}
+
+/// A MITRE ATT&CK Navigator layer over the curated Reconnaissance catalogue.
+/// Serialises to the Navigator's `.json` layer schema via [`Self::to_json`].
+#[derive(Debug, Clone, Serialize)]
+pub struct NavigatorLayer {
+    name: String,
+    versions: NavigatorVersions,
+    domain: &'static str,
+    description: String,
+    #[serde(rename = "hideDisabled")]
+    hide_disabled: bool,
+    techniques: Vec<NavigatorTechnique>,
+    gradient: NavigatorGradient,
+    sorting: u8,
+    #[serde(rename = "showTacticRowBackground")]
+    show_tactic_row_background: bool,
+    #[serde(rename = "tacticRowBackground")]
+    tactic_row_background: &'static str,
+}
+
+impl NavigatorLayer {
+    /// The layer's scored technique rows (read access for callers and tests).
+    #[must_use]
+    pub fn techniques(&self) -> &[NavigatorTechnique] {
+        &self.techniques
+    }
+
+    /// Highest technique score in the layer — the gradient ceiling.
+    #[must_use]
+    pub fn max_score(&self) -> u32 {
+        self.gradient.max_value
+    }
+
+    /// Serialise to pretty Navigator-layer JSON. This fixed-shape struct (no
+    /// non-string map keys, no fallible custom serialisers) cannot fail to
+    /// serialise in practice; an empty object is the panic-free fallback.
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string())
+    }
+}
+
+/// Build a Navigator layer covering the *entire* curated Reconnaissance
+/// catalogue ([`RECONNAISSANCE`]), scoring each technique by the supplied
+/// weights. Techniques with no weight score `0`, so one layer shows both what a
+/// scan exercised AND the gaps it did not — the coverage-and-gaps view an ATT&CK
+/// assessment wants. Weights for the same ID sum; unknown IDs are ignored. Rows
+/// follow catalogue order (sorted by ID) for stable, reviewable output.
+#[must_use]
+pub fn navigator_layer<'a>(
+    name: impl Into<String>,
+    description: impl Into<String>,
+    weights: impl IntoIterator<Item = (&'a str, u32)>,
+) -> NavigatorLayer {
+    // Scores aligned 1:1 with RECONNAISSANCE order; the catalogue is tiny and
+    // static, so a positional scan per weight is clearer than a map and just as
+    // fast in practice.
+    let mut scores = vec![0u32; RECONNAISSANCE.len()];
+    for (id, w) in weights {
+        if let Some(idx) = RECONNAISSANCE.iter().position(|t| t.id == id) {
+            scores[idx] = scores[idx].saturating_add(w);
+        }
+    }
+    // Floor the ceiling at 1 so the gradient stays valid even with no findings.
+    let max_value = scores.iter().copied().max().unwrap_or(0).max(1);
+    let techniques = RECONNAISSANCE
+        .iter()
+        .zip(scores)
+        .map(|(t, score)| NavigatorTechnique {
+            technique_id: t.id,
+            tactic: TACTIC_SHORTNAME,
+            score,
+            enabled: true,
+            comment: t.name.to_string(),
+        })
+        .collect();
+    NavigatorLayer {
+        name: name.into(),
+        versions: NavigatorVersions {
+            attack: NAVIGATOR_ATTACK_VERSION,
+            navigator: NAVIGATOR_APP_VERSION,
+            layer: NAVIGATOR_LAYER_VERSION,
+        },
+        domain: NAVIGATOR_DOMAIN,
+        description: description.into(),
+        hide_disabled: false,
+        techniques,
+        gradient: NavigatorGradient {
+            colors: ["#ffffff", "#66b1ff", "#0d4a90"],
+            min_value: 0,
+            max_value,
+        },
+        // 3 = sort technique cells descending by score in the Navigator UI.
+        sorting: 3,
+        show_tactic_row_background: true,
+        tactic_row_background: "#205b8f",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,5 +472,67 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn navigator_layer_scores_full_catalogue_and_sums_weights() {
+        let layer = navigator_layer(
+            "test",
+            "desc",
+            [
+                ("T1593.002", 5),
+                ("T1589.002", 3),
+                ("T1593.002", 2), // same id again → must sum to 7
+                ("T9999", 9),     // unknown → dropped
+            ],
+        );
+        // Every catalogue technique is present (coverage AND gaps in one layer).
+        assert_eq!(layer.techniques().len(), RECONNAISSANCE.len());
+        let score = |id: &str| {
+            layer
+                .techniques()
+                .iter()
+                .find(|t| t.technique_id == id)
+                .map(|t| t.score)
+        };
+        assert_eq!(score("T1593.002"), Some(7), "repeated-id weights must sum");
+        assert_eq!(score("T1589.002"), Some(3));
+        assert_eq!(score("T1595"), Some(0), "un-exercised technique scores 0");
+        assert!(score("T9999").is_none(), "unknown id must not appear");
+        assert_eq!(layer.max_score(), 7, "gradient ceiling = max score");
+        assert!(
+            layer
+                .techniques()
+                .iter()
+                .all(|t| t.tactic == TACTIC_SHORTNAME && t.enabled)
+        );
+    }
+
+    #[test]
+    fn navigator_layer_serialises_to_navigator_schema() {
+        let layer = navigator_layer("HSE scan", "desc", [("T1589.002", 1)]);
+        let v: serde_json::Value = serde_json::from_str(&layer.to_json()).unwrap();
+        assert_eq!(v["domain"], "enterprise-attack");
+        assert_eq!(v["versions"]["layer"], "4.5");
+        assert_eq!(v["versions"]["attack"], "14");
+        assert_eq!(v["gradient"]["minValue"], 0);
+        let techs = v["techniques"].as_array().expect("techniques array");
+        assert_eq!(techs.len(), RECONNAISSANCE.len());
+        // Navigator field names + tactic shortname on every row.
+        assert!(techs.iter().all(|t| {
+            t.get("techniqueID").is_some()
+                && t["tactic"] == "reconnaissance"
+                && t["enabled"] == true
+        }));
+    }
+
+    #[test]
+    fn navigator_layer_with_no_findings_has_valid_gradient() {
+        let layer = navigator_layer("empty", "no findings", std::iter::empty());
+        // maxValue floors at 1 so the gradient stays valid with zero hits.
+        assert_eq!(layer.max_score(), 1);
+        assert!(layer.techniques().iter().all(|t| t.score == 0));
+        // Still serialises and still covers the whole catalogue.
+        assert_eq!(layer.techniques().len(), RECONNAISSANCE.len());
     }
 }

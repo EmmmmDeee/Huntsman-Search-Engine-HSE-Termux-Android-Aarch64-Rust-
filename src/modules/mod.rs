@@ -327,9 +327,39 @@ pub fn reconnaissance_coverage<'a>(
     crate::core::attack::coverage(ids)
 }
 
+/// Per-technique *weights* for a MITRE ATT&CK Navigator coverage layer:
+/// attribute each module's output volume to every Reconnaissance technique it
+/// implements. `module_hits` is `(module_name, weight)` — typically
+/// `(evidence_source, entity_count)`. Non-module sources (`seed`,
+/// `geo_normalize`, …) and modules with no ATT&CK mapping contribute nothing.
+/// The emitted `(technique_id, weight)` pairs are summed per technique by
+/// [`crate::core::attack::navigator_layer`], turning collection volume into the
+/// heatmap intensity the Navigator renders.
+///
+/// Registry-backed for the same reason as [`reconnaissance_coverage`]: resolving
+/// a source name to its techniques needs the module registry, and `core` may not
+/// depend on `modules`. `core::attack` owns the pure layer shape; this owns the
+/// registry-backed scoring.
+#[must_use]
+pub fn reconnaissance_weights<'a>(
+    module_hits: impl IntoIterator<Item = (&'a str, u32)>,
+) -> Vec<(&'static str, u32)> {
+    use std::collections::HashMap;
+    let reg = registry();
+    let by_name: HashMap<&str, &'static [&'static str]> = reg
+        .iter()
+        .map(|m| (m.name(), m.attack_techniques()))
+        .collect();
+    module_hits
+        .into_iter()
+        .filter_map(|(name, w)| by_name.get(name).copied().map(|ids| (ids, w)))
+        .flat_map(|(ids, w)| ids.iter().map(move |id| (*id, w)))
+        .collect()
+}
+
 #[cfg(test)]
 mod registry_invariants {
-    use super::{reconnaissance_coverage, registry};
+    use super::{reconnaissance_coverage, reconnaissance_weights, registry};
     use crate::core::dependency::{ALL_TARGET_KINDS, PROBE_VALUE};
     use crate::core::scan::Target;
 
@@ -356,6 +386,36 @@ mod registry_invariants {
         assert_eq!(ids, sorted, "coverage must be sorted and deduped");
         // An all-unknown source set yields nothing.
         assert!(reconnaissance_coverage(["seed", "geo_normalize"]).is_empty());
+    }
+
+    #[test]
+    fn reconnaissance_weights_attribute_module_volume_to_techniques() {
+        // search_engines (Search → T1593.002) produced 4 entities; crtsh
+        // (DnsRecon → cert/DNS/WHOIS) produced 2; `seed` is not a module.
+        let w = reconnaissance_weights([("search_engines", 4), ("crtsh", 2), ("seed", 9)]);
+        let total = |id: &str| -> u32 { w.iter().filter(|(t, _)| *t == id).map(|(_, n)| *n).sum() };
+        assert_eq!(
+            total("T1593.002"),
+            4,
+            "search-engine technique carries its volume"
+        );
+        assert_eq!(
+            total("T1596.003"),
+            2,
+            "crt.sh certificate technique carries its volume"
+        );
+        assert!(
+            !w.iter().any(|(_, n)| *n == 9),
+            "the non-module `seed` source must contribute no weight"
+        );
+        // Feeding the weights through the pure layer builder preserves the totals.
+        let layer = crate::core::attack::navigator_layer("t", "d", w.iter().map(|(t, n)| (*t, *n)));
+        let cell = layer
+            .techniques()
+            .iter()
+            .find(|t| t.technique_id == "T1593.002")
+            .expect("search-engine technique present in layer");
+        assert_eq!(cell.score, 4);
     }
 
     /// Every registered module's `consumes()` must cover every `TargetKind`

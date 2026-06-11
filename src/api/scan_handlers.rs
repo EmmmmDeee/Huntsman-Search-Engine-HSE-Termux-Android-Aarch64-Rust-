@@ -721,6 +721,42 @@ pub async fn scan_debug_bundle(
     }
 }
 
+/// `GET /api/v1/scans/{id}/attack.json` — the scan's MITRE ATT&CK
+/// Reconnaissance (TA0043) coverage as a downloadable ATT&CK Navigator layer.
+/// Drop the file straight into the MITRE ATT&CK Navigator to see a heatmap of
+/// which techniques the collection exercised and which it missed. Byte-identical
+/// to the CLI `hse export {id} --format navigator`. The raw layer JSON is
+/// returned at the top level (NOT inside HSE's `{ok,...}` envelope) because the
+/// Navigator consumes the layer object directly.
+pub async fn scan_attack_navigator(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    match s.store.entities_for_scan(&id) {
+        Ok(entities) => {
+            let body = crate::cli::export::scan_navigator_layer(&entities, &id).to_json();
+            // Clean download name `hse-attack-<short>.json` (the layer is plain
+            // JSON; the Navigator parses by content, not extension).
+            let short: String = id.chars().take(12).collect();
+            let disposition = format!("attachment; filename=\"hse-attack-{short}.json\"");
+            let mut resp = (StatusCode::OK, body).into_response();
+            let headers = resp.headers_mut();
+            headers.insert(
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("application/json; charset=utf-8"),
+            );
+            if let Ok(v) = axum::http::HeaderValue::from_str(&disposition) {
+                headers.insert(axum::http::header::CONTENT_DISPOSITION, v);
+            }
+            resp
+        }
+        Err(e) => internal_error(&e),
+    }
+}
+
 fn download_response(
     body: String,
     content_type: &'static str,

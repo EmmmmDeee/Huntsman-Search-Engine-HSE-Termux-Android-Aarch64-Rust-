@@ -447,7 +447,8 @@ pub enum Command {
         /// Scan ID (or `latest` for the most-recent completed scan).
         #[arg(short, long)]
         scan_id: String,
-        /// Output format: json | csv | gexf | report | full. Default `json`.
+        /// Output format: json | csv | gexf | report | full | debug |
+        /// navigator (MITRE ATT&CK Navigator layer). Default `json`.
         #[arg(short, long, default_value = "json")]
         format: String,
         /// File path to write to. Omit for stdout.

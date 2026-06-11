@@ -26,9 +26,10 @@ pub(super) async fn cmd_export(scan_id: String, format: String, out: Option<Stri
         "report" => render_report(&store, &sid)?,
         "full" => render_full(&store, &sid)?,
         "debug" => render_debug_bundle(&store, &sid)?,
+        "navigator" => render_navigator(&store, &sid)?,
         other => {
             return Err(Error::Other(format!(
-                "unknown --format '{other}'. Valid: json, csv, gexf, report, full, debug"
+                "unknown --format '{other}'. Valid: json, csv, gexf, report, full, debug, navigator"
             )));
         }
     };
@@ -65,6 +66,49 @@ fn render_gexf(store: &Store, sid: &str) -> Result<String> {
     Ok(crate::core::gexf::entities_to_gexf(
         &entities, &relations, sid,
     ))
+}
+
+/// Build the MITRE ATT&CK Navigator layer for a scan from its entities. Per
+/// technique the score is the number of entities produced by the modules that
+/// implement it — collection volume becomes heatmap intensity, so the Navigator
+/// shows where a scan's Reconnaissance effort actually landed (and, via the
+/// zero-scored rows, the TA0043 gaps it never touched). Shared by the CLI
+/// `--format navigator` export and the web `/scans/{id}/attack.json` download so
+/// both emit a byte-identical layer.
+pub(crate) fn scan_navigator_layer(
+    entities: &[crate::core::entity::Entity],
+    scan_id: &str,
+) -> crate::core::attack::NavigatorLayer {
+    use std::collections::{BTreeMap, BTreeSet};
+    // Entity count per source module. An entity is counted once per distinct
+    // module that produced evidence for it — two pieces of evidence from the
+    // same module are one finding for that module, not two.
+    let mut by_module: BTreeMap<&str, u32> = BTreeMap::new();
+    for e in entities {
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for ev in &e.evidence {
+            if seen.insert(ev.source.as_str()) {
+                *by_module.entry(ev.source.as_str()).or_default() += 1;
+            }
+        }
+    }
+    let weights = crate::modules::reconnaissance_weights(by_module.iter().map(|(m, c)| (*m, *c)));
+    let short: String = scan_id.chars().take(12).collect();
+    crate::core::attack::navigator_layer(
+        format!("HSE {short} — Reconnaissance coverage"),
+        format!(
+            "MITRE ATT&CK {} ({}) techniques exercised by HSE scan {short}. \
+             Score per technique = entities produced by the modules implementing it.",
+            crate::core::attack::TACTIC_NAME,
+            crate::core::attack::TACTIC_ID,
+        ),
+        weights.iter().map(|(t, w)| (*t, *w)),
+    )
+}
+
+fn render_navigator(store: &Store, sid: &str) -> Result<String> {
+    let entities = store.entities_for_scan(sid)?;
+    Ok(scan_navigator_layer(&entities, sid).to_json())
 }
 
 /// The **full dossier** — Huntsman's standard of maximum output detail. Emits
@@ -818,6 +862,9 @@ mod tests {
             ("json", render_json),
             ("csv", render_csv),
             ("gexf", render_gexf),
+            // Navigator layer: deterministic by construction (fixed catalogue
+            // order, BTree-ordered per-module counts, stable pretty JSON).
+            ("navigator", render_navigator),
         ];
         for (name, render) in store_fmts {
             let a = render(&store, "scan-au").unwrap();
