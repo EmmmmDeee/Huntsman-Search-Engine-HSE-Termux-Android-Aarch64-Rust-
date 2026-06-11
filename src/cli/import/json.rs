@@ -83,7 +83,7 @@ pub(super) async fn parse_oathnet_json(
                         e.tag("stealer-victim");
                         e.tag("import");
                         if total_docs > 100 {
-                            e.tag("high-exposure");
+                            e.tag(crate::core::tags::HIGH_EXPOSURE);
                         }
                         e.add_evidence(
                             Evidence::new(
