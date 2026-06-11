@@ -254,10 +254,15 @@ impl Module for Censys {
         {
             let coord_str = format!("{lat:.6},{lon:.6}");
             let mut geo = Entity::new(EntityKind::Coordinates, &coord_str, 0.65, &ctx.scan_id);
-            geo.tag("geoint");
+            geo.tag(crate::core::tags::GEOINT);
             geo.tag("censys");
             if let Some(cc) = loc.country_code.as_deref() {
                 geo.tag(format!("country:{}", cc.to_uppercase()));
+            }
+            if crate::util::geo::is_in_australia(lat, lon) {
+                for t in crate::util::geo::au_coord_tags(lat, lon) {
+                    geo.tag(t);
+                }
             }
 
             let mut ev = Evidence::new(SRC, format!("Censys geolocation for {ip}"))
@@ -288,7 +293,7 @@ impl Module for Censys {
                     .unwrap_or_default();
                 let mut ae = Entity::new(EntityKind::Address, &addr, 0.60, &ctx.scan_id);
                 ae.tag("censys");
-                ae.tag("geoint");
+                ae.tag(crate::core::tags::GEOINT);
                 ae.add_evidence(Evidence::new(SRC, format!("Censys location for {ip}")));
                 result.push(ae);
             }
