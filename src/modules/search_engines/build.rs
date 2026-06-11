@@ -277,12 +277,26 @@ pub(super) fn build_entities(
             // high confidence (Probable→Verified once corroborated) and tag it,
             // distinct from a generic 0.50 page that merely contains the term.
             let confirmed = is_confirmed_profile(target, &r.url, &host);
-            let mut e = Entity::new(
-                EntityKind::Url,
-                &r.url,
-                if confirmed { 0.85 } else { 0.50 },
-                scan_id,
-            );
+            // A URL discovered while the *seed itself is a location* (an Address
+            // or Coordinates fed back by recursion — e.g. the suburb "Regents
+            // Park, QLD") matched a place term, not a person term: it is a
+            // generic suburb / real-estate-listing page, not the subject's PII.
+            // A live "Haigen Bamford" scan flooded with dozens of
+            // realestate.com.au / domain.com.au / suburb-profile pages this way.
+            // Demote these to a quarantined candidate (below the 0.50 expansion
+            // floor, excluded from confirmed correlation) so they neither inflate
+            // results nor recurse into more suburb spam — unless the URL is a
+            // confirmed profile, which is identity-bearing regardless of seed.
+            let location_seed =
+                matches!(target.kind, TargetKind::Address | TargetKind::Coordinates);
+            let base = if confirmed {
+                0.85
+            } else if location_seed {
+                0.30
+            } else {
+                0.50
+            };
+            let mut e = Entity::new(EntityKind::Url, &r.url, base, scan_id);
             // Credit cross-ENGINE agreement, like the domain branch does: a URL
             // (especially a confirmed profile) independently returned by N engines
             // is far stronger than one from a single engine. Without this the
@@ -293,6 +307,9 @@ pub(super) fn build_entities(
             e.tag("search-discovered");
             if confirmed {
                 e.tag("confirmed-profile");
+            } else if location_seed {
+                e.tag("generic-location");
+                e.tag("candidate");
             }
             e.add_evidence(build_search_evidence(r));
             result.push(e);

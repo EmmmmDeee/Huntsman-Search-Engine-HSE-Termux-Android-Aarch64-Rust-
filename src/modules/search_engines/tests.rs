@@ -1431,6 +1431,54 @@ fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
 }
 
 #[test]
+fn url_from_a_location_seed_is_quarantined_as_generic_location() {
+    // Regression from a live "Haigen Bamford" scan: recursion fed the suburb
+    // "Regents Park, QLD" back as an Address seed, so every suburb / real-estate
+    // page matched the place term and flooded the results at 0.50. A URL found
+    // while the seed is itself a location is generic location content, not the
+    // subject's PII — it must be a quarantined candidate (0.30), below the 0.50
+    // expansion floor, so it neither inflates results nor recurses further.
+    let mk = |url: &str| SearchResult {
+        url: url.to_string(),
+        title: "Regents Park QLD 4118 real estate".to_string(),
+        snippet: "houses for sale in regents park".to_string(),
+        engine: "duckduckgo",
+        query: "regents park qld".to_string(),
+    };
+    let results = vec![mk(
+        "https://www.realestate.com.au/buy/in-regents+park,+qld+4118/list-1",
+    )];
+
+    // From a location seed → quarantined candidate.
+    let loc = build_entities(
+        &Target::new(TargetKind::Address, "Regents Park, QLD"),
+        "s",
+        &results,
+    );
+    let u = loc
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Url)
+        .expect("a URL entity is still emitted");
+    assert!(
+        (u.confidence - 0.30).abs() < 1e-9,
+        "location-seed URL is 0.30"
+    );
+    assert!(u.has_tag("generic-location"));
+    assert!(u.has_tag("candidate"));
+
+    // The SAME URL from a person seed keeps the normal 0.50 (terms would have to
+    // match; here the path contains no person term, so it simply isn't emitted —
+    // assert it is never a 0.50 PROBABLE from the location seed).
+    assert!(
+        !loc.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Url && (e.confidence - 0.50).abs() < 1e-9),
+        "a location-seed URL must never reach the 0.50 person-PII tier"
+    );
+}
+
+#[test]
 fn domain_queries_include_abn() {
     let t = Target::new(TargetKind::Domain, "acme.com");
     let q = build_queries(&t);
