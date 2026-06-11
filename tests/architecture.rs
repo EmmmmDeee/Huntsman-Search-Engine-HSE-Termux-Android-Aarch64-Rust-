@@ -626,7 +626,15 @@ fn correlator_rules_source() -> String {
         .collect();
     files.sort(); // deterministic concatenation order
     for p in files {
-        out.push_str(&fs::read_to_string(&p).expect("rule file readable"));
+        let src = fs::read_to_string(&p).expect("rule file readable");
+        // Strip the in-module `#[cfg(test)] mod tests` block: these guards check
+        // PRODUCTION emission, and a unit test legitimately references other
+        // rules' `"AU-NNN"` ids (e.g. an `all_rule_ids_are_distinct` canary, or a
+        // test asserting `rule_au_049` fires while sitting after the
+        // `rule_au_051` definition). Without this, those test literals are
+        // misattributed to the last-defined rule fn — a false positive. Mirrors
+        // the `mod tests` strip in `coarse_ip_geo_providers_use_the_provider_coord_gate`.
+        out.push_str(src.split("mod tests").next().unwrap_or(&src));
         out.push('\n');
     }
     out
