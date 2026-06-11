@@ -280,7 +280,7 @@ fn records_to_entities(
             e.tag(SRC);
             e.tag("acnc");
             e.tag("country:AU");
-            e.tag("geoint");
+            e.tag(crate::core::tags::GEOINT);
             e.tag("registered-address");
             let mut aev = Evidence::new(SRC, format!("Registered address for {legal}"))
                 .with_attr("org", &legal);

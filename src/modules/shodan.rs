@@ -405,7 +405,7 @@ impl Shodan {
         {
             let mut addr = Entity::new(EntityKind::Address, country, 0.55, &ctx.scan_id);
             addr.tag("shodan");
-            addr.tag("geoint");
+            addr.tag(crate::core::tags::GEOINT);
             addr.add_evidence(Evidence::new(SRC, format!("Country for {ip}")));
             result.push(addr);
         }

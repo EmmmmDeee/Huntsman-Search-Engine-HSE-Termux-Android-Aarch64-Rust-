@@ -65,8 +65,8 @@ impl Module for EmailLocale {
                 geo.confidence,
                 &ctx.scan_id,
             );
-            e.tag("geoint");
-            e.tag("coarse");
+            e.tag(crate::core::tags::GEOINT);
+            e.tag(crate::core::tags::COARSE);
             e.tag("locale-inferred");
             e.add_evidence(
                 Evidence::new(

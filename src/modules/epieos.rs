@@ -183,7 +183,7 @@ fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) -> Vec<Enti
             let mut ae = Entity::new(EntityKind::Address, &location, 0.50, scan_id);
             ae.tag("epieos");
             ae.tag("skype");
-            ae.tag("geoint");
+            ae.tag(crate::core::tags::GEOINT);
             ae.add_evidence(Evidence::new(SRC, format!("Skype location for {email}")));
             out.push(ae);
         }
@@ -199,7 +199,7 @@ fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) -> Vec<Enti
             let mut ae = Entity::new(EntityKind::Address, place, 0.48, scan_id);
             ae.tag("epieos");
             ae.tag("google-maps");
-            ae.tag("geoint");
+            ae.tag(crate::core::tags::GEOINT);
             let mut rev_ev =
                 Evidence::new(SRC, format!("Google Maps review at \"{place}\" by {email}"));
             if let Some(rating) = review.rating {

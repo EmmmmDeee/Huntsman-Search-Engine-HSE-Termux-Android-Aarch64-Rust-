@@ -242,7 +242,7 @@ fn build_entities(profile: &LinkedInProfile, target: &Target, scan_id: &str) -> 
         let mut ae = Entity::new(EntityKind::Address, &location, 0.60, scan_id);
         ae.tag("proxycurl");
         ae.tag("linkedin");
-        ae.tag("geoint");
+        ae.tag(crate::core::tags::GEOINT);
         if let Some(cc) = nonempty(&profile.country) {
             ae.tag(format!("country:{}", cc.to_uppercase()));
         }

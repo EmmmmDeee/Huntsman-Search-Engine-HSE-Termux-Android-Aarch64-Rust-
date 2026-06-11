@@ -205,7 +205,7 @@ fn records_to_entities(
                 e.tag(crate::core::tags::GEOINT);
                 // A postcode spans many localities — flag the coarseness so the
                 // UI and geo rules treat it as a region, not a pinned address.
-                e.tag("coarse");
+                e.tag(crate::core::tags::COARSE);
                 e
             }
             None => {
@@ -267,9 +267,9 @@ fn suburbs_to_entities(pc_localities: &[(String, Vec<Locality>)], scan_id: &str)
             let mut c = Entity::new(EntityKind::Coordinates, coords, 0.30, scan_id);
             c.tag(SRC);
             c.tag("country:AU");
-            c.tag("geoint");
+            c.tag(crate::core::tags::GEOINT);
             c.tag("postcode-centroid");
-            c.tag("coarse");
+            c.tag(crate::core::tags::COARSE);
             c.add_evidence(
                 Evidence::new(SRC, format!("Centroid of postcode {pc}"))
                     .with_attr("postcode", pc)
@@ -286,9 +286,9 @@ fn suburbs_to_entities(pc_localities: &[(String, Vec<Locality>)], scan_id: &str)
             );
             a.tag(SRC);
             a.tag("country:AU");
-            a.tag("geoint");
+            a.tag(crate::core::tags::GEOINT);
             a.tag("candidate-suburb");
-            a.tag("coarse");
+            a.tag(crate::core::tags::COARSE);
             a.add_evidence(
                 Evidence::new(
                     SRC,

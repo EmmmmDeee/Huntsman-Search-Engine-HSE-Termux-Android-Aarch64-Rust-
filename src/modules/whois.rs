@@ -316,7 +316,7 @@ impl Module for Whois {
                 let mut ae = Entity::new(EntityKind::Address, &addr, 0.50, &_ctx.scan_id);
                 ae.tag("whois");
                 ae.tag("registrant");
-                ae.tag("geoint");
+                ae.tag(crate::core::tags::GEOINT);
                 ae.add_evidence(
                     Evidence::new(SRC, format!("Registrant location for {}", target.value))
                         .with_attr("parent_target", target.value.as_str()),

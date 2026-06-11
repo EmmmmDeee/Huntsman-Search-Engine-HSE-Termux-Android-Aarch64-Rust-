@@ -244,7 +244,7 @@ impl Module for GithubUser {
             if location.len() >= 3 {
                 let mut a = Entity::new(EntityKind::Address, location, 0.55, &ctx.scan_id);
                 a.tag("github");
-                a.tag("geoint");
+                a.tag(crate::core::tags::GEOINT);
                 a.add_evidence(
                     Evidence::new(SRC, format!("Location from GitHub profile @{}", user.login))
                         .with_attr("github_login", &user.login),

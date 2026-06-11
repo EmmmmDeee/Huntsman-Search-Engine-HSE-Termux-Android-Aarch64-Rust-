@@ -75,8 +75,8 @@ impl Module for GeoDomainClassifier {
                 geo.confidence,
                 &ctx.scan_id,
             );
-            e.tag("geoint");
-            e.tag("coarse");
+            e.tag(crate::core::tags::GEOINT);
+            e.tag(crate::core::tags::COARSE);
             e.tag("domain-inferred");
             if let Some(tag) = geo.extra_tag {
                 e.tag(tag);

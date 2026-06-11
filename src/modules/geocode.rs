@@ -309,7 +309,7 @@ fn build_reverse_entity(lat: f64, lon: f64, data: &NominatimResp, scan_id: &str)
     };
 
     let mut entity = Entity::new(EntityKind::Address, display, confidence, scan_id);
-    entity.tag("geoint");
+    entity.tag(crate::core::tags::GEOINT);
     entity.tag("reverse-geocoded");
     match relevance {
         AuRelevance::InAustralia => {

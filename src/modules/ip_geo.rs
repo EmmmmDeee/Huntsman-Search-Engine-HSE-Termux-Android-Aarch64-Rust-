@@ -213,7 +213,7 @@ impl Module for IpGeo {
             let addr =
                 crate::util::geo::format_locality(&[city, region, country]).unwrap_or_default();
             let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, &ctx.scan_id);
-            ae.tag("geoint");
+            ae.tag(crate::core::tags::GEOINT);
             ae.add_evidence(Evidence::new(
                 SRC,
                 format!("IP address for {}", target.value),

@@ -77,8 +77,8 @@ impl Module for EmailHeaderGeo {
                 geo.confidence,
                 &ctx.scan_id,
             );
-            e.tag("geoint");
-            e.tag("coarse");
+            e.tag(crate::core::tags::GEOINT);
+            e.tag(crate::core::tags::COARSE);
             e.tag("email-infra-inferred");
             if let Some(tag) = geo.extra_tag {
                 e.tag(tag);
@@ -100,8 +100,8 @@ impl Module for EmailHeaderGeo {
 
         if let Some((provider, region)) = detect_corporate_provider(domain) {
             let mut e = Entity::new(EntityKind::Address, region, 0.40, &ctx.scan_id);
-            e.tag("geoint");
-            e.tag("coarse");
+            e.tag(crate::core::tags::GEOINT);
+            e.tag(crate::core::tags::COARSE);
             e.tag("email-provider-inferred");
             e.add_evidence(
                 Evidence::new(

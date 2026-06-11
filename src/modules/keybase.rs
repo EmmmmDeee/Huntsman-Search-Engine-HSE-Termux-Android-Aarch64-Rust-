@@ -221,7 +221,7 @@ impl Module for Keybase {
             {
                 let mut ae = Entity::new(EntityKind::Address, loc, 0.50, &ctx.scan_id);
                 ae.tag("keybase");
-                ae.tag("geoint");
+                ae.tag(crate::core::tags::GEOINT);
                 ae.add_evidence(Evidence::new(
                     SRC,
                     format!("Location from Keybase profile {kb_username}"),
