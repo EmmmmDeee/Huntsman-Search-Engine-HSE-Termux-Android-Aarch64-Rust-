@@ -55,6 +55,10 @@ struct HunterData {
     #[serde(default)]
     country: Option<String>,
     #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    city: Option<String>,
+    #[serde(default)]
     pattern: Option<String>,
     #[serde(default)]
     emails: Vec<HunterEmail>,
@@ -121,6 +125,7 @@ impl Module for HunterIo {
             EntityKind::Email,
             EntityKind::Person,
             EntityKind::Organisation,
+            EntityKind::Address,
         ]
     }
 
@@ -211,6 +216,17 @@ impl Module for HunterIo {
             result.push(e);
         }
 
+        // ── Organisation Address (city/state/country) → geo pivot ──
+        if let Some(ae) = org_address_entity(
+            data.city.as_deref(),
+            data.state.as_deref(),
+            data.country.as_deref(),
+            domain,
+            &ctx.scan_id,
+        ) {
+            result.push(ae);
+        }
+
         // ── Email entities + co-located Person entities ──
         for entry in &data.emails {
             let Some(addr) = entry.value.as_deref().filter(|s| !s.is_empty()) else {
@@ -283,6 +299,36 @@ fn confidence_from_hunter_score(score: Option<u8>) -> f64 {
     }
 }
 
+/// Build the organisation-location `Address` from Hunter's city/state/country.
+/// **Pure** (no network/IO): joins the present parts (empty-aware, so an absent
+/// field never leaves a dangling separator), tags `geoint`, and AU-enriches an
+/// Australian locality via the shared free-text producer so it feeds AU-056/060
+/// without a geocode round-trip. Returns `None` when nothing locating resolves.
+fn org_address_entity(
+    city: Option<&str>,
+    state: Option<&str>,
+    country: Option<&str>,
+    domain: &str,
+    scan_id: &str,
+) -> Option<Entity> {
+    let addr = crate::util::geo::format_locality(&[
+        city.unwrap_or(""),
+        state.unwrap_or(""),
+        country.unwrap_or(""),
+    ])?;
+    let mut ae = Entity::new(EntityKind::Address, &addr, 0.55, scan_id);
+    ae.tag("hunter-io");
+    ae.tag(crate::core::tags::GEOINT);
+    for t in crate::util::geo::au_location_tags(&addr) {
+        ae.tag(t);
+    }
+    ae.add_evidence(
+        Evidence::new(SRC, format!("Hunter.io organisation location for {domain}"))
+            .with_attr("domain", domain),
+    );
+    Some(ae)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,11 +357,43 @@ mod tests {
     }
 
     #[test]
-    fn produces_email_person_organisation() {
+    fn produces_email_person_organisation_address() {
         let kinds = HunterIo.produces();
         assert!(kinds.contains(&EntityKind::Email));
         assert!(kinds.contains(&EntityKind::Person));
         assert!(kinds.contains(&EntityKind::Organisation));
+        assert!(kinds.contains(&EntityKind::Address));
+    }
+
+    #[test]
+    fn org_address_joins_parts_and_au_enriches() {
+        // Full AU locality → geoint + au-relevant + canonical state (no geocode).
+        let e = org_address_entity(
+            Some("Brisbane"),
+            Some("Queensland"),
+            Some("Australia"),
+            "acme.com.au",
+            "s",
+        )
+        .unwrap();
+        assert_eq!(e.kind, EntityKind::Address);
+        assert_eq!(e.value, "Brisbane, Queensland, Australia");
+        assert!(e.has_tag("geoint") && e.has_tag("au-relevant") && e.has_tag("au-state:QLD"));
+    }
+
+    #[test]
+    fn org_address_is_empty_aware_and_optional() {
+        // A lone city yields no dangling separators; an all-empty set yields None.
+        assert_eq!(
+            org_address_entity(Some("Berlin"), None, None, "x.de", "s")
+                .unwrap()
+                .value,
+            "Berlin"
+        );
+        assert!(org_address_entity(None, None, Some(""), "x.com", "s").is_none());
+        // A non-AU locality carries no AU tags (worldwide first).
+        let de = org_address_entity(Some("Berlin"), None, Some("Germany"), "x.de", "s").unwrap();
+        assert!(!de.has_tag("au-relevant"));
     }
 
     #[test]
