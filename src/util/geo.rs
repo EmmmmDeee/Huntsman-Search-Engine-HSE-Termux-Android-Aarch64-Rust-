@@ -312,6 +312,26 @@ pub fn logan_suburb_centroid(suburb: &str) -> Option<(f64, f64, &'static str)> {
         .map(|&(_, lat, lon, pc)| (lat, lon, pc))
 }
 
+/// Assemble a display locality string from parts in priority order (e.g.
+/// `[city, region, country]`), dropping empty / whitespace-only parts and
+/// joining the rest with `", "`. Returns `None` when every part is empty.
+///
+/// One definition of the `"{city}, {region}, {country}"`-with-fallbacks string
+/// that the IP-geolocation provider modules each open-coded as a nested
+/// `if/else` over `format!`. A caller passes its already-extracted parts and
+/// keeps its own emit gate; this only owns how the string is assembled, so the
+/// assembly (and its empty-part handling) cannot drift between providers.
+#[must_use]
+pub fn format_locality(parts: &[&str]) -> Option<String> {
+    let joined = parts
+        .iter()
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+    (!joined.is_empty()).then_some(joined)
+}
+
 /// The AU geolocation tags for a coordinate: always [`crate::core::tags::AU_RELEVANT`],
 /// plus the `au-state:<CODE>` and `au-lga:<slug>` tags whenever the offline
 /// bounding-box tables ([`au_state_for_coords`] / [`au_lga_for_coords`]) resolve
@@ -428,6 +448,32 @@ pub fn coarse_provider_coords(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_locality_drops_empty_and_joins() {
+        assert_eq!(
+            format_locality(&["Sydney", "NSW", "Australia"]).as_deref(),
+            Some("Sydney, NSW, Australia")
+        );
+        // Empty middle part is dropped (the `region` fallback the providers had).
+        assert_eq!(
+            format_locality(&["Sydney", "", "Australia"]).as_deref(),
+            Some("Sydney, Australia")
+        );
+        // Whitespace-only parts are treated as empty.
+        assert_eq!(
+            format_locality(&["Brisbane", "  ", "AU"]).as_deref(),
+            Some("Brisbane, AU")
+        );
+        // A single surviving part needs no separator.
+        assert_eq!(
+            format_locality(&["Perth", "", ""]).as_deref(),
+            Some("Perth")
+        );
+        // All empty → None (caller emits nothing).
+        assert_eq!(format_locality(&["", "", ""]), None);
+        assert_eq!(format_locality(&[]), None);
+    }
 
     #[test]
     fn au_coord_tags_logan_city_full_stack() {

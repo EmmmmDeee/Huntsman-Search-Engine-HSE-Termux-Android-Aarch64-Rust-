@@ -204,11 +204,8 @@ impl Module for IpQuery {
             let state = loc.state.as_deref().unwrap_or("");
             let country = loc.country.as_deref().unwrap_or("");
             if !city.is_empty() && !country.is_empty() {
-                let addr = if !state.is_empty() {
-                    format!("{city}, {state}, {country}")
-                } else {
-                    format!("{city}, {country}")
-                };
+                let addr =
+                    crate::util::geo::format_locality(&[city, state, country]).unwrap_or_default();
                 let mut ae = Entity::new(EntityKind::Address, &addr, 0.62, &ctx.scan_id);
                 ae.tag("ipquery");
                 ae.add_evidence(Evidence::new(SRC, format!("Address for {ip}")));

@@ -208,11 +208,10 @@ impl Module for IpGeo {
         let region = data.region_name.as_deref().unwrap_or("");
         let country = data.country.as_deref().unwrap_or("");
         if !is_datacenter && !city.is_empty() && !country.is_empty() {
-            let addr = if !region.is_empty() {
-                format!("{city}, {region}, {country}")
-            } else {
-                format!("{city}, {country}")
-            };
+            // Gate guarantees city+country, so `format_locality` yields the same
+            // "city, region, country" / "city, country" string as before.
+            let addr =
+                crate::util::geo::format_locality(&[city, region, country]).unwrap_or_default();
             let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, &ctx.scan_id);
             ae.tag("geoint");
             ae.add_evidence(Evidence::new(

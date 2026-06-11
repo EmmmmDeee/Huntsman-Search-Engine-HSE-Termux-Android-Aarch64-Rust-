@@ -284,11 +284,8 @@ impl Module for Censys {
             let province = loc.province.as_deref().unwrap_or("");
             let country = loc.country.as_deref().unwrap_or("");
             if !city.is_empty() && !country.is_empty() {
-                let addr = if !province.is_empty() {
-                    format!("{city}, {province}, {country}")
-                } else {
-                    format!("{city}, {country}")
-                };
+                let addr = crate::util::geo::format_locality(&[city, province, country])
+                    .unwrap_or_default();
                 let mut ae = Entity::new(EntityKind::Address, &addr, 0.60, &ctx.scan_id);
                 ae.tag("censys");
                 ae.tag("geoint");
