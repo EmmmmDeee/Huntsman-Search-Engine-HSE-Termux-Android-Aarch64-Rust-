@@ -194,3 +194,63 @@ pub(in crate::core::correlator) fn rule_au_033_abn_organisation_link(
         ts,
     )]
 }
+
+/// AU-058 — Microsoft 365 tenant attribution.
+///
+/// Fires when at least one domain entity carries the `m365` tag (injected by
+/// `employer_pivot` after a successful Azure AD / Entra ID OpenID-Connect
+/// discovery). The presence of an active M365 tenant confirms the organisation
+/// uses Microsoft-hosted email and cloud services, strengthening the link
+/// between the discovered email address and the corporate infrastructure.
+///
+/// Technique: T1590.001 — Gather Victim Network Information: IP Addresses /
+/// Cloud infrastructure attribution.
+///
+/// Severity: Low — informational. Confirms cloud platform, not a threat signal.
+pub(in crate::core::correlator) fn rule_au_058_m365_tenant_attribution(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let m365_domains: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain && e.has_tag("m365"))
+        .collect();
+    if m365_domains.is_empty() {
+        return Vec::new();
+    }
+    // Require at least one identity anchor (person, email, or username) to
+    // avoid firing on infrastructure-only scans.
+    let has_anchor = entities.iter().any(|e| {
+        matches!(
+            e.kind,
+            EntityKind::Person | EntityKind::Email | EntityKind::Username
+        )
+    });
+    if !has_anchor {
+        return Vec::new();
+    }
+    let mut uids: Vec<String> = m365_domains.iter().map(|d| d.uid.clone()).collect();
+    // Include any email entities to link the tenant discovery to the subject.
+    uids.extend(
+        entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .map(|e| e.uid.clone()),
+    );
+    uids.sort_unstable();
+    uids.dedup();
+    vec![Correlation::new(
+        "AU-058",
+        "Microsoft 365 tenant attribution",
+        Severity::Low,
+        format!(
+            "{} domain(s) confirmed with active Microsoft 365 / Entra ID tenant; \
+             email address(es) are Microsoft-hosted (T1590.001 cloud infrastructure)",
+            m365_domains.len()
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}

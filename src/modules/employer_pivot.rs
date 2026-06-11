@@ -11,6 +11,11 @@
 //!  - Email addresses on the same domain → Email entities
 //!  - Linked external profile URLs (LinkedIn, Facebook, Instagram,
 //!    LinkedIn pages) → Url entities
+//!  - Microsoft 365 tenant ID (via OpenID Connect discovery endpoint) →
+//!    Domain entity tagged `m365` with `m365_tenant_id` evidence attribute.
+//!    Fires when the domain has an active Azure AD / Entra ID tenant.
+//!    Technique: T1590.001 (Gather Victim Network Information: IP Addresses) —
+//!    tenant IDs expose cloud-infrastructure provider relationships.
 //!
 //! This is the OSINT→Geolocation bridge for professional subjects:
 //! once a subject's employer-domain email surfaces, the employer's
@@ -63,11 +68,18 @@ impl Module for EmployerPivot {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        12_000
+        18_000
     }
 
     fn category(&self) -> ModuleCategory {
         ModuleCategory::People
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Contact-page scraping → T1591.001 (Gather Victim Org Info: Determine
+        // Physical Locations). M365 tenant discovery → T1590.001 (Gather Victim
+        // Network Information: IP Addresses / cloud infrastructure).
+        &["T1591.001", "T1590.001"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
@@ -76,6 +88,7 @@ impl Module for EmployerPivot {
             EntityKind::Phone,
             EntityKind::Email,
             EntityKind::Url,
+            EntityKind::Domain,
         ];
         KINDS
     }
@@ -224,6 +237,24 @@ impl Module for EmployerPivot {
             result.push(e);
         }
 
+        // ── Microsoft 365 tenant discovery ──────────────────────────
+        // Queries the Azure AD OpenID Connect discovery endpoint. A successful
+        // response confirms the domain has an active Entra ID / M365 tenant and
+        // discloses the tenant UUID — useful for cloud-infrastructure attribution
+        // (T1590.001). No auth required; the endpoint is public.
+        if let Some(tenant_id) = fetch_m365_tenant_id(&domain, ctx).await {
+            let mut e = Entity::new(EntityKind::Domain, &domain, 0.75, &ctx.scan_id);
+            e.tag("m365");
+            e.tag("employer-pivot");
+            e.add_evidence(
+                Evidence::new(SRC, format!("Microsoft 365 tenant for {domain}"))
+                    .with_attr("m365_tenant_id", &tenant_id)
+                    .with_attr("employer_domain", &domain)
+                    .with_attr("method", "oidc-discovery"),
+            );
+            result.push(e);
+        }
+
         Ok(result)
     }
 }
@@ -262,6 +293,44 @@ fn extract_profile_urls(text: &str) -> Vec<String> {
     re.find_iter(text)
         .map(|m| m.as_str().trim_end_matches(['/', '.', ',']).to_string())
         .collect()
+}
+
+/// Fetches the Microsoft 365 / Azure AD tenant UUID for a domain by probing
+/// the OpenID Connect discovery endpoint. Returns `Some(tenant_id)` when the
+/// domain has an active Entra ID tenant; `None` for non-M365 domains or on
+/// any network / parse error. The UUID is extracted from the `issuer` field:
+/// `https://sts.windows.net/{tenant_id}/`.
+async fn fetch_m365_tenant_id(domain: &str, ctx: &ModuleContext) -> Option<String> {
+    let url = format!(
+        "https://login.microsoftonline.com/{}/.well-known/openid-configuration",
+        domain
+    );
+    let body = ctx
+        .http
+        .get(&url)
+        .timeout(std::time::Duration::from_millis(5_000))
+        .send()
+        .await
+        .ok()?
+        .text()
+        .await
+        .ok()?;
+    // Issuer format: "https://sts.windows.net/{uuid}/"
+    let issuer = body
+        .split('"')
+        .skip_while(|&s| s != "issuer")
+        .nth(2)?; // key → ":" → value
+    let tenant_id = issuer
+        .trim_start_matches("https://sts.windows.net/")
+        .trim_end_matches('/');
+    // Validate: must be a 36-char UUID (8-4-4-4-12 hex with hyphens)
+    if tenant_id.len() == 36
+        && tenant_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    {
+        Some(tenant_id.to_string())
+    } else {
+        None
+    }
 }
 
 fn canonical_address(a: &address_au::AuAddress) -> String {
