@@ -494,4 +494,32 @@ mod tests {
             "key values must never be exposed: {json}"
         );
     }
+
+    #[test]
+    fn mask_secret_boundary_and_never_leaks_the_full_value() {
+        use super::mask_secret;
+        // Below 16 chars → fully masked (bullets), no original char survives.
+        let short = "sk-12345678901"; // 14 chars
+        let m = mask_secret(short);
+        assert!(
+            m.chars().all(|c| c == '•'),
+            "short secret must be all bullets: {m}"
+        );
+        assert!(!m.contains("12345"), "no plaintext run may survive: {m}");
+        // The 15/16 boundary: 15 fully masked, 16 switches to the 4+4 hint.
+        assert!(mask_secret(&"x".repeat(15)).chars().all(|c| c == '•'));
+        let at16 = mask_secret("ABCDdddddddddWXYZ"); // 17 chars → hinted
+        assert_eq!(mask_secret("ABCD12345678WXYZ"), "ABCD…WXYZ"); // exactly 16
+        assert!(at16.contains('…'));
+        // Long key: only 4 head + 4 tail revealed; the middle never appears.
+        let long = "AKIA0123456789ABCDEF0123456789ABCDEFGHIJ"; // 40 chars
+        let masked = mask_secret(long);
+        assert_eq!(masked, "AKIA…GHIJ");
+        assert!(
+            !masked.contains("0123456789"),
+            "the secret's middle must never appear in the mask: {masked}"
+        );
+        // Empty input must not panic and reveals nothing.
+        assert_eq!(mask_secret(""), "•");
+    }
 }
