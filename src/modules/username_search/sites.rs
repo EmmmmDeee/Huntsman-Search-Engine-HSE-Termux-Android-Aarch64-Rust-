@@ -268,8 +268,9 @@ pub(super) const SITES: &[Site] = &[
     s!(
         "Fandom",
         "https://community.fandom.com/wiki/User:{}",
-        H,
+        HAS,
         200,
+        "\"userid\"",
         "forum"
     ),
     // ── Professional / Business ────────────────────────────────────
@@ -328,8 +329,9 @@ pub(super) const SITES: &[Site] = &[
     s!(
         "Minecraft NameMC",
         "https://namemc.com/profile/{}",
-        H,
+        NOT,
         200,
+        "Profiles matching",
         "gaming"
     ),
     s!(
@@ -402,8 +404,9 @@ pub(super) const SITES: &[Site] = &[
     s!(
         "DeviantArt",
         "https://www.deviantart.com/{}",
-        H,
+        NOT,
         200,
+        "DeviantArt: 404",
         "photo"
     ),
     s!("500px", "https://500px.com/p/{}", H, 200, "photo"),
@@ -507,8 +510,9 @@ pub(super) const SITES: &[Site] = &[
     s!(
         "Buy Me a Coffee",
         "https://buymeacoffee.com/{}",
-        H,
+        NOT,
         200,
+        "Oops! We couldn",
         "crowdfunding"
     ),
     s!(
@@ -560,7 +564,6 @@ pub(super) const SITES: &[Site] = &[
     ),
     s!("Giphy (profile)", "https://giphy.com/{}", H, 200, "other"),
     s!("IFTTT", "https://ifttt.com/p/{}", H, 200, "other"),
-    s!("Linktree (alt)", "https://linktr.ee/{}", H, 200, "other"),
     s!("Tenor", "https://tenor.com/users/{}", H, 200, "other"),
     s!(
         "Wattpad",
@@ -916,14 +919,6 @@ pub(super) const SITES: &[Site] = &[
         "https://www.fandom.com/u/{}",
         H,
         200,
-        "forum"
-    ),
-    s!(
-        "Fandom Central",
-        "https://community.fandom.com/wiki/User:{}",
-        HAS,
-        200,
-        "\"userid\"",
         "forum"
     ),
     // ── Travel (Maigret) ───────────────────────────────────────────
@@ -1515,39 +1510,6 @@ pub(super) const SITES: &[Site] = &[
         200,
         "media"
     ),
-    // ── Message-detection Sherlock sites (using body markers) ──────
-    s!(
-        "DeviantArt (alt)",
-        "https://www.deviantart.com/{}",
-        NOT,
-        200,
-        "DeviantArt: 404",
-        "photo"
-    ),
-    s!(
-        "BuyMeACoffee",
-        "https://buymeacoffee.com/{}",
-        NOT,
-        200,
-        "Oops! We couldn",
-        "crowdfunding"
-    ),
-    s!(
-        "HackerNews (alt)",
-        "https://news.ycombinator.com/user?id={}",
-        NOT,
-        200,
-        "No such user.",
-        "forum"
-    ),
-    s!(
-        "Minecraft",
-        "https://namemc.com/profile/{}",
-        NOT,
-        200,
-        "Profiles matching",
-        "gaming"
-    ),
     s!(
         "RuneScape",
         "https://apps.runescape.com/runemetrics/profile/profile?user={}",
@@ -1597,14 +1559,6 @@ pub(super) const SITES: &[Site] = &[
         "dating"
     ),
     // ── Social Media (people-centric core) ─────────────────────────
-    s!(
-        "Facebook (alt)",
-        "https://www.facebook.com/{}",
-        HAS,
-        200,
-        "fb_content",
-        "social"
-    ),
     s!(
         "LinkedIn",
         "https://www.linkedin.com/in/{}",
@@ -1658,13 +1612,6 @@ pub(super) const SITES: &[Site] = &[
         "messaging"
     ),
     // ── Lifestyle / Fitness / Social ───────────────────────────────
-    s!(
-        "Strava (social)",
-        "https://www.strava.com/athletes/{}",
-        H,
-        200,
-        "social"
-    ),
     s!("Fitbit", "https://www.fitbit.com/user/{}", H, 200, "social"),
     s!(
         "MyFitnessPal",
@@ -1705,3 +1652,115 @@ pub(super) const SITES: &[Site] = &[
         "social"
     ),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::http::urlencode;
+
+    /// Every template must hold EXACTLY ONE `{}` placeholder. Zero means the
+    /// username is never substituted (the probe queries a fixed page for every
+    /// handle); two or more means `str::replace` substitutes the username into
+    /// multiple positions, producing a URL the site never serves. Either way
+    /// the site silently never yields a true hit.
+    #[test]
+    fn each_template_has_exactly_one_placeholder() {
+        for site in SITES {
+            let n = site.url.matches("{}").count();
+            assert_eq!(
+                n, 1,
+                "{} template must have exactly one {{}} placeholder, has {}: {}",
+                site.name, n, site.url
+            );
+        }
+    }
+
+    /// The substituted URL — with a realistic handle covering the full set of
+    /// characters platforms actually permit in a username (letters, digits,
+    /// `_`, `-`, `.`) — must parse as an absolute https URL whose host is
+    /// non-empty. Guards against a template like `https:/{}` (one slash) or a
+    /// `{}` placed where it breaks the host, which would make `reqwest` error on
+    /// every probe rather than detect a profile. (Adversarial handles with
+    /// spaces/slashes are rejected upstream by username validation before they
+    /// ever reach a host-position template such as `https://{}.tumblr.com/`.)
+    #[test]
+    fn substituted_url_parses_and_keeps_a_host() {
+        let handle = urlencode("Test_user-99.x");
+        for site in SITES {
+            let filled = site.url.replace("{}", &handle);
+            let parsed = url::Url::parse(&filled)
+                .unwrap_or_else(|e| panic!("{} → unparseable URL {filled}: {e}", site.name));
+            assert_eq!(parsed.scheme(), "https", "{} not https", site.name);
+            assert!(
+                parsed.host_str().is_some_and(|h| !h.is_empty()),
+                "{} produced a hostless URL: {filled}",
+                site.name
+            );
+        }
+    }
+
+    /// A body-needle (`StatusAndBody` / `StatusAndNotBody`) must be non-empty:
+    /// `"".contains` is always true, so an empty needle turns a body check into
+    /// "any 200 is a hit" (false positives) or "no 200 is ever a hit" (false
+    /// negatives). Status codes must be plausible HTTP (100..=599) so a typo
+    /// like `2000` can't make a probe that never matches.
+    #[test]
+    fn detect_rules_are_well_formed() {
+        for site in SITES {
+            match site.detect {
+                Detect::StatusEq(code) => {
+                    assert!(
+                        (100..=599).contains(&code),
+                        "{} status {code} outside HTTP range",
+                        site.name
+                    );
+                }
+                Detect::StatusAndBody(code, needle) | Detect::StatusAndNotBody(code, needle) => {
+                    assert!(
+                        (100..=599).contains(&code),
+                        "{} status {code} outside HTTP range",
+                        site.name
+                    );
+                    assert!(
+                        !needle.is_empty(),
+                        "{} has an empty body-needle — would match every response",
+                        site.name
+                    );
+                }
+            }
+        }
+    }
+
+    /// No two entries may share the same URL template: a duplicate is a wasted
+    /// concurrent probe and double-counts one platform in `sites_probed`.
+    /// (Site NAMES are already deduped by a sibling test in `mod.rs`; the URL
+    /// is the operative dedup key for the probe itself.)
+    #[test]
+    fn no_duplicate_url_templates() {
+        let mut seen = std::collections::HashSet::new();
+        for site in SITES {
+            assert!(
+                seen.insert(site.url),
+                "duplicate probe URL template ({}): {}",
+                site.name,
+                site.url
+            );
+        }
+    }
+
+    /// A HEAD probe can only ever be a pure status check — a body-needle on a
+    /// HEAD request can never match (HEAD responses carry no body). Pin the
+    /// invariant so a future edit can't pair `Method::Head` with a body detect.
+    #[test]
+    fn head_probes_never_use_a_body_needle() {
+        for site in SITES {
+            if matches!(site.method, Method::Head) {
+                assert!(
+                    matches!(site.detect, Detect::StatusEq(_)),
+                    "{} is a HEAD probe but uses a body-needle detect — HEAD has no body",
+                    site.name
+                );
+            }
+        }
+    }
+}
