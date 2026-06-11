@@ -322,6 +322,11 @@ fn records_to_entities(resp: &GleifResp, query: &str, scan_id: &str) -> Vec<Enti
             }
             e.tag(crate::core::tags::GEOINT);
             e.tag("registered-address");
+            // Free-text AU enrichment (shared producer): a worldwide LEI address
+            // in Australia feeds AU-056/060; non-AU addresses are untouched.
+            for t in crate::util::geo::au_location_tags(&loc) {
+                e.tag(t);
+            }
             let mut aev = Evidence::new(SRC, format!("Registered address for {name}"))
                 .with_attr("org", &name)
                 .with_attr("lei", &lei);

@@ -81,6 +81,12 @@ fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) -> Vec<Enti
         ae.tag("opencorporates");
         ae.tag("registered-address");
         ae.tag("validated");
+        ae.tag(crate::core::tags::GEOINT);
+        // Free-text AU enrichment (shared producer) so an Australian registered
+        // address feeds AU-056/060 with canonical au-state tags — no geocode.
+        for t in crate::util::geo::au_location_tags(addr) {
+            ae.tag(t);
+        }
         ae.add_evidence(Evidence::new(SRC, format!("Registered address for {name}")));
         out.push(ae);
     }
