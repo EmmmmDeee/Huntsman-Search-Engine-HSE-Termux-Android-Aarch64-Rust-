@@ -317,6 +317,13 @@ fn attack_overrides_attribute_collection_modules_precisely() {
     assert_eq!(techniques("subdomain_takeover"), vec!["T1590.001"]); // Domain Properties
     // WAF/CDN fingerprinting → Network Security Appliances + CDNs (not the Web default).
     assert_eq!(techniques("waf_detect"), vec!["T1590.006", "T1596.004"]);
+    // Wordlist-driven active scanning → Active Scanning, not the Web default.
+    assert_eq!(techniques("cloud_storage"), vec!["T1595", "T1595.003"]);
+    // LeakIX is a scan/exposure database — Scan Databases + IP exposure, NOT the
+    // Breach-category default (T1589.001/.002 credentials/emails), which it gathers
+    // neither of. Category stays Breach for correlator grouping; technique is the
+    // honest one.
+    assert_eq!(techniques("leakix"), vec!["T1596.005", "T1590.005"]);
 
     // Every overridden ID is still a real catalogue entry (no typos).
     for name in [
@@ -327,6 +334,8 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "securitytrails",
         "hackertarget",
         "subdomain_takeover",
+        "cloud_storage",
+        "leakix",
     ] {
         for id in techniques(name) {
             assert!(
