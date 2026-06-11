@@ -25,7 +25,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::geo::is_valid_coords;
+use crate::util::geo::{au_coord_tags, is_in_australia, is_valid_coords};
 use crate::util::http::urlencode;
 use crate::util::termux::termux_cmd;
 
@@ -210,9 +210,17 @@ impl Module for CellIntel {
                 let coords = format!("{lat:.6},{lon:.6}");
                 let confidence = accuracy_to_confidence(range);
                 let mut e = Entity::new(EntityKind::Coordinates, &coords, confidence, &ctx.scan_id);
-                e.tag("geoint");
+                e.tag(crate::core::tags::GEOINT);
                 e.tag("cell-tower");
                 e.tag(format!("radio:{}", key.ctype.to_lowercase()));
+                // A located tower is a precise fix: when in Australia attach the
+                // offline state/LGA tags (shared producer) so a Logan tower fix
+                // feeds AU-060 / AU-056 like any geocoded coordinate.
+                if is_in_australia(lat, lon) {
+                    for t in au_coord_tags(lat, lon) {
+                        e.tag(t);
+                    }
+                }
                 e.add_evidence(
                     Evidence::new(
                         SRC,
@@ -235,9 +243,13 @@ impl Module for CellIntel {
             if let Some((lat, lon, country)) = mcc_to_centroid(&key.mcc) {
                 let coords = format!("{lat:.4},{lon:.4}");
                 let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.25, &ctx.scan_id);
-                e.tag("geoint");
+                // Country-centroid placeholder only — NO au_coord_tags here: the
+                // centroid is the geographic-centre point the geo layer treats as
+                // noise, so a state/LGA attribution from it would be bogus. The
+                // honest `country:` tag stands on its own.
+                e.tag(crate::core::tags::GEOINT);
                 e.tag("cell-tower");
-                e.tag("coarse");
+                e.tag(crate::core::tags::COARSE);
                 e.tag(format!("country:{country}"));
                 e.add_evidence(
                     Evidence::new(
