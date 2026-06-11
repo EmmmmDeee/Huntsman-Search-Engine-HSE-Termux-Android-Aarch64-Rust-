@@ -133,6 +133,36 @@ fn claim_entity_ids(entity: &Value, pid: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Globe-coordinate claims for a property (e.g. P625 coordinate location). The
+/// Wikidata datavalue is an object `{"latitude": …, "longitude": …, "globe": …}`
+/// rather than a string or entity-id, so it needs its own extractor. Only Earth
+/// coordinates (the default globe, or an absent globe) are returned — a claim on
+/// another globe (Mars, the Moon) is not a terrestrial geolocation.
+fn claim_coords(entity: &Value, pid: &str) -> Vec<(f64, f64)> {
+    entity
+        .get("claims")
+        .and_then(|c| c.get(pid))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| {
+                    let v = c.pointer("/mainsnak/datavalue/value")?;
+                    // Reject non-Earth globes (Q2 = Earth); absent globe = Earth.
+                    if let Some(globe) = v.get("globe").and_then(Value::as_str)
+                        && !globe.is_empty()
+                        && !globe.ends_with("Q2")
+                    {
+                        return None;
+                    }
+                    let lat = v.get("latitude").and_then(Value::as_f64)?;
+                    let lon = v.get("longitude").and_then(Value::as_f64)?;
+                    Some((lat, lon))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// `labels`/`descriptions` English value for an entity body.
 fn en_text(entity: &Value, section: &str) -> Option<String> {
     entity
@@ -237,6 +267,35 @@ fn primary_entities(
             );
             out.push(d);
         }
+    }
+
+    // Coordinate location (P625) → Coordinates. Wikidata's structured geo claim
+    // is a free, authoritative fix (an org's HQ/registered place, a notable
+    // person's associated location) that feeds geocode + the geo correlators.
+    // One canonical fix is enough; AU coordinates carry the offline state/LGA
+    // tags (shared producer) so they reach AU-056/060 with no geocode call.
+    for (lat, lon) in claim_coords(entity, "P625") {
+        if !crate::util::geo::is_valid_coords(lat, lon) {
+            continue;
+        }
+        let coords = format!("{lat:.6},{lon:.6}");
+        let mut c = Entity::new(EntityKind::Coordinates, &coords, 0.65, scan_id);
+        c.tag(SRC);
+        c.tag("wikidata");
+        c.tag(crate::core::tags::GEOINT);
+        if crate::util::geo::is_in_australia(lat, lon) {
+            for t in crate::util::geo::au_coord_tags(lat, lon) {
+                c.tag(t);
+            }
+        }
+        c.add_evidence(
+            Evidence::new(SRC, format!("Wikidata coordinate location of {label}"))
+                .with_attr("wikidata_id", qid)
+                .with_attr("latitude", format!("{lat:.6}"))
+                .with_attr("longitude", format!("{lon:.6}")),
+        );
+        out.push(c);
+        break; // one canonical coordinate fix is sufficient
     }
 
     // Image (P18) → the canonical Wikimedia Commons image URL — an approved,
@@ -354,6 +413,7 @@ impl Module for Wikidata {
             EntityKind::Domain,
             EntityKind::Username,
             EntityKind::Url,
+            EntityKind::Coordinates,
         ];
         KINDS
     }
@@ -548,6 +608,50 @@ mod tests {
         let none = serde_json::json!({"labels": {"en": {"value": "No Pic"}}, "claims": {}});
         let ents2 = primary_entities("Q2", "No Pic", &none, TargetKind::FullName, "s");
         assert!(ents2.iter().all(|e| e.kind != EntityKind::Url));
+    }
+
+    #[test]
+    fn primary_emits_coordinates_from_p625_with_au_tags() {
+        // An org HQ in Logan City, QLD → a Coordinates fix carrying the offline
+        // AU state/LGA tags so it reaches AU-056/060 without a geocode call.
+        let body = serde_json::json!({
+            "labels": {"en": {"value": "Logan Org"}},
+            "claims": {
+                "P625": [{"mainsnak": {"datavalue": {"value": {
+                    "latitude": -27.6955, "longitude": 152.8918,
+                    "globe": "http://www.wikidata.org/entity/Q2"
+                }}}}]
+            }
+        });
+        let ents = primary_entities("Q9", "Logan Org", &body, TargetKind::Organisation, "s");
+        let coord = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Coordinates)
+            .expect("a Coordinates fix from P625");
+        assert_eq!(coord.value, "-27.695500,152.891800");
+        assert!(coord.has_tag("geoint"));
+        assert!(coord.has_tag("au-relevant"));
+        assert!(coord.has_tag("au-state:QLD"));
+        assert!(coord.has_tag("au-lga:logan-city"));
+    }
+
+    #[test]
+    fn p625_rejects_non_earth_globe_and_bad_coords() {
+        // A Mars coordinate is not a terrestrial geolocation.
+        let mars = serde_json::json!({"claims": {"P625": [{"mainsnak": {"datavalue": {"value": {
+            "latitude": 10.0, "longitude": 20.0,
+            "globe": "http://www.wikidata.org/entity/Q111"
+        }}}}]}});
+        assert!(claim_coords(&mars, "P625").is_empty());
+        // Null Island is rejected by the shared validator at emission.
+        let null_island = serde_json::json!({
+            "labels": {"en": {"value": "Z"}},
+            "claims": {"P625": [{"mainsnak": {"datavalue": {"value": {
+                "latitude": 0.0, "longitude": 0.0
+            }}}}]}
+        });
+        let ents = primary_entities("Q1", "Z", &null_island, TargetKind::Organisation, "s");
+        assert!(ents.iter().all(|e| e.kind != EntityKind::Coordinates));
     }
 
     #[test]
