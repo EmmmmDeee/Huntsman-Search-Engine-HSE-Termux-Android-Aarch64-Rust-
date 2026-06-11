@@ -170,7 +170,11 @@ impl Module for EmployerPivot {
             e.tag("business");
             e.tag("employer-pivot");
             e.tag("country:AU");
-            e.tag(format!("state:{}", addr.state));
+            e.tag(crate::core::tags::AU_RELEVANT);
+            // Canonical au-state tag for correlator compatibility (AU-056).
+            if let Some(st) = crate::core::tags::au_state_tag(&addr.state) {
+                e.tag(st);
+            }
             e.tag(format!("postcode:{}", addr.postcode));
             let mut ev = Evidence::new(
                 SRC,
