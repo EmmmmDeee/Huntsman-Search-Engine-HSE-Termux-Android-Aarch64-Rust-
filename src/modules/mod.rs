@@ -84,6 +84,7 @@ pub mod qld_unclaimed;
 pub mod rdap_domain;
 pub mod reddit_user;
 pub mod ripestat;
+pub mod schema_org;
 pub mod search_engines;
 pub mod securitytrails;
 pub mod see_know;
@@ -283,6 +284,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(portscan::PortScan),
         Arc::new(typosquat::Typosquat),
         // People-centric enrichment
+        Arc::new(schema_org::SchemaOrg),
         Arc::new(name_intel::NameIntel),
         Arc::new(social_location::SocialLocation),
         Arc::new(wikidata::Wikidata),

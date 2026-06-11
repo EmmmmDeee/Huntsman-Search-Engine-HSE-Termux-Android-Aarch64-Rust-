@@ -40,6 +40,7 @@ use crate::util::address_au;
 use crate::util::curl;
 use crate::util::domains::{is_freemail, is_social_platform};
 use crate::util::html::strip_html;
+use crate::util::jsonld;
 
 const SRC: &str = "employer_pivot";
 
@@ -87,6 +88,8 @@ impl Module for EmployerPivot {
             EntityKind::Address,
             EntityKind::Phone,
             EntityKind::Email,
+            EntityKind::Person,
+            EntityKind::Organisation,
             EntityKind::Url,
             EntityKind::Domain,
         ];
@@ -114,6 +117,10 @@ impl Module for EmployerPivot {
         ];
 
         let mut all_text = String::new();
+        // JSON-LD blocks extracted from raw HTML before tag-stripping discards
+        // <script> elements. Schema.org structured data (RealEstateAgent, Person,
+        // Organization, ContactPoint) carries higher confidence than regex fallback.
+        let mut all_jsonld: Vec<serde_json::Value> = Vec::new();
         let mut visited: Vec<String> = Vec::new();
         for path in paths {
             let url = format!("https://{}{}", domain, path);
@@ -139,6 +146,8 @@ impl Module for EmployerPivot {
                     continue;
                 }
                 visited.push(url.clone());
+                // Extract JSON-LD before strip_html removes <script> blocks.
+                all_jsonld.extend(jsonld::extract_jsonld_blocks(&html));
                 all_text.push_str(&strip_html(&html));
                 all_text.push('\n');
                 if visited.len() >= 4 {
@@ -186,8 +195,50 @@ impl Module for EmployerPivot {
             result.push(e);
         }
 
-        // ── Phones ──────────────────────────────────────────────────
+        // ── Phones (Schema.org JSON-LD first, regex fallback) ───────
+        // Structured-data phones (conf 0.80) are inserted before the regex
+        // pass so the seen_phone gate prevents the same number being re-added
+        // at lower confidence by the plain-text extractor.
         let mut seen_phone: HashSet<String> = HashSet::new();
+        let schema_phone_types = [
+            "person",
+            "realestateagent",
+            "agent",
+            "contactpoint",
+            "localbusiness",
+            "organization",
+        ];
+        for type_name in &schema_phone_types {
+            for block in jsonld::blocks_of_type(&all_jsonld, type_name) {
+                for raw in jsonld::field_strings(block, "telephone") {
+                    let Some(ph) = normalise_phone_au(&raw) else {
+                        continue;
+                    };
+                    if !seen_phone.insert(ph.clone()) {
+                        continue;
+                    }
+                    let mut e = Entity::new(EntityKind::Phone, &ph, 0.80, &ctx.scan_id);
+                    e.tag("business");
+                    e.tag("employer-pivot");
+                    e.tag("schema-org");
+                    e.tag("country:AU");
+                    let mut ev = Evidence::new(
+                        SRC,
+                        format!("Phone from Schema.org {} on {}", type_name, domain),
+                    )
+                    .with_attr("schema_type", *type_name)
+                    .with_attr("employer_domain", &domain)
+                    .with_attr("source_urls", visited.join(" | "))
+                    .with_attr("e164", &ph);
+                    if let Some(contact_name) = jsonld::field_str(block, "name") {
+                        ev = ev.with_attr("contact_name", &contact_name);
+                    }
+                    e.add_evidence(ev);
+                    result.push(e);
+                }
+            }
+        }
+        // Regex fallback: adds any phones present in plain text but absent from JSON-LD.
         for ph in address_au::extract_phones(&all_text) {
             if !seen_phone.insert(ph.clone()) {
                 continue;
@@ -204,8 +255,41 @@ impl Module for EmployerPivot {
             result.push(e);
         }
 
-        // ── Same-domain emails ──────────────────────────────────────
+        // ── Same-domain emails (Schema.org JSON-LD first, regex fallback) ──
         let mut seen_email: HashSet<String> = HashSet::new();
+        let schema_email_types = [
+            "person",
+            "realestateagent",
+            "agent",
+            "contactpoint",
+            "localbusiness",
+        ];
+        for type_name in &schema_email_types {
+            for block in jsonld::blocks_of_type(&all_jsonld, type_name) {
+                for raw in jsonld::field_strings(block, "email") {
+                    let em = raw.to_lowercase();
+                    if em.is_empty() || !seen_email.insert(em.clone()) {
+                        continue;
+                    }
+                    let mut e = Entity::new(EntityKind::Email, &em, 0.80, &ctx.scan_id);
+                    e.tag("business");
+                    e.tag("employer-pivot");
+                    e.tag("schema-org");
+                    let mut ev = Evidence::new(
+                        SRC,
+                        format!("Email from Schema.org {} on {}", type_name, domain),
+                    )
+                    .with_attr("schema_type", *type_name)
+                    .with_attr("employer_domain", &domain);
+                    if let Some(contact_name) = jsonld::field_str(block, "name") {
+                        ev = ev.with_attr("contact_name", &contact_name);
+                    }
+                    e.add_evidence(ev);
+                    result.push(e);
+                }
+            }
+        }
+        // Regex fallback: same-domain emails in plain text not already found via JSON-LD.
         for em in extract_emails(&all_text, &domain) {
             if !seen_email.insert(em.clone()) {
                 continue;
@@ -218,6 +302,74 @@ impl Module for EmployerPivot {
                     .with_attr("employer_domain", &domain),
             );
             result.push(e);
+        }
+
+        // ── Person entities from Schema.org ─────────────────────────
+        // RealEstateAgent / Person / Agent blocks expose name + jobTitle +
+        // worksFor — the highest-confidence identity signal from a corporate site.
+        let mut seen_person: HashSet<String> = HashSet::new();
+        let schema_person_types = ["person", "realestateagent", "agent"];
+        for type_name in &schema_person_types {
+            for block in jsonld::blocks_of_type(&all_jsonld, type_name) {
+                let Some(name) = jsonld::field_str(block, "name") else {
+                    continue;
+                };
+                let name_key = name.to_lowercase();
+                if !seen_person.insert(name_key) {
+                    continue;
+                }
+                let mut e = Entity::new(EntityKind::Person, &name, 0.75, &ctx.scan_id);
+                e.tag("employer-pivot");
+                e.tag("schema-org");
+                let mut ev = Evidence::new(
+                    SRC,
+                    format!("Person from Schema.org {} on {}", type_name, domain),
+                )
+                .with_attr("schema_type", *type_name)
+                .with_attr("employer_domain", &domain)
+                .with_attr("source_urls", visited.join(" | "));
+                if let Some(title) = jsonld::field_str(block, "jobTitle") {
+                    e.tag(format!(
+                        "jobtitle:{}",
+                        title.to_lowercase().replace(' ', "-")
+                    ));
+                    ev = ev.with_attr("job_title", &title);
+                }
+                if let Some(works_for) = jsonld::field_str_nested(block, "worksFor", "name")
+                    .or_else(|| jsonld::field_str(block, "worksFor"))
+                {
+                    ev = ev.with_attr("works_for", &works_for);
+                }
+                e.add_evidence(ev);
+                result.push(e);
+            }
+        }
+
+        // ── Organisation from Schema.org ─────────────────────────────
+        let mut seen_org: HashSet<String> = HashSet::new();
+        for type_name in &["organization", "localbusiness", "realestateagency"] {
+            for block in jsonld::blocks_of_type(&all_jsonld, type_name) {
+                let Some(name) = jsonld::field_str(block, "name") else {
+                    continue;
+                };
+                if !seen_org.insert(name.to_lowercase()) {
+                    continue;
+                }
+                let mut e = Entity::new(EntityKind::Organisation, &name, 0.70, &ctx.scan_id);
+                e.tag("employer-pivot");
+                e.tag("schema-org");
+                let mut ev = Evidence::new(
+                    SRC,
+                    format!("Organisation from Schema.org {} on {}", type_name, domain),
+                )
+                .with_attr("schema_type", *type_name)
+                .with_attr("employer_domain", &domain);
+                if let Some(org_url) = jsonld::field_str(block, "url") {
+                    ev = ev.with_attr("org_url", &org_url);
+                }
+                e.add_evidence(ev);
+                result.push(e);
+            }
         }
 
         // ── Linked profile URLs ─────────────────────────────────────
@@ -316,20 +468,27 @@ async fn fetch_m365_tenant_id(domain: &str, ctx: &ModuleContext) -> Option<Strin
         .await
         .ok()?;
     // Issuer format: "https://sts.windows.net/{uuid}/"
-    let issuer = body
-        .split('"')
-        .skip_while(|&s| s != "issuer")
-        .nth(2)?; // key → ":" → value
+    let issuer = body.split('"').skip_while(|&s| s != "issuer").nth(2)?; // key → ":" → value
     let tenant_id = issuer
         .trim_start_matches("https://sts.windows.net/")
         .trim_end_matches('/');
     // Validate: must be a 36-char UUID (8-4-4-4-12 hex with hyphens)
-    if tenant_id.len() == 36
-        && tenant_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
-    {
+    if tenant_id.len() == 36 && tenant_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
         Some(tenant_id.to_string())
     } else {
         None
+    }
+}
+
+/// Normalise a raw phone string to E.164 AU format (`+61xxxxxxxxx`).
+/// Returns `None` for strings that do not look like a valid AU number.
+fn normalise_phone_au(raw: &str) -> Option<String> {
+    let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
+    match digits.len() {
+        10 if digits.starts_with('0') => Some(format!("+61{}", &digits[1..])),
+        11 if digits.starts_with("61") => Some(format!("+{digits}")),
+        12 if digits.starts_with("061") => Some(format!("+{}", &digits[1..])),
+        _ => None,
     }
 }
 

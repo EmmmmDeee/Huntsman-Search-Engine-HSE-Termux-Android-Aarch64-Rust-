@@ -18,6 +18,7 @@ pub mod geometry;
 pub mod html;
 pub mod http;
 pub mod json;
+pub mod jsonld;
 pub mod key_pool;
 pub mod key_roi;
 pub mod keys;

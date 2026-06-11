@@ -31,7 +31,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `keybase` | username | free | no | 100 | person, username, email, domain, address |
 | `username_variants` | username | free | **yes** | 98 | username |
 
-### people (11)
+### people (12)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -40,7 +40,8 @@ records. The engine knows nothing else — every module is a one-file change.
 | `wikidata` | full_name, organisation | free | no | 96 | person, organisation, domain, username, url |
 | `seon` | email, phone | key_gated | no | 95 | person |
 | `pgp` | email | free | no | 91 | person, email |
-| `employer_pivot` | email, domain | free | no | 92 | address, phone, email, url |
+| `employer_pivot` | email, domain | free | no | 92 | address, phone, email, person, organisation, url, domain |
+| `schema_org` | domain, email, url | free | no | 88 | person, phone, email, address, organisation, url |
 | `epieos` | email | key_gated | no | 92 | person, username, address |
 | `gravatar` | email | free | no | 90 | person, username, url, address |
 | `fullcontact` | email, phone | key_gated | no | 89 | person, organisation, address, username, url |
