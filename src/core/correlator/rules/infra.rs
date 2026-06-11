@@ -351,7 +351,22 @@ pub(in crate::core::correlator) fn rule_au_031_malicious_adjacency(
         if is_benign_infra(e) {
             return None;
         }
-        ADJACENCY_BAD_TAGS.iter().copied().find(|t| e.has_tag(t))
+        let tag = ADJACENCY_BAD_TAGS.iter().copied().find(|t| e.has_tag(t))?;
+        // `darknet` is dual-semantic. On an IP/Domain it means bad infrastructure
+        // (a dark-web host, from criminal_ip) whose neighbours are rightly
+        // suspect. But on an identity entity it means darknet *exposure* — the
+        // subject's email/handle surfaced in a darknet dump (from intelx), i.e. a
+        // victim, not bad infra. Anchoring adjacency on that would flag the
+        // subject's own real name / alternate emails / handles as "known-bad
+        // infrastructure" (a High-severity false positive in the mainline
+        // people-centric scan). Restrict darknet-anchoring to infrastructure
+        // kinds; the other adjacency tags are unambiguously infra signals.
+        if tag == crate::core::tags::DARKNET
+            && !matches!(e.kind, EntityKind::IpAddress | EntityKind::Domain)
+        {
+            return None;
+        }
+        Some(tag)
     };
 
     // Group benign neighbours under each flagged node, deduped by benign uid (a

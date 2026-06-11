@@ -1662,6 +1662,46 @@ fn au031_fires_on_edge_to_malicious_node() {
 }
 
 #[test]
+fn au031_darknet_exposed_identity_does_not_contaminate_its_graph() {
+    // A darknet-EXPOSED email (intelx tags the seed identity) is a victim, not
+    // bad infrastructure: it must NOT anchor adjacency and label the subject's
+    // own derived Person as "known-bad infrastructure".
+    use crate::core::relation::{Relation, RelationKind};
+    let exposed = tagged(EntityKind::Email, "subject@example.com", &["darknet"]);
+    let person = tagged(EntityKind::Person, "Jordan Avery", &[]);
+    let rel = Relation::new(
+        person.uid.clone(),
+        exposed.uid.clone(),
+        RelationKind::DerivedFrom,
+        0.8,
+        "s",
+    );
+    assert!(
+        rule_au_031_malicious_adjacency(&[exposed, person], &[rel], "s", 0).is_empty(),
+        "darknet exposure of an identity must not flag its neighbours"
+    );
+}
+
+#[test]
+fn au031_darknet_infrastructure_still_anchors() {
+    // A darknet IP (criminal_ip's dark-web flag) IS bad infrastructure — its
+    // benign neighbour is rightly surfaced. The kind gate keeps this half.
+    use crate::core::relation::{Relation, RelationKind};
+    let bad_ip = tagged(EntityKind::IpAddress, "203.0.113.7", &["darknet"]);
+    let benign = tagged(EntityKind::Domain, "hosted.example", &[]);
+    let rel = Relation::new(
+        benign.uid.clone(),
+        bad_ip.uid.clone(),
+        RelationKind::ResolvesTo,
+        0.8,
+        "s",
+    );
+    let r = rule_au_031_malicious_adjacency(&[bad_ip, benign], &[rel], "s", 0);
+    assert_eq!(r.len(), 1, "darknet infrastructure still anchors adjacency");
+    assert!(r[0].description.contains("darknet"));
+}
+
+#[test]
 fn au031_no_fire_when_neither_endpoint_flagged() {
     use crate::core::relation::{Relation, RelationKind};
     let a = tagged(EntityKind::Domain, "a.example", &[]);
