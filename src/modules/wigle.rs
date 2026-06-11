@@ -259,6 +259,16 @@ impl Module for Wigle {
             Entity::new(EntityKind::Coordinates, &target.value, 0.85, &ctx.scan_id);
         coords_entity.tag("wigle");
         coords_entity.tag("wifi-observed");
+        // The queried coordinate, now WiFi-corroborated (0.85): if it is in
+        // Australia attach the offline state/LGA tags so this strong fix feeds
+        // the AU correlator like the BSSID-derived ones below.
+        if let Ok((lat, lon)) = crate::util::geo::parse_coords(&target.value)
+            && crate::util::geo::is_in_australia(lat, lon)
+        {
+            for t in crate::util::geo::au_coord_tags(lat, lon) {
+                coords_entity.tag(t);
+            }
+        }
 
         let enc_types: Vec<String> = body
             .results
@@ -810,9 +820,16 @@ fn emit_bssid_entities(
             0.75,
             scan_id,
         );
-        e.tag("geoint");
+        e.tag(crate::core::tags::GEOINT);
         e.tag("wigle");
         e.tag(observation_tag);
+        // Precise BSSID fix — AU fixes get the offline state/LGA tags (shared
+        // producer) so they feed AU-056/060; worldwide fixes pass through.
+        if crate::util::geo::is_in_australia(lat, lon) {
+            for t in crate::util::geo::au_coord_tags(lat, lon) {
+                e.tag(t);
+            }
+        }
         e.add_evidence(
             Evidence::new(
                 SRC,
