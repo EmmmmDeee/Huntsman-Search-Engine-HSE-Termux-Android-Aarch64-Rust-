@@ -114,10 +114,11 @@ records. The engine knows nothing else — every module is a one-file change.
 | `hackertarget` | ip_address, domain, url | free | no | 24 | domain, ip_address |
 | `domainsdb` | full_name, domain, organisation | free | no | 19 | domain |
 
-### infrastructure (17)
+### infrastructure (18)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
+| `m365_tenant` | email, domain | free | no | 88 | organisation |
 | `hudsonrock` | email, username, domain | free | no | 130 | — |
 | `ripestat` | ip_address, asn | free | no | 107 | asn, organisation, email |
 | `shodan` | ip_address | free | no | 105 | domain, url, asn, organisation, address, ip_address |

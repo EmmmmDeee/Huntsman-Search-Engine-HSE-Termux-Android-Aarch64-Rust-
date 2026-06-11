@@ -62,6 +62,7 @@ pub mod ipquery;
 pub mod keybase;
 pub mod leakix;
 pub mod local_net;
+pub mod m365_tenant;
 pub mod mls;
 pub mod mylnikov;
 pub mod name_intel;
@@ -274,6 +275,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(email_locale::EmailLocale),
         Arc::new(breach_timezone::BreachTimezone),
         // Threat intel & infrastructure
+        Arc::new(m365_tenant::M365Tenant),
         Arc::new(virustotal::VirusTotal),
         Arc::new(abuseipdb::AbuseIpDb),
         Arc::new(subdomain_takeover::SubdomainTakeover),

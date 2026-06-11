@@ -30,7 +30,7 @@ pub(super) const MAX_USERNAMES: usize = 24;
 /// tighter than usernames so a name seed doesn't flood the Browse table with
 /// near-duplicate addresses.
 pub(super) const MAX_EMAILS: usize = 12;
-pub(super) const MAX_PIVOTS: usize = 18;
+pub(super) const MAX_PIVOTS: usize = 24;
 
 // ── Confidence weights ──────────────────────────────────────────────────────
 /// Real-world-common handle shapes (`first.last`, `firstlast`, `flast`, …).
@@ -71,6 +71,9 @@ const DEFAULT_DOMAINS: &[&str] = &[
     "live.com",
     "aol.com",
     "proton.me",
+    // Australian ISP mailboxes (Telstra/Bigpond — large AU residential user base)
+    "bigpond.com",
+    "bigpond.net.au",
 ];
 
 /// Real-world consumer-mailbox share, used to rank `handle@provider` guesses so
@@ -89,6 +92,7 @@ fn provider_weight(domain: &str) -> f64 {
         "icloud.com" | "me.com" | "mac.com" => 0.45,
         "aol.com" => 0.4,
         "gmx.com" | "gmx.net" | "mail.com" => 0.35,
+        "bigpond.com" | "bigpond.net.au" | "telstra.com" => 0.35,
         "proton.me" | "protonmail.com" | "pm.me" | "tutanota.com" => 0.3,
         _ => 0.4,
     }
@@ -452,6 +456,32 @@ pub fn pivots(p: &ParsedName, top_email: Option<&str>) -> Vec<Pivot> {
         pv(
             "GitHub — users",
             format!("https://github.com/search?q={}&type=users", q(&name)),
+        ),
+        // AU-specific pivots (T1593.001 — Search Open Websites: Social Media)
+        pv(
+            "Seek.com.au — job profile",
+            format!("https://www.seek.com.au/jobs?keywords={}", q(&name)),
+        ),
+        pv(
+            "WhitePages AU — residential",
+            format!(
+                "https://www.whitepages.com.au/residential/name/search?search={}",
+                q(&name)
+            ),
+        ),
+        pv(
+            "Google AU — site:*.com.au",
+            format!(
+                "https://www.google.com.au/search?q={}",
+                q(&format!("\"{name}\" site:com.au"))
+            ),
+        ),
+        pv(
+            "Google — ABN/ACN lookup",
+            format!(
+                "https://www.google.com/search?q={}",
+                q(&format!("\"{name}\" ABN OR ACN OR director"))
+            ),
         ),
     ];
 
