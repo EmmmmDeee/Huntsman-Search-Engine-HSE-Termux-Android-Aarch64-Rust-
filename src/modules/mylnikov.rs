@@ -69,8 +69,15 @@ fn build_location_entity(bssid: &str, data: &MylnikovData, scan_id: &str) -> Opt
         scan_id,
     );
     e.tag("mylnikov");
-    e.tag("geoint");
+    e.tag(crate::core::tags::GEOINT);
     e.tag("bssid-located");
+    // Precise BSSID fix — AU fixes get the offline state/LGA tags (shared
+    // producer) so they feed AU-056/060; worldwide fixes pass through.
+    if crate::util::geo::is_in_australia(lat, lon) {
+        for t in crate::util::geo::au_coord_tags(lat, lon) {
+            e.tag(t);
+        }
+    }
     let mut ev = Evidence::new(SRC, format!("Mylnikov BSSID {bssid} -> {coords}"))
         .with_attr("bssid", bssid)
         .with_attr("latitude", format!("{lat:.6}"))
