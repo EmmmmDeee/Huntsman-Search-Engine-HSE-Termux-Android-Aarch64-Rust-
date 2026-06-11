@@ -529,6 +529,35 @@ fn extract_from_password_field_emits_key_entity() {
 }
 
 #[test]
+fn md5_password_hash_is_not_emitted_as_an_api_key() {
+    // Regression from a live email scan: a 32-hex MD5 password hash in a breach
+    // `password`/`hash` field was classified `generic_hex` and emitted as a
+    // VERIFIED 0.80 ApiKey — wrong kind AND inflated confidence. A bare hex value
+    // in a password field is a password hash, already captured as a credential;
+    // it must NOT surface as an ApiKey.
+    for field in ["password", "password_hash", "hash"] {
+        let item = serde_json::json!({
+            field: "5f4dcc3b5aa765d61d8327deb882cf99", // md5("password")
+            "dbname": "TestBreach",
+        });
+        let (mut seen, mut result) = empty_state();
+        extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+        assert!(
+            !result.entities.iter().any(|e| e.kind == EntityKind::ApiKey),
+            "{field}: md5 hash must not become an ApiKey, got {:?}",
+            result.entities
+        );
+    }
+
+    // But a genuine vendor-prefixed key leaked into a password field is still a
+    // real key and must be emitted.
+    let item = serde_json::json!({ "password": "AKIAJK28SLQQV61MNG9X" });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+    assert!(result.entities.iter().any(|e| e.kind == EntityKind::ApiKey));
+}
+
+#[test]
 fn crypto_address_emits_as_crypto_address_not_api_key() {
     // Regression: a Bitcoin wallet address shares the high-entropy shape of
     // an API key, but it is NOT one. It must surface as a chain-tagged
