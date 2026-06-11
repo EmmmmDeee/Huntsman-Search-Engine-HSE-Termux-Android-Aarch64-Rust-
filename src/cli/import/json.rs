@@ -187,7 +187,7 @@ pub(super) async fn parse_oathnet_json(
                         let lower = sub.to_lowercase();
                         if lower.contains('.') && seen_domains.insert(format!("sub:{lower}")) {
                             let mut e = Entity::new(EntityKind::Domain, &lower, 0.55, &sid);
-                            e.tag("subdomain");
+                            e.tag(crate::core::tags::SUBDOMAIN);
                             e.tag("stealer-target");
                             e.tag("import");
                             entities.push(e);

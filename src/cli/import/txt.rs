@@ -60,7 +60,7 @@ pub(super) fn parse_oathnet_txt(
                         );
                         de.tag("import");
                         if is_sub {
-                            de.tag("subdomain");
+                            de.tag(crate::core::tags::SUBDOMAIN);
                             stats.subdomains += 1;
                         } else {
                             stats.domains += 1;

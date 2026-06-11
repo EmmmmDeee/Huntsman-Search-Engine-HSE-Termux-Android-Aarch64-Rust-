@@ -114,7 +114,7 @@ impl Module for DnsAxfr {
                 Ok(records) if !records.is_empty() => {
                     for record in &records {
                         let mut e = Entity::new(EntityKind::Domain, record, 0.80, &ctx.scan_id);
-                        e.tag("subdomain");
+                        e.tag(crate::core::tags::SUBDOMAIN);
                         e.tag("axfr");
                         e.add_evidence(
                             Evidence::new(SRC, format!("Zone transfer from {ns_host}"))

@@ -61,7 +61,7 @@ fn build_subdomain_entity(
     }
     let host = format!("{sub}.{domain}");
     let mut e = Entity::new(EntityKind::Domain, &host, 0.88, scan_id);
-    e.tag("subdomain");
+    e.tag(crate::core::tags::SUBDOMAIN);
     e.tag("securitytrails");
     e.add_evidence(
         Evidence::new(SRC, format!("Subdomain of {domain} per SecurityTrails"))

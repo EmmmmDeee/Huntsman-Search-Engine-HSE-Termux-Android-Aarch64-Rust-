@@ -38,7 +38,7 @@ pub(super) fn parse_oathnet_html(body: &str, sid: &str) -> Vec<crate::core::enti
             let mut e = Entity::new(EntityKind::Domain, dom, conf, sid);
             e.tag("import");
             if is_sub {
-                e.tag("subdomain");
+                e.tag(crate::core::tags::SUBDOMAIN);
             }
             entities.push(e);
         }

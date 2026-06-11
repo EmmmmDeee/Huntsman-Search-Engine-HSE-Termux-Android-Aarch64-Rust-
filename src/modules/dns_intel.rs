@@ -514,7 +514,7 @@ async fn brute_subdomains(target: &Target, ctx: &ModuleContext) -> Result<Vec<En
     let mut entities: Vec<Entity> = Vec::with_capacity(hits.len());
     for (host, ips_joined, count) in hits {
         let mut e = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
-        e.tag("subdomain");
+        e.tag(crate::core::tags::SUBDOMAIN);
         e.tag("dns-brute");
         e.add_evidence(
             Evidence::new(
