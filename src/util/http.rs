@@ -194,6 +194,18 @@ pub fn build_client() -> reqwest::Client {
         .expect("reqwest client build failed")
 }
 
+/// A client that does NOT follow redirects, otherwise identical to
+/// [`build_client`] (SSRF-guarded resolver, rustls, project UA, fast connect
+/// timeout). Used by API-key validation, where a `301`/`302` from an auth
+/// endpoint is itself the "key is valid" signal and must be observed raw rather
+/// than followed to a dashboard/login page that would mask it.
+pub fn build_client_no_redirect() -> reqwest::Client {
+    client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("reqwest client build failed")
+}
+
 /// Like [`build_client`] but stamps every outbound request with a default
 /// `x-huntsman-trace: <trace_id>` header. End-to-end traceability across external
 /// calls (item #3 of the operator program): the same id the NDJSON scan logs

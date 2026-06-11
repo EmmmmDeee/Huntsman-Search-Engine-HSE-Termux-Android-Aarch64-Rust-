@@ -662,58 +662,55 @@ pub async fn validate_key(service: &str, key: &str) -> Option<bool> {
     Some(result)
 }
 
-async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> bool {
-    let timeout_ms = 10_000u64;
-    let secs = (timeout_ms / 1000).to_string();
-
-    let mut cmd = tokio::process::Command::new("curl");
-    cmd.args([
-        "-s",
-        "-o",
-        "/dev/null",
-        "-w",
-        "%{http_code}",
-        "--max-time",
-        &secs,
-    ]);
-
-    match sdef.key_header {
-        KeyPlacement::QueryParam(param) => {
-            let url = if sdef.test_url.contains('?') {
-                if sdef.test_url.ends_with('=') {
-                    format!("{}{}", sdef.test_url, key)
-                } else {
-                    format!("{}&{}={}", sdef.test_url, param, key)
-                }
-            } else {
-                format!("{}?{}={}", sdef.test_url, param, key)
-            };
-            cmd.args(["--", &url]);
+/// Assemble the validation URL for a `QueryParam` placement, appending the key
+/// correctly whether the template already has a query string, ends at the `=`
+/// of its key param, or has no query at all.
+fn build_query_param_url(test_url: &str, param: &str, key: &str) -> String {
+    if test_url.contains('?') {
+        if test_url.ends_with('=') {
+            format!("{test_url}{key}")
+        } else {
+            format!("{test_url}&{param}={key}")
         }
-        KeyPlacement::Header(header) => {
-            let h = format!("{header}: {key}");
-            cmd.args(["-H", &h, "--", sdef.test_url]);
-        }
-        KeyPlacement::BasicAuth => {
-            cmd.args(["-u", key, "--", sdef.test_url]);
-        }
-        KeyPlacement::BearerAuth => {
-            let h = format!("Authorization: bearer {key}");
-            cmd.args(["-H", &h, "--", sdef.test_url]);
-        }
+    } else {
+        format!("{test_url}?{param}={key}")
     }
+}
 
-    cmd.kill_on_drop(true);
+/// Shared, redirect-free rustls client for key validation. Built once: no `curl`
+/// subprocess (Termux/aarch64 may not ship curl, and a process spawn per key is
+/// needless), and redirects are NOT followed so a `301`/`302` auth signal is
+/// observed raw — matching the prior curl behaviour exactly.
+fn validation_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(crate::util::http::build_client_no_redirect)
+}
 
-    let output = tokio::time::timeout(Duration::from_millis(timeout_ms + 2000), cmd.output())
-        .await
-        .ok()
-        .and_then(std::result::Result::ok);
+async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> bool {
+    let client = validation_client();
+    let req = match sdef.key_header {
+        KeyPlacement::QueryParam(param) => {
+            client.get(build_query_param_url(sdef.test_url, param, key))
+        }
+        KeyPlacement::Header(header) => client.get(sdef.test_url).header(header, key),
+        KeyPlacement::BasicAuth => {
+            // Censys/PassiveTotal-style `id:secret`; a value with no `:` is the
+            // username with an empty password (matching `curl -u`).
+            let (user, pass) = key.split_once(':').unwrap_or((key, ""));
+            client.get(sdef.test_url).basic_auth(user, Some(pass))
+        }
+        KeyPlacement::BearerAuth => client
+            .get(sdef.test_url)
+            .header(reqwest::header::AUTHORIZATION, format!("bearer {key}")),
+    };
 
-    let Some(output) = output else { return false };
-    let code = String::from_utf8_lossy(&output.stdout);
-    let code = code.trim();
-    matches!(code, "200" | "201" | "204" | "301" | "302")
+    let resp = match tokio::time::timeout(Duration::from_secs(10), req.send()).await {
+        Ok(Ok(r)) => r,
+        _ => return false,
+    };
+    // Same success set as before: 2xx, plus the 301/302 some auth endpoints
+    // return on a valid key (observed raw — the client does not follow them).
+    matches!(resp.status().as_u16(), 200 | 201 | 204 | 301 | 302)
 }
 
 // ── Integration with ModuleContext keys ──────────────────────────────────────
@@ -999,6 +996,26 @@ mod tests {
 
         let k = pool.next_key("shodan").unwrap();
         assert_eq!(k, "good-key", "should prefer key with fewer errors");
+    }
+
+    #[test]
+    fn build_query_param_url_handles_all_three_template_shapes() {
+        // Template already ends at the key param's `=` → append the key directly
+        // (shodan: ".../api-info?key=").
+        assert_eq!(
+            build_query_param_url("https://api.shodan.io/api-info?key=", "key", "K"),
+            "https://api.shodan.io/api-info?key=K"
+        );
+        // Template has a query string but not ending in `=` → join with `&`.
+        assert_eq!(
+            build_query_param_url("https://x.test/v?fixed=1", "key", "K"),
+            "https://x.test/v?fixed=1&key=K"
+        );
+        // Template has no query string → start one with `?`.
+        assert_eq!(
+            build_query_param_url("https://x.test/v", "key", "K"),
+            "https://x.test/v?key=K"
+        );
     }
 
     #[test]
