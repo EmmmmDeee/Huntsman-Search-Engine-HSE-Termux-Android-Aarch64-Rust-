@@ -949,3 +949,69 @@ pub(in crate::core::correlator) fn rule_au_055_primary_source_accounts(
         rank: 0.0,
     }]
 }
+
+/// AU-057 — Phone number attributed via structured agent/professional listing data.
+///
+/// When a Phone entity is corroborated by a source tagged `schema-org` (Schema.org
+/// JSON-LD extracted from a real-estate / professional directory page) AND co-located
+/// with a Person or Email entity in the same scan, the phone is directly attributed to
+/// the subject via the listing platform's own structured data — not merely co-occurring
+/// in a breach dump. Schema.org agent listings (`@type: RealEstateAgent`, `Person`, etc.)
+/// explicitly wire the `telephone` field to the named individual, making this a
+/// higher-reliability attribution than a breach co-occurrence.
+///
+/// MITRE T1589.003 (Employee Names) × T1589 (Gather Victim Identity Information):
+/// professional directories self-publish this linkage; the rule surfaces it as a
+/// distinct finding so it can be ranked and acted on separately from breach-sourced
+/// phone data.
+pub(in crate::core::correlator) fn rule_au_057_schema_org_phone_attribution(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // Phones tagged `schema-org` — attributed via structured listing data.
+    let schema_phones: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Phone && e.has_tag("schema-org"))
+        .collect();
+    if schema_phones.is_empty() {
+        return Vec::new();
+    }
+
+    // Need at least one Person or Email in the same scan to anchor the attribution.
+    let has_anchor = entities.iter().any(|e| {
+        matches!(e.kind, EntityKind::Person | EntityKind::Email)
+            && e.confidence >= 0.60
+    });
+    if !has_anchor {
+        return Vec::new();
+    }
+
+    let mut uids: Vec<String> = schema_phones.iter().map(|e| e.uid.clone()).collect();
+    // Include the anchoring identity entity UIDs.
+    for e in entities.iter().filter(|e| {
+        matches!(e.kind, EntityKind::Person | EntityKind::Email) && e.confidence >= 0.60
+    }) {
+        uids.push(e.uid.clone());
+    }
+    uids.sort_unstable();
+    uids.dedup();
+
+    let phone_vals: Vec<&str> = schema_phones.iter().map(|e| e.value.as_str()).collect();
+
+    vec![Correlation {
+        rule_id: "AU-057".into(),
+        rule_name: "Schema.org structured-data phone attribution".into(),
+        severity: Severity::High,
+        description: format!(
+            "{} phone(s) directly attributed to subject via Schema.org structured \
+             agent/professional listing data (telephone field): {}",
+            phone_vals.len(),
+            phone_vals.join(", ")
+        ),
+        entity_uids: uids,
+        scan_id: scan_id.into(),
+        ts,
+        rank: 0.0,
+    }]
+}

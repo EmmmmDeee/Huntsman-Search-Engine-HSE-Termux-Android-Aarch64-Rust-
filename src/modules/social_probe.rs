@@ -28,6 +28,67 @@ struct Platform {
     name: &'static str,
     url_pattern: &'static str,
     exists_codes: &'static [u16],
+    /// Optional structural guard: returns `false` when the slug is
+    /// demonstrably invalid for this platform (e.g. dots in a Twitter
+    /// handle), preventing soft-200 false positives before any HTTP
+    /// request is made. `None` means "accept any slug".
+    handle_ok: Option<fn(&str) -> bool>,
+}
+
+// ── Per-platform slug validators ────────────────────────────────────────────
+// Only the most impactful rules are encoded here — the ones that cause the
+// most false positives (platforms that return 200 for any path, but only
+// support a subset of characters in real handles).
+
+/// Twitter/X: alphanumerics + underscore only, max 15 chars, no dots.
+fn twitter_handle_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 15
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// TikTok: alphanumerics, underscores, dots allowed, max 24 chars.
+/// Dots ARE valid on TikTok but the handle must not start/end with one.
+fn tiktok_handle_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 24
+        && !s.starts_with('.')
+        && !s.ends_with('.')
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+}
+
+/// Twitch: alphanumerics + underscore only, 4–25 chars, no dots.
+fn twitch_handle_ok(s: &str) -> bool {
+    (4..=25).contains(&s.len())
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Steam community ID: alphanumerics + underscore + hyphen, no dots.
+fn steam_handle_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Pinterest: alphanumerics + underscore only, 3–30 chars, no dots.
+fn pinterest_handle_ok(s: &str) -> bool {
+    (3..=30).contains(&s.len())
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Threads / Mastodon / Bluesky: same rule as Twitter — no dots.
+fn nodot_handle_ok(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// GitHub: alphanumerics + hyphens only, no consecutive hyphens, no dots.
+fn github_handle_ok(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with('-')
+        && !s.ends_with('-')
+        && !s.contains("--")
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 const USERNAME_PLATFORMS: &[Platform] = &[
@@ -35,141 +96,169 @@ const USERNAME_PLATFORMS: &[Platform] = &[
         name: "facebook",
         url_pattern: "https://www.facebook.com/{}",
         exists_codes: &[200, 302],
+        handle_ok: None,
     },
     Platform {
         name: "twitter",
         url_pattern: "https://twitter.com/{}",
         exists_codes: &[200, 301, 302],
+        handle_ok: Some(twitter_handle_ok),
     },
     Platform {
         name: "instagram",
         url_pattern: "https://www.instagram.com/{}/",
         exists_codes: &[200],
+        handle_ok: None, // Instagram allows dots
     },
     Platform {
         name: "tiktok",
         url_pattern: "https://www.tiktok.com/@{}",
         exists_codes: &[200],
+        handle_ok: Some(tiktok_handle_ok),
     },
     Platform {
         name: "github",
         url_pattern: "https://github.com/{}",
         exists_codes: &[200],
+        handle_ok: Some(github_handle_ok),
     },
     Platform {
         name: "gitlab",
         url_pattern: "https://gitlab.com/{}",
         exists_codes: &[200],
+        handle_ok: None,
     },
     Platform {
         name: "reddit",
         url_pattern: "https://www.reddit.com/user/{}/about.json",
         exists_codes: &[200],
+        handle_ok: None,
     },
     Platform {
         name: "pinterest",
         url_pattern: "https://www.pinterest.com/{}/",
         exists_codes: &[200],
+        handle_ok: Some(pinterest_handle_ok),
     },
     Platform {
         name: "steam",
         url_pattern: "https://steamcommunity.com/id/{}",
         exists_codes: &[200],
+        handle_ok: Some(steam_handle_ok),
     },
     Platform {
         name: "medium",
         url_pattern: "https://medium.com/@{}",
         exists_codes: &[200],
+        handle_ok: None,
     },
     Platform {
         name: "devto",
         url_pattern: "https://dev.to/{}",
         exists_codes: &[200],
+        handle_ok: None,
     },
     Platform {
         name: "keybase",
         url_pattern: "https://keybase.io/{}",
         exists_codes: &[200],
+        handle_ok: None,
     },
     Platform {
         name: "hackernews",
         url_pattern: "https://news.ycombinator.com/user?id={}",
         exists_codes: &[200],
+        handle_ok: None,
     },
     Platform {
         name: "twitch",
         url_pattern: "https://www.twitch.tv/{}",
         exists_codes: &[200],
+        handle_ok: Some(twitch_handle_ok),
     },
     Platform {
         name: "vimeo",
         url_pattern: "https://vimeo.com/{}",
         exists_codes: &[200],
+        handle_ok: None,
     },
     Platform {
         name: "soundcloud",
         url_pattern: "https://soundcloud.com/{}",
         exists_codes: &[200],
+        handle_ok: None,
     },
     Platform {
         name: "spotify",
         url_pattern: "https://open.spotify.com/user/{}",
         exists_codes: &[200],
+        handle_ok: None,
     },
     Platform {
         name: "flickr",
         url_pattern: "https://www.flickr.com/people/{}",
         exists_codes: &[200],
+        handle_ok: None,
     },
     Platform {
         name: "bitbucket",
         url_pattern: "https://bitbucket.org/{}/",
         exists_codes: &[200],
+        handle_ok: None,
     },
     Platform {
         name: "stackoverflow",
         url_pattern: "https://stackoverflow.com/users/{}",
         exists_codes: &[200],
+        handle_ok: None,
     },
     Platform {
         name: "myspace",
         url_pattern: "https://myspace.com/{}",
         exists_codes: &[200],
+        handle_ok: None,
     },
     Platform {
         name: "linktree",
         url_pattern: "https://linktr.ee/{}",
         exists_codes: &[200],
+        handle_ok: Some(nodot_handle_ok),
     },
     Platform {
         name: "about.me",
         url_pattern: "https://about.me/{}",
         exists_codes: &[200],
+        handle_ok: None,
     },
     Platform {
         name: "behance",
         url_pattern: "https://www.behance.net/{}",
         exists_codes: &[200],
+        handle_ok: None,
     },
     Platform {
         name: "dribbble",
         url_pattern: "https://dribbble.com/{}",
         exists_codes: &[200],
+        handle_ok: None,
     },
     Platform {
         name: "mastodon",
         url_pattern: "https://mastodon.social/@{}",
         exists_codes: &[200],
+        handle_ok: Some(nodot_handle_ok),
     },
     Platform {
         name: "bluesky",
         url_pattern: "https://bsky.app/profile/{}.bsky.social",
         exists_codes: &[200],
+        handle_ok: Some(nodot_handle_ok),
     },
     Platform {
         name: "threads",
         url_pattern: "https://www.threads.net/@{}",
         exists_codes: &[200],
+        handle_ok: Some(nodot_handle_ok),
     },
 ];
 
@@ -178,11 +267,13 @@ const NAME_PLATFORMS: &[Platform] = &[
         name: "facebook-public",
         url_pattern: "https://www.facebook.com/public/{}/",
         exists_codes: &[200],
+        handle_ok: None,
     },
     Platform {
         name: "peekyou",
         url_pattern: "https://www.peekyou.com/{}",
         exists_codes: &[200],
+        handle_ok: None,
     },
 ];
 
@@ -247,6 +338,14 @@ impl Module for SocialProbe {
         for platform in platforms {
             if ctx.cancel.is_cancelled() {
                 break;
+            }
+
+            // Skip before any HTTP call if the slug is structurally
+            // incompatible with this platform's handle rules — prevents
+            // the soft-200 false positives seen with dotted handles on
+            // Twitter, Twitch, Steam, Bluesky, Mastodon, Threads, etc.
+            if platform.handle_ok.is_some_and(|v| !v(&slug)) {
+                continue;
             }
 
             let url = platform.url_pattern.replace("{}", &slug);

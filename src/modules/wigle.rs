@@ -37,6 +37,8 @@ const HARDCODED_TOKEN: &str = crate::util::keys::WIGLE_DEFAULT_TOKEN;
 struct Resp {
     #[serde(default)]
     success: Option<bool>,
+    #[serde(default)]
+    message: Option<String>,
     #[serde(default, rename = "resultCount")]
     result_count: Option<u64>,
     #[serde(default, rename = "totalResults")]
@@ -227,6 +229,19 @@ impl Module for Wigle {
         };
 
         if body.success != Some(true) {
+            // Surface the WiGLE-specific "email not verified" gate so the
+            // operator knows exactly why the search returned nothing, rather
+            // than seeing a silent empty result.
+            if body.message.as_deref().is_some_and(|m| {
+                let lc = m.to_lowercase();
+                lc.contains("email") && lc.contains("verif")
+            }) {
+                tracing::warn!(
+                    "WiGLE search disabled — account email not verified. \
+                     Visit https://wigle.net/account and confirm your email \
+                     to enable network/search queries."
+                );
+            }
             return Ok(ModuleResult::new());
         }
         let total = body
@@ -1078,6 +1093,7 @@ mod tests {
         // "Telstra" → emitted as Organisation with cell-carrier tag.
         let resp = Resp {
             success: Some(true),
+            message: None,
             result_count: Some(3),
             total_results: Some(3),
             results: vec![
@@ -1144,6 +1160,7 @@ mod tests {
         // A non-generic carrier name SHOULD become an Organisation.
         let resp = Resp {
             success: Some(true),
+            message: None,
             result_count: Some(2),
             total_results: Some(2),
             results: vec![
@@ -1205,6 +1222,7 @@ mod tests {
         }
         let resp = Resp {
             success: Some(true),
+            message: None,
             result_count: Some(5),
             total_results: Some(5),
             results,
@@ -1224,6 +1242,7 @@ mod tests {
         // (real BSSIDs are 17 chars with separators, 12 without).
         let resp = Resp {
             success: Some(true),
+            message: None,
             result_count: Some(1),
             total_results: Some(1),
             results: vec![Network {
@@ -1248,6 +1267,7 @@ mod tests {
     fn extract_cell_intel_skips_failed_responses() {
         let resp = Resp {
             success: Some(false),
+            message: None,
             result_count: None,
             total_results: None,
             results: Vec::new(),
