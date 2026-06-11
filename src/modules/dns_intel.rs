@@ -684,7 +684,7 @@ async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Result<Vec<Ent
     } else {
         entity.tag("blocklisted");
         if listed_on.len() >= 3 {
-            entity.tag("high-risk");
+            entity.tag(crate::core::tags::HIGH_RISK);
         }
         listed_on.sort_unstable();
         entity.add_evidence(

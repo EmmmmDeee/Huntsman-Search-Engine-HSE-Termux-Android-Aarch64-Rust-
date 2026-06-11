@@ -180,7 +180,7 @@ fn build_email_entity(target: &Target, body: &RepResp, scan_id: &str) -> Entity 
     if let Some(s) = body.suspicious {
         ev = ev.with_attr("suspicious", s.to_string());
         if s {
-            entity.tag("suspicious");
+            entity.tag(tags::SUSPICIOUS);
         }
     }
     if let Some(refs) = body.references {

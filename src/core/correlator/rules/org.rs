@@ -52,7 +52,10 @@ pub(in crate::core::correlator) fn rule_au_022_organisation_with_breach(
         .into_iter()
         .filter(|e| e.confidence >= 0.60)
         .collect();
-    let breach_entities: Vec<&Entity> = entities.iter().filter(|e| e.has_tag("breach")).collect();
+    let breach_entities: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.has_tag(crate::core::tags::BREACH))
+        .collect();
     if orgs.is_empty() || breach_entities.is_empty() {
         return Vec::new();
     }
@@ -82,14 +85,15 @@ pub(in crate::core::correlator) fn rule_au_024_email_fraud_signal(
         .iter()
         .filter(|e| e.kind == EntityKind::Email)
         .filter(|e| {
-            let s = e.has_tag("suspicious") || e.has_tag("high-risk");
+            let s =
+                e.has_tag(crate::core::tags::SUSPICIOUS) || e.has_tag(crate::core::tags::HIGH_RISK);
             let b = e.has_tag(crate::core::tags::BREACH);
             let d = e.has_tag(crate::core::tags::DISPOSABLE);
             u32::from(s) + u32::from(b) + u32::from(d) >= 2
         })
         .map(|e| {
             let mut signals: Vec<&str> = Vec::new();
-            if e.has_tag("suspicious") || e.has_tag("high-risk") {
+            if e.has_tag(crate::core::tags::SUSPICIOUS) || e.has_tag(crate::core::tags::HIGH_RISK) {
                 signals.push("fraud-flagged");
             }
             if e.has_tag(crate::core::tags::BREACH) {

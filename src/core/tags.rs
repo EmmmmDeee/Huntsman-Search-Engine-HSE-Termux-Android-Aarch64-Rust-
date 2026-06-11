@@ -25,6 +25,12 @@ pub const MISSING_SECURITY_HEADERS: &str = "missing-security-headers";
 /// and matched by the AU-024 multi-signal email-fraud correlator, so it lives
 /// here to keep the emit and match spellings from drifting.
 pub const DISPOSABLE: &str = "disposable";
+/// A reputation/abuse source flagged the entity as suspicious (abuseipdb,
+/// virustotal, emailrep). Matched by the AU-024 fraud-signal correlator.
+pub const SUSPICIOUS: &str = "suspicious";
+/// A reputation/fraud source scored the entity high-risk (seon, ipqs,
+/// abuseipdb, dns_intel, ipquery). Matched by the AU-024 fraud-signal correlator.
+pub const HIGH_RISK: &str = "high-risk";
 
 // Geolocation
 pub const GEOINT: &str = "geoint";

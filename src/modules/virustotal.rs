@@ -87,7 +87,7 @@ fn build_entity(target: &Target, attrs: &VtAttributes, scan_id: &str) -> Entity 
     }
     // A suspicious-but-not-malicious verdict is a real signal the old code lost.
     if suspicious > 0 {
-        e.tag("suspicious");
+        e.tag(crate::core::tags::SUSPICIOUS);
     }
     if attrs
         .reputation

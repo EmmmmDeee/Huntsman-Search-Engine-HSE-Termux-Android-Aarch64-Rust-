@@ -102,7 +102,7 @@ fn build_reputation_entity(
 
     let score = body.fraud_score.unwrap_or(0);
     if score >= HIGH_RISK_SCORE {
-        entity.tag("high-risk");
+        entity.tag(crate::core::tags::HIGH_RISK);
     } else if score >= ELEVATED_RISK_SCORE {
         entity.tag("elevated-risk");
     }

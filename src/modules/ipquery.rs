@@ -157,7 +157,7 @@ impl Module for IpQuery {
             ip_entity.tag("hosting");
         }
         if risk_score >= 70 {
-            ip_entity.tag("high-risk");
+            ip_entity.tag(crate::core::tags::HIGH_RISK);
         }
 
         let mut ev = Evidence::new(SRC, format!("IPQuery risk assessment for {ip}"))

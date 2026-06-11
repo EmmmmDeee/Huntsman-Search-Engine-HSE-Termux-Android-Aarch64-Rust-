@@ -88,9 +88,9 @@ impl Module for AbuseIpDb {
         e.tag("threat-intel");
         if abuse_score >= 80 {
             e.tag("malicious");
-            e.tag("high-risk");
+            e.tag(crate::core::tags::HIGH_RISK);
         } else if abuse_score >= 40 {
-            e.tag("suspicious");
+            e.tag(crate::core::tags::SUSPICIOUS);
         }
         if data.is_tor.unwrap_or(false) {
             e.tag("tor-exit");

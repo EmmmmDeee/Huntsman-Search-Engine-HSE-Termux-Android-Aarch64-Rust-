@@ -198,7 +198,7 @@ fn build_email_entities(target: &Target, data: &SeonEmailData, scan_id: &str) ->
     if let Some(score) = data.score {
         ev = ev.with_attr("fraud_score", format!("{score:.1}"));
         if score >= HIGH_RISK_SCORE {
-            entity.tag("high-risk");
+            entity.tag(crate::core::tags::HIGH_RISK);
         }
     }
     if let Some(d) = data.deliverable {
@@ -290,7 +290,7 @@ fn build_phone_entities(target: &Target, data: &SeonPhoneData, scan_id: &str) ->
     if let Some(score) = data.score {
         ev = ev.with_attr("fraud_score", format!("{score:.1}"));
         if score >= HIGH_RISK_SCORE {
-            entity.tag("high-risk");
+            entity.tag(crate::core::tags::HIGH_RISK);
         }
     }
     if let Some(v) = data.valid {
