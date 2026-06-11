@@ -19,6 +19,7 @@ use crate::core::{
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
+    tags,
 };
 
 const SRC: &str = "phone_intl";
@@ -325,6 +326,13 @@ impl Module for PhoneIntl {
         let mut entity = Entity::new(EntityKind::Phone, &canonical, 0.85, &ctx.scan_id);
         entity.tag("e164");
         entity.tag(format!("country:{iso}"));
+        // Mark AU relevance at the country grain (additive, never narrowing): an
+        // Australian E.164 number surfaces in the au-relevant filter even when
+        // its area/carrier isn't recognised by the more specific phone modules.
+        // The state/LGA/carrier tags remain those modules' job.
+        if iso == "AU" {
+            entity.tag(tags::AU_RELEVANT);
+        }
         entity.add_evidence(
             Evidence::new(SRC, format!("Phone {canonical} → {name}"))
                 .with_attr("country_code", prefix)
@@ -490,5 +498,36 @@ mod tests {
             "phone-prefix ordering violated — move the specific code above its generic stem:\n  {}",
             violations.join("\n  ")
         );
+    }
+
+    fn ctx() -> ModuleContext {
+        let (bus, _rx) = tokio::sync::broadcast::channel(8);
+        ModuleContext {
+            scan_id: "t".into(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::default(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn au_number_is_marked_au_relevant_but_a_foreign_one_is_not() {
+        // An AU E.164 number surfaces in the au-relevant filter at the country
+        // grain (additive); a non-AU number only carries its country tag.
+        let au = PhoneIntl
+            .process(&Target::new(TargetKind::Phone, "+61 400 000 000"), &ctx())
+            .await
+            .unwrap();
+        let e = &au.entities[0];
+        assert!(e.has_tag("country:AU") && e.has_tag("au-relevant"));
+
+        let gb = PhoneIntl
+            .process(&Target::new(TargetKind::Phone, "+44 20 7946 0000"), &ctx())
+            .await
+            .unwrap();
+        let g = &gb.entities[0];
+        assert!(g.has_tag("country:GB") && !g.has_tag("au-relevant"));
     }
 }
