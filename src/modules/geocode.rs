@@ -232,12 +232,8 @@ fn build_forward_entity(lat: f64, lon: f64, coords: &str, scan_id: &str) -> Enti
     let mut e = Entity::new(EntityKind::Coordinates, coords, confidence, scan_id);
     e.tag("geocoded");
     if in_au {
-        e.tag("au-relevant");
-        if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
-            e.tag(format!("au-state:{state}"));
-        }
-        if let Some(lga) = crate::util::geo::au_lga_for_coords(lat, lon) {
-            e.tag(format!("au-lga:{}", lga.replace(' ', "-").to_lowercase()));
+        for t in crate::util::geo::au_coord_tags(lat, lon) {
+            e.tag(t);
         }
     } else {
         e.tag("off-region");
@@ -318,12 +314,8 @@ fn build_reverse_entity(lat: f64, lon: f64, data: &NominatimResp, scan_id: &str)
     match relevance {
         AuRelevance::InAustralia => {
             entity.tag("country:AU");
-            entity.tag("au-relevant");
-            if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
-                entity.tag(format!("au-state:{state}"));
-            }
-            if let Some(lga) = crate::util::geo::au_lga_for_coords(lat, lon) {
-                entity.tag(format!("au-lga:{}", lga.replace(' ', "-").to_lowercase()));
+            for t in crate::util::geo::au_coord_tags(lat, lon) {
+                entity.tag(t);
             }
         }
         AuRelevance::OffRegion => entity.tag("candidate"),

@@ -312,6 +312,67 @@ pub fn logan_suburb_centroid(suburb: &str) -> Option<(f64, f64, &'static str)> {
         .map(|&(_, lat, lon, pc)| (lat, lon, pc))
 }
 
+/// The AU geolocation tags for a coordinate: always [`crate::core::tags::AU_RELEVANT`],
+/// plus the `au-state:<CODE>` and `au-lga:<slug>` tags whenever the offline
+/// bounding-box tables ([`au_state_for_coords`] / [`au_lga_for_coords`]) resolve
+/// them. The state tag uses the canonical [`crate::core::tags::au_state_tag`]
+/// value when the code is one of the eight standard ones, falling back to the
+/// shared [`crate::core::tags::AU_STATE_PREFIX`] for any other code so behaviour
+/// never silently drops a tag.
+///
+/// This is the single producer of coordinate AU tags: the forward and reverse
+/// geocoders and the coarse provider-coords path all funnel through it, so the
+/// `au-relevant` / `au-state:` / `au-lga:` vocabulary they emit cannot drift
+/// apart (it previously lived as three near-identical inline blocks). Callers
+/// decide *when* to apply it — a fix already known to be in Australia tags the
+/// whole list; an off-region gate is the caller's concern.
+#[must_use]
+pub fn au_coord_tags(lat: f64, lon: f64) -> Vec<String> {
+    use crate::core::tags;
+    let mut tags = vec![tags::AU_RELEVANT.to_string()];
+    if let Some(state) = au_state_for_coords(lat, lon) {
+        tags.push(
+            tags::au_state_tag(state)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{}{state}", tags::AU_STATE_PREFIX)),
+        );
+    }
+    if let Some(lga) = au_lga_for_coords(lat, lon) {
+        tags.push(format!(
+            "{}{}",
+            tags::AU_LGA_PREFIX,
+            lga.replace(' ', "-").to_lowercase()
+        ));
+    }
+    tags
+}
+
+/// AU state/sub-state tags implied by a clustered UTC offset (no DST applied).
+///
+/// Queensland is permanently UTC+10 (no daylight saving), so a stable UTC+10
+/// activity cluster is the strongest offline AU-state signal a timestamp set can
+/// give — it cannot be NSW/VIC/TAS, which shift to UTC+11 in summer. UTC+11
+/// implies the eastern-daylight states; UTC+8 is Western Australia. Any other
+/// offset yields no AU tag. Returns canonical [`crate::core::tags`] constants.
+///
+/// Lives here (the pure geo utility) rather than in the breach-timezone module
+/// so the offset→region mapping sits alongside the coordinate→region tables it
+/// is conceptually part of, and so any future timestamp-clustering module reuses
+/// the identical mapping.
+#[must_use]
+pub fn au_utc_offset_tags(utc_offset: i32) -> &'static [&'static str] {
+    use crate::core::tags::{AU_RELEVANT, AU_SE_QLD, AU_STATE_NSW, AU_STATE_QLD, AU_STATE_WA};
+    const QLD: &[&str] = &[AU_RELEVANT, AU_STATE_QLD, AU_SE_QLD];
+    const NSW: &[&str] = &[AU_RELEVANT, AU_STATE_NSW];
+    const WA: &[&str] = &[AU_RELEVANT, AU_STATE_WA];
+    match utc_offset {
+        10 => QLD,
+        11 => NSW,
+        8 => WA,
+        _ => &[],
+    }
+}
+
 /// Build the coarse IP-geolocation `geoint` Coordinates entity shared by the
 /// IP-geo provider modules (`ipinfo` / `ipapi` / `ip2location` / `ipquery`):
 /// the plausibility gate ([`is_plausible_provider_coord`]), the 4-decimal
@@ -346,11 +407,17 @@ pub fn coarse_provider_coords(
         scan_id,
     );
     e.tag(crate::core::tags::GEOINT);
-    if let Some(state) = au_state_for_coords(lat, lon) {
-        e.tag("au-relevant");
-        e.tag(format!("au-state:{state}"));
-        if let Some(lga) = au_lga_for_coords(lat, lon) {
-            e.tag(format!("au-lga:{}", lga.replace(' ', "-").to_lowercase()));
+    // This path tags AU only for a fix that resolves to a state (a bare
+    // `au-relevant` with no state was never emitted here); everything else is
+    // explicitly off-region. The presence of an `au-state:` tag in the shared
+    // producer's output is exactly that "did a state resolve?" gate.
+    let au_tags = au_coord_tags(lat, lon);
+    if au_tags
+        .iter()
+        .any(|t| t.starts_with(crate::core::tags::AU_STATE_PREFIX))
+    {
+        for t in au_tags {
+            e.tag(t);
         }
     } else {
         e.tag("off-region");
@@ -361,6 +428,55 @@ pub fn coarse_provider_coords(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn au_coord_tags_logan_city_full_stack() {
+        // Park Ridge (Logan City, QLD) → relevant + state + LGA.
+        let tags = au_coord_tags(-27.6955, 152.8918);
+        assert!(tags.iter().any(|t| t == "au-relevant"));
+        assert!(tags.iter().any(|t| t == "au-state:QLD"));
+        assert!(tags.iter().any(|t| t == "au-lga:logan-city"));
+    }
+
+    #[test]
+    fn au_coord_tags_uses_canonical_constants() {
+        // The producer must emit the exact strings the correlator matches.
+        let tags = au_coord_tags(-27.6955, 152.8918);
+        assert!(tags.iter().any(|t| t == crate::core::tags::AU_RELEVANT));
+        assert!(tags.iter().any(|t| t == crate::core::tags::AU_STATE_QLD));
+        assert!(
+            tags.iter()
+                .any(|t| t == crate::core::tags::AU_LGA_LOGAN_CITY)
+        );
+    }
+
+    #[test]
+    fn au_coord_tags_brisbane_has_state_no_logan_lga() {
+        // Brisbane CBD is QLD but not Logan City.
+        let tags = au_coord_tags(-27.4698, 153.0251);
+        assert!(tags.iter().any(|t| t == "au-relevant"));
+        assert!(tags.iter().any(|t| t == "au-state:QLD"));
+        assert!(!tags.iter().any(|t| t == "au-lga:logan-city"));
+    }
+
+    #[test]
+    fn au_utc_offset_tags_qld_nsw_wa_and_gaps() {
+        // UTC+10 = permanent AEST = QLD (+ the SE-QLD sub-state signal).
+        let qld = au_utc_offset_tags(10);
+        assert!(qld.contains(&"au-relevant"));
+        assert!(qld.contains(&"au-state:QLD"));
+        assert!(qld.contains(&"au-se-qld"));
+        // UTC+11 = AEDT = NSW (and NOT QLD, which never shifts).
+        let nsw = au_utc_offset_tags(11);
+        assert!(nsw.contains(&"au-state:NSW"));
+        assert!(!nsw.contains(&"au-state:QLD"));
+        // UTC+8 = AWST = WA.
+        assert!(au_utc_offset_tags(8).contains(&"au-state:WA"));
+        // Non-AU offsets carry no tag.
+        assert!(au_utc_offset_tags(-5).is_empty());
+        assert!(au_utc_offset_tags(0).is_empty());
+        assert!(au_utc_offset_tags(9).is_empty());
+    }
 
     #[test]
     fn parse_coords_accepts_well_formed_pairs() {

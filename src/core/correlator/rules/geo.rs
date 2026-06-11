@@ -20,7 +20,7 @@ fn coord_state(e: &Entity) -> Option<&'static str> {
     if let Some(state) = e
         .tags
         .iter()
-        .find_map(|t| t.strip_prefix("au-state:"))
+        .find_map(|t| t.strip_prefix(crate::core::tags::AU_STATE_PREFIX))
         .and_then(|code| AU_STATES.into_iter().find(|s| *s == code))
     {
         return Some(state);
@@ -663,7 +663,7 @@ pub(in crate::core::correlator) fn rule_au_059_se_qld_phone_corroboration(
     // Phone-area entities that assert SE QLD.
     let phone_geo: Vec<&Entity> = entities
         .iter()
-        .filter(|e| e.kind == EntityKind::Address && e.has_tag("au-se-qld"))
+        .filter(|e| e.kind == EntityKind::Address && e.has_tag(crate::core::tags::AU_SE_QLD))
         .collect();
     if phone_geo.is_empty() {
         return Vec::new();
@@ -674,8 +674,8 @@ pub(in crate::core::correlator) fn rule_au_059_se_qld_phone_corroboration(
         .filter(|e| {
             matches!(e.kind, EntityKind::Address | EntityKind::Coordinates)
                 && e.confidence >= 0.40
-                && e.has_tag("au-state:QLD")
-                && !e.has_tag("au-se-qld") // exclude the phone entity itself
+                && e.has_tag(crate::core::tags::AU_STATE_QLD)
+                && !e.has_tag(crate::core::tags::AU_SE_QLD) // exclude the phone entity itself
         })
         .collect();
     if qld_geo.is_empty() {
@@ -731,7 +731,7 @@ pub(in crate::core::correlator) fn rule_au_060_logan_city_convergence(
             continue;
         }
         // Class 1: LGA-tagged coordinate.
-        if e.kind == EntityKind::Coordinates && e.has_tag("au-lga:logan-city") {
+        if e.kind == EntityKind::Coordinates && e.has_tag(crate::core::tags::AU_LGA_LOGAN_CITY) {
             signal_uids.push((1, e.uid.clone()));
             continue;
         }
@@ -741,18 +741,20 @@ pub(in crate::core::correlator) fn rule_au_060_logan_city_convergence(
             let is_div7 = div7_suburbs
                 .iter()
                 .any(|s| val_lower.contains(&s.to_lowercase()));
-            let is_logan = val_lower.contains("logan") && e.has_tag("au-relevant");
+            let is_logan = val_lower.contains("logan") && e.has_tag(crate::core::tags::AU_RELEVANT);
             if is_div7 || is_logan {
                 signal_uids.push((2, e.uid.clone()));
                 continue;
             }
         }
         // Class 3: SE QLD phone area.
-        if e.has_tag("au-se-qld") {
+        if e.has_tag(crate::core::tags::AU_SE_QLD) {
             signal_uids.push((3, e.uid.clone()));
         }
         // Class 4: Optus carrier + SE QLD context.
-        if e.has_tag("au-carrier:optus") && e.has_tag("au-relevant") {
+        if e.has_tag(crate::core::tags::AU_CARRIER_OPTUS)
+            && e.has_tag(crate::core::tags::AU_RELEVANT)
+        {
             signal_uids.push((4, e.uid.clone()));
         }
     }

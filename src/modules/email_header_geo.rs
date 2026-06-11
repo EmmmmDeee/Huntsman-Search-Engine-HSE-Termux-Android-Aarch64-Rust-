@@ -82,7 +82,7 @@ impl Module for EmailHeaderGeo {
             e.tag("email-infra-inferred");
             if let Some(tag) = geo.extra_tag {
                 e.tag(tag);
-                e.tag("au-relevant");
+                e.tag(crate::core::tags::AU_RELEVANT);
             }
             e.add_evidence(
                 Evidence::new(
@@ -146,7 +146,7 @@ fn infer_geo_from_email_domain(domain: &str) -> Option<DomainGeo> {
         if domain.ends_with(tld) {
             // A `.com.au` / `.gov.au` / `.edu.au` address is AU-relevant.
             let extra_tag = if tld.ends_with(".au") {
-                Some("au-relevant")
+                Some(crate::core::tags::AU_RELEVANT)
             } else {
                 None
             };
@@ -173,45 +173,59 @@ fn detect_corporate_provider(domain: &str) -> Option<(&'static str, &'static str
 /// AU-specific organisation domain patterns that carry finer-grained geographic
 /// signal than a bare `.com.au` ccTLD match. Ordered most-specific first so
 /// `logan.qld.gov.au` matches before `qld.gov.au`.
+// extra_tag values are the canonical `crate::core::tags` constants so a matched
+// domain emits the exact tag the GEOINT correlator matches on — no drift.
 const AU_SPECIFIC_DOMAINS: &[(&str, &str, &str)] = &[
     // Logan City Council — strongest LGA signal.
     (
         "logan.qld.gov.au",
         "Logan City, Queensland, Australia",
-        "au-lga:logan-city",
+        crate::core::tags::AU_LGA_LOGAN_CITY,
     ),
     (
         "logancity.qld.gov.au",
         "Logan City, Queensland, Australia",
-        "au-lga:logan-city",
+        crate::core::tags::AU_LGA_LOGAN_CITY,
     ),
     // SE QLD councils.
     (
         "brisbane.qld.gov.au",
         "Brisbane, Queensland, Australia",
-        "au-se-qld",
+        crate::core::tags::AU_SE_QLD,
     ),
     (
         "ipswich.qld.gov.au",
         "Ipswich, Queensland, Australia",
-        "au-se-qld",
+        crate::core::tags::AU_SE_QLD,
     ),
     (
         "goldcoast.qld.gov.au",
         "Gold Coast, Queensland, Australia",
-        "au-se-qld",
+        crate::core::tags::AU_SE_QLD,
     ),
     // QLD state government (any *.qld.gov.au not matched above).
-    ("qld.gov.au", "Queensland, Australia", "au-state:QLD"),
+    (
+        "qld.gov.au",
+        "Queensland, Australia",
+        crate::core::tags::AU_STATE_QLD,
+    ),
     // QLD Education department.
-    ("eq.edu.au", "Queensland, Australia", "au-state:QLD"),
+    (
+        "eq.edu.au",
+        "Queensland, Australia",
+        crate::core::tags::AU_STATE_QLD,
+    ),
     (
         "education.qld.gov.au",
         "Queensland, Australia",
-        "au-state:QLD",
+        crate::core::tags::AU_STATE_QLD,
     ),
     // QLD Health.
-    ("health.qld.gov.au", "Queensland, Australia", "au-state:QLD"),
+    (
+        "health.qld.gov.au",
+        "Queensland, Australia",
+        crate::core::tags::AU_STATE_QLD,
+    ),
 ];
 
 /// True if `pattern` (a provider brand token such as `bigpond` or `tpg.com`)

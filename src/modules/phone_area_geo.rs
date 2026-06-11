@@ -84,8 +84,8 @@ impl Module for PhoneAreaGeo {
             e.tag("geoint");
             e.tag("phone-area-code");
             if geo.country_code == "AU" && geo.area_code == "7" {
-                e.tag("au-se-qld");
-                e.tag("au-relevant");
+                e.tag(crate::core::tags::AU_SE_QLD);
+                e.tag(crate::core::tags::AU_RELEVANT);
             }
             e.add_evidence(
                 Evidence::new(
@@ -111,8 +111,12 @@ impl Module for PhoneAreaGeo {
             let mut e = Entity::new(EntityKind::Address, label, carrier.confidence, &ctx.scan_id);
             e.tag("geoint");
             e.tag("phone-mobile-carrier");
-            e.tag("au-relevant");
-            e.tag(format!("au-carrier:{}", carrier.carrier_slug));
+            e.tag(crate::core::tags::AU_RELEVANT);
+            e.tag(format!(
+                "{}{}",
+                crate::core::tags::AU_CARRIER_PREFIX,
+                carrier.carrier_slug
+            ));
             e.add_evidence(
                 Evidence::new(
                     SRC,

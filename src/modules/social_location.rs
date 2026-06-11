@@ -181,21 +181,21 @@ fn au_location_tags(loc: &str) -> Vec<&'static str> {
     if !is_au {
         return tags;
     }
-    tags.push("au-relevant");
+    tags.push(crate::core::tags::AU_RELEVANT);
 
     // State attribution.
     if lower.contains("qld") || lower.contains("queensland") {
-        tags.push("au-state:QLD");
+        tags.push(crate::core::tags::AU_STATE_QLD);
     } else if lower.contains("nsw") || lower.contains("new south wales") {
-        tags.push("au-state:NSW");
+        tags.push(crate::core::tags::AU_STATE_NSW);
     } else if lower.contains(" vic") || lower.contains("victoria") {
-        tags.push("au-state:VIC");
+        tags.push(crate::core::tags::AU_STATE_VIC);
     } else if lower.contains("western australia") || lower.contains(" wa,") {
-        tags.push("au-state:WA");
+        tags.push(crate::core::tags::AU_STATE_WA);
     } else if lower.contains("south australia") || lower.contains(" sa,") {
-        tags.push("au-state:SA");
+        tags.push(crate::core::tags::AU_STATE_SA);
     } else if lower.contains("tasmania") || lower.contains(" tas") {
-        tags.push("au-state:TAS");
+        tags.push(crate::core::tags::AU_STATE_TAS);
     }
 
     // SE QLD signal: known SE QLD cities mentioned.
@@ -210,7 +210,7 @@ fn au_location_tags(loc: &str) -> Vec<&'static str> {
         "toowoomba",
     ];
     if se_qld_cities.iter().any(|c| lower.contains(c)) {
-        tags.push("au-se-qld");
+        tags.push(crate::core::tags::AU_SE_QLD);
     }
 
     // Logan City LGA: Division 7 suburbs + Logan itself.
@@ -220,7 +220,7 @@ fn au_location_tags(loc: &str) -> Vec<&'static str> {
             .iter()
             .any(|(s, _, _, _)| lower.contains(&s.to_lowercase()));
     if is_logan {
-        tags.push("au-lga:logan-city");
+        tags.push(crate::core::tags::AU_LGA_LOGAN_CITY);
     }
 
     tags

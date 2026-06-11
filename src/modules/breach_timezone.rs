@@ -76,7 +76,8 @@ impl Module for BreachTimezone {
             e.tag("coarse");
             e.tag("timezone-inferred");
             // AU-specific tagging: UTC+10 → QLD (no DST), UTC+11 → NSW/VIC/ACT.
-            for &tag in au_timezone_tags(tz.utc_offset) {
+            // Shared offset→region mapping in `util::geo` (see [`au_utc_offset_tags`]).
+            for &tag in crate::util::geo::au_utc_offset_tags(tz.utc_offset) {
                 e.tag(tag);
             }
             e.add_evidence(
@@ -198,23 +199,6 @@ fn offset_to_region(offset: i32) -> &'static str {
     }
 }
 
-/// Derive AU-specific tags from a UTC offset. Called after `infer_timezone`
-/// to enrich the entity with offline GEOINT state attribution.
-fn au_timezone_tags(utc_offset: i32) -> &'static [&'static str] {
-    match utc_offset {
-        // UTC+10 = AEST. Queensland is permanently at UTC+10 (no DST); NSW/VIC/TAS
-        // are only at UTC+10 in winter (Apr–Oct). A stable UTC+10 cluster is the
-        // strongest offline AU state signal this module can produce.
-        10 => &["au-relevant", "au-state:QLD", "au-se-qld"],
-        // UTC+11 = AEDT (NSW/VIC/TAS/ACT summer, Oct–Apr).
-        11 => &["au-relevant", "au-state:NSW"],
-        // UTC+9.5 rounds to 10 in integer arithmetic — ACST (SA/NT).
-        // UTC+8 = AWST (WA).
-        8 => &["au-relevant", "au-state:WA"],
-        _ => &[],
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,29 +231,6 @@ mod tests {
         assert!(offset_to_region(11).contains("NSW"), "UTC+11 must name NSW");
         assert!(offset_to_region(0).contains("UK"));
         assert!(offset_to_region(-5).contains("Eastern"));
-    }
-
-    #[test]
-    fn au_timezone_tags_utc10_gives_qld_se_qld() {
-        let tags = au_timezone_tags(10);
-        assert!(tags.contains(&"au-relevant"));
-        assert!(tags.contains(&"au-state:QLD"));
-        assert!(tags.contains(&"au-se-qld"));
-    }
-
-    #[test]
-    fn au_timezone_tags_utc11_gives_nsw() {
-        let tags = au_timezone_tags(11);
-        assert!(tags.contains(&"au-relevant"));
-        assert!(tags.contains(&"au-state:NSW"));
-        assert!(!tags.contains(&"au-state:QLD"));
-    }
-
-    #[test]
-    fn au_timezone_tags_non_au_empty() {
-        assert!(au_timezone_tags(-5).is_empty());
-        assert!(au_timezone_tags(0).is_empty());
-        assert!(au_timezone_tags(9).is_empty());
     }
 
     #[test]

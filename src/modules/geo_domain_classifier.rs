@@ -80,7 +80,7 @@ impl Module for GeoDomainClassifier {
             e.tag("domain-inferred");
             if let Some(tag) = geo.extra_tag {
                 e.tag(tag);
-                e.tag("au-relevant");
+                e.tag(crate::core::tags::AU_RELEVANT);
             }
             e.add_evidence(
                 Evidence::new(
@@ -125,101 +125,114 @@ fn classify_domain(domain: &str) -> Option<GeoClassification> {
 /// before the parent state TLD.
 fn classify_by_au_specific_service(domain: &str) -> Option<GeoClassification> {
     let d = domain.strip_prefix("www.").unwrap_or(domain);
-    // (pattern, location, confidence, extra_tag)
+    // (pattern, location, confidence, extra_tag). The extra_tag values are the
+    // canonical `crate::core::tags` constants, so a council/carrier domain here
+    // emits the exact tag the GEOINT correlator matches on — no drift.
+    use crate::core::tags;
     const AU_SPECIFIC: &[(&str, &str, f64, &str)] = &[
         // Logan City Council — strongest possible LGA signal.
         (
             "logan.qld.gov.au",
             "Logan City, Queensland, Australia",
             0.75,
-            "au-lga:logan-city",
+            tags::AU_LGA_LOGAN_CITY,
         ),
         (
             "logancity.qld.gov.au",
             "Logan City, Queensland, Australia",
             0.75,
-            "au-lga:logan-city",
+            tags::AU_LGA_LOGAN_CITY,
         ),
         // SE QLD council domains.
         (
             "brisbane.qld.gov.au",
             "Brisbane, SE Queensland, Australia",
             0.68,
-            "au-se-qld",
+            tags::AU_SE_QLD,
         ),
         (
             "ipswich.qld.gov.au",
             "Ipswich, SE Queensland, Australia",
             0.68,
-            "au-se-qld",
+            tags::AU_SE_QLD,
         ),
         (
             "goldcoast.qld.gov.au",
             "Gold Coast, SE Queensland, Australia",
             0.68,
-            "au-se-qld",
+            tags::AU_SE_QLD,
         ),
         (
             "sunshinecoast.qld.gov.au",
             "Sunshine Coast, Queensland, Australia",
             0.65,
-            "au-se-qld",
+            tags::AU_SE_QLD,
         ),
         (
             "moretonbay.qld.gov.au",
             "Moreton Bay, SE Queensland, Australia",
             0.65,
-            "au-se-qld",
+            tags::AU_SE_QLD,
         ),
         (
             "redland.qld.gov.au",
             "Redland City, SE Queensland, Australia",
             0.65,
-            "au-se-qld",
+            tags::AU_SE_QLD,
         ),
         // Electoral Commission QLD — office is in SE QLD.
         (
             "ecq.qld.gov.au",
             "SE Queensland, Australia",
             0.55,
-            "au-se-qld",
+            tags::AU_SE_QLD,
         ),
         // QLD state government (parent — any *.qld.gov.au not matched above).
-        ("qld.gov.au", "Queensland, Australia", 0.65, "au-state:QLD"),
+        (
+            "qld.gov.au",
+            "Queensland, Australia",
+            0.65,
+            tags::AU_STATE_QLD,
+        ),
         // QLD Education (state school system).
-        ("eq.edu.au", "Queensland, Australia", 0.55, "au-state:QLD"),
+        (
+            "eq.edu.au",
+            "Queensland, Australia",
+            0.55,
+            tags::AU_STATE_QLD,
+        ),
         (
             "education.qld.gov.au",
             "Queensland, Australia",
             0.58,
-            "au-state:QLD",
+            tags::AU_STATE_QLD,
         ),
         // QLD Health.
         (
             "health.qld.gov.au",
             "Queensland, Australia",
             0.58,
-            "au-state:QLD",
+            tags::AU_STATE_QLD,
         ),
         // QLD Transport and Main Roads.
         (
             "tmr.qld.gov.au",
             "Queensland, Australia",
             0.58,
-            "au-state:QLD",
+            tags::AU_STATE_QLD,
         ),
         // Telstra BigPond — national AU carrier, SE QLD major coverage area.
         (
             "bigpond.com",
             "Australia (Telstra)",
             0.60,
-            "au-carrier:telstra",
+            tags::AU_CARRIER_TELSTRA,
         ),
         (
             "bigpond.net.au",
             "Australia (Telstra)",
             0.60,
-            "au-carrier:telstra",
+            tags::AU_CARRIER_TELSTRA,
         ),
     ];
     for &(pattern, location, confidence, extra_tag) in AU_SPECIFIC {
