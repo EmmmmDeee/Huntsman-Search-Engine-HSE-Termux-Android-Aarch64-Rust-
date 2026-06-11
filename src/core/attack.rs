@@ -130,6 +130,10 @@ pub const RECONNAISSANCE: &[Technique] = &[
         name: "Scanning IP Blocks",
     },
     Technique {
+        id: "T1595.003",
+        name: "Wordlist Scanning",
+    },
+    Technique {
         id: "T1596",
         name: "Search Open Technical Databases",
     },

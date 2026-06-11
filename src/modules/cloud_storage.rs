@@ -42,6 +42,16 @@ impl Module for CloudStorage {
         ModuleCategory::Web
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Active, target-touching scanning of candidate bucket names built from a
+        // suffix wordlist — ATT&CK T1595 Active Scanning, sub-technique T1595.003
+        // Wordlist Scanning. More precise than the Web category default
+        // (T1594/T1592.002), and parallel to portscan's T1595 + T1595.001
+        // (Scanning IP Blocks): same parent, the sub-technique that matches HOW
+        // this module enumerates (a wordlist, not IP blocks).
+        &["T1595", "T1595.003"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Url];
         KINDS
@@ -184,5 +194,13 @@ mod tests {
         assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));
         assert!(m.accepts(&Target::new(TargetKind::Organisation, "Acme Corp")));
         assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+    }
+
+    #[test]
+    fn attack_techniques_are_wordlist_active_scanning() {
+        // Wordlist-driven active scanning, not the Web category default.
+        let t = CloudStorage.attack_techniques();
+        assert!(t.contains(&"T1595"), "active scanning parent");
+        assert!(t.contains(&"T1595.003"), "wordlist scanning sub-technique");
     }
 }
