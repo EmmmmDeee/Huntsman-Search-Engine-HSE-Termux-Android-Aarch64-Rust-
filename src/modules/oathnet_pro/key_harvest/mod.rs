@@ -172,6 +172,17 @@ const EXTRACTED_VALUE_MAX: usize = 4096;
 /// Scan a JSON record for API key patterns in password / URL-param / extra
 /// fields. Public so peer modules like `see_know` can use the same harvest
 /// pipeline against their own response schemas.
+/// Breach/stealer fields whose contents are a user password — so a bare hex
+/// value in them is a password *hash*, not an API key. Used to suppress the
+/// `generic_hex` ApiKey fallback for these fields (the value is still harvested
+/// as a credential elsewhere).
+fn is_password_field(field: &str) -> bool {
+    matches!(
+        field,
+        "password" | "password_hash" | "pass" | "pwd" | "passwd" | "hash"
+    )
+}
+
 pub fn extract_api_keys_from_item(
     item: &Value,
     scan_id: &str,
@@ -228,13 +239,24 @@ pub fn extract_api_keys_from_item(
     for field in &fields {
         if let Some(val) = val_str(item, field) {
             if let Some((service, key_val)) = identify_api_key(&val) {
-                let db = val_str(item, "dbname").unwrap_or_default();
-                let source = if db.is_empty() {
-                    format!("{field} field")
-                } else {
-                    format!("breach ({db})")
-                };
-                emit_key(service, key_val, &source, scan_id, seen, result);
+                // A bare 32/64-hex value in a password/hash field is a leaked
+                // password *hash* (MD5/SHA), not an API key — `identify_api_key`
+                // can only see the shape, not the field, so it returns the
+                // `generic_hex` fallback. Emitting it as a VERIFIED ApiKey is a
+                // double error (wrong kind + inflated confidence); the value is
+                // already captured as a credential by `store_api_credential`. A
+                // *vendor-prefixed* key (sk-…, AKIA…) stored in a password field
+                // is still a genuine leaked key, so only the generic fallback is
+                // suppressed here. (Live email scan flooded with hex ApiKeys.)
+                if !(service == "generic_hex" && is_password_field(field)) {
+                    let db = val_str(item, "dbname").unwrap_or_default();
+                    let source = if db.is_empty() {
+                        format!("{field} field")
+                    } else {
+                        format!("breach ({db})")
+                    };
+                    emit_key(service, key_val, &source, scan_id, seen, result);
+                }
             }
             // Decode-through pass: same field, treat the value as
             // base64 of a key and recurse through `identify_api_key`.
