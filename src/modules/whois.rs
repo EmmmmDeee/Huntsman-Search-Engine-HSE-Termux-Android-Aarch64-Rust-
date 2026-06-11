@@ -317,6 +317,11 @@ impl Module for Whois {
                 ae.tag("whois");
                 ae.tag("registrant");
                 ae.tag(crate::core::tags::GEOINT);
+                // Free-text AU enrichment (shared producer): an Australian
+                // registrant location feeds AU-056/060; non-AU passes through.
+                for t in crate::util::geo::au_location_tags(&addr) {
+                    ae.tag(t);
+                }
                 ae.add_evidence(
                     Evidence::new(SRC, format!("Registrant location for {}", target.value))
                         .with_attr("parent_target", target.value.as_str()),

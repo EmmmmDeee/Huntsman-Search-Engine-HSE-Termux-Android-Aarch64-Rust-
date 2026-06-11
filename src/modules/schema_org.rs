@@ -298,7 +298,18 @@ impl Module for SchemaOrg {
                 e.tag("schema-org");
                 e.tag("structured-data");
                 e.tag("country:AU");
-                e.tag(format!("state:{state}"));
+                e.tag(crate::core::tags::GEOINT);
+                e.tag(crate::core::tags::AU_RELEVANT);
+                // Canonical au-state from the authoritative parsed state code (the
+                // structured-data state is reliable, so this is the primary
+                // signal); the shared free-text producer then adds any au-se-qld /
+                // LGA tags it recognises. Entity::tag dedupes, so overlap is safe.
+                if let Some(st) = crate::core::tags::au_state_tag(&state.to_ascii_uppercase()) {
+                    e.tag(st);
+                }
+                for t in crate::util::geo::au_location_tags(&canonical) {
+                    e.tag(t);
+                }
                 e.tag(format!("postcode:{pc}"));
                 e.add_evidence(
                     Evidence::new(

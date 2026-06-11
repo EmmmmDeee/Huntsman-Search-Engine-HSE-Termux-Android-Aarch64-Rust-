@@ -219,6 +219,12 @@ impl Module for UrlScan {
             );
             ae.tag("urlscan");
             ae.tag(crate::core::tags::GEOINT);
+            // Coarse hosting country; AU-enrich if the value names Australia
+            // (shared producer — a bare 2-letter code yields nothing, which is
+            // correct for this coarse hosting signal).
+            for t in crate::util::geo::au_location_tags(country) {
+                ae.tag(t);
+            }
             ae.add_evidence(Evidence::new(
                 SRC,
                 format!("Hosting country from URLScan.io scans of {}", &target.value),
