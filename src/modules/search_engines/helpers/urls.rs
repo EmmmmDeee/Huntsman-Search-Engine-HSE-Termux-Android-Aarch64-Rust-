@@ -551,3 +551,72 @@ fn is_tracking_param(key: &str) -> bool {
 pub(in crate::modules::search_engines) fn extract_registrable(host: &str) -> String {
     crate::util::domains::registrable_domain(host).unwrap_or_else(|| host.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_path_username_first_segment_only_when_handle_shaped() {
+        assert_eq!(
+            extract_path_username("https://github.com/torvalds").as_deref(),
+            Some("torvalds")
+        );
+        // Deeper path: only the first segment is the handle candidate.
+        assert_eq!(
+            extract_path_username("https://x.com/jane.doe/status/1").as_deref(),
+            Some("jane.doe")
+        );
+        // Too short, root, and unparseable all yield None (never panic).
+        assert_eq!(extract_path_username("https://github.com/ab"), None);
+        assert_eq!(extract_path_username("https://github.com/"), None);
+        assert_eq!(extract_path_username("not a url"), None);
+    }
+
+    #[test]
+    fn extract_host_lowercases_and_tolerates_garbage() {
+        assert_eq!(extract_host("https://Example.COM/path"), "example.com");
+        assert_eq!(extract_host("garbage"), String::new());
+    }
+
+    #[test]
+    fn canonicalize_url_strips_tracking_keeps_content_params() {
+        // Fragment + trailing slash dropped; campaign params stripped.
+        assert_eq!(
+            canonicalize_url("https://x.com/page/?utm_source=nl&fbclid=abc#frag"),
+            "https://x.com/page"
+        );
+        // CONTRACT: distinct content params must NOT collapse — else real results
+        // would be silently dropped by dedup.
+        assert_ne!(
+            canonicalize_url("https://yt.com/watch?v=A"),
+            canonicalize_url("https://yt.com/watch?v=B")
+        );
+        // Content params are preserved and order-normalised so the key is stable.
+        assert_eq!(
+            canonicalize_url("https://x.com/p?b=2&a=1"),
+            "https://x.com/p?a=1&b=2"
+        );
+        // A URL that is only tracking params reduces to the bare base.
+        assert_eq!(
+            canonicalize_url("https://x.com/p?gclid=1&utm_medium=x"),
+            "https://x.com/p"
+        );
+    }
+
+    #[test]
+    fn is_tracking_url_flags_known_redirectors_only() {
+        assert!(is_tracking_url("https://r.search.yahoo.com/RV=2/RU=abc"));
+        assert!(is_tracking_url("https://site.test/privacy-policy"));
+        assert!(!is_tracking_url("https://example.com/about"));
+    }
+
+    #[test]
+    fn url_matches_target_needs_a_long_term_in_the_path() {
+        let terms = vec!["jordan".to_string(), "ab".to_string()];
+        assert!(url_matches_target("https://x.com/jordan-avery", &terms));
+        // Short terms (<4) are ignored; a path without any long term fails.
+        assert!(!url_matches_target("https://x.com/profile", &terms));
+        assert!(!url_matches_target("https://x.com/ab", &["ab".to_string()]));
+    }
+}
