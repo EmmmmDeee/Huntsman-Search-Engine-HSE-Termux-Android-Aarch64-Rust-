@@ -85,9 +85,9 @@ impl Module for AbuseIpDb {
             confidence,
             &ctx.scan_id,
         );
-        e.tag("threat-intel");
+        e.tag(crate::core::tags::THREAT_INTEL);
         if abuse_score >= 80 {
-            e.tag("malicious");
+            e.tag(crate::core::tags::MALICIOUS);
             e.tag(crate::core::tags::HIGH_RISK);
         } else if abuse_score >= 40 {
             e.tag(crate::core::tags::SUSPICIOUS);

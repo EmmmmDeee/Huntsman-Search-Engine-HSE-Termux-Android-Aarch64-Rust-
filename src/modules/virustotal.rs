@@ -82,8 +82,8 @@ fn build_entity(target: &Target, attrs: &VtAttributes, scan_id: &str) -> Entity 
     );
     e.tag("virustotal");
     if malicious > 0 {
-        e.tag("malicious");
-        e.tag("threat-intel");
+        e.tag(crate::core::tags::MALICIOUS);
+        e.tag(crate::core::tags::THREAT_INTEL);
     }
     // A suspicious-but-not-malicious verdict is a real signal the old code lost.
     if suspicious > 0 {

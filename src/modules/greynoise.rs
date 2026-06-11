@@ -125,7 +125,7 @@ impl Module for GreyNoise {
         }
         match data.classification.as_deref() {
             Some("malicious") => {
-                entity.tag("malicious");
+                entity.tag(crate::core::tags::MALICIOUS);
                 entity.tag("greynoise-malicious");
             }
             Some("benign") => entity.tag("greynoise-benign"),

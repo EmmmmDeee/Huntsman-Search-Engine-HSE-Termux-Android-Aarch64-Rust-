@@ -74,8 +74,8 @@ fn build_ioc_entity(kind: EntityKind, term: &str, iocs: &[Ioc], scan_id: &str) -
 
     let mut entity = Entity::new(kind, term, 0.92, scan_id);
     entity.tag("threatfox");
-    entity.tag("threat-intel");
-    entity.tag("malicious");
+    entity.tag(crate::core::tags::THREAT_INTEL);
+    entity.tag(crate::core::tags::MALICIOUS);
 
     let mut families: BTreeSet<String> = BTreeSet::new();
     let mut types: BTreeSet<String> = BTreeSet::new();
