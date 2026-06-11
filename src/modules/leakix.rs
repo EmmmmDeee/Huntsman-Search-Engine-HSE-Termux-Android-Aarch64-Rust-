@@ -168,7 +168,19 @@ impl Module for LeakIx {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Breach for correlator grouping (its leak events raise tags::BREACH),
+        // but its ATT&CK technique is overridden below: querying LeakIX gathers
+        // host exposure/vulnerabilities, not credentials/emails.
         ModuleCategory::Breach
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // LeakIX is a queryable database of indexed internet exposures and
+        // vulnerabilities keyed on IP/domain — Search Open Technical Databases:
+        // Scan Databases (T1596.005), yielding network/IP exposure info
+        // (T1590.005). The Breach-category default (T1589.001/.002 credentials
+        // and emails) misdescribes it: LeakIX gathers neither.
+        &["T1596.005", "T1590.005"]
     }
 
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
@@ -249,6 +261,16 @@ mod tests {
     #[test]
     fn cost_is_key_gated() {
         assert!(matches!(LeakIx.cost(), ModuleCost::KeyGated));
+    }
+
+    #[test]
+    fn attack_techniques_describe_scan_db_not_credential_gathering() {
+        // Querying LeakIX is a scan-database search yielding network exposure —
+        // not the credential/email gathering the Breach-category default implies.
+        let t = LeakIx.attack_techniques();
+        assert!(t.contains(&"T1596.005"), "scan databases");
+        assert!(t.contains(&"T1590.005"), "IP/network exposure");
+        assert!(!t.contains(&"T1589.001"), "does not gather credentials");
     }
 
     fn body(json: &str) -> HostResp {

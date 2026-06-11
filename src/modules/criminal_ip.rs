@@ -122,6 +122,10 @@ impl Module for CriminalIp {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Querying Criminal IP's pre-built threat/scan database (incl. the
+        // host's vulnerability count) is T1596.005 Scan Databases, already
+        // covered by the Infrastructure default — not T1595.002, which would be
+        // actively vulnerability-scanning the target ourselves.
         ModuleCategory::Infrastructure
     }
 

@@ -93,8 +93,13 @@ impl Module for Shodan {
         matches!(t.kind, TargetKind::IpAddress)
     }
     fn category(&self) -> ModuleCategory {
+        // Querying Shodan's pre-built scan database (incl. the host's known
+        // CVEs) is T1596.005 Scan Databases, which the Infrastructure default
+        // already covers — NOT T1595.002 Vulnerability Scanning, which would be
+        // actively scanning the target ourselves. So no technique override.
         ModuleCategory::Infrastructure
     }
+
     fn produces(&self) -> &'static [EntityKind] {
         // Free + paid Shodan paths emit IP host context: domains, URLs,
         // ASN labels, plus the dominant ISP/org as Organisation and
