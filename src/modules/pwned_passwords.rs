@@ -15,6 +15,7 @@ use crate::core::{
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
+    tags,
 };
 
 const SRC: &str = "pwned_passwords";
@@ -129,7 +130,10 @@ impl Module for PwnedPasswords {
             &ctx.scan_id,
         );
         entity.tag("pwned-password");
-        entity.tag("breach");
+        entity.tag(tags::BREACH);
+        // A pwned password value IS a password exposure — raise the canonical
+        // risk tag HIBP/emailrep use so it surfaces across the breach sources.
+        entity.tag(tags::PASSWORD_AT_RISK);
 
         entity.add_evidence(
             Evidence::new(
