@@ -282,6 +282,12 @@ fn records_to_entities(
             e.tag("country:AU");
             e.tag(crate::core::tags::GEOINT);
             e.tag("registered-address");
+            // The ACNC register is authoritative; AU-enrich the locality so it
+            // feeds AU-056/060 with the canonical au-state / au-se-qld / LGA
+            // tags (shared free-text producer) — no geocode round-trip.
+            for t in crate::util::geo::au_location_tags(&addr) {
+                e.tag(t);
+            }
             let mut aev = Evidence::new(SRC, format!("Registered address for {legal}"))
                 .with_attr("org", &legal);
             // Carry the full street line(s) so the precise address isn't lost.
@@ -474,6 +480,9 @@ mod tests {
             .expect("exact hit emits a geocodable registered address");
         assert_eq!(addr.value, "Sydney, NSW 2000, Australia");
         assert!(addr.tags.iter().any(|t| t == "geoint"));
+        // AU-enriched for the correlator: au-relevant + the canonical state tag.
+        assert!(addr.has_tag("au-relevant"));
+        assert!(addr.has_tag("au-state:NSW"));
         // The precise street line rides in evidence (no omission), not the value.
         assert!(
             addr.evidence[0]
