@@ -61,6 +61,14 @@ impl Module for Pgp {
         KINDS
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Keyserver UID harvesting recovers the owner's other email addresses
+        // (T1589.002) and real name (T1589.003) — more specific than the
+        // People-category default, which omits the email-address sub-technique
+        // this module's primary output (alternate emails) maps to.
+        &["T1589.002", "T1589.003"]
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let email = target.value.trim();
@@ -95,6 +103,10 @@ impl Module for Pgp {
 fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResult) {
     let query_lower = query_email.to_lowercase();
     let mut fingerprint = String::new();
+    // The key creation epoch (HKP `pub:` field 4). A non-empty, plausible value
+    // is the date the identity's key was established — a temporal-intelligence
+    // signal correlating against breach/account first-seen dates.
+    let mut key_created = String::new();
     // Collect a few fingerprints for evidence; the most recent `pub:` applies to
     // the `uid:` lines that follow it.
     let mut seen_person = std::collections::HashSet::new();
@@ -102,7 +114,16 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
 
     for line in body.lines() {
         if let Some(rest) = line.strip_prefix("pub:") {
-            fingerprint = rest.split(':').next().unwrap_or("").to_string();
+            // pub:<fingerprint>:<algo>:<len>:<created>:<expires>:<flags>
+            let mut fields = rest.split(':');
+            fingerprint = fields.next().unwrap_or("").to_string();
+            // created is the 4th field (skip algo, len); keep only a non-empty
+            // run of digits so a malformed/absent value doesn't pollute evidence.
+            key_created = fields
+                .nth(2)
+                .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+                .unwrap_or("")
+                .to_string();
             continue;
         }
         let Some(rest) = line.strip_prefix("uid:") else {
@@ -116,6 +137,9 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
             let mut e = Evidence::new(SRC, "PGP keyserver User ID");
             if !fingerprint.is_empty() {
                 e = e.with_attr("key_fingerprint", &fingerprint);
+            }
+            if !key_created.is_empty() {
+                e = e.with_attr("key_created_unix", &key_created);
             }
             e.with_attr("uid", &uid)
         };
@@ -214,12 +238,36 @@ mod tests {
         // The ALTERNATE email is surfaced; the queried one is not re-emitted.
         assert!(has(EntityKind::Email, "m.avery@work.com"));
         assert!(!has(EntityKind::Email, "matt@example.com"));
-        // Evidence carries the key fingerprint.
+        // Evidence carries the key fingerprint AND the parsed creation epoch
+        // (HKP pub field 4 = 1500000000), a temporal-intelligence signal.
+        assert!(r.entities.iter().all(|e| {
+            e.evidence.iter().any(|ev| {
+                ev.attributes.contains_key("key_fingerprint")
+                    && ev.attributes.get("key_created_unix").map(String::as_str)
+                        == Some("1500000000")
+            })
+        }));
+    }
+
+    #[test]
+    fn malformed_pub_created_field_is_omitted() {
+        // A non-numeric created field must not pollute evidence (no attr at all).
+        let body = "pub:ABCDEF:1:4096:notadate::\n\
+            uid:Jane%20Doe%20%3Cjane%40x.com%3E:1500000000::\n";
+        let mut r = ModuleResult::new();
+        extract(body, "q@x.com", "scan", &mut r);
         assert!(r.entities.iter().all(|e| {
             e.evidence
                 .iter()
-                .any(|ev| ev.attributes.contains_key("key_fingerprint"))
+                .all(|ev| !ev.attributes.contains_key("key_created_unix"))
         }));
+    }
+
+    #[test]
+    fn attack_techniques_cover_email_and_name_gathering() {
+        let t = Pgp.attack_techniques();
+        assert!(t.contains(&"T1589.002"), "alternate email addresses");
+        assert!(t.contains(&"T1589.003"), "owner real name");
     }
 
     #[test]
