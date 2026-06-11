@@ -184,6 +184,12 @@ fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) -> Vec<Enti
             ae.tag("epieos");
             ae.tag("skype");
             ae.tag(crate::core::tags::GEOINT);
+            ae.tag("self-reported");
+            // Free-text AU enrichment (shared producer): an Australian Skype
+            // location feeds AU-056/060; non-AU passes through unchanged.
+            for t in crate::util::geo::au_location_tags(&location) {
+                ae.tag(t);
+            }
             ae.add_evidence(Evidence::new(SRC, format!("Skype location for {email}")));
             out.push(ae);
         }
