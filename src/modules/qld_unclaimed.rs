@@ -270,6 +270,15 @@ fn suburbs_to_entities(pc_localities: &[(String, Vec<Locality>)], scan_id: &str)
             c.tag(crate::core::tags::GEOINT);
             c.tag("postcode-centroid");
             c.tag(crate::core::tags::COARSE);
+            // A postcode centroid is a real point inside a specific QLD postcode
+            // (unlike a country/MCC centroid), so coordinate AU tags are valid:
+            // they resolve the state and — for a Logan-City postcode — the LGA,
+            // feeding AU-056/060. The coarse tag already flags the low precision.
+            if crate::util::geo::is_in_australia(first.lat, first.lon) {
+                for t in crate::util::geo::au_coord_tags(first.lat, first.lon) {
+                    c.tag(t);
+                }
+            }
             c.add_evidence(
                 Evidence::new(SRC, format!("Centroid of postcode {pc}"))
                     .with_attr("postcode", pc)
@@ -278,17 +287,19 @@ fn suburbs_to_entities(pc_localities: &[(String, Vec<Locality>)], scan_id: &str)
             out.push(c);
         }
         for loc in locs.iter().take(SUBURB_CAP) {
-            let mut a = Entity::new(
-                EntityKind::Address,
-                format!("{}, QLD {pc}, Australia", loc.suburb),
-                0.30,
-                scan_id,
-            );
+            let addr = format!("{}, QLD {pc}, Australia", loc.suburb);
+            let mut a = Entity::new(EntityKind::Address, &addr, 0.30, scan_id);
             a.tag(SRC);
             a.tag("country:AU");
             a.tag(crate::core::tags::GEOINT);
             a.tag("candidate-suburb");
             a.tag(crate::core::tags::COARSE);
+            // Every record is QLD by construction; the shared free-text producer
+            // resolves au-state:QLD and — for an SE-QLD / Logan-City suburb —
+            // the au-se-qld / au-lga:logan-city tags that feed AU-060.
+            for t in crate::util::geo::au_location_tags(&addr) {
+                a.tag(t);
+            }
             a.add_evidence(
                 Evidence::new(
                     SRC,
@@ -630,6 +641,9 @@ mod tests {
                 .iter()
                 .any(|t| t.as_str() == "postcode-centroid")
         );
+        // The postcode centroid resolves canonical AU coordinate tags (it's a
+        // real QLD point, not a country centroid) so it reaches AU-056/060.
+        assert!(coords[0].has_tag("au-relevant") && coords[0].has_tag("au-state:QLD"));
 
         let addrs: Vec<&str> = ents
             .iter()
@@ -648,6 +662,13 @@ mod tests {
         assert!(
             ents.iter()
                 .all(|e| e.confidence < 0.50 && e.tags.iter().any(|t| t.as_str() == SRC))
+        );
+        // Every QLD suburb Address carries the canonical au-state tag so the
+        // jurisdiction cross-check (AU-056) sees this signal class.
+        assert!(
+            ents.iter()
+                .filter(|e| e.kind == EntityKind::Address)
+                .all(|e| e.has_tag("au-relevant") && e.has_tag("au-state:QLD"))
         );
         // The Address evidence carries the suburb + per-locality coordinates.
         let maleny = ents.iter().find(|e| e.value.starts_with("Maleny")).unwrap();
