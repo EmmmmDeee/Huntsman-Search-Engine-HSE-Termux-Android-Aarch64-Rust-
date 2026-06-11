@@ -212,9 +212,19 @@ impl Module for ExifGeo {
         if let Some((lat, lon)) = gps {
             let coord_str = format!("{lat:.6},{lon:.6}");
             let mut e = Entity::new(EntityKind::Coordinates, &coord_str, 0.80, &ctx.scan_id);
-            e.tag("geoint");
+            e.tag(crate::core::tags::GEOINT);
             e.tag("exif");
             e.tag("photo-derived");
+            // Photo GPS is a precise personal fix — the strongest geolocation
+            // lead in EXIF. When it lands in Australia, attach the offline
+            // state/LGA tags (shared producer) so a photo shot in Logan feeds
+            // AU-060 / AU-056 like any other precise coordinate; worldwide
+            // photos pass through unchanged.
+            if crate::util::geo::is_in_australia(lat, lon) {
+                for t in crate::util::geo::au_coord_tags(lat, lon) {
+                    e.tag(t);
+                }
+            }
             e.add_evidence(
                 evidence(format!("EXIF GPS extracted from {url}"))
                     .with_attr("latitude", lat.to_string())
