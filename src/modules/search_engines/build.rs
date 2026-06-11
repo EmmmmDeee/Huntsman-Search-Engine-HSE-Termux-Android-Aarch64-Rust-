@@ -289,9 +289,15 @@ pub(super) fn build_entities(
             // confirmed profile, which is identity-bearing regardless of seed.
             let location_seed =
                 matches!(target.kind, TargetKind::Address | TargetKind::Coordinates);
+            // A code-repo URL that matched only on a repo/file name while its
+            // owner handle is unrelated to the target (e.g.
+            // `github.com/ExponentiAI/HAIGEN` — an AI project, not the subject's
+            // account). The owner is the identity-bearing segment, so this is a
+            // wrong-identity match: quarantine it like a generic-location hit.
+            let offtarget_repo = is_offtarget_repo_url(&r.url, &terms);
             let base = if confirmed {
                 0.85
-            } else if location_seed {
+            } else if location_seed || offtarget_repo {
                 0.30
             } else {
                 0.50
@@ -309,6 +315,9 @@ pub(super) fn build_entities(
                 e.tag("confirmed-profile");
             } else if location_seed {
                 e.tag("generic-location");
+                e.tag("candidate");
+            } else if offtarget_repo {
+                e.tag("offtarget-repo");
                 e.tag("candidate");
             }
             e.add_evidence(build_search_evidence(r));

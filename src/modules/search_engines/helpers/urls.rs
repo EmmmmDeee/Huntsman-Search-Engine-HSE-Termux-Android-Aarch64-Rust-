@@ -434,6 +434,50 @@ pub(in crate::modules::search_engines) fn target_terms(target: &Target) -> Vec<S
         .collect()
 }
 
+/// Code-repository hosts whose first path segment is the account *owner* (the
+/// identity-bearing handle), and whose later segments name a repository, branch
+/// or file — content that merely *belongs* to that owner.
+const REPO_HOSTS: &[&str] = &["github.com", "gitlab.com", "bitbucket.org"];
+
+/// True when a code-repo URL matched a target term only in a NON-owner segment
+/// (a repository / file name), while the owner handle itself shares nothing with
+/// the target — i.e. a project that happens to be named after the subject's term,
+/// not the subject's own account.
+///
+/// A live "Haigen Bamford" scan surfaced `github.com/ExponentiAI/HAIGEN` (an AI
+/// project under the org `ExponentiAI`): it matched on the repo name "HAIGEN"
+/// but the owner is unrelated. `github.com/Haigen` (owner == term) and
+/// `github.com/haigenbamford/repo` (owner contains a term) are the subject's own
+/// accounts and are NOT off-target. Hosts outside [`REPO_HOSTS`] never match.
+pub(in crate::modules::search_engines) fn is_offtarget_repo_url(
+    url: &str,
+    terms: &[String],
+) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    let host = parsed.host_str().unwrap_or("").trim_start_matches("www.");
+    if !REPO_HOSTS.contains(&host) {
+        return false;
+    }
+    let segments: Vec<&str> = parsed.path().split('/').filter(|s| !s.is_empty()).collect();
+    // Need an owner + at least one deeper segment to be a repo/file URL.
+    if segments.len() < 2 {
+        return false;
+    }
+    let owner = segments[0].to_lowercase();
+    let term_in = |s: &str| {
+        terms
+            .iter()
+            .filter(|t| t.len() >= 4)
+            .any(|t| s.contains(t.as_str()))
+    };
+    let owner_matches = term_in(&owner);
+    let deeper_matches = segments[1..].iter().any(|s| term_in(&s.to_lowercase()));
+    // Off-target only when the owner is unrelated yet a deeper segment matched.
+    !owner_matches && deeper_matches
+}
+
 /// Check whether a URL's path contains any target term (≥4 chars).
 pub(in crate::modules::search_engines) fn url_matches_target(url: &str, terms: &[String]) -> bool {
     let path = url::Url::parse(url)
