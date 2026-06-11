@@ -133,8 +133,16 @@ impl Module for Mls {
             &ctx.scan_id,
         );
         e.tag("mls");
-        e.tag("geoint");
+        e.tag(crate::core::tags::GEOINT);
         e.tag(format!("accuracy:{}m", accuracy_m as u64));
+        // Precise BSSID/cell fix — when in Australia attach the offline
+        // state/LGA tags (shared producer) so it feeds AU-060 / AU-056 like any
+        // other precise coordinate; worldwide fixes pass through unchanged.
+        if crate::util::geo::is_in_australia(loc.lat, loc.lng) {
+            for t in crate::util::geo::au_coord_tags(loc.lat, loc.lng) {
+                e.tag(t);
+            }
+        }
         e.add_evidence(
             Evidence::new(
                 SRC,
