@@ -159,6 +159,55 @@ impl KeyEntry {
         let successes = self.use_count.saturating_sub(self.error_count) as f64;
         successes / self.use_count as f64
     }
+
+    /// Coarse health band for selection (higher = healthier). Deliberately
+    /// COARSE, not a fine-grained rate, so that all healthy keys compare *equal*
+    /// and the load tiebreak (least-used-first) can spread traffic across them.
+    /// A fine success-rate would climb with every successful use, making a
+    /// heavily-used key look ever more reliable and starve its siblings
+    /// (rich-get-richer) — the opposite of load balancing.
+    ///
+    /// Judged by error *rate*, fixing the old selector's `u64::MAX - error_count`
+    /// bug where a flaky key (2 errors / 4 uses = 50 %) outranked a reliable one
+    /// (3 errors / 10 000 uses = 0.03 %) purely because it had fewer *absolute*
+    /// errors. A brand-new (0-use) key bands at the top so it is explored rather
+    /// than starved behind an already-proven key.
+    fn health_rank(&self) -> u8 {
+        /// Below this many uses there isn't enough signal to judge the rate, so
+        /// a key is banded healthy (explored) rather than condemned on noise.
+        const MIN_SAMPLES: u64 = 4;
+        if self.use_count == 0 {
+            return 3; // unproven — explore optimistically
+        }
+        if self.use_count < MIN_SAMPLES {
+            return 2; // too few samples to judge a rate — treat as healthy
+        }
+        // Raw error RATE (not the absolute count the old selector used, and not a
+        // smoothed rate — smoothing would drag a perfect young key below the
+        // healthy band purely for being young). Coarse bands so equally-healthy
+        // keys tie and the load tiebreak can balance them.
+        let err_rate = self.error_count as f64 / self.use_count as f64;
+        if err_rate <= 0.15 {
+            2 // healthy
+        } else if err_rate <= 0.5 {
+            1 // shaky but still usable
+        } else {
+            0 // failing
+        }
+    }
+
+    /// Total selection priority, highest wins: prefer the higher service tier,
+    /// then the healthier band, then the least-used key — which round-robins
+    /// load across equally-healthy, equal-tier keys (each selection bumps
+    /// `use_count`, handing the next call to a sibling). Spreading load this way
+    /// also delays hitting any single key's provider rate limit.
+    fn selection_priority(&self) -> (KeyTier, u8, std::cmp::Reverse<u64>) {
+        (
+            self.tier,
+            self.health_rank(),
+            std::cmp::Reverse(self.use_count),
+        )
+    }
 }
 
 // ── Service definitions ──────────────────────────────────────────────────────
@@ -360,15 +409,18 @@ impl KeyPool {
         let len = entries.len();
 
         let mut best: Option<usize> = None;
-        let mut best_score: (KeyTier, u64) = (KeyTier::Trial, u64::MAX);
+        let mut best_score = (KeyTier::Trial, 0u8, std::cmp::Reverse(u64::MAX));
 
         for offset in 0..len {
+            // Start the scan at the rotation cursor so exact ties (same tier,
+            // reliability and use_count) rotate fairly rather than always
+            // landing on index 0.
             let i = (*idx + offset) % len;
             let entry = &entries[i];
             if !entry.is_usable() {
                 continue;
             }
-            let score = (entry.tier, u64::MAX - entry.error_count);
+            let score = entry.selection_priority();
             if best.is_none() || score > best_score {
                 best = Some(i);
                 best_score = score;
@@ -924,6 +976,82 @@ mod tests {
 
         let k = pool.next_key("shodan").unwrap();
         assert_eq!(k, "good-key", "should prefer key with fewer errors");
+    }
+
+    #[test]
+    fn health_rank_is_by_rate_not_absolute_error_count() {
+        // The headline fix: a reliable high-volume key (3 errors / 10 000 =
+        // 0.03 %) must band healthier than a flaky low-volume key (2 errors /
+        // 4 = 50 %), even though it has MORE absolute errors. The old
+        // `u64::MAX - error_count` score ranked them backwards.
+        let mut reliable = KeyEntry::new("reliable");
+        reliable.use_count = 10_000;
+        reliable.error_count = 3;
+        let mut flaky = KeyEntry::new("flaky");
+        flaky.use_count = 4;
+        flaky.error_count = 2;
+        assert!(
+            reliable.health_rank() > flaky.health_rank(),
+            "reliable rank {} should exceed flaky rank {}",
+            reliable.health_rank(),
+            flaky.health_rank()
+        );
+    }
+
+    #[test]
+    fn next_key_picks_reliable_high_volume_over_flaky_low_volume() {
+        let pool = KeyPool::new();
+        let mut reliable = KeyEntry::new("reliable");
+        reliable.status = KeyStatus::Active;
+        reliable.use_count = 10_000;
+        reliable.error_count = 3;
+        let mut flaky = KeyEntry::new("flaky");
+        flaky.status = KeyStatus::Active;
+        flaky.use_count = 4;
+        flaky.error_count = 2;
+        pool.add("shodan", reliable);
+        pool.add("shodan", flaky);
+        assert_eq!(pool.next_key("shodan").as_deref(), Some("reliable"));
+    }
+
+    #[test]
+    fn next_key_explores_freshly_added_unused_key() {
+        // A newly added (0-use) key carries an optimistic band so it is tried
+        // even when a proven key exists — otherwise it would never be validated
+        // through use and would sit idle forever.
+        let pool = KeyPool::new();
+        let mut proven = KeyEntry::new("proven");
+        proven.status = KeyStatus::Active;
+        proven.use_count = 100; // 0 errors → healthy, but already proven
+        let mut fresh = KeyEntry::new("fresh");
+        fresh.status = KeyStatus::Active;
+        pool.add("shodan", proven);
+        pool.add("shodan", fresh);
+        assert_eq!(pool.next_key("shodan").as_deref(), Some("fresh"));
+    }
+
+    #[test]
+    fn next_key_load_balances_across_equivalent_keys() {
+        // Two equally-healthy keys must SHARE the load rather than pinning all
+        // traffic to one (which would hit that key's provider rate limit sooner).
+        let pool = KeyPool::new();
+        for v in ["a", "b"] {
+            let mut k = KeyEntry::new(v);
+            k.status = KeyStatus::Active;
+            pool.add("shodan", k);
+        }
+        let mut counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        for _ in 0..10 {
+            *counts.entry(pool.next_key("shodan").unwrap()).or_default() += 1;
+        }
+        assert!(
+            counts.get("a").copied().unwrap_or(0) >= 3,
+            "key 'a' starved: {counts:?}"
+        );
+        assert!(
+            counts.get("b").copied().unwrap_or(0) >= 3,
+            "key 'b' starved: {counts:?}"
+        );
     }
 
     #[test]
