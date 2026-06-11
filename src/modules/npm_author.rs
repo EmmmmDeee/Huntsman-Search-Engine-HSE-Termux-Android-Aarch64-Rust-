@@ -76,6 +76,8 @@ struct Links {
 #[derive(Deserialize)]
 struct Person {
     #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
     username: Option<String>,
     #[serde(default)]
     email: Option<String>,
@@ -116,6 +118,7 @@ impl Module for NpmAuthor {
             EntityKind::Email,
             EntityKind::Url,
             EntityKind::Domain,
+            EntityKind::Person,
         ];
         KINDS
     }
@@ -148,6 +151,7 @@ impl Module for NpmAuthor {
         let mut result = ModuleResult::new();
         let mut seen_emails: HashSet<String> = HashSet::new();
         let mut seen_urls: HashSet<String> = HashSet::new();
+        let mut seen_persons: HashSet<String> = HashSet::new();
         let mut package_names: Vec<String> = Vec::new();
 
         let push_email =
@@ -191,6 +195,27 @@ impl Module for NpmAuthor {
                     && (is_subject || person.username.is_none())
                 {
                     push_email(&mut result, &mut seen_emails, email, pkg_name);
+                }
+                // The author's real NAME (npm `author.name`) is a high-value
+                // identity link. Emit a Person only for a plausible real name (a
+                // multi-word label, not the handle) from a subject-attributed
+                // record, deduped case-insensitively.
+                if let Some(name) = person.name.as_deref().map(str::trim)
+                    && (is_subject || person.username.is_none())
+                    && name.contains(' ')
+                    && name.len() >= 3
+                    && !name.eq_ignore_ascii_case(&handle)
+                    && seen_persons.insert(name.to_lowercase())
+                {
+                    let mut pe = Entity::new(EntityKind::Person, name, 0.66, &ctx.scan_id);
+                    pe.tag("npm");
+                    pe.tag("public-profile");
+                    pe.add_evidence(
+                        Evidence::new(SRC, format!("npm author name (package {pkg_name})"))
+                            .with_attr("source", "npm_registry")
+                            .with_attr("package", pkg_name),
+                    );
+                    result.push(pe);
                 }
                 if let Some(u) = person.url.as_deref()
                     && (u.starts_with("http://") || u.starts_with("https://"))
@@ -261,6 +286,8 @@ mod tests {
         let m = NpmAuthor;
         assert_eq!(m.name(), "npm_author");
         assert!(m.produces().contains(&EntityKind::Email));
+        // The author's real name is now surfaced as a Person identity pivot.
+        assert!(m.produces().contains(&EntityKind::Person));
     }
 
     #[test]
@@ -273,6 +300,8 @@ mod tests {
         assert_eq!(r.total, 3);
         let p = r.objects[0].package.as_ref().unwrap();
         assert_eq!(p.name.as_deref(), Some("foo"));
+        // The author's real name is parsed (the dropped identity field).
+        assert_eq!(p.author.as_ref().unwrap().name.as_deref(), Some("K"));
         assert_eq!(p.maintainers[0].username.as_deref(), Some("kylo4kylo"));
         assert_eq!(p.maintainers[0].email.as_deref(), Some("k@example.com"));
         // Empty registry response deserializes to no objects.
