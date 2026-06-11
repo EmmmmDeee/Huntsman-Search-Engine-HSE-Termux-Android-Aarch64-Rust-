@@ -181,6 +181,19 @@ pub fn default_seed() -> Option<String> {
 /// This is what modules see at scan-launch time — both the env file
 /// values *and* anything the user exported in the shell before
 /// launching the binary.
+/// Split a possibly comma-separated env key value into its distinct, trimmed,
+/// non-empty keys, preserving order. The FIRST is the value a single-key
+/// consumer uses (always clean — no stray comma/whitespace, which was the bug
+/// fixed in [`load`]); all of them are pooled for rotation. An all-comma /
+/// all-blank value yields an empty vec (no usable key).
+fn split_rotation_keys(val: &str) -> Vec<String> {
+    val.split(',')
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(String::from)
+        .collect()
+}
+
 pub fn load() -> HashMap<String, String> {
     let path = env_path();
     let _ = dotenvy::from_path(&path);
@@ -207,24 +220,44 @@ pub fn load() -> HashMap<String, String> {
         let val = map.get(svc.env_var).cloned();
         if let Some(val) = val {
             if val.contains(',') {
-                let keys: Vec<&str> = val
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|k| !k.is_empty())
-                    .collect();
-                if keys.len() > 1 {
-                    map.insert(svc.env_var.to_string(), keys[0].to_string());
-                    for k in &keys {
-                        let mut entry = crate::util::key_pool::KeyEntry::new(*k);
-                        entry.status = crate::util::key_pool::KeyStatus::Active;
-                        pool.add(svc.name, entry);
+                let keys = split_rotation_keys(&val);
+                // Normalise the env-map value to the first CLEAN key whenever a
+                // comma is present — not only when ≥2 keys survive. A value like
+                // `abc,` or `abc, ` collapses to one key but, under the old
+                // `len() > 1` gate, left the raw comma-bearing string `"abc,"` in
+                // the map; modules then sent a key with a trailing comma to the
+                // provider and auth silently failed. An all-empty CSV (`","`,
+                // `" , "`) carries no usable key, so drop the slot and let the
+                // pool / embedded default fill it.
+                match keys.first() {
+                    Some(first) => {
+                        map.insert(svc.env_var.to_string(), first.clone());
                     }
+                    None => {
+                        map.remove(svc.env_var);
+                    }
+                }
+                // Pool every distinct key (dedup is by value) so rotation —
+                // including rotate-on-rate-limit — can reach them all.
+                for k in &keys {
+                    let mut entry = crate::util::key_pool::KeyEntry::new(k.as_str());
+                    entry.status = crate::util::key_pool::KeyStatus::Active;
+                    pool.add(svc.name, entry);
+                }
+                if keys.len() > 1 {
                     tracing::info!(
                         service = svc.name,
                         count = keys.len(),
                         "loaded {} keys for rotation",
                         keys.len()
                     );
+                }
+                // A comma value that collapsed to nothing has no env key left to
+                // honour, so consult the pool/default like an unset slot would.
+                if keys.is_empty()
+                    && let Some(key) = pool.next_key(svc.name)
+                {
+                    map.insert(svc.env_var.to_string(), key);
                 }
             }
             continue;
@@ -994,6 +1027,39 @@ mod tests {
         // Pool key was either injected (env slot empty) or env had it —
         // either way, the merge didn't crash. Success if we get here.
         let _ = map;
+    }
+
+    #[test]
+    fn split_rotation_keys_trims_and_drops_empties() {
+        // The regression: a trailing comma must NOT leak into the first key.
+        // Under the old `len() > 1` gate, `"abc,"` left the literal `"abc,"`
+        // in the env map and modules sent a comma-suffixed key to the provider.
+        assert_eq!(split_rotation_keys("abc,"), ["abc"]);
+        assert_eq!(split_rotation_keys("abc, "), ["abc"]);
+        // Multi-key splits trim every element.
+        assert_eq!(split_rotation_keys("k1, k2 ,k3"), ["k1", "k2", "k3"]);
+        // The first key — the one that populates the single-key env slot — is
+        // always clean regardless of surrounding whitespace/commas.
+        assert_eq!(
+            split_rotation_keys("  primary  , backup").first().unwrap(),
+            "primary"
+        );
+    }
+
+    #[test]
+    fn split_rotation_keys_all_blank_yields_nothing() {
+        // An all-comma / all-blank value carries no usable key, so `load` drops
+        // the slot (falls back to pool/default) instead of injecting junk.
+        assert!(split_rotation_keys(",").is_empty());
+        assert!(split_rotation_keys(" , ").is_empty());
+        assert!(split_rotation_keys(",,,").is_empty());
+    }
+
+    #[test]
+    fn split_rotation_keys_preserves_duplicates_for_pool_dedup() {
+        // Dedup is the pool's job (by value); the splitter preserves order and
+        // duplicates so the caller pools every occurrence and the pool collapses.
+        assert_eq!(split_rotation_keys("k1,k1"), ["k1", "k1"]);
     }
 
     #[test]
