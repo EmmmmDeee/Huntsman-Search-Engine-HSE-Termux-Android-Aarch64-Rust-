@@ -96,7 +96,7 @@ impl Module for SubdomainTakeover {
 
             if vulnerable {
                 let mut e = Entity::new(EntityKind::Domain, &domain, 0.90, &ctx.scan_id);
-                e.tag("vulnerable");
+                e.tag(crate::core::tags::VULNERABLE);
                 e.tag("subdomain-takeover");
                 e.tag(format!("takeover:{service}"));
                 e.add_evidence(

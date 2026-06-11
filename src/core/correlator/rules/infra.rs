@@ -140,7 +140,9 @@ pub(in crate::core::correlator) fn rule_au_008_exposed_service(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    const EXPOSURE_TAGS: &[&str] = &["vulnerable", "ssh-exposed", "leak"];
+    // `vulnerable` routed through the canonical constant (emit side: cloud_storage,
+    // etc.); `ssh-exposed`/`leak` stay descriptive module-local literals.
+    const EXPOSURE_TAGS: &[&str] = &[crate::core::tags::VULNERABLE, "ssh-exposed", "leak"];
     entities
         .iter()
         .filter(|e| matches!(e.kind, EntityKind::Domain | EntityKind::IpAddress))
@@ -287,7 +289,7 @@ pub(in crate::core::correlator) fn rule_au_029_cloud_storage_exposure(
 ) -> Vec<Correlation> {
     let exposed: Vec<&Entity> = entities
         .iter()
-        .filter(|e| e.has_tag("cloud-storage") && e.has_tag("vulnerable"))
+        .filter(|e| e.has_tag("cloud-storage") && e.has_tag(crate::core::tags::VULNERABLE))
         .collect();
     if exposed.is_empty() {
         return Vec::new();

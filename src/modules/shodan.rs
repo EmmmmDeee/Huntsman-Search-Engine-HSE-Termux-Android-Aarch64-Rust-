@@ -186,7 +186,7 @@ impl Shodan {
         let mut entity = Entity::new(EntityKind::IpAddress, ip, 0.92, &ctx.scan_id);
         entity.tag("shodan-internetdb");
         if !body.vulns.is_empty() {
-            entity.tag("vulnerable");
+            entity.tag(crate::core::tags::VULNERABLE);
         }
 
         const MAX_PORTS: usize = 50;
@@ -311,7 +311,7 @@ impl Shodan {
         let mut entity = target_entity(ip, &ctx.scan_id);
         entity.tag("shodan");
         if !body.vulns.is_empty() {
-            entity.tag("vulnerable");
+            entity.tag(crate::core::tags::VULNERABLE);
         }
         if let Some(c) = body.country_code.as_deref() {
             entity.tag(format!("country:{}", c.to_uppercase()));

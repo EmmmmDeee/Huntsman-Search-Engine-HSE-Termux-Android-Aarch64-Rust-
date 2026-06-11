@@ -313,7 +313,7 @@ pub(in crate::core::correlator) fn rule_au_009_stealer_log(
 ) -> Vec<Correlation> {
     entities
         .iter()
-        .filter(|e| e.kind == EntityKind::Email && e.has_tag("stealer-log"))
+        .filter(|e| e.kind == EntityKind::Email && e.has_tag(crate::core::tags::STEALER_LOG))
         .map(|e| Correlation {
             rule_id: "AU-009".into(),
             rule_name: "Stealer-log compromise".into(),
@@ -334,7 +334,7 @@ pub(in crate::core::correlator) fn rule_au_019_temporal_breach_cluster(
 ) -> Vec<Correlation> {
     let mut breach_dates: Vec<(&Entity, &str)> = Vec::new();
     for e in entities {
-        if !e.has_tag("breach") {
+        if !e.has_tag(crate::core::tags::BREACH) {
             continue;
         }
         for ev in &e.evidence {

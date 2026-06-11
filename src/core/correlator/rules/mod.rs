@@ -192,8 +192,16 @@ const USERNAME_DISCOVERY_SOURCES: &[&str] = &[
     "oathnet_pro",
 ];
 
-/// Tags that mark an entity as known-bad for adjacency analysis.
-const ADJACENCY_BAD_TAGS: &[&str] = &["malicious", "threat-intel", "vulnerable"];
+/// Tags that mark an entity as known-bad for adjacency analysis. Routed through
+/// the canonical `tags` constants so the emit (modules) and match (here) sides
+/// can't drift. `DARKNET` joins the set: an identity observed on a darknet/Tor
+/// source is a known-bad, high-severity exposure for adjacency purposes.
+const ADJACENCY_BAD_TAGS: &[&str] = &[
+    crate::core::tags::MALICIOUS,
+    crate::core::tags::THREAT_INTEL,
+    crate::core::tags::VULNERABLE,
+    crate::core::tags::DARKNET,
+];
 
 /// Minimum members for a co-location cluster to be reported.
 const COLOCATION_CLUSTER_MIN: usize = 3;

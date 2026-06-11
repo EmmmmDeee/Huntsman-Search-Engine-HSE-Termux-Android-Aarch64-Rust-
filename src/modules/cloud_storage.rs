@@ -74,7 +74,7 @@ impl Module for CloudStorage {
                 && is_exposed(status, provider)
             {
                 let mut e = Entity::new(EntityKind::Url, url, 0.80, &ctx.scan_id);
-                e.tag("vulnerable");
+                e.tag(crate::core::tags::VULNERABLE);
                 e.tag("cloud-storage");
                 e.tag(format!("provider:{provider}"));
                 e.add_evidence(
