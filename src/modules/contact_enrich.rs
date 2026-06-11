@@ -416,6 +416,12 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         let mut ae = Entity::new(EntityKind::Address, loc, 0.55, &ctx.scan_id);
         ae.tag("gravatar");
         ae.tag(crate::core::tags::GEOINT);
+        ae.tag("self-reported");
+        // Free-text AU enrichment (shared producer) so an Australian
+        // self-reported location feeds AU-056/060 without a geocode.
+        for t in crate::util::geo::au_location_tags(loc) {
+            ae.tag(t);
+        }
         ae.add_evidence(Evidence::new(
             SRC,
             format!("Gravatar location for {normalised}"),

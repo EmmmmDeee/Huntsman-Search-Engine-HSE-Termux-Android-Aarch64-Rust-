@@ -220,14 +220,18 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
         push(result, EntityKind::Username, u, 0.65, &[]);
     }
 
-    // Location — geo-hint the geocoders can resolve.
+    // Location — geo-hint the geocoders can resolve. Free-text AU enrichment
+    // (shared producer) so an Australian self-reported location feeds the AU
+    // correlator without a geocode round-trip.
     if let Some(loc) = entry
         .current_location
         .as_deref()
         .map(str::trim)
         .filter(|l| l.len() >= 2)
     {
-        push(result, EntityKind::Address, loc, 0.60, &["geo-hint"]);
+        let mut tags: Vec<&str> = vec!["geo-hint", "self-reported"];
+        tags.extend(crate::util::geo::au_location_tags(loc));
+        push(result, EntityKind::Address, loc, 0.60, &tags);
     }
 
     // Profile + avatar URLs, and any personal URLs the owner listed.
@@ -324,6 +328,15 @@ mod tests {
         assert!(has(EntityKind::Person, "Jordan Avery"));
         assert!(has(EntityKind::Username, "matt"));
         assert!(has(EntityKind::Address, "Brisbane, QLD"));
+        // The Brisbane location is AU-enriched (shared free-text producer).
+        let bne = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Address && e.value == "Brisbane, QLD")
+            .unwrap();
+        assert!(
+            bne.has_tag("au-relevant") && bne.has_tag("au-state:QLD") && bne.has_tag("au-se-qld")
+        );
         assert!(has(EntityKind::Url, "https://gravatar.com/matt"));
         assert!(has(EntityKind::Url, "https://javery.dev"));
         // Platform-prefixed account usernames + their URLs.
