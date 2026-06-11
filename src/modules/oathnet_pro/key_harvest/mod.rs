@@ -477,6 +477,48 @@ pub async fn harvest_keys(
     (report, result)
 }
 
+/// Recover the `(service, key)` pairs from harvested `ApiKey` entities — the
+/// service from the `service:<name>` tag, the key from the entity value. Pure;
+/// skips entities without a service tag. Shared by the validation pass.
+fn harvested_credentials(entities: &ModuleResult) -> Vec<(String, String)> {
+    entities
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::ApiKey)
+        .filter_map(|e| {
+            e.tags
+                .iter()
+                .find_map(|t| t.strip_prefix("service:"))
+                .map(|svc| (svc.to_string(), e.value.clone()))
+        })
+        .collect()
+}
+
+/// Validate every harvested key against its service's live endpoint and mark
+/// the pool entry `Active`/`Invalid` accordingly, so a harvest yields VERIFIED,
+/// immediately-usable keys (the rate/health-aware selector then prefers the live
+/// ones and never hands a module a dead key). Returns `(live, checked)`; services
+/// with no validation endpoint are skipped (not counted). Persists the pool once
+/// at the end.
+pub async fn validate_harvested(entities: &ModuleResult) -> (usize, usize) {
+    let pool = crate::util::key_pool::global_pool();
+    let mut live = 0usize;
+    let mut checked = 0usize;
+    for (service, key) in harvested_credentials(entities) {
+        if let Some(valid) = crate::util::key_pool::validate_key(&service, &key).await {
+            checked += 1;
+            pool.mark_validated(&service, &key, valid);
+            if valid {
+                live += 1;
+            }
+        }
+    }
+    if checked > 0 {
+        crate::util::key_pool::save_pool_best_effort(&pool);
+    }
+    (live, checked)
+}
+
 // ── False-positive filtering (APIKeyScanner port) ──────────────────────
 //
 // Three independent gates a candidate string must pass before

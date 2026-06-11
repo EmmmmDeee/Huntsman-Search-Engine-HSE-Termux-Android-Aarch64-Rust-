@@ -88,6 +88,11 @@ pub enum KeysAction {
         /// Maximum service domains to query (each costs one OathNet lookup).
         #[arg(long)]
         limit: Option<usize>,
+        /// Skip validating harvested keys against their live endpoints. By
+        /// default every harvested key is validated and marked Active/Invalid
+        /// so the pool only hands modules verified-live keys.
+        #[arg(long)]
+        no_validate: bool,
     },
     /// Remove a key from the pool.
     Remove {
@@ -324,7 +329,7 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             }
         }
 
-        KeysAction::Harvest { limit } => {
+        KeysAction::Harvest { limit, no_validate } => {
             use crate::modules::oathnet_pro::key_harvest;
             let limit = limit.unwrap_or(key_harvest::DEFAULT_HARVEST_LIMIT);
             let oathnet_key = crate::util::oathnet::resolve_key(None).to_string();
@@ -337,7 +342,7 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             // The shared budget is per-scan; reset so a manual harvest gets its
             // own allowance instead of inheriting a prior run's exhaustion.
             crate::util::oathnet::reset_budget();
-            let (report, _entities) =
+            let (report, entities) =
                 key_harvest::harvest_keys(&oathnet_key, limit, "keys-harvest").await;
             // harvest_keys pools each discovered key via the emit path; persist.
             key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save: {e}")))?;
@@ -351,7 +356,17 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
                 for (svc, n) in svcs {
                     println!("  {svc}: {n}");
                 }
-                println!("\nPooled to {}", key_pool::pool_path().display());
+                if no_validate {
+                    println!("\nPooled (Untested) to {}", key_pool::pool_path().display());
+                } else {
+                    println!("\nValidating harvested keys against live endpoints…");
+                    let (live, checked) = key_harvest::validate_harvested(&entities).await;
+                    println!(
+                        "Validated {checked} key(s): {live} live, {} dead/invalid.",
+                        checked.saturating_sub(live)
+                    );
+                    println!("Pooled to {}", key_pool::pool_path().display());
+                }
             } else {
                 println!("No keys found (empty stealer matches, or OathNet quota exhausted).");
             }

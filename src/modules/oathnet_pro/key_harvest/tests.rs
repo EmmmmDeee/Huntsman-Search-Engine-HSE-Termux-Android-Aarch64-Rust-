@@ -1609,3 +1609,22 @@ fn tally_harvested_counts_apikeys_by_service() {
     assert_eq!(report.by_service.get("shodan"), Some(&2));
     assert_eq!(report.by_service.get("hunter"), Some(&1));
 }
+
+#[test]
+fn harvested_credentials_recovers_service_and_key() {
+    use crate::core::entity::{Entity, EntityKind};
+    let mut result = ModuleResult::new();
+    // Non-ApiKey and untagged ApiKey entities are ignored.
+    result.push(Entity::new(EntityKind::Email, "x@y.com", 0.5, "s"));
+    result.push(Entity::new(EntityKind::ApiKey, "orphan-no-tag", 0.8, "s"));
+    let mut k = Entity::new(EntityKind::ApiKey, "sk-live-abc", 0.8, "s");
+    k.tag("api-key");
+    k.tag("service:stripe");
+    result.push(k);
+
+    let creds = harvested_credentials(&result);
+    assert_eq!(
+        creds,
+        vec![("stripe".to_string(), "sk-live-abc".to_string())]
+    );
+}
