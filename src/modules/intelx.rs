@@ -131,6 +131,16 @@ fn bucket_family(bucket: &str) -> &str {
     bucket.split('.').next().unwrap_or(bucket)
 }
 
+/// True for an IntelX stealer-log bucket (`leaks.logs`, `leaks.logs.*`). **Pure**.
+/// Matched on the dotted path segment so a `leaks.logsomething` false-friend
+/// can't trip it. This is the same data class hudsonrock surfaces, so it earns
+/// the canonical [`crate::core::tags::STEALER_LOG`] tag for cross-source grouping.
+fn is_stealer_log_bucket(bucket: &str) -> bool {
+    bucket
+        .split('.')
+        .any(|seg| seg.eq_ignore_ascii_case("logs"))
+}
+
 #[async_trait]
 impl Module for IntelX {
     fn name(&self) -> &'static str {
@@ -324,12 +334,19 @@ impl Module for IntelX {
         let mut media_counts: std::collections::BTreeMap<i32, u32> =
             std::collections::BTreeMap::new();
         let mut family_tags: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        // `leaks.logs` is the IntelX stealer-log sub-bucket — the same data class
+        // as hudsonrock — so flag it for the canonical STEALER_LOG tag, letting
+        // the correlator group stealer exposure across both sources.
+        let mut has_stealer_log = false;
 
         for r in &all_records {
             if let Some(b) = r.bucket.as_deref().filter(|s| !s.is_empty()) {
                 let display = r.bucketh.as_deref().filter(|s| !s.is_empty()).unwrap_or(b);
                 *bucket_counts.entry(display.to_string()).or_insert(0) += 1;
                 family_tags.insert(bucket_family(b).to_string());
+                if is_stealer_log_bucket(b) {
+                    has_stealer_log = true;
+                }
             }
             if let Some(m) = r.media {
                 *media_counts.entry(m).or_insert(0) += 1;
@@ -345,8 +362,14 @@ impl Module for IntelX {
                     entity.tag(tags::PASSWORD_AT_RISK);
                 }
                 "pastes" => entity.tag(tags::PASTE_EXPOSED),
+                // Darknet/Tor circulation — a distinct, higher-severity exposure
+                // the correlator can group on via the canonical tag.
+                "darknet" => entity.tag(tags::DARKNET),
                 other => entity.tag(format!("intelx-source:{other}")),
             }
+        }
+        if has_stealer_log {
+            entity.tag(tags::STEALER_LOG);
         }
 
         // Top buckets by frequency (source breakdown), deterministic ordering.
@@ -441,6 +464,18 @@ mod tests {
         assert_eq!(bucket_family("darknet.tor"), "darknet");
         assert_eq!(bucket_family("pastes"), "pastes");
         assert_eq!(bucket_family(""), "");
+    }
+
+    #[test]
+    fn stealer_log_bucket_matches_logs_segment_only() {
+        // The leaks.logs stealer-log sub-bucket (and deeper paths) match...
+        assert!(is_stealer_log_bucket("leaks.logs"));
+        assert!(is_stealer_log_bucket("leaks.logs.cloud"));
+        assert!(is_stealer_log_bucket("leaks.public.logs"));
+        // ...but a substring false-friend and unrelated buckets do not.
+        assert!(!is_stealer_log_bucket("leaks.logsomething"));
+        assert!(!is_stealer_log_bucket("leaks.public.general"));
+        assert!(!is_stealer_log_bucket("darknet.tor"));
     }
 
     #[test]

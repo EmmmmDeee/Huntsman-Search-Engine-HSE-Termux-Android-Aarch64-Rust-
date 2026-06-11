@@ -3,6 +3,11 @@
 
 pub const BREACH: &str = "breach";
 pub const STEALER_LOG: &str = "stealer-log";
+/// Subject data observed on a darknet/Tor source (a distinct, higher-severity
+/// exposure than a public leak — it implies active circulation on criminal
+/// marketplaces/forums). Emitted by sources that classify by origin (e.g.
+/// IntelX `darknet.*` buckets) so the correlator can group darknet exposure.
+pub const DARKNET: &str = "darknet";
 pub const WEB: &str = "web";
 pub const CRAWLED: &str = "crawled";
 pub const SUBDOMAIN: &str = "subdomain";
