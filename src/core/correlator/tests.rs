@@ -1683,6 +1683,31 @@ fn au031_darknet_exposed_identity_does_not_contaminate_its_graph() {
 }
 
 #[test]
+fn au031_any_bad_tag_on_an_identity_never_anchors() {
+    // The general invariant: AU-031 anchors only on INFRASTRUCTURE. A bad tag of
+    // ANY kind on an identity entity (here a hypothetical malicious-tagged
+    // Username) is a victim/exposure signal and must not contaminate neighbours
+    // — this guards against a future emitter putting a non-darknet bad tag on an
+    // identity and silently re-creating the false positive.
+    use crate::core::relation::{Relation, RelationKind};
+    for bad_tag in ["malicious", "threat-intel", "vulnerable", "darknet"] {
+        let ident = tagged(EntityKind::Username, "subject", &[bad_tag]);
+        let neighbour = tagged(EntityKind::Email, "subject@example.com", &[]);
+        let rel = Relation::new(
+            neighbour.uid.clone(),
+            ident.uid.clone(),
+            RelationKind::DerivedFrom,
+            0.8,
+            "s",
+        );
+        assert!(
+            rule_au_031_malicious_adjacency(&[ident, neighbour], &[rel], "s", 0).is_empty(),
+            "{bad_tag} on an identity must not anchor adjacency"
+        );
+    }
+}
+
+#[test]
 fn au031_darknet_infrastructure_still_anchors() {
     // A darknet IP (criminal_ip's dark-web flag) IS bad infrastructure — its
     // benign neighbour is rightly surfaced. The kind gate keeps this half.
