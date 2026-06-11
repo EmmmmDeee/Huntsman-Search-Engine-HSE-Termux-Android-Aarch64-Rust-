@@ -22,7 +22,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::geo::is_valid_coords;
+use crate::util::geo::{au_coord_tags, is_in_australia, is_valid_coords};
 use crate::util::http::fetch_json;
 
 const SRC: &str = "geo_intel";
@@ -152,9 +152,17 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
         let coords = format!("{lat:.6},{lon:.6}");
         if seen_coords.insert(coords.clone()) {
             let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.68, &ctx.scan_id);
-            e.tag("geoint");
+            e.tag(crate::core::tags::GEOINT);
             if let Some(cc) = data.country_code.as_deref() {
                 e.tag(format!("country:{}", cc.to_uppercase()));
+            }
+            // Consistent with the dedicated IP-geo modules (which AU-tag via
+            // coarse_provider_coords): an AU fix gets the offline state/LGA tags
+            // so it feeds AU-056/060. Worldwide fixes pass through unchanged.
+            if is_in_australia(lat, lon) {
+                for t in au_coord_tags(lat, lon) {
+                    e.tag(t);
+                }
             }
 
             let mut ev = Evidence::new(SRC, format!("IP geo for {} via ipapi.co", target.value))
@@ -203,12 +211,17 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
         let coords = format!("{lat:.6},{lon:.6}");
         if seen_coords.insert(coords.clone()) {
             let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.62, &ctx.scan_id);
-            e.tag("geoint");
+            e.tag(crate::core::tags::GEOINT);
             if let Some(cc) = data.country_code.as_deref() {
                 e.tag(format!("country:{}", cc.to_uppercase()));
             }
             if data.is_proxy == Some(true) {
                 e.tag("proxy");
+            }
+            if is_in_australia(lat, lon) {
+                for t in au_coord_tags(lat, lon) {
+                    e.tag(t);
+                }
             }
 
             let mut ev = Evidence::new(
@@ -264,10 +277,14 @@ async fn process_phone_prefix_only(target: &Target, ctx: &ModuleContext) -> Resu
     if let Some((country, cc, lat, lon)) = phone_prefix_to_country(&phone) {
         let coords = format!("{lat:.4},{lon:.4}");
         if seen.insert(format!("@phone-geo:{coords}")) {
+            // Country centroid from the dialling prefix — NO au_coord_tags: the
+            // centroid is a placeholder point, so a state/LGA tag from it would
+            // be bogus (cf. cell_intel's MCC fallback). The `country:` tag is the
+            // honest attribution.
             let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.52, &ctx.scan_id);
-            e.tag("geoint");
+            e.tag(crate::core::tags::GEOINT);
             e.tag("phone-prefix");
-            e.tag("coarse");
+            e.tag(crate::core::tags::COARSE);
             e.tag(format!("country:{cc}"));
             e.add_evidence(
                 Evidence::new(
