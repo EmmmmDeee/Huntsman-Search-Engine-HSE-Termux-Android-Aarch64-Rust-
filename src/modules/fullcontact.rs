@@ -218,7 +218,11 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
     );
     for loc in locs {
         if seen_loc.insert(loc.to_lowercase()) {
-            push(&mut out, EntityKind::Address, loc, 0.60, &["geo-hint"]);
+            // Free-text AU enrichment (shared producer) so an Australian
+            // location feeds AU-056/060 without a geocode round-trip.
+            let mut tags: Vec<&str> = vec!["geo-hint"];
+            tags.extend(crate::util::geo::au_location_tags(loc));
+            push(&mut out, EntityKind::Address, loc, 0.60, &tags);
         }
     }
     // Social profiles: platform-prefixed Username pivots + their profile URLs.
@@ -289,6 +293,15 @@ mod tests {
         ));
         // Every entity carries the source tag.
         assert!(es.iter().all(|e| e.has_tag("fullcontact")));
+        // The Brisbane location is AU-enriched (shared free-text producer) so
+        // it feeds the AU correlator.
+        let bne = es
+            .iter()
+            .find(|e| e.value == "Brisbane, Queensland, Australia")
+            .unwrap();
+        assert!(bne.has_tag("au-relevant"));
+        assert!(bne.has_tag("au-state:QLD"));
+        assert!(bne.has_tag("au-se-qld"));
         // Current employer outranks historical.
         let acme = es.iter().find(|e| e.value == "Acme Pty Ltd").unwrap();
         let globex = es.iter().find(|e| e.value == "Globex").unwrap();

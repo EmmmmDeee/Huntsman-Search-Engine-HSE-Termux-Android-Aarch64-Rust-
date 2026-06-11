@@ -245,6 +245,12 @@ impl Module for GithubUser {
                 let mut a = Entity::new(EntityKind::Address, location, 0.55, &ctx.scan_id);
                 a.tag("github");
                 a.tag(crate::core::tags::GEOINT);
+                a.tag("self-reported");
+                // Free-text AU enrichment (shared producer) so an Australian
+                // self-reported GitHub location feeds AU-056/060.
+                for t in crate::util::geo::au_location_tags(location) {
+                    a.tag(t);
+                }
                 a.add_evidence(
                     Evidence::new(SRC, format!("Location from GitHub profile @{}", user.login))
                         .with_attr("github_login", &user.login),

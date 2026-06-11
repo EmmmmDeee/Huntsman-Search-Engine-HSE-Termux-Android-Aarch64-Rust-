@@ -246,6 +246,11 @@ fn build_entities(profile: &LinkedInProfile, target: &Target, scan_id: &str) -> 
         if let Some(cc) = nonempty(&profile.country) {
             ae.tag(format!("country:{}", cc.to_uppercase()));
         }
+        // Free-text AU enrichment (shared producer) so an Australian LinkedIn
+        // location feeds AU-056/060 without a geocode round-trip.
+        for t in crate::util::geo::au_location_tags(&location) {
+            ae.tag(t);
+        }
         ae.add_evidence(Evidence::new(SRC, format!("LinkedIn location: {location}")));
         result.push(ae);
     }
