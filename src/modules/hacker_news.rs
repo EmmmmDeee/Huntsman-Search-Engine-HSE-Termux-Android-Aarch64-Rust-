@@ -32,6 +32,11 @@ use crate::util::http::fetch_json;
 
 const SRC: &str = "hacker_news";
 
+/// Caps on identifiers mined from one free-text bio — bounds entity fan-out on a
+/// low-memory device while comfortably covering a real multi-link dev bio.
+const MAX_BIO_EMAILS: usize = 3;
+const MAX_BIO_URLS: usize = 5;
+
 pub struct HackerNews;
 
 #[derive(Deserialize)]
@@ -131,13 +136,22 @@ impl Module for HackerNews {
         u.add_evidence(ev);
         result.push(u);
 
-        // Mine the free-text bio for identity: an email or personal site here is
-        // a high-value, operator-published link from the handle to a real
-        // identifier — exactly the cross-reference the correlator wants.
+        // Mine the free-text bio for identity: emails and personal sites here are
+        // high-value, operator-published links from the handle to real
+        // identifiers — exactly the cross-references the correlator wants. HN
+        // bios are a dev community where people routinely list several links
+        // (GitHub + blog + social), so capture every distinct one (deduped,
+        // capped to bound fan-out on a phone), not just the first.
         if let Some(about) = user.about.as_deref() {
             let (email_re, url_re) = bio_patterns();
-            if let Some(m) = email_re.find(about) {
+
+            let mut seen_emails: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for m in email_re.find_iter(about).take(MAX_BIO_EMAILS) {
                 let email = m.as_str().to_lowercase();
+                if !seen_emails.insert(email.clone()) {
+                    continue;
+                }
                 let mut e = Entity::new(EntityKind::Email, &email, 0.78, &ctx.scan_id);
                 e.tag("hacker-news");
                 e.tag("public-profile");
@@ -147,8 +161,13 @@ impl Module for HackerNews {
                 );
                 result.push(e);
             }
-            if let Some(m) = url_re.find(about) {
+
+            let mut seen_urls: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for m in url_re.find_iter(about).take(MAX_BIO_URLS) {
                 let link = m.as_str().trim_end_matches(['.', ',', ')']);
+                if link.is_empty() || !seen_urls.insert(link) {
+                    continue;
+                }
                 let mut url_e = Entity::new(EntityKind::Url, link, 0.72, &ctx.scan_id);
                 url_e.tag("hacker-news");
                 url_e.tag("personal-site");
@@ -213,6 +232,25 @@ mod tests {
             .as_str()
             .trim_end_matches(['.', ',', ')']);
         assert_eq!(link, "https://paulgraham.com/bio.html");
+    }
+
+    #[test]
+    fn bio_extracts_all_distinct_links_from_a_multi_link_bio() {
+        // A real dev bio lists several profile links; find_iter must surface each
+        // (the module dedups + caps these into separate Url/Email entities).
+        let (email_re, url_re) = bio_patterns();
+        let about = "me: a@x.com, work b@y.com; \
+            https://github.com/me https://myblog.dev https://github.com/me";
+        let emails: Vec<String> = email_re
+            .find_iter(about)
+            .map(|m| m.as_str().to_lowercase())
+            .collect();
+        assert_eq!(emails, vec!["a@x.com", "b@y.com"]);
+        let urls: std::collections::HashSet<&str> =
+            url_re.find_iter(about).map(|m| m.as_str()).collect();
+        assert!(urls.contains("https://github.com/me"));
+        assert!(urls.contains("https://myblog.dev"));
+        assert_eq!(urls.len(), 2, "duplicate github link dedups to one");
     }
 
     #[test]
