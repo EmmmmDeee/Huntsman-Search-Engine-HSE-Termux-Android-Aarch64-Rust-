@@ -35,6 +35,11 @@ use crate::util::http::fetch_json_or_404;
 
 const SRC: &str = "reddit_user";
 
+/// Caps on identifiers mined from one free-text bio — bounds entity fan-out on a
+/// low-memory device while covering a profile that lists several links.
+const MAX_BIO_EMAILS: usize = 3;
+const MAX_BIO_URLS: usize = 5;
+
 pub struct RedditUser;
 
 #[derive(Deserialize)]
@@ -167,9 +172,17 @@ impl Module for RedditUser {
                 sr.public_description.as_deref().unwrap_or(""),
                 sr.title.as_deref().unwrap_or("")
             );
+            // Capture every distinct identifier the bio publishes (deduped,
+            // capped to bound fan-out on a phone), not just the first — a
+            // profile commonly lists several links.
             let (email_re, url_re) = bio_patterns();
-            if let Some(m) = email_re.find(&bio) {
+            let mut seen_emails: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for m in email_re.find_iter(&bio).take(MAX_BIO_EMAILS) {
                 let email = m.as_str().to_lowercase();
+                if !seen_emails.insert(email.clone()) {
+                    continue;
+                }
                 let mut e = Entity::new(EntityKind::Email, &email, 0.76, &ctx.scan_id);
                 e.tag("reddit");
                 e.tag("public-profile");
@@ -179,8 +192,12 @@ impl Module for RedditUser {
                 );
                 result.push(e);
             }
-            if let Some(m) = url_re.find(&bio) {
+            let mut seen_urls: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for m in url_re.find_iter(&bio).take(MAX_BIO_URLS) {
                 let link = m.as_str().trim_end_matches(['.', ',', ')']);
+                if link.is_empty() || !seen_urls.insert(link) {
+                    continue;
+                }
                 let mut url_e = Entity::new(EntityKind::Url, link, 0.70, &ctx.scan_id);
                 url_e.tag("reddit");
                 url_e.tag("personal-site");
