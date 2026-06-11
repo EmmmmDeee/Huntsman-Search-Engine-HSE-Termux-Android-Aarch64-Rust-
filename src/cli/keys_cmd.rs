@@ -76,6 +76,19 @@ pub enum KeysAction {
         /// Validate only this service. Omit to validate all.
         service: Option<String>,
     },
+    /// Actively harvest API keys from OathNet stealer logs.
+    ///
+    /// Queries OathNet's stealer index for high-value provider domains and pools
+    /// every API key found — unlike a normal scan, which only sees keys that
+    /// happen to appear in the *target's* own rows. Self-scaling: harvested
+    /// breach-API keys (OathNet / see-know / dehashed) grow the pools the engine
+    /// reuses. Uses the OathNet key (env `HUNTSMAN_OATHNET_KEY` or the embedded
+    /// default) and respects its daily/per-run quota budget.
+    Harvest {
+        /// Maximum service domains to query (each costs one OathNet lookup).
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// Remove a key from the pool.
     Remove {
         /// Service name.
@@ -308,6 +321,39 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
                 println!("Rotated '{service}' key: old value revoked, new value added.");
             } else {
                 println!("Old key not found in '{service}' pool — nothing rotated.");
+            }
+        }
+
+        KeysAction::Harvest { limit } => {
+            use crate::modules::oathnet_pro::key_harvest;
+            let limit = limit.unwrap_or(key_harvest::DEFAULT_HARVEST_LIMIT);
+            let oathnet_key = crate::util::oathnet::resolve_key(None).to_string();
+            let targets = key_harvest::harvest_targets(limit);
+            println!(
+                "Harvesting API keys from OathNet across {} service domain(s) \
+                 (limit {limit})…",
+                targets.len()
+            );
+            // The shared budget is per-scan; reset so a manual harvest gets its
+            // own allowance instead of inheriting a prior run's exhaustion.
+            crate::util::oathnet::reset_budget();
+            let (report, _entities) =
+                key_harvest::harvest_keys(&oathnet_key, limit, "keys-harvest").await;
+            // harvest_keys pools each discovered key via the emit path; persist.
+            key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save: {e}")))?;
+            println!(
+                "Queried {} domain(s); found {} key(s).",
+                report.domains_queried, report.keys_found
+            );
+            if report.keys_found > 0 {
+                let mut svcs: Vec<(&String, &usize)> = report.by_service.iter().collect();
+                svcs.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+                for (svc, n) in svcs {
+                    println!("  {svc}: {n}");
+                }
+                println!("\nPooled to {}", key_pool::pool_path().display());
+            } else {
+                println!("No keys found (empty stealer matches, or OathNet quota exhausted).");
             }
         }
 

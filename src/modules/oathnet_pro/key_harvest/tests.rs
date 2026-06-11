@@ -1554,3 +1554,58 @@ fn stripe_secret_publishable_and_test_are_distinguished() {
     assert_attributes("pk_live_", 24, "stripe_pub");
     assert_attributes("sk_test_", 24, "stripe_test");
 }
+
+// ── Active harvest ────────────────────────────────────────────────
+
+#[test]
+fn harvest_targets_dedups_by_service_and_caps() {
+    // One canonical domain per poolable service, capped at the limit.
+    let picks = harvest_targets(5);
+    assert_eq!(picks.len(), 5, "must honour the limit");
+    let mut svcs: Vec<&str> = picks.iter().map(|(_, s)| *s).collect();
+    let unique = svcs.len();
+    svcs.sort_unstable();
+    svcs.dedup();
+    assert_eq!(svcs.len(), unique, "no service may appear twice");
+}
+
+#[test]
+fn harvest_targets_only_picks_poolable_services() {
+    // Every chosen domain must map to a service the pool can actually store —
+    // querying for a key we can't pool wastes a paid request.
+    for (domain, svc) in harvest_targets(usize::MAX) {
+        assert!(
+            crate::util::service_defs::is_poolable_service(svc),
+            "{domain} → {svc} is not poolable and should not be a harvest target"
+        );
+    }
+}
+
+#[test]
+fn harvest_targets_zero_limit_is_empty() {
+    assert!(harvest_targets(0).is_empty());
+}
+
+#[test]
+fn tally_harvested_counts_apikeys_by_service() {
+    use crate::core::entity::{Entity, EntityKind};
+    let mut result = ModuleResult::new();
+    // A non-ApiKey entity before the window must NOT be counted.
+    result.push(Entity::new(EntityKind::Email, "x@y.com", 0.5, "s"));
+    let from = result.entities.len();
+    let mut k1 = Entity::new(EntityKind::ApiKey, "shodan:abc", 0.8, "s");
+    k1.tag("service:shodan");
+    result.push(k1);
+    let mut k2 = Entity::new(EntityKind::ApiKey, "shodan:def", 0.8, "s");
+    k2.tag("service:shodan");
+    result.push(k2);
+    let mut k3 = Entity::new(EntityKind::ApiKey, "hunter:ghi", 0.8, "s");
+    k3.tag("service:hunter");
+    result.push(k3);
+
+    let mut report = HarvestReport::default();
+    tally_harvested(&result, from, &mut report);
+    assert_eq!(report.keys_found, 3);
+    assert_eq!(report.by_service.get("shodan"), Some(&2));
+    assert_eq!(report.by_service.get("hunter"), Some(&1));
+}
