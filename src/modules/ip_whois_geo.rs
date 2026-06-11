@@ -18,7 +18,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::geo::is_plausible_provider_coord;
+use crate::util::geo::{au_coord_tags, is_in_australia, is_plausible_provider_coord};
 use crate::util::http::fetch_json;
 
 const SRC: &str = "ip_whois_geo";
@@ -131,9 +131,14 @@ impl Module for IpWhois {
             // location) so this provider should rank below the
             // residential-DB-backed IP-geo modules.
             let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.55, &ctx.scan_id);
-            e.tag("geoint");
+            e.tag(crate::core::tags::GEOINT);
             if let Some(cc) = data.country_code.as_deref() {
                 e.tag(format!("country:{}", cc.to_uppercase()));
+            }
+            if is_in_australia(lat, lon) {
+                for t in au_coord_tags(lat, lon) {
+                    e.tag(t);
+                }
             }
 
             let mut ev = Evidence::new(SRC, format!("IP geolocation for {}", target.value))
@@ -177,29 +182,29 @@ impl Module for IpWhois {
             // Synthesize an Address entity from the city/region/country
             // so expansion can chain into forward_geocode without an
             // extra API call.
-            let parts: Vec<&str> = [
-                data.city.as_deref(),
-                data.region.as_deref(),
-                data.country.as_deref(),
-            ]
-            .iter()
-            .filter_map(|p| *p)
-            .filter(|p| !p.is_empty())
-            .collect();
-
-            if parts.len() >= 2 {
-                let addr_str = parts.join(", ");
-                let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.50, &ctx.scan_id);
-                addr.tag("geoint");
-                addr.tag("derived");
-                addr.add_evidence(
-                    Evidence::new(
-                        "ip_whois_geo",
-                        format!("Address derived from IP geo for {}", target.value),
-                    )
-                    .with_attr("source", "ipwho.is"),
-                );
-                result.push(addr);
+            if let Some(addr_str) = crate::util::geo::format_locality(&[
+                data.city.as_deref().unwrap_or(""),
+                data.region.as_deref().unwrap_or(""),
+                data.country.as_deref().unwrap_or(""),
+            ]) {
+                // Need at least two non-empty components for a useful address.
+                let component_count = [&data.city, &data.region, &data.country]
+                    .iter()
+                    .filter(|o| o.as_deref().is_some_and(|s| !s.is_empty()))
+                    .count();
+                if component_count >= 2 {
+                    let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.50, &ctx.scan_id);
+                    addr.tag(crate::core::tags::GEOINT);
+                    addr.tag("derived");
+                    addr.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!("Address derived from IP geo for {}", target.value),
+                        )
+                        .with_attr("source", "ipwho.is"),
+                    );
+                    result.push(addr);
+                }
             }
         }
 
