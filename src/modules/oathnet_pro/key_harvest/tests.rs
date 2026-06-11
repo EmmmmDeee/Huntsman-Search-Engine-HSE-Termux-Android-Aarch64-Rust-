@@ -1491,3 +1491,66 @@ fn pattern_catalogue_preserves_declaration_order() {
         "specific-before-generic violated for sk- family"
     );
 }
+
+// ─── Collision-family EXACT-attribution guards ────────────────
+//
+// `every_pattern_entry_round_trips_through_identify` only asserts a synthetic
+// key resolves to SOME non-empty service. That is too weak for the
+// overlapping-prefix families: a re-ordering that resolves `sk-or-…` to the
+// generic `openai_or_stripe` stem (instead of `openrouter`) still round-trips
+// to a sibling and passes every existing test. These tests pin the EXACT label
+// each collision-prone prefix must produce, so a mis-ordering — the precise
+// failure the table comments warn about — fails loudly. Keys are synthesised
+// with the proven high-entropy suffix so they clear the FP/entropy gate.
+
+/// Assert a synthetic, FP-gate-passing key for `prefix` (padded to the table's
+/// `min_len`) is attributed to exactly `expected`.
+fn assert_attributes(prefix: &str, min_len: usize, expected: &str) {
+    let key = synthesise_for(prefix, min_len);
+    let (svc, matched) = identify_api_key(&key)
+        .unwrap_or_else(|| panic!("{prefix}… ({key}) was not identified at all"));
+    assert_eq!(
+        svc, expected,
+        "{prefix}… mis-attributed to {svc:?} (expected {expected:?}) — \
+         check specific-before-generic ordering in KEY_PATTERNS"
+    );
+    assert_eq!(matched, key, "matched slice must be the whole trimmed key");
+}
+
+#[test]
+fn sk_family_resolves_to_the_specific_service_not_the_generic_stem() {
+    // The whole point of the sk- ordering: each specific prefix wins over `sk-`.
+    assert_attributes("sk-ant-", 40, "anthropic");
+    assert_attributes("sk-proj-", 40, "openai");
+    assert_attributes("sk-svcacct-", 40, "openai_svc");
+    assert_attributes("sk-admin-", 40, "openai_admin");
+    assert_attributes("sk-or-", 40, "openrouter");
+    // The generic stem itself: an `sk-` key that matches none of the specific
+    // siblings must fall through to the catch-all (not be dropped or mislabeled).
+    assert_attributes("sk-", 20, "openai_or_stripe");
+}
+
+#[test]
+fn aws_access_key_and_sts_token_are_distinguished() {
+    // AKIA → long-lived access key; ASIA → temporary STS credential. The two
+    // must not collapse onto one label (different exploitation paths).
+    assert_attributes("AKIA", 16, "aws");
+    assert_attributes("ASIA", 16, "aws_sts");
+}
+
+#[test]
+fn github_token_classes_are_distinguished() {
+    assert_attributes("ghp_", 36, "github");
+    assert_attributes("gho_", 36, "github_oauth");
+    assert_attributes("ghs_", 36, "github_app");
+    assert_attributes("github_pat_", 40, "github");
+}
+
+#[test]
+fn stripe_secret_publishable_and_test_are_distinguished() {
+    // Mislabeling a live secret key as the publishable (safe) one would
+    // under-rank a critical exposure — pin all three.
+    assert_attributes("sk_live_", 24, "stripe");
+    assert_attributes("pk_live_", 24, "stripe_pub");
+    assert_attributes("sk_test_", 24, "stripe_test");
+}
