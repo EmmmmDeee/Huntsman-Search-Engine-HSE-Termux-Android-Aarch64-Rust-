@@ -10,6 +10,7 @@ pub mod curl_client;
 pub mod diagnostics;
 pub mod dns;
 pub mod domains;
+pub mod extract;
 pub mod found_keys;
 pub mod freq;
 pub mod geo;
