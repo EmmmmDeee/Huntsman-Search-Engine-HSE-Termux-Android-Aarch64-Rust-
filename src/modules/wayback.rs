@@ -26,6 +26,14 @@ use crate::util::http::{fetch_json, urlencode};
 
 const SRC: &str = "wayback";
 
+/// At or below this many distinct archived URLs (the CDX query collapses on
+/// `urlkey`, so the count is distinct URLs, not raw snapshots) the domain has a
+/// thin web footprint — a parked, brand-new, or throwaway domain rather than an
+/// established site. Surfaced as the `thin-web-history` tag for triage (the
+/// "low snapshot count" half of the newly-registered heuristic; the first-seen
+/// date for the recency half rides in evidence for the analyst/correlator).
+const THIN_HISTORY_MAX: usize = 4;
+
 pub struct Wayback;
 
 /// CDX API returns a 2-D array; first row is the column header, the
@@ -71,6 +79,12 @@ fn build_entity(kind: EntityKind, value: &str, rows: &[Row], scan_id: &str) -> O
 
     let mut entity = Entity::new(kind, value, 0.80, scan_id);
     entity.tag("archived");
+    // Thin web footprint → the actionable "possibly newly-registered/parked"
+    // signal the module documents. Deterministic (no clock): few distinct
+    // archived URLs means little established history regardless of when scanned.
+    if count <= THIN_HISTORY_MAX {
+        entity.tag("thin-web-history");
+    }
     let mut ev = Evidence::new(
         SRC,
         format!("Wayback Machine: {count} archived snapshot(s)"),
@@ -238,6 +252,8 @@ mod tests {
         let e = build_entity(EntityKind::Domain, "example.com", &rows, "s").unwrap();
         assert_eq!(e.kind, EntityKind::Domain);
         assert!(e.has_tag("archived"));
+        // 3 distinct URLs ≤ THIN_HISTORY_MAX → flagged as a thin web footprint.
+        assert!(e.has_tag("thin-web-history"));
         assert!((e.confidence - 0.80).abs() < 1e-9);
         assert_eq!(attr(&e, "snapshot_count"), Some("3")); // header excluded
         assert_eq!(attr(&e, "first_seen"), Some("20140912153012"));
@@ -246,5 +262,21 @@ mod tests {
         assert_eq!(attr(&e, "last_seen_iso"), Some("2020-07-22 12:00:00 UTC"));
         // 200 appears twice, 301 once → ranked by frequency.
         assert_eq!(attr(&e, "status_distribution"), Some("200×2, 301×1"));
+    }
+
+    #[test]
+    fn established_domain_is_not_flagged_thin() {
+        // A domain with more than THIN_HISTORY_MAX distinct archived URLs is an
+        // established site — no thin-web-history tag.
+        let mut rows = vec![row(&["timestamp", "statuscode"])];
+        for i in 0..(THIN_HISTORY_MAX + 1) {
+            rows.push(row(&[&format!("2014091215{i:04}"), "200"]));
+        }
+        let e = build_entity(EntityKind::Domain, "established.org", &rows, "s").unwrap();
+        assert_eq!(
+            attr(&e, "snapshot_count"),
+            Some((THIN_HISTORY_MAX + 1).to_string().as_str())
+        );
+        assert!(!e.has_tag("thin-web-history"));
     }
 }
