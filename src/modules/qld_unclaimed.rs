@@ -202,7 +202,7 @@ fn records_to_entities(
                 e.tag("postcode-only");
                 // `geoint` only belongs on actual geo entities (Address/Coords);
                 // the no-postcode finding below is not geographic.
-                e.tag("geoint");
+                e.tag(crate::core::tags::GEOINT);
                 // A postcode spans many localities — flag the coarseness so the
                 // UI and geo rules treat it as a region, not a pinned address.
                 e.tag("coarse");

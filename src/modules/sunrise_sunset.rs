@@ -68,7 +68,12 @@ fn build_solar_entity(
     let mut entity = Entity::new(EntityKind::Coordinates, coord, 0.55, scan_id);
     entity.tag("sunrise-sunset");
     entity.tag("chronolocation");
-    entity.tag("geoint");
+    entity.tag(crate::core::tags::GEOINT);
+    if crate::util::geo::is_in_australia(lat, lon) {
+        for t in crate::util::geo::au_coord_tags(lat, lon) {
+            entity.tag(t);
+        }
+    }
 
     let mut ev = Evidence::new(
         SRC,
