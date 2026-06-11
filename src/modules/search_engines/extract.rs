@@ -134,6 +134,9 @@ pub(super) async fn recycle_entities(
         }
 
         for email in extract_emails_from_text(&combined) {
+            if crate::util::domains::is_infrastructure_email(&email) {
+                continue;
+            }
             if seen_emails.insert(email.clone()) {
                 let mut e = Entity::new(EntityKind::Email, &email, 0.55, &scan_id);
                 e.tag("search-discovered");

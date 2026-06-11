@@ -127,6 +127,9 @@ pub(super) fn build_entities(
         // Extract emails from title + snippet text
         let combined_text = format!("{} {}", r.title, r.snippet);
         for email in extract_emails_from_text(&combined_text) {
+            if crate::util::domains::is_infrastructure_email(&email) {
+                continue;
+            }
             if seen_emails.insert(email.clone()) {
                 let mut e = Entity::new(EntityKind::Email, &email, 0.60, scan_id);
                 e.tag(tags::WEB_SCRAPED);

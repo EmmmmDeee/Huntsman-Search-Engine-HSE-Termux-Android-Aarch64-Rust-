@@ -188,7 +188,10 @@ fn records_to_entities(
         // (0.32). The `find_conf` for the non-geo `unclaimed_money` finding /
         // company Organisation keeps its full weight: those are real records,
         // not coarse geo.
-        let (addr_conf, find_conf) = if exact { (0.38, 0.60) } else { (0.32, 0.50) };
+        // Non-exact surname-only matches must stay below the 0.50 expansion
+        // floor so unrelated family members (e.g. "MS DAWN BAMFORD") never
+        // trigger pivots when scanning a specific individual.
+        let (addr_conf, find_conf) = if exact { (0.38, 0.60) } else { (0.32, 0.35) };
 
         // Geo pivot when we have a usable postcode; otherwise a plain finding.
         let mut entity = match pc {
