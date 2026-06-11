@@ -206,7 +206,10 @@ impl Module for CriminalIp {
                 entity.tag("scanner");
             }
             if is.is_dark_web == Some(true) {
-                entity.tag("dark-web");
+                // Canonical darknet-exposure tag (same one IntelX's darknet.*
+                // buckets emit) so both sources group in adjacency analysis,
+                // rather than this signal sitting under an unmatched "dark-web".
+                entity.tag(crate::core::tags::DARKNET);
             }
         }
         if let Some(w) = body.whois.as_ref().and_then(|w| w.data.first())
@@ -308,5 +311,16 @@ mod tests {
     #[test]
     fn cost_is_key_gated() {
         assert!(matches!(CriminalIp.cost(), ModuleCost::KeyGated));
+    }
+
+    #[test]
+    fn dark_web_flag_drives_canonical_darknet_tag() {
+        // The is_dark_web issue flag is what process() turns into the canonical
+        // tags::DARKNET tag (grouping with IntelX darknet exposure in adjacency
+        // analysis). Lock the field name + the constant it maps to.
+        let issues: Issues =
+            serde_json::from_str(r#"{"is_dark_web":true,"is_tor":false}"#).unwrap();
+        assert_eq!(issues.is_dark_web, Some(true));
+        assert_eq!(crate::core::tags::DARKNET, "darknet");
     }
 }
