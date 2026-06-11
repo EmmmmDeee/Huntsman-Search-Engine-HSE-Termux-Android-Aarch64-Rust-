@@ -80,6 +80,10 @@ impl Module for EmailHeaderGeo {
             e.tag("geoint");
             e.tag("coarse");
             e.tag("email-infra-inferred");
+            if let Some(tag) = geo.extra_tag {
+                e.tag(tag);
+                e.tag("au-relevant");
+            }
             e.add_evidence(
                 Evidence::new(
                     SRC,
@@ -121,15 +125,36 @@ struct DomainGeo {
     region: &'static str,
     confidence: f64,
     reason: &'static str,
+    /// Optional AU-specific tag (`au-state:QLD`, `au-lga:logan-city`, etc.)
+    /// applied to the entity in addition to the standard geoint/coarse tags.
+    extra_tag: Option<&'static str>,
 }
 
 fn infer_geo_from_email_domain(domain: &str) -> Option<DomainGeo> {
+    // AU-specific subdomain patterns take priority (more precise than raw ccTLD).
+    for &(pattern, region, extra_tag) in AU_SPECIFIC_DOMAINS {
+        if crate::util::domains::is_or_subdomain_of(domain, pattern) {
+            return Some(DomainGeo {
+                region,
+                confidence: 0.62,
+                reason: "au-specific-domain",
+                extra_tag: Some(extra_tag),
+            });
+        }
+    }
     for &(tld, region) in CCTLD_REGIONS {
         if domain.ends_with(tld) {
+            // A `.com.au` / `.gov.au` / `.edu.au` address is AU-relevant.
+            let extra_tag = if tld.ends_with(".au") {
+                Some("au-relevant")
+            } else {
+                None
+            };
             return Some(DomainGeo {
                 region,
                 confidence: 0.48,
                 reason: "country-code TLD",
+                extra_tag,
             });
         }
     }
@@ -144,6 +169,50 @@ fn detect_corporate_provider(domain: &str) -> Option<(&'static str, &'static str
     }
     None
 }
+
+/// AU-specific organisation domain patterns that carry finer-grained geographic
+/// signal than a bare `.com.au` ccTLD match. Ordered most-specific first so
+/// `logan.qld.gov.au` matches before `qld.gov.au`.
+const AU_SPECIFIC_DOMAINS: &[(&str, &str, &str)] = &[
+    // Logan City Council — strongest LGA signal.
+    (
+        "logan.qld.gov.au",
+        "Logan City, Queensland, Australia",
+        "au-lga:logan-city",
+    ),
+    (
+        "logancity.qld.gov.au",
+        "Logan City, Queensland, Australia",
+        "au-lga:logan-city",
+    ),
+    // SE QLD councils.
+    (
+        "brisbane.qld.gov.au",
+        "Brisbane, Queensland, Australia",
+        "au-se-qld",
+    ),
+    (
+        "ipswich.qld.gov.au",
+        "Ipswich, Queensland, Australia",
+        "au-se-qld",
+    ),
+    (
+        "goldcoast.qld.gov.au",
+        "Gold Coast, Queensland, Australia",
+        "au-se-qld",
+    ),
+    // QLD state government (any *.qld.gov.au not matched above).
+    ("qld.gov.au", "Queensland, Australia", "au-state:QLD"),
+    // QLD Education department.
+    ("eq.edu.au", "Queensland, Australia", "au-state:QLD"),
+    (
+        "education.qld.gov.au",
+        "Queensland, Australia",
+        "au-state:QLD",
+    ),
+    // QLD Health.
+    ("health.qld.gov.au", "Queensland, Australia", "au-state:QLD"),
+];
 
 /// True if `pattern` (a provider brand token such as `bigpond` or `tpg.com`)
 /// begins a host label in `domain` — i.e. it occurs at the start, or right after
@@ -233,11 +302,22 @@ const CCTLD_REGIONS: &[(&str, &str)] = &[
 ];
 
 const REGIONAL_PROVIDERS: &[(&str, &str, &str)] = &[
+    // Australia — major ISPs / carriers
     ("bigpond", "Telstra BigPond", "Australia"),
     ("optusnet", "Optus", "Australia"),
     ("iinet", "iiNet", "Australia"),
     ("internode", "Internode", "Australia"),
     ("tpg.com", "TPG", "Australia"),
+    ("aussiebroadband", "Aussie Broadband", "Australia"),
+    ("exetel", "Exetel", "Australia"),
+    ("dodo.com", "Dodo", "Australia"),
+    ("spintel", "Spintel", "Australia"),
+    ("belong.com", "Belong (Telstra)", "Australia"),
+    ("westnet", "WestNet (iiNet)", "Australia"),
+    ("aapt.net", "AAPT", "Australia"),
+    ("primus.com", "Primus", "Australia"),
+    ("chariot.net", "Chariot", "Australia"),
+    ("netspace.net", "Netspace", "Australia"),
     ("btinternet", "BT Internet", "United Kingdom"),
     ("sky.com", "Sky UK", "United Kingdom"),
     ("virginmedia", "Virgin Media", "United Kingdom"),
@@ -265,6 +345,28 @@ mod tests {
     fn au_cctld_detected() {
         let geo = infer_geo_from_email_domain("company.com.au").unwrap();
         assert_eq!(geo.region, "Australia");
+        assert_eq!(geo.extra_tag, Some("au-relevant"));
+    }
+
+    #[test]
+    fn logan_city_council_domain_detected() {
+        let geo = infer_geo_from_email_domain("staff.logan.qld.gov.au").unwrap();
+        assert!(geo.region.contains("Logan City"));
+        assert_eq!(geo.extra_tag, Some("au-lga:logan-city"));
+        assert!(geo.confidence >= 0.60);
+    }
+
+    #[test]
+    fn qld_state_domain_detected() {
+        let geo = infer_geo_from_email_domain("employee.qld.gov.au").unwrap();
+        assert_eq!(geo.extra_tag, Some("au-state:QLD"));
+        assert!(geo.region.contains("Queensland"));
+    }
+
+    #[test]
+    fn se_qld_council_domain_detected() {
+        let geo = infer_geo_from_email_domain("staff.brisbane.qld.gov.au").unwrap();
+        assert_eq!(geo.extra_tag, Some("au-se-qld"));
     }
 
     #[test]

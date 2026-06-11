@@ -5,6 +5,14 @@
 //! target's activity falls within a consistent 14-hour window, the
 //! midpoint of that window reveals the local timezone (±1 hour).
 //!
+//! **Australia-specific notes:**
+//!   - UTC+10 (AEST) uniquely identifies Queensland: QLD is the only major
+//!     AU population centre that does NOT observe daylight saving. A persistent
+//!     UTC+10 cluster is a strong signal for QLD residency.
+//!   - UTC+11 (AEDT) indicates NSW/VIC/TAS/ACT in summer (Oct–Apr). Absent
+//!     DST switching, a UTC+11 cluster implies non-QLD eastern AU.
+//!   - UTC+9.5 (ACST) → SA/NT. UTC+8 → WA.
+//!
 //! No network calls. Operates on evidence attributes already attached
 //! to entities. Priority 7 — runs late so other modules have produced
 //! timestamped evidence first.
@@ -67,6 +75,10 @@ impl Module for BreachTimezone {
             e.tag("geoint");
             e.tag("coarse");
             e.tag("timezone-inferred");
+            // AU-specific tagging: UTC+10 → QLD (no DST), UTC+11 → NSW/VIC/ACT.
+            for &tag in au_timezone_tags(tz.utc_offset) {
+                e.tag(tag);
+            }
             e.add_evidence(
                 Evidence::new(
                     SRC,
@@ -157,21 +169,49 @@ fn infer_timezone(hours: &[u32]) -> Option<TimezoneInference> {
 
 fn offset_to_region(offset: i32) -> &'static str {
     match offset {
+        -12 => "UTC-12 (Baker / Howland Islands)",
+        -11 => "Pacific/Niue",
+        -10 => "US/Hawaii",
+        -9 => "US/Alaska",
         -8 => "US/Pacific",
         -7 => "US/Mountain",
         -6 => "US/Central",
         -5 => "US/Eastern",
+        -4 => "Atlantic (Canada / Venezuela)",
         -3 => "South America (Brazil/Argentina)",
+        -2 => "Mid-Atlantic",
+        -1 => "Azores",
         0 => "Western Europe (UK/Ireland)",
-        1 => "Central Europe (France/Germany)",
-        2 => "Eastern Europe (Finland/South Africa)",
-        3 => "Middle East / Moscow",
-        5 => "South Asia (Pakistan)",
-        8 => "East Asia (China/Singapore/Perth)",
+        1 => "Central Europe (France/Germany/Netherlands)",
+        2 => "Eastern Europe (Finland/Greece/South Africa)",
+        3 => "Middle East / Moscow / Kenya",
+        4 => "Gulf / UAE / Mauritius",
+        5 => "South Asia (Pakistan/Uzbekistan)",
+        6 => "Bangladesh / Kazakhstan",
+        7 => "SE Asia (Vietnam/Thailand/Indonesia West)",
+        8 => "East Asia (China/Singapore/Taiwan) / Australia/WA",
         9 => "East Asia (Japan/Korea)",
-        10 => "Australia Eastern (Sydney/Melbourne)",
-        12 => "Pacific (New Zealand)",
+        10 => "Australia/QLD (AEST — no daylight saving)",
+        11 => "Australia Eastern Daylight (NSW/VIC/ACT/TAS summer) / Solomon Is.",
+        12 => "Pacific (New Zealand / Fiji)",
         _ => "Unknown timezone region",
+    }
+}
+
+/// Derive AU-specific tags from a UTC offset. Called after `infer_timezone`
+/// to enrich the entity with offline GEOINT state attribution.
+fn au_timezone_tags(utc_offset: i32) -> &'static [&'static str] {
+    match utc_offset {
+        // UTC+10 = AEST. Queensland is permanently at UTC+10 (no DST); NSW/VIC/TAS
+        // are only at UTC+10 in winter (Apr–Oct). A stable UTC+10 cluster is the
+        // strongest offline AU state signal this module can produce.
+        10 => &["au-relevant", "au-state:QLD", "au-se-qld"],
+        // UTC+11 = AEDT (NSW/VIC/TAS/ACT summer, Oct–Apr).
+        11 => &["au-relevant", "au-state:NSW"],
+        // UTC+9.5 rounds to 10 in integer arithmetic — ACST (SA/NT).
+        // UTC+8 = AWST (WA).
+        8 => &["au-relevant", "au-state:WA"],
+        _ => &[],
     }
 }
 
@@ -203,9 +243,42 @@ mod tests {
 
     #[test]
     fn offset_to_region_coverage() {
-        assert!(offset_to_region(10).contains("Australia"));
+        assert!(offset_to_region(10).contains("QLD"), "UTC+10 must name QLD");
+        assert!(offset_to_region(11).contains("NSW"), "UTC+11 must name NSW");
         assert!(offset_to_region(0).contains("UK"));
         assert!(offset_to_region(-5).contains("Eastern"));
+    }
+
+    #[test]
+    fn au_timezone_tags_utc10_gives_qld_se_qld() {
+        let tags = au_timezone_tags(10);
+        assert!(tags.contains(&"au-relevant"));
+        assert!(tags.contains(&"au-state:QLD"));
+        assert!(tags.contains(&"au-se-qld"));
+    }
+
+    #[test]
+    fn au_timezone_tags_utc11_gives_nsw() {
+        let tags = au_timezone_tags(11);
+        assert!(tags.contains(&"au-relevant"));
+        assert!(tags.contains(&"au-state:NSW"));
+        assert!(!tags.contains(&"au-state:QLD"));
+    }
+
+    #[test]
+    fn au_timezone_tags_non_au_empty() {
+        assert!(au_timezone_tags(-5).is_empty());
+        assert!(au_timezone_tags(0).is_empty());
+        assert!(au_timezone_tags(9).is_empty());
+    }
+
+    #[test]
+    fn histogram_aest_utc10() {
+        // Queensland AEST: activity at UTC hours 22-11 = 08:00-21:00 at UTC+10
+        let hours: Vec<u32> = vec![22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+        let tz = infer_timezone(&hours).unwrap();
+        assert_eq!(tz.utc_offset, 10, "should infer UTC+10 (AEST/QLD)");
+        assert!(tz.region.contains("QLD"));
     }
 
     #[tokio::test]
