@@ -20,6 +20,7 @@ use crate::core::{
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
+    tags,
 };
 use crate::util::http::{error_snippet, urlencode};
 
@@ -187,10 +188,12 @@ fn build_email_entity(target: &Target, body: &RepResp, scan_id: &str) -> Entity 
     }
 
     if let Some(d) = &body.details {
-        // `(field == Some(true))` flags → attribute + a pivotable tag.
+        // `(field == Some(true))` flags → attribute + a pivotable tag. The two
+        // breach flags raise the canonical tags::BREACH so the breach correlator
+        // sees this source alongside HIBP/dehashed/hudsonrock.
         for (flag, attr, tag) in [
-            (d.credential_leaked, "credential_leaked", "breach"),
-            (d.data_breach, "data_breach", "breach"),
+            (d.credential_leaked, "credential_leaked", tags::BREACH),
+            (d.data_breach, "data_breach", tags::BREACH),
             (d.blacklisted, "blacklisted", "blacklisted"),
             (d.malicious_activity, "malicious_activity", "malicious"),
             (d.spam, "spam", "spam-source"),
@@ -202,6 +205,13 @@ fn build_email_entity(target: &Target, body: &RepResp, scan_id: &str) -> Entity 
                 ev = ev.with_attr(attr, "true");
                 entity.tag(tag);
             }
+        }
+        // A leaked *credential* (not just an email-in-breach) is a password
+        // exposure — raise the same canonical tag HIBP uses so the risk surfaces
+        // consistently across breach sources. (Entity::tag dedupes the BREACH
+        // tag already added above.)
+        if d.credential_leaked == Some(true) {
+            entity.tag(tags::PASSWORD_AT_RISK);
         }
 
         // The inverse case: a domain that does NOT exist is the suspicious one.
@@ -311,6 +321,9 @@ mod tests {
         assert!(e.has_tag("reputation:low"));
         assert!(e.has_tag("suspicious"));
         assert!(e.has_tag("breach"));
+        // A leaked credential additionally raises the canonical password-risk
+        // tag (matching HIBP) so the exposure surfaces across breach sources.
+        assert!(e.has_tag("password-at-risk"));
         assert!(e.has_tag("blacklisted"));
         assert!(e.has_tag("malicious"));
         let ev = &e.evidence[0];
