@@ -34,6 +34,21 @@ const HIGH_RISK_SCORE: f64 = 80.0;
 /// Email platforms whose self-reported display name is worth a `Person` lead.
 const PERSON_PLATFORMS: &[&str] = &["facebook", "twitter", "linkedin", "github"];
 
+/// Map SEON's carrier string to the canonical AU carrier tag (case-insensitive
+/// prefix match on the known three nationals). `None` for MVNOs / non-AU.
+fn au_carrier_tag(carrier: &str) -> Option<&'static str> {
+    let c = carrier.to_ascii_lowercase();
+    if c.starts_with("telstra") {
+        Some(crate::core::tags::AU_CARRIER_TELSTRA)
+    } else if c.starts_with("optus") {
+        Some(crate::core::tags::AU_CARRIER_OPTUS)
+    } else if c.starts_with("vodafone") {
+        Some(crate::core::tags::AU_CARRIER_VODAFONE)
+    } else {
+        None
+    }
+}
+
 pub struct Seon;
 
 #[derive(Deserialize)]
@@ -290,6 +305,15 @@ fn build_phone_entities(target: &Target, data: &SeonPhoneData, scan_id: &str) ->
     if let Some(cc) = nonempty(&data.country_code) {
         ev = ev.with_attr("country_code", cc);
         entity.tag(format!("country:{}", cc.to_uppercase()));
+        // AU phone + known national carrier → feed AU-060 class 4 (carrier signal).
+        if cc.eq_ignore_ascii_case("AU") {
+            entity.tag(crate::core::tags::AU_RELEVANT);
+            if let Some(carrier_str) = nonempty(&data.carrier)
+                && let Some(ct) = au_carrier_tag(carrier_str)
+            {
+                entity.tag(ct);
+            }
+        }
     }
     if let Some(lt) = nonempty(&data.line_type) {
         ev = ev.with_attr("line_type", lt);
@@ -349,8 +373,19 @@ impl Module for Seon {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Person, EntityKind::Url];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Email,
+            EntityKind::Phone,
+            EntityKind::Person,
+            EntityKind::Url,
+        ];
         KINDS
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Cross-platform social presence detection (T1593.001) + identity
+        // information gathering (T1589.003 employee/personal names).
+        &["T1593.001", "T1589.003"]
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -598,6 +633,18 @@ mod tests {
         assert!(es.iter().all(|e| e.kind != EntityKind::Person));
     }
 
+    #[test]
+    fn au_carrier_tag_maps_nationals_case_insensitively() {
+        use super::au_carrier_tag;
+        assert_eq!(au_carrier_tag("Telstra"), Some("au-carrier:telstra"));
+        assert_eq!(au_carrier_tag("TELSTRA MOBILE"), Some("au-carrier:telstra"));
+        assert_eq!(au_carrier_tag("Optus"), Some("au-carrier:optus"));
+        assert_eq!(au_carrier_tag("Vodafone"), Some("au-carrier:vodafone"));
+        assert_eq!(au_carrier_tag("Boost Mobile"), None); // MVNO
+        assert_eq!(au_carrier_tag("EE"), None); // UK
+        assert_eq!(au_carrier_tag(""), None);
+    }
+
     // ── Core: phone entity building ─────────────────────────────────────
     #[test]
     fn phone_enriches_and_emits_messaging_profile_urls() {
@@ -634,5 +681,56 @@ mod tests {
         assert_eq!(urls.len(), 1);
         assert_eq!(urls[0].value, "https://wa.me/61400");
         assert!(urls[0].has_tag("platform:whatsapp"));
+    }
+
+    #[test]
+    fn au_phone_with_national_carrier_gets_au_carrier_tags() {
+        // AU + Telstra → au-relevant + au-carrier:telstra (feeds AU-060 class 4).
+        let r: SeonPhoneResp = serde_json::from_str(
+            r#"{"data":{"valid":true,"carrier":"Telstra","country_code":"AU","type":"mobile"}}"#,
+        )
+        .unwrap();
+        let es = build_phone_entities(
+            &Target::new(TargetKind::Phone, "+61400000000"),
+            &r.data.unwrap(),
+            "s",
+        );
+        let phone_e = &es[0];
+        assert!(phone_e.has_tag("au-relevant"), "needs au-relevant");
+        assert!(
+            phone_e.has_tag("au-carrier:telstra"),
+            "needs au-carrier:telstra"
+        );
+    }
+
+    #[test]
+    fn au_phone_mvno_gets_au_relevant_but_no_carrier_tag() {
+        let r: SeonPhoneResp = serde_json::from_str(
+            r#"{"data":{"valid":true,"carrier":"Boost Mobile","country_code":"AU","type":"mobile"}}"#,
+        )
+        .unwrap();
+        let es = build_phone_entities(
+            &Target::new(TargetKind::Phone, "+61411000000"),
+            &r.data.unwrap(),
+            "s",
+        );
+        let phone_e = &es[0];
+        assert!(
+            phone_e.has_tag("au-relevant"),
+            "AU phone always gets au-relevant"
+        );
+        assert!(!phone_e.has_tag("au-carrier:telstra"));
+        assert!(!phone_e.has_tag("au-carrier:optus"));
+        assert!(!phone_e.has_tag("au-carrier:vodafone"));
+    }
+
+    #[test]
+    fn attack_techniques_includes_social_media() {
+        let techniques = Seon.attack_techniques();
+        assert!(
+            techniques.contains(&"T1593.001"),
+            "social media presence detection"
+        );
+        assert!(techniques.contains(&"T1589.003"), "identity gathering");
     }
 }
