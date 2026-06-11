@@ -302,11 +302,20 @@ fn parse_fix(stdout: &[u8], scan_id: &str) -> ModuleResult {
     let coords = format!("{:.7},{:.7}", fix.latitude, fix.longitude);
 
     let mut e = Entity::new(EntityKind::Coordinates, coords, confidence, scan_id);
-    e.tag("geoint");
+    e.tag(crate::core::tags::GEOINT);
     e.tag("device-sensor");
     e.tag(format!("provider:{provider}"));
     if let Some(a) = fix.accuracy.filter(|a| *a > 0.0) {
         e.tag(format!("accuracy:{}m", a as u64));
+    }
+    // The on-device GPS/network fix is the most precise personal location the
+    // engine can hold. When it lands in Australia, attach the offline state/LGA
+    // tags (shared producer) so it feeds AU-056/060 like every other precise
+    // fix; a fix anywhere else in the world passes through unchanged.
+    if crate::util::geo::is_in_australia(fix.latitude, fix.longitude) {
+        for t in crate::util::geo::au_coord_tags(fix.latitude, fix.longitude) {
+            e.tag(t);
+        }
     }
     e.add_evidence(
         Evidence::new(SRC, format!("Location fix via {provider}"))
@@ -597,5 +606,29 @@ mod tests {
         let json = br#"{"latitude":-33.8688,"longitude":151.2093,"provider":"network"}"#;
         let r = parse_fix(json, "test");
         assert_eq!(r.entities[0].value, "-33.868800,151.209300");
+    }
+
+    #[test]
+    fn au_fix_carries_offline_state_and_lga_tags() {
+        // A device GPS fix in Park Ridge (Logan City) feeds the AU correlator:
+        // au-relevant + au-state:QLD + au-lga:logan-city, via the shared producer.
+        let json = br#"{"latitude":-27.6955,"longitude":152.8918,"provider":"gps"}"#;
+        let e = &parse_fix(json, "test").entities[0];
+        assert!(e.has_tag(crate::core::tags::AU_RELEVANT));
+        assert!(e.has_tag(crate::core::tags::AU_STATE_QLD));
+        assert!(e.has_tag(crate::core::tags::AU_LGA_LOGAN_CITY));
+    }
+
+    #[test]
+    fn non_au_fix_has_no_au_tags() {
+        // London fix — worldwide OSINT, the AU enrichment must not touch it.
+        let json = br#"{"latitude":51.5074,"longitude":-0.1278,"provider":"gps"}"#;
+        let e = &parse_fix(json, "test").entities[0];
+        assert!(!e.has_tag(crate::core::tags::AU_RELEVANT));
+        assert!(
+            !e.tags
+                .iter()
+                .any(|t| t.starts_with(crate::core::tags::AU_STATE_PREFIX))
+        );
     }
 }
