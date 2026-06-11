@@ -18,7 +18,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::geo::is_valid_coords;
+use crate::util::geo::{au_coord_tags, is_in_australia, is_valid_coords};
 use crate::util::http::error_snippet;
 use crate::util::termux::termux_cmd;
 
@@ -206,9 +206,19 @@ impl Module for WifiIntel {
                     .unwrap_or("<hidden>");
 
                 let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.80, &ctx.scan_id);
-                e.tag("geoint");
+                e.tag(crate::core::tags::GEOINT);
                 e.tag("wifi-ap");
                 e.tag("bssid-located");
+                // A BSSID fix is a *precise* position, so when it lands in
+                // Australia attach the offline state/LGA tags — a Logan WiFi fix
+                // then carries `au-lga:logan-city`, feeding the AU-060
+                // convergence rule's coordinate signal class (and AU-056's
+                // jurisdiction cross-check) the same way a geocoded fix does.
+                if is_in_australia(lat, lon) {
+                    for t in au_coord_tags(lat, lon) {
+                        e.tag(t);
+                    }
+                }
 
                 let mut ev = Evidence::new(
                     SOURCE,
@@ -264,7 +274,7 @@ impl Module for WifiIntel {
                         addr_str = format!("{addr_str} {p}");
                     }
                     let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.60, &ctx.scan_id);
-                    addr.tag("geoint");
+                    addr.tag(crate::core::tags::GEOINT);
                     addr.tag("bssid-derived");
                     addr.add_evidence(
                         Evidence::new(SOURCE, format!("Address from BSSID {} location", ap.bssid))
