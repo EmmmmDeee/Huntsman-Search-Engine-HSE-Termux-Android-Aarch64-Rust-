@@ -5,6 +5,8 @@
 //!
 //! Given a Coordinates target, queries for nearby infrastructure nodes
 //! (cell towers, substations, surveillance cameras) within a 500m radius.
+//! Infrastructure in Australia receives AU geo-tags (state, LGA) so results
+//! feed the AU correlator rules (AU-056, AU-060) just like any other fix.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -73,13 +75,28 @@ fn classify_element(tags: &std::collections::HashMap<String, String>) -> &'stati
 /// and a per-category breakdown), then one `Coordinates` entity per located
 /// infrastructure node (capped at [`MAX_NODES`], classified via
 /// [`classify_element`], with name/operator/osm_id evidence). Caller guarantees
-/// `elements` is non-empty.
-fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<Entity> {
+/// `elements` is non-empty. `lat`/`lon` are the parsed query-point coordinates
+/// (already validated by the caller).
+fn build_entities(
+    coord: &str,
+    lat: f64,
+    lon: f64,
+    elements: &[OsmElement],
+    scan_id: &str,
+) -> Vec<Entity> {
+    use crate::core::tags;
+    use crate::util::geo::{au_coord_tags, is_in_australia};
+
     let mut out = Vec::new();
 
     let mut summary = Entity::new(EntityKind::Coordinates, coord, 0.70, scan_id);
     summary.tag("overpass");
-    summary.tag("geoint");
+    summary.tag(tags::GEOINT);
+    if is_in_australia(lat, lon) {
+        for t in au_coord_tags(lat, lon) {
+            summary.tag(t);
+        }
+    }
     summary.add_evidence(
         Evidence::new(
             SRC,
@@ -94,10 +111,10 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
 
     let mut categories: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
     for elem in elements.iter().take(MAX_NODES) {
-        let Some(tags) = &elem.tags else {
+        let Some(elem_tags) = &elem.tags else {
             continue;
         };
-        let category = classify_element(tags);
+        let category = classify_element(elem_tags);
         *categories.entry(category).or_default() += 1;
 
         if let (Some(nlat), Some(nlon)) = (elem.lat, elem.lon)
@@ -106,14 +123,19 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
             let node_coords = format!("{nlat:.6},{nlon:.6}");
             let mut ce = Entity::new(EntityKind::Coordinates, &node_coords, 0.55, scan_id);
             ce.tag("overpass");
-            ce.tag("geoint");
+            ce.tag(tags::GEOINT);
             ce.tag(format!("infra:{category}"));
+            if is_in_australia(nlat, nlon) {
+                for t in au_coord_tags(nlat, nlon) {
+                    ce.tag(t);
+                }
+            }
             let mut ev = Evidence::new(SRC, format!("OSM {category} near {coord}"))
                 .with_attr("category", category);
-            if let Some(name) = tags.get("name") {
+            if let Some(name) = elem_tags.get("name") {
                 ev = ev.with_attr("name", name);
             }
-            if let Some(operator) = tags.get("operator") {
+            if let Some(operator) = elem_tags.get("operator") {
                 ev = ev.with_attr("operator", operator);
             }
             if let Some(id) = elem.id {
@@ -208,7 +230,7 @@ out body;"#
         }
 
         let mut result = ModuleResult::new();
-        result.entities = build_entities(&target.value, &body.elements, &ctx.scan_id);
+        result.entities = build_entities(&target.value, lat, lon, &body.elements, &ctx.scan_id);
         Ok(result)
     }
 }
@@ -310,7 +332,7 @@ mod tests {
                "tags":{"man_made":"mast"}}
             ]"#,
         );
-        let out = build_entities("-33.8688,151.2093", &els, "s");
+        let out = build_entities("-33.8688,151.2093", -33.8688, 151.2093, &els, "s");
         // Summary + 3 node entities.
         assert_eq!(out.len(), 4);
 
@@ -350,6 +372,40 @@ mod tests {
     }
 
     #[test]
+    fn build_entities_au_tags_summary_and_nodes() {
+        // Logan City fix: summary and node entities must both carry AU geo-tags.
+        let els = elements(
+            r#"[{"type":"node","id":1,"lat":-27.6955,"lon":152.8918,
+                 "tags":{"man_made":"mast"}}]"#,
+        );
+        let out = build_entities("-27.6955,152.8918", -27.6955, 152.8918, &els, "s");
+        let summary = &out[0];
+        assert!(summary.has_tag("au-relevant"), "summary needs au-relevant");
+        assert!(
+            summary.has_tag("au-state:QLD"),
+            "summary needs QLD state tag"
+        );
+        // Node entity at same coords also AU-tagged.
+        let node = &out[1];
+        assert!(node.has_tag("au-relevant"), "node entity needs au-relevant");
+        assert!(
+            node.has_tag("au-state:QLD"),
+            "node entity needs QLD state tag"
+        );
+    }
+
+    #[test]
+    fn build_entities_non_au_has_no_au_tags() {
+        let els = elements(
+            r#"[{"type":"node","id":1,"lat":51.5074,"lon":-0.1278,
+                 "tags":{"man_made":"mast"}}]"#,
+        );
+        let out = build_entities("51.5074,-0.1278", 51.5074, -0.1278, &els, "s");
+        assert!(!out[0].has_tag("au-relevant"));
+        assert!(!out[1].has_tag("au-relevant"));
+    }
+
+    #[test]
     fn build_entities_caps_nodes_but_counts_all_in_summary() {
         let els: Vec<OsmElement> = elements(&format!(
             "[{}]",
@@ -361,7 +417,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(",")
         ));
-        let out = build_entities("-33.0,151.0", &els, "s");
+        let out = build_entities("-33.0,151.0", -33.0, 151.0, &els, "s");
         // Summary node_count reflects ALL elements...
         assert_eq!(
             out[0].evidence[0]
