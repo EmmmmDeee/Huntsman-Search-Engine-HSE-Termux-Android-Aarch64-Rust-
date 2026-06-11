@@ -1098,6 +1098,41 @@ fn geo_normalize_alone_does_not_over_fire_corroboration_rules() {
     );
 }
 
+#[test]
+fn au017_source_count_excludes_the_enrichment_pass() {
+    // Two coordinates converging within range, each carrying one real source
+    // plus the deterministic geo_normalize enrichment. AU-017 ("Multi-source
+    // geographic convergence") must report the INDEPENDENT source count (2),
+    // not raw evidence sources (which would inflate it to 3 with geo_normalize)
+    // — consistent with AU-030's phantom-source exclusion.
+    let coord = |val: &str, real_src: &str| -> Entity {
+        let mut e = Entity::new(EntityKind::Coordinates, val, 0.80, "s");
+        e.add_evidence(Evidence::new(real_src, "fix"));
+        e.add_evidence(Evidence::new("geo_normalize", "enrichment"));
+        e.tag("geoint");
+        e
+    };
+    let ents = vec![
+        coord("-27.46800,153.02800", "ip_geo"),
+        coord("-27.47100,153.02400", "wifi_intel"),
+    ];
+    let firings = evaluate_rules(&ents, "s");
+    let c = firings
+        .iter()
+        .find(|c| c.rule_id == "AU-017")
+        .expect("two converging coordinates must fire AU-017");
+    assert!(
+        c.description.contains("from 2 source"),
+        "AU-017 must count 2 independent sources, not the geo_normalize pass: {}",
+        c.description
+    );
+    assert!(
+        !c.description.contains("from 3 source"),
+        "geo_normalize must not inflate the source count: {}",
+        c.description
+    );
+}
+
 // ── AU-015 ──────────────────────────────────────────────────────────
 
 #[test]

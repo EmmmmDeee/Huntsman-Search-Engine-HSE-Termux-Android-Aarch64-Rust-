@@ -298,9 +298,14 @@ pub(in crate::core::correlator) fn rule_au_017_multi_geo_convergence(
         .filter(|cl| cl.len() >= 2)
         .map(|cl| {
             let uids: Vec<String> = cl.iter().map(|(e, _)| e.uid.clone()).collect();
+            // Count INDEPENDENT sources only — exclude the geo_normalize/
+            // enrichment passes that touch every geo entity (the same phantom-
+            // source trap AU-030 guards against). This is a "multi-SOURCE"
+            // finding, so its displayed count must reflect genuine corroboration,
+            // not the deterministic enrichment that isn't an observation.
             let sources: HashSet<&str> = cl
                 .iter()
-                .flat_map(|(e, _)| e.evidence.iter().map(|ev| ev.source.as_str()))
+                .flat_map(|(e, _)| e.corroborating_sources())
                 .collect();
             Correlation {
                 rule_id: "AU-017".into(),
