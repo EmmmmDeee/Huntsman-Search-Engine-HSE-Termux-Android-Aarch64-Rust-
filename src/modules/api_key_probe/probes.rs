@@ -488,3 +488,81 @@ pub(super) fn probes() -> Vec<Probe> {
         },
     ]
 }
+
+/// The subject's brand/service domain for a validated key, for the pivot
+/// `Domain` entity the probe emits. Single source of truth (complete for every
+/// `probes()` entry — enforced by `every_probe_has_a_service_domain`).
+///
+/// This is deliberately NOT derived from the probe URL: several services are
+/// validated through an unrelated API host (numverify → `apilayer.net`,
+/// passivetotal → `api.passivetotal.org`), so URL-host derivation would pivot
+/// into the wrong estate.
+pub(super) fn service_domain(service: &str) -> Option<&'static str> {
+    Some(match service {
+        "shodan" => "shodan.io",
+        "virustotal" => "virustotal.com",
+        "intelx" => "intelx.io",
+        "securitytrails" => "securitytrails.com",
+        "hunter" => "hunter.io",
+        "leakix" => "leakix.net",
+        "ipqs" => "ipqualityscore.com",
+        "criminal_ip" => "criminalip.io",
+        "numverify" => "numverify.com",
+        "wigle" => "wigle.net",
+        "hibp" => "haveibeenpwned.com",
+        "abuseipdb" => "abuseipdb.com",
+        "censys" => "censys.io",
+        "binaryedge" => "binaryedge.io",
+        "greynoise" => "greynoise.io",
+        "fullhunt" => "fullhunt.io",
+        "urlscan" => "urlscan.io",
+        "passivetotal" => "passivetotal.org",
+        "onyphe" => "onyphe.io",
+        "zoomeye" => "zoomeye.org",
+        "netlas" => "netlas.io",
+        "pulsedive" => "pulsedive.com",
+        "emailrep" => "emailrep.io",
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_probe_has_a_service_domain() {
+        // The pivot Domain emission depends on this mapping being complete; a
+        // new probe added without a domain here would silently lose its DNS/IP/
+        // geo expansion pivot.
+        for probe in probes() {
+            assert!(
+                service_domain(probe.service).is_some(),
+                "{} has no service_domain mapping — add it so the probe still \
+                 emits a pivot Domain entity",
+                probe.service
+            );
+        }
+    }
+
+    #[test]
+    fn service_domains_are_bare_registrable_hosts() {
+        // No scheme, no path, no port — a clean domain the DNS/IP pipeline can
+        // resolve. (Guards a typo like "https://shodan.io" or "shodan.io/api".)
+        for probe in probes() {
+            if let Some(d) = service_domain(probe.service) {
+                assert!(
+                    !d.contains("://") && !d.contains('/') && !d.contains(':'),
+                    "{} domain {d:?} is not a bare host",
+                    probe.service
+                );
+                assert!(d.contains('.'), "{} domain {d:?} has no TLD", probe.service);
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_service_has_no_domain() {
+        assert_eq!(service_domain("not_a_real_service"), None);
+    }
+}

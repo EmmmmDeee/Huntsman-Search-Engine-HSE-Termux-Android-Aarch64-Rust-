@@ -84,8 +84,13 @@ impl Module for ApiKeyProbe {
         for probe in &all_probes {
             let key = key.to_string();
             let (url, headers) = (probe.url_builder)(&key);
+            // Clone the shared rustls reqwest client (cheap — Arc inside) into
+            // each task. No `curl` subprocess: Termux/aarch64 (no root) may not
+            // ship curl, and spawning ~24 processes to validate one key is far
+            // heavier on a phone than 24 pooled HTTPS requests on one client.
+            let http = ctx.http.clone();
             tasks.push(tokio::spawn(async move {
-                probe_endpoint(&url, &key, &headers).await
+                probe_endpoint(&http, &url, &key, &headers).await
             }));
         }
 
@@ -150,25 +155,12 @@ impl Module for ApiKeyProbe {
             result.push(entity);
 
             // Emit a Domain entity for the service so expansion can pivot
-            // through DNS/IP/geo pipelines.
-            let service_domain = match probe.service {
-                "shodan" => Some("shodan.io"),
-                "virustotal" => Some("virustotal.com"),
-                "censys" => Some("censys.io"),
-                "greynoise" => Some("greynoise.io"),
-                "urlscan" => Some("urlscan.io"),
-                "securitytrails" => Some("securitytrails.com"),
-                "hunter" => Some("hunter.io"),
-                "intelx" => Some("intelx.io"),
-                "dehashed" => Some("dehashed.com"),
-                "leakix" => Some("leakix.net"),
-                "ipqs" => Some("ipqualityscore.com"),
-                "numverify" => Some("numverify.com"),
-                "wigle" => Some("wigle.net"),
-                "abuseipdb" => Some("abuseipdb.com"),
-                _ => None,
-            };
-            if let Some(domain) = service_domain {
+            // through DNS/IP/geo pipelines. The brand domain is single-sourced
+            // in `probes::service_domain` (complete for every probe, enforced by
+            // a test) — it is NOT derived from the probe URL, because several
+            // APIs are served from an unrelated host (numverify validates via
+            // `apilayer.net`, but the subject's service is `numverify.com`).
+            if let Some(domain) = probes::service_domain(probe.service) {
                 let mut d = Entity::new(EntityKind::Domain, domain, 0.60, &ctx.scan_id);
                 d.tag("api-key-derived");
                 d.tag(format!("service:{}", probe.service));
@@ -221,39 +213,65 @@ impl Module for ApiKeyProbe {
     }
 }
 
-async fn probe_endpoint(url: &str, key: &str, headers: &[(&str, String)]) -> Option<String> {
-    let secs = 10u64.to_string();
-    let mut cmd = tokio::process::Command::new("curl");
-    cmd.args(["-s", "--max-time", &secs]);
+/// Split a Censys/PassiveTotal-style `id:secret` credential into HTTP Basic
+/// Auth parts. A value with no `:` is treated as the username with an empty
+/// password — identical to `curl -u value` semantics.
+fn basic_auth_parts(key: &str) -> (&str, &str) {
+    key.split_once(':').unwrap_or((key, ""))
+}
+
+/// Build the value for a prefixed auth header: `"Bearer <key>"`,
+/// `"Basic <token>"`, or the bare key when the prefix is empty.
+fn auth_header_value(prefix: &str, key: &str) -> String {
+    if prefix.is_empty() {
+        key.to_string()
+    } else {
+        format!("{prefix} {key}")
+    }
+}
+
+/// Send one validation request for a candidate key against a service endpoint,
+/// using the shared rustls reqwest client.
+///
+/// Returns the response body **only on an HTTP 2xx**. This is the authoritative
+/// validity gate: a non-success status (401/403/429/5xx) means the key is
+/// invalid, blocked, or the service is down for that probe — so we never feed a
+/// failed response into the body-content parser, which previously had to *guess*
+/// validity from JSON shape because the `curl -s` subprocess hid the status code.
+async fn probe_endpoint(
+    http: &reqwest::Client,
+    url: &str,
+    key: &str,
+    headers: &[(&str, String)],
+) -> Option<String> {
+    let mut req = http
+        .get(url)
+        .header(reqwest::header::ACCEPT, "application/json");
 
     for (name, prefix) in headers {
         if *name == "_basic_auth" {
-            cmd.args(["-u", key]);
+            let (user, pass) = basic_auth_parts(key);
+            req = req.basic_auth(user, Some(pass));
             continue;
         }
-        let val = if !prefix.is_empty() {
-            format!("{prefix} {key}")
-        } else {
-            key.to_string()
-        };
-        let h = format!("{name}: {val}");
-        cmd.args(["-H", &h]);
+        req = req.header(*name, auth_header_value(prefix, key));
     }
 
-    cmd.args(["-H", "Accept: application/json"]);
-    cmd.args(["--", url]);
-    cmd.kill_on_drop(true);
-
-    let output = tokio::time::timeout(Duration::from_secs(12), cmd.output())
+    // Bound every probe independently so one slow service can't stall the sweep
+    // past the module's budget on a mobile/captive link.
+    let resp = tokio::time::timeout(Duration::from_secs(10), req.send())
         .await
         .ok()?
         .ok()?;
 
-    if !output.status.success() {
+    if !resp.status().is_success() {
         return None;
     }
 
-    let body = String::from_utf8(output.stdout).ok()?;
+    let body = tokio::time::timeout(Duration::from_secs(5), resp.text())
+        .await
+        .ok()?
+        .ok()?;
     if body.len() < 2 {
         return None;
     }
@@ -385,5 +403,24 @@ mod tests {
         let m = ApiKeyProbe;
         assert!(m.is_passive());
         assert_eq!(m.cost(), ModuleCost::Free);
+    }
+
+    #[test]
+    fn basic_auth_parts_splits_id_secret() {
+        // Censys/PassiveTotal "id:secret" → (id, secret), matching `curl -u`.
+        assert_eq!(basic_auth_parts("apiid:apisecret"), ("apiid", "apisecret"));
+        // A value with no colon is the username with an empty password.
+        assert_eq!(basic_auth_parts("lonekey"), ("lonekey", ""));
+        // Only the FIRST colon splits (a secret may itself contain ':').
+        assert_eq!(basic_auth_parts("id:sec:ret"), ("id", "sec:ret"));
+    }
+
+    #[test]
+    fn auth_header_value_applies_scheme_prefix() {
+        // Prefixed schemes (wigle "Basic", onyphe "bearer") → "<prefix> <key>".
+        assert_eq!(auth_header_value("Basic", "TOKEN"), "Basic TOKEN");
+        assert_eq!(auth_header_value("bearer", "TOKEN"), "bearer TOKEN");
+        // No prefix → the bare key is the whole header value (e.g. `x-apikey`).
+        assert_eq!(auth_header_value("", "TOKEN"), "TOKEN");
     }
 }
