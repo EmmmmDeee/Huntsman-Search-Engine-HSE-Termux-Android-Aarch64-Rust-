@@ -261,6 +261,7 @@ pub(in crate::modules::search_engines) fn is_non_name_word(s: &str) -> bool {
         "linkedin",
         "locatefamily",
         "may",
+        "named",
         "net",
         "new",
         "not",

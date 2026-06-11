@@ -1173,6 +1173,40 @@ fn extract_family_names_survives_non_ascii_email_local_part() {
 }
 
 #[test]
+fn extract_family_names_rejects_subject_name_doublings_and_filler() {
+    // Regression from a live "Haigen Bamford" scan: snippet text produced phantom
+    // "family members" — the subject's own first name doubled into one token
+    // ("Haigenhaigen Bamford", "Haigenbhaigen Bamford") and a filler word before
+    // the surname ("Named Bamford"). None is a distinct relative.
+    let mk = |title: &str, snippet: &str| SearchResult {
+        url: "https://example.com/x".into(),
+        title: title.into(),
+        snippet: snippet.into(),
+        engine: "google",
+        query: "\"Haigen Bamford\"".into(),
+    };
+    let target = Target::new(TargetKind::FullName, "Haigen Bamford");
+    let results = vec![
+        mk("haigenhaigen bamford", ""),
+        mk("haigenbhaigen bamford", ""),
+        mk("a company named bamford", ""),
+    ];
+    let fam = extract_family_names(&results, &target);
+    assert!(
+        fam.is_empty(),
+        "subject-name doublings and filler must not become family members: {fam:?}"
+    );
+
+    // A genuine relative sharing the surname is still extracted.
+    let real = vec![mk("Jeanette Bamford realty", "")];
+    let fam2 = extract_family_names(&real, &target);
+    assert!(
+        fam2.iter().any(|(n, _)| n == "Jeanette Bamford"),
+        "a real distinct relative must survive: {fam2:?}"
+    );
+}
+
+#[test]
 fn abn_extraction() {
     let text = "Registered ABN 53 004 085 616 for the company";
     let results = extract_abn_acn_from_text(text);

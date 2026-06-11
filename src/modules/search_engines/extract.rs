@@ -236,6 +236,19 @@ pub(super) fn extract_family_names(
     let mut found = Vec::new();
     let mut seen = HashSet::new();
     let target_lower = target.value.to_lowercase();
+    // The target's own significant terms (≥3 chars), used to reject candidate
+    // first names that *embed* the subject's name rather than being a distinct
+    // person. A live scan on "Haigen Bamford" surfaced phantom "family members"
+    // like "Haigenhaigen Bamford" / "Haigenbhaigen Bamford" — snippet text where
+    // the subject's own first name had been doubled/garbled into one token. The
+    // `target_lower.contains(first)` guard below only catches a candidate that is
+    // a *substring* of the target; these are the reverse (the candidate contains
+    // the term), so they slipped through.
+    let target_terms: Vec<String> = target_lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 3)
+        .map(str::to_string)
+        .collect();
 
     for r in results {
         // Strip HTML artifacts before scanning for names
@@ -253,6 +266,12 @@ pub(super) fn extract_family_names(
                 continue;
             }
             if target_lower.contains(first) {
+                continue;
+            }
+            // Reject a candidate that embeds one of the subject's own terms
+            // (e.g. "haigenhaigen" contains "haigen") — a garbled duplicate of
+            // the subject, not a distinct relative.
+            if target_terms.iter().any(|t| first.contains(t.as_str())) {
                 continue;
             }
             if is_non_name_word(first) {
