@@ -19,11 +19,11 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::error_snippet;
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "github_user";
 
@@ -109,25 +109,18 @@ impl Module for GithubUser {
             .get(&url)
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28")
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC)
+            .await?;
 
         let status = resp.status();
         if status.as_u16() == 404 {
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {
-            return Err(Error::module(
-                "github_user",
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
+            return Err(crate::util::http::http_status_error("github_user", resp).await);
         }
 
-        let user: GhUser = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let user: GhUser = crate::util::http::json_decode(SRC, resp).await?;
 
         let mut result = ModuleResult::new();
 

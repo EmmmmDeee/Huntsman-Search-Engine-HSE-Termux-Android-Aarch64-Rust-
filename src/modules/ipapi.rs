@@ -19,6 +19,7 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "ipapi";
 const FIELDS: u64 = 66846719;
@@ -120,9 +121,8 @@ impl Module for IpApi {
             .http
             .get(&url)
             .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC)
+            .await?;
 
         if !resp.status().is_success() {
             return Err(Error::module(SRC, format!("HTTP {}", resp.status())));

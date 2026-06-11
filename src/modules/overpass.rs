@@ -15,6 +15,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "overpass";
 
@@ -187,9 +188,8 @@ out body;"#
             .post("https://overpass-api.de/api/interpreter")
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(format!("data={}", crate::util::http::urlencode(&query)))
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC)
+            .await?;
 
         let status = resp.status();
         if status.as_u16() == 429 {

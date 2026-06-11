@@ -218,6 +218,15 @@ async fn responses_carry_security_headers() {
             "no-referrer",
             "{uri}: Referrer-Policy"
         );
+        // Phone defence-in-depth: the browser must deny the device's camera,
+        // mic, and GPS to the console (which uses none of them).
+        let pp = hv("permissions-policy");
+        for feature in ["camera=()", "microphone=()", "geolocation=()"] {
+            assert!(
+                pp.contains(feature),
+                "{uri}: Permissions-Policy must deny {feature}: {pp:?}"
+            );
+        }
     }
 }
 
@@ -389,13 +398,7 @@ async fn stats_endpoint_includes_wigle_sub_budgets() {
     let account = wn
         .get("account")
         .expect("wigle block must include account sub-object");
-    for field in [
-        "verified",
-        "user",
-        "daily_api_calls",
-        "monthly_api_calls",
-        "last_polled_ts",
-    ] {
+    for field in ["verified", "user", "last_polled_ts"] {
         assert!(
             account.get(field).is_some(),
             "wigle.account missing field {field}"

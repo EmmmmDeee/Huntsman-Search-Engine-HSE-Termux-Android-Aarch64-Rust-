@@ -172,11 +172,11 @@ pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
             // `verified == false` means the WiGLE account has not yet
             // confirmed the email-verification step, which gates the
             // database queries (operator-facing warning). `null` means
-            // we haven't polled `/profile/user` yet this process.
+            // we haven't polled `/profile/user` yet this process. WiGLE
+            // exposes no per-call usage endpoint, so quota counts aren't
+            // reported here.
             "verified":           wigle_account.verified,
             "user":               wigle_account.user,
-            "daily_api_calls":    wigle_account.daily_api_calls,
-            "monthly_api_calls":  wigle_account.monthly_api_calls,
             "last_polled_ts":     wigle_account.last_polled_ts,
         },
     });

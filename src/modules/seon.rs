@@ -24,7 +24,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::error_snippet;
+use crate::util::http::RequestBuilderExt;
 
 const KEY_ENV: &str = "HUNTSMAN_SEON_KEY";
 const SRC: &str = "seon";
@@ -385,20 +385,14 @@ impl Seon {
             .header("X-API-KEY", key)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({ "email": email }))
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC)
+            .await?;
 
         let status = resp.status();
         if !status.is_success() {
             let code = status.as_u16();
-            if code == 429 || code == 401 || code == 403 {
-                ctx.report_key_exhausted(SRC, key, code);
-            }
-            return Err(Error::module(
-                SRC,
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
+            crate::util::http::note_keyed_error(code, SRC, key, ctx);
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
         let body: SeonEmailResp = crate::util::http::json_scanned(resp, SRC)
@@ -436,20 +430,14 @@ impl Seon {
             .header("X-API-KEY", key)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({ "phone": phone }))
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC)
+            .await?;
 
         let status = resp.status();
         if !status.is_success() {
             let code = status.as_u16();
-            if code == 429 || code == 401 || code == 403 {
-                ctx.report_key_exhausted(SRC, key, code);
-            }
-            return Err(Error::module(
-                SRC,
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
+            crate::util::http::note_keyed_error(code, SRC, key, ctx);
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
         let body: SeonPhoneResp = crate::util::http::json_scanned(resp, SRC)

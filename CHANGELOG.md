@@ -10,6 +10,116 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+
+- **Built-in OathNet batch query generator (`hse oathnet-batch`).** A new
+  command + pure `util::oathnet_batch` generator that expands a single seed into
+  a large, de-duplicated array of distinct OathNet queries across three axes:
+  **surface** (breach, plus the stealer corpus for login-indexable selectors),
+  **selector field** (the seed's native field plus derived ones — an email's
+  local part becomes a `username` search and its domain a `domain` search), and
+  **value permutation** (names and email local parts fan out into the handle
+  shapes real accounts use — `first.last`, `flast`, `firstl`, reversed and
+  middle-name blends; phone numbers fan out into their digit-only / AU-E.164 /
+  `+`-prefixed formats). A `john.doe@example.com` seed generates ~20+ distinct
+  queries; a full name, ~12+. The generator is pure and deterministic (seed
+  queries first, then derived, exact duplicates collapsed), so the plan can be
+  previewed for free — `hse oathnet-batch -v <seed>` prints the plan and spends
+  nothing; `--execute` dispatches it, bounded by the shared per-session OathNet
+  budget (the per-scan cap is lifted for the deliberate batch, but the session
+  ceiling still caps daily spend). Flags: `--no-stealer`, `--no-permute`,
+  `--synthesize-emails`, `--max`, `--page-size`, `--json`. The generator's public
+  API carries runnable doc examples, its guarantees (determinism, seed-first
+  ordering, de-duplication, well-formed/bounded output) are documented *and*
+  enforced by invariant tests, and malformed email hosts are guarded — a stray
+  `@` (from a double-`@` address) or a dotless host is no longer searched as a
+  domain.
+
+### Changed
+
+- **Airtight, offline-by-construction local web console (Termux/phone
+  hardening).** The embedded UI already shipped a strict CSP, security-header
+  middleware, vendored same-origin assets, and a `data:` favicon — so it makes
+  no external requests. This locks that guarantee so it can't silently regress
+  and tightens it for the phone:
+  - Added a restrictive **`Permissions-Policy`** denying every powerful browser
+    feature (camera, microphone, geolocation, USB, Bluetooth, serial, HID, MIDI,
+    motion sensors, payment) with empty `()` allowlists, plus `interest-cohort=()`.
+    The SPA uses none of these APIs, so denial is free; on the phone target it
+    means a hypothetical injection still can't reach the device's sensors.
+  - Added source-level tripwires: the CSP is asserted to name **no** external
+    origin or `*` wildcard (closing the hole that a substring check like
+    `contains("connect-src 'self'")` leaves open against
+    `connect-src 'self' https://exfil`), every CSP directive token is checked to
+    be `'self'`/`'unsafe-inline'`/`'none'`/`data:` only, and the embedded SPA is
+    scanned to prove it auto-loads no external `<script>`/`<link>`/`<img>`
+    resource (the scanner is itself tested against a CDN sample). The served
+    `Permissions-Policy` is asserted in the API integration tests.
+
+- **Intelligence X selector coverage widened to match the API.** IntelX
+  auto-classifies a search term across its full `SelectorType` table, but the
+  module only accepted email / username / phone / name / domain / IP. It now
+  also accepts **URL, CIDR, MAC address, and crypto (Bitcoin) address** — all
+  kinds IntelX has dedicated selectors for and that other modules already emit
+  as entities, so an expansion can now pivot them through IntelX. Coverage is
+  defined once in a new single-sourced `intelx_selector` map that drives
+  `accepts` (and is documented + exhaustively tested, including a compile-time
+  tripwire that forces any newly-added `TargetKind` to be classified); kinds
+  IntelX cannot resolve (ASN, coordinates, ABN/ACN, organisation, address, API
+  key) are still declined so a paid query is never wasted. `produces` was
+  extended to match. No change to the (already-correct) two-phase search/poll.
+
+- **Single-sourced the OathNet query vocabulary.** The surface↔path mapping
+  (`Surface`) and the target-kind↔selector-field mapping (`selector_field`,
+  `stealer_indexable`) now live once in `util::oathnet` and are consumed by both
+  the `oathnet_pro` scan module and the new `oathnet_batch` generator, instead
+  of each re-encoding the field names (`email`/`username`/`q`/`ip`/`domain`) and
+  the breach/stealer routing. As part of this, `oathnet_pro::process` lost its
+  inline kind→field `match`: the field comes from `selector_field`, and the
+  per-kind junk gates were extracted into a pure, separately-tested
+  `should_skip_preflight`. Behaviour is unchanged (a batch plan for a sample
+  email still generates the same 23 queries); the win is that adding a kind or
+  renaming a field updates both consumers at once.
+
+- **DeHashed module migrated to the v2 API.** DeHashed sunset the v1
+  `GET https://api.dehashed.com/search` endpoint (HTTP Basic with an account
+  email + key) — it now returns **404**, so the module was dead for everyone.
+  It now calls `POST https://api.dehashed.com/v2/search` with the key in a
+  `Dehashed-Api-Key` header and a JSON body (`{"query","page","size"}`). v2 is
+  **key-only**, so the obsolete `HUNTSMAN_DEHASHED_USER` account-email variable
+  is removed across the module, `KNOWN_KEYS`, the env templates, and the
+  service registry (its GET-based key validator can't probe a POST-only
+  endpoint, so the two now-unprobeable DeHashed service defs were dropped
+  rather than left mis-reporting valid keys as invalid). Response parsing
+  follows the v2 shape: `database_name` is read as an array (folded into the
+  top-databases aggregate), the new top-level `balance` is surfaced as
+  `credit_balance`, and the v1-only `obtained_from`/`created_at` aggregates are
+  dropped. The no-credentials-in-evidence invariant is preserved and now
+  regression-tested against the real v2 wire shape (an entry's
+  `password`/`hashed_password` are never bound). Note: DeHashed v2 requires an
+  **active search subscription** in addition to API credits — without it the
+  endpoint returns `401 "You need a search subscription and API credits to use
+  the API"`, which the module now surfaces verbatim.
+
+### Fixed
+
+- **WiGLE account introspection now actually detects the email-unverified
+  throttle.** `refresh_account_status` deserialised the `/api/v2/profile/user`
+  response with the wrong field names — it read `user`/`verified`, but the
+  WiGLE `Person` object (per the published swagger schema, confirmed live)
+  names them `userid` and `emailVerified`. Both therefore always parsed to
+  `None`, so `is_unverified()` could never fire and `hse doctor` reported
+  `email-verified: unknown — /profile/user not reachable` even when the
+  endpoint was reachable and the account was plainly unverified — defeating
+  the entire purpose of the check (WiGLE silently throttles DB queries until
+  the email is confirmed). The parser now reads the real fields and trims the
+  trailing space WiGLE pads onto `userid`. Additionally, the second poll to
+  `/api/v2/profile/apiUsage` was removed: that path has never existed (it
+  always 404'd), so the `daily_api_calls`/`monthly_api_calls` fields it fed
+  were structurally always `null`. They are dropped from `WigleAccountStatus`,
+  the `/api/v1/stats` `wigle.account` block, and `hse doctor` output. Locked in
+  with a regression test that parses the real `Person` wire shape.
+
 ## [1.4.0] — 2026-06-09
 
 ### Added

@@ -17,6 +17,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "social_location";
 
@@ -60,9 +61,8 @@ impl Module for SocialLocation {
         let body = ctx
             .http
             .get(url)
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?
+            .send_tagged(SRC)
+            .await?
             .text()
             .await
             .map_err(|e| Error::module(SRC, e.to_string()))?;

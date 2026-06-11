@@ -644,7 +644,7 @@ if [[ ! -f "$KEYS_PATH" ]]; then
 #HUNTSMAN_HIBP_KEY=
 #HUNTSMAN_OATHNET_KEY=
 #HUNTSMAN_SEEKNOW_KEY=
-#HUNTSMAN_DEHASHED_USER=
+# DeHashed v2 is key-only (needs an active search subscription + credits):
 #HUNTSMAN_DEHASHED_KEY=
 #HUNTSMAN_HUNTER_KEY=
 #HUNTSMAN_INTELX_KEY=

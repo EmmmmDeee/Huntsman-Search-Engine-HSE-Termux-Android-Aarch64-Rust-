@@ -61,8 +61,7 @@ HUNTSMAN_HUNTER_KEY="insert_hunter_io_key_here"
 # key-free today; these keys are placeholders for future paid tiers):
 HUNTSMAN_XPOSEDORNOT_KEY="insert_xposedornot_key_here"
 HUNTSMAN_HUDSONROCK_KEY="insert_hudsonrock_key_here"
-HUNTSMAN_DEHASHED_USER="insert_dehashed_account_email_here"
-HUNTSMAN_DEHASHED_KEY="insert_dehashed_key_here"
+HUNTSMAN_DEHASHED_KEY="insert_dehashed_v2_api_key_here"
 HUNTSMAN_NUMVERIFY_KEY="insert_numverify_key_here"
 
 # --- TIER 4: LOCAL WIRELESS, CELLULAR & GEOSPATIAL SIGINT ENRICHMENT ---

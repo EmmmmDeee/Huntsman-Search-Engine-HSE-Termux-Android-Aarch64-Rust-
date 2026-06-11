@@ -613,6 +613,77 @@ pub async fn handle_keyed_error(
     }
 }
 
+/// HTTP status codes that indicate an API-key problem: unauthorized (401),
+/// forbidden (403), or rate-limited / quota-exhausted (429). The single source
+/// of the "which response codes count against a key" classification, shared by
+/// [`note_keyed_error`] and matched (with per-code actions) by
+/// [`handle_keyed_error`].
+#[must_use]
+pub fn is_keyed_error_status(code: u16) -> bool {
+    matches!(code, 401 | 403 | 429)
+}
+
+/// Mark `key` exhausted (so the key pool / rotation can react) when `code` is a
+/// key-problem status per [`is_keyed_error_status`]; a no-op otherwise.
+///
+/// This is the non-retrying counterpart to [`handle_keyed_error`]: it does NOT
+/// sleep, back off, or return a retry signal. It centralises the
+/// `if 401/403/429 { ctx.report_key_exhausted(..) }` block that many keyed
+/// modules — which surface the error immediately rather than retrying — had
+/// hand-rolled identically.
+pub fn note_keyed_error(
+    code: u16,
+    module: &str,
+    key: &str,
+    ctx: &crate::core::module::ModuleContext,
+) {
+    if is_keyed_error_status(code) {
+        ctx.report_key_exhausted(module, key, code);
+    }
+}
+
+/// Build the uniform `Error::module` for a non-success HTTP response —
+/// `"HTTP <status>: <body snippet>"` — consuming `resp` to read a bounded body
+/// snippet via [`error_snippet`]. The single source of the HTTP-status error
+/// construction that ~20 keyed modules repeated verbatim.
+pub async fn http_status_error(module: &str, resp: reqwest::Response) -> Error {
+    let status = resp.status();
+    let snippet = error_snippet(resp).await;
+    Error::module(module, format!("HTTP {status}: {snippet}"))
+}
+
+/// Classify a keyed-API response by status — the full post-send operation that
+/// the keyed modules repeat. `404` -> `Ok(None)` (a clean "not in this dataset"
+/// miss the caller maps to empty findings); any other non-2xx ->
+/// [`note_keyed_error`] (so 401/403/429 burn the key) then `Err` via
+/// [`http_status_error`]; `2xx` -> `Ok(Some(resp))` for the caller to decode.
+///
+/// Composes the keyed-error building blocks so the policy — which codes are a
+/// miss, which burn a key, which are a hard error — lives in one tested place.
+/// Pairs with `let-else`:
+///
+/// ```ignore
+/// let Some(resp) = http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
+///     return Ok(ModuleResult::new());
+/// };
+/// ```
+pub async fn keyed_ok_or_404(
+    module: &str,
+    key: &str,
+    ctx: &crate::core::module::ModuleContext,
+    resp: reqwest::Response,
+) -> Result<Option<reqwest::Response>> {
+    let status = resp.status();
+    if status.as_u16() == 404 {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        note_keyed_error(status.as_u16(), module, key, ctx);
+        return Err(http_status_error(module, resp).await);
+    }
+    Ok(Some(resp))
+}
+
 /// Keyed GET: fetch JSON from a URL that requires an API key header.
 /// Handles 401/403/429 uniformly via report_key_exhausted, maps 404
 /// to Ok(None). Consolidates the error handling pattern duplicated
@@ -691,6 +762,39 @@ pub async fn json_scanned<T: DeserializeOwned>(
     serde_json::from_str(&text).map_err(|e| format!("{module}: {e}"))
 }
 
+/// Decode a response body as JSON, tagging any decode failure with `module`.
+///
+/// The raw-decode counterpart to [`json_scanned`]: where that helper retains
+/// the body in the raw archive and scans it for leaked keys, this is the plain
+/// `resp.json().await` path used by endpoints whose body is not retained. It
+/// folds the `.map_err(|e| Error::module(module, e.to_string()))` that the
+/// keyed modules repeated verbatim into one named, module-tagged decode.
+pub async fn json_decode<T: DeserializeOwned>(module: &str, resp: reqwest::Response) -> Result<T> {
+    resp.json::<T>()
+        .await
+        .map_err(|e| Error::module(module, e.to_string()))
+}
+
+/// Extension on [`reqwest::RequestBuilder`] that sends the request and maps any
+/// transport error to a module-tagged [`Error`]. Folds the
+/// `.send().await.map_err(|e| Error::module(module, e.to_string()))` tail that
+/// ~40 modules repeated verbatim into `builder.send_tagged(module).await`.
+///
+/// Crate-internal (`pub(crate)`), so the `async fn` carries no public auto-trait
+/// caveat: callers invoke it on the concrete `RequestBuilder`, whose future is
+/// `Send`, so it composes inside their `async_trait` module methods.
+pub(crate) trait RequestBuilderExt {
+    async fn send_tagged(self, module: &'static str) -> Result<reqwest::Response>;
+}
+
+impl RequestBuilderExt for reqwest::RequestBuilder {
+    async fn send_tagged(self, module: &'static str) -> Result<reqwest::Response> {
+        self.send()
+            .await
+            .map_err(|e| Error::module(module, e.to_string()))
+    }
+}
+
 /// Scan arbitrary text for API key patterns and store any discoveries
 /// in the global key pool. Call on any raw text that passes through the
 /// system — HTTP response bodies, WHOIS output, certificate fields, etc.
@@ -735,6 +839,141 @@ pub fn scan_for_api_keys_with_source(text: &str, source: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn keyed_error_status_classification() {
+        // The single-sourced "which HTTP codes count against an API key" set.
+        for code in [401, 403, 429] {
+            assert!(super::is_keyed_error_status(code), "{code} is a key error");
+        }
+        for code in [200, 400, 404, 418, 500, 502, 503] {
+            assert!(
+                !super::is_keyed_error_status(code),
+                "{code} is not a key error"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn json_decode_parses_ok_and_tags_decode_errors_with_module() {
+        use serde::Deserialize;
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct V {
+            a: u32,
+            b: String,
+        }
+
+        // A well-formed body decodes to the typed value.
+        let ok = reqwest::Response::from(
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"a":7,"b":"x"}"#.to_string())
+                .unwrap(),
+        );
+        let v: V = super::json_decode("test_mod", ok).await.unwrap();
+        assert_eq!(
+            v,
+            V {
+                a: 7,
+                b: "x".into()
+            }
+        );
+
+        // A malformed body never panics — it surfaces a module-tagged error.
+        let bad = reqwest::Response::from(
+            http::Response::builder()
+                .status(200)
+                .body("not json".to_string())
+                .unwrap(),
+        );
+        let err = super::json_decode::<V>("test_mod", bad).await.unwrap_err();
+        assert!(
+            err.to_string().contains("test_mod"),
+            "decode error must name the module: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_tagged_maps_transport_errors_to_the_module() {
+        use super::RequestBuilderExt;
+        // An unsupported scheme fails inside send() with no network I/O, so this
+        // deterministically exercises the transport-error -> module-tagged Error
+        // mapping that ~40 modules relied on inline.
+        let err = reqwest::Client::new()
+            .get("ftp://example.invalid/")
+            .send_tagged("test_mod")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("test_mod"),
+            "transport error must name the module: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn keyed_ok_or_404_classifies_miss_success_and_error() {
+        use std::collections::HashMap;
+        // A minimal context. Its key-pool side effects are only reached on a
+        // keyed status (401/403/429) — note_keyed_error's tested responsibility —
+        // which this test deliberately avoids so it stays hermetic (no global
+        // key-pool mutation / disk persistence).
+        let (bus, _rx) = tokio::sync::broadcast::channel(1);
+        let ctx = crate::core::module::ModuleContext {
+            scan_id: "test".into(),
+            bus,
+            http: reqwest::Client::new(),
+            keys: HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+            proxy_pool: Default::default(),
+        };
+        let resp = |code: u16| {
+            reqwest::Response::from(
+                http::Response::builder()
+                    .status(code)
+                    .body(String::new())
+                    .unwrap(),
+            )
+        };
+
+        // 404 -> a clean miss the caller maps to empty findings.
+        let miss = super::keyed_ok_or_404("test_mod", "k", &ctx, resp(404))
+            .await
+            .unwrap();
+        assert!(miss.is_none(), "404 must classify as a miss");
+
+        // 2xx -> the response is handed back for the caller to decode.
+        let ok = super::keyed_ok_or_404("test_mod", "k", &ctx, resp(200))
+            .await
+            .unwrap();
+        assert!(ok.is_some(), "2xx must hand back the response");
+
+        // Other non-2xx -> a module-tagged hard error. 500 is not a keyed status,
+        // so no key-pool mutation occurs and the test stays hermetic.
+        let err = super::keyed_ok_or_404("test_mod", "k", &ctx, resp(500))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("test_mod"),
+            "non-2xx error must name the module: {err}"
+        );
+    }
+
+    #[test]
+    fn curl_download_cap_mirrors_the_json_body_cap() {
+        // curl.rs documents CURL_MAX_DOWNLOAD_BYTES as "Mirrors http::JSON_BODY_CAP",
+        // but the two size caps (the reqwest JSON path here vs the curl-subprocess
+        // path) are defined separately — usize arithmetic vs a curl-arg string — so
+        // nothing stops one being bumped without the other. Pin their equality: a
+        // body refused on one path must be refused on the other.
+        let curl_cap: usize = crate::util::curl::CURL_MAX_DOWNLOAD_BYTES
+            .parse()
+            .expect("CURL_MAX_DOWNLOAD_BYTES must be a decimal byte count");
+        assert_eq!(
+            curl_cap,
+            super::JSON_BODY_CAP,
+            "the curl --max-filesize cap and the reqwest JSON body cap must stay equal"
+        );
+    }
+
     #[tokio::test]
     async fn traced_client_sends_x_huntsman_trace_header() {
         // Prove the trace id rides on the wire: a minimal TCP server reads the

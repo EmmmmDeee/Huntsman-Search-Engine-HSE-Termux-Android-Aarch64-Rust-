@@ -13,11 +13,12 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{error_snippet, handle_keyed_error};
+use crate::util::http::RequestBuilderExt;
+use crate::util::http::handle_keyed_error;
 
 const KEY_ENV: &str = "HUNTSMAN_CRIMINALIP_KEY";
 
@@ -146,24 +147,17 @@ impl Module for CriminalIp {
                 .http
                 .get(&url)
                 .header("x-api-key", key)
-                .send()
-                .await
-                .map_err(|e| Error::module(SRC, e.to_string()))?;
+                .send_tagged(SRC)
+                .await?;
             let status = resp.status();
             if !status.is_success() {
                 let code = status.as_u16();
                 if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
                     continue;
                 }
-                return Err(Error::module(
-                    "criminal_ip",
-                    format!("HTTP {status}: {}", error_snippet(resp).await),
-                ));
+                return Err(crate::util::http::http_status_error("criminal_ip", resp).await);
             }
-            break resp
-                .json()
-                .await
-                .map_err(|e| Error::module(SRC, e.to_string()))?;
+            break crate::util::http::json_decode(SRC, resp).await?;
         };
         if body.status != Some(200) {
             return Ok(ModuleResult::new());

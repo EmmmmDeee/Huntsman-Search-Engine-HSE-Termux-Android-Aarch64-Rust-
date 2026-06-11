@@ -15,6 +15,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::RequestBuilderExt;
 use crate::util::http::urlencode;
 
 const KEY_ENV: &str = "HUNTSMAN_OPENCORP_KEY";
@@ -204,9 +205,8 @@ impl Module for OpenCorporates {
             .http
             .get(&url)
             .header("Accept", "application/json")
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC)
+            .await?;
 
         let status = resp.status();
         // Graceful no-op statuses. OpenCorporates' v0.4 search now answers 401
@@ -224,10 +224,7 @@ impl Module for OpenCorporates {
             return Err(Error::module(SRC, format!("HTTP {status}")));
         }
 
-        let body: OcResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let body: OcResp = crate::util::http::json_decode(SRC, resp).await?;
 
         let Some(results) = body.results else {
             return Ok(ModuleResult::new());

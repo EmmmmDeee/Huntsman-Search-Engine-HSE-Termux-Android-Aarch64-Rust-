@@ -139,19 +139,9 @@ impl CurlClient {
 
         let mut cmd = Command::new("curl");
         cmd.args(["-s", "-L", "--max-time", &secs, "-A", DEFAULT_UA]);
-        cmd.args([
-            "--proto",
-            "=http,https",
-            "--proto-redir",
-            "=http,https",
-            "--max-redirs",
-            "5",
-            // Bound the download so even a trusted-but-misbehaving API returning
-            // a multi-GB body can't OOM a Termux device — the same cap the
-            // free-function curl path applies, single-sourced in `curl`.
-            "--max-filesize",
-            crate::util::curl::CURL_MAX_DOWNLOAD_BYTES,
-        ]);
+        // Protocol/redirect/size hardening, single-sourced so this keyed-API
+        // path and the free-function curl path can never drift apart.
+        cmd.args(crate::util::curl::FETCH_HARDENING_ARGS);
         if let Some(ref h) = auth_header {
             cmd.args(["-H", h]);
         }

@@ -14,11 +14,12 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{error_snippet, handle_keyed_error, urlencode};
+use crate::util::http::RequestBuilderExt;
+use crate::util::http::{handle_keyed_error, urlencode};
 
 const KEY_ENV: &str = "HUNTSMAN_IPQS_KEY";
 
@@ -228,12 +229,7 @@ impl Module for IpQs {
         );
         let mut retries = 2u8;
         let body: Common = loop {
-            let resp = ctx
-                .http
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| Error::module(SRC, e.to_string()))?;
+            let resp = ctx.http.get(&url).send_tagged(SRC).await?;
             let status = resp.status();
             if status.as_u16() == 404 {
                 return Ok(ModuleResult::new());
@@ -243,15 +239,9 @@ impl Module for IpQs {
                 if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
                     continue;
                 }
-                return Err(Error::module(
-                    "ipqs",
-                    format!("HTTP {status}: {}", error_snippet(resp).await),
-                ));
+                return Err(crate::util::http::http_status_error("ipqs", resp).await);
             }
-            break resp
-                .json()
-                .await
-                .map_err(|e| Error::module(SRC, e.to_string()))?;
+            break crate::util::http::json_decode(SRC, resp).await?;
         };
         if body.success == Some(false) {
             return Ok(ModuleResult::new());

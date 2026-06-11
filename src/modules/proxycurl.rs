@@ -30,12 +30,13 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::domains::is_freemail;
-use crate::util::http::{error_snippet, urlencode};
+use crate::util::http::RequestBuilderExt;
+use crate::util::http::urlencode;
 use crate::util::str_util::truncate_safe;
 
 const KEY_ENV: &str = "HUNTSMAN_PROXYCURL_KEY";
@@ -387,29 +388,14 @@ impl Module for Proxycurl {
             .get(&api_url)
             .bearer_auth(key)
             .header("Accept", "application/json")
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC)
+            .await?;
 
-        let status = resp.status();
-        if status.as_u16() == 404 {
+        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
             return Ok(ModuleResult::new());
-        }
-        if !status.is_success() {
-            let code = status.as_u16();
-            if code == 429 || code == 401 || code == 403 {
-                ctx.report_key_exhausted(SRC, key, code);
-            }
-            return Err(Error::module(
-                SRC,
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
-        }
+        };
 
-        let profile: LinkedInProfile = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let profile: LinkedInProfile = crate::util::http::json_decode(SRC, resp).await?;
 
         Ok(build_entities(&profile, target, &ctx.scan_id))
     }

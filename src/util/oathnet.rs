@@ -85,6 +85,22 @@ pub fn reset_budget() {
     BUDGET.reset_scan();
 }
 
+/// True while the shared OathNet budget can absorb at least one more billable
+/// query (per-scan + per-session room, quota not tripped). Public so the
+/// deliberate `hse oathnet-batch --execute` runner can stop cleanly at the
+/// session ceiling instead of firing calls the budget would silently drop.
+pub fn has_budget() -> bool {
+    BUDGET.remaining()
+}
+
+/// Lift the per-scan OathNet cap for a deliberate batch run, so the batch is
+/// bounded by the per-session ceiling (the operator's daily-quota contract)
+/// rather than the tight per-scan default sized for automated scans. Cleared
+/// by [`reset_budget`].
+pub fn set_scan_cap_override(cap: u32) {
+    BUDGET.set_scan_cap_override(cap);
+}
+
 fn mark_quota_exhausted() {
     BUDGET.mark_exhausted();
     tracing::warn!("OathNet daily quota exhausted — skipping remaining queries");
@@ -259,6 +275,106 @@ pub mod paths {
     pub const SESSION_INIT: &str = "/service/search/init";
 }
 
+// ─── Query vocabulary — single source of truth ──────────────────────────────
+//
+// The mapping of "which corpus" (surface) and "which selector field a target
+// kind searches on" is shared by the `oathnet_pro` scan module and the
+// `oathnet_batch` query generator. Defining it once here keeps the two in
+// lockstep — a kind added or a field renamed updates both consumers at once.
+
+/// An OathNet search surface — the typed companion to the [`paths`] constants.
+///
+/// ```
+/// use huntsman_search_engine::util::oathnet::{Surface, paths};
+///
+/// assert_eq!(Surface::Breach.label(), "breach");
+/// assert_eq!(Surface::Breach.path(), paths::BREACH);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Surface {
+    /// Breach corpus ([`paths::BREACH`]).
+    Breach,
+    /// Stealer-log corpus ([`paths::STEALER`]).
+    Stealer,
+}
+
+impl Surface {
+    /// The [`paths`] constant this surface dispatches against.
+    #[must_use]
+    pub fn path(self) -> &'static str {
+        match self {
+            Self::Breach => paths::BREACH,
+            Self::Stealer => paths::STEALER,
+        }
+    }
+
+    /// Short human/JSON label.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Breach => "breach",
+            Self::Stealer => "stealer",
+        }
+    }
+}
+
+/// OathNet selector field names — the single source for the wire field strings,
+/// referenced by both [`selector_field`] and the batch generator's derived-query
+/// logic so a selector rename can't let the seed and derived queries drift apart.
+pub const FIELD_EMAIL: &str = "email";
+/// OathNet `username` selector. See [`FIELD_EMAIL`].
+pub const FIELD_USERNAME: &str = "username";
+/// OathNet `phone` selector. See [`FIELD_EMAIL`].
+pub const FIELD_PHONE: &str = "phone";
+/// OathNet free-text `q` selector (used by `FullName` seeds). See [`FIELD_EMAIL`].
+pub const FIELD_QUERY: &str = "q";
+/// OathNet `ip` selector. See [`FIELD_EMAIL`].
+pub const FIELD_IP: &str = "ip";
+/// OathNet `domain` selector. See [`FIELD_EMAIL`].
+pub const FIELD_DOMAIN: &str = "domain";
+
+/// The OathNet selector field a target kind searches on, or `None` for a kind
+/// OathNet does not index. The breach corpus indexes all of these; the stealer
+/// corpus only those for which [`stealer_indexable`] is true.
+///
+/// ```
+/// use huntsman_search_engine::util::oathnet::selector_field;
+/// use huntsman_search_engine::core::scan::TargetKind;
+///
+/// assert_eq!(selector_field(TargetKind::Email), Some("email"));
+/// assert_eq!(selector_field(TargetKind::FullName), Some("q"));
+/// assert_eq!(selector_field(TargetKind::Url), None); // OathNet doesn't index URLs
+/// ```
+#[must_use]
+pub fn selector_field(kind: crate::core::scan::TargetKind) -> Option<&'static str> {
+    use crate::core::scan::TargetKind;
+    Some(match kind {
+        TargetKind::Email => FIELD_EMAIL,
+        TargetKind::Username => FIELD_USERNAME,
+        TargetKind::Phone => FIELD_PHONE,
+        TargetKind::FullName => FIELD_QUERY,
+        TargetKind::IpAddress => FIELD_IP,
+        TargetKind::Domain => FIELD_DOMAIN,
+        _ => return None,
+    })
+}
+
+/// True for selector fields the stealer corpus indexes — it is keyed on login
+/// credentials, so only `email` / `username` resolve there. Phone / name /
+/// domain / IP are breach-only.
+///
+/// ```
+/// use huntsman_search_engine::util::oathnet::stealer_indexable;
+///
+/// assert!(stealer_indexable("email"));
+/// assert!(stealer_indexable("username"));
+/// assert!(!stealer_indexable("phone")); // breach-only
+/// ```
+#[must_use]
+pub fn stealer_indexable(field: &str) -> bool {
+    matches!(field, "email" | "username")
+}
+
 /// Per-scan search session ID. When set, breach and stealer queries for
 /// the same target value consume only ONE OathNet lookup instead of two.
 /// Sessions are valid for 60 minutes on the OathNet side.
@@ -400,5 +516,41 @@ mod tests {
     fn paths_are_non_empty() {
         assert!(!paths::BREACH.is_empty());
         assert!(!paths::STEALER.is_empty());
+    }
+
+    #[test]
+    fn surface_maps_to_its_path_and_label() {
+        assert_eq!(Surface::Breach.path(), paths::BREACH);
+        assert_eq!(Surface::Stealer.path(), paths::STEALER);
+        assert_eq!(Surface::Breach.label(), "breach");
+        assert_eq!(Surface::Stealer.label(), "stealer");
+    }
+
+    #[test]
+    fn selector_field_covers_every_indexed_kind_and_only_those() {
+        use crate::core::scan::TargetKind;
+        assert_eq!(selector_field(TargetKind::Email), Some("email"));
+        assert_eq!(selector_field(TargetKind::Username), Some("username"));
+        assert_eq!(selector_field(TargetKind::Phone), Some("phone"));
+        assert_eq!(selector_field(TargetKind::FullName), Some("q"));
+        assert_eq!(selector_field(TargetKind::IpAddress), Some("ip"));
+        assert_eq!(selector_field(TargetKind::Domain), Some("domain"));
+        // A kind OathNet does not index.
+        assert_eq!(selector_field(TargetKind::Url), None);
+    }
+
+    #[test]
+    fn stealer_indexable_only_for_login_fields() {
+        assert!(stealer_indexable("email"));
+        assert!(stealer_indexable("username"));
+        for f in ["phone", "q", "ip", "domain"] {
+            assert!(!stealer_indexable(f), "{f} is breach-only");
+        }
+        // Every login-indexable field must itself be a real selector field.
+        use crate::core::scan::TargetKind;
+        for kind in [TargetKind::Email, TargetKind::Username] {
+            let f = selector_field(kind).unwrap();
+            assert!(stealer_indexable(f));
+        }
     }
 }

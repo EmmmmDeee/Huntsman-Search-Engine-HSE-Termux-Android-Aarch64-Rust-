@@ -19,16 +19,14 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::geo::is_valid_coords;
+use crate::util::http::RequestBuilderExt;
 use crate::util::http::error_snippet;
 use crate::util::termux::termux_cmd;
 
 // ── WiGLE credentials ──────────────────────────────────────────────────
 
-const USER_ENV: &str = "HUNTSMAN_WIGLE_USER";
-const TOKEN_ENV: &str = "HUNTSMAN_WIGLE_TOKEN";
-// Embedded fallback: single source of truth lives in `util::keys`.
-const HARDCODED_USER: &str = crate::util::keys::WIGLE_DEFAULT_USER;
-const HARDCODED_TOKEN: &str = crate::util::keys::WIGLE_DEFAULT_TOKEN;
+// Env names + embedded fallbacks are resolved by the single-sourced
+// `crate::util::keys::wigle_credentials` (shared with the `wigle` module).
 
 /// How many of the strongest APs to query WiGLE for.
 const MAX_BSSIDS: usize = 5;
@@ -140,8 +138,7 @@ impl Module for WifiIntel {
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let user = ctx.key_opt(USER_ENV).unwrap_or(HARDCODED_USER);
-        let token = ctx.key_opt(TOKEN_ENV).unwrap_or(HARDCODED_TOKEN);
+        let (user, token) = crate::util::keys::wigle_credentials(ctx);
 
         // ── Single termux-wifi-scaninfo call ────────────────────────────
         let Some(stdout) = termux_cmd("termux-wifi-scaninfo", &[], 5000).await else {
@@ -294,9 +291,8 @@ async fn query_wigle_detail(
         .get(&url)
         .basic_auth(user, Some(token))
         .header("Accept", "application/json")
-        .send()
-        .await
-        .map_err(|e| Error::module(SOURCE, e.to_string()))?;
+        .send_tagged(SOURCE)
+        .await?;
 
     let status = resp.status();
     if status.as_u16() == 429 {
@@ -328,10 +324,7 @@ async fn query_wigle_detail(
         ));
     }
 
-    let body: DetailResp = resp
-        .json()
-        .await
-        .map_err(|e| Error::module(SOURCE, e.to_string()))?;
+    let body: DetailResp = crate::util::http::json_decode(SOURCE, resp).await?;
 
     if body.success != Some(true) {
         return Ok(None);

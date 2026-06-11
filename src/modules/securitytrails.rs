@@ -16,7 +16,8 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{error_snippet, handle_keyed_error};
+use crate::util::http::RequestBuilderExt;
+use crate::util::http::handle_keyed_error;
 
 const KEY_ENV: &str = "HUNTSMAN_SECTRAILS_KEY";
 const SRC: &str = "securitytrails";
@@ -217,9 +218,8 @@ impl SecurityTrails {
                 .get(url)
                 .header("APIKEY", key)
                 .header("Accept", "application/json")
-                .send()
-                .await
-                .map_err(|e| Error::module(SRC, e.to_string()))?;
+                .send_tagged(SRC)
+                .await?;
             let status = resp.status();
             if status.as_u16() == 404 {
                 return Err(Error::module(SRC, "404 Not Found"));
@@ -229,10 +229,7 @@ impl SecurityTrails {
                 if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
                     continue;
                 }
-                return Err(Error::module(
-                    SRC,
-                    format!("HTTP {status}: {}", error_snippet(resp).await),
-                ));
+                return Err(crate::util::http::http_status_error(SRC, resp).await);
             }
             return resp
                 .json()

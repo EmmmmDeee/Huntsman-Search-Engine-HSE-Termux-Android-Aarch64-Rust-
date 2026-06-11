@@ -17,11 +17,12 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{error_snippet, urlencode};
+use crate::util::http::RequestBuilderExt;
+use crate::util::http::urlencode;
 
 // ---------------------------------------------------------------------------
 // Public module struct
@@ -198,30 +199,17 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     // TLS refusal), fall back to HTTP and remember the transport
     // we ended up using.
     let try_url = |url: String| async move {
-        let resp = ctx
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let resp = ctx.http.get(&url).send_tagged(SRC).await?;
         let status = resp.status();
         if status.as_u16() == 404 {
             return Ok(None);
         }
         if !status.is_success() {
             let code = status.as_u16();
-            if code == 429 || code == 401 || code == 403 {
-                ctx.report_key_exhausted("numverify", key, code);
-            }
-            return Err(Error::module(
-                "contact_enrich",
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
+            crate::util::http::note_keyed_error(code, "numverify", key, ctx);
+            return Err(crate::util::http::http_status_error("contact_enrich", resp).await);
         }
-        let data: NumverifyResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let data: NumverifyResp = crate::util::http::json_decode(SRC, resp).await?;
         Ok(Some(data))
     };
 
@@ -310,12 +298,7 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     // Gravatar's placeholder profiles return 200 + non-JSON body, and
     // the helper would surface that as a `module_error`. The
     // silent-treat-as-empty behaviour below is the documented contract.
-    let resp = ctx
-        .http
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| Error::module(SRC, e.to_string()))?;
+    let resp = ctx.http.get(&url).send_tagged(SRC).await?;
 
     let status = resp.status();
     if status.as_u16() == 404 {
@@ -323,10 +306,7 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         return Ok(ModuleResult::new());
     }
     if !status.is_success() {
-        return Err(Error::module(
-            "contact_enrich",
-            format!("HTTP {status}: {}", error_snippet(resp).await),
-        ));
+        return Err(crate::util::http::http_status_error("contact_enrich", resp).await);
     }
 
     let data: ProfileResp = match crate::util::http::json_scanned(resp, SRC).await {

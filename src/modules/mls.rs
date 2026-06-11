@@ -17,10 +17,11 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "mls";
 const KEY_ENV: &str = "HUNTSMAN_MLS_KEY";
@@ -81,7 +82,9 @@ impl Module for Mls {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = ctx.key_opt(KEY_ENV).unwrap_or(DEFAULT_KEY);
+        // Single-sourced credential policy (see `keys::resolve_or_default`): a
+        // non-empty configured key wins, else Mozilla's public `test` key.
+        let key = crate::util::keys::resolve_or_default(ctx.key_opt(KEY_ENV), DEFAULT_KEY);
         let url = format!("https://location.services.mozilla.com/v1/geolocate?key={key}");
 
         // MLS prefers ≥2 access points for triangulation; with one we
@@ -98,13 +101,7 @@ impl Module for Mls {
             "fallbacks": { "lacf": false, "ipf": false },
         });
 
-        let resp = ctx
-            .http
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let resp = ctx.http.post(&url).json(&body).send_tagged(SRC).await?;
 
         if !resp.status().is_success() {
             return Ok(ModuleResult::new());

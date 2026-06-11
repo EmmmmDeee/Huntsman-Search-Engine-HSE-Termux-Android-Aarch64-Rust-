@@ -16,6 +16,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "pwned_passwords";
 
@@ -83,9 +84,8 @@ impl Module for PwnedPasswords {
             .http
             .get(&url)
             .header("Add-Padding", "true")
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC)
+            .await?;
 
         if !resp.status().is_success() {
             return Ok(ModuleResult::new());

@@ -25,7 +25,8 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{error_snippet, handle_keyed_error};
+use crate::util::http::RequestBuilderExt;
+use crate::util::http::handle_keyed_error;
 
 const KEY_ENV: &str = "HUNTSMAN_THREATFOX_KEY";
 const SRC: &str = "threatfox";
@@ -235,24 +236,17 @@ impl Module for ThreatFox {
                 .header("Auth-Key", key)
                 .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
                 .json(&body)
-                .send()
-                .await
-                .map_err(|e| Error::module(SRC, e.to_string()))?;
+                .send_tagged(SRC)
+                .await?;
             let status = resp.status();
             if !status.is_success() {
                 let code = status.as_u16();
                 if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
                     continue;
                 }
-                return Err(Error::module(
-                    SRC,
-                    format!("HTTP {status}: {}", error_snippet(resp).await),
-                ));
+                return Err(crate::util::http::http_status_error(SRC, resp).await);
             }
-            break resp
-                .json()
-                .await
-                .map_err(|e| Error::module(SRC, e.to_string()))?;
+            break crate::util::http::json_decode(SRC, resp).await?;
         };
 
         // abuse.ch's anonymous tier returns HTTP 200 + `query_status:

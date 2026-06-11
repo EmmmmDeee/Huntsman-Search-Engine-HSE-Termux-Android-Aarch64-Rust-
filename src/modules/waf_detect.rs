@@ -11,10 +11,11 @@ use async_trait::async_trait;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "waf_detect";
 
@@ -63,12 +64,7 @@ impl Module for WafDetect {
             _ => return Ok(result),
         };
 
-        let resp = ctx
-            .http
-            .head(&url)
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let resp = ctx.http.head(&url).send_tagged(SRC).await?;
 
         let headers = resp.headers();
         let mut detections: Vec<(&str, &str)> = Vec::with_capacity(4);

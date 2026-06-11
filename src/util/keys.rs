@@ -18,7 +18,6 @@ pub const KNOWN_KEYS: &[&str] = &[
     // Identity / breach
     "HUNTSMAN_OATHNET_KEY",
     "HUNTSMAN_HIBP_KEY",
-    "HUNTSMAN_DEHASHED_USER",
     "HUNTSMAN_DEHASHED_KEY",
     "HUNTSMAN_HUNTER_KEY",
     "HUNTSMAN_INTELX_KEY",
@@ -112,8 +111,8 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         }
         // Paid-only / invite providers.
         "HUNTSMAN_HIBP_KEY" => "Have I Been Pwned — paid key at https://haveibeenpwned.com/API/Key",
-        "HUNTSMAN_DEHASHED_KEY" | "HUNTSMAN_DEHASHED_USER" => {
-            "DeHashed — paid, https://dehashed.com"
+        "HUNTSMAN_DEHASHED_KEY" => {
+            "DeHashed — paid (v2 API, key-only); needs an active search subscription at https://dehashed.com"
         }
         "HUNTSMAN_PROXYCURL_KEY" => "Proxycurl — paid, https://nubela.co/proxycurl",
         "HUNTSMAN_SEON_KEY" => "SEON — free trial at https://seon.io",
@@ -300,6 +299,18 @@ pub fn resolve_or_default<'a>(ctx_key: Option<&'a str>, default: &'a str) -> &'a
         Some(k) if !k.is_empty() => k,
         _ => default,
     }
+}
+
+/// Resolve the WiGLE HTTP-Basic credentials (API name + token) from the module
+/// context, each falling back to the embedded default via [`resolve_or_default`].
+/// Single-sources the WiGLE credential env-var names and defaults that the
+/// `wigle` and `wifi_intel` modules both need — they authenticate against the
+/// same WiGLE API, so this resolution previously lived in two places.
+#[must_use]
+pub fn wigle_credentials(ctx: &crate::core::module::ModuleContext) -> (&str, &str) {
+    let user = resolve_or_default(ctx.key_opt("HUNTSMAN_WIGLE_USER"), WIGLE_DEFAULT_USER);
+    let token = resolve_or_default(ctx.key_opt("HUNTSMAN_WIGLE_TOKEN"), WIGLE_DEFAULT_TOKEN);
+    (user, token)
 }
 
 /// Every API-key/token value HSE uses to authenticate its OWN queries: the
@@ -624,6 +635,18 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
+
+    #[test]
+    fn resolve_or_default_policy() {
+        // The single-sourced "explicit non-empty key wins, else the embedded
+        // default" policy every zero-config keyed module shares.
+        assert_eq!(resolve_or_default(Some("real-key"), "default"), "real-key");
+        assert_eq!(resolve_or_default(None, "default"), "default");
+        // A present-but-empty value falls back to the default rather than being
+        // used verbatim — the bug the wigle/wifi_intel/mls modules had before
+        // they were routed through this function.
+        assert_eq!(resolve_or_default(Some(""), "default"), "default");
+    }
 
     #[test]
     fn own_api_keys_includes_embedded_and_splits_csv_rotation_lists() {

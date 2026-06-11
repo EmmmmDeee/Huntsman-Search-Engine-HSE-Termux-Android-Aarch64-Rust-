@@ -15,12 +15,13 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::http::{error_snippet, urlencode};
+use crate::util::http::RequestBuilderExt;
+use crate::util::http::urlencode;
 
 const KEY_ENV: &str = "HUNTSMAN_SHODAN_KEY";
 
@@ -283,30 +284,17 @@ impl Shodan {
             urlencode(ip),
             urlencode(key),
         );
-        let resp = ctx
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let resp = ctx.http.get(&url).send_tagged(SRC).await?;
         let status = resp.status();
         if status.as_u16() == 404 {
             return Ok(());
         }
         if !status.is_success() {
             let code = status.as_u16();
-            if code == 429 || code == 401 || code == 403 {
-                ctx.report_key_exhausted(SRC, key, code);
-            }
-            return Err(Error::module(
-                SRC,
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
+            crate::util::http::note_keyed_error(code, SRC, key, ctx);
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
-        let body: HostResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let body: HostResp = crate::util::http::json_decode(SRC, resp).await?;
 
         let mut entity = target_entity(ip, &ctx.scan_id);
         entity.tag("shodan");

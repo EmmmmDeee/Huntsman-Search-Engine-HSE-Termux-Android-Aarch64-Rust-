@@ -16,11 +16,12 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{error_snippet, handle_keyed_error};
+use crate::util::http::RequestBuilderExt;
+use crate::util::http::handle_keyed_error;
 
 const KEY_ENV: &str = "HUNTSMAN_LEAKIX_KEY";
 const SRC: &str = "leakix";
@@ -186,9 +187,8 @@ impl Module for LeakIx {
                 .get(&url)
                 .header("api-key", key)
                 .header("Accept", "application/json")
-                .send()
-                .await
-                .map_err(|e| Error::module(SRC, e.to_string()))?;
+                .send_tagged(SRC)
+                .await?;
             let status = resp.status();
             if status.as_u16() == 404 {
                 return Ok(ModuleResult::new());
@@ -198,15 +198,9 @@ impl Module for LeakIx {
                 if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
                     continue;
                 }
-                return Err(Error::module(
-                    SRC,
-                    format!("HTTP {status}: {}", error_snippet(resp).await),
-                ));
+                return Err(crate::util::http::http_status_error(SRC, resp).await);
             }
-            break resp
-                .json()
-                .await
-                .map_err(|e| Error::module(SRC, e.to_string()))?;
+            break crate::util::http::json_decode(SRC, resp).await?;
         };
         if body.services.is_empty() && body.leaks.is_empty() {
             return Ok(ModuleResult::new());

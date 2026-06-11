@@ -184,9 +184,7 @@ impl Module for ExaSearch {
         let status = resp.status();
         if !status.is_success() {
             let code = status.as_u16();
-            if code == 401 || code == 403 || code == 429 {
-                ctx.report_key_exhausted(SRC, key, code);
-            }
+            crate::util::http::note_keyed_error(code, SRC, key, ctx);
             return Ok(ModuleResult::new());
         }
 

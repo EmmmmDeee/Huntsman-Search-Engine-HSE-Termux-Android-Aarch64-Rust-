@@ -16,11 +16,12 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{error_snippet, urlencode};
+use crate::util::http::RequestBuilderExt;
+use crate::util::http::urlencode;
 
 #[derive(Deserialize)]
 struct RdapResp {
@@ -243,25 +244,18 @@ impl Module for RdapDomain {
             .get(&url)
             .header("Accept", "application/rdap+json")
             .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+            .send_tagged(SRC)
+            .await?;
 
         let status = resp.status();
         if status.as_u16() == 404 {
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {
-            return Err(Error::module(
-                SRC,
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
-        let body: RdapResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let body: RdapResp = crate::util::http::json_decode(SRC, resp).await?;
 
         let mut result = ModuleResult::new();
         result.push(build_domain_entity(domain, &body, &ctx.scan_id));

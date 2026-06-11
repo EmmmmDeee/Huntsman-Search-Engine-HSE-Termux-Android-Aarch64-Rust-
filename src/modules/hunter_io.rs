@@ -18,7 +18,6 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::error_snippet;
 
 const KEY_ENV: &str = "HUNTSMAN_HUNTER_KEY";
 const SRC: &str = "hunter_io";
@@ -165,10 +164,7 @@ impl Module for HunterIo {
             return Err(Error::module(SRC, "rate-limited (429)"));
         }
         if !status.is_success() {
-            return Err(Error::module(
-                SRC,
-                format!("HTTP {status}: {}", error_snippet(resp).await),
-            ));
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
         let wrap: Wrap = resp
