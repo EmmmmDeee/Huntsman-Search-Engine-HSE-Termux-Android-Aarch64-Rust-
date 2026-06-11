@@ -123,6 +123,11 @@ fn core_does_not_import_util_directly() {
                 // (most fixes — only three builders tag), so the cross-check
                 // works for coordinates from any module.
                 && !line.contains("util::geo::au_state_for_coords")
+                // Pure, dependency-free Logan City LGA static data accessors
+                // (Division-7 suburb list and LGA centroid table). Used by
+                // AU-060 convergence rule: no I/O, no state, no upward deps.
+                && !line.contains("util::geo::logan_div7_suburbs")
+                && !line.contains("util::geo::au_lga_for_coords")
                 // Pure, dependency-free digit-only normaliser — the same leaf
                 // category as the ABN checksums above; `core::scan` uses it in
                 // the target auto-detector to strip separators from a candidate

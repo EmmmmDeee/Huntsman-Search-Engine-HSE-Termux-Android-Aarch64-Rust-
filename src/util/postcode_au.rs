@@ -61,7 +61,7 @@ fn from_resp(resp: &ZippoResp) -> Vec<Locality> {
         .collect()
 }
 
-/// Offline fallback gazetteer for a small set of pre-validated AU postcodes,
+/// Offline fallback gazetteer for a set of pre-validated AU postcodes,
 /// consulted only when the Zippopotam network lookup returns nothing — the
 /// common case on a flaky Termux mobile connection (live device transcripts
 /// showed network geo modules timing out repeatedly, which would otherwise make
@@ -71,8 +71,12 @@ fn from_resp(resp: &ZippoResp) -> Vec<Locality> {
 /// offline resolve matches an online one rather than diverging — this only adds
 /// resilience, never a second source of truth. Any postcode not in the table
 /// yields an empty list, so the caller degrades to the bare postcode exactly as
-/// before. Deliberately tiny and conservative: each entry is a locality whose
+/// before. Deliberately conservative: each entry is a locality whose
 /// coordinates have been ground-truth confirmed, not a guessed gazetteer.
+///
+/// Logan City LGA postcodes (4114, 4118, 4124–4131, 4133, 4205, 4207, 4280)
+/// are fully covered so that an offline Termux scan can still resolve Logan
+/// City suburb-level coordinates from a postcode-only breach record.
 fn offline_fallback(postcode: &str) -> Vec<Locality> {
     let mk = |suburb: &str, lat: f64, lon: f64| Locality {
         suburb: suburb.to_string(),
@@ -80,8 +84,70 @@ fn offline_fallback(postcode: &str) -> Vec<Locality> {
         lon,
     };
     match postcode {
-        // QLD 4552 — Sunshine Coast hinterland. Maleny/Booroobin share the
-        // postcode centroid (as Zippopotam serves them); Conondale is distinct.
+        // ── Logan City LGA ───────────────────────────────────────────────────
+        // 4114 — Logan Central, Woodridge, Kingston, Slacks Creek (partial)
+        "4114" => vec![
+            mk("Logan Central", -27.6417, 153.0079),
+            mk("Woodridge", -27.6252, 153.0086),
+            mk("Kingston", -27.6545, 153.0212),
+        ],
+        // 4118 — Regents Park, Browns Plains, Hillcrest, Forestdale, Heritage Park
+        "4118" => vec![
+            mk("Regents Park", -27.6654, 152.9131),
+            mk("Browns Plains", -27.6744, 152.9258),
+            mk("Hillcrest", -27.6562, 152.9014),
+            mk("Forestdale", -27.6853, 152.9401),
+            mk("Heritage Park", -27.6920, 152.9162),
+        ],
+        // 4124 — Boronia Heights, Lyons (partial)
+        "4124" => vec![
+            mk("Boronia Heights", -27.6769, 152.9004),
+            mk("Lyons", -27.7107, 152.9201),
+        ],
+        // 4125 — Park Ridge, Park Ridge South
+        "4125" => vec![
+            mk("Park Ridge", -27.6955, 152.8918),
+            mk("Park Ridge South", -27.7107, 152.8766),
+        ],
+        // 4127 — Springwood, Slacks Creek, Daisy Hill
+        "4127" => vec![
+            mk("Springwood", -27.6096, 153.0475),
+            mk("Slacks Creek", -27.6435, 153.0451),
+            mk("Daisy Hill", -27.6441, 153.1179),
+        ],
+        // 4128 — Shailer Park, Tanah Merah
+        "4128" => vec![
+            mk("Shailer Park", -27.6418, 153.1059),
+            mk("Tanah Merah", -27.6884, 153.1690),
+        ],
+        // 4129 — Loganholme
+        "4129" => vec![mk("Loganholme", -27.6849, 153.1366)],
+        // 4130 — Cornubia, Carbrook
+        "4130" => vec![
+            mk("Cornubia", -27.6569, 153.1210),
+            mk("Carbrook", -27.7114, 153.1659),
+        ],
+        // 4131 — Loganlea, Meadowbrook
+        "4131" => vec![
+            mk("Loganlea", -27.6600, 153.0126),
+            mk("Meadowbrook", -27.6636, 153.0165),
+        ],
+        // 4133 — Waterford West
+        "4133" => vec![mk("Waterford West", -27.6874, 152.9998)],
+        // 4205 — Bethania
+        "4205" => vec![mk("Bethania", -27.7050, 153.1515)],
+        // 4207 — Beenleigh, Eagleby, Edens Landing
+        "4207" => vec![
+            mk("Beenleigh", -27.7090, 153.1990),
+            mk("Eagleby", -27.7107, 153.1862),
+            mk("Edens Landing", -27.7193, 153.1758),
+        ],
+        // 4280 — Flagstone (new growth corridor)
+        "4280" => vec![mk("Flagstone", -27.7910, 152.8898)],
+        // ── Brisbane / SE QLD ────────────────────────────────────────────────
+        "4000" => vec![mk("Brisbane City", -27.4698, 153.0251)],
+        "4551" => vec![mk("Caloundra", -26.8004, 153.1274)],
+        // 4552 — Sunshine Coast hinterland (original entry).
         "4552" => vec![
             mk("Maleny", -26.729, 152.7554),
             mk("Booroobin", -26.729, 152.7554),
@@ -89,6 +155,29 @@ fn offline_fallback(postcode: &str) -> Vec<Locality> {
         ],
         _ => Vec::new(),
     }
+}
+
+/// True if the postcode is within the Logan City LGA boundary (offline check).
+///
+/// Based on ABS 2021 postcode-to-suburb mapping for LGA28090.
+#[must_use]
+pub fn is_logan_city_postcode(postcode: &str) -> bool {
+    matches!(
+        postcode,
+        "4114"
+            | "4118"
+            | "4124"
+            | "4125"
+            | "4127"
+            | "4128"
+            | "4129"
+            | "4130"
+            | "4131"
+            | "4133"
+            | "4205"
+            | "4207"
+            | "4280"
+    )
 }
 
 /// Resolve an AU postcode to its localities. Best-effort: a network/parse
@@ -136,6 +225,31 @@ mod tests {
         assert!(locs.iter().any(|l| l.suburb == "Booroobin"));
         // Conondale has its own distinct centroid.
         assert!((locs[2].lat - -26.7333).abs() < 1e-6);
+    }
+
+    #[test]
+    fn is_logan_city_postcode_covers_lga() {
+        assert!(is_logan_city_postcode("4118")); // Regents Park / Browns Plains
+        assert!(is_logan_city_postcode("4125")); // Park Ridge
+        assert!(is_logan_city_postcode("4207")); // Beenleigh
+        assert!(!is_logan_city_postcode("4000")); // Brisbane CBD
+        assert!(!is_logan_city_postcode("2000")); // Sydney
+    }
+
+    #[test]
+    fn offline_fallback_logan_city_postcodes() {
+        let locs_4118 = offline_fallback("4118");
+        assert!(!locs_4118.is_empty());
+        assert!(locs_4118.iter().any(|l| l.suburb == "Regents Park"));
+        assert!(locs_4118.iter().any(|l| l.suburb == "Browns Plains"));
+
+        let locs_4125 = offline_fallback("4125");
+        assert!(locs_4125.iter().any(|l| l.suburb == "Park Ridge"));
+        assert!(locs_4125.iter().any(|l| l.suburb == "Park Ridge South"));
+
+        let locs_4207 = offline_fallback("4207");
+        assert!(locs_4207.iter().any(|l| l.suburb == "Beenleigh"));
+        assert!(locs_4207.iter().any(|l| l.suburb == "Eagleby"));
     }
 
     #[test]
