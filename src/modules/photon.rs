@@ -119,6 +119,13 @@ fn build_forward(addr: &str, feature: &Feature, scan_id: &str) -> Option<Entity>
     let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.60, scan_id);
     e.tag("photon");
     e.tag("geocoded");
+    // Geocoded fix in Australia → offline state/LGA tags (shared producer), so
+    // it feeds the AU correlator like the geocode module's forward fixes.
+    if crate::util::geo::is_in_australia(lat, lon) {
+        for t in crate::util::geo::au_coord_tags(lat, lon) {
+            e.tag(t);
+        }
+    }
     let mut ev = Evidence::new(SRC, format!("Photon geocoded \"{addr}\" -> {coords}"))
         .with_attr("input_address", addr)
         .with_attr("latitude", format!("{lat:.6}"))
@@ -160,7 +167,14 @@ fn build_reverse(lat: f64, lon: f64, props: &Props, scan_id: &str) -> Option<Ent
     let mut ae = Entity::new(EntityKind::Address, &display, 0.70, scan_id);
     ae.tag("photon");
     ae.tag("reverse-geocoded");
-    ae.tag("geoint");
+    ae.tag(crate::core::tags::GEOINT);
+    // Reverse-geocoded address in Australia → offline state/LGA tags, matching
+    // the geocode module's reverse path.
+    if crate::util::geo::is_in_australia(lat, lon) {
+        for t in crate::util::geo::au_coord_tags(lat, lon) {
+            ae.tag(t);
+        }
+    }
     let mut ev = Evidence::new(SRC, format!("Photon reverse geocode for {lat:.6},{lon:.6}"))
         .with_attr("latitude", format!("{lat:.6}"))
         .with_attr("longitude", format!("{lon:.6}"));
