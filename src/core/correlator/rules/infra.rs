@@ -400,9 +400,19 @@ pub(in crate::core::correlator) fn rule_au_031_malicious_adjacency(
         let entry = groups
             .entry(bad.uid.as_str())
             .or_insert_with(|| (bad, reason, BTreeMap::new()));
+        // A benign↔bad pair can be joined by more than one relation kind. Keep
+        // the lexicographically-smallest kind (by stable label) rather than the
+        // first-seen one, so the per-neighbour finding's description is
+        // independent of `relations` ordering — the determinism this rule
+        // documents. (Single-edge pairs, the common case, are unaffected.)
         entry
             .2
             .entry(benign.uid.as_str())
+            .and_modify(|(_, kind)| {
+                if r.kind.as_str() < kind.as_str() {
+                    *kind = r.kind;
+                }
+            })
             .or_insert((benign, r.kind));
     }
 

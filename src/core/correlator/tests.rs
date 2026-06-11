@@ -1708,6 +1708,34 @@ fn au031_any_bad_tag_on_an_identity_never_anchors() {
 }
 
 #[test]
+fn au031_multi_kind_edge_picks_a_deterministic_relation_label() {
+    // When the same benign↔bad pair is joined by two different relation kinds,
+    // the per-neighbour finding must be identical regardless of `relations`
+    // order — the determinism the rule documents. (Pre-fix it kept the
+    // first-seen kind, so reversing the slice flipped the description.)
+    use crate::core::relation::{Relation, RelationKind};
+    let bad = tagged(EntityKind::Domain, "evil.example", &["malicious"]);
+    let benign = tagged(EntityKind::Domain, "node.example", &[]);
+    let edge = |k| Relation::new(benign.uid.clone(), bad.uid.clone(), k, 0.8, "s");
+    let fwd = vec![
+        edge(RelationKind::SubdomainOf),
+        edge(RelationKind::ResolvesTo),
+    ];
+    let mut rev = fwd.clone();
+    rev.reverse();
+
+    let r1 = rule_au_031_malicious_adjacency(&[bad.clone(), benign.clone()], &fwd, "s", 0);
+    let r2 = rule_au_031_malicious_adjacency(&[bad, benign], &rev, "s", 0);
+    assert_eq!(r1.len(), 1, "one pair → one finding (neighbour deduped)");
+    assert_eq!(
+        r1[0].description, r2[0].description,
+        "relation label must not depend on input order"
+    );
+    // Deterministically the smallest label: resolves_to < subdomain_of.
+    assert!(r1[0].description.contains("resolves_to"));
+}
+
+#[test]
 fn au031_darknet_infrastructure_still_anchors() {
     // A darknet IP (criminal_ip's dark-web flag) IS bad infrastructure — its
     // benign neighbour is rightly surfaced. The kind gate keeps this half.
