@@ -979,10 +979,9 @@ pub(in crate::core::correlator) fn rule_au_057_schema_org_phone_attribution(
     }
 
     // Need at least one Person or Email in the same scan to anchor the attribution.
-    let has_anchor = entities.iter().any(|e| {
-        matches!(e.kind, EntityKind::Person | EntityKind::Email)
-            && e.confidence >= 0.60
-    });
+    let has_anchor = entities
+        .iter()
+        .any(|e| matches!(e.kind, EntityKind::Person | EntityKind::Email) && e.confidence >= 0.60);
     if !has_anchor {
         return Vec::new();
     }

@@ -42,9 +42,7 @@ struct Platform {
 
 /// Twitter/X: alphanumerics + underscore only, max 15 chars, no dots.
 fn twitter_handle_ok(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 15
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    !s.is_empty() && s.len() <= 15 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// TikTok: alphanumerics, underscores, dots allowed, max 24 chars.
@@ -60,8 +58,7 @@ fn tiktok_handle_ok(s: &str) -> bool {
 
 /// Twitch: alphanumerics + underscore only, 4–25 chars, no dots.
 fn twitch_handle_ok(s: &str) -> bool {
-    (4..=25).contains(&s.len())
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    (4..=25).contains(&s.len()) && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Steam community ID: alphanumerics + underscore + hyphen, no dots.
@@ -73,13 +70,14 @@ fn steam_handle_ok(s: &str) -> bool {
 
 /// Pinterest: alphanumerics + underscore only, 3–30 chars, no dots.
 fn pinterest_handle_ok(s: &str) -> bool {
-    (3..=30).contains(&s.len())
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    (3..=30).contains(&s.len()) && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Threads / Mastodon / Bluesky: same rule as Twitter — no dots.
 fn nodot_handle_ok(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// GitHub: alphanumerics + hyphens only, no consecutive hyphens, no dots.
