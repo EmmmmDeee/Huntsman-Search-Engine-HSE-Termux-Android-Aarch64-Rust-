@@ -217,3 +217,62 @@ pub(in crate::modules::search_engines) fn is_email_local_char(b: u8) -> bool {
 pub(in crate::modules::search_engines) fn is_domain_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'.' || b == b'-'
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn char_boundary_helpers_are_panic_safe_on_multibyte_and_oob() {
+        // "café" — 'é' is 2 bytes (index 3..5), len 5.
+        let s = "café";
+        assert_eq!(s.len(), 5);
+        // floor walks back to the start of the multibyte char; ceil walks forward.
+        assert_eq!(floor_char_boundary(s, 4), 3);
+        assert_eq!(ceil_char_boundary(s, 4), 5);
+        // An index already on a boundary is returned unchanged.
+        assert_eq!(floor_char_boundary(s, 3), 3);
+        assert_eq!(ceil_char_boundary(s, 3), 3);
+        // Out-of-range and empty clamp to len, never panic.
+        assert_eq!(floor_char_boundary(s, 99), 5);
+        assert_eq!(ceil_char_boundary(s, 99), 5);
+        assert_eq!(floor_char_boundary("", 0), 0);
+        assert_eq!(ceil_char_boundary("", 7), 0);
+    }
+
+    #[test]
+    fn bigram_similarity_is_bounded_and_correct() {
+        // Identical strings → 1.0; disjoint → 0.0; case-insensitive.
+        assert!((bigram_similarity("hello", "hello") - 1.0).abs() < 1e-9);
+        assert!((bigram_similarity("HELLO", "hello") - 1.0).abs() < 1e-9);
+        assert_eq!(bigram_similarity("abcd", "wxyz"), 0.0);
+        // Empty / single-char inputs have no bigrams → 0.0 (never NaN/panic).
+        assert_eq!(bigram_similarity("", ""), 0.0);
+        assert_eq!(bigram_similarity("a", "a"), 0.0);
+        // Partial overlap stays strictly within (0, 1).
+        let s = bigram_similarity("night", "nacht");
+        assert!(s > 0.0 && s < 1.0, "partial similarity out of range: {s}");
+    }
+
+    #[test]
+    fn strip_tags_removes_markup_and_respects_byte_cap_without_splitting_chars() {
+        assert_eq!(strip_tags("<b>hi</b> there", 100), "hi there");
+        // Collapses whitespace runs introduced between tags.
+        assert_eq!(strip_tags("<p>a</p>   <p>b</p>", 100), "a b");
+        // A tiny cap on multibyte content must not panic or yield invalid UTF-8;
+        // it stops at a whole-char boundary (the result is always valid UTF-8).
+        let out = strip_tags("café société", 4);
+        assert!(out.is_char_boundary(out.len()));
+        assert!("café société".contains(out.trim()));
+    }
+
+    #[test]
+    fn char_class_predicates() {
+        assert!(
+            is_email_local_char(b'a') && is_email_local_char(b'+') && is_email_local_char(b'.')
+        );
+        assert!(!is_email_local_char(b'@') && !is_email_local_char(b' '));
+        assert!(is_domain_char(b'z') && is_domain_char(b'-') && is_domain_char(b'.'));
+        assert!(!is_domain_char(b'_') && !is_domain_char(b'/'));
+    }
+}
