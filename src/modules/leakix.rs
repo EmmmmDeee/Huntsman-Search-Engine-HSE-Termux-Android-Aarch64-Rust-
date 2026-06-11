@@ -19,6 +19,7 @@ use crate::core::{
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
+    tags,
 };
 use crate::util::http::{error_snippet, handle_keyed_error};
 
@@ -63,8 +64,14 @@ const MAX_PORTS: usize = 20;
 fn build_exposure_entity(kind: EntityKind, value: &str, body: &HostResp, scan_id: &str) -> Entity {
     let mut entity = Entity::new(kind, value, 0.88, scan_id);
     entity.tag("leakix");
+    // An actual data-leak event makes this a breach-class exposure: raise the
+    // canonical tag (the module is ModuleCategory::Breach) alongside the
+    // descriptive "leak" tag so the breach correlator groups it with the other
+    // breach sources. The most-recent leak time is surfaced as `breach_date`
+    // below so it also feeds the AU-019 temporal breach cluster.
     if !body.leaks.is_empty() {
         entity.tag("leak");
+        entity.tag(tags::BREACH);
     }
     if body.services.iter().any(|e| {
         e.event_type
@@ -112,6 +119,12 @@ fn build_exposure_entity(kind: EntityKind, value: &str, body: &HostResp, scan_id
     }
     if let Some(t) = all().filter_map(|e| e.time.as_deref()).min() {
         ev = ev.with_attr("earliest", t);
+    }
+    // When there are actual leak events, surface the most-recent leak time under
+    // the canonical `breach_date` key the AU-019 temporal breach cluster reads,
+    // so a leakix exposure dates the same way a HIBP/IntelX breach does.
+    if let Some(t) = body.leaks.iter().filter_map(|e| e.time.as_deref()).max() {
+        ev = ev.with_attr("breach_date", t);
     }
 
     let top_sources =
@@ -264,7 +277,9 @@ mod tests {
         );
         let e = build_exposure_entity(EntityKind::IpAddress, "1.2.3.4", &b, "s");
         assert_eq!(e.kind, EntityKind::IpAddress);
-        assert!(e.has_tag("leakix") && e.has_tag("leak"));
+        // A leak event raises BOTH the descriptive "leak" tag and the canonical
+        // breach tag so the breach correlator groups this exposure.
+        assert!(e.has_tag("leakix") && e.has_tag("leak") && e.has_tag("breach"));
         assert!(!e.has_tag("ssh-exposed"));
         assert_eq!(attr(&e, "service_count"), Some("2"));
         assert_eq!(attr(&e, "leak_count"), Some("1"));
@@ -274,6 +289,9 @@ mod tests {
         // Window spans every event, leaks included.
         assert_eq!(attr(&e, "most_recent"), Some("2024-05-01T00:00:00Z"));
         assert_eq!(attr(&e, "earliest"), Some("2024-01-01T00:00:00Z"));
+        // breach_date is the most-recent LEAK time (not service events), feeding
+        // the AU-019 temporal breach cluster.
+        assert_eq!(attr(&e, "breach_date"), Some("2024-01-01T00:00:00Z"));
         assert_eq!(attr(&e, "protocols"), Some("tcp×2"));
         assert_eq!(
             attr(&e, "event_sources"),
@@ -286,8 +304,10 @@ mod tests {
         let b = body(r#"{"services":[{"event_type":"SSH","port":22}],"leaks":[]}"#);
         let e = build_exposure_entity(EntityKind::IpAddress, "1.2.3.4", &b, "s");
         assert!(e.has_tag("ssh-exposed"));
-        // No leaks → no `leak` tag.
-        assert!(!e.has_tag("leak"));
+        // No leaks → neither the descriptive nor the canonical breach tag, and
+        // no breach_date (services-only exposure isn't a breach-class finding).
+        assert!(!e.has_tag("leak") && !e.has_tag("breach"));
+        assert_eq!(attr(&e, "breach_date"), None);
     }
 
     #[test]
