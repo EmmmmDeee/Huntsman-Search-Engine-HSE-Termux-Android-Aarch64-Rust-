@@ -320,13 +320,54 @@ async fn set_security_headers(mut response: Response) -> Response {
     response
 }
 
-async fn spa_handler() -> Response {
-    // `no-cache` (the browser must revalidate each load) so a binary upgrade's
-    // new SPA shows immediately instead of Chrome serving a heuristically-cached
-    // old copy. The document is small and same-origin, so revalidation is cheap.
+/// Content-derived ETag for the SPA, computed once. A hash of the embedded
+/// bytes (not the crate version, which the SPA outpaces between bumps) so the
+/// tag changes **iff** the document changes — busting Chrome's cache the instant
+/// a rebuilt binary ships a new SPA, yet matching on every unchanged reload.
+/// `DefaultHasher` is fixed-seeded, so the value is stable for a given build.
+fn spa_etag() -> &'static (String, HeaderValue) {
+    use std::hash::{Hash, Hasher};
+    static ETAG: std::sync::OnceLock<(String, HeaderValue)> = std::sync::OnceLock::new();
+    ETAG.get_or_init(|| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        SPA_HTML.hash(&mut h);
+        let s = format!("\"spa-{:016x}\"", h.finish());
+        let hv = HeaderValue::from_str(&s).expect("hex ETag is always a valid header value");
+        (s, hv)
+    })
+}
+
+async fn spa_handler(headers: HeaderMap) -> Response {
+    // `no-cache` means "revalidate every load", but without a validator the
+    // browser cannot make a conditional request — so it re-downloaded the whole
+    // ~149 KB document on every page load (wasteful on a metered Termux/mobile
+    // link). Pair `no-cache` with a content ETag: Chrome now sends
+    // `If-None-Match` and gets an empty 304 when the SPA is unchanged, while a
+    // new build (new content → new ETag) still shows immediately.
+    let (etag_str, etag_hv) = spa_etag();
+    let cache = HeaderValue::from_static("no-cache");
+
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|inm| if_none_match_hit(inm, etag_str))
+    {
+        return (
+            StatusCode::NOT_MODIFIED,
+            [
+                (header::ETAG, etag_hv.clone()),
+                (header::CACHE_CONTROL, cache),
+            ],
+        )
+            .into_response();
+    }
+
     (
         StatusCode::OK,
-        [(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))],
+        [
+            (header::CACHE_CONTROL, cache),
+            (header::ETAG, etag_hv.clone()),
+        ],
         Html(SPA_HTML),
     )
         .into_response()
@@ -599,5 +640,50 @@ mod tests {
         );
         assert!(!if_none_match_hit("\"old\"", etag), "different tag misses");
         assert!(!if_none_match_hit("", etag), "empty header misses");
+    }
+
+    #[test]
+    fn spa_etag_is_stable_content_derived_and_well_formed() {
+        let a = spa_etag();
+        let b = spa_etag();
+        // Same instance each call (computed once) and a quoted content hash.
+        assert_eq!(a.0, b.0);
+        assert!(a.0.starts_with("\"spa-") && a.0.ends_with('"'));
+        // It is NOT the crate version (which the SPA outpaces between bumps).
+        assert_ne!(a.0, concat!("\"", env!("CARGO_PKG_VERSION"), "\""));
+    }
+
+    #[tokio::test]
+    async fn spa_handler_serves_full_body_with_etag_then_304_on_revalidation() {
+        use axum::http::header;
+
+        // First load (no validator): 200 with the full document + an ETag.
+        let first = spa_handler(HeaderMap::new()).await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let etag = first
+            .headers()
+            .get(header::ETAG)
+            .expect("200 must advertise an ETag so Chrome can revalidate")
+            .clone();
+        assert_eq!(
+            first.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-cache"
+        );
+
+        // Reload carrying that ETag: 304 Not Modified, body not re-sent — the
+        // ~149 KB saving on a metered Termux/mobile link.
+        let mut h = HeaderMap::new();
+        h.insert(header::IF_NONE_MATCH, etag.clone());
+        let second = spa_handler(h).await;
+        assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(second.headers().get(header::ETAG).unwrap(), &etag);
+
+        // A stale ETag still gets the fresh document (correctness over thrift).
+        let mut stale = HeaderMap::new();
+        stale.insert(
+            header::IF_NONE_MATCH,
+            HeaderValue::from_static("\"spa-old\""),
+        );
+        assert_eq!(spa_handler(stale).await.status(), StatusCode::OK);
     }
 }
