@@ -198,6 +198,11 @@ impl Module for IpApi {
             };
             let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, &ctx.scan_id);
             ae.tag(tags::GEOINT);
+            // Free-text AU enrichment (shared producer): an Australian IP-geo
+            // locality feeds AU-056/060 with canonical state tags — no geocode.
+            for t in crate::util::geo::au_location_tags(&addr) {
+                ae.tag(t);
+            }
             ae.add_evidence(ev.clone());
             result.push(ae);
         }

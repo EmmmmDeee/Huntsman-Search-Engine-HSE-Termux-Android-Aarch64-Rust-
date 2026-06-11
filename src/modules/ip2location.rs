@@ -173,6 +173,11 @@ impl Module for Ip2Location {
             let mut ae = Entity::new(EntityKind::Address, &addr, 0.68, &ctx.scan_id);
             ae.tag("ip2location");
             ae.tag(tags::GEOINT);
+            // Free-text AU enrichment (shared producer): an Australian IP-geo
+            // locality feeds AU-056/060 with canonical state tags — no geocode.
+            for t in crate::util::geo::au_location_tags(&addr) {
+                ae.tag(t);
+            }
             ae.add_evidence(Evidence::new(SRC, format!("Address for {ip}")));
             result.push(ae);
         }
