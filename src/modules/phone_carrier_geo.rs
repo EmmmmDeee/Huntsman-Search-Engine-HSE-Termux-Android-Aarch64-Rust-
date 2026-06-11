@@ -5,7 +5,12 @@
 //! ranges. Carrier dominance varies by region: Telstra dominates
 //! rural/regional, Optus in metro Sydney, Vodafone in metro areas.
 //!
-//! Also covers UK (07xxx) and US carrier prefixes where identifiable.
+//! Also covers UK (07xxx) carrier prefixes where identifiable.
+//!
+//! For the three national AU carriers the emitted entity carries the canonical
+//! `au-carrier:*` tag ([`crate::core::tags`]), so a recognised Optus number
+//! feeds the AU-060 Logan-convergence correlator's carrier signal class without
+//! any module needing to re-spell the tag.
 //!
 //! No network calls. Pure lookup table. Priority 92.
 
@@ -16,6 +21,7 @@ use crate::core::{
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
+    tags,
 };
 
 const SRC: &str = "phone_carrier_geo";
@@ -51,11 +57,9 @@ impl Module for PhoneCarrierGeo {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
-        let digits: String = target
-            .value
-            .chars()
-            .filter(|c| c.is_ascii_digit())
-            .collect();
+        // Shared digit normaliser (the same one the target auto-detector and the
+        // other phone modules use) — strips +, spaces, and separators.
+        let digits = crate::util::str_util::ascii_digits(&target.value);
 
         if digits.len() < 10 {
             return Ok(result);
@@ -68,9 +72,14 @@ impl Module for PhoneCarrierGeo {
                 carrier.confidence,
                 &ctx.scan_id,
             );
-            e.tag("geoint");
-            e.tag("coarse");
+            e.tag(tags::GEOINT);
+            e.tag(tags::COARSE);
             e.tag("carrier-inferred");
+            // Canonical AU carrier tag → feeds the AU-060 carrier signal class.
+            if let Some(carrier_tag) = carrier.au_carrier_tag {
+                e.tag(tags::AU_RELEVANT);
+                e.tag(carrier_tag);
+            }
             e.add_evidence(
                 Evidence::new(
                     SRC,
@@ -92,6 +101,10 @@ struct CarrierInfo {
     country: &'static str,
     confidence: f64,
     network_hint: &'static str,
+    /// Canonical `au-carrier:*` tag ([`crate::core::tags`]) for the three
+    /// national AU carriers, `None` for UK carriers and AU MVNOs that have no
+    /// dedicated constant. When set, the emitted entity also gets `au-relevant`.
+    au_carrier_tag: Option<&'static str>,
 }
 
 fn identify_carrier(digits: &str) -> Option<CarrierInfo> {
@@ -122,6 +135,14 @@ fn au_carrier(prefix_3: &str) -> Option<CarrierInfo> {
         "490" | "491" => "Optus",
         _ => return None,
     };
+    // The three national carriers carry their canonical correlator tag; MVNOs
+    // (Pivotel et al.) have no dedicated constant, so they stay untagged.
+    let au_carrier_tag = match carrier {
+        "Telstra" => Some(tags::AU_CARRIER_TELSTRA),
+        "Optus" => Some(tags::AU_CARRIER_OPTUS),
+        "Vodafone" => Some(tags::AU_CARRIER_VODAFONE),
+        _ => None,
+    };
     Some(CarrierInfo {
         carrier,
         country: "Australia",
@@ -132,6 +153,7 @@ fn au_carrier(prefix_3: &str) -> Option<CarrierInfo> {
             "Vodafone" => "metro_only",
             _ => "mvno",
         },
+        au_carrier_tag,
     })
 }
 
@@ -164,6 +186,7 @@ fn uk_carrier(prefix_4: &str) -> Option<CarrierInfo> {
         country: "United Kingdom",
         confidence: 0.40,
         network_hint: "mobile",
+        au_carrier_tag: None,
     })
 }
 
@@ -195,6 +218,46 @@ mod tests {
         let c = identify_carrier("447400123456").unwrap();
         assert_eq!(c.carrier, "EE");
         assert_eq!(c.country, "United Kingdom");
+    }
+
+    #[test]
+    fn au_carriers_carry_canonical_correlator_tag() {
+        // The three national carriers feed the AU-060 carrier signal class via
+        // the canonical au-carrier:* constant — not a re-spelled literal.
+        assert_eq!(
+            identify_carrier("61431234567").unwrap().au_carrier_tag,
+            Some(tags::AU_CARRIER_OPTUS)
+        );
+        assert_eq!(
+            identify_carrier("61412345678").unwrap().au_carrier_tag,
+            Some(tags::AU_CARRIER_TELSTRA)
+        );
+        assert_eq!(
+            identify_carrier("61420123456").unwrap().au_carrier_tag,
+            Some(tags::AU_CARRIER_VODAFONE)
+        );
+    }
+
+    #[test]
+    fn mvno_and_uk_have_no_au_carrier_tag() {
+        // AU MVNO band (450x) — recognised carrier, but no canonical tag.
+        assert_eq!(
+            identify_carrier("61450123456").unwrap().carrier,
+            "Pivotel/MVNOs"
+        );
+        assert!(
+            identify_carrier("61450123456")
+                .unwrap()
+                .au_carrier_tag
+                .is_none()
+        );
+        // UK carrier — never AU-tagged.
+        assert!(
+            identify_carrier("447400123456")
+                .unwrap()
+                .au_carrier_tag
+                .is_none()
+        );
     }
 
     #[test]
