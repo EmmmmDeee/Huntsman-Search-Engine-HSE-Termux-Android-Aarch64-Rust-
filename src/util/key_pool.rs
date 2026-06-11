@@ -13,6 +13,12 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
+/// Recovery window for a quota-`Exhausted` key, in seconds (24 h). Provider
+/// quotas almost universally reset on a daily boundary; a key on a *monthly*
+/// quota simply re-marks Exhausted after one probe a day until the month rolls
+/// over — far cheaper than losing the key permanently.
+const QUOTA_RESET_SECS: u64 = 86_400;
+
 /// Non-secret short identifier for a key value — the first 12 hex chars of its
 /// SHA-256. Lets the web UI / API reference a specific pooled key (to revoke it)
 /// without the plaintext secret ever crossing the wire. Stable for a given value
@@ -141,14 +147,21 @@ impl KeyEntry {
     pub fn is_usable(&self) -> bool {
         match self.status {
             KeyStatus::Untested | KeyStatus::Active => true,
-            KeyStatus::RateLimited => {
-                if let Some(reset) = self.rate_limit_reset {
-                    crate::core::entity::unix_now() >= reset
-                } else {
-                    true
-                }
-            }
-            KeyStatus::Exhausted | KeyStatus::Invalid | KeyStatus::Revoked => false,
+            // A short-term rate limit clears at `rate_limit_reset`; a missing
+            // reset is treated as already-clear (back-compat with old entries).
+            KeyStatus::RateLimited => self
+                .rate_limit_reset
+                .is_none_or(|reset| crate::core::entity::unix_now() >= reset),
+            // A quota exhaustion is NOT terminal: provider quotas reset on a
+            // window (usually daily), so a key marked Exhausted re-enters
+            // rotation once its `rate_limit_reset` recovery timestamp passes —
+            // otherwise a long-running `hse serve` would permanently lose every
+            // key that ever hit its quota. A legacy Exhausted entry with no reset
+            // set stays out until validated (safe: never silently re-enabled).
+            KeyStatus::Exhausted => self
+                .rate_limit_reset
+                .is_some_and(|reset| crate::core::entity::unix_now() >= reset),
+            KeyStatus::Invalid | KeyStatus::Revoked => false,
         }
     }
 
@@ -445,9 +458,19 @@ impl KeyPool {
             && let Some(entry) = entries.iter_mut().find(|e| e.value == value)
         {
             entry.status = status;
-            if status == KeyStatus::RateLimited {
-                let reset = rate_limit_reset(service);
-                entry.rate_limit_reset = Some(crate::core::entity::unix_now() + reset);
+            let now = crate::core::entity::unix_now();
+            match status {
+                KeyStatus::RateLimited => {
+                    entry.rate_limit_reset = Some(now + rate_limit_reset(service));
+                }
+                // Stamp a quota-recovery deadline so the key re-enters rotation
+                // after its provider window (default daily) instead of being lost
+                // forever. Re-trying a still-exhausted key after the window costs
+                // one request and simply re-marks it — self-correcting.
+                KeyStatus::Exhausted => {
+                    entry.rate_limit_reset = Some(now + QUOTA_RESET_SECS);
+                }
+                _ => {}
             }
         }
     }
@@ -976,6 +999,61 @@ mod tests {
 
         let k = pool.next_key("shodan").unwrap();
         assert_eq!(k, "good-key", "should prefer key with fewer errors");
+    }
+
+    #[test]
+    fn exhausted_key_recovers_after_its_quota_window() {
+        let now = crate::core::entity::unix_now();
+
+        // Quota window not yet elapsed → still out of rotation.
+        let mut pending = KeyEntry::new("pending");
+        pending.status = KeyStatus::Exhausted;
+        pending.rate_limit_reset = Some(now + 3600);
+        assert!(
+            !pending.is_usable(),
+            "exhausted key must wait out its window"
+        );
+
+        // Window elapsed → back in rotation (quotas reset on a window).
+        let mut recovered = KeyEntry::new("recovered");
+        recovered.status = KeyStatus::Exhausted;
+        recovered.rate_limit_reset = Some(now.saturating_sub(10));
+        assert!(
+            recovered.is_usable(),
+            "exhausted key past its reset must re-enter rotation"
+        );
+
+        // Legacy Exhausted entry with no reset stamp stays out (never silently
+        // re-enabled) until something validates it.
+        let mut legacy = KeyEntry::new("legacy");
+        legacy.status = KeyStatus::Exhausted;
+        legacy.rate_limit_reset = None;
+        assert!(
+            !legacy.is_usable(),
+            "exhausted-with-no-reset stays terminal"
+        );
+    }
+
+    #[test]
+    fn mark_status_exhausted_stamps_a_recovery_deadline() {
+        let pool = KeyPool::new();
+        let mut k = KeyEntry::new("k");
+        k.status = KeyStatus::Active;
+        pool.add("shodan", k);
+        // Immediately after marking, the key is out of rotation...
+        pool.mark_status("shodan", "k", KeyStatus::Exhausted);
+        assert_eq!(
+            pool.next_key("shodan"),
+            None,
+            "freshly-exhausted key skipped"
+        );
+        // ...but a recovery deadline was stamped (so it WILL come back).
+        let snap = pool.snapshot();
+        let entry = &snap.services["shodan"][0];
+        assert!(
+            entry.rate_limit_reset.is_some(),
+            "Exhausted must stamp a recovery deadline, not be terminal"
+        );
     }
 
     #[test]
