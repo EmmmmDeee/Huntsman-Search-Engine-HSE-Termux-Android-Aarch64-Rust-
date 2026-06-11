@@ -152,6 +152,20 @@ fn build_entity(r: &NvResp, scan_id: &str) -> Option<Entity> {
     }
     if let Some(cc) = &r.country_code {
         ev = ev.with_attr("country_code", cc);
+        if cc.eq_ignore_ascii_case("AU") {
+            e.tag(crate::core::tags::AU_RELEVANT);
+            // Carrier tag for AU-060 class 4 when a national carrier is identified.
+            if let Some(carrier) = r.carrier.as_deref().filter(|c| !c.is_empty()) {
+                let cl = carrier.to_ascii_lowercase();
+                if cl.starts_with("telstra") {
+                    e.tag(crate::core::tags::AU_CARRIER_TELSTRA);
+                } else if cl.starts_with("optus") {
+                    e.tag(crate::core::tags::AU_CARRIER_OPTUS);
+                } else if cl.starts_with("vodafone") {
+                    e.tag(crate::core::tags::AU_CARRIER_VODAFONE);
+                }
+            }
+        }
     }
     if let Some(intl) = &r.international_format {
         ev = ev.with_attr("international_format", intl);
@@ -204,6 +218,22 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(build_entity(&r, "scan").unwrap().value, "Australia");
+    }
+
+    #[test]
+    fn au_number_with_national_carrier_gets_au_tags() {
+        let r = NvResp {
+            valid: true,
+            country_code: Some("AU".into()),
+            country_name: Some("Australia".into()),
+            location: Some("Queensland".into()),
+            carrier: Some("Telstra".into()),
+            line_type: Some("mobile".into()),
+            ..Default::default()
+        };
+        let e = build_entity(&r, "scan").unwrap();
+        assert!(e.has_tag("au-relevant"), "needs au-relevant");
+        assert!(e.has_tag("au-carrier:telstra"), "needs telstra carrier tag");
     }
 
     #[test]
