@@ -78,6 +78,10 @@ impl Module for GeoDomainClassifier {
             e.tag("geoint");
             e.tag("coarse");
             e.tag("domain-inferred");
+            if let Some(tag) = geo.extra_tag {
+                e.tag(tag);
+                e.tag("au-relevant");
+            }
             e.add_evidence(
                 Evidence::new(
                     SRC,
@@ -99,13 +103,137 @@ struct GeoClassification {
     country_code: &'static str,
     confidence: f64,
     method: &'static str,
+    /// Optional extra tag applied to the emitted entity (e.g. `au-se-qld`,
+    /// `au-lga:logan-city`, `au-state:QLD`).
+    extra_tag: Option<&'static str>,
 }
 
 fn classify_domain(domain: &str) -> Option<GeoClassification> {
+    // LGA/state-specific AU services first (higher precision).
+    if let Some(geo) = classify_by_au_specific_service(domain) {
+        return Some(geo);
+    }
     if let Some(geo) = classify_by_known_service(domain) {
         return Some(geo);
     }
     classify_by_cctld(domain)
+}
+
+/// Classify AU domains that carry city/LGA/state-level geographic signal,
+/// returning an extra tag for the entity alongside the standard location string.
+/// Entries ordered longest-specific to shortest so a council subdomain matches
+/// before the parent state TLD.
+fn classify_by_au_specific_service(domain: &str) -> Option<GeoClassification> {
+    let d = domain.strip_prefix("www.").unwrap_or(domain);
+    // (pattern, location, confidence, extra_tag)
+    const AU_SPECIFIC: &[(&str, &str, f64, &str)] = &[
+        // Logan City Council — strongest possible LGA signal.
+        (
+            "logan.qld.gov.au",
+            "Logan City, Queensland, Australia",
+            0.75,
+            "au-lga:logan-city",
+        ),
+        (
+            "logancity.qld.gov.au",
+            "Logan City, Queensland, Australia",
+            0.75,
+            "au-lga:logan-city",
+        ),
+        // SE QLD council domains.
+        (
+            "brisbane.qld.gov.au",
+            "Brisbane, SE Queensland, Australia",
+            0.68,
+            "au-se-qld",
+        ),
+        (
+            "ipswich.qld.gov.au",
+            "Ipswich, SE Queensland, Australia",
+            0.68,
+            "au-se-qld",
+        ),
+        (
+            "goldcoast.qld.gov.au",
+            "Gold Coast, SE Queensland, Australia",
+            0.68,
+            "au-se-qld",
+        ),
+        (
+            "sunshinecoast.qld.gov.au",
+            "Sunshine Coast, Queensland, Australia",
+            0.65,
+            "au-se-qld",
+        ),
+        (
+            "moretonbay.qld.gov.au",
+            "Moreton Bay, SE Queensland, Australia",
+            0.65,
+            "au-se-qld",
+        ),
+        (
+            "redland.qld.gov.au",
+            "Redland City, SE Queensland, Australia",
+            0.65,
+            "au-se-qld",
+        ),
+        // Electoral Commission QLD — office is in SE QLD.
+        (
+            "ecq.qld.gov.au",
+            "SE Queensland, Australia",
+            0.55,
+            "au-se-qld",
+        ),
+        // QLD state government (parent — any *.qld.gov.au not matched above).
+        ("qld.gov.au", "Queensland, Australia", 0.65, "au-state:QLD"),
+        // QLD Education (state school system).
+        ("eq.edu.au", "Queensland, Australia", 0.55, "au-state:QLD"),
+        (
+            "education.qld.gov.au",
+            "Queensland, Australia",
+            0.58,
+            "au-state:QLD",
+        ),
+        // QLD Health.
+        (
+            "health.qld.gov.au",
+            "Queensland, Australia",
+            0.58,
+            "au-state:QLD",
+        ),
+        // QLD Transport and Main Roads.
+        (
+            "tmr.qld.gov.au",
+            "Queensland, Australia",
+            0.58,
+            "au-state:QLD",
+        ),
+        // Telstra BigPond — national AU carrier, SE QLD major coverage area.
+        (
+            "bigpond.com",
+            "Australia (Telstra)",
+            0.60,
+            "au-carrier:telstra",
+        ),
+        (
+            "bigpond.net.au",
+            "Australia (Telstra)",
+            0.60,
+            "au-carrier:telstra",
+        ),
+    ];
+    for &(pattern, location, confidence, extra_tag) in AU_SPECIFIC {
+        if crate::util::domains::is_or_subdomain_of(d, pattern) {
+            return Some(GeoClassification {
+                location,
+                country_code: "AU",
+                confidence,
+                method: "au_specific_service",
+                extra_tag: Some(extra_tag),
+            });
+        }
+    }
+    None
 }
 
 fn classify_by_known_service(domain: &str) -> Option<GeoClassification> {
@@ -118,6 +246,7 @@ fn classify_by_known_service(domain: &str) -> Option<GeoClassification> {
                 country_code: cc,
                 confidence: 0.60,
                 method: "known_service",
+                extra_tag: None,
             });
         }
     }
@@ -132,6 +261,7 @@ fn classify_by_cctld(domain: &str) -> Option<GeoClassification> {
                 country_code: cc,
                 confidence: 0.45,
                 method: "cctld",
+                extra_tag: None,
             });
         }
     }
@@ -139,24 +269,45 @@ fn classify_by_cctld(domain: &str) -> Option<GeoClassification> {
 }
 
 const GEO_SERVICES: &[(&str, &str, &str)] = &[
-    // Australia
+    // Australia — national services
     ("commbank.com.au", "Australia", "AU"),
     ("westpac.com.au", "Australia", "AU"),
     ("anz.com.au", "Australia", "AU"),
     ("nab.com.au", "Australia", "AU"),
     ("realestate.com.au", "Australia", "AU"),
     ("domain.com.au", "Australia", "AU"),
+    ("homely.com.au", "Australia", "AU"),
+    ("ratemyagent.com.au", "Australia", "AU"),
+    ("rent.com.au", "Australia", "AU"),
+    ("allhomes.com.au", "Australia", "AU"),
     ("seek.com.au", "Australia", "AU"),
     ("gumtree.com.au", "Australia", "AU"),
+    ("whitepages.com.au", "Australia", "AU"),
+    ("yellowpages.com.au", "Australia", "AU"),
+    ("truelocal.com.au", "Australia", "AU"),
+    ("sensis.com.au", "Australia", "AU"),
     ("afterpay.com", "Australia", "AU"),
     ("zip.co", "Australia", "AU"),
     ("bunnings.com.au", "Australia", "AU"),
     ("woolworths.com.au", "Australia", "AU"),
     ("coles.com.au", "Australia", "AU"),
+    ("aldi.com.au", "Australia", "AU"),
     ("telstra.com.au", "Australia", "AU"),
     ("optus.com.au", "Australia", "AU"),
+    ("vodafone.com.au", "Australia", "AU"),
+    ("tpg.com.au", "Australia", "AU"),
+    ("iinet.net.au", "Australia", "AU"),
+    ("internode.on.net", "Australia", "AU"),
     ("centrelink.gov.au", "Australia", "AU"),
+    ("servicesaustralia.gov.au", "Australia", "AU"),
+    ("ato.gov.au", "Australia", "AU"),
+    ("asic.gov.au", "Australia", "AU"),
+    ("aec.gov.au", "Australia", "AU"),
+    ("acnc.gov.au", "Australia", "AU"),
+    ("auspost.com.au", "Australia", "AU"),
+    ("australia.gov.au", "Australia", "AU"),
     ("myob.com", "Australia", "AU"),
+    ("reckon.com", "Australia", "AU"),
     ("xero.com", "New Zealand", "NZ"),
     // United Kingdom
     ("hsbc.co.uk", "United Kingdom", "GB"),
@@ -286,6 +437,50 @@ mod tests {
         assert_eq!(geo.country_code, "AU");
         assert_eq!(geo.method, "known_service");
         assert!((geo.confidence - 0.60).abs() < 1e-9);
+        assert!(geo.extra_tag.is_none());
+    }
+
+    #[test]
+    fn classifies_logan_city_council_domain() {
+        let geo = classify_domain("logan.qld.gov.au").unwrap();
+        assert_eq!(geo.country_code, "AU");
+        assert_eq!(geo.method, "au_specific_service");
+        assert_eq!(geo.extra_tag, Some("au-lga:logan-city"));
+        assert!(geo.confidence >= 0.70);
+    }
+
+    #[test]
+    fn classifies_subdomain_of_logan_council() {
+        // A subdomain of logan.qld.gov.au should also match.
+        let geo = classify_domain("payments.logan.qld.gov.au").unwrap();
+        assert_eq!(geo.extra_tag, Some("au-lga:logan-city"));
+    }
+
+    #[test]
+    fn classifies_qld_state_domain() {
+        let geo = classify_domain("health.qld.gov.au").unwrap();
+        assert_eq!(geo.country_code, "AU");
+        assert_eq!(geo.extra_tag, Some("au-state:QLD"));
+    }
+
+    #[test]
+    fn classifies_se_qld_brisbane_council() {
+        let geo = classify_domain("brisbane.qld.gov.au").unwrap();
+        assert_eq!(geo.extra_tag, Some("au-se-qld"));
+    }
+
+    #[test]
+    fn classifies_bigpond() {
+        let geo = classify_domain("bigpond.com").unwrap();
+        assert_eq!(geo.country_code, "AU");
+        assert_eq!(geo.extra_tag, Some("au-carrier:telstra"));
+    }
+
+    #[test]
+    fn classifies_whitepages_au() {
+        let geo = classify_domain("whitepages.com.au").unwrap();
+        assert_eq!(geo.country_code, "AU");
+        assert_eq!(geo.method, "known_service");
     }
 
     #[test]

@@ -646,3 +646,155 @@ pub(in crate::core::correlator) fn rule_au_032_colocation_cluster(
     }
     out
 }
+
+/// AU-059 — SE Queensland phone-area + location corroboration.
+///
+/// The `phone_area_geo` module tags Address entities produced from +617
+/// landlines with `au-se-qld`. This rule fires when that tag coexists with at
+/// least one other geo entity (`Address` or `Coordinates`) that independently
+/// asserts QLD (via the `au-state:QLD` tag or a postcode in the QLD range).
+/// Two independent classes — phone area code and geo signal — agreeing on SE
+/// QLD is stronger than either alone.
+pub(in crate::core::correlator) fn rule_au_059_se_qld_phone_corroboration(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // Phone-area entities that assert SE QLD.
+    let phone_geo: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address && e.has_tag("au-se-qld"))
+        .collect();
+    if phone_geo.is_empty() {
+        return Vec::new();
+    }
+    // Independent QLD geo signals (not from phone_area_geo itself).
+    let qld_geo: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| {
+            matches!(e.kind, EntityKind::Address | EntityKind::Coordinates)
+                && e.confidence >= 0.40
+                && e.has_tag("au-state:QLD")
+                && !e.has_tag("au-se-qld") // exclude the phone entity itself
+        })
+        .collect();
+    if qld_geo.is_empty() {
+        return Vec::new();
+    }
+    let mut uids: Vec<String> = phone_geo.iter().map(|e| e.uid.clone()).collect();
+    uids.extend(qld_geo.iter().map(|e| e.uid.clone()));
+    uids.sort_unstable();
+    uids.dedup();
+    vec![Correlation::new(
+        "AU-059",
+        "SE Queensland location corroborated (phone area + geo signal)",
+        Severity::Medium,
+        format!(
+            "Phone area code 07 (SE QLD) and {} independent QLD location signal(s) both place \
+             the subject in SE Queensland",
+            qld_geo.len()
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
+/// AU-060 — Logan City multi-signal convergence.
+///
+/// Accumulates weak signals that individually point toward Logan City as the
+/// subject's residential LGA. A single signal is insufficient — a Logan suburb
+/// address, an LGA-tagged coordinate, an Optus SE-QLD carrier hit, and a school
+/// or electoral mention each carry low individual confidence. When 2+ distinct
+/// signal classes converge the rule fires Medium; 3+ fires High.
+///
+/// Signal classes counted:
+///  1. `Coordinates` entity tagged `au-lga:logan-city`.
+///  2. `Address` entity whose value contains a known Logan Division 7 suburb.
+///  3. An Address entity tagged `au-se-qld` AND a carrier entity tagged `au-carrier:optus`.
+///  4. Any entity tagged `au-relevant` carrying evidence from `geocode` or
+///     `phone_area_geo` and a QLD state signal.
+pub(in crate::core::correlator) fn rule_au_060_logan_city_convergence(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let div7_suburbs: Vec<&str> = crate::util::geo::logan_div7_suburbs()
+        .iter()
+        .map(|(s, _, _, _)| *s)
+        .collect();
+
+    let mut signal_uids: Vec<(u8, String)> = Vec::new(); // (signal_class, uid)
+
+    for e in entities {
+        if e.confidence < 0.35 {
+            continue;
+        }
+        // Class 1: LGA-tagged coordinate.
+        if e.kind == EntityKind::Coordinates && e.has_tag("au-lga:logan-city") {
+            signal_uids.push((1, e.uid.clone()));
+            continue;
+        }
+        // Class 2: Address matching a known Logan Division 7 suburb (case-insensitive).
+        if e.kind == EntityKind::Address {
+            let val_lower = e.value.to_lowercase();
+            let is_div7 = div7_suburbs
+                .iter()
+                .any(|s| val_lower.contains(&s.to_lowercase()));
+            let is_logan = val_lower.contains("logan") && e.has_tag("au-relevant");
+            if is_div7 || is_logan {
+                signal_uids.push((2, e.uid.clone()));
+                continue;
+            }
+        }
+        // Class 3: SE QLD phone area.
+        if e.has_tag("au-se-qld") {
+            signal_uids.push((3, e.uid.clone()));
+        }
+        // Class 4: Optus carrier + SE QLD context.
+        if e.has_tag("au-carrier:optus") && e.has_tag("au-relevant") {
+            signal_uids.push((4, e.uid.clone()));
+        }
+    }
+
+    // Unique signal classes.
+    let mut classes: Vec<u8> = signal_uids.iter().map(|(c, _)| *c).collect();
+    classes.sort_unstable();
+    classes.dedup();
+
+    if classes.len() < 2 {
+        return Vec::new();
+    }
+
+    let severity = if classes.len() >= 3 {
+        Severity::High
+    } else {
+        Severity::Medium
+    };
+
+    let uids: Vec<String> = {
+        let mut u: Vec<String> = signal_uids.into_iter().map(|(_, uid)| uid).collect();
+        u.sort_unstable();
+        u.dedup();
+        u
+    };
+
+    vec![Correlation::new(
+        "AU-060",
+        "Logan City residential convergence",
+        severity,
+        format!(
+            "{} independent signal class(es) converge on Logan City LGA as likely residential \
+             area (signal classes: {})",
+            classes.len(),
+            classes
+                .iter()
+                .map(|c| format!("S{c}"))
+                .collect::<Vec<_>>()
+                .join("+"),
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}

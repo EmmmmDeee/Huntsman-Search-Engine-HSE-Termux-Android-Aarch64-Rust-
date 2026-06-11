@@ -251,6 +251,8 @@ const RULES: &[RuleFn] = &[
     rule_au_056_jurisdiction_cross_check,
     rule_au_057_schema_org_phone_attribution,
     rule_au_058_m365_tenant_attribution,
+    rule_au_059_se_qld_phone_corroboration,
+    rule_au_060_logan_city_convergence,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

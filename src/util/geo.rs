@@ -179,6 +179,139 @@ pub fn is_plausible_provider_coord(lat: f64, lon: f64) -> bool {
     is_valid_coords(lat, lon) && lat.abs() > NULL_ISLAND_BAND && lon.abs() > NULL_ISLAND_BAND
 }
 
+/// True if a coordinate falls within the Logan City Council LGA bounding box.
+///
+/// Logan City LGA covers south-east QLD roughly between Brisbane and the Gold
+/// Coast hinterland. Bounding box derived from ABS ASGS 2021 LGA boundary
+/// (LGA28090 — Logan). Pure, no I/O.
+///
+/// ```
+/// use huntsman_search_engine::util::geo::is_in_logan_city;
+///
+/// assert!(is_in_logan_city(-27.6954, 152.8918));  // Park Ridge
+/// assert!(is_in_logan_city(-27.6654, 152.9131));  // Regents Park
+/// assert!(!is_in_logan_city(-27.4766, 153.0166)); // Brisbane CBD
+/// ```
+#[must_use]
+pub fn is_in_logan_city(lat: f64, lon: f64) -> bool {
+    is_valid_coords(lat, lon)
+        && (-27.92..=-27.52).contains(&lat)
+        && (152.82..=153.28).contains(&lon)
+}
+
+/// Resolve a coordinate to an AU Local Government Area name (coarse, bounding-
+/// box approximation). Currently covers the greater SE QLD LGAs relevant to
+/// AU-focused scans. Returns `None` when no LGA box contains the point. Only
+/// called for confirmed AU coordinates — do not pass foreign fixes.
+///
+/// Order matters for sub-LGA overlaps; smaller / more specific boxes first.
+#[must_use]
+pub fn au_lga_for_coords(lat: f64, lon: f64) -> Option<&'static str> {
+    // (lga, lat_min, lat_max, lon_min, lon_max)
+    const LGA_BOXES: &[(&str, f64, f64, f64, f64)] = &[
+        // SE QLD — smaller LGAs before the large Brisbane City box that overlaps
+        ("Logan City", -27.92, -27.52, 152.82, 153.28),
+        ("Ipswich City", -27.75, -27.45, 152.60, 152.90),
+        ("Scenic Rim", -28.20, -27.85, 152.50, 153.00),
+        ("Redland City", -27.75, -27.40, 153.05, 153.55),
+        ("Moreton Bay", -27.30, -26.80, 152.70, 153.30),
+        ("Gold Coast City", -28.30, -27.70, 153.10, 153.55),
+        ("Sunshine Coast", -26.90, -26.40, 152.60, 153.20),
+        // Greater Brisbane — last so specific LGA boxes above match first
+        ("Brisbane City", -27.78, -27.25, 152.68, 153.30),
+        // Other capitals
+        ("City of Sydney", -33.97, -33.78, 151.12, 151.28),
+        ("City of Melbourne", -37.85, -37.72, 144.90, 145.02),
+        ("City of Perth", -32.02, -31.90, 115.80, 115.92),
+    ];
+    if !is_in_australia(lat, lon) {
+        return None;
+    }
+    for &(lga, lat_min, lat_max, lon_min, lon_max) in LGA_BOXES {
+        if (lat_min..=lat_max).contains(&lat) && (lon_min..=lon_max).contains(&lon) {
+            return Some(lga);
+        }
+    }
+    None
+}
+
+/// Logan City Division 7 suburbs with centroid coordinates and postcode.
+///
+/// Division 7 covers the western corridor of Logan City from Regents Park /
+/// Browns Plains south to Park Ridge and Boronia Heights. Data from ECQ ward
+/// boundary maps and ABS locality centroids.
+///
+/// Returns `&'static [(suburb, lat, lon, postcode)]`.
+#[must_use]
+pub fn logan_div7_suburbs() -> &'static [(&'static str, f64, f64, &'static str)] {
+    &[
+        ("Regents Park", -27.6654, 152.9131, "4118"),
+        ("Browns Plains", -27.6744, 152.9258, "4118"),
+        ("Boronia Heights", -27.6769, 152.9004, "4124"),
+        ("Heritage Park", -27.6920, 152.9162, "4118"),
+        ("Park Ridge", -27.6955, 152.8918, "4125"),
+        ("Park Ridge South", -27.7107, 152.8766, "4125"),
+        ("Hillcrest", -27.6562, 152.9014, "4118"),
+        ("Forestdale", -27.6853, 152.9401, "4118"),
+        ("Lyons", -27.7107, 152.9201, "4124"),
+    ]
+}
+
+/// Logan City suburb centroid table — all suburbs within the LGA.
+///
+/// Used by the offline suburb → coordinates fallback (geocode module) and by
+/// GEOINT correlator rules that need to convert a suburb string into a lat/lon
+/// anchor without a network call. Data sourced from ABS 2021 locality centroids
+/// plus ECQ Division boundaries.
+#[must_use]
+pub fn logan_suburbs() -> &'static [(&'static str, f64, f64, &'static str)] {
+    &[
+        // Division 7 core (western corridor)
+        ("Regents Park", -27.6654, 152.9131, "4118"),
+        ("Browns Plains", -27.6744, 152.9258, "4118"),
+        ("Boronia Heights", -27.6769, 152.9004, "4124"),
+        ("Heritage Park", -27.6920, 152.9162, "4118"),
+        ("Park Ridge", -27.6955, 152.8918, "4125"),
+        ("Park Ridge South", -27.7107, 152.8766, "4125"),
+        ("Hillcrest", -27.6562, 152.9014, "4118"),
+        ("Forestdale", -27.6853, 152.9401, "4118"),
+        ("Lyons", -27.7107, 152.9201, "4124"),
+        ("Flagstone", -27.7910, 152.8898, "4280"),
+        // Central Logan
+        ("Logan Central", -27.6417, 153.0079, "4114"),
+        ("Woodridge", -27.6252, 153.0086, "4114"),
+        ("Kingston", -27.6545, 153.0212, "4114"),
+        ("Slacks Creek", -27.6435, 153.0451, "4127"),
+        ("Springwood", -27.6096, 153.0475, "4127"),
+        ("Underwood", -27.5933, 153.0856, "4119"),
+        ("Rochedale South", -27.5978, 153.0777, "4123"),
+        ("Meadowbrook", -27.6636, 153.0165, "4131"),
+        ("Loganlea", -27.6600, 153.0126, "4131"),
+        ("Eagleby", -27.7107, 153.1862, "4207"),
+        ("Beenleigh", -27.7090, 153.1990, "4207"),
+        ("Shailer Park", -27.6418, 153.1059, "4128"),
+        ("Daisy Hill", -27.6441, 153.1179, "4127"),
+        ("Cornubia", -27.6569, 153.1210, "4130"),
+        ("Tanah Merah", -27.6884, 153.1690, "4128"),
+        ("Loganholme", -27.6849, 153.1366, "4129"),
+        ("Carbrook", -27.7114, 153.1659, "4130"),
+        ("Edens Landing", -27.7193, 153.1758, "4207"),
+        ("Waterford West", -27.6874, 152.9998, "4133"),
+        ("Bethania", -27.7050, 153.1515, "4205"),
+    ]
+}
+
+/// Look up an AU suburb name (case-insensitive) in the Logan City suburb table.
+/// Returns `(lat, lon, postcode)` when found.
+#[must_use]
+pub fn logan_suburb_centroid(suburb: &str) -> Option<(f64, f64, &'static str)> {
+    let lower = suburb.to_lowercase();
+    logan_suburbs()
+        .iter()
+        .find(|(name, _, _, _)| name.to_lowercase() == lower)
+        .map(|&(_, lat, lon, pc)| (lat, lon, pc))
+}
+
 /// Build the coarse IP-geolocation `geoint` Coordinates entity shared by the
 /// IP-geo provider modules (`ipinfo` / `ipapi` / `ip2location` / `ipquery`):
 /// the plausibility gate ([`is_plausible_provider_coord`]), the 4-decimal
@@ -216,6 +349,9 @@ pub fn coarse_provider_coords(
     if let Some(state) = au_state_for_coords(lat, lon) {
         e.tag("au-relevant");
         e.tag(format!("au-state:{state}"));
+        if let Some(lga) = au_lga_for_coords(lat, lon) {
+            e.tag(format!("au-lga:{}", lga.replace(' ', "-").to_lowercase()));
+        }
     } else {
         e.tag("off-region");
     }
@@ -349,5 +485,43 @@ mod tests {
         assert!(!is_plausible_provider_coord(10.0, 181.0));
         assert!(!is_plausible_provider_coord(f64::INFINITY, f64::INFINITY));
         assert!(!is_plausible_provider_coord(f64::NAN, 10.0));
+    }
+
+    #[test]
+    fn is_in_logan_city_matches_known_suburbs() {
+        assert!(is_in_logan_city(-27.6954, 152.8918)); // Park Ridge
+        assert!(is_in_logan_city(-27.6654, 152.9131)); // Regents Park
+        assert!(is_in_logan_city(-27.6769, 152.9004)); // Boronia Heights
+        assert!(is_in_logan_city(-27.6417, 153.0079)); // Logan Central
+        assert!(!is_in_logan_city(-27.4766, 153.0166)); // Brisbane CBD
+        assert!(!is_in_logan_city(-28.0166, 153.4000)); // Gold Coast
+        assert!(!is_in_logan_city(0.0, 0.0)); // null island
+    }
+
+    #[test]
+    fn au_lga_for_coords_identifies_logan_and_brisbane() {
+        assert_eq!(au_lga_for_coords(-27.6954, 152.8918), Some("Logan City")); // Park Ridge
+        assert_eq!(au_lga_for_coords(-27.4766, 153.0166), Some("Brisbane City")); // Brisbane CBD
+        assert_eq!(au_lga_for_coords(40.7128, -74.0060), None); // New York
+    }
+
+    #[test]
+    fn logan_suburb_centroid_lookup() {
+        let (lat, lon, pc) = logan_suburb_centroid("Park Ridge").unwrap();
+        assert!((lat - (-27.6955)).abs() < 0.001);
+        assert!((lon - 152.8918).abs() < 0.001);
+        assert_eq!(pc, "4125");
+        // Case-insensitive.
+        assert!(logan_suburb_centroid("park ridge").is_some());
+        assert!(logan_suburb_centroid("nonexistent place xyz").is_none());
+    }
+
+    #[test]
+    fn coarse_provider_coords_tags_lga_for_logan_fix() {
+        let e = coarse_provider_coords(-27.6954, 152.8918, 0.60, "scan-lga")
+            .expect("Park Ridge is a valid, plausible fix");
+        assert!(e.has_tag("au-relevant"));
+        assert!(e.has_tag("au-state:QLD"));
+        assert!(e.has_tag("au-lga:logan-city"));
     }
 }

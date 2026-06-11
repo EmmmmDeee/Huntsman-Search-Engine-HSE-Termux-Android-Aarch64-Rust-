@@ -7,6 +7,13 @@
 //! UK, US, Germany, France, Japan), it maps the area code to a
 //! city or region, producing an Address entity at higher granularity.
 //!
+//! For Australia specifically:
+//!  - `+617` landlines → SE Queensland (Brisbane / Logan / Gold Coast /
+//!    Sunshine Coast); confidence 0.62 (area code is unambiguous for SE QLD,
+//!    but the actual city within SE QLD is unknown).
+//!  - `+614xx` mobiles → carrier inference via ACMA number-block allocations,
+//!    producing a Carrier + likely metro/rural region; confidence 0.42.
+//!
 //! No network calls. Runs in < 1ms. Priority 93 so it fires before
 //! geocoding modules.
 
@@ -76,6 +83,10 @@ impl Module for PhoneAreaGeo {
             );
             e.tag("geoint");
             e.tag("phone-area-code");
+            if geo.country_code == "AU" && geo.area_code == "7" {
+                e.tag("au-se-qld");
+                e.tag("au-relevant");
+            }
             e.add_evidence(
                 Evidence::new(
                     SRC,
@@ -87,6 +98,32 @@ impl Module for PhoneAreaGeo {
                 .with_attr("area_code", geo.area_code)
                 .with_attr("country", geo.country)
                 .with_attr("country_code", geo.country_code),
+            );
+            result.push(e);
+        }
+
+        // AU mobile carrier inference: +614xx → carrier + likely metro/rural region.
+        if let Some(carrier) = au_mobile_carrier(&digits) {
+            let label = format!(
+                "Australia — {} mobile ({})",
+                carrier.region, carrier.carrier_name
+            );
+            let mut e = Entity::new(EntityKind::Address, label, carrier.confidence, &ctx.scan_id);
+            e.tag("geoint");
+            e.tag("phone-mobile-carrier");
+            e.tag("au-relevant");
+            e.tag(format!("au-carrier:{}", carrier.carrier_slug));
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!(
+                        "AU mobile prefix +61{} allocated to {} — {}",
+                        carrier.prefix, carrier.carrier_name, carrier.region
+                    ),
+                )
+                .with_attr("mobile_prefix", carrier.prefix)
+                .with_attr("carrier", carrier.carrier_name)
+                .with_attr("country_code", "AU"),
             );
             result.push(e);
         }
@@ -131,10 +168,67 @@ fn country_name(cc: &str) -> &'static str {
     crate::util::geohash::country_name_for_iso(cc).unwrap_or("Unknown")
 }
 
+struct MobileCarrierGeo {
+    prefix: String,
+    carrier_name: &'static str,
+    carrier_slug: &'static str,
+    region: &'static str,
+    confidence: f64,
+}
+
+/// AU mobile carrier inference from ACMA number-block allocations.
+///
+/// Maps `+614xx` national-number prefixes to the carrier that holds the block
+/// and their typical service footprint. Confidence 0.42 — carrier tells us
+/// metro vs. regional, not city-level.
+fn au_mobile_carrier(digits: &str) -> Option<MobileCarrierGeo> {
+    // Must start with AU country code + mobile digit 4.
+    let national = digits.strip_prefix("614")?;
+    if national.len() < 6 {
+        return None;
+    }
+    // Two-digit block prefix (first two digits of the 8-digit subscriber number).
+    let block: u8 = national[..2].parse().ok()?;
+    let prefix_str = national[..2].to_string();
+    // ACMA block allocations (simplified, as at 2024).
+    // Optus: 04 00–09, 04 27–29, 04 30–39, 04 50–59, 04 80–83
+    // Telstra: 04 10–26, 04 40–49, 04 60–69, 04 84–99
+    // Vodafone/TPG: 04 70–79
+    let (carrier_name, carrier_slug, region) = match block {
+        0..=9 => ("Optus", "optus", "SE QLD / Sydney / Melbourne (metro)"),
+        10..=26 => ("Telstra", "telstra", "Australia-wide (metro + regional)"),
+        27..=39 => ("Optus", "optus", "SE QLD / Sydney / Melbourne (metro)"),
+        40..=49 => ("Telstra", "telstra", "Australia-wide (metro + regional)"),
+        50..=59 => ("Optus", "optus", "SE QLD / Sydney / Melbourne (metro)"),
+        60..=69 => ("Telstra", "telstra", "Australia-wide (metro + regional)"),
+        70..=79 => ("Vodafone / TPG", "vodafone", "Major metro centres only"),
+        80..=83 => ("Optus", "optus", "SE QLD / Sydney / Melbourne (metro)"),
+        _ => ("Telstra", "telstra", "Australia-wide (metro + regional)"),
+    };
+    Some(MobileCarrierGeo {
+        prefix: prefix_str,
+        carrier_name,
+        carrier_slug,
+        region,
+        confidence: 0.42,
+    })
+}
+
+// AU landline area codes — expanded to SE QLD city / region granularity.
+// Table ordering rule: longer prefix first within a country so lookup_area_code
+// finds the most-specific entry. Digit-prefix deduplication is verified by the
+// `area_tables_are_well_formed_and_prefix_ordered` test.
 const AU_AREAS: &[(&str, &str, &str)] = &[
+    // +617 — SE QLD. Broken out so a 07 landline asserts SE QLD,
+    // not the whole state.  City-level table omitted because all 07
+    // landlines share the same national area digit '7'.
+    (
+        "7",
+        "SE Queensland (Brisbane / Logan / Gold Coast / Sunshine Coast)",
+        "AU",
+    ),
     ("2", "Sydney / NSW / ACT", "AU"),
     ("3", "Melbourne / VIC / TAS", "AU"),
-    ("7", "Brisbane / QLD", "AU"),
     ("8", "Perth / SA / NT", "AU"),
 ];
 
@@ -266,11 +360,46 @@ mod tests {
     }
 
     #[test]
-    fn au_mobile_returns_none() {
+    fn au_se_qld_landline() {
+        let geo = lookup_area_code("61712345678").unwrap();
+        assert!(
+            geo.location.contains("SE Queensland"),
+            "expected SE Queensland, got {}",
+            geo.location
+        );
+        assert_eq!(geo.country_code, "AU");
+        assert_eq!(geo.area_code, "7");
+    }
+
+    #[test]
+    fn au_mobile_returns_none_from_area_table() {
         assert!(
             lookup_area_code("61412345678").is_none(),
-            "mobile prefixes should not produce geographic addresses"
+            "mobile prefixes should not produce geographic addresses via area table"
         );
+    }
+
+    #[test]
+    fn au_mobile_optus_carrier_inference() {
+        // +61 434 215 033 → digits 61434215033, national "34215033", block "34" → Optus
+        let c = au_mobile_carrier("61434215033").unwrap();
+        assert_eq!(c.carrier_name, "Optus");
+        assert!(c.region.contains("metro"));
+        assert!((c.confidence - 0.42).abs() < 1e-9);
+    }
+
+    #[test]
+    fn au_mobile_telstra_carrier_inference() {
+        // +61 411 xxx xxx → block "11" → Telstra
+        let c = au_mobile_carrier("61411234567").unwrap();
+        assert_eq!(c.carrier_name, "Telstra");
+        assert!(c.region.contains("regional"));
+    }
+
+    #[test]
+    fn au_mobile_vodafone_carrier_inference() {
+        let c = au_mobile_carrier("61470123456").unwrap();
+        assert_eq!(c.carrier_slug, "vodafone");
     }
 
     #[test]
@@ -369,7 +498,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn module_produces_address() {
+    async fn module_produces_address_for_landline() {
         let m = PhoneAreaGeo;
         let target = Target::new(TargetKind::Phone, "+61 2 1234 5678");
         let (bus, _rx) = tokio::sync::broadcast::channel(8);
@@ -386,5 +515,47 @@ mod tests {
         assert_eq!(r.entities[0].kind, EntityKind::Address);
         assert!(r.entities[0].value.contains("Sydney"));
         assert!(r.entities[0].has_tag("phone-area-code"));
+    }
+
+    #[tokio::test]
+    async fn module_produces_se_qld_for_07_landline() {
+        let m = PhoneAreaGeo;
+        let target = Target::new(TargetKind::Phone, "+61 7 3333 4444");
+        let (bus, _rx) = tokio::sync::broadcast::channel(8);
+        let ctx = ModuleContext {
+            scan_id: "test".into(),
+            bus,
+            http: reqwest::Client::new(),
+            keys: Default::default(),
+            cancel: Default::default(),
+            proxy_pool: Default::default(),
+        };
+        let r = m.process(&target, &ctx).await.unwrap();
+        assert_eq!(r.len(), 1);
+        assert!(r.entities[0].value.contains("SE Queensland"));
+        assert!(r.entities[0].has_tag("au-se-qld"));
+    }
+
+    #[tokio::test]
+    async fn module_produces_carrier_for_au_mobile() {
+        let m = PhoneAreaGeo;
+        // +61 434 215 033 — Optus mobile (block 34)
+        let target = Target::new(TargetKind::Phone, "+61434215033");
+        let (bus, _rx) = tokio::sync::broadcast::channel(8);
+        let ctx = ModuleContext {
+            scan_id: "test".into(),
+            bus,
+            http: reqwest::Client::new(),
+            keys: Default::default(),
+            cancel: Default::default(),
+            proxy_pool: Default::default(),
+        };
+        let r = m.process(&target, &ctx).await.unwrap();
+        // Only carrier entity (no area-code entity for mobiles).
+        assert_eq!(r.len(), 1);
+        let e = &r.entities[0];
+        assert!(e.has_tag("phone-mobile-carrier"));
+        assert!(e.has_tag("au-carrier:optus"));
+        assert!(e.value.contains("Optus"));
     }
 }
