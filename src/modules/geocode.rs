@@ -114,6 +114,26 @@ impl Geocode {
             return Ok(ModuleResult::new());
         }
 
+        // Offline fast-path: resolve known AU suburb centroids without a
+        // Nominatim round-trip. This is especially valuable on Termux/aarch64
+        // where network latency is higher and offline operation is desirable.
+        if let Some((lat, lon, postcode)) = offline_au_suburb_centroid(addr) {
+            let mut result = ModuleResult::new();
+            let coords = format!("{lat:.6},{lon:.6}");
+            let mut e = build_forward_entity(lat, lon, &coords, &ctx.scan_id);
+            e.tag("offline");
+            e.add_evidence(
+                Evidence::new(SRC, format!("Offline centroid for \"{addr}\" → {coords}"))
+                    .with_attr("input_address", addr)
+                    .with_attr("latitude", lat.to_string())
+                    .with_attr("longitude", lon.to_string())
+                    .with_attr("postcode", postcode)
+                    .with_attr("method", "logan_suburb_centroid"),
+            );
+            result.push(e);
+            return Ok(result);
+        }
+
         let url = format!(
             "https://nominatim.openstreetmap.org/search?q={}&format=json&limit=1&addressdetails=1",
             urlencode(addr)
@@ -216,11 +236,39 @@ fn build_forward_entity(lat: f64, lon: f64, coords: &str, scan_id: &str) -> Enti
         if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
             e.tag(format!("au-state:{state}"));
         }
+        if let Some(lga) = crate::util::geo::au_lga_for_coords(lat, lon) {
+            e.tag(format!("au-lga:{}", lga.replace(' ', "-").to_lowercase()));
+        }
     } else {
         e.tag("off-region");
         e.tag("candidate");
     }
     e
+}
+
+/// Offline AU suburb lookup: strips postcode and state suffix, then searches
+/// the Logan City suburb centroid table. Returns `(lat, lon, postcode)` when
+/// the address resolves to a known Logan suburb without a network call.
+///
+/// Used as a fast-path before the Nominatim round-trip when the address is
+/// a bare suburb string (e.g. "Park Ridge", "Regents Park QLD 4118").
+pub(crate) fn offline_au_suburb_centroid(addr: &str) -> Option<(f64, f64, &'static str)> {
+    // Strip trailing postcode and state abbreviation ("QLD 4118", "NSW", "4118").
+    let cleaned: String = addr
+        .split_whitespace()
+        .filter(|w| {
+            // Drop 4-digit postcodes and state abbreviations.
+            let up = w.to_ascii_uppercase();
+            let is_state = matches!(
+                up.as_str(),
+                "QLD" | "NSW" | "VIC" | "SA" | "WA" | "TAS" | "NT" | "ACT" | "AUSTRALIA"
+            );
+            let is_postcode = w.len() == 4 && w.bytes().all(|b| b.is_ascii_digit());
+            !is_state && !is_postcode
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    crate::util::geo::logan_suburb_centroid(cleaned.trim())
 }
 
 /// AU-relevance verdict for a reverse-geocoded coordinate, deciding how much an
@@ -273,6 +321,9 @@ fn build_reverse_entity(lat: f64, lon: f64, data: &NominatimResp, scan_id: &str)
             entity.tag("au-relevant");
             if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
                 entity.tag(format!("au-state:{state}"));
+            }
+            if let Some(lga) = crate::util::geo::au_lga_for_coords(lat, lon) {
+                entity.tag(format!("au-lga:{}", lga.replace(' ', "-").to_lowercase()));
             }
         }
         AuRelevance::OffRegion => entity.tag("candidate"),
@@ -405,6 +456,60 @@ mod tests {
 
     fn resp(json: serde_json::Value) -> NominatimResp {
         serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn offline_suburb_centroid_resolves_park_ridge() {
+        let (lat, lon, pc) = offline_au_suburb_centroid("Park Ridge").unwrap();
+        assert!((lat - (-27.6955)).abs() < 0.001);
+        assert!((lon - 152.8918).abs() < 0.001);
+        assert_eq!(pc, "4125");
+    }
+
+    #[test]
+    fn offline_suburb_centroid_strips_state_and_postcode() {
+        // "Regents Park QLD 4118" → "Regents Park" → match.
+        let r = offline_au_suburb_centroid("Regents Park QLD 4118");
+        assert!(r.is_some());
+        assert_eq!(r.unwrap().2, "4118");
+    }
+
+    #[test]
+    fn offline_suburb_centroid_unknown_returns_none() {
+        assert!(offline_au_suburb_centroid("Fake Suburb NSW 2000").is_none());
+    }
+
+    #[test]
+    fn build_forward_entity_tags_lga_for_logan() {
+        let e = build_forward_entity(-27.6954, 152.8918, "-27.695400,152.891800", "scan");
+        assert!(e.has_tag("au-lga:logan-city"));
+        assert!(e.has_tag("au-state:QLD"));
+        assert!(e.has_tag("au-relevant"));
+    }
+
+    #[test]
+    fn build_reverse_entity_tags_lga_for_logan() {
+        let data = NominatimResp {
+            display_name: Some("Park Ridge, Logan City, QLD, Australia".into()),
+            address: Some(NominatimAddr {
+                suburb: Some("Park Ridge".into()),
+                city: None,
+                town: None,
+                village: None,
+                municipality: None,
+                county: Some("Logan City".into()),
+                state: Some("Queensland".into()),
+                postcode: Some("4125".into()),
+                country: Some("Australia".into()),
+                country_code: Some("au".into()),
+                road: None,
+                house_number: None,
+            }),
+        };
+        let e = build_reverse_entity(-27.6955, 152.8918, &data, "scan");
+        assert!(e.has_tag("au-lga:logan-city"));
+        assert!(e.has_tag("au-state:QLD"));
+        assert!(e.has_tag("au-relevant"));
     }
 
     #[test]
