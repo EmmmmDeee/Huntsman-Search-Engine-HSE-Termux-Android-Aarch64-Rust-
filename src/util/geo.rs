@@ -367,6 +367,86 @@ pub fn au_coord_tags(lat: f64, lon: f64) -> Vec<String> {
     tags
 }
 
+/// AU tags implied by a **free-text location string** (e.g. a self-reported
+/// social-profile location like `"Brisbane, QLD"` or `"Logan, Australia"`).
+///
+/// The free-text sibling of [`au_coord_tags`]: where that resolves coordinates
+/// to a region, this resolves prose. It gates on a clear AU signal (the word
+/// Australia, a state name/abbreviation, or a trailing `, AU`) before emitting
+/// anything, so a non-AU location yields an empty list and never narrows a
+/// worldwide profile. When the string *is* AU it returns `au-relevant`, the
+/// `au-state:` tag when a state is named, `au-se-qld` when a South-East
+/// Queensland city is mentioned, and `au-lga:logan-city` for a Logan City
+/// suburb — the same vocabulary the coordinate producer emits, so the GEOINT
+/// correlator receives consistent tags without a geocode round-trip.
+///
+/// Single producer for free-text AU tagging: any module that scrapes a
+/// self-reported location (social profiles, identity graphs, résumés) funnels
+/// through here so the matcher strings cannot drift from the coordinate path.
+#[must_use]
+pub fn au_location_tags(loc: &str) -> Vec<&'static str> {
+    use crate::core::tags;
+    let lower = loc.to_lowercase();
+    let mut out: Vec<&'static str> = Vec::new();
+
+    // AU relevance gate — must contain a clear AU signal.
+    let is_au = lower.contains("australia")
+        || lower.contains("qld")
+        || lower.contains("queensland")
+        || lower.contains("nsw")
+        || lower.contains("vic")
+        || lower.contains("western australia")
+        || lower.contains("south australia")
+        || lower.contains("tasmania")
+        || lower.contains("northern territory")
+        || lower.ends_with(", au");
+    if !is_au {
+        return out;
+    }
+    out.push(tags::AU_RELEVANT);
+
+    // State attribution.
+    if lower.contains("qld") || lower.contains("queensland") {
+        out.push(tags::AU_STATE_QLD);
+    } else if lower.contains("nsw") || lower.contains("new south wales") {
+        out.push(tags::AU_STATE_NSW);
+    } else if lower.contains(" vic") || lower.contains("victoria") {
+        out.push(tags::AU_STATE_VIC);
+    } else if lower.contains("western australia") || lower.contains(" wa,") {
+        out.push(tags::AU_STATE_WA);
+    } else if lower.contains("south australia") || lower.contains(" sa,") {
+        out.push(tags::AU_STATE_SA);
+    } else if lower.contains("tasmania") || lower.contains(" tas") {
+        out.push(tags::AU_STATE_TAS);
+    }
+
+    // SE QLD signal: known SE QLD cities mentioned.
+    let se_qld_cities = [
+        "brisbane",
+        "logan",
+        "gold coast",
+        "sunshine coast",
+        "ipswich",
+        "redland",
+        "moreton bay",
+        "toowoomba",
+    ];
+    if se_qld_cities.iter().any(|c| lower.contains(c)) {
+        out.push(tags::AU_SE_QLD);
+    }
+
+    // Logan City LGA: Division 7 suburbs + Logan itself.
+    let is_logan = lower.contains("logan")
+        || logan_div7_suburbs()
+            .iter()
+            .any(|(s, _, _, _)| lower.contains(&s.to_lowercase()));
+    if is_logan {
+        out.push(tags::AU_LGA_LOGAN_CITY);
+    }
+
+    out
+}
+
 /// AU state/sub-state tags implied by a clustered UTC offset (no DST applied).
 ///
 /// Queensland is permanently UTC+10 (no daylight saving), so a stable UTC+10
@@ -503,6 +583,30 @@ mod tests {
         assert!(tags.iter().any(|t| t == "au-relevant"));
         assert!(tags.iter().any(|t| t == "au-state:QLD"));
         assert!(!tags.iter().any(|t| t == "au-lga:logan-city"));
+    }
+
+    #[test]
+    fn au_location_tags_brisbane_qld() {
+        let tags = au_location_tags("Brisbane, QLD");
+        assert!(tags.contains(&"au-relevant"));
+        assert!(tags.contains(&"au-state:QLD"));
+        assert!(tags.contains(&"au-se-qld"));
+    }
+
+    #[test]
+    fn au_location_tags_park_ridge_resolves_logan_lga() {
+        let tags = au_location_tags("Park Ridge, QLD 4125");
+        assert!(tags.contains(&"au-relevant"));
+        assert!(tags.contains(&"au-state:QLD"));
+        assert!(tags.contains(&"au-lga:logan-city"));
+    }
+
+    #[test]
+    fn au_location_tags_foreign_returns_empty() {
+        // Worldwide-first: a non-AU location must never be narrowed.
+        assert!(au_location_tags("London, UK").is_empty());
+        assert!(au_location_tags("San Francisco, CA").is_empty());
+        assert!(au_location_tags("").is_empty());
     }
 
     #[test]

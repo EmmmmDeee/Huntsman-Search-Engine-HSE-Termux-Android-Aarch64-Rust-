@@ -160,71 +160,7 @@ fn platform_confidence(host: &str) -> f64 {
     }
 }
 
-/// Derive AU-specific tags from a free-text location string. Applied to every
-/// entity this module emits so the GEOINT correlator receives `au-state:QLD`,
-/// `au-lga:logan-city`, or `au-se-qld` without a geocode round-trip.
-fn au_location_tags(loc: &str) -> Vec<&'static str> {
-    let lower = loc.to_lowercase();
-    let mut tags: Vec<&'static str> = Vec::new();
-
-    // AU relevance gate — must contain a clear AU signal.
-    let is_au = lower.contains("australia")
-        || lower.contains("qld")
-        || lower.contains("queensland")
-        || lower.contains("nsw")
-        || lower.contains("vic")
-        || lower.contains("western australia")
-        || lower.contains("south australia")
-        || lower.contains("tasmania")
-        || lower.contains("northern territory")
-        || lower.ends_with(", au");
-    if !is_au {
-        return tags;
-    }
-    tags.push(crate::core::tags::AU_RELEVANT);
-
-    // State attribution.
-    if lower.contains("qld") || lower.contains("queensland") {
-        tags.push(crate::core::tags::AU_STATE_QLD);
-    } else if lower.contains("nsw") || lower.contains("new south wales") {
-        tags.push(crate::core::tags::AU_STATE_NSW);
-    } else if lower.contains(" vic") || lower.contains("victoria") {
-        tags.push(crate::core::tags::AU_STATE_VIC);
-    } else if lower.contains("western australia") || lower.contains(" wa,") {
-        tags.push(crate::core::tags::AU_STATE_WA);
-    } else if lower.contains("south australia") || lower.contains(" sa,") {
-        tags.push(crate::core::tags::AU_STATE_SA);
-    } else if lower.contains("tasmania") || lower.contains(" tas") {
-        tags.push(crate::core::tags::AU_STATE_TAS);
-    }
-
-    // SE QLD signal: known SE QLD cities mentioned.
-    let se_qld_cities = [
-        "brisbane",
-        "logan",
-        "gold coast",
-        "sunshine coast",
-        "ipswich",
-        "redland",
-        "moreton bay",
-        "toowoomba",
-    ];
-    if se_qld_cities.iter().any(|c| lower.contains(c)) {
-        tags.push(crate::core::tags::AU_SE_QLD);
-    }
-
-    // Logan City LGA: Division 7 suburbs + Logan itself.
-    let logan_suburbs = crate::util::geo::logan_div7_suburbs();
-    let is_logan = lower.contains("logan")
-        || logan_suburbs
-            .iter()
-            .any(|(s, _, _, _)| lower.contains(&s.to_lowercase()));
-    if is_logan {
-        tags.push(crate::core::tags::AU_LGA_LOGAN_CITY);
-    }
-
-    tags
-}
+use crate::util::geo::au_location_tags;
 
 fn extract_github_location(html: &str) -> Option<String> {
     let marker = "p-label";
@@ -463,28 +399,6 @@ mod tests {
         let html = r#"<p>John lives in Boronia Heights, QLD</p>"#;
         let loc = extract_whitepages_au_location(html).unwrap();
         assert_eq!(loc, "Boronia Heights, QLD");
-    }
-
-    #[test]
-    fn au_location_tags_brisbane_qld() {
-        let tags = au_location_tags("Brisbane, QLD");
-        assert!(tags.contains(&"au-relevant"));
-        assert!(tags.contains(&"au-state:QLD"));
-        assert!(tags.contains(&"au-se-qld"));
-    }
-
-    #[test]
-    fn au_location_tags_park_ridge() {
-        let tags = au_location_tags("Park Ridge, QLD 4125");
-        assert!(tags.contains(&"au-relevant"));
-        assert!(tags.contains(&"au-state:QLD"));
-        assert!(tags.contains(&"au-lga:logan-city"));
-    }
-
-    #[test]
-    fn au_location_tags_foreign_returns_empty() {
-        let tags = au_location_tags("London, UK");
-        assert!(tags.is_empty());
     }
 
     #[test]

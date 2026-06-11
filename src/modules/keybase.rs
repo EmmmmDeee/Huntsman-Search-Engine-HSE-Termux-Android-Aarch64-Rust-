@@ -222,6 +222,12 @@ impl Module for Keybase {
                 let mut ae = Entity::new(EntityKind::Address, loc, 0.50, &ctx.scan_id);
                 ae.tag("keybase");
                 ae.tag(crate::core::tags::GEOINT);
+                ae.tag("self-reported");
+                // Free-text AU enrichment (shared producer) so an Australian
+                // self-reported location feeds AU-056/060 without a geocode.
+                for t in crate::util::geo::au_location_tags(loc) {
+                    ae.tag(t);
+                }
                 ae.add_evidence(Evidence::new(
                     SRC,
                     format!("Location from Keybase profile {kb_username}"),
