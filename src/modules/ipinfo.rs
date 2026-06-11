@@ -88,14 +88,19 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
     let city = data.city.as_deref().unwrap_or("");
     let region = data.region.as_deref().unwrap_or("");
     let country = data.country.as_deref().unwrap_or("");
-    if !city.is_empty() {
-        let addr = if !region.is_empty() {
-            format!("{city}, {region}, {country}")
-        } else {
-            format!("{city}, {country}")
-        };
+    // Empty-aware join (shared builder): drops absent parts so a city with no
+    // region/country can't leave a dangling ", " the way the old format! did.
+    if !city.is_empty()
+        && let Some(addr) = crate::util::geo::format_locality(&[city, region, country])
+    {
         let mut ae = Entity::new(EntityKind::Address, &addr, 0.60, scan_id);
         ae.tag("ipinfo");
+        ae.tag(tags::GEOINT);
+        // Free-text AU enrichment (shared producer): an Australian IP-geo
+        // locality feeds AU-056/060; non-AU passes through unchanged.
+        for t in crate::util::geo::au_location_tags(&addr) {
+            ae.tag(t);
+        }
         ae.add_evidence(Evidence::new(SRC, format!("Address for {ip}")));
         out.push(ae);
     }
@@ -294,7 +299,24 @@ mod tests {
     #[test]
     fn address_omits_region_when_absent() {
         let ents = build_entities("1.2.3.4", &data(r#"{"city":"Sydney","country":"AU"}"#), "s");
-        assert_eq!(one(&ents, EntityKind::Address).unwrap().value, "Sydney, AU");
+        let addr = one(&ents, EntityKind::Address).unwrap();
+        assert_eq!(addr.value, "Sydney, AU");
+        // Address carries geoint and AU enrichment so it reaches the correlator.
+        assert!(addr.has_tag("geoint"));
+        assert!(addr.has_tag("au-relevant"));
+    }
+
+    #[test]
+    fn au_address_with_state_gets_canonical_state_tag() {
+        // A full QLD locality resolves the canonical au-state tag (no geocode).
+        let ents = build_entities(
+            "1.2.3.4",
+            &data(r#"{"city":"Brisbane","region":"Queensland","country":"AU"}"#),
+            "s",
+        );
+        let addr = one(&ents, EntityKind::Address).unwrap();
+        assert!(addr.has_tag("au-state:QLD"));
+        assert!(addr.has_tag("au-se-qld"));
     }
 
     #[test]
