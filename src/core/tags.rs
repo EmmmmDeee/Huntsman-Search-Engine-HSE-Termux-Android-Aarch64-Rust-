@@ -20,6 +20,11 @@ pub const PASTE_EXPOSED: &str = "paste-exposed";
 pub const PASSWORD_AT_RISK: &str = "password-at-risk";
 pub const MULTI_DEVICE: &str = "multi-device";
 pub const MISSING_SECURITY_HEADERS: &str = "missing-security-headers";
+/// A throwaway / disposable email address (mailinator, guerrillamail, …).
+/// Emitted by the email-verdict modules (disposable_check, seon, ipqs, emailrep)
+/// and matched by the AU-024 multi-signal email-fraud correlator, so it lives
+/// here to keep the emit and match spellings from drifting.
+pub const DISPOSABLE: &str = "disposable";
 
 // Geolocation
 pub const GEOINT: &str = "geoint";

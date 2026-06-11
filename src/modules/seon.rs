@@ -216,7 +216,7 @@ fn build_email_entities(target: &Target, data: &SeonEmailData, scan_id: &str) ->
             entity.tag("custom-domain");
         }
         if dd.disposable == Some(true) {
-            entity.tag("disposable");
+            entity.tag(crate::core::tags::DISPOSABLE);
             ev = ev.with_attr("disposable", "true");
         }
         if dd.free == Some(true) {

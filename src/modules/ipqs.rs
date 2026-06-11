@@ -112,7 +112,7 @@ fn build_reputation_entity(
         (body.vpn, "vpn"),
         (body.tor, "tor"),
         (body.is_crawler, "crawler"),
-        (body.disposable, "disposable"),
+        (body.disposable, crate::core::tags::DISPOSABLE),
         (body.leaked, "leaked"),
         (body.recent_abuse, "recent-abuse"),
     ] {

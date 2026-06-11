@@ -197,7 +197,7 @@ fn build_email_entity(target: &Target, body: &RepResp, scan_id: &str) -> Entity 
             (d.blacklisted, "blacklisted", "blacklisted"),
             (d.malicious_activity, "malicious_activity", "malicious"),
             (d.spam, "spam", "spam-source"),
-            (d.disposable, "disposable", "disposable"),
+            (d.disposable, "disposable", tags::DISPOSABLE),
             (d.free_provider, "free_provider", "freemail"),
             (d.new_domain, "new_domain", "new-domain"),
         ] {

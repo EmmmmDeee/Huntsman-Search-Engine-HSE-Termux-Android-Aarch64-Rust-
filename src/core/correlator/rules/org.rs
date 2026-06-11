@@ -83,8 +83,8 @@ pub(in crate::core::correlator) fn rule_au_024_email_fraud_signal(
         .filter(|e| e.kind == EntityKind::Email)
         .filter(|e| {
             let s = e.has_tag("suspicious") || e.has_tag("high-risk");
-            let b = e.has_tag("breach");
-            let d = e.has_tag("disposable");
+            let b = e.has_tag(crate::core::tags::BREACH);
+            let d = e.has_tag(crate::core::tags::DISPOSABLE);
             u32::from(s) + u32::from(b) + u32::from(d) >= 2
         })
         .map(|e| {
@@ -92,10 +92,10 @@ pub(in crate::core::correlator) fn rule_au_024_email_fraud_signal(
             if e.has_tag("suspicious") || e.has_tag("high-risk") {
                 signals.push("fraud-flagged");
             }
-            if e.has_tag("breach") {
+            if e.has_tag(crate::core::tags::BREACH) {
                 signals.push("breach-exposed");
             }
-            if e.has_tag("disposable") {
+            if e.has_tag(crate::core::tags::DISPOSABLE) {
                 signals.push("disposable");
             }
             Correlation::new(

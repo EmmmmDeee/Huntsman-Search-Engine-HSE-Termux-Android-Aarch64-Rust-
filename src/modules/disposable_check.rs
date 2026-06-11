@@ -58,7 +58,7 @@ fn build_email_entity(email: &str, disposable: bool, scan_id: &str) -> Entity {
     entity.tag("email-validated");
 
     let ev = if disposable {
-        entity.tag("disposable");
+        entity.tag(crate::core::tags::DISPOSABLE);
         Evidence::new(SRC, format!("{email} uses a disposable/throwaway domain"))
             .with_attr("disposable", "true")
     } else {
