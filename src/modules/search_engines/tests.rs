@@ -1431,6 +1431,35 @@ fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
 }
 
 #[test]
+fn offtarget_repo_url_detects_project_named_after_a_term() {
+    let terms = vec!["haigen".to_string(), "bamford".to_string()];
+    // Repo named after the first-name term, owner is an unrelated org → off-target.
+    assert!(is_offtarget_repo_url(
+        "https://github.com/ExponentiAI/HAIGEN",
+        &terms
+    ));
+    assert!(is_offtarget_repo_url(
+        "https://github.com/ExponentiAI/HAIGEN/blob/main/README.md",
+        &terms
+    ));
+    // The subject's OWN account (owner matches) is never off-target.
+    assert!(!is_offtarget_repo_url("https://github.com/Haigen", &terms));
+    assert!(!is_offtarget_repo_url(
+        "https://github.com/haigenbamford/coolproject",
+        &terms
+    ));
+    assert!(!is_offtarget_repo_url(
+        "https://github.com/bamford/anything",
+        &terms
+    ));
+    // Non-repo hosts are out of scope.
+    assert!(!is_offtarget_repo_url(
+        "https://pickleball.com/players/haigen-bamford",
+        &terms
+    ));
+}
+
+#[test]
 fn url_from_a_location_seed_is_quarantined_as_generic_location() {
     // Regression from a live "Haigen Bamford" scan: recursion fed the suburb
     // "Regents Park, QLD" back as an Address seed, so every suburb / real-estate
