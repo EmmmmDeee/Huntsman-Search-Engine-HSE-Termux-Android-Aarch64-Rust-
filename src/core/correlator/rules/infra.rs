@@ -18,7 +18,7 @@ pub(in crate::core::correlator) fn rule_au_004_malicious_infrastructure(
         })
         // A GreyNoise RIOT/benign verdict vetoes a `malicious` tag picked up on
         // the same (shared-edge) IP from a weaker source.
-        .filter(|e| e.has_tag("malicious") && !is_benign_infra(e))
+        .filter(|e| e.has_tag(crate::core::tags::MALICIOUS) && !is_benign_infra(e))
         .map(|e| Correlation {
             rule_id: "AU-004".into(),
             rule_name: "Malicious infrastructure".into(),
@@ -105,7 +105,7 @@ pub(in crate::core::correlator) fn rule_au_007_high_risk_reputation(
     ts: u64,
 ) -> Vec<Correlation> {
     const RISK_TAGS: &[&str] = &[
-        "high-risk",
+        crate::core::tags::HIGH_RISK,
         "high-risk-inbound",
         "high-risk-outbound",
         "recent-abuse",
@@ -220,7 +220,7 @@ pub(in crate::core::correlator) fn rule_au_015_threat_intel_hit(
         .iter()
         // A GreyNoise RIOT/benign IP that a reputation feed also flagged is a
         // shared-edge false positive — exonerate it.
-        .filter(|e| e.has_tag("threat-intel") && !is_benign_infra(e))
+        .filter(|e| e.has_tag(crate::core::tags::THREAT_INTEL) && !is_benign_infra(e))
         .map(|e| {
             let sources: std::collections::BTreeSet<&str> = e
                 .evidence
@@ -411,7 +411,7 @@ pub(in crate::core::correlator) fn rule_au_031_malicious_adjacency(
             // aggregate, not N noise rows. A large *malicious* cluster is a real
             // threat and stays High; weaker reasons (vulnerable/threat-intel on
             // shared infra) are Medium.
-            let agg_sev = if reason == "malicious" {
+            let agg_sev = if reason == crate::core::tags::MALICIOUS {
                 Severity::High
             } else {
                 Severity::Medium

@@ -170,7 +170,7 @@ pub(in crate::core::correlator) fn rule_au_014_geo_cluster(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    const GEO_TAGS: &[&str] = &["geoint", "wifi-observed"];
+    const GEO_TAGS: &[&str] = &[crate::core::tags::GEOINT, "wifi-observed"];
     entities_of_kind(entities, EntityKind::Coordinates)
         .into_iter()
         .filter_map(|e| {
@@ -208,7 +208,7 @@ pub(in crate::core::correlator) fn rule_au_016_breach_ip_geo_chain(
 ) -> Vec<Correlation> {
     let breach_ips: Vec<&Entity> = entities_of_kind(entities, EntityKind::IpAddress)
         .into_iter()
-        .filter(|e| e.has_tag("breach"))
+        .filter(|e| e.has_tag(crate::core::tags::BREACH))
         .collect();
     let coords: Vec<&Entity> = entities_of_kind(entities, EntityKind::Coordinates)
         .into_iter()
@@ -443,12 +443,14 @@ pub(in crate::core::correlator) fn rule_au_027_address_coordinates_chain(
     if addresses.is_empty() || coords.is_empty() {
         return Vec::new();
     }
-    let addr_has_geo_tag = addresses
-        .iter()
-        .any(|a| a.has_tag("geoint") || a.has_tag("reverse-geocoded") || a.has_tag("validated"));
+    let addr_has_geo_tag = addresses.iter().any(|a| {
+        a.has_tag(crate::core::tags::GEOINT)
+            || a.has_tag("reverse-geocoded")
+            || a.has_tag("validated")
+    });
     let coords_has_geo_tag = coords
         .iter()
-        .any(|c| c.has_tag("geoint") || c.has_tag("geocoded"));
+        .any(|c| c.has_tag(crate::core::tags::GEOINT) || c.has_tag("geocoded"));
     if !addr_has_geo_tag && !coords_has_geo_tag {
         return Vec::new();
     }
