@@ -246,11 +246,18 @@ impl Module for Epieos {
 
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
+            EntityKind::Email,
             EntityKind::Person,
             EntityKind::Username,
             EntityKind::Address,
         ];
         KINDS
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Email-to-identity with social platform presence (T1589.002 = email
+        // addresses, T1589.003 = employee names, T1593.001 = social media).
+        &["T1589.002", "T1589.003", "T1593.001"]
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
