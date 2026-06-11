@@ -304,6 +304,18 @@ fn build_result(
             if !descriptions.is_empty() {
                 ev = ev.with_attr("breach_descriptions", descriptions.join(" | "));
             }
+            // Surface the most-recent breach date under the canonical breach_date
+            // key the AU-019 temporal breach cluster reads (ISO dates sort
+            // lexically, so max() is the latest), so XposedOrNot dates the same
+            // way HIBP / IntelX / leakix do instead of only feeding the summary.
+            if let Some(latest) = details
+                .iter()
+                .filter_map(|d| d.xposed_date.as_deref())
+                .filter(|s| !s.is_empty())
+                .max()
+            {
+                ev = ev.with_attr("breach_date", latest);
+            }
         }
     }
 
@@ -412,6 +424,60 @@ mod tests {
 
         let descs = ev.attributes.get("breach_descriptions").unwrap();
         assert!(descs.contains("LinkedIn: LinkedIn suffered a data breach in 2012"));
+
+        // The canonical breach_date is surfaced so this hit feeds the AU-019
+        // temporal breach cluster (here the single breach's xposed_date).
+        assert_eq!(
+            ev.attributes.get("breach_date").map(String::as_str),
+            Some("2012-06-05")
+        );
+    }
+
+    #[test]
+    fn breach_date_is_the_most_recent_across_details() {
+        // With multiple breaches, breach_date is the latest xposed_date (ISO
+        // dates sort lexically), and a detail with no date is skipped.
+        let breaches = vec!["Old".into(), "New".into()];
+        let analytics = AnalyticsResp {
+            exposed_breaches: Some(AnalyticsBreaches {
+                breaches_details: Some(vec![
+                    BreachDetail {
+                        breach: Some("Old".into()),
+                        xposed_data: None,
+                        xposed_records: None,
+                        xposure_desc: None,
+                        xposed_date: Some("2012-01-01".into()),
+                        password_risk: None,
+                    },
+                    BreachDetail {
+                        breach: Some("New".into()),
+                        xposed_data: None,
+                        xposed_records: None,
+                        xposure_desc: None,
+                        xposed_date: Some("2021-09-09".into()),
+                        password_risk: None,
+                    },
+                    BreachDetail {
+                        breach: Some("Undated".into()),
+                        xposed_data: None,
+                        xposed_records: None,
+                        xposure_desc: None,
+                        xposed_date: None,
+                        password_risk: None,
+                    },
+                ]),
+            }),
+            pastes_summary: None,
+        };
+        let target = Target::new(TargetKind::Email, "a@b.com");
+        let r = build_result(&breaches, Some(&analytics), &target, "s");
+        assert_eq!(
+            r.entities[0].evidence[0]
+                .attributes
+                .get("breach_date")
+                .map(String::as_str),
+            Some("2021-09-09")
+        );
     }
 
     #[test]
