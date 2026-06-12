@@ -103,6 +103,14 @@ impl Module for EmailRep {
         ModuleCategory::Email
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Beyond the Email default (T1589.002 Email Addresses), EmailRep reports
+        // credential-leak / data-breach status (T1589.001 Credentials) and the
+        // address's social-media presence (T1593.001 Social Media). Superset of
+        // the default — coverage cannot regress.
+        &["T1589.002", "T1589.001", "T1593.001"]
+    }
+
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
         use crate::core::entity::EntityKind;
         const KINDS: &[EntityKind] = &[EntityKind::Email];
