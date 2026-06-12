@@ -141,40 +141,33 @@ impl Module for IpWhois {
                 e.tag(format!("au-state:{state}"));
             }
 
-            let mut ev = Evidence::new(SRC, format!("IP geolocation for {}", target.value))
-                .with_attr("latitude", lat.to_string())
-                .with_attr("longitude", lon.to_string())
-                .with_attr("source", "ipwho.is");
-
-            if let Some(c) = data.country.as_deref() {
-                ev = ev.with_attr("country", c);
-            }
-            if let Some(cc) = data.country_code.as_deref() {
-                ev = ev.with_attr("country_code", cc);
-            }
-            if let Some(r) = data.region.as_deref() {
-                ev = ev.with_attr("region", r);
-            }
-            if let Some(c) = data.city.as_deref() {
-                ev = ev.with_attr("city", c);
-            }
-            if let Some(p) = data.postal.as_deref() {
-                ev = ev.with_attr("postal", p);
-            }
-            if let Some(tz) = data.timezone_id.as_deref() {
-                ev = ev.with_attr("timezone", tz);
-            }
-            if let Some(conn) = &data.connection {
-                if let Some(isp) = conn.isp.as_deref() {
-                    ev = ev.with_attr("isp", isp);
-                }
-                if let Some(asn) = conn.asn_num {
-                    ev = ev.with_attr("asn", format!("AS{asn}"));
-                }
-                if let Some(org) = conn.org.as_deref() {
-                    ev = ev.with_attr("org", org);
-                }
-            }
+            let conn = data.connection.as_ref();
+            let ev = [
+                ("country", data.country.as_deref().map(String::from)),
+                (
+                    "country_code",
+                    data.country_code.as_deref().map(String::from),
+                ),
+                ("region", data.region.as_deref().map(String::from)),
+                ("city", data.city.as_deref().map(String::from)),
+                ("postal", data.postal.as_deref().map(String::from)),
+                ("timezone", data.timezone_id.as_deref().map(String::from)),
+                ("isp", conn.and_then(|c| c.isp.as_deref()).map(String::from)),
+                (
+                    "asn",
+                    conn.and_then(|c| c.asn_num).map(|a| format!("AS{a}")),
+                ),
+                ("org", conn.and_then(|c| c.org.as_deref()).map(String::from)),
+            ]
+            .into_iter()
+            .filter_map(|(key, value)| value.map(|v| (key, v)))
+            .fold(
+                Evidence::new(SRC, format!("IP geolocation for {}", target.value))
+                    .with_attr("latitude", lat.to_string())
+                    .with_attr("longitude", lon.to_string())
+                    .with_attr("source", "ipwho.is"),
+                |ev, (key, v)| ev.with_attr(key, v),
+            );
 
             e.add_evidence(ev);
             result.push(e);
@@ -213,13 +206,16 @@ impl Module for IpWhois {
             && !org.is_empty()
         {
             let mut e = Entity::new(EntityKind::Organisation, org, 0.60, &ctx.scan_id);
-            let mut ev = Evidence::new(SRC, format!("IP org for {}", target.value));
-            if let Some(asn) = conn.asn_num {
-                ev = ev.with_attr("asn", format!("AS{asn}"));
-            }
-            if let Some(isp) = conn.isp.as_deref() {
-                ev = ev.with_attr("isp", isp);
-            }
+            let ev = [
+                ("asn", conn.asn_num.map(|a| format!("AS{a}"))),
+                ("isp", conn.isp.as_deref().map(String::from)),
+            ]
+            .into_iter()
+            .filter_map(|(key, value)| value.map(|v| (key, v)))
+            .fold(
+                Evidence::new(SRC, format!("IP org for {}", target.value)),
+                |ev, (key, v)| ev.with_attr(key, v),
+            );
             e.add_evidence(ev);
             result.push(e);
         }
