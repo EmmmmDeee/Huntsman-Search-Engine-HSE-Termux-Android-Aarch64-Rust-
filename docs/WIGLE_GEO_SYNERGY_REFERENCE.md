@@ -121,10 +121,13 @@ Consequences that the design **must** obey:
   ```
   No key. Returns lot/plan attributes. **Verify the exact `outFields` names against the live `/4`
   layer metadata before coding.**
-- **Why it's new:** `au_property` is **name-keyed** (`full_name`); this is a **coordinate-keyed**
-  lot/plan lookup — a different capability. A new `qld_cadastre` module accepting `Coordinates`
-  (gated on AU/QLD), attaching lot/plan as `Evidence`/tags on the `Coordinates` (or emitting an
-  enriched `Address`), is reasonable and keyless.
+- **Why it's distinct:** `au_property` is **name-keyed** (`full_name`); this is a **coordinate-keyed**
+  lot/plan lookup — a different capability.
+- **Status: shipped** as `src/modules/qld_cadastre.rs` (priority 18, free, `Geo`). Accepts
+  `Coordinates`, gates on `au_state_for_coords == QLD` (no network off-state), and emits an enriched
+  `Coordinates` (lot/plan/locality/tenure as evidence) plus a locality `Address`. The `outFields`
+  were confirmed against the live `/4` layer: `lot, plan, lotplan, locality, shire_name, tenure,
+  parcel_typ`.
 
 ---
 
@@ -149,7 +152,7 @@ MacAddress (BSSID)
                                    │
 Coordinates ───────────────────────┤
   ├─ geocode / photon ────────────► Address              (EXISTING — Nominatim/Photon)
-  ├─ [new] qld_cadastre (QLD) ────► Address + lot/plan Evidence   (verified ArcGIS layer 4)
+  ├─ qld_cadastre (QLD) [SHIPPED] ► Coordinates + Address + lot/plan Evidence  (ArcGIS layer 4)
   └─ [new] acma_rrl sidecar ──────► Organisation + AbnAcn
                                       └─ abn_lookup ─────► Organisation / Address  (EXISTING)
 
@@ -170,7 +173,7 @@ recorded as **competing evidence on the entity** — never averaged, never an in
 | Component | Type | Input → Output | Endpoint (verified) | Key |
 |---|---|---|---|---|
 | OpenCelliD enrichment | **inside `cell_intel`** | cell id → `Coordinates` | `opencellid.org/cell/get?…&format=json` (`range` field) | `HUNTSMAN_OPENCELLID_KEY` |
-| `qld_cadastre` | new module | `Coordinates(QLD)` → `Address` + lot/plan Evidence | `spatial-gis.information.qld.gov.au …/MapServer/4/query` | none |
+| `qld_cadastre` | **shipped** ✓ | `Coordinates(QLD)` → `Coordinates` + `Address` + lot/plan Evidence | `spatial-gis.information.qld.gov.au …/MapServer/4/query` | none |
 | `acma_rrl` | new sidecar/module | `Coordinates` → `Organisation` + `AbnAcn` | offline SQLite from `spectra_rrl.zip` | none |
 | ~~`reverse_geocode`~~ | **not needed** | — | already `geocode`/`photon` | — |
 | ~~`cell_geo`~~ | **not viable** | — | cell ids aren't a `TargetKind` (fold into `cell_intel`) | — |

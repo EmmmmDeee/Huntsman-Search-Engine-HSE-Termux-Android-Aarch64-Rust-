@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (112 modules: 87 free · 20 key-gated · 5 paid)
+## Catalogue (113 modules: 88 free · 20 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -153,7 +153,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `cloud_storage` | domain, organisation | free | no | 25 | url |
 | `web_crawler` | domain, url | free | no | 20 | email, url, domain, phone, api_key |
 
-### geo (18)
+### geo (19)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -169,6 +169,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `geocode` | coordinates, address | free | no | 21 | coordinates, address |
 | `photon` | coordinates, address | free | no | 20 | coordinates, address |
 | `wigle` | coordinates, mac_address | key_gated | no | 18 | coordinates, address, mac_address, organisation |
+| `qld_cadastre` | coordinates | free | no | 18 | coordinates, address |
 | `mylnikov` | mac_address | free | no | 17 | coordinates |
 | `overpass` | coordinates | free | no | 15 | coordinates |
 | `social_location` | — | free | no | 15 | address |

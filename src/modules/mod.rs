@@ -86,6 +86,7 @@ pub mod portscan;
 pub mod proxycurl;
 pub mod psbdmp;
 pub mod pwned_passwords;
+pub mod qld_cadastre;
 pub mod qld_unclaimed;
 pub mod rdap_domain;
 pub mod reddit_user;
@@ -271,6 +272,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(mls::Mls),
         Arc::new(exif_geo::ExifGeo),
         Arc::new(overpass::Overpass),
+        Arc::new(qld_cadastre::QldCadastre),
         Arc::new(sunrise_sunset::SunriseSunset),
         // Geolocation enrichment (passive, zero-API)
         Arc::new(geo_domain_classifier::GeoDomainClassifier),
