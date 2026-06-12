@@ -90,16 +90,21 @@ impl Module for CertIntel {
         if target.kind == TargetKind::Domain {
             let ct_url = format!("https://crt.sh/?q=%.{domain}&output=json");
             if let Ok(entries) = fetch_json::<Vec<CrtEntry>>(&ctx.http, SRC, &ct_url).await {
-                for entry in &entries {
-                    for name in entry.name_value.split('\n') {
-                        let name = name.trim().trim_start_matches("*.").to_lowercase();
-                        if name.is_empty() || !name.contains('.') {
-                            continue;
-                        }
-                        if name == parent {
-                            continue;
-                        }
-                        if seen_subs.insert(name.clone()) {
+                result.extend(
+                    entries
+                        .iter()
+                        .flat_map(|entry| {
+                            entry.name_value.split('\n').map(move |name| (entry, name))
+                        })
+                        .filter_map(|(entry, name)| {
+                            let name = name.trim().trim_start_matches("*.").to_lowercase();
+                            if name.is_empty()
+                                || !name.contains('.')
+                                || name == parent
+                                || !seen_subs.insert(name.clone())
+                            {
+                                return None;
+                            }
                             let mut e = Entity::new(EntityKind::Domain, &name, 0.88, &ctx.scan_id);
                             e.tag(tags::CT_LOG);
                             e.add_evidence(
@@ -122,10 +127,9 @@ impl Module for CertIntel {
                                     )
                                     .with_attr("parent_domain", domain),
                             );
-                            result.push(e);
-                        }
-                    }
-                }
+                            Some(e)
+                        }),
+                );
             }
         } // end CT-log search (domain-only)
 
@@ -198,25 +202,25 @@ fn parse_certificate(
         ev.attributes.insert("sans".into(), san_display.join(", "));
 
         let target_lower = target_domain.to_lowercase();
-        for san in &sans {
+        result.extend(sans.iter().filter_map(|san| {
             let san_lower = san.to_lowercase();
             let is_sub = crate::util::domains::is_proper_subdomain_of(&san_lower, &target_lower)
                 && !san_lower.starts_with("*.");
-
-            if is_sub && seen_subs.insert(san_lower.clone()) {
-                let mut sub = Entity::new(EntityKind::Domain, &san_lower, 0.85, scan_id);
-                sub.tag(tags::SUBDOMAIN);
-                sub.tag("tls-san");
-                sub.add_evidence(
-                    Evidence::new(
-                        "cert_intel",
-                        format!("TLS SAN on {target_domain} certificate"),
-                    )
-                    .with_attr("parent_domain", target_domain),
-                );
-                result.push(sub);
+            if !is_sub || !seen_subs.insert(san_lower.clone()) {
+                return None;
             }
-        }
+            let mut sub = Entity::new(EntityKind::Domain, &san_lower, 0.85, scan_id);
+            sub.tag(tags::SUBDOMAIN);
+            sub.tag("tls-san");
+            sub.add_evidence(
+                Evidence::new(
+                    "cert_intel",
+                    format!("TLS SAN on {target_domain} certificate"),
+                )
+                .with_attr("parent_domain", target_domain),
+            );
+            Some(sub)
+        }));
 
         if san_count > 10 {
             entity.tag("multi-san");
