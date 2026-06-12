@@ -116,18 +116,22 @@ impl Module for HackerNews {
         // The confirmed-on-HN username, carrying account metadata as evidence.
         let mut u = Entity::new(EntityKind::Username, &user.id, 0.90, &ctx.scan_id);
         u.tag("hacker-news");
-        let mut ev = Evidence::new(SRC, format!("Hacker News account '{}'", user.id)).with_attr(
-            "profile_url",
-            format!("https://news.ycombinator.com/user?id={}", user.id),
-        );
-        if let Some(k) = user.karma {
-            ev = ev.with_attr("karma", k.to_string());
-        }
-        if let Some(c) = user.created {
-            ev = ev.with_attr("created_unix", c.to_string());
-        }
         let submissions = user.submitted.as_ref().map_or(0, Vec::len);
-        ev = ev.with_attr("submissions", submissions.to_string());
+        let ev = [
+            ("karma", user.karma.map(|k| k.to_string())),
+            ("created_unix", user.created.map(|c| c.to_string())),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(
+            Evidence::new(SRC, format!("Hacker News account '{}'", user.id))
+                .with_attr(
+                    "profile_url",
+                    format!("https://news.ycombinator.com/user?id={}", user.id),
+                )
+                .with_attr("submissions", submissions.to_string()),
+            |ev, (key, v)| ev.with_attr(key, v),
+        );
         u.add_evidence(ev);
         result.push(u);
 
