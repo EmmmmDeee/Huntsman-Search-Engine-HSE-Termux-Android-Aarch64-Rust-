@@ -185,6 +185,9 @@ pub(in crate::modules::search_engines) fn known_city_coords(addr: &str) -> Optio
         ("logan", -27.6389, 153.1092),
         ("springfield", -27.6667, 152.9167),
         ("surfers paradise", -28.0029, 153.4300),
+        ("broadbeach", -28.0264, 153.4307),
+        ("robina", -28.0744, 153.3842),
+        ("coolangatta", -28.1667, 153.5333),
         ("nerang", -27.9897, 153.3372),
         ("bundaberg", -24.8661, 152.3489),
         ("hervey bay", -25.2881, 152.8411),
@@ -196,6 +199,59 @@ pub(in crate::modules::search_engines) fn known_city_coords(addr: &str) -> Optio
         ("dalby", -27.1833, 151.2667),
         ("kingaroy", -26.5400, 151.8400),
         ("stanthorpe", -28.6567, 151.9333),
+        ("goondiwindi", -28.5500, 150.3000),
+        ("chinchilla", -26.7333, 150.6333),
+        ("morayfield", -27.1167, 152.9667),
+        ("burpengary", -27.1667, 152.9667),
+        ("narangba", -27.2000, 152.9667),
+        ("kallangur", -27.2667, 152.9833),
+        ("petrie", -27.2667, 152.9833),
+        ("bracken ridge", -27.3333, 153.0333),
+        ("sandgate", -27.3239, 153.0672),
+        ("shorncliffe", -27.3300, 153.0800),
+        ("deagon", -27.3500, 153.0667),
+        ("fortitude valley", -27.4570, 153.0320),
+        ("new farm", -27.4661, 153.0510),
+        ("teneriffe", -27.4556, 153.0444),
+        ("woolloongabba", -27.4939, 153.0333),
+        ("south brisbane", -27.4800, 153.0200),
+        ("west end", -27.4800, 153.0133),
+        ("kangaroo point", -27.4833, 153.0400),
+        ("spring hill", -27.4600, 153.0233),
+        ("paddington", -27.4600, 152.9900),
+        ("milton", -27.4667, 152.9833),
+        ("toowong", -27.4833, 152.9833),
+        ("indooroopilly", -27.5000, 152.9667),
+        ("st lucia", -27.4986, 153.0036),
+        ("taringa", -27.5000, 152.9833),
+        ("beenleigh", -27.7167, 153.2000),
+        ("capalaba", -27.5167, 153.2000),
+        ("cleveland", -27.5333, 153.2667),
+        ("wynnum", -27.4333, 153.1667),
+        ("tweed heads", -28.1781, 153.5506),
+        ("withcott", -27.5667, 152.2167),
+        ("caboolture south", -27.1167, 152.9667),
+        // NT
+        ("alice springs", -23.6980, 133.8807),
+        ("katherine", -14.4650, 132.2635),
+        ("nhulunbuy", -12.1811, 136.7756),
+        // SA
+        ("mount gambier", -37.8307, 140.7828),
+        ("whyalla", -33.0350, 137.5667),
+        ("port augusta", -32.4939, 137.7650),
+        ("port pirie", -33.1858, 138.0178),
+        ("victor harbor", -35.5572, 138.6172),
+        // WA
+        ("fremantle", -32.0569, 115.7439),
+        ("mandurah", -32.5264, 115.7239),
+        ("bunbury", -33.3258, 115.6397),
+        ("albany", -35.0269, 117.8836),
+        ("geraldton", -28.7744, 114.6153),
+        ("kalgoorlie", -30.7490, 121.4658),
+        // TAS
+        ("launceston", -41.4388, 147.1347),
+        ("devonport", -41.1769, 146.3506),
+        ("burnie", -41.0553, 145.9058),
         // NSW regional
         ("newcastle", -32.9283, 151.7817),
         ("wollongong", -34.4278, 150.8931),
@@ -596,6 +652,18 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
                     "NSW"
                 } else if combined.contains("vic") || combined.contains("victoria") {
                     "VIC"
+                } else if combined.contains(" wa ") || combined.contains("western australia") {
+                    "WA"
+                } else if combined.contains(" sa ") || combined.contains("south australia") {
+                    "SA"
+                } else if combined.contains("tas") || combined.contains("tasmania") {
+                    "TAS"
+                } else if combined.contains(" nt ") || combined.contains("northern territory") {
+                    "NT"
+                } else if combined.contains("act")
+                    || combined.contains("australian capital territory")
+                {
+                    "ACT"
                 } else {
                     "Australia"
                 };
@@ -624,8 +692,11 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
                 let pc = &s[i..i + 4];
                 let first = pc.as_bytes()[0];
                 // AU postcodes: 2xxx (NSW/ACT), 3xxx (VIC), 4xxx (QLD),
-                // 5xxx (SA), 6xxx (WA), 7xxx (TAS), 08xx (NT)
-                if (b'2'..=b'7').contains(&first) {
+                // 5xxx (SA), 6xxx (WA), 7xxx (TAS), 08xx (NT).
+                // NT postcodes start with '0' and must be 08xx or 09xx.
+                let is_au_postcode = (b'2'..=b'7').contains(&first)
+                    || (first == b'0' && pc.len() == 4 && matches!(pc.as_bytes()[1], b'8' | b'9'));
+                if is_au_postcode {
                     return Some(pc.to_string());
                 }
             }

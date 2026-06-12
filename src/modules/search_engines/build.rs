@@ -225,13 +225,31 @@ pub(super) fn build_entities(
             }
         }
 
-        // Extract addresses from snippet text (geolocation pivot)
+        // Extract addresses from snippet text (geolocation pivot).
+        // Confidence is tiered by content richness:
+        //   City + State + Postcode → 0.55 (well-localised, AU-specific)
+        //   City + State only       → 0.45 (standard locality mention)
+        //   AU place contextual     → 0.42 (context-inferred, no explicit state)
+        // Corroboration cap for postcode-only / bare addresses is 0.60 to prevent
+        // pure suburb mentions reaching Probable (0.75+) via repetition alone.
         for addr in extract_addresses_from_text(&combined_text) {
             let addr_key = format!("@addr:{}", normalise_address_key(&addr));
+            let has_postcode = addr
+                .split_whitespace()
+                .last()
+                .is_some_and(|t| t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()));
+            let base_conf = if has_postcode { 0.55 } else { 0.45 };
+            // Cap for multi-source merge: postcode-qualified can reach 0.75;
+            // bare city+state is capped lower at 0.65 to prevent suburb noise
+            // from inflating to Probable via pure repetition.
+            let corr_cap = if has_postcode { 0.75 } else { 0.65 };
             if seen_domains.insert(addr_key.clone()) {
-                let mut e = Entity::new(EntityKind::Address, &addr, 0.45, scan_id);
+                let mut e = Entity::new(EntityKind::Address, &addr, base_conf, scan_id);
                 e.tag("search-discovered");
                 e.tag(tags::WEB_SCRAPED);
+                if has_postcode {
+                    e.tag("au-postcode");
+                }
                 e.add_evidence(
                     Evidence::new(
                         "search_engines",
@@ -247,12 +265,14 @@ pub(super) fn build_entities(
                 );
                 result.push(e);
             } else {
-                // Address seen before — boost via merge (corroboration increases)
+                // Address seen before — boost via merge (corroboration increases).
+                // Use the normalised key for lookup so "Gatton, QLD" and
+                // "Gatton, Queensland" merge rather than forking into two entities.
                 let norm = normalise_address_key(&addr);
                 if let Some(existing) = result.entities.iter_mut().find(|e| {
                     e.kind == EntityKind::Address && normalise_address_key(&e.value) == norm
                 }) {
-                    existing.confidence = (existing.confidence + 0.12).min(0.80);
+                    existing.confidence = (existing.confidence + 0.10).min(corr_cap);
                     existing.corroboration = existing.corroboration.saturating_add(1);
                     existing.add_evidence(
                         Evidence::new(
@@ -421,6 +441,10 @@ pub(super) fn build_entities(
             .entities
             .iter()
             .filter(|e| {
+                // All extracted addresses qualify for inline geocoding — the
+                // minimum base confidence is now 0.42 so no address falls below
+                // this gate. The corroboration bypass (>= 2) is kept for any
+                // edge-case address emitted at a lower confidence by other modules.
                 e.kind == EntityKind::Address && (e.confidence >= 0.40 || e.corroboration >= 2)
             })
             .map(|e| (e.value.clone(), e.confidence, e.corroboration))
@@ -429,8 +453,14 @@ pub(super) fn build_entities(
             if let Some((lat, lon)) = known_city_coords(addr) {
                 let coords = format!("{lat:.4},{lon:.4}");
                 if seen_coords.insert(coords.clone()) {
-                    let corr_boost = (*corr as f64 - 1.0).max(0.0) * 0.08;
-                    let geo_conf = ((conf * 0.82) + corr_boost).min(0.75);
+                    // Floor at 0.55: a city match from a search snippet is city-
+                    // level precision, comparable to a forward geocode (geocode.rs
+                    // emits 0.70 for AU). We use 0.55 as the minimum (not 0.45×0.82
+                    // which could sink to 0.37) with a corroboration lift and a cap
+                    // at 0.72 (just below the Verified 0.75 threshold — it remains
+                    // Probable until a more-authoritative source corroborates).
+                    let corr_boost = (*corr as f64 - 1.0).max(0.0) * 0.05;
+                    let geo_conf = (conf.max(0.55) + corr_boost).min(0.72);
                     let mut ce = Entity::new(EntityKind::Coordinates, &coords, geo_conf, scan_id);
                     ce.tag("geoint");
                     ce.tag("search-geocoded");
