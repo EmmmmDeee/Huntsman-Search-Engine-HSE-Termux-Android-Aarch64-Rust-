@@ -145,23 +145,22 @@ impl Module for Ip2Location {
                 ce.tag(format!("au-state:{state}"));
                 ce.tag("country:AU");
             }
-            let mut ev = Evidence::new(
-                SRC,
-                format!("IP geolocation for {ip}: {city}, {region}, {country}"),
-            )
-            .with_attr("ip", ip);
-            if !city.is_empty() {
-                ev = ev.with_attr("city", city);
-            }
-            if !region.is_empty() {
-                ev = ev.with_attr("region", region);
-            }
-            if !country.is_empty() {
-                ev = ev.with_attr("country", country);
-            }
-            if !zip.is_empty() {
-                ev = ev.with_attr("postcode", zip);
-            }
+            let ev = [
+                ("city", (!city.is_empty()).then_some(city)),
+                ("region", (!region.is_empty()).then_some(region)),
+                ("country", (!country.is_empty()).then_some(country)),
+                ("postcode", (!zip.is_empty()).then_some(zip)),
+            ]
+            .into_iter()
+            .filter_map(|(key, value)| value.map(|v| (key, v)))
+            .fold(
+                Evidence::new(
+                    SRC,
+                    format!("IP geolocation for {ip}: {city}, {region}, {country}"),
+                )
+                .with_attr("ip", ip),
+                |ev, (key, v)| ev.with_attr(key, v),
+            );
             ce.add_evidence(ev);
             result.push(ce);
         }
