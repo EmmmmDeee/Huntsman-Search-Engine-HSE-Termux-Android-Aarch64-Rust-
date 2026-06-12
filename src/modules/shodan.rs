@@ -234,9 +234,9 @@ impl Shodan {
         }
         if !body.tags.is_empty() {
             ev = ev.with_attr("tags", body.tags.join(","));
-            for t in &body.tags {
-                entity.tag(format!("shodan:{t}"));
-            }
+            body.tags
+                .iter()
+                .for_each(|t| entity.tag(format!("shodan:{t}")));
         }
         if let Some(canonical_ip) = body.ip.as_deref() {
             ev = ev.with_attr("ip", canonical_ip);
@@ -246,29 +246,31 @@ impl Shodan {
 
         // Emit Domain entities for observed PTR / SAN hostnames.
         const MAX_HOSTS: usize = 30;
-        for host in body.hostnames.iter().take(MAX_HOSTS) {
-            let host = host.trim().trim_end_matches('.');
-            if host.is_empty() {
-                continue;
-            }
-            if host.parse::<std::net::IpAddr>().is_ok() {
-                continue;
-            }
-            if !host.contains('.') || host.contains(char::is_whitespace) {
-                continue;
-            }
-            let mut d = Entity::new(EntityKind::Domain, host, 0.80, &ctx.scan_id);
-            d.tag("shodan-internetdb");
-            d.tag("ptr");
-            d.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Hostname associated with {ip} per Shodan InternetDB"),
-                )
-                .with_attr("ip", ip),
-            );
-            result.push(d);
-        }
+        result.extend(
+            body.hostnames
+                .iter()
+                .take(MAX_HOSTS)
+                .map(|host| host.trim().trim_end_matches('.'))
+                .filter(|host| {
+                    !host.is_empty()
+                        && host.parse::<std::net::IpAddr>().is_err()
+                        && host.contains('.')
+                        && !host.contains(char::is_whitespace)
+                })
+                .map(|host| {
+                    let mut d = Entity::new(EntityKind::Domain, host, 0.80, &ctx.scan_id);
+                    d.tag("shodan-internetdb");
+                    d.tag("ptr");
+                    d.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!("Hostname associated with {ip} per Shodan InternetDB"),
+                        )
+                        .with_attr("ip", ip),
+                    );
+                    d
+                }),
+        );
     }
 
     /// Query the paid Shodan host API.
@@ -305,28 +307,21 @@ impl Shodan {
             entity.tag(format!("country:{}", c.to_uppercase()));
         }
 
-        let mut ev = Evidence::new(SRC, format!("Shodan host record for {ip}"));
-        if let Some(o) = body.org.as_deref() {
-            ev = ev.with_attr("org", o);
-        }
-        if let Some(i) = body.isp.as_deref() {
-            ev = ev.with_attr("isp", i);
-        }
-        if let Some(a) = body.asn.as_deref() {
-            ev = ev.with_attr("asn", a);
-        }
-        if let Some(c) = body.country_name.as_deref() {
-            ev = ev.with_attr("country", c);
-        }
-        if let Some(c) = body.country_code.as_deref() {
-            ev = ev.with_attr("country_code", c);
-        }
-        if let Some(o) = body.os.as_deref() {
-            ev = ev.with_attr("os", o);
-        }
-        if let Some(t) = body.last_update.as_deref() {
-            ev = ev.with_attr("last_update", t);
-        }
+        let mut ev = [
+            ("org", body.org.as_deref()),
+            ("isp", body.isp.as_deref()),
+            ("asn", body.asn.as_deref()),
+            ("country", body.country_name.as_deref()),
+            ("country_code", body.country_code.as_deref()),
+            ("os", body.os.as_deref()),
+            ("last_update", body.last_update.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(
+            Evidence::new(SRC, format!("Shodan host record for {ip}")),
+            |ev, (key, v)| ev.with_attr(key, v),
+        );
         if !body.ports.is_empty() {
             let mut ports = body.ports;
             ports.sort_unstable();
@@ -359,18 +354,20 @@ impl Shodan {
         result.push(entity);
 
         // Each PTR hostname becomes a Domain entity.
-        for host in body.hostnames {
-            if host.is_empty() {
-                continue;
-            }
-            let mut d = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
-            d.tag("shodan");
-            d.tag(tags::PTR);
-            d.add_evidence(
-                Evidence::new(SRC, format!("Hostname known for {ip}")).with_attr("ip", ip),
-            );
-            result.push(d);
-        }
+        result.extend(
+            body.hostnames
+                .into_iter()
+                .filter(|host| !host.is_empty())
+                .map(|host| {
+                    let mut d = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
+                    d.tag("shodan");
+                    d.tag(tags::PTR);
+                    d.add_evidence(
+                        Evidence::new(SRC, format!("Hostname known for {ip}")).with_attr("ip", ip),
+                    );
+                    d
+                }),
+        );
 
         if let Some(org) = &body.org
             && !org.is_empty()
