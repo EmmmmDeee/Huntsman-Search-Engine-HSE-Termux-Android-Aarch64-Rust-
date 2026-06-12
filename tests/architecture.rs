@@ -128,6 +128,10 @@ fn core_does_not_import_util_directly() {
                 // the target auto-detector to strip separators from a candidate
                 // phone/registry number. No state, no I/O, no upward deps.
                 && !line.contains("util::str_util::ascii_digits")
+                // Pure, dependency-free offline city→coordinate lookup table
+                // (no I/O, no network). The engine's address_to_coords_pass uses
+                // it to convert Address entities into Coordinates for geo correlation.
+                && !line.contains("util::city_coords::city_coords")
                 && !line.contains("modules::wigle::reset_budget")
                 && !line.contains("modules::see_know::reset_budget")
                 && !line.contains("modules::oathnet_pro::key_harvest::identify_api_key")

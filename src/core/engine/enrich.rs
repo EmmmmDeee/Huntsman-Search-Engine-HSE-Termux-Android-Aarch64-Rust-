@@ -136,6 +136,91 @@ pub(super) fn seed_anchor_entity(
     Some(e)
 }
 
+/// Convert confirmed Address entities to Coordinates via offline city lookup,
+/// then return the new entities so the caller can merge them into the entity map.
+///
+/// This is the architectural bridge that lets AU-052/AU-053 consume location
+/// signals from every module that emits an Address (social_location,
+/// email_header_geo, abn_lookup, search_engines, qld_unclaimed, …), not just the
+/// dedicated geocoding modules.
+///
+/// Gate: confidence ≥ 0.45 (all PROBABLE + postcode-qualified CANDIDATE addresses)
+/// and at least one corroborating source from outside the Address itself, so a
+/// bare, unsupported address string doesn't assert a footprint. The derived
+/// Coordinates entity inherits the Address's sources and confidence (capped at
+/// 0.72 — city-centroid precision is inherently coarser than a GPS fix), and is
+/// tagged `addr-derived` so it is distinguishable from a direct geocode. An
+/// existing Coordinates uid (same `lat,lon` value) is detected by the caller via
+/// the normal merge path; we never re-emit duplicates within the same pass.
+pub(super) fn address_to_coords_pass(
+    entities: &std::collections::HashMap<String, crate::core::entity::Entity>,
+    scan_id: &str,
+) -> Vec<crate::core::entity::Entity> {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    let mut out: Vec<Entity> = Vec::new();
+    // Track coord values emitted in this pass to avoid creating two identical
+    // Coordinates from two Address entities that both name the same city.
+    let mut seen_coords: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for addr_entity in entities.values() {
+        if addr_entity.kind != EntityKind::Address {
+            continue;
+        }
+        if addr_entity.confidence < 0.45 {
+            continue;
+        }
+        // Skip if no corroborating sources recorded — a bare assertion with
+        // confidence raised purely by the seeding pass would otherwise assert a
+        // location from nothing.
+        if addr_entity.corroborating_sources().is_empty() {
+            continue;
+        }
+        let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr_entity.value) else {
+            continue;
+        };
+        let coord_val = format!("{lat:.4},{lon:.4}");
+        if !seen_coords.insert(coord_val.clone()) {
+            continue;
+        }
+        // Already have a Coordinates entity for this point?
+        let candidate_uid = Entity::new(EntityKind::Coordinates, &coord_val, 0.0, scan_id).uid;
+        if entities.contains_key(&candidate_uid) {
+            continue;
+        }
+        // Confidence: inherit address confidence but cap at 0.72 (city centroid
+        // is less precise than a GPS fix; AU-052's person-anchor gate still needs
+        // ≥0.50, so we floor there too).
+        let conf = addr_entity.confidence.clamp(0.50, 0.72);
+        let mut c = Entity::new(EntityKind::Coordinates, &coord_val, conf, scan_id);
+        c.tag("addr-derived");
+        c.tag("geoint");
+        // Propagate au-state from the address so AU-056 jurisdiction check works.
+        for tag in &addr_entity.tags {
+            if tag.starts_with("au-state:") || tag.starts_with("country:") {
+                c.tag(tag.clone());
+            }
+        }
+        // Carry originating sources: the correlator's ANCHORING_GEO_SOURCES check
+        // looks at corroborating_sources(), which reads Evidence source fields.
+        for src in addr_entity.corroborating_sources() {
+            c.add_evidence(
+                Evidence::new(
+                    src,
+                    format!(
+                        "Inline geocode of address '{}' → {coord_val}",
+                        addr_entity.value
+                    ),
+                )
+                .with_attr("addr_entity_uid", &addr_entity.uid)
+                .with_attr("addr_value", &addr_entity.value),
+            );
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Harvest any API keys embedded in an entity's value or evidence attributes into
 /// the global key pool (the force-multiplier loop: a key found in breach/leak data
 /// unlocks more modules). Best-effort and side-effecting only on the pool; the
