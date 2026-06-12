@@ -740,20 +740,23 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
         if !AU_STATES.contains(&state_seg.as_str()) {
             continue;
         }
-        let after_idx = text.find(r.as_str()).unwrap_or(0) + r.len();
-        if after_idx < text.len() {
-            // Walk the end forward to a char boundary so multi-byte
-            // UTF-8 chars cannot be split mid-codepoint.
-            let mut end = text.len().min(after_idx + 20);
-            while end < text.len() && !text.is_char_boundary(end) {
-                end += 1;
-            }
-            let snippet = &text[after_idx..end];
-            if let Some(pc) = postcode_re_like(snippet) {
-                let with_pc = format!("{r} {pc}");
-                if !addrs.contains(&with_pc) {
-                    addrs.push(with_pc);
-                }
+        // Anchor the postcode-lookahead window on where the address actually
+        // occurs. If `r` isn't a literal substring of `text` (e.g. it was
+        // normalised upstream), there's no valid position to read a trailing
+        // postcode from — skip it. The previous `text.find(r).unwrap_or(0)`
+        // fallback produced a byte index (`r.len()`) unrelated to `text`, which
+        // on a multi-byte char — an en-dash in a page title like
+        // "SOHO Galleries – Sydney Art Gallery" — sliced mid-codepoint and
+        // panicked. `char_window` clamps both ends to char boundaries.
+        let Some(found) = text.find(r.as_str()) else {
+            continue;
+        };
+        let after_idx = found + r.len();
+        let snippet = crate::util::str_util::char_window(text, after_idx, after_idx + 20);
+        if let Some(pc) = postcode_re_like(snippet) {
+            let with_pc = format!("{r} {pc}");
+            if !addrs.contains(&with_pc) {
+                addrs.push(with_pc);
             }
         }
     }
@@ -1013,4 +1016,40 @@ pub(in crate::modules::search_engines) fn extract_phones_from_text(text: &str) -
         }
     }
     phones
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_addresses_never_panics_on_multibyte_after_reconstructed_address() {
+        // Regression: the postcode-lookahead reconstructs the address as
+        // "City, State" (a ", " separator), so when the source text used
+        // different punctuation the string is NOT a literal substring and
+        // `find` returns None. The old `unwrap_or(0) + r.len()` fallback then
+        // indexed at a byte offset (18) unrelated to the text — here it lands
+        // inside the 3-byte '€', slicing mid-codepoint and panicking. The
+        // address itself is still extracted; only the (skipped) postcode
+        // lookahead differs.
+        let addrs = extract_addresses_from_text("Nundah,Queensland€xx");
+        assert!(
+            addrs.iter().any(|a| a == "Nundah, Queensland"),
+            "address still extracted, no panic: {addrs:?}"
+        );
+
+        // The real-world payload that crashed a live scan: an en-dash (U+2013)
+        // in a SOHO real-estate page title. Must not panic.
+        let _ = extract_addresses_from_text(
+            "SOHO Galleries – Sydney Art Gallery, New South Wales and beyond",
+        );
+
+        // Positive path intact: a clean address with a trailing postcode still
+        // gains the postcode-qualified variant.
+        let with_pc = extract_addresses_from_text("Lives in Gatton, QLD 4343 now");
+        assert!(
+            with_pc.iter().any(|a| a == "Gatton, QLD 4343"),
+            "postcode still attaches on clean input: {with_pc:?}"
+        );
+    }
 }
