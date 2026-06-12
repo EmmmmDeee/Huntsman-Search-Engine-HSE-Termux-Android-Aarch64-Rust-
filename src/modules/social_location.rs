@@ -183,7 +183,9 @@ fn extract_github_location(html: &str) -> Option<String> {
 
 fn extract_meta_location(html: &str) -> Option<String> {
     // Try each location <meta> name/property in turn and return the first whose
-    // `content="…"` parses to a non-empty value.
+    // `content="…"` attribute parses to a non-empty value. The content attribute
+    // is read from the whole enclosing <meta …> element, so it is found whether
+    // it precedes or follows the name/property — real pages use both orderings.
     [
         "geo.placename",
         "og:locality",
@@ -192,21 +194,24 @@ fn extract_meta_location(html: &str) -> Option<String> {
     ]
     .into_iter()
     .find_map(|tag| {
-        let pattern = "content=\"";
         let attr = format!("\"{tag}\"");
         let tag_pos = html.find(&attr)?;
-        // `tag_pos + 300` is an arbitrary byte offset into untrusted HTML; clamp
-        // to a char boundary so a multibyte character can't panic the slice.
-        let search_area = crate::util::str_util::char_window(html, tag_pos, tag_pos + 300);
-        let content_pos = search_area.find(pattern)?;
-        let start = content_pos + pattern.len();
-        let end = search_area[start..].find('"').unwrap_or(0) + start;
-        if end > start {
-            let val = &search_area[start..end];
-            (!val.is_empty()).then(|| val.to_string())
-        } else {
-            None
-        }
+        // Bound the single element: back to its opening `<`, forward to its
+        // closing `>` (capped). Both delimiters are ASCII and `char_window`
+        // clamps the forward cap to a char boundary, so slicing untrusted HTML
+        // here can never split a multibyte character.
+        let lo = html[..tag_pos].rfind('<').map_or(tag_pos, |p| p);
+        let windowed = crate::util::str_util::char_window(html, lo, tag_pos + 300);
+        let element = windowed.split('>').next().unwrap_or(windowed);
+
+        let pattern = "content=\"";
+        let start = element.find(pattern)? + pattern.len();
+        // The closing quote is required: an unterminated `content="…` has no
+        // value to extract, so skip to the next candidate tag rather than
+        // coercing a missing match into a zero-length window.
+        let rel_end = element[start..].find('"')?;
+        let val = element[start..start + rel_end].trim();
+        (!val.is_empty()).then(|| val.to_string())
     })
 }
 
@@ -231,6 +236,26 @@ mod tests {
         let html = r#"<meta name="geo.placename" content="Sydney, NSW">"#;
         let loc = extract_meta_location(html).unwrap();
         assert_eq!(loc, "Sydney, NSW");
+    }
+
+    #[test]
+    fn extract_meta_content_before_name_is_found() {
+        // The content attribute can precede the name/property; the old
+        // forward-only scan from the name attr missed this. Bounding the whole
+        // element finds it in either order.
+        let html = r#"<meta content="Brisbane, QLD" property="og:region">"#;
+        assert_eq!(extract_meta_location(html).unwrap(), "Brisbane, QLD");
+    }
+
+    #[test]
+    fn extract_meta_tolerates_multibyte_and_unterminated() {
+        // A multibyte char (é) inside the extracted value must not panic the
+        // slice, and an unterminated content="… must be skipped, not coerced
+        // to an empty string.
+        let ok = r#"<meta name="og:locality" content="Café Nundah">"#;
+        assert_eq!(extract_meta_location(ok).unwrap(), "Café Nundah");
+        let unterminated = r#"<meta name="og:locality" content="Nundah"#;
+        assert!(extract_meta_location(unterminated).is_none());
     }
 
     #[test]
