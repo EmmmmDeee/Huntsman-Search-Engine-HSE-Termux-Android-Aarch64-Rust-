@@ -70,6 +70,14 @@ impl Module for EmployerPivot {
         ModuleCategory::People
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Mining an employer site yields the org's physical address, phone and
+        // linked corporate profiles — ATT&CK Gather Victim Org Information:
+        // Determine Physical Locations (T1591.001) + Business Relationships
+        // (T1591.002), more precise than the People-category default.
+        &["T1591.001", "T1591.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::Address,
@@ -139,90 +147,107 @@ impl Module for EmployerPivot {
 
         // ── Addresses ────────────────────────────────────────────────
         let mut seen_addr: HashSet<String> = HashSet::new();
-        for addr in address_au::extract_all(&all_text) {
-            let canon = canonical_address(&addr);
-            if !seen_addr.insert(canon.clone()) {
-                continue;
-            }
-            let mut e = Entity::new(EntityKind::Address, &canon, addr.confidence(), &ctx.scan_id);
-            e.tag("business");
-            e.tag("employer-pivot");
-            e.tag("country:AU");
-            e.tag(format!("state:{}", addr.state));
-            e.tag(format!("postcode:{}", addr.postcode));
-            let mut ev = Evidence::new(
-                SRC,
-                format!("Business address extracted from {} contact pages", domain),
-            )
-            .with_attr("addr_country", "Australia")
-            .with_attr("addr_iso", "AU")
-            .with_attr("addr_state", &addr.state)
-            .with_attr("addr_city", &addr.suburb)
-            .with_attr("addr_postal", &addr.postcode)
-            .with_attr("street_number", &addr.street_number)
-            .with_attr("street", &addr.street);
-            if let Some(lvl) = addr.level.as_deref() {
-                ev = ev.with_attr("level", lvl);
-            }
-            if let Some(unit) = addr.unit.as_deref() {
-                ev = ev.with_attr("unit", unit);
-            }
-            ev = ev.with_attr("employer_domain", &domain);
-            ev = ev.with_attr("source_urls", visited.join(" | "));
-            e.add_evidence(ev);
-            result.push(e);
-        }
+        result.extend(
+            address_au::extract_all(&all_text)
+                .into_iter()
+                .filter_map(|addr| {
+                    let canon = canonical_address(&addr);
+                    if !seen_addr.insert(canon.clone()) {
+                        return None;
+                    }
+                    let mut e =
+                        Entity::new(EntityKind::Address, &canon, addr.confidence(), &ctx.scan_id);
+                    e.tag("business");
+                    e.tag("employer-pivot");
+                    e.tag("country:AU");
+                    e.tag(format!("state:{}", addr.state));
+                    e.tag(format!("postcode:{}", addr.postcode));
+                    let mut ev = Evidence::new(
+                        SRC,
+                        format!("Business address extracted from {} contact pages", domain),
+                    )
+                    .with_attr("addr_country", "Australia")
+                    .with_attr("addr_iso", "AU")
+                    .with_attr("addr_state", &addr.state)
+                    .with_attr("addr_city", &addr.suburb)
+                    .with_attr("addr_postal", &addr.postcode)
+                    .with_attr("street_number", &addr.street_number)
+                    .with_attr("street", &addr.street);
+                    if let Some(lvl) = addr.level.as_deref() {
+                        ev = ev.with_attr("level", lvl);
+                    }
+                    if let Some(unit) = addr.unit.as_deref() {
+                        ev = ev.with_attr("unit", unit);
+                    }
+                    ev = ev.with_attr("employer_domain", &domain);
+                    ev = ev.with_attr("source_urls", visited.join(" | "));
+                    e.add_evidence(ev);
+                    Some(e)
+                }),
+        );
 
         // ── Phones ──────────────────────────────────────────────────
         let mut seen_phone: HashSet<String> = HashSet::new();
-        for ph in address_au::extract_phones(&all_text) {
-            if !seen_phone.insert(ph.clone()) {
-                continue;
-            }
-            let mut e = Entity::new(EntityKind::Phone, &ph, 0.65, &ctx.scan_id);
-            e.tag("business");
-            e.tag("employer-pivot");
-            e.tag("country:AU");
-            e.add_evidence(
-                Evidence::new(SRC, format!("Business phone from {}", domain))
-                    .with_attr("employer_domain", &domain)
-                    .with_attr("e164", &ph),
-            );
-            result.push(e);
-        }
+        result.extend(
+            address_au::extract_phones(&all_text)
+                .into_iter()
+                .filter_map(|ph| {
+                    if !seen_phone.insert(ph.clone()) {
+                        return None;
+                    }
+                    let mut e = Entity::new(EntityKind::Phone, &ph, 0.65, &ctx.scan_id);
+                    e.tag("business");
+                    e.tag("employer-pivot");
+                    e.tag("country:AU");
+                    e.add_evidence(
+                        Evidence::new(SRC, format!("Business phone from {}", domain))
+                            .with_attr("employer_domain", &domain)
+                            .with_attr("e164", &ph),
+                    );
+                    Some(e)
+                }),
+        );
 
         // ── Same-domain emails ──────────────────────────────────────
         let mut seen_email: HashSet<String> = HashSet::new();
-        for em in extract_emails(&all_text, &domain) {
-            if !seen_email.insert(em.clone()) {
-                continue;
-            }
-            let mut e = Entity::new(EntityKind::Email, &em, 0.70, &ctx.scan_id);
-            e.tag("business");
-            e.tag("employer-pivot");
-            e.add_evidence(
-                Evidence::new(SRC, format!("Employer email from {} site", domain))
-                    .with_attr("employer_domain", &domain),
-            );
-            result.push(e);
-        }
+        result.extend(
+            extract_emails(&all_text, &domain)
+                .into_iter()
+                .filter_map(|em| {
+                    if !seen_email.insert(em.clone()) {
+                        return None;
+                    }
+                    let mut e = Entity::new(EntityKind::Email, &em, 0.70, &ctx.scan_id);
+                    e.tag("business");
+                    e.tag("employer-pivot");
+                    e.add_evidence(
+                        Evidence::new(SRC, format!("Employer email from {} site", domain))
+                            .with_attr("employer_domain", &domain),
+                    );
+                    Some(e)
+                }),
+        );
 
         // ── Linked profile URLs ─────────────────────────────────────
         let mut seen_url: HashSet<String> = HashSet::new();
-        for url in extract_profile_urls(&all_text) {
-            if !seen_url.insert(url.clone()) {
-                continue;
-            }
-            let mut e = Entity::new(EntityKind::Url, &url, 0.55, &ctx.scan_id);
-            e.tag("employer-pivot");
-            e.tag("social-profile");
-            e.add_evidence(
-                Evidence::new(SRC, format!("Linked profile from {} site", domain))
-                    .with_attr("employer_domain", &domain)
-                    .with_attr("profile_url", &url),
-            );
-            result.push(e);
-        }
+        result.extend(
+            extract_profile_urls(&all_text)
+                .into_iter()
+                .filter_map(|url| {
+                    if !seen_url.insert(url.clone()) {
+                        return None;
+                    }
+                    let mut e = Entity::new(EntityKind::Url, &url, 0.55, &ctx.scan_id);
+                    e.tag("employer-pivot");
+                    e.tag("social-profile");
+                    e.add_evidence(
+                        Evidence::new(SRC, format!("Linked profile from {} site", domain))
+                            .with_attr("employer_domain", &domain)
+                            .with_attr("profile_url", &url),
+                    );
+                    Some(e)
+                }),
+        );
 
         Ok(result)
     }
@@ -240,16 +265,13 @@ fn extract_emails(text: &str, employer_domain: &str) -> Vec<String> {
     static R: OnceLock<Regex> = OnceLock::new();
     let re =
         R.get_or_init(|| Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}").unwrap());
-    let mut out = Vec::new();
-    for m in re.find_iter(text) {
-        let s = m.as_str().to_lowercase();
-        if let Some((_, d)) = s.rsplit_once('@')
-            && d == employer_domain
-        {
-            out.push(s);
-        }
-    }
-    out
+    re.find_iter(text)
+        .map(|m| m.as_str().to_lowercase())
+        .filter(|s| {
+            s.rsplit_once('@')
+                .is_some_and(|(_, d)| d == employer_domain)
+        })
+        .collect()
 }
 
 fn extract_profile_urls(text: &str) -> Vec<String> {
