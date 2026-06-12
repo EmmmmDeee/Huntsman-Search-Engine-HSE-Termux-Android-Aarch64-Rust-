@@ -141,38 +141,33 @@ impl Module for IpQuery {
 
         let mut ip_entity = target.to_entity(0.80, &ctx.scan_id);
         ip_entity.tag("ipquery");
-        if risk.and_then(|r| r.is_vpn) == Some(true) {
-            ip_entity.tag(tags::VPN);
-        }
-        if risk.and_then(|r| r.is_tor) == Some(true) {
-            ip_entity.tag(tags::TOR_EXIT);
-        }
-        if risk.and_then(|r| r.is_proxy) == Some(true) {
-            ip_entity.tag(tags::PROXY);
-        }
-        if risk.and_then(|r| r.is_mobile) == Some(true) {
-            ip_entity.tag("mobile");
-        }
-        if risk.and_then(|r| r.is_datacenter) == Some(true) {
-            ip_entity.tag("hosting");
-        }
+        [
+            (risk.and_then(|r| r.is_vpn), tags::VPN),
+            (risk.and_then(|r| r.is_tor), tags::TOR_EXIT),
+            (risk.and_then(|r| r.is_proxy), tags::PROXY),
+            (risk.and_then(|r| r.is_mobile), "mobile"),
+            (risk.and_then(|r| r.is_datacenter), "hosting"),
+        ]
+        .into_iter()
+        .filter(|(flag, _)| *flag == Some(true))
+        .for_each(|(_, tag)| ip_entity.tag(tag));
         if risk_score >= 70 {
             ip_entity.tag("high-risk");
         }
 
-        let mut ev = Evidence::new(SRC, format!("IPQuery risk assessment for {ip}"))
-            .with_attr("risk_score", risk_score.to_string());
-        if let Some(isp) = data.isp.as_ref() {
-            if let Some(v) = isp.isp.as_deref() {
-                ev = ev.with_attr("isp", v);
-            }
-            if let Some(v) = isp.org.as_deref() {
-                ev = ev.with_attr("org", v);
-            }
-            if let Some(v) = isp.asn.as_deref() {
-                ev = ev.with_attr("asn", v);
-            }
-        }
+        let isp = data.isp.as_ref();
+        let ev = [
+            ("isp", isp.and_then(|i| i.isp.as_deref())),
+            ("org", isp.and_then(|i| i.org.as_deref())),
+            ("asn", isp.and_then(|i| i.asn.as_deref())),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(
+            Evidence::new(SRC, format!("IPQuery risk assessment for {ip}"))
+                .with_attr("risk_score", risk_score.to_string()),
+            |ev, (key, v)| ev.with_attr(key, v),
+        );
         ip_entity.add_evidence(ev);
         result.push(ip_entity);
 
