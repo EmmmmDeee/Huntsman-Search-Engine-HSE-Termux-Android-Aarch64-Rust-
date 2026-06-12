@@ -54,6 +54,12 @@ impl Module for SocialLocation {
         KINDS
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // T1591.001 — Determine Physical Locations (primary geo signal)
+        // T1591.002 — Business Relationships (professional/workplace location from agent portals)
+        &["T1591.001", "T1591.002"]
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let url = target.value.trim();
@@ -68,6 +74,7 @@ impl Module for SocialLocation {
             .map_err(|e| Error::module(SRC, e.to_string()))?;
 
         let host = crate::util::url_util::host_from_url(url).unwrap_or_default();
+        let is_professional = is_professional_host(&host);
 
         let location = if host.contains("github.com") {
             extract_github_location(&body)
@@ -78,14 +85,32 @@ impl Module for SocialLocation {
         if let Some(loc) = location {
             let trimmed = loc.trim();
             if !trimmed.is_empty() && trimmed.len() <= 200 {
-                let mut e = Entity::new(EntityKind::Address, trimmed, 0.45, &ctx.scan_id);
+                // Professional portals carry verified workplace addresses; slightly
+                // higher confidence than a self-reported bio field.
+                let conf = if is_professional { 0.50 } else { 0.45 };
+                let mut e = Entity::new(EntityKind::Address, trimmed, conf, &ctx.scan_id);
                 e.tag("geoint");
-                e.tag("self-reported");
+                if is_professional {
+                    e.tag("professional-address");
+                    e.tag("attack:T1591.002");
+                } else {
+                    e.tag("self-reported");
+                }
                 e.tag("social-profile");
                 e.add_evidence(
-                    Evidence::new(SRC, format!("Self-reported location on {host}: {trimmed}"))
-                        .with_attr("url", url)
-                        .with_attr("platform", &host),
+                    Evidence::new(
+                        SRC,
+                        format!(
+                            "{} location on {host}: {trimmed}",
+                            if is_professional {
+                                "Professional"
+                            } else {
+                                "Self-reported"
+                            }
+                        ),
+                    )
+                    .with_attr("url", url)
+                    .with_attr("platform", &host),
                 );
                 result.push(e);
             }
@@ -95,7 +120,35 @@ impl Module for SocialLocation {
     }
 }
 
-const SUPPORTED_HOSTS: &[&str] = &["github.com", "reddit.com"];
+/// True when the host is an AU real estate / professional-profile portal whose
+/// location data reflects a workplace address rather than a personal bio field.
+fn is_professional_host(host: &str) -> bool {
+    const PROFESSIONAL: &[&str] = &[
+        "ratemyagent.com.au",
+        "homely.com.au",
+        "soho.com.au",
+        "realestate.com.au",
+        "domain.com.au",
+        "linkedin.com",
+    ];
+    PROFESSIONAL.iter().any(|h| host.contains(h))
+}
+
+/// Hosts where a self-reported or professional location can be extracted.
+///
+/// The AU real estate portals (ratemyagent, homely, soho, realestate, domain)
+/// carry suburb-level *professional* addresses for agent profiles — a workplace
+/// location signal mapping to MITRE T1591.002 (Business Relationships).
+const SUPPORTED_HOSTS: &[&str] = &[
+    "github.com",
+    "reddit.com",
+    "linkedin.com",
+    "ratemyagent.com.au",
+    "homely.com.au",
+    "soho.com.au",
+    "realestate.com.au",
+    "domain.com.au",
+];
 
 fn extract_github_location(html: &str) -> Option<String> {
     let marker = "p-label";
@@ -175,10 +228,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn module_accepts_github_urls_only() {
+    async fn module_accepts_supported_hosts() {
         let m = SocialLocation;
         assert!(m.accepts(&Target::new(TargetKind::Url, "https://github.com/alice")));
+        assert!(m.accepts(&Target::new(
+            TargetKind::Url,
+            "https://www.ratemyagent.com.au/real-estate-agent/haigen-bamford-as105/"
+        )));
+        assert!(m.accepts(&Target::new(
+            TargetKind::Url,
+            "https://www.homely.com.au/agent/haigenb"
+        )));
+        assert!(m.accepts(&Target::new(
+            TargetKind::Url,
+            "https://www.linkedin.com/in/haigen-bamford"
+        )));
         assert!(!m.accepts(&Target::new(TargetKind::Url, "https://example.com")));
         assert!(!m.accepts(&Target::new(TargetKind::Domain, "github.com")));
+    }
+
+    #[test]
+    fn professional_host_detection() {
+        assert!(is_professional_host("ratemyagent.com.au"));
+        assert!(is_professional_host("www.homely.com.au"));
+        assert!(is_professional_host("linkedin.com"));
+        assert!(!is_professional_host("github.com"));
+        assert!(!is_professional_host("reddit.com"));
     }
 }
