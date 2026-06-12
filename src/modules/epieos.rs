@@ -253,7 +253,12 @@ impl Module for Epieos {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
+        // The anchor entity is the Email seed re-emitted with enrichment
+        // (`target.to_entity` → `EntityKind::Email`, since this module accepts
+        // only Email), so Email must be declared here too — the dependency
+        // planner and the orphaned-pivot smoke guard read producer kinds from it.
         const KINDS: &[EntityKind] = &[
+            EntityKind::Email,
             EntityKind::Person,
             EntityKind::Username,
             EntityKind::Address,
