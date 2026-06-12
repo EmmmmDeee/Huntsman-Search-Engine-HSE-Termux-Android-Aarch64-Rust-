@@ -162,7 +162,7 @@ impl Module for WifiIntel {
         let mut result = ModuleResult::with_capacity(aps.len());
 
         // ── Phase 1: MacAddress entities for ALL APs ────────────────────
-        for ap in &aps {
+        result.extend(aps.iter().map(|ap| {
             let ssid = ap.ssid.as_deref().unwrap_or("<hidden>");
             let mut e = Entity::new(EntityKind::MacAddress, &ap.bssid, 0.95, &ctx.scan_id);
             e.tag("wifi-ap");
@@ -174,8 +174,8 @@ impl Module for WifiIntel {
                     .with_attr("rssi_dbm", ap.rssi.unwrap_or(0).to_string())
                     .with_attr("timestamp", ap.timestamp.unwrap_or(0).to_string()),
             );
-            result.push(e);
-        }
+            e
+        }));
 
         // ── Phase 2: WiGLE geolocation for top-N strongest APs ─────────
         for ap in aps.iter().take(MAX_BSSIDS) {
