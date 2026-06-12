@@ -3,150 +3,213 @@
 **Prepared for:** Haigen Bamford
 **Date:** 2026-06-12
 **Analyst tool reference:** Huntsman Search Engine (HSE) v1.0.0 — 112 modules (87 free · 25 key-gated/paid)
-**Purpose:** Price a range of OSINT services (cheapest → most expensive) and weigh each
-against what HSE already delivers natively or through bring-your-own-key (BYO-key) integration.
+**Purpose:** Price a range of OSINT services on a like-for-like basis and weigh each, capability by
+capability, against what HSE delivers natively or through bring-your-own-key (BYO-key) integration.
 
 > **Scope note / caveat.** This analysis does **not** have the specific "previous website" that
-> prompted the request in session context. Instead it prices the live commercial offerings of the
-> seven services named in `DOSSIER_OSINT_Service_Usernames.md` (IntelligenceX, OathNet, DeHashed,
-> Epieos, UserSearch, Shodan, WiGLE) plus the adjacent commercial platforms HSE either integrates
-> with or competes against (HIBP, Hunter.io, Censys, Maltego, SpiderFoot HX, OSINT Industries).
-> All figures were pulled from vendor pricing pages and reputable secondary sources in **June 2026**
-> and are reproduced with sources at the foot of this document. Currency conversions are
-> **approximate** (≈ €1 = $1.08, £1 = $1.27) and for ranking only — pay in the vendor's native
-> currency. Where a vendor does not publish a number ("contact sales"), it is marked **POA**.
+> prompted the request in session context. It prices the live commercial offerings of the seven
+> services named in `DOSSIER_OSINT_Service_Usernames.md` (IntelligenceX, OathNet, DeHashed, Epieos,
+> UserSearch, Shodan, WiGLE) plus the adjacent platforms HSE integrates with or competes against
+> (HIBP, Hunter.io, Censys, Maltego, SpiderFoot HX, OSINT Industries). Figures are from vendor
+> pricing pages and reputable secondary sources, **June 2026**, cited at the foot. Conversions are
+> **approximate** (≈ €1 = $1.08, £1 = $1.27) and for ranking only. "POA" = price on application
+> ("contact sales").
 
 ---
 
-## 1. Pricing — cheapest to most expensive
+## 1. Pricing — normalised to annualised USD, cheapest to most expensive
 
-Ranked by the **realistic entry price an individual analyst pays to start using the service
-meaningfully**, with the ceiling shown alongside. "Free tier" means a genuinely usable no-cost mode.
+The previous draft ranked by "entry price," which silently mixed one-time ($49), weekly ($5.49),
+monthly, and yearly figures — not a true ranking. **This version normalises every service to its
+cheapest committed annual cost in USD**, so the order is genuinely comparable. Native price and
+billing unit are kept beside it.
 
-| # | Service | Free tier | Entry paid price | Ceiling / top tier | What the money buys |
-|---|---------|-----------|------------------|--------------------|---------------------|
-| 1 | **WiGLE** (wigle.net) | ✅ Free, non-commercial, daily query cap | — (free) | **POA** commercial licence (currently *suspended*) | Wardriving DB: WiFi/Bluetooth BSSID → geolocation, SSID intel |
-| 2 | **Shodan** (membership) | Limited free account | **$49 one-time** (lifetime membership) | — | Internet-wide host/port/banner search; lifetime, not subscription |
-| 3 | **Have I Been Pwned** | k-anonymity password API free | **$4.39/mo** (Core 1, 10 RPM; $52.68/yr) | **$5,833/mo** (High RPM 24 000) | Breach presence by email/domain; Pro tiers add k-anonymity + high throughput |
-| 4 | **DeHashed** | Search free, pay to *view* results; 10 monitor tasks | **~$5.49/week** (≈$15/mo; **$180/yr**) | Enterprise POA | Raw breached credentials/records; API credits **$3 / 100** |
-| 5 | **UserSearch.org** | Limited free lookups | **$6.99–$14.97/mo** ($159.97/yr) | Premium + credits | Username/email → social & people-search pivots; +$10/mo partner-data credits |
-| 6 | **OathNet** (oathnet.org) | ✅ Free, 10 lookups/day | Starter (50/day) — **low, exact $ not public** | Enterprise 1000+/day POA | Breach + stealer-log search & OSINT enrichment via one API |
-| 7 | **OSINT Industries** | Trial | **£19/mo** (~$24, 30 searches) | £99/mo (~$126, 300, +API) | Email/phone/username → account-existence across 100s of sites |
-| 8 | **Epieos** | ✅ Visitor + Member (free) | **€29.99/mo** (~$32, Osinter) | €49/mo (~$53) Pro, 500 lookups +API | Email/phone reverse lookup, Google/registration footprints |
-| 9 | **Hunter.io** | Free, 50 credits/mo | **$49/mo** (Starter, $34 annual) | $299/mo (Scale, 25k credits) | Corporate email discovery/verification by domain |
-| 10 | **Shodan** (API subs) | — | **$69/mo** (Freelancer) | $1,099/mo (Corporate); Enterprise POA | Programmatic query/scan credits on top of membership |
-| 11 | **Censys** | ✅ Free < 250 queries/mo | **~$99/mo** | ~$1,000/mo | Internet asset/attack-surface search (Shodan competitor) |
-| 12 | **Intelligence X** | 7-day trial; free for universities | **€2,500/yr** (~$2,700; Researcher) | €7,500/yr (~$8,100) Identity Portal; API €5,000/yr | Historical/dark-web data, leaks, document & selector search |
-| 13 | **SpiderFoot HX** | Open-source SpiderFoot is free | **POA** (Freelancer/Business/Enterprise, annual) | Enterprise POA | *Hosted* OSINT **automation/orchestration** + team features |
-| 14 | **SecurityTrails** | Limited free API | **POA** (API tier public-ish; rest custom) | Enterprise POA | Deep DNS/WHOIS history, subdomains, infra pivots |
-| 15 | **Maltego** | ✅ Basic (free, community) | Entry (individual) → **$6,600/yr** (~$550/mo, Professional) | Enterprise POA | Desktop link-analysis graph + 100+ paid data "transforms" |
+| # | Service | Native price | **Annualised USD** | Free tier (real limit) | You're paying for |
+|---|---------|--------------|--------------------|------------------------|-------------------|
+| 1 | **WiGLE** | free (non-commercial) | **$0** | ✅ daily query cap | WiFi/BT BSSID → geolocation DB |
+| 2 | **Shodan** (membership) | $49 **one-time** | **$49 once → ~$0/yr** | limited account | lifetime host/banner search access |
+| 3 | **Have I Been Pwned** (Core 1) | $4.39/mo · $52.68/yr | **$53/yr** | ✅ password k-anonymity API | breach presence by email/domain |
+| 4 | **UserSearch.org** | $14.97/mo · $159.97/yr | **$160/yr** | ✅ limited lookups | username/people-search pivots |
+| 5 | **DeHashed** | $5.49/wk · $180/yr | **$180/yr** | search free, pay to view | raw breached records (API $3/100) |
+| 6 | **OathNet** | free 10/day; paid low | **POA (low)** | ✅ 10 lookups/day | breach + stealer-log search API |
+| 7 | **OSINT Industries** | £19/mo (£228/yr) | **~$290/yr** | trial | email/phone/user account-existence |
+| 8 | **Epieos** (Osinter) | €29.99/mo · €27.08/mo annual | **~$351/yr** | ✅ Visitor + Member | email/phone reverse footprint |
+| 9 | **Hunter.io** (Starter) | $49/mo · $34/mo annual | **~$408/yr** | ✅ 50 credits/mo | corporate email discovery |
+| 10 | **Shodan** (API Freelancer) | $69/mo (+ membership) | **~$828/yr** | — | scan/query credits at volume |
+| 11 | **Censys** | ~$99/mo | **~$1,188/yr** | ✅ < 250 queries/mo | internet asset/attack-surface search |
+| 12 | **Intelligence X** (Researcher) | €2,500/yr | **~$2,700/yr** | 7-day trial; free for edu | historical/dark-web & document search |
+| 13 | **Maltego** (Professional) | $6,600/yr | **$6,600/yr** | ✅ Basic (community) | link-analysis engine + paid transforms |
+| 14 | **SpiderFoot HX** | annual, tiered | **POA** (OSS edition free) | OSS SpiderFoot free | hosted OSINT automation + team features |
+| 15 | **SecurityTrails** | API tier public-ish; rest custom | **POA** | limited free API | deep DNS/WHOIS history, infra pivots |
 
-**Reading the table.** The market splits into three economic bands:
+**What the normalisation changes.** Re-ranking by true annual cost moves **UserSearch ($160)
+*below* DeHashed ($180)** — the opposite of the entry-price order, because DeHashed's $5.49 *weekly*
+teaser annualises to ~$285 while its committed annual plan is $180. Shodan's **one-time $49**
+membership is, over any multi-year horizon, the cheapest paid item on the board — a structurally
+different deal from everything else, which is recurring.
 
-- **Data-provider services** (HIBP, DeHashed, OathNet, IntelX, UserSearch, Shodan, WiGLE, Censys,
-  SecurityTrails, Hunter.io, Epieos) — you pay for access to a **proprietary dataset** or
-  **scanning infrastructure** you cannot otherwise obtain. Entry is cheap ($4–$50/mo); the price
-  scales with *throughput/volume*, not features.
-- **Aggregator/lookup services** (OSINT Industries, UserSearch, Epieos) — you pay a markup for a
-  **convenience layer** that fans one selector out across many sources and presents a tidy report.
-- **Orchestration/analysis platforms** (Maltego, SpiderFoot HX) — you pay the **most** ($550/mo+)
-  for the *workflow engine* that chains sources, correlates results, and visualises the graph.
+**Three economic bands** (now with numbers attached):
 
-That third band is exactly the layer HSE occupies — for **$0**.
+- **Data-provider tier ($0–$2,700/yr): HIBP, DeHashed, OathNet, IntelX, UserSearch, Shodan, Censys,
+  SecurityTrails, Hunter.io, Epieos, WiGLE.** You rent a **proprietary dataset or scanning
+  infrastructure**. Price scales with *volume/throughput*, not features.
+- **Aggregator tier ($160–$408/yr): UserSearch, OSINT Industries, Epieos.** You pay a markup for a
+  **convenience layer** fanning one selector across many sources into a tidy report.
+- **Orchestration tier ($6,600/yr+ / POA): Maltego, SpiderFoot HX.** The dearest band — you pay for
+  the **workflow engine** that chains sources, correlates, and graphs the result.
 
----
-
-## 2. What Huntsman Search Engine actually provides
-
-HSE is an open-source (MIT/Apache-2.0), pure-Rust OSINT/GEOINT **orchestration engine** that runs as
-a single ~5 MB binary on Termux/Android aarch64 with no root, plus desktop Linux. It is the
-SpiderFoot-style automation + correlation layer, not a data vendor. Its 112 modules divide into:
-
-**87 free / keyless modules** that reproduce much of the *free-tier* value of the priced services:
-
-| Capability | HSE free modules | Overlaps (priced service) |
-|---|---|---|
-| Breach / stealer presence | `hudsonrock` (stealer-log lookup), `pwned_passwords`, `xposed_or_not`, `psbdmp` | HIBP, DeHashed, OathNet *(presence only — no raw creds)* |
-| Username / people pivots | `username_search`, `social_probe`, `username_variants`, `name_intel` (offline NAMINT port), `github_user`, `keybase`, `reddit_user`, `hacker_news` | UserSearch, OSINT Industries, Epieos |
-| Email intelligence | `email_parse`, `email_canonical`, `disposable_check`, `smtp_vrfy`, `gravatar`, `contact_enrich`, `employer_pivot`, `pgp` | Hunter.io, Epieos, emailrep |
-| DNS / domain / infra | `crtsh`, `cert_intel`, `whois`, `rdap_domain`, `dns_intel`, `doh_resolver`, `subdomain_takeover`, `typosquat`, `hackertarget`, `bgpview`, `shodan` (free), `greynoise`, `urlscan`, 5× IP-geo providers | SecurityTrails, Censys, Shodan |
-| Geolocation pipeline | `ip_geo`, `ip_whois_geo`, `geocode`/`photon` (Nominatim), `overpass`, `mylnikov`/`mls`, `phone_*_geo`, `exif_geo` | (most commercial tools charge for or omit this) |
-| Corporate / public records | `opencorporates`, `gleif_lei`, `acnc_charities`, AU `asic_director`/`au_electoral`/`au_property`/`au_unclaimed` | (AU-specific niche few competitors cover) |
-| On-device GEOINT (Termux) | `device_sensors`, `cell_intel`, `local_net` (WiFi/cell/GPS/ARP) | (no cloud OSINT service can do this — it needs the handset) |
-
-**25 key-gated/paid modules** that turn HSE into a **single front-end for the priced services**, each
-called with **your own API key** so you pay the vendor's metered rate directly, with no aggregator
-markup: `dehashed`, `intelx`, `hibp`, `hunter_io`, `epieos`, `emailrep`, `censys`, `securitytrails`,
-`virustotal`, `abuseipdb`, `ipqs`, `leakix`, `oathnet_pro`, `proxycurl`, `seon`, `wigle`, `whoisxml`,
-`see_know`, `criminal_ip`, `threatfox`, `fullcontact`, `numverify`, `abn_lookup`, `exa_search`.
-
-On top of collection, HSE adds what the *expensive* band charges for: autonomous multi-round
-expansion, 43 correlator rules, a D3 relationship graph, a scored self-audit/expansion ledger, and
-MITRE ATT&CK Reconnaissance (TA0043) mapping — deterministically, with zero AI/ML dependencies.
+The orchestration tier is exactly what HSE *is*, for **$0**; the aggregator tier is largely what HSE
+*reproduces free*; the data-provider tier is what HSE *fronts via your own key*.
 
 ---
 
-## 3. Head-to-head — can HSE replace, complement, or not match each service?
+## 2. What Huntsman Search Engine provides
 
-| Service | HSE verdict | Rationale |
-|---|---|---|
-| **WiGLE** | **Complement (BYO-key)** | `wigle` module drives WiGLE's API; HSE adds adaptive-bbox quota conservation + the geo pipeline. The *dataset* is still WiGLE's. WiGLE non-commercial access is free anyway. |
-| **Shodan** | **Mostly replace at free tier; complement at scale** | Free `shodan` module + `greynoise` + `urlscan` + `webserver_banner` + `cert_intel` cover host/banner/cert recon. For high-volume scan/query credits you still buy Shodan. |
-| **HIBP** | **Replace presence-checks free; complement for raw** | `pwned_passwords`/`xposed_or_not` answer "is it breached?" free. HIBP's paid API (via the `hibp` module) is only needed for authoritative domain-wide breach enumeration. |
-| **DeHashed** | **Complement only (data moat)** | HSE has **no breach corpus of its own**. `hudsonrock` gives stealer-log *presence*, but raw leaked credentials require DeHashed behind the `dehashed` key. HSE = the interface + correlation, not the data. |
-| **UserSearch / OSINT Industries / Epieos** | **Largely replace** | HSE's free `username_search` + `social_probe` + `name_intel` + email modules reproduce the username/email fan-out these aggregators charge £19–€49/mo for. Epieos/`epieos` still wins on a few proprietary modules (LinkedIn/Fitbit), available BYO-key. |
-| **OathNet** | **Complement (data moat)** | The in-repo dossier shows HSE already orchestrating OathNet Pro via `oathnet_pro`. HSE does all the structural/cross-reference analysis; OathNet owns the breach/stealer data **and the paywall** — e.g. the dossier's `***UPGRADE_TO_SEE***` redactions are OathNet's, not something HSE can lift. |
-| **Censys / SecurityTrails** | **Replace much free; complement for depth** | Free `crtsh`/`cert_intel`/`dns_intel`/`subdomain_takeover`/`bgpview` cover everyday DNS/cert/infra recon. Historical DNS depth and full asset search still need the paid `securitytrails`/`censys` keys. |
-| **Hunter.io** | **Partial replace** | `employer_pivot`/`contact_enrich`/`crtsh` infer corporate emails free; Hunter's verified-email dataset (via `hunter_io`) is better for bulk B2B email discovery. |
-| **Intelligence X** | **Complement only (data moat)** | IntelX's historical/dark-web corpus is proprietary; HSE reaches it via the `intelx` key. At €2,500–€7,500/yr this is the dataset you rent, not rebuild. |
-| **SpiderFoot HX** | **Replace (direct competitor)** | This is HSE's closest analogue — the hosted OSINT *automation* layer. HSE delivers the same orchestration + correlation + web UI **free and self-hosted**, and uniquely runs on a phone with no root. |
-| **Maltego** | **Replace the engine; rent the transforms** | HSE's expansion engine + D3 graph + correlator replace Maltego's $6,600/yr link-analysis core. Maltego's paid third-party "transforms" map to HSE's BYO-key modules — same economics, no $550/mo platform fee. |
+Open-source (MIT/Apache-2.0), pure-Rust orchestration engine; single ~5 MB binary on Termux/Android
+aarch64 (no root) and desktop Linux. **87 free/keyless modules** reproduce much of the *free-tier*
+value of the priced services; **25 key-gated modules** make HSE a single front-end that calls the
+paid services with **your own key** (vendor's metered rate, no aggregator markup). On top it adds the
+orchestration-tier value: autonomous multi-round expansion, 43 correlator rules, a D3 relationship
+graph, a scored self-audit/expansion ledger, MITRE ATT&CK Reconnaissance (TA0043) mapping — all
+deterministic, zero AI/ML dependencies. Inventory of free coverage:
 
----
-
-## 4. Value verdict
-
-**Where HSE wins outright (displaces spend):**
-
-1. **The orchestration/analysis band — the most expensive layer.** Maltego ($6,600/yr) and
-   SpiderFoot HX (POA, typically four figures/yr) sell the workflow engine, correlation, and graph
-   that HSE ships for **$0**, self-hosted, on a handset. This is the single largest cost avoidance.
-2. **Free-tier parity with the aggregators.** UserSearch ($7–$15/mo), OSINT Industries
-   (£19–£99/mo), and Epieos's free modules are substantially reproduced by HSE's free
-   username/email/social fan-out — the convenience markup mostly evaporates.
-3. **Breach/infra *presence* checks** (HIBP password API, Shodan/Censys free recon, HudsonRock
-   stealer-log presence) — covered free, deferring paid tiers until you need authoritative volume.
-4. **Capabilities no cloud OSINT service sells at all:** on-device WiFi/cell/GPS GEOINT via Termux
-   sensors, a free end-to-end geolocation pipeline (Nominatim/Photon/Overpass), and
-   Australia-specific public-records dorking (ASIC/AEC/land titles/ABN-ACN).
-
-**Where HSE cannot win (you still pay the vendor):**
-
-- **Proprietary datasets are moats.** DeHashed, Intelligence X, OathNet, and HIBP's full corpus own
-  data HSE does not have and cannot scrape. For *raw* leaked credentials/records, historical
-  dark-web selectors, or authoritative domain-wide breach enumeration, you rent their access. HSE's
-  value there is being the **single pane of glass** that calls them via your own key — so you pay
-  the vendor's published metered rate (e.g. DeHashed $3/100 credits, IntelX €2,500/yr) instead of an
-  aggregator's bundled premium, and you get HSE's correlation on top.
-- **Managed extras.** SLAs, hosted infrastructure, team seats, and vendor support are things a
-  free self-hosted binary does not provide.
-
-**Bottom line for budgeting.** Treat HSE as the **free replacement for the $550/mo+ orchestration
-tier (Maltego/SpiderFoot HX) and the $7–$126/mo aggregator tier (UserSearch/OSINT Industries/
-Epieos)**, and as a **cost-neutral BYO-key front-end** for the data-provider tier you genuinely need
-(start with the cheapest meaningful keys — HIBP at $4.39/mo, DeHashed at ~$15/mo, OathNet free→low —
-and only climb to IntelX/Maltego-class spend when a specific dataset demands it). The recurring spend
-HSE *eliminates* is the platform/aggregator markup; the spend it *cannot* eliminate is the raw-data
-access fee — but it lets you pay that once, directly, instead of twice.
+- **Breach/stealer presence:** `hudsonrock`, `pwned_passwords`, `xposed_or_not`, `psbdmp`
+- **Username/people:** `username_search`, `social_probe`, `username_variants`, `name_intel`
+  (offline NAMINT port), `github_user`, `keybase`, `reddit_user`, `hacker_news`, `npm_author`, `crates_io`
+- **Email:** `email_parse`, `email_canonical`, `disposable_check`, `smtp_vrfy`, `gravatar`,
+  `contact_enrich`, `employer_pivot`, `pgp`
+- **DNS/domain/infra:** `crtsh`, `cert_intel`, `whois`, `rdap_domain`, `dns_intel`, `doh_resolver`,
+  `subdomain_takeover`, `typosquat`, `hackertarget`, `bgpview`, `shodan` (free), `greynoise`,
+  `urlscan`, `webserver_banner`, 5× IP-geo providers
+- **Geolocation pipeline:** `ip_geo`, `ip_whois_geo`, `geocode`/`photon` (Nominatim), `overpass`,
+  `mylnikov`/`mls`, `phone_*_geo`, `exif_geo`
+- **Corporate/public records:** `opencorporates`, `gleif_lei`, `acnc_charities`, AU `asic_director`/
+  `au_electoral`/`au_property`/`au_unclaimed`
+- **On-device GEOINT (Termux):** `device_sensors`, `cell_intel`, `local_net` (WiFi/cell/GPS/ARP)
 
 ---
 
-## 5. Security hygiene note (incidental, flagged in good faith)
+## 3. Capability-parity matrix (the core comparison)
+
+Read this as: *for each thing an analyst actually wants to do*, what is the best commercial option
+and its annual cost, what does HSE field, how close is parity, and what — if anything — you still
+have to pay for. Parity grades: **Full (free)** · **Partial** (HSE covers the common case, paid tool
+deeper) · **Presence-only** (HSE confirms existence/counts, not the raw data) · **None — data moat**
+(HSE cannot substitute; the value is the dataset) · **HSE-exclusive** (no commercial equivalent sold).
+
+| Capability | Best commercial (annualised) | HSE equivalent | Parity | Residual paid need |
+|---|---|---|---|---|
+| Password/breach **presence** ("is this exposed?") | HIBP Core 1 **$53** | `pwned_passwords`, `xposed_or_not` | **Full (free)** | none |
+| **Domain-wide** breach enumeration | HIBP Pro **$4,548+** | `hibp` (BYO-key) | **None — data moat** | HIBP key |
+| **Raw** leaked credentials / records | DeHashed **$180** / IntelX **$2,700** | `hudsonrock` (counts only) | **Presence-only** | DeHashed / IntelX / OathNet key |
+| Stealer-log intelligence | OathNet (POA, low) | `hudsonrock` free + `oathnet_pro` BYO | **Partial** | OathNet for record-level detail |
+| Historical / dark-web selectors | IntelX **$2,700** | `intelx` (BYO-key) | **None — data moat** | IntelX key |
+| Username → social fan-out | OSINT Industries **$290** / UserSearch **$160** | `username_search`, `social_probe`, `username_variants`, `github_user`, `keybase`, `reddit_user`, `hacker_news` | **Full (free)** | none |
+| Email reverse / footprint | Epieos **$351** | `email_parse`, `gravatar`, `contact_enrich`, `pgp`, `employer_pivot`, `smtp_vrfy` | **Partial → Full** | Epieos for niche modules (LinkedIn/Fitbit) |
+| Corporate email discovery (bulk B2B) | Hunter.io **$408** | `employer_pivot`, `contact_enrich`, `crtsh` | **Partial** | Hunter.io for verified bulk |
+| Host / port / banner recon | Shodan **$828** (+$49 once) | `shodan` free, `greynoise`, `urlscan`, `webserver_banner` | **Partial → Full at low volume** | Shodan/Censys for scale + scan credits |
+| Internet asset / attack surface | Censys **$1,188** | `crtsh`, `cert_intel`, `dns_intel`, `subdomain_takeover`, `bgpview` | **Partial** | Censys/SecurityTrails for depth |
+| Historical DNS / WHOIS | SecurityTrails (POA) | `whois`, `rdap_domain`, `dns_intel`, `crtsh` | **Partial** | SecurityTrails for time-series depth |
+| WiFi BSSID geolocation | WiGLE (free / commercial POA) | `wigle` (BYO), `mylnikov`, `mls` | **Full (free/BYO)** | WiGLE key (free non-commercial) |
+| **OSINT automation / orchestration** | SpiderFoot HX (POA) / Maltego **$6,600** | the entire HSE engine | **Full (free) — direct replacement** | none |
+| **Link-analysis graph + correlation** | Maltego **$6,600** | D3 force graph + 43 correlator rules | **Full (free)** | none |
+| On-device WiFi/cell/GPS GEOINT | *(none sold)* | `device_sensors`, `cell_intel`, `local_net` | **HSE-exclusive** | n/a |
+| AU public records (ASIC/AEC/titles/ABN) | *(niche / unserved)* | `asic_director`, `au_electoral`, `au_property`, `au_unclaimed`, `opencorporates` | **Full (mostly free)** | `abn_lookup` key optional |
+
+**The dividing line.** Every **None — data moat** row is a *dataset* HSE has no copy of and cannot
+scrape; every **Full (free)** row is *tooling or public-API work* HSE does itself. Parity tracks the
+data/tooling axis almost perfectly: HSE owns the tooling end completely and the data end not at all,
+with **Presence-only** as the honest middle (it can tell you a credential *exists* in a stealer log —
+via `hudsonrock` — but not show you the credential).
+
+---
+
+## 4. Per-service verdict — keep paying, or not?
+
+| Service | Annualised | Verdict | What you still pay for (if anything) |
+|---|---|---|---|
+| **Maltego** | $6,600 | **Replace** | nothing — HSE replaces the engine; its paid transforms map to HSE BYO-key modules |
+| **SpiderFoot HX** | POA | **Replace** | nothing — HSE is the same automation layer, free and self-hosted, even on a phone |
+| **OSINT Industries** | $290 | **Replace** | nothing material — free HSE modules reproduce the fan-out |
+| **UserSearch** | $160 | **Replace** | nothing material |
+| **Epieos** | $351 | **Mostly replace** | a few proprietary modules (LinkedIn/Fitbit), available BYO-key |
+| **Hunter.io** | $408 | **Partial** | verified bulk B2B email datasets |
+| **Censys** | $1,188 | **Partial** | full asset search + historical depth beyond free DNS/cert recon |
+| **SecurityTrails** | POA | **Partial** | historical DNS/WHOIS time-series |
+| **Shodan** | $49 once / $828 API | **Complement** | $49 membership is worth it; API only at scan/query volume |
+| **HIBP** | $53 → $4,548+ | **Complement** | authoritative domain-wide breach enumeration (Pro tier) |
+| **WiGLE** | $0 / POA | **Complement** | nothing for non-commercial; HSE fronts the free API |
+| **DeHashed** | $180 | **Data moat** | raw leaked records — HSE gives presence only |
+| **OathNet** | POA (low) | **Data moat** | record-level breach/stealer detail (HSE drives it via `oathnet_pro`) |
+| **Intelligence X** | $2,700 | **Data moat** | the historical/dark-web corpus itself |
+
+The in-repo dossier is a live illustration of the **Data moat** verdict: HSE drove OathNet Pro,
+ran all the structural cross-referencing, but the `***UPGRADE_TO_SEE***` redactions are OathNet's
+paywall — exactly the boundary HSE cannot cross by tooling alone.
+
+---
+
+## 5. Worked cost scenarios (illustrative)
+
+Concrete arithmetic from the prices above. The "commercial stack" is *one plausible assembly* an
+analyst might buy, not the only one; HSE figures assume the free engine plus only the keys whose data
+is a genuine moat for that workload. Year-1 figures shown.
+
+**A — Solo investigator / journalist (identity & breach focus)**
+
+| Commercial stack | $/yr | HSE alternative | $/yr |
+|---|---|---|---|
+| DeHashed $180 + Epieos $351 + OSINT Industries $290 + HIBP $53 | **$874** | HSE (free) + DeHashed key (the one real moat) | **$180** |
+| …same, but add Maltego Professional for the graph | **$7,474** | same as above (graph is built in) | **$180** |
+
+> **Net saving ≈ $694/yr** without Maltego, **≈ $7,294/yr** with it.
+
+**B — Small pentest / attack-surface team**
+
+| Commercial stack | $/yr (yr 1) | HSE alternative | $/yr (yr 1) |
+|---|---|---|---|
+| Shodan $49 + Shodan API $828 + Censys $1,188 + HIBP Core 2 $259 + Maltego Pro $6,600 | **$8,924** | HSE (free) + Shodan membership $49 + HIBP Core 1 $53 (API/Censys only if volume demands) | **$102** |
+
+> **Net saving ≈ $8,800/yr**; residual paid only where data *volume/depth* genuinely exceeds free tiers.
+
+**C — Hobbyist / learner**
+
+| Commercial stack | $/yr | HSE alternative | $/yr |
+|---|---|---|---|
+| OSINT Industries £19/mo + Epieos free | **~$290** | HSE (free) covers username/email/breach-presence/DNS/geo | **$0** |
+
+> **Net saving ≈ $290/yr, with $0 spend.**
+
+---
+
+## 6. Value verdict
+
+1. **HSE zeroes the two most-marked-up bands.** It is a free, self-hosted replacement for the
+   **orchestration tier** (Maltego $6,600/yr, SpiderFoot HX POA) and substantially for the
+   **aggregator tier** ($160–$408/yr). Across the scenarios that is **~$290 to ~$8,800/yr** of
+   recurring spend removed, before counting capabilities no one sells (on-device GEOINT, the free
+   geolocation pipeline, AU public-records dorking).
+2. **HSE cannot beat a data moat — and doesn't pretend to.** DeHashed, IntelX, OathNet, and HIBP's
+   full corpus own data HSE has no copy of. There its role is the **single pane of glass** that calls
+   them with your own key, so you pay the vendor's published rate *once* (e.g. DeHashed $3/100
+   credits, IntelX €2,500/yr) instead of a vendor rate *plus* an aggregator markup — and you get
+   HSE's correlation, expansion, and graph layered on for free.
+3. **Spend ladder.** Run HSE free; add keys cheapest-moat-first only as a workload demands —
+   HIBP $53/yr, DeHashed $180/yr, OathNet free→low, then Shodan/Censys at volume, and IntelX/
+   Maltego-class spend only when a specific dataset or compliance need forces it.
+
+**One line:** HSE eliminates the *platform and convenience* markup entirely and lets you pay the
+*raw-data* fee once, directly — turning a typical $900–$8,900/yr commercial OSINT stack into a
+$0–$180/yr one for most individual and small-team workflows.
+
+---
+
+## 7. Security hygiene note (incidental, flagged in good faith)
 
 `DOSSIER_OSINT_Service_Usernames.md` §8 commits what it labels live API keys (OathNet Pro, HIBP v3,
 WiGLE) into the repository in plaintext. If any are real and active, committed secrets are exposed to
-anyone with repo access and to Git history even after deletion. Recommended: rotate those keys at the
-vendors, move them to `~/.huntsman.env` (which the installer already preserves and the code reads via
+anyone with repo access and remain in Git history even after deletion. Recommended: rotate those keys
+at the vendors, move them to `~/.huntsman.env` (which the installer preserves and the code reads via
 `ctx.key("HUNTSMAN_*")`), and scrub them from history. Not part of the pricing question, but worth
 fixing before this repo is shared.
 
@@ -169,4 +232,4 @@ fixing before this repo is shared.
 - Censys — <https://censys.com/resources/pricing/>
 - SecurityTrails — <https://securitytrails.com/corp/pricing>
 
-*Prices change frequently and several vendors gate exact figures behind "contact sales"; verify against the live pages before committing budget. Currency conversions are approximate (June 2026).*
+*Prices change frequently and several vendors gate exact figures behind "contact sales"; verify against the live pages before committing budget. Currency conversions are approximate (June 2026). Scenario totals are illustrative arithmetic from the cited list prices.*
