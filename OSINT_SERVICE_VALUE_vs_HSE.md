@@ -5,6 +5,8 @@
 **Analyst tool reference:** Huntsman Search Engine (HSE) v1.0.0 — 112 modules (87 free · 25 key-gated/paid)
 **Purpose:** Price a range of OSINT services on a like-for-like basis and weigh each, capability by
 capability, against what HSE delivers natively or through bring-your-own-key (BYO-key) integration.
+**See also:** [`OSINT_MATRIX_GAP_ANALYSIS.md`](OSINT_MATRIX_GAP_ANALYSIS.md) — gap register, closeability
+classification (KEY / BUILD / MOAT / CHARTER / MANAGED), and a prioritised closure roadmap built on the parity matrix below.
 
 > **Scope note / caveat.** This analysis does **not** have the specific "previous website" that
 > prompted the request in session context. It prices the live commercial offerings of the seven
