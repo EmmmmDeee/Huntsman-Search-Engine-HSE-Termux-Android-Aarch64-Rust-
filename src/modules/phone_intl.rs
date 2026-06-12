@@ -379,12 +379,10 @@ pub fn international_digits(raw: &str) -> Option<String> {
 /// by longest-prefix-first match. `pub(crate)` so `geo_intel` reuses this single
 /// source of truth instead of maintaining a second, divergent prefix table.
 pub(crate) fn match_country(digits: &str) -> Option<(&'static str, &'static str, &'static str)> {
-    for (prefix, iso, name) in COUNTRIES {
-        if digits.starts_with(prefix) {
-            return Some((*prefix, *iso, *name));
-        }
-    }
-    None
+    COUNTRIES
+        .iter()
+        .find(|&&(prefix, ..)| digits.starts_with(prefix))
+        .copied()
 }
 
 #[cfg(test)]
