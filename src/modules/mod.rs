@@ -10,6 +10,7 @@ pub mod abuseipdb;
 pub mod acnc_charities;
 pub mod api_key_probe;
 pub mod asic_director;
+pub mod au_electoral;
 pub mod au_people;
 pub mod au_unclaimed;
 pub mod bgpview;
@@ -297,6 +298,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(au_unclaimed::AuUnclaimed),
         Arc::new(au_people::AuPeople),
         Arc::new(asic_director::AsicDirector),
+        Arc::new(au_electoral::AuElectoral),
         Arc::new(acnc_charities::AcncCharities),
         Arc::new(gleif_lei::GleifLei),
     ]

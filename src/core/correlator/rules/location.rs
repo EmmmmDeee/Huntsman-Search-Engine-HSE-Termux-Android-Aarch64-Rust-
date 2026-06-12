@@ -82,6 +82,9 @@ const ANCHORING_GEO_SOURCES: &[&str] = &[
     // Timezone inference from breach timestamp clustering — coarse but
     // person-linked (the timestamps belong to the subject's account activity)
     "breach_timezone",
+    // AEC and state electoral commission enrolment lookups — compulsory
+    // enrolment and address-verified; highest-confidence residential signal.
+    "au_electoral",
 ];
 
 /// Returns `true` when a source name is a person-anchoring geo source —
@@ -359,6 +362,8 @@ pub(crate) enum GeoSourceClass {
     Enrichment,
     /// Search-snippet inline geocoding.
     Search,
+    /// Australian electoral roll — compulsory residential enrolment, AEC/state ECs.
+    Electoral,
     /// Unrecognised / coarse (timezone clustering, etc.).
     Other,
 }
@@ -373,6 +378,7 @@ pub(crate) fn geo_source_class(source: &str) -> GeoSourceClass {
             GeoSourceClass::Registry
         }
         "qld_unclaimed" | "au_unclaimed" | "au_people" => GeoSourceClass::Directory,
+        "au_electoral" => GeoSourceClass::Electoral,
         "github_user" | "keybase" | "social_location" => GeoSourceClass::Social,
         "phone_area_geo" | "phone_carrier_geo" => GeoSourceClass::Phone,
         "epieos" | "contact_enrich" | "proxycurl" | "fullcontact" => GeoSourceClass::Enrichment,
@@ -537,6 +543,7 @@ fn geo_class_name(c: &GeoSourceClass) -> &'static str {
         GeoSourceClass::Phone => "phone",
         GeoSourceClass::Enrichment => "enrichment",
         GeoSourceClass::Search => "search",
+        GeoSourceClass::Electoral => "electoral",
         GeoSourceClass::Other => "other",
     }
 }
