@@ -139,16 +139,17 @@ impl Module for GreyNoise {
             data.noise, data.riot
         );
 
-        let mut ev = Evidence::new(SRC, summary)
+        let base = Evidence::new(SRC, summary)
             .with_attr("classification", classification)
             .with_attr("noise", data.noise.to_string())
             .with_attr("riot", data.riot.to_string());
-        if let Some(name) = data.name.as_deref().filter(|s| !s.is_empty()) {
-            ev = ev.with_attr("name", name);
-        }
-        if let Some(link) = data.link.as_deref().filter(|s| !s.is_empty()) {
-            ev = ev.with_attr("link", link);
-        }
+        let ev = [
+            ("name", data.name.as_deref()),
+            ("link", data.link.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.filter(|s| !s.is_empty()).map(|v| (key, v)))
+        .fold(base, |ev, (key, v)| ev.with_attr(key, v));
         entity.add_evidence(ev);
 
         let mut result = ModuleResult::new();
