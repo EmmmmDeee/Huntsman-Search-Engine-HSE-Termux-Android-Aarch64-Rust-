@@ -124,38 +124,24 @@ impl Module for UrlScan {
         }
 
         // ── Aggregate intel from all scan results ───────────────────────────
-        let mut unique_ips: BTreeSet<String> = BTreeSet::new();
-        let mut countries: BTreeSet<String> = BTreeSet::new();
-        let mut servers: BTreeSet<String> = BTreeSet::new();
-        let mut any_malicious = false;
-
-        for entry in &data.results {
-            if let Some(ref page) = entry.page {
-                if let Some(ref ip) = page.ip {
-                    let trimmed = ip.trim();
-                    if !trimmed.is_empty() {
-                        unique_ips.insert(trimmed.to_string());
-                    }
-                }
-                if let Some(ref country) = page.country {
-                    let trimmed = country.trim();
-                    if !trimmed.is_empty() {
-                        countries.insert(trimmed.to_string());
-                    }
-                }
-                if let Some(ref server) = page.server {
-                    let trimmed = server.trim();
-                    if !trimmed.is_empty() {
-                        servers.insert(trimmed.to_string());
-                    }
-                }
-            }
-            if let Some(ref verdicts) = entry.verdicts
-                && verdicts.malicious == Some(true)
-            {
-                any_malicious = true;
-            }
-        }
+        let trimmed_field = |field: fn(&PageInfo) -> Option<&str>| -> BTreeSet<String> {
+            data.results
+                .iter()
+                .filter_map(|e| e.page.as_ref())
+                .filter_map(field)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect()
+        };
+        let unique_ips = trimmed_field(|p| p.ip.as_deref());
+        let countries = trimmed_field(|p| p.country.as_deref());
+        let servers = trimmed_field(|p| p.server.as_deref());
+        let any_malicious = data
+            .results
+            .iter()
+            .filter_map(|e| e.verdicts.as_ref())
+            .any(|v| v.malicious == Some(true));
 
         // ── Build target entity ─────────────────────────────────────────────
         let confidence = if any_malicious { 0.88 } else { 0.70 };
@@ -197,34 +183,32 @@ impl Module for UrlScan {
         result.push(entity);
 
         // ── Extract unique IPs as child IpAddress entities ──────────────────
-        for ip in &unique_ips {
-            // Only emit valid-looking IPs (v4 or v6).
-            if ip.parse::<std::net::IpAddr>().is_ok() {
-                let mut ip_entity = Entity::new(EntityKind::IpAddress, ip, 0.65, &ctx.scan_id);
-                ip_entity.tag("urlscan");
-                ip_entity.add_evidence(Evidence::new(
-                    SRC,
-                    format!("Resolved IP seen in URLScan.io scans of {}", &target.value),
-                ));
-                result.push(ip_entity);
-            }
-        }
+        result.extend(
+            unique_ips
+                .iter()
+                // Only emit valid-looking IPs (v4 or v6).
+                .filter(|ip| ip.parse::<std::net::IpAddr>().is_ok())
+                .map(|ip| {
+                    let mut ip_entity = Entity::new(EntityKind::IpAddress, ip, 0.65, &ctx.scan_id);
+                    ip_entity.tag("urlscan");
+                    ip_entity.add_evidence(Evidence::new(
+                        SRC,
+                        format!("Resolved IP seen in URLScan.io scans of {}", &target.value),
+                    ));
+                    ip_entity
+                }),
+        );
 
-        for country in &countries {
-            let mut ae = Entity::new(
-                crate::core::entity::EntityKind::Address,
-                country,
-                0.50,
-                &ctx.scan_id,
-            );
+        result.extend(countries.iter().map(|country| {
+            let mut ae = Entity::new(EntityKind::Address, country, 0.50, &ctx.scan_id);
             ae.tag("urlscan");
             ae.tag("geoint");
             ae.add_evidence(Evidence::new(
                 SRC,
                 format!("Hosting country from URLScan.io scans of {}", &target.value),
             ));
-            result.push(ae);
-        }
+            ae
+        }));
 
         Ok(result)
     }
