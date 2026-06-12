@@ -575,6 +575,167 @@ pub(in crate::core::correlator) fn rule_au_030_geo_convergence_score(
     )]
 }
 
+/// AU-057 — Synthesised location fix (weighted median).
+///
+/// Collects all `EntityKind::Coordinates` entities with confidence ≥ 0.60,
+/// runs a confidence-weighted geometric median over them
+/// ([`crate::util::geometry::weighted_geometric_median`]), and emits a single
+/// Correlation whose description includes the synthesised lat/lon (4 dp) plus a
+/// geohash-5 string. Severity is High when ≥3 inputs, Medium for exactly 2.
+pub(in crate::core::correlator) fn rule_au_057_synthesised_location_fix(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let high_conf_coords: Vec<&Entity> = entities_of_kind(entities, EntityKind::Coordinates)
+        .into_iter()
+        .filter(|e| e.confidence >= 0.60)
+        .collect();
+
+    if high_conf_coords.len() < 2 {
+        return Vec::new();
+    }
+
+    // Parse each coordinate value via the canonical helper; drop unparseable ones.
+    let weighted_points: Vec<((f64, f64), f64)> = high_conf_coords
+        .iter()
+        .filter_map(|e| {
+            crate::util::geohash::parse_coords(&e.value)
+                .map(|(lat, lon)| ((lat, lon), e.confidence))
+        })
+        .collect();
+
+    if weighted_points.len() < 2 {
+        return Vec::new();
+    }
+
+    let Some((lat, lon)) = crate::util::geometry::weighted_geometric_median(&weighted_points)
+    else {
+        return Vec::new();
+    };
+
+    // Collect UIDs of the inputs that contributed a parseable coordinate.
+    let uids: Vec<String> = high_conf_coords
+        .iter()
+        .filter(|e| crate::util::geohash::parse_coords(&e.value).is_some())
+        .map(|e| e.uid.clone())
+        .collect();
+
+    let n = uids.len();
+    let severity = if n >= 3 {
+        Severity::High
+    } else {
+        Severity::Medium
+    };
+
+    let gh = crate::util::geohash::geohash(lat, lon, 5);
+    vec![Correlation::new(
+        "AU-057",
+        "Synthesised location fix (weighted median)",
+        severity,
+        format!(
+            "Weighted geometric median of {n} confirmed coordinate(s) yields synthesised fix \
+             ({lat:.4}, {lon:.4}) — geohash-5 {gh} — MITRE T1591.001"
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
+/// AU-058 — Professional profile geographic signal.
+///
+/// Finds `EntityKind::Url` entities with confidence ≥ 0.45 whose value
+/// contains one of the AU real estate portal domains (ratemyagent, homely,
+/// soho). For ratemyagent URLs the suburb slug is extracted from the path
+/// (`/real-estate-agent/<name>-<suburb>-<id>/`). Only emits when the extracted
+/// suburb is ≥4 characters and composed entirely of ASCII alphabetic characters
+/// or hyphens. Maps to MITRE T1591.002 (Business Relationships).
+pub(in crate::core::correlator) fn rule_au_058_professional_profile_geo(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    const PROF_HOSTS: &[&str] = &["ratemyagent.com.au", "homely.com.au", "soho.com.au"];
+
+    let mut out = Vec::new();
+    for e in entities_of_kind(entities, EntityKind::Url)
+        .into_iter()
+        .filter(|e| e.confidence >= 0.45)
+    {
+        let url_lower = e.value.to_lowercase();
+        let Some(host) = PROF_HOSTS.iter().find(|h| url_lower.contains(*h)) else {
+            continue;
+        };
+
+        let Some(suburb) = extract_suburb_from_url(&e.value) else {
+            continue;
+        };
+
+        out.push(Correlation::new(
+            "AU-058",
+            "Professional profile geographic signal",
+            Severity::Medium,
+            format!(
+                "Real estate agent profile at {host} suggests subject operates in {suburb} \
+                 — MITRE T1591.002 (Business Relationships)"
+            ),
+            vec![e.uid.clone()],
+            scan_id,
+            ts,
+        ));
+    }
+    out
+}
+
+/// Extract the suburb slug from a ratemyagent-style URL path.
+///
+/// Expects the pattern `/real-estate-agent/<name>-<suburb>-<id>/` where
+/// `<id>` is a numeric-heavy final segment. Returns the suburb slug if it is
+/// ≥4 chars and all ASCII alphabetic or hyphen; `None` otherwise.
+fn extract_suburb_from_url(url: &str) -> Option<String> {
+    // Normalise to lowercase for matching; work on the path portion.
+    let lower = url.to_lowercase();
+    let path_start = lower.find("real-estate-agent/")?;
+    let after_prefix = &lower[path_start + "real-estate-agent/".len()..];
+    // Take the first path segment (stop at '/' or end-of-string).
+    let segment = after_prefix.split('/').next()?;
+    if segment.is_empty() {
+        return None;
+    }
+    // The segment is `<name-parts>-<suburb-slug>-<numeric-id>`.
+    // Split by '-', drop the last token (numeric id), take the second-to-last
+    // as the suburb slug. Real suburb slugs: `paddington`, `north-sydney`, etc.
+    let parts: Vec<&str> = segment.split('-').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    // Drop trailing numeric-id part(s) — the last dash-separated token that
+    // is entirely digits or a short alphanumeric code like "as105".
+    // Strategy: strip the final token; if the remaining last token looks like
+    // a suburb (all alpha/hyphen, ≥4 chars) use it, otherwise try one more.
+    let candidate = parts[parts.len() - 2];
+    let suburb = if is_suburb_slug(candidate) {
+        candidate.to_string()
+    } else if parts.len() >= 4 {
+        let c2 = parts[parts.len() - 3];
+        if is_suburb_slug(c2) {
+            c2.to_string()
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+    Some(suburb)
+}
+
+/// True when `s` looks like a suburb slug: ≥4 chars, only ASCII alphabetic or
+/// hyphen (hyphens are interior word-joiners in compound suburb names).
+fn is_suburb_slug(s: &str) -> bool {
+    s.len() >= 4 && s.chars().all(|c| c.is_ascii_alphabetic() || c == '-')
+}
+
 /// AU-032 — Geographic co-location cluster (graph-aware). Walks the
 /// `CoLocatedWith` edge graph and reports each connected component of
 /// `COLOCATION_CLUSTER_MIN`+ Coordinates entities — i.e. three or more
