@@ -51,35 +51,37 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
     // Pre-compute the `.base` subdomain suffix once instead of re-formatting it
     // for every name across every certificate.
     let dot_base = format!(".{base}");
-    let mut out: Vec<Entity> = Vec::new();
     let mut seen_domains: HashSet<String> = HashSet::new();
     let mut seen_emails: HashSet<String> = HashSet::new();
 
-    for entry in entries {
-        let names = entry
-            .name_value
-            .as_deref()
-            .unwrap_or("")
-            .split('\n')
-            .chain(entry.common_name.as_deref());
-
-        for raw_name in names {
+    let mut out: Vec<Entity> = entries
+        .iter()
+        .flat_map(|entry| {
+            entry
+                .name_value
+                .as_deref()
+                .unwrap_or("")
+                .split('\n')
+                .chain(entry.common_name.as_deref())
+                .map(move |raw_name| (entry, raw_name))
+        })
+        .filter_map(|(entry, raw_name)| {
             let name = raw_name.trim().to_lowercase();
             if name.is_empty() || name.starts_with('*') {
-                continue;
+                return None;
             }
-
             if name.contains('@') {
-                if name.len() >= MIN_EMAIL_LEN && seen_emails.insert(name.clone()) {
-                    let mut e = Entity::new(EntityKind::Email, &name, 0.70, scan_id);
-                    e.tag(tags::CT_LOG);
-                    e.add_evidence(
-                        Evidence::new(SRC, "Email in certificate SAN".to_string())
-                            .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or(""))
-                            .with_attr("not_before", entry.not_before.as_deref().unwrap_or("")),
-                    );
-                    out.push(e);
+                if name.len() < MIN_EMAIL_LEN || !seen_emails.insert(name.clone()) {
+                    return None;
                 }
+                let mut e = Entity::new(EntityKind::Email, &name, 0.70, scan_id);
+                e.tag(tags::CT_LOG);
+                e.add_evidence(
+                    Evidence::new(SRC, "Email in certificate SAN".to_string())
+                        .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or(""))
+                        .with_attr("not_before", entry.not_before.as_deref().unwrap_or("")),
+                );
+                Some(e)
             } else if name.contains('.') && seen_domains.insert(name.clone()) {
                 let is_sub = name == base || name.ends_with(&dot_base);
                 let conf = if is_sub { 0.75 } else { 0.45 };
@@ -94,10 +96,12 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
                         .with_attr("not_before", entry.not_before.as_deref().unwrap_or(""))
                         .with_attr("not_after", entry.not_after.as_deref().unwrap_or("")),
                 );
-                out.push(e);
+                Some(e)
+            } else {
+                None
             }
-        }
-    }
+        })
+        .collect();
 
     out.sort_by(|a, b| {
         b.confidence
