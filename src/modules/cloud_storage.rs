@@ -97,27 +97,31 @@ fn extract_base_name(value: &str) -> String {
 }
 
 fn generate_bucket_names(base: &str) -> Vec<(String, &'static str, String)> {
-    let mut out = Vec::with_capacity(MAX_PROBES);
-    let suffixes = ["", "-backup", "-assets", "-data", "-public", "-dev"];
-    for suffix in &suffixes {
-        let name = format!("{base}{suffix}");
-        out.push((
-            format!("https://{name}.s3.amazonaws.com"),
-            "AWS S3",
-            name.clone(),
-        ));
-        out.push((
-            format!("https://{name}.blob.core.windows.net"),
-            "Azure Blob",
-            name.clone(),
-        ));
-        out.push((
-            format!("https://storage.googleapis.com/{name}"),
-            "GCS",
-            name,
-        ));
-    }
-    out
+    // One probe triple (S3 / Azure / GCS) per name variant, flattened — the six
+    // suffixes × three providers give the MAX_PROBES (18) candidate URLs.
+    ["", "-backup", "-assets", "-data", "-public", "-dev"]
+        .into_iter()
+        .flat_map(|suffix| {
+            let name = format!("{base}{suffix}");
+            [
+                (
+                    format!("https://{name}.s3.amazonaws.com"),
+                    "AWS S3",
+                    name.clone(),
+                ),
+                (
+                    format!("https://{name}.blob.core.windows.net"),
+                    "Azure Blob",
+                    name.clone(),
+                ),
+                (
+                    format!("https://storage.googleapis.com/{name}"),
+                    "GCS",
+                    name,
+                ),
+            ]
+        })
+        .collect()
 }
 
 async fn probe_url(http: &reqwest::Client, url: &str) -> Option<u16> {
