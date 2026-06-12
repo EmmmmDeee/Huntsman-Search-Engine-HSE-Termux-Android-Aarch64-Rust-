@@ -187,14 +187,12 @@ impl Module for DomainsDb {
             };
 
             let broad_match = data.total.is_some_and(|t| t > BROAD_MATCH_THRESHOLD);
-            for entry in &data.domains {
+            result.extend(data.domains.iter().filter_map(|entry| {
                 if !seen.insert(entry.domain.trim().to_lowercase()) {
-                    continue;
+                    return None;
                 }
-                if let Some(e) = build_domain_entity(entry, broad_match, &ctx.scan_id) {
-                    result.push(e);
-                }
-            }
+                build_domain_entity(entry, broad_match, &ctx.scan_id)
+            }));
         }
         Ok(result)
     }
