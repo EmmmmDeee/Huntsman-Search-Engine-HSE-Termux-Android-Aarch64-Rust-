@@ -105,17 +105,14 @@ fn name_matches_query(name: &str, query: &str) -> bool {
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
         .collect();
-    let mut any = false;
-    for tok in query
+    let tokens: Vec<&str> = query
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
-    {
-        any = true;
-        if !words.iter().any(|w| w.eq_ignore_ascii_case(tok)) {
-            return false;
-        }
-    }
-    any
+        .collect();
+    !tokens.is_empty()
+        && tokens
+            .iter()
+            .all(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
 }
 
 /// True if the seed matches the charity's legal name or any of its other names.
@@ -183,11 +180,11 @@ fn locality_address(rec: &Map<String, Value>) -> Option<String> {
 /// API returned is dropped — true for exact hits and candidates alike.
 fn charity_evidence(rec: &Map<String, Value>, total: u64) -> Evidence {
     let legal = field_str(rec, "Charity_Legal_Name").unwrap_or_default();
-    let mut ev = Evidence::new(SRC, format!("ACNC registered charity: {legal}"))
+    let ev = Evidence::new(SRC, format!("ACNC registered charity: {legal}"))
         .with_attr("register", "ACNC Register of Australian charities")
         .with_attr("total_matches", total.to_string());
     // Stable, useful columns — added only when present (no empty noise).
-    for (col, attr) in [
+    [
         ("ABN", "abn"),
         ("Other_Organisation_Names", "other_names"),
         ("Address_Line_1", "address_line_1"),
@@ -202,12 +199,10 @@ fn charity_evidence(rec: &Map<String, Value>, total: u64) -> Evidence {
         ("Date_Organisation_Established", "established"),
         ("Charity_Size", "charity_size"),
         ("Number_of_Responsible_Persons", "responsible_persons"),
-    ] {
-        if let Some(v) = field_str(rec, col) {
-            ev = ev.with_attr(attr, v);
-        }
-    }
-    ev
+    ]
+    .into_iter()
+    .filter_map(|(col, attr)| field_str(rec, col).map(|v| (attr, v)))
+    .fold(ev, |ev, (attr, v)| ev.with_attr(attr, v))
 }
 
 /// Pure transform: CKAN records → entities. Every row yields a primary
@@ -258,21 +253,25 @@ fn records_to_entities(
         }
 
         // Other / trading names → resolvable Organisations.
-        for tn in other_names(rec).into_iter().take(MAX_TRADING_NAMES) {
-            if tn.eq_ignore_ascii_case(&legal) {
-                continue;
-            }
-            let mut e = Entity::new(EntityKind::Organisation, &tn, TRADING_NAME_CONF, scan_id);
-            e.tag(SRC);
-            e.tag("acnc");
-            e.tag("country:AU");
-            e.tag("business-name");
-            e.add_evidence(Evidence::new(
-                SRC,
-                format!("Other/trading name for {legal}"),
-            ));
-            out.push(e);
-        }
+        out.extend(
+            other_names(rec)
+                .into_iter()
+                .take(MAX_TRADING_NAMES)
+                .filter(|tn| !tn.eq_ignore_ascii_case(&legal))
+                .map(|tn| {
+                    let mut e =
+                        Entity::new(EntityKind::Organisation, &tn, TRADING_NAME_CONF, scan_id);
+                    e.tag(SRC);
+                    e.tag("acnc");
+                    e.tag("country:AU");
+                    e.tag("business-name");
+                    e.add_evidence(Evidence::new(
+                        SRC,
+                        format!("Other/trading name for {legal}"),
+                    ));
+                    e
+                }),
+        );
 
         // Registered locality → geocode chains it into Coordinates.
         if let Some(addr) = locality_address(rec) {
@@ -285,13 +284,14 @@ fn records_to_entities(
             if let Some(sc) = crate::util::address_au::state_code(&addr) {
                 e.tag(format!("au-state:{sc}"));
             }
-            let mut aev = Evidence::new(SRC, format!("Registered address for {legal}"))
-                .with_attr("org", &legal);
-            for col in ["Address_Line_1", "Address_Line_2", "Address_Line_3"] {
-                if let Some(v) = field_str(rec, col) {
-                    aev = aev.with_attr(col.to_lowercase().replace(' ', "_"), v);
-                }
-            }
+            let aev = ["Address_Line_1", "Address_Line_2", "Address_Line_3"]
+                .into_iter()
+                .filter_map(|col| field_str(rec, col).map(|v| (col, v)))
+                .fold(
+                    Evidence::new(SRC, format!("Registered address for {legal}"))
+                        .with_attr("org", &legal),
+                    |aev, (col, v)| aev.with_attr(col.to_lowercase().replace(' ', "_"), v),
+                );
             e.add_evidence(aev);
             out.push(e);
 
