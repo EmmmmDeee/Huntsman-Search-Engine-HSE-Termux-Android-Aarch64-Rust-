@@ -102,40 +102,33 @@ struct GeoClassification {
 }
 
 fn classify_domain(domain: &str) -> Option<GeoClassification> {
-    if let Some(geo) = classify_by_known_service(domain) {
-        return Some(geo);
-    }
-    classify_by_cctld(domain)
+    // Known service first (higher confidence), falling back to the ccTLD table.
+    classify_by_known_service(domain).or_else(|| classify_by_cctld(domain))
 }
 
 fn classify_by_known_service(domain: &str) -> Option<GeoClassification> {
     let d = domain.strip_prefix("www.").unwrap_or(domain);
-
-    for &(pattern, location, cc) in GEO_SERVICES {
-        if crate::util::domains::is_or_subdomain_of(d, pattern) {
-            return Some(GeoClassification {
-                location,
-                country_code: cc,
-                confidence: 0.60,
-                method: "known_service",
-            });
-        }
-    }
-    None
+    GEO_SERVICES
+        .iter()
+        .find(|&&(pattern, _, _)| crate::util::domains::is_or_subdomain_of(d, pattern))
+        .map(|&(_, location, cc)| GeoClassification {
+            location,
+            country_code: cc,
+            confidence: 0.60,
+            method: "known_service",
+        })
 }
 
 fn classify_by_cctld(domain: &str) -> Option<GeoClassification> {
-    for &(tld, location, cc) in CCTLD_MAP {
-        if domain.ends_with(tld) {
-            return Some(GeoClassification {
-                location,
-                country_code: cc,
-                confidence: 0.45,
-                method: "cctld",
-            });
-        }
-    }
-    None
+    CCTLD_MAP
+        .iter()
+        .find(|&&(tld, _, _)| domain.ends_with(tld))
+        .map(|&(_, location, cc)| GeoClassification {
+            location,
+            country_code: cc,
+            confidence: 0.45,
+            method: "cctld",
+        })
 }
 
 const GEO_SERVICES: &[(&str, &str, &str)] = &[
