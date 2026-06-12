@@ -194,12 +194,11 @@ fn build_result(
     let mut entity = target.to_entity(confidence, scan_id);
     entity.tag(tags::BREACH);
 
-    for name in breaches {
-        let lower = name.to_lowercase();
-        if NOTABLE_BREACHES.iter().any(|n| lower.contains(n)) {
-            entity.tag(format!("breach:{lower}"));
-        }
-    }
+    breaches
+        .iter()
+        .map(|name| name.to_lowercase())
+        .filter(|lower| NOTABLE_BREACHES.iter().any(|n| lower.contains(n)))
+        .for_each(|lower| entity.tag(format!("breach:{lower}")));
 
     if count >= 5 {
         entity.tag(tags::HIGH_EXPOSURE);
