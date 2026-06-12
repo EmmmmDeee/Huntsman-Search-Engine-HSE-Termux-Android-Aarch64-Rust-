@@ -113,21 +113,19 @@ struct TimezoneInference {
 }
 
 fn extract_hours_from_value(value: &str) -> Vec<u32> {
-    let mut hours = Vec::new();
-    let digits = crate::util::str_util::ascii_digits(value);
-    // Extract plausible unix timestamps (10-digit sequences) from the value
-    if digits.len() >= 10 {
-        for chunk in digits.as_bytes().windows(10) {
-            if let Ok(s) = std::str::from_utf8(chunk)
-                && let Ok(ts) = s.parse::<u64>()
-                && (1_000_000_000..2_000_000_000).contains(&ts)
-            {
-                let hour = ((ts % 86400) / 3600) as u32;
-                hours.push(hour);
-            }
-        }
-    }
-    hours
+    // Each 10-digit window that parses as a plausible unix timestamp
+    // (2001–2033) is reduced to its UTC hour-of-day. `windows(10)` on a
+    // shorter digit string yields nothing, so no length guard is needed.
+    crate::util::str_util::ascii_digits(value)
+        .as_bytes()
+        .windows(10)
+        .filter_map(|chunk| {
+            let ts = std::str::from_utf8(chunk).ok()?.parse::<u64>().ok()?;
+            (1_000_000_000..2_000_000_000)
+                .contains(&ts)
+                .then_some(((ts % 86400) / 3600) as u32)
+        })
+        .collect()
 }
 
 fn infer_timezone(hours: &[u32]) -> Option<TimezoneInference> {
