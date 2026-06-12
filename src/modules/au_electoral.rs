@@ -176,23 +176,17 @@ pub(crate) fn extract_division(html: &str) -> Option<(String, Option<String>)> {
         }
     }
 
-    // State EC pattern: "enrolled in <Division>" or "enrolled for <Division>"
-    for marker in &["enrolled in ", "enrolled for "] {
-        if let Some(pos) = lc.find(marker) {
-            let rest = &text[pos + marker.len()..];
-            let name: String = rest
-                .chars()
-                .take_while(|c| c.is_alphabetic() || *c == '-' || *c == ' ')
-                .collect();
-            let name = name.trim().to_string();
-            if !name.is_empty() && name.len() < 40 {
-                let suburb = extract_suburb_hint(&text[pos..]);
-                return Some((name, suburb));
-            }
-        }
-    }
-
-    None
+    // State EC pattern: "enrolled in <Division>" or "enrolled for <Division>".
+    ["enrolled in ", "enrolled for "].iter().find_map(|marker| {
+        let pos = lc.find(marker)?;
+        let rest = &text[pos + marker.len()..];
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_alphabetic() || *c == '-' || *c == ' ')
+            .collect();
+        let name = name.trim().to_string();
+        (!name.is_empty() && name.len() < 40).then(|| (name, extract_suburb_hint(&text[pos..])))
+    })
 }
 
 /// Strip HTML tags from an electoral response, inserting spaces at each tag
