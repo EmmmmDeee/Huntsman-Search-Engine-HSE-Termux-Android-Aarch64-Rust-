@@ -133,29 +133,24 @@ struct DomainGeo {
 }
 
 fn infer_geo_from_email_domain(domain: &str) -> Option<DomainGeo> {
-    for &(tld, region) in CCTLD_REGIONS {
-        if domain.ends_with(tld) {
-            // AU ccTLDs (.com.au, .net.au, .org.au, .edu.au, .gov.au) are
-            // strong country signals — raise from 0.48 to 0.52 so they cross
-            // the 0.50 expansion floor and feed the geo-correlation chain.
-            let confidence = if tld.ends_with(".au") { 0.52 } else { 0.48 };
-            return Some(DomainGeo {
-                region,
-                confidence,
-                reason: "country-code TLD",
-            });
-        }
-    }
-    None
+    // AU ccTLDs (.com.au, .net.au, .org.au, .edu.au, .gov.au) are strong country
+    // signals — raised from 0.48 to 0.52 so they cross the 0.50 expansion floor
+    // and feed the geo-correlation chain.
+    CCTLD_REGIONS
+        .iter()
+        .find(|&&(tld, _)| domain.ends_with(tld))
+        .map(|&(tld, region)| DomainGeo {
+            region,
+            confidence: if tld.ends_with(".au") { 0.52 } else { 0.48 },
+            reason: "country-code TLD",
+        })
 }
 
 fn detect_corporate_provider(domain: &str) -> Option<(&'static str, &'static str)> {
-    for &(pattern, provider, region) in REGIONAL_PROVIDERS {
-        if domain_has_label_prefix(domain, pattern) {
-            return Some((provider, region));
-        }
-    }
-    None
+    REGIONAL_PROVIDERS
+        .iter()
+        .find(|&&(pattern, _, _)| domain_has_label_prefix(domain, pattern))
+        .map(|&(_, provider, region)| (provider, region))
 }
 
 /// True if `pattern` (a provider brand token such as `bigpond` or `tpg.com`)
