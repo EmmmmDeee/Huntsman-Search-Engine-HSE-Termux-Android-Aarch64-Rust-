@@ -432,60 +432,6 @@ fn should_skip_seed(kind: TargetKind, v: &str) -> bool {
     }
 }
 
-/// Mine a `discord_messages` item's free-text `content` for embedded emails
-/// and emit each as a low-confidence `Email` entity (0.30 — below pivot floor).
-fn extract_message_emails(
-    item: &Value,
-    scan_id: &str,
-    seen: &mut HashSet<String>,
-    result: &mut ModuleResult,
-) {
-    let Some(content) = val_str(item, "content") else {
-        return;
-    };
-    let ev = Evidence::new(SRC, "SeekNow discord_messages content")
-        .with_attr("source", "discord_messages");
-    for m in EMAIL_RE.find_iter(&content) {
-        let email = m.as_str().to_lowercase();
-        if seen.insert(email.clone()) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.30, scan_id);
-            e.tag("see-know");
-            e.tag("discord-message");
-            e.tag("weak-lead");
-            e.add_evidence(ev.clone());
-            result.push(e);
-        }
-    }
-}
-
-/// Mine a `discord_messages` item's free-text `content` for `<@id>` / `<@!id>`
-/// Discord user-mention snowflakes and emit each as a low-confidence `Username`
-/// entity (`discord:<id>`, 0.30 — below pivot floor).
-fn extract_message_mentions(
-    item: &Value,
-    scan_id: &str,
-    seen: &mut HashSet<String>,
-    result: &mut ModuleResult,
-) {
-    let Some(content) = val_str(item, "content") else {
-        return;
-    };
-    let ev = Evidence::new(SRC, "SeekNow discord_messages content")
-        .with_attr("source", "discord_messages");
-    for caps in MESSAGE_MENTION_RE.captures_iter(&content) {
-        let id = &caps[1];
-        if seen.insert(format!("@discord:{id}")) {
-            let mut e = Entity::new(EntityKind::Username, format!("discord:{id}"), 0.30, scan_id);
-            e.tag("see-know");
-            e.tag("discord-message");
-            e.tag("weak-lead");
-            e.tag("mention");
-            e.add_evidence(ev.clone());
-            result.push(e);
-        }
-    }
-}
-
 /// Geo-conscious extraction — surface coordinates, timezones, and
 /// location-bearing fields from any SeekNow endpoint response so the
 /// downstream geocode/overpass/wigle modules can converge.
