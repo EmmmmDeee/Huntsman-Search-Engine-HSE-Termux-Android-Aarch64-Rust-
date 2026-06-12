@@ -98,6 +98,21 @@ impl Module for FullContact {
         ModuleCategory::People
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // person.enrich resolves the owner's name + title (the People default
+        // T1589.003 + T1591.004), their employer(s) (T1591.002 Business
+        // Relationships), location (T1591.001 Physical Locations), and linked
+        // social handles (T1593.001 Social Media). Superset of the default —
+        // coverage cannot regress.
+        &[
+            "T1589.003",
+            "T1591.004",
+            "T1591.002",
+            "T1591.001",
+            "T1593.001",
+        ]
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         9_000
     }
