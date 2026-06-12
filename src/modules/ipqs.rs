@@ -108,7 +108,7 @@ fn build_reputation_entity(
         entity.tag("elevated-risk");
     }
     // Boolean signal tags — raised only on an explicit `true`.
-    for (flag, tag) in [
+    [
         (body.proxy, "proxy"),
         (body.vpn, "vpn"),
         (body.tor, "tor"),
@@ -116,11 +116,10 @@ fn build_reputation_entity(
         (body.disposable, "disposable"),
         (body.leaked, "leaked"),
         (body.recent_abuse, "recent-abuse"),
-    ] {
-        if flag == Some(true) {
-            entity.tag(tag);
-        }
-    }
+    ]
+    .into_iter()
+    .filter(|(flag, _)| *flag == Some(true))
+    .for_each(|(_, tag)| entity.tag(tag));
     if let Some(c) = body.country_code.as_deref() {
         entity.tag(format!("country:{}", c.to_uppercase()));
     }
@@ -199,6 +198,14 @@ impl Module for IpQs {
 
     fn category(&self) -> ModuleCategory {
         ModuleCategory::Infrastructure
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // IPQualityScore is a paid fraud/reputation vendor scoring IP / email /
+        // phone, so beyond the Infrastructure default (T1590.005 IP Addresses +
+        // T1596.005 Scan Databases) it is Search Closed Sources: Threat Intel
+        // Vendors (T1597.001). Superset of the default — coverage cannot regress.
+        &["T1590.005", "T1596.005", "T1597.001"]
     }
 
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
