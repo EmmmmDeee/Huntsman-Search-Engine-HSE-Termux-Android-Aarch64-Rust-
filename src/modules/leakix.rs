@@ -159,6 +159,14 @@ impl Module for LeakIx {
         ModuleCategory::Breach
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // LeakIX is an internet-wide scan-results / exposure database, so beyond
+        // the Breach default (T1589.001 Credentials + T1589.002 Email, for the
+        // leak events) it is Search Open Technical Databases: Scan Databases
+        // (T1596.005). Superset of the default — coverage cannot regress.
+        &["T1589.001", "T1589.002", "T1596.005"]
+    }
+
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
         use crate::core::entity::EntityKind;
         const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Domain];
