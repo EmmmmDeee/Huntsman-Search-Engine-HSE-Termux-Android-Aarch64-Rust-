@@ -222,7 +222,10 @@ mod tests {
             for end in 0..=s.len() + 2 {
                 let out = char_window(s, start, end);
                 // Always a real contiguous substring (valid &str by construction).
-                assert!(out.is_empty() || s.contains(out), "real slice: {start},{end}");
+                assert!(
+                    out.is_empty() || s.contains(out),
+                    "real slice: {start},{end}"
+                );
             }
         }
         // Boundary-rounding spot-checks ("aébc": a=0, é=1..3, b=3, c=4).

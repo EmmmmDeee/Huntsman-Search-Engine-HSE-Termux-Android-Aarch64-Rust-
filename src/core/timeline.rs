@@ -74,8 +74,11 @@ impl TimelineEventKind {
 /// One reconstructed point on the chronology.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimelineEvent {
-    /// Unix seconds — the sort key and canonical instant.
-    pub ts: u64,
+    /// Unix seconds — the sort key and canonical instant. **Signed**: pre-1970
+    /// instants (e.g. a date of birth) are legitimately negative, so this must
+    /// not be `u64` or `reconstruct`'s oldest-first sort would place every
+    /// pre-epoch event *after* the 1970+ ones.
+    pub ts: i64,
     /// Normalised `YYYY-MM-DD` (or `YYYY-MM-DDTHH:MM:SSZ`) for display.
     pub iso: String,
     pub kind: TimelineEventKind,
@@ -171,7 +174,7 @@ fn is_leap(y: i64) -> bool {
 /// Accepts: Unix seconds (10 digits), Unix milliseconds (13 digits), bare year
 /// (`1998`), `YYYY-MM-DD`, `YYYY/MM/DD`, and `YYYY-MM-DDTHH:MM:SS[Z]`. Anything
 /// else (or an out-of-range field) returns `None` so callers skip it cleanly.
-pub fn parse_date(raw: &str) -> Option<(u64, String)> {
+pub fn parse_date(raw: &str) -> Option<(i64, String)> {
     let s = raw.trim();
     if s.is_empty() {
         return None;
@@ -180,8 +183,8 @@ pub fn parse_date(raw: &str) -> Option<(u64, String)> {
     // Pure-digit forms: epoch seconds / milliseconds, or a bare year.
     if s.bytes().all(|b| b.is_ascii_digit()) {
         match s.len() {
-            13 => return s.parse::<u64>().ok().map(|ms| from_unix(ms / 1000)),
-            10 => return s.parse::<u64>().ok().map(from_unix),
+            13 => return s.parse::<i64>().ok().map(|ms| from_unix(ms / 1000)),
+            10 => return s.parse::<i64>().ok().map(from_unix),
             4 => {
                 let y: i64 = s.parse().ok()?;
                 if (1900..=2100).contains(&y) {
@@ -264,10 +267,12 @@ pub fn parse_date(raw: &str) -> Option<(u64, String)> {
     Some(civil_to_unix(y, mo, d, hh, mm, ss))
 }
 
-fn civil_to_unix(y: i64, m: i64, d: i64, hh: i64, mm: i64, ss: i64) -> (u64, String) {
+fn civil_to_unix(y: i64, m: i64, d: i64, hh: i64, mm: i64, ss: i64) -> (i64, String) {
     let days = days_from_civil(y, m, d);
-    let secs = days * 86400 + hh * 3600 + mm * 60 + ss;
-    let ts = secs.max(0) as u64;
+    // Signed: a pre-1970 date yields a negative instant. Do NOT clamp to 0 —
+    // that would collapse every pre-epoch event onto the same sort key and
+    // break the oldest-first chronology while the ISO string stayed correct.
+    let ts = days * 86400 + hh * 3600 + mm * 60 + ss;
     let iso = if hh == 0 && mm == 0 && ss == 0 {
         format!("{y:04}-{m:02}-{d:02}")
     } else {
@@ -278,9 +283,11 @@ fn civil_to_unix(y: i64, m: i64, d: i64, hh: i64, mm: i64, ss: i64) -> (u64, Str
 
 /// Convert Unix seconds back into a normalised `YYYY-MM-DD` display string,
 /// pairing it with the input timestamp.
-fn from_unix(ts: u64) -> (u64, String) {
-    // Inverse of days_from_civil (Hinnant's civil_from_days).
-    let z = (ts / 86400) as i64 + 719468;
+fn from_unix(ts: i64) -> (i64, String) {
+    // Inverse of days_from_civil (Hinnant's civil_from_days). `div_euclid`
+    // floors toward negative infinity so a negative `ts` (pre-1970) maps to the
+    // correct civil day rather than truncating toward zero.
+    let z = ts.div_euclid(86400) + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
     let doe = z - era * 146097;
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
@@ -403,6 +410,41 @@ mod tests {
         assert_eq!(tl[1].kind, TimelineEventKind::BreachExposure);
         assert_eq!(tl[2].kind, TimelineEventKind::Expiry);
         assert!(tl.iter().all(|e| e.ts > 0));
+    }
+
+    #[test]
+    fn pre_1970_dates_are_negative_and_sort_before_epoch() {
+        // Regression: a pre-1970 calendar date must yield a *negative* Unix
+        // timestamp, not clamp to 0. Otherwise reconstruct()'s oldest-first
+        // sort places, e.g., a 1965 date of birth *after* every 1970+ event.
+        let (ts, iso) = parse_date("1965-03-10").unwrap();
+        assert!(ts < 0, "pre-1970 date must be negative, got {ts}");
+        assert_eq!(iso, "1965-03-10");
+        // The display string round-trips through the signed inverse too.
+        assert_eq!(from_unix(ts).1, "1965-03-10");
+
+        let entities = vec![
+            entity_with_attrs(
+                EntityKind::Domain,
+                "b.com",
+                "rdap_domain",
+                &[("registered", "2008-06-01")],
+            ),
+            entity_with_attrs(
+                EntityKind::Person,
+                "Haigen Bamford",
+                "au_people",
+                &[("date_of_birth", "1965-03-10")],
+            ),
+        ];
+        let tl = reconstruct(&entities);
+        assert_eq!(tl.len(), 2);
+        // Oldest-first: the 1965 birth must precede the 2008 registration,
+        // even though it was supplied second.
+        assert_eq!(tl[0].kind, TimelineEventKind::DateOfBirth);
+        assert!(tl[0].ts < 0);
+        assert_eq!(tl[1].kind, TimelineEventKind::Registered);
+        assert!(tl[1].ts > 0);
     }
 
     #[test]
