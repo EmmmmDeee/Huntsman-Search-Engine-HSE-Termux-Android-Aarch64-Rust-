@@ -3171,3 +3171,220 @@ fn au_058_below_confidence_threshold_does_not_fire() {
     }];
     assert!(rule_au_058_professional_profile_geo(&ents, "scan", 0).is_empty());
 }
+
+// ─── Recursive-scan simulation: cross-seed geo synergy for a subject ─────────
+//
+// An offline, deterministic stand-in for a live recursive scan. Real modules
+// hit the network; here we construct the `Coordinates` entities those modules
+// *would* emit for a subject (one per orthogonal source class) and drive the
+// real correlation pipeline (`correlate_entities`) over them. This proves the
+// end-to-end geo-synergy behaviour — AU-059 convergence, AU restriction, and
+// orthogonal-class scoring — from many *random combinations of starting seeds*,
+// without a live PII collection. Pure fixtures + the production rule set.
+mod geo_synergy_sim {
+    use super::super::rules::location::geo_source_class;
+    use super::super::{Correlation, Severity, correlate_entities};
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    /// One simulated person-anchored geo sighting: the `Coordinates` an emitting
+    /// module would produce. `source` selects the orthogonal class; the AU-state
+    /// tag mirrors what collection-time tagging attaches.
+    fn sighting(source: &str, lat: f64, lon: f64, conf: f64, state: &str) -> Entity {
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            format!("{lat:.4},{lon:.4}"),
+            conf,
+            "scan",
+        );
+        e.tag(format!("au-state:{state}"));
+        e.tag("country:AU");
+        e.add_evidence(Evidence::new(
+            source,
+            "person-anchored geo sighting".to_string(),
+        ));
+        e
+    }
+
+    /// Did AU-059 fire, and on which state/severity? Returns the matching
+    /// correlation if present.
+    fn au059(corrs: &[Correlation]) -> Option<&Correlation> {
+        corrs.iter().find(|c| c.rule_id == "AU-059")
+    }
+
+    /// The canonical Sydney/NSW fixture coordinates, one per orthogonal class.
+    /// Tight cluster (~Paddington/CBD) so the centroid is unambiguous.
+    fn nsw_sources() -> Vec<(&'static str, f64, f64, f64)> {
+        vec![
+            ("abn_lookup", -33.8841, 151.2310, 0.82), // registry  (ABN registered office)
+            ("exif_geo", -33.8850, 151.2300, 0.74),   // photo-gps (geotagged image)
+            ("wigle", -33.8835, 151.2325, 0.66),      // wifi      (observed AP)
+            ("au_people", -33.8860, 151.2290, 0.55),  // directory (White Pages AU)
+            ("social_location", -33.8848, 151.2312, 0.60), // social (profile bio)
+            ("phone_area_geo", -33.8700, 151.2090, 0.52), // phone (02 area code → Sydney)
+        ]
+    }
+
+    #[test]
+    fn single_class_never_converges() {
+        // Two sightings, but BOTH registry → one orthogonal class → no synergy.
+        let ents = vec![
+            sighting("abn_lookup", -33.8841, 151.2310, 0.82, "NSW"),
+            sighting("acnc_charities", -33.8850, 151.2300, 0.70, "NSW"),
+        ];
+        let corrs = correlate_entities(&ents, "scan");
+        assert!(
+            au059(&corrs).is_none(),
+            "a single orthogonal class must not assert a synergy fix"
+        );
+    }
+
+    #[test]
+    fn two_orthogonal_classes_converge_in_nsw() {
+        // A name→registry hit plus a photo GPS: the minimum useful seed combo.
+        let ents = vec![
+            sighting("abn_lookup", -33.8841, 151.2310, 0.82, "NSW"),
+            sighting("exif_geo", -33.8850, 151.2300, 0.74, "NSW"),
+        ];
+        let corrs = correlate_entities(&ents, "scan");
+        let c = au059(&corrs).expect("two orthogonal AU classes must fire AU-059");
+        assert_eq!(c.severity, Severity::Medium, "exactly 2 classes ⇒ Medium");
+        assert!(c.description.contains("state=NSW"));
+    }
+
+    #[test]
+    fn three_plus_classes_are_high_severity() {
+        let ents = vec![
+            sighting("abn_lookup", -33.8841, 151.2310, 0.82, "NSW"),
+            sighting("exif_geo", -33.8850, 151.2300, 0.74, "NSW"),
+            sighting("wigle", -33.8835, 151.2325, 0.66, "NSW"),
+        ];
+        let corrs = correlate_entities(&ents, "scan");
+        let c = au059(&corrs).expect("three orthogonal classes must fire AU-059");
+        assert_eq!(c.severity, Severity::High, "≥3 classes ⇒ High");
+    }
+
+    /// The core requirement: geolocation must be achievable from *as many random
+    /// combinations of starting seeds as possible*. Enumerate every 2-and-3
+    /// subset of the orthogonal NSW source set; each subset whose sources span
+    /// ≥2 distinct classes MUST converge on NSW. This is the combinatorial proof
+    /// that the fix doesn't depend on any one privileged seed.
+    #[test]
+    fn every_multi_class_seed_combination_converges() {
+        let all = nsw_sources();
+        let n = all.len();
+        let mut tested_combos = 0usize;
+
+        // All 2- and 3-element subsets (bitmask enumeration; n is small).
+        for mask in 1u32..(1 << n) {
+            let chosen: Vec<_> = (0..n)
+                .filter(|i| mask & (1 << i) != 0)
+                .map(|i| all[i])
+                .collect();
+            if !(2..=3).contains(&chosen.len()) {
+                continue;
+            }
+            // Distinct orthogonal classes in this subset.
+            let classes: std::collections::HashSet<_> = chosen
+                .iter()
+                .map(|(src, ..)| geo_source_class(src))
+                .collect();
+
+            let ents: Vec<Entity> = chosen
+                .iter()
+                .map(|(src, lat, lon, conf)| sighting(src, *lat, *lon, *conf, "NSW"))
+                .collect();
+            let corrs = correlate_entities(&ents, "scan");
+            let fired = au059(&corrs);
+
+            if classes.len() >= 2 {
+                let c = fired.unwrap_or_else(|| {
+                    panic!(
+                        "multi-class seed combo {:?} ({} classes) must converge",
+                        chosen.iter().map(|(s, ..)| *s).collect::<Vec<_>>(),
+                        classes.len()
+                    )
+                });
+                assert!(
+                    c.description.contains("state=NSW"),
+                    "combo {:?} must localise to NSW",
+                    chosen.iter().map(|(s, ..)| *s).collect::<Vec<_>>()
+                );
+                tested_combos += 1;
+            } else {
+                assert!(
+                    fired.is_none(),
+                    "single-class combo {:?} must NOT converge",
+                    chosen.iter().map(|(s, ..)| *s).collect::<Vec<_>>()
+                );
+            }
+        }
+        // Sanity: we actually exercised a meaningful number of combinations.
+        assert!(
+            tested_combos >= 15,
+            "expected many converging combos, exercised {tested_combos}"
+        );
+    }
+
+    /// AU restriction: a non-Australian sighting must never contribute a class,
+    /// even if it would otherwise complete a 2-class quorum. Here the only AU
+    /// point is a registry hit; the photo GPS is in London → no synergy.
+    #[test]
+    fn foreign_sighting_cannot_complete_quorum() {
+        let mut london = Entity::new(EntityKind::Coordinates, "51.5074,-0.1278", 0.80, "scan");
+        london.add_evidence(Evidence::new("exif_geo", "overseas trip photo".to_string()));
+        let ents = vec![
+            sighting("abn_lookup", -33.8841, 151.2310, 0.82, "NSW"),
+            london,
+        ];
+        let corrs = correlate_entities(&ents, "scan");
+        assert!(
+            au059(&corrs).is_none(),
+            "a foreign coordinate must not complete the AU synergy quorum"
+        );
+    }
+
+    /// The dominant-state report follows the majority of contributing sightings:
+    /// 3 NSW + 1 VIC ⇒ NSW. (Mixed-state input still converges; the centroid and
+    /// reported state reflect the weight of evidence.)
+    #[test]
+    fn majority_state_wins_the_report() {
+        let ents = vec![
+            sighting("abn_lookup", -33.8841, 151.2310, 0.82, "NSW"),
+            sighting("exif_geo", -33.8850, 151.2300, 0.74, "NSW"),
+            sighting("au_people", -33.8860, 151.2290, 0.55, "NSW"),
+            sighting("wigle", -37.8136, 144.9631, 0.66, "VIC"),
+        ];
+        let corrs = correlate_entities(&ents, "scan");
+        let c = au059(&corrs).expect("multi-class input must converge");
+        assert!(
+            c.description.contains("state=NSW"),
+            "majority NSW evidence must report NSW: {}",
+            c.description
+        );
+    }
+
+    /// Infrastructure geo (a CDN edge, an Overpass POI) must never enter the fix
+    /// — the person-anchor gate is shared with AU-052/053. Here two genuine
+    /// person sources converge while a `hosting`-tagged point is ignored.
+    #[test]
+    fn infrastructure_points_are_excluded() {
+        let mut cdn = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.90, "scan");
+        cdn.tag("au-state:NSW");
+        cdn.tag(crate::core::tags::HOSTING);
+        cdn.add_evidence(Evidence::new("ip_geo", "CDN edge".to_string()));
+        let ents = vec![
+            sighting("abn_lookup", -33.8841, 151.2310, 0.82, "NSW"),
+            sighting("exif_geo", -33.8850, 151.2300, 0.74, "NSW"),
+            cdn,
+        ];
+        let corrs = correlate_entities(&ents, "scan");
+        let c = au059(&corrs).expect("two person sources still converge");
+        // The hosting point's uid (uid is derived from kind+value) must not
+        // appear among AU-059's children.
+        let cdn_uid = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.0, "scan").uid;
+        assert!(
+            !c.entity_uids.contains(&cdn_uid),
+            "a hosting-tagged CDN point must not enter the synergy fix"
+        );
+    }
+}
