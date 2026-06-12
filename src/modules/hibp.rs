@@ -387,13 +387,10 @@ impl Hibp {
         result.push(domain_ent);
 
         // Extract data classes across all breaches for intelligence
-        let mut all_data_classes: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        for breach in &breaches {
-            for dc in &breach.data_classes {
-                all_data_classes.insert(dc.clone());
-            }
-        }
+        let all_data_classes: std::collections::HashSet<String> = breaches
+            .iter()
+            .flat_map(|breach| breach.data_classes.iter().cloned())
+            .collect();
         if !all_data_classes.is_empty() {
             let mut sorted: Vec<String> = all_data_classes.into_iter().collect();
             sorted.sort();
