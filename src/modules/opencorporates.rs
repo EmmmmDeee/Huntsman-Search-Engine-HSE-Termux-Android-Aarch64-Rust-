@@ -51,8 +51,7 @@ fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) -> Vec<Enti
         entity.tag("active");
     }
 
-    let mut ev = Evidence::new(SRC, format!("OpenCorporates: {name}"));
-    for (attr, val) in [
+    let mut ev = [
         ("company_number", co.company_number.as_deref()),
         ("jurisdiction", co.jurisdiction_code.as_deref()),
         ("incorporation_date", co.incorporation_date.as_deref()),
@@ -64,11 +63,13 @@ fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) -> Vec<Enti
             co.registered_address_in_full.as_deref(),
         ),
         ("opencorporates_url", co.opencorporates_url.as_deref()),
-    ] {
-        if let Some(v) = val {
-            ev = ev.with_attr(attr, v);
-        }
-    }
+    ]
+    .into_iter()
+    .filter_map(|(attr, val)| val.map(|v| (attr, v)))
+    .fold(
+        Evidence::new(SRC, format!("OpenCorporates: {name}")),
+        |ev, (attr, v)| ev.with_attr(attr, v),
+    );
     ev = ev.with_attr("total_matches", total.to_string());
     entity.add_evidence(ev);
     out.push(entity);
@@ -261,13 +262,14 @@ impl Module for OpenCorporates {
             .unwrap_or(results.companies.len() as u64);
         let mut result = ModuleResult::new();
 
-        for wrapper in results.companies.iter().take(PER_PAGE) {
-            if let Some(co) = &wrapper.company {
-                for e in build_company_entities(co, total, &ctx.scan_id) {
-                    result.push(e);
-                }
-            }
-        }
+        result.extend(
+            results
+                .companies
+                .iter()
+                .take(PER_PAGE)
+                .filter_map(|wrapper| wrapper.company.as_ref())
+                .flat_map(|co| build_company_entities(co, total, &ctx.scan_id)),
+        );
 
         Ok(result)
     }
