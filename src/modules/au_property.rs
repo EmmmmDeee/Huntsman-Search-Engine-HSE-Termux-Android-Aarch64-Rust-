@@ -148,75 +148,39 @@ pub(crate) fn extract_postcode(text: &str) -> Option<String> {
     None
 }
 
-/// Parse owner records from a NSW Spatial / ELVIS cadastral API response.
-/// Looks for suburb + state patterns near a name match. Pure.
-pub(crate) fn parse_nsw_response(text: &str, full_name: &str) -> Vec<PropertyRecord> {
-    let stripped = strip_html(text);
-    let mut out = Vec::new();
-    // NSW ELVIS returns JSON-like or HTML rows. Scan for name proximity.
-    for line in stripped.lines() {
-        if !name_matches(line, full_name) {
-            continue;
-        }
-        let state = extract_state(line).unwrap_or("NSW");
-        let postcode = extract_postcode(line);
-        let suburb = extract_suburb_from_line(line, state);
-        if !suburb.is_empty() {
-            out.push(PropertyRecord {
+/// Parse owner records from a property-portal response: keep lines matching the
+/// seed name, then extract suburb/state/postcode. `default_state` applies when a
+/// line names no state. Pure. The per-portal wrappers differ only in that default.
+fn parse_response(text: &str, full_name: &str, default_state: &'static str) -> Vec<PropertyRecord> {
+    strip_html(text)
+        .lines()
+        .filter(|line| name_matches(line, full_name))
+        .filter_map(|line| {
+            let state = extract_state(line).unwrap_or(default_state);
+            let suburb = extract_suburb_from_line(line, state);
+            (!suburb.is_empty()).then(|| PropertyRecord {
                 owner_name: full_name.to_string(),
                 suburb,
                 state,
-                postcode,
-            });
-        }
-    }
-    out
+                postcode: extract_postcode(line),
+            })
+        })
+        .collect()
+}
+
+/// Parse owner records from a NSW Spatial / ELVIS cadastral API response. Pure.
+pub(crate) fn parse_nsw_response(text: &str, full_name: &str) -> Vec<PropertyRecord> {
+    parse_response(text, full_name, "NSW")
 }
 
 /// Parse owner records from a VIC MapShare response. Pure.
 pub(crate) fn parse_vic_response(text: &str, full_name: &str) -> Vec<PropertyRecord> {
-    let stripped = strip_html(text);
-    let mut out = Vec::new();
-    for line in stripped.lines() {
-        if !name_matches(line, full_name) {
-            continue;
-        }
-        let state = extract_state(line).unwrap_or("VIC");
-        let postcode = extract_postcode(line);
-        let suburb = extract_suburb_from_line(line, state);
-        if !suburb.is_empty() {
-            out.push(PropertyRecord {
-                owner_name: full_name.to_string(),
-                suburb,
-                state,
-                postcode,
-            });
-        }
-    }
-    out
+    parse_response(text, full_name, "VIC")
 }
 
 /// Parse owner records from a QLD Globe / titles response. Pure.
 pub(crate) fn parse_qld_response(text: &str, full_name: &str) -> Vec<PropertyRecord> {
-    let stripped = strip_html(text);
-    let mut out = Vec::new();
-    for line in stripped.lines() {
-        if !name_matches(line, full_name) {
-            continue;
-        }
-        let state = extract_state(line).unwrap_or("QLD");
-        let postcode = extract_postcode(line);
-        let suburb = extract_suburb_from_line(line, state);
-        if !suburb.is_empty() {
-            out.push(PropertyRecord {
-                owner_name: full_name.to_string(),
-                suburb,
-                state,
-                postcode,
-            });
-        }
-    }
-    out
+    parse_response(text, full_name, "QLD")
 }
 
 /// Extract a suburb name from a line, stopping before the state abbreviation
@@ -378,9 +342,11 @@ impl Module for AuProperty {
             && resp.status().is_success()
             && let Ok(body) = resp.text().await
         {
-            for rec in parse_nsw_response(&body, full_name) {
-                all_entities.extend(record_to_entities(&rec, &ctx.scan_id));
-            }
+            all_entities.extend(
+                parse_nsw_response(&body, full_name)
+                    .iter()
+                    .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
+            );
         }
 
         // ── VIC MapShare ──────────────────────────────────────────────────
@@ -401,9 +367,11 @@ impl Module for AuProperty {
                 && resp.status().is_success()
                 && let Ok(body) = resp.text().await
             {
-                for rec in parse_vic_response(&body, full_name) {
-                    all_entities.extend(record_to_entities(&rec, &ctx.scan_id));
-                }
+                all_entities.extend(
+                    parse_vic_response(&body, full_name)
+                        .iter()
+                        .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
+                );
             }
         }
 
@@ -423,9 +391,11 @@ impl Module for AuProperty {
                 && resp.status().is_success()
                 && let Ok(body) = resp.text().await
             {
-                for rec in parse_qld_response(&body, full_name) {
-                    all_entities.extend(record_to_entities(&rec, &ctx.scan_id));
-                }
+                all_entities.extend(
+                    parse_qld_response(&body, full_name)
+                        .iter()
+                        .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
+                );
             }
         }
 
