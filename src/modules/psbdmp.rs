@@ -102,26 +102,35 @@ fn extract(resp: &SearchResp, term: &str, scan_id: &str, result: &mut ModuleResu
     // Mark the seed as paste-exposed so the correlator can corroborate it
     // against the other breach sources.
     let mut seen = std::collections::HashSet::new();
-    for paste in &resp.data {
+    result.extend(resp.data.iter().filter_map(|paste| {
         if paste.id.is_empty() || !seen.insert(paste.id.clone()) {
-            continue;
+            return None;
         }
         let url = format!("https://pastebin.com/{}", paste.id);
-        let mut ev = Evidence::new(SRC, format!("{term} found in paste {}", paste.id))
-            .with_attr("paste_id", &paste.id)
-            .with_attr("search_term", term);
-        if !paste.date.is_empty() {
-            ev = ev.with_attr("date", &paste.date);
-        }
-        if !paste.tags.is_empty() {
-            ev = ev.with_attr("tags", &paste.tags);
-        }
+        let ev = [
+            (
+                "date",
+                (!paste.date.is_empty()).then_some(paste.date.as_str()),
+            ),
+            (
+                "tags",
+                (!paste.tags.is_empty()).then_some(paste.tags.as_str()),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(
+            Evidence::new(SRC, format!("{term} found in paste {}", paste.id))
+                .with_attr("paste_id", &paste.id)
+                .with_attr("search_term", term),
+            |ev, (key, v)| ev.with_attr(key, v),
+        );
         let mut e = Entity::new(EntityKind::Url, &url, 0.55, scan_id);
         e.tag(SRC);
         e.tag(tags::PASTE_EXPOSED);
         e.add_evidence(ev);
-        result.push(e);
-    }
+        Some(e)
+    }));
 }
 
 #[cfg(test)]
