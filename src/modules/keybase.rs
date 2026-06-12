@@ -170,35 +170,33 @@ impl Module for Keybase {
         let mut entity = Entity::new(EntityKind::Username, kb_username, 0.90, &ctx.scan_id);
         entity.tag("keybase");
 
-        let mut ev = Evidence::new(SRC, format!("Keybase profile for {kb_username}"))
-            .with_attr("profile_url", format!("https://keybase.io/{kb_username}"));
-
-        if let Some(basics) = &user.basics
-            && let Some(ctime) = basics.ctime
-        {
-            ev = ev.with_attr("created_at_unix", ctime.to_string());
-        }
-        if let Some(id) = &user.id {
-            ev = ev.with_attr("keybase_id", id);
-        }
-        if let Some(profile) = &user.profile {
-            if let Some(name) = profile.full_name.as_deref() {
-                ev = ev.with_attr("full_name", name);
-            }
-            if let Some(loc) = profile.location.as_deref() {
-                ev = ev.with_attr("location", loc);
-            }
-            if let Some(bio) = profile.bio.as_deref() {
-                ev = ev.with_attr("bio", bio);
-            }
-        }
-
         let proof_count = user
             .proofs_summary
             .as_ref()
             .map(|p| p.all.len())
             .unwrap_or(0);
-        ev = ev.with_attr("proof_count", proof_count.to_string());
+        let profile = user.profile.as_ref();
+        let ev = [
+            (
+                "created_at_unix",
+                user.basics
+                    .as_ref()
+                    .and_then(|b| b.ctime)
+                    .map(|c| c.to_string()),
+            ),
+            ("keybase_id", user.id.clone()),
+            ("full_name", profile.and_then(|p| p.full_name.clone())),
+            ("location", profile.and_then(|p| p.location.clone())),
+            ("bio", profile.and_then(|p| p.bio.clone())),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(
+            Evidence::new(SRC, format!("Keybase profile for {kb_username}"))
+                .with_attr("profile_url", format!("https://keybase.io/{kb_username}"))
+                .with_attr("proof_count", proof_count.to_string()),
+            |ev, (key, v)| ev.with_attr(key, v),
+        );
 
         entity.add_evidence(ev);
         result.push(entity);
