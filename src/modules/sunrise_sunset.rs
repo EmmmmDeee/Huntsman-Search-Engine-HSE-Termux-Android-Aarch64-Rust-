@@ -71,15 +71,8 @@ fn build_solar_entity(
     entity.tag("chronolocation");
     entity.tag("geoint");
 
-    let mut ev = Evidence::new(
-        SRC,
-        format!("Solar phases for {lat:.4},{lon:.4} on {today}"),
-    )
-    .with_attr("date", today)
-    .with_attr("latitude", format!("{lat:.6}"))
-    .with_attr("longitude", format!("{lon:.6}"));
-
-    for (attr, val) in [
+    // Fold every present solar timestamp into the evidence in one pass.
+    let mut ev = [
         ("sunrise_utc", results.sunrise.as_deref()),
         ("sunset_utc", results.sunset.as_deref()),
         ("solar_noon_utc", results.solar_noon.as_deref()),
@@ -104,11 +97,19 @@ fn build_solar_entity(
             "astronomical_twilight_end",
             results.astronomical_twilight_end.as_deref(),
         ),
-    ] {
-        if let Some(v) = val {
-            ev = ev.with_attr(attr, v);
-        }
-    }
+    ]
+    .into_iter()
+    .filter_map(|(attr, val)| val.map(|v| (attr, v)))
+    .fold(
+        Evidence::new(
+            SRC,
+            format!("Solar phases for {lat:.4},{lon:.4} on {today}"),
+        )
+        .with_attr("date", today)
+        .with_attr("latitude", format!("{lat:.6}"))
+        .with_attr("longitude", format!("{lon:.6}")),
+        |ev, (attr, v)| ev.with_attr(attr, v),
+    );
 
     // `day_length` is a number (seconds) on the formatted=0 API but a string on
     // the default endpoint — accept either.
