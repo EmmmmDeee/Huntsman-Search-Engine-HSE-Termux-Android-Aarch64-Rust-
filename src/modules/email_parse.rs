@@ -59,6 +59,15 @@ impl Module for EmailParse {
         ModuleCategory::Email
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // The email yields its domain + derived usernames (T1589.002 Email
+        // Addresses, the category default) and, for a corporate
+        // firstname.lastname local-part, infers the person's name — add
+        // T1589.003 (Employee Names). Superset of the default; coverage cannot
+        // regress.
+        &["T1589.002", "T1589.003"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] =
             &[EntityKind::Domain, EntityKind::Username, EntityKind::Person];
@@ -142,7 +151,7 @@ impl Module for EmailParse {
                 let email_domain = target.value.split('@').nth(1).unwrap_or("").to_lowercase();
                 let is_corporate = !is_freemail(&email_domain);
                 let uname_conf = if is_corporate { 0.70 } else { 0.55 };
-                for candidate in candidates {
+                result.extend(candidates.into_iter().map(|candidate| {
                     let mut entity =
                         Entity::new(EntityKind::Username, &candidate, uname_conf, &ctx.scan_id);
                     entity.tag("derived");
@@ -151,8 +160,8 @@ impl Module for EmailParse {
                             .with_attr("source_email", &target.value)
                             .with_attr("derivation", "local_part"),
                     );
-                    result.push(entity);
-                }
+                    entity
+                }));
 
                 // firstname.lastname → Person entity (corporate emails)
                 let parts: Vec<&str> = detagged.split(['.', '_']).collect();
