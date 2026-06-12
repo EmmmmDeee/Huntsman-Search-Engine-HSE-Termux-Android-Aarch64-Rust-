@@ -254,9 +254,9 @@ impl Module for UsernameSearch {
             summary.tag("multi-platform");
 
             // Tag each category that had at least one hit.
-            for cat in category_counts.keys() {
-                summary.tag(format!("cat:{cat}"));
-            }
+            category_counts
+                .keys()
+                .for_each(|cat| summary.tag(format!("cat:{cat}")));
 
             // People-centric intelligence tags: flag high-value
             // categories that reveal personal lifestyle/identity
