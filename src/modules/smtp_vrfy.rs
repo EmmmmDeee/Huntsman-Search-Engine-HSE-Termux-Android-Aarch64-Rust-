@@ -165,23 +165,22 @@ fn build_entity(
 async fn resolve_mx(domain: &str) -> Option<String> {
     use hickory_resolver::proto::rr::RData;
     let resolver = crate::util::dns::shared_resolver();
-    match resolver.mx_lookup(domain).await {
-        Ok(response) => {
-            let mut best: Option<(u16, String)> = None;
-            for record in response.answers() {
-                if let RData::MX(mx) = &record.data {
-                    let host = mx.exchange.to_ascii();
-                    let host = host.trim_end_matches('.').to_string();
-                    let pref = mx.preference;
-                    if best.as_ref().is_none_or(|(p, _)| pref < *p) {
-                        best = Some((pref, host));
-                    }
-                }
+    let response = resolver.mx_lookup(domain).await.ok()?;
+    // Lowest-preference MX wins; min_by_key returns the first among equal
+    // minima, matching the original strict-`<` update.
+    response
+        .answers()
+        .iter()
+        .filter_map(|record| {
+            if let RData::MX(mx) = &record.data {
+                let host = mx.exchange.to_ascii().trim_end_matches('.').to_string();
+                Some((mx.preference, host))
+            } else {
+                None
             }
-            best.map(|(_, h)| h)
-        }
-        Err(_) => None,
-    }
+        })
+        .min_by_key(|(pref, _)| *pref)
+        .map(|(_, h)| h)
 }
 
 async fn smtp_rcpt_check(mx_host: &str, email: &str) -> SmtpVerdict {
