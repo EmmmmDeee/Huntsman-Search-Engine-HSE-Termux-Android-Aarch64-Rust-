@@ -52,6 +52,14 @@ impl Module for BgpView {
         ModuleCategory::Infrastructure
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // ASN→prefix and IP→ASN mapping is IP-address recon (T1590.005, the
+        // Infrastructure default) but it also surfaces the IP's PTR records as
+        // DNS findings — add Gather Victim Network Information: DNS (T1590.002).
+        // Superset of the category default, so coverage never regresses.
+        &["T1590.005", "T1590.002", "T1596.005"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Domain, EntityKind::Asn];
         KINDS
@@ -69,9 +77,7 @@ impl Module for BgpView {
                 let resp: BgpPrefixResponse =
                     crate::util::http::fetch_json(&ctx.http, SRC, &url).await?;
                 if let Some(data) = resp.data {
-                    for e in asn_prefix_entities(&data, asn_num, &ctx.scan_id) {
-                        result.push(e);
-                    }
+                    result.extend(asn_prefix_entities(&data, asn_num, &ctx.scan_id));
                 }
             }
             TargetKind::IpAddress => {
@@ -80,9 +86,7 @@ impl Module for BgpView {
                 let resp: BgpIpResponse =
                     crate::util::http::fetch_json(&ctx.http, SRC, &url).await?;
                 if let Some(data) = resp.data {
-                    for e in ip_entities(&data, ip, &ctx.scan_id) {
-                        result.push(e);
-                    }
+                    result.extend(ip_entities(&data, ip, &ctx.scan_id));
                 }
             }
             _ => {}
@@ -97,66 +101,73 @@ use crate::util::str_util::nonempty;
 /// `IpAddress` entities for the prefixes an ASN announces (the network blocks it
 /// owns), each tagged `bgp-prefix` and carrying the owning org name when known.
 fn asn_prefix_entities(data: &BgpPrefixData, asn_num: &str, scan_id: &str) -> Vec<Entity> {
-    let mut out = Vec::new();
-    for prefix in data.ipv4_prefixes.iter().take(MAX_ANNOUNCED_PREFIXES) {
-        let cidr = prefix.prefix.trim();
-        if cidr.is_empty() {
-            continue;
-        }
-        let mut e = Entity::new(EntityKind::IpAddress, cidr, 0.70, scan_id);
-        e.tag("bgp-prefix");
-        let mut ev = Evidence::new(SRC, format!("AS{asn_num} announces {cidr}"))
-            .with_attr("asn", asn_num)
-            .with_attr("prefix", cidr);
-        if let Some(name) = nonempty(&prefix.name) {
-            ev = ev.with_attr("name", name);
-        }
-        e.add_evidence(ev);
-        out.push(e);
-    }
-    out
+    data.ipv4_prefixes
+        .iter()
+        .take(MAX_ANNOUNCED_PREFIXES)
+        .filter_map(|prefix| {
+            let cidr = prefix.prefix.trim();
+            if cidr.is_empty() {
+                return None;
+            }
+            let mut e = Entity::new(EntityKind::IpAddress, cidr, 0.70, scan_id);
+            e.tag("bgp-prefix");
+            let mut ev = Evidence::new(SRC, format!("AS{asn_num} announces {cidr}"))
+                .with_attr("asn", asn_num)
+                .with_attr("prefix", cidr);
+            if let Some(name) = nonempty(&prefix.name) {
+                ev = ev.with_attr("name", name);
+            }
+            e.add_evidence(ev);
+            Some(e)
+        })
+        .collect()
 }
 
 /// `Domain` (reverse-DNS PTR) + `Asn` entities for an IP. The `Asn` entity now
 /// carries the announced **CIDR block** the IP sits in (`prefix`) — previously
 /// parsed and discarded — which is the actionable network-ownership datum.
 fn ip_entities(data: &BgpIpData, ip: &str, scan_id: &str) -> Vec<Entity> {
-    let mut out = Vec::new();
-
+    // PTRs are often trailing-dot FQDNs; normalise, require a real label, dedup.
     let mut seen_ptr = std::collections::HashSet::new();
-    for ptr in data.ptr_record.iter().take(MAX_PTR_RECORDS) {
-        // PTRs are often trailing-dot FQDNs; normalise and require a real label.
-        let host = ptr.trim().trim_end_matches('.').to_lowercase();
-        if host.contains('.') && seen_ptr.insert(host.clone()) {
+    let ptr_entities = data
+        .ptr_record
+        .iter()
+        .take(MAX_PTR_RECORDS)
+        .filter_map(move |ptr| {
+            let host = ptr.trim().trim_end_matches('.').to_lowercase();
+            if !host.contains('.') || !seen_ptr.insert(host.clone()) {
+                return None;
+            }
             let mut e = Entity::new(EntityKind::Domain, &host, 0.65, scan_id);
             e.tag("ptr");
             e.add_evidence(Evidence::new(SRC, format!("PTR record for {ip}")));
-            out.push(e);
-        }
-    }
+            Some(e)
+        });
 
-    for prefix in data.prefixes.iter().take(MAX_IP_PREFIXES) {
-        let Some(asn) = prefix.asn.as_ref() else {
-            continue;
-        };
-        let asn_label = format!("AS{}", asn.asn);
-        let mut e = Entity::new(EntityKind::Asn, &asn_label, 0.80, scan_id);
-        let name = nonempty(&asn.name).unwrap_or("");
-        let mut ev = Evidence::new(SRC, format!("{ip} in AS{} ({name})", asn.asn))
-            .with_attr("asn", asn.asn.to_string());
-        if let Some(name) = nonempty(&asn.name) {
-            ev = ev.with_attr("name", name);
-        }
-        // The announced CIDR block the IP belongs to — the key network datum.
-        if let Some(cidr) = nonempty(&prefix.prefix) {
-            ev = ev.with_attr("prefix", cidr);
-            e.tag(format!("prefix:{cidr}"));
-        }
-        e.add_evidence(ev);
-        out.push(e);
-    }
+    let asn_entities = data
+        .prefixes
+        .iter()
+        .take(MAX_IP_PREFIXES)
+        .filter_map(|prefix| {
+            let asn = prefix.asn.as_ref()?;
+            let asn_label = format!("AS{}", asn.asn);
+            let mut e = Entity::new(EntityKind::Asn, &asn_label, 0.80, scan_id);
+            let name = nonempty(&asn.name).unwrap_or("");
+            let mut ev = Evidence::new(SRC, format!("{ip} in AS{} ({name})", asn.asn))
+                .with_attr("asn", asn.asn.to_string());
+            if let Some(name) = nonempty(&asn.name) {
+                ev = ev.with_attr("name", name);
+            }
+            // The announced CIDR block the IP belongs to — the key network datum.
+            if let Some(cidr) = nonempty(&prefix.prefix) {
+                ev = ev.with_attr("prefix", cidr);
+                e.tag(format!("prefix:{cidr}"));
+            }
+            e.add_evidence(ev);
+            Some(e)
+        });
 
-    out
+    ptr_entities.chain(asn_entities).collect()
 }
 
 #[derive(Deserialize)]
