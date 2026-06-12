@@ -169,41 +169,36 @@ fn build_repo_entities(
 
 /// Build Email entities from a repository's recent commits. Pure.
 fn build_commit_emails(commits: &CommitsResp, repo_name: &str, scan_id: &str) -> Vec<Entity> {
-    let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    commits
+        .commits
+        .iter()
+        .filter_map(|item| {
+            let author = item.commit.as_ref()?.author.as_ref()?;
+            let email = nonempty(&author.email)?;
+            // Skip noreply GitHub emails — not real contact addresses.
+            if email.contains("noreply.github.com") || email.contains("users.noreply") {
+                return None;
+            }
+            let email_lc = email.to_lowercase();
+            if !seen.insert(email_lc.clone()) {
+                return None;
+            }
 
-    for item in &commits.commits {
-        let Some(detail) = &item.commit else { continue };
-        let Some(author) = &detail.author else {
-            continue;
-        };
-        let Some(email) = nonempty(&author.email) else {
-            continue;
-        };
-
-        // Skip noreply GitHub emails — not real contact addresses.
-        if email.contains("noreply.github.com") || email.contains("users.noreply") {
-            continue;
-        }
-        let email_lc = email.to_lowercase();
-        if !seen.insert(email_lc.clone()) {
-            continue;
-        }
-
-        let mut e = Entity::new(EntityKind::Email, &email_lc, 0.35, scan_id);
-        e.tag(SRC);
-        e.tag("github");
-        e.tag("commit-author");
-        let mut ev = Evidence::new(SRC, format!("Commit author email from {repo_name}"))
-            .with_attr("repo", repo_name)
-            .with_attr("email", &email_lc);
-        if let Some(name) = author.name.as_deref().filter(|s| !s.is_empty()) {
-            ev = ev.with_attr("commit_author_name", name);
-        }
-        e.add_evidence(ev);
-        out.push(e);
-    }
-    out
+            let mut e = Entity::new(EntityKind::Email, &email_lc, 0.35, scan_id);
+            e.tag(SRC);
+            e.tag("github");
+            e.tag("commit-author");
+            let mut ev = Evidence::new(SRC, format!("Commit author email from {repo_name}"))
+                .with_attr("repo", repo_name)
+                .with_attr("email", &email_lc);
+            if let Some(name) = author.name.as_deref().filter(|s| !s.is_empty()) {
+                ev = ev.with_attr("commit_author_name", name);
+            }
+            e.add_evidence(ev);
+            Some(e)
+        })
+        .collect()
 }
 
 #[async_trait]
@@ -299,9 +294,7 @@ impl Module for GithubCodeSearch {
                 continue;
             }
 
-            for e in build_repo_entities(item, seed, target.kind, &ctx.scan_id) {
-                result.push(e);
-            }
+            result.extend(build_repo_entities(item, seed, target.kind, &ctx.scan_id));
 
             // Fetch recent commits for the repo to harvest author emails.
             // Best-effort: skip on any error (rate limit, private repo).
@@ -321,9 +314,7 @@ impl Module for GithubCodeSearch {
                 && let Ok(arr) = serde_json::from_slice::<Vec<CommitItem>>(&raw)
             {
                 let wrapped = CommitsResp { commits: arr };
-                for e in build_commit_emails(&wrapped, &full_name, &ctx.scan_id) {
-                    result.push(e);
-                }
+                result.extend(build_commit_emails(&wrapped, &full_name, &ctx.scan_id));
             }
         }
 
