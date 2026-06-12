@@ -141,54 +141,57 @@ impl Module for HudsonRock {
         entity.tag(tags::BREACH);
         entity.tag(tags::STEALER_LOG);
 
-        let mut seen_families: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-        let mut seen_hosts: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        let seen_families: std::collections::BTreeSet<&str> = data
+            .stealers
+            .iter()
+            .filter_map(|s| s.stealer_family.as_deref())
+            .collect();
+        let seen_hosts: std::collections::BTreeSet<&str> = data
+            .stealers
+            .iter()
+            .filter_map(|s| s.computer_name.as_deref())
+            .collect();
 
-        for stealer in &data.stealers {
+        data.stealers.iter().for_each(|stealer| {
             let cred_count = stealer.credentials.len();
             let family = stealer.stealer_family.as_deref().unwrap_or("-");
-
-            if let Some(f) = stealer.stealer_family.as_deref() {
-                seen_families.insert(f);
-            }
-            if let Some(h) = stealer.computer_name.as_deref() {
-                seen_hosts.insert(h);
-            }
-
-            let mut ev = Evidence::new(
-                SRC,
-                format!("Stealer log: {cred_count} credentials on compromised machine"),
-            )
-            .with_attr(
-                "computer_name",
-                stealer.computer_name.as_deref().unwrap_or("-"),
-            )
-            .with_attr(
-                "operating_system",
-                stealer.operating_system.as_deref().unwrap_or("-"),
-            )
-            .with_attr(
-                "date_compromised",
-                stealer.date_compromised.as_deref().unwrap_or("-"),
-            )
-            .with_attr("stealer_family", family)
-            .with_attr(
-                "malware_path",
-                stealer.malware_path.as_deref().unwrap_or("-"),
-            )
-            .with_attr("credential_count", cred_count.to_string());
-            if let Some(uploaded) = stealer.date_uploaded.as_deref() {
-                ev = ev.with_attr("date_uploaded", uploaded);
-            }
-            if let Some(ip) = stealer.ip.as_deref() {
-                ev = ev.with_attr("victim_ip", ip);
-            }
+            let ev = [
+                ("date_uploaded", stealer.date_uploaded.as_deref()),
+                ("victim_ip", stealer.ip.as_deref()),
+            ]
+            .into_iter()
+            .filter_map(|(key, value)| value.map(|v| (key, v)))
+            .fold(
+                Evidence::new(
+                    SRC,
+                    format!("Stealer log: {cred_count} credentials on compromised machine"),
+                )
+                .with_attr(
+                    "computer_name",
+                    stealer.computer_name.as_deref().unwrap_or("-"),
+                )
+                .with_attr(
+                    "operating_system",
+                    stealer.operating_system.as_deref().unwrap_or("-"),
+                )
+                .with_attr(
+                    "date_compromised",
+                    stealer.date_compromised.as_deref().unwrap_or("-"),
+                )
+                .with_attr("stealer_family", family)
+                .with_attr(
+                    "malware_path",
+                    stealer.malware_path.as_deref().unwrap_or("-"),
+                )
+                .with_attr("credential_count", cred_count.to_string()),
+                |ev, (key, v)| ev.with_attr(key, v),
+            );
             entity.add_evidence(ev);
-        }
+        });
 
-        for family in &seen_families {
-            entity.tag(format!("stealer:{}", family.to_lowercase()));
-        }
+        seen_families
+            .iter()
+            .for_each(|family| entity.tag(format!("stealer:{}", family.to_lowercase())));
         if seen_hosts.len() >= 2 {
             entity.tag(tags::MULTI_DEVICE);
         }
@@ -198,28 +201,26 @@ impl Module for HudsonRock {
         result.push(entity);
 
         let mut seen_ips: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for stealer in &data.stealers {
-            if let Some(ip) = stealer.ip.as_deref()
-                && !ip.is_empty()
-                && ip.contains('.')
-                && seen_ips.insert(ip.to_string())
-            {
-                let mut e = Entity::new(
-                    crate::core::entity::EntityKind::IpAddress,
-                    ip,
-                    0.70,
-                    &ctx.scan_id,
-                );
-                e.tag(tags::STEALER_LOG);
-                e.tag("hudsonrock");
-                e.tag(crate::core::tags::GEOLOCATION_LEAD);
-                e.add_evidence(Evidence::new(
-                    "hudsonrock",
-                    "Victim device IP from stealer log".to_string(),
-                ));
-                result.push(e);
+        result.extend(data.stealers.iter().filter_map(|stealer| {
+            let ip = stealer.ip.as_deref()?;
+            if ip.is_empty() || !ip.contains('.') || !seen_ips.insert(ip.to_string()) {
+                return None;
             }
-        }
+            let mut e = Entity::new(
+                crate::core::entity::EntityKind::IpAddress,
+                ip,
+                0.70,
+                &ctx.scan_id,
+            );
+            e.tag(tags::STEALER_LOG);
+            e.tag("hudsonrock");
+            e.tag(crate::core::tags::GEOLOCATION_LEAD);
+            e.add_evidence(Evidence::new(
+                "hudsonrock",
+                "Victim device IP from stealer log".to_string(),
+            ));
+            Some(e)
+        }));
 
         Ok(result)
     }
