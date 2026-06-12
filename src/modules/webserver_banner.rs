@@ -94,11 +94,14 @@ impl Module for WebserverBanner {
             };
             let status = resp.status();
             let captured = capture_headers(resp.headers());
-            for (_, v) in resp.headers() {
-                if let Ok(val) = v.to_str() {
-                    crate::util::http::scan_for_api_keys_with_source(val, "http_header");
-                }
-            }
+            // Surface any API keys leaked in response headers (credentials are
+            // high-value seeds) before deciding whether the banner is useful.
+            resp.headers()
+                .values()
+                .filter_map(|v| v.to_str().ok())
+                .for_each(|val| {
+                    crate::util::http::scan_for_api_keys_with_source(val, "http_header")
+                });
             if captured.is_empty() {
                 continue;
             }
@@ -107,15 +110,14 @@ impl Module for WebserverBanner {
             entity.tag(crate::core::tags::WEB);
             apply_stack_tags(&mut entity, &captured);
 
-            let mut ev = Evidence::new(SRC, format!("HTTP headers from {scheme} HEAD of {host}"))
-                .with_attr("scheme", scheme)
-                .with_attr("status", status.as_u16().to_string());
-            for (h, v) in &captured {
-                // Clip individual values so a verbose CSP doesn't bloat
-                // the evidence row past sanity.
-                let clipped: String = v.chars().take(240).collect();
-                ev = ev.with_attr(h.as_str(), clipped);
-            }
+            // Fold each captured header into the evidence, clipping individual
+            // values so a verbose CSP doesn't bloat the row past sanity.
+            let ev = captured.iter().fold(
+                Evidence::new(SRC, format!("HTTP headers from {scheme} HEAD of {host}"))
+                    .with_attr("scheme", scheme)
+                    .with_attr("status", status.as_u16().to_string()),
+                |ev, (h, v)| ev.with_attr(h.as_str(), v.chars().take(240).collect::<String>()),
+            );
             entity.add_evidence(ev);
 
             let mut result = ModuleResult::new();
@@ -145,28 +147,22 @@ fn extract_host_port(kind: TargetKind, value: &str) -> Option<(String, Option<u1
 }
 
 fn capture_headers(h: &reqwest::header::HeaderMap) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::with_capacity(FINGERPRINT_HEADERS.len());
-    for name in FINGERPRINT_HEADERS {
-        if let Some(v) = h.get(*name)
-            && let Ok(s) = v.to_str()
-            && !s.is_empty()
-        {
-            out.push(((*name).to_string(), s.to_string()));
-        }
-    }
-    out
+    FINGERPRINT_HEADERS
+        .iter()
+        .filter_map(|name| {
+            let s = h.get(*name)?.to_str().ok()?;
+            (!s.is_empty()).then(|| ((*name).to_string(), s.to_string()))
+        })
+        .collect()
 }
 
 fn apply_stack_tags(e: &mut Entity, headers: &[(String, String)]) {
-    let mut blob = String::with_capacity(headers.iter().map(|(_, v)| v.len() + 1).sum());
-    for (i, (_, v)) in headers.iter().enumerate() {
-        if i > 0 {
-            blob.push('|');
-        }
-        for c in v.chars() {
-            blob.push(c.to_ascii_lowercase());
-        }
-    }
+    // Lower-case every header value and join them into one searchable blob.
+    let blob: String = headers
+        .iter()
+        .map(|(_, v)| v.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join("|");
     let names: Vec<&str> = headers.iter().map(|(n, _)| n.as_str()).collect();
     if blob.contains("nginx") {
         e.tag("nginx");
