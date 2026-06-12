@@ -141,6 +141,10 @@ impl Module for Ip2Location {
             if data.is_proxy == Some(true) {
                 ce.tag(tags::PROXY);
             }
+            if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
+                ce.tag(format!("au-state:{state}"));
+                ce.tag("country:AU");
+            }
             let mut ev = Evidence::new(
                 SRC,
                 format!("IP geolocation for {ip}: {city}, {region}, {country}"),

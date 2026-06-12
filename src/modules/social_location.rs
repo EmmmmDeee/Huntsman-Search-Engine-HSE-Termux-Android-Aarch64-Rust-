@@ -101,6 +101,10 @@ impl Module for SocialLocation {
                     e.tag("self-reported");
                 }
                 e.tag("social-profile");
+                if let Some(sc) = crate::util::address_au::state_code(trimmed) {
+                    e.tag(format!("au-state:{sc}"));
+                    e.tag("country:AU");
+                }
                 e.add_evidence(
                     Evidence::new(
                         SRC,

@@ -273,6 +273,7 @@ fn suburbs_to_entities(pc_localities: &[(String, Vec<Locality>)], scan_id: &str)
             let mut c = Entity::new(EntityKind::Coordinates, coords, 0.30, scan_id);
             c.tag(SRC);
             c.tag("country:AU");
+            c.tag("au-state:QLD");
             c.tag("geoint");
             c.tag("postcode-centroid");
             c.tag("coarse");

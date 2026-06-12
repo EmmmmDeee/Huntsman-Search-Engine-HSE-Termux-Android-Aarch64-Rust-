@@ -197,6 +197,10 @@ impl Module for IpQuery {
                     crate::util::geo::coarse_provider_coords(lat, lon, 0.58, &ctx.scan_id)
             {
                 ce.tag("ipquery");
+                if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
+                    ce.tag(format!("au-state:{state}"));
+                    ce.tag("country:AU");
+                }
                 ce.add_evidence(Evidence::new(SRC, format!("Geolocation for {ip}")));
                 result.push(ce);
             }
