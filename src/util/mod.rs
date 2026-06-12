@@ -1,10 +1,10 @@
 //! Utilities: HTTP client, DNS resolver, key loading, UID generation, Termux helpers.
 
 pub mod abn;
-pub mod city_coords;
 pub mod address_au;
 pub mod atomic_file;
 pub mod budget;
+pub mod city_coords;
 pub mod ckan;
 pub mod curl;
 pub mod curl_client;
