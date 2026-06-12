@@ -317,47 +317,53 @@ fn build_entities(profile: &LinkedInProfile, target: &Target, scan_id: &str) -> 
     }
 
     // ── Phones ────────────────────────────────────────────────────────────
-    for phone in profile
-        .personal_numbers
-        .iter()
-        .map(|p| p.trim())
-        .filter(|p| p.len() >= 7)
-        .take(MAX_PHONES)
-    {
-        let mut phe = Entity::new(EntityKind::Phone, phone, 0.75, scan_id);
-        phe.tag("proxycurl");
-        phe.tag("linkedin");
-        phe.add_evidence(Evidence::new(SRC, "Phone from LinkedIn"));
-        result.push(phe);
-    }
+    result.extend(
+        profile
+            .personal_numbers
+            .iter()
+            .map(|p| p.trim())
+            .filter(|p| p.len() >= 7)
+            .take(MAX_PHONES)
+            .map(|phone| {
+                let mut phe = Entity::new(EntityKind::Phone, phone, 0.75, scan_id);
+                phe.tag("proxycurl");
+                phe.tag("linkedin");
+                phe.add_evidence(Evidence::new(SRC, "Phone from LinkedIn"));
+                phe
+            }),
+    );
 
     // ── Organisations (employers) — title, dates, and job location ────────
-    for exp in profile.experiences.iter().take(MAX_EXPERIENCES) {
-        let Some(company) = nonempty(&exp.company).filter(|c| c.chars().count() >= 2) else {
-            continue;
-        };
-        let mut oe = Entity::new(EntityKind::Organisation, company, 0.65, scan_id);
-        oe.tag("proxycurl");
-        oe.tag("linkedin");
-        let mut ev = Evidence::new(SRC, format!("Employer: {company}"));
-        if let Some(title) = nonempty(&exp.title) {
-            ev = ev.with_attr("title", title);
-        }
-        if let Some(loc) = nonempty(&exp.location) {
-            ev = ev.with_attr("location", loc);
-        }
-        if let Some(start) = exp.starts_at.as_ref().map(DateField::to_string_approx)
-            && !start.is_empty()
-        {
-            ev = ev.with_attr("start_date", start);
-        }
-        match exp.ends_at.as_ref().map(DateField::to_string_approx) {
-            Some(end) if !end.is_empty() => ev = ev.with_attr("end_date", end),
-            _ => oe.tag("current-employer"),
-        }
-        oe.add_evidence(ev);
-        result.push(oe);
-    }
+    result.extend(
+        profile
+            .experiences
+            .iter()
+            .take(MAX_EXPERIENCES)
+            .filter_map(|exp| {
+                let company = nonempty(&exp.company).filter(|c| c.chars().count() >= 2)?;
+                let mut oe = Entity::new(EntityKind::Organisation, company, 0.65, scan_id);
+                oe.tag("proxycurl");
+                oe.tag("linkedin");
+                let mut ev = Evidence::new(SRC, format!("Employer: {company}"));
+                if let Some(title) = nonempty(&exp.title) {
+                    ev = ev.with_attr("title", title);
+                }
+                if let Some(loc) = nonempty(&exp.location) {
+                    ev = ev.with_attr("location", loc);
+                }
+                if let Some(start) = exp.starts_at.as_ref().map(DateField::to_string_approx)
+                    && !start.is_empty()
+                {
+                    ev = ev.with_attr("start_date", start);
+                }
+                match exp.ends_at.as_ref().map(DateField::to_string_approx) {
+                    Some(end) if !end.is_empty() => ev = ev.with_attr("end_date", end),
+                    _ => oe.tag("current-employer"),
+                }
+                oe.add_evidence(ev);
+                Some(oe)
+            }),
+    );
 
     result
 }
@@ -388,6 +394,14 @@ impl Module for Proxycurl {
 
     fn category(&self) -> ModuleCategory {
         ModuleCategory::People
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // A LinkedIn profile yields the person's name + role (the People default
+        // T1589.003 + T1591.004), their employers (T1591.002 Business
+        // Relationships), and their city/state location (T1591.001 Physical
+        // Locations). Superset of the default — coverage cannot regress.
+        &["T1589.003", "T1591.004", "T1591.002", "T1591.001"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
