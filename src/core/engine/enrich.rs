@@ -182,8 +182,9 @@ pub(super) fn address_to_coords_pass(
         }
         // Skip if no corroborating sources recorded — a bare assertion with
         // confidence raised purely by the seeding pass would otherwise assert a
-        // location from nothing.
-        if addr_entity.corroborating_sources().is_empty() {
+        // location from nothing. Seed-tagged addresses are operator-provided and
+        // pre-verified, so they bypass this check.
+        if addr_entity.corroborating_sources().is_empty() && !addr_entity.has_tag("seed") {
             continue;
         }
         let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr_entity.value) else {
