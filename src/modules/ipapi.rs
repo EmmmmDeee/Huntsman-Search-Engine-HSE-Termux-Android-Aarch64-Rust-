@@ -144,29 +144,22 @@ impl Module for IpApi {
         let country = data.country.as_deref().unwrap_or("");
         let isp = data.isp.as_deref().unwrap_or("");
 
-        let mut ev = Evidence::new(SRC, format!("IP geolocation: {city}, {region}, {country}"))
-            .with_attr("ip", ip);
-        if !city.is_empty() {
-            ev = ev.with_attr("city", city);
-        }
-        if !region.is_empty() {
-            ev = ev.with_attr("region", region);
-        }
-        if !country.is_empty() {
-            ev = ev.with_attr("country", country);
-        }
-        if !isp.is_empty() {
-            ev = ev.with_attr("isp", isp);
-        }
-        if let Some(asn) = &data.asn {
-            ev = ev.with_attr("asn", asn);
-        }
-        if let Some(org) = &data.org {
-            ev = ev.with_attr("org", org);
-        }
-        if let Some(tz) = &data.timezone {
-            ev = ev.with_attr("timezone", tz);
-        }
+        let ev = [
+            ("city", (!city.is_empty()).then_some(city)),
+            ("region", (!region.is_empty()).then_some(region)),
+            ("country", (!country.is_empty()).then_some(country)),
+            ("isp", (!isp.is_empty()).then_some(isp)),
+            ("asn", data.asn.as_deref()),
+            ("org", data.org.as_deref()),
+            ("timezone", data.timezone.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(
+            Evidence::new(SRC, format!("IP geolocation: {city}, {region}, {country}"))
+                .with_attr("ip", ip),
+            |ev, (key, v)| ev.with_attr(key, v),
+        );
 
         // Confidence recalibrated 0.70 → 0.60 — see ip_geo.rs for rationale
         // (single-source free IP geo overstates residential precision; the
@@ -175,15 +168,14 @@ impl Module for IpApi {
             && let Some(mut ce) =
                 crate::util::geo::coarse_provider_coords(lat, lon, 0.60, &ctx.scan_id)
         {
-            if data.mobile == Some(true) {
-                ce.tag("mobile");
-            }
-            if data.proxy == Some(true) {
-                ce.tag(tags::PROXY);
-            }
-            if data.hosting == Some(true) {
-                ce.tag("hosting");
-            }
+            [
+                (data.mobile, "mobile"),
+                (data.proxy, tags::PROXY),
+                (data.hosting, "hosting"),
+            ]
+            .into_iter()
+            .filter(|(flag, _)| *flag == Some(true))
+            .for_each(|(_, tag)| ce.tag(tag));
             ce.add_evidence(ev.clone());
             result.push(ce);
         }
