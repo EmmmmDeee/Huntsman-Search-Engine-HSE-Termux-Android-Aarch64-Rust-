@@ -67,19 +67,18 @@ impl Module for WafDetect {
         let resp = ctx.http.head(&url).send_tagged(SRC).await?;
 
         let headers = resp.headers();
-        let mut detections: Vec<(&str, &str)> = Vec::with_capacity(4);
+        // Run every fingerprint predicate over the response headers and keep the
+        // providers whose check fired — one functional pass, no intermediate
+        // accumulator.
+        let providers: Vec<&str> = FINGERPRINTS
+            .iter()
+            .filter(|(check_fn, _)| check_fn(headers))
+            .map(|(_, provider)| *provider)
+            .collect();
 
-        for &(check_fn, provider) in FINGERPRINTS {
-            if check_fn(headers) {
-                detections.push((provider, "header_fingerprint"));
-            }
-        }
-
-        if detections.is_empty() {
+        if providers.is_empty() {
             return Ok(result);
         }
-
-        let providers: Vec<&str> = detections.iter().map(|(p, _)| *p).collect();
         // Emit the finding against the HOST, not the raw target value: for a
         // `Url` target `target.value` is the full URL (`https://host/path`),
         // which must never be stored as a `Domain` entity value (it would be a
