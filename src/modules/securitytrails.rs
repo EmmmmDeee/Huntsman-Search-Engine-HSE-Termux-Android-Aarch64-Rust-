@@ -166,11 +166,11 @@ impl SecurityTrails {
         let total = body.subdomain_count.unwrap_or(body.subdomains.len() as u64);
         let total_str = total.to_string();
         let mut result = ModuleResult::with_capacity(body.subdomains.len());
-        for sub in &body.subdomains {
-            if let Some(e) = build_subdomain_entity(&domain, sub, &total_str, &ctx.scan_id) {
-                result.push(e);
-            }
-        }
+        result.extend(
+            body.subdomains
+                .iter()
+                .filter_map(|sub| build_subdomain_entity(&domain, sub, &total_str, &ctx.scan_id)),
+        );
         Ok(result)
     }
 
@@ -197,11 +197,14 @@ impl SecurityTrails {
         };
 
         let mut result = ModuleResult::new();
-        for record in body.records.iter().take(MAX_REVERSE_RECORDS) {
-            if let Some(e) = build_associated_entity(ip, record.hostname.as_deref(), &ctx.scan_id) {
-                result.push(e);
-            }
-        }
+        result.extend(
+            body.records
+                .iter()
+                .take(MAX_REVERSE_RECORDS)
+                .filter_map(|record| {
+                    build_associated_entity(ip, record.hostname.as_deref(), &ctx.scan_id)
+                }),
+        );
         Ok(result)
     }
 
