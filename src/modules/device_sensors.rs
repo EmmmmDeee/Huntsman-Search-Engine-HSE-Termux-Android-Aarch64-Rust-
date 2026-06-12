@@ -98,10 +98,7 @@ impl Module for DeviceSensors {
 
         // ── Step 1: WiFi connection info (3 s timeout) ──────────────
         if let Some(stdout) = termux_cmd("termux-wifi-connectioninfo", &[], 3000).await {
-            let wifi = parse_conn(&stdout, &ctx.scan_id);
-            for e in wifi.entities {
-                result.push(e);
-            }
+            result.extend(parse_conn(&stdout, &ctx.scan_id).entities);
         }
 
         // ── Step 2: location fix — GPS first, network fallback ──────
@@ -119,9 +116,7 @@ impl Module for DeviceSensors {
         } else {
             gps
         };
-        for e in fix.entities {
-            result.push(e);
-        }
+        result.extend(fix.entities);
 
         Ok(result)
     }
