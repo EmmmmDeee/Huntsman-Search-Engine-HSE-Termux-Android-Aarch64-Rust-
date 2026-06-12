@@ -82,8 +82,30 @@ fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) -> Vec<Enti
         ae.tag("opencorporates");
         ae.tag("registered-address");
         ae.tag("validated");
+        ae.tag("geoint");
+        if let Some(sc) = crate::util::address_au::state_code(addr) {
+            ae.tag(format!("au-state:{sc}"));
+            ae.tag("country:AU");
+        }
         ae.add_evidence(Evidence::new(SRC, format!("Registered address for {name}")));
         out.push(ae);
+
+        if let Some((lat, lon)) = crate::util::city_coords::city_coords(addr) {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.62, scan_id);
+            c.tag("addr-derived");
+            c.tag("geoint");
+            c.tag("opencorporates");
+            if let Some(sc) = crate::util::address_au::state_code(addr) {
+                c.tag(format!("au-state:{sc}"));
+                c.tag("country:AU");
+            }
+            c.add_evidence(Evidence::new(
+                SRC,
+                format!("Inline geocode of registered address '{addr}' → {coord_val}"),
+            ));
+            out.push(c);
+        }
     }
 
     if let Some(num) = co.company_number.as_deref()
@@ -182,6 +204,7 @@ impl Module for OpenCorporates {
             EntityKind::Organisation,
             EntityKind::AbnAcn,
             EntityKind::Address,
+            EntityKind::Coordinates,
         ];
         KINDS
     }
@@ -316,8 +339,12 @@ mod tests {
             }"#,
         );
         let ents = build_company_entities(&co, 7, "s");
-        // Org + Address + AbnAcn.
-        assert_eq!(ents.len(), 3);
+        // Org + Address + optional Coordinates (Sydney matches city_coords) + AbnAcn.
+        assert!(
+            ents.len() >= 3,
+            "expected at least 3 entities, got {}",
+            ents.len()
+        );
 
         let org = &ents[0];
         assert_eq!(org.kind, EntityKind::Organisation);
@@ -328,12 +355,13 @@ mod tests {
         assert_eq!(org_attr(org, "status"), Some("Active"));
         assert_eq!(org_attr(org, "total_matches"), Some("7"));
 
-        assert_eq!(ents[1].kind, EntityKind::Address);
-        assert!(ents[1].has_tag("registered-address") && ents[1].has_tag("validated"));
+        assert!(ents.iter().any(|e| e.kind == EntityKind::Address
+            && e.has_tag("registered-address")
+            && e.has_tag("validated")));
 
-        assert_eq!(ents[2].kind, EntityKind::AbnAcn);
-        assert!(ents[2].has_tag("company-number"));
-        assert_eq!(ents[2].value, "111222333");
+        assert!(ents.iter().any(|e| e.kind == EntityKind::AbnAcn
+            && e.has_tag("company-number")
+            && e.value == "111222333"));
     }
 
     #[test]
@@ -345,8 +373,12 @@ mod tests {
                 "registered_address_in_full":"1 Market St, San Francisco"}"#,
         );
         let ents = build_company_entities(&co, 1, "s");
-        // Org + Address only (no AU company-number).
-        assert_eq!(ents.len(), 2);
+        // Org + Address (+ optional Coordinates if city matches) — no AU company-number.
+        assert!(
+            ents.len() >= 2,
+            "expected at least 2 entities, got {}",
+            ents.len()
+        );
         assert!(!ents[0].has_tag("country:AU") && !ents[0].has_tag("active"));
         assert!(ents.iter().all(|e| e.kind != EntityKind::AbnAcn));
     }

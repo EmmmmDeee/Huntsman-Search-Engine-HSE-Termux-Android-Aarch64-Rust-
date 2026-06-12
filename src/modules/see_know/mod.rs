@@ -358,26 +358,6 @@ async fn resolve_identity_pivots(
     }
 }
 
-/// True if a seed is junk that should never reach a SeekNow HTTP call — local
-/// domains, too-short / all-digit / placeholder usernames, under-length phones
-/// and names, private IPs, and any unsupported target kind. Pure function of
-/// `(kind, value)` so the skip policy is testable in isolation.
-fn should_skip_seed(kind: TargetKind, v: &str) -> bool {
-    match kind {
-        TargetKind::Email => v
-            .split_once('@')
-            .is_some_and(|(_, host)| is_local_domain(host)),
-        TargetKind::Username => {
-            v.len() < 4 || v.chars().all(|c| c.is_ascii_digit()) || is_placeholder_username(v)
-        }
-        TargetKind::Phone => v.chars().filter(|c| c.is_ascii_digit()).count() < 6,
-        TargetKind::FullName => !v.contains(' ') || v.len() < 5,
-        TargetKind::IpAddress => is_private_ip(v),
-        TargetKind::Domain => is_local_domain(v),
-        _ => true,
-    }
-}
-
 /// Mine a `discord_messages` item's free-text `content` for embedded emails
 /// and emit each as a low-confidence `Email` entity (0.30 — below pivot floor).
 fn extract_message_emails(
@@ -429,6 +409,26 @@ fn extract_message_mentions(
             e.add_evidence(ev.clone());
             result.push(e);
         }
+    }
+}
+
+/// True if a seed is junk that should never reach a SeekNow HTTP call — local
+/// domains, too-short / all-digit / placeholder usernames, under-length phones
+/// and names, private IPs, and any unsupported target kind. Pure function of
+/// `(kind, value)` so the skip policy is testable in isolation.
+fn should_skip_seed(kind: TargetKind, v: &str) -> bool {
+    match kind {
+        TargetKind::Email => v
+            .split_once('@')
+            .is_some_and(|(_, host)| is_local_domain(host)),
+        TargetKind::Username => {
+            v.len() < 4 || v.chars().all(|c| c.is_ascii_digit()) || is_placeholder_username(v)
+        }
+        TargetKind::Phone => v.chars().filter(|c| c.is_ascii_digit()).count() < 6,
+        TargetKind::FullName => !v.contains(' ') || v.len() < 5,
+        TargetKind::IpAddress => is_private_ip(v),
+        TargetKind::Domain => is_local_domain(v),
+        _ => true,
     }
 }
 

@@ -42,7 +42,7 @@ use dispatch::{
     dispatch_key, log_module_dispatch, module_skip_reason, run_module_guarded,
     target_distinct_sources,
 };
-use enrich::{enrich_geospatial, scan_entity_for_keys, seed_anchor_entity};
+use enrich::{address_to_coords_pass, enrich_geospatial, scan_entity_for_keys, seed_anchor_entity};
 use expansion::{
     apply_roi_cutoff, budget_check, cmp_expansion_candidates, correlation_key, visit_key,
 };
@@ -347,6 +347,18 @@ impl ScanEngine {
             .await
         {
             warn!(scan_id = %scan.id, error = %e, "seed dispatch failed (continuing to finalise)");
+        }
+
+        // Convert Address entities to Coordinates (offline city lookup) so they
+        // feed AU-052/053 geo correlation rules.  Run before the snapshot so
+        // derived Coordinates are checkpointed and correlated in the same pass.
+        for mut derived in address_to_coords_pass(&entity_map, &scan.id) {
+            enrich_geospatial(&mut derived);
+            if let Some(existing) = entity_map.get_mut(&derived.uid) {
+                existing.merge(derived);
+            } else {
+                entity_map.insert(derived.uid.clone(), derived);
+            }
         }
 
         // Checkpoint + correlate the seed round from a single snapshot: the
@@ -870,6 +882,21 @@ impl ScanEngine {
                             richness,
                         );
                     }
+                    // Geo-corroboration bonus: entities confirmed by anchoring
+                    // geo sources (self-reported address, photo GPS, registry
+                    // address, person-enrichment location) rank slightly ahead
+                    // of equal-weight entities with no person-anchored geo
+                    // signal. Each anchoring geo source contributes +2%, capped
+                    // at +10%, keeping the bonus sub-dominant to the confidence
+                    // and corroboration factors.
+                    let anchoring_geo_count = entity
+                        .corroborating_sources()
+                        .into_iter()
+                        .filter(|s| crate::core::correlator::is_anchoring_geo_source(s))
+                        .count();
+                    if anchoring_geo_count > 0 {
+                        weight *= 1.0 + (anchoring_geo_count as f64 * 0.02).min(0.10);
+                    }
                     next.push((new_target, weight, entity.uid.clone()));
                 } else {
                     // This exact target was already dispatched (or queued) this
@@ -985,6 +1012,18 @@ impl ScanEngine {
             // dispatch activity — a round that dispatched nothing cannot have
             // changed the graph, so we skip both passes (backpressure).
             if dispatched_this_round > 0 {
+                // Address→Coords pass: any new Address entities this round may
+                // name a known city; derive Coordinates before the snapshot so
+                // AU-052/053 can correlate them immediately.
+                for derived in address_to_coords_pass(entity_map, scan_id) {
+                    let mut d = derived;
+                    enrich_geospatial(&mut d);
+                    if let Some(existing) = entity_map.get_mut(&d.uid) {
+                        existing.merge(d);
+                    } else {
+                        entity_map.insert(d.uid.clone(), d);
+                    }
+                }
                 let snapshot: Vec<Entity> = entity_map.values().cloned().collect();
                 self.checkpoint_entities(scan_id, &snapshot);
                 self.correlate_incremental(scan_id, &snapshot, emitted_corr);

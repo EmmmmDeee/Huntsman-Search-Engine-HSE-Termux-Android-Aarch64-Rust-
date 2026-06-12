@@ -192,6 +192,7 @@ impl Correlator {
 type RuleFn = fn(&[Entity], &str, u64) -> Vec<Correlation>;
 
 mod rules;
+pub(crate) use rules::location::is_anchoring_geo_source;
 use rules::*;
 
 const RULES: &[RuleFn] = &[
@@ -249,6 +250,8 @@ const RULES: &[RuleFn] = &[
     rule_au_054_data_broker_exposure,
     rule_au_055_primary_source_accounts,
     rule_au_056_jurisdiction_cross_check,
+    rule_au_057_synthesised_location_fix,
+    rule_au_058_professional_profile_geo,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

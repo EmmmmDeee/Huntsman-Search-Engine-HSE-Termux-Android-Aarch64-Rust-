@@ -81,6 +81,13 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
     let mut summary = Entity::new(EntityKind::Coordinates, coord, 0.70, scan_id);
     summary.tag("overpass");
     summary.tag("geoint");
+    // Attempt to parse the query coordinates for state tagging.
+    if let Ok((slat, slon)) = crate::util::geo::parse_coords(coord)
+        && let Some(state) = crate::util::geo::au_state_for_coords(slat, slon)
+    {
+        summary.tag(format!("au-state:{state}"));
+        summary.tag("country:AU");
+    }
     summary.add_evidence(
         Evidence::new(
             SRC,
@@ -109,6 +116,10 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
             ce.tag("overpass");
             ce.tag("geoint");
             ce.tag(format!("infra:{category}"));
+            if let Some(state) = crate::util::geo::au_state_for_coords(nlat, nlon) {
+                ce.tag(format!("au-state:{state}"));
+                ce.tag("country:AU");
+            }
             let mut ev = Evidence::new(SRC, format!("OSM {category} near {coord}"))
                 .with_attr("category", category);
             if let Some(name) = tags.get("name") {

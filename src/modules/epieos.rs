@@ -180,10 +180,14 @@ fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) -> Vec<Enti
                 Some(c) => format!("{city}, {c}"),
                 None => city.to_string(),
             };
-            let mut ae = Entity::new(EntityKind::Address, &location, 0.50, scan_id);
+            let mut ae = Entity::new(EntityKind::Address, &location, 0.52, scan_id);
             ae.tag("epieos");
             ae.tag("skype");
             ae.tag("geoint");
+            if let Some(sc) = crate::util::address_au::state_code(&location) {
+                ae.tag(format!("au-state:{sc}"));
+                ae.tag("country:AU");
+            }
             ae.add_evidence(Evidence::new(SRC, format!("Skype location for {email}")));
             out.push(ae);
         }
@@ -196,10 +200,14 @@ fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) -> Vec<Enti
             else {
                 continue;
             };
-            let mut ae = Entity::new(EntityKind::Address, place, 0.48, scan_id);
+            let mut ae = Entity::new(EntityKind::Address, place, 0.52, scan_id);
             ae.tag("epieos");
             ae.tag("google-maps");
             ae.tag("geoint");
+            if let Some(sc) = crate::util::address_au::state_code(place) {
+                ae.tag(format!("au-state:{sc}"));
+                ae.tag("country:AU");
+            }
             let mut rev_ev =
                 Evidence::new(SRC, format!("Google Maps review at \"{place}\" by {email}"));
             if let Some(rating) = review.rating {

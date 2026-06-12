@@ -282,9 +282,11 @@ fn records_to_entities(
             e.tag("country:AU");
             e.tag("geoint");
             e.tag("registered-address");
+            if let Some(sc) = crate::util::address_au::state_code(&addr) {
+                e.tag(format!("au-state:{sc}"));
+            }
             let mut aev = Evidence::new(SRC, format!("Registered address for {legal}"))
                 .with_attr("org", &legal);
-            // Carry the full street line(s) so the precise address isn't lost.
             for col in ["Address_Line_1", "Address_Line_2", "Address_Line_3"] {
                 if let Some(v) = field_str(rec, col) {
                     aev = aev.with_attr(col.to_lowercase().replace(' ', "_"), v);
@@ -292,6 +294,24 @@ fn records_to_entities(
             }
             e.add_evidence(aev);
             out.push(e);
+
+            // Inline Coordinates for immediate AU-052/053 participation.
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.62, scan_id);
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.tag("acnc");
+                c.tag("country:AU");
+                if let Some(sc) = crate::util::address_au::state_code(&addr) {
+                    c.tag(format!("au-state:{sc}"));
+                }
+                c.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Inline geocode of ACNC address '{addr}' → {coord_val}"),
+                ));
+                out.push(c);
+            }
         }
 
         // Website → DNS / web modules.
@@ -349,6 +369,7 @@ impl Module for AcncCharities {
             EntityKind::Organisation,
             EntityKind::AbnAcn,
             EntityKind::Address,
+            EntityKind::Coordinates,
             EntityKind::Domain,
         ];
         KINDS

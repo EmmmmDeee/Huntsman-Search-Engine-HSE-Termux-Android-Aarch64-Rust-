@@ -97,6 +97,18 @@ struct EntitiesResp {
     entities: serde_json::Map<String, Value>,
 }
 
+/// Coordinate location from P625 as `(lat, lon)`, or `None` if absent/malformed.
+fn claim_p625(entity: &Value) -> Option<(f64, f64)> {
+    let val = entity.pointer("/claims/P625/0/mainsnak/datavalue/value")?;
+    let lat = val.get("latitude").and_then(Value::as_f64)?;
+    let lon = val.get("longitude").and_then(Value::as_f64)?;
+    if crate::util::geo::is_valid_coords(lat, lon) {
+        Some((lat, lon))
+    } else {
+        None
+    }
+}
+
 /// String-valued claims for a property (e.g. P856 website, P2037 github handle).
 fn claim_strings(entity: &Value, pid: &str) -> Vec<String> {
     entity
@@ -271,6 +283,28 @@ fn primary_entities(
         break; // one canonical image is sufficient
     }
 
+    // Coordinate location (P625) → Coordinates entity for geo correlators.
+    if let Some((lat, lon)) = claim_p625(entity) {
+        let coord_val = format!("{lat:.6},{lon:.6}");
+        let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.65, scan_id);
+        c.tag(SRC);
+        c.tag("wikidata");
+        c.tag("geoint");
+        let mut ev = Evidence::new(SRC, format!("Wikidata P625 coordinate for {label}"))
+            .with_attr("wikidata_id", qid)
+            .with_attr("latitude", format!("{lat:.6}"))
+            .with_attr("longitude", format!("{lon:.6}"));
+        if let Some(d) = desc.as_deref() {
+            ev = ev.with_attr("description", d);
+        }
+        if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
+            c.tag(format!("au-state:{state}"));
+            c.tag("country:AU");
+        }
+        c.add_evidence(ev);
+        out.push(c);
+    }
+
     // Social handles → Username (capped).
     let mut emitted = 0usize;
     for (pid, platform) in HANDLE_PROPS {
@@ -354,6 +388,7 @@ impl Module for Wikidata {
             EntityKind::Domain,
             EntityKind::Username,
             EntityKind::Url,
+            EntityKind::Coordinates,
         ];
         KINDS
     }

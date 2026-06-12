@@ -396,6 +396,10 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         let mut ae = Entity::new(EntityKind::Address, loc, 0.55, &ctx.scan_id);
         ae.tag("gravatar");
         ae.tag("geoint");
+        if let Some(sc) = crate::util::address_au::state_code(loc) {
+            ae.tag(format!("au-state:{sc}"));
+            ae.tag("country:AU");
+        }
         ae.add_evidence(Evidence::new(
             SRC,
             format!("Gravatar location for {normalised}"),

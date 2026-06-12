@@ -4,6 +4,7 @@ pub mod abn;
 pub mod address_au;
 pub mod atomic_file;
 pub mod budget;
+pub mod city_coords;
 pub mod ckan;
 pub mod curl;
 pub mod curl_client;

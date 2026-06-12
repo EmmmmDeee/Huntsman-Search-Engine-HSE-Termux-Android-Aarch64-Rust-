@@ -144,6 +144,11 @@ impl Module for IpGeo {
             if let Some(cc) = data.country_code.as_deref() {
                 e.tag(format!("country:{}", cc.to_uppercase()));
             }
+            if data.country_code.as_deref() == Some("AU")
+                && let Some(state) = crate::util::geo::au_state_for_coords(lat, lon)
+            {
+                e.tag(format!("au-state:{state}"));
+            }
             if data.proxy == Some(true) {
                 e.tag("proxy");
             }

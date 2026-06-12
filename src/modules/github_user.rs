@@ -84,6 +84,7 @@ impl Module for GithubUser {
             EntityKind::Url,
             EntityKind::Organisation,
             EntityKind::Address,
+            EntityKind::Coordinates,
             EntityKind::Credential,
         ];
         KINDS
@@ -231,18 +232,47 @@ impl Module for GithubUser {
             }
         }
 
-        // Location → Address entity, when present.
+        // Location → Address + optional inline Coordinates.
         if let Some(location) = user.location.as_deref() {
             let location = location.trim();
             if location.len() >= 3 {
                 let mut a = Entity::new(EntityKind::Address, location, 0.55, &ctx.scan_id);
                 a.tag("github");
                 a.tag("geoint");
+                a.tag("self-reported");
+                if let Some(sc) = crate::util::address_au::state_code(location) {
+                    a.tag(format!("au-state:{sc}"));
+                    a.tag("country:AU");
+                }
                 a.add_evidence(
                     Evidence::new(SRC, format!("Location from GitHub profile @{}", user.login))
                         .with_attr("github_login", &user.login),
                 );
                 result.push(a);
+
+                if let Some((lat, lon)) = crate::util::city_coords::city_coords(location) {
+                    let coord_val = format!("{lat:.4},{lon:.4}");
+                    let mut c =
+                        Entity::new(EntityKind::Coordinates, &coord_val, 0.52, &ctx.scan_id);
+                    c.tag("addr-derived");
+                    c.tag("geoint");
+                    c.tag("github");
+                    if let Some(sc) = crate::util::address_au::state_code(location) {
+                        c.tag(format!("au-state:{sc}"));
+                        c.tag("country:AU");
+                    }
+                    c.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!(
+                                "Inline geocode of GitHub location '{}' → {coord_val}",
+                                user.login
+                            ),
+                        )
+                        .with_attr("github_login", &user.login),
+                    );
+                    result.push(c);
+                }
             }
         }
 

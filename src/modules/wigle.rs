@@ -240,6 +240,12 @@ impl Module for Wigle {
             Entity::new(EntityKind::Coordinates, &target.value, 0.85, &ctx.scan_id);
         coords_entity.tag("wigle");
         coords_entity.tag("wifi-observed");
+        if let Some((lat, lon)) = crate::util::geohash::parse_coords(&target.value)
+            && let Some(state) = crate::util::geo::au_state_for_coords(lat, lon)
+        {
+            coords_entity.tag(format!("au-state:{state}"));
+            coords_entity.tag("country:AU");
+        }
 
         let enc_types: Vec<String> = body
             .results
@@ -790,6 +796,10 @@ fn emit_bssid_entities(
         e.tag("geoint");
         e.tag("wigle");
         e.tag(observation_tag);
+        if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
+            e.tag(format!("au-state:{state}"));
+            e.tag("country:AU");
+        }
         e.add_evidence(
             Evidence::new(
                 SRC,

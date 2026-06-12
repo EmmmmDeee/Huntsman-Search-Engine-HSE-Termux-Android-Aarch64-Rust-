@@ -71,6 +71,10 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
             && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.58, scan_id)
         {
             ce.tag("ipinfo");
+            if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
+                ce.tag(format!("au-state:{state}"));
+                ce.tag("country:AU");
+            }
             let mut ev = Evidence::new(SRC, format!("IP geo for {ip}"));
             if let Some(c) = &data.city {
                 ev = ev.with_attr("city", c);

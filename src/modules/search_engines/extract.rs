@@ -125,15 +125,29 @@ pub(super) async fn recycle_entities(
 
         for addr in extract_addresses_from_text(&combined) {
             if seen_addrs.insert(addr.to_lowercase()) {
-                let mut e = Entity::new(EntityKind::Address, &addr, 0.45, &scan_id);
+                let has_postcode = addr
+                    .split_whitespace()
+                    .last()
+                    .is_some_and(|t| t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()));
+                let base_conf = if has_postcode { 0.55 } else { 0.45 };
+                let mut e = Entity::new(EntityKind::Address, &addr, base_conf, &scan_id);
                 e.tag("search-discovered");
                 e.tag("recycled");
+                if has_postcode {
+                    e.tag("au-postcode");
+                }
+                if let Some(state) = crate::util::address_au::state_code(&addr) {
+                    e.tag(format!("au-state:{state}"));
+                }
                 e.add_evidence(recycled_evidence(r, "Address", &addr, &combined));
                 result.push(e);
             }
         }
 
         for email in extract_emails_from_text(&combined) {
+            if crate::util::domains::is_infrastructure_email(&email) {
+                continue;
+            }
             if seen_emails.insert(email.clone()) {
                 let mut e = Entity::new(EntityKind::Email, &email, 0.55, &scan_id);
                 e.tag("search-discovered");

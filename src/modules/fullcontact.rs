@@ -107,6 +107,7 @@ impl Module for FullContact {
             EntityKind::Person,
             EntityKind::Organisation,
             EntityKind::Address,
+            EntityKind::Coordinates,
             EntityKind::Username,
             EntityKind::Url,
         ];
@@ -204,9 +205,38 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
             .iter()
             .filter_map(|l| l.formatted.as_deref()),
     );
-    for loc in locs {
-        if seen_loc.insert(loc.to_lowercase()) {
-            push(&mut out, EntityKind::Address, loc, 0.60, &["geo-hint"]);
+    // Collect into a Vec so we can iterate twice (once for Address, once for
+    // Coordinates) without re-borrowing the chained iterator.
+    let loc_list: Vec<&str> = locs.filter(|l| seen_loc.insert(l.to_lowercase())).collect();
+    for loc in &loc_list {
+        let mut extra_tags: Vec<&str> = vec!["geo-hint", "geoint"];
+        let mut au_state_tag = String::new();
+        if let Some(sc) = crate::util::address_au::state_code(loc) {
+            au_state_tag = format!("au-state:{sc}");
+        }
+        if !au_state_tag.is_empty() {
+            extra_tags.push("country:AU");
+        }
+        let tags_refs: Vec<&str> = extra_tags;
+        push(&mut out, EntityKind::Address, loc, 0.60, &tags_refs);
+        if !au_state_tag.is_empty()
+            && let Some(last) = out.last_mut()
+        {
+            last.tag(au_state_tag);
+        }
+        // Inline Coordinates via offline city lookup.
+        if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.55, scan_id);
+            c.tag(SRC);
+            c.tag("addr-derived");
+            c.tag("geoint");
+            if let Some(sc) = crate::util::address_au::state_code(loc) {
+                c.tag(format!("au-state:{sc}"));
+                c.tag("country:AU");
+            }
+            c.add_evidence(ev());
+            out.push(c);
         }
     }
     // Social profiles: platform-prefixed Username pivots + their profile URLs.

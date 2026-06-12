@@ -71,6 +71,9 @@ impl Module for PhoneCarrierGeo {
             e.tag("geoint");
             e.tag("coarse");
             e.tag("carrier-inferred");
+            if carrier.country.eq_ignore_ascii_case("australia") {
+                e.tag("country:AU");
+            }
             e.add_evidence(
                 Evidence::new(
                     SRC,

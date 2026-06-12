@@ -137,6 +137,10 @@ fn build_forward(addr: &str, feature: &Feature, scan_id: &str) -> Option<Entity>
         }
         ev = osm_attrs(ev, &mut e, props);
     }
+    if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
+        e.tag(format!("au-state:{state}"));
+        e.tag("country:AU");
+    }
     e.add_evidence(ev);
     Some(e)
 }
@@ -185,6 +189,10 @@ fn build_reverse(lat: f64, lon: f64, props: &Props, scan_id: &str) -> Option<Ent
         ev = ev.with_attr("postcode", p);
     }
     ev = osm_attrs(ev, &mut ae, props);
+    if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
+        ae.tag(format!("au-state:{state}"));
+        ae.tag("country:AU");
+    }
     ae.add_evidence(ev);
     Some(ae)
 }

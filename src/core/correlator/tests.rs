@@ -3032,3 +3032,142 @@ fn au_056_silent_without_both_signal_classes() {
     )];
     assert!(rule_au_056_jurisdiction_cross_check(&addr_only, "scan", 0).is_empty());
 }
+
+// ─── AU-057 tests ─────────────────────────────────────────────────────────────
+
+#[test]
+fn au_057_two_brisbane_coords_produce_synthesised_fix() {
+    use super::rules::rule_au_057_synthesised_location_fix;
+
+    // Two Brisbane coordinates both at confidence 0.70 → AU-057 fires with
+    // a synthesised point between them; severity is Medium (2 inputs).
+    let ents = vec![
+        {
+            let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.70, "scan");
+            e.add_evidence(Evidence::new("geocode", "Brisbane CBD fix".to_string()));
+            e
+        },
+        {
+            let mut e = Entity::new(EntityKind::Coordinates, "-27.4766,153.0166", 0.70, "scan");
+            e.add_evidence(Evidence::new("ip_geo", "Brisbane suburb fix".to_string()));
+            e
+        },
+    ];
+    let out = rule_au_057_synthesised_location_fix(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-057");
+    assert_eq!(out[0].severity, super::Severity::Medium);
+    assert!(out[0].description.contains("2 confirmed"));
+    assert!(out[0].entity_uids.len() == 2);
+}
+
+#[test]
+fn au_057_single_coord_does_not_fire() {
+    use super::rules::rule_au_057_synthesised_location_fix;
+
+    let ents = vec![{
+        let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.70, "scan");
+        e.add_evidence(Evidence::new("geocode", "single fix".to_string()));
+        e
+    }];
+    assert!(rule_au_057_synthesised_location_fix(&ents, "scan", 0).is_empty());
+}
+
+#[test]
+fn au_057_low_confidence_coords_do_not_fire() {
+    use super::rules::rule_au_057_synthesised_location_fix;
+
+    // Both coords are below the 0.60 threshold → rule is silent.
+    let ents = vec![
+        {
+            let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.55, "scan");
+            e.add_evidence(Evidence::new("geocode", "Brisbane CBD fix".to_string()));
+            e
+        },
+        {
+            let mut e = Entity::new(EntityKind::Coordinates, "-27.4766,153.0166", 0.55, "scan");
+            e.add_evidence(Evidence::new("ip_geo", "Brisbane suburb fix".to_string()));
+            e
+        },
+    ];
+    assert!(rule_au_057_synthesised_location_fix(&ents, "scan", 0).is_empty());
+}
+
+#[test]
+fn au_057_three_coords_produce_high_severity() {
+    use super::rules::rule_au_057_synthesised_location_fix;
+
+    let ents: Vec<Entity> = [
+        ("-27.4698,153.0251", "geocode"),
+        ("-27.4766,153.0166", "ip_geo"),
+        ("-27.4750,153.0200", "wigle"),
+    ]
+    .iter()
+    .map(|(v, src)| {
+        let mut e = Entity::new(EntityKind::Coordinates, *v, 0.70, "scan");
+        e.add_evidence(Evidence::new(*src, "fix".to_string()));
+        e
+    })
+    .collect();
+    let out = rule_au_057_synthesised_location_fix(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].severity, super::Severity::High);
+}
+
+// ─── AU-058 tests ─────────────────────────────────────────────────────────────
+
+#[test]
+fn au_058_ratemyagent_url_extracts_suburb() {
+    use super::rules::rule_au_058_professional_profile_geo;
+
+    let ents = vec![{
+        let mut e = Entity::new(
+            EntityKind::Url,
+            "https://www.ratemyagent.com.au/real-estate-agent/haigen-bamford-paddington-as105/",
+            0.50,
+            "scan",
+        );
+        e.add_evidence(Evidence::new("social_probe", "profile found".to_string()));
+        e
+    }];
+    let out = rule_au_058_professional_profile_geo(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-058");
+    assert!(out[0].description.contains("paddington"));
+    assert!(out[0].description.contains("T1591.002"));
+}
+
+#[test]
+fn au_058_non_real_estate_url_does_not_fire() {
+    use super::rules::rule_au_058_professional_profile_geo;
+
+    let ents = vec![{
+        let mut e = Entity::new(
+            EntityKind::Url,
+            "https://www.linkedin.com/in/haigen-bamford",
+            0.50,
+            "scan",
+        );
+        e.add_evidence(Evidence::new("social_probe", "profile".to_string()));
+        e
+    }];
+    // linkedin is not in PROF_HOSTS for AU-058 (ratemyagent/homely/soho only)
+    assert!(rule_au_058_professional_profile_geo(&ents, "scan", 0).is_empty());
+}
+
+#[test]
+fn au_058_below_confidence_threshold_does_not_fire() {
+    use super::rules::rule_au_058_professional_profile_geo;
+
+    let ents = vec![{
+        let mut e = Entity::new(
+            EntityKind::Url,
+            "https://www.ratemyagent.com.au/real-estate-agent/haigen-bamford-paddington-as105/",
+            0.40,
+            "scan",
+        );
+        e.add_evidence(Evidence::new("social_probe", "low-conf".to_string()));
+        e
+    }];
+    assert!(rule_au_058_professional_profile_geo(&ents, "scan", 0).is_empty());
+}

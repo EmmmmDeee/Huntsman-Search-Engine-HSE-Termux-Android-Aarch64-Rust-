@@ -67,6 +67,25 @@ impl Module for BreachTimezone {
             e.tag("geoint");
             e.tag("coarse");
             e.tag("timezone-inferred");
+            // Tag AU timezones so AU-056 jurisdiction cross-check can use them.
+            match tz.utc_offset {
+                10 | 11 => {
+                    e.tag("country:AU");
+                    e.tag("au-state:AU");
+                }
+                8 if tz.region.contains("Perth") => {
+                    e.tag("country:AU");
+                    e.tag("au-state:WA");
+                }
+                9 if tz.region.contains("Darwin") => {
+                    e.tag("country:AU");
+                    e.tag("au-state:NT");
+                }
+                12 if tz.region.contains("New Zealand") => {
+                    e.tag("country:NZ");
+                }
+                _ => {}
+            }
             e.add_evidence(
                 Evidence::new(
                     SRC,

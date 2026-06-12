@@ -80,6 +80,15 @@ impl Module for EmailHeaderGeo {
             e.tag("geoint");
             e.tag("coarse");
             e.tag("email-infra-inferred");
+            // Attach au-state when region resolves to Australia so AU-056
+            // jurisdiction cross-check and the address→coords enrichment pass
+            // can use it without re-parsing the string.
+            if geo.region.eq_ignore_ascii_case("australia") {
+                e.tag("country:AU");
+                e.tag("au-state:AU"); // coarse — state unknown from ccTLD alone
+            } else if let Some(state) = crate::util::address_au::state_code(geo.region) {
+                e.tag(format!("au-state:{state}"));
+            }
             e.add_evidence(
                 Evidence::new(
                     SRC,
@@ -126,9 +135,13 @@ struct DomainGeo {
 fn infer_geo_from_email_domain(domain: &str) -> Option<DomainGeo> {
     for &(tld, region) in CCTLD_REGIONS {
         if domain.ends_with(tld) {
+            // AU ccTLDs (.com.au, .net.au, .org.au, .edu.au, .gov.au) are
+            // strong country signals — raise from 0.48 to 0.52 so they cross
+            // the 0.50 expansion floor and feed the geo-correlation chain.
+            let confidence = if tld.ends_with(".au") { 0.52 } else { 0.48 };
             return Some(DomainGeo {
                 region,
-                confidence: 0.48,
+                confidence,
                 reason: "country-code TLD",
             });
         }

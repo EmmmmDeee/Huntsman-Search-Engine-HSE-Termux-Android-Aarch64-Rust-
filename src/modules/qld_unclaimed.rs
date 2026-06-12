@@ -188,7 +188,10 @@ fn records_to_entities(
         // (0.32). The `find_conf` for the non-geo `unclaimed_money` finding /
         // company Organisation keeps its full weight: those are real records,
         // not coarse geo.
-        let (addr_conf, find_conf) = if exact { (0.38, 0.60) } else { (0.32, 0.50) };
+        // Non-exact surname-only matches must stay below the 0.50 expansion
+        // floor so unrelated family members (e.g. "MS DAWN BAMFORD") never
+        // trigger pivots when scanning a specific individual.
+        let (addr_conf, find_conf) = if exact { (0.38, 0.60) } else { (0.32, 0.35) };
 
         // Geo pivot when we have a usable postcode; otherwise a plain finding.
         let mut entity = match pc {
@@ -206,6 +209,9 @@ fn records_to_entities(
                 // A postcode spans many localities — flag the coarseness so the
                 // UI and geo rules treat it as a region, not a pinned address.
                 e.tag("coarse");
+                // This register is Queensland-only; tag state explicitly so
+                // AU-056 jurisdiction cross-check can use it without re-parsing.
+                e.tag("au-state:QLD");
                 e
             }
             None => {
@@ -267,6 +273,7 @@ fn suburbs_to_entities(pc_localities: &[(String, Vec<Locality>)], scan_id: &str)
             let mut c = Entity::new(EntityKind::Coordinates, coords, 0.30, scan_id);
             c.tag(SRC);
             c.tag("country:AU");
+            c.tag("au-state:QLD");
             c.tag("geoint");
             c.tag("postcode-centroid");
             c.tag("coarse");

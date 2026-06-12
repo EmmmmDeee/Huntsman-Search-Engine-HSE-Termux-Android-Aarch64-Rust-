@@ -361,7 +361,7 @@ mod crypto;
 mod geo;
 mod identity;
 mod infra;
-mod location;
+pub(crate) mod location;
 mod org;
 
 pub(super) use assoc::*;

@@ -23,7 +23,64 @@ use super::*;
 /// person. An exclude-list silently admits any source it forgot to name (it had
 /// no `overpass` entry, so it would have built a tight footprint out of traffic
 /// cameras); an allowlist admits only what genuinely anchors to the subject.
-const ANCHORING_GEO_SOURCES: &[&str] = &["geocode", "photon", "exif_geo", "wigle", "mylnikov"];
+/// Geo sources that anchor a **person's** location rather than IP/host
+/// infrastructure. Every entry here produces a real-world address or confirmed
+/// GPS fix that is associated with the *subject*, not a CDN edge or POI.
+///
+/// Additions over the original five:
+/// - `search_engines` — inline city-lookup geocoding from search snippets
+/// - `social_location` — self-reported or professional profile address
+/// - `abn_lookup` / `opencorporates` / `acnc_charities` / `gleif_lei` — AU/global
+///   business registry registered address (the entity's legal place of operation)
+/// - `epieos` / `contact_enrich` / `proxycurl` — email-to-person enrichment that
+///   returns a home or work address for the *subject*
+/// - `qld_unclaimed` — Queensland register postcode (coarse but person-linked)
+/// - `github_user` / `keybase` — self-reported location on confirmed social profiles
+/// - `phone_area_geo` / `phone_carrier_geo` — phone number → city/carrier inference
+/// - `fullcontact` — structured location from person-enrichment data-broker API
+/// - `breach_timezone` — timezone inferred from breach timestamp activity clustering
+const ANCHORING_GEO_SOURCES: &[&str] = &[
+    // Original five: direct GPS/geocode/wifi sightings
+    "geocode",
+    "photon",
+    "exif_geo",
+    "wigle",
+    "mylnikov",
+    // Search-derived inline geocoding (known-city lookup from snippets)
+    "search_engines",
+    // Social profile bio and professional portal addresses
+    "social_location",
+    // Social profile location fields (GitHub, Keybase) — self-reported but
+    // person-anchored (the profile belongs to a confirmed identity node).
+    "github_user",
+    "keybase",
+    // Phone area-code and carrier inference — narrows person to city/region.
+    "phone_area_geo",
+    "phone_carrier_geo",
+    // Business registry addresses (legal registered location of subject/employer)
+    "abn_lookup",
+    "opencorporates",
+    "acnc_charities",
+    "gleif_lei",
+    // Email-to-person enrichment returning home/work address
+    "epieos",
+    "contact_enrich",
+    "proxycurl",
+    // AU public register (coarse postcode, person-linked)
+    "qld_unclaimed",
+    // Person enrichment — structured location data from data-broker APIs
+    "fullcontact",
+    // Timezone inference from breach timestamp clustering — coarse but
+    // person-linked (the timestamps belong to the subject's account activity)
+    "breach_timezone",
+];
+
+/// Returns `true` when a source name is a person-anchoring geo source —
+/// i.e. it locates the *subject*, not IP/host infrastructure. Used both by
+/// the correlator's hull filters and the engine's expansion ranking bonus.
+pub(crate) fn is_anchoring_geo_source(source: &str) -> bool {
+    ANCHORING_GEO_SOURCES.contains(&source)
+}
 
 /// True when a `Coordinates` entity does **not** locate the subject and must be
 /// kept out of their footprint: it is `hosting`-tagged (a CDN/cloud edge), it

@@ -73,6 +73,7 @@ impl Module for AbnLookup {
         const KINDS: &[EntityKind] = &[
             EntityKind::AbnAcn,
             EntityKind::Address,
+            EntityKind::Coordinates,
             EntityKind::Organisation,
             EntityKind::Person,
         ];
@@ -299,11 +300,41 @@ fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleResult) {
         };
         let mut addr_entity = Entity::new(EntityKind::Address, &addr, 0.75, scan_id);
         addr_entity.tag("abr");
+        addr_entity.tag("country:AU");
+        if let Some(sc) = crate::util::address_au::state_code(&addr) {
+            addr_entity.tag(format!("au-state:{sc}"));
+        }
         addr_entity.add_evidence(Evidence::new(
             SRC,
             format!("Business address for {entity_name}"),
         ));
         result.push(addr_entity);
+
+        // Emit inline Coordinates for city-level geo correlation.
+        // Prefer postcode → suburb centroid, fall back to city_coords on the
+        // full address string. ABR addresses are registry-validated, so these
+        // coordinates are strong anchors for AU-052/053.
+        let coord_source = if !postcode.is_empty() {
+            crate::util::city_coords::city_coords(&addr)
+                .or_else(|| crate::util::city_coords::city_coords(&state))
+        } else {
+            crate::util::city_coords::city_coords(&state)
+        };
+        if let Some((lat, lon)) = coord_source {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.65, scan_id);
+            c.tag("addr-derived");
+            c.tag("geoint");
+            c.tag("country:AU");
+            if let Some(sc) = crate::util::address_au::state_code(&addr) {
+                c.tag(format!("au-state:{sc}"));
+            }
+            c.add_evidence(Evidence::new(
+                SRC,
+                format!("Inline geocode of ABR address '{addr}' → {coord_val}"),
+            ));
+            result.push(c);
+        }
     }
 
     if let Some(names) = data.get("BusinessName").and_then(|v| v.as_array()) {
@@ -396,8 +427,30 @@ fn parse_name_results(data: &Value, query: &str, scan_id: &str, result: &mut Mod
             };
             let mut addr_entity = Entity::new(EntityKind::Address, &addr, 0.65, scan_id);
             addr_entity.tag("abr");
+            addr_entity.tag("country:AU");
+            if let Some(sc) = crate::util::address_au::state_code(&addr) {
+                addr_entity.tag(format!("au-state:{sc}"));
+            }
             addr_entity.add_evidence(Evidence::new(SRC, format!("Location for {name}")));
             result.push(addr_entity);
+
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&state)
+                .or_else(|| crate::util::city_coords::city_coords(&addr))
+            {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.58, scan_id);
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.tag("country:AU");
+                if let Some(sc) = crate::util::address_au::state_code(&addr) {
+                    c.tag(format!("au-state:{sc}"));
+                }
+                c.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Inline geocode of ABR address '{addr}' → {coord_val}"),
+                ));
+                result.push(c);
+            }
         }
     }
 }

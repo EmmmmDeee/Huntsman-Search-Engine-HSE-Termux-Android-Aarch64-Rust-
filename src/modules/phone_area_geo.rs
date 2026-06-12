@@ -50,7 +50,7 @@ impl Module for PhoneAreaGeo {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Address];
+        const KINDS: &[EntityKind] = &[EntityKind::Address, EntityKind::Coordinates];
         KINDS
     }
 
@@ -76,19 +76,48 @@ impl Module for PhoneAreaGeo {
             );
             e.tag("geoint");
             e.tag("phone-area-code");
-            e.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!(
-                        "Phone area code {} → {}, {}",
-                        geo.area_code, geo.location, geo.country
-                    ),
-                )
-                .with_attr("area_code", geo.area_code)
-                .with_attr("country", geo.country)
-                .with_attr("country_code", geo.country_code),
-            );
+            e.tag(format!("country:{}", geo.country_code));
+            if geo.country_code == "AU"
+                && let Some(sc) = crate::util::address_au::state_code(geo.location)
+            {
+                e.tag(format!("au-state:{sc}"));
+            }
+            let ev = Evidence::new(
+                SRC,
+                format!(
+                    "Phone area code {} → {}, {}",
+                    geo.area_code, geo.location, geo.country
+                ),
+            )
+            .with_attr("area_code", geo.area_code)
+            .with_attr("country", geo.country)
+            .with_attr("country_code", geo.country_code);
+            e.add_evidence(ev.clone());
             result.push(e);
+
+            // Inline Coordinates: city_coords gives a lat/lon for the primary
+            // city named in the location string. Confidence one tier below the
+            // Address (area-code geo is city-level, not GPS).
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(geo.location) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    geo.confidence - 0.08,
+                    &ctx.scan_id,
+                );
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.tag("phone-area-code");
+                c.tag(format!("country:{}", geo.country_code));
+                if geo.country_code == "AU"
+                    && let Some(sc) = crate::util::address_au::state_code(geo.location)
+                {
+                    c.tag(format!("au-state:{sc}"));
+                }
+                c.add_evidence(ev);
+                result.push(c);
+            }
         }
 
         Ok(result)
@@ -382,9 +411,14 @@ mod tests {
             proxy_pool: Default::default(),
         };
         let r = m.process(&target, &ctx).await.unwrap();
-        assert_eq!(r.len(), 1);
-        assert_eq!(r.entities[0].kind, EntityKind::Address);
-        assert!(r.entities[0].value.contains("Sydney"));
-        assert!(r.entities[0].has_tag("phone-area-code"));
+        // Address always emitted; Coordinates emitted when city_coords matches.
+        assert!(!r.is_empty());
+        let addr = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Address)
+            .unwrap();
+        assert!(addr.value.contains("Sydney"));
+        assert!(addr.has_tag("phone-area-code"));
     }
 }

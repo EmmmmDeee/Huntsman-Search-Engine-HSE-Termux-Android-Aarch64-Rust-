@@ -3,6 +3,8 @@
 
 use super::*;
 
+use crate::util::geohash::geohash;
+
 /// The AU state/territory a confirmed `Coordinates` entity asserts. Prefers the
 /// `au-state:XX` tag the geo builders attach, but falls back to deriving the
 /// state straight from the lat/long via [`crate::util::geo::au_state_for_coords`]
@@ -645,4 +647,142 @@ pub(in crate::core::correlator) fn rule_au_032_colocation_cluster(
         }
     }
     out
+}
+
+/// AU-057 — Synthesised location fix (weighted geometric median).
+///
+/// Collects all confirmed (`confidence ≥ 0.60`) `Coordinates` entities, weights
+/// each by its confidence, and computes the
+/// [`crate::util::geometry::weighted_geometric_median`] — the point that
+/// minimises the confidence-weighted sum of great-circle distances to all
+/// inputs. This converts the qualitative "sources agree" assertion from
+/// AU-017/AU-030 into a single computable best-estimate lat/lon.
+///
+/// Requires ≥ 2 valid inputs; `High` at ≥ 3 inputs, `Medium` at 2.
+pub(in crate::core::correlator) fn rule_au_057_synthesised_location_fix(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let candidates: Vec<(&Entity, (f64, f64))> =
+        entities_of_kind(entities, EntityKind::Coordinates)
+            .into_iter()
+            .filter(|e| e.confidence >= 0.60)
+            .filter_map(|e| crate::util::geohash::parse_coords(&e.value).map(|ll| (e, ll)))
+            .collect();
+
+    if candidates.len() < 2 {
+        return Vec::new();
+    }
+
+    let weighted: Vec<((f64, f64), f64)> = candidates
+        .iter()
+        .map(|(e, ll)| (*ll, e.confidence))
+        .collect();
+
+    let Some((lat, lon)) = crate::util::geometry::weighted_geometric_median(&weighted) else {
+        return Vec::new();
+    };
+
+    let gh = geohash(lat, lon, 5);
+    let severity = if candidates.len() >= 3 {
+        Severity::High
+    } else {
+        Severity::Medium
+    };
+    let uids: Vec<String> = candidates.iter().map(|(e, _)| e.uid.clone()).collect();
+
+    vec![Correlation::new(
+        "AU-057",
+        "Synthesised location fix (weighted median)",
+        severity,
+        format!(
+            "Weighted geometric median of {} confirmed coordinate(s): ({lat:.4}, {lon:.4}) \
+             geohash={gh} — MITRE T1591.001",
+            candidates.len()
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
+/// AU-058 — Professional profile geographic signal (T1591.002).
+///
+/// AU real estate agent profile URLs embed a suburb-level workplace location in
+/// the URL slug — no live HTTP fetch required. ratemyagent.com.au slugs follow
+/// `/real-estate-agent/<name>-<suburb>-<id>/`; the suburb token is extracted and
+/// surfaced as a geographic signal aligned with MITRE T1591.002 (Business
+/// Relationships — physical location inferred from professional context).
+pub(in crate::core::correlator) fn rule_au_058_professional_profile_geo(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    const PROF_HOSTS: &[&str] = &["ratemyagent.com.au", "homely.com.au", "soho.com.au"];
+
+    let mut out = Vec::new();
+
+    for e in entities_of_kind(entities, EntityKind::Url) {
+        if e.confidence < 0.45 {
+            continue;
+        }
+        let url_lower = e.value.to_lowercase();
+        let Some(host) = PROF_HOSTS.iter().find(|h| url_lower.contains(*h)) else {
+            continue;
+        };
+
+        let suburb = if host.contains("ratemyagent") {
+            extract_ratemyagent_suburb(&e.value)
+        } else {
+            None
+        };
+
+        let Some(suburb) = suburb else {
+            continue;
+        };
+
+        out.push(Correlation::new(
+            "AU-058",
+            "Professional profile geographic signal",
+            Severity::Medium,
+            format!(
+                "Real estate agent profile at {host} indicates subject operates in \
+                 '{suburb}' — MITRE T1591.002 (Business Relationships)"
+            ),
+            vec![e.uid.clone()],
+            scan_id,
+            ts,
+        ));
+    }
+
+    out
+}
+
+/// Extract the suburb token from a ratemyagent.com.au agent URL slug.
+///
+/// Pattern: `/real-estate-agent/<name>-<suburb>-<id>/`
+/// The trailing ID is stripped; the preceding token is the suburb.
+fn extract_ratemyagent_suburb(url: &str) -> Option<String> {
+    let path_start = url.find("/real-estate-agent/")?;
+    let slug_area = &url[path_start + "/real-estate-agent/".len()..];
+    let slug = slug_area
+        .trim_end_matches('/')
+        .split('?')
+        .next()
+        .unwrap_or(slug_area);
+    let parts: Vec<&str> = slug.split('-').collect();
+    if parts.len() < 4 {
+        return None;
+    }
+    let id = *parts.last()?;
+    if !id.chars().all(|c| c.is_ascii_alphanumeric()) || id.len() < 2 {
+        return None;
+    }
+    let suburb = parts[parts.len() - 2];
+    if suburb.len() >= 4 && suburb.chars().all(|c| c.is_ascii_alphabetic()) {
+        Some(suburb.to_string())
+    } else {
+        None
+    }
 }

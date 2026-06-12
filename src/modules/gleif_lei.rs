@@ -322,6 +322,17 @@ fn records_to_entities(resp: &GleifResp, query: &str, scan_id: &str) -> Vec<Enti
             }
             e.tag("geoint");
             e.tag("registered-address");
+            // GLEIF region codes use ISO 3166-2 format "AU-VIC", "AU-NSW", etc.
+            // Extract the sub-national part for au-state tagging.
+            if let Some(region) = a.region.as_deref() {
+                if let Some(sub) = region.strip_prefix("AU-") {
+                    e.tag(format!("au-state:{sub}"));
+                    e.tag("country:AU");
+                }
+            } else if let Some(sc) = crate::util::address_au::state_code(&loc) {
+                e.tag(format!("au-state:{sc}"));
+                e.tag("country:AU");
+            }
             let mut aev = Evidence::new(SRC, format!("Registered address for {name}"))
                 .with_attr("org", &name)
                 .with_attr("lei", &lei);
@@ -330,6 +341,29 @@ fn records_to_entities(resp: &GleifResp, query: &str, scan_id: &str) -> Vec<Enti
             }
             e.add_evidence(aev);
             out.push(e);
+
+            // Inline Coordinates via city lookup.
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&loc) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.62, scan_id);
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.tag("gleif");
+                if let Some(region) = a.region.as_deref() {
+                    if let Some(sub) = region.strip_prefix("AU-") {
+                        c.tag(format!("au-state:{sub}"));
+                        c.tag("country:AU");
+                    }
+                } else if let Some(sc) = crate::util::address_au::state_code(&loc) {
+                    c.tag(format!("au-state:{sc}"));
+                    c.tag("country:AU");
+                }
+                c.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Inline geocode of GLEIF address '{loc}' → {coord_val}"),
+                ));
+                out.push(c);
+            }
         }
     }
     out
@@ -373,6 +407,7 @@ impl Module for GleifLei {
             EntityKind::Organisation,
             EntityKind::AbnAcn,
             EntityKind::Address,
+            EntityKind::Coordinates,
         ];
         KINDS
     }
