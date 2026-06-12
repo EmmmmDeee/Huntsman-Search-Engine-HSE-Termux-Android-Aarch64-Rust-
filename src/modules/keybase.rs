@@ -113,6 +113,7 @@ impl Module for Keybase {
             EntityKind::Email,
             EntityKind::Domain,
             EntityKind::Address,
+            EntityKind::Coordinates,
         ];
         KINDS
     }
@@ -219,14 +220,37 @@ impl Module for Keybase {
             if let Some(loc) = profile.location.as_deref()
                 && loc.len() >= 3
             {
-                let mut ae = Entity::new(EntityKind::Address, loc, 0.50, &ctx.scan_id);
+                let mut ae = Entity::new(EntityKind::Address, loc, 0.52, &ctx.scan_id);
                 ae.tag("keybase");
                 ae.tag("geoint");
+                ae.tag("self-reported");
+                if let Some(sc) = crate::util::address_au::state_code(loc) {
+                    ae.tag(format!("au-state:{sc}"));
+                    ae.tag("country:AU");
+                }
                 ae.add_evidence(Evidence::new(
                     SRC,
                     format!("Location from Keybase profile {kb_username}"),
                 ));
                 result.push(ae);
+
+                if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
+                    let coord_val = format!("{lat:.4},{lon:.4}");
+                    let mut c =
+                        Entity::new(EntityKind::Coordinates, &coord_val, 0.50, &ctx.scan_id);
+                    c.tag("addr-derived");
+                    c.tag("geoint");
+                    c.tag("keybase");
+                    if let Some(sc) = crate::util::address_au::state_code(loc) {
+                        c.tag(format!("au-state:{sc}"));
+                        c.tag("country:AU");
+                    }
+                    c.add_evidence(Evidence::new(
+                        SRC,
+                        format!("Inline geocode of Keybase location '{loc}' → {coord_val}"),
+                    ));
+                    result.push(c);
+                }
             }
         }
 

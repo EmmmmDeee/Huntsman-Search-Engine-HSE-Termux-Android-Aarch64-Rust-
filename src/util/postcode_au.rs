@@ -80,13 +80,34 @@ fn offline_fallback(postcode: &str) -> Vec<Locality> {
         lon,
     };
     match postcode {
-        // QLD 4552 — Sunshine Coast hinterland. Maleny/Booroobin share the
-        // postcode centroid (as Zippopotam serves them); Conondale is distinct.
+        // QLD 4552 — Sunshine Coast hinterland.
         "4552" => vec![
             mk("Maleny", -26.729, 152.7554),
             mk("Booroobin", -26.729, 152.7554),
             mk("Conondale", -26.7333, 152.7167),
         ],
+        // AU capital-city central postcodes — Zippopotam centroid values.
+        "2000" => vec![mk("Sydney CBD", -33.8688, 151.2093)],
+        "3000" => vec![mk("Melbourne CBD", -37.8136, 144.9631)],
+        "4000" => vec![mk("Brisbane CBD", -27.4698, 153.0251)],
+        "5000" => vec![mk("Adelaide CBD", -34.9285, 138.6007)],
+        "6000" => vec![mk("Perth CBD", -31.9505, 115.8605)],
+        "7000" => vec![mk("Hobart CBD", -42.8821, 147.3272)],
+        "0800" | "0801" => vec![mk("Darwin", -12.4634, 130.8456)],
+        // Frequently-occurring QLD postcodes in AU registers
+        "4551" => vec![mk("Caloundra", -26.7986, 153.1319)],
+        "4556" => vec![mk("Maroochydore", -26.6532, 153.0640)],
+        "4217" => vec![mk("Surfers Paradise", -28.0029, 153.4300)],
+        "4218" => vec![mk("Broadbeach", -28.0264, 153.4307)],
+        "4500" => vec![mk("Strathpine", -27.3050, 152.9900)],
+        "4501" => vec![mk("Kallangur", -27.2667, 152.9833)],
+        "4510" => vec![mk("Caboolture", -27.0847, 152.9511)],
+        "4520" => vec![mk("Samford Valley", -27.3667, 152.8833)],
+        "4300" => vec![mk("Springfield", -27.6667, 152.9167)],
+        "4305" => vec![mk("Ipswich", -27.6167, 152.7667)],
+        "4350" => vec![mk("Toowoomba", -27.5598, 151.9507)],
+        "4810" => vec![mk("Townsville", -19.2590, 146.8169)],
+        "4870" => vec![mk("Cairns", -16.9186, 145.7781)],
         _ => Vec::new(),
     }
 }
@@ -151,8 +172,10 @@ mod tests {
         // Centroids match the online Zippopotam values (offline == online).
         let maleny = locs.iter().find(|l| l.suburb == "Maleny").unwrap();
         assert!((maleny.lat - -26.729).abs() < 1e-6 && (maleny.lon - 152.7554).abs() < 1e-6);
+        // Capital city postcodes now resolve offline.
+        assert!(!offline_fallback("2000").is_empty());
+        assert!(!offline_fallback("3000").is_empty());
         // Unknown postcodes stay empty → caller degrades to the bare postcode.
-        assert!(offline_fallback("2000").is_empty());
         assert!(offline_fallback("9999").is_empty());
     }
 

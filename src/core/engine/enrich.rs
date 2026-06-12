@@ -167,7 +167,17 @@ pub(super) fn address_to_coords_pass(
         if addr_entity.kind != EntityKind::Address {
             continue;
         }
-        if addr_entity.confidence < 0.45 {
+        // Registry/validated sources (ABR, company registries, social profiles
+        // with explicit geoint tag) have externally-verified addresses; lower
+        // their gate from 0.45 to 0.40 so even conservative confidence estimates
+        // feed the footprint. All others keep the 0.45 floor.
+        let validated = addr_entity.has_tag("abr") || addr_entity.has_tag("validated") || {
+            addr_entity.has_tag("geoint")
+                && (addr_entity.has_tag("professional-address")
+                    || addr_entity.has_tag("social-profile"))
+        };
+        let gate = if validated { 0.40 } else { 0.45 };
+        if addr_entity.confidence < gate {
             continue;
         }
         // Skip if no corroborating sources recorded — a bare assertion with
