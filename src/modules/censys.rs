@@ -95,6 +95,13 @@ impl Module for Censys {
     fn category(&self) -> ModuleCategory {
         ModuleCategory::Infrastructure
     }
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Censys host search is a scan/exposure database (T1596.005, alongside
+        // T1590.005 IP Addresses — the Infrastructure default) that also emits
+        // the host's data-centre coordinates + city/region as physical-location
+        // entities (T1591.001). Superset of the default — coverage cannot regress.
+        &["T1590.005", "T1596.005", "T1591.001"]
+    }
     fn produces(&self) -> &'static [EntityKind] {
         // Censys host search corroborates the IP and emits the host's
         // Coordinates (data-centre lat/lon) and city/region/country
@@ -258,18 +265,15 @@ impl Module for Censys {
                 .with_attr("latitude", lat.to_string())
                 .with_attr("longitude", lon.to_string())
                 .with_attr("source", "censys");
-            if let Some(c) = loc.country.as_deref() {
-                ev = ev.with_attr("country", c);
-            }
-            if let Some(cc) = loc.country_code.as_deref() {
-                ev = ev.with_attr("country_code", cc);
-            }
-            if let Some(city) = loc.city.as_deref() {
-                ev = ev.with_attr("city", city);
-            }
-            if let Some(prov) = loc.province.as_deref() {
-                ev = ev.with_attr("province", prov);
-            }
+            ev = [
+                ("country", loc.country.as_deref()),
+                ("country_code", loc.country_code.as_deref()),
+                ("city", loc.city.as_deref()),
+                ("province", loc.province.as_deref()),
+            ]
+            .into_iter()
+            .filter_map(|(k, v)| v.map(|val| (k, val)))
+            .fold(ev, |ev, (k, val)| ev.with_attr(k, val));
 
             geo.add_evidence(ev);
             result.push(geo);
