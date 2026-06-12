@@ -92,17 +92,14 @@ fn owner_matches_full_name(owner: &str, seed: &str) -> bool {
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
         .collect();
-    let mut any = false;
-    for tok in seed
+    let tokens: Vec<&str> = seed
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
-    {
-        any = true;
-        if !owner_words.iter().any(|w| w.eq_ignore_ascii_case(tok)) {
-            return false;
-        }
-    }
-    any
+        .collect();
+    !tokens.is_empty()
+        && tokens
+            .iter()
+            .all(|tok| owner_words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
 }
 
 /// The datastore_search URL for one full-text query.
@@ -119,16 +116,15 @@ fn merge_records(
     secondary: Vec<Map<String, Value>>,
 ) -> Vec<Map<String, Value>> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut out = Vec::with_capacity(primary.len() + secondary.len());
-    for rec in primary.into_iter().chain(secondary) {
-        let id = field_str(&rec, "_id").unwrap_or_default();
-        // Keep id-less rows (CKAN always sets `_id`, so this is just defensive)
-        // and any id not seen before.
-        if id.is_empty() || seen.insert(id) {
-            out.push(rec);
-        }
-    }
-    out
+    primary
+        .into_iter()
+        .chain(secondary)
+        .filter(|rec| {
+            let id = field_str(rec, "_id").unwrap_or_default();
+            // Keep id-less rows (CKAN always sets `_id`; defensive) + first-seen ids.
+            id.is_empty() || seen.insert(id)
+        })
+        .collect()
 }
 
 /// Pure transform: CKAN records → entities. One entity per record — a geocodable
@@ -155,30 +151,28 @@ fn records_to_entities(
         let sender = field_str(rec, "SenderName");
         let date = field_str(rec, "DateRec");
         let reference = field_str(rec, "ClientId_ActNo");
-
-        let mut ev = Evidence::new(SRC, format!("QLD unclaimed money: {owner}"));
-        ev = ev.with_attr("owner", &owner);
-        if let Some(a) = amount.as_deref() {
-            ev = ev.with_attr("amount_aud", a);
-        }
-        if let Some(s) = sender.as_deref() {
-            ev = ev.with_attr("sender", s);
-        }
-        if let Some(d) = date.as_deref() {
-            ev = ev.with_attr("date_received", d);
-        }
-        if let Some(r) = reference.as_deref() {
-            ev = ev.with_attr("reference", r);
-        }
         // Resolve the postcode once and reuse it for both the evidence attr and
         // the entity-kind decision below.
         let pc = postcode(rec);
-        if let Some(ref p) = pc {
-            ev = ev.with_attr("postcode", p);
-        }
-        ev = ev
-            .with_attr("register", "QLD Public Trustee unclaimed monies")
-            .with_attr("total_matches", total.to_string());
+
+        // Fold the optional money-trail fields into the evidence in a single
+        // pass: only the present (`Some`) attributes are attached; owner /
+        // register / total_matches always are.
+        let ev = [
+            ("amount_aud", amount.as_deref()),
+            ("sender", sender.as_deref()),
+            ("date_received", date.as_deref()),
+            ("reference", reference.as_deref()),
+            ("postcode", pc.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(k, v)| v.map(|val| (k, val)))
+        .fold(
+            Evidence::new(SRC, format!("QLD unclaimed money: {owner}")).with_attr("owner", &owner),
+            |ev, (k, val)| ev.with_attr(k, val),
+        )
+        .with_attr("register", "QLD Public Trustee unclaimed monies")
+        .with_attr("total_matches", total.to_string());
 
         // A bare postcode is a COARSE locator, not a residence, so even an
         // exact-name register hit stays a Candidate-tier `Address` (it must not
@@ -240,20 +234,26 @@ fn records_to_entities(
         // `Organisation` per individually-resolvable company name so the engine's
         // expansion pivots each into abn_lookup / opencorporates and resolves its
         // ABN/ACN, connecting the unclaimed-money graph to the business registry.
-        for company in crate::util::abn::company_names(&owner) {
-            let mut org = Entity::new(EntityKind::Organisation, &company, find_conf, scan_id);
-            org.tag(SRC);
-            org.tag("unclaimed-money");
-            org.tag("country:AU");
-            org.tag("company-owner");
-            let mut oev = Evidence::new(SRC, format!("Company owed unclaimed money: {company}"))
-                .with_attr("register", "QLD Public Trustee unclaimed monies");
-            if company != owner {
-                oev = oev.with_attr("joint_owner", &owner);
-            }
-            org.add_evidence(oev);
-            out.push(org);
-        }
+        out.extend(
+            crate::util::abn::company_names(&owner)
+                .into_iter()
+                .map(|company| {
+                    let mut org =
+                        Entity::new(EntityKind::Organisation, &company, find_conf, scan_id);
+                    org.tag(SRC);
+                    org.tag("unclaimed-money");
+                    org.tag("country:AU");
+                    org.tag("company-owner");
+                    let mut oev =
+                        Evidence::new(SRC, format!("Company owed unclaimed money: {company}"))
+                            .with_attr("register", "QLD Public Trustee unclaimed monies");
+                    if company != owner {
+                        oev = oev.with_attr("joint_owner", &owner);
+                    }
+                    org.add_evidence(oev);
+                    org
+                }),
+        );
     }
     out
 }
@@ -368,6 +368,15 @@ impl Module for QldUnclaimed {
         // (defaulted to `Other`), which excluded it from any category-focused
         // scan (e.g. `skiptrace`) despite being a direct person-locator.
         ModuleCategory::People
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // A person → register entry yields a physical location (postcode),
+        // confirms the legal name, and surfaces company owners — ATT&CK Determine
+        // Physical Locations + Employee Names + Business Relationships, the same
+        // precise mapping as the sibling au_unclaimed (more accurate than the
+        // People-category default alone).
+        &["T1591.001", "T1589.003", "T1591.002"]
     }
 
     fn accepts(&self, t: &Target) -> bool {
