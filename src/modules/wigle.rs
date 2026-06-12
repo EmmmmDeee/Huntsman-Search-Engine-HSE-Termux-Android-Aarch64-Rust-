@@ -405,15 +405,18 @@ impl Module for Wigle {
         }
 
         // ── Top MAC addresses (AP BSSIDs) for device correlation ────
-        // Only emit the 5 most precise (lowest trilat variance).
+        // Emit the 5 APs nearest the query point. The distance is the full 2-D
+        // offset: the earlier version used latitude only (longitude ignored), so
+        // within the search bbox two APs at the same latitude but different
+        // longitudes ranked as equidistant and a farther one could be kept.
         let mut macs: Vec<(&str, f64)> = body
             .results
             .iter()
             .filter_map(|n| {
                 let mac = n.netid.as_deref()?;
-                let nlat = n.trilat.unwrap_or(lat);
-                let dlat = nlat - lat;
-                let dist = (dlat * dlat).sqrt();
+                let dlat = n.trilat.unwrap_or(lat) - lat;
+                let dlon = n.trilong.unwrap_or(lon) - lon;
+                let dist = (dlat * dlat + dlon * dlon).sqrt();
                 Some((mac, dist))
             })
             .collect();
