@@ -209,6 +209,9 @@ fn records_to_entities(
                 // A postcode spans many localities — flag the coarseness so the
                 // UI and geo rules treat it as a region, not a pinned address.
                 e.tag("coarse");
+                // This register is Queensland-only; tag state explicitly so
+                // AU-056 jurisdiction cross-check can use it without re-parsing.
+                e.tag("au-state:QLD");
                 e
             }
             None => {

@@ -250,6 +250,11 @@ pub(super) fn build_entities(
                 if has_postcode {
                     e.tag("au-postcode");
                 }
+                // Attach au-state tag immediately so AU-056 jurisdiction
+                // cross-check fires on this address without re-parsing.
+                if let Some(state) = crate::util::address_au::state_code(&addr) {
+                    e.tag(format!("au-state:{state}"));
+                }
                 e.add_evidence(
                     Evidence::new(
                         "search_engines",
@@ -464,6 +469,14 @@ pub(super) fn build_entities(
                     let mut ce = Entity::new(EntityKind::Coordinates, &coords, geo_conf, scan_id);
                     ce.tag("geoint");
                     ce.tag("search-geocoded");
+                    // Tag au-state from coordinates so AU-056 jurisdiction
+                    // cross-check can fire without re-parsing lat/lon strings.
+                    if crate::util::geo::is_in_australia(lat, lon) {
+                        ce.tag("au-relevant");
+                        if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
+                            ce.tag(format!("au-state:{state}"));
+                        }
+                    }
                     ce.add_evidence(
                         Evidence::new(
                             "search_engines",
