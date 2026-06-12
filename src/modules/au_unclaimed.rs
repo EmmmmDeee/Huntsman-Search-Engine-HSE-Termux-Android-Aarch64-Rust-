@@ -127,21 +127,25 @@ fn record_to_entities(
         (None, None) => return out,
     };
 
-    let mut ev = Evidence::new(
-        SRC,
-        format!("AU unclaimed money ({}) for {full_name}", reg.state),
-    )
-    .with_attr("state", reg.state)
-    .with_attr("source", "au_unclaimed");
-    if let Some(p) = postcode.as_deref() {
-        ev = ev.with_attr("postcode", p);
-    }
-    if let Some(s) = suburb.as_deref() {
-        ev = ev.with_attr("suburb", s);
-    }
-    if let Some(amt) = field_str(record, "Amount").or_else(|| field_str(record, "AMOUNT")) {
-        ev = ev.with_attr("amount", amt);
-    }
+    let ev = [
+        ("postcode", postcode.clone()),
+        ("suburb", suburb.clone()),
+        (
+            "amount",
+            field_str(record, "Amount").or_else(|| field_str(record, "AMOUNT")),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.map(|v| (key, v)))
+    .fold(
+        Evidence::new(
+            SRC,
+            format!("AU unclaimed money ({}) for {full_name}", reg.state),
+        )
+        .with_attr("state", reg.state)
+        .with_attr("source", "au_unclaimed"),
+        |ev, (key, v)| ev.with_attr(key, v),
+    );
 
     let mut ae = Entity::new(EntityKind::Address, &display, 0.55, scan_id);
     ae.tag(SRC);
@@ -252,14 +256,13 @@ impl Module for AuUnclaimed {
                 Some(r) => &r.records,
                 None => continue,
             };
-            for record in records.iter().take(MAX_RECORDS) {
-                if !owner_matches(record, reg.name_field, full_name) {
-                    continue;
-                }
-                for e in record_to_entities(record, reg, full_name, &ctx.scan_id) {
-                    result.push(e);
-                }
-            }
+            result.extend(
+                records
+                    .iter()
+                    .take(MAX_RECORDS)
+                    .filter(|record| owner_matches(record, reg.name_field, full_name))
+                    .flat_map(|record| record_to_entities(record, reg, full_name, &ctx.scan_id)),
+            );
         }
 
         Ok(result)
