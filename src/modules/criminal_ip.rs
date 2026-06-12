@@ -126,6 +126,15 @@ impl Module for CriminalIp {
         ModuleCategory::Infrastructure
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Criminal IP is a paid threat-intel vendor (risk scoring + VPN/proxy/
+        // tor/scanner classification), so beyond the Infrastructure default
+        // (T1590.005 IP Addresses + T1596.005 Scan Databases) it is Search
+        // Closed Sources: Threat Intel Vendors (T1597.001). Superset of the
+        // default — coverage cannot regress.
+        &["T1590.005", "T1596.005", "T1597.001"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Organisation, EntityKind::Asn];
         KINDS
@@ -178,30 +187,20 @@ impl Module for CriminalIp {
             }
         }
         if let Some(is) = &body.issues {
-            if is.is_vpn == Some(true) {
-                entity.tag("vpn");
-            }
-            if is.is_proxy == Some(true) {
-                entity.tag("proxy");
-            }
-            if is.is_tor == Some(true) {
-                entity.tag("tor");
-            }
-            if is.is_hosting == Some(true) {
-                entity.tag("hosting");
-            }
-            if is.is_anonymous_vpn == Some(true) {
-                entity.tag("anonymous-vpn");
-            }
-            if is.is_cloud == Some(true) {
-                entity.tag("cloud");
-            }
-            if is.is_scanner == Some(true) {
-                entity.tag("scanner");
-            }
-            if is.is_dark_web == Some(true) {
-                entity.tag("dark-web");
-            }
+            // Each true issue flag raises its tag — one table, one pass.
+            [
+                (is.is_vpn, "vpn"),
+                (is.is_proxy, "proxy"),
+                (is.is_tor, "tor"),
+                (is.is_hosting, "hosting"),
+                (is.is_anonymous_vpn, "anonymous-vpn"),
+                (is.is_cloud, "cloud"),
+                (is.is_scanner, "scanner"),
+                (is.is_dark_web, "dark-web"),
+            ]
+            .into_iter()
+            .filter(|(flag, _)| *flag == Some(true))
+            .for_each(|(_, tag)| entity.tag(tag));
         }
         if let Some(w) = body.whois.as_ref().and_then(|w| w.data.first())
             && let Some(c) = w.org_country_code.as_deref()
@@ -239,30 +238,20 @@ impl Module for CriminalIp {
             ev = ev.with_attr("vuln_count", v.to_string());
         }
         if let Some(is) = &body.issues {
-            if is.is_vpn == Some(true) {
-                ev = ev.with_attr("is_vpn", "true");
-            }
-            if is.is_proxy == Some(true) {
-                ev = ev.with_attr("is_proxy", "true");
-            }
-            if is.is_tor == Some(true) {
-                ev = ev.with_attr("is_tor", "true");
-            }
-            if is.is_hosting == Some(true) {
-                ev = ev.with_attr("is_hosting", "true");
-            }
-            if is.is_anonymous_vpn == Some(true) {
-                ev = ev.with_attr("is_anonymous_vpn", "true");
-            }
-            if is.is_cloud == Some(true) {
-                ev = ev.with_attr("is_cloud", "true");
-            }
-            if is.is_scanner == Some(true) {
-                ev = ev.with_attr("is_scanner", "true");
-            }
-            if is.is_dark_web == Some(true) {
-                ev = ev.with_attr("is_dark_web", "true");
-            }
+            // Mirror the true issue flags as evidence attributes in one fold.
+            ev = [
+                (is.is_vpn, "is_vpn"),
+                (is.is_proxy, "is_proxy"),
+                (is.is_tor, "is_tor"),
+                (is.is_hosting, "is_hosting"),
+                (is.is_anonymous_vpn, "is_anonymous_vpn"),
+                (is.is_cloud, "is_cloud"),
+                (is.is_scanner, "is_scanner"),
+                (is.is_dark_web, "is_dark_web"),
+            ]
+            .into_iter()
+            .filter(|(flag, _)| *flag == Some(true))
+            .fold(ev, |ev, (_, k)| ev.with_attr(k, "true"));
         }
         entity.add_evidence(ev);
         let mut result = ModuleResult::new();
