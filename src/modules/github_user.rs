@@ -128,53 +128,49 @@ impl Module for GithubUser {
         // Username entity with GitHub profile metadata.
         let mut u_entity = Entity::new(EntityKind::Username, &user.login, 0.95, &ctx.scan_id);
         u_entity.tag("github");
-        let mut ev = Evidence::new(SRC, format!("GitHub profile @{}", user.login))
-            .with_attr("github_id", user.id.to_string())
-            .with_attr(
-                "profile_url",
-                user.html_url.as_deref().map_or_else(
-                    || format!("https://github.com/{}", user.login),
-                    String::from,
-                ),
-            );
-        if let Some(n) = user.name.as_deref() {
-            ev = ev.with_attr("name", n);
-        }
-        if let Some(c) = user.company.as_deref() {
-            ev = ev.with_attr("company", c);
-        }
+        let profile_url = user.html_url.as_deref().map_or_else(
+            || format!("https://github.com/{}", user.login),
+            String::from,
+        );
+        let mut ev = [
+            ("name", user.name.as_deref().map(String::from)),
+            ("company", user.company.as_deref().map(String::from)),
+            (
+                "blog",
+                user.blog
+                    .as_deref()
+                    .filter(|b| !b.is_empty())
+                    .map(String::from),
+            ),
+            (
+                "bio",
+                user.bio
+                    .as_deref()
+                    .filter(|b| !b.is_empty())
+                    .map(String::from),
+            ),
+            ("created_at", user.created_at.as_deref().map(String::from)),
+            ("public_repos", user.public_repos.map(|n| n.to_string())),
+            ("public_gists", user.public_gists.map(|n| n.to_string())),
+            ("followers", user.followers.map(|n| n.to_string())),
+            ("following", user.following.map(|n| n.to_string())),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(
+            Evidence::new(SRC, format!("GitHub profile @{}", user.login))
+                .with_attr("github_id", user.id.to_string())
+                .with_attr("profile_url", profile_url),
+            |ev, (key, v)| ev.with_attr(key, v),
+        );
+        // Location and Twitter also drive entity tags, so they stay explicit.
         if let Some(l) = user.location.as_deref() {
             ev = ev.with_attr("location", l);
             if !l.trim().is_empty() {
                 u_entity.tag("has-location");
             }
         }
-        if let Some(b) = user.blog.as_deref()
-            && !b.is_empty()
-        {
-            ev = ev.with_attr("blog", b);
-        }
-        if let Some(b) = user.bio.as_deref()
-            && !b.is_empty()
-        {
-            ev = ev.with_attr("bio", b);
-        }
-        if let Some(c) = user.created_at.as_deref() {
-            ev = ev.with_attr("created_at", c);
-        }
-        if let Some(n) = user.public_repos {
-            ev = ev.with_attr("public_repos", n.to_string());
-        }
-        if let Some(n) = user.public_gists {
-            ev = ev.with_attr("public_gists", n.to_string());
-        }
-        if let Some(n) = user.followers {
-            ev = ev.with_attr("followers", n.to_string());
-        }
-        if let Some(n) = user.following {
-            ev = ev.with_attr("following", n.to_string());
-        }
-        if let Some(ref tw) = user.twitter_username
+        if let Some(tw) = user.twitter_username.as_deref()
             && !tw.is_empty()
         {
             ev = ev.with_attr("twitter", tw);
@@ -387,10 +383,8 @@ impl GithubUser {
         // value is `ssh:<fp>` (a hash of algo+base64, comment dropped), so two
         // accounts sharing a key produce the SAME uid and the engine merges them
         // into one artifact carrying both logins — which AU-048 then links.
-        for key in keys.iter().take(10) {
-            let Some(fp) = key.key.as_deref().and_then(ssh_fingerprint) else {
-                continue;
-            };
+        result.extend(keys.iter().take(10).filter_map(|key| {
+            let fp = key.key.as_deref().and_then(ssh_fingerprint)?;
             let mut e = Entity::new(EntityKind::Credential, &fp, 0.85, &ctx.scan_id);
             e.tag("ssh-key");
             e.tag("public-key");
@@ -405,8 +399,8 @@ impl GithubUser {
                     .with_attr("github_login", login)
                     .with_attr("key_type", algo),
             );
-            result.push(e);
-        }
+            Some(e)
+        }));
     }
 
     async fn fetch_events(&self, login: &str, ctx: &ModuleContext, result: &mut ModuleResult) {
@@ -515,38 +509,31 @@ impl GithubUser {
         // `…@users.noreply.github.com` placeholders carry no identity, so they're
         // excluded. Dedup by value; cap to keep a busy account bounded.
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for event in &events {
-            let Some(payload) = event.payload.as_ref() else {
-                continue;
-            };
-            for commit in &payload.commits {
-                let Some(raw) = commit.author.as_ref().and_then(|a| a.email.as_deref()) else {
-                    continue;
-                };
-                let Some(email) = usable_commit_email(raw) else {
-                    continue;
-                };
-                if !seen.insert(email.clone()) {
-                    continue;
-                }
-                if seen.len() > 10 {
-                    break;
-                }
-                let mut e = Entity::new(EntityKind::Email, &email, 0.82, &ctx.scan_id);
-                e.tag("github");
-                e.tag("commit-email");
-                e.tag("public-profile");
-                e.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("Email from @{login}'s public commit author field"),
-                    )
-                    .with_attr("github_login", login)
-                    .with_attr("source", "commit_author"),
-                );
-                result.push(e);
-            }
-        }
+        result.extend(
+            events
+                .iter()
+                .filter_map(|event| event.payload.as_ref())
+                .flat_map(|payload| payload.commits.iter())
+                .filter_map(|commit| commit.author.as_ref()?.email.as_deref())
+                .filter_map(usable_commit_email)
+                .filter(|email| seen.insert(email.clone()))
+                .take(10)
+                .map(|email| {
+                    let mut e = Entity::new(EntityKind::Email, &email, 0.82, &ctx.scan_id);
+                    e.tag("github");
+                    e.tag("commit-email");
+                    e.tag("public-profile");
+                    e.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!("Email from @{login}'s public commit author field"),
+                        )
+                        .with_attr("github_login", login)
+                        .with_attr("source", "commit_author"),
+                    );
+                    e
+                }),
+        );
     }
 }
 
