@@ -75,16 +75,17 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
                 ce.tag(format!("au-state:{state}"));
                 ce.tag("country:AU");
             }
-            let mut ev = Evidence::new(SRC, format!("IP geo for {ip}"));
-            if let Some(c) = &data.city {
-                ev = ev.with_attr("city", c);
-            }
-            if let Some(r) = &data.region {
-                ev = ev.with_attr("region", r);
-            }
-            if let Some(co) = &data.country {
-                ev = ev.with_attr("country", co);
-            }
+            let ev = [
+                ("city", data.city.as_deref()),
+                ("region", data.region.as_deref()),
+                ("country", data.country.as_deref()),
+            ]
+            .into_iter()
+            .filter_map(|(key, value)| value.map(|v| (key, v)))
+            .fold(
+                Evidence::new(SRC, format!("IP geo for {ip}")),
+                |ev, (key, v)| ev.with_attr(key, v),
+            );
             ce.add_evidence(ev);
             out.push(ce);
         }
