@@ -162,32 +162,25 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
                 e.tag(format!("au-state:{state}"));
             }
 
-            let mut ev = Evidence::new(SRC, format!("IP geo for {} via ipapi.co", target.value))
-                .with_attr("latitude", lat.to_string())
-                .with_attr("longitude", lon.to_string())
-                .with_attr("source", "ipapi.co");
-
-            if let Some(c) = data.city.as_deref() {
-                ev = ev.with_attr("city", c);
-            }
-            if let Some(r) = data.region.as_deref() {
-                ev = ev.with_attr("region", r);
-            }
-            if let Some(c) = data.country_name.as_deref() {
-                ev = ev.with_attr("country", c);
-            }
-            if let Some(p) = data.postal.as_deref() {
-                ev = ev.with_attr("postal", p);
-            }
-            if let Some(tz) = data.timezone.as_deref() {
-                ev = ev.with_attr("timezone", tz);
-            }
-            if let Some(org) = data.org.as_deref() {
-                ev = ev.with_attr("org", org);
-            }
-            if let Some(asn) = data.asn.as_deref() {
-                ev = ev.with_attr("asn", asn);
-            }
+            // Fold the present optional fields into the evidence in one pass.
+            let ev = [
+                ("city", data.city.as_deref()),
+                ("region", data.region.as_deref()),
+                ("country", data.country_name.as_deref()),
+                ("postal", data.postal.as_deref()),
+                ("timezone", data.timezone.as_deref()),
+                ("org", data.org.as_deref()),
+                ("asn", data.asn.as_deref()),
+            ]
+            .into_iter()
+            .filter_map(|(k, v)| v.map(|val| (k, val)))
+            .fold(
+                Evidence::new(SRC, format!("IP geo for {} via ipapi.co", target.value))
+                    .with_attr("latitude", lat.to_string())
+                    .with_attr("longitude", lon.to_string())
+                    .with_attr("source", "ipapi.co"),
+                |ev, (k, val)| ev.with_attr(k, val),
+            );
 
             e.add_evidence(ev);
             result.push(e);
@@ -221,29 +214,27 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
                 e.tag("proxy");
             }
 
-            let mut ev = Evidence::new(
-                SRC,
-                format!("IP geo for {} via freeipapi.com", target.value),
-            )
-            .with_attr("latitude", lat.to_string())
-            .with_attr("longitude", lon.to_string())
-            .with_attr("source", "freeipapi.com");
-
-            if let Some(c) = data.city_name.as_deref() {
-                ev = ev.with_attr("city", c);
-            }
-            if let Some(r) = data.region_name.as_deref() {
-                ev = ev.with_attr("region", r);
-            }
-            if let Some(c) = data.country_name.as_deref() {
-                ev = ev.with_attr("country", c);
-            }
-            if let Some(z) = data.zip_code.as_deref() {
-                ev = ev.with_attr("postal", z);
-            }
-            if let Some(tz) = data.timezone.as_deref() {
-                ev = ev.with_attr("timezone", tz);
-            }
+            // Fold the present optional string fields in one pass; is_proxy is a
+            // bool, attached separately below.
+            let mut ev = [
+                ("city", data.city_name.as_deref()),
+                ("region", data.region_name.as_deref()),
+                ("country", data.country_name.as_deref()),
+                ("postal", data.zip_code.as_deref()),
+                ("timezone", data.timezone.as_deref()),
+            ]
+            .into_iter()
+            .filter_map(|(k, v)| v.map(|val| (k, val)))
+            .fold(
+                Evidence::new(
+                    SRC,
+                    format!("IP geo for {} via freeipapi.com", target.value),
+                )
+                .with_attr("latitude", lat.to_string())
+                .with_attr("longitude", lon.to_string())
+                .with_attr("source", "freeipapi.com"),
+                |ev, (k, val)| ev.with_attr(k, val),
+            );
             if let Some(v) = data.is_proxy {
                 ev = ev.with_attr("is_proxy", v.to_string());
             }
