@@ -180,31 +180,30 @@ fn extract_github_location(html: &str) -> Option<String> {
 }
 
 fn extract_meta_location(html: &str) -> Option<String> {
-    // Look for <meta name="geo.placename" content="...">
-    // or <meta property="og:locality" content="...">
-    for tag in [
+    // Try each location <meta> name/property in turn and return the first whose
+    // `content="…"` parses to a non-empty value.
+    [
         "geo.placename",
         "og:locality",
         "og:region",
         "og:country-name",
-    ] {
+    ]
+    .into_iter()
+    .find_map(|tag| {
         let pattern = "content=\"";
         let attr = format!("\"{tag}\"");
-        if let Some(tag_pos) = html.find(&attr) {
-            let search_area = &html[tag_pos..html.len().min(tag_pos + 300)];
-            if let Some(content_pos) = search_area.find(pattern) {
-                let start = content_pos + pattern.len();
-                let end = search_area[start..].find('"').unwrap_or(0) + start;
-                if end > start {
-                    let val = &search_area[start..end];
-                    if !val.is_empty() {
-                        return Some(val.to_string());
-                    }
-                }
-            }
+        let tag_pos = html.find(&attr)?;
+        let search_area = &html[tag_pos..html.len().min(tag_pos + 300)];
+        let content_pos = search_area.find(pattern)?;
+        let start = content_pos + pattern.len();
+        let end = search_area[start..].find('"').unwrap_or(0) + start;
+        if end > start {
+            let val = &search_area[start..end];
+            (!val.is_empty()).then(|| val.to_string())
+        } else {
+            None
         }
-    }
-    None
+    })
 }
 
 #[cfg(test)]
