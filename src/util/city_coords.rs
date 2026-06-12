@@ -7,10 +7,58 @@
 /// Look up approximate `(lat, lon)` for the city/suburb named in `addr`.
 /// Returns `None` when no entry matches — callers should treat a miss as
 /// "unknown city" rather than an error.
+///
+/// Falls back to [`postcode_coords`] when `addr` is a bare 4-digit AU
+/// postcode (e.g. `"4000"` → Brisbane CBD) so postcode-only addresses from
+/// breach records and search snippets still resolve offline.
 pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
-    let lower = addr.to_lowercase();
+    let trimmed = addr.trim();
+    let lower = trimmed.to_lowercase();
     for &(city, lat, lon) in CITIES {
         if lower.contains(city) {
+            return Some((lat, lon));
+        }
+    }
+    // Last-resort: treat a bare 4-digit string as a postcode.
+    if trimmed.len() == 4 && trimmed.bytes().all(|b| b.is_ascii_digit()) {
+        return postcode_coords(trimmed);
+    }
+    None
+}
+
+/// Resolve a bare 4-digit AU postcode to an approximate `(lat, lon)`.
+/// Uses the same offline fallback table as [`crate::util::postcode_au`] but
+/// returns a single centroid (the first locality) rather than all localities,
+/// so callers that want a single point can use this directly. Returns `None`
+/// for postcodes not in the table.
+pub fn postcode_coords(postcode: &str) -> Option<(f64, f64)> {
+    // AU capital CBDs + common QLD postcodes (matches postcode_au offline_fallback).
+    const POSTCODES: &[(&str, f64, f64)] = &[
+        ("2000", -33.8688, 151.2093), // Sydney CBD
+        ("3000", -37.8136, 144.9631), // Melbourne CBD
+        ("4000", -27.4698, 153.0251), // Brisbane CBD
+        ("5000", -34.9285, 138.6007), // Adelaide CBD
+        ("6000", -31.9505, 115.8605), // Perth CBD
+        ("7000", -42.8821, 147.3272), // Hobart CBD
+        ("0800", -12.4634, 130.8456), // Darwin
+        ("0801", -12.4634, 130.8456), // Darwin
+        ("4552", -26.7290, 152.7554), // Maleny / Sunshine Coast hinterland
+        ("4551", -26.7986, 153.1319), // Caloundra
+        ("4556", -26.6532, 153.0640), // Maroochydore
+        ("4217", -28.0029, 153.4300), // Surfers Paradise
+        ("4218", -28.0264, 153.4307), // Broadbeach
+        ("4500", -27.3050, 152.9900), // Strathpine
+        ("4501", -27.2667, 152.9833), // Kallangur
+        ("4510", -27.0847, 152.9511), // Caboolture
+        ("4520", -27.3667, 152.8833), // Samford Valley
+        ("4300", -27.6667, 152.9167), // Springfield
+        ("4305", -27.6167, 152.7667), // Ipswich
+        ("4350", -27.5598, 151.9507), // Toowoomba
+        ("4810", -19.2590, 146.8169), // Townsville
+        ("4870", -16.9186, 145.7781), // Cairns
+    ];
+    for &(pc, lat, lon) in POSTCODES {
+        if postcode == pc {
             return Some((lat, lon));
         }
     }
@@ -201,5 +249,28 @@ mod tests {
     #[test]
     fn no_match_returns_none() {
         assert!(city_coords("Clobberville").is_none());
+    }
+
+    #[test]
+    fn bare_postcode_resolves() {
+        // Capital-city postcodes resolve via the fallback table.
+        let (lat, lon) = city_coords("4000").unwrap();
+        assert!((lat - -27.4698).abs() < 0.01);
+        assert!((lon - 153.0251).abs() < 0.01);
+        assert!(city_coords("3000").is_some());
+        assert!(city_coords("2000").is_some());
+    }
+
+    #[test]
+    fn unknown_postcode_returns_none() {
+        assert!(city_coords("9999").is_none());
+        assert!(postcode_coords("9999").is_none());
+    }
+
+    #[test]
+    fn postcode_in_address_string_also_resolves() {
+        // When city_coords is called with "Brisbane, QLD 4000" the city name
+        // matches before postcode fallback even fires.
+        assert!(city_coords("Brisbane, QLD 4000").is_some());
     }
 }
