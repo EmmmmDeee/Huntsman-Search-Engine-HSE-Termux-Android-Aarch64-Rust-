@@ -133,25 +133,23 @@ struct AreaCodeGeo {
 }
 
 fn lookup_area_code(digits: &str) -> Option<AreaCodeGeo> {
-    for &(country_prefix, table) in AREA_CODE_TABLES {
-        let Some(national) = digits.strip_prefix(country_prefix) else {
-            continue;
-        };
-        {
-            for &(area, city, cc) in table {
-                if national.starts_with(area) {
-                    return Some(AreaCodeGeo {
-                        location: city,
-                        country: country_name(cc),
-                        country_code: cc,
-                        area_code: area,
-                        confidence: 0.58,
-                    });
-                }
-            }
-        }
-    }
-    None
+    // First country whose dialling prefix the number carries AND whose table has
+    // a matching area code; a prefix match with no area hit falls through to the
+    // next country (nested find_map mirrors the original break-to-outer-loop).
+    AREA_CODE_TABLES
+        .iter()
+        .find_map(|&(country_prefix, table)| {
+            let national = digits.strip_prefix(country_prefix)?;
+            table.iter().find_map(|&(area, city, cc)| {
+                national.starts_with(area).then(|| AreaCodeGeo {
+                    location: city,
+                    country: country_name(cc),
+                    country_code: cc,
+                    area_code: area,
+                    confidence: 0.58,
+                })
+            })
+        })
 }
 
 fn country_name(cc: &str) -> &'static str {
