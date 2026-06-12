@@ -78,7 +78,7 @@ impl Module for GreyNoise {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::IpAddress];
+        const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Organisation];
         KINDS
     }
 
@@ -154,6 +154,24 @@ impl Module for GreyNoise {
 
         let mut result = ModuleResult::new();
         result.push(entity);
+
+        // The operator/actor name (e.g. "Cloudflare", "Shodan.io") is a real
+        // Organisation pivot — surface it, don't leave it in evidence only.
+        if let Some(name) = data
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| n.len() >= 2 && !n.eq_ignore_ascii_case("unknown"))
+        {
+            let mut o = Entity::new(EntityKind::Organisation, name, 0.62, &ctx.scan_id);
+            o.tag("greynoise");
+            o.tag("ip-operator");
+            o.add_evidence(
+                Evidence::new(SRC, format!("Operator/actor of {ip} per GreyNoise"))
+                    .with_attr("ip", ip),
+            );
+            result.push(o);
+        }
         Ok(result)
     }
 }
