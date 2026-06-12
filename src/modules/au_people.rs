@@ -132,10 +132,13 @@ fn parse_whitepages_html(html: &str, full_name: &str, scan_id: &str) -> Vec<Enti
             if let Ok(pc) = postcode.parse::<u32>()
                 && (2000..=7999).contains(&pc)
             {
-                // Grab surrounding 120-char window for suburb/state context.
-                let ctx_start = i.saturating_sub(60);
-                let ctx_end = (i + 64).min(len);
-                let context = &html[ctx_start..ctx_end];
+                // Grab a ~120-char window around the postcode for suburb/state
+                // context. `i±60` are arbitrary byte offsets into untrusted
+                // response HTML; a raw `&html[..]` panics when one lands inside a
+                // multibyte character (accented suburb names, typographic quotes,
+                // NBSP — all common in real pages), so clamp to char boundaries.
+                let context =
+                    crate::util::str_util::char_window(html, i.saturating_sub(60), i + 64);
                 // Strip HTML tags from context.
                 let stripped = strip_html_tags(context);
                 let trimmed = stripped.trim().replace("  ", " ");
@@ -147,9 +150,15 @@ fn parse_whitepages_html(html: &str, full_name: &str, scan_id: &str) -> Vec<Enti
                     continue;
                 }
                 if !trimmed.is_empty() && trimmed.len() > 5 {
+                    // Does the seed name appear in the HTML up to just past the
+                    // postcode? `i + 64` is a byte offset into untrusted HTML, so
+                    // clamp it to a char boundary (raw `html[..i+64]` panics on
+                    // multibyte content); lower-case the window once, not per token.
+                    let window_lc =
+                        crate::util::str_util::truncate_safe(html, i + 64).to_lowercase();
                     let addr_conf = if name_lc
                         .split_whitespace()
-                        .all(|tok| html[..ctx_end].to_lowercase().contains(tok))
+                        .all(|tok| window_lc.contains(tok))
                     {
                         0.55
                     } else {

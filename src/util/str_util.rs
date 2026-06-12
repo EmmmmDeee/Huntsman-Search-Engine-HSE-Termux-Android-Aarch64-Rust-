@@ -63,6 +63,43 @@ pub fn truncate_safe(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
+/// A byte-offset substring window that can never panic on a multibyte boundary.
+///
+/// Direct `&s[start..end]` slicing panics when `start`/`end` fall inside a
+/// multibyte UTF-8 character — exactly the hazard when slicing scraped HTML at
+/// *arithmetic* offsets like `pos ± N` (a postcode position widened by 60, an
+/// HTML marker offset widened by 300). Real web pages routinely carry multibyte
+/// bytes (accented names, typographic quotes, NBSP), so such offsets land
+/// mid-character. This clamps both ends to the nearest valid char boundary
+/// (rounding inward), bounded by `s.len()`, and guarantees `start <= end` — so
+/// the worst case is a window a byte or two narrower than requested, never a
+/// panic.
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::char_window;
+///
+/// let s = "aébc"; // bytes: a=0, é=1..3, b=3, c=4, len=5
+/// assert_eq!(char_window(s, 0, 5), "aébc"); // whole string
+/// // end=2 is inside 'é' → rounds up to 3; start=1 is a boundary → "é".
+/// assert_eq!(char_window(s, 1, 2), "é");
+/// // start=2 is inside 'é' → rounds up to 3 → "bc"; end past len clamps to len.
+/// assert_eq!(char_window(s, 2, 999), "bc");
+/// assert_eq!(char_window(s, 999, 999), "");
+/// ```
+#[must_use]
+pub fn char_window(s: &str, start: usize, end: usize) -> &str {
+    let len = s.len();
+    let mut a = start.min(len);
+    while a < len && !s.is_char_boundary(a) {
+        a += 1;
+    }
+    let mut b = end.min(len).max(a);
+    while b < len && !s.is_char_boundary(b) {
+        b += 1;
+    }
+    &s[a..b]
+}
+
 /// Fold common Latin diacritics to their base ASCII letter, lowercase, and
 /// drop everything else. Pure and dependency-free (no `deunicode`/ICU — keeps
 /// the Termux single-binary lean). A name like `"José Müller-Łódź"` folds to
@@ -136,7 +173,7 @@ pub fn fold_ascii_lower(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ascii_digits, fold_ascii_lower, nonempty, truncate_safe};
+    use super::{ascii_digits, char_window, fold_ascii_lower, nonempty, truncate_safe};
 
     #[test]
     fn nonempty_trims_and_treats_blank_as_absent() {
@@ -172,6 +209,26 @@ mod tests {
         }
         assert_eq!(truncate_safe(s, 100), s, "<= len returns whole string");
         assert_eq!(truncate_safe("hello", 3), "hel"); // pure-ASCII exact cut
+    }
+
+    #[test]
+    fn char_window_never_panics_at_any_arithmetic_offset() {
+        // The whole point of char_window: slicing scraped HTML at arithmetic
+        // byte offsets (pos±N) must never panic on a multibyte boundary.
+        // Exhaustively window every (start, end) pair, including past the end —
+        // the loop completing IS the panic-safety proof.
+        let s = "aé😀b xÿz"; // mixed 1/2/4-byte chars interleaved with ASCII
+        for start in 0..=s.len() + 2 {
+            for end in 0..=s.len() + 2 {
+                let out = char_window(s, start, end);
+                // Always a real contiguous substring (valid &str by construction).
+                assert!(out.is_empty() || s.contains(out), "real slice: {start},{end}");
+            }
+        }
+        // Boundary-rounding spot-checks ("aébc": a=0, é=1..3, b=3, c=4).
+        assert_eq!(char_window("aébc", 1, 3), "é"); // both ends on boundaries
+        assert_eq!(char_window("aébc", 2, 4), "b"); // start inside 'é' → rounds to 3
+        assert_eq!(char_window("aébc", 0, 0), ""); // empty window
     }
 
     /// All four documented guarantees, over an adversarial corpus × every

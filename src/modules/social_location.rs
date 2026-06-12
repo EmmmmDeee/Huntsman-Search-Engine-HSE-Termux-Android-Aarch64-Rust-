@@ -161,7 +161,9 @@ const SUPPORTED_HOSTS: &[&str] = &[
 fn extract_github_location(html: &str) -> Option<String> {
     let marker = "p-label";
     let pos = html.find(marker)?;
-    let after = &html[pos..html.len().min(pos + 300)];
+    // `pos + 300` is an arbitrary byte offset into untrusted HTML; clamp to a
+    // char boundary so a multibyte character at the window edge can't panic.
+    let after = crate::util::str_util::char_window(html, pos, pos + 300);
     let start = after.find('>')? + 1;
     let end = after[start..].find('<')? + start;
     let text = &after[start..end];
@@ -193,7 +195,9 @@ fn extract_meta_location(html: &str) -> Option<String> {
         let pattern = "content=\"";
         let attr = format!("\"{tag}\"");
         let tag_pos = html.find(&attr)?;
-        let search_area = &html[tag_pos..html.len().min(tag_pos + 300)];
+        // `tag_pos + 300` is an arbitrary byte offset into untrusted HTML; clamp
+        // to a char boundary so a multibyte character can't panic the slice.
+        let search_area = crate::util::str_util::char_window(html, tag_pos, tag_pos + 300);
         let content_pos = search_area.find(pattern)?;
         let start = content_pos + pattern.len();
         let end = search_area[start..].find('"').unwrap_or(0) + start;
