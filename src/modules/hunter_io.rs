@@ -99,6 +99,14 @@ impl Module for HunterIo {
         ModuleCategory::Email
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Beyond the Email default (T1589.002 Email Addresses), Hunter.io
+        // attributes each address to an employee name (T1589.003 Employee Names)
+        // and surfaces their position/department (T1591.004 Identify Roles).
+        // Superset of the default — coverage cannot regress.
+        &["T1589.002", "T1589.003", "T1591.004"]
+    }
+
     fn priority(&self) -> u8 {
         62
     }
