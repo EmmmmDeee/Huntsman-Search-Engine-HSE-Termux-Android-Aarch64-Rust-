@@ -199,9 +199,7 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
     let mut result = rdap_res?;
     let bgp = bgp_res?;
 
-    for entity in bgp.entities {
-        result.push(entity);
-    }
+    result.extend(bgp.entities);
     Ok(result)
 }
 
@@ -238,35 +236,27 @@ async fn rdap_lookup_ip(ip: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
         entity.tag(format!("country:{}", c.to_uppercase()));
     }
 
-    let mut ev = Evidence::new(SRC, format!("RDAP allocation record for {ip}"));
-    if let Some(h) = body.handle.as_deref() {
-        ev = ev.with_attr("handle", h);
-    }
-    if let Some(n) = body.name.as_deref() {
-        ev = ev.with_attr("name", n);
-    }
-    if let Some(c) = body.country.as_deref() {
-        ev = ev.with_attr("country", c);
-    }
-    if let Some(c) = cidr.as_deref() {
-        ev = ev.with_attr("prefix", c);
-    }
-    if let Some(v) = body.ip_version.as_deref() {
-        ev = ev.with_attr("ip_version", v);
-    }
-    if let Some(p) = body.parent_handle.as_deref() {
-        ev = ev.with_attr("parent_handle", p);
-    }
-    for evt in &body.events {
-        if let Some(d) = evt.date.as_deref() {
-            let mut key = String::with_capacity(7 + evt.action.len());
-            key.push_str("event:");
-            for c in evt.action.chars() {
-                key.push(if c == ' ' { '_' } else { c });
-            }
-            ev = ev.with_attr(key, d);
-        }
-    }
+    let ev = [
+        ("handle", body.handle.as_deref()),
+        ("name", body.name.as_deref()),
+        ("country", body.country.as_deref()),
+        ("prefix", cidr.as_deref()),
+        ("ip_version", body.ip_version.as_deref()),
+        ("parent_handle", body.parent_handle.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.map(|v| (key, v)))
+    .fold(
+        Evidence::new(SRC, format!("RDAP allocation record for {ip}")),
+        |ev, (key, v)| ev.with_attr(key, v),
+    );
+    let ev = body
+        .events
+        .iter()
+        .fold(ev, |ev, evt| match evt.date.as_deref() {
+            Some(d) => ev.with_attr(format!("event:{}", evt.action.replace(' ', "_")), d),
+            None => ev,
+        });
     entity.add_evidence(ev);
 
     let mut result = ModuleResult::new();
@@ -328,9 +318,8 @@ async fn bgp_lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleRe
     let raw = target.value.trim().to_uppercase();
     // Accept both "AS15169" and "15169".
     let digits = raw.trim_start_matches("AS").trim();
-    let asn: u64 = match digits.parse() {
-        Ok(n) => n,
-        Err(_) => return Ok(ModuleResult::new()),
+    let Ok(asn) = digits.parse::<u64>() else {
+        return Ok(ModuleResult::new());
     };
 
     let url = format!("https://api.bgpview.io/asn/{asn}");
@@ -379,36 +368,20 @@ async fn bgp_lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleRe
     result.push(entity);
 
     // Surface contact emails as discrete Email entities.
-    for email in data.email_contacts.into_iter().flatten() {
-        if !email.contains('@') {
-            continue;
-        }
-        let mut e = Entity::new(EntityKind::Email, &email, 0.78, &ctx.scan_id);
-        e.tag("asn-contact");
-        e.tag("role:admin");
-        e.add_evidence(
-            Evidence::new(SRC, format!("Contact for {asn_label}"))
-                .with_attr("source", "bgpview")
-                .with_attr("asn", &asn_str)
-                .with_attr("contact_role", "admin"),
-        );
-        result.push(e);
-    }
-    for email in data.abuse_contacts.into_iter().flatten() {
-        if !email.contains('@') {
-            continue;
-        }
-        let mut e = Entity::new(EntityKind::Email, &email, 0.78, &ctx.scan_id);
-        e.tag("asn-contact");
-        e.tag("role:abuse");
-        e.add_evidence(
-            Evidence::new(SRC, format!("Contact for {asn_label}"))
-                .with_attr("source", "bgpview")
-                .with_attr("asn", &asn_str)
-                .with_attr("contact_role", "abuse"),
-        );
-        result.push(e);
-    }
+    result.extend(contact_emails(
+        data.email_contacts,
+        "admin",
+        &asn_label,
+        &asn_str,
+        &ctx.scan_id,
+    ));
+    result.extend(contact_emails(
+        data.abuse_contacts,
+        "abuse",
+        &asn_label,
+        &asn_str,
+        &ctx.scan_id,
+    ));
 
     // If the AS has a website, emit it as a Url entity.
     if let Some(w) = data
@@ -425,6 +398,39 @@ async fn bgp_lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleRe
     }
 
     Ok(result)
+}
+
+// ---------------------------------------------------------------------------
+// Shared contact-email builder
+// ---------------------------------------------------------------------------
+
+/// Build `Email` entities for an ASN's contact list. **Pure** (no network).
+/// Filters out non-email strings, then maps each to a role-tagged `Email`
+/// entity — the shared body of the admin- and abuse-contact emission.
+fn contact_emails(
+    emails: Option<Vec<String>>,
+    role: &'static str,
+    asn_label: &str,
+    asn_str: &str,
+    scan_id: &str,
+) -> Vec<Entity> {
+    emails
+        .into_iter()
+        .flatten()
+        .filter(|email| email.contains('@'))
+        .map(|email| {
+            let mut e = Entity::new(EntityKind::Email, &email, 0.78, scan_id);
+            e.tag("asn-contact");
+            e.tag(format!("role:{role}"));
+            e.add_evidence(
+                Evidence::new(SRC, format!("Contact for {asn_label}"))
+                    .with_attr("source", "bgpview")
+                    .with_attr("asn", asn_str)
+                    .with_attr("contact_role", role),
+            );
+            e
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
