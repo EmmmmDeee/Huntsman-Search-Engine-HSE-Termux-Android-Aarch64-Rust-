@@ -134,7 +134,7 @@ impl Module for IpReputation {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::IpAddress];
+        const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Organisation];
         KINDS
     }
 
@@ -277,6 +277,26 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
     }
     entity.add_evidence(ev);
     result.push(entity);
+
+    // The named adversary/threat-actor (e.g. "Mirai", "NSO Group") is a
+    // correlatable Organisation pivot, not just an evidence string.
+    if let Some(a) = adversary {
+        let name = a.split('(').next().unwrap_or(a).trim();
+        let capped: String = name.chars().take(64).collect();
+        if capped.len() >= 2 {
+            let mut o = Entity::new(EntityKind::Organisation, &capped, 0.58, &ctx.scan_id);
+            o.tag("threat-intel");
+            o.tag("adversary");
+            o.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("Threat actor linked to {} per OTX", target.value),
+                )
+                .with_attr("indicator", target.value.as_str()),
+            );
+            result.push(o);
+        }
+    }
 }
 
 // ── Tor exit-relay sub-routine ─────────────────────────────────────
