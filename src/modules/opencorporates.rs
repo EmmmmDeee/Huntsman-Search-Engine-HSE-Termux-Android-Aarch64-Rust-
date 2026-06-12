@@ -340,7 +340,11 @@ mod tests {
         );
         let ents = build_company_entities(&co, 7, "s");
         // Org + Address + optional Coordinates (Sydney matches city_coords) + AbnAcn.
-        assert!(ents.len() >= 3, "expected at least 3 entities, got {}", ents.len());
+        assert!(
+            ents.len() >= 3,
+            "expected at least 3 entities, got {}",
+            ents.len()
+        );
 
         let org = &ents[0];
         assert_eq!(org.kind, EntityKind::Organisation);
@@ -370,7 +374,11 @@ mod tests {
         );
         let ents = build_company_entities(&co, 1, "s");
         // Org + Address (+ optional Coordinates if city matches) — no AU company-number.
-        assert!(ents.len() >= 2, "expected at least 2 entities, got {}", ents.len());
+        assert!(
+            ents.len() >= 2,
+            "expected at least 2 entities, got {}",
+            ents.len()
+        );
         assert!(!ents[0].has_tag("country:AU") && !ents[0].has_tag("active"));
         assert!(ents.iter().all(|e| e.kind != EntityKind::AbnAcn));
     }

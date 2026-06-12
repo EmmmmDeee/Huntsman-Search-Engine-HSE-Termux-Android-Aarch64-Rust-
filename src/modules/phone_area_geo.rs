@@ -413,7 +413,11 @@ mod tests {
         let r = m.process(&target, &ctx).await.unwrap();
         // Address always emitted; Coordinates emitted when city_coords matches.
         assert!(!r.is_empty());
-        let addr = r.entities.iter().find(|e| e.kind == EntityKind::Address).unwrap();
+        let addr = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Address)
+            .unwrap();
         assert!(addr.value.contains("Sydney"));
         assert!(addr.has_tag("phone-area-code"));
     }
