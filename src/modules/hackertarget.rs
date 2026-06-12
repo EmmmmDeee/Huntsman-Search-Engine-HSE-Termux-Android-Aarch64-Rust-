@@ -178,19 +178,21 @@ impl HackerTarget {
         let body = self.fetch_text(&url, ctx).await?;
         let mut seen: HashSet<String> = HashSet::new();
 
-        for line in body.lines() {
+        result.extend(body.lines().filter_map(|line| {
             let domain = line.trim().to_lowercase();
-            if domain.is_empty() || !domain.contains('.') || domain == ip {
-                continue;
+            if domain.is_empty()
+                || !domain.contains('.')
+                || domain == ip
+                || !seen.insert(domain.clone())
+            {
+                return None;
             }
-            if seen.insert(domain.clone()) {
-                let mut e = Entity::new(EntityKind::Domain, &domain, 0.65, &ctx.scan_id);
-                e.tag("hackertarget");
-                e.tag("reverse-ip");
-                e.add_evidence(Evidence::new(SRC, format!("Reverse IP lookup for {ip}")));
-                result.push(e);
-            }
-        }
+            let mut e = Entity::new(EntityKind::Domain, &domain, 0.65, &ctx.scan_id);
+            e.tag("hackertarget");
+            e.tag("reverse-ip");
+            e.add_evidence(Evidence::new(SRC, format!("Reverse IP lookup for {ip}")));
+            Some(e)
+        }));
 
         Ok(())
     }
@@ -204,17 +206,16 @@ impl HackerTarget {
         let url = format!("{BASE}/reversedns/?q={}", urlencode(ip));
         let body = self.fetch_text(&url, ctx).await?;
 
-        for line in body.lines() {
+        result.extend(body.lines().filter_map(|line| {
             let domain = line.trim().trim_end_matches('.').to_lowercase();
-            if domain.is_empty() || !domain.contains('.') {
-                continue;
-            }
-            let mut e = Entity::new(EntityKind::Domain, &domain, 0.70, &ctx.scan_id);
-            e.tag("hackertarget");
-            e.tag(tags::PTR);
-            e.add_evidence(Evidence::new(SRC, format!("Reverse DNS for {ip}")));
-            result.push(e);
-        }
+            (!domain.is_empty() && domain.contains('.')).then(|| {
+                let mut e = Entity::new(EntityKind::Domain, &domain, 0.70, &ctx.scan_id);
+                e.tag("hackertarget");
+                e.tag(tags::PTR);
+                e.add_evidence(Evidence::new(SRC, format!("Reverse DNS for {ip}")));
+                e
+            })
+        }));
 
         Ok(())
     }
