@@ -359,30 +359,28 @@ impl Module for Wigle {
         }
 
         // ── SSID intelligence: extract names and business identifiers ──
-        let mut ssid_names: Vec<String> = Vec::new();
-        for net in &body.results {
-            if let Some(ref ssid) = net.ssid {
-                let ssid = ssid.trim();
+        // Named-looking SSIDs ("Smith-Family") → identity leads. A no-separator
+        // SSID splits into one part and fails the `>= 2` gate, so the prior
+        // contains-a-separator pre-check is subsumed by it.
+        let mut ssid_names: Vec<String> = body
+            .results
+            .iter()
+            .filter_map(|net| {
+                let ssid = net.ssid.as_deref()?.trim();
                 if ssid.is_empty() || ssid.len() < 4 || ssid.starts_with("DIRECT-") {
-                    continue;
+                    return None;
                 }
-                // Skip generic SSIDs
                 let lower = ssid.to_lowercase();
                 if GENERIC_SSIDS.iter().any(|g| lower.contains(g)) {
-                    continue;
+                    return None;
                 }
-                // SSIDs with separators that look like names: "Smith-Family"
-                if ssid.contains('-') || ssid.contains('_') || ssid.contains(' ') {
-                    let parts: Vec<&str> = ssid.split(['-', '_', ' ']).collect();
-                    if parts.len() >= 2
-                        && parts[0].len() >= 3
-                        && parts[0].starts_with(|c: char| c.is_ascii_uppercase())
-                    {
-                        ssid_names.push(ssid.to_string());
-                    }
-                }
-            }
-        }
+                let parts: Vec<&str> = ssid.split(['-', '_', ' ']).collect();
+                (parts.len() >= 2
+                    && parts[0].len() >= 3
+                    && parts[0].starts_with(|c: char| c.is_ascii_uppercase()))
+                .then(|| ssid.to_string())
+            })
+            .collect();
         ssid_names.sort();
         ssid_names.dedup();
 
@@ -422,28 +420,28 @@ impl Module for Wigle {
         macs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         macs.dedup_by_key(|m| m.0);
 
-        for (mac, _) in macs.iter().take(5) {
-            if mac.len() >= 12 {
-                let mut e = Entity::new(EntityKind::MacAddress, *mac, 0.60, &ctx.scan_id);
-                e.tag("wigle");
-                e.tag("wifi-ap");
-                let mut ev = Evidence::new(SRC, format!("WiFi AP near {}", target.value))
-                    .with_attr("coordinates", &target.value);
-                // OUI classification — same treatment as Bluetooth
-                // beacons. WiFi APs commonly resolve to a router
-                // brand (Netgear / TP-Link / Asus / etc.) which is
-                // useful operator context.
-                if let Some(oui) = crate::util::oui::classify_mac(mac) {
-                    e.tag(format!("vendor:{}", oui.vendor));
-                    e.tag(format!("device:{}", oui.class.as_str()));
-                    ev = ev
-                        .with_attr("vendor", oui.vendor)
-                        .with_attr("device_class", oui.class.as_str());
-                }
-                e.add_evidence(ev);
-                result.push(e);
+        result.extend(macs.iter().take(5).filter_map(|(mac, _)| {
+            if mac.len() < 12 {
+                return None;
             }
-        }
+            let mut e = Entity::new(EntityKind::MacAddress, *mac, 0.60, &ctx.scan_id);
+            e.tag("wigle");
+            e.tag("wifi-ap");
+            let mut ev = Evidence::new(SRC, format!("WiFi AP near {}", target.value))
+                .with_attr("coordinates", &target.value);
+            // OUI classification — same treatment as Bluetooth beacons. WiFi APs
+            // commonly resolve to a router brand (Netgear / TP-Link / Asus / etc.)
+            // which is useful operator context.
+            if let Some(oui) = crate::util::oui::classify_mac(mac) {
+                e.tag(format!("vendor:{}", oui.vendor));
+                e.tag(format!("device:{}", oui.class.as_str()));
+                ev = ev
+                    .with_attr("vendor", oui.vendor)
+                    .with_attr("device_class", oui.class.as_str());
+            }
+            e.add_evidence(ev);
+            Some(e)
+        }));
 
         // ── Potentiation: cell-tower + Bluetooth observations ──────
         //
@@ -564,12 +562,10 @@ fn extract_bluetooth_intel(
     if resp.success != Some(true) || resp.results.is_empty() {
         return;
     }
-    for net in resp.results.iter().take(3) {
-        let Some(mac) = net.netid.as_deref() else {
-            continue;
-        };
+    result.extend(resp.results.iter().take(3).filter_map(|net| {
+        let mac = net.netid.as_deref()?;
         if mac.len() < 12 {
-            continue;
+            return None;
         }
         let mut e = Entity::new(EntityKind::MacAddress, mac, 0.55, scan_id);
         e.tag("wigle");
@@ -580,10 +576,9 @@ fn extract_bluetooth_intel(
         )
         .with_attr("source", "wigle_bluetooth")
         .with_attr("coordinates", target_value);
-        // OUI classification — surface the vendor + coarse device
-        // type (AirPods / Tesla / Hikvision camera / …) so
-        // downstream pivots can act on it. The check is cheap
-        // (linear over ~120 entries) and runs once per emission.
+        // OUI classification — surface the vendor + coarse device type (AirPods
+        // / Tesla / Hikvision camera / …) so downstream pivots can act on it.
+        // The check is cheap (linear over ~120 entries) and runs once per emission.
         if let Some(oui) = crate::util::oui::classify_mac(mac) {
             e.tag(format!("vendor:{}", oui.vendor));
             e.tag(format!("device:{}", oui.class.as_str()));
@@ -595,8 +590,8 @@ fn extract_bluetooth_intel(
         if let Some(ref ssid) = net.ssid {
             e.tag(format!("name:{}", ssid.trim()));
         }
-        result.push(e);
-    }
+        Some(e)
+    }));
 }
 
 fn is_generic_ssid(s: &str) -> bool {
