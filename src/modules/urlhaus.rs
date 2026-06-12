@@ -147,16 +147,12 @@ fn build_threat_entity(
         // Aggregate tags across URL entries; surface the top MAX_TAGS by count
         // (ties broken lexically) as `tag(count)`.
         let mut tag_counts: BTreeMap<&str, usize> = BTreeMap::new();
-        for u in urls {
-            if let Some(tag_list) = &u.tags {
-                for tag in tag_list {
-                    let trimmed = tag.trim();
-                    if !trimmed.is_empty() {
-                        *tag_counts.entry(trimmed).or_insert(0) += 1;
-                    }
-                }
-            }
-        }
+        urls.iter()
+            .filter_map(|u| u.tags.as_ref())
+            .flatten()
+            .map(|tag| tag.trim())
+            .filter(|trimmed| !trimmed.is_empty())
+            .for_each(|trimmed| *tag_counts.entry(trimmed).or_insert(0) += 1);
         if !tag_counts.is_empty() {
             let mut sorted_tags: Vec<(&str, usize)> = tag_counts.into_iter().collect();
             sorted_tags.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
