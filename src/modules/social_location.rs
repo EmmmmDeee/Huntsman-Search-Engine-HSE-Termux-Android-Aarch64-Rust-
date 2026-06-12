@@ -85,9 +85,13 @@ impl Module for SocialLocation {
         if let Some(loc) = location {
             let trimmed = loc.trim();
             if !trimmed.is_empty() && trimmed.len() <= 200 {
-                // Professional portals carry verified workplace addresses; slightly
-                // higher confidence than a self-reported bio field.
-                let conf = if is_professional { 0.50 } else { 0.45 };
+                // Professional portals carry verified workplace addresses.
+                // Self-reported bio fields are raised to 0.52 (above the 0.50
+                // expansion floor) so they feed the geo-correlation chain
+                // (AU-052/AU-053) after the address→coordinates enrichment pass.
+                // Professional portals are set to 0.55 — the same tier as a
+                // search-discovered postcode-qualified address.
+                let conf = if is_professional { 0.55 } else { 0.52 };
                 let mut e = Entity::new(EntityKind::Address, trimmed, conf, &ctx.scan_id);
                 e.tag("geoint");
                 if is_professional {

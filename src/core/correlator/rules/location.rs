@@ -23,7 +23,41 @@ use super::*;
 /// person. An exclude-list silently admits any source it forgot to name (it had
 /// no `overpass` entry, so it would have built a tight footprint out of traffic
 /// cameras); an allowlist admits only what genuinely anchors to the subject.
-const ANCHORING_GEO_SOURCES: &[&str] = &["geocode", "photon", "exif_geo", "wigle", "mylnikov"];
+/// Geo sources that anchor a **person's** location rather than IP/host
+/// infrastructure. Every entry here produces a real-world address or confirmed
+/// GPS fix that is associated with the *subject*, not a CDN edge or POI.
+///
+/// Additions over the original five:
+/// - `search_engines` — inline city-lookup geocoding from search snippets
+/// - `social_location` — self-reported or professional profile address
+/// - `abn_lookup` / `opencorporates` / `acnc_charities` / `gleif_lei` — AU/global
+///   business registry registered address (the entity's legal place of operation)
+/// - `epieos` / `contact_enrich` / `proxycurl` — email-to-person enrichment that
+///   returns a home or work address for the *subject*
+/// - `qld_unclaimed` — Queensland register postcode (coarse but person-linked)
+const ANCHORING_GEO_SOURCES: &[&str] = &[
+    // Original five: direct GPS/geocode/wifi sightings
+    "geocode",
+    "photon",
+    "exif_geo",
+    "wigle",
+    "mylnikov",
+    // Search-derived inline geocoding (known-city lookup from snippets)
+    "search_engines",
+    // Social profile bio and professional portal addresses
+    "social_location",
+    // Business registry addresses (legal registered location of subject/employer)
+    "abn_lookup",
+    "opencorporates",
+    "acnc_charities",
+    "gleif_lei",
+    // Email-to-person enrichment returning home/work address
+    "epieos",
+    "contact_enrich",
+    "proxycurl",
+    // AU public register (coarse postcode, person-linked)
+    "qld_unclaimed",
+];
 
 /// True when a `Coordinates` entity does **not** locate the subject and must be
 /// kept out of their footprint: it is `hosting`-tagged (a CDN/cloud edge), it
