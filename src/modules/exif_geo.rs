@@ -182,29 +182,22 @@ impl Module for ExifGeo {
         // Shared evidence: every emitted entity carries the same camera/owner
         // attribute set so the operator can correlate source, device and shot time.
         let evidence = |summary: String| {
-            let mut ev = Evidence::new(SRC, summary).with_attr("url", url);
-            if let Some(v) = &make {
-                ev = ev.with_attr("camera_make", v);
-            }
-            if let Some(v) = &model {
-                ev = ev.with_attr("camera_model", v);
-            }
-            if let Some(v) = &serial {
-                ev = ev.with_attr("camera_serial", v);
-            }
-            if let Some(v) = &lens {
-                ev = ev.with_attr("lens_model", v);
-            }
-            if let Some(v) = &software {
-                ev = ev.with_attr("software", v);
-            }
-            if let Some(v) = &owner {
-                ev = ev.with_attr("owner_name", v);
-            }
-            if let Some(v) = &shot_time {
-                ev = ev.with_attr("shot_time", v);
-            }
-            ev
+            // Fold the present camera/owner fields onto the shared evidence base.
+            [
+                ("camera_make", make.as_deref()),
+                ("camera_model", model.as_deref()),
+                ("camera_serial", serial.as_deref()),
+                ("lens_model", lens.as_deref()),
+                ("software", software.as_deref()),
+                ("owner_name", owner.as_deref()),
+                ("shot_time", shot_time.as_deref()),
+            ]
+            .into_iter()
+            .filter_map(|(k, v)| v.map(|val| (k, val)))
+            .fold(
+                Evidence::new(SRC, summary).with_attr("url", url),
+                |ev, (k, val)| ev.with_attr(k, val),
+            )
         };
 
         // 1. Coordinates — GPS IFD. Empirically reliable to ~10–50 m; base 0.80,
