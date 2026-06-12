@@ -9,6 +9,9 @@ pub mod abn_lookup;
 pub mod abuseipdb;
 pub mod acnc_charities;
 pub mod api_key_probe;
+pub mod asic_director;
+pub mod au_people;
+pub mod au_unclaimed;
 pub mod bgpview;
 pub mod breach_timezone;
 pub mod cell_intel;
@@ -40,6 +43,7 @@ pub mod fullcontact;
 pub mod geo_domain_classifier;
 pub mod geo_intel;
 pub mod geocode;
+pub mod github_code_search;
 pub mod github_user;
 pub mod gleif_lei;
 pub mod gravatar;
@@ -235,6 +239,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(username_search::UsernameSearch),
         Arc::new(username_variants::UsernameVariants),
         Arc::new(github_user::GithubUser),
+        Arc::new(github_code_search::GithubCodeSearch),
         Arc::new(hacker_news::HackerNews),
         Arc::new(npm_author::NpmAuthor),
         Arc::new(crates_io::CratesIo),
@@ -289,6 +294,9 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         // Australian + global public-records / corporate registries
         Arc::new(opencorporates::OpenCorporates),
         Arc::new(qld_unclaimed::QldUnclaimed),
+        Arc::new(au_unclaimed::AuUnclaimed),
+        Arc::new(au_people::AuPeople),
+        Arc::new(asic_director::AsicDirector),
         Arc::new(acnc_charities::AcncCharities),
         Arc::new(gleif_lei::GleifLei),
     ]
