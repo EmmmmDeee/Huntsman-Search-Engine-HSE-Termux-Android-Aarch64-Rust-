@@ -254,11 +254,9 @@ fn build_email_entities(target: &Target, data: &SeonEmailData, scan_id: &str) ->
     }
 
     // A Url for every platform that reported a profile link.
-    for (platform, p) in &registered {
-        if let Some(url) = nonempty(&p.url) {
-            out.push(profile_url_entity(platform, url, email, scan_id));
-        }
-    }
+    out.extend(registered.iter().filter_map(|(platform, p)| {
+        nonempty(&p.url).map(|url| profile_url_entity(platform, url, email, scan_id))
+    }));
 
     out
 }
@@ -314,11 +312,9 @@ fn build_phone_entities(target: &Target, data: &SeonPhoneData, scan_id: &str) ->
     entity.add_evidence(ev);
     out.push(entity);
 
-    for (platform, p) in &registered {
-        if let Some(url) = nonempty(&p.url) {
-            out.push(profile_url_entity(platform, url, phone, scan_id));
-        }
-    }
+    out.extend(registered.iter().filter_map(|(platform, p)| {
+        nonempty(&p.url).map(|url| profile_url_entity(platform, url, phone, scan_id))
+    }));
 
     out
 }
@@ -346,6 +342,15 @@ impl Module for Seon {
 
     fn category(&self) -> ModuleCategory {
         ModuleCategory::People
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // SEON detects an identity's presence across 250+ social/messaging
+        // platforms (emitting profile Urls), so beyond the People default
+        // (T1589.003 Employee Names + T1591.004 Identify Roles) it is Search
+        // Open Websites/Domains: Social Media (T1593.001). Superset of the
+        // default — coverage cannot regress.
+        &["T1589.003", "T1591.004", "T1593.001"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
@@ -407,9 +412,7 @@ impl Seon {
         };
 
         let mut result = ModuleResult::new();
-        for e in build_email_entities(target, &data, &ctx.scan_id) {
-            result.push(e);
-        }
+        result.extend(build_email_entities(target, &data, &ctx.scan_id));
         Ok(result)
     }
 
@@ -452,9 +455,7 @@ impl Seon {
         };
 
         let mut result = ModuleResult::new();
-        for e in build_phone_entities(target, &data, &ctx.scan_id) {
-            result.push(e);
-        }
+        result.extend(build_phone_entities(target, &data, &ctx.scan_id));
         Ok(result)
     }
 }
