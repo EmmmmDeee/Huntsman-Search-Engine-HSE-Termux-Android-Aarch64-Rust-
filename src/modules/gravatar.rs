@@ -147,10 +147,15 @@ impl Module for Gravatar {
         let hash = gravatar_hash(email);
         let url = format!("https://gravatar.com/{hash}.json");
 
-        // 404 = no public profile for this email — a clean miss, not an error.
-        let resp: GravatarResp = match fetch_json_or_404(&ctx.http, SRC, &url).await? {
-            Some(r) => r,
-            None => return Ok(result),
+        // "No public profile" reaches us several ways: a 404, or a 200 whose
+        // body is the literal `"User not found"` (the shape Gravatar returns on
+        // the curl fallback) or otherwise isn't a `GravatarResp`. None of these
+        // is an operational error — they all mean the email has no Gravatar, a
+        // clean miss. Only an unparseable body was previously propagated via `?`
+        // as a spurious module error; fold it into the empty-result path.
+        let resp: GravatarResp = match fetch_json_or_404(&ctx.http, SRC, &url).await {
+            Ok(Some(r)) => r,
+            Ok(None) | Err(_) => return Ok(result),
         };
         let Some(entry) = resp.entry.into_iter().next() else {
             return Ok(result);
