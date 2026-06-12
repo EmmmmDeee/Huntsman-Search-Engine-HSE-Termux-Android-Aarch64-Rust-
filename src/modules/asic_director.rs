@@ -154,47 +154,32 @@ fn build_director_entities(
 /// Parse ASIC Connect Online HTML search result for director name matches.
 /// Returns `(company_name, acn, registered_office_address)` tuples. Pure.
 fn parse_asic_html(html: &str, full_name: &str) -> Vec<(String, String, Option<String>)> {
-    let mut results = Vec::new();
     let name_lc = full_name.to_lowercase();
-    let cleaned = clean_html(html);
-
-    // ASIC result rows contain: Company Name | ACN | Address | Role | Status
-    // Look for lines where the director name appears near an ACN (9 digits).
-    for line in cleaned.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        // Check if the full name appears in this line.
-        if !name_lc
-            .split_whitespace()
-            .all(|tok| line.to_lowercase().contains(tok))
-        {
-            continue;
-        }
-        // Extract ACN — 9 consecutive digits, optionally space-separated as XXX XXX XXX.
-        let acn = extract_acn(line).unwrap_or_default();
-        // Company name: usually the text before the ACN.
-        let company = extract_company_name(line, &acn);
-        if company.len() < 3 {
-            continue;
-        }
-        // Address: look for AU state + postcode pattern in the line.
-        let address = extract_au_address(line);
-        results.push((company, acn, address));
-    }
-
-    results
+    // ASIC result rows contain: Company Name | ACN | Address | Role | Status.
+    // Keep lines where every name token appears, then extract company/ACN/address.
+    clean_html(html)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| {
+            let line_lc = line.to_lowercase();
+            name_lc.split_whitespace().all(|tok| line_lc.contains(tok))
+        })
+        .filter_map(|line| {
+            let acn = extract_acn(line).unwrap_or_default();
+            let company = extract_company_name(line, &acn);
+            if company.len() < 3 {
+                return None;
+            }
+            Some((company, acn, extract_au_address(line)))
+        })
+        .collect()
 }
 
 /// Extract the first 9-digit ACN-like sequence from text. Pure.
 fn extract_acn(text: &str) -> Option<String> {
     let digits_only: String = text.chars().filter(|c| c.is_ascii_digit()).collect();
-    if digits_only.len() >= 9 {
-        Some(digits_only[..9].to_string())
-    } else {
-        None
-    }
+    (digits_only.len() >= 9).then(|| digits_only[..9].to_string())
 }
 
 /// Rough company name extraction: text before the first digit run. Pure.
@@ -306,14 +291,11 @@ impl Module for AsicDirector {
         };
 
         let mut result = ModuleResult::new();
-        for (company, acn, address) in parse_asic_html(&html, full_name) {
-            for e in
+        result.extend(parse_asic_html(&html, full_name).into_iter().flat_map(
+            |(company, acn, address)| {
                 build_director_entities(&company, &acn, full_name, address.as_deref(), &ctx.scan_id)
-            {
-                result.push(e);
-            }
-        }
-
+            },
+        ));
         Ok(result)
     }
 }
