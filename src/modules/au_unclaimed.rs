@@ -1,6 +1,6 @@
 //! Australian multi-state unclaimed money registers (NSW, VIC, WA, SA, TAS, ACT).
 //!
-//! Complements [`qld_unclaimed`] which covers Queensland only. This module
+//! Complements [`crate::modules::qld_unclaimed`] which covers Queensland only. This module
 //! queries the open CKAN data portals for the remaining six states/territories
 //! via their published unclaimed-money datasets. Each query is surname-anchored
 //! (same precision strategy as qld_unclaimed) to avoid flooding the graph with

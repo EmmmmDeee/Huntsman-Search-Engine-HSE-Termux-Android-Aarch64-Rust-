@@ -1081,4 +1081,121 @@ mod tests {
             "evidence summary missing: {row}"
         );
     }
+
+    // ── AU-059 best_location emit→extract contract ──────────────────────────
+    //
+    // `extract_au_location_fix` parses the structured fields back out of the
+    // free-text description AU-059 emits. That round-trip is only safe if the
+    // two stay in lockstep, so these tests drive the REAL correlator pipeline
+    // (not a hand-copied string) and assert the parser recovers every field —
+    // any change to AU-059's format that breaks the contract fails here.
+
+    /// Build a tagged AU `Coordinates` entity for a given source, mirroring the
+    /// correlator's own fixture so the convergence path is identical.
+    #[cfg(test)]
+    fn au_sighting(
+        value: &str,
+        conf: f64,
+        source: &str,
+        state: &str,
+    ) -> crate::core::entity::Entity {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut e = Entity::new(EntityKind::Coordinates, value, conf, "s");
+        e.tag(format!("au-state:{state}"));
+        e.tag("country:AU");
+        e.add_evidence(Evidence::new(source, "geo sighting"));
+        e
+    }
+
+    #[test]
+    fn extract_au_location_fix_round_trips_every_field() {
+        // Two orthogonal AU classes (registry + photo GPS) in NSW → AU-059.
+        let ents = vec![
+            au_sighting("-33.8688,151.2093", 0.80, "abn_lookup", "NSW"),
+            au_sighting("-33.8700,151.2100", 0.70, "exif_geo", "NSW"),
+        ];
+        let corrs = crate::core::correlator::correlate_entities(&ents, "s");
+        assert!(
+            corrs.iter().any(|c| c.rule_id == "AU-059"),
+            "fixture must produce an AU-059 firing"
+        );
+
+        let fix = extract_au_location_fix(&corrs);
+        assert!(
+            fix.is_object(),
+            "fix must be a structured object, got {fix}"
+        );
+        assert_eq!(fix["state"], "NSW");
+        assert_eq!(fix["rule_id"], "AU-059");
+        // Centroid of the two NSW points — must land on Sydney, not (0,0).
+        let lat = fix["lat"].as_f64().unwrap();
+        let lon = fix["lon"].as_f64().unwrap();
+        assert!((-34.0..-33.0).contains(&lat), "lat off Sydney: {lat}");
+        assert!((150.0..152.0).contains(&lon), "lon off Sydney: {lon}");
+        assert!(
+            !fix["geohash"].as_str().unwrap().is_empty(),
+            "geohash empty"
+        );
+        let sc = fix["synergy_confidence"].as_f64().unwrap();
+        assert!(
+            (0.0..=0.97).contains(&sc) && sc > 0.0,
+            "synergy_conf range: {sc}"
+        );
+        assert_eq!(fix["class_count"], 2);
+        assert!(fix["source_count"].as_u64().unwrap() >= 2);
+        assert_eq!(fix["severity"], "medium", "2 classes ⇒ medium");
+    }
+
+    #[test]
+    fn extract_au_location_fix_is_null_without_au_059() {
+        // A single class can't reach quorum → no AU-059 → null fix.
+        let ents = vec![
+            au_sighting("-33.8688,151.2093", 0.80, "abn_lookup", "NSW"),
+            au_sighting("-33.8700,151.2100", 0.75, "acnc_charities", "NSW"),
+        ];
+        let corrs = crate::core::correlator::correlate_entities(&ents, "s");
+        assert_eq!(extract_au_location_fix(&corrs), serde_json::Value::Null);
+        assert_eq!(extract_au_location_fix(&[]), serde_json::Value::Null);
+    }
+
+    #[test]
+    fn extract_au_location_fix_picks_highest_rank_when_several() {
+        // Two AU-059 firings with different ranks: the extractor must report the
+        // higher-ranked one (the engine's "best" estimate).
+        use crate::core::correlator::{Correlation, Severity};
+        let mut low = Correlation::new(
+            "AU-059",
+            "Cross-seed geographic synergy (orthogonal-class fix)",
+            Severity::Medium,
+            "2 AU coordinate(s) from 2 orthogonal source class(es) [Registry, Social] \
+             converge on -37.8136,144.9631 (geohash=r1r0fs, state=VIC); synergy confidence \
+             0.55 — MITRE T1591.001"
+                .into(),
+            vec!["a".into(), "b".into()],
+            "s",
+            0,
+        );
+        low.rank = 1.1;
+        let mut high = Correlation::new(
+            "AU-059",
+            "Cross-seed geographic synergy (orthogonal-class fix)",
+            Severity::High,
+            "3 AU coordinate(s) from 3 orthogonal source class(es) [PhotoGps, Registry, \
+             Directory] converge on -33.8688,151.2093 (geohash=r3gx2f, state=NSW); synergy \
+             confidence 0.81 — MITRE T1591.001"
+                .into(),
+            vec!["c".into(), "d".into(), "e".into()],
+            "s",
+            0,
+        );
+        high.rank = 2.7;
+
+        let fix = extract_au_location_fix(&[low, high]);
+        assert_eq!(fix["state"], "NSW", "must pick the higher-rank firing");
+        assert_eq!(fix["class_count"], 3);
+        assert_eq!(fix["source_count"], 3);
+        assert_eq!(fix["severity"], "high");
+        assert!((fix["synergy_confidence"].as_f64().unwrap() - 0.81).abs() < 1e-9);
+        assert!((fix["lat"].as_f64().unwrap() - -33.8688).abs() < 1e-4);
+    }
 }
