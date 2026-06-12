@@ -143,6 +143,14 @@ impl Module for ContactEnrich {
         ModuleCategory::People
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Contact validation/enrichment: the People default (T1589.003 Employee
+        // Names + T1591.004 Identify Roles) plus T1591.001 (Physical Locations)
+        // for the Numverify/Gravatar location → Address output. Superset of the
+        // default — coverage cannot regress.
+        &["T1589.003", "T1591.004", "T1591.001"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::Person,
@@ -242,35 +250,27 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         entity.tag(format!("line:{lt}"));
     }
 
-    let mut ev = Evidence::new(
-        SRC,
-        format!("Numverify confirmed valid phone {}", target.value),
-    )
-    .with_attr("transport", transport);
-    if let Some(v) = body.number.as_deref() {
-        ev = ev.with_attr("normalised", v);
-    }
-    if let Some(v) = body.international_format.as_deref() {
-        ev = ev.with_attr("international", v);
-    }
-    if let Some(v) = body.local_format.as_deref() {
-        ev = ev.with_attr("local", v);
-    }
-    if let Some(v) = body.country_prefix.as_deref() {
-        ev = ev.with_attr("country_prefix", v);
-    }
-    if let Some(v) = body.country_name.as_deref() {
-        ev = ev.with_attr("country", v);
-    }
-    if let Some(v) = body.location.as_deref() {
-        ev = ev.with_attr("location", v);
-    }
-    if let Some(v) = body.carrier.as_deref() {
-        ev = ev.with_attr("carrier", v);
-    }
-    if let Some(v) = body.line_type.as_deref() {
-        ev = ev.with_attr("line_type", v);
-    }
+    // Fold the present optional fields into the evidence in one pass.
+    let ev = [
+        ("normalised", body.number.as_deref()),
+        ("international", body.international_format.as_deref()),
+        ("local", body.local_format.as_deref()),
+        ("country_prefix", body.country_prefix.as_deref()),
+        ("country", body.country_name.as_deref()),
+        ("location", body.location.as_deref()),
+        ("carrier", body.carrier.as_deref()),
+        ("line_type", body.line_type.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(k, v)| v.map(|val| (k, val)))
+    .fold(
+        Evidence::new(
+            SRC,
+            format!("Numverify confirmed valid phone {}", target.value),
+        )
+        .with_attr("transport", transport),
+        |ev, (k, val)| ev.with_attr(k, val),
+    );
     entity.add_evidence(ev);
 
     let mut result = ModuleResult::new();
@@ -347,20 +347,17 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     {
         ev = ev.with_attr("avatar_url", avatar);
     }
-    if !entry.urls.is_empty() {
-        let mut urls_iter = entry.urls.iter().filter_map(|u| {
+    let urls: Vec<String> = entry
+        .urls
+        .iter()
+        .filter_map(|u| {
             let v = u.value.as_deref()?;
             let t = u.title.as_deref().unwrap_or("link");
             Some(format!("{t}: {v}"))
-        });
-        if let Some(first) = urls_iter.next() {
-            let mut joined = first;
-            for item in urls_iter {
-                joined.push_str(" | ");
-                joined.push_str(&item);
-            }
-            ev = ev.with_attr("urls", joined);
-        }
+        })
+        .collect();
+    if !urls.is_empty() {
+        ev = ev.with_attr("urls", urls.join(" | "));
     }
     entity.add_evidence(ev);
 
@@ -406,19 +403,19 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         ));
         result.push(ae);
     }
-    for url_entry in &entry.urls {
-        if let Some(url) = url_entry.value.as_deref()
-            && url.starts_with("http")
-        {
-            let mut ue = Entity::new(EntityKind::Url, url, 0.60, &ctx.scan_id);
-            ue.tag("gravatar");
-            ue.add_evidence(Evidence::new(
-                SRC,
-                format!("Gravatar link for {normalised}"),
-            ));
-            result.push(ue);
+    result.extend(entry.urls.iter().filter_map(|url_entry| {
+        let url = url_entry.value.as_deref()?;
+        if !url.starts_with("http") {
+            return None;
         }
-    }
+        let mut ue = Entity::new(EntityKind::Url, url, 0.60, &ctx.scan_id);
+        ue.tag("gravatar");
+        ue.add_evidence(Evidence::new(
+            SRC,
+            format!("Gravatar link for {normalised}"),
+        ));
+        Some(ue)
+    }));
 
     Ok(result)
 }
