@@ -150,11 +150,11 @@ impl Module for PortScan {
         result.push(ipe);
 
         // Web ports → Url entities so the crawler / banner modules enrich them.
-        for (port, svc) in &open {
+        result.extend(open.iter().filter_map(|(port, svc)| {
             let scheme = match *port {
                 443 | 8443 => "https",
                 80 | 8000 | 8080 => "http",
-                _ => continue,
+                _ => return None,
             };
             let url = format!("{scheme}://{}:{port}/", bracketed(ip));
             let mut e = Entity::new(EntityKind::Url, &url, 0.65, &ctx.scan_id);
@@ -165,8 +165,8 @@ impl Module for PortScan {
                     .with_attr("ip", host)
                     .with_attr("port", port.to_string()),
             );
-            result.push(e);
-        }
+            Some(e)
+        }));
         Ok(result)
     }
 }
