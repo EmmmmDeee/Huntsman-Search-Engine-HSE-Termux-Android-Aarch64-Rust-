@@ -73,15 +73,15 @@ impl Module for Netblock {
         };
 
         let block = target.value.trim();
-        for ip in hosts {
+        result.extend(hosts.into_iter().map(|ip| {
             let mut e = Entity::new(EntityKind::IpAddress, &ip, 0.70, &ctx.scan_id);
             e.tag("netblock-member");
             e.add_evidence(
                 Evidence::new(SRC, format!("Host {ip} in network block {block}"))
                     .with_attr("cidr", block),
             );
-            result.push(e);
-        }
+            e
+        }));
         if truncated {
             // Surface the cap on the parent so the operator knows the sweep was
             // bounded (the block has `total` addresses; only MAX_HOSTS emitted).
