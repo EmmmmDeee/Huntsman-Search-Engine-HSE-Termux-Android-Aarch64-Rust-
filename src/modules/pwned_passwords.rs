@@ -96,16 +96,13 @@ impl Module for PwnedPasswords {
             .await
             .map_err(|e| Error::module(SRC, e.to_string()))?;
 
-        let mut breach_count: Option<u64> = None;
-        for line in body.lines() {
-            let line = line.trim();
-            if let Some((hash_suffix, count_str)) = line.split_once(':')
-                && hash_suffix.eq_ignore_ascii_case(suffix)
-            {
-                breach_count = count_str.trim().parse().ok();
-                break;
-            }
-        }
+        // Find the (unique) suffix line in the k-anonymity range and parse its
+        // breach count; `find` stops at the first match, mirroring the break.
+        let breach_count: Option<u64> = body
+            .lines()
+            .filter_map(|line| line.trim().split_once(':'))
+            .find(|(hash_suffix, _)| hash_suffix.eq_ignore_ascii_case(suffix))
+            .and_then(|(_, count_str)| count_str.trim().parse().ok());
 
         let Some(count) = breach_count else {
             return Ok(ModuleResult::new());
