@@ -107,28 +107,21 @@ fn build_entities(coord: &str, attrs: &HashMap<String, Value>, scan_id: &str) ->
     if let Some(lp) = &lotplan {
         coords.tag(format!("lotplan:{lp}"));
     }
-    let mut ev = Evidence::new(SRC, format!("QLD DCDB cadastral parcel at {coord}"));
-    if let Some(v) = &lotplan {
-        ev = ev.with_attr("lotplan", v);
-    }
-    if let Some(v) = &lot {
-        ev = ev.with_attr("lot", v);
-    }
-    if let Some(v) = &plan {
-        ev = ev.with_attr("plan", v);
-    }
-    if let Some(v) = &locality {
-        ev = ev.with_attr("locality", v);
-    }
-    if let Some(v) = &lga {
-        ev = ev.with_attr("local_authority", v);
-    }
-    if let Some(v) = &tenure {
-        ev = ev.with_attr("tenure", v);
-    }
-    if let Some(v) = &parcel_typ {
-        ev = ev.with_attr("parcel_type", v);
-    }
+    let ev = [
+        ("lotplan", &lotplan),
+        ("lot", &lot),
+        ("plan", &plan),
+        ("locality", &locality),
+        ("local_authority", &lga),
+        ("tenure", &tenure),
+        ("parcel_type", &parcel_typ),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.as_deref().map(|v| (key, v)))
+    .fold(
+        Evidence::new(SRC, format!("QLD DCDB cadastral parcel at {coord}")),
+        |ev, (key, v)| ev.with_attr(key, v),
+    );
     coords.add_evidence(ev);
     out.push(coords);
 
