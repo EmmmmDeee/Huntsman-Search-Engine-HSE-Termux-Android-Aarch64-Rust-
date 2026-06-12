@@ -3,26 +3,10 @@
 //! Reaches the other helper groups and shared imports through `use super::*`.
 
 use super::*;
-
-pub(in crate::modules::search_engines) fn floor_char_boundary(s: &str, mut i: usize) -> usize {
-    if i >= s.len() {
-        return s.len();
-    }
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-pub(in crate::modules::search_engines) fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
-    if i >= s.len() {
-        return s.len();
-    }
-    while i < s.len() && !s.is_char_boundary(i) {
-        i += 1;
-    }
-    i
-}
+// Canonical char-boundary primitives live in the shared util layer so every
+// module that slices scraped HTML at an arithmetic offset reaches for the same
+// total helper instead of re-rolling (or partially guarding) its own.
+use crate::util::str_util::{ceil_char_boundary, floor_char_boundary};
 
 pub(in crate::modules::search_engines) fn extract_anchor_text(
     html: &str,

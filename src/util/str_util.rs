@@ -30,6 +30,65 @@ pub fn ascii_digits(s: &str) -> String {
     s.chars().filter(char::is_ascii_digit).collect()
 }
 
+/// Round `i` **down** to the nearest UTF-8 character boundary of `s` (the start
+/// of the character `i` falls inside), clamped to `s.len()`. The canonical
+/// safe-slicing primitive for a *start* offset or a length cap:
+/// `&s[..floor_char_boundary(s, i)]` is valid — never panics — for any `i`.
+///
+/// A free-function stand-in for the still-unstable `str::floor_char_boundary`,
+/// so it is usable at this crate's MSRV and shared by every module that slices
+/// scraped text at an arithmetic byte offset.
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::floor_char_boundary;
+///
+/// let s = "aébc"; // bytes: a=0, é=1..3, b=3, c=4, len=5
+/// assert_eq!(floor_char_boundary(s, 2), 1);  // inside 'é' → back to its start
+/// assert_eq!(floor_char_boundary(s, 3), 3);  // already a boundary
+/// assert_eq!(floor_char_boundary(s, 99), 5); // past the end → len
+/// ```
+#[must_use]
+pub fn floor_char_boundary(s: &str, i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    let mut i = i;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Round `i` **up** to the nearest UTF-8 character boundary of `s` (the start of
+/// the next character when `i` lands mid-character), clamped to `s.len()`. The
+/// canonical safe-slicing primitive for an *end* offset: a `floor_char_boundary`
+/// start paired with a `ceil_char_boundary` end makes any arithmetic byte window
+/// (`pos ± N` into scraped HTML) total — the worst case is a window a byte or
+/// two off, never a panic.
+///
+/// A free-function stand-in for the still-unstable `str::ceil_char_boundary`,
+/// usable at this crate's MSRV.
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::ceil_char_boundary;
+///
+/// let s = "aébc"; // bytes: a=0, é=1..3, b=3, c=4, len=5
+/// assert_eq!(ceil_char_boundary(s, 2), 3);  // inside 'é' → forward to 'b'
+/// assert_eq!(ceil_char_boundary(s, 1), 1);  // already a boundary
+/// assert_eq!(ceil_char_boundary(s, 99), 5); // past the end → len
+/// ```
+#[must_use]
+pub fn ceil_char_boundary(s: &str, i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    let mut i = i;
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
 /// Borrow the longest prefix of `s` that is at most `max` bytes and ends on a
 /// UTF-8 character boundary. Zero-copy — caps oversized fields (key fragments,
 /// scraped summaries) without ever risking the panic of a raw `&s[..max]`.
@@ -53,14 +112,7 @@ pub fn ascii_digits(s: &str) -> String {
 /// ```
 #[must_use]
 pub fn truncate_safe(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        return s;
-    }
-    let mut end = max;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
+    &s[..floor_char_boundary(s, max)]
 }
 
 /// A byte-offset substring window that can never panic on a multibyte boundary.
@@ -88,15 +140,10 @@ pub fn truncate_safe(s: &str, max: usize) -> &str {
 /// ```
 #[must_use]
 pub fn char_window(s: &str, start: usize, end: usize) -> &str {
-    let len = s.len();
-    let mut a = start.min(len);
-    while a < len && !s.is_char_boundary(a) {
-        a += 1;
-    }
-    let mut b = end.min(len).max(a);
-    while b < len && !s.is_char_boundary(b) {
-        b += 1;
-    }
+    // Round the start *up* and the end *up*, then keep `end >= start`: a window
+    // that never splits a code point and never inverts.
+    let a = ceil_char_boundary(s, start);
+    let b = ceil_char_boundary(s, end).max(a);
     &s[a..b]
 }
 
