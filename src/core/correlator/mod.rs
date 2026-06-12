@@ -252,6 +252,7 @@ const RULES: &[RuleFn] = &[
     rule_au_056_jurisdiction_cross_check,
     rule_au_057_synthesised_location_fix,
     rule_au_058_professional_profile_geo,
+    rule_au_059_cross_seed_geo_synergy,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

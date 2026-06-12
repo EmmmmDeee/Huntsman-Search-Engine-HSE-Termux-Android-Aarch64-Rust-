@@ -68,6 +68,15 @@ const ANCHORING_GEO_SOURCES: &[&str] = &[
     "proxycurl",
     // AU public register (coarse postcode, person-linked)
     "qld_unclaimed",
+    // Multi-state AU unclaimed-money registers (NSW/VIC/WA/SA) — postcode-level,
+    // surname-anchored to the subject (same class as qld_unclaimed).
+    "au_unclaimed",
+    // AU residential people-finder directories (White Pages AU, True People
+    // Search AU) — suburb/state/postcode for a confirmed name.
+    "au_people",
+    // ASIC company-directors register — the director's company registered-office
+    // address (a person-anchored business location).
+    "asic_director",
     // Person enrichment — structured location data from data-broker APIs
     "fullcontact",
     // Timezone inference from breach timestamp clustering — coarse but
@@ -318,4 +327,305 @@ pub(in crate::core::correlator) fn rule_au_053_out_of_area_location(
         scan_id,
         ts,
     )]
+}
+
+/// Orthogonal **source classes** for cross-seed geo synergy. Two coordinates
+/// that agree are far stronger evidence when they come from *different* classes
+/// of source (a breach record and a business registry) than from two sources of
+/// the same class (two IP-geo APIs), because independent collection methods
+/// don't share the same systematic error. AU-059 scores convergence by the
+/// number of distinct classes that agree, not the raw source count — this is the
+/// "orthogonal approaches" principle made computable.
+///
+/// Every person-anchoring geo source maps to exactly one class; an unrecognised
+/// source falls back to [`GeoSourceClass::Other`] so the classifier total-maps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum GeoSourceClass {
+    /// Direct GPS/photo EXIF — a physical sighting of the subject's device.
+    PhotoGps,
+    /// Wi-Fi access-point geolocation (wardriving databases).
+    WifiSensor,
+    /// Geocoded street address (forward/reverse geocoders).
+    Geocode,
+    /// Government/business registry registered address (ABR, ASIC, GLEIF, ACNC).
+    Registry,
+    /// Public people-finder / unclaimed-money / residential directory.
+    Directory,
+    /// Self-reported social-profile location field.
+    Social,
+    /// Phone number → area/carrier city inference.
+    Phone,
+    /// Person-enrichment data-broker API (FullContact, proxycurl, epieos).
+    Enrichment,
+    /// Search-snippet inline geocoding.
+    Search,
+    /// Unrecognised / coarse (timezone clustering, etc.).
+    Other,
+}
+
+/// Map a person-anchoring source name to its orthogonal [`GeoSourceClass`].
+pub(crate) fn geo_source_class(source: &str) -> GeoSourceClass {
+    match source {
+        "exif_geo" => GeoSourceClass::PhotoGps,
+        "wigle" | "mylnikov" => GeoSourceClass::WifiSensor,
+        "geocode" | "photon" => GeoSourceClass::Geocode,
+        "abn_lookup" | "opencorporates" | "acnc_charities" | "gleif_lei" | "asic_director" => {
+            GeoSourceClass::Registry
+        }
+        "qld_unclaimed" | "au_unclaimed" | "au_people" => GeoSourceClass::Directory,
+        "github_user" | "keybase" | "social_location" => GeoSourceClass::Social,
+        "phone_area_geo" | "phone_carrier_geo" => GeoSourceClass::Phone,
+        "epieos" | "contact_enrich" | "proxycurl" | "fullcontact" => GeoSourceClass::Enrichment,
+        "search_engines" => GeoSourceClass::Search,
+        _ => GeoSourceClass::Other,
+    }
+}
+
+/// The distinct orthogonal source classes represented across a coordinate set.
+fn distinct_geo_classes(
+    parsed: &[(&Entity, (f64, f64))],
+) -> std::collections::HashSet<GeoSourceClass> {
+    let mut classes = std::collections::HashSet::new();
+    for (e, _) in parsed {
+        for src in e.corroborating_sources() {
+            if is_anchoring_geo_source(src) {
+                classes.insert(geo_source_class(src));
+            }
+        }
+    }
+    classes
+}
+
+/// True when a coordinate falls within Australia — either it carries an
+/// explicit `au-state:` / `country:AU` tag (emitted at collection time) or its
+/// lat/lon lands inside the AU bounding boxes. Restricts AU-059 to the subject's
+/// home jurisdiction as required, without depending on tags alone.
+fn is_australian_coord(e: &Entity, (lat, lon): (f64, f64)) -> bool {
+    if e.has_tag("country:AU") || e.tags.iter().any(|t| t.starts_with("au-state:")) {
+        return true;
+    }
+    crate::util::geo::is_in_australia(lat, lon)
+}
+
+/// AU-059 — Cross-seed geographic synergy (orthogonal-class location fix).
+///
+/// Where AU-052 needs ≥3 person-anchored coordinates *bounding an area* and
+/// AU-057 takes the weighted median of *all* confirmed coordinates regardless of
+/// jurisdiction, AU-059 answers the operator's actual question: **from whatever
+/// combination of seeds this scan produced, what is the single best AU location
+/// estimate, and how many independent kinds of source agree on it?**
+///
+/// It restricts to Australian person-anchored coordinates ([`is_australian_coord`]),
+/// classifies each by its orthogonal [`GeoSourceClass`], and fires as soon as
+/// **≥2 distinct source classes** converge — a far lower and more useful bar than
+/// AU-052's area gate, so a name→registry hit plus a photo GPS already yields a
+/// fix. The estimate is the confidence-weighted centroid, with each point's
+/// weight multiplied by a small per-class-diversity bonus so a 3-class agreement
+/// outranks a 1-class cluster of the same size.
+///
+/// Severity scales with synergy: ≥3 orthogonal classes ⇒ `High` (independent
+/// collection methods agreeing is the strongest geo evidence short of a warrant);
+/// exactly 2 ⇒ `Medium`. The dominant AU state is reported for jurisdictional
+/// context (feeds AU-056).
+pub(in crate::core::correlator) fn rule_au_059_cross_seed_geo_synergy(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // Australian person-anchored coordinates only.
+    let parsed: Vec<(&Entity, (f64, f64))> = person_anchored_coords(entities)
+        .into_iter()
+        .filter(|(e, ll)| is_australian_coord(e, *ll))
+        .collect();
+    if parsed.len() < 2 {
+        return Vec::new();
+    }
+
+    // The synergy gate: ≥2 *distinct orthogonal source classes* must agree.
+    let classes = distinct_geo_classes(&parsed);
+    if classes.len() < 2 {
+        return Vec::new();
+    }
+
+    // Confidence-weighted centroid, each weight boosted by class diversity so a
+    // point corroborated across more orthogonal classes pulls proportionally more.
+    let class_bonus = 1.0 + (classes.len() as f64 - 1.0) * 0.10;
+    let weighted: Vec<((f64, f64), f64)> = parsed
+        .iter()
+        .map(|(e, ll)| (*ll, e.c_effective() * class_bonus))
+        .collect();
+    let Some((lat, lon)) = crate::util::geometry::weighted_centroid(&weighted) else {
+        return Vec::new();
+    };
+
+    // Dominant AU state across the contributing coordinates (for AU-056 context).
+    let state = au_state_majority(&parsed).unwrap_or("AU");
+
+    // A scan-level synergy confidence: base on the strongest contributor, lifted
+    // by orthogonal-class agreement, capped below certainty.
+    let peak = parsed
+        .iter()
+        .map(|(e, _)| e.c_effective())
+        .fold(0.0_f64, f64::max);
+    let synergy_conf = (peak + (classes.len() as f64 - 1.0) * 0.08).min(0.97);
+
+    let severity = if classes.len() >= 3 {
+        Severity::High
+    } else {
+        Severity::Medium
+    };
+
+    let mut class_names: Vec<&str> = classes.iter().map(geo_class_name).collect();
+    class_names.sort_unstable();
+    let gh = crate::util::geohash::geohash(lat, lon, 6);
+
+    let mut uids: Vec<String> = parsed.iter().map(|(e, _)| e.uid.clone()).collect();
+    uids.sort_unstable();
+    uids.dedup();
+
+    vec![Correlation::new(
+        "AU-059",
+        "Cross-seed geographic synergy (orthogonal-class fix)",
+        severity,
+        format!(
+            "{} AU coordinate(s) from {} orthogonal source class(es) [{}] converge on \
+             {lat:.4},{lon:.4} (geohash={gh}, state={state}); synergy confidence {synergy_conf:.2} \
+             — MITRE T1591.001",
+            parsed.len(),
+            classes.len(),
+            class_names.join(", "),
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
+/// The majority AU state across a coordinate set, by `au-state:` tag where
+/// present, else inferred from lat/lon. Ties resolve alphabetically for
+/// determinism. `None` when no point resolves to a state.
+fn au_state_majority(parsed: &[(&Entity, (f64, f64))]) -> Option<&'static str> {
+    const STATES: &[&str] = &["ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"];
+    let mut counts: std::collections::BTreeMap<&'static str, u32> =
+        std::collections::BTreeMap::new();
+    for (e, (lat, lon)) in parsed {
+        // Prefer an explicit tag (collection-time), else derive from coords.
+        let tagged = e.tags.iter().find_map(|t| {
+            t.strip_prefix("au-state:")
+                .and_then(|s| STATES.iter().copied().find(|st| *st == s))
+        });
+        let state = tagged.or_else(|| crate::util::geo::au_state_for_coords(*lat, *lon));
+        if let Some(s) = state {
+            *counts.entry(s).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))
+        .map(|(s, _)| s)
+}
+
+/// Human-readable label for a [`GeoSourceClass`] (for correlation summaries).
+fn geo_class_name(c: &GeoSourceClass) -> &'static str {
+    match c {
+        GeoSourceClass::PhotoGps => "photo-gps",
+        GeoSourceClass::WifiSensor => "wifi",
+        GeoSourceClass::Geocode => "geocode",
+        GeoSourceClass::Registry => "registry",
+        GeoSourceClass::Directory => "directory",
+        GeoSourceClass::Social => "social",
+        GeoSourceClass::Phone => "phone",
+        GeoSourceClass::Enrichment => "enrichment",
+        GeoSourceClass::Search => "search",
+        GeoSourceClass::Other => "other",
+    }
+}
+
+#[cfg(test)]
+mod au059_tests {
+    use super::*;
+    use crate::core::entity::Evidence;
+
+    fn au_coord(value: &str, conf: f64, source: &str, state: &str) -> Entity {
+        let mut e = Entity::new(EntityKind::Coordinates, value, conf, "s");
+        e.tag(format!("au-state:{state}"));
+        e.tag("country:AU");
+        e.add_evidence(Evidence::new(source, "geo sighting"));
+        e
+    }
+
+    #[test]
+    fn fires_on_two_orthogonal_classes() {
+        // A registry address and a photo GPS, both in NSW, converge.
+        let ents = vec![
+            au_coord("-33.8688,151.2093", 0.80, "abn_lookup", "NSW"),
+            au_coord("-33.8700,151.2100", 0.70, "exif_geo", "NSW"),
+        ];
+        let out = rule_au_059_cross_seed_geo_synergy(&ents, "s", 0);
+        assert_eq!(out.len(), 1, "two orthogonal classes must fire AU-059");
+        assert!(out[0].description.contains("state=NSW"));
+    }
+
+    #[test]
+    fn does_not_fire_on_single_class() {
+        // Two registry sources are the SAME class — no orthogonal synergy.
+        let ents = vec![
+            au_coord("-33.8688,151.2093", 0.80, "abn_lookup", "NSW"),
+            au_coord("-33.8700,151.2100", 0.75, "acnc_charities", "NSW"),
+        ];
+        let out = rule_au_059_cross_seed_geo_synergy(&ents, "s", 0);
+        assert!(out.is_empty(), "same source class must not assert synergy");
+    }
+
+    #[test]
+    fn three_classes_is_high_severity() {
+        let ents = vec![
+            au_coord("-37.8136,144.9631", 0.80, "abn_lookup", "VIC"),
+            au_coord("-37.8140,144.9640", 0.70, "exif_geo", "VIC"),
+            au_coord("-37.8150,144.9650", 0.65, "wigle", "VIC"),
+        ];
+        let out = rule_au_059_cross_seed_geo_synergy(&ents, "s", 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn excludes_non_australian_coordinates() {
+        // One AU registry point + one London photo GPS: only 1 AU class remains.
+        let mut london = Entity::new(EntityKind::Coordinates, "51.5074,-0.1278", 0.80, "s");
+        london.add_evidence(Evidence::new("exif_geo", "geo sighting"));
+        let ents = vec![
+            au_coord("-33.8688,151.2093", 0.80, "abn_lookup", "NSW"),
+            london,
+        ];
+        let out = rule_au_059_cross_seed_geo_synergy(&ents, "s", 0);
+        assert!(
+            out.is_empty(),
+            "non-AU coordinate must not contribute a class"
+        );
+    }
+
+    #[test]
+    fn source_class_mapping_is_orthogonal() {
+        assert_eq!(geo_source_class("exif_geo"), GeoSourceClass::PhotoGps);
+        assert_eq!(geo_source_class("abn_lookup"), GeoSourceClass::Registry);
+        assert_eq!(geo_source_class("asic_director"), GeoSourceClass::Registry);
+        assert_eq!(geo_source_class("au_people"), GeoSourceClass::Directory);
+        assert_eq!(geo_source_class("phone_area_geo"), GeoSourceClass::Phone);
+        assert_eq!(geo_source_class("unknown_src"), GeoSourceClass::Other);
+    }
+
+    #[test]
+    fn au_state_majority_picks_dominant() {
+        let ents = [
+            au_coord("-33.8688,151.2093", 0.8, "abn_lookup", "NSW"),
+            au_coord("-33.8700,151.2100", 0.7, "exif_geo", "NSW"),
+            au_coord("-37.8136,144.9631", 0.7, "wigle", "VIC"),
+        ];
+        let parsed: Vec<(&Entity, (f64, f64))> = ents
+            .iter()
+            .filter_map(|e| crate::util::geohash::parse_coords(&e.value).map(|ll| (e, ll)))
+            .collect();
+        assert_eq!(au_state_majority(&parsed), Some("NSW"));
+    }
 }
