@@ -134,17 +134,15 @@ fn name_matches_query(name: &str, query: &str) -> bool {
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
         .collect();
-    let mut any = false;
-    for tok in query
+    let tokens: Vec<&str> = query
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
-    {
-        any = true;
-        if !words.iter().any(|w| w.eq_ignore_ascii_case(tok)) {
-            return false;
-        }
-    }
-    any
+        .collect();
+    // At least one token, and every token present as a whole word.
+    !tokens.is_empty()
+        && tokens
+            .iter()
+            .all(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
 }
 
 /// The lei-records search URL for one legal-name query. JSON:API bracket params
