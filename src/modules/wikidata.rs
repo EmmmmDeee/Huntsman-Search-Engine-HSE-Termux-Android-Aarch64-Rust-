@@ -162,17 +162,14 @@ fn name_matches_query(name: &str, query: &str) -> bool {
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
         .collect();
-    let mut any = false;
-    for tok in query
+    let tokens: Vec<&str> = query
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
-    {
-        any = true;
-        if !words.iter().any(|w| w.eq_ignore_ascii_case(tok)) {
-            return false;
-        }
-    }
-    any
+        .collect();
+    !tokens.is_empty()
+        && tokens
+            .iter()
+            .all(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
 }
 
 fn search_url(q: &str) -> String {
@@ -238,18 +235,17 @@ fn primary_entities(
     out.push(head);
 
     // Official website (P856) → Domain.
-    for url in claim_strings(entity, "P856") {
-        if let Some(host) = host_from_url(&url) {
-            let mut d = Entity::new(EntityKind::Domain, &host, DOMAIN_CONF, scan_id);
-            d.tag(SRC);
-            d.tag("wikidata");
-            d.tag("official-website");
-            d.add_evidence(
-                Evidence::new(SRC, format!("Official website of {label}")).with_attr("url", &url),
-            );
-            out.push(d);
-        }
-    }
+    out.extend(claim_strings(entity, "P856").into_iter().filter_map(|url| {
+        let host = host_from_url(&url)?;
+        let mut d = Entity::new(EntityKind::Domain, &host, DOMAIN_CONF, scan_id);
+        d.tag(SRC);
+        d.tag("wikidata");
+        d.tag("official-website");
+        d.add_evidence(
+            Evidence::new(SRC, format!("Official website of {label}")).with_attr("url", &url),
+        );
+        Some(d)
+    }));
 
     // Image (P18) → the canonical Wikimedia Commons image URL — an approved,
     // keyless "image search": the official record's photo of the matched subject.
@@ -259,28 +255,33 @@ fn primary_entities(
     // capture time — normalising any geotag into `Coordinates` the geo
     // correlators consume. Commons normalises spaces↔underscores, so the
     // space→underscore form is a valid, stable URL needing no extra API call.
-    for filename in claim_strings(entity, "P18") {
-        let f = filename.trim();
-        if f.is_empty() {
-            continue;
-        }
-        let img_url = format!(
-            "https://commons.wikimedia.org/wiki/Special:FilePath/{}",
-            f.replace(' ', "_")
-        );
-        let mut img = Entity::new(EntityKind::Url, &img_url, IMAGE_CONF, scan_id);
-        img.tag(SRC);
-        img.tag("wikidata");
-        img.tag("image");
-        img.tag("avatar");
-        img.add_evidence(
-            Evidence::new(SRC, format!("Wikimedia Commons image of {label}"))
-                .with_attr("commons_file", f)
-                .with_attr("wikidata_id", qid)
-                .with_attr("image_source", "wikidata_p18"),
-        );
+    // The first non-empty P18 filename yields one canonical Commons image URL.
+    if let Some(img) = claim_strings(entity, "P18")
+        .into_iter()
+        .find_map(|filename| {
+            let f = filename.trim();
+            if f.is_empty() {
+                return None;
+            }
+            let img_url = format!(
+                "https://commons.wikimedia.org/wiki/Special:FilePath/{}",
+                f.replace(' ', "_")
+            );
+            let mut img = Entity::new(EntityKind::Url, &img_url, IMAGE_CONF, scan_id);
+            img.tag(SRC);
+            img.tag("wikidata");
+            img.tag("image");
+            img.tag("avatar");
+            img.add_evidence(
+                Evidence::new(SRC, format!("Wikimedia Commons image of {label}"))
+                    .with_attr("commons_file", f)
+                    .with_attr("wikidata_id", qid)
+                    .with_attr("image_source", "wikidata_p18"),
+            );
+            Some(img)
+        })
+    {
         out.push(img);
-        break; // one canonical image is sufficient
     }
 
     // Coordinate location (P625) → Coordinates entity for geo correlators.
@@ -381,6 +382,14 @@ impl Module for Wikidata {
         ModuleCategory::People
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Beyond the People default (T1589.003 Employee Names + T1591.004
+        // Identify Roles), Wikidata's structured claims yield social-media
+        // handles (T1593.001) and a P625 physical-location coordinate
+        // (T1591.001). Superset of the default — coverage cannot regress.
+        &["T1589.003", "T1591.004", "T1593.001", "T1591.001"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::Person,
@@ -455,9 +464,10 @@ impl Module for Wikidata {
             out.push(e);
         }
 
-        for hit in rest {
-            out.push(candidate_entity(hit, target.kind, &ctx.scan_id));
-        }
+        out.extend(
+            rest.iter()
+                .map(|hit| candidate_entity(hit, target.kind, &ctx.scan_id)),
+        );
 
         Ok(out)
     }
