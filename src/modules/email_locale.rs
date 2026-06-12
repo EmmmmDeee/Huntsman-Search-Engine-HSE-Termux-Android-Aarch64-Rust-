@@ -105,33 +105,32 @@ fn detect_locale_from_local_part(local: &str) -> Option<LocaleGeo> {
     let first = parts[0].to_lowercase();
     let last = parts[parts.len() - 1].to_lowercase();
 
-    for &(suffixes, region, locale) in SURNAME_SUFFIX_PATTERNS {
-        for suffix in suffixes {
-            if last.ends_with(suffix) && last.len() >= suffix.len() + 2 {
-                return Some(LocaleGeo {
-                    region,
-                    locale,
-                    pattern: "surname_suffix",
-                    confidence: 0.35,
-                });
-            }
-        }
-    }
+    // Surname-suffix match (higher confidence) first, then a given-name match.
+    let by_surname = SURNAME_SUFFIX_PATTERNS
+        .iter()
+        .find(|&&(suffixes, _, _)| {
+            suffixes
+                .iter()
+                .any(|suffix| last.ends_with(suffix) && last.len() >= suffix.len() + 2)
+        })
+        .map(|&(_, region, locale)| LocaleGeo {
+            region,
+            locale,
+            pattern: "surname_suffix",
+            confidence: 0.35,
+        });
 
-    for &(prefixes, region, locale) in GIVEN_NAME_PATTERNS {
-        for prefix in prefixes {
-            if first.as_str() == *prefix {
-                return Some(LocaleGeo {
-                    region,
-                    locale,
-                    pattern: "given_name",
-                    confidence: 0.30,
-                });
-            }
-        }
-    }
-
-    None
+    by_surname.or_else(|| {
+        GIVEN_NAME_PATTERNS
+            .iter()
+            .find(|&&(prefixes, _, _)| prefixes.contains(&first.as_str()))
+            .map(|&(_, region, locale)| LocaleGeo {
+                region,
+                locale,
+                pattern: "given_name",
+                confidence: 0.30,
+            })
+    })
 }
 
 const SURNAME_SUFFIX_PATTERNS: &[(&[&str], &str, &str)] = &[
