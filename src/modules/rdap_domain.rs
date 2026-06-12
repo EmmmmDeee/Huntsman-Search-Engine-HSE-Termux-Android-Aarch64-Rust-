@@ -109,11 +109,11 @@ fn build_domain_entity(domain: &str, body: &RdapResp, scan_id: &str) -> Entity {
     }
     if !body.status.is_empty() {
         ev = ev.with_attr("status", body.status.join(","));
-        for s in &body.status {
-            // RDAP status values are human phrases ("client transfer
-            // prohibited"); slugify so tags match the whitespace-free convention.
-            entity.tag(format!("status:{}", slugify(s)));
-        }
+        // RDAP status values are human phrases ("client transfer prohibited");
+        // slugify so tags match the whitespace-free convention.
+        body.status
+            .iter()
+            .for_each(|s| entity.tag(format!("status:{}", slugify(s))));
     }
     // RDAP commonly carries multiple events with the same action (e.g. two
     // `transfer` events from successive registrar moves). Group dates by action.
@@ -260,14 +260,12 @@ impl Module for RdapDomain {
         let mut result = ModuleResult::new();
         result.push(build_domain_entity(domain, &body, &ctx.scan_id));
 
-        for n in body.nameservers.iter().take(MAX_NS) {
-            let Some(name) = n.name.as_deref() else {
-                continue;
-            };
-            if let Some(ns) = build_ns_entity(domain, name, &ctx.scan_id) {
-                result.push(ns);
-            }
-        }
+        result.extend(
+            body.nameservers
+                .iter()
+                .take(MAX_NS)
+                .filter_map(|n| build_ns_entity(domain, n.name.as_deref()?, &ctx.scan_id)),
+        );
 
         Ok(result)
     }
