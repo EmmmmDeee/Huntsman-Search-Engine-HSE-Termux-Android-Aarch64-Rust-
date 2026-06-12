@@ -138,25 +138,25 @@ impl Module for RedditUser {
         if data.verified == Some(true) {
             u.tag("verified");
         }
-        let mut ev = Evidence::new(SRC, format!("Reddit account u/{}", data.name)).with_attr(
-            "profile_url",
-            format!("https://www.reddit.com/user/{}", data.name),
+        let ev = [
+            ("link_karma", data.link_karma.map(|k| k.to_string())),
+            ("comment_karma", data.comment_karma.map(|k| k.to_string())),
+            (
+                "created_unix",
+                data.created_utc.map(|c| (c as u64).to_string()),
+            ),
+            ("is_gold", data.is_gold.map(|g| g.to_string())),
+            ("verified", data.verified.map(|v| v.to_string())),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(
+            Evidence::new(SRC, format!("Reddit account u/{}", data.name)).with_attr(
+                "profile_url",
+                format!("https://www.reddit.com/user/{}", data.name),
+            ),
+            |ev, (key, v)| ev.with_attr(key, v),
         );
-        if let Some(k) = data.link_karma {
-            ev = ev.with_attr("link_karma", k.to_string());
-        }
-        if let Some(k) = data.comment_karma {
-            ev = ev.with_attr("comment_karma", k.to_string());
-        }
-        if let Some(c) = data.created_utc {
-            ev = ev.with_attr("created_unix", (c as u64).to_string());
-        }
-        if let Some(g) = data.is_gold {
-            ev = ev.with_attr("is_gold", g.to_string());
-        }
-        if let Some(v) = data.verified {
-            ev = ev.with_attr("verified", v.to_string());
-        }
         u.add_evidence(ev);
         result.push(u);
 
