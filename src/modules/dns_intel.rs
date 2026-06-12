@@ -259,11 +259,11 @@ async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Ent
 
     // A + AAAA
     if let Ok(lookup) = ips {
-        for record in lookup.as_lookup().answers() {
+        entities.extend(lookup.as_lookup().answers().iter().filter_map(|record| {
             let (ip_str, record_type, ip_version) = match &record.data {
                 RData::A(a) => (a.0.to_string(), "A", "4"),
                 RData::AAAA(aaaa) => (aaaa.0.to_string(), "AAAA", "6"),
-                _ => continue,
+                _ => return None,
             };
             let mut e = Entity::new(EntityKind::IpAddress, &ip_str, 0.95, &ctx.scan_id);
             e.tag(if record_type == "A" { "ipv4" } else { "ipv6" });
@@ -274,53 +274,55 @@ async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Ent
                     .with_attr("ttl_secs", record.ttl.to_string())
                     .with_attr("ip_version", ip_version),
             );
-            entities.push(e);
-        }
+            Some(e)
+        }));
     }
 
     // MX records
     if let Ok(lookup) = mxs {
-        for record in lookup.answers() {
+        entities.extend(lookup.answers().iter().filter_map(|record| {
             let RData::MX(mx) = &record.data else {
-                continue;
+                return None;
             };
             let host = mx.exchange.to_ascii();
             let host = host.trim_end_matches('.').to_string();
-            if !host.is_empty() {
-                let mut e = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
-                e.tag("mx");
-                e.add_evidence(
-                    Evidence::new(SRC, format!("MX record for {domain}"))
-                        .with_attr("record_type", "MX")
-                        .with_attr("priority", mx.preference.to_string())
-                        .with_attr("parent_domain", domain)
-                        .with_attr("ttl_secs", record.ttl.to_string()),
-                );
-                entities.push(e);
+            if host.is_empty() {
+                return None;
             }
-        }
+            let mut e = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
+            e.tag("mx");
+            e.add_evidence(
+                Evidence::new(SRC, format!("MX record for {domain}"))
+                    .with_attr("record_type", "MX")
+                    .with_attr("priority", mx.preference.to_string())
+                    .with_attr("parent_domain", domain)
+                    .with_attr("ttl_secs", record.ttl.to_string()),
+            );
+            Some(e)
+        }));
     }
 
     // NS records
     if let Ok(lookup) = nss {
-        for record in lookup.answers() {
+        entities.extend(lookup.answers().iter().filter_map(|record| {
             let RData::NS(ns) = &record.data else {
-                continue;
+                return None;
             };
             let host = ns.0.to_ascii();
             let host = host.trim_end_matches('.').to_string();
-            if !host.is_empty() {
-                let mut e = Entity::new(EntityKind::Domain, &host, 0.88, &ctx.scan_id);
-                e.tag("ns");
-                e.add_evidence(
-                    Evidence::new(SRC, format!("NS record for {domain}"))
-                        .with_attr("record_type", "NS")
-                        .with_attr("parent_domain", domain)
-                        .with_attr("ttl_secs", record.ttl.to_string()),
-                );
-                entities.push(e);
+            if host.is_empty() {
+                return None;
             }
-        }
+            let mut e = Entity::new(EntityKind::Domain, &host, 0.88, &ctx.scan_id);
+            e.tag("ns");
+            e.add_evidence(
+                Evidence::new(SRC, format!("NS record for {domain}"))
+                    .with_attr("record_type", "NS")
+                    .with_attr("parent_domain", domain)
+                    .with_attr("ttl_secs", record.ttl.to_string()),
+            );
+            Some(e)
+        }));
     }
 
     // SOA
@@ -511,24 +513,26 @@ async fn brute_subdomains(target: &Target, ctx: &ModuleContext) -> Result<Vec<En
     }
     hits.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
-    let mut entities: Vec<Entity> = Vec::with_capacity(hits.len());
-    for (host, ips_joined, count) in hits {
-        let mut e = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
-        e.tag("subdomain");
-        e.tag("dns-brute");
-        e.add_evidence(
-            Evidence::new(
-                SRC,
-                format!("Subdomain {host} resolves to one or more A/AAAA records"),
-            )
-            .with_attr("parent_domain", &parent)
-            .with_attr("method", "common-name-dictionary")
-            .with_attr("dictionary_size", SUBDOMAINS.len().to_string())
-            .with_attr("resolved_ips", &ips_joined)
-            .with_attr("ip_count", count.to_string()),
-        );
-        entities.push(e);
-    }
+    let entities: Vec<Entity> = hits
+        .into_iter()
+        .map(|(host, ips_joined, count)| {
+            let mut e = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
+            e.tag("subdomain");
+            e.tag("dns-brute");
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("Subdomain {host} resolves to one or more A/AAAA records"),
+                )
+                .with_attr("parent_domain", &parent)
+                .with_attr("method", "common-name-dictionary")
+                .with_attr("dictionary_size", SUBDOMAINS.len().to_string())
+                .with_attr("resolved_ips", &ips_joined)
+                .with_attr("ip_count", count.to_string()),
+            );
+            e
+        })
+        .collect();
     Ok(entities)
 }
 
@@ -621,26 +625,29 @@ async fn reverse_lookup(target: &Target, ctx: &ModuleContext) -> Result<Vec<Enti
         Err(_) => return Ok(Vec::new()),
     };
 
-    let mut entities: Vec<Entity> = Vec::new();
-    for record in lookup.answers() {
-        let RData::PTR(ptr) = &record.data else {
-            continue;
-        };
-        let host_raw = ptr.0.to_ascii();
-        let host = host_raw.trim_end_matches('.');
-        if host.is_empty() {
-            continue;
-        }
-        let mut e = Entity::new(EntityKind::Domain, host, 0.85, &ctx.scan_id);
-        e.tag(crate::core::tags::PTR);
-        e.add_evidence(
-            Evidence::new(SRC, format!("PTR record for {ip}"))
-                .with_attr("record_type", "PTR")
-                .with_attr("ip", target.value.as_str())
-                .with_attr("ttl_secs", record.ttl.to_string()),
-        );
-        entities.push(e);
-    }
+    let entities: Vec<Entity> = lookup
+        .answers()
+        .iter()
+        .filter_map(|record| {
+            let RData::PTR(ptr) = &record.data else {
+                return None;
+            };
+            let host_raw = ptr.0.to_ascii();
+            let host = host_raw.trim_end_matches('.');
+            if host.is_empty() {
+                return None;
+            }
+            let mut e = Entity::new(EntityKind::Domain, host, 0.85, &ctx.scan_id);
+            e.tag(crate::core::tags::PTR);
+            e.add_evidence(
+                Evidence::new(SRC, format!("PTR record for {ip}"))
+                    .with_attr("record_type", "PTR")
+                    .with_attr("ip", target.value.as_str())
+                    .with_attr("ttl_secs", record.ttl.to_string()),
+            );
+            Some(e)
+        })
+        .collect();
     Ok(entities)
 }
 
