@@ -62,22 +62,22 @@ impl Module for SubdomainTakeover {
         }
 
         let resolver = crate::util::dns::shared_resolver();
-        let cname = match resolver
+        // Resolve the CNAME chain and take the first CNAME answer, normalised to
+        // a trailing-dot-free lower-case host. A lookup error (NXDOMAIN, no
+        // CNAME) collapses to `None` and short-circuits below.
+        let cname = resolver
             .lookup(&domain, hickory_resolver::proto::rr::RecordType::CNAME)
             .await
-        {
-            Ok(lookup) => {
-                let mut target_name = None;
-                for record in lookup.answers() {
+            .ok()
+            .and_then(|lookup| {
+                lookup.answers().iter().find_map(|record| {
                     if let hickory_resolver::proto::rr::RData::CNAME(ref c) = record.data {
-                        target_name = Some(c.0.to_ascii().trim_end_matches('.').to_lowercase());
-                        break;
+                        Some(c.0.to_ascii().trim_end_matches('.').to_lowercase())
+                    } else {
+                        None
                     }
-                }
-                target_name
-            }
-            Err(_) => None,
-        };
+                })
+            });
 
         let Some(cname_target) = cname else {
             return Ok(result);
