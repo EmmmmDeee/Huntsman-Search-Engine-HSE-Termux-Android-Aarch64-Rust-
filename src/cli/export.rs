@@ -473,6 +473,21 @@ pub(crate) fn render_debug_bundle(
         );
     }
 
+    // Best AU geolocation fix (AU-059 cross-seed synergy), if one fired.
+    let fix = crate::api::scan_handlers::extract_au_location_fix(&correlations);
+    if fix != serde_json::Value::Null {
+        let lat = fix["lat"].as_f64().unwrap_or(0.0);
+        let lon = fix["lon"].as_f64().unwrap_or(0.0);
+        let gh = fix["geohash"].as_str().unwrap_or("");
+        let state = fix["state"].as_str().unwrap_or("");
+        let sc = fix["synergy_confidence"].as_f64().unwrap_or(0.0);
+        let sev = fix["severity"].as_str().unwrap_or("");
+        let _ = writeln!(
+            s,
+            "\n── BEST AU LOCATION FIX (AU-059) ──\n  {lat:.4},{lon:.4} · geohash={gh} · state={state} · synergy_conf={sc:.2} · severity={sev}"
+        );
+    }
+
     // ── 3. Complete scan sequence (every event) ──
     let events = store.events_for_scan(sid)?;
     let mut histo: BTreeMap<String, usize> = BTreeMap::new();

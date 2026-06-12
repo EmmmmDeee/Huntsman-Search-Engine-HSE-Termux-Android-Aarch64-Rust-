@@ -648,6 +648,89 @@ pub async fn scan_report_json(
 ///
 /// Returns `Ok(None)` when no scan with that id exists, so callers
 /// can map straight to a 404. Bubbles storage errors otherwise.
+/// Parse the structured geo-fix fields that AU-059 embeds in its description.
+///
+/// AU-059 description format:
+/// `"N AU coordinate(s) from M orthogonal source class(es) [C1, C2] converge on
+///  LAT,LON (geohash=GH, state=STATE); synergy confidence SC — MITRE T1591.001"`
+///
+/// Returns a JSON object `{lat, lon, geohash, state, synergy_confidence,
+/// source_count, class_count, severity}` from the highest-rank AU-059 firing,
+/// or `serde_json::Value::Null` when no AU-059 correlation exists for the scan.
+pub(crate) fn extract_au_location_fix(
+    correlations: &[crate::core::correlator::Correlation],
+) -> serde_json::Value {
+    let best = correlations
+        .iter()
+        .filter(|c| c.rule_id == "AU-059")
+        .max_by(|a, b| {
+            a.rank
+                .partial_cmp(&b.rank)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    let Some(c) = best else {
+        return serde_json::Value::Null;
+    };
+    let desc = &c.description;
+
+    // source_count: first token before " AU coordinate"
+    let source_count: Option<u32> = desc
+        .split_once(" AU coordinate")
+        .and_then(|(n, _)| n.trim().parse().ok());
+
+    // class_count: token before " orthogonal source class"
+    let class_count: Option<u32> = desc
+        .split_once(" orthogonal source class")
+        .and_then(|(pre, _)| pre.rsplit_once(' ').map(|(_, n)| n))
+        .and_then(|n| n.parse().ok());
+
+    // lat,lon: after "converge on "
+    let (lat, lon) = desc
+        .split_once("converge on ")
+        .and_then(|(_, rest)| rest.split_once(' '))
+        .and_then(|(coord, _)| coord.split_once(','))
+        .and_then(|(la, lo)| {
+            let la: f64 = la.parse().ok()?;
+            let lo: f64 = lo.parse().ok()?;
+            Some((la, lo))
+        })
+        .unwrap_or((0.0, 0.0));
+
+    // geohash: between "geohash=" and ","
+    let geohash = desc
+        .split_once("geohash=")
+        .and_then(|(_, rest)| rest.split_once(','))
+        .map(|(gh, _)| gh.to_string())
+        .unwrap_or_default();
+
+    // state: between "state=" and ")"
+    let state = desc
+        .split_once("state=")
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(st, _)| st.to_string())
+        .unwrap_or_default();
+
+    // synergy_confidence: after "synergy confidence " and before " —"
+    let synergy_confidence: f64 = desc
+        .split_once("synergy confidence ")
+        .and_then(|(_, rest)| rest.split_once(" —"))
+        .and_then(|(sc, _)| sc.parse().ok())
+        .unwrap_or(0.0);
+
+    json!({
+        "lat": lat,
+        "lon": lon,
+        "geohash": geohash,
+        "state": state,
+        "synergy_confidence": synergy_confidence,
+        "severity": c.severity.as_canonical(),
+        "rank": c.rank,
+        "source_count": source_count,
+        "class_count": class_count,
+        "rule_id": "AU-059",
+    })
+}
+
 pub(crate) fn build_scan_report(
     store: &dyn crate::core::port::StoragePort,
     scan_id: &str,
@@ -665,12 +748,17 @@ pub(crate) fn build_scan_report(
         entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
     }
     let correlations = store.correlations_for_scan(scan_id)?;
+    let best_location = extract_au_location_fix(&correlations);
     Ok(Some(json!({
         "scan": scan,
         "entities": entities,
         "entity_count": entities.len(),
         "correlations": correlations,
         "correlation_count": correlations.len(),
+        // Best AU geolocation fix synthesised by AU-059 cross-seed geo synergy.
+        // `null` when no AU-059 fired; present with full structured fields when
+        // ≥2 orthogonal AU source classes converged on a location.
+        "best_location": best_location,
         // DETERMINISM: `exported_at` is the SOLE intentional source of
         // non-determinism in any export. It is meaningful here — report.json is a
         // point-in-time snapshot whose "when was this pulled" is part of its
