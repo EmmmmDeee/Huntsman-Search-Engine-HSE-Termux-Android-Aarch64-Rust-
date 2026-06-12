@@ -78,6 +78,15 @@ impl Module for RipeStat {
         ModuleCategory::Infrastructure
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Beyond the Infrastructure default (T1590.005 IP Addresses + T1596.005
+        // Scan Databases), RIPEstat resolves the registered abuse-contact email
+        // (T1589.002 Email Addresses) and the network-holder organisation
+        // (T1591.002 Business Relationships). Superset of the default — coverage
+        // cannot regress.
+        &["T1590.005", "T1596.005", "T1589.002", "T1591.002"]
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         // Two sequential JSON GETs; budget for a slow mobile link.
         14_000
