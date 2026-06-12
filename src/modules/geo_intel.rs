@@ -156,6 +156,11 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
             if let Some(cc) = data.country_code.as_deref() {
                 e.tag(format!("country:{}", cc.to_uppercase()));
             }
+            if data.country_code.as_deref() == Some("AU")
+                && let Some(state) = crate::util::geo::au_state_for_coords(lat, lon)
+            {
+                e.tag(format!("au-state:{state}"));
+            }
 
             let mut ev = Evidence::new(SRC, format!("IP geo for {} via ipapi.co", target.value))
                 .with_attr("latitude", lat.to_string())
@@ -206,6 +211,11 @@ async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult
             e.tag("geoint");
             if let Some(cc) = data.country_code.as_deref() {
                 e.tag(format!("country:{}", cc.to_uppercase()));
+            }
+            if data.country_code.as_deref() == Some("AU")
+                && let Some(state) = crate::util::geo::au_state_for_coords(lat, lon)
+            {
+                e.tag(format!("au-state:{state}"));
             }
             if data.is_proxy == Some(true) {
                 e.tag("proxy");

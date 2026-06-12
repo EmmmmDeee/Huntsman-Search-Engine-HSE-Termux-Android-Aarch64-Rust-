@@ -75,6 +75,13 @@ const ANCHORING_GEO_SOURCES: &[&str] = &[
     "breach_timezone",
 ];
 
+/// Returns `true` when a source name is a person-anchoring geo source —
+/// i.e. it locates the *subject*, not IP/host infrastructure. Used both by
+/// the correlator's hull filters and the engine's expansion ranking bonus.
+pub(crate) fn is_anchoring_geo_source(source: &str) -> bool {
+    ANCHORING_GEO_SOURCES.contains(&source)
+}
+
 /// True when a `Coordinates` entity does **not** locate the subject and must be
 /// kept out of their footprint: it is `hosting`-tagged (a CDN/cloud edge), it
 /// carries an `infra:` map-feature tag (an Overpass POI — a camera, a cell tower

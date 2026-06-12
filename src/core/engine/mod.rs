@@ -882,6 +882,21 @@ impl ScanEngine {
                             richness,
                         );
                     }
+                    // Geo-corroboration bonus: entities confirmed by anchoring
+                    // geo sources (self-reported address, photo GPS, registry
+                    // address, person-enrichment location) rank slightly ahead
+                    // of equal-weight entities with no person-anchored geo
+                    // signal. Each anchoring geo source contributes +2%, capped
+                    // at +10%, keeping the bonus sub-dominant to the confidence
+                    // and corroboration factors.
+                    let anchoring_geo_count = entity
+                        .corroborating_sources()
+                        .into_iter()
+                        .filter(|s| crate::core::correlator::is_anchoring_geo_source(s))
+                        .count();
+                    if anchoring_geo_count > 0 {
+                        weight *= 1.0 + (anchoring_geo_count as f64 * 0.02).min(0.10);
+                    }
                     next.push((new_target, weight, entity.uid.clone()));
                 } else {
                     // This exact target was already dispatched (or queued) this

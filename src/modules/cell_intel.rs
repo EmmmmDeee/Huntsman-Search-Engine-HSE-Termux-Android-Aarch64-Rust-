@@ -213,6 +213,10 @@ impl Module for CellIntel {
                 e.tag("geoint");
                 e.tag("cell-tower");
                 e.tag(format!("radio:{}", key.ctype.to_lowercase()));
+                if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
+                    e.tag(format!("au-state:{state}"));
+                    e.tag("country:AU");
+                }
                 e.add_evidence(
                     Evidence::new(
                         SRC,
@@ -239,6 +243,11 @@ impl Module for CellIntel {
                 e.tag("cell-tower");
                 e.tag("coarse");
                 e.tag(format!("country:{country}"));
+                if country == "AU"
+                    && let Some(state) = crate::util::geo::au_state_for_coords(lat, lon)
+                {
+                    e.tag(format!("au-state:{state}"));
+                }
                 e.add_evidence(
                     Evidence::new(
                         SRC,
