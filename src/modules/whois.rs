@@ -169,55 +169,36 @@ impl Module for Whois {
             entity.tag("dnssec:signed");
         }
 
-        let mut ev = Evidence::new(SRC, format!("WHOIS for {}", target.value));
-        if let Some(v) = &registrar {
-            ev = ev.with_attr("registrar", v);
-        }
-        if let Some(v) = &registrar_iana {
-            ev = ev.with_attr("registrar_iana_id", v);
-        }
-        if let Some(v) = &registrar_url {
-            ev = ev.with_attr("registrar_url", v);
-        }
-        if let Some(v) = &created {
-            ev = ev.with_attr("created", v);
-        }
-        if let Some(v) = &updated {
-            ev = ev.with_attr("updated", v);
-        }
-        if let Some(v) = &expires {
-            ev = ev.with_attr("expires", v);
-        }
-        if !nameservers.is_empty() {
-            ev = ev.with_attr("name_servers", nameservers.join(", "));
-        }
-        if !statuses.is_empty() {
-            ev = ev.with_attr("statuses", statuses.join(", "));
-        }
-        if let Some(v) = &dnssec {
-            ev = ev.with_attr("dnssec", v);
-        }
-        if let Some(v) = &registrant_org {
-            ev = ev.with_attr("registrant_org", v);
-        }
-        if let Some(v) = &registrant_country {
-            ev = ev.with_attr("registrant_country", v);
-        }
-        if let Some(v) = &registrant_state {
-            ev = ev.with_attr("registrant_state", v);
-        }
-        if let Some(v) = &registrant_email {
-            ev = ev.with_attr("registrant_email", v);
-        }
-        if let Some(v) = &admin_email {
-            ev = ev.with_attr("admin_email", v);
-        }
-        if let Some(v) = &tech_email {
-            ev = ev.with_attr("tech_email", v);
-        }
-        if let Some(v) = &abuse_email {
-            ev = ev.with_attr("abuse_email", v);
-        }
+        let ev = [
+            ("registrar", registrar.clone()),
+            ("registrar_iana_id", registrar_iana.clone()),
+            ("registrar_url", registrar_url.clone()),
+            ("created", created.clone()),
+            ("updated", updated.clone()),
+            ("expires", expires.clone()),
+            (
+                "name_servers",
+                (!nameservers.is_empty()).then(|| nameservers.join(", ")),
+            ),
+            (
+                "statuses",
+                (!statuses.is_empty()).then(|| statuses.join(", ")),
+            ),
+            ("dnssec", dnssec.clone()),
+            ("registrant_org", registrant_org.clone()),
+            ("registrant_country", registrant_country.clone()),
+            ("registrant_state", registrant_state.clone()),
+            ("registrant_email", registrant_email.clone()),
+            ("admin_email", admin_email.clone()),
+            ("tech_email", tech_email.clone()),
+            ("abuse_email", abuse_email.clone()),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(
+            Evidence::new(SRC, format!("WHOIS for {}", target.value)),
+            |ev, (key, v)| ev.with_attr(key, v),
+        );
 
         entity.add_evidence(ev);
 
@@ -226,24 +207,26 @@ impl Module for Whois {
 
         // Surface contact emails as discrete Email entities so they fan
         // out as scan targets in autonomous-expansion mode.
-        for (email, role) in [
-            (&registrant_email, "registrant"),
-            (&admin_email, "admin"),
-            (&tech_email, "tech"),
-            (&abuse_email, "abuse"),
-        ] {
-            if let Some(addr) = email {
-                // A WHOIS contact that is an infrastructure mailbox — a role
-                // address (`abuse@`, `dns@`, `hostmaster@`) or a mailbox on a
-                // CDN/registrar/cloud provider (`abuse@cloudflare.com`) — is the
-                // registrar/provider's desk, NEVER the subject. Emitting it as a
-                // 0.78 Email entity made it a breach-checked, identity-clustered,
-                // expandable target (a real scan merged `dns@cloudflare.com` /
-                // `abuse@cloudflare.com` into the subject's identity). The address
-                // is still preserved in the parent domain's evidence attrs above;
-                // it just must not become standalone PII.
+        // A WHOIS contact that is an infrastructure mailbox — a role address
+        // (`abuse@`, `dns@`, `hostmaster@`) or a mailbox on a CDN/registrar/cloud
+        // provider (`abuse@cloudflare.com`) — is the registrar/provider's desk,
+        // NEVER the subject. Emitting it as a 0.78 Email entity made it a
+        // breach-checked, identity-clustered, expandable target (a real scan
+        // merged `dns@cloudflare.com` / `abuse@cloudflare.com` into the subject's
+        // identity). The address is still preserved in the parent domain's
+        // evidence attrs above; it just must not become standalone PII.
+        result.extend(
+            [
+                (&registrant_email, "registrant"),
+                (&admin_email, "admin"),
+                (&tech_email, "tech"),
+                (&abuse_email, "abuse"),
+            ]
+            .into_iter()
+            .filter_map(|(email, role)| {
+                let addr = email.as_deref()?;
                 if crate::util::domains::is_infrastructure_email(addr) {
-                    continue;
+                    return None;
                 }
                 let mut e = Entity::new(EntityKind::Email, addr, 0.78, &_ctx.scan_id);
                 e.tag(format!("whois-{role}"));
@@ -252,9 +235,9 @@ impl Module for Whois {
                         .with_attr("role", role)
                         .with_attr("parent_target", target.value.as_str()),
                 );
-                result.push(e);
-            }
-        }
+                Some(e)
+            }),
+        );
 
         // Registrant organisation → Organisation entity.
         if let Some(org) = &registrant_org {
@@ -327,10 +310,10 @@ impl Module for Whois {
 
         // Surface nameservers as Domain entities too so DNS chaining
         // picks them up at depth>=1.
-        for ns in &nameservers {
+        result.extend(nameservers.iter().filter_map(|ns| {
             let host = ns.trim_end_matches('.').to_lowercase();
             if host.is_empty() {
-                continue;
+                return None;
             }
             let mut e = Entity::new(EntityKind::Domain, &host, 0.82, &_ctx.scan_id);
             e.tag("whois-ns");
@@ -338,8 +321,8 @@ impl Module for Whois {
                 Evidence::new(SRC, format!("Nameserver for {}", target.value))
                     .with_attr("parent_target", target.value.as_str()),
             );
-            result.push(e);
-        }
+            Some(e)
+        }));
 
         Ok(result)
     }
