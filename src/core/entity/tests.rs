@@ -115,6 +115,49 @@ fn geo_normalize_does_not_count_as_corroboration() {
 }
 
 #[test]
+fn uncorroborated_recycled_is_gated_until_a_second_source_confirms() {
+    // Regression: a value scraped only from a recycled search snippet (the
+    // lowest-reliability discovery path) must NOT be promoted to an expansion
+    // seed on its own — otherwise the recursion budget gets spent pivoting on
+    // strangers (a Subway-directory "Austin, Texas", an unrelated contact
+    // email). This mirrors the real dossier entity: `search_engines` recycling
+    // plus the deterministic `geo_normalize` self-enrichment, which does NOT
+    // count as corroboration.
+    let mut addr = Entity::new(EntityKind::Address, "Austin, Texas", 0.45, "s");
+    addr.tag("search-discovered");
+    addr.tag("recycled");
+    addr.add_evidence(Evidence::new("search_engines", "from recycled search"));
+    addr.add_evidence(Evidence::new(
+        "geo_normalize",
+        "Address parse + normalization",
+    ));
+    assert_eq!(
+        addr.source_count(),
+        1,
+        "geo_normalize is self-enrichment, not an independent source"
+    );
+    assert!(
+        addr.is_uncorroborated_recycled(),
+        "single-source recycled extraction must be gated from expansion"
+    );
+
+    // One independent, real corroborating source lifts it past the gate, so a
+    // genuine lead is never permanently lost — it expands on a later round.
+    addr.add_evidence(Evidence::new("whitepages", "address confirmed"));
+    assert_eq!(addr.source_count(), 2);
+    assert!(
+        !addr.is_uncorroborated_recycled(),
+        "a corroborated recycled value expands normally"
+    );
+
+    // The gate is specific to the `recycled` tag: a normally-discovered
+    // single-source entity (e.g. a breach hit) is never suppressed by it.
+    let mut breach_email = email("a@b.com");
+    breach_email.add_evidence(Evidence::new("hibp", "breached"));
+    assert!(!breach_email.is_uncorroborated_recycled());
+}
+
+#[test]
 fn c_eff_independent_agreement_lifts_moderate_findings() {
     // The grunt: independent corroboration of a MODERATE finding drives
     // confidence toward certainty, where the multiplicative model alone

@@ -475,6 +475,19 @@ impl Entity {
         self.tags.iter().any(|x| x == t)
     }
 
+    /// True when this entity was extracted *only* from search-snippet recycling
+    /// and nothing else has confirmed it — the lowest-reliability discovery path
+    /// (a value scraped from the text of whatever page a search engine returned
+    /// for a recycled query). The expansion planner uses this to record such a
+    /// value as a lead without burning a recursion round pivoting on it: one
+    /// independent corroborating source lifts [`Self::source_count`] past 1 and
+    /// the entity expands normally. See the `uncorroborated_recycled` gate in
+    /// the engine's expansion loop.
+    #[inline]
+    pub fn is_uncorroborated_recycled(&self) -> bool {
+        self.has_tag("recycled") && self.source_count() < 2
+    }
+
     // ── Evidence helpers ────────────────────────────────────────────────────
 
     pub fn evidence_sources(&self) -> std::collections::HashSet<&str> {

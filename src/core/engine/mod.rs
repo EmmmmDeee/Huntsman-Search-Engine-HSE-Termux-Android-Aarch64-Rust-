@@ -767,6 +767,23 @@ impl ScanEngine {
                     self.emit_excluded(scan_id, entity, "below_min_expand_confidence");
                     continue;
                 }
+                // Search-snippet recycling is the lowest-reliability discovery
+                // path: a value scraped from the *text* of whatever page a search
+                // engine returned for a recycled query — a Subway-directory
+                // "Austin, Texas", an unrelated contact email on a scraped page.
+                // At the relaxed deep/`--full` expansion floor these clear
+                // `min_expand_confidence` on a single source, so without this gate
+                // the recursion budget gets burned pivoting on strangers. The
+                // wrong-identity gate below can't catch them: it only covers
+                // Username/Person and is lifted entirely by
+                // `--expand-all-identities`. Record the lead, but don't pivot
+                // until a second, independent source corroborates it —
+                // corroboration lifts `source_count` past 1 and the entity
+                // expands normally on a later round.
+                if entity.is_uncorroborated_recycled() {
+                    self.emit_excluded(scan_id, entity, "uncorroborated_recycled");
+                    continue;
+                }
                 // ROI bundle: convergence-pruning. Once an entity has 2+
                 // corroborating sources at high confidence, further dispatch
                 // only re-confirms what we already know. Skip it.
