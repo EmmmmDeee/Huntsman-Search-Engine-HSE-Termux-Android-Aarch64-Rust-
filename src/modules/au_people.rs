@@ -182,7 +182,7 @@ fn parse_whitepages_html(html: &str, full_name: &str, scan_id: &str) -> Vec<Enti
     }
 
     // Mine any email addresses visible in the HTML.
-    for email in page_emails(html) {
+    out.extend(page_emails(html).into_iter().map(|email| {
         let mut e = Entity::new(EntityKind::Email, &email, 0.45, scan_id);
         e.tag(SRC);
         e.tag("au-directory");
@@ -191,8 +191,8 @@ fn parse_whitepages_html(html: &str, full_name: &str, scan_id: &str) -> Vec<Enti
             Evidence::new(SRC, format!("White Pages AU contact email for {full_name}"))
                 .with_attr("source", "whitepages_au"),
         );
-        out.push(e);
-    }
+        e
+    }));
 
     out
 }
@@ -226,46 +226,43 @@ fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<Entity> {
 
     // TPS embeds addresses as "Suburb, STATE POSTCODE" patterns.
     // Use a simple line-by-line scan for lines that look like AU addresses.
-    for line in stripped.lines() {
-        let line = line.trim();
-        if line.len() < 6 || line.len() > 120 {
-            continue;
-        }
-        // Must contain at least one word that is an AU state abbreviation.
-        if crate::util::address_au::state_code(line).is_none() {
-            continue;
-        }
-        // Must contain a 4-digit AU postcode.
-        let has_postcode = line.split_whitespace().any(|tok| {
-            tok.len() == 4
-                && tok.chars().all(|c| c.is_ascii_digit())
-                && tok.parse::<u32>().is_ok_and(|n| (2000..=7999).contains(&n))
-        });
-        if !has_postcode {
-            continue;
-        }
-
-        let mut ae = Entity::new(EntityKind::Address, line, 0.52, scan_id);
-        ae.tag(SRC);
-        ae.tag("au-directory");
-        ae.tag("tps-au");
-        ae.tag("country:AU");
-        if let Some(st) = state_tag_from_text(line) {
-            ae.tag(st);
-        }
-        ae.add_evidence(
-            Evidence::new(
-                SRC,
-                format!("True People Search AU address for {full_name}"),
-            )
-            .with_attr("line", line)
-            .with_attr("source", "tps_au"),
-        );
-        out.push(ae);
-    }
+    out.extend(
+        stripped
+            .lines()
+            .map(str::trim)
+            .filter(|&line| (6..=120).contains(&line.len()))
+            // Must name an AU state abbreviation and carry a 4-digit AU postcode.
+            .filter(|&line| crate::util::address_au::state_code(line).is_some())
+            .filter(|&line| {
+                line.split_whitespace().any(|tok| {
+                    tok.len() == 4
+                        && tok.chars().all(|c| c.is_ascii_digit())
+                        && tok.parse::<u32>().is_ok_and(|n| (2000..=7999).contains(&n))
+                })
+            })
+            .map(|line| {
+                let mut ae = Entity::new(EntityKind::Address, line, 0.52, scan_id);
+                ae.tag(SRC);
+                ae.tag("au-directory");
+                ae.tag("tps-au");
+                ae.tag("country:AU");
+                if let Some(st) = state_tag_from_text(line) {
+                    ae.tag(st);
+                }
+                ae.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("True People Search AU address for {full_name}"),
+                    )
+                    .with_attr("line", line)
+                    .with_attr("source", "tps_au"),
+                );
+                ae
+            }),
+    );
 
     // Mine emails.
-    for email in page_emails(&stripped) {
+    out.extend(page_emails(&stripped).into_iter().map(|email| {
         let mut e = Entity::new(EntityKind::Email, &email, 0.45, scan_id);
         e.tag(SRC);
         e.tag("au-directory");
@@ -274,8 +271,8 @@ fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<Entity> {
             Evidence::new(SRC, format!("TPS AU contact email for {full_name}"))
                 .with_attr("source", "tps_au"),
         );
-        out.push(e);
-    }
+        e
+    }));
 
     out
 }
@@ -358,10 +355,7 @@ impl Module for AuPeople {
             && resp.status().is_success()
             && let Ok(html) = resp.text().await
         {
-            let mut ents = parse_whitepages_html(&html, full_name, &ctx.scan_id);
-            for e in ents.drain(..) {
-                result.push(e);
-            }
+            result.extend(parse_whitepages_html(&html, full_name, &ctx.scan_id));
         }
 
         // True People Search AU.
@@ -382,10 +376,7 @@ impl Module for AuPeople {
             && resp.status().is_success()
             && let Ok(html) = resp.text().await
         {
-            let mut ents = parse_tps_html(&html, full_name, &ctx.scan_id);
-            for e in ents.drain(..) {
-                result.push(e);
-            }
+            result.extend(parse_tps_html(&html, full_name, &ctx.scan_id));
         }
 
         // Emit a Person anchor for the name if we got any results — confirms
