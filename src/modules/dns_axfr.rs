@@ -112,7 +112,7 @@ impl Module for DnsAxfr {
 
             match attempt_axfr(&ns_ip, &domain).await {
                 Ok(records) if !records.is_empty() => {
-                    for record in &records {
+                    result.extend(records.iter().map(|record| {
                         let mut e = Entity::new(EntityKind::Domain, record, 0.80, &ctx.scan_id);
                         e.tag("subdomain");
                         e.tag("axfr");
@@ -121,8 +121,8 @@ impl Module for DnsAxfr {
                                 .with_attr("nameserver", ns_host)
                                 .with_attr("method", "AXFR"),
                         );
-                        result.push(e);
-                    }
+                        e
+                    }));
 
                     let mut zone_e = Entity::new(EntityKind::Domain, &domain, 0.95, &ctx.scan_id);
                     zone_e.tag("axfr-permitted");
