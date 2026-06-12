@@ -247,8 +247,37 @@ fn build_entities(profile: &LinkedInProfile, target: &Target, scan_id: &str) -> 
         if let Some(cc) = nonempty(&profile.country) {
             ae.tag(format!("country:{}", cc.to_uppercase()));
         }
+        if let Some(state_str) = nonempty(&profile.state)
+            && let Some(sc) = crate::util::address_au::state_code(state_str)
+        {
+            ae.tag(format!("au-state:{sc}"));
+            ae.tag("country:AU");
+        }
         ae.add_evidence(Evidence::new(SRC, format!("LinkedIn location: {location}")));
         result.push(ae);
+
+        if let Some((lat, lon)) = crate::util::city_coords::city_coords(&location) {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.52, scan_id);
+            c.tag("proxycurl");
+            c.tag("linkedin");
+            c.tag("addr-derived");
+            c.tag("geoint");
+            if let Some(cc) = nonempty(&profile.country) {
+                c.tag(format!("country:{}", cc.to_uppercase()));
+            }
+            if let Some(state_str) = nonempty(&profile.state)
+                && let Some(sc) = crate::util::address_au::state_code(state_str)
+            {
+                c.tag(format!("au-state:{sc}"));
+                c.tag("country:AU");
+            }
+            c.add_evidence(Evidence::new(
+                SRC,
+                format!("Inline geocode of LinkedIn location '{location}' → {coord_val}"),
+            ));
+            result.push(c);
+        }
     }
 
     // ── Emails + their (non-freemail) domains — single deduped pass ────────
@@ -365,6 +394,7 @@ impl Module for Proxycurl {
         const KINDS: &[EntityKind] = &[
             EntityKind::Person,
             EntityKind::Address,
+            EntityKind::Coordinates,
             EntityKind::Email,
             EntityKind::Domain,
             EntityKind::Phone,
