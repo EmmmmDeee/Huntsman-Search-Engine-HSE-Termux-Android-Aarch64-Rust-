@@ -153,11 +153,8 @@ pub(in crate::modules::search_engines) fn known_city_coords(addr: &str) -> Optio
     crate::util::city_coords::city_coords(addr)
 }
 
-// ─── Dead code removed ──────────────────────────────────────────────────────
-// (inline CITIES table replaced by crate::util::city_coords)
-
 #[allow(dead_code)]
-fn _removed_inline_table_placeholder() {
+fn _placeholder_cities_tombstone() {
     const _CITIES: &[(&str, f64, f64)] = &[
         // Australian capitals + major cities
         ("brisbane", -27.4698, 153.0251),
