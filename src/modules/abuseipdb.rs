@@ -96,25 +96,26 @@ impl Module for AbuseIpDb {
             e.tag("tor-exit");
         }
 
-        let mut ev = Evidence::new(
-            SRC,
-            format!(
-                "AbuseIPDB: {}% abuse confidence, {} reports",
-                abuse_score,
-                data.total_reports.unwrap_or(0)
-            ),
-        )
-        .with_attr("abuse_score", abuse_score.to_string())
-        .with_attr("total_reports", data.total_reports.unwrap_or(0).to_string());
-        if let Some(ref isp) = data.isp {
-            ev = ev.with_attr("isp", isp);
-        }
-        if let Some(ref usage) = data.usage_type {
-            ev = ev.with_attr("usage_type", usage);
-        }
-        if let Some(ref cc) = data.country_code {
-            ev = ev.with_attr("country_code", cc);
-        }
+        let ev = [
+            ("isp", data.isp.as_deref()),
+            ("usage_type", data.usage_type.as_deref()),
+            ("country_code", data.country_code.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(
+            Evidence::new(
+                SRC,
+                format!(
+                    "AbuseIPDB: {}% abuse confidence, {} reports",
+                    abuse_score,
+                    data.total_reports.unwrap_or(0)
+                ),
+            )
+            .with_attr("abuse_score", abuse_score.to_string())
+            .with_attr("total_reports", data.total_reports.unwrap_or(0).to_string()),
+            |ev, (key, v)| ev.with_attr(key, v),
+        );
         e.add_evidence(ev);
         result.push(e);
 
