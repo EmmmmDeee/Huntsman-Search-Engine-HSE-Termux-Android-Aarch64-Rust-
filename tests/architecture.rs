@@ -123,6 +123,11 @@ fn core_does_not_import_util_directly() {
                 // (most fixes — only three builders tag), so the cross-check
                 // works for coordinates from any module.
                 && !line.contains("util::geo::au_state_for_coords")
+                // Pure, dependency-free AU bounding-box membership test (no I/O),
+                // same leaf category as `au_state_for_coords`. AU-059 uses it to
+                // restrict the cross-seed geo-synergy fix to Australian
+                // coordinates when the `au-state:`/`country:AU` tag is absent.
+                && !line.contains("util::geo::is_in_australia")
                 // Pure, dependency-free digit-only normaliser — the same leaf
                 // category as the ABN checksums above; `core::scan` uses it in
                 // the target auto-detector to strip separators from a candidate
