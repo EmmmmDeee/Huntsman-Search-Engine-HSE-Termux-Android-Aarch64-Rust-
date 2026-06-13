@@ -47,7 +47,7 @@ use serde_json::json;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 
-use super::{AppState, handlers, scan_handlers, settings_handlers};
+use super::{AppState, handlers, scan_export, scan_handlers, settings_handlers};
 
 /// Embedded SPA — single self-contained HTML file with inline CSS + JS.
 /// Lives in `src/web/spa.html` and is compiled into the binary at build time
@@ -186,19 +186,19 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         )
         .route(
             "/scans/{id}/entities.csv",
-            get(scan_handlers::scan_entities_csv),
+            get(scan_export::scan_entities_csv),
         )
         .route(
             "/scans/{id}/report.json",
-            get(scan_handlers::scan_report_json),
+            get(scan_export::scan_report_json),
         )
         .route(
             "/scans/{id}/graph.gexf",
-            get(scan_handlers::scan_export_gexf),
+            get(scan_export::scan_export_gexf),
         )
         .route(
             "/scans/{id}/debug.txt",
-            get(scan_handlers::scan_debug_bundle),
+            get(scan_export::scan_debug_bundle),
         )
         .route(
             "/scans/{id}/correlations",

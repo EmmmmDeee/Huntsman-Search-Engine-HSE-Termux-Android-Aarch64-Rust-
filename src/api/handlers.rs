@@ -549,7 +549,7 @@ pub async fn live_events_sse(
 
 #[cfg(test)]
 mod tests {
-    use crate::api::scan_handlers::csv_escape;
+    use crate::api::scan_export::csv_escape;
 
     #[test]
     fn validated_target_accepts_good_and_prefixes_bad() {

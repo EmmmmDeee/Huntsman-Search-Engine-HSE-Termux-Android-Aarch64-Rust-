@@ -56,7 +56,7 @@ fn render_json(store: &Store, sid: &str) -> Result<String> {
 
 fn render_csv(store: &Store, sid: &str) -> Result<String> {
     let entities = store.entities_for_scan(sid)?;
-    Ok(crate::api::scan_handlers::entities_to_csv(&entities))
+    Ok(crate::api::scan_export::entities_to_csv(&entities))
 }
 
 fn render_gexf(store: &Store, sid: &str) -> Result<String> {
@@ -474,7 +474,7 @@ pub(crate) fn render_debug_bundle(
     }
 
     // Best AU geolocation fix (AU-059 cross-seed synergy), if one fired.
-    let fix = crate::api::scan_handlers::extract_au_location_fix(&correlations);
+    let fix = crate::api::scan_export::extract_au_location_fix(&correlations);
     if fix != serde_json::Value::Null {
         let lat = fix["lat"].as_f64().unwrap_or(0.0);
         let lon = fix["lon"].as_f64().unwrap_or(0.0);
@@ -646,7 +646,7 @@ fn render_report(store: &Store, sid: &str) -> Result<String> {
     // Default dossier hides quarantined `candidate` entities (non-target
     // breach-dump rows) — the confirmed-footprint view. They remain available
     // over HTTP via `report.json?include_candidates=1`.
-    let report = crate::api::scan_handlers::build_scan_report(store as _, sid, false)?
+    let report = crate::api::scan_export::build_scan_report(store as _, sid, false)?
         .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
     serde_json::to_string_pretty(&report)
         .map_err(|e| Error::Other(format!("report serialise: {e}")))
