@@ -225,24 +225,21 @@ pub(crate) fn permutations(domain: &str, cap: usize) -> Vec<(String, &'static st
     let mut seen = std::collections::HashSet::new();
     seen.insert(registrable.clone());
 
-    let mut add = |fqdn: String, tech: &'static str, out: &mut Vec<(String, &'static str)>| {
-        if seen.insert(fqdn.clone()) {
-            out.push((fqdn, tech));
-        }
-    };
-
     // Label permutations on the original suffix.
-    for (tech, label) in &variants {
-        if is_valid_label(label) {
-            add(format!("{label}.{suffix}"), tech, &mut out);
-        }
-    }
+    out.extend(variants.iter().filter(|(_, lbl)| is_valid_label(lbl)).filter_map(|(tech, lbl)| {
+        let fqdn = format!("{lbl}.{suffix}");
+        seen.insert(fqdn.clone()).then_some((fqdn, *tech))
+    }));
     // TLD swaps on the original label.
-    for &tld in SWAP_TLDS {
-        if tld != suffix {
-            add(format!("{label}.{tld}"), "tld-swap", &mut out);
-        }
-    }
+    out.extend(
+        SWAP_TLDS
+            .iter()
+            .filter(|&&tld| tld != suffix)
+            .filter_map(|&tld| {
+                let fqdn = format!("{label}.{tld}");
+                seen.insert(fqdn.clone()).then_some((fqdn, "tld-swap"))
+            }),
+    );
 
     out.truncate(cap);
     out

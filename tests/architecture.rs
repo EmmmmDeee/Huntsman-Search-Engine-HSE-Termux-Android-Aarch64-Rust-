@@ -623,6 +623,15 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "criminal_ip → IP Addresses + Business Relationships + Scan Databases + Threat Intel Vendors"
     );
 
+    // device_sensors: Sensor default (T1592 Host Information) but GPS coordinates
+    // also Determine Physical Locations (T1591.001) and the device IP is
+    // T1590.005 IP Addresses — both omitted from the Sensor default.
+    assert_eq!(
+        techniques("device_sensors"),
+        vec!["T1590.005", "T1591.001", "T1592"],
+        "device_sensors → IP Addresses + Physical Locations + Host Information"
+    );
+
     // Every overridden ID is still a real catalogue entry (no typos).
     for name in [
         "github_user",
@@ -661,6 +670,7 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "leakix",
         "ipqs",
         "criminal_ip",
+        "device_sensors",
     ] {
         for id in techniques(name) {
             assert!(

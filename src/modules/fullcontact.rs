@@ -205,11 +205,10 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
             .iter()
             .filter_map(|e| e.name.as_deref()),
     );
-    for (i, o) in orgs.iter().enumerate() {
-        // First (current) employer highest; later/historical slightly lower.
+    orgs.iter().enumerate().for_each(|(i, o)| {
         let conf = if i == 0 { 0.65 } else { 0.55 };
         push(&mut out, EntityKind::Organisation, o, conf, &["employer"]);
-    }
+    });
     // Location(s): top-level convenience string + structured formatted addresses.
     let mut seen_loc = std::collections::HashSet::new();
     let locs = r.location.iter().map(String::as_str).chain(

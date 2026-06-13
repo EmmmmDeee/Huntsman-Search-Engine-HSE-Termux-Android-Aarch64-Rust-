@@ -306,13 +306,15 @@ fn phone_prefix_to_country(phone: &str) -> Option<(&'static str, &'static str, f
     {
         return None;
     }
-    for len in [3, 2, 1] {
-        if phone.len() >= len {
-            let prefix = &phone[..len];
-            if !prefix.chars().all(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(result) = match prefix {
+    [3usize, 2, 1].into_iter().find_map(|len| {
+        if phone.len() < len {
+            return None;
+        }
+        let prefix = &phone[..len];
+        if !prefix.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        match prefix {
                 // 1-digit
                 "1" => Some(("United States/Canada", "US", 39.8283, -98.5795)),
                 "7" => Some(("Russia", "RU", 61.5240, 105.3188)),
@@ -392,12 +394,8 @@ fn phone_prefix_to_country(phone: &str) -> Option<(&'static str, &'static str, f
                 "971" => Some(("UAE", "AE", 23.4241, 53.8478)),
                 "972" => Some(("Israel", "IL", 31.0461, 34.8516)),
                 _ => None,
-            } {
-                return Some(result);
-            }
         }
-    }
-    None
+    })
 }
 
 #[cfg(test)]
