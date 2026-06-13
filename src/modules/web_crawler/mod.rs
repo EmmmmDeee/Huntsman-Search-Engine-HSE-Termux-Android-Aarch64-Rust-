@@ -435,7 +435,7 @@ fn build_entities(
     state.result.push(entity);
 
     // Subdomain entities — feed back into expansion
-    for sub in &state.subdomains {
+    state.result.extend(state.subdomains.iter().map(|sub| {
         let mut e = Entity::new(EntityKind::Domain, sub.as_str(), 0.82, scan_id);
         e.tag(tags::WEB);
         e.tag(tags::SUBDOMAIN);
@@ -443,19 +443,19 @@ fn build_entities(
             Evidence::new(SRC, format!("Subdomain discovered by crawling {domain}"))
                 .with_attr("parent_domain", domain),
         );
-        state.result.push(e);
-    }
+        e
+    }));
 
     // External domain entities
-    for ext in &state.external_domains {
+    state.result.extend(state.external_domains.iter().map(|ext| {
         let mut e = Entity::new(EntityKind::Domain, ext.as_str(), 0.50, scan_id);
         e.tag(tags::EXTERNAL);
         e.add_evidence(
             Evidence::new(SRC, format!("External domain linked from {domain}"))
                 .with_attr("source_domain", domain),
         );
-        state.result.push(e);
-    }
+        e
+    }));
 
     // Email entities. A crawl that scrapes an implausible number of distinct
     // addresses has hit a directory / forum / comment-thread dump, not the
@@ -465,15 +465,15 @@ fn build_entities(
     // contact/about page (a handful of addresses) passes through.
     const CONTACT_DUMP_LIMIT: usize = 20;
     if state.emails.len() <= CONTACT_DUMP_LIMIT {
-        for email in &state.emails {
+        state.result.extend(state.emails.iter().map(|email| {
             let mut e = Entity::new(EntityKind::Email, email.as_str(), 0.75, scan_id);
             e.tag(tags::WEB_SCRAPED);
             e.add_evidence(
                 Evidence::new(SRC, format!("Email found on {domain}"))
                     .with_attr("source_domain", domain),
             );
-            state.result.push(e);
-        }
+            e
+        }));
     }
 
     // Tracking-ID entities (web-analytics affiliate pivot). The id is a hard
@@ -481,7 +481,7 @@ fn build_entities(
     // correlator count how many distinct sites carry the same id (shared id ⇒
     // common ownership). When two crawled domains share an id, both emit the same
     // TrackingId value → it merges to one entity, raising corroboration.
-    for (id, provider) in &state.tracking_ids {
+    state.result.extend(state.tracking_ids.iter().map(|(id, provider)| {
         let mut e = Entity::new(EntityKind::TrackingId, id.as_str(), 0.80, scan_id);
         e.tag(tags::WEB_SCRAPED);
         e.tag("web-analytics");
@@ -490,21 +490,21 @@ fn build_entities(
                 .with_attr("provider", provider)
                 .with_attr("source_domain", domain),
         );
-        state.result.push(e);
-    }
+        e
+    }));
 
     // Phone entities — same dump guard (a page with dozens of numbers is a
     // directory, not the subject's).
     if state.phones.len() <= CONTACT_DUMP_LIMIT {
-        for phone in &state.phones {
+        state.result.extend(state.phones.iter().map(|phone| {
             let mut e = Entity::new(EntityKind::Phone, phone.as_str(), 0.75, scan_id);
             e.tag(tags::WEB_SCRAPED);
             e.add_evidence(
                 Evidence::new(SRC, format!("Phone found on {domain}"))
                     .with_attr("source_domain", domain),
             );
-            state.result.push(e);
-        }
+            e
+        }));
     }
 }
 
