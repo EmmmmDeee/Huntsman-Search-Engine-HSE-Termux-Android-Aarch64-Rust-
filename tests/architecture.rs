@@ -344,6 +344,23 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "opencorporates lists officers → also Identify Roles",
     );
 
+    // IP geolocation modules sit in Geo (ip_geo) or Infrastructure (ip2location,
+    // ip_whois_geo) but all three emit Coordinates + Address (T1591.001) and an
+    // ISP/Organisation entity (T1591.002) alongside ASN info (T1590.005).
+    // The Geo default (T1591.001 only) and Infrastructure default (T1590.005 +
+    // T1596.005) both under-claim; all three declare the precise triple instead.
+    for name in ["ip_geo", "ip2location", "ip_whois_geo"] {
+        assert_eq!(
+            techniques(name),
+            vec!["T1590.005", "T1591.001", "T1591.002"],
+            "{name} → IP Addresses + Physical Locations + Business Relationships"
+        );
+        assert!(
+            !techniques(name).contains(&"T1596.005"),
+            "{name} is a passive geolocation API, not a scan database (T1596.005)"
+        );
+    }
+
     // Every overridden ID is still a real catalogue entry (no typos).
     for name in [
         "github_user",
@@ -353,6 +370,9 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "securitytrails",
         "hackertarget",
         "subdomain_takeover",
+        "ip_geo",
+        "ip2location",
+        "ip_whois_geo",
     ] {
         for id in techniques(name) {
             assert!(

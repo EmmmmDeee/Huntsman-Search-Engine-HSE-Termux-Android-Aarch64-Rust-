@@ -75,6 +75,14 @@ impl Module for IpGeo {
         KINDS
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // The Geo default (T1591.001 Physical Locations) covers the coordinates
+        // and address entities but misses the ASN block (T1590.005 IP Addresses)
+        // and ISP/AS name mapped to an Organisation (T1591.002 Business
+        // Relationships). Declare all three explicitly.
+        &["T1590.005", "T1591.001", "T1591.002"]
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         // Single network request with no per-request timeout; the 3s default
         // would kill a slow-but-connected response as a spurious "timeout".
