@@ -53,6 +53,14 @@ impl Module for Netblock {
         ModuleCategory::Infrastructure
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Pure offline CIDR expansion — no scan database is queried, so the
+        // Infrastructure default T1596.005 (Scan Databases) does not apply.
+        // Enumerating the host addresses in a network block is IP address
+        // reconnaissance (T1590.005) only.
+        &["T1590.005"]
+    }
+
     fn is_passive(&self) -> bool {
         true
     }
@@ -62,7 +70,7 @@ impl Module for Netblock {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::IpAddress];
+        const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Cidr];
         KINDS
     }
 

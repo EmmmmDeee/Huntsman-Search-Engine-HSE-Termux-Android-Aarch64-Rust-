@@ -95,8 +95,16 @@ impl Module for UrlScan {
         ModuleCategory::Infrastructure
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // URLScan.io is a genuine scan database (T1596.005) and surfaces IP
+        // addresses (T1590.005). Scan results also carry the hosting country,
+        // emitted as an Address entity → T1591.001 Physical Locations, which
+        // the Infrastructure default omits.
+        &["T1590.005", "T1591.001", "T1596.005"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::IpAddress];
+        const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Address];
         KINDS
     }
 

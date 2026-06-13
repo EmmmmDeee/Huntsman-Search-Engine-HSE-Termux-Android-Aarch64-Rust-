@@ -449,6 +449,40 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "gravatar surfaces no role/job info; must not claim Identify Roles"
     );
 
+    // netblock: pure offline CIDR expansion — no scan database → drops T1596.005.
+    assert_eq!(
+        techniques("netblock"),
+        vec!["T1590.005"],
+        "netblock → IP Addresses only (no scan database queried)"
+    );
+    assert!(
+        !techniques("netblock").contains(&"T1596.005"),
+        "netblock is a pure CIDR math expansion, not a scan database"
+    );
+
+    // urlscan: scan database (T1596.005) + IP info (T1590.005) + hosting country
+    // → Address entity → T1591.001 Physical Locations (missing from default).
+    assert_eq!(
+        techniques("urlscan"),
+        vec!["T1590.005", "T1591.001", "T1596.005"],
+        "urlscan → IP Addresses + Physical Locations + Scan Databases"
+    );
+
+    // DeHashed + IntelX: Breach category covers Credentials (T1589.001) and
+    // Email Addresses (T1589.002) but both modules also emit real-name Person
+    // entities → T1589.003 Employee Names must be declared explicitly.
+    for name in ["dehashed", "intelx"] {
+        assert_eq!(
+            techniques(name),
+            vec!["T1589.001", "T1589.002", "T1589.003"],
+            "{name} → Credentials + Email Addresses + Employee Names"
+        );
+        assert!(
+            techniques(name).contains(&"T1589.003"),
+            "{name} emits Person entities; must claim Employee Names (T1589.003)"
+        );
+    }
+
     // Every overridden ID is still a real catalogue entry (no typos).
     for name in [
         "github_user",
@@ -468,6 +502,10 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "greynoise",
         "ip_reputation",
         "gravatar",
+        "netblock",
+        "urlscan",
+        "dehashed",
+        "intelx",
     ] {
         for id in techniques(name) {
             assert!(
