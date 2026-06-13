@@ -321,25 +321,20 @@ fn suburbs_to_entities(pc_localities: &[(String, Vec<Locality>)], scan_id: &str)
 /// (non-broadened) search has no family/exact split, so every row qualifies.
 fn exact_postcodes(records: &[Map<String, Value>], seed: &str, broadened: bool) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    for rec in records {
-        let exact = !broadened
-            || field_str(rec, "Owner")
-                .map(|o| owner_matches_full_name(&o, seed))
-                .unwrap_or(false);
-        if !exact {
-            continue;
-        }
-        if let Some(pc) = postcode(rec)
-            && seen.insert(pc.clone())
-        {
-            out.push(pc);
-            if out.len() >= POSTCODE_CAP {
-                break;
-            }
-        }
-    }
-    out
+    records
+        .iter()
+        .filter(|rec| {
+            !broadened
+                || field_str(rec, "Owner")
+                    .map(|o| owner_matches_full_name(&o, seed))
+                    .unwrap_or(false)
+        })
+        .filter_map(|rec| {
+            let pc = postcode(rec)?;
+            seen.insert(pc.clone()).then_some(pc)
+        })
+        .take(POSTCODE_CAP)
+        .collect()
 }
 
 #[async_trait]
