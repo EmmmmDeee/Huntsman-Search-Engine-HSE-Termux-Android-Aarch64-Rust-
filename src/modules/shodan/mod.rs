@@ -10,6 +10,9 @@
 //!
 //! Both paths run for every IP address target; entities are merged.
 
+#[cfg(test)]
+mod tests;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -23,55 +26,55 @@ use crate::core::{
 use crate::util::http::RequestBuilderExt;
 use crate::util::http::urlencode;
 
-const KEY_ENV: &str = "HUNTSMAN_SHODAN_KEY";
+pub(super) const KEY_ENV: &str = "HUNTSMAN_SHODAN_KEY";
 
 // ── Paid API response ────────────────────────────────────────────────
 
 #[derive(Deserialize)]
-struct HostResp {
+pub(super) struct HostResp {
     #[serde(default)]
-    hostnames: Vec<String>,
+    pub(super) hostnames: Vec<String>,
     #[serde(default)]
-    ports: Vec<u32>,
+    pub(super) ports: Vec<u32>,
     #[serde(default)]
-    vulns: Vec<String>,
+    pub(super) vulns: Vec<String>,
     #[serde(default)]
-    last_update: Option<String>,
+    pub(super) last_update: Option<String>,
     #[serde(default)]
-    org: Option<String>,
+    pub(super) org: Option<String>,
     #[serde(default)]
-    isp: Option<String>,
+    pub(super) isp: Option<String>,
     #[serde(default)]
-    asn: Option<String>,
+    pub(super) asn: Option<String>,
     #[serde(default)]
-    country_name: Option<String>,
+    pub(super) country_name: Option<String>,
     #[serde(default)]
-    country_code: Option<String>,
+    pub(super) country_code: Option<String>,
     #[serde(default)]
-    os: Option<String>,
+    pub(super) os: Option<String>,
 }
 
 // ── Free InternetDB response ─────────────────────────────────────────
 
 #[derive(Deserialize)]
-struct InternetDbResp {
+pub(super) struct InternetDbResp {
     #[serde(default)]
-    ip: Option<String>,
+    pub(super) ip: Option<String>,
     #[serde(default)]
-    ports: Vec<u16>,
+    pub(super) ports: Vec<u16>,
     #[serde(default)]
-    hostnames: Vec<String>,
+    pub(super) hostnames: Vec<String>,
     #[serde(default)]
-    cpes: Vec<String>,
+    pub(super) cpes: Vec<String>,
     #[serde(default)]
-    vulns: Vec<String>,
+    pub(super) vulns: Vec<String>,
     #[serde(default)]
-    tags: Vec<String>,
+    pub(super) tags: Vec<String>,
 }
 
 // ── Module impl ──────────────────────────────────────────────────────
 
-const SRC: &str = "shodan";
+pub(super) const SRC: &str = "shodan";
 
 pub struct Shodan;
 
@@ -408,58 +411,6 @@ impl Shodan {
 }
 
 /// Helper to build an IP entity from a raw IP string.
-fn target_entity(ip: &str, scan_id: &str) -> Entity {
+pub(super) fn target_entity(ip: &str, scan_id: &str) -> Entity {
     Entity::new(EntityKind::IpAddress, ip, 0.90, scan_id)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── Tests carried from paid-only shodan.rs ───────────────────────
-
-    #[test]
-    fn accepts_only_ip() {
-        let m = Shodan;
-        assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
-        assert!(!m.accepts(&Target::new(TargetKind::Domain, "x")));
-    }
-
-    #[test]
-    fn cost_is_free() {
-        assert!(matches!(Shodan.cost(), ModuleCost::Free));
-    }
-
-    // ── Tests carried from shodan_internetdb.rs ──────────────────────
-
-    #[test]
-    fn accepts_only_ip_not_domain() {
-        let m = Shodan;
-        assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
-        assert!(!m.accepts(&Target::new(TargetKind::Domain, "x.com")));
-    }
-
-    // ── Merged-module tests ──────────────────────────────────────────
-
-    #[test]
-    fn priority_is_105() {
-        assert_eq!(Shodan.priority(), 105);
-    }
-
-    #[test]
-    fn timeout_is_10s() {
-        assert_eq!(Shodan.max_timeout_ms(), 10_000);
-    }
-
-    #[test]
-    fn name_is_shodan() {
-        assert_eq!(Shodan.name(), "shodan");
-    }
-
-    #[test]
-    fn description_mentions_free_and_paid() {
-        let desc = Shodan.description();
-        assert!(desc.contains("free") || desc.contains("Free") || desc.contains("InternetDB"));
-        assert!(desc.contains("paid") || desc.contains("Paid") || desc.contains("keyed"));
-    }
 }
