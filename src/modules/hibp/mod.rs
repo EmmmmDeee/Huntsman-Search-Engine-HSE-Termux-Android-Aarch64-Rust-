@@ -11,6 +11,9 @@
 //!
 //! Key: hardcoded for testing, overridden by HUNTSMAN_HIBP_KEY env var.
 
+#[cfg(test)]
+mod tests;
+
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -32,7 +35,7 @@ const KEY_ENV: &str = "HUNTSMAN_HIBP_KEY";
 const HARDCODED_KEY: &str = crate::util::keys::HIBP_DEFAULT_KEY;
 const BASE_URL: &str = "https://haveibeenpwned.com/api/v3";
 
-fn resolve_key(ctx_key: Option<&str>) -> &str {
+pub(super) fn resolve_key(ctx_key: Option<&str>) -> &str {
     crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
 }
 
@@ -41,38 +44,38 @@ fn resolve_key(ctx_key: Option<&str>) -> &str {
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 #[allow(dead_code)]
-struct Breach {
-    name: String,
+pub(super) struct Breach {
+    pub(super) name: String,
     #[serde(default)]
-    title: Option<String>,
+    pub(super) title: Option<String>,
     #[serde(default)]
-    domain: Option<String>,
+    pub(super) domain: Option<String>,
     #[serde(default)]
-    breach_date: Option<String>,
+    pub(super) breach_date: Option<String>,
     #[serde(default)]
-    added_date: Option<String>,
+    pub(super) added_date: Option<String>,
     #[serde(default)]
-    modified_date: Option<String>,
+    pub(super) modified_date: Option<String>,
     #[serde(default)]
-    pwn_count: Option<u64>,
+    pub(super) pwn_count: Option<u64>,
     #[serde(default)]
-    description: Option<String>,
+    pub(super) description: Option<String>,
     #[serde(default)]
-    data_classes: Vec<String>,
+    pub(super) data_classes: Vec<String>,
     #[serde(default)]
-    is_verified: Option<bool>,
+    pub(super) is_verified: Option<bool>,
     #[serde(default)]
-    is_fabricated: Option<bool>,
+    pub(super) is_fabricated: Option<bool>,
     #[serde(default)]
-    is_sensitive: Option<bool>,
+    pub(super) is_sensitive: Option<bool>,
     #[serde(default)]
-    is_retired: Option<bool>,
+    pub(super) is_retired: Option<bool>,
     #[serde(default)]
-    is_spam_list: Option<bool>,
+    pub(super) is_spam_list: Option<bool>,
     #[serde(default)]
-    is_subscription_free: Option<bool>,
+    pub(super) is_subscription_free: Option<bool>,
     #[serde(default)]
-    logo_path: Option<String>,
+    pub(super) logo_path: Option<String>,
 }
 
 // ── Module impl ─────────────────────────────────────────────────────
@@ -398,103 +401,5 @@ impl Hibp {
         }
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_email_and_domain() {
-        let m = Hibp;
-        assert!(m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
-        assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));
-        assert!(!m.accepts(&Target::new(TargetKind::Username, "alice")));
-        assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.2.3.4")));
-    }
-
-    #[test]
-    fn priority_above_free_breach_modules() {
-        let m = Hibp;
-        assert!(
-            m.priority() > 100,
-            "HIBP should run before free breach modules"
-        );
-    }
-
-    #[test]
-    fn cost_is_key_gated() {
-        assert_eq!(Hibp.cost(), ModuleCost::KeyGated);
-    }
-
-    #[test]
-    fn resolve_key_prefers_provided() {
-        assert_eq!(resolve_key(Some("my-key")), "my-key");
-    }
-
-    #[test]
-    fn resolve_key_falls_back_to_hardcoded() {
-        assert_eq!(resolve_key(None), HARDCODED_KEY);
-    }
-
-    #[test]
-    fn resolve_key_falls_back_on_empty() {
-        assert_eq!(resolve_key(Some("")), HARDCODED_KEY);
-    }
-
-    #[test]
-    fn name_is_hibp() {
-        assert_eq!(Hibp.name(), "hibp");
-    }
-
-    #[test]
-    fn description_non_empty() {
-        assert!(!Hibp.description().is_empty());
-    }
-
-    #[test]
-    fn max_timeout_generous() {
-        assert!(Hibp.max_timeout_ms() >= 30_000);
-    }
-
-    #[test]
-    fn breach_deser_full_payload() {
-        let json = r#"[{
-            "Name": "Adobe",
-            "Title": "Adobe",
-            "Domain": "adobe.com",
-            "BreachDate": "2013-10-04",
-            "AddedDate": "2013-12-04",
-            "ModifiedDate": "2022-05-15",
-            "PwnCount": 152445165,
-            "Description": "Adobe breach",
-            "DataClasses": ["Email addresses", "Password hints", "Passwords", "Usernames"],
-            "IsVerified": true,
-            "IsFabricated": false,
-            "IsSensitive": false,
-            "IsRetired": false,
-            "IsSpamList": false,
-            "IsSubscriptionFree": false,
-            "LogoPath": "https://haveibeenpwned.com/Content/Images/PwnedLogos/Adobe.png"
-        }]"#;
-        let breaches: Vec<Breach> = serde_json::from_str(json).unwrap();
-        assert_eq!(breaches.len(), 1);
-        assert_eq!(breaches[0].name, "Adobe");
-        assert_eq!(breaches[0].domain.as_deref(), Some("adobe.com"));
-        assert_eq!(breaches[0].pwn_count, Some(152445165));
-        assert!(breaches[0].is_verified == Some(true));
-        assert_eq!(breaches[0].data_classes.len(), 4);
-        assert!(breaches[0].data_classes.contains(&"Passwords".to_string()));
-    }
-
-    #[test]
-    fn breach_deser_minimal() {
-        let json = r#"[{"Name": "Unknown"}]"#;
-        let breaches: Vec<Breach> = serde_json::from_str(json).unwrap();
-        assert_eq!(breaches.len(), 1);
-        assert_eq!(breaches[0].name, "Unknown");
-        assert!(breaches[0].domain.is_none());
-        assert!(breaches[0].data_classes.is_empty());
     }
 }
