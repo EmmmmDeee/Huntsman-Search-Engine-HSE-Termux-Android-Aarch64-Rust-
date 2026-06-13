@@ -837,8 +837,9 @@ fn embedded_default_keys_have_a_single_source_of_truth() {
 
     let mut offenders = Vec::new();
     for path in files {
-        // The single source of truth — the literals legitimately live here.
-        if path.ends_with("util/keys.rs") {
+        // The single source of truth — the literals legitimately live here
+        // (flat file or directory module's constants submodule).
+        if path.ends_with("util/keys.rs") || path.ends_with("util/keys/constants.rs") {
             continue;
         }
         let content = fs::read_to_string(&path).unwrap();
