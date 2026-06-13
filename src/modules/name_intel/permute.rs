@@ -229,51 +229,54 @@ pub fn usernames(p: &ParsedName) -> Vec<ScoredHandle> {
     let mut raw: Vec<(String, f64)> = Vec::new();
 
     // Primary — the shapes that dominate real-world account handles.
-    for h in [
-        format!("{f}.{l}"),
-        format!("{f}{l}"),
-        format!("{fi}{l}"),
-        format!("{f}_{l}"),
-        format!("{f}{li}"),
-    ] {
-        raw.push((h, W_PRIMARY));
-    }
+    raw.extend(
+        [
+            format!("{f}.{l}"),
+            format!("{f}{l}"),
+            format!("{fi}{l}"),
+            format!("{f}_{l}"),
+            format!("{f}{li}"),
+        ]
+        .map(|h| (h, W_PRIMARY)),
+    );
 
     // Secondary — reversed and punctuation-joined variants. Bare single-token
     // handles (`first` or `last` alone) are deliberately excluded: a lone given
     // or family name is not a distinguishing handle — it matches countless
     // unrelated people and only padded the candidate list with noise.
-    for h in [
-        format!("{l}.{f}"),
-        format!("{l}{f}"),
-        format!("{l}{fi}"),
-        format!("{f}.{li}"),
-        format!("{l}_{f}"),
-        format!("{f}-{l}"),
-        format!("{l}-{f}"),
-        format!("{fi}.{l}"),
-        format!("{l}.{fi}"),
-        format!("{fi}_{l}"),
-        format!("{fi}-{l}"),
-    ] {
-        raw.push((h, W_SECONDARY));
-    }
+    raw.extend(
+        [
+            format!("{l}.{f}"),
+            format!("{l}{f}"),
+            format!("{l}{fi}"),
+            format!("{f}.{li}"),
+            format!("{l}_{f}"),
+            format!("{f}-{l}"),
+            format!("{l}-{f}"),
+            format!("{fi}.{l}"),
+            format!("{l}.{fi}"),
+            format!("{fi}_{l}"),
+            format!("{fi}-{l}"),
+        ]
+        .map(|h| (h, W_SECONDARY)),
+    );
 
     // Middle-name blends.
     if let Some(m) = p.middle.as_deref() {
         let mi = initial(m);
-        for h in [
-            format!("{f}{m}{l}"),
-            format!("{l}{f}{m}"),
-            format!("{f}{mi}{l}"),
-            format!("{fi}{mi}{l}"),
-            format!("{l}{fi}{mi}"),
-            format!("{m}{l}"),
-            format!("{l}{m}"),
-            m.to_string(),
-        ] {
-            raw.push((h, W_MIDDLE));
-        }
+        raw.extend(
+            [
+                format!("{f}{m}{l}"),
+                format!("{l}{f}{m}"),
+                format!("{f}{mi}{l}"),
+                format!("{fi}{mi}{l}"),
+                format!("{l}{fi}{mi}"),
+                format!("{m}{l}"),
+                format!("{l}{m}"),
+                m.to_string(),
+            ]
+            .map(|h| (h, W_MIDDLE)),
+        );
     }
 
     // Year/number-suffixed shapes (NAMINT appends the number to logins).
@@ -288,9 +291,7 @@ pub fn usernames(p: &ParsedName) -> Vec<ScoredHandle> {
         if let Some(m) = p.middle.as_deref() {
             suffixed.push(format!("{f}{m}{l}{n}"));
         }
-        for h in suffixed {
-            raw.push((h, W_YEAR));
-        }
+        raw.extend(suffixed.into_iter().map(|h| (h, W_YEAR)));
     }
 
     dedup_top(raw, MAX_USERNAMES)
