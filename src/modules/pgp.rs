@@ -52,6 +52,15 @@ impl Module for Pgp {
         ModuleCategory::People
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // People default (T1589.003 Employee Names + T1591.004 Identify Roles).
+        // PGP key lookup surfaces the key owner's real name (T1589.003) and
+        // email address (T1589.002) — but carries no role/organisational
+        // information, so T1591.004 is over-claimed. Replacing with the precise
+        // pair that matches the produced entity kinds.
+        &["T1589.002", "T1589.003"]
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         12_000
     }

@@ -96,6 +96,14 @@ impl Module for HudsonRock {
         ModuleCategory::Breach
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Breach default (T1589.001 Credentials + T1589.002 Email Addresses).
+        // Stealer logs also capture the victim device's IP address, which
+        // HudsonRock surfaces as an IpAddress entity → T1590.005 IP Addresses,
+        // missing from the Breach category default.
+        &["T1589.001", "T1589.002", "T1590.005"]
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         // Single network request with no per-request timeout; the 3s default
         // would kill a slow-but-connected response as a spurious "timeout".

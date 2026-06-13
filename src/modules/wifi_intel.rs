@@ -128,6 +128,15 @@ impl Module for WifiIntel {
         ModuleCategory::Geo
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Geo default (T1591.001 Physical Locations) covers the Coordinates and
+        // Address entities. wifi_intel also enumerates nearby WiFi access-point
+        // MAC addresses — hardware identifiers of physical devices — mapping to
+        // T1592 Gather Victim Host Information (the catalogue entry covering MAC
+        // / device fingerprinting), absent from the Geo default.
+        &["T1591.001", "T1592"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::MacAddress,

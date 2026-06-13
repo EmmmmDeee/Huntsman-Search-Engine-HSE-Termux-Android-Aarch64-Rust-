@@ -522,6 +522,55 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "search_engines → Email + Employee Names + Physical Locations + Business Relationships + Search Engines"
     );
 
+    // pgp: People default (T1589.003 + T1591.004 Identify Roles) but PGP keys
+    // carry no role info — only real name (T1589.003) and email (T1589.002).
+    assert_eq!(
+        techniques("pgp"),
+        vec!["T1589.002", "T1589.003"],
+        "pgp → Email Addresses + Employee Names (no role data)"
+    );
+    assert!(
+        !techniques("pgp").contains(&"T1591.004"),
+        "pgp profiles carry no role/job info; must not claim Identify Roles"
+    );
+
+    // hacker_news: Social default (T1593.001 Social Media + T1589.003 Employee Names)
+    // but HN profiles carry no real-name Person entity → T1589.003 over-claimed.
+    // Bio emails → T1589.002 Email Addresses must be declared.
+    assert_eq!(
+        techniques("hacker_news"),
+        vec!["T1589.002", "T1593.001"],
+        "hacker_news → Email Addresses + Social Media (no real-name Person)"
+    );
+    assert!(
+        !techniques("hacker_news").contains(&"T1589.003"),
+        "hacker_news emits no Person entity; must not claim Employee Names"
+    );
+
+    // hudsonrock: Breach default (T1589.001 + T1589.002). Stealer logs also
+    // capture the victim device IP → T1590.005 IP Addresses must be declared.
+    assert_eq!(
+        techniques("hudsonrock"),
+        vec!["T1589.001", "T1589.002", "T1590.005"],
+        "hudsonrock → Credentials + Email Addresses + IP Addresses (stealer device IP)"
+    );
+
+    // wifi_intel: Geo default (T1591.001 Physical Locations) but also enumerates
+    // WiFi AP MAC addresses → T1592 Host Information (hardware identification).
+    assert_eq!(
+        techniques("wifi_intel"),
+        vec!["T1591.001", "T1592"],
+        "wifi_intel → Physical Locations + Host Information (AP MAC addresses)"
+    );
+
+    // cell_intel: Sensor default (T1592 Host Information) but primarily determines
+    // the device's physical location from cell-tower triangulation → T1591.001.
+    assert_eq!(
+        techniques("cell_intel"),
+        vec!["T1591.001", "T1592"],
+        "cell_intel → Physical Locations (triangulated) + Host Information"
+    );
+
     // Every overridden ID is still a real catalogue entry (no typos).
     for name in [
         "github_user",
@@ -549,6 +598,11 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "ip_registry",
         "exif_geo",
         "search_engines",
+        "pgp",
+        "hacker_news",
+        "hudsonrock",
+        "wifi_intel",
+        "cell_intel",
     ] {
         for id in techniques(name) {
             assert!(
