@@ -42,6 +42,9 @@
 //! IntelX would reject. The single-sourced [`intelx_selector`] map is the one
 //! place this coverage is defined; [`IntelX::accepts`] is derived from it.
 
+#[cfg(test)]
+mod tests;
+
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -58,56 +61,56 @@ use crate::core::{
 use crate::util::http::RequestBuilderExt;
 use crate::util::http::error_snippet;
 
-const KEY_ENV: &str = "HUNTSMAN_INTELX_KEY";
-const BASE: &str = "https://2.intelx.io";
-const MAX_RESULTS: u32 = 50;
-const POLL_ATTEMPTS: u32 = 3;
-const POLL_INTERVAL_MS: u64 = 1_500;
+pub(crate) const KEY_ENV: &str = "HUNTSMAN_INTELX_KEY";
+pub(crate) const BASE: &str = "https://2.intelx.io";
+pub(crate) const MAX_RESULTS: u32 = 50;
+pub(crate) const POLL_ATTEMPTS: u32 = 3;
+pub(crate) const POLL_INTERVAL_MS: u64 = 1_500;
 
 // --- Phase 1: search-start response ----------------------------------------
 
 #[derive(Deserialize)]
-struct StartResp {
+pub(crate) struct StartResp {
     #[serde(default)]
-    id: Option<String>,
+    pub(crate) id: Option<String>,
     /// 0 = success, 1 = invalid term, 2 = max concurrent searches reached.
     #[serde(default)]
-    status: Option<i32>,
+    pub(crate) status: Option<i32>,
 }
 
 // --- Phase 2: result-page response ------------------------------------------
 
 #[derive(Deserialize)]
-struct ResultResp {
+pub(crate) struct ResultResp {
     /// 0 = results-this-batch, 1 = none-yet (running), 2 = finished,
     /// 3 = none-available. 2 and 3 are terminal.
     #[serde(default)]
-    status: Option<i32>,
+    pub(crate) status: Option<i32>,
     #[serde(default)]
-    records: Vec<Record>,
+    pub(crate) records: Vec<Record>,
 }
 
 #[derive(Deserialize)]
-struct Record {
+pub(crate) struct Record {
     #[serde(default)]
-    bucket: Option<String>,
+    pub(crate) bucket: Option<String>,
     /// Human-readable bucket name where the API provides it.
     #[serde(default)]
-    bucketh: Option<String>,
+    pub(crate) bucketh: Option<String>,
     #[serde(default)]
-    media: Option<i32>,
+    pub(crate) media: Option<i32>,
     #[serde(default)]
-    date: Option<String>,
+    pub(crate) date: Option<String>,
 }
 
-const SRC: &str = "intelx";
+pub(crate) const SRC: &str = "intelx";
 
 pub struct IntelX;
 
 /// Map IntelX `media` type codes to human-readable labels, per the official
 /// SDK media-type table. This is the item DATA TYPE, not the data source.
 /// Unrecognised/new codes return `None` and are reported numerically.
-fn media_label(code: i32) -> Option<&'static str> {
+pub(crate) fn media_label(code: i32) -> Option<&'static str> {
     Some(match code {
         0 => "all",
         1 => "paste document",
@@ -137,7 +140,7 @@ fn media_label(code: i32) -> Option<&'static str> {
 
 /// Collapse a machine bucket name to a coarse source family for tagging.
 /// e.g. `leaks.public.general` -> "leaks", `darknet.tor` -> "darknet".
-fn bucket_family(bucket: &str) -> &str {
+pub(crate) fn bucket_family(bucket: &str) -> &str {
     bucket.split('.').next().unwrap_or(bucket)
 }
 
@@ -152,7 +155,7 @@ fn bucket_family(bucket: &str) -> &str {
 /// no IntelX selector (`asn`, `coordinates`, `abn_acn`, `organisation`,
 /// `address`, `api_key`) return `None` so a paid query is never spent on a term
 /// IntelX would reject.
-fn intelx_selector(kind: TargetKind) -> Option<&'static str> {
+pub(crate) fn intelx_selector(kind: TargetKind) -> Option<&'static str> {
     Some(match kind {
         TargetKind::Email => "email",
         TargetKind::Domain => "domain",
@@ -435,166 +438,5 @@ impl Module for IntelX {
         let mut result = ModuleResult::new();
         result.push(entity);
         Ok(result)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Every `TargetKind` variant. Listing them exhaustively makes the
-    /// agreement tests below a compile-time tripwire: a new kind added to the
-    /// enum forces a decision here (accept with a selector, or decline).
-    const ALL_KINDS: &[TargetKind] = &[
-        TargetKind::Email,
-        TargetKind::Username,
-        TargetKind::Phone,
-        TargetKind::FullName,
-        TargetKind::IpAddress,
-        TargetKind::Domain,
-        TargetKind::Url,
-        TargetKind::Asn,
-        TargetKind::Cidr,
-        TargetKind::Coordinates,
-        TargetKind::Address,
-        TargetKind::Organisation,
-        TargetKind::AbnAcn,
-        TargetKind::MacAddress,
-        TargetKind::ApiKey,
-        TargetKind::CryptoAddress,
-    ];
-
-    #[test]
-    fn accepts_every_kind_intelx_has_a_selector_for() {
-        let m = IntelX;
-        for k in [
-            TargetKind::Email,
-            TargetKind::Username,
-            TargetKind::Phone,
-            TargetKind::FullName,
-            TargetKind::Domain,
-            TargetKind::IpAddress,
-            TargetKind::Url,
-            TargetKind::Cidr,
-            TargetKind::MacAddress,
-            TargetKind::CryptoAddress,
-        ] {
-            assert!(m.accepts(&Target::new(k, "x")), "should accept {k:?}");
-        }
-    }
-
-    #[test]
-    fn rejects_kinds_intelx_cannot_resolve() {
-        let m = IntelX;
-        for k in [
-            TargetKind::Asn,
-            TargetKind::Coordinates,
-            TargetKind::Address,
-            TargetKind::Organisation,
-            TargetKind::AbnAcn,
-            TargetKind::ApiKey,
-        ] {
-            assert!(!m.accepts(&Target::new(k, "x")), "should reject {k:?}");
-            assert_eq!(intelx_selector(k), None);
-        }
-    }
-
-    #[test]
-    fn accepts_is_exactly_the_selector_map() {
-        // accepts() and the selector map must agree for EVERY kind — no drift
-        // between the gate and the single-sourced coverage definition.
-        let m = IntelX;
-        for &k in ALL_KINDS {
-            assert_eq!(
-                m.accepts(&Target::new(k, "x")),
-                intelx_selector(k).is_some(),
-                "accepts/selector disagree for {k:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn selector_labels_are_descriptive() {
-        assert_eq!(intelx_selector(TargetKind::Email), Some("email"));
-        assert_eq!(intelx_selector(TargetKind::Url), Some("url"));
-        assert_eq!(intelx_selector(TargetKind::Cidr), Some("cidr"));
-        assert_eq!(intelx_selector(TargetKind::MacAddress), Some("mac"));
-        assert_eq!(
-            intelx_selector(TargetKind::CryptoAddress),
-            Some("crypto-address")
-        );
-        // Unstructured kinds resolve as a general text search.
-        assert_eq!(intelx_selector(TargetKind::Username), Some("text"));
-        assert_eq!(intelx_selector(TargetKind::FullName), Some("text"));
-    }
-
-    #[test]
-    fn produces_covers_every_accepted_kind() {
-        // The module re-emits the scanned target, so every accepted kind's
-        // entity kind must be declared in produces().
-        let produced = IntelX.produces();
-        for &k in ALL_KINDS {
-            if intelx_selector(k).is_some() {
-                let ek = k.to_entity_kind();
-                assert!(
-                    produced.contains(&ek),
-                    "accepts {k:?} but produces() omits its entity kind {ek:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn cost_is_paid() {
-        assert!(matches!(IntelX.cost(), ModuleCost::Paid));
-    }
-
-    #[test]
-    fn media_labels_match_official_table() {
-        // Spot-check the corrected media-code table against the SDK docs.
-        assert_eq!(media_label(1), Some("paste document"));
-        assert_eq!(media_label(14), Some("URL"));
-        assert_eq!(media_label(15), Some("PDF document"));
-        assert_eq!(media_label(24), Some("text file"));
-        // Codes not in the table are reported numerically, not mislabeled.
-        assert_eq!(media_label(999), None);
-        // The OLD table's wrong mappings must not reappear: code 2 is
-        // "paste user", never "breach".
-        assert_eq!(media_label(2), Some("paste user"));
-    }
-
-    #[test]
-    fn bucket_family_collapses_dotted_names() {
-        assert_eq!(bucket_family("leaks.public.general"), "leaks");
-        assert_eq!(bucket_family("darknet.tor"), "darknet");
-        assert_eq!(bucket_family("pastes"), "pastes");
-        assert_eq!(bucket_family(""), "");
-    }
-
-    #[test]
-    fn result_resp_terminal_status_parsing() {
-        let running: ResultResp = serde_json::from_str(r#"{"status":1,"records":[]}"#).unwrap();
-        assert_eq!(running.status, Some(1)); // must NOT be treated as terminal
-        let finished: ResultResp = serde_json::from_str(
-            r#"{"status":2,"records":[{"bucket":"leaks.public.general","media":24,"date":"2024-01-01"}]}"#,
-        )
-        .unwrap();
-        assert_eq!(finished.status, Some(2));
-        assert_eq!(finished.records[0].media, Some(24));
-        assert_eq!(
-            finished.records[0].bucket.as_deref(),
-            Some("leaks.public.general")
-        );
-    }
-
-    #[test]
-    fn record_tolerates_missing_and_human_bucket() {
-        let r: ResultResp = serde_json::from_str(
-            r#"{"status":2,"records":[{"bucketh":"Public Leaks","media":1}]}"#,
-        )
-        .unwrap();
-        assert_eq!(r.records[0].bucketh.as_deref(), Some("Public Leaks"));
-        assert!(r.records[0].bucket.is_none());
-        assert!(r.records[0].date.is_none());
     }
 }
