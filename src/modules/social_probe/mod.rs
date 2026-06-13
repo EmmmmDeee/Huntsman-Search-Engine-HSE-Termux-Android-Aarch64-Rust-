@@ -20,17 +20,18 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 
-const SRC: &str = "social_probe";
+#[cfg(test)]
+mod tests;
 
-pub struct SocialProbe;
+pub(super) const SRC: &str = "social_probe";
 
-struct Platform {
-    name: &'static str,
-    url_pattern: &'static str,
-    exists_codes: &'static [u16],
+pub(super) struct Platform {
+    pub(super) name: &'static str,
+    pub(super) url_pattern: &'static str,
+    pub(super) exists_codes: &'static [u16],
 }
 
-const USERNAME_PLATFORMS: &[Platform] = &[
+pub(super) const USERNAME_PLATFORMS: &[Platform] = &[
     Platform {
         name: "facebook",
         url_pattern: "https://www.facebook.com/{}",
@@ -173,7 +174,7 @@ const USERNAME_PLATFORMS: &[Platform] = &[
     },
 ];
 
-const NAME_PLATFORMS: &[Platform] = &[
+pub(super) const NAME_PLATFORMS: &[Platform] = &[
     Platform {
         name: "facebook-public",
         url_pattern: "https://www.facebook.com/public/{}/",
@@ -185,6 +186,8 @@ const NAME_PLATFORMS: &[Platform] = &[
         exists_codes: &[200],
     },
 ];
+
+pub struct SocialProbe;
 
 #[async_trait]
 impl Module for SocialProbe {
@@ -317,13 +320,13 @@ impl Module for SocialProbe {
 /// across the social family" on phantom evidence (observed on a network-blocked
 /// self-scan).
 #[must_use]
-fn should_echo_target(found_count: u32) -> bool {
+pub(super) fn should_echo_target(found_count: u32) -> bool {
     found_count > 0
 }
 
 /// Build the target-echo summary entity for a probe run, or `None` when the run
 /// confirmed nothing (see [`should_echo_target`]).
-fn build_target_summary(
+pub(super) fn build_target_summary(
     target: &Target,
     found_count: u32,
     checked_count: u32,
@@ -350,7 +353,7 @@ fn build_target_summary(
     Some(summary)
 }
 
-async fn probe_url(url: &str) -> u16 {
+pub(super) async fn probe_url(url: &str) -> u16 {
     let output = tokio::process::Command::new("curl")
         .args([
             "-s",
@@ -376,50 +379,5 @@ async fn probe_url(url: &str) -> u16 {
             .parse()
             .unwrap_or(0),
         _ => 0,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_username_and_fullname() {
-        let m = SocialProbe;
-        assert!(m.accepts(&Target::new(TargetKind::Username, "test")));
-        assert!(m.accepts(&Target::new(TargetKind::FullName, "Test User")));
-        assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y")));
-        assert!(!m.accepts(&Target::new(TargetKind::Domain, "x.com")));
-    }
-
-    #[test]
-    fn platform_count() {
-        assert!(USERNAME_PLATFORMS.len() >= 28);
-        assert!(NAME_PLATFORMS.len() >= 2);
-    }
-
-    #[test]
-    fn probe_with_no_hits_does_not_echo_the_seed() {
-        // A run that checked platforms but confirmed nothing must NOT vouch for
-        // the target — otherwise it counts as an independent corroborating
-        // source and inflates the seed to VERIFIED on phantom evidence.
-        assert!(!should_echo_target(0));
-        let t = Target::new(TargetKind::Username, "haigenb");
-        assert!(build_target_summary(&t, 0, 28, &[], "scan").is_none());
-    }
-
-    #[test]
-    fn probe_with_a_hit_echoes_the_seed_as_corroboration() {
-        assert!(should_echo_target(1));
-        let t = Target::new(TargetKind::Username, "haigenb");
-        let summary = build_target_summary(&t, 1, 28, &["github"], "scan")
-            .expect("a confirmed profile must echo the seed");
-        assert_eq!(summary.value, "haigenb");
-        assert!(summary.has_tag("social-probed"));
-        assert!(!summary.has_tag("multi-platform"));
-        // Three or more confirmed profiles flags the multi-platform footprint.
-        let multi = build_target_summary(&t, 3, 28, &["github", "reddit", "twitch"], "scan")
-            .expect("entity");
-        assert!(multi.has_tag("multi-platform"));
     }
 }
