@@ -1266,10 +1266,10 @@ fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
                 .flatten()
             {
                 let p = entry.path();
-                if p.extension().and_then(|e| e.to_str()) == Some("rs") {
-                    if let Ok(s) = fs::read_to_string(&p) {
-                        combined.push_str(&s);
-                    }
+                if p.extension().and_then(|e| e.to_str()) == Some("rs")
+                    && let Ok(s) = fs::read_to_string(&p)
+                {
+                    combined.push_str(&s);
                 }
             }
             combined
