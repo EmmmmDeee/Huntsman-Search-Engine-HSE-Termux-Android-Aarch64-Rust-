@@ -1,0 +1,171 @@
+use super::*;
+
+#[test]
+fn geohash_sydney_opera_house() {
+    // Famous coords: -33.8568° S, 151.2153° E → r3gx2f7 prefix
+    let h = geohash(-33.8568, 151.2153, 7);
+    assert!(h.starts_with("r3gx2"), "got {h}");
+    assert_eq!(h.len(), 7);
+}
+
+#[test]
+fn geohash_invalid_coords_returns_empty() {
+    assert!(geohash(91.0, 0.0, 7).is_empty());
+    assert!(geohash(0.0, 200.0, 7).is_empty());
+}
+
+#[test]
+fn parse_coords_handles_typical_format() {
+    assert_eq!(
+        parse_coords("-33.8568,151.2153"),
+        Some((-33.8568, 151.2153))
+    );
+    assert_eq!(parse_coords("38.83, -104.82"), Some((38.83, -104.82)));
+}
+
+#[test]
+fn parse_coords_rejects_invalid() {
+    assert!(parse_coords("not-coords").is_none());
+    assert!(parse_coords("91,0").is_none());
+    assert!(parse_coords("0,181").is_none());
+}
+
+#[test]
+fn timezone_australia_specific() {
+    assert_eq!(timezone_for(-33.86, 151.21), "Australia/Sydney");
+    assert_eq!(timezone_for(-31.95, 115.86), "Australia/Perth");
+    assert_eq!(timezone_for(-34.93, 138.60), "Australia/Adelaide");
+}
+
+#[test]
+fn timezone_us_specific() {
+    assert_eq!(timezone_for(40.71, -74.00), "America/New_York");
+    assert_eq!(timezone_for(37.77, -122.41), "America/Los_Angeles");
+}
+
+#[test]
+fn parse_address_aus_full() {
+    let a = parse_address("Sydney, NSW, Australia");
+    assert_eq!(a.city.as_deref(), Some("Sydney"));
+    assert_eq!(a.state.as_deref(), Some("NSW"));
+    assert_eq!(a.country.as_deref(), Some("Australia"));
+    assert_eq!(a.iso_country.as_deref(), Some("AU"));
+}
+
+#[test]
+fn parse_address_with_street() {
+    let a = parse_address("10 Smith St, Melbourne, VIC, Australia");
+    assert_eq!(a.street.as_deref(), Some("10 Smith St"));
+    assert_eq!(a.city.as_deref(), Some("Melbourne"));
+    assert_eq!(a.state.as_deref(), Some("VIC"));
+    assert_eq!(a.iso_country.as_deref(), Some("AU"));
+}
+
+#[test]
+fn parse_address_state_only() {
+    let a = parse_address("SA, VIC");
+    // First-classified-state wins
+    assert_eq!(a.state.as_deref(), Some("SA"));
+    // Country inferred from AU state code
+    assert_eq!(a.iso_country.as_deref(), Some("AU"));
+}
+
+#[test]
+fn parse_address_postal_code() {
+    let a = parse_address("Brisbane, QLD 4000");
+    assert_eq!(a.city.as_deref(), Some("Brisbane"));
+    assert_eq!(a.state.as_deref(), Some("QLD"));
+    assert_eq!(a.postal_code.as_deref(), Some("4000"));
+}
+
+#[test]
+fn parse_address_handles_spelled_out_multiword_states() {
+    // Regression: au_state_norm defines multi-word arms ("new south
+    // wales", "western australia", …) but the state loop only ever passed
+    // single whitespace-split tokens, so a spelled-out state silently
+    // failed to parse while its abbreviation succeeded. Both must work.
+    let a = parse_address("Sydney, New South Wales, Australia");
+    assert_eq!(a.city.as_deref(), Some("Sydney"));
+    assert_eq!(a.state.as_deref(), Some("NSW"));
+    assert_eq!(a.country.as_deref(), Some("Australia"));
+
+    // Multi-word state alone still infers the AU country, and is not
+    // misread as the city.
+    let b = parse_address("Perth, Western Australia");
+    assert_eq!(b.state.as_deref(), Some("WA"));
+    assert_eq!(b.city.as_deref(), Some("Perth"));
+    assert_eq!(b.iso_country.as_deref(), Some("AU"));
+
+    // Abbreviation and combined "STATE postcode" forms are unchanged.
+    assert_eq!(
+        parse_address("Brisbane, QLD 4000").state.as_deref(),
+        Some("QLD")
+    );
+}
+
+#[test]
+fn parse_address_does_not_mistake_street_number_for_postal() {
+    // Regression: a multi-digit street number is the LEADING token of a
+    // street part, not a postcode — it must not be captured as postal_code.
+    let a = parse_address("1234 Smith St, Sydney, NSW");
+    assert_eq!(a.street.as_deref(), Some("1234 Smith St"));
+    assert_eq!(a.postal_code, None);
+    assert_eq!(a.state.as_deref(), Some("NSW"));
+
+    // A trailing postcode is still captured even alongside a long street no.
+    let b = parse_address("4000 George St, Brisbane, QLD 4000");
+    assert_eq!(b.street.as_deref(), Some("4000 George St"));
+    assert_eq!(b.postal_code.as_deref(), Some("4000")); // from "QLD 4000", not the street
+    assert_eq!(b.state.as_deref(), Some("QLD"));
+}
+
+#[test]
+fn haversine_known_distance_sydney_to_melbourne() {
+    // SYD (-33.87,151.21) → MEL (-37.81,144.96) is ~714 km great-circle.
+    let d = haversine_km(-33.87, 151.21, -37.81, 144.96);
+    assert!((d - 714.0).abs() < 15.0, "got {d} km");
+    // Identical points → zero distance, no NaN.
+    assert_eq!(haversine_km(10.0, 20.0, 10.0, 20.0), 0.0);
+}
+
+/// Metric invariants of `haversine_km`, proved over a randomised sample of
+/// valid coordinates (seeded LCG — deterministic, no `rand` dependency). The
+/// geo-cluster correlators treat this as a distance, so it must stay a proper
+/// metric: finite, non-negative, symmetric, identity-zero, and bounded by
+/// half the Earth's circumference. Guards against a future edit (e.g. swapping
+/// back to the `acos` form, or transposing a term) silently breaking it.
+#[test]
+fn haversine_is_a_bounded_symmetric_metric() {
+    // Half-circumference upper bound: π·R, plus a hair for float slack.
+    let max_km = std::f64::consts::PI * 6371.0 + 1e-6;
+    let mut state: u64 = 0x5DEECE66D;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        // Top 53 bits → [0, 1).
+        (state >> 11) as f64 / (1u64 << 53) as f64
+    };
+    for _ in 0..50_000 {
+        let lat1 = next() * 180.0 - 90.0;
+        let lon1 = next() * 360.0 - 180.0;
+        let lat2 = next() * 180.0 - 90.0;
+        let lon2 = next() * 360.0 - 180.0;
+        let d = haversine_km(lat1, lon1, lat2, lon2);
+        assert!(d.is_finite() && d >= 0.0, "non-metric distance {d}");
+        assert!(d <= max_km, "distance {d} exceeds half-circumference");
+        // Symmetric: swapping the endpoints is byte-identical (the formula is
+        // symmetric, so this is exact, not approximate).
+        assert_eq!(d, haversine_km(lat2, lon2, lat1, lon1), "asymmetric");
+        // Identity: a point is zero distance from itself.
+        assert_eq!(haversine_km(lat1, lon1, lat1, lon1), 0.0);
+    }
+}
+
+#[test]
+fn reverse_country_iso_aliases_us_subregions() {
+    assert_eq!(reverse_country_iso(-33.87, 151.21), Some("AU")); // Sydney
+    assert_eq!(reverse_country_iso(61.0, -150.0), Some("US")); // Alaska → US
+    assert_eq!(reverse_country_iso(21.3, -157.8), Some("US")); // Hawaii → US
+    assert_eq!(reverse_country_iso(0.0, -30.0), None); // mid-Atlantic
+}
