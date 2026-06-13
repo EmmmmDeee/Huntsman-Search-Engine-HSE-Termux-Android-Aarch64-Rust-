@@ -258,8 +258,30 @@ impl Evidence {
         }
     }
 
+    /// Attach a key/value attribute, **accumulating** rather than clobbering
+    /// when the key is already present.
+    ///
+    /// Operator full-fidelity policy: a repeated key must not silently lose its
+    /// earlier value — e.g. several breach rows folded into one evidence record,
+    /// each carrying a different `gender`, `date_of_birth`, or `country`. On
+    /// collision the new value is appended after `"; "`, **de-duplicated** so
+    /// re-asserting an identical value is idempotent and the merged cell never
+    /// bloats with repeats. The first-seen value stays first and single-set
+    /// callers — the overwhelming majority — are byte-for-byte unchanged.
     pub fn with_attr(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.attributes.insert(key.into(), value.into());
+        let key = key.into();
+        let value = value.into();
+        match self.attributes.get_mut(&key) {
+            Some(existing) => {
+                if !existing.split("; ").any(|seen| seen == value) {
+                    existing.push_str("; ");
+                    existing.push_str(&value);
+                }
+            }
+            None => {
+                self.attributes.insert(key, value);
+            }
+        }
         self
     }
 }

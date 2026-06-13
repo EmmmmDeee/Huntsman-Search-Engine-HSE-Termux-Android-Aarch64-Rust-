@@ -1002,3 +1002,24 @@ fn classification_ladder_is_single_sourced_and_boundary_exact() {
         assert_eq!(e.classify(), C::from_c_eff(e.c_effective()), "conf {conf}");
     }
 }
+
+#[test]
+fn with_attr_accumulates_repeated_keys_additively_and_dedups() {
+    // Operator full-fidelity policy: a repeated attribute key must RETAIN every
+    // distinct value, not let the last write clobber the earlier ones (e.g.
+    // several breach rows folded into one evidence record, each with a
+    // different gender/DOB). Single-set keys are unchanged.
+    let ev = Evidence::new("m", "s").with_attr("country", "AU");
+    assert_eq!(ev.attributes.get("country").map(String::as_str), Some("AU"));
+
+    // Distinct values accumulate, first-seen first; a re-asserted value is
+    // idempotent (de-duplicated, no "M; F; M" bloat).
+    let ev = Evidence::new("m", "s")
+        .with_attr("gender", "M")
+        .with_attr("gender", "F")
+        .with_attr("gender", "M");
+    assert_eq!(
+        ev.attributes.get("gender").map(String::as_str),
+        Some("M; F")
+    );
+}
