@@ -15,7 +15,6 @@
 //! Both APIs are free, keyless, and rate-limited to ~1 req/s.
 
 use async_trait::async_trait;
-use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -25,121 +24,16 @@ use crate::core::{
 };
 use crate::util::http::fetch_json_or_404;
 
-// ---------------------------------------------------------------------------
-// Public module struct
-// ---------------------------------------------------------------------------
+mod types;
 
-pub struct IpRegistry;
+#[cfg(test)]
+mod tests;
 
-// ---------------------------------------------------------------------------
-// RDAP response types
-// ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-struct RdapResp {
-    #[serde(default)]
-    handle: Option<String>,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    country: Option<String>,
-    #[serde(default, rename = "startAddress")]
-    start_address: Option<String>,
-    #[serde(default, rename = "endAddress")]
-    end_address: Option<String>,
-    #[serde(default, rename = "ipVersion")]
-    ip_version: Option<String>,
-    #[serde(default, rename = "parentHandle")]
-    parent_handle: Option<String>,
-    #[serde(default, rename = "cidr0_cidrs")]
-    cidr0_cidrs: Vec<CidrEntry>,
-    #[serde(default)]
-    events: Vec<RdapEvent>,
-}
-
-#[derive(Deserialize)]
-struct CidrEntry {
-    #[serde(default)]
-    v4prefix: Option<String>,
-    #[serde(default)]
-    v6prefix: Option<String>,
-    #[serde(default)]
-    length: Option<u8>,
-}
-
-#[derive(Deserialize)]
-struct RdapEvent {
-    #[serde(rename = "eventAction")]
-    action: String,
-    #[serde(default, rename = "eventDate")]
-    date: Option<String>,
-}
-
-// ---------------------------------------------------------------------------
-// BGPView response types — ASN lookup
-// ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-struct AsnResp {
-    data: Option<AsnData>,
-    status: String,
-}
-
-#[derive(Deserialize)]
-struct AsnData {
-    name: Option<String>,
-    description_short: Option<String>,
-    country_code: Option<String>,
-    rir_allocation: Option<RirInfo>,
-    email_contacts: Option<Vec<String>>,
-    abuse_contacts: Option<Vec<String>>,
-    website: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct RirInfo {
-    rir_name: Option<String>,
-    date_allocated: Option<String>,
-}
-
-// ---------------------------------------------------------------------------
-// BGPView response types — IP lookup
-// ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-struct IpResp {
-    data: Option<IpData>,
-    status: String,
-}
-
-#[derive(Deserialize)]
-struct IpData {
-    prefixes: Option<Vec<PrefixInfo>>,
-}
-
-#[derive(Deserialize)]
-struct PrefixInfo {
-    prefix: Option<String>,
-    asn: Option<AsnRef>,
-}
-
-#[derive(Deserialize)]
-struct AsnRef {
-    asn: Option<u64>,
-    name: Option<String>,
-    description: Option<String>,
-    country_code: Option<String>,
-}
-
-// ---------------------------------------------------------------------------
-// Evidence source constant
-// ---------------------------------------------------------------------------
+use types::{AsnResp, IpResp, RdapResp};
 
 const SRC: &str = "ip_registry";
 
-// ---------------------------------------------------------------------------
-// Module trait implementation
-// ---------------------------------------------------------------------------
+pub struct IpRegistry;
 
 #[async_trait]
 impl Module for IpRegistry {
@@ -195,26 +89,13 @@ impl Module for IpRegistry {
     }
 }
 
-// ---------------------------------------------------------------------------
-// IpAddress path: RDAP + BGPView (both)
-// ---------------------------------------------------------------------------
-
 async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
     let ip = target.value.trim();
-
-    // Run both lookups concurrently.
     let (rdap_res, bgp_res) = tokio::join!(rdap_lookup_ip(ip, ctx), bgp_lookup_ip(ip, ctx),);
-
     let mut result = rdap_res?;
-    let bgp = bgp_res?;
-
-    result.extend(bgp.entities);
+    result.extend(bgp_res?.entities);
     Ok(result)
 }
-
-// ---------------------------------------------------------------------------
-// RDAP: IP allocation record
-// ---------------------------------------------------------------------------
 
 async fn rdap_lookup_ip(ip: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
     let url = format!("https://rdap.arin.net/registry/ip/{ip}");
@@ -273,10 +154,6 @@ async fn rdap_lookup_ip(ip: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
     Ok(result)
 }
 
-// ---------------------------------------------------------------------------
-// BGPView: IP-to-ASN reverse mapping
-// ---------------------------------------------------------------------------
-
 async fn bgp_lookup_ip(ip: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
     let url = format!("https://api.bgpview.io/ip/{ip}");
     let Some(body): Option<IpResp> = fetch_json_or_404(&ctx.http, SRC, &url).await? else {
@@ -290,8 +167,6 @@ async fn bgp_lookup_ip(ip: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
     };
 
     let mut result = ModuleResult::new();
-    // Take only the most-specific (first) prefix announcement — bgpview
-    // returns them ordered by length descending.
     if let Some(prefix) = data.prefixes.into_iter().flatten().next()
         && let Some(asn_ref) = prefix.asn
         && let Some(asn_num) = asn_ref.asn
@@ -319,13 +194,8 @@ async fn bgp_lookup_ip(ip: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
     Ok(result)
 }
 
-// ---------------------------------------------------------------------------
-// BGPView: ASN registry record
-// ---------------------------------------------------------------------------
-
 async fn bgp_lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
     let raw = target.value.trim().to_uppercase();
-    // Accept both "AS15169" and "15169".
     let digits = raw.trim_start_matches("AS").trim();
     let Ok(asn) = digits.parse::<u64>() else {
         return Ok(ModuleResult::new());
@@ -335,7 +205,6 @@ async fn bgp_lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleRe
     let Some(body): Option<AsnResp> = fetch_json_or_404(&ctx.http, SRC, &url).await? else {
         return Ok(ModuleResult::new());
     };
-
     if body.status != "ok" {
         return Ok(ModuleResult::new());
     }
@@ -376,7 +245,6 @@ async fn bgp_lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleRe
     entity.add_evidence(ev);
     result.push(entity);
 
-    // Surface contact emails as discrete Email entities.
     result.extend(contact_emails(
         data.email_contacts,
         "admin",
@@ -392,7 +260,6 @@ async fn bgp_lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleRe
         &ctx.scan_id,
     ));
 
-    // If the AS has a website, emit it as a Url entity.
     if let Some(w) = data
         .website
         .as_deref()
@@ -409,13 +276,7 @@ async fn bgp_lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleRe
     Ok(result)
 }
 
-// ---------------------------------------------------------------------------
-// Shared contact-email builder
-// ---------------------------------------------------------------------------
-
-/// Build `Email` entities for an ASN's contact list. **Pure** (no network).
-/// Filters out non-email strings, then maps each to a role-tagged `Email`
-/// entity — the shared body of the admin- and abuse-contact emission.
+/// Build `Email` entities for an ASN's contact list. Pure (no network).
 fn contact_emails(
     emails: Option<Vec<String>>,
     role: &'static str,
@@ -440,73 +301,4 @@ fn contact_emails(
             e
         })
         .collect()
-}
-
-// ---------------------------------------------------------------------------
-// Tests (preserved from ip_rdap.rs + bgpview.rs)
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_ip_and_asn() {
-        let m = IpRegistry;
-        assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
-        assert!(m.accepts(&Target::new(TargetKind::Asn, "AS15169")));
-        assert!(!m.accepts(&Target::new(TargetKind::Domain, "x")));
-    }
-
-    #[test]
-    fn priority_and_timeout() {
-        let m = IpRegistry;
-        assert_eq!(m.priority(), 23);
-        assert_eq!(m.max_timeout_ms(), 8_000);
-    }
-
-    #[test]
-    fn parse_arin_rdap_response() {
-        // Trimmed ARIN RDAP response for 8.8.8.8.
-        let raw = r#"{
-          "handle":"NET-8-8-8-0-1",
-          "name":"LVLT-GOGL-8-8-8",
-          "country":"US",
-          "startAddress":"8.8.8.0",
-          "endAddress":"8.8.8.255",
-          "ipVersion":"v4",
-          "parentHandle":"NET-8-0-0-0-0",
-          "cidr0_cidrs":[{"v4prefix":"8.8.8.0","length":24}],
-          "events":[
-            {"eventAction":"last changed","eventDate":"2014-03-14T16:52:05-04:00"},
-            {"eventAction":"registration","eventDate":"2014-03-14T16:52:05-04:00"}
-          ]
-        }"#;
-        let r: RdapResp = serde_json::from_str(raw).unwrap();
-        assert_eq!(r.handle.as_deref(), Some("NET-8-8-8-0-1"));
-        assert_eq!(r.country.as_deref(), Some("US"));
-        assert_eq!(r.cidr0_cidrs.len(), 1);
-        assert_eq!(r.events.len(), 2);
-    }
-
-    #[test]
-    fn parse_bgpview_asn_response() {
-        let raw = r#"{
-          "status": "ok",
-          "data": {
-            "name": "GOOGLE",
-            "description_short": "Google LLC",
-            "country_code": "US",
-            "rir_allocation": {"rir_name": "ARIN", "date_allocated": "2000-03-30"},
-            "email_contacts": ["noc@google.com"],
-            "abuse_contacts": ["abuse@google.com"],
-            "website": "https://about.google"
-          }
-        }"#;
-        let r: AsnResp = serde_json::from_str(raw).unwrap();
-        assert_eq!(r.status, "ok");
-        let data = r.data.unwrap();
-        assert_eq!(data.name.as_deref(), Some("GOOGLE"));
-        assert_eq!(data.country_code.as_deref(), Some("US"));
-    }
 }
