@@ -23,6 +23,9 @@
 //! physical location from three independent source classes (TA0043 technique
 //! diversity principle).
 
+#[cfg(test)]
+mod tests;
+
 use async_trait::async_trait;
 
 use crate::core::{
@@ -34,13 +37,13 @@ use crate::core::{
 use crate::util::extract::page_emails;
 use crate::util::http::RequestBuilderExt;
 
-const SRC: &str = "au_people";
+pub(crate) const SRC: &str = "au_people";
 
 pub struct AuPeople;
 
 /// Split a full name into first/last for URL construction. Returns `(first, last)`
 /// where `last` is every token after the first. Pure.
-fn split_name(full: &str) -> (&str, &str) {
+pub(super) fn split_name(full: &str) -> (&str, &str) {
     let trimmed = full.trim();
     if let Some(pos) = trimmed.find(' ') {
         (&trimmed[..pos], trimmed[pos + 1..].trim_start())
@@ -50,13 +53,34 @@ fn split_name(full: &str) -> (&str, &str) {
 }
 
 /// Extract au-state tag from suburb/state text. Pure.
-fn state_tag_from_text(text: &str) -> Option<String> {
+pub(super) fn state_tag_from_text(text: &str) -> Option<String> {
     crate::util::address_au::state_code(text).map(|s| format!("au-state:{s}"))
+}
+
+/// Strip HTML tags from a string slice, replacing each tag with a space. Pure.
+pub(super) fn strip_html_tags(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for ch in html.chars() {
+        match ch {
+            '<' => {
+                in_tag = true;
+                // Replace the tag with a space so adjacent text stays separated.
+                if !out.ends_with(' ') {
+                    out.push(' ');
+                }
+            }
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Parse White Pages AU result HTML for address/phone/name entries.
 /// Looks for structured microdata and text patterns. Pure.
-fn parse_whitepages_html(html: &str, full_name: &str, scan_id: &str) -> Vec<Entity> {
+pub(super) fn parse_whitepages_html(html: &str, full_name: &str, scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
     let name_lc = full_name.to_lowercase();
 
@@ -206,30 +230,9 @@ fn parse_whitepages_html(html: &str, full_name: &str, scan_id: &str) -> Vec<Enti
     out
 }
 
-/// Strip HTML tags from a string slice, replacing each tag with a space. Pure.
-fn strip_html_tags(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for ch in html.chars() {
-        match ch {
-            '<' => {
-                in_tag = true;
-                // Replace the tag with a space so adjacent text stays separated.
-                if !out.ends_with(' ') {
-                    out.push(' ');
-                }
-            }
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(ch),
-            _ => {}
-        }
-    }
-    out
-}
-
 /// Parse True People Search AU HTML for name-confirmed address and phone entities.
 /// Uses a simpler heuristic — TPS structures results as JSON-LD or visible text blocks. Pure.
-fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<Entity> {
+pub(super) fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
     let stripped = strip_html_tags(html);
 
@@ -287,7 +290,7 @@ fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<Entity> {
 }
 
 /// Deduplicate entities by (kind, value) from a mutable result. Pure.
-fn dedup_by_kind_value(entities: &mut Vec<Entity>) {
+pub(super) fn dedup_by_kind_value(entities: &mut Vec<Entity>) {
     let mut seen = std::collections::HashSet::new();
     entities.retain(|e| seen.insert((e.kind.clone(), e.value.clone())));
 }
@@ -407,90 +410,5 @@ impl Module for AuPeople {
 
         dedup_by_kind_value(&mut result.entities);
         Ok(result)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_two_token_fullname_only() {
-        let m = AuPeople;
-        assert!(m.accepts(&Target::new(TargetKind::FullName, "Haigen Bamford")));
-        assert!(!m.accepts(&Target::new(TargetKind::FullName, "Haigen"))); // single token
-        assert!(!m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
-        assert!(!m.accepts(&Target::new(TargetKind::Username, "haigen")));
-    }
-
-    #[test]
-    fn module_metadata() {
-        let m = AuPeople;
-        assert_eq!(m.name(), "au_people");
-        assert!(m.attack_techniques().contains(&"T1591.001"));
-        assert!(m.attack_techniques().contains(&"T1589.003"));
-    }
-
-    #[test]
-    fn split_name_standard() {
-        assert_eq!(split_name("Haigen Bamford"), ("Haigen", "Bamford"));
-        assert_eq!(split_name("Mary Jane Watson"), ("Mary", "Jane Watson"));
-        assert_eq!(split_name("Solo"), ("Solo", ""));
-    }
-
-    #[test]
-    fn strip_html_tags_removes_markup() {
-        // Tags are replaced by spaces; adjacent content stays separated.
-        let r = strip_html_tags("<b>Sydney</b>, <span>NSW</span> 2000");
-        assert!(r.contains("Sydney") && r.contains("NSW") && r.contains("2000"));
-        assert_eq!(strip_html_tags("plain text"), "plain text");
-    }
-
-    #[test]
-    fn parse_tps_html_extracts_au_address() {
-        let html =
-            "<div>Results for Test Person</div><p>Bondi Beach, NSW 2026</p><p>Other line</p>";
-        let ents = parse_tps_html(html, "Test Person", "s");
-        assert!(
-            ents.iter().any(|e| e.kind == EntityKind::Address
-                && e.value.contains("NSW")
-                && e.has_tag("au-state:NSW")),
-            "should extract NSW address"
-        );
-    }
-
-    #[test]
-    fn parse_tps_html_skips_non_au_lines() {
-        // No AU state abbreviation or postcode → nothing emitted.
-        let html = "<p>London, UK</p><p>New York, NY 10001</p>";
-        let ents = parse_tps_html(html, "Test Person", "s");
-        assert!(
-            ents.iter().all(|e| e.kind != EntityKind::Address),
-            "non-AU addresses should not be emitted"
-        );
-    }
-
-    #[test]
-    fn dedup_removes_same_kind_value() {
-        let mut ents = vec![
-            Entity::new(EntityKind::Address, "Sydney NSW 2000", 0.5, "s"),
-            Entity::new(EntityKind::Address, "Sydney NSW 2000", 0.6, "s"),
-            Entity::new(EntityKind::Email, "a@b.com", 0.5, "s"),
-        ];
-        dedup_by_kind_value(&mut ents);
-        assert_eq!(ents.len(), 2);
-    }
-
-    #[test]
-    fn state_tag_from_text_recognises_au_states() {
-        assert_eq!(
-            state_tag_from_text("Bondi Beach NSW 2026"),
-            Some("au-state:NSW".into())
-        );
-        assert_eq!(
-            state_tag_from_text("Melbourne VIC 3000"),
-            Some("au-state:VIC".into())
-        );
-        assert!(state_tag_from_text("London UK").is_none());
     }
 }
