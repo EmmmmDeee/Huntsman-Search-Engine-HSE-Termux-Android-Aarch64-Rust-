@@ -1,0 +1,235 @@
+use super::config::enabled_from;
+use super::format::{build_body, build_filename, format_utc, slug};
+use super::io::write_file;
+use super::query::records_filtered_dir;
+use super::url::describe_url;
+
+use serde_json::Value;
+
+#[test]
+fn disable_switch_is_opt_out_only() {
+    assert!(enabled_from(None), "default must be ON");
+    assert!(enabled_from(Some("1")));
+    assert!(enabled_from(Some("anything")));
+    assert!(!enabled_from(Some("0")));
+    assert!(!enabled_from(Some("off")));
+    assert!(!enabled_from(Some("False")));
+    assert!(!enabled_from(Some("  off  ")));
+}
+
+#[test]
+fn slug_is_human_legible_and_filesystem_safe() {
+    assert_eq!(
+        slug("jordanavery@gmail.com", 80),
+        "jordanavery_at_gmail.com"
+    );
+    assert_eq!(slug("Jordan Avery", 80), "Jordan_Avery");
+    assert_eq!(slug("javery88", 80), "javery88");
+    // No path traversal, no slashes survive.
+    assert_eq!(slug("../../etc/passwd", 80), "etc_passwd");
+    // Blank / separator-only input never yields an empty component.
+    assert_eq!(slug("", 80), "unknown");
+    assert_eq!(slug("///", 80), "unknown");
+    // Length is capped.
+    assert_eq!(slug(&"a".repeat(200), 10).len(), 10);
+}
+
+#[test]
+fn format_utc_matches_known_epoch_instants() {
+    assert_eq!(format_utc(0), "19700101T000000Z");
+    // 2026-06-06T06:14:09Z (the live test instant) — exact round value.
+    assert_eq!(format_utc(1_780_726_449), "20260606T061409Z");
+}
+
+#[test]
+fn build_filename_is_blatantly_self_describing() {
+    let name = build_filename(
+        "see_know",
+        "stealer",
+        "jordanavery@gmail.com",
+        1_780_726_449,
+        7,
+    );
+    assert_eq!(
+        name,
+        "see_know__stealer__jordanavery_at_gmail.com__20260606T061409Z__0007.json"
+    );
+    // A human (and the OS sort) can read who/what/when straight off the name.
+    assert!(name.starts_with("see_know__stealer__"));
+    assert!(name.contains("jordanavery_at_gmail.com"));
+    assert!(name.ends_with("__0007.json"));
+}
+
+#[test]
+fn build_body_keeps_paid_secret_in_full_with_meta_header() {
+    let body = build_body(
+        "see_know",
+        "stealer",
+        "seed@x.com",
+        1_780_726_449,
+        r#"{"results":[{"password":"PLAINTEXT-kept"}]}"#,
+    );
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["_meta"]["provider"], "see_know");
+    assert_eq!(v["_meta"]["endpoint"], "stealer");
+    assert_eq!(v["_meta"]["query"], "seed@x.com");
+    assert_eq!(v["_meta"]["archived_at_utc"], "20260606T061409Z");
+    // The cleartext paid secret is retained, in full, structurally.
+    assert_eq!(v["raw"]["results"][0]["password"], "PLAINTEXT-kept");
+}
+
+#[test]
+fn build_body_falls_back_to_verbatim_string_for_non_json() {
+    let body = build_body(
+        "oathnet",
+        "breach-search",
+        "x",
+        0,
+        "503 Service Unavailable",
+    );
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["raw"], "503 Service Unavailable");
+}
+
+#[test]
+fn describe_url_derives_endpoint_and_query() {
+    // Query param → query value (URL-decoded); path tail → endpoint.
+    assert_eq!(
+        describe_url("https://haveibeenpwned.com/api/v3/breachedaccount/a%40b.com"),
+        ("breachedaccount".to_string(), "a@b.com".to_string())
+    );
+    assert_eq!(
+        describe_url("https://crt.sh/?q=example.com&output=json"),
+        ("crt.sh".to_string(), "example.com".to_string())
+    );
+    // No path, no query → host is both.
+    assert_eq!(
+        describe_url("https://api.example.org"),
+        ("api.example.org".to_string(), "api.example.org".to_string())
+    );
+    // Credential-named params are SKIPPED so our own auth key never lands in
+    // a filename / `_meta.query`; the real lookup term is used instead.
+    assert_eq!(
+        describe_url("https://api.example.org/v1/lookup?api_key=SECRET123456&q=target%40x.com"),
+        ("lookup".to_string(), "target@x.com".to_string())
+    );
+    // When EVERY query param is a credential, fall back to the path/host —
+    // never the secret.
+    let (_, q) = describe_url("https://api.example.org/v1/ping?token=DEADBEEFSECRET");
+    assert_ne!(
+        q, "DEADBEEFSECRET",
+        "an auth token must never become the query label"
+    );
+}
+
+#[test]
+fn records_in_window_recovers_full_responses_and_filters_by_time() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("hse_win_{}_{nanos}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    // Two in-window responses (one structured, one thin/no-entity) + one out.
+    write_file(
+        &dir.join(build_filename(
+            "see-know",
+            "search-email",
+            "v@x.com",
+            1000,
+            1,
+        )),
+        &build_body(
+            "see-know",
+            "search-email",
+            "v@x.com",
+            1000,
+            r#"{"results":[{"source":"INF0SEC Leaks"}]}"#,
+        ),
+    )
+    .unwrap();
+    write_file(
+        &dir.join(build_filename(
+            "oathnet",
+            "breach-search",
+            "v@x.com",
+            1005,
+            2,
+        )),
+        &build_body(
+            "oathnet",
+            "breach-search",
+            "v@x.com",
+            1005,
+            r#"{"data":{"items":[{"password":"PLAINTEXT"}]}}"#,
+        ),
+    )
+    .unwrap();
+    write_file(
+        &dir.join(build_filename("see-know", "search-email", "old", 50, 3)),
+        &build_body("see-know", "search-email", "old", 50, r#"{"x":1}"#),
+    )
+    .unwrap();
+
+    let got = records_filtered_dir(&dir, 900, 1100, None);
+    assert_eq!(got.len(), 2, "only the two in-window responses");
+    // Chronological order, provenance recovered, raw body intact verbatim.
+    assert_eq!(got[0].provider, "see-know");
+    assert_eq!(got[0].query, "v@x.com");
+    assert_eq!(got[0].raw["results"][0]["source"], "INF0SEC Leaks");
+    assert_eq!(got[1].raw["data"]["items"][0]["password"], "PLAINTEXT");
+    // The out-of-window record is excluded.
+    assert!(!got.iter().any(|r| r.query == "old"));
+
+    // Query-set filter: same window, but restrict to a different value —
+    // both in-window responses are for "v@x.com", so an unrelated query set
+    // excludes them (this is what stops a neighbouring scan bleeding in).
+    let mut other: std::collections::HashSet<String> = std::collections::HashSet::new();
+    other.insert("someone-else@x.com".to_string());
+    assert!(records_filtered_dir(&dir, 900, 1100, Some(&other)).is_empty());
+    // Matching query-set keeps them.
+    let mut mine: std::collections::HashSet<String> = std::collections::HashSet::new();
+    mine.insert("v@x.com".to_string());
+    assert_eq!(records_filtered_dir(&dir, 900, 1100, Some(&mine)).len(), 2);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn write_file_persists_individual_named_response_on_disk() {
+    // End-to-end on a temp dir (no process-env mutation): an individually
+    // named file is written and reads back to the structured paid response.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("hse_raw_{}_{nanos}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let name = build_filename(
+        "see_know",
+        "search-email",
+        "vanamill@hotmail.com",
+        1_780_726_449,
+        3,
+    );
+    let path = dir.join(&name);
+    let body = build_body(
+        "see_know",
+        "search-email",
+        "vanamill@hotmail.com",
+        1_780_726_449,
+        r#"{"x":1}"#,
+    );
+    write_file(&path, &body).expect("write succeeds");
+
+    assert!(path.exists());
+    assert_eq!(
+        path.file_name().unwrap().to_str().unwrap(),
+        "see_know__search-email__vanamill_at_hotmail.com__20260606T061409Z__0003.json"
+    );
+    let read = std::fs::read_to_string(&path).unwrap();
+    let v: Value = serde_json::from_str(&read).unwrap();
+    assert_eq!(v["raw"]["x"], 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
