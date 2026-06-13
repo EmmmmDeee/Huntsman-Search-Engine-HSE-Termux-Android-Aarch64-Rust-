@@ -5,11 +5,13 @@
 //! email. The parser is line-prefix based, robust across the half-dozen
 //! mostly-but-not-quite-RFC-3912 dialects in the wild.
 
+mod client;
+mod parse;
+
+#[cfg(test)]
+mod tests;
+
 use async_trait::async_trait;
-use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
-use tokio::time::timeout;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -18,12 +20,14 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 
+use client::{find_referral, query};
+use parse::{WhoisFields, field, parse_whois};
+
 const SRC: &str = "whois";
+const IANA_WHOIS: &str = "whois.iana.org:43";
+pub(super) const QUERY_TIMEOUT_MS: u64 = 4000;
 
 pub struct Whois;
-
-const IANA_WHOIS: &str = "whois.iana.org:43";
-const QUERY_TIMEOUT_MS: u64 = 4000;
 
 #[async_trait]
 impl Module for Whois {
@@ -325,249 +329,5 @@ impl Module for Whois {
         }));
 
         Ok(result)
-    }
-}
-
-async fn query(server: &str, q: &str) -> std::io::Result<String> {
-    let mut stream = timeout(
-        Duration::from_millis(QUERY_TIMEOUT_MS),
-        TcpStream::connect(server),
-    )
-    .await??;
-    let mut query_line = String::with_capacity(q.len() + 2);
-    query_line.push_str(q);
-    query_line.push_str("\r\n");
-    stream.write_all(query_line.as_bytes()).await?;
-    let mut buf = String::with_capacity(4096);
-    // Cap the read at 64 KiB so a malicious or misconfigured whois server
-    // can't OOM the engine by streaming forever. Real WHOIS responses are
-    // ≪ 64 KiB (typically 2–8 KiB).
-    timeout(
-        Duration::from_millis(QUERY_TIMEOUT_MS),
-        (&mut stream).take(65_536).read_to_string(&mut buf),
-    )
-    .await??;
-    Ok(buf)
-}
-
-fn find_referral(text: &str) -> Option<String> {
-    for line in text.lines() {
-        // Use the zero-alloc helper for consistency with field() /
-        // all_fields() below. The previous per-line `to_lowercase()`
-        // allocation here contradicted the v0.5 "zero allocation" promise.
-        if (starts_with_ascii_ci(line, "whois:") || starts_with_ascii_ci(line, "refer:"))
-            && let Some((_, rest)) = line.split_once(':')
-        {
-            let v = rest.trim().to_string();
-            if !v.is_empty() {
-                return Some(v);
-            }
-        }
-    }
-    None
-}
-
-/// True if `line`'s leading bytes match `key` ignoring ASCII case. Avoids the
-/// per-line `to_lowercase()` allocation a `lower.starts_with(&lkey)` check
-/// would force (WHOIS keys are pure ASCII).
-fn starts_with_ascii_ci(line: &str, key: &str) -> bool {
-    line.len() >= key.len() && line.as_bytes()[..key.len()].eq_ignore_ascii_case(key.as_bytes())
-}
-
-fn field(text: &str, keys: &[&str]) -> Option<String> {
-    for line in text.lines() {
-        for key in keys {
-            if starts_with_ascii_ci(line, key)
-                && let Some((_, rest)) = line.split_once(':')
-            {
-                let v = rest.trim().to_string();
-                if !v.is_empty() {
-                    return Some(v);
-                }
-            }
-        }
-    }
-    None
-}
-
-fn all_fields(text: &str, keys: &[&str]) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in text.lines() {
-        for key in keys {
-            if starts_with_ascii_ci(line, key)
-                && let Some((_, rest)) = line.split_once(':')
-            {
-                let v = rest.trim().to_string();
-                if !v.is_empty() && !out.contains(&v) {
-                    out.push(v);
-                }
-            }
-        }
-    }
-    out
-}
-
-/// The typed fields parsed out of a raw WHOIS response. Pure data — the
-/// entity-building in `process` consumes these by name.
-struct WhoisFields {
-    registrar: Option<String>,
-    registrar_iana: Option<String>,
-    registrar_url: Option<String>,
-    updated: Option<String>,
-    created: Option<String>,
-    expires: Option<String>,
-    registrant_email: Option<String>,
-    registrant_org: Option<String>,
-    registrant_country: Option<String>,
-    registrant_state: Option<String>,
-    admin_email: Option<String>,
-    tech_email: Option<String>,
-    abuse_email: Option<String>,
-    nameservers: Vec<String>,
-    statuses: Vec<String>,
-    dnssec: Option<String>,
-}
-
-/// Parse a raw WHOIS response body into the [`WhoisFields`] we surface. Pure
-/// (no I/O), so it is unit-testable against canned WHOIS text. Email fields are
-/// filtered to require an `@` (some registries return "REDACTED" placeholders).
-fn parse_whois(response: &str) -> WhoisFields {
-    WhoisFields {
-        registrar: field(response, &["Registrar:", "Sponsoring Registrar:"]),
-        registrar_iana: field(response, &["Registrar IANA ID:", "Registrar IANA Number:"]),
-        registrar_url: field(response, &["Registrar URL:", "Registrar Website:"]),
-        updated: field(
-            response,
-            &[
-                "Updated Date:",
-                "Last Modified:",
-                "Last updated:",
-                "changed:",
-            ],
-        ),
-        created: field(response, &["Creation Date:", "created:", "Created On:"]),
-        expires: field(
-            response,
-            &[
-                "Registry Expiry Date:",
-                "Registrar Registration Expiration Date:",
-                "expires:",
-                "paid-till:",
-            ],
-        ),
-        registrant_email: field(
-            response,
-            &["Registrant Email:", "Tech Email:", "Admin Email:"],
-        )
-        .filter(|e| e.contains('@')),
-        registrant_org: field(
-            response,
-            &[
-                "Registrant Organization:",
-                "Registrant Organisation:",
-                "org:",
-            ],
-        ),
-        registrant_country: field(response, &["Registrant Country:", "country:"]),
-        registrant_state: field(
-            response,
-            &["Registrant State/Province:", "Registrant State:"],
-        ),
-        admin_email: field(response, &["Admin Email:"]).filter(|e| e.contains('@')),
-        tech_email: field(response, &["Tech Email:"]).filter(|e| e.contains('@')),
-        abuse_email: field(
-            response,
-            &[
-                "Registrar Abuse Contact Email:",
-                "abuse-mailbox:",
-                "OrgAbuseEmail:",
-            ],
-        )
-        .filter(|e| e.contains('@')),
-        nameservers: all_fields(response, &["Name Server:", "nserver:"]),
-        statuses: all_fields(response, &["Domain Status:", "status:"]),
-        dnssec: field(response, &["DNSSEC:", "dnssec:"]),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_domain_and_ip() {
-        let m = Whois;
-        assert!(m.accepts(&Target::new(TargetKind::Domain, "x.com")));
-        assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
-        assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
-    }
-
-    #[test]
-    fn parses_referral() {
-        let s = "refer:        whois.verisign-grs.com\nstatus:        ACTIVE";
-        assert_eq!(find_referral(s).as_deref(), Some("whois.verisign-grs.com"));
-    }
-
-    #[test]
-    fn parses_field_case_insensitive() {
-        let s = "Registrar: Example LLC\nCreation Date: 2020-01-01";
-        assert_eq!(field(s, &["Registrar:"]).as_deref(), Some("Example LLC"));
-        assert_eq!(
-            field(s, &["Creation Date:", "created:"]).as_deref(),
-            Some("2020-01-01")
-        );
-    }
-
-    #[test]
-    fn parses_multiple_nameservers_deduplicated() {
-        let s = "Name Server: NS1.EXAMPLE.COM\nName Server: NS2.EXAMPLE.COM\nName Server: NS1.EXAMPLE.COM";
-        let ns = all_fields(s, &["Name Server:"]);
-        assert_eq!(ns.len(), 2);
-    }
-
-    #[test]
-    fn parse_whois_extracts_typed_fields() {
-        let s = "\
-Registrar: Example Registrar LLC
-Registrar IANA ID: 1234
-Creation Date: 2020-01-01T00:00:00Z
-Registry Expiry Date: 2030-01-01T00:00:00Z
-Updated Date: 2024-06-01T00:00:00Z
-Registrant Organization: Example Org
-Registrant Country: US
-Registrant State/Province: NV
-Registrant Email: owner@example.com
-Admin Email: admin@example.com
-Tech Email: tech@example.com
-Registrar Abuse Contact Email: abuse@registrar.com
-Name Server: NS1.EXAMPLE.COM
-Name Server: NS2.EXAMPLE.COM
-Domain Status: clientTransferProhibited
-DNSSEC: unsigned
-";
-        let f = parse_whois(s);
-        assert_eq!(f.registrar.as_deref(), Some("Example Registrar LLC"));
-        assert_eq!(f.registrar_iana.as_deref(), Some("1234"));
-        assert_eq!(f.created.as_deref(), Some("2020-01-01T00:00:00Z"));
-        assert_eq!(f.expires.as_deref(), Some("2030-01-01T00:00:00Z"));
-        assert_eq!(f.updated.as_deref(), Some("2024-06-01T00:00:00Z"));
-        assert_eq!(f.registrant_org.as_deref(), Some("Example Org"));
-        assert_eq!(f.registrant_country.as_deref(), Some("US"));
-        assert_eq!(f.registrant_state.as_deref(), Some("NV"));
-        assert_eq!(f.registrant_email.as_deref(), Some("owner@example.com"));
-        assert_eq!(f.admin_email.as_deref(), Some("admin@example.com"));
-        assert_eq!(f.tech_email.as_deref(), Some("tech@example.com"));
-        assert_eq!(f.abuse_email.as_deref(), Some("abuse@registrar.com"));
-        assert_eq!(f.nameservers, ["NS1.EXAMPLE.COM", "NS2.EXAMPLE.COM"]);
-        assert_eq!(f.statuses, ["clientTransferProhibited"]);
-        assert_eq!(f.dnssec.as_deref(), Some("unsigned"));
-    }
-
-    #[test]
-    fn parse_whois_filters_non_at_email_placeholders() {
-        // Registrant Email present but without '@' (REDACTED placeholder) → None.
-        let f = parse_whois("Registrant Email: REDACTED FOR PRIVACY\nRegistrar: X");
-        assert!(f.registrant_email.is_none());
-        assert_eq!(f.registrar.as_deref(), Some("X"));
     }
 }
