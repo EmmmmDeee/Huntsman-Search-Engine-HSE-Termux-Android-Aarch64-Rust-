@@ -92,6 +92,7 @@ pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, t
     let proxy_clone = std::sync::Arc::clone(&state.proxy_pool);
     let engine = Arc::clone(&state.engine);
     let sem = Arc::clone(&state.scan_semaphore);
+    let store_clone = Arc::clone(&state.store);
     tokio::spawn(async move {
         let _cancel_guard = cancel_guard;
         let api_keys = keys::populate_and_load().await;
@@ -107,8 +108,27 @@ pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, t
             tracing::warn!(scan_id = %sid, "scan semaphore closed");
             return;
         };
-        if let Err(e) = engine.run(scan, target, ctx).await {
-            tracing::warn!(scan_id = %sid, error = %e, "scan failed");
+        match engine.run(scan, target, ctx).await {
+            Ok(completed) => {
+                // Mirror the CLI's post-scan diagnostics: update the cross-scan
+                // module-stats ledger so API/web scans feed adaptive routing the
+                // same as `hse scan` CLI runs do.
+                if let Ok(entities) = store_clone.entities_for_scan(&sid) {
+                    let wall_ms = completed
+                        .finished_at
+                        .and_then(|f| f.checked_sub(completed.started_at))
+                        .unwrap_or(0)
+                        .saturating_mul(1000);
+                    crate::util::diagnostics::analyse(
+                        &sid,
+                        completed.target.kind.canonical_str(),
+                        &completed.target.value,
+                        wall_ms,
+                        &entities,
+                    );
+                }
+            }
+            Err(e) => tracing::warn!(scan_id = %sid, error = %e, "scan failed"),
         }
     });
 }
