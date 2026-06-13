@@ -591,7 +591,7 @@ fn extract_geo_entities(
 /// objects/arrays as compact JSON. This is what makes a result traceable to its
 /// actual raw source record rather than just a module name + entity hash.
 fn record_evidence(item: &Value, dbname: &str, endpoint: &str, key_fp: &str) -> Evidence {
-    let mut ev = Evidence::new(SRC, format!("SeekNow record from {dbname}"))
+    let ev = Evidence::new(SRC, format!("SeekNow record from {dbname}"))
         .with_attr("source", dbname)
         // Provenance: which provider, which exact API key, and which endpoint
         // returned this record. Stamped on EVERY record so a finding always
@@ -599,26 +599,22 @@ fn record_evidence(item: &Value, dbname: &str, endpoint: &str, key_fp: &str) -> 
         .with_attr("provider", "see-know.eu")
         .with_attr("api_key_origin", key_fp)
         .with_attr("via_endpoint", endpoint);
-    if let Some(obj) = item.as_object() {
-        for (k, v) in obj {
-            let val = match v {
-                Value::Null => continue,
-                Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            if val.is_empty() {
-                continue;
-            }
-            // Don't clobber the canonical "source" attribute set above.
-            let key = if k == "source" {
-                "source_db"
-            } else {
-                k.as_str()
-            };
-            ev = ev.with_attr(key, val);
+    let Some(obj) = item.as_object() else {
+        return ev;
+    };
+    obj.iter().fold(ev, |ev, (k, v)| {
+        let val = match v {
+            Value::Null => return ev,
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        if val.is_empty() {
+            return ev;
         }
-    }
-    ev
+        // Don't clobber the canonical "source" attribute set above.
+        let key = if k == "source" { "source_db" } else { k.as_str() };
+        ev.with_attr(key, val)
+    })
 }
 
 fn extract_entities(
