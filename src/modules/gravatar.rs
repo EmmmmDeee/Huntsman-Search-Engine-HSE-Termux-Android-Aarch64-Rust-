@@ -122,6 +122,14 @@ impl Module for Gravatar {
         ModuleCategory::People
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // People default (T1589.003 Employee Names + T1591.004 Identify Roles) but
+        // Gravatar surfaces no role information — only Person, Username, URL, and a
+        // profile location Address (T1591.001 Determine Physical Locations). Drop
+        // the over-claimed T1591.004 and add the correct T1591.001.
+        &["T1591.001", "T1589.003"]
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         // One small JSON GET, but mobile networks are slow; budget well above
         // the 3s default so a single slow response isn't a spurious timeout.

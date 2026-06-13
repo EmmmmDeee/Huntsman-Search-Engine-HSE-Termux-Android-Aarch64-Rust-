@@ -378,6 +378,77 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "censys → scan-db + IP info + physical location"
     );
 
+    // ipapi is a passive geolocation API identical in surface to the geo-5 above:
+    // IP address info + physical location + ISP/operator organisation.
+    assert_eq!(
+        techniques("ipapi"),
+        vec!["T1590.005", "T1591.001", "T1591.002"],
+        "ipapi → IP Addresses + Physical Locations + Business Relationships"
+    );
+    assert!(
+        !techniques("ipapi").contains(&"T1596.005"),
+        "ipapi is a passive geo API, not a scan database (T1596.005)"
+    );
+
+    // Keybase: Social category but profiles include a user-declared location
+    // string → Physical Locations (T1591.001) alongside Social Media (T1593.001)
+    // and Employee Names (T1589.003).
+    assert_eq!(
+        techniques("keybase"),
+        vec!["T1591.001", "T1593.001", "T1589.003"],
+        "keybase → Physical Locations + Social Media + Employee Names"
+    );
+
+    // NumVerify: Phone category, maps carrier country to a geocodable Address
+    // → T1591.001 Physical Locations alongside the base T1589 phone identity.
+    assert_eq!(
+        techniques("numverify"),
+        vec!["T1589", "T1591.001"],
+        "numverify → Gather Victim Identity Info (Phone) + Physical Locations"
+    );
+
+    // AbuseIPDB: Infrastructure (scan database T1596.005 + IP info T1590.005)
+    // but also identifies the ISP as an Organisation → T1591.002 Business
+    // Relationships, which the Infrastructure default omits.
+    assert_eq!(
+        techniques("abuseipdb"),
+        vec!["T1590.005", "T1591.002", "T1596.005"],
+        "abuseipdb → IP Addresses + Business Relationships + Scan Databases"
+    );
+
+    // GreyNoise: same surface as AbuseIPDB — scan-db + IP info + ISP org.
+    assert_eq!(
+        techniques("greynoise"),
+        vec!["T1590.005", "T1591.002", "T1596.005"],
+        "greynoise → IP Addresses + Business Relationships + Scan Databases"
+    );
+
+    // ip_reputation (AlienVault OTX + Tor): threat intel vendor (T1597.001)
+    // rather than passive scan database (T1596.005). Also emits ISP/adversary
+    // Organisation (T1591.002) alongside IP info (T1590.005).
+    assert_eq!(
+        techniques("ip_reputation"),
+        vec!["T1590.005", "T1591.002", "T1597.001"],
+        "ip_reputation → IP Addresses + Business Relationships + Threat Intel Vendors"
+    );
+    assert!(
+        !techniques("ip_reputation").contains(&"T1596.005"),
+        "ip_reputation uses OTX (threat intel vendor T1597.001), not a scan database"
+    );
+
+    // Gravatar: People category, but profile location → T1591.001 Physical
+    // Locations. T1591.004 (Identify Roles) dropped — Gravatar profiles carry
+    // no role information.
+    assert_eq!(
+        techniques("gravatar"),
+        vec!["T1591.001", "T1589.003"],
+        "gravatar → Physical Locations + Employee Names (no roles)"
+    );
+    assert!(
+        !techniques("gravatar").contains(&"T1591.004"),
+        "gravatar surfaces no role/job info; must not claim Identify Roles"
+    );
+
     // Every overridden ID is still a real catalogue entry (no typos).
     for name in [
         "github_user",
@@ -390,6 +461,13 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "ip_geo",
         "ip2location",
         "ip_whois_geo",
+        "ipapi",
+        "keybase",
+        "numverify",
+        "abuseipdb",
+        "greynoise",
+        "ip_reputation",
+        "gravatar",
     ] {
         for id in techniques(name) {
             assert!(
