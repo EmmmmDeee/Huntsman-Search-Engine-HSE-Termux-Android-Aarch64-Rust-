@@ -200,6 +200,14 @@ impl Module for OpenCorporates {
         ModuleCategory::Corporate
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // A company registry: it establishes the business and its officers
+        // (T1591.002 Business Relationships + T1591.004 Identify Roles) and
+        // geocodes the registered address to coordinates, so it also Determines
+        // Physical Locations (T1591.001) — which the Corporate default omits.
+        &["T1591.001", "T1591.002", "T1591.004"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::Organisation,

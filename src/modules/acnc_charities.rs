@@ -364,6 +364,16 @@ impl Module for AcncCharities {
         ModuleCategory::Corporate
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // A charity/entity registry: it establishes the organisation
+        // (T1591.002 Business Relationships) and geocodes its registered address
+        // to coordinates, so it also Determines Physical Locations (T1591.001) —
+        // which the Corporate default omits. It surfaces no individual
+        // officer/role, so the default's T1591.004 (Identify Roles) is dropped
+        // (cf. au_people / oathnet_pro).
+        &["T1591.001", "T1591.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::Organisation,

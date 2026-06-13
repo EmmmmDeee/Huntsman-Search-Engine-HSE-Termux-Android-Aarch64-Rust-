@@ -322,6 +322,28 @@ fn attack_overrides_attribute_collection_modules_precisely() {
     // WAF/CDN fingerprinting → Network Security Appliances + CDNs (not the Web default).
     assert_eq!(techniques("waf_detect"), vec!["T1590.006", "T1596.004"]);
 
+    // Corporate registries geocode the registered business address to
+    // coordinates, so they also Determine Physical Locations (T1591.001) — which
+    // the Corporate default (Business Relationships + Identify Roles) omits. The
+    // three that surface no officer/role drop the inherited T1591.004; only
+    // opencorporates, which lists officers, keeps it.
+    for name in ["abn_lookup", "acnc_charities", "gleif_lei"] {
+        assert_eq!(
+            techniques(name),
+            vec!["T1591.001", "T1591.002"],
+            "{name} → Physical Locations + Business Relationships (no roles)"
+        );
+        assert!(
+            !techniques(name).contains(&"T1591.004"),
+            "{name} surfaces no officer/role; must not claim Identify Roles"
+        );
+    }
+    assert_eq!(
+        techniques("opencorporates"),
+        vec!["T1591.001", "T1591.002", "T1591.004"],
+        "opencorporates lists officers → also Identify Roles",
+    );
+
     // Every overridden ID is still a real catalogue entry (no typos).
     for name in [
         "github_user",
