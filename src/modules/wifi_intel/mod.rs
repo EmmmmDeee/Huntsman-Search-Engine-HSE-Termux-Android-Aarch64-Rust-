@@ -1,0 +1,266 @@
+//! Unified WiFi intelligence — access-point survey **and** BSSID geolocation
+//! in a single `termux-wifi-scaninfo` invocation.
+//!
+//! Merges the former `wifi_scan` (AP enumeration → `MacAddress` entities) and
+//! `bssid_locate` (top-N strongest BSSIDs → WiGLE detail → `Coordinates` +
+//! `Address` entities) into one module that calls the Termux API **once**,
+//! halving the radio scan overhead on-device.
+//!
+//! Auth: HTTP Basic — `HUNTSMAN_WIGLE_USER` / `HUNTSMAN_WIGLE_TOKEN` with
+//! hardcoded fallback, same as the `wigle` module.
+
+mod types;
+mod wigle;
+
+#[cfg(test)]
+mod tests;
+
+use async_trait::async_trait;
+
+use crate::core::{
+    entity::{Entity, EntityKind, Evidence},
+    error::Result,
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
+    scan::{Target, TargetKind},
+};
+use crate::util::geo::is_valid_coords;
+use crate::util::termux::termux_cmd;
+
+// ── WiGLE credentials ──────────────────────────────────────────────────
+
+// Env names + embedded fallbacks are resolved by the single-sourced
+// `crate::util::keys::wigle_credentials` (shared with the `wigle` module).
+
+/// How many of the strongest APs to query WiGLE for.
+const MAX_BSSIDS: usize = 5;
+
+/// Evidence source tag used throughout this module.
+pub(super) const SOURCE: &str = "wifi_intel";
+
+// ── Module implementation ──────────────────────────────────────────────
+
+pub struct WifiIntel;
+
+#[async_trait]
+impl Module for WifiIntel {
+    fn name(&self) -> &'static str {
+        "wifi_intel"
+    }
+
+    fn description(&self) -> &'static str {
+        "WiFi AP survey and BSSID geolocation via Termux + WiGLE"
+    }
+
+    fn priority(&self) -> u8 {
+        65
+    }
+
+    fn is_passive(&self) -> bool {
+        // Classed passive as a local sensor: the primary action is reading
+        // on-device Wi-Fi radios via termux-wifi-scaninfo, and off-Termux
+        // the module no-ops before any network use. CAVEAT: when run
+        // on-device with scan results, the top-N strongest BSSIDs are
+        // enriched via the WiGLE API — so under --passive-only this module
+        // CAN still egress for geolocation. This is intentional (it lives in
+        // engine::LOCAL_PASSIVE_MODULES as a seed-round sensor); a strict
+        // no-egress guarantee would require gating the WiGLE step on a
+        // passive flag. Documented in docs/MODULES.md.
+        true
+    }
+
+    fn cost(&self) -> ModuleCost {
+        ModuleCost::KeyGated
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        // Surveys the operator's OWN Wi-Fi radios (local APs), so it must not run
+        // on a remote-subject scan — engage only on a deliberately-local seed
+        // (coordinates / MAC), never a name/email/domain/IP, so the operator's
+        // APs aren't attributed to the subject (fault-tree cut set MCS-A).
+        matches!(t.kind, TargetKind::Coordinates | TargetKind::MacAddress)
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        20_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Geo
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::MacAddress,
+            EntityKind::Coordinates,
+            EntityKind::Address,
+        ];
+        KINDS
+    }
+
+    async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let (user, token) = crate::util::keys::wigle_credentials(ctx);
+
+        // ── Single termux-wifi-scaninfo call ────────────────────────────
+        let Some(stdout) = termux_cmd("termux-wifi-scaninfo", &[], 5000).await else {
+            return Ok(ModuleResult::new());
+        };
+
+        let mut aps: Vec<types::Ap> = match serde_json::from_slice(&stdout) {
+            Ok(v) => v,
+            Err(_) => return Ok(ModuleResult::new()),
+        };
+
+        if aps.is_empty() {
+            return Ok(ModuleResult::new());
+        }
+
+        // Sort by signal strength (strongest first) so top-N selection is
+        // deterministic; we walk the full list for MacAddress entities but
+        // only query WiGLE for the first MAX_BSSIDS.
+        aps.sort_by_key(|a| std::cmp::Reverse(a.rssi.unwrap_or(-100)));
+
+        let mut result = ModuleResult::with_capacity(aps.len());
+
+        // ── Phase 1: MacAddress entities for ALL APs ────────────────────
+        result.extend(aps.iter().map(|ap| {
+            let ssid = ap.ssid.as_deref().unwrap_or("<hidden>");
+            let mut e = Entity::new(EntityKind::MacAddress, &ap.bssid, 0.95, &ctx.scan_id);
+            e.tag("wifi-ap");
+            e.add_evidence(
+                Evidence::new(SOURCE, format!("Wi-Fi AP: {ssid}"))
+                    .with_attr("ssid", ssid)
+                    .with_attr("bssid", &ap.bssid)
+                    .with_attr("frequency_mhz", ap.frequency.unwrap_or(0).to_string())
+                    .with_attr("rssi_dbm", ap.rssi.unwrap_or(0).to_string())
+                    .with_attr("timestamp", ap.timestamp.unwrap_or(0).to_string()),
+            );
+            e
+        }));
+
+        // ── Phase 2: WiGLE geolocation for top-N strongest APs ─────────
+        for ap in aps.iter().take(MAX_BSSIDS) {
+            if ctx.cancel.is_cancelled() {
+                break;
+            }
+
+            if ap.bssid.len() < 12 {
+                continue;
+            }
+
+            if let Ok(Some(detail)) =
+                wigle::query_wigle_detail(&ctx.http, user, token, &ap.bssid).await
+                && let (Some(lat), Some(lon)) = (detail.trilat, detail.trilong)
+            {
+                // Shared validator: Null Island + out-of-range + non-finite.
+                if !is_valid_coords(lat, lon) {
+                    continue;
+                }
+
+                let coords = format!("{lat:.6},{lon:.6}");
+                let ssid = detail
+                    .ssid
+                    .as_deref()
+                    .or(ap.ssid.as_deref())
+                    .unwrap_or("<hidden>");
+
+                let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.80, &ctx.scan_id);
+                e.tag("geoint");
+                e.tag("wifi-ap");
+                e.tag("bssid-located");
+
+                let mut ev = Evidence::new(
+                    SOURCE,
+                    format!("BSSID {} ({ssid}) \u{2192} {coords}", ap.bssid),
+                )
+                .with_attr("bssid", &ap.bssid)
+                .with_attr("ssid", ssid)
+                .with_attr("latitude", lat.to_string())
+                .with_attr("longitude", lon.to_string())
+                .with_attr("source", "WiGLE");
+
+                if let Some(rssi) = ap.rssi {
+                    ev = ev.with_attr("rssi_dbm", rssi.to_string());
+                }
+                if let Some(c) = detail.city.as_deref() {
+                    ev = ev.with_attr("city", c);
+                }
+                if let Some(r) = detail.region.as_deref() {
+                    ev = ev.with_attr("region", r);
+                }
+                if let Some(c) = detail.country.as_deref() {
+                    ev = ev.with_attr("country", c);
+                }
+                if let Some(p) = detail.postalcode.as_deref() {
+                    ev = ev.with_attr("postcode", p);
+                }
+                if let Some(t) = detail.lastupdt.as_deref() {
+                    ev = ev.with_attr("last_updated", t);
+                }
+                if let Some(enc) = detail.encryption.as_deref() {
+                    ev = ev.with_attr("encryption", enc);
+                }
+
+                e.add_evidence(ev);
+                result.push(e);
+
+                // Also emit an Address entity if we have city + country
+                let addr_parts: Vec<&str> = [
+                    detail.city.as_deref(),
+                    detail.region.as_deref(),
+                    detail.country.as_deref(),
+                ]
+                .iter()
+                .filter_map(|p| *p)
+                .filter(|p| !p.is_empty())
+                .collect();
+
+                if addr_parts.len() >= 2 {
+                    let mut addr_str = addr_parts.join(", ");
+                    if let Some(p) = detail.postalcode.as_deref()
+                        && !p.is_empty()
+                    {
+                        addr_str = format!("{addr_str} {p}");
+                    }
+                    let mut addr =
+                        Entity::new(EntityKind::Address, &addr_str, 0.60, &ctx.scan_id);
+                    addr.tag("geoint");
+                    addr.tag("bssid-derived");
+                    addr.add_evidence(
+                        Evidence::new(SOURCE, format!("Address from BSSID {} location", ap.bssid))
+                            .with_attr("bssid", &ap.bssid),
+                    );
+                    result.push(addr);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+}
+
+// ── Standalone AP parser (used by tests, mirrors old wifi_scan logic) ──
+
+#[cfg(test)]
+fn parse_aps(stdout: &[u8], scan_id: &str) -> ModuleResult {
+    let aps: Vec<types::Ap> = match serde_json::from_slice(stdout) {
+        Ok(v) => v,
+        Err(_) => return ModuleResult::new(),
+    };
+
+    let mut result = ModuleResult::with_capacity(aps.len());
+    for ap in aps {
+        let ssid = ap.ssid.as_deref().unwrap_or("<hidden>");
+        let mut e = Entity::new(EntityKind::MacAddress, &ap.bssid, 0.95, scan_id);
+        e.tag("wifi-ap");
+        e.add_evidence(
+            Evidence::new(SOURCE, format!("Wi-Fi AP: {ssid}"))
+                .with_attr("ssid", ssid)
+                .with_attr("bssid", ap.bssid)
+                .with_attr("frequency_mhz", ap.frequency.unwrap_or(0).to_string())
+                .with_attr("rssi_dbm", ap.rssi.unwrap_or(0).to_string())
+                .with_attr("timestamp", ap.timestamp.unwrap_or(0).to_string()),
+        );
+        result.push(e);
+    }
+    result
+}
