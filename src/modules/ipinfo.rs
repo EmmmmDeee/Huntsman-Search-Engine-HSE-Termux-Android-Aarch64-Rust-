@@ -161,6 +161,14 @@ impl Module for IpInfo {
         ModuleCategory::Infrastructure
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Infrastructure default (T1590.005 + T1596.005) covers IP info but
+        // ipinfo.io is a passive geolocation API, not a scan database (T1596.005).
+        // It maps IPs to physical coordinates + address (T1591.001) and identifies
+        // the ISP/ASN operator as an Organisation (T1591.002).
+        &["T1590.005", "T1591.001", "T1591.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::Coordinates,

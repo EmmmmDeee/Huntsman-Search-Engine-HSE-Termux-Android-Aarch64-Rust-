@@ -344,12 +344,13 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "opencorporates lists officers → also Identify Roles",
     );
 
-    // IP geolocation modules sit in Geo (ip_geo) or Infrastructure (ip2location,
-    // ip_whois_geo) but all three emit Coordinates + Address (T1591.001) and an
-    // ISP/Organisation entity (T1591.002) alongside ASN info (T1590.005).
+    // IP geolocation modules (Geo or Infrastructure category) all emit
+    // Coordinates + Address (T1591.001 Physical Locations) and an ISP/Organisation
+    // entity (T1591.002 Business Relationships) alongside ASN info (T1590.005).
     // The Geo default (T1591.001 only) and Infrastructure default (T1590.005 +
-    // T1596.005) both under-claim; all three declare the precise triple instead.
-    for name in ["ip_geo", "ip2location", "ip_whois_geo"] {
+    // T1596.005 Scan Databases) both under-claim; all five declare the precise
+    // triple instead — none are scan databases, all are passive geolocation APIs.
+    for name in ["ip_geo", "ip2location", "ip_whois_geo", "ipinfo", "ipquery"] {
         assert_eq!(
             techniques(name),
             vec!["T1590.005", "T1591.001", "T1591.002"],
