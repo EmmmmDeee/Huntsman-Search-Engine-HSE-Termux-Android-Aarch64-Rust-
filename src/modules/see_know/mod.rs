@@ -110,6 +110,26 @@ impl Module for SeekNow {
         ModuleCategory::Breach
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // SeekNow's broad breach + stealer + OSINT corpus is the widest single
+        // Reconnaissance surface in HSE. Beyond the Breach-category default
+        // (credentials + email) its extractors gather employee names, physical
+        // locations, org/employer relationships, social-media handles, network
+        // IP/ASN records, and host device fingerprints — so it declares the
+        // precise (additive) superset and the per-scan coverage report credits
+        // every technique its extraction actually exercises, not just two.
+        &[
+            "T1589.001", // Credentials — leaked passwords / hashes (Password, credential)
+            "T1589.002", // Email Addresses
+            "T1589.003", // Employee Names — full_name / first+last → Person
+            "T1590.005", // IP Addresses — ip / ASN / network records
+            "T1591.001", // Determine Physical Locations — address / coords / city-state
+            "T1591.002", // Business Relationships — company / employer / org
+            "T1592",     // Gather Victim Host Information — MAC / HWID / hostname / device_id
+            "T1593.001", // Social Media — telegram / facebook / instagram / … handles
+        ]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::Email,
@@ -1552,6 +1572,35 @@ mod tests {
     #[test]
     fn category_is_breach() {
         assert_eq!(SeekNow.category(), ModuleCategory::Breach);
+    }
+
+    #[test]
+    fn attack_techniques_credit_the_full_recon_surface() {
+        use crate::core::attack;
+        let t = SeekNow.attack_techniques();
+        // Superset of the Breach category default — SeekNow genuinely returns
+        // leaked credentials and emails, so the precise mapping must still claim
+        // them (regression guard against silently narrowing the override).
+        for default in attack::techniques_for_category(ModuleCategory::Breach) {
+            assert!(
+                t.contains(default),
+                "see_know mapping must keep the Breach default {default}, got {t:?}"
+            );
+        }
+        // …plus the additional surfaces its extractors actually gather, so the
+        // per-scan ATT&CK coverage report credits them: employee names, physical
+        // location, org relationships, host fingerprints, and social handles.
+        for id in [
+            "T1589.003", // Employee Names
+            "T1590.005", // IP Addresses
+            "T1591.001", // Physical Locations
+            "T1591.002", // Business Relationships
+            "T1592",     // Host Information (device fingerprints)
+            "T1593.001", // Social Media
+        ] {
+            assert!(t.contains(&id), "see_know must claim {id}");
+            assert!(attack::technique(id).is_some(), "{id} must be catalogued");
+        }
     }
 
     #[test]
