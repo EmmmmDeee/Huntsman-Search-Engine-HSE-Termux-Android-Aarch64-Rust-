@@ -7,6 +7,9 @@
 //! Pivots from a Username target to discover linked accounts across
 //! platforms (Twitter, GitHub, Reddit, HN, personal sites, PGP keys).
 
+#[cfg(test)]
+mod tests;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -18,70 +21,70 @@ use crate::core::{
 };
 use crate::util::http::urlencode;
 
-const SRC: &str = "keybase";
+pub(super) const SRC: &str = "keybase";
 
 pub struct Keybase;
 
 #[derive(Deserialize)]
-struct KbResp {
+pub(super) struct KbResp {
     #[serde(default)]
-    status: Option<KbStatus>,
+    pub(super) status: Option<KbStatus>,
     #[serde(default)]
-    them: Option<Vec<KbUser>>,
+    pub(super) them: Option<Vec<KbUser>>,
 }
 
 #[derive(Deserialize)]
-struct KbStatus {
+pub(super) struct KbStatus {
     #[serde(default)]
-    code: Option<i32>,
+    pub(super) code: Option<i32>,
 }
 
 #[derive(Deserialize)]
-struct KbUser {
+pub(super) struct KbUser {
     #[serde(default)]
-    id: Option<String>,
+    pub(super) id: Option<String>,
     #[serde(default)]
-    basics: Option<KbBasics>,
+    pub(super) basics: Option<KbBasics>,
     #[serde(default)]
-    profile: Option<KbProfile>,
+    pub(super) profile: Option<KbProfile>,
     #[serde(default)]
-    proofs_summary: Option<KbProofs>,
+    pub(super) proofs_summary: Option<KbProofs>,
 }
 
 #[derive(Deserialize)]
-struct KbBasics {
+pub(super) struct KbBasics {
     #[serde(default)]
-    username: Option<String>,
+    pub(super) username: Option<String>,
     #[serde(default)]
-    ctime: Option<i64>,
+    pub(super) ctime: Option<i64>,
 }
 
 #[derive(Deserialize)]
-struct KbProfile {
+pub(super) struct KbProfile {
     #[serde(default)]
-    full_name: Option<String>,
+    pub(super) full_name: Option<String>,
     #[serde(default)]
-    location: Option<String>,
+    pub(super) location: Option<String>,
     #[serde(default)]
-    bio: Option<String>,
+    pub(super) bio: Option<String>,
 }
 
 #[derive(Deserialize)]
-struct KbProofs {
+pub(super) struct KbProofs {
     #[serde(default)]
-    all: Vec<KbProof>,
+    pub(super) all: Vec<KbProof>,
 }
 
 #[derive(Deserialize)]
-struct KbProof {
+pub(super) struct KbProof {
     #[serde(default)]
-    proof_type: Option<String>,
+    pub(super) proof_type: Option<String>,
     #[serde(default)]
-    nametag: Option<String>,
+    pub(super) nametag: Option<String>,
     #[serde(default)]
-    service_url: Option<String>,
+    pub(super) service_url: Option<String>,
     #[serde(default)]
-    state: Option<i32>,
+    pub(super) state: Option<i32>,
 }
 
 #[async_trait]
@@ -273,7 +276,7 @@ impl Module for Keybase {
 /// emitted; each cross-platform handle is a cryptographically-verified pivot,
 /// so we ALSO surface its `service_url` as a first-class (confirmed) profile
 /// link rather than discarding it.
-fn extract_proofs(proofs: &[KbProof], kb_username: &str, scan_id: &str, result: &mut ModuleResult) {
+pub(super) fn extract_proofs(proofs: &[KbProof], kb_username: &str, scan_id: &str, result: &mut ModuleResult) {
     // Emit the verified profile URL a proof points at (when present + http).
     let push_service_url = |result: &mut ModuleResult, ptype: &str, url: Option<&str>| {
         if let Some(u) = url.filter(|u| u.starts_with("http")) {
@@ -365,96 +368,5 @@ fn extract_proofs(proofs: &[KbProof], kb_username: &str, scan_id: &str, result: 
             }
             _ => push_service_url(result, ptype, service_url),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_username_only() {
-        let m = Keybase;
-        assert!(m.accepts(&Target::new(TargetKind::Username, "alice")));
-        assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
-        assert!(!m.accepts(&Target::new(TargetKind::Domain, "x.com")));
-    }
-
-    #[test]
-    fn module_metadata() {
-        assert_eq!(Keybase.name(), "keybase");
-        assert_eq!(Keybase.priority(), 100);
-        assert_eq!(Keybase.max_timeout_ms(), 4_000);
-        assert!(!Keybase.description().is_empty());
-    }
-
-    #[test]
-    fn parse_response() {
-        let raw = r#"{
-            "status": {"code": 0, "name": "OK"},
-            "them": [{
-                "id": "abc123",
-                "basics": {"username": "alice", "ctime": 1500000000},
-                "profile": {"full_name": "Alice Smith", "location": "Sydney, AU", "bio": "dev"},
-                "proofs_summary": {
-                    "all": [
-                        {"proof_type": "twitter", "nametag": "alice_s", "state": 1},
-                        {"proof_type": "github", "nametag": "alicesmith", "state": 1},
-                        {"proof_type": "dns", "nametag": "alice.dev", "state": 1}
-                    ]
-                }
-            }]
-        }"#;
-        let r: KbResp = serde_json::from_str(raw).unwrap();
-        assert_eq!(r.status.unwrap().code, Some(0));
-        let user = &r.them.unwrap()[0];
-        assert_eq!(
-            user.basics.as_ref().unwrap().username.as_deref(),
-            Some("alice")
-        );
-        assert_eq!(
-            user.profile.as_ref().unwrap().full_name.as_deref(),
-            Some("Alice Smith")
-        );
-        assert_eq!(user.proofs_summary.as_ref().unwrap().all.len(), 3);
-    }
-
-    #[test]
-    fn extract_proofs_maps_verified_links_and_urls() {
-        // Shape captured from the live keybase.io lookup for `chris`.
-        let proofs: Vec<KbProof> = serde_json::from_str(
-            r#"[
-                {"proof_type":"twitter","nametag":"malgorithms","state":1,"service_url":"https://twitter.com/malgorithms"},
-                {"proof_type":"github","nametag":"malgorithms","state":1,"service_url":"https://github.com/malgorithms"},
-                {"proof_type":"gitlab","nametag":"mal","state":1,"service_url":"https://gitlab.com/mal"},
-                {"proof_type":"dns","nametag":"chriscoyne.com","state":1,"service_url":"http://chriscoyne.com"},
-                {"proof_type":"twitter","nametag":"revoked","state":2,"service_url":"https://twitter.com/revoked"}
-            ]"#,
-        )
-        .unwrap();
-        let mut r = ModuleResult::new();
-        extract_proofs(&proofs, "chris", "scan", &mut r);
-        let has = |k: EntityKind, v: &str| r.entities.iter().any(|e| e.kind == k && e.value == v);
-
-        // Cross-platform handles (incl. the newly-supported gitlab).
-        assert!(has(EntityKind::Username, "malgorithms"));
-        assert!(
-            has(EntityKind::Username, "mal"),
-            "gitlab proof now supported"
-        );
-        // Verified service_url surfaced as a first-class profile link.
-        assert!(has(EntityKind::Url, "https://github.com/malgorithms"));
-        // DNS proof → owned domain.
-        assert!(has(EntityKind::Domain, "chriscoyne.com"));
-        // Revoked (state != 1) proof dropped entirely.
-        assert!(!has(EntityKind::Username, "revoked"));
-        assert!(!has(EntityKind::Url, "https://twitter.com/revoked"));
-        // Verified handles carry the `verified` tag.
-        let gh = r
-            .entities
-            .iter()
-            .find(|e| e.kind == EntityKind::Username && e.value == "malgorithms")
-            .unwrap();
-        assert!(gh.has_tag("verified") && gh.has_tag("keybase"));
     }
 }
