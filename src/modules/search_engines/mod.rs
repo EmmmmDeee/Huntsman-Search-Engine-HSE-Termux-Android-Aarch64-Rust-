@@ -148,6 +148,15 @@ impl Module for SearchEngines {
         ModuleCategory::Search
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Search Engines (T1593.002) is the default. SERP scraping also surfaces
+        // email addresses (T1589.002), real-name Person entities (T1589.003),
+        // physical addresses / coordinates (T1591.001), and organisation names
+        // including corporate registrations (T1591.002) — none of which the
+        // Search category default declares.
+        &["T1589.002", "T1589.003", "T1591.001", "T1591.002", "T1593.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         // 17-engine SERP scraping discovers a wide range of entity
         // types: identity fragments (emails, usernames), infrastructure

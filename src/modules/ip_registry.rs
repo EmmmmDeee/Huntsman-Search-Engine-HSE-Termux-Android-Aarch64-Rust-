@@ -167,6 +167,15 @@ impl Module for IpRegistry {
         ModuleCategory::Infrastructure
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // ip_registry queries RDAP (the standardised WHOIS replacement, T1596.002)
+        // and BGPView (IP/ASN intelligence, T1590.005). It emits abuse-contact
+        // Email entities (T1589.002) and the ASN operator as a Business
+        // Relationship (T1591.002). T1596.005 (Scan Databases) does not apply —
+        // RDAP and BGPView are registration/routing databases, not port-scan corpora.
+        &["T1589.002", "T1590.005", "T1591.002", "T1596.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::IpAddress,

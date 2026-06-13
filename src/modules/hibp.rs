@@ -270,51 +270,46 @@ impl Hibp {
         );
         result.push(email_ent);
 
-        // Extract data classes to tag risk level
-        let mut has_passwords = false;
-        let mut has_phone = false;
-        let mut has_physical = false;
+        // Extract data classes to tag risk level — short-circuit scan per flag.
+        let has_passwords = breaches
+            .iter()
+            .flat_map(|b| &b.data_classes)
+            .any(|dc| dc.to_ascii_lowercase().contains("password"));
+        let has_phone = breaches
+            .iter()
+            .flat_map(|b| &b.data_classes)
+            .any(|dc| dc.to_ascii_lowercase().contains("phone"));
+        let has_physical = breaches.iter().flat_map(|b| &b.data_classes).any(|dc| {
+            let dcl = dc.to_ascii_lowercase();
+            dcl.contains("physical") || dcl.contains("address") || dcl.contains("location")
+        });
 
-        for breach in &breaches {
-            for dc in &breach.data_classes {
-                let dcl = dc.to_lowercase();
-                if dcl.contains("password") {
-                    has_passwords = true;
-                }
-                if dcl.contains("phone") {
-                    has_phone = true;
-                }
-                if dcl.contains("physical") || dcl.contains("address") || dcl.contains("location") {
-                    has_physical = true;
-                }
-            }
-
-            // Extract associated domains as expansion seeds
-            if let Some(domain) = &breach.domain
-                && !domain.is_empty()
-                && domain.contains('.')
-            {
-                let mut de = Entity::new(EntityKind::Domain, domain, 0.55, &ctx.scan_id);
-                de.tag(tags::BREACH);
-                de.tag("hibp");
-                de.tag(tags::BREACH_DERIVED);
-                de.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!(
-                            "Domain from breach '{}' ({})",
-                            breach.name,
-                            breach.breach_date.as_deref().unwrap_or("unknown date")
-                        ),
-                    )
-                    .with_attr("breach_name", &breach.name)
-                    .with_attr("pwn_count", breach.pwn_count.unwrap_or(0).to_string())
-                    .with_attr("data_classes", breach.data_classes.join(", "))
-                    .with_attr("breach_date", breach.breach_date.as_deref().unwrap_or("")),
-                );
-                result.push(de);
-            }
-        }
+        // Extract associated domains as expansion seeds.
+        result.extend(breaches.iter().filter_map(|breach| {
+            let domain = breach
+                .domain
+                .as_deref()
+                .filter(|d| !d.is_empty() && d.contains('.'))?;
+            let mut de = Entity::new(EntityKind::Domain, domain, 0.55, &ctx.scan_id);
+            de.tag(tags::BREACH);
+            de.tag("hibp");
+            de.tag(tags::BREACH_DERIVED);
+            de.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!(
+                        "Domain from breach '{}' ({})",
+                        breach.name,
+                        breach.breach_date.as_deref().unwrap_or("unknown date")
+                    ),
+                )
+                .with_attr("breach_name", &breach.name)
+                .with_attr("pwn_count", breach.pwn_count.unwrap_or(0).to_string())
+                .with_attr("data_classes", breach.data_classes.join(", "))
+                .with_attr("breach_date", breach.breach_date.as_deref().unwrap_or("")),
+            );
+            Some(de)
+        }));
 
         // Emit risk-level tags on the email entity
         if has_passwords && let Some(e) = result.entities.first_mut() {

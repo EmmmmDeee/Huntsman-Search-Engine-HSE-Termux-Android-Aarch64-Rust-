@@ -483,6 +483,45 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         );
     }
 
+    // WiGLE: Geo category (T1591.001 Physical Locations) but also surfaces
+    // the cellular carrier / WiFi network operator as an Organisation →
+    // T1591.002 Business Relationships.
+    assert_eq!(
+        techniques("wigle"),
+        vec!["T1591.001", "T1591.002"],
+        "wigle → Physical Locations + Business Relationships (carrier/operator)"
+    );
+
+    // ip_registry: queries RDAP (T1596.002 WHOIS) + BGPView (T1590.005 IP Addresses).
+    // Emits abuse-contact emails (T1589.002) and ASN operator org (T1591.002).
+    // T1596.005 (Scan Databases) does not apply to registration/routing databases.
+    assert_eq!(
+        techniques("ip_registry"),
+        vec!["T1589.002", "T1590.005", "T1591.002", "T1596.002"],
+        "ip_registry → Email Addresses + IP Addresses + Business Relationships + WHOIS"
+    );
+    assert!(
+        !techniques("ip_registry").contains(&"T1596.005"),
+        "ip_registry queries RDAP/BGPView — not a scan database (T1596.005)"
+    );
+
+    // exif_geo: Geo category (T1591.001) but EXIF Author field → Person entity
+    // → T1589.003 Employee Names, which the Geo default omits.
+    assert_eq!(
+        techniques("exif_geo"),
+        vec!["T1589.003", "T1591.001"],
+        "exif_geo → Employee Names (EXIF author) + Physical Locations (GPS)"
+    );
+
+    // search_engines: Search category (T1593.002) but SERP scraping surfaces
+    // emails, real names, addresses, and organisations — all techniques absent
+    // from the narrow Search category default.
+    assert_eq!(
+        techniques("search_engines"),
+        vec!["T1589.002", "T1589.003", "T1591.001", "T1591.002", "T1593.002"],
+        "search_engines → Email + Employee Names + Physical Locations + Business Relationships + Search Engines"
+    );
+
     // Every overridden ID is still a real catalogue entry (no typos).
     for name in [
         "github_user",
@@ -506,6 +545,10 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "urlscan",
         "dehashed",
         "intelx",
+        "wigle",
+        "ip_registry",
+        "exif_geo",
+        "search_engines",
     ] {
         for id in techniques(name) {
             assert!(

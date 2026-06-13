@@ -169,6 +169,15 @@ impl Module for Wigle {
     fn category(&self) -> ModuleCategory {
         ModuleCategory::Geo
     }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Geo default (T1591.001 Physical Locations) covers the Coordinates and
+        // Address entities. WiGLE also surfaces the cellular carrier / WiFi
+        // network operator as an Organisation entity → T1591.002 Business
+        // Relationships, which the Geo default omits.
+        &["T1591.001", "T1591.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         // WiGLE corroborates Coordinates with WiFi density, emits
         // city/region/country as Address, surfaces top APs as

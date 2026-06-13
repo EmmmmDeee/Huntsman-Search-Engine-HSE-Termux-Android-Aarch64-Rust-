@@ -186,9 +186,7 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
         }
         let mut e = Entity::new(kind, v, conf, scan_id);
         e.tag(SRC);
-        for t in tags {
-            e.tag(*t);
-        }
+        tags.iter().for_each(|t| e.tag(*t));
         e.add_evidence(ev());
         out.push(e);
     };
