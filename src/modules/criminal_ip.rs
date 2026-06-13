@@ -130,9 +130,9 @@ impl Module for CriminalIp {
         // Criminal IP is a paid threat-intel vendor (risk scoring + VPN/proxy/
         // tor/scanner classification), so beyond the Infrastructure default
         // (T1590.005 IP Addresses + T1596.005 Scan Databases) it is Search
-        // Closed Sources: Threat Intel Vendors (T1597.001). Superset of the
-        // default — coverage cannot regress.
-        &["T1590.005", "T1596.005", "T1597.001"]
+        // Closed Sources: Threat Intel Vendors (T1597.001). Also surfaces the
+        // ASN operator as an Organisation entity → T1591.002 Business Relationships.
+        &["T1590.005", "T1591.002", "T1596.005", "T1597.001"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {

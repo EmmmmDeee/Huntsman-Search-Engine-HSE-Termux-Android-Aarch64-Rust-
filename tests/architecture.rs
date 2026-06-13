@@ -571,6 +571,58 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "cell_intel → Physical Locations (triangulated) + Host Information"
     );
 
+    // reddit_user: same profile as hacker_news — Social default over-claims
+    // T1589.003 (no Person entity emitted); adds T1589.002 for bio emails.
+    assert_eq!(
+        techniques("reddit_user"),
+        vec!["T1589.002", "T1593.001"],
+        "reddit_user → Email Addresses + Social Media (no real-name Person)"
+    );
+    assert!(
+        !techniques("reddit_user").contains(&"T1589.003"),
+        "reddit_user emits no Person entity; must not claim Employee Names"
+    );
+
+    // epieos: People default drops over-claimed T1591.004 (no roles); adds
+    // T1589.002 for the email seed and T1591.001 for location Address.
+    assert_eq!(
+        techniques("epieos"),
+        vec!["T1589.002", "T1589.003", "T1591.001"],
+        "epieos → Email Addresses + Employee Names + Physical Locations"
+    );
+    assert!(
+        !techniques("epieos").contains(&"T1591.004"),
+        "epieos carries no role/job data; must not claim Identify Roles"
+    );
+
+    // local_net: Sensor default (T1592) adds T1590.005 for IpAddress enumeration.
+    assert_eq!(
+        techniques("local_net"),
+        vec!["T1590.005", "T1592"],
+        "local_net → IP Addresses (local network sweep) + Host Information (MAC)"
+    );
+
+    // leakix: existing override adds T1590.005 for the exposed-service IpAddress.
+    assert_eq!(
+        techniques("leakix"),
+        vec!["T1589.001", "T1589.002", "T1590.005", "T1596.005"],
+        "leakix → Credentials + Email Addresses + IP Addresses + Scan Databases"
+    );
+
+    // ipqs: existing override adds T1589 + T1589.002 for Phone and Email scoring.
+    assert_eq!(
+        techniques("ipqs"),
+        vec!["T1589", "T1589.002", "T1590.005", "T1596.005", "T1597.001"],
+        "ipqs → Victim Identity (Phone) + Email Addresses + IP Addresses + Scan Databases + Threat Intel Vendors"
+    );
+
+    // criminal_ip: existing override adds T1591.002 for ASN operator Organisation.
+    assert_eq!(
+        techniques("criminal_ip"),
+        vec!["T1590.005", "T1591.002", "T1596.005", "T1597.001"],
+        "criminal_ip → IP Addresses + Business Relationships + Scan Databases + Threat Intel Vendors"
+    );
+
     // Every overridden ID is still a real catalogue entry (no typos).
     for name in [
         "github_user",
@@ -603,6 +655,12 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "hudsonrock",
         "wifi_intel",
         "cell_intel",
+        "reddit_user",
+        "epieos",
+        "local_net",
+        "leakix",
+        "ipqs",
+        "criminal_ip",
     ] {
         for id in techniques(name) {
             assert!(

@@ -252,6 +252,14 @@ impl Module for Epieos {
         ModuleCategory::People
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // People default (T1589.003 Employee Names + T1591.004 Identify Roles).
+        // Epieos also surfaces the email address itself (T1589.002) and maps the
+        // owner's location to an Address entity (T1591.001 Physical Locations).
+        // T1591.004 is dropped — epieos carries no role/job information.
+        &["T1589.002", "T1589.003", "T1591.001"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         // The anchor entity is the Email seed re-emitted with enrichment
         // (`target.to_entity` → `EntityKind::Email`, since this module accepts
