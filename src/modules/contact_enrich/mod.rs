@@ -11,6 +11,9 @@
 //! Gravatar endpoint:
 //!   `GET https://www.gravatar.com/{md5}.json`
 
+#[cfg(test)]
+mod tests;
+
 use async_trait::async_trait;
 use md5::{Digest, Md5};
 use serde::Deserialize;
@@ -34,30 +37,30 @@ pub struct ContactEnrich;
 // Numverify response type
 // ---------------------------------------------------------------------------
 
-const NUMVERIFY_KEY_ENV: &str = "HUNTSMAN_NUMVERIFY_KEY";
+pub(super) const NUMVERIFY_KEY_ENV: &str = "HUNTSMAN_NUMVERIFY_KEY";
 
 #[derive(Deserialize)]
-struct NumverifyResp {
+pub(super) struct NumverifyResp {
     #[serde(default)]
-    valid: Option<bool>,
+    pub(super) valid: Option<bool>,
     #[serde(default)]
-    number: Option<String>,
+    pub(super) number: Option<String>,
     #[serde(default)]
-    local_format: Option<String>,
+    pub(super) local_format: Option<String>,
     #[serde(default)]
-    international_format: Option<String>,
+    pub(super) international_format: Option<String>,
     #[serde(default)]
-    country_prefix: Option<String>,
+    pub(super) country_prefix: Option<String>,
     #[serde(default)]
-    country_code: Option<String>,
+    pub(super) country_code: Option<String>,
     #[serde(default)]
-    country_name: Option<String>,
+    pub(super) country_name: Option<String>,
     #[serde(default)]
-    location: Option<String>,
+    pub(super) location: Option<String>,
     #[serde(default)]
-    carrier: Option<String>,
+    pub(super) carrier: Option<String>,
     #[serde(default)]
-    line_type: Option<String>,
+    pub(super) line_type: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -65,49 +68,49 @@ struct NumverifyResp {
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
-struct ProfileResp {
-    entry: Vec<ProfileEntry>,
+pub(super) struct ProfileResp {
+    pub(super) entry: Vec<ProfileEntry>,
 }
 
 #[derive(Deserialize)]
-struct ProfileEntry {
+pub(super) struct ProfileEntry {
     #[serde(rename = "displayName")]
-    display_name: Option<String>,
+    pub(super) display_name: Option<String>,
     #[serde(rename = "preferredUsername")]
-    preferred_username: Option<String>,
+    pub(super) preferred_username: Option<String>,
     #[serde(default)]
-    name: Option<NameField>,
+    pub(super) name: Option<NameField>,
     #[serde(default)]
-    urls: Vec<UrlEntry>,
+    pub(super) urls: Vec<UrlEntry>,
     #[serde(rename = "currentLocation")]
-    location: Option<String>,
+    pub(super) location: Option<String>,
     #[serde(rename = "aboutMe")]
-    about_me: Option<String>,
+    pub(super) about_me: Option<String>,
     #[serde(default)]
-    photos: Option<Vec<PhotoEntry>>,
+    pub(super) photos: Option<Vec<PhotoEntry>>,
 }
 
 #[derive(Deserialize)]
-struct NameField {
-    formatted: Option<String>,
+pub(super) struct NameField {
+    pub(super) formatted: Option<String>,
 }
 
 #[derive(Deserialize)]
-struct UrlEntry {
-    value: Option<String>,
-    title: Option<String>,
+pub(super) struct UrlEntry {
+    pub(super) value: Option<String>,
+    pub(super) title: Option<String>,
 }
 
 #[derive(Deserialize)]
-struct PhotoEntry {
-    value: Option<String>,
+pub(super) struct PhotoEntry {
+    pub(super) value: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
 // Evidence source constant
 // ---------------------------------------------------------------------------
 
-const SRC: &str = "contact_enrich";
+pub(super) const SRC: &str = "contact_enrich";
 
 // ---------------------------------------------------------------------------
 // Module trait implementation
@@ -418,75 +421,4 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     }));
 
     Ok(result)
-}
-
-// ---------------------------------------------------------------------------
-// Tests (preserved from numverify.rs + gravatar.rs)
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_phone_and_email() {
-        let m = ContactEnrich;
-        assert!(m.accepts(&Target::new(TargetKind::Phone, "+1")));
-        assert!(m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
-        assert!(!m.accepts(&Target::new(TargetKind::Username, "x")));
-        assert!(!m.accepts(&Target::new(TargetKind::Domain, "x")));
-    }
-
-    #[test]
-    fn cost_is_free() {
-        assert!(matches!(ContactEnrich.cost(), ModuleCost::Free));
-    }
-
-    #[test]
-    fn priority_and_timeout() {
-        let m = ContactEnrich;
-        assert_eq!(m.priority(), 85);
-        assert_eq!(m.max_timeout_ms(), 6_000);
-    }
-
-    #[test]
-    fn parse_numverify_response() {
-        let raw = r#"{
-          "valid": true,
-          "number": "14158586273",
-          "local_format": "4158586273",
-          "international_format": "+14158586273",
-          "country_prefix": "+1",
-          "country_code": "US",
-          "country_name": "United States of America",
-          "location": "Novato",
-          "carrier": "AT&T Mobility LLC",
-          "line_type": "mobile"
-        }"#;
-        let r: NumverifyResp = serde_json::from_str(raw).unwrap();
-        assert_eq!(r.valid, Some(true));
-        assert_eq!(r.country_code.as_deref(), Some("US"));
-        assert_eq!(r.carrier.as_deref(), Some("AT&T Mobility LLC"));
-        assert_eq!(r.line_type.as_deref(), Some("mobile"));
-    }
-
-    #[test]
-    fn parse_gravatar_response() {
-        let raw = r#"{
-          "entry": [{
-            "displayName": "John Doe",
-            "preferredUsername": "johndoe",
-            "name": {"formatted": "John Doe"},
-            "urls": [{"value": "https://example.com", "title": "Blog"}],
-            "currentLocation": "NYC",
-            "aboutMe": "dev",
-            "photos": [{"value": "https://gravatar.com/avatar/abc"}]
-          }]
-        }"#;
-        let r: ProfileResp = serde_json::from_str(raw).unwrap();
-        assert_eq!(r.entry.len(), 1);
-        let e = &r.entry[0];
-        assert_eq!(e.display_name.as_deref(), Some("John Doe"));
-        assert_eq!(e.location.as_deref(), Some("NYC"));
-    }
 }
