@@ -78,6 +78,14 @@ impl Module for DeviceSensors {
         ModuleCategory::Sensor
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Sensor default (T1592 Host Information) covers MAC address / device
+        // fingerprinting. device_sensors also reads GPS Coordinates → T1591.001
+        // Physical Locations, and the device's local IP address → T1590.005 IP
+        // Addresses — both absent from the Sensor default.
+        &["T1590.005", "T1591.001", "T1592"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::Coordinates,

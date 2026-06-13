@@ -200,23 +200,20 @@ fn extract_company_name(line: &str, acn: &str) -> String {
 fn extract_au_address(text: &str) -> Option<String> {
     // Look for AU state abbreviation followed by a 4-digit postcode.
     let tokens: Vec<&str> = text.split_whitespace().collect();
-    for (i, tok) in tokens.iter().enumerate() {
-        if crate::util::address_au::state_code(tok).is_some() && i + 1 < tokens.len() {
-            let next = tokens[i + 1];
-            if next.len() == 4
-                && next.chars().all(|c| c.is_ascii_digit())
-                && next
-                    .parse::<u32>()
-                    .is_ok_and(|n| (2000..=7999).contains(&n))
-            {
-                // Build a context: up to 4 tokens before + state + postcode.
-                let start = i.saturating_sub(4);
-                let addr_tokens = &tokens[start..=(i + 1)];
-                return Some(addr_tokens.join(" "));
-            }
+    tokens.iter().enumerate().find_map(|(i, tok)| {
+        crate::util::address_au::state_code(tok)?;
+        let next = *tokens.get(i + 1)?;
+        if next.len() == 4
+            && next.chars().all(|c| c.is_ascii_digit())
+            && next.parse::<u32>().is_ok_and(|n| (2000..=7999).contains(&n))
+        {
+            // Build a context: up to 4 tokens before + state + postcode.
+            let start = i.saturating_sub(4);
+            Some(tokens[start..=(i + 1)].join(" "))
+        } else {
+            None
         }
-    }
-    None
+    })
 }
 
 #[async_trait]
