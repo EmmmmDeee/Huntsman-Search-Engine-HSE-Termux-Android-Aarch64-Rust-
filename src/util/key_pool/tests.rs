@@ -1,0 +1,327 @@
+use std::collections::HashMap;
+
+use super::*;
+
+#[test]
+fn export_import_roundtrips_and_is_idempotent() {
+    let src = KeyPool::new();
+    let mut a = KeyEntry::new("key-a");
+    a.environment = Some("prod".into());
+    src.add("shodan", a);
+    src.add("intelx", KeyEntry::new("key-b")); // default env
+
+    let json = src.export_json(None).unwrap();
+    let dst = KeyPool::new();
+    assert_eq!(
+        dst.import_json(&json, None).unwrap(),
+        2,
+        "both keys imported"
+    );
+    // Re-import is idempotent (dedup by value).
+    assert_eq!(dst.import_json(&json, None).unwrap(), 0, "no duplicates");
+    // Environment survives the round-trip.
+    let snap = dst.snapshot();
+    assert_eq!(snap.services["shodan"][0].environment(), "prod");
+    assert_eq!(snap.services["intelx"][0].environment(), "default");
+}
+
+#[test]
+fn export_filters_by_environment() {
+    let pool = KeyPool::new();
+    let mut p = KeyEntry::new("prod-key");
+    p.environment = Some("prod".into());
+    pool.add("shodan", p);
+    pool.add("shodan", KeyEntry::new("default-key")); // default env
+
+    let only_prod = pool.export_json(Some("prod")).unwrap();
+    assert!(only_prod.contains("prod-key"));
+    assert!(
+        !only_prod.contains("default-key"),
+        "env filter must exclude other environments"
+    );
+}
+
+#[test]
+fn revoke_and_rotate_by_id_reference_keys_without_plaintext() {
+    let pool = KeyPool::new();
+    let mut p = KeyEntry::new("old-secret");
+    p.environment = Some("prod".into());
+    pool.add("shodan", p);
+    let id = key_id("old-secret");
+    assert_ne!(id, "old-secret", "id is a hash, not the value");
+
+    // Rotate by id: old revoked (retained), new added in the same env, served.
+    assert!(pool.rotate_by_id("shodan", &id, "new-secret"));
+    let snap = pool.snapshot();
+    let entries = &snap.services["shodan"];
+    let old = entries.iter().find(|e| e.value == "old-secret").unwrap();
+    let new = entries.iter().find(|e| e.value == "new-secret").unwrap();
+    assert_eq!(old.status, KeyStatus::Revoked);
+    assert_eq!(new.environment(), "prod");
+    assert_eq!(pool.next_key("shodan").as_deref(), Some("new-secret"));
+
+    // Revoke the new key by its id.
+    assert!(pool.revoke_by_id("shodan", &key_id("new-secret")));
+    assert_eq!(pool.next_key("shodan"), None);
+    // Unknown id is a no-op.
+    assert!(!pool.revoke_by_id("shodan", "00ff00ff00ff"));
+    assert!(!pool.rotate_by_id("shodan", "00ff00ff00ff", "x"));
+}
+
+#[test]
+fn revoke_makes_a_key_unusable_but_retained() {
+    let pool = KeyPool::new();
+    pool.add("shodan", KeyEntry::new("compromised"));
+    assert_eq!(pool.next_key("shodan").as_deref(), Some("compromised"));
+    assert!(pool.revoke("shodan", "compromised"));
+    // Retained for audit…
+    assert_eq!(pool.snapshot().services["shodan"].len(), 1);
+    assert_eq!(
+        pool.snapshot().services["shodan"][0].status,
+        KeyStatus::Revoked
+    );
+    // …but never selected again.
+    assert_eq!(
+        pool.next_key("shodan"),
+        None,
+        "revoked key must not be used"
+    );
+    assert!(!pool.revoke("shodan", "nonexistent"));
+}
+
+#[test]
+fn rotate_revokes_old_adds_new_carrying_environment() {
+    let pool = KeyPool::new();
+    let mut old = KeyEntry::new("old-key");
+    old.environment = Some("prod".into());
+    old.notes = Some("primary".into());
+    pool.add("shodan", old);
+
+    assert!(pool.rotate("shodan", "old-key", "new-key"));
+    let snap = pool.snapshot();
+    let entries = &snap.services["shodan"];
+    let old_e = entries.iter().find(|e| e.value == "old-key").unwrap();
+    let new_e = entries.iter().find(|e| e.value == "new-key").unwrap();
+    assert_eq!(old_e.status, KeyStatus::Revoked, "old key revoked");
+    assert_eq!(new_e.environment(), "prod", "new key inherits environment");
+    assert_eq!(
+        new_e.notes.as_deref(),
+        Some("primary"),
+        "provenance carried"
+    );
+    assert!(new_e.rotated_at.is_some(), "rotation timestamp stamped");
+    // The pool now serves the new key, not the revoked old one.
+    assert_eq!(pool.next_key("shodan").as_deref(), Some("new-key"));
+    // Rotating a missing key is a no-op.
+    assert!(!pool.rotate("shodan", "ghost", "x"));
+}
+
+#[test]
+fn add_and_cycle() {
+    let pool = KeyPool::new();
+    assert!(pool.add("shodan", KeyEntry::new("key-a")));
+    assert!(pool.add("shodan", KeyEntry::new("key-b")));
+    assert!(!pool.add("shodan", KeyEntry::new("key-a")));
+
+    assert_eq!(pool.service_count("shodan"), 2);
+
+    let k1 = pool.next_key("shodan").unwrap();
+    let k2 = pool.next_key("shodan").unwrap();
+    let k3 = pool.next_key("shodan").unwrap();
+    assert_eq!(k1, "key-a");
+    assert_eq!(k2, "key-b");
+    assert_eq!(k3, "key-a");
+}
+
+#[test]
+fn skips_invalid_keys() {
+    let pool = KeyPool::new();
+    pool.add("intelx", KeyEntry::new("good"));
+    pool.add("intelx", KeyEntry::new("bad"));
+    pool.mark_status("intelx", "bad", KeyStatus::Invalid);
+
+    let k1 = pool.next_key("intelx").unwrap();
+    let k2 = pool.next_key("intelx").unwrap();
+    assert_eq!(k1, "good");
+    assert_eq!(k2, "good");
+}
+
+#[test]
+fn mark_validated() {
+    let pool = KeyPool::new();
+    pool.add("shodan", KeyEntry::new("test-key"));
+    pool.mark_validated("shodan", "test-key", true);
+
+    let snap = pool.snapshot();
+    let entry = &snap.services["shodan"][0];
+    assert_eq!(entry.status, KeyStatus::Active);
+    assert!(entry.last_validated.is_some());
+}
+
+#[test]
+fn remove_key() {
+    let pool = KeyPool::new();
+    pool.add("shodan", KeyEntry::new("k1"));
+    pool.add("shodan", KeyEntry::new("k2"));
+    assert!(pool.remove("shodan", "k1"));
+    assert_eq!(pool.service_count("shodan"), 1);
+    assert!(!pool.remove("shodan", "k1"));
+}
+
+#[test]
+fn empty_service_returns_none() {
+    let pool = KeyPool::new();
+    assert!(pool.next_key("nonexistent").is_none());
+}
+
+#[test]
+fn case_insensitive_service() {
+    let pool = KeyPool::new();
+    pool.add("Shodan", KeyEntry::new("k1"));
+    assert!(pool.next_key("shodan").is_some());
+    assert!(pool.next_key("SHODAN").is_some());
+}
+
+#[test]
+fn merge_fills_gaps() {
+    let pool = KeyPool::new();
+    pool.add("shodan", KeyEntry::new("pool-key"));
+
+    let mut keys = HashMap::new();
+    merge_pool_into_env(&pool, &mut keys);
+    assert_eq!(keys.get("HUNTSMAN_SHODAN_KEY").unwrap(), "pool-key");
+}
+
+#[test]
+fn merge_does_not_override_existing() {
+    let pool = KeyPool::new();
+    pool.add("shodan", KeyEntry::new("pool-key"));
+
+    let mut keys = HashMap::new();
+    keys.insert("HUNTSMAN_SHODAN_KEY".to_string(), "env-key".to_string());
+    merge_pool_into_env(&pool, &mut keys);
+    assert_eq!(keys.get("HUNTSMAN_SHODAN_KEY").unwrap(), "env-key");
+}
+
+#[test]
+fn all_services_defined() {
+    let defs = crate::util::service_defs::service_defs();
+    assert!(defs.len() >= 24);
+    for d in defs {
+        assert!(d.env_var.starts_with("HUNTSMAN_"));
+        assert!(!d.test_url.is_empty());
+    }
+}
+
+#[test]
+fn find_service_works() {
+    assert!(crate::util::service_defs::find_service("shodan").is_some());
+    assert!(crate::util::service_defs::find_service("intelx").is_some());
+    assert!(crate::util::service_defs::find_service("nonexistent").is_none());
+}
+
+#[test]
+fn tier_ordering() {
+    assert!(KeyTier::Premium > KeyTier::Standard);
+    assert!(KeyTier::Standard > KeyTier::Basic);
+    assert!(KeyTier::Basic > KeyTier::Trial);
+}
+
+#[test]
+fn next_key_prefers_higher_tier() {
+    let pool = KeyPool::new();
+    let mut basic = KeyEntry::new("basic-key");
+    basic.tier = KeyTier::Basic;
+    basic.status = KeyStatus::Active;
+    let mut premium = KeyEntry::new("premium-key");
+    premium.tier = KeyTier::Premium;
+    premium.status = KeyStatus::Active;
+    pool.add("shodan", basic);
+    pool.add("shodan", premium);
+
+    let k = pool.next_key("shodan").unwrap();
+    assert_eq!(k, "premium-key", "should prefer higher-tier key");
+}
+
+#[test]
+fn next_key_avoids_error_prone_key() {
+    let pool = KeyPool::new();
+    let mut good = KeyEntry::new("good-key");
+    good.status = KeyStatus::Active;
+    good.error_count = 0;
+    let mut bad = KeyEntry::new("bad-key");
+    bad.status = KeyStatus::Active;
+    bad.error_count = 50;
+    pool.add("shodan", good);
+    pool.add("shodan", bad);
+
+    let k = pool.next_key("shodan").unwrap();
+    assert_eq!(k, "good-key", "should prefer key with fewer errors");
+}
+
+#[test]
+fn add_rejects_non_poolable_services() {
+    // The pool only holds reusable provider keys; the harvest catch-alls
+    // (generic_hex, crypto_*, jwt_token, <svc>_login) must never enter it,
+    // regardless of which ingest path calls add() — this is the chokepoint
+    // that stopped a 6 MB generic_hex pool.
+    let pool = KeyPool::new();
+    assert!(
+        pool.add("shodan", KeyEntry::new("real")),
+        "provider key pools"
+    );
+    assert!(!pool.add("generic_hex", KeyEntry::new("deadbeefdeadbeef")));
+    assert!(!pool.add("crypto_sol", KeyEntry::new("So11111111111111")));
+    assert!(!pool.add("shodan_login", KeyEntry::new("user:pass")));
+    assert_eq!(pool.service_count("generic_hex"), 0);
+    assert_eq!(pool.service_count("shodan"), 1);
+}
+
+#[test]
+fn record_error_increments() {
+    let pool = KeyPool::new();
+    pool.add("shodan", KeyEntry::new("k1"));
+    pool.record_error("shodan", "k1");
+    pool.record_error("shodan", "k1");
+    let snap = pool.snapshot();
+    assert_eq!(snap.services["shodan"][0].error_count, 2);
+}
+
+#[test]
+fn success_rate_calculation() {
+    let mut e = KeyEntry::new("k");
+    assert!((e.success_rate() - 1.0).abs() < 1e-9, "unused key = 100%");
+    e.use_count = 10;
+    e.error_count = 3;
+    assert!((e.success_rate() - 0.7).abs() < 1e-9);
+}
+
+#[test]
+fn prune_degraded_removes_bad_keys() {
+    let pool = KeyPool::new();
+    let mut good = KeyEntry::new("good");
+    good.use_count = 100;
+    good.error_count = 5;
+    let mut bad = KeyEntry::new("bad");
+    bad.use_count = 100;
+    bad.error_count = 90;
+    pool.add("shodan", good);
+    pool.add("shodan", bad);
+
+    let pruned = pool.prune_degraded(0.50, 10);
+    assert_eq!(pruned, 1);
+    assert_eq!(pool.service_count("shodan"), 1);
+    assert!(pool.next_key("shodan").unwrap() == "good");
+}
+
+#[test]
+fn prune_degraded_spares_low_use_keys() {
+    let pool = KeyPool::new();
+    let mut new_key = KeyEntry::new("new");
+    new_key.use_count = 2;
+    new_key.error_count = 2;
+    pool.add("shodan", new_key);
+
+    let pruned = pool.prune_degraded(0.50, 10);
+    assert_eq!(pruned, 0, "keys below min_uses should be spared");
+}
