@@ -181,7 +181,7 @@ impl Module for UsernameVariants {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let variants = Self::variants(&target.value);
         let mut result = ModuleResult::with_capacity(variants.len());
-        for v in variants {
+        result.extend(variants.into_iter().map(|v| {
             let mut e = Entity::new(EntityKind::Username, &v, VARIANT_CONF, &ctx.scan_id);
             e.tag("derived");
             e.tag("variant");
@@ -191,8 +191,8 @@ impl Module for UsernameVariants {
                     .with_attr("source_username", &target.value)
                     .with_attr("derivation", "handle_variant"),
             );
-            result.push(e);
-        }
+            e
+        }));
         Ok(result)
     }
 }

@@ -96,6 +96,14 @@ impl Module for Shodan {
     fn category(&self) -> ModuleCategory {
         ModuleCategory::Infrastructure
     }
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Shodan IS a scan database (T1596.005) and gathers IP address info
+        // (T1590.005) — both covered by the Infrastructure default. But it
+        // also maps hosts to their country-level Address (T1591.001 Physical
+        // Locations) and identifies the ASN operator as an Organisation
+        // (T1591.002 Business Relationships) — both absent from the default.
+        &["T1590.005", "T1591.001", "T1591.002", "T1596.005"]
+    }
     fn produces(&self) -> &'static [EntityKind] {
         // Free + paid Shodan paths emit IP host context: domains, URLs,
         // ASN labels, plus the dominant ISP/org as Organisation and

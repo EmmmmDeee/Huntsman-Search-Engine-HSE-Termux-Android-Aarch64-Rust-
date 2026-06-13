@@ -293,9 +293,7 @@ impl Module for Epieos {
         let body: EpieosResp = crate::util::http::json_decode(SRC, resp).await?;
 
         let mut result = ModuleResult::new();
-        for e in build_entities(target, &body, &ctx.scan_id) {
-            result.push(e);
-        }
+        result.extend(build_entities(target, &body, &ctx.scan_id));
         Ok(result)
     }
 }

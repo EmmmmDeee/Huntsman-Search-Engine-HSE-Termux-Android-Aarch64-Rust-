@@ -361,6 +361,22 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         );
     }
 
+    // Scan-database Infrastructure modules that also geocode hosts:
+    // Shodan is a genuine scan db (T1596.005) + IP info (T1590.005) but also
+    // maps country→Address (T1591.001) and ASN→Organisation (T1591.002).
+    assert_eq!(
+        techniques("shodan"),
+        vec!["T1590.005", "T1591.001", "T1591.002", "T1596.005"],
+        "shodan → scan-db + IP info + physical location + org"
+    );
+    // Censys likewise: scan db (T1596.005) + IP info (T1590.005) + datacenter
+    // coordinates and city as physical location (T1591.001).
+    assert_eq!(
+        techniques("censys"),
+        vec!["T1590.005", "T1596.005", "T1591.001"],
+        "censys → scan-db + IP info + physical location"
+    );
+
     // Every overridden ID is still a real catalogue entry (no typos).
     for name in [
         "github_user",

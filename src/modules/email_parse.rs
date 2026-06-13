@@ -133,11 +133,12 @@ impl Module for EmailParse {
 
                 // Split on separators (john.doe -> john, doe). Apply to the
                 // de-tagged version so "+work" doesn't become a username token.
-                for part in detagged.split(['.', '_', '-']) {
-                    if part.len() > 2 {
-                        candidates.insert(part.to_string());
-                    }
-                }
+                candidates.extend(
+                    detagged
+                        .split(['.', '_', '-'])
+                        .filter(|p| p.len() > 2)
+                        .map(str::to_string),
+                );
 
                 // "Corporate" = not a consumer mailbox. Use the SAME shared
                 // freemail list the domain-extraction step above uses, not a
