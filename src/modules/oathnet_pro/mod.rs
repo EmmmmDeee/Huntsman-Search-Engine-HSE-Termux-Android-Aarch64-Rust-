@@ -76,6 +76,24 @@ impl Module for OathnetPro {
         ModuleCategory::People
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // oathnet_pro sits in the People category for dispatch, but functionally
+        // it is a breach / stealer pool: its extractors mint leaked credentials,
+        // emails, employee names, network IPs, and physical addresses. The People
+        // default (T1589.003 + T1591.004 "Identify Roles") both over-claims a
+        // role mapping the module never performs and under-claims the
+        // credential/email/IP/location collection it actually does — so declare
+        // the precise set instead (mirroring au_people, which likewise drops
+        // T1591.004 where no role is identified).
+        &[
+            "T1589.001", // Credentials — leaked passwords / hashes
+            "T1589.002", // Email Addresses
+            "T1589.003", // Employee Names — Person from name fields
+            "T1590.005", // IP Addresses
+            "T1591.001", // Determine Physical Locations — street / city / state address
+        ]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::Email,
@@ -1023,6 +1041,30 @@ mod tests {
     #[test]
     fn cost_is_paid() {
         assert!(matches!(OathnetPro.cost(), ModuleCost::Paid));
+    }
+
+    #[test]
+    fn attack_techniques_reflect_breach_pool_not_role_identification() {
+        use crate::core::attack;
+        let t = OathnetPro.attack_techniques();
+        // Each claimed technique is backed by a concrete extractor: credentials,
+        // emails, employee names, network IPs, and physical-location addresses.
+        for id in [
+            "T1589.001",
+            "T1589.002",
+            "T1589.003",
+            "T1590.005",
+            "T1591.001",
+        ] {
+            assert!(t.contains(&id), "oathnet_pro must claim {id}, got {t:?}");
+            assert!(attack::technique(id).is_some(), "{id} must be catalogued");
+        }
+        // The People-category default's "Identify Roles" (T1591.004) is
+        // deliberately NOT claimed — oathnet_pro extracts no job-title/role field.
+        assert!(
+            !t.contains(&"T1591.004"),
+            "oathnet_pro identifies no roles; must not claim T1591.004"
+        );
     }
 
     #[test]
