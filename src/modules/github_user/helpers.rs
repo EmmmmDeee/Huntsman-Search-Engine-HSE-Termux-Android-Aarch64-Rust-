@@ -11,7 +11,11 @@ pub(super) fn ssh_fingerprint(raw: &str) -> Option<String> {
     if blob.len() < 16 {
         return None; // not a plausible key body
     }
-    let digest = Sha256::digest(format!("{algo} {blob}").as_bytes());
+    let mut hasher = Sha256::new();
+    hasher.update(algo.as_bytes());
+    hasher.update(b" ");
+    hasher.update(blob.as_bytes());
+    let digest = hasher.finalize();
     Some(format!("ssh:{}", hex::encode(&digest[..8])))
 }
 
@@ -41,7 +45,8 @@ pub(super) fn top_event_types(
     event_types: std::collections::HashMap<String, u32>,
     n: usize,
 ) -> Vec<String> {
-    let mut sorted: Vec<(String, u32)> = event_types.into_iter().collect();
+    let mut sorted: Vec<(String, u32)> = Vec::with_capacity(event_types.len());
+    sorted.extend(event_types);
     sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     sorted
         .into_iter()

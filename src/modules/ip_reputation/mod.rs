@@ -239,6 +239,13 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
         .pulses
         .iter()
         .find_map(|p| p.adversary.as_deref().filter(|s| !s.is_empty()));
+    // OTX `adversary` is sometimes a long freeform paragraph after the group
+    // name — keep just the lead name, capped. Computed once here and reused for
+    // both the evidence attr and the Organisation pivot below.
+    let adversary_name: Option<String> = adversary.map(|a| {
+        let name = a.split('(').next().unwrap_or(a).trim();
+        name.chars().take(64).collect()
+    });
 
     let latest_tlp = pulse_info
         .pulses
@@ -251,7 +258,14 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
         .min();
 
     // Tag high-level threat hints for SPA colour-coding.
-    let combined_tags = all_tags.join(",").to_lowercase();
+    let cap = all_tags.iter().map(|t| t.len() + 1).sum::<usize>();
+    let mut combined_tags = String::with_capacity(cap);
+    for (i, t) in all_tags.iter().enumerate() {
+        if i > 0 {
+            combined_tags.push(',');
+        }
+        combined_tags.extend(t.chars().flat_map(char::to_lowercase));
+    }
     for hint in ["malware", "ransomware", "apt", "phishing", "botnet", "c2"] {
         if combined_tags.contains(hint) {
             entity.tag(format!("ti:{hint}"));
@@ -267,14 +281,10 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
     if !all_tags.is_empty() {
         ev = ev.with_attr("pulse_tags", all_tags.join(", "));
     }
-    if let Some(a) = adversary {
-        // OTX `adversary` is sometimes a long freeform paragraph after the
-        // group name — keep just the lead name, capped.
-        let name = a.split('(').next().unwrap_or(a).trim();
-        let capped: String = name.chars().take(64).collect();
-        if !capped.is_empty() {
-            ev = ev.with_attr("adversary", &capped);
-        }
+    if let Some(capped) = adversary_name.as_deref()
+        && !capped.is_empty()
+    {
+        ev = ev.with_attr("adversary", capped);
     }
     if let Some(t) = latest_tlp {
         ev = ev.with_attr("tlp", t);
@@ -287,11 +297,9 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
 
     // The named adversary/threat-actor (e.g. "Mirai", "NSO Group") is a
     // correlatable Organisation pivot, not just an evidence string.
-    if let Some(a) = adversary {
-        let name = a.split('(').next().unwrap_or(a).trim();
-        let capped: String = name.chars().take(64).collect();
+    if let Some(capped) = adversary_name.as_deref() {
         if capped.len() >= 2 {
-            let mut o = Entity::new(EntityKind::Organisation, &capped, 0.58, &ctx.scan_id);
+            let mut o = Entity::new(EntityKind::Organisation, capped, 0.58, &ctx.scan_id);
             o.tag("threat-intel");
             o.tag("adversary");
             o.add_evidence(

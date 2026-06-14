@@ -196,10 +196,16 @@ fn parse_certificate(
 
     if !sans.is_empty() {
         let san_count = sans.len();
-        let san_display: Vec<&str> = sans.iter().take(30).map(String::as_str).collect();
+        let mut san_display = String::new();
+        for (i, san) in sans.iter().take(30).enumerate() {
+            if i > 0 {
+                san_display.push_str(", ");
+            }
+            san_display.push_str(san);
+        }
         ev.attributes
             .insert("san_count".into(), san_count.to_string());
-        ev.attributes.insert("sans".into(), san_display.join(", "));
+        ev.attributes.insert("sans".into(), san_display);
 
         let target_lower = target_domain.to_lowercase();
         result.extend(sans.iter().filter_map(|san| {
@@ -319,11 +325,16 @@ fn extract_serial_hex(der: &[u8]) -> String {
         if der[i] == 0x02 {
             let len = der[i + 1] as usize;
             if len > 0 && len <= 20 && i + 2 + len <= der.len() {
-                return der[i + 2..i + 2 + len]
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<Vec<_>>()
-                    .join(":");
+                use std::fmt::Write as _;
+                let bytes = &der[i + 2..i + 2 + len];
+                let mut s = String::with_capacity(len * 3);
+                for (j, b) in bytes.iter().enumerate() {
+                    if j > 0 {
+                        s.push(':');
+                    }
+                    let _ = write!(s, "{b:02x}");
+                }
+                return s;
             }
         }
     }

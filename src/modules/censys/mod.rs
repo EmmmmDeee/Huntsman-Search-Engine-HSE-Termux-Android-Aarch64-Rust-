@@ -166,26 +166,26 @@ impl Module for Censys {
                 ),
             )
             .with_attr("port_count", ports.len().to_string())
-            .with_attr(
-                "ports",
-                ports
-                    .iter()
-                    .take(20)
-                    .map(std::string::ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(","),
-            );
+            .with_attr("ports", {
+                let mut s = String::new();
+                for (i, p) in ports.iter().take(20).enumerate() {
+                    if i > 0 {
+                        s.push(',');
+                    }
+                    s.push_str(&p.to_string());
+                }
+                s
+            });
 
             if !services.is_empty() {
-                ev = ev.with_attr(
-                    "services",
-                    services
-                        .iter()
-                        .take(20)
-                        .map(String::as_str)
-                        .collect::<Vec<_>>()
-                        .join("; "),
-                );
+                let mut s = String::new();
+                for (i, svc) in services.iter().take(20).enumerate() {
+                    if i > 0 {
+                        s.push_str("; ");
+                    }
+                    s.push_str(svc);
+                }
+                ev = ev.with_attr("services", s);
             }
             if !protocols.is_empty() {
                 let mut protos: Vec<&str> = protocols;

@@ -228,12 +228,13 @@ impl Hibp {
             .count();
         let total = breaches.len();
         let breach_names: Vec<&str> = breaches.iter().map(|b| b.name.as_str()).collect();
-        let top_names: String = breach_names
-            .iter()
-            .take(10)
-            .copied()
-            .collect::<Vec<_>>()
-            .join(", ");
+        let mut top_names = String::new();
+        for (i, name) in breach_names.iter().take(10).enumerate() {
+            if i > 0 {
+                top_names.push_str(", ");
+            }
+            top_names.push_str(name);
+        }
 
         let base_conf = match verified_count {
             0 => 0.65,
@@ -273,19 +274,22 @@ impl Hibp {
         );
         result.push(email_ent);
 
-        // Extract data classes to tag risk level — short-circuit scan per flag.
-        let has_passwords = breaches
-            .iter()
-            .flat_map(|b| &b.data_classes)
-            .any(|dc| dc.to_ascii_lowercase().contains("password"));
-        let has_phone = breaches
-            .iter()
-            .flat_map(|b| &b.data_classes)
-            .any(|dc| dc.to_ascii_lowercase().contains("phone"));
-        let has_physical = breaches.iter().flat_map(|b| &b.data_classes).any(|dc| {
-            let dcl = dc.to_ascii_lowercase();
-            dcl.contains("physical") || dcl.contains("address") || dcl.contains("location")
-        });
+        // Extract data classes to tag risk level. Single pass over all data
+        // classes, lowercasing each at most once into a reused buffer rather
+        // than allocating a fresh String per flag-check per class.
+        let (mut has_passwords, mut has_phone, mut has_physical) = (false, false, false);
+        let mut dcl = String::new();
+        for dc in breaches.iter().flat_map(|b| &b.data_classes) {
+            if has_passwords && has_phone && has_physical {
+                break;
+            }
+            dcl.clear();
+            dcl.extend(dc.chars().map(|c| c.to_ascii_lowercase()));
+            has_passwords |= dcl.contains("password");
+            has_phone |= dcl.contains("phone");
+            has_physical |=
+                dcl.contains("physical") || dcl.contains("address") || dcl.contains("location");
+        }
 
         // Extract associated domains as expansion seeds.
         result.extend(breaches.iter().filter_map(|breach| {

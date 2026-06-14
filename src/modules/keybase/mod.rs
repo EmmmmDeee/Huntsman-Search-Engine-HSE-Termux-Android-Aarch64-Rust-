@@ -229,11 +229,12 @@ impl Module for Keybase {
             if let Some(loc) = profile.location.as_deref()
                 && loc.len() >= 3
             {
+                let state_code = crate::util::address_au::state_code(loc);
                 let mut ae = Entity::new(EntityKind::Address, loc, 0.52, &ctx.scan_id);
                 ae.tag("keybase");
                 ae.tag("geoint");
                 ae.tag("self-reported");
-                if let Some(sc) = crate::util::address_au::state_code(loc) {
+                if let Some(sc) = state_code {
                     ae.tag(format!("au-state:{sc}"));
                     ae.tag("country:AU");
                 }
@@ -250,7 +251,7 @@ impl Module for Keybase {
                     c.tag("addr-derived");
                     c.tag("geoint");
                     c.tag("keybase");
-                    if let Some(sc) = crate::util::address_au::state_code(loc) {
+                    if let Some(sc) = state_code {
                         c.tag(format!("au-state:{sc}"));
                         c.tag("country:AU");
                     }

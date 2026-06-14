@@ -310,12 +310,13 @@ pub(super) fn build_reverse_entity(
             ev = ev.with_attr("country", c);
         }
         if let Some(cc) = addr.country_code.as_deref() {
-            ev = ev.with_attr("country_code", cc.to_uppercase());
+            let cc_upper = cc.to_uppercase();
             // The on-region `country:AU` tag is set above; for off-region fixes
             // record the resolved country so the lead stays explainable.
             if !cc.eq_ignore_ascii_case("au") {
-                entity.tag(format!("country:{}", cc.to_uppercase()));
+                entity.tag(format!("country:{cc_upper}"));
             }
+            ev = ev.with_attr("country_code", cc_upper);
         }
         if let Some(p) = addr.postcode.as_deref() {
             ev = ev.with_attr("postcode", p);

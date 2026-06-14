@@ -44,30 +44,29 @@ pub struct AsicDirector;
 fn clean_html(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut in_tag = false;
-    let chars: Vec<char> = s.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        match chars[i] {
+    // Walk the string slice directly: no `Vec<char>` and no per-`&` tail
+    // allocation — entity decoding matches against the live remainder.
+    let mut rest = s;
+    while let Some(ch) = rest.chars().next() {
+        match ch {
             '<' => in_tag = true,
             '>' => in_tag = false,
             '&' if !in_tag => {
-                // Decode &amp; &lt; &gt; &nbsp;
-                let rest: String = chars[i..].iter().collect();
-                if rest.starts_with("&amp;") {
+                if let Some(after) = rest.strip_prefix("&amp;") {
                     out.push('&');
-                    i += 5;
+                    rest = after;
                     continue;
-                } else if rest.starts_with("&lt;") {
+                } else if let Some(after) = rest.strip_prefix("&lt;") {
                     out.push('<');
-                    i += 4;
+                    rest = after;
                     continue;
-                } else if rest.starts_with("&gt;") {
+                } else if let Some(after) = rest.strip_prefix("&gt;") {
                     out.push('>');
-                    i += 4;
+                    rest = after;
                     continue;
-                } else if rest.starts_with("&nbsp;") {
+                } else if let Some(after) = rest.strip_prefix("&nbsp;") {
                     out.push(' ');
-                    i += 6;
+                    rest = after;
                     continue;
                 } else {
                     out.push('&');
@@ -76,7 +75,7 @@ fn clean_html(s: &str) -> String {
             c if !in_tag => out.push(c),
             _ => {}
         }
-        i += 1;
+        rest = &rest[ch.len_utf8()..];
     }
     out
 }

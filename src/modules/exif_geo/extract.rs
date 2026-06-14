@@ -29,13 +29,18 @@ pub(super) fn device_fingerprint(
     serial: Option<&str>,
 ) -> Option<String> {
     let serial = serial.map(str::trim).filter(|s| !s.is_empty())?;
-    let label = [make, model]
+    let mut label = String::new();
+    for part in [make, model]
         .into_iter()
         .flatten()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
+    {
+        if !label.is_empty() {
+            label.push(' ');
+        }
+        label.push_str(part);
+    }
     Some(if label.is_empty() {
         format!("camera s/n {serial}")
     } else {

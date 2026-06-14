@@ -133,9 +133,8 @@ impl Module for GithubCodeSearch {
                 .repository
                 .as_ref()
                 .and_then(|r| r.full_name.as_deref())
-                .unwrap_or("")
-                .to_string();
-            if full_name.is_empty() || !seen_repos.insert(full_name.clone()) {
+                .unwrap_or("");
+            if full_name.is_empty() || !seen_repos.insert(full_name.to_string()) {
                 continue;
             }
 

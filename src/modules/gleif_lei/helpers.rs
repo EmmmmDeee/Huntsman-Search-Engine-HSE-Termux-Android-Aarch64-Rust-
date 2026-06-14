@@ -10,6 +10,12 @@ pub(super) fn non_empty(s: Option<String>) -> Option<String> {
     s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
+/// Borrowing variant of [`non_empty`]: trims an `Option<&str>` to an owned
+/// non-empty `String`, avoiding a clone of the source `Option<String>`.
+pub(super) fn non_empty_ref(s: Option<&str>) -> Option<String> {
+    s.map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned)
+}
+
 /// True if `name` contains every token of the seed `query` as a whole word
 /// (case-insensitive). Whole-word, not substring, so a short seed token can't
 /// match inside an unrelated word. (Same precision rule as `acnc_charities`.)
@@ -59,37 +65,39 @@ pub(super) fn au_abn_acn(entity: &GleifEntity) -> Option<String> {
 /// region ("AU-VIC") is reduced to its subdivision ("VIC"); street lines ride in
 /// evidence, not the geocode value. Returns `None` when there's nothing locating.
 pub(super) fn locality(addr: &GleifAddress) -> Option<String> {
-    let city = non_empty(addr.city.clone());
-    let region = non_empty(addr.region.clone()).map(|r| {
+    let city = non_empty_ref(addr.city.as_deref());
+    let region = non_empty_ref(addr.region.as_deref()).map(|r| {
         // "AU-VIC" -> "VIC"; leave plain regions untouched.
         r.rsplit('-').next().unwrap_or(&r).to_string()
     });
-    let postal = non_empty(addr.postal_code.clone());
-    let country = non_empty(addr.country.clone());
+    let postal = non_empty_ref(addr.postal_code.as_deref());
+    let country = non_empty_ref(addr.country.as_deref());
     if city.is_none() && region.is_none() && postal.is_none() {
         return None;
     }
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(c) = city {
-        parts.push(c);
-    }
+    // Build "city, region postal, country" directly, skipping empty segments,
+    // avoiding an intermediate Vec + join.
     let mut rp = String::new();
-    if let Some(r) = region {
-        rp.push_str(&r);
+    if let Some(r) = &region {
+        rp.push_str(r);
     }
-    if let Some(p) = postal {
+    if let Some(p) = &postal {
         if !rp.is_empty() {
             rp.push(' ');
         }
-        rp.push_str(&p);
+        rp.push_str(p);
     }
-    if !rp.is_empty() {
-        parts.push(rp);
+    let mut out = String::new();
+    for seg in [city.as_deref(), (!rp.is_empty()).then_some(rp.as_str()), country.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        if !out.is_empty() {
+            out.push_str(", ");
+        }
+        out.push_str(seg);
     }
-    if let Some(c) = country {
-        parts.push(c);
-    }
-    (!parts.is_empty()).then(|| parts.join(", "))
+    (!out.is_empty()).then_some(out)
 }
 
 /// Attach the full record to evidence so nothing the API returned is dropped —
