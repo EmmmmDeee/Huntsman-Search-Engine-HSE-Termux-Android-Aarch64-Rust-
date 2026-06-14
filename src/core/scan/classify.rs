@@ -16,18 +16,26 @@
 /// such a domain's expansion weight and (in the engine) to skip expanding one
 /// that was only *incidentally* discovered, so a person/profile scan doesn't
 /// burn rounds mapping a platform's own DNS/mail infrastructure.
-/// Registrable-suffix match: `d == m` or `d` ends with `.m` (www-stripped).
-fn matches_domain_suffix(domain: &str, list: &[&str]) -> bool {
-    let d = domain.trim().to_lowercase();
-    let d = d.strip_prefix("www.").unwrap_or(&d);
+/// Registrable-suffix match against an ALREADY trimmed/lowercased/www-stripped
+/// host `d`: `d == m` or `d` ends with `.m`. Callers normalise once (the
+/// lowercase is a heap allocation) and may match against several lists without
+/// re-normalising — `is_noncentral_domain` checks both the mega and infra lists.
+fn matches_domain_suffix(d: &str, list: &[&str]) -> bool {
     list.iter().any(|m| {
         d == *m
             || (d.len() > m.len() && d.as_bytes()[d.len() - m.len() - 1] == b'.' && d.ends_with(m))
     })
 }
 
+/// Trim, lowercase and strip a leading `www.` — the canonical host form the
+/// suffix lists are keyed on. Done once per check rather than per list.
+fn normalise_host(domain: &str) -> String {
+    let d = domain.trim().to_lowercase();
+    d.strip_prefix("www.").unwrap_or(&d).to_string()
+}
+
 pub(crate) fn is_mega_domain(domain: &str) -> bool {
-    matches_domain_suffix(domain, MEGA_DOMAINS)
+    matches_domain_suffix(&normalise_host(domain), MEGA_DOMAINS)
 }
 
 /// Shared third-party infrastructure (managed DNS, registrar control-plane, CDN
@@ -36,8 +44,11 @@ pub(crate) fn is_mega_domain(domain: &str) -> bool {
 /// `cns1.secureserver.net`, `u123.sendgrid.net`, `ns-664.awsdns-19.net`, … map
 /// the provider's estate, not the target, so they are never worth deep-expanding.
 pub(crate) fn is_infra_domain(domain: &str) -> bool {
-    let d = domain.trim().to_lowercase();
-    let d = d.strip_prefix("www.").unwrap_or(&d);
+    infra_matches(&normalise_host(domain))
+}
+
+/// [`is_infra_domain`] over an already-normalised host (see [`normalise_host`]).
+fn infra_matches(d: &str) -> bool {
     // AWS Route 53 nameservers — ns-N.awsdns-NN.{com,net,org,co.uk} — whose root
     // varies with the shard number, so a plain suffix list can't catch them.
     if d.contains(".awsdns-") || d.starts_with("awsdns-") {
@@ -50,7 +61,10 @@ pub(crate) fn is_infra_domain(domain: &str) -> bool {
 /// sits in, not a lead itself. The engine skips these as incidental (non-seed)
 /// expansion targets so a scan doesn't map a provider's whole estate.
 pub(crate) fn is_noncentral_domain(domain: &str) -> bool {
-    is_mega_domain(domain) || is_infra_domain(domain)
+    // Normalise the host ONCE and test both lists against it, rather than letting
+    // `is_mega_domain` and `is_infra_domain` each re-trim/re-lowercase the string.
+    let d = normalise_host(domain);
+    matches_domain_suffix(&d, MEGA_DOMAINS) || infra_matches(&d)
 }
 
 /// Identity fingerprint of a name / handle / email-local: lowercase ASCII

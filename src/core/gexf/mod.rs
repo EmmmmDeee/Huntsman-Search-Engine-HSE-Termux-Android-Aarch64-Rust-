@@ -139,11 +139,16 @@ fn write_relation_edge(xml: &mut String, r: &Relation, edge_id: &mut u64) {
 /// shares ≥1 evidence source, an edge weighted by the shared-source count and
 /// labelled by the joined source names. Advances `edge_id` per emitted edge.
 fn write_shared_evidence_edges(xml: &mut String, entities: &[Entity], edge_id: &mut u64) {
+    // Pre-compute each entity's evidence-source set ONCE. The pairwise loop is
+    // O(n²); rebuilding the inner entity's `HashSet` (a heap allocation) on every
+    // pair made it O(n²) allocations. Building the n sets up front drops that to n.
+    let sources: Vec<std::collections::HashSet<&str>> =
+        entities.iter().map(Entity::evidence_sources).collect();
     for (i, src) in entities.iter().enumerate() {
-        let src_sources = src.evidence_sources();
-        for tgt in entities.iter().skip(i + 1) {
-            let tgt_sources = tgt.evidence_sources();
-            let shared: Vec<&str> = src_sources.intersection(&tgt_sources).copied().collect();
+        let src_sources = &sources[i];
+        for (j, tgt) in entities.iter().enumerate().skip(i + 1) {
+            let tgt_sources = &sources[j];
+            let shared: Vec<&str> = src_sources.intersection(tgt_sources).copied().collect();
             if !shared.is_empty() {
                 let _ = writeln!(
                     xml,
