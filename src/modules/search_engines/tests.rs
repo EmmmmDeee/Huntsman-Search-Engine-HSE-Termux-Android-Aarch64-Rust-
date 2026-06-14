@@ -240,7 +240,7 @@ fn address_extractor_ignores_non_au_4digit() {
 fn build_queries_domain_produces_five_dorks() {
     let t = Target::new(TargetKind::Domain, "acme.com");
     let q = build_queries(&t);
-    assert!(q.len() >= 5);
+    assert!(q.len() >= 10);
     assert!(q[0].contains("site:acme.com"));
     assert!(q[1].contains("filetype:pdf"));
     assert!(q[2].contains("@acme.com"));
@@ -260,8 +260,8 @@ fn build_queries_email_produces_social_pivots() {
 fn build_queries_username_covers_social_platforms() {
     let t = Target::new(TargetKind::Username, "johndoe");
     let q = build_queries(&t);
-    // Broad → narrow: ≥13 dorks, universal first, platform site: dorks last.
-    assert!(q.len() >= 13, "expected ≥13 dorks, got {}", q.len());
+    // Broad → narrow: ≥16 dorks, universal first, platform site: dorks last.
+    assert!(q.len() >= 16, "expected ≥16 dorks, got {}", q.len());
     // Tier 1 — universal lead: the broadest two queries carry no `site:`.
     assert_eq!(
         q[0], "johndoe",
@@ -418,7 +418,7 @@ fn build_queries_fullname_three_parts_generates_username_variants() {
 fn build_queries_ip_produces_infra_dorks() {
     let t = Target::new(TargetKind::IpAddress, "8.8.8.8");
     let q = build_queries(&t);
-    assert!(q.len() >= 4);
+    assert!(q.len() >= 6);
     assert!(q[0].contains("\"8.8.8.8\""));
     assert!(q.iter().any(|qr| qr.contains("shodan.io")));
 }

@@ -124,6 +124,27 @@ pub(super) fn build_queries_fullname(v: &str) -> Vec<String> {
             "\"{fl}\" site:t.me OR site:steamcommunity.com \
              OR site:twitch.tv"
         ));
+
+        // UK company/director surfaces — Companies House (find-and-update +
+        // beta) for directorship records.
+        q.push(format!(
+            "\"{v}\" site:find-and-update.company-information.service.gov.uk \
+             OR site:beta.companieshouse.gov.uk"
+        ));
+
+        // US SEC EDGAR — named individuals appear in filings as officers,
+        // directors, or beneficial owners.
+        q.push(format!("\"{v}\" site:sec.gov OR site:efts.sec.gov"));
+
+        // EU/global company registry — OpenCorporates lists officers
+        // across 140+ jurisdictions.
+        q.push(format!(
+            "\"{v}\" site:opencorporates.com director OR officer"
+        ));
+
+        // Intext body search — name appears near contact details in
+        // articles, PDFs, or directories.
+        q.push(format!("intext:\"{v}\" email OR phone OR address"));
     }
     q
 }
@@ -132,6 +153,9 @@ pub(super) fn build_queries_fullname(v: &str) -> Vec<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Region {
     Au,
+    Uk,
+    Us,
+    Eu,
 }
 
 /// Infer a region from the seed itself — only when it carries a clear signal, so
@@ -139,16 +163,50 @@ pub(super) enum Region {
 pub(super) fn detect_region(target: &Target) -> Option<Region> {
     let v = target.value.trim().to_lowercase();
     let host_au = |h: &str| h.ends_with(".au");
+    let host_uk = |h: &str| h.ends_with(".uk");
+    let host_us = |h: &str| h.ends_with(".edu") || h.ends_with(".gov");
     match target.kind {
         TargetKind::AbnAcn => Some(Region::Au),
-        TargetKind::Domain => host_au(&v).then_some(Region::Au),
-        TargetKind::Url => crate::util::url_util::host_from_url(&v)
-            .filter(|h| host_au(h))
-            .map(|_| Region::Au),
-        TargetKind::Email => v
-            .rsplit_once('@')
-            .is_some_and(|(_, d)| host_au(d))
-            .then_some(Region::Au),
+        TargetKind::Domain => {
+            if host_au(&v) {
+                Some(Region::Au)
+            } else if host_uk(&v) || v.ends_with(".co.uk") {
+                Some(Region::Uk)
+            } else if host_us(&v) {
+                Some(Region::Us)
+            } else {
+                None
+            }
+        }
+        TargetKind::Url => {
+            let host = crate::util::url_util::host_from_url(&v);
+            if let Some(ref h) = host {
+                if host_au(h) {
+                    return Some(Region::Au);
+                }
+                if host_uk(h) || h.ends_with(".co.uk") {
+                    return Some(Region::Uk);
+                }
+                if host_us(h) {
+                    return Some(Region::Us);
+                }
+            }
+            None
+        }
+        TargetKind::Email => {
+            if let Some((_, d)) = v.rsplit_once('@') {
+                if host_au(d) {
+                    return Some(Region::Au);
+                }
+                if host_uk(d) || d.ends_with(".co.uk") {
+                    return Some(Region::Uk);
+                }
+                if host_us(d) {
+                    return Some(Region::Us);
+                }
+            }
+            None
+        }
         TargetKind::Phone => {
             let digits = crate::util::str_util::ascii_digits(&v);
             // `+61` is unambiguous. A *bare* `61…` is only the AU country code at
@@ -156,13 +214,54 @@ pub(super) fn detect_region(target: &Target) -> Option<Region> {
             // that stops a domestic number like the US `610` area code
             // (`610-555-1234` → `6105551234`, 10 digits) from falsely tagging AU.
             let bare_au_cc = digits.len() >= 11 && digits.starts_with("61");
-            (v.contains("+61") || bare_au_cc).then_some(Region::Au)
-        }
-        TargetKind::Address | TargetKind::Organisation => (v.contains("australia")
-            || [" nsw", " vic", " qld", " wa", " sa", " tas", " act", " nt"]
+            if v.contains("+61") || bare_au_cc {
+                return Some(Region::Au);
+            }
+            // +44 → UK
+            if v.contains("+44") {
+                return Some(Region::Uk);
+            }
+            // +1 with 11 digits (country code 1 + 10 national digits) → US
+            let bare_us_cc = digits.len() == 11 && digits.starts_with('1');
+            if (v.contains("+1") && digits.len() == 11) || bare_us_cc {
+                return Some(Region::Us);
+            }
+            // EU country codes: +49 DE, +33 FR, +31 NL, +34 ES, +39 IT
+            if ["+49", "+33", "+31", "+34", "+39"]
                 .iter()
-                .any(|s| v.contains(s)))
-        .then_some(Region::Au),
+                .any(|cc| v.contains(cc))
+            {
+                return Some(Region::Eu);
+            }
+            None
+        }
+        TargetKind::Address | TargetKind::Organisation => {
+            if v.contains("australia")
+                || [" nsw", " vic", " qld", " wa", " sa", " tas", " act", " nt"]
+                    .iter()
+                    .any(|s| v.contains(s))
+            {
+                Some(Region::Au)
+            } else if v.contains("united kingdom")
+                || v.contains(".co.uk")
+                || [
+                    " england",
+                    " scotland",
+                    " wales",
+                    " surrey",
+                    " kent",
+                    " essex",
+                    " yorkshire",
+                    " lancashire",
+                ]
+                .iter()
+                .any(|s| v.contains(s))
+            {
+                Some(Region::Uk)
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -199,6 +298,19 @@ pub(super) fn regional_dorks(target: &Target) -> Vec<String> {
             }
             d
         }
+        Region::Uk => {
+            vec![
+                format!("\"{v}\" site:co.uk OR site:org.uk OR site:gov.uk"),
+                format!("\"{v}\" site:192.com OR site:ukphonebook.com OR site:thephonebook.co.uk"),
+            ]
+        }
+        Region::Us => {
+            vec![
+                format!("\"{v}\" site:whitepages.com OR site:spokeo.com OR site:intelius.com"),
+                format!("\"{v}\" site:pacer.gov OR site:courtlistener.com"),
+            ]
+        }
+        Region::Eu => Vec::new(),
     }
 }
 
@@ -250,6 +362,14 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
             format!("\"{v}\" \"@{v}\""),
             format!("site:{v} inurl:login OR inurl:admin OR inurl:signin"),
             format!("\"{v}\" ABN OR ACN OR \"Pty Ltd\" OR \"business number\""),
+            // Exposed config/backup files
+            format!("site:{v} ext:sql OR ext:bak OR ext:log OR ext:conf"),
+            format!("site:{v} filetype:env OR inurl:wp-config.php OR inurl:configuration.php"),
+            format!("site:{v} intext:\"password\" OR intext:\"api_key\" OR intext:\"secret\""),
+            // Subdomain discovery via negative site
+            format!("site:{v} -site:www.{v}"),
+            // Backlinks
+            format!("link:{v}"),
         ],
         TargetKind::Email => {
             let domain = v.rsplit_once('@').map_or("", |(_, d)| d);
@@ -299,6 +419,14 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
             // Direct credential / password presence indicator. Surfaces
             // mentions where the email is next to a leaked credential.
             q.push(format!("\"{v}\" password OR login OR credentials"));
+            // Credential/hash exposure in body text
+            q.push(format!("intext:\"{v}\" password OR hash OR md5 OR sha256"));
+            // Code repository mentions
+            q.push(format!(
+                "\"{v}\" site:github.com OR site:gitlab.com OR site:bitbucket.org"
+            ));
+            // Temporal breach discovery
+            q.push(format!("\"{v}\" breach OR leak OR dump after:2020-01-01"));
             q
         }
         // Broad → narrow ladder: start universal (widest net), then narrow into
@@ -339,6 +467,12 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
                 "\"{v}\" site:whatsmyname.app OR site:namecheckr.com \
                  OR site:check-username.com"
             ),
+            // Profile page title matching (more precise than intitle: with OR)
+            format!("allintitle:\"{v}\""),
+            // Code contribution fingerprinting
+            format!("\"{v}\" site:github.com OR site:stackoverflow.com OR site:dev.to"),
+            // Account aggregators
+            format!("\"{v}\" site:keybase.io OR site:about.me OR site:gravatar.com"),
         ],
         TargetKind::FullName => build_queries_fullname(v),
         TargetKind::Phone => {
@@ -367,6 +501,10 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
                 // members register with a phone number and the public
                 // profile sometimes surfaces it.
                 q.push(format!("\"{v}\" site:vk.com OR site:facebook.com"));
+                // Recent breach/leak mentions on paste sites
+                q.push(format!("\"{v}\" site:pastebin.com OR site:ghostbin.co"));
+                // Temporal owner/name discovery
+                q.push(format!("intext:\"{v}\" name OR owner after:2018-01-01"));
             }
             q
         }
@@ -375,6 +513,10 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
             format!("\"{v}\" hostname OR server OR domain"),
             format!("\"{v}\" site:shodan.io OR site:censys.io OR site:zoomeye.org"),
             format!("\"{v}\" location OR city OR country OR ISP"),
+            // Server exposure
+            format!("\"{v}\" inurl:phpmyadmin OR inurl:admin OR inurl:jenkins"),
+            // CVE/vulnerability exposure
+            format!("\"{v}\" intext:CVE OR vulnerability OR exploit"),
         ],
         TargetKind::Organisation => {
             let mut q = vec![
@@ -391,6 +533,20 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
             if !lower.contains("pty") && !lower.contains("ltd") {
                 q.push(format!("\"{v}\" \"Pty Ltd\" OR \"Limited\" OR \"Inc\""));
             }
+            // UK Companies House
+            q.push(format!(
+                "\"{v}\" site:find-and-update.company-information.service.gov.uk"
+            ));
+            // US SEC EDGAR
+            q.push(format!(
+                "\"{v}\" site:sec.gov OR site:efts.sec.gov filing OR report"
+            ));
+            // OpenCorporates global
+            q.push(format!("\"{v}\" site:opencorporates.com"));
+            // Intext regulatory filing mentions
+            q.push(format!(
+                "intext:\"{v}\" annual report OR filing OR director"
+            ));
             q
         }
         TargetKind::Address => {
