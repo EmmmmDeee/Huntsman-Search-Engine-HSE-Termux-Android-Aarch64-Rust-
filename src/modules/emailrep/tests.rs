@@ -149,8 +149,7 @@ fn clean_email_gets_only_the_source_tag() {
 #[test]
 fn false_flags_do_not_tag() {
     // EmailRep returns explicit `false` for absent abuse — must not tag.
-    let e =
-        build(r#"{"details":{"credential_leaked":false,"spam":false,"blacklisted":false}}"#);
+    let e = build(r#"{"details":{"credential_leaked":false,"spam":false,"blacklisted":false}}"#);
     assert!(!e.has_tag("breach"));
     assert!(!e.has_tag("spam-source"));
     assert!(!e.has_tag("blacklisted"));

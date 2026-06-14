@@ -14,10 +14,7 @@ use super::constants::SUBDOMAINS;
 use super::{MAX_CONCURRENT_BRUTE, SRC};
 
 /// Subdomain brute-force via the common-name dictionary.
-pub(super) async fn brute_subdomains(
-    target: &Target,
-    ctx: &ModuleContext,
-) -> Result<Vec<Entity>> {
+pub(super) async fn brute_subdomains(target: &Target, ctx: &ModuleContext) -> Result<Vec<Entity>> {
     let parent = target.value.trim().trim_end_matches('.').to_lowercase();
     if parent.is_empty() || parent.contains('/') || parent.contains(' ') {
         return Ok(Vec::new());

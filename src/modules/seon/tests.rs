@@ -1,7 +1,7 @@
 use super::{
+    Seon,
     entity_builders::{build_email_entities, build_phone_entities},
     types::{SeonEmailResp, SeonPhoneResp},
-    Seon,
 };
 use crate::core::{
     entity::EntityKind,
@@ -128,9 +128,8 @@ fn email_no_accounts_yields_only_the_enriched_email() {
 #[test]
 fn email_person_skips_handles_and_partial_names() {
     // A registered platform whose "name" is a handle (no space) is not a Person.
-    let es = email(
-        r#"{"data":{"account_details":{"github":{"registered":true,"name":"janedoe"}}}}"#,
-    );
+    let es =
+        email(r#"{"data":{"account_details":{"github":{"registered":true,"name":"janedoe"}}}}"#);
     assert!(es.iter().all(|e| e.kind != EntityKind::Person));
 }
 

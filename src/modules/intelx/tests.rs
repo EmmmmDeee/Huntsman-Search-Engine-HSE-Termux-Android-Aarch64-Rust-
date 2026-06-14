@@ -147,10 +147,9 @@ fn result_resp_terminal_status_parsing() {
 
 #[test]
 fn record_tolerates_missing_and_human_bucket() {
-    let r: ResultResp = serde_json::from_str(
-        r#"{"status":2,"records":[{"bucketh":"Public Leaks","media":1}]}"#,
-    )
-    .unwrap();
+    let r: ResultResp =
+        serde_json::from_str(r#"{"status":2,"records":[{"bucketh":"Public Leaks","media":1}]}"#)
+            .unwrap();
     assert_eq!(r.records[0].bucketh.as_deref(), Some("Public Leaks"));
     assert!(r.records[0].bucket.is_none());
     assert!(r.records[0].date.is_none());

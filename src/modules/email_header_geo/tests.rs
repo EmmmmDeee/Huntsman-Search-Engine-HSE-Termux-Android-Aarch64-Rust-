@@ -1,6 +1,6 @@
+use super::EmailHeaderGeo;
 use super::infer::{detect_corporate_provider, infer_geo_from_email_domain};
 use super::tables::CONSUMER_PROVIDERS;
-use super::EmailHeaderGeo;
 use crate::core::{
     entity::EntityKind,
     module::{Module, ModuleContext},

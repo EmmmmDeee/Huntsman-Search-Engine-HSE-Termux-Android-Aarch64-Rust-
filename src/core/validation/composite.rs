@@ -1,6 +1,6 @@
 use super::{
-    coordinates::validate_coordinates, domain::validate_domain_shape,
-    email::validate_email_syntax, phone::validate_phone_e164, report::ValidationReport,
+    coordinates::validate_coordinates, domain::validate_domain_shape, email::validate_email_syntax,
+    phone::validate_phone_e164, report::ValidationReport,
 };
 
 /// Apply every validator that is relevant to the given entity-kind

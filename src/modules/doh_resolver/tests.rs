@@ -16,8 +16,7 @@ fn cost_is_free() {
 
 #[test]
 fn doh_resp_deser() {
-    let json =
-        r#"{"Status":0,"Answer":[{"name":"example.com.","type":1,"data":"93.184.216.34"}]}"#;
+    let json = r#"{"Status":0,"Answer":[{"name":"example.com.","type":1,"data":"93.184.216.34"}]}"#;
     let resp: DohResp = serde_json::from_str(json).unwrap();
     assert_eq!(resp.answer.len(), 1);
     assert_eq!(resp.answer[0].data, "93.184.216.34");

@@ -3,9 +3,9 @@
 use crate::core::entity::{Entity, EntityKind, Evidence};
 
 use super::{
+    ABN_CONF, ADDR_CONF, MAX_RECORDS, ORG_CANDIDATE, ORG_EXACT, SRC,
     helpers::{au_abn_acn, locality, name_matches_query, record_evidence},
     types::GleifResp,
-    ABN_CONF, ADDR_CONF, MAX_RECORDS, ORG_CANDIDATE, ORG_EXACT, SRC,
 };
 
 /// Pure transform: GLEIF records → entities. Every row yields an `Organisation`

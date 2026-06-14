@@ -1,8 +1,8 @@
-use super::parse::{
-    dedup_entities, extract_postcode, extract_state, name_matches, parse_nsw_response,
-    record_to_entities, strip_html, PropertyRecord,
-};
 use super::AuProperty;
+use super::parse::{
+    PropertyRecord, dedup_entities, extract_postcode, extract_state, name_matches,
+    parse_nsw_response, record_to_entities, strip_html,
+};
 use crate::core::entity::{Entity, EntityKind};
 use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};

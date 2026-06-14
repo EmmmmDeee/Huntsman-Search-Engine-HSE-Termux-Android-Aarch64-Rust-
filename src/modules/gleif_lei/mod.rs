@@ -121,8 +121,7 @@ impl Module for GleifLei {
             return Ok(ModuleResult::new());
         }
 
-        let resp: types::GleifResp =
-            fetch_json(&ctx.http, SRC, &helpers::query_url(query)).await?;
+        let resp: types::GleifResp = fetch_json(&ctx.http, SRC, &helpers::query_url(query)).await?;
         let mut out = ModuleResult::new();
         out.extend(transform::records_to_entities(&resp, query, &ctx.scan_id));
         Ok(out)

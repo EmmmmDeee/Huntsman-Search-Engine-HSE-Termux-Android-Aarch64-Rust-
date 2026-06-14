@@ -9,7 +9,7 @@ use crate::util::ckan::field_str;
 use crate::util::url_util::host_from_url;
 
 use super::{
-    ADDR_CONF, ABN_CONF, DOMAIN_CONF, MAX_RECORDS, MAX_TRADING_NAMES, ORG_CANDIDATE, ORG_EXACT,
+    ABN_CONF, ADDR_CONF, DOMAIN_CONF, MAX_RECORDS, MAX_TRADING_NAMES, ORG_CANDIDATE, ORG_EXACT,
     SRC, TRADING_NAME_CONF,
 };
 

@@ -28,7 +28,9 @@ pub(super) fn render_environment() -> String {
     let mods = crate::modules::registry();
     let mut by_cost: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     for m in &mods {
-        *by_cost.entry(super::super::cost_label(m.cost())).or_default() += 1;
+        *by_cost
+            .entry(super::super::cost_label(m.cost()))
+            .or_default() += 1;
     }
     let cost_summary = by_cost
         .iter()

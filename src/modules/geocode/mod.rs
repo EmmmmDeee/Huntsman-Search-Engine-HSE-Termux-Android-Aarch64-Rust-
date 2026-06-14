@@ -257,7 +257,12 @@ pub(super) fn au_relevance(lat: f64, lon: f64, addr: Option<&NominatimAddr>) -> 
 
 /// Build the reverse-geocode Address entity, shaping confidence and tags by
 /// [`au_relevance`]. Pure (no I/O) so the AU-gating is unit-tested directly.
-pub(super) fn build_reverse_entity(lat: f64, lon: f64, data: &NominatimResp, scan_id: &str) -> Entity {
+pub(super) fn build_reverse_entity(
+    lat: f64,
+    lon: f64,
+    data: &NominatimResp,
+    scan_id: &str,
+) -> Entity {
     let display = data.display_name.as_deref().unwrap_or("-");
     let relevance = au_relevance(lat, lon, data.address.as_ref());
 

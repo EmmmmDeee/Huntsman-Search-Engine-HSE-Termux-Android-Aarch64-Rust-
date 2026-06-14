@@ -7,10 +7,10 @@ use crate::core::{
 use crate::util::url_util::host_from_url;
 
 use super::{
-    claims::{claim_p625, claim_strings, en_text},
-    classify::{classify, seed_kind},
     CANDIDATE, DOMAIN_CONF, HANDLE_CONF, HANDLE_PROPS, IMAGE_CONF, MAX_HANDLES, ORG_PRIMARY,
     PERSON_PRIMARY, SRC,
+    claims::{claim_p625, claim_strings, en_text},
+    classify::{classify, seed_kind},
 };
 
 /// Build the fan-out for the primary item from its claims body.

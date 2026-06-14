@@ -1,6 +1,6 @@
+use super::DeHashed;
 use super::build::{balance_str, build_breach_entity, db_names, selector_for};
 use super::types::{DehashedResp, Entry};
-use super::DeHashed;
 use crate::core::{
     entity::{Entity, EntityKind},
     module::{Module, ModuleCost},

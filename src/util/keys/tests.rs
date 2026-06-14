@@ -1,5 +1,5 @@
-use super::*;
 use super::io::{hardcoded_key_writes, pick_default_seed};
+use super::*;
 use std::collections::BTreeMap;
 use tempfile::tempdir;
 
@@ -16,8 +16,14 @@ fn resolve_or_default_policy() {
 #[test]
 fn own_api_keys_includes_embedded_and_splits_csv_rotation_lists() {
     let own = own_api_keys();
-    assert!(own.contains(SEEKNOW_DEFAULT_KEY), "embedded SeekNow key missing");
-    assert!(own.contains(OATHNET_DEFAULT_KEY), "embedded OathNet key missing");
+    assert!(
+        own.contains(SEEKNOW_DEFAULT_KEY),
+        "embedded SeekNow key missing"
+    );
+    assert!(
+        own.contains(OATHNET_DEFAULT_KEY),
+        "embedded OathNet key missing"
+    );
     // The CSV-splitting `add` closure must register EACH key of a
     // comma-separated rotation list individually.
     let mut set = std::collections::HashSet::new();
@@ -137,7 +143,12 @@ fn delete_removes_key_entirely() {
     )
     .unwrap();
 
-    write_keys_at(&path, &BTreeMap::new(), &["HUNTSMAN_OATHNET_KEY".to_string()]).unwrap();
+    write_keys_at(
+        &path,
+        &BTreeMap::new(),
+        &["HUNTSMAN_OATHNET_KEY".to_string()],
+    )
+    .unwrap();
 
     let got = std::fs::read_to_string(&path).unwrap();
     assert!(!got.contains("HUNTSMAN_OATHNET_KEY"));
@@ -179,18 +190,14 @@ fn rejects_values_with_control_characters() {
 fn rejects_values_with_double_quotes() {
     let dir = tempdir().unwrap();
     let path = dir.path().join(".huntsman.env");
-    assert!(
-        write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "ab\"cd")]), &[]).is_err()
-    );
+    assert!(write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "ab\"cd")]), &[]).is_err());
 }
 
 #[test]
 fn rejects_values_with_backslash() {
     let dir = tempdir().unwrap();
     let path = dir.path().join(".huntsman.env");
-    assert!(
-        write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "ab\\nc")]), &[]).is_err()
-    );
+    assert!(write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "ab\\nc")]), &[]).is_err());
 }
 
 #[test]
@@ -207,7 +214,10 @@ fn load_from_file_ignores_comments_and_non_huntsman() {
     )
     .unwrap();
     let m = load_from_file_only(&path);
-    assert_eq!(m.get("HUNTSMAN_OATHNET_KEY").map(String::as_str), Some("abc"));
+    assert_eq!(
+        m.get("HUNTSMAN_OATHNET_KEY").map(String::as_str),
+        Some("abc")
+    );
     assert_eq!(m.get("HUNTSMAN_HIBP_KEY").map(String::as_str), Some("def"));
     assert!(!m.contains_key("HUNTSMAN_DEHASHED_KEY"));
     assert!(!m.contains_key("OTHER"));
@@ -229,7 +239,12 @@ fn put_then_get_round_trips_through_file() {
     write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "v1")]), &[]).unwrap();
     assert!(load_from_file_only(&path).contains_key("HUNTSMAN_OATHNET_KEY"));
 
-    write_keys_at(&path, &BTreeMap::new(), &["HUNTSMAN_OATHNET_KEY".to_string()]).unwrap();
+    write_keys_at(
+        &path,
+        &BTreeMap::new(),
+        &["HUNTSMAN_OATHNET_KEY".to_string()],
+    )
+    .unwrap();
     assert!(!load_from_file_only(&path).contains_key("HUNTSMAN_OATHNET_KEY"));
 }
 
@@ -277,12 +292,8 @@ fn update_matches_key_with_whitespace_around_equals() {
 #[test]
 fn read_error_other_than_not_found_surfaces() {
     let dir = tempdir().unwrap();
-    let err = write_keys_at(
-        dir.path(),
-        &map_of(&[("HUNTSMAN_OATHNET_KEY", "v")]),
-        &[],
-    )
-    .unwrap_err();
+    let err =
+        write_keys_at(dir.path(), &map_of(&[("HUNTSMAN_OATHNET_KEY", "v")]), &[]).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("read ") || msg.contains("open ") || msg.contains("write "),

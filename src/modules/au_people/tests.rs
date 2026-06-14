@@ -34,8 +34,7 @@ fn strip_html_tags_removes_markup() {
 
 #[test]
 fn parse_tps_html_extracts_au_address() {
-    let html =
-        "<div>Results for Test Person</div><p>Bondi Beach, NSW 2026</p><p>Other line</p>";
+    let html = "<div>Results for Test Person</div><p>Bondi Beach, NSW 2026</p><p>Other line</p>";
     let ents = parse_tps_html(html, "Test Person", "s");
     assert!(
         ents.iter().any(|e| e.kind == EntityKind::Address

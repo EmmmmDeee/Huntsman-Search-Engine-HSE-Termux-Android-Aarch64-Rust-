@@ -2,10 +2,10 @@ use crate::core::entity::EntityKind;
 use crate::core::scan::{Target, TargetKind};
 
 use super::{
+    AuElectoral,
     division_map::division_centroid,
     entity::build_electoral_entities,
     parse::{extract_division, strip_electoral_html},
-    AuElectoral,
 };
 
 use crate::core::module::Module;

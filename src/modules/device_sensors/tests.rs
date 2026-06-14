@@ -1,9 +1,9 @@
 use crate::core::{entity::EntityKind, scan::Target, scan::TargetKind};
 
 use super::{
+    DeviceSensors,
     gps::{fix_confidence, is_valid_fix, parse_fix},
     wifi::{parse_conn, wifi_band},
-    DeviceSensors,
 };
 use crate::core::module::Module;
 

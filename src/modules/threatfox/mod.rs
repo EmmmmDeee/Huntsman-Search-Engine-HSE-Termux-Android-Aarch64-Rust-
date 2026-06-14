@@ -71,7 +71,12 @@ pub(super) const MAX_IOC_TAGS: usize = 16;
 /// capped, deterministically-ordered (`BTreeSet`) attribute lists, takes the
 /// **max** analyst confidence and the **outer** first/last-seen window across
 /// the batch, and records the hit count. Caller guarantees `iocs` is non-empty.
-pub(super) fn build_ioc_entity(kind: EntityKind, term: &str, iocs: &[Ioc], scan_id: &str) -> Entity {
+pub(super) fn build_ioc_entity(
+    kind: EntityKind,
+    term: &str,
+    iocs: &[Ioc],
+    scan_id: &str,
+) -> Entity {
     use std::collections::BTreeSet;
 
     let mut entity = Entity::new(kind, term, 0.92, scan_id);

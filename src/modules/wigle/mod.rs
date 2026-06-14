@@ -21,9 +21,7 @@ mod fetch;
 #[cfg(test)]
 mod tests;
 
-pub use account::{
-    WigleAccountStatus, account_status, is_unverified, refresh_account_status,
-};
+pub use account::{WigleAccountStatus, account_status, is_unverified, refresh_account_status};
 
 use async_trait::async_trait;
 use serde::Deserialize;

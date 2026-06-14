@@ -138,8 +138,7 @@ pub(super) async fn fetch_events(login: &str, ctx: &ModuleContext, result: &mut 
     }
 
     let mut hours: [u32; 24] = [0; 24];
-    let mut event_types: std::collections::HashMap<String, u32> =
-        std::collections::HashMap::new();
+    let mut event_types: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     let mut most_recent: Option<&str> = None;
 
     for event in &events {

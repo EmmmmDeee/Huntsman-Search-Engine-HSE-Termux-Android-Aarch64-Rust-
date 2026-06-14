@@ -1,8 +1,8 @@
 use crate::core::scan::{Target, TargetKind};
 
 use super::{
-    types::{AsnResp, RdapResp},
     IpRegistry,
+    types::{AsnResp, RdapResp},
 };
 use crate::core::module::Module;
 

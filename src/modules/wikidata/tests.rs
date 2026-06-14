@@ -7,11 +7,11 @@ use crate::core::{
 };
 
 use super::{
+    HANDLE_PROPS, MAX_HANDLES, PERSON_PRIMARY, Wikidata,
     builder::{candidate_entity, primary_entities},
     classify::{classify, name_matches_query},
     types::SearchHit,
     urls::{entities_url, search_url},
-    Wikidata, HANDLE_PROPS, MAX_HANDLES, PERSON_PRIMARY,
 };
 use crate::core::module::Module;
 

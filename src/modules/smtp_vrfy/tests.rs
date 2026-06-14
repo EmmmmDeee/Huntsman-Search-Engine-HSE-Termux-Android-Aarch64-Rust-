@@ -1,4 +1,4 @@
-use super::{build_entity, SmtpVerdict, SmtpVrfy};
+use super::{SmtpVerdict, SmtpVrfy, build_entity};
 use crate::core::entity::{Entity, EntityKind};
 use crate::core::module::{Module, ModuleContext};
 use crate::core::scan::{Target, TargetKind};

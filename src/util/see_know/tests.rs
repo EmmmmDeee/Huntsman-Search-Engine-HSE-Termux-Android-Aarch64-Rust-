@@ -3,12 +3,12 @@ use serde_json::json;
 use super::budget::{
     budget_increment, budget_snapshot, reset_budget, scan_budget_remaining, set_scan_cap_override,
 };
-use crate::util::curl_client::AuthScheme;
 use super::client::{
-    CLIENT, HARDCODED_KEY_FOR_TESTS, cache_get, cache_put, cache_key, is_auth_error,
+    CLIENT, HARDCODED_KEY_FOR_TESTS, cache_get, cache_key, cache_put, is_auth_error,
     key_fingerprint, resolve_key, typed_cache_key,
 };
 use super::endpoints::{SEARCH_LIMIT, build_search_body, extract_items};
+use crate::util::curl_client::AuthScheme;
 
 #[test]
 fn client_timeout_budget_exceeds_name_search_server_cap() {

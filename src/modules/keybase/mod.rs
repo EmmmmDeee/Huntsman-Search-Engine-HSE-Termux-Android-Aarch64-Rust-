@@ -276,7 +276,12 @@ impl Module for Keybase {
 /// emitted; each cross-platform handle is a cryptographically-verified pivot,
 /// so we ALSO surface its `service_url` as a first-class (confirmed) profile
 /// link rather than discarding it.
-pub(super) fn extract_proofs(proofs: &[KbProof], kb_username: &str, scan_id: &str, result: &mut ModuleResult) {
+pub(super) fn extract_proofs(
+    proofs: &[KbProof],
+    kb_username: &str,
+    scan_id: &str,
+    result: &mut ModuleResult,
+) {
     // Emit the verified profile URL a proof points at (when present + http).
     let push_service_url = |result: &mut ModuleResult, ptype: &str, url: Option<&str>| {
         if let Some(u) = url.filter(|u| u.starts_with("http")) {

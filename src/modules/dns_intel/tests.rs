@@ -2,12 +2,12 @@ use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
 
 use super::{
+    DnsIntel,
     constants::SUBDOMAINS,
     helpers::{
-        dmarc_report_addresses, reverse_ip, soa_rname_to_email, unescape_dns_label,
-        verification_vendor, VERIFICATION_VENDORS,
+        VERIFICATION_VENDORS, dmarc_report_addresses, reverse_ip, soa_rname_to_email,
+        unescape_dns_label, verification_vendor,
     },
-    DnsIntel,
 };
 
 // -- DnsIntel accepts --------------------------------------------------
@@ -155,9 +155,7 @@ fn verification_vendor_table_is_sound() {
 fn dmarc_report_addresses_skips_non_mailto_and_implausible() {
     // https:// report URIs, a bare mailto:, and a too-short address are all
     // skipped; no rua/ruf at all yields nothing.
-    assert!(
-        dmarc_report_addresses("v=DMARC1; rua=https://dmarc.example.com/report").is_empty()
-    );
+    assert!(dmarc_report_addresses("v=DMARC1; rua=https://dmarc.example.com/report").is_empty());
     assert!(dmarc_report_addresses("v=DMARC1; rua=mailto:,mailto:a@b").is_empty());
     assert!(dmarc_report_addresses("v=DMARC1; p=none").is_empty());
 }

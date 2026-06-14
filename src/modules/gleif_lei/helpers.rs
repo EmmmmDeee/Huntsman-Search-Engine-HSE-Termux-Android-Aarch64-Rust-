@@ -32,8 +32,8 @@ pub(super) fn name_matches_query(name: &str, query: &str) -> bool {
 /// The lei-records search URL for one legal-name query. JSON:API bracket params
 /// are percent-encoded literally; the value is url-encoded.
 pub(super) fn query_url(name: &str) -> String {
-    use crate::util::http::urlencode;
     use super::MAX_RECORDS;
+    use crate::util::http::urlencode;
     format!(
         "{BASE_URL}?filter%5Bentity.legalName%5D={}&page%5Bsize%5D={MAX_RECORDS}",
         urlencode(name)

@@ -369,8 +369,7 @@ fn resolution_dedups_repeated_domain_mentions() {
     let mut ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.9, "rel-scan");
     // Domain appears in both an attr and the summary, across two records.
     ip.add_evidence(
-        Evidence::new("dns_intel", "A record for example.com")
-            .with_attr("domain", "example.com"),
+        Evidence::new("dns_intel", "A record for example.com").with_attr("domain", "example.com"),
     );
     ip.add_evidence(
         Evidence::new("dns_intel", "AAAA record for example.com")

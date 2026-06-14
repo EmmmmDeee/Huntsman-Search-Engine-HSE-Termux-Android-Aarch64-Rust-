@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use super::pool::KeyPool;
 use super::types::{KeyEntry, KeyStatus};
-use crate::util::service_defs::{find_service, KeyPlacement, ServiceDef};
+use crate::util::service_defs::{KeyPlacement, ServiceDef, find_service};
 
 /// Add a key and validate it immediately against the service endpoint.
 /// If valid, marks it Active and stores it. If invalid, marks it Invalid

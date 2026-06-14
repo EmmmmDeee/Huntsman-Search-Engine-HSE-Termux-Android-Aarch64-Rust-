@@ -91,8 +91,7 @@ pub fn location_fix(weighted_points: &[((f64, f64), f64)]) -> Option<LocationFix
     let points: Vec<(f64, f64)> = weighted_points.iter().map(|&(p, _)| p).collect();
     let footprint = geo_footprint(&points)?;
     let weighted_centroid = weighted_centroid(weighted_points).unwrap_or(footprint.centroid);
-    let geometric_median =
-        weighted_geometric_median(weighted_points).unwrap_or(weighted_centroid);
+    let geometric_median = weighted_geometric_median(weighted_points).unwrap_or(weighted_centroid);
     let median_radius_km = median_distance_km(geometric_median, &points);
     let enclosing = min_enclosing_circle(&points).unwrap_or(EnclosingCircle {
         center: footprint.centroid,

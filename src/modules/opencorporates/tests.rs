@@ -71,9 +71,7 @@ fn au_company_yields_org_address_and_company_number() {
 
     let org = &ents[0];
     assert_eq!(org.kind, EntityKind::Organisation);
-    assert!(
-        org.has_tag("opencorporates") && org.has_tag("country:AU") && org.has_tag("active")
-    );
+    assert!(org.has_tag("opencorporates") && org.has_tag("country:AU") && org.has_tag("active"));
     assert_eq!(org_attr(org, "company_number"), Some("111222333"));
     assert_eq!(org_attr(org, "status"), Some("Active"));
     assert_eq!(org_attr(org, "total_matches"), Some("7"));

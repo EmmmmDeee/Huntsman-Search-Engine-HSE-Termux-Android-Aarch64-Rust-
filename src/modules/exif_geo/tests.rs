@@ -1,8 +1,8 @@
 use exif::Value;
 
-use crate::core::scan::{Target, TargetKind};
 use crate::core::entity::EntityKind;
 use crate::core::module::{Module, ModuleCategory};
+use crate::core::scan::{Target, TargetKind};
 
 use super::ExifGeo;
 use super::extract::{clean_owner, device_fingerprint, looks_like_image_url};

@@ -124,8 +124,7 @@ impl Module for Proxycurl {
             return Ok(ModuleResult::new());
         };
 
-        let profile: types::LinkedInProfile =
-            crate::util::http::json_decode(SRC, resp).await?;
+        let profile: types::LinkedInProfile = crate::util::http::json_decode(SRC, resp).await?;
 
         Ok(build::build_entities(&profile, target, &ctx.scan_id))
     }

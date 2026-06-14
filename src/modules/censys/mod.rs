@@ -7,9 +7,9 @@
 //! Surfaces open ports, service names, transport protocols, and
 //! geographic coordinates when the API reports location data.
 
-mod types;
 #[cfg(test)]
 mod tests;
+mod types;
 
 use async_trait::async_trait;
 

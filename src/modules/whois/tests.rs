@@ -31,7 +31,8 @@ fn parses_field_case_insensitive() {
 
 #[test]
 fn parses_multiple_nameservers_deduplicated() {
-    let s = "Name Server: NS1.EXAMPLE.COM\nName Server: NS2.EXAMPLE.COM\nName Server: NS1.EXAMPLE.COM";
+    let s =
+        "Name Server: NS1.EXAMPLE.COM\nName Server: NS2.EXAMPLE.COM\nName Server: NS1.EXAMPLE.COM";
     let ns = all_fields(s, &["Name Server:"]);
     assert_eq!(ns.len(), 2);
 }

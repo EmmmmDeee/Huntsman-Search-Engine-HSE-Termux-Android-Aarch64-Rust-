@@ -222,7 +222,10 @@ pub(super) fn records_to_entities(
 /// owner is in one of them), so confidence is low and they carry a
 /// `candidate-suburb` tag; the engine surfaces them as enumeration without
 /// auto-expanding (below the 0.50 floor). Pure: takes the already-fetched map.
-pub(super) fn suburbs_to_entities(pc_localities: &[(String, Vec<Locality>)], scan_id: &str) -> Vec<Entity> {
+pub(super) fn suburbs_to_entities(
+    pc_localities: &[(String, Vec<Locality>)],
+    scan_id: &str,
+) -> Vec<Entity> {
     let mut out = Vec::new();
     for (pc, locs) in pc_localities {
         if let Some(first) = locs.first() {
@@ -276,7 +279,11 @@ pub(super) fn suburbs_to_entities(pc_localities: &[(String, Vec<Locality>)], sca
 /// broadened search doesn't fan every relative's postcode out into a pile of
 /// candidate suburbs (the explosion this collapses). A verbatim
 /// (non-broadened) search has no family/exact split, so every row qualifies.
-pub(super) fn exact_postcodes(records: &[Map<String, Value>], seed: &str, broadened: bool) -> Vec<String> {
+pub(super) fn exact_postcodes(
+    records: &[Map<String, Value>],
+    seed: &str,
+    broadened: bool,
+) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for rec in records {

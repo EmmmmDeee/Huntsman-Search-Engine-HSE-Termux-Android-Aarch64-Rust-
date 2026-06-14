@@ -39,5 +39,7 @@ pub use domain::validate_domain_shape;
 pub use email::validate_email_syntax;
 pub use ip::{is_bogus_ip, is_cdn_edge_ip, is_non_routable_ip};
 pub use phone::validate_phone_e164;
-pub use placeholder::{is_fragment_value, is_placeholder_domain, is_placeholder_entity, is_specific_residence};
+pub use placeholder::{
+    is_fragment_value, is_placeholder_domain, is_placeholder_entity, is_specific_residence,
+};
 pub use report::ValidationReport;

@@ -138,7 +138,12 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
     }
 }
 
-pub(super) fn parse_name_results(data: &Value, query: &str, scan_id: &str, result: &mut ModuleResult) {
+pub(super) fn parse_name_results(
+    data: &Value,
+    query: &str,
+    scan_id: &str,
+    result: &mut ModuleResult,
+) {
     let names = match data.get("Names").and_then(|v| v.as_array()) {
         Some(n) if !n.is_empty() => n,
         _ => return,

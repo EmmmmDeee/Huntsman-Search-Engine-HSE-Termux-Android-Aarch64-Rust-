@@ -9,11 +9,11 @@ use crate::util::ckan::{Response as CkanResp, field_str};
 use crate::util::postcode_au::Locality;
 
 use super::QldUnclaimed;
+use super::SRC;
 use super::helpers::{
     derive_query, exact_postcodes, merge_records, owner_matches_full_name, records_to_entities,
     suburbs_to_entities,
 };
-use super::SRC;
 
 fn sample() -> CkanResp {
     let raw = r#"{

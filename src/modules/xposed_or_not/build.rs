@@ -1,11 +1,6 @@
 //! Pure result-building helpers for XposedOrNot breach data.
 
-use crate::core::{
-    entity::Evidence,
-    module::ModuleResult,
-    scan::Target,
-    tags,
-};
+use crate::core::{entity::Evidence, module::ModuleResult, scan::Target, tags};
 
 use super::types::{AnalyticsResp, BreachDetail};
 
@@ -118,10 +113,7 @@ pub(super) fn build_result(
     result
 }
 
-fn attach_breach_detail_attrs(
-    mut ev: Evidence,
-    details: &[BreachDetail],
-) -> Evidence {
+fn attach_breach_detail_attrs(mut ev: Evidence, details: &[BreachDetail]) -> Evidence {
     // Surface per-breach summaries with description and record counts.
     let mut breach_summaries: Vec<String> = Vec::new();
     let mut descriptions: Vec<String> = Vec::new();
@@ -187,10 +179,7 @@ fn attach_breach_detail_attrs(
 }
 
 /// Fetch breach analytics from the XposedOrNot analytics endpoint. Best-effort.
-pub(super) async fn fetch_analytics(
-    http: &reqwest::Client,
-    email: &str,
-) -> Option<AnalyticsResp> {
+pub(super) async fn fetch_analytics(http: &reqwest::Client, email: &str) -> Option<AnalyticsResp> {
     use crate::util::http::{fetch_json_or_404, urlencode};
     let url = format!(
         "https://api.xposedornot.com/v1/breach-analytics?email={}",

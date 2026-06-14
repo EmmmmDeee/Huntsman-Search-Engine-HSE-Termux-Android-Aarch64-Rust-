@@ -13,7 +13,7 @@ use crate::util::domains::is_freemail;
 use crate::util::str_util::truncate_safe;
 
 use super::types::{DateField, Education, LinkedInProfile};
-use super::{MAX_EMAILS, MAX_EXPERIENCES, MAX_LISTED, MAX_PHONES, SUMMARY_CAP, SRC};
+use super::{MAX_EMAILS, MAX_EXPERIENCES, MAX_LISTED, MAX_PHONES, SRC, SUMMARY_CAP};
 
 use crate::util::str_util::nonempty;
 

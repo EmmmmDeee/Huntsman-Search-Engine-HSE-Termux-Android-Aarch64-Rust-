@@ -4,8 +4,8 @@ use crate::core::error::{Error, Result};
 use crate::util::http::RequestBuilderExt;
 use crate::util::http::error_snippet;
 
-use super::types::{DetailNetwork, DetailResp};
 use super::SOURCE;
+use super::types::{DetailNetwork, DetailResp};
 
 pub(super) async fn query_wigle_detail(
     http: &reqwest::Client,

@@ -1,7 +1,7 @@
 //! Minimum enclosing circle: [`EnclosingCircle`] and [`min_enclosing_circle`].
 
-use crate::util::geohash::haversine_km;
 use super::footprint::lon_scale;
+use crate::util::geohash::haversine_km;
 
 /// The smallest circle enclosing a set of observed coordinates: its centre — the
 /// **Chebyshev centre**, the point that minimises the *worst-case* distance to

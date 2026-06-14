@@ -8,14 +8,11 @@ use crate::core::{
 };
 use crate::util::dns::shared_resolver;
 
-use super::helpers::{dmarc_report_addresses, soa_rname_to_email, verification_vendor};
 use super::SRC;
+use super::helpers::{dmarc_report_addresses, soa_rname_to_email, verification_vendor};
 
 /// A / AAAA / MX / NS / SOA / TXT — run concurrently via `tokio::join!`.
-pub(super) async fn resolve_records(
-    target: &Target,
-    ctx: &ModuleContext,
-) -> Result<Vec<Entity>> {
+pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Entity>> {
     let resolver = shared_resolver();
     let domain = target.value.as_str();
     let mut entities: Vec<Entity> = Vec::new();
@@ -336,10 +333,7 @@ pub(super) async fn reverse_lookup(target: &Target, ctx: &ModuleContext) -> Resu
 }
 
 /// DNSBL reputation check against 8 blocklists.
-pub(super) async fn blocklist_check(
-    target: &Target,
-    ctx: &ModuleContext,
-) -> Result<Vec<Entity>> {
+pub(super) async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Result<Vec<Entity>> {
     use super::constants::BLOCKLISTS;
     use super::helpers::reverse_ip;
 

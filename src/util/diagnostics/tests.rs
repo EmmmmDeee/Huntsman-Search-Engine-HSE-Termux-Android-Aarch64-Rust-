@@ -1,6 +1,6 @@
+use super::cluster;
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use super::cluster;
 use crate::core::entity::{Entity, EntityKind, Evidence};
 
 fn ent(kind: EntityKind, val: &str, conf: f64, source: &str) -> Entity {

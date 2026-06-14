@@ -10,9 +10,9 @@
 mod analyse;
 pub mod cluster;
 pub(super) mod ledger;
-pub mod types;
 #[cfg(test)]
 mod tests;
+pub mod types;
 
 pub use analyse::{analyse, read_adaptive_routing};
 pub use cluster::{country_coherence_weight, filter_country_coherent};

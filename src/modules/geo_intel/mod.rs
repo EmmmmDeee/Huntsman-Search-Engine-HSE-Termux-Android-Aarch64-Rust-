@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use crate::core::{
     entity::EntityKind,
     error::Result,
-    module::{Module, ModuleCategory, ModuleCost, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 

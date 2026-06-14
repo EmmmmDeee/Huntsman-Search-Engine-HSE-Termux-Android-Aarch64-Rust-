@@ -23,8 +23,8 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::handle_keyed_error;
 use crate::util::http::RequestBuilderExt;
+use crate::util::http::handle_keyed_error;
 
 mod types;
 use types::DehashedResp;

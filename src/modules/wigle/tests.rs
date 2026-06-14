@@ -1,10 +1,14 @@
-use super::*;
 use super::account::{
     ProfileUserResp, WigleAccountStatus, account_status, account_status_cache, is_unverified,
     status_from_profile,
 };
 use super::emit::{emit_bssid_entities, extract_bluetooth_intel, extract_cell_intel};
-use crate::core::{entity::EntityKind, module::ModuleResult, scan::{Target, TargetKind}};
+use super::*;
+use crate::core::{
+    entity::EntityKind,
+    module::ModuleResult,
+    scan::{Target, TargetKind},
+};
 use crate::util::geo::parse_coords;
 
 #[test]
@@ -105,21 +109,39 @@ fn extract_cell_intel_emits_dominant_carrier_as_organisation() {
         results: vec![
             Network {
                 ssid: Some("Telstra".into()),
-                netid: None, encryption: None, lastupdt: None,
-                trilat: None, trilong: None, city: None,
-                region: None, country: None, postalcode: None,
+                netid: None,
+                encryption: None,
+                lastupdt: None,
+                trilat: None,
+                trilong: None,
+                city: None,
+                region: None,
+                country: None,
+                postalcode: None,
             },
             Network {
                 ssid: Some("Telstra".into()),
-                netid: None, encryption: None, lastupdt: None,
-                trilat: None, trilong: None, city: None,
-                region: None, country: None, postalcode: None,
+                netid: None,
+                encryption: None,
+                lastupdt: None,
+                trilat: None,
+                trilong: None,
+                city: None,
+                region: None,
+                country: None,
+                postalcode: None,
             },
             Network {
                 ssid: Some("Vodafone".into()),
-                netid: None, encryption: None, lastupdt: None,
-                trilat: None, trilong: None, city: None,
-                region: None, country: None, postalcode: None,
+                netid: None,
+                encryption: None,
+                lastupdt: None,
+                trilat: None,
+                trilong: None,
+                city: None,
+                region: None,
+                country: None,
+                postalcode: None,
             },
         ],
     };
@@ -146,15 +168,27 @@ fn extract_cell_intel_passes_non_generic_carrier_through() {
         results: vec![
             Network {
                 ssid: Some("AcmeMobileOps".into()),
-                netid: None, encryption: None, lastupdt: None,
-                trilat: None, trilong: None, city: None,
-                region: None, country: None, postalcode: None,
+                netid: None,
+                encryption: None,
+                lastupdt: None,
+                trilat: None,
+                trilong: None,
+                city: None,
+                region: None,
+                country: None,
+                postalcode: None,
             },
             Network {
                 ssid: Some("AcmeMobileOps".into()),
-                netid: None, encryption: None, lastupdt: None,
-                trilat: None, trilong: None, city: None,
-                region: None, country: None, postalcode: None,
+                netid: None,
+                encryption: None,
+                lastupdt: None,
+                trilat: None,
+                trilong: None,
+                city: None,
+                region: None,
+                country: None,
+                postalcode: None,
             },
         ],
     };
@@ -173,9 +207,14 @@ fn extract_bluetooth_intel_emits_at_most_three_mac_entities() {
         results.push(Network {
             ssid: Some(format!("Beacon-{i}")),
             netid: Some(format!("AA:BB:CC:DD:EE:{i:02X}")),
-            encryption: None, lastupdt: None,
-            trilat: None, trilong: None, city: None,
-            region: None, country: None, postalcode: None,
+            encryption: None,
+            lastupdt: None,
+            trilat: None,
+            trilong: None,
+            city: None,
+            region: None,
+            country: None,
+            postalcode: None,
         });
     }
     let resp = Resp {
@@ -202,9 +241,14 @@ fn extract_bluetooth_intel_skips_short_macs() {
         results: vec![Network {
             ssid: None,
             netid: Some("AA:BB".into()),
-            encryption: None, lastupdt: None,
-            trilat: None, trilong: None, city: None,
-            region: None, country: None, postalcode: None,
+            encryption: None,
+            lastupdt: None,
+            trilat: None,
+            trilong: None,
+            city: None,
+            region: None,
+            country: None,
+            postalcode: None,
         }],
     };
     let mut r = ModuleResult::new();
@@ -350,9 +394,14 @@ fn emit_bssid_entities_skips_when_no_location_data() {
     let net = Network {
         ssid: None,
         netid: Some("AA:BB:CC:DD:EE:FF".into()),
-        encryption: None, lastupdt: None,
-        trilat: None, trilong: None, city: None,
-        region: None, country: None, postalcode: None,
+        encryption: None,
+        lastupdt: None,
+        trilat: None,
+        trilong: None,
+        city: None,
+        region: None,
+        country: None,
+        postalcode: None,
     };
     let r = emit_bssid_entities("AA:BB:CC:DD:EE:FF", NetworkKind::Wifi, &[net], "test");
     assert!(r.entities.is_empty());
@@ -363,7 +412,8 @@ fn emit_bssid_entities_tags_cell_lookup_with_cell_located() {
     let net = Network {
         ssid: None,
         netid: Some("AA:BB:CC:DD:EE:FF".into()),
-        encryption: None, lastupdt: None,
+        encryption: None,
+        lastupdt: None,
         trilat: Some(-27.4766),
         trilong: Some(153.0166),
         city: Some("Brisbane".into()),
@@ -372,8 +422,16 @@ fn emit_bssid_entities_tags_cell_lookup_with_cell_located() {
         postalcode: None,
     };
     let r = emit_bssid_entities("310-410-12345", NetworkKind::Cell, &[net], "test");
-    assert!(r.entities.iter().any(|e| e.kind == EntityKind::Coordinates && e.has_tag("cell-located")));
-    assert!(r.entities.iter().any(|e| e.kind == EntityKind::Address && e.has_tag("cell-located")));
+    assert!(
+        r.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Coordinates && e.has_tag("cell-located"))
+    );
+    assert!(
+        r.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Address && e.has_tag("cell-located"))
+    );
 }
 
 #[test]
@@ -381,7 +439,8 @@ fn emit_bssid_entities_tags_bluetooth_lookup_with_bluetooth_located() {
     let net = Network {
         ssid: Some("BeaconLabel".into()),
         netid: Some("DD:EE:FF:00:11:22".into()),
-        encryption: None, lastupdt: None,
+        encryption: None,
+        lastupdt: None,
         trilat: Some(51.5074),
         trilong: Some(-0.1278),
         city: Some("London".into()),
@@ -390,8 +449,16 @@ fn emit_bssid_entities_tags_bluetooth_lookup_with_bluetooth_located() {
         postalcode: None,
     };
     let r = emit_bssid_entities("DD:EE:FF:00:11:22", NetworkKind::Bluetooth, &[net], "test");
-    assert!(r.entities.iter().any(|e| e.kind == EntityKind::Coordinates && e.has_tag("bluetooth-located")));
-    assert!(r.entities.iter().any(|e| e.kind == EntityKind::Address && e.has_tag("bluetooth-located")));
+    assert!(
+        r.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Coordinates && e.has_tag("bluetooth-located"))
+    );
+    assert!(
+        r.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Address && e.has_tag("bluetooth-located"))
+    );
 }
 
 #[test]

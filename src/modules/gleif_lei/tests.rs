@@ -1,12 +1,12 @@
 use super::{
+    GleifLei, ORG_EXACT,
     helpers::{locality, query_url},
     transform::records_to_entities,
     types::{GleifAddress, GleifResp},
-    GleifLei, ORG_EXACT,
 };
 use crate::core::{
     entity::EntityKind,
-    module::{Module, ModuleCost, ModuleCategory},
+    module::{Module, ModuleCategory, ModuleCost},
     scan::{Target, TargetKind},
 };
 

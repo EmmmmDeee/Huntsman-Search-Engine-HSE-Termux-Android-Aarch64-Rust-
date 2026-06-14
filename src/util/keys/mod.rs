@@ -15,6 +15,5 @@ pub use constants::{
     resolve_or_default, signup_hint, wigle_credentials,
 };
 pub use io::{
-    default_seed, env_path, load, load_from_file_only, populate_and_load, write_keys,
-    write_keys_at,
+    default_seed, env_path, load, load_from_file_only, populate_and_load, write_keys, write_keys_at,
 };

@@ -44,8 +44,8 @@ use crate::core::{
 use crate::util::http::RequestBuilderExt;
 
 use parse::{
-    dedup_entities, parse_nsw_response, parse_qld_response, parse_vic_response, record_to_entities,
-    split_name, surname, SRC,
+    SRC, dedup_entities, parse_nsw_response, parse_qld_response, parse_vic_response,
+    record_to_entities, split_name, surname,
 };
 
 pub struct AuProperty;

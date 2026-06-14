@@ -1,6 +1,6 @@
+use super::GithubUser;
 use super::helpers::{ssh_fingerprint, top_event_types, usable_commit_email};
 use super::types::GhUser;
-use super::GithubUser;
 use crate::core::{
     module::Module,
     scan::{Target, TargetKind},

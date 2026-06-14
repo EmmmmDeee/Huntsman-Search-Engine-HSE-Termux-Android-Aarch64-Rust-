@@ -1,6 +1,6 @@
-use super::build::{build_result, confidence_for_count, NOTABLE_BREACHES};
-use super::types::{AnalyticsBreaches, AnalyticsResp, BreachDetail};
 use super::XposedOrNot;
+use super::build::{NOTABLE_BREACHES, build_result, confidence_for_count};
+use super::types::{AnalyticsBreaches, AnalyticsResp, BreachDetail};
 use crate::core::{
     entity::EntityKind,
     module::Module,

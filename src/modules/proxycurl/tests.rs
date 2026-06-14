@@ -1,8 +1,8 @@
-use super::build::email_domain;
+use super::Proxycurl;
 use super::build::build_entities;
+use super::build::email_domain;
 use super::types::{DateField, Education, LinkedInProfile};
 use super::url::profile_url;
-use super::Proxycurl;
 use crate::core::{
     entity::EntityKind,
     module::{Module, ModuleCost},

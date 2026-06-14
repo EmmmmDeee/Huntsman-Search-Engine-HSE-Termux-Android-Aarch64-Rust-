@@ -3,8 +3,8 @@
 use crate::core::entity::{Entity, EntityKind, Evidence};
 
 use super::{
-    division_map::{division_centroid, infer_state_from_division},
     SRC,
+    division_map::{division_centroid, infer_state_from_division},
 };
 
 /// Build entity set from a confirmed electoral division match. Pure.

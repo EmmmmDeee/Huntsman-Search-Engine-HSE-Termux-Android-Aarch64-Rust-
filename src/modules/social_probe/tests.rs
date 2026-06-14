@@ -35,7 +35,7 @@ fn probe_with_a_hit_echoes_the_seed_as_corroboration() {
     assert!(summary.has_tag("social-probed"));
     assert!(!summary.has_tag("multi-platform"));
     // Three or more confirmed profiles flags the multi-platform footprint.
-    let multi = build_target_summary(&t, 3, 28, &["github", "reddit", "twitch"], "scan")
-        .expect("entity");
+    let multi =
+        build_target_summary(&t, 3, 28, &["github", "reddit", "twitch"], "scan").expect("entity");
     assert!(multi.has_tag("multi-platform"));
 }

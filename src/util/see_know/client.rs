@@ -26,8 +26,7 @@ pub(super) static RESPONSE_CACHE: ResponseCache<Vec<Value>> = ResponseCache::new
 // opaque "curl failed" with zero entities. Budget above the cap: 75s curl,
 // 78s outer (curl < outer so curl's own exit code is observed), paired with an
 // 80s module max_timeout in `modules::see_know`.
-pub(super) static CLIENT: CurlClient =
-    CurlClient::new("seek_now", AuthScheme::XApiKey, 75, 78_000);
+pub(super) static CLIENT: CurlClient = CurlClient::new("seek_now", AuthScheme::XApiKey, 75, 78_000);
 
 /// Cache key combining endpoint path, normalised query, and query
 /// type (when applicable). Disambiguates the universal /search path

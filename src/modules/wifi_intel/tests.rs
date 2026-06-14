@@ -99,7 +99,8 @@ fn parses_three_aps_with_all_fields() {
 
 #[test]
 fn hidden_ssid_shows_placeholder() {
-    let json = br#"[{"bssid":"ff:ff:ff:ff:ff:ff","ssid":null,"frequency":2412,"rssi":-80,"timestamp":0}]"#;
+    let json =
+        br#"[{"bssid":"ff:ff:ff:ff:ff:ff","ssid":null,"frequency":2412,"rssi":-80,"timestamp":0}]"#;
     let r = parse_aps(json, "test");
     assert_eq!(r.entities.len(), 1);
     let ev = &r.entities[0].evidence[0];

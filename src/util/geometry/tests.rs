@@ -1,10 +1,12 @@
 //! Tests for the geometry submodules.
 
-use crate::util::geohash::haversine_km;
 use super::circle::{EnclosingCircle, min_enclosing_circle};
 use super::fix::{LocationFix, location_fix, point_in_convex_hull};
 use super::footprint::{GeoFootprint, convex_hull_latlon, geo_footprint, polygon_centroid_latlon};
-use super::median::{geometric_median, median_distance_km, weighted_centroid, weighted_geometric_median};
+use super::median::{
+    geometric_median, median_distance_km, weighted_centroid, weighted_geometric_median,
+};
+use crate::util::geohash::haversine_km;
 
 #[test]
 fn footprint_needs_three_distinct_noncollinear_points() {
@@ -221,8 +223,7 @@ fn weighted_geometric_median_pulls_toward_high_confidence() {
     let a = (0.0, 0.0);
     let pts = [a, (0.0, 1.0), (0.8, 0.5)];
     let unweighted = geometric_median(&pts).unwrap();
-    let weighted =
-        weighted_geometric_median(&[(a, 12.0), (pts[1], 1.0), (pts[2], 1.0)]).unwrap();
+    let weighted = weighted_geometric_median(&[(a, 12.0), (pts[1], 1.0), (pts[2], 1.0)]).unwrap();
     let d = |p: (f64, f64)| haversine_km(a.0, a.1, p.0, p.1);
     assert!(
         d(weighted) < d(unweighted),
@@ -416,4 +417,7 @@ fn point_in_convex_hull_uses_real_hull_orientation() {
 
 // Suppress unused-import warnings for items imported for potential future tests.
 #[allow(unused_imports)]
-use self::{convex_hull_latlon as _, polygon_centroid_latlon as _, GeoFootprint as _, LocationFix as _, EnclosingCircle as _};
+use self::{
+    EnclosingCircle as _, GeoFootprint as _, LocationFix as _, convex_hull_latlon as _,
+    polygon_centroid_latlon as _,
+};

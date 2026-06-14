@@ -1,8 +1,8 @@
 //! Geometric median estimators: [`geometric_median`], [`weighted_geometric_median`],
 //! [`median_distance_km`], and [`weighted_centroid`].
 
-use crate::util::geohash::haversine_km;
 use super::footprint::lon_scale;
+use crate::util::geohash::haversine_km;
 
 /// The **geometric median** (Weber point) of observed coordinates — the location
 /// that minimises the *sum* of great-circle distances to every sighting (the L1

@@ -9,8 +9,8 @@ use crate::core::{
 use crate::util::str_util::nonempty;
 
 use super::{
-    types::{AccountPresence, SeonEmailData, SeonPhoneData},
     HIGH_RISK_SCORE, PERSON_PLATFORMS, SRC,
+    types::{AccountPresence, SeonEmailData, SeonPhoneData},
 };
 
 /// The platforms a presence map reports as `registered: true`, in declared order.

@@ -1,5 +1,5 @@
-use super::types::{CensysResp};
 use super::Censys;
+use super::types::CensysResp;
 use crate::core::module::{Module, ModuleCost};
 use crate::core::scan::{Target, TargetKind};
 use crate::util::geo::is_valid_coords;

@@ -2,10 +2,10 @@ use super::client::{build_client, build_client_with_trace};
 use super::fetch::{
     JSON_BODY_CAP, is_keyed_error_status, key_tail, keyed_ok_or_404, retry_after_secs,
 };
-use super::url::json_decode;
 use super::keys::is_key_token_separator;
 use super::redact::{redact_credentials, redact_literal_secrets};
 use super::ssrf::{filter_public, redirect_to_private_ip};
+use super::url::json_decode;
 use super::url::{RequestBuilderExt, urlencode};
 
 #[test]
@@ -34,7 +34,13 @@ async fn json_decode_parses_ok_and_tags_decode_errors_with_module() {
             .unwrap(),
     );
     let v: V = json_decode("test_mod", ok).await.unwrap();
-    assert_eq!(v, V { a: 7, b: "x".into() });
+    assert_eq!(
+        v,
+        V {
+            a: 7,
+            b: "x".into()
+        }
+    );
 
     let bad = reqwest::Response::from(
         http::Response::builder()
@@ -108,8 +114,7 @@ fn curl_download_cap_mirrors_the_json_body_cap() {
         .parse()
         .expect("CURL_MAX_DOWNLOAD_BYTES must be a decimal byte count");
     assert_eq!(
-        curl_cap,
-        JSON_BODY_CAP,
+        curl_cap, JSON_BODY_CAP,
         "the curl --max-filesize cap and the reqwest JSON body cap must stay equal"
     );
 }
@@ -183,7 +188,10 @@ fn redirect_to_private_ip_blocks_metadata_and_internal() {
     assert!(redirect_to_private_ip(Some("127.0.0.1")));
     assert!(redirect_to_private_ip(Some("10.0.0.5")));
     assert!(redirect_to_private_ip(Some("192.168.1.1")));
-    assert!(!redirect_to_private_ip(Some("8.8.8.8")), "public IP follows");
+    assert!(
+        !redirect_to_private_ip(Some("8.8.8.8")),
+        "public IP follows"
+    );
     assert!(
         !redirect_to_private_ip(Some("example.com")),
         "hostnames resolved at connect, not judged here"
@@ -191,9 +199,18 @@ fn redirect_to_private_ip_blocks_metadata_and_internal() {
     assert!(!redirect_to_private_ip(None));
 
     // IPv6-literal hops arrive bracketed from `Url::host_str()` (url 2.5).
-    assert!(redirect_to_private_ip(Some("[::1]")), "IPv6 loopback hop must be refused");
-    assert!(redirect_to_private_ip(Some("[fc00::1]")), "ULA hop must be refused");
-    assert!(redirect_to_private_ip(Some("[fe80::1]")), "link-local hop must be refused");
+    assert!(
+        redirect_to_private_ip(Some("[::1]")),
+        "IPv6 loopback hop must be refused"
+    );
+    assert!(
+        redirect_to_private_ip(Some("[fc00::1]")),
+        "ULA hop must be refused"
+    );
+    assert!(
+        redirect_to_private_ip(Some("[fe80::1]")),
+        "link-local hop must be refused"
+    );
     assert!(
         redirect_to_private_ip(Some("[::ffff:169.254.169.254]")),
         "IPv4-mapped cloud-metadata hop must be refused"
@@ -218,7 +235,10 @@ fn redacts_path_embedded_secret_value() {
     let key = "abcd1234efgh5678ijkl";
     let body = format!("invalid request: /api/json/ip/{key}/1.2.3.4 rejected");
     let masked = redact_literal_secrets(&body, std::iter::once(key.to_string()));
-    assert!(!masked.contains(key), "path-embedded key must be redacted: {masked}");
+    assert!(
+        !masked.contains(key),
+        "path-embedded key must be redacted: {masked}"
+    );
     assert!(masked.contains("***"));
     assert_eq!(
         redact_literal_secrets("xabcx", std::iter::once("abc".to_string())),
@@ -395,4 +415,3 @@ fn redact_over_masks_bare_key_param_after_boundary() {
     assert!(r.contains("key=***"), "got: {r}");
     assert!(r.contains("page=2"), "got: {r}");
 }
-

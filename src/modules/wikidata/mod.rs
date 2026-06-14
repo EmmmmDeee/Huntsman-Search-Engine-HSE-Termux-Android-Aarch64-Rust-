@@ -24,10 +24,10 @@
 mod builder;
 mod claims;
 mod classify;
-mod types;
-mod urls;
 #[cfg(test)]
 mod tests;
+mod types;
+mod urls;
 
 use async_trait::async_trait;
 

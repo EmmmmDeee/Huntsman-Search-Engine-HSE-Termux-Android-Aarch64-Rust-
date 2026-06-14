@@ -221,8 +221,7 @@ impl Module for WifiIntel {
                     {
                         addr_str = format!("{addr_str} {p}");
                     }
-                    let mut addr =
-                        Entity::new(EntityKind::Address, &addr_str, 0.60, &ctx.scan_id);
+                    let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.60, &ctx.scan_id);
                     addr.tag("geoint");
                     addr.tag("bssid-derived");
                     addr.add_evidence(

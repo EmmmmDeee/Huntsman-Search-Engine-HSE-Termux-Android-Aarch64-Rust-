@@ -1,9 +1,9 @@
+use super::GeoIntel;
 use super::ip_geo::{FreeIpApiResp, IpApiCoResp};
 use super::phone_geo::{phone_prefix_to_country, process_phone_prefix_only};
-use super::GeoIntel;
-use crate::core::module::{ModuleCost, ModuleContext};
-use crate::core::scan::{Target, TargetKind};
 use crate::core::module::Module;
+use crate::core::module::{ModuleContext, ModuleCost};
+use crate::core::scan::{Target, TargetKind};
 use crate::util::geo::is_valid_coords;
 
 #[test]

@@ -1,5 +1,9 @@
 use super::*;
-use crate::core::{entity::EntityKind, module::ModuleResult, scan::{Target, TargetKind}};
+use crate::core::{
+    entity::EntityKind,
+    module::ModuleResult,
+    scan::{Target, TargetKind},
+};
 use crate::modules::abn_lookup::parse::{parse_abn_result, parse_name_results};
 
 #[test]

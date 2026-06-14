@@ -18,16 +18,18 @@
 //! true great-circle kilometre via the spherical [`super::geohash::haversine_km`].
 //! All functions are pure, deterministic, and dependency-free.
 
-pub(crate) mod footprint;
 pub(crate) mod circle;
-pub(crate) mod median;
 pub(crate) mod fix;
+pub(crate) mod footprint;
+pub(crate) mod median;
 
 #[cfg(test)]
 mod tests;
 
 // Re-export all public items so callers use `util::geometry::*` as before.
-pub use footprint::{GeoFootprint, geo_footprint};
 pub use circle::{EnclosingCircle, min_enclosing_circle};
-pub use median::{geometric_median, weighted_geometric_median, median_distance_km, weighted_centroid};
-pub use fix::{point_in_convex_hull, LocationFix, location_fix};
+pub use fix::{LocationFix, location_fix, point_in_convex_hull};
+pub use footprint::{GeoFootprint, geo_footprint};
+pub use median::{
+    geometric_median, median_distance_km, weighted_centroid, weighted_geometric_median,
+};

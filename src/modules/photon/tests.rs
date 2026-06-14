@@ -1,6 +1,6 @@
+use super::Photon;
 use super::build::{build_forward, build_reverse};
 use super::types::{Feature, PhotonResp, Props};
-use super::Photon;
 use crate::core::{
     entity::EntityKind,
     module::Module,
@@ -73,8 +73,7 @@ fn build_forward_emits_coordinates_with_name_and_osm() {
 fn build_forward_without_geometry_is_none() {
     let feature: Feature = serde_json::from_str(r#"{"properties":{"name":"X"}}"#).unwrap();
     assert!(build_forward("x", &feature, "s").is_none());
-    let no_coords: Feature =
-        serde_json::from_str(r#"{"geometry":{"coordinates":[1.0]}}"#).unwrap();
+    let no_coords: Feature = serde_json::from_str(r#"{"geometry":{"coordinates":[1.0]}}"#).unwrap();
     assert!(build_forward("x", &no_coords, "s").is_none());
 }
 

@@ -12,7 +12,7 @@ pub mod distance;
 pub mod encode;
 pub mod timezone;
 
-pub use address::{parse_address, AddressComponents};
+pub use address::{AddressComponents, parse_address};
 pub use country::{country_name_for_iso, reverse_country_iso};
 pub use distance::haversine_km;
 pub use encode::{geohash, parse_coords};

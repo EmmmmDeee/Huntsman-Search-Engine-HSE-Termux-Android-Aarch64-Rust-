@@ -1,6 +1,4 @@
-use super::entity::{
-    locality_address, name_matches_query, records_to_entities,
-};
+use super::entity::{locality_address, name_matches_query, records_to_entities};
 use super::*;
 use crate::core::entity::EntityKind;
 use crate::core::module::{ModuleCategory, ModuleCost};
