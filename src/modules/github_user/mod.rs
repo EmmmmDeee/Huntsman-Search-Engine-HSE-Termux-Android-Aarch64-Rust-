@@ -296,11 +296,13 @@ impl Module for GithubUser {
             }
         }
 
-        // SSH public keys → evidence on the username entity.
-        fetch::fetch_ssh_keys(login, ctx, &mut result).await;
-
-        // Public events → extract active working hours.
-        fetch::fetch_events(login, ctx, &mut result).await;
+        // SSH public keys and public events are independent — fetch in parallel.
+        let (ssh, events) = tokio::join!(
+            fetch::fetch_ssh_keys(login, ctx),
+            fetch::fetch_events(login, ctx),
+        );
+        fetch::apply_ssh(&mut result, ssh);
+        fetch::apply_events(&mut result, events);
 
         Ok(result)
     }
