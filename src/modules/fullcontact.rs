@@ -254,10 +254,26 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
     // Social profiles: platform-prefixed Username pivots + their profile URLs.
     r.details.profiles.iter().for_each(|(network, p)| {
         let net = network.trim();
-        if let Some(u) = p.username.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
-            push(&mut out, EntityKind::Username, &format!("{net}:{u}"), 0.60, &[net]);
+        if let Some(u) = p
+            .username
+            .as_deref()
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+        {
+            push(
+                &mut out,
+                EntityKind::Username,
+                &format!("{net}:{u}"),
+                0.60,
+                &[net],
+            );
         }
-        if let Some(url) = p.url.as_deref().map(str::trim).filter(|u| u.starts_with("http")) {
+        if let Some(url) = p
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|u| u.starts_with("http"))
+        {
             push(&mut out, EntityKind::Url, url, 0.55, &[net]);
         }
     });

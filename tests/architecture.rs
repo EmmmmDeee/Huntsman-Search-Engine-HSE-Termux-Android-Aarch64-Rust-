@@ -518,7 +518,13 @@ fn attack_overrides_attribute_collection_modules_precisely() {
     // from the narrow Search category default.
     assert_eq!(
         techniques("search_engines"),
-        vec!["T1589.002", "T1589.003", "T1591.001", "T1591.002", "T1593.002"],
+        vec![
+            "T1589.002",
+            "T1589.003",
+            "T1591.001",
+            "T1591.002",
+            "T1593.002"
+        ],
         "search_engines → Email + Employee Names + Physical Locations + Business Relationships + Search Engines"
     );
 

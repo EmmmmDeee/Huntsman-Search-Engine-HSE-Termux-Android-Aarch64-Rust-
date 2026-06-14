@@ -404,10 +404,7 @@ async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Ent
                         let mut e = Entity::new(kind, value, conf, &ctx.scan_id);
                         e.tag("dns");
                         e.tag(tag2);
-                        e.add_evidence(Evidence::new(
-                            SRC,
-                            format!("SPF {ev_label} for {domain}"),
-                        ));
+                        e.add_evidence(Evidence::new(SRC, format!("SPF {ev_label} for {domain}")));
                         e
                     }));
                 } else if b.len() >= 7 && b[..7].eq_ignore_ascii_case(b"v=dkim1") {

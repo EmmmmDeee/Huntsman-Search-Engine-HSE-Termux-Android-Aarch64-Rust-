@@ -612,7 +612,11 @@ fn record_evidence(item: &Value, dbname: &str, endpoint: &str, key_fp: &str) -> 
             return ev;
         }
         // Don't clobber the canonical "source" attribute set above.
-        let key = if k == "source" { "source_db" } else { k.as_str() };
+        let key = if k == "source" {
+            "source_db"
+        } else {
+            k.as_str()
+        };
         ev.with_attr(key, val)
     })
 }

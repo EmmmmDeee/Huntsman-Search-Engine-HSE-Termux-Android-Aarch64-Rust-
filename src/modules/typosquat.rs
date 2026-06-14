@@ -226,10 +226,15 @@ pub(crate) fn permutations(domain: &str, cap: usize) -> Vec<(String, &'static st
     seen.insert(registrable.clone());
 
     // Label permutations on the original suffix.
-    out.extend(variants.iter().filter(|(_, lbl)| is_valid_label(lbl)).filter_map(|(tech, lbl)| {
-        let fqdn = format!("{lbl}.{suffix}");
-        seen.insert(fqdn.clone()).then_some((fqdn, *tech))
-    }));
+    out.extend(
+        variants
+            .iter()
+            .filter(|(_, lbl)| is_valid_label(lbl))
+            .filter_map(|(tech, lbl)| {
+                let fqdn = format!("{lbl}.{suffix}");
+                seen.insert(fqdn.clone()).then_some((fqdn, *tech))
+            }),
+    );
     // TLD swaps on the original label.
     out.extend(
         SWAP_TLDS

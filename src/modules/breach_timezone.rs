@@ -148,7 +148,11 @@ fn infer_timezone(hours: &[u32]) -> Option<TimezoneInference> {
             (offset, count)
         })
         .fold((0_i32, 0_u32), |(best_off, best_cnt), (off, cnt)| {
-            if cnt > best_cnt { (off, cnt) } else { (best_off, best_cnt) }
+            if cnt > best_cnt {
+                (off, cnt)
+            } else {
+                (best_off, best_cnt)
+            }
         });
 
     let concentration = best_count as f64 / total;

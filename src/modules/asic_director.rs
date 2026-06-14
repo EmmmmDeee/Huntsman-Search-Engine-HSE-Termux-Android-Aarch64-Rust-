@@ -205,7 +205,9 @@ fn extract_au_address(text: &str) -> Option<String> {
         let next = *tokens.get(i + 1)?;
         if next.len() == 4
             && next.chars().all(|c| c.is_ascii_digit())
-            && next.parse::<u32>().is_ok_and(|n| (2000..=7999).contains(&n))
+            && next
+                .parse::<u32>()
+                .is_ok_and(|n| (2000..=7999).contains(&n))
         {
             // Build a context: up to 4 tokens before + state + postcode.
             let start = i.saturating_sub(4);

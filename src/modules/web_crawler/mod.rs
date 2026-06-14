@@ -447,15 +447,17 @@ fn build_entities(
     }));
 
     // External domain entities
-    state.result.extend(state.external_domains.iter().map(|ext| {
-        let mut e = Entity::new(EntityKind::Domain, ext.as_str(), 0.50, scan_id);
-        e.tag(tags::EXTERNAL);
-        e.add_evidence(
-            Evidence::new(SRC, format!("External domain linked from {domain}"))
-                .with_attr("source_domain", domain),
-        );
-        e
-    }));
+    state
+        .result
+        .extend(state.external_domains.iter().map(|ext| {
+            let mut e = Entity::new(EntityKind::Domain, ext.as_str(), 0.50, scan_id);
+            e.tag(tags::EXTERNAL);
+            e.add_evidence(
+                Evidence::new(SRC, format!("External domain linked from {domain}"))
+                    .with_attr("source_domain", domain),
+            );
+            e
+        }));
 
     // Email entities. A crawl that scrapes an implausible number of distinct
     // addresses has hit a directory / forum / comment-thread dump, not the
@@ -481,17 +483,19 @@ fn build_entities(
     // correlator count how many distinct sites carry the same id (shared id ⇒
     // common ownership). When two crawled domains share an id, both emit the same
     // TrackingId value → it merges to one entity, raising corroboration.
-    state.result.extend(state.tracking_ids.iter().map(|(id, provider)| {
-        let mut e = Entity::new(EntityKind::TrackingId, id.as_str(), 0.80, scan_id);
-        e.tag(tags::WEB_SCRAPED);
-        e.tag("web-analytics");
-        e.add_evidence(
-            Evidence::new(SRC, format!("{provider} tracking id {id} on {domain}"))
-                .with_attr("provider", provider)
-                .with_attr("source_domain", domain),
-        );
-        e
-    }));
+    state
+        .result
+        .extend(state.tracking_ids.iter().map(|(id, provider)| {
+            let mut e = Entity::new(EntityKind::TrackingId, id.as_str(), 0.80, scan_id);
+            e.tag(tags::WEB_SCRAPED);
+            e.tag("web-analytics");
+            e.add_evidence(
+                Evidence::new(SRC, format!("{provider} tracking id {id} on {domain}"))
+                    .with_attr("provider", provider)
+                    .with_attr("source_domain", domain),
+            );
+            e
+        }));
 
     // Phone entities — same dump guard (a page with dozens of numbers is a
     // directory, not the subject's).

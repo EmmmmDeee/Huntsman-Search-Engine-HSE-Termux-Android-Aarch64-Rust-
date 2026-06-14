@@ -154,7 +154,13 @@ impl Module for SearchEngines {
         // physical addresses / coordinates (T1591.001), and organisation names
         // including corporate registrations (T1591.002) — none of which the
         // Search category default declares.
-        &["T1589.002", "T1589.003", "T1591.001", "T1591.002", "T1593.002"]
+        &[
+            "T1589.002",
+            "T1589.003",
+            "T1591.001",
+            "T1591.002",
+            "T1593.002",
+        ]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
