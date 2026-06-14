@@ -54,7 +54,7 @@ pub(super) fn build_repo_entities(
     if let Some(d) = nonempty(&repo.description) {
         ev = ev.with_attr("description", d);
     }
-    url_e.add_evidence(ev.clone());
+    url_e.add_evidence(ev);
     out.push(url_e);
 
     // Repo owner → Username pivot.
