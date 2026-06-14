@@ -283,6 +283,7 @@
         <li id="nav-scans"  ><a href="#/scans"  ><i class="glyphicon glyphicon-list"></i>&nbsp;Scans</a></li>
         <li id="nav-live"   ><a href="#/live"   ><i class="glyphicon glyphicon-record"></i>&nbsp;Live</a></li>
         <li id="nav-engines"><a href="#/engines"><i class="glyphicon glyphicon-search"></i>&nbsp;Engines</a></li>
+        <li id="nav-radar"  ><a href="#/radar"  >&#x1F4E1;&nbsp;Signal Radar</a></li>
         <li id="nav-opts"   ><a href="#/opts"   ><i class="glyphicon glyphicon-wrench"></i>&nbsp;Settings</a></li>
       </ul>
       <form class="navbar-form navbar-left" style="margin-left:10px" onsubmit="globalSearch(event)">
@@ -580,7 +581,8 @@ const API = {
   modulesGraph: ()=>API._req('/api/v1/modules/graph'),
   // Cross-scan entity pivot: everywhere an identifier appears, across every
   // scan. {entity, scan_ids:[…], observation_count}.
-  entityGet:  uid=>API._req('/api/v1/entities/'+encodeURIComponent(uid))
+  entityGet:  uid=>API._req('/api/v1/entities/'+encodeURIComponent(uid)),
+  radar:      ()=>API._req('/api/v1/radar')
 };
 
 /* ─── Router (hash-based, mirrors SpiderFoot's path semantics) ─── */
@@ -599,6 +601,7 @@ function parseHash(){
   if (segs[0]==='search')                   return {name:'search', params:{}, query};
   if (segs[0]==='live')                     return {name:'live', params:{}, query};
   if (segs[0]==='engines')                  return {name:'engines', params:{}, query};
+  if (segs[0]==='radar')                    return {name:'radar', params:{}, query};
   if (segs[0]==='diff')                     return {name:'diff', params:{a:query.a||'', b:query.b||''}, query};
   if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'status'}, query};
   return {name:'dash', params:{}, query};
@@ -612,9 +615,10 @@ async function render(){
   clearLiveTimer();
   clearScanTimer();
   clearEnginesTimer();
+  clearRadarTimer();
   S.route = parseHash();
   $$('#main-navbar-collapse li').forEach(li=>li.classList.remove('active'));
-  const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', engines:'nav-engines'};
+  const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', engines:'nav-engines', radar:'nav-radar'};
   const navEl = $('#'+navMap[S.route.name]); if (navEl) navEl.classList.add('active');
 
   const v = $('#view');
@@ -628,6 +632,7 @@ async function render(){
     if (S.route.name==='search')   return await renderSearch(v);
     if (S.route.name==='live')     return await renderLive(v);
     if (S.route.name==='engines')  return await renderEngines(v);
+    if (S.route.name==='radar')    return await renderRadar(v);
     if (S.route.name==='diff')     return await renderDiff(v);
   } catch(e){
     v.innerHTML = `<div class="alert alert-danger"><strong>Error.</strong> ${esc(e.message)}
@@ -2802,6 +2807,132 @@ async function renderLive(v){
       if (host){ host.innerHTML = renderLiveSessions(d.sessions || []); wireLiveStops(); }
     } catch(_){}
   }, 8000);
+}
+
+/* ═══════════ Page: SIGNAL RADAR (#/radar) ═══════════ */
+/* Real-time snapshot of the RF/network environment: WiFi APs, Bluetooth
+   devices, cell towers, LAN hosts, and GPS fix. Data comes from
+   GET /api/v1/radar which runs termux-wifi-scaninfo, termux-bluetooth-
+   scaninfo, termux-telephony-cellinfo, termux-location, and /proc/net/arp
+   in parallel. Auto-refreshes every 5 s while open. */
+
+function clearRadarTimer(){ if (S.radarTimer){ clearInterval(S.radarTimer); S.radarTimer = null; } }
+
+/** Return N filled + (5-N) empty signal-bar chars for RSSI displayed inline. */
+function rssiBar(dbm){
+  const lvl = dbm >= -50 ? 5 : dbm >= -65 ? 4 : dbm >= -75 ? 3 : dbm >= -85 ? 2 : 1;
+  const fill = '&#9608;'.repeat(lvl);
+  const empty = '<span style="opacity:.2">&#9608;</span>'.repeat(5-lvl);
+  const col = lvl >= 4 ? '#3c763d' : lvl === 3 ? '#8a6d3b' : '#a94442';
+  return `<span style="color:${col};font-family:monospace;letter-spacing:-1px">${fill}${empty}</span>`;
+}
+
+function renderRadarContent(snap, elapsed){
+  const ago = `<span class="text-muted" style="font-size:11px">Last updated: ${elapsed}s ago</span>`;
+
+  // WiFi APs
+  const wifiRows = (snap.wifi_aps||[]).map(ap=>`<tr>
+    <td><code>${esc(ap.bssid)}</code></td>
+    <td>${esc(ap.ssid)}</td>
+    <td class="text-right">${rssiBar(ap.rssi)} ${ap.rssi}&nbsp;dBm</td>
+    <td class="text-right">${ap.frequency_mhz}&nbsp;MHz</td>
+    <td class="text-right">${ap.channel_width_mhz || '—'}&nbsp;MHz</td>
+  </tr>`).join('');
+  const wifiSection = `<h4>&#x1F4F6; WiFi Access Points <span class="badge">${(snap.wifi_aps||[]).length}</span></h4>
+  <div class="table-responsive"><table class="table table-condensed table-striped">
+    <thead><tr><th>BSSID</th><th>SSID</th><th class="text-right">Signal</th><th class="text-right">Frequency</th><th class="text-right">Width</th></tr></thead>
+    <tbody>${wifiRows || '<tr><td colspan="5" class="text-center text-muted">No WiFi APs detected</td></tr>'}</tbody>
+  </table></div>`;
+
+  // Bluetooth
+  const btRows = (snap.bluetooth_devices||[]).map(d=>`<tr>
+    <td><code>${esc(d.address)}</code></td>
+    <td>${esc(d.name)}</td>
+    <td>${esc(d.device_type)}</td>
+    <td>${esc(d.bond_state)}</td>
+  </tr>`).join('');
+  const btSection = `<h4>&#x1F4F2; Bluetooth Devices <span class="badge">${(snap.bluetooth_devices||[]).length}</span></h4>
+  <div class="table-responsive"><table class="table table-condensed table-striped">
+    <thead><tr><th>Address</th><th>Name</th><th>Type</th><th>Bond</th></tr></thead>
+    <tbody>${btRows || '<tr><td colspan="4" class="text-center text-muted">No Bluetooth devices detected</td></tr>'}</tbody>
+  </table></div>`;
+
+  // Cell towers
+  const cellRows = (snap.cell_towers||[]).map(c=>{
+    const id = [c.mcc, c.mnc, c.cid].filter(v=>v!=null).join('-') || '—';
+    const dbmStr = c.dbm != null ? `${rssiBar(c.dbm)} ${c.dbm}&nbsp;dBm` : '—';
+    return `<tr>
+    <td>${esc(c.technology.toUpperCase())}</td>
+    <td><code>${esc(id)}</code></td>
+    <td>${c.lac_tac != null ? c.lac_tac : '—'}</td>
+    <td class="text-right">${dbmStr}</td>
+    <td class="text-center">${c.registered ? '<span class="label label-success">serving</span>' : ''}</td>
+  </tr>`;}).join('');
+  const cellSection = `<h4>&#x1F4F1; Cell Towers <span class="badge">${(snap.cell_towers||[]).length}</span></h4>
+  <div class="table-responsive"><table class="table table-condensed table-striped">
+    <thead><tr><th>Tech</th><th>MCC-MNC-CID</th><th>LAC/TAC</th><th class="text-right">Signal</th><th class="text-center">Role</th></tr></thead>
+    <tbody>${cellRows || '<tr><td colspan="5" class="text-center text-muted">No cell data</td></tr>'}</tbody>
+  </table></div>`;
+
+  // LAN hosts
+  const lanRows = (snap.lan_hosts||[]).map(h=>`<tr>
+    <td><code>${esc(h.ip)}</code></td>
+    <td><code>${esc(h.mac)}</code></td>
+  </tr>`).join('');
+  const lanSection = `<h4>&#x1F5A7; LAN Hosts <span class="badge">${(snap.lan_hosts||[]).length}</span></h4>
+  <div class="table-responsive"><table class="table table-condensed table-striped">
+    <thead><tr><th>IP</th><th>MAC</th></tr></thead>
+    <tbody>${lanRows || '<tr><td colspan="2" class="text-center text-muted">No ARP neighbours</td></tr>'}</tbody>
+  </table></div>`;
+
+  // GPS
+  const gps = snap.gps;
+  const gpsSection = `<h4>&#x1F4CD; GPS Fix</h4>
+  ${gps ? `<div class="stat-card">
+    <div><b>${gps.latitude.toFixed(6)}, ${gps.longitude.toFixed(6)}</b>
+      <span class="text-muted" style="margin-left:8px">via ${esc(gps.provider)}</span></div>
+    ${gps.accuracy_m != null ? `<div class="text-muted" style="font-size:12px">accuracy: ${gps.accuracy_m.toFixed(0)} m${gps.altitude != null ? ` &nbsp;|&nbsp; altitude: ${gps.altitude.toFixed(0)} m` : ''}</div>` : ''}
+    <div style="margin-top:4px">
+      <a class="btn btn-default btn-xs" target="_blank"
+         href="https://maps.google.com/?q=${gps.latitude},${gps.longitude}"
+         rel="noopener noreferrer">Open in Maps</a>
+    </div>
+  </div>` : '<p class="text-muted">No GPS fix available — check Termux location permission.</p>'}`;
+
+  return `${wifiSection}<hr style="margin:12px 0">${btSection}<hr style="margin:12px 0">${cellSection}<hr style="margin:12px 0">${lanSection}<hr style="margin:12px 0">${gpsSection}<div style="margin-top:10px">${ago}</div>`;
+}
+
+async function renderRadar(v){
+  v.innerHTML = `<h2>&#x1F4E1; Signal Radar
+    <small class="text-muted">real-time RF &amp; network environment — auto-refreshes every 5&nbsp;s</small>
+    <div class="pull-right">
+      <button class="btn btn-default btn-sm" onclick="renderRadar($('#view'))" title="Refresh now"><i class="glyphicon glyphicon-refresh"></i></button>
+    </div>
+  </h2><hr style="margin:8px 0 14px 0">
+  <div id="radar-body"><div class="empty-state"><h3>Scanning…</h3></div></div>`;
+
+  let snap, fetchedAt;
+  try {
+    snap = await API.radar();
+    fetchedAt = Date.now();
+  } catch(e){
+    v.innerHTML += `<div class="alert alert-danger"><strong>Could not reach radar endpoint.</strong> ${esc(e.message)}</div>`;
+    return;
+  }
+
+  const body = $('#radar-body');
+  if (body) body.innerHTML = renderRadarContent(snap, 0);
+
+  clearRadarTimer();
+  S.radarTimer = setInterval(async ()=>{
+    if (!S.route || S.route.name !== 'radar'){ clearRadarTimer(); return; }
+    try {
+      snap = await API.radar();
+      fetchedAt = Date.now();
+    } catch(_){}
+    const host = $('#radar-body');
+    if (host) host.innerHTML = renderRadarContent(snap, Math.round((Date.now()-fetchedAt)/1000));
+  }, 5000);
 }
 
 function applyTheme(){

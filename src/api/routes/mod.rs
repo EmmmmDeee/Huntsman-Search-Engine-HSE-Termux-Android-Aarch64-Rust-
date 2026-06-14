@@ -10,6 +10,7 @@
 //! | GET    | `/api/v1/modules/graph`           | `modules_graph` (v1.1+)  |
 //! | GET    | `/api/v1/engines/health`          | `engines_health` (v1.3+) |
 //! | GET    | `/api/v1/keys/patterns`           | `keys_patterns` (v1.4+)  |
+//! | GET    | `/api/v1/radar`                   | `radar_scan` (v1.5+)     |
 //! | POST   | `/api/v1/scans`                   | `scan_create`            |
 //! | GET    | `/api/v1/scans`                   | `scan_list`              |
 //! | GET    | `/api/v1/scans/{id}`              | `scan_get`               |
@@ -47,7 +48,7 @@ use serde_json::json;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 
-use super::{AppState, handlers, scan_export, scan_handlers, settings_handlers};
+use super::{AppState, handlers, radar_handlers, scan_export, scan_handlers, settings_handlers};
 
 /// Embedded SPA — single self-contained HTML file with inline CSS + JS.
 /// Lives in `src/web/spa.html` and is compiled into the binary at build time
@@ -153,6 +154,8 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             "/keys/pool/rotate",
             post(settings_handlers::keys_pool_rotate),
         )
+        // ── signal radar (v1.5+) ──
+        .route("/radar", get(radar_handlers::radar_scan))
         // ── scans ──
         .route(
             "/scans",
