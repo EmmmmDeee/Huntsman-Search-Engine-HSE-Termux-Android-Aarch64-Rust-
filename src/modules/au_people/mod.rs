@@ -348,43 +348,38 @@ impl Module for AuPeople {
 
         let mut result = ModuleResult::new();
 
-        // White Pages AU search.
         let wp_url = format!(
             "https://www.whitepages.com.au/residential/search/{}+{}",
             crate::util::http::urlencode(first),
             crate::util::http::urlencode(last),
         );
-        if let Ok(resp) = ctx
-            .http
-            .get(&wp_url)
-            .header("Accept", "text/html,application/xhtml+xml")
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            )
-            .send_tagged(SRC)
-            .await
+        let tps_url = format!(
+            "https://www.truepeoplesearch.com.au/results?name={}",
+            crate::util::http::urlencode(full_name),
+        );
+
+        const UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+        // Fire both directory searches concurrently.
+        let (wp_resp, tps_resp) = tokio::join!(
+            ctx.http
+                .get(&wp_url)
+                .header("Accept", "text/html,application/xhtml+xml")
+                .header("User-Agent", UA)
+                .send_tagged(SRC),
+            ctx.http
+                .get(&tps_url)
+                .header("Accept", "text/html,application/xhtml+xml")
+                .header("User-Agent", UA)
+                .send_tagged(SRC),
+        );
+        if let Ok(resp) = wp_resp
             && resp.status().is_success()
             && let Ok(html) = resp.text().await
         {
             result.extend(parse_whitepages_html(&html, full_name, &ctx.scan_id));
         }
-
-        // True People Search AU.
-        let tps_url = format!(
-            "https://www.truepeoplesearch.com.au/results?name={}",
-            crate::util::http::urlencode(full_name),
-        );
-        if let Ok(resp) = ctx
-            .http
-            .get(&tps_url)
-            .header("Accept", "text/html,application/xhtml+xml")
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            )
-            .send_tagged(SRC)
-            .await
+        if let Ok(resp) = tps_resp
             && resp.status().is_success()
             && let Ok(html) = resp.text().await
         {
