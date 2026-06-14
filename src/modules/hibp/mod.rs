@@ -374,7 +374,11 @@ impl Hibp {
                 SRC,
                 format!(
                     "Domain affected by {total} breach(es) ({verified} verified, {total_pwns} total records): {}",
-                    names.iter().take(10).copied().collect::<Vec<_>>().join(", ")
+                    names.iter().take(10).copied().enumerate().fold(String::new(), |mut s, (i, v)| {
+                        if i > 0 { s.push_str(", "); }
+                        s.push_str(v);
+                        s
+                    })
                 ),
             )
             .with_attr("breach_count", total.to_string())
