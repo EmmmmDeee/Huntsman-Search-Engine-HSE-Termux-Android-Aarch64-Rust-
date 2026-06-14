@@ -146,17 +146,15 @@ impl Module for IpReputation {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut result = ModuleResult::new();
-
-        // ── 1. AlienVault OTX (IpAddress + Domain) ─────────────────
-        run_otx(target, ctx, &mut result).await;
-
-        // ── 2. Tor exit-relay check (IpAddress only) ───────────────
         if target.kind == TargetKind::IpAddress {
-            run_tor_check(target, ctx, &mut result).await;
+            // Both checks are independent — run them concurrently.
+            let (mut otx, tor) =
+                tokio::join!(collect_otx(target, ctx), collect_tor(target, ctx));
+            otx.extend(tor.entities);
+            Ok(otx)
+        } else {
+            Ok(collect_otx(target, ctx).await)
         }
-
-        Ok(result)
     }
 }
 
@@ -178,11 +176,12 @@ fn is_meaningful_tag(t: &str) -> bool {
         && t.split_whitespace().count() <= 4
 }
 
-async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult) {
+async fn collect_otx(target: &Target, ctx: &ModuleContext) -> ModuleResult {
+    let mut result = ModuleResult::new();
     let itype = match target.kind {
         TargetKind::IpAddress => "IPv4",
         TargetKind::Domain => "domain",
-        _ => return,
+        _ => return result,
     };
 
     let url = format!(
@@ -193,18 +192,18 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
 
     let data: Option<OtxResp> = match fetch_json_or_404(&ctx.http, SRC, &url).await {
         Ok(d) => d,
-        Err(_) => return,
+        Err(_) => return result,
     };
 
-    let Some(data) = data else { return };
+    let Some(data) = data else { return result };
 
     let pulse_info = match data.pulse_info {
         Some(p) => p,
-        None => return,
+        None => return result,
     };
     let pulse_count = pulse_info.count.unwrap_or(0);
     if pulse_count == 0 {
-        return;
+        return result;
     }
 
     let mut entity = target.to_entity(0.72, &ctx.scan_id);
@@ -304,20 +303,22 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
             result.push(o);
         }
     }
+    result
 }
 
 // ── Tor exit-relay sub-routine ─────────────────────────────────────
 
-async fn run_tor_check(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult) {
+async fn collect_tor(target: &Target, ctx: &ModuleContext) -> ModuleResult {
+    let mut result = ModuleResult::new();
     let ip = target.value.trim();
     if ip.is_empty() {
-        return;
+        return result;
     }
     let Some(set) = exit_set(&ctx.http).await else {
-        return;
+        return result;
     };
     if !set.contains(ip) {
-        return;
+        return result;
     }
 
     let mut entity = Entity::new(EntityKind::IpAddress, ip, 0.95, &ctx.scan_id);
@@ -332,6 +333,7 @@ async fn run_tor_check(target: &Target, ctx: &ModuleContext, result: &mut Module
         .with_attr("exit_list_size", set.len().to_string()),
     );
     result.push(entity);
+    result
 }
 
 // ── Tests (merged from alienvault_otx + tor_exit_check) ────────────
