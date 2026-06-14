@@ -253,7 +253,9 @@ impl Module for AuUnclaimed {
         let responses = join_all(futures).await;
         for (reg, resp) in responses {
             let Ok(resp) = resp else { continue };
-            let Some(r) = resp.result.as_ref() else { continue };
+            let Some(r) = resp.result.as_ref() else {
+                continue;
+            };
             result.extend(
                 r.records
                     .iter()
