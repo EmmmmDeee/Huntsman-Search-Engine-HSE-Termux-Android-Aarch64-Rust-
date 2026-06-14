@@ -375,7 +375,28 @@ impl Entity {
     /// signal for ranking/diagnostics; it no longer drives C_eff.
     #[inline]
     pub fn source_count(&self) -> u32 {
-        let distinct = self.corroborating_sources().len() as u32;
+        // Count DISTINCT corroborating sources WITHOUT allocating a `HashSet`.
+        // This runs for every entity on the merge/dedup hot path (via
+        // `c_effective`/`classify`), so the previous `corroborating_sources().len()`
+        // — which built and dropped a `HashSet<&str>` on every call — was pure
+        // overhead. A source is counted exactly once, at its first occurrence:
+        // for each record we scan only the evidence *before* it for the same
+        // source. Entity evidence chains are short (a handful of sources), so
+        // this O(k²) scan over tiny `k` beats hashing + heap allocation, and the
+        // distinct set it yields is identical to `corroborating_sources().len()`.
+        let mut distinct: u32 = 0;
+        for (i, ev) in self.evidence.iter().enumerate() {
+            let s = ev.source.as_str();
+            if is_enrichment_source(s) {
+                continue;
+            }
+            if !self.evidence[..i]
+                .iter()
+                .any(|prev| prev.source == ev.source)
+            {
+                distinct += 1;
+            }
+        }
         if distinct > 0 {
             // Evidence is attached: distinct *corroborating* sources is the
             // authoritative cross-correlation count. The summed `corroboration`
@@ -595,7 +616,7 @@ impl Entity {
     /// assert!(a.has_tag("breach") && a.has_tag("paste-exposed")); // tags unioned
     /// assert_eq!(a.evidence.len(), 2);  // distinct evidence both kept
     /// ```
-    pub fn merge(&mut self, other: Self) {
+    pub fn merge(&mut self, mut other: Self) {
         debug_assert_eq!(self.uid, other.uid, "merge: UID mismatch");
         if self.uid != other.uid {
             return;
@@ -607,9 +628,10 @@ impl Entity {
         // default concurrent dispatch, results merge in completion order, so
         // keeping `self`'s would leak that order into the persisted dossier
         // (Determinism Requirement). `min` is commutative, so any merge order —
-        // and any pairing — yields the same raw_value.
+        // and any pairing — yields the same raw_value. `other` is consumed by
+        // `absorb`, so swap the smaller spelling out rather than cloning it.
         if other.raw_value < self.raw_value {
-            self.raw_value = other.raw_value.clone();
+            std::mem::swap(&mut self.raw_value, &mut other.raw_value);
         }
         self.absorb(other);
     }
@@ -634,14 +656,44 @@ impl Entity {
             .max(1);
         self.observed_at = u64::max(self.observed_at, other.observed_at);
         // Deduplicate evidence by (source, summary) to prevent accumulation
-        // across live mode iterations or re-scans.
-        for ev in other.evidence {
-            let dominated = self
+        // across live mode iterations or re-scans. A linear `Vec::any` scan per
+        // incoming record is O(n×m); build a membership set of the existing
+        // `(source, summary)` keys once and keep it in sync as we push, so the
+        // fold stays linear even when an entity accumulates many evidence rows
+        // (re-scans / live mode). Push order and idempotence are unchanged.
+        // Small inputs (the overwhelming common case — a handful of rows on
+        // each side) stay on the original linear scan: building a hash set with
+        // owned keys would allocate more than the scan saves. Only when both
+        // sides are large enough for the O(n×m) scan to bite do we switch to a
+        // membership set, keeping the fold linear for re-scan / live-mode
+        // accumulation. Either branch yields identical results (first-wins,
+        // idempotent dedup by `(source, summary)`, push order preserved).
+        if self.evidence.len() * other.evidence.len() <= 256 {
+            for ev in other.evidence {
+                let dominated = self
+                    .evidence
+                    .iter()
+                    .any(|e| e.source == ev.source && e.summary == ev.summary);
+                if !dominated {
+                    self.evidence.push(ev);
+                }
+            }
+        } else {
+            // Owned membership keys: a borrowed `&str` set would alias
+            // `self.evidence`, which we mutate by pushing. Seed it with the
+            // existing rows; `insert` then returns false for any incoming row
+            // duplicating either an existing record OR an earlier incoming one
+            // (so duplicates within `other` are folded too — matching the scan).
+            let mut seen: std::collections::HashSet<(String, String)> = self
                 .evidence
                 .iter()
-                .any(|e| e.source == ev.source && e.summary == ev.summary);
-            if !dominated {
-                self.evidence.push(ev);
+                .map(|e| (e.source.clone(), e.summary.clone()))
+                .collect();
+            self.evidence.reserve(other.evidence.len());
+            for ev in other.evidence {
+                if seen.insert((ev.source.clone(), ev.summary.clone())) {
+                    self.evidence.push(ev);
+                }
             }
         }
         for t in other.tags {

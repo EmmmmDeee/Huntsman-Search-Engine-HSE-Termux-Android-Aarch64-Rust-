@@ -241,7 +241,7 @@ impl Store {
     pub fn upsert_scan(&self, scan: &Scan) -> Result<()> {
         let json = serde_json::to_string(scan)?;
         let conn = self.conn.lock();
-        conn.execute(
+        conn.prepare_cached(
             "INSERT INTO scans(id, target_kind, target_value, status, started_at, finished_at, entity_count, error, data_json)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
@@ -250,7 +250,8 @@ impl Store {
                entity_count = excluded.entity_count,
                error        = excluded.error,
                data_json    = excluded.data_json",
-            params![
+        )?
+        .execute(params![
                 scan.id,
                 scan.target.kind.canonical_str(),
                 scan.target.value,
@@ -329,32 +330,38 @@ impl Store {
         // new count-bearing description every round, defeating both the
         // in-memory (rule_id+uids) and DB (rule_id+description) dedup keys.
         let new_set: HashSet<&str> = c.entity_uids.iter().map(String::as_str).collect();
-        let existing: Vec<(i64, Vec<String>)> = {
-            let mut stmt = conn.prepare(
+        // Stream the candidate rows and fold the set-containment decision in a
+        // single pass: no intermediate `Vec<(rowid, Vec<String>)>` is
+        // materialised, and each old uid list is parsed into a transient
+        // `HashSet` that is dropped before the next row (only the small
+        // `superseded` rowid list survives the loop). Behaviourally identical to
+        // collect-then-scan: a subset/equal match still short-circuits with
+        // `Ok(())`, and every old set that is a subset of `new_set` is recorded.
+        let mut superseded: Vec<i64> = Vec::new();
+        let early_return = {
+            let mut stmt = conn.prepare_cached(
                 "SELECT rowid, entity_uids FROM correlations WHERE scan_id = ?1 AND rule_id = ?2",
             )?;
-            let rows = stmt.query_map(params![c.scan_id, c.rule_id], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })?;
-            rows.filter_map(std::result::Result::ok)
-                .map(|(id, j)| {
-                    (
-                        id,
-                        serde_json::from_str::<Vec<String>>(&j).unwrap_or_default(),
-                    )
-                })
-                .collect()
+            let mut rows = stmt.query(params![c.scan_id, c.rule_id])?;
+            let mut already_represented = false;
+            while let Some(row) = rows.next()? {
+                let rowid: i64 = row.get(0)?;
+                let j: String = row.get(1)?;
+                let old_uids = serde_json::from_str::<Vec<String>>(&j).unwrap_or_default();
+                let old_set: HashSet<&str> = old_uids.iter().map(String::as_str).collect();
+                if new_set.is_subset(&old_set) {
+                    // Subset of (or equal to) a stored correlation — already represented.
+                    already_represented = true;
+                    break;
+                }
+                if old_set.is_subset(&new_set) {
+                    superseded.push(rowid);
+                }
+            }
+            already_represented
         };
-        let mut superseded: Vec<i64> = Vec::new();
-        for (rowid, old_uids) in &existing {
-            let old_set: HashSet<&str> = old_uids.iter().map(String::as_str).collect();
-            if new_set.is_subset(&old_set) {
-                // Subset of (or equal to) a stored correlation — already represented.
-                return Ok(());
-            }
-            if old_set.is_subset(&new_set) {
-                superseded.push(*rowid);
-            }
+        if early_return {
+            return Ok(());
         }
         // Atomic supersede: delete the superseded rows AND insert the
         // replacement in one transaction, so a crash or mid-statement error
@@ -363,8 +370,12 @@ impl Store {
         // Mirrors delete_scan / upsert_entities_batch. Rolls back on drop if a
         // statement errors (the `?` returns before commit).
         let tx = conn.unchecked_transaction()?;
-        for rowid in superseded {
-            tx.execute("DELETE FROM correlations WHERE rowid = ?1", params![rowid])?;
+        {
+            // One prepared DELETE reused across all superseded rows.
+            let mut del = tx.prepare_cached("DELETE FROM correlations WHERE rowid = ?1")?;
+            for rowid in superseded {
+                del.execute(params![rowid])?;
+            }
         }
         tx.execute(
             "INSERT INTO correlations(scan_id, rule_id, severity, description, entity_uids, ts, data_json)
@@ -429,11 +440,12 @@ impl Store {
     pub fn upsert_relation(&self, r: &Relation) -> Result<()> {
         let json = serde_json::to_string(r)?;
         let conn = self.conn.lock();
-        conn.execute(
+        conn.prepare_cached(
             "INSERT INTO relations(id, scan_id, from_uid, to_uid, kind, confidence, observed_at, data_json)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(id) DO NOTHING",
-            params![
+        )?
+        .execute(params![
                 r.id,
                 r.scan_id,
                 r.from_uid,
@@ -493,7 +505,7 @@ impl Store {
         // 'always-synchronized index' invariant the write path maintains
         // (see merge_and_persist_entity).
         let orphans: Vec<(i64, String, String)> = {
-            let mut stmt = tx.prepare(
+            let mut stmt = tx.prepare_cached(
                 "SELECT rowid, value, kind FROM entities e
                  WHERE NOT EXISTS (SELECT 1 FROM entity_observations o WHERE o.entity_uid = e.uid)",
             )?;
@@ -506,12 +518,18 @@ impl Store {
             })?;
             rows.collect::<std::result::Result<_, _>>()?
         };
-        for (rowid, value, kind) in orphans {
-            tx.execute(
+        // Reuse one prepared 'delete' statement across all orphans rather than
+        // re-compiling the same SQL once per row — the orphan set can be large
+        // after deleting a high-yield scan, and statement compilation is pure
+        // overhead on aarch64.
+        {
+            let mut del_fts = tx.prepare_cached(
                 "INSERT INTO entities_fts(entities_fts, rowid, value, kind)
                  VALUES('delete', ?1, ?2, ?3)",
-                params![rowid, value, kind],
             )?;
+            for (rowid, value, kind) in orphans {
+                del_fts.execute(params![rowid, value, kind])?;
+            }
         }
         tx.execute(
             "DELETE FROM entities
@@ -550,11 +568,11 @@ impl Store {
         let event_type = event.kind.event_type_str();
         let json = serde_json::to_string(event)?;
         let conn = self.conn.lock();
-        conn.execute(
+        conn.prepare_cached(
             "INSERT INTO events(scan_id, ts, event_type, data_json)
              VALUES(?1, ?2, ?3, ?4)",
-            params![event.scan_id, event.ts as i64, event_type, json],
-        )?;
+        )?
+        .execute(params![event.scan_id, event.ts as i64, event_type, json])?;
         Ok(())
     }
 
