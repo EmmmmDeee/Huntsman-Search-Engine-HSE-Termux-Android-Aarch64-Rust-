@@ -137,11 +137,17 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
     }
 
     if let Some(first) = out.first_mut() {
-        let breakdown: String = categories
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let breakdown: String =
+            categories
+                .iter()
+                .enumerate()
+                .fold(String::new(), |mut s, (i, (k, v))| {
+                    if i > 0 {
+                        s.push_str(", ");
+                    }
+                    s.push_str(&format!("{k}={v}"));
+                    s
+                });
         first.add_evidence(
             Evidence::new(SRC, format!("Infrastructure breakdown: {breakdown}"))
                 .with_attr("categories", breakdown),

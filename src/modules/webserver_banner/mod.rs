@@ -160,9 +160,14 @@ fn apply_stack_tags(e: &mut Entity, headers: &[(String, String)]) {
     // Lower-case every header value and join them into one searchable blob.
     let blob: String = headers
         .iter()
-        .map(|(_, v)| v.to_ascii_lowercase())
-        .collect::<Vec<_>>()
-        .join("|");
+        .enumerate()
+        .fold(String::new(), |mut s, (i, (_, v))| {
+            if i > 0 {
+                s.push('|');
+            }
+            s.push_str(&v.to_ascii_lowercase());
+            s
+        });
     let names: Vec<&str> = headers.iter().map(|(n, _)| n.as_str()).collect();
     if blob.contains("nginx") {
         e.tag("nginx");

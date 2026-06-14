@@ -396,25 +396,38 @@ impl Module for IntelX {
         // Top buckets by frequency (source breakdown), deterministic ordering.
         let mut top_buckets: Vec<(String, u32)> = bucket_counts.into_iter().collect();
         top_buckets.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        let top = top_buckets
-            .iter()
-            .take(15)
-            .map(|(b, n)| format!("{b}×{n}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let top =
+            top_buckets
+                .iter()
+                .take(15)
+                .enumerate()
+                .fold(String::new(), |mut s, (i, (b, n))| {
+                    if i > 0 {
+                        s.push_str(", ");
+                    }
+                    s.push_str(&format!("{b}×{n}"));
+                    s
+                });
 
         // Media-type breakdown (data types), labeled where known, numeric else.
         let mut media_pairs: Vec<(i32, u32)> = media_counts.into_iter().collect();
         media_pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        let media_summary = media_pairs
-            .iter()
-            .take(15)
-            .map(|(code, n)| match media_label(*code) {
-                Some(l) => format!("{l}×{n}"),
-                None => format!("media{code}×{n}"),
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
+        let media_summary =
+            media_pairs
+                .iter()
+                .take(15)
+                .enumerate()
+                .fold(String::new(), |mut s, (i, (code, n))| {
+                    if i > 0 {
+                        s.push_str(", ");
+                    }
+                    let label = match media_label(*code) {
+                        Some(l) => format!("{l}×{n}"),
+                        None => format!("media{code}×{n}"),
+                    };
+                    s.push_str(&label);
+                    s
+                });
 
         let latest = all_records.iter().filter_map(|r| r.date.as_deref()).max();
 
