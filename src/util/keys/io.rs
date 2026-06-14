@@ -1,6 +1,6 @@
 //! Env-file I/O: loading keys from disk, writing/rotating entries atomically.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -35,8 +35,14 @@ pub fn pick_default_seed(
 ) -> Option<String> {
     env_value
         .or_else(|| file.get(DEFAULT_SEED_ENV).cloned())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .and_then(|s| {
+            let t = s.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_owned())
+            }
+        })
 }
 
 /// Resolve the operator-configured default scan seed, if any.
@@ -81,29 +87,34 @@ pub fn load() -> HashMap<String, String> {
     // stays in the env map for backward compat; extras go to the pool.
     let pool = crate::util::key_pool::global_pool();
     for svc in crate::util::key_pool::service_defs() {
-        let val = map.get(svc.env_var).cloned();
-        if let Some(val) = val {
-            if val.contains(',') {
-                let keys: Vec<&str> = val
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|k| !k.is_empty())
-                    .collect();
-                if keys.len() > 1 {
-                    map.insert(svc.env_var.to_string(), keys[0].to_string());
-                    for k in &keys {
-                        let mut entry = crate::util::key_pool::KeyEntry::new(*k);
-                        entry.status = crate::util::key_pool::KeyStatus::Active;
-                        pool.add(svc.name, entry);
-                    }
-                    tracing::info!(
-                        service = svc.name,
-                        count = keys.len(),
-                        "loaded {} keys for rotation",
-                        keys.len()
-                    );
+        // Avoid cloning the value in the common case (no comma / no rotation).
+        // Only clone when we detect a comma and need to split + re-insert.
+        let has_comma = map.get(svc.env_var).is_some_and(|v| v.contains(','));
+        if has_comma {
+            // Clone only here, after confirming rotation is needed.
+            let val = map.get(svc.env_var).unwrap().clone();
+            let keys: Vec<&str> = val
+                .split(',')
+                .map(str::trim)
+                .filter(|k| !k.is_empty())
+                .collect();
+            if keys.len() > 1 {
+                map.insert(svc.env_var.to_string(), keys[0].to_string());
+                for k in &keys {
+                    let mut entry = crate::util::key_pool::KeyEntry::new(*k);
+                    entry.status = crate::util::key_pool::KeyStatus::Active;
+                    pool.add(svc.name, entry);
                 }
+                tracing::info!(
+                    service = svc.name,
+                    count = keys.len(),
+                    "loaded {} keys for rotation",
+                    keys.len()
+                );
             }
+            continue;
+        }
+        if map.contains_key(svc.env_var) {
             continue;
         }
         if let Some(key) = pool.next_key(svc.name) {
@@ -302,7 +313,10 @@ pub fn write_keys_at(
     };
 
     let mut out_lines: Vec<String> = Vec::new();
-    let mut seen: BTreeSet<String> = BTreeSet::new();
+    // Track which update keys were matched in the existing file so we only
+    // append truly new keys below. Using `&str` slices into `existing` avoids
+    // one heap allocation per matched key compared to `HashSet<String>`.
+    let mut seen: HashSet<&str> = HashSet::new();
 
     for line in existing.lines() {
         let trimmed = line.trim_start();
@@ -330,7 +344,7 @@ pub fn write_keys_at(
         }
         if let Some(new_val) = updates.get(key) {
             out_lines.push(env_line(key, new_val));
-            seen.insert(key.to_string());
+            seen.insert(key);
             continue;
         }
         out_lines.push(line.to_string());
@@ -338,7 +352,7 @@ pub fn write_keys_at(
 
     // Append updates that weren't already present in the file.
     for (k, v) in updates {
-        if !seen.contains(k) {
+        if !seen.contains(k.as_str()) {
             out_lines.push(env_line(k, v));
         }
     }
