@@ -15,6 +15,7 @@ mod bluetooth;
 mod cell;
 mod gps;
 mod lan;
+pub mod nfc;
 mod wifi;
 
 #[cfg(test)]
@@ -87,11 +88,12 @@ impl Module for SignalRadar {
         let scan_id = ctx.scan_id.as_str();
 
         // Run all sensors in parallel.
-        let (wifi_out, bt_out, gps_out, lan_out) = tokio::join!(
+        let (wifi_out, bt_out, gps_out, lan_out, nfc_out) = tokio::join!(
             scan_wifi(scan_id),
             bluetooth::scan_bluetooth(scan_id),
             gps::scan_gps(scan_id),
             lan::scan_lan(scan_id),
+            nfc::scan(scan_id),
         );
 
         // Cell info is fetched inside scan_cell alongside signal-strength.
@@ -102,6 +104,7 @@ impl Module for SignalRadar {
         result.extend(bt_out.entities);
         result.extend(gps_out.entities);
         result.extend(lan_out.entities);
+        result.extend(nfc_out.entities);
         result.extend(cell_out.entities);
 
         Ok(result)

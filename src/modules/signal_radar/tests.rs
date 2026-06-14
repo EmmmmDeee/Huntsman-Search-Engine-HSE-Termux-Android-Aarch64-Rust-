@@ -159,6 +159,116 @@ fn cell_skip_incomplete_towers() {
     assert!(result.is_empty());
 }
 
+// ── 5G NR cell parser ─────────────────────────────────────────────────────
+
+#[test]
+fn cell_parse_nr_tower_with_arfcn_and_ssband() {
+    let json = br#"[
+        {"type":"NR","registered":true,"nrArfcn":627264,"ssBand":"n78","csiRsrp":-88,
+         "cid":55001,"tac":9000,"mcc":"234","mnc":"20"}
+    ]"#;
+    let result = cell::parse_cells(json, "test-scan");
+    assert_eq!(result.len(), 1);
+
+    let e = &result.entities[0];
+    assert_eq!(e.kind, EntityKind::DeviceId);
+    assert_eq!(e.value, "234-20-9000-55001");
+    assert!(e.has_tag("cell-tower"), "missing cell-tower tag");
+    assert!(e.has_tag("nr"), "missing nr tag");
+    assert!(e.has_tag("5g-nr"), "missing 5g-nr tag");
+    assert!(e.has_tag("registered"), "missing registered tag");
+
+    let ev = &e.evidence[0];
+    assert_eq!(
+        ev.attributes.get("nr_arfcn").map(String::as_str),
+        Some("627264"),
+        "nr_arfcn attribute missing or wrong"
+    );
+    assert_eq!(
+        ev.attributes.get("ss_band").map(String::as_str),
+        Some("n78"),
+        "ss_band attribute missing or wrong"
+    );
+    // dbm absent → falls back to csiRsrp
+    assert_eq!(
+        ev.attributes.get("dbm").map(String::as_str),
+        Some("-88"),
+        "dbm should equal csiRsrp"
+    );
+}
+
+#[test]
+fn cell_parse_nr_tower_dbm_preferred_over_csi_rsrp() {
+    let json = br#"[
+        {"type":"NR","dbm":-70,"csiRsrp":-99,"nrArfcn":123456,"ssBand":"n41",
+         "cid":1,"tac":1,"mcc":"001","mnc":"01"}
+    ]"#;
+    let result = cell::parse_cells(json, "test-scan");
+    assert_eq!(result.len(), 1);
+    let ev = &result.entities[0].evidence[0];
+    assert_eq!(
+        ev.attributes.get("dbm").map(String::as_str),
+        Some("-70"),
+        "dbm field should be preferred over csiRsrp"
+    );
+}
+
+#[test]
+fn cell_parse_nr_without_optional_nr_fields() {
+    // NR entry with no nrArfcn / ssBand — should still parse, just omit those attrs.
+    let json = br#"[
+        {"type":"NR","csiRsrp":-90,"cid":2,"tac":2,"mcc":"310","mnc":"260"}
+    ]"#;
+    let result = cell::parse_cells(json, "test-scan");
+    assert_eq!(result.len(), 1);
+    let e = &result.entities[0];
+    assert!(e.has_tag("5g-nr"));
+    let ev = &e.evidence[0];
+    assert!(
+        !ev.attributes.contains_key("nr_arfcn"),
+        "nr_arfcn should be absent"
+    );
+    assert!(
+        !ev.attributes.contains_key("ss_band"),
+        "ss_band should be absent"
+    );
+}
+
+// ── NFC parser ────────────────────────────────────────────────────────────
+
+#[test]
+fn nfc_parse_valid_tags() {
+    let json = br#"[{"id":"04:AB:CD:EF"},{"id":"A1:B2:C3:D4"}]"#;
+    let result = nfc::parse_tags(json, "test-scan");
+    assert_eq!(result.len(), 2);
+
+    let t = &result.entities[0];
+    assert_eq!(t.kind, EntityKind::DeviceId);
+    assert_eq!(t.value, "04:AB:CD:EF");
+    assert!((t.confidence - 0.75).abs() < 0.01);
+    assert!(t.has_tag("nfc"), "missing nfc tag");
+    assert!(t.has_tag("nfc-tag"), "missing nfc-tag tag");
+}
+
+#[test]
+fn nfc_skip_empty_id() {
+    let json = br#"[{"id":""},{"id":"AA:BB:CC:DD"}]"#;
+    let result = nfc::parse_tags(json, "test-scan");
+    assert_eq!(result.len(), 1);
+}
+
+#[test]
+fn nfc_parse_empty_array() {
+    let result = nfc::parse_tags(b"[]", "test-scan");
+    assert!(result.is_empty());
+}
+
+#[test]
+fn nfc_parse_invalid_json() {
+    let result = nfc::parse_tags(b"not json", "test-scan");
+    assert!(result.is_empty());
+}
+
 // ── ARP parser ─────────────────────────────────────────────────────────────
 
 #[test]
