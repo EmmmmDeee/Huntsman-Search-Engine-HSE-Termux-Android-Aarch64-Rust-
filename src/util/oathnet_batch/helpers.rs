@@ -45,7 +45,7 @@ pub(super) fn name_tokens(raw: &str) -> Vec<String> {
 /// more tokens fan out into first/last/initial combinations with the common
 /// separators. Deterministic and de-duplicated, best-shapes-first.
 pub(super) fn handle_permutations(tokens: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<String> = Vec::with_capacity(13);
     match tokens {
         [] => return out,
         [only] => {

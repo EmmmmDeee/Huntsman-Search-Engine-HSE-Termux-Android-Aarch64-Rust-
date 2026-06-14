@@ -296,10 +296,10 @@ pub(super) fn apply_ssh(result: &mut ModuleResult, ssh: SshResult) {
 }
 
 pub(super) fn apply_events(result: &mut ModuleResult, events: EventsResult) {
-    if let Some(first) = result.entities.first_mut() {
-        if let Some(ev) = events.username_evidence {
-            first.add_evidence(ev);
-        }
+    if let Some(first) = result.entities.first_mut()
+        && let Some(ev) = events.username_evidence
+    {
+        first.add_evidence(ev);
     }
     result.extend(events.extra);
 }
