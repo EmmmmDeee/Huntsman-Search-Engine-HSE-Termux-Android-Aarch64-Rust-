@@ -171,9 +171,14 @@ impl Module for Censys {
                 ports
                     .iter()
                     .take(20)
-                    .map(std::string::ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(","),
+                    .enumerate()
+                    .fold(String::new(), |mut s, (i, x)| {
+                        if i > 0 {
+                            s.push(',');
+                        }
+                        s.push_str(&x.to_string());
+                        s
+                    }),
             );
 
             if !services.is_empty() {
@@ -182,9 +187,14 @@ impl Module for Censys {
                     services
                         .iter()
                         .take(20)
-                        .map(String::as_str)
-                        .collect::<Vec<_>>()
-                        .join("; "),
+                        .enumerate()
+                        .fold(String::new(), |mut s, (i, x)| {
+                            if i > 0 {
+                                s.push_str("; ");
+                            }
+                            s.push_str(x.as_str());
+                            s
+                        }),
                 );
             }
             if !protocols.is_empty() {

@@ -205,12 +205,18 @@ impl Shodan {
         let mut ports_sorted: Vec<u16> = body.ports.clone();
         ports_sorted.sort_unstable();
         ports_sorted.dedup();
-        let ports_csv = ports_sorted
-            .iter()
-            .take(MAX_PORTS)
-            .map(std::string::ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
+        let ports_csv =
+            ports_sorted
+                .iter()
+                .take(MAX_PORTS)
+                .enumerate()
+                .fold(String::new(), |mut s, (i, x)| {
+                    if i > 0 {
+                        s.push(',');
+                    }
+                    s.push_str(&x.to_string());
+                    s
+                });
         let mut ev = Evidence::new(
             SRC,
             format!(

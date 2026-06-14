@@ -87,9 +87,14 @@ fn build_exposure_entity(kind: EntityKind, value: &str, body: &HostResp, scan_id
     let port_str = ports
         .iter()
         .take(MAX_PORTS)
-        .map(i64::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
+        .enumerate()
+        .fold(String::new(), |mut s, (i, x)| {
+            if i > 0 {
+                s.push(',');
+            }
+            s.push_str(&x.to_string());
+            s
+        });
 
     let mut ev = Evidence::new(
         SRC,

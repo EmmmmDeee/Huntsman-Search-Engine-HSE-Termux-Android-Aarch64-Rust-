@@ -136,11 +136,16 @@ fn build_threat_entity(
         if !threats.is_empty() {
             ev = ev.with_attr(
                 "threats",
-                threats
-                    .into_iter()
-                    .take(MAX_THREATS)
-                    .collect::<Vec<_>>()
-                    .join(","),
+                threats.into_iter().take(MAX_THREATS).enumerate().fold(
+                    String::new(),
+                    |mut s, (i, x)| {
+                        if i > 0 {
+                            s.push(',');
+                        }
+                        s.push_str(x);
+                        s
+                    },
+                ),
             );
         }
 
