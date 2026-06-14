@@ -319,11 +319,17 @@ fn extract_serial_hex(der: &[u8]) -> String {
         if der[i] == 0x02 {
             let len = der[i + 1] as usize;
             if len > 0 && len <= 20 && i + 2 + len <= der.len() {
-                return der[i + 2..i + 2 + len]
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<Vec<_>>()
-                    .join(":");
+                return der[i + 2..i + 2 + len].iter().enumerate().fold(
+                    String::with_capacity(len * 3),
+                    |mut s, (i, b)| {
+                        if i > 0 {
+                            s.push(':');
+                        }
+                        use std::fmt::Write;
+                        let _ = write!(s, "{b:02x}");
+                        s
+                    },
+                );
             }
         }
     }

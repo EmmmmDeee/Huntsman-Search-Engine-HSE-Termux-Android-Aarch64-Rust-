@@ -137,9 +137,15 @@ impl Module for PortScan {
         // Re-emit the IP enriched with the open-port summary.
         let summary = open
             .iter()
-            .map(|(p, svc)| format!("{p}/{svc}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+            .enumerate()
+            .fold(String::new(), |mut s, (i, (p, svc))| {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                use std::fmt::Write;
+                let _ = write!(s, "{p}/{svc}");
+                s
+            });
         let mut ipe = Entity::new(EntityKind::IpAddress, host, 0.75, &ctx.scan_id);
         ipe.tag("portscan");
         ipe.tag("active-probe");
