@@ -191,6 +191,9 @@
     body.dark-theme .help-panel b{color:#eee}
     body.dark-theme #graph-svg{background:radial-gradient(circle at 50% 40%,#222 0%,#1a1a1a 70%)}
     body.dark-theme .graph-hint{background:rgba(20,20,20,.85);color:#999}
+    body.dark-theme .graph-legend{background:rgba(28,28,28,.92);border-color:#333}
+    body.dark-theme .graph-legend .lr{color:#bbb}
+    body.dark-theme .graph-ctl .btn-default{background:#2a2a2a;color:#ccc;border-color:#444}
     body.dark-theme #log-box{background:#222;border-color:#333;color:#ddd}
     body.dark-theme .keyrow{background:#222;border-color:#333}
     body.dark-theme .mod-grid{background:#1f1f1f;border-color:#333}
@@ -1889,6 +1892,15 @@ const NODE_COLOR = {
 
 function buildD3Graph(){
   if (typeof d3==='undefined') return;
+  // Theme-aware palette: the graph is drawn by D3 (inline styles), so the
+  // CSS dark-theme rules can't reach the node labels / seed edges. Read the
+  // active theme once per (re)layout and pick contrasting colours, so the
+  // signature graph view stays legible in the default dark mode.
+  const dark = document.body.classList.contains('dark-theme');
+  const labelFill = dark ? '#cfcfcf' : '#444';
+  const seedEdge  = dark ? '#4a4a4a' : '#bbb';
+  const nodeHalo  = dark ? '#1a1a1a' : '#fff';
+  const seedHalo  = dark ? '#fff'    : '#222';
   const svg = d3.select('#graph-svg');
   const rect = svg.node().getBoundingClientRect();
   const W = rect.width, H = rect.height || 560;
@@ -1944,8 +1956,8 @@ function buildD3Graph(){
 
   const link = container.append('g').selectAll('line')
     .data(validLinks).enter().append('line')
-    .style('stroke', d=>d.rel?'#d9822b':(d.corr?'#9b1f9b':'#bbb'))
-    .style('stroke-opacity', d=>d.rel?0.85:(d.corr?0.7:0.3))
+    .style('stroke', d=>d.rel?'#d9822b':(d.corr?'#9b1f9b':seedEdge))
+    .style('stroke-opacity', d=>d.rel?0.85:(d.corr?0.7:(dark?0.5:0.3)))
     .style('stroke-width', d=>d.rel?2:(d.corr?1.6:1))
     .style('stroke-dasharray', d=>d.rel?'5,3':'none');
   // Hover a typed edge to see its relation kind.
@@ -1959,7 +1971,7 @@ function buildD3Graph(){
   nodeG.append('circle')
     .attr('r', d=>d.r)
     .style('fill', d=>d.isSeed?'#059CD7':(NODE_COLOR[d.kind]||'#888'))
-    .style('stroke', d=>d.isSeed?'#222':'#fff')
+    .style('stroke', d=>d.isSeed?seedHalo:nodeHalo)
     .style('stroke-width', d=>d.isSeed?2:1.5)
     .style('cursor','grab');
   nodeG.append('title').text(d=>`${d.kind}: ${d.label}`);
@@ -1967,7 +1979,7 @@ function buildD3Graph(){
     .attr('dx', d=>d.r + 4)
     .attr('dy', 4)
     .style('font-size','11px')
-    .style('fill','#444')
+    .style('fill',labelFill)
     .text(d=>{const l = d.label||''; return l.length>28?l.slice(0,26)+'…':l;});
 
   force.on('tick', ()=>{
