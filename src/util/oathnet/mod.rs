@@ -198,15 +198,13 @@ pub async fn search(
     // path segments (e.g. `/service/v2/breach/search` → `breach-search`) and the
     // query is the looked-up value, so the saved filename names exactly what was
     // queried. The archive skips empty bodies on its own.
-    let endpoint_label = path
-        .trim_matches('/')
-        .rsplit('/')
-        .take(2)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>()
-        .join("-");
+    let trimmed = path.trim_matches('/');
+    let mut segs = trimmed.rsplit('/').take(2);
+    let endpoint_label = match (segs.next(), segs.next()) {
+        (Some(b), Some(a)) => format!("{a}-{b}"),
+        (Some(b), None) => b.to_owned(),
+        _ => trimmed.to_owned(),
+    };
     crate::util::raw_archive::record("oathnet", &endpoint_label, value, &body);
     // Detect actual quota exhaustion. Earlier check used `body.contains("quota")`
     // which false-positives on legitimate metadata fields like `session_quota`
@@ -395,8 +393,9 @@ pub async fn init_session(key: &str, value: &str) -> Option<String> {
         .or_else(|| parsed.pointer("/data/session/id"))
         .and_then(|v| v.as_str())
         .map(str::to_string)?;
+    let lower = value.to_lowercase();
     if let Ok(mut guard) = SEARCH_SESSION.lock() {
-        *guard = Some((value.to_lowercase(), sid.clone()));
+        *guard = Some((lower, sid.clone()));
     }
     tracing::info!(session_id = %sid, query = %value, "OathNet search session initialised");
     Some(sid)
@@ -404,14 +403,13 @@ pub async fn init_session(key: &str, value: &str) -> Option<String> {
 
 /// Return the cached session ID if it matches the given target value.
 pub fn session_id_for(value: &str) -> Option<String> {
+    let lower = value.to_lowercase();
     SEARCH_SESSION.lock().ok().and_then(|guard| {
-        guard.as_ref().and_then(|(q, sid)| {
-            if q == &value.to_lowercase() {
-                Some(sid.clone())
-            } else {
-                None
-            }
-        })
+        guard.as_ref().and_then(
+            |(q, sid)| {
+                if q == &lower { Some(sid.clone()) } else { None }
+            },
+        )
     })
 }
 
