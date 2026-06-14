@@ -152,9 +152,53 @@ fn is_linkable_secret(e: &Entity) -> bool {
                 || (e.has_tag("session-token") && is_substantial_token(&e.value))
                 || is_reusable_password(&e.value)
         }
+        // The breach/stealer modules surface a leaked plaintext password (or a
+        // password *hash*) as a first-class `Password` entity — distinct from the
+        // `username@host` `Credential` string. A reused high-entropy password is
+        // the canonical "password reuse as an identifier" join-key, so it must be
+        // linkable in its own right, gated by the same salted-hash precision and
+        // entropy/denylist floor that stop a common password (or an unsalted
+        // digest of one) from manufacturing phantom identities.
+        EntityKind::Password => is_salted_hash(&e.value) || is_reusable_password(&e.value),
         EntityKind::CryptoAddress | EntityKind::ApiKey => true,
         _ => false,
     }
+}
+
+/// The distinct breach **source datasets** a secret was observed in, read from
+/// the per-record provenance the importers stamp onto each evidence entry:
+/// `dbname` (OathNet), `source` / `source_db` (See-Know), and
+/// `database_name` / `top_databases` (DeHashed). The generic `stealer` /
+/// `unknown` sentinels carry no dataset identity and are skipped. A password
+/// observed across two INDEPENDENT sources is materially more individuating than
+/// the same value seen twice inside a single dump — cross-source spread is the
+/// "unique sources" signal that raises the shared-ownership confidence.
+fn distinct_sources(secret: &Entity) -> std::collections::BTreeSet<String> {
+    const SOURCE_ATTRS: &[&str] = &[
+        "dbname",
+        "source",
+        "source_db",
+        "database_name",
+        "database",
+        "top_databases",
+        "top_dbnames",
+    ];
+    let mut out = std::collections::BTreeSet::new();
+    for ev in &secret.evidence {
+        for attr in SOURCE_ATTRS {
+            if let Some(v) = ev.attributes.get(*attr) {
+                // `top_databases` / `top_dbnames` are comma-joined lists; split
+                // so each named database counts as its own distinct source.
+                for part in v.split(',') {
+                    let s = part.trim().to_lowercase();
+                    if !s.is_empty() && s != "unknown" && s != "stealer" && s != "n/a" {
+                        out.insert(s);
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Human label for the reused artifact, for the AU-047 description.
@@ -163,8 +207,10 @@ fn secret_label(e: &Entity) -> &'static str {
         return "session/cookie token";
     }
     match e.kind {
-        EntityKind::Credential if is_salted_hash(&e.value) => "password hash",
-        EntityKind::Credential => "password",
+        EntityKind::Credential | EntityKind::Password if is_salted_hash(&e.value) => {
+            "password hash"
+        }
+        EntityKind::Credential | EntityKind::Password => "password",
         EntityKind::CryptoAddress => "wallet address",
         EntityKind::ApiKey => "API key",
         _ => "secret",
@@ -186,7 +232,12 @@ fn secret_label(e: &Entity) -> &'static str {
 /// Severity reflects coincidence risk: a salted hash, crypto address, API key or
 /// random session token is globally unique by construction (**Critical**); a
 /// reused plaintext password is a strong but marginally less certain link, since
-/// two people could conceivably pick the same strong password (**High**).
+/// two people could conceivably pick the same strong password (**High**) —
+/// *unless* its reuse is corroborated across **≥2 independent source datasets**
+/// ([`distinct_sources`]), which removes the single-dump-coincidence doubt and
+/// restores **Critical**. The implicated secret may be a `Credential` string or
+/// a first-class `Password` entity alike, so a leaked plaintext password drives
+/// the link directly; the corroborating unique sources are named in the finding.
 pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
     entities: &[Entity],
     scan_id: &str,
@@ -230,26 +281,50 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
                 uids.push(e.uid.clone());
             }
         }
+        // The distinct breach datasets this exact secret spans. Cross-source
+        // spread is the individuality signal: the same strong password in two
+        // INDEPENDENT corpora is far likelier a real reuse than a single-dump
+        // artifact, so it raises the link's certainty.
+        let sources = distinct_sources(secret);
+        let cross_source = sources.len() >= 2;
+
         // A reused PLAINTEXT password is a strong but marginally less certain
         // link than a construction-unique artifact (salted hash / crypto / API
-        // key / random session token), so it lands one tier lower.
-        let plaintext_password = secret.kind == EntityKind::Credential
-            && !secret.has_tag("session-token")
-            && !is_salted_hash(&secret.value);
-        let severity = if plaintext_password {
+        // key / random session token), so it lands one tier lower — UNLESS its
+        // reuse is corroborated across ≥2 independent sources, which removes the
+        // single-dump-coincidence doubt and restores Critical.
+        let plaintext_password =
+            matches!(secret.kind, EntityKind::Credential | EntityKind::Password)
+                && !secret.has_tag("session-token")
+                && !is_salted_hash(&secret.value);
+        let severity = if plaintext_password && !cross_source {
             Severity::High
         } else {
             Severity::Critical
         };
         let listed: Vec<&str> = emails.iter().take(6).map(String::as_str).collect();
+        // Name the corroborating sources when we have dataset provenance, so the
+        // operator sees *which* unique sources back the reuse claim.
+        let source_clause = if sources.is_empty() {
+            String::new()
+        } else {
+            let named: Vec<&str> = sources.iter().take(5).map(String::as_str).collect();
+            format!(
+                " across {} source{} ({})",
+                sources.len(),
+                if sources.len() == 1 { "" } else { "s" },
+                named.join(", ")
+            )
+        };
         out.push(Correlation {
             rule_id: "AU-047".into(),
             rule_name: "Reused-secret identity link".into(),
             severity,
             description: format!(
-                "A single reused {} ties {} otherwise-separate accounts to one controller (secret reuse across accounts): {}",
+                "A single reused {} ties {} otherwise-separate accounts to one controller{} — secret reuse across accounts: {}",
                 secret_label(secret),
                 emails.len(),
+                source_clause,
                 listed.join(", ")
             ),
             entity_uids: uids,
