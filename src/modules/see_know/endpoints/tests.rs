@@ -1,0 +1,188 @@
+use super::*;
+
+    #[test]
+    fn endpoint_call_labels_are_unique() {
+        // Sanity check: every variant must have a distinct label so
+        // the dispatch + geo extractor can route by string identity.
+        let all = [
+            EndpointCall::EmailCheck,
+            EndpointCall::SocialAggregate,
+            EndpointCall::GithubProfile,
+            EndpointCall::TwitterProfile,
+            EndpointCall::RedditProfile,
+            EndpointCall::TiktokProfile,
+            EndpointCall::UsernameHistory,
+            EndpointCall::RobloxProfile,
+            EndpointCall::XboxProfile,
+            EndpointCall::MinecraftProfile,
+            EndpointCall::DiscordUser,
+            EndpointCall::DiscordToRoblox,
+            EndpointCall::PhoneInfo,
+            EndpointCall::IpInfo,
+            EndpointCall::DomainIntel,
+            EndpointCall::Whois,
+        ];
+        let mut labels: Vec<&str> = all.iter().map(|c| c.label()).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(labels.len(), all.len(), "duplicate endpoint labels");
+    }
+
+    #[test]
+    fn plan_email_addon_is_only_email_check() {
+        // Breach/stealer/external all come from the universal `/search` (run
+        // separately), so the email plan adds only the distinct account/service
+        // existence map. The dead, redundant `/stealer` + `/breachhub/search`
+        // endpoints (live-verified 404) must NOT be planned.
+        let plan = plan_endpoints(TargetKind::Email, "a@b.com");
+        let labels: Vec<&str> = plan.iter().map(|c| c.label()).collect();
+        assert!(labels.contains(&"email_check"), "got {labels:?}");
+        assert!(!labels.contains(&"stealer"), "404 endpoint must be gone");
+        assert!(!labels.contains(&"breachhub"), "404 endpoint must be gone");
+    }
+
+    #[test]
+    fn plan_username_covers_social_and_gaming_endpoints() {
+        // Regression guard so we don't accidentally trim the username breadth.
+        // The dead `/stealer` + `/breachhub/search` (404) are gone — their
+        // breach/stealer coverage is served by the universal `/search`.
+        let plan = plan_endpoints(TargetKind::Username, "alice");
+        let labels: Vec<&str> = plan.iter().map(|c| c.label()).collect();
+        for ep in [
+            "social",
+            "github",
+            "twitter",
+            "reddit",
+            "tiktok",
+            "username_history",
+            "roblox",
+            "xbox",
+            "minecraft",
+        ] {
+            assert!(
+                labels.contains(&ep),
+                "username plan missing endpoint {ep}; got {labels:?}"
+            );
+        }
+        assert!(!labels.contains(&"stealer"), "404 endpoint must be gone");
+        assert!(!labels.contains(&"breachhub"), "404 endpoint must be gone");
+    }
+
+    #[test]
+    fn effective_plan_drops_free_covered_single_origin_endpoints() {
+        // Quota conservation: SeekNow must not spend a paid lookup on a
+        // single-origin presence check the free username_search stack already
+        // covers. effective_plan() is what actually dispatches.
+        let labels: Vec<&str> = effective_plan(TargetKind::Username, "alice")
+            .iter()
+            .map(|c| c.label())
+            .collect();
+        for dropped in [
+            "github",
+            "twitter",
+            "reddit",
+            "tiktok",
+            "roblox",
+            "xbox",
+            "minecraft",
+        ] {
+            assert!(
+                !labels.contains(&dropped),
+                "effective plan must DROP free-covered '{dropped}'; got {labels:?}"
+            );
+        }
+        // …while keeping the paid-unique value: username-history plus the
+        // multi-platform aggregate (one call across many sites — not single-origin).
+        for kept in ["social", "username_history"] {
+            assert!(
+                labels.contains(&kept),
+                "effective plan must KEEP paid-unique '{kept}'; got {labels:?}"
+            );
+        }
+        // The full matrix stays self-documenting — only dispatch is gated.
+        assert!(
+            plan_endpoints(TargetKind::Username, "alice")
+                .iter()
+                .any(|c| c.label() == "github"),
+            "plan_endpoints retains the capability (one policy-flip away)"
+        );
+    }
+
+    #[test]
+    fn effective_plan_keeps_id_resolution_pivots() {
+        // Discord/Steam ID resolution is cross-platform identity linkage, NOT
+        // single-origin enumeration — it survives the filter even though the
+        // paths live under discord/ and gaming/.
+        let labels: Vec<&str> = effective_plan(TargetKind::Username, "359023095012345678")
+            .iter()
+            .map(|c| c.label())
+            .collect();
+        assert!(
+            labels.contains(&"discord_user") && labels.contains(&"discord_to_roblox"),
+            "ID-resolution pivots must survive; got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn plan_username_with_discord_id_prepends_discord_endpoints() {
+        // 18-digit discord snowflake (typical len 17–19).
+        let plan = plan_endpoints(TargetKind::Username, "359023095012345678");
+        let labels: Vec<&str> = plan.iter().map(|c| c.label()).collect();
+        // discord_user + discord_to_roblox should be at the head of the
+        // plan so they run even if the per-scan budget cuts the tail.
+        assert_eq!(labels[0], "discord_user");
+        assert_eq!(labels[1], "discord_to_roblox");
+    }
+
+    #[test]
+    fn plan_domain_covers_intel_and_whois() {
+        let plan = plan_endpoints(TargetKind::Domain, "example.com");
+        let labels: Vec<&str> = plan.iter().map(|c| c.label()).collect();
+        assert!(labels.contains(&"domain_intel"));
+        assert!(labels.contains(&"whois"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_plan_returns_empty_for_empty_plan() {
+        // An empty plan never reaches the util layer; this path must
+        // short-circuit without any HTTP regardless of budget state.
+        // (Per-endpoint budget gating is exercised by the util-level
+        // tests in `crate::util::see_know::tests`.)
+        let out = dispatch_plan("key", "alice", &[]).await;
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn plan_username_with_steam_id_prepends_steam_endpoint() {
+        let plan = plan_endpoints(TargetKind::Username, "76561198000000000");
+        let first = plan.first().expect("steam plan must be non-empty");
+        assert_eq!(first.label(), "steam");
+    }
+
+    #[test]
+    fn endpoint_call_steam_round_trips_via_label() {
+        // Ensure the new variant appears in the unique-label set.
+        let labels: Vec<&str> = [
+            EndpointCall::EmailCheck,
+            EndpointCall::SocialAggregate,
+            EndpointCall::GithubProfile,
+            EndpointCall::TwitterProfile,
+            EndpointCall::RedditProfile,
+            EndpointCall::TiktokProfile,
+            EndpointCall::UsernameHistory,
+            EndpointCall::RobloxProfile,
+            EndpointCall::XboxProfile,
+            EndpointCall::MinecraftProfile,
+            EndpointCall::SteamProfile,
+            EndpointCall::DiscordUser,
+            EndpointCall::DiscordToRoblox,
+            EndpointCall::PhoneInfo,
+            EndpointCall::IpInfo,
+            EndpointCall::DomainIntel,
+            EndpointCall::Whois,
+        ]
+        .iter()
+        .map(|c| c.label())
+        .collect();
+        assert!(labels.contains(&"steam"));
+    }

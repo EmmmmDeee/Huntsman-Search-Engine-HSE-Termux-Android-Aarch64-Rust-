@@ -1,4 +1,3 @@
-use super::*;
 
 use super::{host_from_url, host_only};
 
