@@ -16,6 +16,7 @@ mod wigle;
 mod tests;
 
 use async_trait::async_trait;
+use futures::future::join_all;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -142,17 +143,21 @@ impl Module for WifiIntel {
         }));
 
         // ── Phase 2: WiGLE geolocation for top-N strongest APs ─────────
-        for ap in aps.iter().take(MAX_BSSIDS) {
-            if ctx.cancel.is_cancelled() {
-                break;
-            }
-
-            if ap.bssid.len() < 12 {
-                continue;
-            }
-
-            if let Ok(Some(detail)) =
-                wigle::query_wigle_detail(&ctx.http, user, token, &ap.bssid).await
+        let valid_aps: Vec<_> = aps
+            .iter()
+            .take(MAX_BSSIDS)
+            .filter(|ap| ap.bssid.len() >= 12)
+            .collect();
+        let wigle_futures = valid_aps.iter().map(|ap| {
+            let http = ctx.http.clone();
+            let user = user.to_string();
+            let token = token.to_string();
+            let bssid = ap.bssid.clone();
+            async move { wigle::query_wigle_detail(&http, &user, &token, &bssid).await }
+        });
+        let wigle_results = join_all(wigle_futures).await;
+        for (ap, detail_result) in valid_aps.iter().zip(wigle_results) {
+            if let Ok(Some(detail)) = detail_result
                 && let (Some(lat), Some(lon)) = (detail.trilat, detail.trilong)
             {
                 // Shared validator: Null Island + out-of-range + non-finite.
