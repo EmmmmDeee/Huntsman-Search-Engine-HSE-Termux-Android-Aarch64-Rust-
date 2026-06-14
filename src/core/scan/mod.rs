@@ -472,15 +472,29 @@ impl Target {
         // rotation proxy or DNS resolver is routed *through*, never investigated.
         // No-op unless HUNTSMAN_SEARCH_PROXY / HUNTSMAN_PROXY / HUNTSMAN_DNS_RESOLVERS
         // is set, so default behaviour is unchanged.
-        let infra_host: Option<String> = match self.kind {
-            TargetKind::Domain | TargetKind::IpAddress => Some(v.to_string()),
-            TargetKind::Url => url::Url::parse(v)
-                .ok()
-                .and_then(|u| u.host_str().map(str::to_string)),
+        //
+        // Domain/IpAddress: `v` is already the host string — borrow it directly
+        // rather than cloning to `Option<String>` just to immediately deref back.
+        // Url: host_str() borrows from the temporary `Url`, so we materialise it
+        // as a String only for that uncommon branch.
+        let url_host: String;
+        let infra_host: Option<&str> = match self.kind {
+            TargetKind::Domain | TargetKind::IpAddress => Some(v),
+            TargetKind::Url => {
+                url_host = url::Url::parse(v)
+                    .ok()
+                    .and_then(|u| u.host_str().map(str::to_string))
+                    .unwrap_or_default();
+                if url_host.is_empty() {
+                    None
+                } else {
+                    Some(&url_host)
+                }
+            }
             _ => None,
         };
         if let Some(h) = infra_host
-            && crate::util::preflight::is_infrastructure_host(&h)
+            && crate::util::preflight::is_infrastructure_host(h)
         {
             return Err(
                 "target is configured network infrastructure (proxy / DNS resolver) — not scanned",
