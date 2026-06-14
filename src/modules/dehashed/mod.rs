@@ -82,6 +82,10 @@ impl Module for DeHashed {
         ModuleCategory::Breach
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        &["T1589.001", "T1589.002", "T1589.003"]
+    }
+
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
         use crate::core::entity::EntityKind;
         const KINDS: &[EntityKind] = &[

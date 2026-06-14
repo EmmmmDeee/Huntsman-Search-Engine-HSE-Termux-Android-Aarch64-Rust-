@@ -179,6 +179,9 @@ impl Module for Wigle {
     fn category(&self) -> ModuleCategory {
         ModuleCategory::Geo
     }
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        &["T1591.001", "T1591.002"]
+    }
     fn produces(&self) -> &'static [EntityKind] {
         // WiGLE corroborates Coordinates with WiFi density, emits
         // city/region/country as Address, surfaces top APs as

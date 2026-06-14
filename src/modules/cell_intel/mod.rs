@@ -84,6 +84,10 @@ impl Module for CellIntel {
         ModuleCategory::Sensor
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        &["T1591.001", "T1592"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Coordinates];
         KINDS

@@ -133,6 +133,13 @@ impl Module for IpReputation {
         ModuleCategory::Infrastructure
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // OTX pulse lookup → threat-intelligence vendor data (T1597.001);
+        // surfaced organisation/ISP context (T1591.002); IP addresses confirmed
+        // as Tor exits (T1590.005). Replaces the Infrastructure default T1596.005.
+        &["T1590.005", "T1591.002", "T1597.001"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Organisation];
         KINDS

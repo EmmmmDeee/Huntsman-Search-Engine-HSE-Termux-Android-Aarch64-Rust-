@@ -99,6 +99,10 @@ impl Module for ExifGeo {
         ModuleCategory::Geo
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        &["T1589.003", "T1591.001"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         // Coordinates (GPS IFD), DeviceId (camera serial — a cross-image
         // correlation anchor), and Person (the owner/artist named in metadata).
