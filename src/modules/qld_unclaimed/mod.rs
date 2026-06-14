@@ -11,6 +11,7 @@ mod helpers;
 mod tests;
 
 use async_trait::async_trait;
+use futures::future::join_all;
 
 use crate::core::{
     entity::EntityKind,
@@ -107,13 +108,20 @@ impl Module for QldUnclaimed {
 
         let broadened = surname != full;
 
-        let mut pc_localities = Vec::new();
-        for pc in exact_postcodes(&records, full, broadened) {
-            let locs = crate::util::postcode_au::localities(&ctx.http, &pc).await;
-            if !locs.is_empty() {
-                pc_localities.push((pc, locs));
+        let postcodes: Vec<String> = exact_postcodes(&records, full, broadened);
+        let locality_futures = postcodes.iter().map(|pc| {
+            let http = ctx.http.clone();
+            let pc = pc.clone();
+            async move {
+                let locs = crate::util::postcode_au::localities(&http, &pc).await;
+                (pc, locs)
             }
-        }
+        });
+        let pc_localities: Vec<(String, _)> = join_all(locality_futures)
+            .await
+            .into_iter()
+            .filter(|(_, locs)| !locs.is_empty())
+            .collect();
 
         let mut out = ModuleResult::new();
         out.extend(records_to_entities(
