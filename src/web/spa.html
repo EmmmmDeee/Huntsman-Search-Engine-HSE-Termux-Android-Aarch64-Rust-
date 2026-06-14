@@ -283,6 +283,7 @@
         <li id="nav-scans"  ><a href="#/scans"  ><i class="glyphicon glyphicon-list"></i>&nbsp;Scans</a></li>
         <li id="nav-live"   ><a href="#/live"   ><i class="glyphicon glyphicon-record"></i>&nbsp;Live</a></li>
         <li id="nav-engines"><a href="#/engines"><i class="glyphicon glyphicon-search"></i>&nbsp;Engines</a></li>
+        <li id="nav-radar"  ><a href="#/radar"  ><i class="glyphicon glyphicon-signal"></i>&nbsp;Signal Radar</a></li>
         <li id="nav-opts"   ><a href="#/opts"   ><i class="glyphicon glyphicon-wrench"></i>&nbsp;Settings</a></li>
       </ul>
       <form class="navbar-form navbar-left" style="margin-left:10px" onsubmit="globalSearch(event)">
@@ -612,9 +613,10 @@ async function render(){
   clearLiveTimer();
   clearScanTimer();
   clearEnginesTimer();
+  clearRadarTimer();
   S.route = parseHash();
   $$('#main-navbar-collapse li').forEach(li=>li.classList.remove('active'));
-  const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', engines:'nav-engines'};
+  const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', engines:'nav-engines', radar:'nav-radar'};
   const navEl = $('#'+navMap[S.route.name]); if (navEl) navEl.classList.add('active');
 
   const v = $('#view');
@@ -628,6 +630,7 @@ async function render(){
     if (S.route.name==='search')   return await renderSearch(v);
     if (S.route.name==='live')     return await renderLive(v);
     if (S.route.name==='engines')  return await renderEngines(v);
+    if (S.route.name==='radar')    return await renderRadar(v);
     if (S.route.name==='diff')     return await renderDiff(v);
   } catch(e){
     v.innerHTML = `<div class="alert alert-danger"><strong>Error.</strong> ${esc(e.message)}
@@ -2594,8 +2597,122 @@ async function renderSearch(v){
 function clearLiveTimer(){ if (S.liveTimer){ clearInterval(S.liveTimer); S.liveTimer = null; } }
 function clearScanTimer(){ if (S.scanTimer){ clearTimeout(S.scanTimer); S.scanTimer = null; } }
 function clearEnginesTimer(){ if (S.enginesTimer){ clearInterval(S.enginesTimer); S.enginesTimer = null; } }
+function clearRadarTimer(){ if (S.radarTimer){ clearInterval(S.radarTimer); S.radarTimer = null; } }
 
 /* ═══════════ Page: SEARCH-ENGINE LIVENESS (#/engines) ═══════════ */
+/* ═══════════ Page: SIGNAL RADAR (#/radar) ═══════════
+   Auto-fetches GET /api/v1/radar every 5 s while the tab is active.
+   Runs all sensors in parallel on the server (WiFi, BT, cell, GPS, LAN ARP).
+   No target input required — ambient enumeration only. */
+async function renderRadar(v){
+  v.innerHTML = `
+<div class="panel panel-default">
+  <div class="panel-heading"><strong><i class="glyphicon glyphicon-signal"></i> Signal Radar</strong>
+    <span class="pull-right text-muted" id="radar-ts">Scanning…</span>
+  </div>
+  <div class="panel-body" id="radar-body">
+    <div class="empty-state"><h3>Scanning…</h3><p>Collecting ambient signals. This may take up to 15 seconds on first load.</p></div>
+  </div>
+</div>`;
+
+  async function fetchRadar(){
+    try {
+      const snap = await fetch('/api/v1/radar').then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); });
+      if (!(S.route && S.route.name === 'radar')) return;
+      const age = Math.round((Date.now() - snap.timestamp_ms) / 1000);
+      $('#radar-ts').textContent = `Updated ${age}s ago`;
+      $('#radar-body').innerHTML = renderRadarBody(snap);
+    } catch(e){
+      if ($('#radar-body')) $('#radar-body').innerHTML = `<div class="alert alert-warning">Scan failed: ${esc(e.message)}</div>`;
+    }
+  }
+
+  clearRadarTimer();
+  await fetchRadar();
+  S.radarTimer = setInterval(async ()=>{
+    if (document.hidden || !(S.route && S.route.name === 'radar')){ clearRadarTimer(); return; }
+    await fetchRadar();
+  }, 5000);
+}
+
+function rssiBar(rssi){
+  const pct = Math.max(0, Math.min(100, ((rssi + 100) / 60) * 100)).toFixed(0);
+  const colour = rssi >= -50 ? '#5cb85c' : rssi >= -70 ? '#f0ad4e' : '#d9534f';
+  return `<div style="display:inline-block;width:80px;height:10px;background:#ddd;border-radius:3px;vertical-align:middle">
+            <div style="width:${pct}%;height:100%;background:${colour};border-radius:3px"></div></div>
+          <small class="text-muted">&nbsp;${rssi} dBm</small>`;
+}
+
+function renderRadarBody(snap){
+  let html = '';
+
+  // WiFi APs
+  html += `<h4><i class="glyphicon glyphicon-wifi"></i> WiFi Access Points <span class="badge">${snap.wifi_aps.length}</span></h4>`;
+  if (snap.wifi_aps.length){
+    html += `<div class="table-responsive"><table class="table table-condensed table-hover">
+      <thead><tr><th>SSID</th><th>BSSID</th><th>Band</th><th>Signal</th><th>Confidence</th></tr></thead><tbody>`;
+    for (const ap of snap.wifi_aps){
+      html += `<tr><td>${esc(ap.ssid)}</td><td><code>${esc(ap.bssid)}</code></td>
+               <td>${esc(ap.band)}</td><td>${rssiBar(ap.rssi_dbm)}</td>
+               <td>${(ap.confidence*100).toFixed(0)}%</td></tr>`;
+    }
+    html += `</tbody></table></div>`;
+  } else { html += `<p class="text-muted">No WiFi APs detected.</p>`; }
+
+  // Bluetooth
+  html += `<h4><i class="glyphicon glyphicon-phone"></i> Bluetooth Devices <span class="badge">${snap.bluetooth_devices.length}</span></h4>`;
+  if (snap.bluetooth_devices.length){
+    html += `<div class="table-responsive"><table class="table table-condensed table-hover">
+      <thead><tr><th>Address</th><th>Name</th><th>Type</th><th>Bond</th></tr></thead><tbody>`;
+    for (const d of snap.bluetooth_devices){
+      html += `<tr><td><code>${esc(d.address)}</code></td><td>${esc(d.name)}</td>
+               <td>${esc(d.device_type)}</td><td>${esc(d.bond_state)}</td></tr>`;
+    }
+    html += `</tbody></table></div>`;
+  } else { html += `<p class="text-muted">No Bluetooth devices detected.</p>`; }
+
+  // Cell towers
+  html += `<h4><i class="glyphicon glyphicon-tower"></i> Cell Towers <span class="badge">${snap.cell_towers.length}</span></h4>`;
+  if (snap.cell_towers.length){
+    html += `<div class="table-responsive"><table class="table table-condensed table-hover">
+      <thead><tr><th>ID</th><th>Tech</th><th>Signal</th><th>Registered</th></tr></thead><tbody>`;
+    for (const c of snap.cell_towers){
+      html += `<tr><td><code>${esc(c.id)}</code></td><td>${esc(c.technology)}</td>
+               <td>${rssiBar(c.signal_dbm)}</td>
+               <td>${c.registered ? '<span class="label label-success">Yes</span>' : '<span class="label label-default">No</span>'}</td></tr>`;
+    }
+    html += `</tbody></table></div>`;
+  } else { html += `<p class="text-muted">No cell towers detected.</p>`; }
+
+  // LAN hosts
+  html += `<h4><i class="glyphicon glyphicon-home"></i> LAN Hosts <span class="badge">${snap.lan_hosts.length}</span></h4>`;
+  if (snap.lan_hosts.length){
+    html += `<div class="table-responsive"><table class="table table-condensed table-hover">
+      <thead><tr><th>IP</th><th>MAC</th><th>Open Ports</th></tr></thead><tbody>`;
+    for (const h of snap.lan_hosts){
+      const ports = h.open_ports.length ? h.open_ports.map(p=>`<code>${p}</code>`).join(' ') : '<em class="text-muted">none</em>';
+      html += `<tr><td>${esc(h.ip)}</td><td><code>${esc(h.mac)}</code></td><td>${ports}</td></tr>`;
+    }
+    html += `</tbody></table></div>`;
+  } else { html += `<p class="text-muted">No LAN hosts in ARP table.</p>`; }
+
+  // GPS
+  html += `<h4><i class="glyphicon glyphicon-map-marker"></i> GPS Fix</h4>`;
+  if (snap.gps){
+    const g = snap.gps;
+    html += `<table class="table table-condensed" style="max-width:420px">
+      <tbody>
+        <tr><th>Latitude</th><td>${g.latitude.toFixed(6)}</td></tr>
+        <tr><th>Longitude</th><td>${g.longitude.toFixed(6)}</td></tr>
+        <tr><th>Accuracy</th><td>${g.accuracy_m.toFixed(1)} m</td></tr>
+        <tr><th>Provider</th><td>${esc(g.provider)}</td></tr>
+        <tr><th>Confidence</th><td>${(g.confidence*100).toFixed(0)}%</td></tr>
+      </tbody></table>`;
+  } else { html += `<p class="text-muted">No GPS fix available.</p>`; }
+
+  return html;
+}
+
 /* Merges the cached liveness sweep (GET /api/v1/engines/health — only ENABLED
    engines are probed) with the full engine roster + on/off state (GET
    /api/v1/settings/toggles), so disabled engines stay visible and can be

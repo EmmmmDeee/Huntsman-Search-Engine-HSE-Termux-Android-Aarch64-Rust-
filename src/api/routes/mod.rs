@@ -30,6 +30,7 @@
 //! | PUT    | `/api/v1/settings/keys`           | `settings_keys_put`      |
 //! | GET    | `/api/v1/settings/toggles`        | `settings_toggles_get` (v1.4+) |
 //! | PUT    | `/api/v1/settings/toggles`        | `settings_toggles_put`   |
+//! | GET    | `/api/v1/radar`                   | `radar_scan` (v1.5+)     |
 //! | *      | `/api/*` (unmatched)              | `api_not_found` (JSON 404) |
 //! | GET    | `/static/{file}`                  | `vendor_handler`         |
 //! | GET    | `/*` (fallback)                   | `spa_handler` (static)   |
@@ -47,7 +48,7 @@ use serde_json::json;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 
-use super::{AppState, handlers, scan_export, scan_handlers, settings_handlers};
+use super::{AppState, handlers, radar_handlers, scan_export, scan_handlers, settings_handlers};
 
 /// Embedded SPA — single self-contained HTML file with inline CSS + JS.
 /// Lives in `src/web/spa.html` and is compiled into the binary at build time
@@ -229,6 +230,8 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             get(settings_handlers::settings_toggles_get)
                 .put(settings_handlers::settings_toggles_put),
         )
+        // ── signal radar (v1.5+) ──
+        .route("/radar", get(radar_handlers::radar_scan))
         .fallback(api_not_found);
 
     // /api — outer layer catches `/api/v2/...` / `/api/typo` /
