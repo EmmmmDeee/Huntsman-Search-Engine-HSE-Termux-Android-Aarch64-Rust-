@@ -222,98 +222,143 @@ impl Module for WebCrawler {
         let seed_for_entities = seed.clone();
         state.queue.push_back((seed, 0));
 
-        while let Some((url, depth)) = state.queue.pop_front() {
+        // Concurrent BFS: drain up to CRAWL_BATCH_SIZE URLs per iteration and
+        // fetch them in parallel (bounded by a semaphore). HTTP I/O is done
+        // concurrently; state mutations (link extraction, de-dup, entity
+        // accumulation) remain serial so CrawlState needs no locking.
+        // A failure on one URL in a batch never aborts the others — each future
+        // resolves independently and returns an Option.
+        const CRAWL_BATCH_SIZE: usize = 4;
+        // Per-URL fetch outcome: (url, depth, response_headers, body) or None.
+        type FetchResult = Option<(String, u32, reqwest::header::HeaderMap, String)>;
+
+        'outer: loop {
             if state.pages_fetched >= max_pages || ctx.cancel.is_cancelled() {
                 break;
             }
-            if state.visited.contains(&url) {
-                continue;
-            }
-            state.visited.insert(url.clone());
 
-            // SSRF egress guard (defense in depth): never fetch a discovered
-            // link whose host is a private/reserved IP literal (loopback,
-            // RFC1918, 169.254 cloud-metadata, …). `extract_links` keeps the
-            // queue on the seed host and the HTTP client's DNS resolver vets
-            // hostnames, but an IP-literal link bypasses the resolver — so the
-            // guard is enforced explicitly here rather than left implicit in the
-            // same-host filter, which a future change could loosen.
-            if crate::util::preflight::url_host_is_private(&url) {
-                continue;
-            }
-
-            if is_disallowed(&url, &state.disallow_rules) {
-                continue;
-            }
-
-            let resp = match ctx.http.get(&url).send().await {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::debug!(url = %url, error = %e, "web_crawler: fetch failed");
+            // Collect the next batch of unvisited, allowed URLs from the queue.
+            let mut batch: Vec<(String, u32)> = Vec::with_capacity(CRAWL_BATCH_SIZE);
+            while batch.len() < CRAWL_BATCH_SIZE {
+                let Some((url, depth)) = state.queue.pop_front() else {
+                    break;
+                };
+                if state.visited.contains(&url) {
                     continue;
                 }
-            };
-
-            let status = resp.status();
-            if status.as_u16() == 429 || status.as_u16() == 503 {
-                tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-                continue;
-            }
-            if !status.is_success() {
-                continue;
-            }
-
-            let headers = resp.headers().clone();
-            if state.pages_fetched == 0 {
-                audit_security_headers(&headers, &mut state.security_headers);
-            }
-
-            let ct = headers
-                .get("content-type")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-            if !ct.contains("text/html")
-                && !ct.contains("text/plain")
-                && !ct.contains("application/xhtml")
-            {
-                continue;
+                // SSRF egress guard (defense in depth): never fetch a discovered
+                // link whose host is a private/reserved IP literal (loopback,
+                // RFC1918, 169.254 cloud-metadata, …). `extract_links` keeps the
+                // queue on the seed host and the HTTP client's DNS resolver vets
+                // hostnames, but an IP-literal link bypasses the resolver — so the
+                // guard is enforced explicitly here rather than left implicit in the
+                // same-host filter, which a future change could loosen.
+                if crate::util::preflight::url_host_is_private(&url) {
+                    continue;
+                }
+                if is_disallowed(&url, &state.disallow_rules) {
+                    continue;
+                }
+                state.visited.insert(url.clone());
+                batch.push((url, depth));
             }
 
-            // Stream the (untrusted) page body and STOP at BODY_CAP. A plain
-            // `resp.text()` buffers the WHOLE body first — a hostile multi-GB page
-            // would OOM the device before any truncation. `read_body_capped` never
-            // accumulates beyond the cap, and decodes UTF-8-lossy so there's no
-            // mid-codepoint panic at the boundary (web_crawler runs under
-            // catch_unwind, where such a panic would silently void all findings).
-            let Some(body) = crate::util::http::read_body_capped(resp, BODY_CAP).await else {
-                continue;
-            };
-
-            state.pages_fetched += 1;
-
-            detect_frameworks(&body, &mut state.frameworks);
-
-            let mut per_page_types: HashSet<&'static str> = HashSet::new();
-            detect_page_types(&body, &mut per_page_types);
-            if state.notable_pages.len() < NOTABLE_PAGES_CAP
-                && per_page_types
-                    .iter()
-                    .any(|pt| NOTABLE_PAGE_TYPES.contains(pt))
-            {
-                state.notable_pages.push(url.clone());
-            }
-            state.page_types.extend(per_page_types);
-
-            extract_emails(&body, &mut state.emails);
-            extract_phones(&body, &mut state.phones);
-            extract_tracking_ids(&body, &mut state.tracking_ids);
-            extract_api_keys_from_body(&body, &domain);
-
-            if depth < max_depth {
-                extract_links(&body, &url, &base_host, &domain, &mut state);
+            if batch.is_empty() {
+                break;
             }
 
-            if state.pages_fetched < max_pages {
+            // Fetch the batch concurrently. Each task returns the URL, depth,
+            // and the parsed response data (headers + body) — or None on error.
+            // The batch itself bounds concurrency to CRAWL_BATCH_SIZE (4), so no
+            // extra semaphore is needed.
+            let http = &ctx.http;
+            let fetch_futs = batch.iter().map(|(url, depth)| {
+                let url = url.clone();
+                let depth = *depth;
+                async move {
+                    let resp = match http.get(&url).send().await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::debug!(url = %url, error = %e, "web_crawler: fetch failed");
+                            return None::<(String, u32, reqwest::header::HeaderMap, String)>;
+                        }
+                    };
+                    let status = resp.status();
+                    // Rate-limit / temporary-unavailable: skip this URL.
+                    if status.as_u16() == 429 || status.as_u16() == 503 {
+                        return None;
+                    }
+                    if !status.is_success() {
+                        return None;
+                    }
+                    let headers = resp.headers().clone();
+                    let ct = headers
+                        .get("content-type")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    if !ct.contains("text/html")
+                        && !ct.contains("text/plain")
+                        && !ct.contains("application/xhtml")
+                    {
+                        return None;
+                    }
+                    // Stream the (untrusted) page body and STOP at BODY_CAP. A plain
+                    // `resp.text()` buffers the WHOLE body first — a hostile multi-GB
+                    // page would OOM the device before any truncation. `read_body_capped`
+                    // never accumulates beyond the cap, and decodes UTF-8-lossy so
+                    // there's no mid-codepoint panic at the boundary (web_crawler runs
+                    // under catch_unwind, where such a panic would silently void all
+                    // findings).
+                    let body = crate::util::http::read_body_capped(resp, BODY_CAP).await?;
+                    Some((url, depth, headers, body))
+                }
+            });
+            let batch_results: Vec<FetchResult> = futures::future::join_all(fetch_futs).await;
+
+            // Process results serially so CrawlState needs no locking.
+            for maybe in batch_results {
+                if state.pages_fetched >= max_pages {
+                    break 'outer;
+                }
+                let Some((url, depth, headers, body)) = maybe else {
+                    continue;
+                };
+
+                if state.pages_fetched == 0 {
+                    audit_security_headers(&headers, &mut state.security_headers);
+                }
+
+                state.pages_fetched += 1;
+
+                detect_frameworks(&body, &mut state.frameworks);
+
+                let mut per_page_types: HashSet<&'static str> = HashSet::new();
+                detect_page_types(&body, &mut per_page_types);
+                if state.notable_pages.len() < NOTABLE_PAGES_CAP
+                    && per_page_types
+                        .iter()
+                        .any(|pt| NOTABLE_PAGE_TYPES.contains(pt))
+                {
+                    state.notable_pages.push(url.clone());
+                }
+                state.page_types.extend(per_page_types);
+
+                extract_emails(&body, &mut state.emails);
+                extract_phones(&body, &mut state.phones);
+                extract_tracking_ids(&body, &mut state.tracking_ids);
+                extract_api_keys_from_body(&body, &domain);
+
+                if depth < max_depth {
+                    extract_links(&body, &url, &base_host, &domain, &mut state);
+                }
+            }
+
+            // Honour the inter-request delay once per batch (not per URL) to
+            // stay Termux-friendly while still being faster than the old serial
+            // loop: 4 pages land in ~RTT time then one 200 ms pause, vs. the
+            // old RTT + 200 ms per page.
+            if state.pages_fetched < max_pages && !ctx.cancel.is_cancelled() {
                 tokio::time::sleep(std::time::Duration::from_millis(INTER_REQUEST_MS)).await;
             }
         }
