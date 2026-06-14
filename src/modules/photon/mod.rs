@@ -1,0 +1,136 @@
+//! Photon geocoder (Komoot). Free, no API key.
+//!
+//! Forward: `GET https://photon.komoot.io/api/?q={address}&limit=1`
+//! Reverse: `GET https://photon.komoot.io/reverse?lon={lon}&lat={lat}`
+//!
+//! Complements the Nominatim-based `geocode` module with a second independent
+//! geocoding source for corroboration. Every property Photon returns is used:
+//! the resolved place **name** confirms *what* was matched, and the OSM
+//! `key`/`value` classify its *nature* (e.g. `place/city` vs `amenity/restaurant`
+//! — a coarse city hit vs a precise POI), surfaced as an `osm:<value>` tag.
+//!
+//! The two response → entity mappings live in the pure [`build::build_forward`] /
+//! [`build::build_reverse`] so they are unit-tested without a live API; the
+//! `forward`/`reverse` methods own only transport.
+
+use async_trait::async_trait;
+
+use crate::core::{
+    entity::EntityKind,
+    error::Result,
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
+    scan::{Target, TargetKind},
+};
+use crate::util::http::RequestBuilderExt;
+use crate::util::http::urlencode;
+
+mod types;
+use types::PhotonResp;
+
+mod build;
+use build::{build_forward, build_reverse};
+
+#[cfg(test)]
+mod tests;
+
+pub struct Photon;
+
+#[async_trait]
+impl Module for Photon {
+    fn name(&self) -> &'static str {
+        "photon"
+    }
+    fn description(&self) -> &'static str {
+        "Photon geocoder (Komoot) — independent forward/reverse geocoding for corroboration"
+    }
+    fn priority(&self) -> u8 {
+        20
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Address | TargetKind::Coordinates)
+    }
+    fn max_timeout_ms(&self) -> u64 {
+        4_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Geo
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::Coordinates, EntityKind::Address];
+        KINDS
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        match target.kind {
+            TargetKind::Address => self.forward(target, ctx).await,
+            TargetKind::Coordinates => self.reverse(target, ctx).await,
+            _ => Ok(ModuleResult::new()),
+        }
+    }
+}
+
+impl Photon {
+    async fn forward(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let addr = target.value.trim();
+        if addr.len() <= 2 {
+            return Ok(ModuleResult::new());
+        }
+
+        let url = format!(
+            "https://photon.komoot.io/api/?q={}&limit=1",
+            urlencode(addr),
+        );
+
+        let resp = ctx
+            .http
+            .get(&url)
+            .header("Accept", "application/json")
+            .send_tagged(build::SRC)
+            .await?;
+        if !resp.status().is_success() {
+            return Ok(ModuleResult::new());
+        }
+        let body: PhotonResp = match crate::util::http::json_scanned(resp, build::SRC).await {
+            Ok(b) => b,
+            Err(_) => return Ok(ModuleResult::new()),
+        };
+
+        let mut result = ModuleResult::new();
+        if let Some(feature) = body.features.first()
+            && let Some(e) = build_forward(addr, feature, &ctx.scan_id)
+        {
+            result.push(e);
+        }
+        Ok(result)
+    }
+
+    async fn reverse(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
+
+        let url = format!("https://photon.komoot.io/reverse?lon={lon:.6}&lat={lat:.6}",);
+
+        let resp = ctx
+            .http
+            .get(&url)
+            .header("Accept", "application/json")
+            .send_tagged(build::SRC)
+            .await?;
+        if !resp.status().is_success() {
+            return Ok(ModuleResult::new());
+        }
+        let body: PhotonResp = match crate::util::http::json_scanned(resp, build::SRC).await {
+            Ok(b) => b,
+            Err(_) => return Ok(ModuleResult::new()),
+        };
+
+        let mut result = ModuleResult::new();
+        if let Some(props) = body.features.first().and_then(|f| f.properties.as_ref())
+            && let Some(e) = build_reverse(lat, lon, props, &ctx.scan_id)
+        {
+            result.push(e);
+        }
+        Ok(result)
+    }
+}

@@ -837,8 +837,9 @@ fn embedded_default_keys_have_a_single_source_of_truth() {
 
     let mut offenders = Vec::new();
     for path in files {
-        // The single source of truth — the literals legitimately live here.
-        if path.ends_with("util/keys.rs") {
+        // The single source of truth — the literals legitimately live here
+        // (flat file or directory module's constants submodule).
+        if path.ends_with("util/keys.rs") || path.ends_with("util/keys/constants.rs") {
             continue;
         }
         let content = fs::read_to_string(&path).unwrap();
@@ -1251,9 +1252,31 @@ fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/modules");
     let mut offenders = Vec::new();
     for provider in COARSE_PROVIDERS {
-        let path = root.join(format!("{provider}.rs"));
-        let src = fs::read_to_string(&path)
-            .unwrap_or_else(|_| panic!("coarse provider {provider} missing at {path:?}"));
+        // Modules may be a flat file (`{provider}.rs`) or a directory module
+        // (`{provider}/mod.rs`). For directory modules we concatenate all
+        // non-test source files so the gate check covers the whole module.
+        let flat = root.join(format!("{provider}.rs"));
+        let dir = root.join(provider);
+        let src = if flat.exists() {
+            fs::read_to_string(&flat)
+                .unwrap_or_else(|_| panic!("coarse provider {provider} missing at {flat:?}"))
+        } else if dir.is_dir() {
+            let mut combined = String::new();
+            for entry in fs::read_dir(&dir)
+                .unwrap_or_else(|_| panic!("cannot read dir {dir:?}"))
+                .flatten()
+            {
+                let p = entry.path();
+                if p.extension().and_then(|e| e.to_str()) == Some("rs")
+                    && let Ok(s) = fs::read_to_string(&p)
+                {
+                    combined.push_str(&s);
+                }
+            }
+            combined
+        } else {
+            panic!("coarse provider {provider} missing at {flat:?}");
+        };
         // Strip the test module so a `use is_valid_coords` in a unit test
         // doesn't count against the production gate.
         let prod = src.split("mod tests").next().unwrap_or(&src);

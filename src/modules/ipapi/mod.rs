@@ -1,0 +1,237 @@
+//! ip-api.com — free IP geolocation with ISP/ASN/proxy detection.
+//!
+//! Endpoint: `GET http://ip-api.com/json/{ip}?fields=66846719`
+//! Auth: None — 45 requests/minute, no key required.
+//!
+//! Returns city/region/country, lat/lon, ISP, ASN, org, mobile/proxy/
+//! hosting flags, reverse DNS, and timezone. The numeric `fields` bitmask
+//! requests all available fields.
+//!
+//! Note: free tier requires HTTP (not HTTPS). HTTPS is paid only.
+
+use async_trait::async_trait;
+use serde::Deserialize;
+
+use crate::core::{
+    entity::{Entity, EntityKind, Evidence},
+    error::{Error, Result},
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
+    scan::{Target, TargetKind},
+    tags,
+};
+use crate::util::http::RequestBuilderExt;
+
+const SRC: &str = "ipapi";
+const FIELDS: u64 = 66846719;
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct IpApiResp {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    country: Option<String>,
+    #[serde(rename = "countryCode", default)]
+    country_code: Option<String>,
+    #[serde(default)]
+    region: Option<String>,
+    #[serde(rename = "regionName", default)]
+    region_name: Option<String>,
+    #[serde(default)]
+    city: Option<String>,
+    #[serde(default)]
+    zip: Option<String>,
+    #[serde(default)]
+    lat: Option<f64>,
+    #[serde(default)]
+    lon: Option<f64>,
+    #[serde(default)]
+    timezone: Option<String>,
+    #[serde(default)]
+    isp: Option<String>,
+    #[serde(default)]
+    org: Option<String>,
+    #[serde(rename = "as", default)]
+    asn: Option<String>,
+    #[serde(rename = "asname", default)]
+    as_name: Option<String>,
+    #[serde(default)]
+    reverse: Option<String>,
+    #[serde(default)]
+    mobile: Option<bool>,
+    #[serde(default)]
+    proxy: Option<bool>,
+    #[serde(default)]
+    hosting: Option<bool>,
+    #[serde(default)]
+    district: Option<String>,
+}
+
+pub struct IpApi;
+
+#[async_trait]
+impl Module for IpApi {
+    fn name(&self) -> &'static str {
+        "ipapi"
+    }
+
+    fn description(&self) -> &'static str {
+        "Free IP geolocation via ip-api.com (city, ISP, ASN, proxy detection)"
+    }
+
+    fn priority(&self) -> u8 {
+        26
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::IpAddress)
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        8_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Infrastructure
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Passive IP geolocation API — same surface as ip2location, ipinfo, etc.
+        // Maps IPs to physical location (T1591.001) and identifies the ISP/AS
+        // operator as an Organisation (T1591.002); T1596.005 (Scan Databases) does
+        // not describe a passive geolocation lookup.
+        &["T1590.005", "T1591.001", "T1591.002"]
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Coordinates,
+            EntityKind::Address,
+            EntityKind::Asn,
+            EntityKind::Organisation,
+            EntityKind::Domain,
+        ];
+        KINDS
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        // ip-api.com free tier is IPv4-only — the universal dispatcher
+        // gate allows public IPv6 through, so this module needs its own
+        // IPv6 rejection on top.
+        if crate::util::preflight::should_skip_external_ipv4(&target.value) {
+            return Ok(ModuleResult::new());
+        }
+        let ip = target.value.trim();
+
+        let url = format!("http://ip-api.com/json/{ip}?fields={FIELDS}");
+
+        let resp = ctx
+            .http
+            .get(&url)
+            .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
+            .send_tagged(SRC)
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(Error::module(SRC, format!("HTTP {}", resp.status())));
+        }
+
+        let data: IpApiResp = resp
+            .json()
+            .await
+            .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
+
+        if data.status.as_deref() != Some("success") {
+            return Ok(ModuleResult::new());
+        }
+
+        let mut result = ModuleResult::new();
+
+        let city = data.city.as_deref().unwrap_or("");
+        let region = data.region_name.as_deref().unwrap_or("");
+        let country = data.country.as_deref().unwrap_or("");
+        let isp = data.isp.as_deref().unwrap_or("");
+
+        let ev = [
+            ("city", (!city.is_empty()).then_some(city)),
+            ("region", (!region.is_empty()).then_some(region)),
+            ("country", (!country.is_empty()).then_some(country)),
+            ("isp", (!isp.is_empty()).then_some(isp)),
+            ("asn", data.asn.as_deref()),
+            ("org", data.org.as_deref()),
+            ("timezone", data.timezone.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(
+            Evidence::new(SRC, format!("IP geolocation: {city}, {region}, {country}"))
+                .with_attr("ip", ip),
+            |ev, (key, v)| ev.with_attr(key, v),
+        );
+
+        // Confidence recalibrated 0.70 → 0.60 — see ip_geo.rs for rationale
+        // (single-source free IP geo overstates residential precision; the
+        // corroboration boost lifts the real value at the merge step).
+        if let (Some(lat), Some(lon)) = (data.lat, data.lon)
+            && let Some(mut ce) =
+                crate::util::geo::coarse_provider_coords(lat, lon, 0.60, &ctx.scan_id)
+        {
+            [
+                (data.mobile, "mobile"),
+                (data.proxy, tags::PROXY),
+                (data.hosting, "hosting"),
+            ]
+            .into_iter()
+            .filter(|(flag, _)| *flag == Some(true))
+            .for_each(|(_, tag)| ce.tag(tag));
+            ce.add_evidence(ev.clone());
+            result.push(ce);
+        }
+
+        if !city.is_empty() {
+            let addr = if !region.is_empty() && !country.is_empty() {
+                format!("{city}, {region}, {country}")
+            } else if !country.is_empty() {
+                format!("{city}, {country}")
+            } else {
+                city.to_string()
+            };
+            let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, &ctx.scan_id);
+            ae.tag(tags::GEOINT);
+            ae.add_evidence(ev.clone());
+            result.push(ae);
+        }
+
+        if let Some(asn) = &data.asn {
+            let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, &ctx.scan_id);
+            ae.add_evidence(ev.clone());
+            result.push(ae);
+        }
+
+        if let Some(org) = &data.org
+            && !org.is_empty()
+            && org.len() >= 3
+        {
+            let mut oe = Entity::new(EntityKind::Organisation, org, 0.60, &ctx.scan_id);
+            oe.add_evidence(ev.clone());
+            result.push(oe);
+        }
+
+        if let Some(rev) = &data.reverse
+            && !rev.is_empty()
+            && rev.contains('.')
+        {
+            let mut de = Entity::new(EntityKind::Domain, rev, 0.65, &ctx.scan_id);
+            de.tag(tags::PTR);
+            de.add_evidence(ev);
+            result.push(de);
+        }
+
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    include!("tests.rs");
+}

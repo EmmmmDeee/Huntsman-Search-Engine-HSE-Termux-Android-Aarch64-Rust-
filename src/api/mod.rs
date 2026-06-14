@@ -10,6 +10,7 @@
 
 pub mod handlers;
 pub mod routes;
+pub mod scan_export;
 pub mod scan_handlers;
 pub mod settings_handlers;
 

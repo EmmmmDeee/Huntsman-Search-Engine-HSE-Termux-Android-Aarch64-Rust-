@@ -1,0 +1,196 @@
+use super::CellIntel;
+use super::helpers::{accuracy_to_confidence, json_to_str, mcc_to_centroid, parse_cells_survey};
+use crate::core::entity::EntityKind;
+use crate::core::module::Module;
+use crate::core::scan::{Target, TargetKind};
+
+// ---- Module trait tests ----
+
+#[test]
+fn is_passive() {
+    assert!(CellIntel.is_passive());
+}
+
+#[test]
+fn accepts_only_local_physical_seeds() {
+    assert!(CellIntel.accepts(&Target::new(TargetKind::Coordinates, "-27.47,153.02")));
+    assert!(CellIntel.accepts(&Target::new(TargetKind::MacAddress, "aa:bb:cc:dd:ee:ff")));
+    assert!(!CellIntel.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+    assert!(!CellIntel.accepts(&Target::new(TargetKind::FullName, "Jane Doe")));
+    assert!(!CellIntel.accepts(&Target::new(TargetKind::Domain, "x.com")));
+}
+
+#[test]
+fn module_name_and_priority() {
+    assert_eq!(CellIntel.name(), "cell_intel");
+    assert_eq!(CellIntel.priority(), 64);
+}
+
+#[test]
+fn module_description() {
+    assert_eq!(
+        CellIntel.description(),
+        "Cell tower survey and geolocation via Termux + OpenCelliD"
+    );
+}
+
+#[test]
+fn module_max_timeout() {
+    assert_eq!(CellIntel.max_timeout_ms(), 15_000);
+}
+
+// ---- Survey (DeviceId) tests (from cell_survey) ----
+
+#[test]
+fn parses_mcc_as_string_or_number() {
+    let json = br#"[
+        {"type":"lte","registered":true,"cid":12345,"tac":54321,
+         "mcc":"505","mnc":"01","dbm":-75,"asu":30,"level":4,"pci":100},
+        {"type":"gsm","registered":true,"cid":99,"lac":42,
+         "mcc":505,"mnc":1,"dbm":-90,"asu":10,"level":2}
+    ]"#;
+    let r = parse_cells_survey(json, "test");
+    assert_eq!(r.entities.len(), 2);
+    assert_eq!(r.entities[0].value, "505-01-54321-12345");
+    assert_eq!(r.entities[1].value, "505-1-42-99");
+}
+
+#[test]
+fn skips_cells_without_mcc_or_cid() {
+    let json = br#"[{"type":"lte","registered":true}]"#;
+    let r = parse_cells_survey(json, "test");
+    assert_eq!(r.entities.len(), 0);
+}
+
+#[test]
+fn malformed_json_no_ops() {
+    let r = parse_cells_survey(b"{", "test");
+    assert_eq!(r.entities.len(), 0);
+}
+
+#[test]
+fn entity_tags_include_cell_tower_and_radio_type() {
+    let json = br#"[
+        {"type":"lte","registered":true,"cid":5678,"tac":1234,
+         "mcc":"310","mnc":"260","dbm":-85,"asu":25,"level":3,"pci":42}
+    ]"#;
+    let r = parse_cells_survey(json, "scan-x");
+    assert_eq!(r.entities.len(), 1);
+    let e = &r.entities[0];
+    assert_eq!(e.kind, EntityKind::DeviceId);
+    assert_eq!(e.value, "310-260-1234-5678");
+    assert!((e.confidence - 0.80).abs() < 1e-6);
+    assert!(e.has_tag("cell-tower"));
+    assert!(e.has_tag("radio:lte"));
+    assert_eq!(e.scan_id, "scan-x");
+}
+
+#[test]
+fn evidence_attributes_populated() {
+    let json = br#"[
+        {"type":"gsm","registered":false,"cid":100,"lac":200,
+         "mcc":"505","mnc":"01","dbm":-95,"asu":8,"level":1,"pci":0}
+    ]"#;
+    let r = parse_cells_survey(json, "test");
+    let ev = &r.entities[0].evidence[0];
+    assert_eq!(ev.source, "cell_intel");
+    assert_eq!(ev.attributes.get("type").unwrap(), "gsm");
+    assert_eq!(ev.attributes.get("mcc").unwrap(), "505");
+    assert_eq!(ev.attributes.get("mnc").unwrap(), "01");
+    assert_eq!(ev.attributes.get("lac_tac").unwrap(), "200");
+    assert_eq!(ev.attributes.get("cid").unwrap(), "100");
+    assert_eq!(ev.attributes.get("dbm").unwrap(), "-95");
+    assert_eq!(ev.attributes.get("asu").unwrap(), "8");
+    assert_eq!(ev.attributes.get("level").unwrap(), "1");
+    assert_eq!(ev.attributes.get("registered").unwrap(), "false");
+}
+
+#[test]
+fn lac_falls_back_to_tac_for_lte() {
+    let json = br#"[{"type":"lte","cid":999,"tac":555,"mcc":"310","mnc":"410"}]"#;
+    let r = parse_cells_survey(json, "test");
+    assert_eq!(r.entities[0].value, "310-410-555-999");
+}
+
+#[test]
+fn lac_preferred_over_tac_when_both_present() {
+    let json = br#"[{"type":"gsm","cid":1,"lac":10,"tac":20,"mcc":"505","mnc":"01"}]"#;
+    let r = parse_cells_survey(json, "test");
+    assert_eq!(r.entities[0].value, "505-01-10-1");
+}
+
+#[test]
+fn skips_cell_with_zero_cid() {
+    let json = br#"[{"type":"lte","cid":0,"tac":123,"mcc":"310","mnc":"260"}]"#;
+    let r = parse_cells_survey(json, "test");
+    assert_eq!(r.entities.len(), 0);
+}
+
+#[test]
+fn empty_json_array() {
+    let r = parse_cells_survey(b"[]", "test");
+    assert_eq!(r.entities.len(), 0);
+}
+
+#[test]
+fn missing_type_defaults_to_unknown() {
+    let json = br#"[{"cid":42,"lac":7,"mcc":"001","mnc":"01"}]"#;
+    let r = parse_cells_survey(json, "test");
+    assert_eq!(r.entities.len(), 1);
+    assert!(r.entities[0].has_tag("radio:unknown"));
+    assert!(r.entities[0].evidence[0].summary.contains("unknown"));
+}
+
+// ---- json_to_str tests (from both modules) ----
+
+#[test]
+fn json_to_str_handles_all_variants() {
+    use std::borrow::Cow;
+
+    // String value
+    let s = Some(serde_json::Value::String("505".into()));
+    assert_eq!(json_to_str(&s), Cow::Borrowed("505"));
+
+    // Number value
+    let n = Some(serde_json::json!(310));
+    assert_eq!(json_to_str(&n).as_ref(), "310");
+
+    // Null value
+    let null = Some(serde_json::Value::Null);
+    assert_eq!(json_to_str(&null), Cow::Borrowed(""));
+
+    // None
+    assert_eq!(json_to_str(&None), Cow::Borrowed(""));
+}
+
+// ---- Geolocation helper tests (from cell_locate) ----
+
+#[test]
+fn accuracy_to_confidence_tiers() {
+    assert!((accuracy_to_confidence(50) - 0.85).abs() < 1e-6);
+    assert!((accuracy_to_confidence(300) - 0.75).abs() < 1e-6);
+    assert!((accuracy_to_confidence(1000) - 0.65).abs() < 1e-6);
+    assert!((accuracy_to_confidence(5000) - 0.50).abs() < 1e-6);
+    assert!((accuracy_to_confidence(50000) - 0.35).abs() < 1e-6);
+}
+
+#[test]
+fn mcc_us_maps_to_us_centroid() {
+    let (lat, lon, cc) = mcc_to_centroid("310").unwrap();
+    assert!((lat - 39.8283).abs() < 0.01);
+    assert!((lon - (-98.5795)).abs() < 0.01);
+    assert_eq!(cc, "US");
+}
+
+#[test]
+fn mcc_au_maps_to_au_centroid() {
+    let (lat, lon, cc) = mcc_to_centroid("505").unwrap();
+    assert!((lat - (-25.2744)).abs() < 0.01);
+    assert_eq!(cc, "AU");
+    assert!(lon > 100.0);
+}
+
+#[test]
+fn unknown_mcc_returns_none() {
+    assert!(mcc_to_centroid("999").is_none());
+}

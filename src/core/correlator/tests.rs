@@ -3405,7 +3405,7 @@ mod geo_synergy_sim {
 mod all_eleven_classes {
     use super::super::rules::location::geo_source_class;
     use super::super::{Correlation, Severity, correlate_entities};
-    use crate::api::scan_handlers::extract_au_location_fix;
+    use crate::api::scan_export::extract_au_location_fix;
     use crate::core::entity::{Entity, EntityKind, Evidence};
 
     /// One AU Coordinates entity per source class, all near Sydney NSW.

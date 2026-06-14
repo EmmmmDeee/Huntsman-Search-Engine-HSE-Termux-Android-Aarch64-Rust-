@@ -1,0 +1,199 @@
+use serde_json::Value;
+
+use crate::core::{
+    entity::EntityKind,
+    module::{ModuleCategory, ModuleCost},
+    scan::{Target, TargetKind},
+};
+
+use super::{
+    HANDLE_PROPS, MAX_HANDLES, PERSON_PRIMARY, Wikidata,
+    builder::{candidate_entity, primary_entities},
+    classify::{classify, name_matches_query},
+    types::SearchHit,
+    urls::{entities_url, search_url},
+};
+use crate::core::module::Module;
+
+fn torvalds_entity() -> Value {
+    serde_json::json!({
+        "labels": {"en": {"value": "Linus Torvalds"}},
+        "descriptions": {"en": {"value": "Finnish software engineer (born 1969)"}},
+        "claims": {
+            "P31":   [{"mainsnak": {"datavalue": {"value": {"entity-type": "item", "id": "Q5"}}}}],
+            "P856":  [{"mainsnak": {"datavalue": {"value": "https://torvalds-family.blogspot.com"}}}],
+            "P2037": [{"mainsnak": {"datavalue": {"value": "torvalds"}}}],
+            "P6634": [{"mainsnak": {"datavalue": {"value": "linustorvalds"}}}]
+        }
+    })
+}
+
+#[test]
+fn accepts_fullname_and_org_only() {
+    let m = Wikidata;
+    assert!(m.accepts(&Target::new(TargetKind::FullName, "Linus Torvalds")));
+    assert!(m.accepts(&Target::new(TargetKind::Organisation, "Mozilla Foundation")));
+    assert!(!m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
+    assert!(!m.accepts(&Target::new(TargetKind::Domain, "example.com")));
+}
+
+#[test]
+fn module_metadata() {
+    let m = Wikidata;
+    assert_eq!(m.name(), "wikidata");
+    assert!(!m.description().is_empty());
+    assert_eq!(m.cost(), ModuleCost::Free);
+    assert_eq!(m.category(), ModuleCategory::People);
+    assert!(m.max_timeout_ms() > 3_000);
+}
+
+#[test]
+fn classify_uses_p31_human() {
+    let person = torvalds_entity();
+    assert_eq!(classify(&person, TargetKind::FullName), EntityKind::Person);
+    // Non-human P31 → Organisation even for a FullName seed.
+    let org = serde_json::json!({"claims": {"P31": [{"mainsnak": {"datavalue": {"value": {"id": "Q43229"}}}}]}});
+    assert_eq!(
+        classify(&org, TargetKind::FullName),
+        EntityKind::Organisation
+    );
+    // No P31 → fall back to the seed kind.
+    let bare = serde_json::json!({"claims": {}});
+    assert_eq!(
+        classify(&bare, TargetKind::Organisation),
+        EntityKind::Organisation
+    );
+    assert_eq!(classify(&bare, TargetKind::FullName), EntityKind::Person);
+}
+
+#[test]
+fn primary_fans_out_person_website_and_handles() {
+    let body = torvalds_entity();
+    let ents = primary_entities("Q34253", "Linus Torvalds", &body, TargetKind::FullName, "s");
+
+    let person = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("a Person head entity");
+    assert_eq!(person.value, "Linus Torvalds");
+    assert!(person.tags.iter().any(|t| t == "Q34253"));
+    assert!((person.confidence - PERSON_PRIMARY).abs() < f64::EPSILON);
+
+    // Official website → Domain (host extracted).
+    let dom = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain)
+        .expect("a Domain from P856");
+    assert_eq!(dom.value, "torvalds-family.blogspot.com");
+
+    // Social handles → Usernames, tagged by platform.
+    let unames: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(unames.contains(&"torvalds")); // github
+    assert!(unames.contains(&"linustorvalds")); // linkedin
+    let gh = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Username && e.value == "torvalds")
+        .unwrap();
+    assert!(gh.tags.iter().any(|t| t == "github"));
+}
+
+#[test]
+fn primary_emits_commons_image_url_for_p18() {
+    // P18 image claim → a normalized Url tagged image/avatar pointing at the
+    // official Commons Special:FilePath endpoint, ending in an image
+    // extension so exif_geo will mine its metadata during expansion.
+    let body = serde_json::json!({
+        "labels": {"en": {"value": "Jane Doe"}},
+        "claims": {
+            "P18": [{"mainsnak": {"datavalue": {"value": "Jane Doe portrait.jpg"}}}]
+        }
+    });
+    let ents = primary_entities("Q1", "Jane Doe", &body, TargetKind::FullName, "s");
+    let img = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Url)
+        .expect("a Url image entity from P18");
+    assert_eq!(
+        img.value,
+        "https://commons.wikimedia.org/wiki/Special:FilePath/Jane_Doe_portrait.jpg"
+    );
+    assert!(img.tags.iter().any(|t| t == "image"));
+    assert!(img.tags.iter().any(|t| t == "avatar"));
+    assert!(
+        img.value.to_lowercase().ends_with(".jpg"),
+        "must end in an image extension so exif_geo accepts it"
+    );
+    // No P18 → no image url.
+    let none = serde_json::json!({"labels": {"en": {"value": "No Pic"}}, "claims": {}});
+    let ents2 = primary_entities("Q2", "No Pic", &none, TargetKind::FullName, "s");
+    assert!(ents2.iter().all(|e| e.kind != EntityKind::Url));
+}
+
+#[test]
+fn name_match_gate_is_whole_word() {
+    assert!(name_matches_query("Linus Torvalds", "linus torvalds"));
+    assert!(name_matches_query(
+        "Australian Red Cross",
+        "red cross australian"
+    ));
+    assert!(!name_matches_query("Mildred Smith", "red")); // not substring of Mildred
+    assert!(!name_matches_query("Linus Torvalds", "linus pauling")); // missing token
+}
+
+#[test]
+fn candidate_is_sub_floor_with_description_evidence() {
+    let hit = SearchHit {
+        id: "Q123".into(),
+        label: Some("John Smith".into()),
+        description: Some("English cricketer".into()),
+    };
+    let e = candidate_entity(&hit, TargetKind::FullName, "s");
+    assert_eq!(e.kind, EntityKind::Person);
+    assert!(e.confidence < 0.50);
+    assert!(e.tags.iter().any(|t| t == "name-candidate"));
+    assert!(e.tags.iter().any(|t| t == "Q123"));
+    assert!(
+        e.evidence[0]
+            .attributes
+            .iter()
+            .any(|(k, v)| k == "description" && v == "English cricketer")
+    );
+}
+
+#[test]
+fn search_url_and_entities_url_shapes() {
+    let s = search_url("Linus Torvalds");
+    assert!(s.contains("action=wbsearchentities"));
+    assert!(s.contains("search=Linus+Torvalds"));
+    assert!(s.contains("type=item"));
+    let e = entities_url("Q34253");
+    assert!(e.contains("action=wbgetentities"));
+    assert!(e.contains("ids=Q34253"));
+    assert!(e.contains("props=claims%7Clabels%7Cdescriptions"));
+}
+
+#[test]
+fn handle_cap_is_respected() {
+    // Build an entity with more handles than MAX_HANDLES across properties.
+    let mut claims = serde_json::Map::new();
+    for (pid, _) in HANDLE_PROPS {
+        claims.insert(
+            (*pid).to_string(),
+            serde_json::json!([
+                {"mainsnak": {"datavalue": {"value": "h1"}}},
+                {"mainsnak": {"datavalue": {"value": "h2"}}}
+            ]),
+        );
+    }
+    let body = serde_json::json!({"claims": Value::Object(claims)});
+    let ents = primary_entities("Q1", "X", &body, TargetKind::Organisation, "s");
+    let n = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username)
+        .count();
+    assert!(n <= MAX_HANDLES, "emitted {n} usernames, cap {MAX_HANDLES}");
+}

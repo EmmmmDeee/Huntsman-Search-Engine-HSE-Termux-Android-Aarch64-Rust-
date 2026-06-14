@@ -1,0 +1,77 @@
+use super::*;
+
+    #[test]
+    fn accepts_only_email_and_domain() {
+        let m = HudsonRock;
+        assert!(m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
+        assert!(m.accepts(&Target::new(TargetKind::Domain, "b.com")));
+        // Usernames are NEVER routed here — search-by-login 400s ("Email is
+        // required") on a bare handle (seen live on the `javery88` scan), and
+        // the engine surfaces real emails as Email targets. Reject both a bare
+        // handle AND an email-shaped one so `accepts()` stays value-independent
+        // (the property the two registry-dispatch invariants rely on).
+        assert!(!m.accepts(&Target::new(TargetKind::Username, "javery88")));
+        assert!(!m.accepts(&Target::new(TargetKind::Username, "javery88@gmail.com")));
+        assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
+    }
+
+    #[tokio::test]
+    async fn username_target_yields_nothing_without_a_request() {
+        // A Username never reaches process() via the engine (accepts() rejects
+        // it); a direct call still falls through to empty — no doomed 400.
+        let (bus, _rx) = tokio::sync::broadcast::channel(8);
+        let ctx = ModuleContext {
+            scan_id: "t".into(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+        };
+        let r = HudsonRock
+            .process(&Target::new(TargetKind::Username, "javery88"), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            r.is_empty(),
+            "username must not call the email-only endpoint"
+        );
+    }
+
+    #[test]
+    fn fresh_compromise_gets_higher_confidence() {
+        let recent = Stealer {
+            computer_name: None,
+            operating_system: None,
+            date_compromised: Some("2026-05-01T00:00:00Z".into()),
+            date_uploaded: None,
+            stealer_family: Some("Lumma".into()),
+            ip: None,
+            malware_path: None,
+            credentials: vec![],
+        };
+        assert!((compute_confidence(&[recent]) - FRESH_CONFIDENCE).abs() < 1e-9);
+    }
+
+    #[test]
+    fn old_compromise_gets_base_confidence() {
+        let old = Stealer {
+            computer_name: None,
+            operating_system: None,
+            date_compromised: Some("2020-01-01T00:00:00Z".into()),
+            date_uploaded: None,
+            stealer_family: None,
+            ip: None,
+            malware_path: None,
+            credentials: vec![],
+        };
+        assert!((compute_confidence(&[old]) - BASE_CONFIDENCE).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_iso_epoch_works() {
+        assert!(parse_iso_epoch("2025-06-15T12:00:00Z").is_some());
+        assert!(parse_iso_epoch("2025-06-15").is_some());
+        assert!(parse_iso_epoch("garbage").is_none());
+        assert!(parse_iso_epoch("").is_none());
+    }

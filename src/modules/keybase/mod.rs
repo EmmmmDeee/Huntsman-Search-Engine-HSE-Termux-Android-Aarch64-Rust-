@@ -1,0 +1,377 @@
+//! Keybase identity graph lookup. Free, no API key required.
+//!
+//! Endpoints:
+//!   `GET https://keybase.io/_/api/1.0/user/lookup.json?username={user}`
+//!   `GET https://keybase.io/_/api/1.0/user/lookup.json?github={user}`
+//!
+//! Pivots from a Username target to discover linked accounts across
+//! platforms (Twitter, GitHub, Reddit, HN, personal sites, PGP keys).
+
+#[cfg(test)]
+mod tests;
+
+use async_trait::async_trait;
+use serde::Deserialize;
+
+use crate::core::{
+    entity::{Entity, EntityKind, Evidence},
+    error::Result,
+    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
+    scan::{Target, TargetKind},
+};
+use crate::util::http::urlencode;
+
+pub(super) const SRC: &str = "keybase";
+
+pub struct Keybase;
+
+#[derive(Deserialize)]
+pub(super) struct KbResp {
+    #[serde(default)]
+    pub(super) status: Option<KbStatus>,
+    #[serde(default)]
+    pub(super) them: Option<Vec<KbUser>>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct KbStatus {
+    #[serde(default)]
+    pub(super) code: Option<i32>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct KbUser {
+    #[serde(default)]
+    pub(super) id: Option<String>,
+    #[serde(default)]
+    pub(super) basics: Option<KbBasics>,
+    #[serde(default)]
+    pub(super) profile: Option<KbProfile>,
+    #[serde(default)]
+    pub(super) proofs_summary: Option<KbProofs>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct KbBasics {
+    #[serde(default)]
+    pub(super) username: Option<String>,
+    #[serde(default)]
+    pub(super) ctime: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct KbProfile {
+    #[serde(default)]
+    pub(super) full_name: Option<String>,
+    #[serde(default)]
+    pub(super) location: Option<String>,
+    #[serde(default)]
+    pub(super) bio: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct KbProofs {
+    #[serde(default)]
+    pub(super) all: Vec<KbProof>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct KbProof {
+    #[serde(default)]
+    pub(super) proof_type: Option<String>,
+    #[serde(default)]
+    pub(super) nametag: Option<String>,
+    #[serde(default)]
+    pub(super) service_url: Option<String>,
+    #[serde(default)]
+    pub(super) state: Option<i32>,
+}
+
+#[async_trait]
+impl Module for Keybase {
+    fn name(&self) -> &'static str {
+        "keybase"
+    }
+    fn description(&self) -> &'static str {
+        "Keybase identity graph — linked accounts, PGP keys, and cryptographic proofs"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Username)
+    }
+    fn max_timeout_ms(&self) -> u64 {
+        4_000
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Social
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Social default (T1593.001 Social Media + T1589.003 Employee Names) but
+        // Keybase profiles surface a user-declared location string and an inline
+        // geocoded Coordinates entity — both mapping to T1591.001 Physical
+        // Locations, absent from the Social default.
+        &["T1591.001", "T1593.001", "T1589.003"]
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Person,
+            EntityKind::Username,
+            EntityKind::Email,
+            EntityKind::Domain,
+            EntityKind::Address,
+            EntityKind::Coordinates,
+        ];
+        KINDS
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let username = target.value.trim();
+        if username.is_empty() || username.len() > 64 {
+            return Ok(ModuleResult::new());
+        }
+
+        let url = format!(
+            "https://keybase.io/_/api/1.0/user/lookup.json?username={}",
+            urlencode(username)
+        );
+
+        let resp = ctx
+            .http
+            .get(&url)
+            .header("Accept", "application/json")
+            .send()
+            .await;
+
+        let resp = match resp {
+            Ok(r) => r,
+            Err(_) => return Ok(ModuleResult::new()),
+        };
+
+        if !resp.status().is_success() {
+            return Ok(ModuleResult::new());
+        }
+
+        let body: KbResp = match crate::util::http::json_scanned(resp, SRC).await {
+            Ok(b) => b,
+            Err(_) => return Ok(ModuleResult::new()),
+        };
+
+        if body.status.as_ref().and_then(|s| s.code) != Some(0) {
+            return Ok(ModuleResult::new());
+        }
+
+        let users = body.them.unwrap_or_default();
+        let Some(user) = users.into_iter().next() else {
+            return Ok(ModuleResult::new());
+        };
+
+        let mut result = ModuleResult::new();
+
+        let kb_username = user
+            .basics
+            .as_ref()
+            .and_then(|b| b.username.as_deref())
+            .unwrap_or(username);
+
+        let mut entity = Entity::new(EntityKind::Username, kb_username, 0.90, &ctx.scan_id);
+        entity.tag("keybase");
+
+        let proof_count = user
+            .proofs_summary
+            .as_ref()
+            .map(|p| p.all.len())
+            .unwrap_or(0);
+        let profile = user.profile.as_ref();
+        let ev = [
+            (
+                "created_at_unix",
+                user.basics
+                    .as_ref()
+                    .and_then(|b| b.ctime)
+                    .map(|c| c.to_string()),
+            ),
+            ("keybase_id", user.id.clone()),
+            ("full_name", profile.and_then(|p| p.full_name.clone())),
+            ("location", profile.and_then(|p| p.location.clone())),
+            ("bio", profile.and_then(|p| p.bio.clone())),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(
+            Evidence::new(SRC, format!("Keybase profile for {kb_username}"))
+                .with_attr("profile_url", format!("https://keybase.io/{kb_username}"))
+                .with_attr("proof_count", proof_count.to_string()),
+            |ev, (key, v)| ev.with_attr(key, v),
+        );
+
+        entity.add_evidence(ev);
+        result.push(entity);
+
+        if let Some(profile) = &user.profile {
+            if let Some(name) = profile.full_name.as_deref()
+                && name.len() >= 3
+                && name.contains(' ')
+            {
+                let mut pe = Entity::new(EntityKind::Person, name, 0.75, &ctx.scan_id);
+                pe.tag("keybase");
+                pe.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Name from Keybase profile {kb_username}"),
+                ));
+                result.push(pe);
+            }
+
+            if let Some(loc) = profile.location.as_deref()
+                && loc.len() >= 3
+            {
+                let mut ae = Entity::new(EntityKind::Address, loc, 0.52, &ctx.scan_id);
+                ae.tag("keybase");
+                ae.tag("geoint");
+                ae.tag("self-reported");
+                if let Some(sc) = crate::util::address_au::state_code(loc) {
+                    ae.tag(format!("au-state:{sc}"));
+                    ae.tag("country:AU");
+                }
+                ae.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Location from Keybase profile {kb_username}"),
+                ));
+                result.push(ae);
+
+                if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
+                    let coord_val = format!("{lat:.4},{lon:.4}");
+                    let mut c =
+                        Entity::new(EntityKind::Coordinates, &coord_val, 0.50, &ctx.scan_id);
+                    c.tag("addr-derived");
+                    c.tag("geoint");
+                    c.tag("keybase");
+                    if let Some(sc) = crate::util::address_au::state_code(loc) {
+                        c.tag(format!("au-state:{sc}"));
+                        c.tag("country:AU");
+                    }
+                    c.add_evidence(Evidence::new(
+                        SRC,
+                        format!("Inline geocode of Keybase location '{loc}' → {coord_val}"),
+                    ));
+                    result.push(c);
+                }
+            }
+        }
+
+        if let Some(proofs) = &user.proofs_summary {
+            extract_proofs(&proofs.all, kb_username, &ctx.scan_id, &mut result);
+        }
+
+        Ok(result)
+    }
+}
+
+/// Fold the verified Keybase proofs into entities. Pure (no I/O) so the
+/// proof→entity mapping is unit-tested. Only `state == 1` (active) proofs are
+/// emitted; each cross-platform handle is a cryptographically-verified pivot,
+/// so we ALSO surface its `service_url` as a first-class (confirmed) profile
+/// link rather than discarding it.
+pub(super) fn extract_proofs(
+    proofs: &[KbProof],
+    kb_username: &str,
+    scan_id: &str,
+    result: &mut ModuleResult,
+) {
+    // Emit the verified profile URL a proof points at (when present + http).
+    let push_service_url = |result: &mut ModuleResult, ptype: &str, url: Option<&str>| {
+        if let Some(u) = url.filter(|u| u.starts_with("http")) {
+            let mut ue = Entity::new(EntityKind::Url, u, 0.85, scan_id);
+            ue.tag("keybase");
+            ue.tag("social-profile");
+            ue.tag("verified");
+            ue.add_evidence(Evidence::new(
+                SRC,
+                format!("Keybase-verified {ptype} profile of {kb_username}"),
+            ));
+            result.push(ue);
+        }
+    };
+
+    for proof in proofs {
+        if proof.state != Some(1) {
+            continue;
+        }
+        let Some(ptype) = proof.proof_type.as_deref() else {
+            continue;
+        };
+        let Some(nametag) = proof
+            .nametag
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        else {
+            continue;
+        };
+        let service_url = proof.service_url.as_deref();
+
+        match ptype {
+            "twitter" | "github" | "reddit" | "hackernews" | "gitlab" | "mastodon" | "facebook"
+            | "twitch" => {
+                let mut ue = Entity::new(EntityKind::Username, nametag, 0.80, scan_id);
+                ue.tag("keybase");
+                ue.tag("verified");
+                ue.tag(format!("platform:{ptype}"));
+                ue.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!(
+                            "Cryptographic proof: {ptype}/@{nametag} linked to Keybase/{kb_username}"
+                        ),
+                    )
+                    .with_attr("proof_type", ptype)
+                    .with_attr("keybase_user", kb_username),
+                );
+                result.push(ue);
+                push_service_url(result, ptype, service_url);
+            }
+            "dns" | "generic_web_site" | "https" | "http" | "web" => {
+                // nametag may be a bare host or a URL — reduce to the host.
+                let domain = nametag
+                    .trim_start_matches("https://")
+                    .trim_start_matches("http://")
+                    .split('/')
+                    .next()
+                    .unwrap_or(nametag);
+                let mut de = Entity::new(EntityKind::Domain, domain, 0.75, scan_id);
+                de.tag("keybase");
+                de.tag("verified");
+                de.tag("personal-site");
+                de.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("Domain proof: {domain} linked to Keybase/{kb_username}"),
+                    )
+                    .with_attr("keybase_user", kb_username),
+                );
+                result.push(de);
+            }
+            _ if nametag.contains('@') && nametag.contains('.') => {
+                let mut ee = Entity::new(EntityKind::Email, nametag, 0.70, scan_id);
+                ee.tag("keybase");
+                ee.tag(format!("proof:{ptype}"));
+                ee.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!(
+                            "Verified {ptype} proof: {nametag} linked to Keybase/{kb_username}"
+                        ),
+                    )
+                    .with_attr("proof_type", ptype)
+                    .with_attr("keybase_user", kb_username),
+                );
+                result.push(ee);
+            }
+            _ => push_service_url(result, ptype, service_url),
+        }
+    }
+}

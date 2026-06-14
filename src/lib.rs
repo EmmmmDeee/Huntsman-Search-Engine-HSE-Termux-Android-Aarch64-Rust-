@@ -136,7 +136,7 @@ mod tests {
         for rel in [
             "src/lib.rs",
             "src/main.rs",
-            "src/core/entity.rs",
+            "src/core/entity/mod.rs",
             "src/modules/mod.rs",
         ] {
             let recorded = SOURCE_FILES
