@@ -58,11 +58,15 @@ fn is_residence_address(normalised: &str) -> bool {
 /// (breach/dossier records carry the subject's postal address under an
 /// `address` attribute). Returns the *normalised* keys, deduplicated.
 fn entity_residences(e: &Entity) -> Vec<String> {
+    // Order-preserving dedup via a `BTreeSet` membership side-index, so the
+    // dedup check is O(log n) instead of an O(n) linear scan of the growing
+    // `out` vec for every evidence record.
     let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for ev in &e.evidence {
         if let Some(raw) = ev.attributes.get("address") {
             let key = normalise_address(raw);
-            if is_residence_address(&key) && !out.contains(&key) {
+            if is_residence_address(&key) && seen.insert(key.clone()) {
                 out.push(key);
             }
         }
@@ -91,11 +95,14 @@ fn normalise_phone(raw: &str) -> Option<String> {
 /// (breach/dossier records carry it under a `phone` attribute). Normalised,
 /// deduplicated keys.
 fn entity_phones(e: &Entity) -> Vec<String> {
+    // Order-preserving dedup via a `BTreeSet` membership side-index (O(log n)
+    // per record) rather than rescanning the growing `out` vec linearly.
     let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for ev in &e.evidence {
         if let Some(raw) = ev.attributes.get("phone")
             && let Some(key) = normalise_phone(raw)
-            && !out.contains(&key)
+            && seen.insert(key.clone())
         {
             out.push(key);
         }
@@ -124,7 +131,13 @@ fn surname(name_value: &str) -> Option<String> {
 #[derive(Default)]
 struct Group {
     persons: std::collections::BTreeMap<String, String>,
-    handles: Vec<String>,
+    /// Distinct reachable handle uids (emails/phones) for this key, held in a
+    /// `BTreeSet` so the dedup check is O(log n) instead of the old O(n) linear
+    /// `Vec::contains` scan of a growing vec for every handle added (an O(n²) hot
+    /// path when many handles cluster on one key). The set is also already sorted,
+    /// which `firing_uids` consumes directly — the firing's bounded, sorted handle
+    /// order is identical to the previous clone-and-sort.
+    handle_set: std::collections::BTreeSet<String>,
     anchor_uid: Option<String>,
 }
 
@@ -136,8 +149,8 @@ impl Group {
                     .entry(e.value.clone())
                     .or_insert_with(|| e.uid.clone());
             }
-            EntityKind::Email | EntityKind::Phone if !self.handles.contains(&e.uid) => {
-                self.handles.push(e.uid.clone());
+            EntityKind::Email | EntityKind::Phone => {
+                self.handle_set.insert(e.uid.clone());
             }
             _ => {}
         }
@@ -153,9 +166,10 @@ impl Group {
         let mut person_uids: Vec<String> = self.persons.values().cloned().collect();
         person_uids.sort_unstable();
         uids.extend(person_uids);
-        let mut handles = self.handles.clone();
-        handles.sort_unstable();
-        uids.extend(handles.into_iter().take(8));
+        // `handle_set` already holds the handle uids in sorted order, so reuse it
+        // directly rather than cloning `handles` and re-sorting — the emitted
+        // (sorted, bounded-to-8) order is identical to the old clone+sort path.
+        uids.extend(self.handle_set.iter().take(8).cloned());
         uids
     }
 }
@@ -201,6 +215,17 @@ pub(in crate::core::correlator) fn rule_au_049_shared_address_association(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    // Cheap precondition: every firing needs ≥2 distinct persons in one group,
+    // so fewer than two Person entities anywhere means no household can form —
+    // bail before building the residence-group map.
+    if entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .count()
+        < 2
+    {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     for (addr, g) in residence_groups(entities) {
         if g.persons.len() < 2 {
@@ -244,6 +269,16 @@ pub(in crate::core::correlator) fn rule_au_050_shared_phone_association(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    // Cheap precondition: every firing needs ≥2 distinct persons on one line, so
+    // fewer than two Person entities anywhere means no association can form.
+    if entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .count()
+        < 2
+    {
+        return Vec::new();
+    }
     let mut groups: std::collections::BTreeMap<String, Group> = std::collections::BTreeMap::new();
     // Pre-seed anchor nodes from first-class Phone entities.
     for ph in entities_of_kind(entities, EntityKind::Phone) {
@@ -301,6 +336,17 @@ pub(in crate::core::correlator) fn rule_au_051_shared_surname_kin(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    // Cheap precondition: kin needs ≥2 distinct persons sharing a residence, so
+    // fewer than two Person entities anywhere can never fire — bail before
+    // building the residence-group map.
+    if entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .count()
+        < 2
+    {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     for (addr, g) in residence_groups(entities) {
         if g.persons.len() < 2 {

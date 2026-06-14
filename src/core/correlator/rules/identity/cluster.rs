@@ -152,9 +152,16 @@ pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolutio
     };
 
     // The alias: a username controlled across ≥2 distinct platform families.
-    let aliases: Vec<&Entity> = entities
+    // Compute each alias's family set ONCE here and carry it forward, rather
+    // than recomputing `platform_families` (a full corroborating-sources scan)
+    // a second time in the emit loop below.
+    let aliases: Vec<(&Entity, BTreeSet<&'static str>)> = entities
         .iter()
-        .filter(|e| e.kind == EntityKind::Username && platform_families(e).len() >= 2)
+        .filter(|e| e.kind == EntityKind::Username)
+        .filter_map(|e| {
+            let fams = platform_families(e);
+            (fams.len() >= 2).then_some((e, fams))
+        })
         .collect();
     if aliases.is_empty() {
         return Vec::new();
@@ -177,8 +184,7 @@ pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolutio
     let resolved_uids: Vec<String> = resolved.iter().map(|e| e.uid.clone()).collect();
     aliases
         .iter()
-        .map(|alias| {
-            let fams = platform_families(alias);
+        .map(|(alias, fams)| {
             let fam_list: Vec<&str> = fams.iter().copied().collect();
             let mut uids = vec![alias.uid.clone()];
             uids.extend(resolved_uids.iter().cloned());
@@ -222,22 +228,31 @@ pub(in crate::core::correlator) fn rule_au_003_high_corroboration(
     };
     entities
         .iter()
-        .filter(|e| e.source_count() >= min_sources(&e.kind))
-        .map(|e| Correlation {
-            rule_id: "AU-003".into(),
-            rule_name: "High cross-source corroboration".into(),
-            severity: Severity::Medium,
-            description: format!(
-                "{} entity '{}' corroborated by {} independent source(s) (C_eff={:.3})",
-                e.kind,
-                e.value,
-                e.source_count(),
-                e.c_effective()
-            ),
-            entity_uids: vec![e.uid.clone()],
-            scan_id: scan_id.into(),
-            ts,
-            rank: 0.0,
+        .filter_map(|e| {
+            // Compute the distinct-source count ONCE: `source_count()` rebuilds a
+            // `corroborating_sources` HashSet on every call, and the previous form
+            // invoked it twice (filter + description) for every matching entity.
+            // Reuse the single value for both the gate and the message.
+            let sources = e.source_count();
+            if sources < min_sources(&e.kind) {
+                return None;
+            }
+            Some(Correlation {
+                rule_id: "AU-003".into(),
+                rule_name: "High cross-source corroboration".into(),
+                severity: Severity::Medium,
+                description: format!(
+                    "{} entity '{}' corroborated by {} independent source(s) (C_eff={:.3})",
+                    e.kind,
+                    e.value,
+                    sources,
+                    e.c_effective()
+                ),
+                entity_uids: vec![e.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            })
         })
         .collect()
 }

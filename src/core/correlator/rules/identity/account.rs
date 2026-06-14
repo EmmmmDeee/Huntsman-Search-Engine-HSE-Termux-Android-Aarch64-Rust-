@@ -96,6 +96,25 @@ pub(in crate::core::correlator) fn rule_au_048_shared_public_key(
     ts: u64,
 ) -> Vec<Correlation> {
     use std::collections::BTreeSet;
+    // Cheap precondition: with no key-tagged credential present, no link can
+    // fire — bail before building the identity index.
+    let has_shared_key = entities.iter().any(|e| {
+        e.kind == EntityKind::Credential && (e.has_tag("ssh-key") || e.has_tag("pgp-key"))
+    });
+    if !has_shared_key {
+        return Vec::new();
+    }
+    // Pre-lowercase the Username/Email index ONCE. The previous form
+    // re-lowercased every account entity's value for every shared key (an
+    // O(keys×accounts) allocation storm); building it a single time turns the
+    // per-key linking into plain set membership. Entity iteration order is
+    // preserved, so the emitted uid order is identical to before.
+    let id_index: Vec<(String, &str)> = entities
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::Username | EntityKind::Email))
+        .map(|e| (e.value.trim().to_lowercase(), e.uid.as_str()))
+        .collect();
+
     let mut out = Vec::new();
     for key in entities.iter().filter(|e| {
         e.kind == EntityKind::Credential && (e.has_tag("ssh-key") || e.has_tag("pgp-key"))
@@ -133,12 +152,9 @@ pub(in crate::core::correlator) fn rule_au_048_shared_public_key(
             continue;
         }
         let mut uids = vec![key.uid.clone()];
-        for e in entities
-            .iter()
-            .filter(|e| matches!(e.kind, EntityKind::Username | EntityKind::Email))
-        {
-            if accounts.contains(&e.value.trim().to_lowercase()) {
-                uids.push(e.uid.clone());
+        for (value_lc, uid) in &id_index {
+            if accounts.contains(value_lc) {
+                uids.push((*uid).to_owned());
             }
         }
         let listed: Vec<&str> = accounts.iter().take(6).map(String::as_str).collect();
