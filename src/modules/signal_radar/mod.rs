@@ -70,7 +70,7 @@ impl Module for SignalRadar {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        &["T1590.005", "T1592", "T1592.001", "T1040"]
+        &["T1590.005", "T1592"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {

@@ -98,6 +98,10 @@ pub const RECONNAISSANCE: &[Technique] = &[
         name: "Gather Victim Host Information",
     },
     Technique {
+        id: "T1592.001",
+        name: "Hardware",
+    },
+    Technique {
         id: "T1592.002",
         name: "Software",
     },
