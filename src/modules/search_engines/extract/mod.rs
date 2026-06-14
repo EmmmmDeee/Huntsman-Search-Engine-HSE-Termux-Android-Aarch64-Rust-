@@ -334,7 +334,8 @@ pub(super) fn extract_username_pivots(results: &[SearchResult], target: &Target)
                 && !is_navigation_path(&lower)
                 && seen.insert(lower.clone())
             {
-                let (score, _) = score_username(&lower, &extract_host(&r.url), &terms, r);
+                // Reuse the host computed above instead of recomputing it.
+                let (score, _) = score_username(&lower, &host, &terms, r);
                 if score >= 3 {
                     pivots.push(format!("\"{username}\""));
                 }
