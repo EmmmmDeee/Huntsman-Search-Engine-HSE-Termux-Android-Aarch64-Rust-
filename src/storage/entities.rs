@@ -203,41 +203,54 @@ impl super::Store {
         min_confidence: Option<f64>,
         value_contains: Option<&str>,
     ) -> Result<Vec<Entity>> {
-        let mut sql = String::from(
+        use std::fmt::Write as _;
+        // The clause text is short and fixed-shape; build it in one pre-sized
+        // buffer with `write!` rather than allocating a throwaway `format!`
+        // String per optional predicate.
+        let mut sql = String::with_capacity(256);
+        sql.push_str(
             "SELECT e.data_json FROM entities e \
              JOIN entity_observations o ON o.entity_uid = e.uid \
              WHERE o.scan_id = ?1",
         );
         let mut next_param = 2u32;
         if kind.is_some() {
-            sql.push_str(&format!(" AND e.kind = ?{next_param}"));
+            let _ = write!(sql, " AND e.kind = ?{next_param}");
             next_param += 1;
         }
         if min_confidence.is_some() {
-            sql.push_str(&format!(" AND e.confidence >= ?{next_param}"));
+            let _ = write!(sql, " AND e.confidence >= ?{next_param}");
             next_param += 1;
         }
         if value_contains.is_some() {
-            sql.push_str(&format!(" AND e.value LIKE ?{next_param} ESCAPE '\\'"));
+            let _ = write!(sql, " AND e.value LIKE ?{next_param} ESCAPE '\\'");
             let _ = next_param;
         }
         sql.push_str(" ORDER BY e.confidence DESC, e.uid ASC LIMIT 500");
+
+        // Only the LIKE pattern needs an owned String (it wraps the escaped
+        // input in `%…%`); `scan_id`/`kind`/`min_confidence` bind by borrow as
+        // native SQL types, so none of the prior `to_string` conversions are
+        // paid.
+        let like_pattern = value_contains.map(|v| format!("%{}%", super::escape_like(v)));
 
         let raw: Vec<String> = {
             let conn = self.conn.lock();
             let mut stmt = conn.prepare_cached(&sql)?;
 
-            let like_pattern = value_contains.map(|v| format!("%{}%", super::escape_like(v)));
+            let mut binds: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(4);
+            binds.push(&scan_id);
+            if let Some(k) = kind.as_ref() {
+                binds.push(k);
+            }
+            if let Some(c) = min_confidence.as_ref() {
+                binds.push(c);
+            }
+            if let Some(p) = like_pattern.as_ref() {
+                binds.push(p);
+            }
 
-            let rows = stmt.query_map(
-                rusqlite::params_from_iter(
-                    std::iter::once(scan_id.to_string())
-                        .chain(kind.map(std::string::ToString::to_string))
-                        .chain(min_confidence.map(|c| c.to_string()))
-                        .chain(like_pattern),
-                ),
-                |r| r.get::<_, String>(0),
-            )?;
+            let rows = stmt.query_map(binds.as_slice(), |r| r.get::<_, String>(0))?;
             rows.filter_map(std::result::Result::ok).collect()
         };
         Ok(raw
@@ -332,12 +345,24 @@ impl super::Store {
     /// append `*` for prefix matching, AND-joined. Returns "" when there are
     /// no usable tokens (caller then uses the LIKE fallback).
     fn fts_prefix_query(input: &str) -> String {
-        input
+        // Fold directly into one pre-sized String: each token becomes `"tok"*`,
+        // space-joined — no per-token `format!`/`replace` String and no
+        // intermediate Vec for `join`. Reserving `len + overhead` covers the
+        // common (no embedded quotes) case without reallocating.
+        let mut out = String::with_capacity(input.len() + 8);
+        for tok in input
             .split(|c: char| !c.is_alphanumeric())
             .filter(|t| !t.is_empty())
-            .map(|t| format!("\"{}\"*", t.replace('"', "")))
-            .collect::<Vec<_>>()
-            .join(" ")
+        {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push('"');
+            // Drop FTS quote chars from the token without an intermediate String.
+            out.extend(tok.chars().filter(|&c| c != '"'));
+            out.push_str("\"*");
+        }
+        out
     }
 }
 
