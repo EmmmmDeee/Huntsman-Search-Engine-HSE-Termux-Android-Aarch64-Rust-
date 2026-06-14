@@ -2441,6 +2441,84 @@ fn au047_links_on_reused_plaintext_password_and_session_token() {
 }
 
 #[test]
+fn au047_links_on_password_entity_and_credits_unique_sources() {
+    // The breach/stealer modules emit a leaked plaintext password as a
+    // first-class `Password` entity (not the `username@host` `Credential`
+    // string). AU-047 must link identities on a reused high-entropy `Password`
+    // in its own right, and CREDIT cross-source spread: the same password seen
+    // across ≥2 independent breach datasets is more individuating than one seen
+    // inside a single dump, so it rises from High to Critical.
+    let pw_entity = |sources: &[&str], emails: &[&str]| {
+        let mut c = Entity::new(EntityKind::Password, "Tr0ub4dor&3xK9!q", 0.6, "scan");
+        c.tag("credential");
+        // One evidence record per (source, email): the importer stamps `source`
+        // (See-Know) or `dbname` (OathNet) provenance onto each.
+        for (i, em) in emails.iter().enumerate() {
+            let src = sources.get(i).copied().unwrap_or("unknown");
+            c.add_evidence(
+                Evidence::new("see-know", "breach record")
+                    .with_attr("email", *em)
+                    .with_attr("source", src),
+            );
+        }
+        c
+    };
+    let a = Entity::new(EntityKind::Email, "burner1@proton.me", 0.6, "scan");
+    let b = Entity::new(EntityKind::Email, "real.name@gmail.com", 0.6, "scan");
+
+    // Reused `Password` across 2 accounts but only ONE distinct source → High.
+    let single_src = pw_entity(&["collection1", "collection1"], &[&a.value, &b.value]);
+    let hits = super::rules::rule_au_047_reused_secret_identity(
+        &[single_src, a.clone(), b.clone()],
+        "scan",
+        0,
+    );
+    assert_eq!(hits.len(), 1, "reused Password entity must link accounts");
+    assert_eq!(
+        hits[0].severity,
+        super::Severity::High,
+        "single-source reuse stays High"
+    );
+
+    // Same reused `Password` spread across TWO distinct sources → Critical, and
+    // the description names the unique-source count.
+    let cross_src = pw_entity(&["collection1", "antipublic"], &[&a.value, &b.value]);
+    let hits = super::rules::rule_au_047_reused_secret_identity(
+        &[cross_src, a.clone(), b.clone()],
+        "scan",
+        0,
+    );
+    assert_eq!(hits.len(), 1);
+    assert_eq!(
+        hits[0].severity,
+        super::Severity::Critical,
+        "cross-source reuse (≥2 independent datasets) is a near-certain controller link"
+    );
+    assert!(
+        hits[0].description.contains("2 sources"),
+        "description must surface the unique-source count, got: {}",
+        hits[0].description
+    );
+
+    // A reused `Password` whose value is a salted hash is labelled a hash and
+    // stays Critical (construction-unique), never demoted to the plaintext tier.
+    let mut hashed = Entity::new(
+        EntityKind::Password,
+        "$2b$12$abcdefghijklmnopqrstuv",
+        0.6,
+        "scan",
+    );
+    hashed.tag("password-hash");
+    for em in [&a.value, &b.value] {
+        hashed.add_evidence(Evidence::new("oathnet", "breach").with_attr("email", em));
+    }
+    let hits = super::rules::rule_au_047_reused_secret_identity(&[hashed, a, b], "scan", 0);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].severity, super::Severity::Critical);
+    assert!(hits[0].description.contains("password hash"));
+}
+
+#[test]
 fn au018_includes_full_member_set_so_finalize_supersedes_live() {
     use super::rules::rule_au_018_email_address_colocation;
     // Regression: a live "Haigen Bamford" scan persisted AU-018 twice
