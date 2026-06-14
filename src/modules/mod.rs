@@ -96,6 +96,7 @@ pub mod securitytrails;
 pub mod see_know;
 pub mod seon;
 pub mod shodan;
+pub mod signal_radar;
 pub mod smtp_vrfy;
 pub mod social_location;
 pub mod social_probe;
@@ -256,6 +257,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(cell_intel::CellIntel),
         Arc::new(wifi_intel::WifiIntel),
         Arc::new(local_net::LocalNet),
+        Arc::new(signal_radar::SignalRadar),
         Arc::new(abn_lookup::AbnLookup),
         Arc::new(api_key_probe::ApiKeyProbe),
         Arc::new(chain_intel::ChainIntel),
