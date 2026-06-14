@@ -100,7 +100,7 @@ pub(super) fn is_placeholder_email_local(local: &str) -> bool {
 /// should never enter the graph — `example.com`, `jordan@example.com`,
 /// `firstname@gmail.com`, `http://example.com`, the `example` username,
 /// `John Doe`, … Enforced at the engine's admission gate alongside
-/// [`is_bogus_ip`] so it covers every module.
+/// [`is_bogus_ip`](super::ip::is_bogus_ip) so it covers every module.
 ///
 /// Exception (the operator's rule): kinds whose VALUE is inherently unique —
 /// passwords, API keys, raw credentials — are NEVER rejected, even if the value
