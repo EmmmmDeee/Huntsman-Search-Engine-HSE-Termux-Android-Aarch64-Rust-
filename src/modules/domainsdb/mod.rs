@@ -13,6 +13,7 @@
 //! [`build_domain_entity`] so it is unit-tested without a live API.
 
 use async_trait::async_trait;
+use futures::future::join_all;
 use serde::Deserialize;
 use std::collections::HashSet;
 
@@ -164,28 +165,28 @@ impl Module for DomainsDb {
         let mut result = ModuleResult::new();
         let mut seen: HashSet<String> = HashSet::new();
 
-        for zone in &["com", "net", "org", "io", "com.au", "co.uk"] {
-            if ctx.cancel.is_cancelled() {
-                break;
-            }
+        let encoded = crate::util::http::urlencode(&query);
+        let futures = ["com", "net", "org", "io", "com.au", "co.uk"].map(|zone| {
             let url = format!(
-                "https://api.domainsdb.info/v1/domains/search?domain={}&zone={zone}&limit=20",
-                crate::util::http::urlencode(&query)
+                "https://api.domainsdb.info/v1/domains/search?domain={encoded}&zone={zone}&limit=20"
             );
-            let resp = ctx
-                .http
-                .get(&url)
-                .timeout(std::time::Duration::from_secs(8))
-                .send()
-                .await;
-            let Ok(r) = resp else { continue };
-            if !r.status().is_success() {
-                continue;
+            let http = ctx.http.clone();
+            async move {
+                let resp = http
+                    .get(&url)
+                    .timeout(std::time::Duration::from_secs(8))
+                    .send()
+                    .await;
+                let Ok(r) = resp else { return None };
+                if !r.status().is_success() {
+                    return None;
+                }
+                crate::util::http::json_scanned::<DbResp>(r, SRC).await.ok()
             }
-            let Ok(data) = crate::util::http::json_scanned::<DbResp>(r, SRC).await else {
-                continue;
-            };
+        });
 
+        let responses = join_all(futures).await;
+        for data in responses.into_iter().flatten() {
             let broad_match = data.total.is_some_and(|t| t > BROAD_MATCH_THRESHOLD);
             result.extend(data.domains.iter().filter_map(|entry| {
                 if !seen.insert(entry.domain.trim().to_lowercase()) {
