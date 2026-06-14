@@ -21,17 +21,18 @@ pub(in crate::modules::search_engines) fn score_username(
 ) -> (u8, f64) {
     let mut score: u8 = 0;
 
-    // Signal 1: direct term overlap (strongest)
-    let parts: Vec<String> = username
-        .to_lowercase()
+    // Signal 1: direct term overlap (strongest). Lowercase once and borrow the
+    // resulting `&str` parts — they are only compared/substring-tested, never
+    // retained, so no per-part `String` allocation is needed.
+    let username_lower = username.to_lowercase();
+    let parts: Vec<&str> = username_lower
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.len() >= 3)
-        .map(String::from)
         .collect();
     if terms.iter().any(|t| {
         parts
             .iter()
-            .any(|p| p == t || p.contains(t.as_str()) || t.contains(p.as_str()))
+            .any(|p| *p == t.as_str() || p.contains(t.as_str()) || t.contains(*p))
     }) {
         score += 3;
     }
@@ -96,13 +97,13 @@ pub(in crate::modules::search_engines) fn score_username(
     // handle that ALSO co-occurs reaches PROBABLE (0.55) while pure co-occurrence
     // stays CANDIDATE (0.30) — the precision lift that keeps alias variants ahead
     // of co-occurrence noise.
-    let cand = username.to_lowercase();
+    let cand = username_lower.as_str();
     let stem_match = terms
         .iter()
         .flat_map(|t| t.split(|c: char| c.is_ascii_digit()))
         .any(|s| s.len() >= 4 && cand.contains(s));
     let seed = terms.first().map(String::as_str).unwrap_or("");
-    if stem_match || bigram_similarity(&cand, seed) >= 0.25 {
+    if stem_match || bigram_similarity(cand, seed) >= 0.25 {
         score += 2;
     }
 
@@ -622,8 +623,14 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
         "Brunswick",
     ];
 
+    // Lowercase the text once; the AU-place scan below only reads it.
+    let lower = text.to_lowercase();
+    // Track lowercased addresses already emitted so the dedup check below is an
+    // O(1) set lookup instead of a fresh `to_lowercase()` over every prior addr
+    // on each candidate. Seeded with the first-pass (STATES) results.
+    let mut seen_addr_keys: std::collections::HashSet<String> =
+        addrs.iter().map(|a| a.to_lowercase()).collect();
     for place in AU_PLACES {
-        let lower = text.to_lowercase();
         let place_lower = place.to_lowercase();
         if let Some(pos) = lower.find(&place_lower) {
             let after = &lower[pos + place_lower.len()..];
@@ -667,7 +674,7 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
                 };
                 let addr = format!("{place}, {state_tag}");
                 let addr_lower = addr.to_lowercase();
-                if !addrs.iter().any(|a| a.to_lowercase() == addr_lower) {
+                if seen_addr_keys.insert(addr_lower) {
                     addrs.push(addr);
                 }
             }
@@ -735,7 +742,12 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
         "northern territory",
         "australia",
     ];
-    for r in &addrs.clone() {
+    // Collect postcode-qualified variants while only borrowing `addrs`
+    // immutably, then append them afterwards — this replaces the previous
+    // whole-vector `.clone()` taken to dodge the borrow conflict.
+    let mut pc_additions: Vec<String> = Vec::new();
+    for r in &addrs {
+        let r = r.as_str();
         let state_seg = r.rsplit(',').next().unwrap_or("").trim().to_lowercase();
         if !AU_STATES.contains(&state_seg.as_str()) {
             continue;
@@ -748,18 +760,21 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
         // on a multi-byte char — an en-dash in a page title like
         // "SOHO Galleries – Sydney Art Gallery" — sliced mid-codepoint and
         // panicked. `char_window` clamps both ends to char boundaries.
-        let Some(found) = text.find(r.as_str()) else {
+        let Some(found) = text.find(r) else {
             continue;
         };
         let after_idx = found + r.len();
         let snippet = crate::util::str_util::char_window(text, after_idx, after_idx + 20);
         if let Some(pc) = postcode_re_like(snippet) {
             let with_pc = format!("{r} {pc}");
-            if !addrs.contains(&with_pc) {
-                addrs.push(with_pc);
+            // Preserve the original "not already present" dedup: a variant must
+            // be absent from both the existing addresses and the ones queued.
+            if !addrs.contains(&with_pc) && !pc_additions.contains(&with_pc) {
+                pc_additions.push(with_pc);
             }
         }
     }
+    addrs.extend(pc_additions);
 
     addrs
 }
@@ -884,13 +899,12 @@ pub(in crate::modules::search_engines) fn extract_organisations_from_text(
                 name_start += 1;
             }
             let org = text[name_start..end].trim();
-            if org.len() >= 5
-                && org.starts_with(|c: char| c.is_ascii_uppercase())
-                && terms
-                    .iter()
-                    .any(|t| org.to_lowercase().contains(t.as_str()))
-            {
-                orgs.push(org.to_string());
+            if org.len() >= 5 && org.starts_with(|c: char| c.is_ascii_uppercase()) {
+                // Lowercase once per candidate rather than once per term.
+                let org_lower = org.to_lowercase();
+                if terms.iter().any(|t| org_lower.contains(t.as_str())) {
+                    orgs.push(org.to_string());
+                }
             }
             i = end;
         }
