@@ -220,7 +220,6 @@
     body.dark-theme .btn-default{background:#2a2a2a;color:#ccc;border-color:#444}
     body.dark-theme .btn-default:hover{background:#333;color:#fff}
     /* New scan wizard dark mode */
-    body.dark-theme #adv-box{background:#222;border-color:#333}
     body.dark-theme .help-panel{background:#1e2a30;border-color:#2d4a5a;color:#bbb}
     body.dark-theme .panel{background:#1f1f1f;border-color:#333}
     body.dark-theme .panel-heading{background:#2a2a2a;color:#ddd;border-color:#333}
@@ -239,6 +238,15 @@
     body.dark-theme .stat-card{background:#222;border-color:#333}
     body.dark-theme .stat-card .val{color:#ddd}
     body.dark-theme .stat-card .lab{color:#777}
+    /* Wizard advanced-options box, severity-count pills, and table group-header
+       rows: static styling moved off inline `style=` so the dark overrides below
+       actually win (inline styles outrank id/class selectors). */
+    #adv-box{background:#f7f7f7;border:1px solid #e3e3e3;border-radius:3px;padding:10px;margin-bottom:14px}
+    .sev-count{background:#f7f7f7;border:1px solid #ddd;color:#444;margin-right:4px}
+    .grp-row{background:#fafafa}
+    body.dark-theme #adv-box{background:#222;border-color:#333}
+    body.dark-theme .sev-count{background:#2a2a2a;border-color:#444;color:#ccc}
+    body.dark-theme .grp-row{background:#262626;color:#ddd}
     /* Correlation cards — keep the severity hue on the left border, dark-tint the fill */
     body.dark-theme .corr-card{background:#1f1f1f;border-left-color:#777;color:#ccc}
     body.dark-theme .cv-critical{border-left-color:#c64fc6;background:#2a1430}
@@ -1065,7 +1073,7 @@ async function renderNewScan(v){
       <p style="margin-top:14px;margin-bottom:6px">
         <a href="#" id="adv-toggle" style="font-size:12px;color:#059CD7">${W.showAdv?'▾':'▸'} Advanced options</a>
       </p>
-      <div id="adv-box" style="display:${W.showAdv?'block':'none'};background:#f7f7f7;border:1px solid #e3e3e3;border-radius:3px;padding:10px;margin-bottom:14px">
+      <div id="adv-box" style="display:${W.showAdv?'block':'none'}">
         <div class="row">
           <div class="col-sm-3">
             <label>Expansion depth</label>
@@ -1663,7 +1671,7 @@ function renderStatus(host, scan){
                  <div style="margin-top:8px">
                    ${['critical','high','medium','low'].map(sev=>{
                      const n = S.correlations.filter(c=>(c.severity||'').toLowerCase()===sev).length;
-                     return `<span class="status-pill cv-${sev}" style="background:#f7f7f7;border:1px solid #ddd;color:#444;margin-right:4px">${esc(sev)}: ${n}</span>`;
+                     return `<span class="status-pill sev-count">${esc(sev)}: ${n}</span>`;
                    }).join('')}
                  </div>`
               : '<div class="empty-state"><p>No correlation rules have fired for this scan.</p></div>'}
@@ -2465,7 +2473,7 @@ function poolPanel(pool, writeEnabled){
   if (!pool || !(pool.services||[]).length) return '';
   const tierBadge = s => `<span class="status-pill s-${s==='revoked'?'failed':(s==='active'?'complete':'pending')}">${esc(s)}</span>`;
   const rows = pool.services.map(svc=>`
-    <tr><td colspan="5" style="background:#fafafa;font-weight:600">${esc(svc.service)}</td></tr>
+    <tr><td colspan="5" class="grp-row" style="font-weight:600">${esc(svc.service)}</td></tr>
     ${svc.keys.map(k=>`<tr data-svc="${attr(svc.service)}" data-id="${attr(k.id)}">
       <td><code>${esc(k.masked)}</code></td>
       <td>${tierBadge(k.status)}</td>
@@ -2665,7 +2673,7 @@ async function renderModuleGraph(host){
       <td class="text-right"><code>${(k.richness!=null?Number(k.richness):0).toFixed(2)}</code></td>
       <td class="text-muted" style="font-size:11px">${(k.modules||[]).slice(0,6).map(esc).join(', ')}${(k.modules||[]).length>6?` +${k.modules.length-6}`:''}</td>
     </tr>
-    <tr style="display:none"><td colspan="4" style="background:#fafafa"><div style="padding:6px 4px">
+    <tr style="display:none"><td colspan="4" class="grp-row"><div style="padding:6px 4px">
       <b>${esc(k.kind)}</b> is consumed by ${(k.modules||[]).length} module(s): ${(k.modules||[]).map(m=>`<span class="tag">${esc(m)}</span>`).join(' ')}</div></td></tr>`).join('');
   host.innerHTML = `
     <div class="page-header" style="margin-top:26px;border-bottom:1px solid #eee;padding-bottom:8px">
