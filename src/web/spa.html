@@ -841,7 +841,9 @@ function renderScansTable(scans){
       <td class="text-right">${s.entity_count||0}</td>
       <td>
         <a href="#/scaninfo?id=${attr(s.id)}" class="btn btn-default btn-xs" title="Open"><i class="glyphicon glyphicon-eye-open"></i></a>
-        <button class="btn btn-default btn-xs" data-rerun="${attr(s.id)}" title="Rescan"><i class="glyphicon glyphicon-repeat"></i></button>
+        ${(s.status==='running'||s.status==='pending')
+          ? `<button class="btn btn-warning btn-xs" data-cancel="${attr(s.id)}" title="Stop scan"><i class="glyphicon glyphicon-stop"></i></button>`
+          : `<button class="btn btn-default btn-xs" data-rerun="${attr(s.id)}" title="Rescan"><i class="glyphicon glyphicon-repeat"></i></button>`}
         <a class="btn btn-default btn-xs" href="${API.csvUrl(s.id)}" title="Export CSV"><i class="glyphicon glyphicon-download-alt"></i></a>
         <button class="btn btn-danger btn-xs" data-delete="${attr(s.id)}" title="Delete"><i class="glyphicon glyphicon-trash"></i></button>
       </td>
@@ -863,6 +865,17 @@ function wireScansTable(){
     const id = b.dataset.rerun;
     alertify.confirm('Re-run scan', 'Start a new scan with the same target and options?', async ()=>{
       try { const r = await API.rerun(id); toast('Scan queued'); nav(`#/scaninfo?id=${r.scan_id}&tab=log`); }
+      catch(e){ toast(e.message,'err'); }
+    }, ()=>{});
+  }));
+  $$('button[data-cancel]').forEach(b=>b.addEventListener('click', e=>{
+    e.stopPropagation();
+    const id = b.dataset.cancel;
+    // Stop an in-flight scan straight from the list (SpiderFoot parity). The
+    // engine sees the cancel flag at its next gate, lets in-flight modules
+    // finish, and marks the scan `aborted`; partial results are kept.
+    alertify.confirm('Stop scan', 'Stop the scan now? Modules already in flight will complete, then no further work will run. Results produced so far are kept.', async ()=>{
+      try { await API.cancel(id); toast('Stop requested'); setTimeout(render, 1500); }
       catch(e){ toast(e.message,'err'); }
     }, ()=>{});
   }));
