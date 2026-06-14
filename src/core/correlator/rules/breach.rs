@@ -1,7 +1,18 @@
 //! AU correlation rules — breach family. See `super` (rules/mod.rs) for the
 //! shared helpers; every rule reaches them through `use super::*`.
 
+use std::collections::BTreeSet;
+
 use super::*;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Secret-shape primitives
+//
+// The AU-047 identity link stands or falls on one judgement: is a string unique
+// enough that two accounts sharing it must share a controller? These helpers
+// make that judgement. They are deliberately allocation-light and single-pass —
+// the correlator runs them across every credential-shaped entity in a scan.
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// True if `s` is a **salted** password-hash digest — bcrypt / sha-crypt /
 /// argon2 / scrypt / yescrypt, all of which embed their salt. This is the
@@ -34,37 +45,68 @@ fn is_hex_digest(s: &str) -> bool {
     s.len() >= 16 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Estimated search-space entropy in bits: `len × log2(alphabet present)`. A
-/// deliberately conservative proxy for "how rare is this exact string", used
-/// only to decide whether a reused plaintext credential / token is unique enough
-/// that sharing it across accounts is a real controller link rather than a
-/// common-password coincidence.
-fn estimated_entropy_bits(s: &str) -> f64 {
-    let mut alphabet = 0u32;
-    if s.chars().any(|c| c.is_ascii_lowercase()) {
-        alphabet += 26;
+/// Single-pass character analysis of a candidate secret: its length, distinct
+/// character count, and estimated search-space entropy. Computing all three in
+/// one scan replaces the previous ~10 separate passes (four `.any()` alphabet
+/// probes, a `.count()`, and a `BTreeSet` build, twice over) that the password
+/// and token gates each used to run.
+struct CharProfile {
+    /// Total `char` count (not bytes) of the trimmed string.
+    len: usize,
+    /// Number of distinct `char`s — the variety floor that rejects
+    /// `aaaaaaaaaa`-style low-entropy strings.
+    distinct: usize,
+    /// `len × log2(alphabet present)` — a deliberately conservative proxy for
+    /// "how rare is this exact string". The alphabet sums only the character
+    /// *classes* observed (lower/upper/digit/symbol), so a 16-char all-lowercase
+    /// string scores far below a 16-char mixed one.
+    entropy_bits: f64,
+}
+
+impl CharProfile {
+    /// Scan `s` (trimmed) once, deriving [`CharProfile`]. Whitespace counts
+    /// toward `len`/`distinct` but contributes to no alphabet class, matching the
+    /// original gates exactly.
+    fn of(s: &str) -> Self {
+        let s = s.trim();
+        let mut seen = BTreeSet::new();
+        let (mut lower, mut upper, mut digit, mut symbol) = (false, false, false, false);
+        let mut len = 0usize;
+        for c in s.chars() {
+            len += 1;
+            seen.insert(c);
+            if c.is_ascii_lowercase() {
+                lower = true;
+            } else if c.is_ascii_uppercase() {
+                upper = true;
+            } else if c.is_ascii_digit() {
+                digit = true;
+            } else if !c.is_ascii_alphanumeric() && !c.is_whitespace() {
+                symbol = true; // ASCII punctuation/symbols
+            }
+        }
+        let alphabet = u32::from(lower) * 26
+            + u32::from(upper) * 26
+            + u32::from(digit) * 10
+            + u32::from(symbol) * 33;
+        let entropy_bits = if alphabet == 0 {
+            0.0
+        } else {
+            len as f64 * f64::from(alphabet).log2()
+        };
+        Self {
+            len,
+            distinct: seen.len(),
+            entropy_bits,
+        }
     }
-    if s.chars().any(|c| c.is_ascii_uppercase()) {
-        alphabet += 26;
-    }
-    if s.chars().any(|c| c.is_ascii_digit()) {
-        alphabet += 10;
-    }
-    if s.chars()
-        .any(|c| !c.is_ascii_alphanumeric() && !c.is_whitespace())
-    {
-        alphabet += 33; // ASCII punctuation/symbols
-    }
-    if alphabet == 0 {
-        return 0.0;
-    }
-    s.chars().count() as f64 * f64::from(alphabet).log2()
 }
 
 /// The handful of ubiquitous passwords whose reuse links nobody — millions share
 /// them, so identity-linking on them is a false positive even when they clear
 /// the entropy floor. Compared lowercased. (Most are short enough to fail the
-/// length/entropy gate anyway; this catches the long, common ones.)
+/// length/entropy gate anyway; this catches the long, common ones — chiefly
+/// `password123`, which clears the entropy floor.)
 fn is_common_password(s: &str) -> bool {
     const COMMON: &[&str] = &[
         "password",
@@ -113,12 +155,12 @@ fn is_common_password(s: &str) -> bool {
 /// low-variety strings (`aaaaaaaaaa`); requires ≥10 chars, ≥6 distinct chars and
 /// ≥50 bits of estimated entropy.
 fn is_reusable_password(s: &str) -> bool {
-    let s = s.trim();
-    if s.chars().count() < 10 || is_hex_digest(s) || is_common_password(s) {
+    let t = s.trim();
+    if is_hex_digest(t) || is_common_password(t) {
         return false;
     }
-    let distinct = s.chars().collect::<std::collections::BTreeSet<_>>().len();
-    distinct >= 6 && estimated_entropy_bits(s) >= 50.0
+    let p = CharProfile::of(t);
+    p.len >= 10 && p.distinct >= 6 && p.entropy_bits >= 50.0
 }
 
 /// A **session / cookie token** substantial enough to be a unique controller
@@ -127,41 +169,84 @@ fn is_reusable_password(s: &str) -> bool {
 /// `session-token` tag is the provenance that distinguishes it from an unsalted
 /// password hash. Requires ≥16 chars, ≥8 distinct chars and ≥64 bits.
 fn is_substantial_token(s: &str) -> bool {
-    let s = s.trim();
-    let distinct = s.chars().collect::<std::collections::BTreeSet<_>>().len();
-    s.chars().count() >= 16 && distinct >= 8 && estimated_entropy_bits(s) >= 64.0
+    let p = CharProfile::of(s);
+    p.len >= 16 && p.distinct >= 8 && p.entropy_bits >= 64.0
 }
 
-/// True if `e` is a secret artifact unique enough that its **reuse across
-/// distinct identities** is strong evidence of a single controller. These are
-/// the OPSEC seams that unmask the hardest people to find:
-///   * a **salted** password hash, a crypto wallet address, or an API key —
-///     globally unique by construction (near-certain);
-///   * a **reused high-entropy plaintext password** ([`is_reusable_password`]) —
-///     password reuse across otherwise-separate accounts;
-///   * a **session / cookie token** ([`is_substantial_token`], carried with the
-///     `session-token` tag) — a captured session identifier shared across
-///     accounts/sites.
-///
-/// All three are legitimate cross-correlation join-keys; the entropy/denylist
-/// gates keep a *common* password from manufacturing false identities.
-fn is_linkable_secret(e: &Entity) -> bool {
-    match e.kind {
-        EntityKind::Credential => {
-            is_salted_hash(&e.value)
-                || (e.has_tag("session-token") && is_substantial_token(&e.value))
-                || is_reusable_password(&e.value)
+// ─────────────────────────────────────────────────────────────────────────────
+// Secret classification
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The kind of linkable secret an entity carries — the single source of truth
+/// for *whether* a secret links identities, *what* to call it, and *how certain*
+/// the link is. Computing this once per secret removes the previous triple
+/// recomputation of `is_salted_hash` / `has_tag` across the filter, the label,
+/// and the severity decision.
+#[derive(Clone, Copy)]
+enum Secret {
+    /// Salted password hash — globally unique by construction.
+    SaltedHash,
+    /// Reused high-entropy plaintext password — strong, but two people *could*
+    /// pick the same one, so it is the only kind eligible for the High tier.
+    PlaintextPassword,
+    /// Captured session/cookie token carried with `session-token` provenance.
+    SessionToken,
+    /// Crypto wallet address — globally unique.
+    WalletAddress,
+    /// Leaked API key — globally unique.
+    ApiKey,
+}
+
+impl Secret {
+    /// Classify `e`, or `None` if it carries nothing unique enough to link
+    /// identities on. This is the exact admission gate AU-047 fires on.
+    ///
+    /// The breach/stealer modules surface a leaked plaintext password (or a
+    /// password *hash*) as a first-class `Password` entity — distinct from the
+    /// `username@host` `Credential` string — so both kinds are credential
+    /// carriers here. The salted-hash precision and entropy/denylist floors stop
+    /// a common password (or an unsalted digest of one) from manufacturing
+    /// phantom identities; a session token is admitted only on `Credential` with
+    /// explicit `session-token` provenance, never inferred from shape alone.
+    fn classify(e: &Entity) -> Option<Self> {
+        match e.kind {
+            EntityKind::CryptoAddress => Some(Self::WalletAddress),
+            EntityKind::ApiKey => Some(Self::ApiKey),
+            EntityKind::Credential | EntityKind::Password => {
+                if is_salted_hash(&e.value) {
+                    Some(Self::SaltedHash)
+                } else if e.kind == EntityKind::Credential
+                    && e.has_tag("session-token")
+                    && is_substantial_token(&e.value)
+                {
+                    Some(Self::SessionToken)
+                } else if is_reusable_password(&e.value) {
+                    Some(Self::PlaintextPassword)
+                } else {
+                    None
+                }
+            }
+            _ => None,
         }
-        // The breach/stealer modules surface a leaked plaintext password (or a
-        // password *hash*) as a first-class `Password` entity — distinct from the
-        // `username@host` `Credential` string. A reused high-entropy password is
-        // the canonical "password reuse as an identifier" join-key, so it must be
-        // linkable in its own right, gated by the same salted-hash precision and
-        // entropy/denylist floor that stop a common password (or an unsalted
-        // digest of one) from manufacturing phantom identities.
-        EntityKind::Password => is_salted_hash(&e.value) || is_reusable_password(&e.value),
-        EntityKind::CryptoAddress | EntityKind::ApiKey => true,
-        _ => false,
+    }
+
+    /// Human label for the reused artifact, for the AU-047 description.
+    fn label(self) -> &'static str {
+        match self {
+            Self::SaltedHash => "password hash",
+            Self::PlaintextPassword => "password",
+            Self::SessionToken => "session/cookie token",
+            Self::WalletAddress => "wallet address",
+            Self::ApiKey => "API key",
+        }
+    }
+
+    /// True only for a reused plaintext password — the one kind whose link is
+    /// marginally less certain (two people could conceivably pick the same strong
+    /// password) and so may land one severity tier lower absent cross-source
+    /// corroboration. Every other kind is unique by construction.
+    fn is_plaintext_password(self) -> bool {
+        matches!(self, Self::PlaintextPassword)
     }
 }
 
@@ -173,7 +258,7 @@ fn is_linkable_secret(e: &Entity) -> bool {
 /// observed across two INDEPENDENT sources is materially more individuating than
 /// the same value seen twice inside a single dump — cross-source spread is the
 /// "unique sources" signal that raises the shared-ownership confidence.
-fn distinct_sources(secret: &Entity) -> std::collections::BTreeSet<String> {
+fn distinct_sources(secret: &Entity) -> BTreeSet<String> {
     const SOURCE_ATTRS: &[&str] = &[
         "dbname",
         "source",
@@ -183,17 +268,26 @@ fn distinct_sources(secret: &Entity) -> std::collections::BTreeSet<String> {
         "top_databases",
         "top_dbnames",
     ];
-    let mut out = std::collections::BTreeSet::new();
+    /// Generic provenance values that name no specific dataset.
+    fn is_sentinel(s: &str) -> bool {
+        s.is_empty()
+            || s.eq_ignore_ascii_case("unknown")
+            || s.eq_ignore_ascii_case("stealer")
+            || s.eq_ignore_ascii_case("n/a")
+    }
+    let mut out = BTreeSet::new();
     for ev in &secret.evidence {
         for attr in SOURCE_ATTRS {
-            if let Some(v) = ev.attributes.get(*attr) {
-                // `top_databases` / `top_dbnames` are comma-joined lists; split
-                // so each named database counts as its own distinct source.
-                for part in v.split(',') {
-                    let s = part.trim().to_lowercase();
-                    if !s.is_empty() && s != "unknown" && s != "stealer" && s != "n/a" {
-                        out.insert(s);
-                    }
+            let Some(v) = ev.attributes.get(*attr) else {
+                continue;
+            };
+            // `top_databases` / `top_dbnames` are comma-joined lists; split so
+            // each named database counts as its own distinct source. Sentinels
+            // are rejected before allocating the lowercased key.
+            for part in v.split(',') {
+                let s = part.trim();
+                if !is_sentinel(s) {
+                    out.insert(s.to_lowercase());
                 }
             }
         }
@@ -201,30 +295,18 @@ fn distinct_sources(secret: &Entity) -> std::collections::BTreeSet<String> {
     out
 }
 
-/// Human label for the reused artifact, for the AU-047 description.
-fn secret_label(e: &Entity) -> &'static str {
-    if e.has_tag("session-token") {
-        return "session/cookie token";
-    }
-    match e.kind {
-        EntityKind::Credential | EntityKind::Password if is_salted_hash(&e.value) => {
-            "password hash"
-        }
-        EntityKind::Credential | EntityKind::Password => "password",
-        EntityKind::CryptoAddress => "wallet address",
-        EntityKind::ApiKey => "API key",
-        _ => "secret",
-    }
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// Rules
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// AU-047 — Reused-secret identity link.
 ///
 /// The unmasking rule for compartmentalised targets. When one linkable secret
-/// (see [`is_linkable_secret`]) is observed against **≥2 distinct identities**
+/// (see [`Secret::classify`]) is observed against **≥2 distinct identities**
 /// (the email/username the breach record carries in its evidence), those
 /// identities are tied to a single controller: someone reused a secret across
-/// accounts they kept otherwise separate. The linkable set covers all three of
-/// the legitimate cross-correlation join-keys — a salted hash / crypto address /
+/// accounts they kept otherwise separate. The linkable set covers all the
+/// legitimate cross-correlation join-keys — a salted hash / crypto address /
 /// API key, a **reused high-entropy plaintext password**, and a **session /
 /// cookie token** — while the entropy + denylist gates keep a *common* password
 /// from manufacturing phantom identities.
@@ -243,9 +325,36 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    use std::collections::BTreeSet;
+    // Classify every secret up front; bail before any further work if none link.
+    let secrets: Vec<(&Entity, Secret)> = entities
+        .iter()
+        .filter_map(|e| Secret::classify(e).map(|s| (e, s)))
+        .collect();
+    if secrets.is_empty() {
+        return Vec::new();
+    }
+
+    // Pre-index the identity entities ONCE, lowercased. The previous form
+    // re-lowercased every entity's value for every secret — O(secrets×entities)
+    // allocations; this is O(entities) built a single time. `is_email`
+    // discriminates the two kinds the filter admits without cloning EntityKind.
+    struct IdRef<'a> {
+        value_lc: String,
+        is_email: bool,
+        uid: &'a str,
+    }
+    let identities: Vec<IdRef> = entities
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::Email | EntityKind::Username))
+        .map(|e| IdRef {
+            value_lc: e.value.trim().to_lowercase(),
+            is_email: e.kind == EntityKind::Email,
+            uid: &e.uid,
+        })
+        .collect();
+
     let mut out = Vec::new();
-    for secret in entities.iter().filter(|e| is_linkable_secret(e)) {
+    for (secret, class) in secrets {
         // The distinct ACCOUNTS this exact secret was seen against. Keyed on the
         // email — the account identifier — drawn from the breach-record evidence
         // the importer accumulates onto the secret (one evidence record per
@@ -258,13 +367,13 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
             .iter()
             .filter_map(|ev| ev.attributes.get("email"))
             .map(|v| v.trim().to_lowercase())
-            .filter(|v| v.contains('@') && !v.is_empty())
+            .filter(|v| v.contains('@'))
             .collect();
         if emails.len() < 2 {
             continue;
         }
-        // Link the secret plus every implicated identity entity present in scope
-        // (the emails directly, and any username co-located in those records).
+        // Usernames co-located in those same records — linked as implicated
+        // identities, but never counted toward the ≥2-account firing gate above.
         let usernames: BTreeSet<String> = secret
             .evidence
             .iter()
@@ -272,37 +381,35 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
             .map(|v| v.trim().to_lowercase())
             .filter(|v| !v.is_empty())
             .collect();
+
+        // The secret plus every implicated identity entity present in scope, in
+        // entity order. Walks the pre-built identity index, not all entities.
         let mut uids = vec![secret.uid.clone()];
-        for e in entities.iter() {
-            let v = e.value.trim().to_lowercase();
-            if (e.kind == EntityKind::Email && emails.contains(&v))
-                || (e.kind == EntityKind::Username && usernames.contains(&v))
-            {
-                uids.push(e.uid.clone());
+        for id in &identities {
+            let hit = if id.is_email {
+                emails.contains(&id.value_lc)
+            } else {
+                usernames.contains(&id.value_lc)
+            };
+            if hit {
+                uids.push(id.uid.to_owned());
             }
         }
-        // The distinct breach datasets this exact secret spans. Cross-source
-        // spread is the individuality signal: the same strong password in two
-        // INDEPENDENT corpora is far likelier a real reuse than a single-dump
-        // artifact, so it raises the link's certainty.
+
+        // Cross-source spread is the individuality signal: the same strong
+        // password in two INDEPENDENT corpora is far likelier a real reuse than a
+        // single-dump artifact, so it raises the link's certainty. A reused
+        // plaintext password confined to one source stays High; everything else
+        // (construction-unique artifacts, or a password corroborated across ≥2
+        // sources) is Critical.
         let sources = distinct_sources(secret);
         let cross_source = sources.len() >= 2;
-
-        // A reused PLAINTEXT password is a strong but marginally less certain
-        // link than a construction-unique artifact (salted hash / crypto / API
-        // key / random session token), so it lands one tier lower — UNLESS its
-        // reuse is corroborated across ≥2 independent sources, which removes the
-        // single-dump-coincidence doubt and restores Critical.
-        let plaintext_password =
-            matches!(secret.kind, EntityKind::Credential | EntityKind::Password)
-                && !secret.has_tag("session-token")
-                && !is_salted_hash(&secret.value);
-        let severity = if plaintext_password && !cross_source {
+        let severity = if class.is_plaintext_password() && !cross_source {
             Severity::High
         } else {
             Severity::Critical
         };
-        let listed: Vec<&str> = emails.iter().take(6).map(String::as_str).collect();
+
         // Name the corroborating sources when we have dataset provenance, so the
         // operator sees *which* unique sources back the reuse claim.
         let source_clause = if sources.is_empty() {
@@ -316,13 +423,15 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
                 named.join(", ")
             )
         };
+        let listed: Vec<&str> = emails.iter().take(6).map(String::as_str).collect();
+
         out.push(Correlation {
             rule_id: "AU-047".into(),
             rule_name: "Reused-secret identity link".into(),
             severity,
             description: format!(
                 "A single reused {} ties {} otherwise-separate accounts to one controller{} — secret reuse across accounts: {}",
-                secret_label(secret),
+                class.label(),
                 emails.len(),
                 source_clause,
                 listed.join(", ")
@@ -427,7 +536,11 @@ pub(in crate::core::correlator) fn rule_au_019_temporal_breach_cluster(
     }
     breach_dates.sort_by_key(|(_, d)| *d);
     let mut clusters: Vec<Vec<String>> = Vec::new();
+    // Track the current cluster's member uids both as an ordered list (the
+    // output) and as a set (the membership test), so de-duping a uid is O(log n)
+    // instead of the O(n) `Vec::contains` the rolling window previously used.
     let mut current: Vec<String> = vec![breach_dates[0].0.uid.clone()];
+    let mut current_set: BTreeSet<&str> = BTreeSet::from([breach_dates[0].0.uid.as_str()]);
     // Anchor the window to the cluster's FIRST (earliest, since sorted) date, not
     // a rolling previous date. A rolling gap chains — Jan 1 / Jan 30 / Feb 28 /
     // Mar 30 are each ≤30 days apart and would collapse into one 88-day "cluster",
@@ -436,14 +549,18 @@ pub(in crate::core::correlator) fn rule_au_019_temporal_breach_cluster(
     let mut anchor = breach_dates[0].1;
     for &(e, d) in &breach_dates[1..] {
         if date_diff_days(anchor, d) <= 30 {
-            if !current.contains(&e.uid) {
+            if current_set.insert(e.uid.as_str()) {
                 current.push(e.uid.clone());
             }
         } else {
             if current.len() >= 3 {
-                clusters.push(current);
+                clusters.push(std::mem::take(&mut current));
+            } else {
+                current.clear();
             }
-            current = vec![e.uid.clone()];
+            current.push(e.uid.clone());
+            current_set.clear();
+            current_set.insert(e.uid.as_str());
             anchor = d;
         }
     }
@@ -505,21 +622,27 @@ pub(in crate::core::correlator) fn rule_au_037_credential_exposure(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let secrets: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| matches!(e.kind, EntityKind::Password | EntityKind::Credential))
-        .collect();
-    if secrets.is_empty() {
+    // One pass: collect the capped secret uids and tally passwords-vs-credentials
+    // together, instead of filtering the whole entity list three times.
+    let mut secret_uids: Vec<String> = Vec::new();
+    let mut passwords = 0usize;
+    let mut credentials = 0usize;
+    for e in entities {
+        match e.kind {
+            EntityKind::Password => passwords += 1,
+            EntityKind::Credential => credentials += 1,
+            _ => continue,
+        }
+        if secret_uids.len() < 20 {
+            secret_uids.push(e.uid.clone());
+        }
+    }
+    if passwords == 0 && credentials == 0 {
         return Vec::new();
     }
-    let passwords = secrets
-        .iter()
-        .filter(|e| e.kind == EntityKind::Password)
-        .count();
-    let credentials = secrets.len() - passwords;
 
     // Affected secrets first (capped), then the identity they pertain to.
-    let mut uids: Vec<String> = secrets.iter().take(20).map(|e| e.uid.clone()).collect();
+    let mut uids = secret_uids;
     uids.extend(
         entities
             .iter()
@@ -563,19 +686,19 @@ pub(in crate::core::correlator) fn rule_au_043_paste_exposure(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let pastes: Vec<&Entity> = entities
+    let uids: Vec<String> = entities
         .iter()
         .filter(|e| e.kind == EntityKind::Url && e.has_tag(crate::core::tags::PASTE_EXPOSED))
+        .map(|e| e.uid.clone())
         .collect();
-    if pastes.is_empty() {
+    if uids.is_empty() {
         return Vec::new();
     }
-    let uids: Vec<String> = pastes.iter().map(|e| e.uid.clone()).collect();
     vec![Correlation::new(
         "AU-043",
         "Public paste exposure",
         Severity::Medium,
-        format!("Subject data found in {} public paste(s)", pastes.len()),
+        format!("Subject data found in {} public paste(s)", uids.len()),
         uids,
         scan_id,
         ts,
