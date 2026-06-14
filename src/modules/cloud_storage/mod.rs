@@ -7,6 +7,7 @@
 //! vulnerable. No API key required.
 
 use async_trait::async_trait;
+use futures::future::join_all;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -56,24 +57,34 @@ impl Module for CloudStorage {
 
         let candidates = generate_bucket_names(&base);
 
-        for (url, provider, bucket_name) in candidates.iter().take(MAX_PROBES) {
-            if ctx.cancel.is_cancelled() {
-                break;
-            }
-            if let Some(status) = probe_url(&ctx.http, url).await
+        let probes = candidates
+            .iter()
+            .take(MAX_PROBES)
+            .map(|(url, provider, bucket_name)| {
+                let http = ctx.http.clone();
+                let url = url.clone();
+                let bucket_name = bucket_name.clone();
+                async move {
+                    let status = probe_url(&http, &url).await;
+                    (url, *provider, bucket_name, status)
+                }
+            });
+        let outcomes = join_all(probes).await;
+        for (url, provider, bucket_name, status) in outcomes {
+            if let Some(status) = status
                 && is_exposed(status, provider)
             {
-                let mut e = Entity::new(EntityKind::Url, url, 0.80, &ctx.scan_id);
+                let mut e = Entity::new(EntityKind::Url, &url, 0.80, &ctx.scan_id);
                 e.tag("vulnerable");
                 e.tag("cloud-storage");
-                e.tag(format!("provider:{provider}"));
+                e.tag(["provider:", provider].concat());
                 e.add_evidence(
                     Evidence::new(
                         SRC,
                         format!("{provider} bucket '{bucket_name}' is publicly accessible"),
                     )
-                    .with_attr("provider", *provider)
-                    .with_attr("bucket", bucket_name)
+                    .with_attr("provider", provider)
+                    .with_attr("bucket", &bucket_name)
                     .with_attr("http_status", status.to_string()),
                 );
                 result.push(e);
