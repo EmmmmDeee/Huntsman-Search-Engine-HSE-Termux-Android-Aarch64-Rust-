@@ -83,10 +83,11 @@ impl Module for HackerTarget {
                 self.hostsearch(&val, ctx, &mut result).await?;
             }
             TargetKind::IpAddress => {
-                self.reverse_ip(&val, ctx, &mut result).await?;
-                if !ctx.cancel.is_cancelled() {
-                    self.reverse_dns(&val, ctx, &mut result).await?;
-                }
+                // reverse_ip and reverse_dns are independent — run concurrently.
+                let (r_ip, r_dns) =
+                    tokio::join!(self.reverse_ip(&val, ctx), self.reverse_dns(&val, ctx));
+                result.extend(r_ip?.entities);
+                result.extend(r_dns?.entities);
             }
             _ => {}
         }
@@ -168,15 +169,11 @@ impl HackerTarget {
         Ok(())
     }
 
-    async fn reverse_ip(
-        &self,
-        ip: &str,
-        ctx: &ModuleContext,
-        result: &mut ModuleResult,
-    ) -> Result<()> {
+    async fn reverse_ip(&self, ip: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
         let url = format!("{BASE}/reverseiplookup/?q={}", urlencode(ip));
         let body = self.fetch_text(&url, ctx).await?;
         let mut seen: HashSet<String> = HashSet::new();
+        let mut result = ModuleResult::new();
 
         result.extend(body.lines().filter_map(|line| {
             let domain = line.trim().to_lowercase();
@@ -194,17 +191,13 @@ impl HackerTarget {
             Some(e)
         }));
 
-        Ok(())
+        Ok(result)
     }
 
-    async fn reverse_dns(
-        &self,
-        ip: &str,
-        ctx: &ModuleContext,
-        result: &mut ModuleResult,
-    ) -> Result<()> {
+    async fn reverse_dns(&self, ip: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
         let url = format!("{BASE}/reversedns/?q={}", urlencode(ip));
         let body = self.fetch_text(&url, ctx).await?;
+        let mut result = ModuleResult::new();
 
         result.extend(body.lines().filter_map(|line| {
             let domain = line.trim().trim_end_matches('.').to_lowercase();
@@ -217,7 +210,7 @@ impl HackerTarget {
             })
         }));
 
-        Ok(())
+        Ok(result)
     }
 }
 
