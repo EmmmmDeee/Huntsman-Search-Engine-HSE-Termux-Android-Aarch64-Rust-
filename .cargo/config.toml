@@ -1,0 +1,42 @@
+# Cargo configuration for Huntsman Search Engine
+# Primary target: Termux Android aarch64 (no root)
+
+# ── aarch64 (Termux on-device builds) ──────────────────────────────────────
+# `target-cpu=native` enables the full Armv8-A ISA feature set detected at
+# compile time: NEON SIMD, AES/SHA crypto extensions, CRC32, LSE atomics.
+# This is safe here because HSE is compiled and run on the same device (the
+# CI cross-compiles to aarch64-unknown-linux-gnu, which also benefits from the
+# crypto/SIMD flags that are universally available on Android 8+ aarch64 SoCs).
+#
+# `target-feature=+crt-static` is intentionally NOT set: Termux uses a
+# shared libc (bionic via NDK), and static-linking libc causes ABI mismatches
+# with dlopen()/threads on Android. The default dynamic link is correct.
+[target.aarch64-unknown-linux-gnu]
+rustflags = [
+    "-C", "target-cpu=native",
+    # Link-time optimisation hint: prefer smaller code on a phone's limited
+    # flash. Works in tandem with `opt-level = "s"` in [profile.release].
+    "-C", "link-arg=-Wl,--as-needed",
+]
+
+# Keep x86_64 (CI / dev laptops) at a sane baseline — no native-only flags
+# that would break cross-compilation or reproducibility.
+[target.x86_64-unknown-linux-gnu]
+rustflags = []
+
+# ── Build parallelism ───────────────────────────────────────────────────────
+# On a typical phone (8 cores / ~6 GB RAM) the default job count (= logical
+# CPUs) is fine for the `fast` profile (16 codegen-units, LTO off). For the
+# full `release` profile the linker step is the bottleneck anyway, so we
+# leave `jobs` unset and let Cargo auto-detect.
+
+# ── Incremental compilation ─────────────────────────────────────────────────
+# Disable incremental for release/fast builds: the generated `.d` dependency
+# files and rmeta cache eat several hundred MB on a phone's internal storage,
+# and HSE's release builds are clean-room (CI, install.sh) not incremental
+# iteration. Dev builds keep Cargo's default (incremental = true).
+[profile.release]
+incremental = false
+
+[profile.fast]
+incremental = false
