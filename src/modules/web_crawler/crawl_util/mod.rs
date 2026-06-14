@@ -699,6 +699,168 @@ pub(super) fn audit_security_headers(
 }
 
 // ---------------------------------------------------------------------------
+// Static tag helpers — eliminate per-iteration heap allocations for the
+// most common tag prefixes. Known values return `&'static str`; unknown
+// values fall back to `format!` (uncommon path, e.g. novel frameworks
+// discovered at runtime — not possible today since `frameworks` is a
+// `HashSet<&'static str>` populated only from the static `checks` table
+// in `detect_frameworks`, but the fallback keeps future additions safe).
+// ---------------------------------------------------------------------------
+
+/// Return the `tech:<name>` tag string for a framework fingerprint.
+///
+/// All values in the static [`detect_frameworks`] check table are covered.
+/// An unknown entry (unreachable with the current table) falls back to
+/// a heap-allocated `String` via `format!`.
+pub(super) fn tech_tag(fw: &'static str) -> std::borrow::Cow<'static, str> {
+    let s: Option<&'static str> = match fw {
+        "WordPress" => Some("tech:wordpress"),
+        "jQuery" => Some("tech:jquery"),
+        "Bootstrap" => Some("tech:bootstrap"),
+        "React" => Some("tech:react"),
+        "Next.js" => Some("tech:next.js"),
+        "Nuxt.js" => Some("tech:nuxt.js"),
+        "Vue.js" => Some("tech:vue.js"),
+        "Angular" => Some("tech:angular"),
+        "Ember.js" => Some("tech:ember.js"),
+        "Drupal" => Some("tech:drupal"),
+        "Joomla" => Some("tech:joomla"),
+        "Laravel" => Some("tech:laravel"),
+        "Django" => Some("tech:django"),
+        "Ruby on Rails" => Some("tech:ruby-on-rails"),
+        "Tailwind CSS" => Some("tech:tailwind-css"),
+        "Material UI" => Some("tech:material-ui"),
+        "ZURB Foundation" => Some("tech:zurb-foundation"),
+        "MooTools" => Some("tech:mootools"),
+        "Dojo" => Some("tech:dojo"),
+        "ExtJS" => Some("tech:extjs"),
+        "YUI" => Some("tech:yui"),
+        "Prototype" => Some("tech:prototype"),
+        "Backbone.js" => Some("tech:backbone.js"),
+        "Svelte" => Some("tech:svelte"),
+        "Astro" => Some("tech:astro"),
+        "Gatsby" => Some("tech:gatsby"),
+        "Shopify" => Some("tech:shopify"),
+        "Squarespace" => Some("tech:squarespace"),
+        "Wix" => Some("tech:wix"),
+        "Webflow" => Some("tech:webflow"),
+        "Cloudflare" => Some("tech:cloudflare"),
+        "HTMX" => Some("tech:htmx"),
+        "Alpine.js" => Some("tech:alpine.js"),
+        "config-leak-detected" => Some("tech:config-leak-detected"),
+        _ => None,
+    };
+    match s {
+        Some(tag) => std::borrow::Cow::Borrowed(tag),
+        None => std::borrow::Cow::Owned(format!("tech:{}", fw.to_lowercase().replace(' ', "-"))),
+    }
+}
+
+/// Return the `page:<type>` tag string for a page-type classification.
+///
+/// All values emitted by [`detect_page_types`] are covered; the function
+/// returns a `&'static str` in every reachable case.
+pub(super) fn page_tag(pt: &'static str) -> &'static str {
+    match pt {
+        "has_forms" => "page:has_forms",
+        "login_form" => "page:login_form",
+        "file_upload" => "page:file_upload",
+        "admin_panel" => "page:admin_panel",
+        "javascript" => "page:javascript",
+        "api_reference" => "page:api_reference",
+        // Unreachable with the current `detect_page_types` table; included
+        // so any future addition causes a compile-time miss rather than a
+        // silent wrong tag.
+        _ => pt,
+    }
+}
+
+/// Return the `service:<name>` tag string for a known API-key service.
+///
+/// Service names come from `identify_api_key` / `key_harvest`, which
+/// returns `&'static str`. Known names map to a pre-built static tag;
+/// unknowns fall back to a heap-allocated `String`.
+pub(super) fn service_tag(service: &'static str) -> std::borrow::Cow<'static, str> {
+    let s: Option<&'static str> = match service {
+        "openai" => Some("service:openai"),
+        "anthropic" => Some("service:anthropic"),
+        "github" => Some("service:github"),
+        "stripe" => Some("service:stripe"),
+        "aws" => Some("service:aws"),
+        "google" => Some("service:google"),
+        "sendgrid" => Some("service:sendgrid"),
+        "twilio" => Some("service:twilio"),
+        "slack" => Some("service:slack"),
+        "mailgun" => Some("service:mailgun"),
+        "shopify" => Some("service:shopify"),
+        "digitalocean" => Some("service:digitalocean"),
+        "heroku" => Some("service:heroku"),
+        "npm" => Some("service:npm"),
+        "firebase" => Some("service:firebase"),
+        "square" => Some("service:square"),
+        "paypal" => Some("service:paypal"),
+        "coinbase" => Some("service:coinbase"),
+        "braintree" => Some("service:braintree"),
+        "cloudflare" => Some("service:cloudflare"),
+        "datadog" => Some("service:datadog"),
+        "newrelic" => Some("service:newrelic"),
+        "sentry" => Some("service:sentry"),
+        "okta" => Some("service:okta"),
+        "auth0" => Some("service:auth0"),
+        "jwt" => Some("service:jwt"),
+        "azure" => Some("service:azure"),
+        "gcp" => Some("service:gcp"),
+        "huggingface" => Some("service:huggingface"),
+        "groq" => Some("service:groq"),
+        "cohere" => Some("service:cohere"),
+        "mistral" => Some("service:mistral"),
+        "replicate" => Some("service:replicate"),
+        "stability-ai" => Some("service:stability-ai"),
+        "xai" => Some("service:xai"),
+        "shodan" => Some("service:shodan"),
+        "censys" => Some("service:censys"),
+        "hunter" => Some("service:hunter"),
+        "proxycurl" => Some("service:proxycurl"),
+        "hibp" => Some("service:hibp"),
+        "dehashed" => Some("service:dehashed"),
+        "securitytrails" => Some("service:securitytrails"),
+        "abuseipdb" => Some("service:abuseipdb"),
+        "virustotal" => Some("service:virustotal"),
+        "greynoise" => Some("service:greynoise"),
+        "ipinfo" => Some("service:ipinfo"),
+        "maxmind" => Some("service:maxmind"),
+        "telegram" => Some("service:telegram"),
+        "discord" => Some("service:discord"),
+        "mapbox" => Some("service:mapbox"),
+        "algolia" => Some("service:algolia"),
+        "mailchimp" => Some("service:mailchimp"),
+        "hubspot" => Some("service:hubspot"),
+        "salesforce" => Some("service:salesforce"),
+        "zendesk" => Some("service:zendesk"),
+        "intercom" => Some("service:intercom"),
+        "segment" => Some("service:segment"),
+        "amplitude" => Some("service:amplitude"),
+        "mixpanel" => Some("service:mixpanel"),
+        _ => None,
+    };
+    match s {
+        Some(tag) => std::borrow::Cow::Borrowed(tag),
+        None => std::borrow::Cow::Owned(format!("service:{service}")),
+    }
+}
+
+/// Return the `roi:<label>` tag string for a [`crate::util::key_roi::KeyRoi`] tier.
+///
+/// Only three variants exist; all map to `&'static str` with no allocation.
+pub(super) fn roi_tag(roi: crate::util::key_roi::KeyRoi) -> &'static str {
+    match roi {
+        crate::util::key_roi::KeyRoi::Terminal => "roi:terminal",
+        crate::util::key_roi::KeyRoi::Expansion => "roi:expansion",
+        crate::util::key_roi::KeyRoi::Multiplier => "roi:multiplier",
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests — pure parsers were previously uncovered; these lock in their
 // observed behaviour as a regression guard (the crawler and several other
 // modules rely on this extraction logic).

@@ -194,8 +194,8 @@ impl Module for WebCrawler {
                 e.tag("api-key");
                 e.tag("config-leak");
                 e.tag("web-crawler");
-                e.tag(format!("service:{service}"));
-                e.tag(format!("roi:{}", roi.label()));
+                e.tag(service_tag(service));
+                e.tag(roi_tag(roi));
                 if roi == crate::util::key_roi::KeyRoi::Multiplier {
                     e.tag("force-multiplier");
                 }
@@ -394,7 +394,7 @@ fn build_entities(
         url_entity.tag(tags::WEB);
         url_entity.tag(tags::CRAWLED);
         for fw in &state.frameworks {
-            url_entity.tag(format!("tech:{}", fw.to_lowercase().replace(' ', "-")));
+            url_entity.tag(tech_tag(fw));
         }
         url_entity.add_evidence(
             Evidence::new(
@@ -417,10 +417,10 @@ fn build_entities(
     entity.tag(tags::CRAWLED);
 
     for fw in &state.frameworks {
-        entity.tag(format!("tech:{}", fw.to_lowercase().replace(' ', "-")));
+        entity.tag(tech_tag(fw));
     }
     for pt in &state.page_types {
-        entity.tag(format!("page:{pt}"));
+        entity.tag(page_tag(pt));
     }
 
     // Security header tags
