@@ -139,7 +139,7 @@ impl Module for ChainIntel {
 
         let mut e = Entity::new(EntityKind::CryptoAddress, addr, 0.80, &ctx.scan_id);
         e.tag("crypto-address");
-        e.tag(format!("chain:{}", chain_label(chain)));
+        e.tag(["chain:", chain_label(chain)].concat());
         e.add_evidence(build_evidence(chain_label(chain), &enr));
         result.push(e);
 

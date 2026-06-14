@@ -126,8 +126,8 @@ impl Module for ApiKeyProbe {
                 0.95,
                 &ctx.scan_id,
             );
-            entity.tag(format!("service:{}", probe.service));
-            entity.tag(format!("category:{}", probe.category));
+            entity.tag(["service:", probe.service].concat());
+            entity.tag(["category:", probe.category].concat());
             entity.tag("api-key");
             entity.tag("validated");
 
@@ -171,7 +171,7 @@ impl Module for ApiKeyProbe {
             if let Some(domain) = service_domain {
                 let mut d = Entity::new(EntityKind::Domain, domain, 0.60, &ctx.scan_id);
                 d.tag("api-key-derived");
-                d.tag(format!("service:{}", probe.service));
+                d.tag(["service:", probe.service].concat());
                 d.add_evidence(Evidence::new(
                     SRC,
                     format!("Service domain for identified {} API key", probe.service),
