@@ -216,6 +216,26 @@
     /* btn-default dark */
     body.dark-theme .btn-default{background:#2a2a2a;color:#ccc;border-color:#444}
     body.dark-theme .btn-default:hover{background:#333;color:#fff}
+    /* New scan wizard dark mode */
+    body.dark-theme #adv-box{background:#222;border-color:#333}
+    body.dark-theme .help-panel{background:#1e2a30;border-color:#2d4a5a;color:#bbb}
+    body.dark-theme .panel{background:#1f1f1f;border-color:#333}
+    body.dark-theme .panel-heading{background:#2a2a2a;color:#ddd;border-color:#333}
+    body.dark-theme .panel-body{background:#1f1f1f;color:#ccc}
+    body.dark-theme .nav-tabs{border-color:#333}
+    body.dark-theme .nav-tabs>li>a{background:#222;color:#aaa;border-color:#333}
+    body.dark-theme .nav-tabs>li>a:hover{background:#2a2a2a;color:#ddd;border-color:#444}
+    body.dark-theme .nav-tabs>li.active>a,body.dark-theme .nav-tabs>li.active>a:focus{background:#1c1c1c;color:#fff;border-color:#333 #333 #1c1c1c}
+    body.dark-theme .table-striped>tbody>tr:nth-of-type(odd){background:#222}
+    body.dark-theme .table-striped>tbody>tr:nth-of-type(even){background:#1c1c1c}
+    body.dark-theme .table>tbody>tr>td{color:#ccc;border-color:#333}
+    body.dark-theme .table>tbody>tr:hover{background:#2a2a2a !important}
+    body.dark-theme textarea.form-control{background:#2a2a2a;color:#ddd;border-color:#444}
+    body.dark-theme .mod-grid label{background:#222;border-color:#333;color:#ccc}
+    body.dark-theme .mod-grid label:hover{background:#2a2a2a}
+    body.dark-theme .stat-card{background:#222;border-color:#333}
+    body.dark-theme .stat-card .val{color:#ddd}
+    body.dark-theme .stat-card .lab{color:#777}
   </style>
 </head>
 <body>
@@ -348,6 +368,21 @@ const USE_CASES = {
   }
 };
 
+// SpiderFoot "By Required Data" vocabulary: maps a data-type label to the
+// TargetKind values (wire strings) that match it, so clicking a chip auto-
+// selects the modules that accept those kinds.
+const DATA_TYPES = [
+  {label:'Domain Name',     kinds:['domain']},
+  {label:'E-mail Address',  kinds:['email']},
+  {label:'IP Address',      kinds:['ip_address']},
+  {label:'Phone Number',    kinds:['phone']},
+  {label:'Username',        kinds:['username']},
+  {label:'Human Name',      kinds:['full_name']},
+  {label:'URL',             kinds:['url']},
+  {label:'Network ASN',     kinds:['asn']},
+  {label:'GPS Coordinates', kinds:['coordinates']},
+];
+
 const S = {
   route:    {name:'scans', params:{}, query:{}},
   version:  '',
@@ -365,7 +400,7 @@ const S = {
   wizard: {
     name:'', value:'', kind:'auto',
     usecase:'all', modules:null,
-    activeTab:'usecase',
+    activeTab:'usecase', dataType:null,
     showAdv:false,
     options:{ exclude_modules:[], throttle_ms:250, module_timeout_ms:null, depth:2,
               min_expand_confidence:0.50, max_entities:null, max_wall_time_secs:null,
@@ -968,7 +1003,8 @@ async function renderNewScan(v){
 
       <div class="control-group">
         <ul class="nav nav-tabs">
-          <li id="usetab" class="${W.activeTab==='usecase'?'active':''}"><a href="#" data-tab="usecase">By Use Case</a></li>
+          <li id="usetab"    class="${W.activeTab==='usecase'?'active':''}"><a href="#" data-tab="usecase">By Use Case</a></li>
+          <li id="datatab"   class="${W.activeTab==='data'?'active':''}"><a href="#" data-tab="data">By Required Data</a></li>
           <li id="moduletab" class="${W.activeTab==='module'?'active':''}"><a href="#" data-tab="module">By Module</a></li>
           <div class="btn-group-sm pull-right" id="selectors" style="display:${W.activeTab==='module'?'block':'none'};padding:6px">
             <button id="btn-select-all" type="button" class="btn btn-info btn-sm">Select All</button>&nbsp;
@@ -988,6 +1024,23 @@ async function renderNewScan(v){
             </tr>
           `).join('')}
         </table>
+
+        <div id="datatable-host" style="display:${W.activeTab==='data'?'block':'none'}">
+          <p class="text-muted" style="margin:10px 0 6px;font-size:13px">
+            Select the type of data you have about your target. Huntsman will enable only the modules that can use that data.
+          </p>
+          <div id="data-type-chips" style="margin-bottom:12px">
+            ${DATA_TYPES.map(dt=>`
+              <button type="button" class="btn btn-sm ${W.dataType===dt.label?'btn-primary':'btn-default'} data-type-chip"
+                data-label="${attr(dt.label)}" data-kinds="${attr(JSON.stringify(dt.kinds))}"
+                style="margin:3px">${esc(dt.label)}</button>
+            `).join('')}
+          </div>
+          <div id="data-type-hint" class="text-muted" style="font-size:12px">
+            ${W.dataType ? `Showing modules that accept <b>${esc(W.dataType)}</b> as input.` : 'Click a data type above to filter modules.'}
+          </div>
+          <div id="data-moduletable-host" style="margin-top:8px"></div>
+        </div>
 
         <div id="moduletable-host" style="display:${W.activeTab==='module'?'block':'none'}"></div>
       </div>
@@ -1069,11 +1122,27 @@ async function renderNewScan(v){
     e.preventDefault();
     W.activeTab = a.dataset.tab;
     $('#usetab').classList.toggle('active', W.activeTab==='usecase');
+    $('#datatab').classList.toggle('active', W.activeTab==='data');
     $('#moduletab').classList.toggle('active', W.activeTab==='module');
     $('#usetable').style.display = W.activeTab==='usecase' ? 'table' : 'none';
+    $('#datatable-host').style.display = W.activeTab==='data' ? 'block' : 'none';
     $('#moduletable-host').style.display = W.activeTab==='module' ? 'block' : 'none';
     $('#selectors').style.display = W.activeTab==='module' ? 'block' : 'none';
+    if (W.activeTab==='data') renderDataTypeModules();
   }));
+  // "By Required Data" chip clicks
+  $('#datatable-host').addEventListener('click', e=>{
+    const chip = e.target.closest('.data-type-chip');
+    if (!chip) return;
+    e.preventDefault();
+    const label = chip.dataset.label;
+    W.dataType = W.dataType===label ? null : label;
+    $$('.data-type-chip').forEach(c=>c.classList.toggle('btn-primary', c.dataset.label===W.dataType));
+    $$('.data-type-chip').forEach(c=>c.classList.toggle('btn-default', c.dataset.label!==W.dataType));
+    const hint = $('#data-type-hint');
+    if (hint) hint.innerHTML = W.dataType ? `Showing modules that accept <b>${esc(W.dataType)}</b> as input.` : 'Click a data type above to filter modules.';
+    renderDataTypeModules();
+  });
   $('#adv-toggle').addEventListener('click', e=>{
     e.preventDefault();
     W.showAdv = !W.showAdv;
@@ -1150,6 +1219,51 @@ function renderWizardModuleTable(){
     renderWizardModuleTable();
   }));
 }
+function renderDataTypeModules(){
+  const W = S.wizard;
+  const host = $('#data-moduletable-host');
+  if (!host) return;
+  if (!W.dataType){
+    host.innerHTML = '';
+    return;
+  }
+  const dt = DATA_TYPES.find(d=>d.label===W.dataType);
+  if (!dt){ host.innerHTML = ''; return; }
+  const matching = S.modules.filter(m=>
+    !m.accepts || dt.kinds.some(k=>m.accepts.includes(k))
+  );
+  if (!matching.length){
+    host.innerHTML = `<div class="empty-state"><p>No modules accept <code>${esc(W.dataType)}</code> as input.</p></div>`;
+    return;
+  }
+  const activeFromData = new Set(matching.map(m=>m.name));
+  host.innerHTML = `
+    <div style="padding:6px 0 4px;color:#666;font-size:12px">
+      <b>${matching.length}</b> module${matching.length===1?'':'s'} accept ${esc(W.dataType)} as input.
+      <a href="#" id="apply-data-selection" style="margin-left:8px;color:#059CD7">Apply selection →</a>
+    </div>
+    <div class="mod-grid">
+      ${matching.map(m=>{
+        const cost = m.cost || 'free';
+        const desc = m.description || '';
+        return `<label${desc ? ` title="${attr(desc)}"` : ''}>
+          <input type="checkbox" data-mod="${attr(m.name)}" checked>
+          <span class="mn">${esc(m.name)}</span>
+          ${m.passive ? '<span class="cost-pill" style="background:#eee;color:#666" title="passive">passive</span>':''}
+          ${costPill(cost)}
+        </label>`;
+      }).join('')}
+    </div>
+  `;
+  const applyLink = $('#apply-data-selection');
+  if (applyLink) applyLink.addEventListener('click', e=>{
+    e.preventDefault();
+    W.modules = Array.from(activeFromData);
+    W.activeTab = 'module';
+    renderNewScan($('#view')).then(()=>{});
+  });
+}
+
 async function uploadDossier(){
   const inp = $('#dossier-file');
   const st  = $('#import-status');
