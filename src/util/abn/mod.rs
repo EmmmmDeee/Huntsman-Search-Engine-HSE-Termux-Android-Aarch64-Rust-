@@ -225,7 +225,7 @@ pub fn company_names(owner: &str) -> Vec<String> {
 
     if parts.len() >= 2 {
         // Joint syndicate: each company is its own ABN target.
-        let mut out: Vec<String> = Vec::new();
+        let mut out: Vec<String> = Vec::with_capacity(parts.len().min(5));
         for c in parts {
             if !out.contains(&c) {
                 out.push(c);

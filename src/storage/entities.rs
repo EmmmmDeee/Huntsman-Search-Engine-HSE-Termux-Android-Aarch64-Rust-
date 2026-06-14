@@ -336,8 +336,14 @@ impl super::Store {
             .split(|c: char| !c.is_alphanumeric())
             .filter(|t| !t.is_empty())
             .map(|t| format!("\"{}\"*", t.replace('"', "")))
-            .collect::<Vec<_>>()
-            .join(" ")
+            .enumerate()
+            .fold(String::new(), |mut s, (i, token)| {
+                if i > 0 {
+                    s.push(' ');
+                }
+                s.push_str(&token);
+                s
+            })
     }
 }
 
