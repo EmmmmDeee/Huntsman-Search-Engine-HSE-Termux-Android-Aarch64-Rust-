@@ -24,6 +24,7 @@
 //!   * `Coordinates` at 0.52 via offline postcode centroid (au-state tagged)
 
 use async_trait::async_trait;
+use futures::future::join_all;
 use serde_json::{Map, Value};
 
 use crate::core::{
@@ -240,24 +241,21 @@ impl Module for AuUnclaimed {
 
         let mut result = ModuleResult::new();
 
-        for reg in REGISTERS {
+        let encoded = crate::util::http::urlencode(query);
+        let futures = REGISTERS.iter().map(|reg| {
             let url = format!(
                 "{}/datastore_search?resource_id={}&q={}&limit={}",
-                reg.action_base,
-                reg.resource_id,
-                crate::util::http::urlencode(query),
-                MAX_RECORDS,
+                reg.action_base, reg.resource_id, encoded, MAX_RECORDS,
             );
-            let resp: CkanResp = match fetch_json(&ctx.http, SRC, &url).await {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-            let records = match resp.result.as_ref() {
-                Some(r) => &r.records,
-                None => continue,
-            };
+            let http = ctx.http.clone();
+            async move { (reg, fetch_json::<CkanResp>(&http, SRC, &url).await) }
+        });
+        let responses = join_all(futures).await;
+        for (reg, resp) in responses {
+            let Ok(resp) = resp else { continue };
+            let Some(r) = resp.result.as_ref() else { continue };
             result.extend(
-                records
+                r.records
                     .iter()
                     .take(MAX_RECORDS)
                     .filter(|record| owner_matches(record, reg.name_field, full_name))
