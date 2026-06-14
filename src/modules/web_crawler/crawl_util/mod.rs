@@ -281,19 +281,23 @@ pub(super) async fn fetch_robots(http: &reqwest::Client, seed: &Url, rules: &mut
 }
 
 pub(super) fn is_disallowed(url: &str, rules: &[String]) -> bool {
-    let path = Url::parse(url)
-        .ok()
-        .map(|u| u.path().to_string())
-        .unwrap_or_default();
+    // Borrow the parsed path instead of allocating a `String`; `Url` owns the
+    // backing buffer for the duration of this call.
+    let parsed = Url::parse(url).ok();
+    let path = parsed.as_ref().map(|u| u.path()).unwrap_or("");
     rules.iter().any(|r| path.starts_with(r))
 }
 
 pub(super) fn is_binary_url(url: &str) -> bool {
     let lower = url.to_lowercase();
     let path = lower.split('?').next().unwrap_or(&lower);
-    BINARY_EXTENSIONS
-        .iter()
-        .any(|ext| path.ends_with(&format!(".{ext}")))
+    // Match `.<ext>` without allocating a `format!(".{ext}")` per extension:
+    // require the suffix `<ext>` preceded by a literal `.`.
+    BINARY_EXTENSIONS.iter().any(|ext| {
+        path.len() > ext.len()
+            && path.as_bytes()[path.len() - ext.len() - 1] == b'.'
+            && path.ends_with(ext)
+    })
 }
 
 pub(super) fn extract_links(
@@ -307,6 +311,11 @@ pub(super) fn extract_links(
         Ok(u) => u,
         Err(_) => return,
     };
+
+    // The enqueued depth depends only on `current_url`, not on the individual
+    // link, so compute it once instead of re-scanning the URL for every match.
+    let child_depth =
+        (current_url.matches('/').count().min(MAX_DEPTH as usize) as u32).saturating_add(1);
 
     for cap in LinkIter::new(body) {
         let resolved = match base.join(cap) {
@@ -332,11 +341,6 @@ pub(super) fn extract_links(
 
         if crate::util::domains::is_or_subdomain_of(&host, base_host) {
             state.internal_links += 1;
-            if host != base_host
-                && crate::util::domains::is_proper_subdomain_of(&host, target_domain)
-            {
-                state.subdomains.insert(host.clone());
-            }
             // SSRF egress guard: never enqueue a link whose host is a
             // private/reserved IP literal, even when it matches the seed host
             // (which would require the seed itself to be internal). Mirrors the
@@ -346,8 +350,14 @@ pub(super) fn extract_links(
                 && state.visited.len() < MAX_PAGES * 2
                 && !crate::util::preflight::url_host_is_private(&clean)
             {
-                let depth = current_url.matches('/').count().min(MAX_DEPTH as usize) as u32;
-                state.queue.push_back((clean, depth + 1));
+                state.queue.push_back((clean, child_depth));
+            }
+            if host != base_host
+                && crate::util::domains::is_proper_subdomain_of(&host, target_domain)
+            {
+                // `host` is not used again on this branch, so move it into the
+                // set instead of cloning.
+                state.subdomains.insert(host);
             }
         } else {
             state.external_links += 1;
