@@ -8,6 +8,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use futures::future::join_all;
 use serde_json::Value;
 
 use crate::core::{
@@ -79,24 +80,25 @@ impl Module for ApiKeyProbe {
 
         let mut result = ModuleResult::new();
         let all_probes = probes();
-        let mut tasks = Vec::new();
 
-        for probe in &all_probes {
-            let key = key.to_string();
-            let (url, headers) = (probe.url_builder)(&key);
-            tasks.push(tokio::spawn(async move {
-                probe_endpoint(&url, &key, &headers).await
-            }));
-        }
+        let futs: Vec<_> = all_probes
+            .iter()
+            .map(|probe| {
+                let key_owned = key.to_string();
+                let (url, headers) = (probe.url_builder)(&key_owned);
+                async move { probe_endpoint(&url, &key_owned, &headers).await }
+            })
+            .collect();
+        let responses = join_all(futs).await;
 
         let pool = key_pool::global_pool();
         let mut identified = Vec::new();
 
-        for (i, task) in tasks.into_iter().enumerate() {
+        for (i, response_opt) in responses.into_iter().enumerate() {
             let probe = &all_probes[i];
-            let response = match task.await {
-                Ok(Some(body)) => body,
-                _ => continue,
+            let response = match response_opt {
+                Some(body) => body,
+                None => continue,
             };
 
             let json: Value = match serde_json::from_str(&response) {
