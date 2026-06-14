@@ -4,6 +4,7 @@
 //! source reads as implementation; tests reach private items via `use super::*`.
 
 use super::*;
+use super::classify::is_infra_domain;
 
 #[test]
 fn sanitise_strips_surrounding_quotes_and_stray_punctuation() {

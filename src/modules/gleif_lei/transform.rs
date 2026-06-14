@@ -105,7 +105,7 @@ pub(super) fn records_to_entities(resp: &GleifResp, query: &str, scan_id: &str) 
             }
             let mut aev = Evidence::new(SRC, format!("Registered address for {name}"))
                 .with_attr("org", &name)
-                .with_attr("lei", &lei);
+                .with_attr("lei", lei);
             if !a.address_lines.is_empty() {
                 aev = aev.with_attr("street", a.address_lines.join(", "));
             }

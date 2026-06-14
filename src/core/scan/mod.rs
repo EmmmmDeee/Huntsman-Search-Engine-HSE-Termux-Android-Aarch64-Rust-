@@ -12,7 +12,7 @@ use classify::domain_expansion_factor;
 pub(crate) use classify::{is_mega_domain, is_noncentral_domain, is_wrong_identity_pivot};
 // Reached only by the classification tests retained in this file.
 #[cfg(test)]
-use classify::{identity_norm, identity_overlaps, is_infra_domain};
+use classify::{identity_norm, identity_overlaps};
 
 mod detect;
 use detect::{

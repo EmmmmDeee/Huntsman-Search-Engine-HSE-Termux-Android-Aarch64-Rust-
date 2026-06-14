@@ -43,6 +43,7 @@ pub(crate) fn is_mega_domain(domain: &str) -> bool {
 /// but is incidental to any subject — `ns10.dnsmadeeasy.com`,
 /// `cns1.secureserver.net`, `u123.sendgrid.net`, `ns-664.awsdns-19.net`, … map
 /// the provider's estate, not the target, so they are never worth deep-expanding.
+#[cfg(test)]
 pub(crate) fn is_infra_domain(domain: &str) -> bool {
     infra_matches(&normalise_host(domain))
 }

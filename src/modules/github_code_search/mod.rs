@@ -158,7 +158,7 @@ impl Module for GithubCodeSearch {
                 && let Ok(arr) = serde_json::from_slice::<Vec<CommitItem>>(&raw)
             {
                 let wrapped = CommitsResp { commits: arr };
-                result.extend(build_commit_emails(&wrapped, &full_name, &ctx.scan_id));
+                result.extend(build_commit_emails(&wrapped, full_name, &ctx.scan_id));
             }
         }
 

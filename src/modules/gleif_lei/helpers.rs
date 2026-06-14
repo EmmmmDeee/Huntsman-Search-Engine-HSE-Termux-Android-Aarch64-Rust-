@@ -5,12 +5,7 @@ use crate::core::entity::Evidence;
 
 use super::SRC;
 
-/// Trim to `None` when empty.
-pub(super) fn non_empty(s: Option<String>) -> Option<String> {
-    s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
-}
-
-/// Borrowing variant of [`non_empty`]: trims an `Option<&str>` to an owned
+/// Trims an `Option<&str>` to an owned
 /// non-empty `String`, avoiding a clone of the source `Option<String>`.
 pub(super) fn non_empty_ref(s: Option<&str>) -> Option<String> {
     s.map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned)

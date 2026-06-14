@@ -297,8 +297,8 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
 
     // The named adversary/threat-actor (e.g. "Mirai", "NSO Group") is a
     // correlatable Organisation pivot, not just an evidence string.
-    if let Some(capped) = adversary_name.as_deref() {
-        if capped.len() >= 2 {
+    if let Some(capped) = adversary_name.as_deref().filter(|s| s.len() >= 2) {
+        {
             let mut o = Entity::new(EntityKind::Organisation, capped, 0.58, &ctx.scan_id);
             o.tag("threat-intel");
             o.tag("adversary");
