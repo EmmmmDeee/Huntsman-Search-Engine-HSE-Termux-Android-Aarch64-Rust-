@@ -588,12 +588,16 @@ fn extract_breach_entities_with(
     let city = val_str(item, "city");
     let state = val_str(item, "state");
     if city.is_some() || street.is_some() {
-        let addr = [street.as_deref(), city.as_deref(), state.as_deref()]
-            .iter()
+        let mut addr = String::new();
+        for part in [street.as_deref(), city.as_deref(), state.as_deref()]
+            .into_iter()
             .flatten()
-            .copied()
-            .collect::<Vec<&str>>()
-            .join(", ");
+        {
+            if !addr.is_empty() {
+                addr.push_str(", ");
+            }
+            addr.push_str(part);
+        }
         if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {
             push_oathnet_entity(
                 result,

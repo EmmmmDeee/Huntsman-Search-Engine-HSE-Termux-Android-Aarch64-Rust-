@@ -28,6 +28,25 @@ use crate::util::http::urlencode;
 
 pub(super) const KEY_ENV: &str = "HUNTSMAN_SHODAN_KEY";
 
+/// Join displayable items with `sep` into a single `String`, writing each item
+/// directly into the buffer to avoid the intermediate `Vec<String>` that a
+/// `map(to_string).collect::<Vec<_>>().join(..)` chain allocates.
+fn join_display<I>(items: I, sep: &str) -> String
+where
+    I: IntoIterator,
+    I::Item: std::fmt::Display,
+{
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for item in items {
+        if !out.is_empty() {
+            out.push_str(sep);
+        }
+        let _ = write!(out, "{item}");
+    }
+    out
+}
+
 // ── Paid API response ────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -205,12 +224,7 @@ impl Shodan {
         let mut ports_sorted: Vec<u16> = body.ports.clone();
         ports_sorted.sort_unstable();
         ports_sorted.dedup();
-        let ports_csv = ports_sorted
-            .iter()
-            .take(MAX_PORTS)
-            .map(std::string::ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
+        let ports_csv = join_display(ports_sorted.iter().take(MAX_PORTS), ",");
         let mut ev = Evidence::new(
             SRC,
             format!(
@@ -338,28 +352,12 @@ impl Shodan {
             ports.sort_unstable();
             ev = ev
                 .with_attr("port_count", ports.len().to_string())
-                .with_attr(
-                    "open_ports",
-                    ports
-                        .iter()
-                        .take(20)
-                        .map(u32::to_string)
-                        .collect::<Vec<_>>()
-                        .join(","),
-                );
+                .with_attr("open_ports", join_display(ports.iter().take(20), ","));
         }
         if !body.vulns.is_empty() {
             ev = ev
                 .with_attr("vuln_count", body.vulns.len().to_string())
-                .with_attr(
-                    "top_vulns",
-                    body.vulns
-                        .iter()
-                        .take(10)
-                        .map(String::as_str)
-                        .collect::<Vec<_>>()
-                        .join(","),
-                );
+                .with_attr("top_vulns", join_display(body.vulns.iter().take(10), ","));
         }
         entity.add_evidence(ev);
         result.push(entity);
