@@ -222,6 +222,10 @@ impl Module for SeekNow {
             );
             result.push(parent);
 
+            // Each record yields at least one entity; reserve up front so the
+            // result vector doesn't repeatedly realloc as records are walked.
+            result.entities.reserve(total);
+
             for item in &items {
                 extract_entities(
                     item,
@@ -638,8 +642,6 @@ fn extract_entities(
     // API-key origin, endpoint) for traceability.
     let ev = record_evidence(item, &dbname, endpoint, key_fp);
 
-    let target_lower = target_value.to_lowercase();
-
     if let Some(email) = val_str(item, "email") {
         let lower = email.to_lowercase();
         if lower.contains('@') && seen.insert(lower) {
@@ -664,19 +666,24 @@ fn extract_entities(
     }
     if let Some(phone) = val_str(item, "phone").or_else(|| val_str(item, "phone_number"))
         && phone.len() >= 7
-        && seen.insert(phone.to_lowercase())
     {
-        let conf = if phone.to_lowercase() == target_lower {
-            0.70
-        } else {
-            0.55
-        };
-        push_breach_entity(
-            result,
-            Entity::new(EntityKind::Phone, &phone, conf, scan_id),
-            &ev,
-            &[],
-        );
+        // Lowercase `phone` once and reuse that single copy for both the dedup
+        // key and the target comparison, instead of lowercasing it twice (and
+        // the target unconditionally). Preserves the exact prior comparison.
+        let phone_lower = phone.to_lowercase();
+        if seen.insert(phone_lower.clone()) {
+            let conf = if phone_lower == target_value.to_lowercase() {
+                0.70
+            } else {
+                0.55
+            };
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Phone, &phone, conf, scan_id),
+                &ev,
+                &[],
+            );
+        }
     }
     if let Some(name) = val_str(item, "full_name").or_else(|| val_str(item, "name"))
         && name.trim().contains(' ')
@@ -949,6 +956,13 @@ const RICH_DETAIL_SKIP: &[&str] = &[
     "whois",
 ];
 
+/// `O(1)` membership view over [`RICH_DETAIL_SKIP`], built once on first use.
+/// The catch-all pass runs this lookup per field per record, so a `HashSet`
+/// replaces the prior linear scan of ~90 `&str` entries without changing which
+/// fields are skipped.
+static RICH_DETAIL_SKIP_SET: std::sync::LazyLock<HashSet<&'static str>> =
+    std::sync::LazyLock::new(|| RICH_DETAIL_SKIP.iter().copied().collect());
+
 /// Push a stealer/infrastructure-CONTEXT entity: tags `see-know` plus any
 /// `extra_tags`, but deliberately NOT `breach`. Device fingerprints (MAC, HWID,
 /// hostname, …) are infrastructure/context, not leaked PII — the same policy the
@@ -1131,7 +1145,16 @@ fn extract_rich_detail(
     // node and only pollutes the entity set; its atomic contents are surfaced by
     // the typed paths above and by the dedicated DNS/RDAP modules. ──
     for (k, v) in obj {
-        if RICH_DETAIL_SKIP.contains(&k.to_lowercase().as_str()) {
+        // O(1) set lookup instead of a linear scan of ~90 entries per field.
+        // The skip list is all-lowercase; only pay for a lowercased copy when
+        // `k` actually contains uppercase ASCII (the common case is already
+        // lowercase, so no allocation), preserving the case-insensitive match.
+        let skip = if k.bytes().any(|b| b.is_ascii_uppercase()) {
+            RICH_DETAIL_SKIP_SET.contains(k.to_lowercase().as_str())
+        } else {
+            RICH_DETAIL_SKIP_SET.contains(k.as_str())
+        };
+        if skip {
             continue;
         }
         let val = match v {
