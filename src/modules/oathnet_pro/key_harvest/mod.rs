@@ -147,15 +147,17 @@ pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
         }
     }
 
-    // user:password format — extract the password portion
-    if trimmed.contains(':') && !trimmed.starts_with("http") {
-        let parts: Vec<&str> = trimmed.splitn(2, ':').collect();
-        if parts.len() == 2 && parts[1].len() >= 16 {
-            // Same DoS cap as above — recurse on at most 4 KiB (char-boundary safe).
-            let pw = crate::util::str_util::truncate_safe(parts[1], EXTRACTED_VALUE_MAX);
-            if let Some(hit) = identify_api_key(pw) {
-                return Some(hit);
-            }
+    // user:password format — extract the password portion. `split_once`
+    // avoids the per-call `Vec` allocation the prior `splitn(2).collect()`
+    // paid on every `user:pass`-shaped candidate.
+    if !trimmed.starts_with("http")
+        && let Some((_, pass)) = trimmed.split_once(':')
+        && pass.len() >= 16
+    {
+        // Same DoS cap as above — recurse on at most 4 KiB (char-boundary safe).
+        let pw = crate::util::str_util::truncate_safe(pass, EXTRACTED_VALUE_MAX);
+        if let Some(hit) = identify_api_key(pw) {
+            return Some(hit);
         }
     }
     None
@@ -354,14 +356,24 @@ pub fn extract_api_keys_from_item(
             let Some(obj) = cookie.as_object() else {
                 continue;
             };
-            let name = val_str(&Value::Object(obj.clone()), "name").unwrap_or_default();
-            let Some(value) = val_str(&Value::Object(obj.clone()), "value") else {
+            // Read the cookie fields straight off the object map. The prior code
+            // built `Value::Object(obj.clone())` — a full deep clone of every
+            // cookie's key/value map — twice per cookie just to call `val_str`;
+            // stealer logs export hundreds of cookies per record, so that was a
+            // large per-cookie allocation for nothing. `val_str`'s empty-string
+            // filter is preserved by the explicit `is_empty` / `< 16` guards.
+            let name = obj
+                .get("name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_default();
+            let Some(value) = obj.get("value").and_then(|v| v.as_str()) else {
                 continue;
             };
             if value.len() < 16 {
                 continue;
             }
-            if let Some((service, key_val)) = identify_api_key(&value) {
+            if let Some((service, key_val)) = identify_api_key(value) {
                 let source = if name.is_empty() {
                     "cookie".to_string()
                 } else {
