@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (113 modules: 88 free · 20 key-gated · 5 paid)
+## Catalogue (116 modules: 91 free · 20 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -119,17 +119,19 @@ records. The engine knows nothing else — every module is a one-file change.
 | `hackertarget` | ip_address, domain, url | free | no | 24 | domain, ip_address |
 | `domainsdb` | full_name, domain, organisation | free | no | 19 | domain |
 
-### infrastructure (17)
+### infrastructure (18)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `hudsonrock` | email, username, domain | free | no | 130 | — |
 | `ripestat` | ip_address, asn | free | no | 107 | asn, organisation, email |
+| `signal_radar` | (all targets) | free | **yes** | 30 | ip_address, mac_address, device_id, coordinates |
 | `shodan` | ip_address | free | no | 105 | domain, url, asn, organisation, address, ip_address |
 | `criminal_ip` | ip_address | key_gated | no | 103 | organisation, asn |
 | `ipqs` | email, phone, ip_address | key_gated | no | 100 | — |
 | `ip_reputation` | ip_address, domain | free | no | 78 | ip_address |
 | `abuseipdb` | ip_address | key_gated | no | 52 | ip_address |
+| `asn_peers` | asn | free | **yes** | 36 | asn |
 | `bgpview` | ip_address, asn | free | no | 35 | ip_address, domain, asn |
 | `netblock` | cidr | free | **yes** | 60 | ip_address |
 | `portscan` | ip_address | free | no | 22 | ip_address, url |

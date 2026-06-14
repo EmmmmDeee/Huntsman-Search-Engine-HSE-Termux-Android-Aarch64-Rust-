@@ -10,6 +10,7 @@ pub mod abuseipdb;
 pub mod acnc_charities;
 pub mod api_key_probe;
 pub mod asic_director;
+pub mod asn_peers;
 pub mod au_electoral;
 pub mod au_people;
 pub mod au_property;
@@ -260,6 +261,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(signal_radar::SignalRadar),
         Arc::new(abn_lookup::AbnLookup),
         Arc::new(api_key_probe::ApiKeyProbe),
+        Arc::new(asn_peers::AsnPeers),
         Arc::new(chain_intel::ChainIntel),
         // OSINT orchestration API modules
         Arc::new(seon::Seon),
