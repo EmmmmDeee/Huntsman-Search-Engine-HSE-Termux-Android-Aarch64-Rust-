@@ -14,7 +14,8 @@ pub(super) const SRC: &str = "dehashed";
 pub(super) const MAX_DATABASES: usize = 5;
 
 /// The DeHashed query selector for a target kind, or `None` for a kind this
-/// module does not search. **Pure** — kept in lockstep with [`super::DeHashed::accepts`].
+/// module does not search. **Pure** — kept in lockstep with [`super::DeHashed`]'s
+/// `accepts` implementation.
 /// The v2 selector syntax is unchanged from v1 (`email:`, `username:`, …).
 pub(super) fn selector_for(kind: TargetKind) -> Option<&'static str> {
     Some(match kind {

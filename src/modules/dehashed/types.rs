@@ -19,7 +19,7 @@ pub(super) struct DehashedResp {
 /// are deliberately NOT bound so we can't even accidentally surface them. v2
 /// returns most fields as arrays (e.g. `"database_name": ["Collection1"]`), so
 /// `database_name` is captured as a raw JSON value and flattened by
-/// [`db_names`], which tolerates a string, an array of strings, or null.
+/// [`db_names`](super::build::db_names), which tolerates a string, an array of strings, or null.
 #[derive(Deserialize)]
 pub(super) struct Entry {
     #[serde(default)]

@@ -59,12 +59,6 @@ impl Drop for CancelRegistryGuard {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    include!("tests.rs");
-}
-
-
 /// Maximum number of scans that can run concurrently via the HTTP API.
 pub const MAX_CONCURRENT_SCANS: usize = 8;
 
@@ -82,4 +76,9 @@ pub struct AppState {
     /// Bounds the number of scans running concurrently via the API.
     /// Prevents resource exhaustion from rapid `POST /scans` calls.
     pub scan_semaphore: Arc<tokio::sync::Semaphore>,
+}
+
+#[cfg(test)]
+mod tests {
+    include!("tests.rs");
 }
