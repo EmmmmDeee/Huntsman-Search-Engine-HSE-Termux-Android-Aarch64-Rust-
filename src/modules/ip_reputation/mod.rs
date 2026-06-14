@@ -148,8 +148,7 @@ impl Module for IpReputation {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         if target.kind == TargetKind::IpAddress {
             // Both checks are independent — run them concurrently.
-            let (mut otx, tor) =
-                tokio::join!(collect_otx(target, ctx), collect_tor(target, ctx));
+            let (mut otx, tor) = tokio::join!(collect_otx(target, ctx), collect_tor(target, ctx));
             otx.extend(tor.entities);
             Ok(otx)
         } else {
