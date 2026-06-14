@@ -70,12 +70,15 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
             }
         }
         let evidence_urls = urls.join(" | ");
-        let evidence = e
-            .evidence
-            .iter()
-            .map(|ev| format!("[{}] {}", ev.source, ev.summary))
-            .collect::<Vec<_>>()
-            .join(" || ");
+        // Fold the per-source summary trail directly into one String rather than
+        // collecting an intermediate Vec of formatted fragments before joining.
+        let mut evidence = String::new();
+        for (i, ev) in e.evidence.iter().enumerate() {
+            if i > 0 {
+                evidence.push_str(" || ");
+            }
+            let _ = write!(evidence, "[{}] {}", ev.source, ev.summary);
+        }
 
         let _ = writeln!(
             body,

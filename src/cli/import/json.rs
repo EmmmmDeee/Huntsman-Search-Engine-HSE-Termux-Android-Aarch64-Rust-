@@ -365,16 +365,17 @@ pub(super) async fn parse_oathnet_json(
                     let mut e = Entity::new(EntityKind::Email, email, 0.85, &sid);
                     e.tag("holehe-verified");
                     e.tag("import");
+                    let platforms_joined = platforms.join(", ");
                     e.add_evidence(
                         Evidence::new(
                             "import:oathnet",
                             format!(
                                 "Holehe: registered on {} platform(s): {}",
                                 platforms.len(),
-                                platforms.join(", ")
+                                platforms_joined
                             ),
                         )
-                        .with_attr("platforms", platforms.join(", "))
+                        .with_attr("platforms", platforms_joined.clone())
                         .with_attr("platform_count", platforms.len().to_string()),
                     );
                     entities.push(e);

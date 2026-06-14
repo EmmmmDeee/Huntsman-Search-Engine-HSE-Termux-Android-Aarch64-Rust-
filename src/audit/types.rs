@@ -21,12 +21,17 @@ impl AuditEntity {
     /// source names.
     #[must_use]
     pub fn from_entity(e: &crate::core::entity::Entity) -> Self {
+        // Dedup on borrowed `&str` (sorted via BTreeSet to keep the stable,
+        // observable ordering) so each source string is cloned at most once —
+        // only for the survivors — instead of cloning every evidence source up
+        // front and discarding the duplicates.
         let sources: Vec<String> = e
             .evidence
             .iter()
-            .map(|ev| ev.source.clone())
+            .map(|ev| ev.source.as_str())
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
+            .map(str::to_owned)
             .collect();
         Self {
             kind: e.kind.to_string(),

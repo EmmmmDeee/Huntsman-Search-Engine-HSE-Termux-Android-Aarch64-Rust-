@@ -58,12 +58,14 @@ pub async fn scan_create(
         return internal_error(&e);
     }
 
-    spawn_scan(&s, scan.clone(), target);
+    let sid = scan.id.clone();
+    let kind = scan.target.kind;
+    spawn_scan(&s, scan, target);
 
-    info!(scan_id = %scan.id, kind = ?scan.target.kind, "scan queued");
+    info!(scan_id = %sid, kind = ?kind, "scan queued");
     (
         StatusCode::ACCEPTED,
-        Json(json!({ "scan_id": scan.id, "status": "queued" })),
+        Json(json!({ "scan_id": sid, "status": "queued" })),
     )
         .into_response()
 }
