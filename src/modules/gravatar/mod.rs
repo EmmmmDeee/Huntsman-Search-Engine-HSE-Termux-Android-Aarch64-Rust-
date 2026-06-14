@@ -177,25 +177,28 @@ impl Module for Gravatar {
 /// Turn a Gravatar profile entry into entities. Pure of I/O so it is unit-tested
 /// against a fixture; the network shell in `process` stays a thin adapter.
 fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleResult) {
-    // Evidence shared by every derived entity: the profile's provenance.
-    let ev = [
-        ("profile_url", entry.profile_url.as_deref()),
-        ("display_name", entry.display_name.as_deref()),
-        ("about_me", entry.about_me.as_deref()),
-    ]
-    .into_iter()
-    .filter_map(|(key, value)| value.map(|v| (key, v)))
-    .fold(
-        Evidence::new(SRC, "Gravatar public profile").with_attr("gravatar_hash", hash),
-        |ev, (key, v)| ev.with_attr(key, v),
-    );
+    // Build a fresh Evidence value for each derived entity from shared immutable
+    // profile fields — avoids cloning a single Evidence across many push calls.
+    let make_ev = || {
+        [
+            ("profile_url", entry.profile_url.as_deref()),
+            ("display_name", entry.display_name.as_deref()),
+            ("about_me", entry.about_me.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(
+            Evidence::new(SRC, "Gravatar public profile").with_attr("gravatar_hash", hash),
+            |ev, (key, v)| ev.with_attr(key, v),
+        )
+    };
 
     let push =
         |result: &mut ModuleResult, kind: EntityKind, value: &str, conf: f64, tags: &[&str]| {
             let mut e = Entity::new(kind, value, conf, scan_id);
             e.tag(SRC);
             tags.iter().for_each(|t| e.tag(*t));
-            e.add_evidence(ev.clone());
+            e.add_evidence(make_ev());
             result.push(e);
         };
 

@@ -127,32 +127,33 @@ fn record_to_entities(
         (None, None) => return out,
     };
 
-    let ev = [
-        ("postcode", postcode.clone()),
-        ("suburb", suburb.clone()),
-        (
-            "amount",
-            field_str(record, "Amount").or_else(|| field_str(record, "AMOUNT")),
-        ),
-    ]
-    .into_iter()
-    .filter_map(|(key, value)| value.map(|v| (key, v)))
-    .fold(
-        Evidence::new(
-            SRC,
-            format!("AU unclaimed money ({}) for {full_name}", reg.state),
+    // Build evidence from shared source data; called twice to avoid cloning.
+    let amount = field_str(record, "Amount").or_else(|| field_str(record, "AMOUNT"));
+    let make_ev = || {
+        [
+            ("postcode", postcode.clone()),
+            ("suburb", suburb.clone()),
+            ("amount", amount.clone()),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(
+            Evidence::new(
+                SRC,
+                format!("AU unclaimed money ({}) for {full_name}", reg.state),
+            )
+            .with_attr("state", reg.state)
+            .with_attr("source", "au_unclaimed"),
+            |ev, (key, v)| ev.with_attr(key, v),
         )
-        .with_attr("state", reg.state)
-        .with_attr("source", "au_unclaimed"),
-        |ev, (key, v)| ev.with_attr(key, v),
-    );
+    };
 
     let mut ae = Entity::new(EntityKind::Address, &display, 0.55, scan_id);
     ae.tag(SRC);
     ae.tag("au-unclaimed");
     ae.tag("country:AU");
     ae.tag(format!("au-state:{}", reg.state));
-    ae.add_evidence(ev.clone());
+    ae.add_evidence(make_ev());
     out.push(ae);
 
     // Derive Coordinates from postcode centroid via city_coords lookup.
@@ -170,7 +171,7 @@ fn record_to_entities(
             ce.tag("au-unclaimed");
             ce.tag("country:AU");
             ce.tag(format!("au-state:{}", reg.state));
-            ce.add_evidence(ev);
+            ce.add_evidence(make_ev());
             out.push(ce);
         }
     }
