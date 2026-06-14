@@ -241,7 +241,16 @@ pub(in crate::core::correlator) fn rule_au_015_threat_intel_hit(
             let attribution = if sources.is_empty() {
                 "a curated threat-intel feed".to_string()
             } else {
-                sources.into_iter().collect::<Vec<_>>().join(" + ")
+                sources
+                    .into_iter()
+                    .enumerate()
+                    .fold(String::new(), |mut acc, (i, s)| {
+                        if i > 0 {
+                            acc.push_str(" + ");
+                        }
+                        acc.push_str(s);
+                        acc
+                    })
             };
             let ti_hints: Vec<&str> = e
                 .tags

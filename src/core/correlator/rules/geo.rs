@@ -109,8 +109,26 @@ pub(in crate::core::correlator) fn rule_au_056_jurisdiction_cross_check(
                 } else {
                     format!(
                         " (coordinates: {}; addresses: {})",
-                        coord_set.iter().copied().collect::<Vec<_>>().join("/"),
-                        addr_set.iter().copied().collect::<Vec<_>>().join("/"),
+                        coord_set.iter().copied().enumerate().fold(
+                            String::new(),
+                            |mut acc, (i, s)| {
+                                if i > 0 {
+                                    acc.push('/');
+                                }
+                                acc.push_str(s);
+                                acc
+                            },
+                        ),
+                        addr_set.iter().copied().enumerate().fold(
+                            String::new(),
+                            |mut acc, (i, s)| {
+                                if i > 0 {
+                                    acc.push('/');
+                                }
+                                acc.push_str(s);
+                                acc
+                            },
+                        ),
                     )
                 }
             ),
@@ -126,8 +144,28 @@ pub(in crate::core::correlator) fn rule_au_056_jurisdiction_cross_check(
             format!(
                 "Coordinate fix(es) place the subject in {} but address/postcode(s) say {} — \
                  travel, a secondary base, or planted/stale data",
-                coord_set.iter().copied().collect::<Vec<_>>().join("/"),
-                addr_set.iter().copied().collect::<Vec<_>>().join("/"),
+                coord_set
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .fold(String::new(), |mut acc, (i, s)| {
+                        if i > 0 {
+                            acc.push('/');
+                        }
+                        acc.push_str(s);
+                        acc
+                    },),
+                addr_set
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .fold(String::new(), |mut acc, (i, s)| {
+                        if i > 0 {
+                            acc.push('/');
+                        }
+                        acc.push_str(s);
+                        acc
+                    },),
             ),
             uids,
             scan_id,
