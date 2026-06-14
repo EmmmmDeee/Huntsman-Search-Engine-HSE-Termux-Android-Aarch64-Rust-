@@ -129,7 +129,15 @@ pub fn extract_all(text: &str) -> Vec<AuAddress> {
 }
 
 fn normalise_ws(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
+    s.split_whitespace()
+        .enumerate()
+        .fold(String::with_capacity(s.len()), |mut acc, (i, w)| {
+            if i > 0 {
+                acc.push(' ');
+            }
+            acc.push_str(w);
+            acc
+        })
 }
 
 /// Reject impossible state-postcode combos. Tight enough to filter

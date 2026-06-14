@@ -126,10 +126,18 @@ pub fn looks_like_company(name: &str) -> bool {
     // Double-pad the collapsed token stream so each suffix matches only as a
     // whitespace-bounded token — otherwise " INC" would falsely fire inside
     // "INCANDESCENT", " LTD" inside "ALTDORF".
-    let u = format!(
-        " {} ",
-        folded.split_whitespace().collect::<Vec<_>>().join(" ")
-    );
+    let u = {
+        let mut s = String::with_capacity(folded.len() + 2);
+        s.push(' ');
+        for (i, w) in folded.split_whitespace().enumerate() {
+            if i > 0 {
+                s.push(' ');
+            }
+            s.push_str(w);
+        }
+        s.push(' ');
+        s
+    };
     const SUFFIXES: &[&str] = &[
         " PTY LTD ",
         " LIMITED ",
