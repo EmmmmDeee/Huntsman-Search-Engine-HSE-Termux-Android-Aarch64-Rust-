@@ -49,7 +49,7 @@ impl Module for EmailLocale {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
-        let email = target.value.clone();
+        let email = &target.value;
         let Some((local, _domain)) = email.split_once('@') else {
             return Ok(result);
         };

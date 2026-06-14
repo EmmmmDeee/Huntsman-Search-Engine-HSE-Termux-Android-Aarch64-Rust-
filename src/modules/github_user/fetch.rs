@@ -42,22 +42,25 @@ pub(super) async fn fetch_ssh_keys(login: &str, ctx: &ModuleContext, result: &mu
 
     if let Some(first) = result.entities.first_mut() {
         first.tag("has-ssh-keys");
-        let key_summaries: Vec<String> = keys
-            .iter()
-            .take(5)
-            .filter_map(|k| {
-                let key_str = k.key.as_deref()?;
-                let algo = key_str.split_whitespace().next().unwrap_or("unknown");
-                Some(format!("id={} type={algo}", k.id.unwrap_or(0)))
-            })
-            .collect();
+        let mut key_summaries = String::new();
+        for k in keys.iter().take(5) {
+            let Some(key_str) = k.key.as_deref() else {
+                continue;
+            };
+            let algo = key_str.split_whitespace().next().unwrap_or("unknown");
+            if !key_summaries.is_empty() {
+                key_summaries.push_str("; ");
+            }
+            use std::fmt::Write as _;
+            let _ = write!(key_summaries, "id={} type={algo}", k.id.unwrap_or(0));
+        }
         first.add_evidence(
             Evidence::new(
                 SRC,
                 format!("{} SSH public key(s) for @{login}", keys.len()),
             )
             .with_attr("ssh_key_count", keys.len().to_string())
-            .with_attr("ssh_keys", key_summaries.join("; ")),
+            .with_attr("ssh_keys", key_summaries),
         );
     }
 

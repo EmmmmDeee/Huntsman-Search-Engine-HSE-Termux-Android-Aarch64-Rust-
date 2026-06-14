@@ -146,17 +146,17 @@ impl Module for DomainsDb {
                 base
             }
             TargetKind::Organisation | TargetKind::FullName => {
-                let cleaned: String = target
+                // Join with no separator == keep alphanumerics, drop the spaces.
+                let query: String = target
                     .value
                     .to_lowercase()
                     .chars()
-                    .filter(|c| c.is_alphanumeric() || *c == ' ')
+                    .filter(|c| c.is_alphanumeric())
                     .collect();
-                let parts: Vec<&str> = cleaned.split_whitespace().collect();
-                if parts.is_empty() {
+                if query.is_empty() {
                     return Ok(ModuleResult::new());
                 }
-                parts.join("")
+                query
             }
             _ => return Ok(ModuleResult::new()),
         };

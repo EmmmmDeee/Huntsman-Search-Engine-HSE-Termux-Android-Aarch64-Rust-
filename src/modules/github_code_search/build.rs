@@ -35,13 +35,12 @@ pub(super) fn build_repo_entities(
         .and_then(|o| o.login.as_deref())
         .unwrap_or("");
     let exact_owner = seed_kind == TargetKind::Username && owner_login.eq_ignore_ascii_case(seed);
-    let seed_in_repo = full_name.to_lowercase().contains(&seed.to_lowercase())
-        || description.to_lowercase().contains(&seed.to_lowercase());
-    let conf = if exact_owner || seed_in_repo {
-        0.58
-    } else {
-        0.38
+    let seed_in_repo = exact_owner || {
+        let seed_lc = seed.to_lowercase();
+        full_name.to_lowercase().contains(&seed_lc)
+            || description.to_lowercase().contains(&seed_lc)
     };
+    let conf = if seed_in_repo { 0.58 } else { 0.38 };
 
     // Repo URL entity.
     let mut url_e = Entity::new(EntityKind::Url, html_url, conf, scan_id);
@@ -54,7 +53,7 @@ pub(super) fn build_repo_entities(
     if let Some(d) = nonempty(&repo.description) {
         ev = ev.with_attr("description", d);
     }
-    url_e.add_evidence(ev.clone());
+    url_e.add_evidence(ev);
     out.push(url_e);
 
     // Repo owner → Username pivot.

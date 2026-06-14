@@ -221,20 +221,18 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
     // Coordinates) without re-borrowing the chained iterator.
     let loc_list: Vec<&str> = locs.filter(|l| seen_loc.insert(l.to_lowercase())).collect();
     for loc in &loc_list {
+        // Resolve the AU state once and reuse it for both the Address tags and
+        // the inline Coordinates entity.
+        let state_code = crate::util::address_au::state_code(loc);
         let mut extra_tags: Vec<&str> = vec!["geo-hint", "geoint"];
-        let mut au_state_tag = String::new();
-        if let Some(sc) = crate::util::address_au::state_code(loc) {
-            au_state_tag = format!("au-state:{sc}");
-        }
-        if !au_state_tag.is_empty() {
+        if state_code.is_some() {
             extra_tags.push("country:AU");
         }
-        let tags_refs: Vec<&str> = extra_tags;
-        push(&mut out, EntityKind::Address, loc, 0.60, &tags_refs);
-        if !au_state_tag.is_empty()
+        push(&mut out, EntityKind::Address, loc, 0.60, &extra_tags);
+        if let Some(sc) = state_code
             && let Some(last) = out.last_mut()
         {
-            last.tag(au_state_tag);
+            last.tag(format!("au-state:{sc}"));
         }
         // Inline Coordinates via offline city lookup.
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
@@ -243,7 +241,7 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
             c.tag(SRC);
             c.tag("addr-derived");
             c.tag("geoint");
-            if let Some(sc) = crate::util::address_au::state_code(loc) {
+            if let Some(sc) = state_code {
                 c.tag(format!("au-state:{sc}"));
                 c.tag("country:AU");
             }

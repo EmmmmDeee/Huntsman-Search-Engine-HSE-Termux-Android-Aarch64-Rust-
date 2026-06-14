@@ -119,7 +119,7 @@ fn extract_suburb_from_line(line: &str, state: &str) -> String {
     if let Some(pos) = lc.find(&state_lc) {
         // Suburb is the sequence of alpha tokens immediately before the state.
         let before = line[..pos].trim_end();
-        let suburb: String = before
+        let tokens: Vec<&str> = before
             .split_whitespace()
             .rev()
             // A suburb is all-alpha or hyphenated; stop on digits/punctuation.
@@ -127,12 +127,14 @@ fn extract_suburb_from_line(line: &str, state: &str) -> String {
                 tok.chars()
                     .all(|c| c.is_alphabetic() || c == '-' || c == '\'')
             })
-            .collect::<Vec<_>>()
-            .iter()
-            .rev()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(" ");
+            .collect();
+        let mut suburb = String::new();
+        for (i, tok) in tokens.iter().rev().enumerate() {
+            if i > 0 {
+                suburb.push(' ');
+            }
+            suburb.push_str(tok);
+        }
         if !suburb.is_empty() && suburb.len() <= 30 {
             return suburb;
         }
@@ -237,15 +239,19 @@ pub(super) fn state_capital_coords(state: &str) -> Option<(f64, f64)> {
 /// Remove duplicate entities by (kind, value) keeping the highest-confidence
 /// copy. Pure after the sort. Allocates one pass.
 pub(super) fn dedup_entities(entities: &mut Vec<Entity>) {
-    entities.sort_by(|a, b| {
-        format!("{}", a.kind)
-            .cmp(&format!("{}", b.kind))
-            .then(a.value.cmp(&b.value))
-            .then(
-                b.confidence
-                    .partial_cmp(&a.confidence)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
+    // Decorate with the kind's Display string once per entity (O(n)) rather than
+    // re-formatting both sides on every comparison (O(n log n) allocations).
+    let mut decorated: Vec<(String, Entity)> = std::mem::take(entities)
+        .into_iter()
+        .map(|e| (e.kind.to_string(), e))
+        .collect();
+    decorated.sort_by(|(ka, a), (kb, b)| {
+        ka.cmp(kb).then(a.value.cmp(&b.value)).then(
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        )
     });
+    *entities = decorated.into_iter().map(|(_, e)| e).collect();
     entities.dedup_by(|a, b| a.kind == b.kind && a.value == b.value);
 }

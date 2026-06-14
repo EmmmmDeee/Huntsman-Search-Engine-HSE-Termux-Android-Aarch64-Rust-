@@ -45,6 +45,7 @@
 #[cfg(test)]
 mod tests;
 
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -396,25 +397,31 @@ impl Module for IntelX {
         // Top buckets by frequency (source breakdown), deterministic ordering.
         let mut top_buckets: Vec<(String, u32)> = bucket_counts.into_iter().collect();
         top_buckets.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        let top = top_buckets
-            .iter()
-            .take(15)
-            .map(|(b, n)| format!("{b}×{n}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let mut top = String::new();
+        for (i, (b, n)) in top_buckets.iter().take(15).enumerate() {
+            if i > 0 {
+                top.push_str(", ");
+            }
+            let _ = write!(top, "{b}×{n}");
+        }
 
         // Media-type breakdown (data types), labeled where known, numeric else.
         let mut media_pairs: Vec<(i32, u32)> = media_counts.into_iter().collect();
         media_pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        let media_summary = media_pairs
-            .iter()
-            .take(15)
-            .map(|(code, n)| match media_label(*code) {
-                Some(l) => format!("{l}×{n}"),
-                None => format!("media{code}×{n}"),
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
+        let mut media_summary = String::new();
+        for (i, (code, n)) in media_pairs.iter().take(15).enumerate() {
+            if i > 0 {
+                media_summary.push_str(", ");
+            }
+            match media_label(*code) {
+                Some(l) => {
+                    let _ = write!(media_summary, "{l}×{n}");
+                }
+                None => {
+                    let _ = write!(media_summary, "media{code}×{n}");
+                }
+            }
+        }
 
         let latest = all_records.iter().filter_map(|r| r.date.as_deref()).max();
 

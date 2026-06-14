@@ -286,7 +286,7 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
 // ---------------------------------------------------------------------------
 
 async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-    let normalised = target.value.clone();
+    let normalised = &target.value;
     if !normalised.contains('@') {
         return Ok(ModuleResult::new());
     }

@@ -31,11 +31,11 @@ pub(super) fn records_to_entities(resp: &GleifResp, query: &str, scan_id: &str) 
         let Some(name) = entity
             .legal_name
             .as_ref()
-            .and_then(|n| super::helpers::non_empty(n.name.clone()))
+            .and_then(|n| super::helpers::non_empty_ref(n.name.as_deref()))
         else {
             continue;
         };
-        let lei = attrs.lei.clone().unwrap_or_default();
+        let lei = attrs.lei.as_deref().unwrap_or("");
         let exact = name_matches_query(&name, query);
         let conf = if exact { ORG_EXACT } else { ORG_CANDIDATE };
 
@@ -51,7 +51,7 @@ pub(super) fn records_to_entities(resp: &GleifResp, query: &str, scan_id: &str) 
         } else {
             "name-candidate"
         });
-        org.add_evidence(record_evidence(&lei, entity, &name, total));
+        org.add_evidence(record_evidence(lei, entity, &name, total));
         out.push(org);
 
         if !exact {
@@ -66,7 +66,7 @@ pub(super) fn records_to_entities(resp: &GleifResp, query: &str, scan_id: &str) 
             e.tag("country:AU");
             e.add_evidence(
                 Evidence::new(SRC, format!("ACN/ABN for {name} (LEI {lei})"))
-                    .with_attr("lei", &lei),
+                    .with_attr("lei", lei),
             );
             out.push(e);
         }

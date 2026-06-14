@@ -63,7 +63,7 @@ impl Module for DnsAxfr {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
-        let domain = target.value.clone();
+        let domain = &target.value;
 
         if domain.is_empty() || !domain.contains('.') {
             return Ok(result);
@@ -72,7 +72,7 @@ impl Module for DnsAxfr {
         use hickory_resolver::proto::rr::RData;
 
         let resolver = crate::util::dns::shared_resolver();
-        let ns_records = match resolver.ns_lookup(&domain).await {
+        let ns_records = match resolver.ns_lookup(domain).await {
             Ok(ns) => ns,
             Err(_) => return Ok(result),
         };
@@ -110,7 +110,7 @@ impl Module for DnsAxfr {
                 Err(_) => continue,
             };
 
-            match attempt_axfr(&ns_ip, &domain).await {
+            match attempt_axfr(&ns_ip, domain).await {
                 Ok(records) if !records.is_empty() => {
                     result.extend(records.iter().map(|record| {
                         let mut e = Entity::new(EntityKind::Domain, record, 0.80, &ctx.scan_id);
@@ -124,7 +124,7 @@ impl Module for DnsAxfr {
                         e
                     }));
 
-                    let mut zone_e = Entity::new(EntityKind::Domain, &domain, 0.95, &ctx.scan_id);
+                    let mut zone_e = Entity::new(EntityKind::Domain, domain, 0.95, &ctx.scan_id);
                     zone_e.tag("axfr-permitted");
                     zone_e.tag("vulnerable");
                     zone_e.add_evidence(

@@ -254,12 +254,20 @@ pub(super) async fn lookup_caa(target: &Target, ctx: &ModuleContext) -> Result<V
         let RData::CAA(caa) = &record.data else {
             continue;
         };
-        let value = String::from_utf8_lossy(&caa.value).into_owned();
-        match caa.tag.to_ascii_lowercase().as_str() {
-            "issue" => issuers.push(value),
-            "issuewild" => wildcards.push(value),
-            "iodef" => iodefs.push(value),
-            _ => {}
+        // Match the tag without allocating a lowercased copy per record, and
+        // only materialise the value string once a tag we care about matches.
+        let tag = caa.tag.as_str();
+        let bucket = if tag.eq_ignore_ascii_case("issue") {
+            Some(&mut issuers)
+        } else if tag.eq_ignore_ascii_case("issuewild") {
+            Some(&mut wildcards)
+        } else if tag.eq_ignore_ascii_case("iodef") {
+            Some(&mut iodefs)
+        } else {
+            None
+        };
+        if let Some(bucket) = bucket {
+            bucket.push(String::from_utf8_lossy(&caa.value).into_owned());
         }
     }
 

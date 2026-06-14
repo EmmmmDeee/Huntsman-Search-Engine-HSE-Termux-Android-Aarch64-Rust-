@@ -131,12 +131,11 @@ impl HackerTarget {
         let mut seen: HashSet<String> = HashSet::new();
 
         for line in body.lines() {
-            let parts: Vec<&str> = line.splitn(2, ',').collect();
-            if parts.len() < 2 {
+            let Some((host_raw, ip_raw)) = line.split_once(',') else {
                 continue;
-            }
-            let host = parts[0].trim().to_lowercase();
-            let ip = parts[1].trim();
+            };
+            let host = host_raw.trim().to_lowercase();
+            let ip = ip_raw.trim();
 
             if !host.is_empty() && host.contains('.') && seen.insert(host.clone()) {
                 let is_sub = crate::util::domains::is_or_subdomain_of(&host, domain);

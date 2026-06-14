@@ -225,13 +225,13 @@ pub(super) fn build_email_entity(target: &Target, body: &RepResp, scan_id: &str)
             ev = ev.with_attr("domain_age_days", days.to_string());
         }
         if !d.profiles.is_empty() {
-            let csv = d
-                .profiles
-                .iter()
-                .take(MAX_PROFILES)
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(",");
+            let mut csv = String::new();
+            for (i, p) in d.profiles.iter().take(MAX_PROFILES).enumerate() {
+                if i > 0 {
+                    csv.push(',');
+                }
+                csv.push_str(p);
+            }
             ev = ev
                 .with_attr("profiles", csv)
                 .with_attr("profile_count", d.profiles.len().to_string());

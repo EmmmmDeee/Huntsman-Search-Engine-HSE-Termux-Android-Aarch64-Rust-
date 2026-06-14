@@ -11,6 +11,8 @@
 //! the most recent timestamps; individual service banners are NOT
 //! stored verbatim (some include credentials).
 
+use std::fmt::Write as _;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -84,12 +86,13 @@ fn build_exposure_entity(kind: EntityKind, value: &str, body: &HostResp, scan_id
     // Open ports across services, sorted + deduplicated.
     let ports: std::collections::BTreeSet<i64> =
         body.services.iter().filter_map(|e| e.port).collect();
-    let port_str = ports
-        .iter()
-        .take(MAX_PORTS)
-        .map(i64::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
+    let mut port_str = String::new();
+    for (i, port) in ports.iter().take(MAX_PORTS).enumerate() {
+        if i > 0 {
+            port_str.push(',');
+        }
+        let _ = write!(port_str, "{port}");
+    }
 
     let mut ev = Evidence::new(
         SRC,
@@ -107,11 +110,20 @@ fn build_exposure_entity(kind: EntityKind, value: &str, body: &HostResp, scan_id
     if !port_str.is_empty() {
         ev = ev.with_attr("ports", port_str);
     }
-    // Most-recent and earliest timestamps across all events.
-    if let Some(t) = all().filter_map(|e| e.time.as_deref()).max() {
+    // Most-recent and earliest timestamps across all events — single pass.
+    let (mut min_t, mut max_t): (Option<&str>, Option<&str>) = (None, None);
+    for t in all().filter_map(|e| e.time.as_deref()) {
+        if min_t.is_none_or(|m| t < m) {
+            min_t = Some(t);
+        }
+        if max_t.is_none_or(|m| t > m) {
+            max_t = Some(t);
+        }
+    }
+    if let Some(t) = max_t {
         ev = ev.with_attr("most_recent", t);
     }
-    if let Some(t) = all().filter_map(|e| e.time.as_deref()).min() {
+    if let Some(t) = min_t {
         ev = ev.with_attr("earliest", t);
     }
 

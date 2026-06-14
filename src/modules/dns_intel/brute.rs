@@ -38,9 +38,16 @@ pub(super) async fn brute_subdomains(target: &Target, ctx: &ModuleContext) -> Re
             let _permit = sem.acquire_owned().await.ok()?;
             match resolver.lookup_ip(host.as_str()).await {
                 Ok(lookup) => {
-                    let ips: Vec<String> = lookup.iter().map(|ip| ip.to_string()).collect();
-                    let count = ips.len();
-                    let joined = ips.join(", ");
+                    let mut count = 0usize;
+                    let mut joined = String::new();
+                    for ip in lookup.iter() {
+                        if count > 0 {
+                            joined.push_str(", ");
+                        }
+                        use std::fmt::Write as _;
+                        let _ = write!(joined, "{ip}");
+                        count += 1;
+                    }
                     Some((host, joined, count))
                 }
                 Err(_) => None,

@@ -196,15 +196,15 @@ impl Module for ApiKeyProbe {
             summary.tag("api-key-probe");
 
             let svc_list: Vec<&str> = identified.iter().map(|(s, _, _)| *s).collect();
+            let svc_joined = svc_list.join(", ");
             let mut ev = Evidence::new(
                 SRC,
                 format!(
-                    "Key identified across {} service(s): {}",
+                    "Key identified across {} service(s): {svc_joined}",
                     identified.len(),
-                    svc_list.join(", ")
                 ),
             )
-            .with_attr("services_matched", svc_list.join(", "))
+            .with_attr("services_matched", svc_joined)
             .with_attr("total_matches", identified.len().to_string());
 
             for (svc, _cat, info) in &identified {
