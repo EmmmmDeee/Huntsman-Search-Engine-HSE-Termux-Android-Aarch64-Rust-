@@ -48,12 +48,15 @@ pub(in crate::core::correlator) fn rule_au_022_organisation_with_breach(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let orgs: Vec<&Entity> = entities_of_kind(entities, EntityKind::Organisation)
-        .into_iter()
-        .filter(|e| e.confidence >= 0.60)
+    let orgs: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Organisation && e.confidence >= 0.60)
         .collect();
+    if orgs.is_empty() {
+        return Vec::new();
+    }
     let breach_entities: Vec<&Entity> = entities.iter().filter(|e| e.has_tag("breach")).collect();
-    if orgs.is_empty() || breach_entities.is_empty() {
+    if breach_entities.is_empty() {
         return Vec::new();
     }
     let mut uids: Vec<String> = orgs.iter().map(|e| e.uid.clone()).collect();
@@ -81,24 +84,27 @@ pub(in crate::core::correlator) fn rule_au_024_email_fraud_signal(
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::Email)
-        .filter(|e| {
-            let s = e.has_tag("suspicious") || e.has_tag("high-risk");
-            let b = e.has_tag("breach");
-            let d = e.has_tag("disposable");
-            u32::from(s) + u32::from(b) + u32::from(d) >= 2
-        })
-        .map(|e| {
+        .filter_map(|e| {
+            // Classify each tag class once, then reuse the booleans for the
+            // ≥2-signal gate, the signal labels and (implicitly) the count —
+            // instead of re-scanning the tag list up to seven times per email.
+            let fraud = e.has_tag("suspicious") || e.has_tag("high-risk");
+            let breach = e.has_tag("breach");
+            let disposable = e.has_tag("disposable");
+            if u32::from(fraud) + u32::from(breach) + u32::from(disposable) < 2 {
+                return None;
+            }
             let mut signals: Vec<&str> = Vec::new();
-            if e.has_tag("suspicious") || e.has_tag("high-risk") {
+            if fraud {
                 signals.push("fraud-flagged");
             }
-            if e.has_tag("breach") {
+            if breach {
                 signals.push("breach-exposed");
             }
-            if e.has_tag("disposable") {
+            if disposable {
                 signals.push("disposable");
             }
-            Correlation::new(
+            Some(Correlation::new(
                 "AU-024",
                 "Multi-signal email fraud indicator",
                 Severity::High,
@@ -110,7 +116,7 @@ pub(in crate::core::correlator) fn rule_au_024_email_fraud_signal(
                 vec![e.uid.clone()],
                 scan_id,
                 ts,
-            )
+            ))
         })
         .collect()
 }
@@ -124,11 +130,14 @@ pub(in crate::core::correlator) fn rule_au_025_corporate_identity_link(
         .iter()
         .filter(|e| e.kind == EntityKind::Organisation && e.has_tag("opencorporates"))
         .collect();
+    if orgs.is_empty() {
+        return Vec::new();
+    }
     let persons: Vec<&Entity> = entities
         .iter()
         .filter(|e| e.kind == EntityKind::Person && e.confidence >= 0.60)
         .collect();
-    if orgs.is_empty() || persons.is_empty() {
+    if persons.is_empty() {
         return Vec::new();
     }
     let mut uids: Vec<String> = orgs.iter().map(|o| o.uid.clone()).collect();
@@ -164,6 +173,9 @@ pub(in crate::core::correlator) fn rule_au_033_abn_organisation_link(
         .iter()
         .filter(|e| e.kind == EntityKind::AbnAcn)
         .collect();
+    if abns.is_empty() {
+        return Vec::new();
+    }
     let orgs: Vec<&Entity> = entities
         .iter()
         .filter(|e| {
@@ -174,7 +186,7 @@ pub(in crate::core::correlator) fn rule_au_033_abn_organisation_link(
                     || e.has_tag("gleif"))
         })
         .collect();
-    if abns.is_empty() || orgs.is_empty() {
+    if orgs.is_empty() {
         return Vec::new();
     }
     let mut uids: Vec<String> = abns.iter().map(|a| a.uid.clone()).collect();

@@ -44,10 +44,14 @@ pub(in crate::core::correlator) fn rule_au_005_anonymous_network(
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::IpAddress)
-        .filter(|e| ANON_TAGS.iter().any(|t| e.has_tag(t)))
-        .map(|e| {
+        // Collect the matching tags once and gate on non-emptiness, instead of
+        // scanning ANON_TAGS for `.any()` and then a second time to build `hits`.
+        .filter_map(|e| {
             let hits: Vec<&str> = ANON_TAGS.iter().copied().filter(|t| e.has_tag(t)).collect();
-            Correlation {
+            if hits.is_empty() {
+                return None;
+            }
+            Some(Correlation {
                 rule_id: "AU-005".into(),
                 rule_name: "Anonymous-network exit".into(),
                 severity: Severity::High,
@@ -60,7 +64,7 @@ pub(in crate::core::correlator) fn rule_au_005_anonymous_network(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
-            }
+            })
         })
         .collect()
 }
@@ -74,18 +78,22 @@ pub(in crate::core::correlator) fn rule_au_006_proxy_vpn(
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::IpAddress)
-        .filter(|e| {
-            (e.has_tag("proxy") || e.has_tag("vpn")) && !ANON_TAGS.iter().any(|t| e.has_tag(t))
-        })
-        .map(|e| {
+        // Resolve the proxy/vpn tag presence once and reuse it for both the gate
+        // and the `hits` label, rather than re-checking each tag twice.
+        .filter_map(|e| {
+            let proxy = e.has_tag("proxy");
+            let vpn = e.has_tag("vpn");
+            if !(proxy || vpn) || ANON_TAGS.iter().any(|t| e.has_tag(t)) {
+                return None;
+            }
             let mut hits: Vec<&str> = Vec::new();
-            if e.has_tag("proxy") {
+            if proxy {
                 hits.push("proxy");
             }
-            if e.has_tag("vpn") {
+            if vpn {
                 hits.push("vpn");
             }
-            Correlation {
+            Some(Correlation {
                 rule_id: "AU-006".into(),
                 rule_name: "Proxy/VPN-fronted IP".into(),
                 severity: Severity::Medium,
@@ -94,7 +102,7 @@ pub(in crate::core::correlator) fn rule_au_006_proxy_vpn(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
-            }
+            })
         })
         .collect()
 }
@@ -114,10 +122,14 @@ pub(in crate::core::correlator) fn rule_au_007_high_risk_reputation(
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::IpAddress)
-        .filter(|e| RISK_TAGS.iter().any(|t| e.has_tag(t)))
-        .map(|e| {
+        // Build the matching-tag list once; gate on non-emptiness instead of a
+        // separate `.any()` pre-scan.
+        .filter_map(|e| {
             let hits: Vec<&str> = RISK_TAGS.iter().copied().filter(|t| e.has_tag(t)).collect();
-            Correlation {
+            if hits.is_empty() {
+                return None;
+            }
+            Some(Correlation {
                 rule_id: "AU-007".into(),
                 rule_name: "High-risk IP reputation".into(),
                 severity: Severity::High,
@@ -130,7 +142,7 @@ pub(in crate::core::correlator) fn rule_au_007_high_risk_reputation(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
-            }
+            })
         })
         .collect()
 }

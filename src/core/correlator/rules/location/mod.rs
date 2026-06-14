@@ -104,14 +104,18 @@ pub(crate) fn is_anchoring_geo_source(source: &str) -> bool {
 /// corroborating source at all ([`ANCHORING_GEO_SOURCES`]) — i.e. it rests purely
 /// on IP/WHOIS geo, chronolocation, or POI enrichment. See AU-052.
 fn is_infrastructure_geo(e: &Entity) -> bool {
-    if e.has_tag(crate::core::tags::HOSTING) {
-        return true;
+    // Single tag pass: detect the HOSTING tag and any `infra:` map-feature tag
+    // together instead of two separate `.iter()` scans.
+    for t in &e.tags {
+        if t == crate::core::tags::HOSTING || t.starts_with("infra:") {
+            return true;
+        }
     }
-    if e.tags.iter().any(|t| t.starts_with("infra:")) {
-        return true;
-    }
-    let sources = e.corroborating_sources();
-    !sources.iter().any(|s| ANCHORING_GEO_SOURCES.contains(s))
+    // Anchor check straight off the evidence iterator — no intermediate HashSet
+    // allocation, and short-circuits on the first anchoring source.
+    !e.corroborating_sources()
+        .iter()
+        .any(|s| ANCHORING_GEO_SOURCES.contains(s))
 }
 
 /// The coordinates admissible to a *person's* geo footprint: confirmed
