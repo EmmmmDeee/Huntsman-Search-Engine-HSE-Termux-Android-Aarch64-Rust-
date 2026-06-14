@@ -101,14 +101,17 @@ impl Report {
     /// Human-readable multi-line render (for `hse selftest`).
     #[must_use]
     pub fn render(&self) -> String {
-        let mut out = String::new();
+        use std::fmt::Write as _;
+        let mut out = String::with_capacity(self.checks.len() * 48 + 64);
         for c in &self.checks {
-            out.push_str(&format!(
-                "  {:<7} {:<24} {}\n",
+            // Infallible: writing into a String never errors.
+            let _ = writeln!(
+                out,
+                "  {:<7} {:<24} {}",
                 c.status.marker(),
                 c.name,
                 c.detail
-            ));
+            );
         }
         out.push('\n');
         out.push_str(&self.summary());

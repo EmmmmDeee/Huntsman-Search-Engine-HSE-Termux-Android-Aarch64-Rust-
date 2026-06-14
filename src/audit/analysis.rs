@@ -375,8 +375,9 @@ pub fn audit(entities: &[AuditEntity], log: LogSignals) -> AuditReport {
     }
     let dead_engines = log.engines_down.len() + log.engines_blocked.len();
     if dead_engines >= 3 {
-        let mut ex = log.engines_down.clone();
-        ex.extend(log.engines_blocked.clone());
+        let mut ex = Vec::with_capacity(dead_engines);
+        ex.extend(log.engines_down.iter().cloned());
+        ex.extend(log.engines_blocked.iter().cloned());
         findings.push(Finding {
             severity: Severity::Medium,
             category: "search-coverage",
