@@ -153,7 +153,7 @@ impl Module for Typosquat {
 pub(crate) fn permutations(domain: &str, cap: usize) -> Vec<(String, &'static str)> {
     let domain = domain.trim().trim_end_matches('.').to_lowercase();
     // Reduce to the registrable domain, then split label | suffix on the first dot.
-    let registrable = crate::util::domains::registrable_domain(&domain).unwrap_or(domain.clone());
+    let registrable = crate::util::domains::registrable_domain(&domain).unwrap_or(domain);
     let Some((label, suffix)) = registrable.split_once('.') else {
         return Vec::new();
     };
@@ -161,50 +161,63 @@ pub(crate) fn permutations(domain: &str, cap: usize) -> Vec<(String, &'static st
         return Vec::new();
     }
     let chars: Vec<char> = label.chars().collect();
+    let n = chars.len();
 
     // (technique, variant-label) — ordered most-useful first so the cap keeps signal.
     let mut variants: Vec<(&'static str, String)> = Vec::new();
     let mut push = |tech: &'static str, s: String| variants.push((tech, s));
 
+    // Build a label from `chars` with the char at `i` replaced by `c` — no clone
+    // of the whole `Vec<char>`, pre-sized to the label length.
+    let replace_at = |i: usize, c: char| -> String {
+        let mut s = String::with_capacity(n);
+        for (j, &ch) in chars.iter().enumerate() {
+            s.push(if j == i { c } else { ch });
+        }
+        s
+    };
+
     // Omission — drop one char.
-    for i in 0..chars.len() {
-        let mut v = chars.clone();
-        v.remove(i);
-        push("omission", v.into_iter().collect());
+    for i in 0..n {
+        let mut s = String::with_capacity(n.saturating_sub(1));
+        s.extend(chars[..i].iter().chain(chars[i + 1..].iter()));
+        push("omission", s);
     }
     // Transposition — swap adjacent chars.
-    for i in 0..chars.len().saturating_sub(1) {
-        let mut v = chars.clone();
-        v.swap(i, i + 1);
-        push("transposition", v.into_iter().collect());
+    for i in 0..n.saturating_sub(1) {
+        let mut s = String::with_capacity(n);
+        s.extend(chars[..i].iter());
+        s.push(chars[i + 1]);
+        s.push(chars[i]);
+        s.extend(chars[i + 2..].iter());
+        push("transposition", s);
     }
     // Repetition — double one char.
-    for i in 0..chars.len() {
-        let mut v = chars.clone();
-        v.insert(i, chars[i]);
-        push("repetition", v.into_iter().collect());
+    for i in 0..n {
+        let mut s = String::with_capacity(n + 1);
+        s.extend(chars[..=i].iter());
+        s.extend(chars[i..].iter());
+        push("repetition", s);
     }
     // Keyboard-adjacent replacement.
     for (i, &c) in chars.iter().enumerate() {
-        for n in keyboard_neighbors(c).chars() {
-            let mut v = chars.clone();
-            v[i] = n;
-            push("keyboard", v.into_iter().collect());
+        for nb in keyboard_neighbors(c).chars() {
+            push("keyboard", replace_at(i, nb));
         }
     }
     // Homoglyph substitution (ASCII look-alikes).
     for (i, &c) in chars.iter().enumerate() {
-        for n in homoglyphs(c) {
-            let mut v = chars.clone();
-            v[i] = *n;
-            push("homoglyph", v.into_iter().collect());
+        for &nb in homoglyphs(c) {
+            push("homoglyph", replace_at(i, nb));
         }
     }
     // Hyphenation — insert a hyphen between two chars.
-    for i in 1..chars.len() {
-        let mut v = chars.clone();
-        v.insert(i, '-');
-        push("hyphenation", v.into_iter().collect());
+    for i in 1..n {
+        let mut s = String::with_capacity(n + 1);
+        s.extend(chars[..i].iter());
+        s.push('-');
+        s.extend(chars[i..].iter());
+        push("hyphenation", s);
     }
     // Bitsquatting — flip one bit of an ASCII letter/digit.
     for (i, &c) in chars.iter().enumerate() {
@@ -214,9 +227,7 @@ pub(crate) fn permutations(domain: &str, cap: usize) -> Vec<(String, &'static st
         for bit in 0..7u8 {
             let flipped = (c as u8) ^ (1 << bit);
             if flipped.is_ascii_lowercase() || flipped.is_ascii_digit() {
-                let mut v = chars.clone();
-                v[i] = flipped as char;
-                push("bitsquat", v.into_iter().collect());
+                push("bitsquat", replace_at(i, flipped as char));
             }
         }
     }

@@ -99,8 +99,9 @@ impl UsernameVariants {
         // 1. Separator swaps over the original tokens (john.doe → john_doe,
         //    john-doe, johndoe). Only meaningful with ≥ 2 tokens.
         if tokens.len() >= 2 {
+            let mut buf = [0u8; 4];
             for sep in SEPARATORS {
-                add_variant(&mut out, &norm, tokens.join(&sep.to_string()));
+                add_variant(&mut out, &norm, tokens.join(&*sep.encode_utf8(&mut buf)));
             }
             add_variant(&mut out, &norm, collapsed.clone());
         }
@@ -134,8 +135,9 @@ impl UsernameVariants {
                 }
                 add_variant(&mut out, &norm, core_collapsed);
                 if core.len() >= 2 {
+                    let mut buf = [0u8; 4];
                     for sep in SEPARATORS {
-                        add_variant(&mut out, &norm, core.join(&sep.to_string()));
+                        add_variant(&mut out, &norm, core.join(&*sep.encode_utf8(&mut buf)));
                     }
                 }
             }
