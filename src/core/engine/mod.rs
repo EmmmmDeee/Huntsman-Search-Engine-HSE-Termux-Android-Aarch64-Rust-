@@ -749,24 +749,46 @@ impl ScanEngine {
             // footprint into the scan (a real run chased `arizonambb` —
             // Arizona basketball — off an `jordanavery` seed). Rebuilt each
             // round so confirmed aliases widen the identity as the scan learns.
-            let subject_identities: Vec<String> = std::iter::once(seed.value.clone())
-                .chain(entity_map.values().filter_map(|e| {
-                    use crate::core::entity::{Classification, EntityKind};
-                    let is_identity = matches!(
-                        e.kind,
-                        EntityKind::Username | EntityKind::Person | EntityKind::Email
-                    );
-                    (is_identity && e.c_effective() >= Classification::VERIFIED_MIN)
-                        .then(|| e.value.clone())
-                }))
-                .collect();
+            // Only the wrong-identity gate consumes this, and that gate is
+            // bypassed entirely under `--expand-all-identities`; skip the
+            // per-round allocation + scan when it can't be read.
+            let subject_identities: Vec<String> = if opts.expand_all_identities {
+                Vec::new()
+            } else {
+                std::iter::once(seed.value.clone())
+                    .chain(entity_map.values().filter_map(|e| {
+                        use crate::core::entity::{Classification, EntityKind};
+                        let is_identity = matches!(
+                            e.kind,
+                            EntityKind::Username | EntityKind::Person | EntityKind::Email
+                        );
+                        (is_identity && e.c_effective() >= Classification::VERIFIED_MIN)
+                            .then(|| e.value.clone())
+                    }))
+                    .collect()
+            };
 
-            let mut next: Vec<(Target, f64, String)> = Vec::new();
+            // At most one candidate per working-set entity survives the gates;
+            // reserve up front so the push loop never re-grows on a large round.
+            let mut next: Vec<(Target, f64, String)> = Vec::with_capacity(entity_map.len());
+            // Seed identity normalised ONCE for the incidental-infra
+            // candidate-is-seed check below; it is invariant across the whole
+            // candidate loop, so computing `strip(&seed.value)` (a trim +
+            // lowercasing allocation) per entity was pure repeated work.
+            let strip = |s: &str| s.trim().trim_start_matches("www.").to_ascii_lowercase();
+            let seed_stripped = strip(&seed.value);
             for entity in entity_map.values() {
-                if entity.c_effective() < opts.min_expand_confidence {
+                // Hoist the two pure-but-repeated scores: `c_effective()` is read
+                // up to four times below (the floor check, the wrong-identity gate,
+                // the strategy weight, the convex premium) and `source_count()`
+                // twice. Computing each once per candidate trims redundant work in
+                // the hottest expansion loop on the constrained target.
+                let c_eff = entity.c_effective();
+                if c_eff < opts.min_expand_confidence {
                     self.emit_excluded(scan_id, entity, "below_min_expand_confidence");
                     continue;
                 }
+                let source_count = entity.source_count();
                 // Search-snippet recycling is the lowest-reliability discovery
                 // path: a value scraped from the *text* of whatever page a search
                 // engine returned for a recycled query — a Subway-directory
@@ -809,8 +831,8 @@ impl ScanEngine {
                 if !opts.expand_all_identities
                     && crate::core::scan::is_wrong_identity_pivot(
                         &entity.kind,
-                        entity.c_effective(),
-                        entity.source_count(),
+                        c_eff,
+                        source_count,
                         &entity.value,
                         &subject_identities,
                     )
@@ -843,9 +865,8 @@ impl ScanEngine {
                 // Still expand when the candidate IS the seed (you're
                 // investigating that property itself).
                 {
-                    let strip = |s: &str| s.trim().trim_start_matches("www.").to_ascii_lowercase();
                     let candidate_is_seed =
-                        seed.kind == tk && strip(&seed.value) == strip(&entity.value);
+                        seed.kind == tk && seed_stripped == strip(&entity.value);
                     let is_incidental_infra = match tk {
                         // Freemail / social / shared CDN-DNS-registrar infra is
                         // never the subject's own estate — expanding it maps the
@@ -876,15 +897,14 @@ impl ScanEngine {
                     // a lead confirmed by N independent sources is dispatched
                     // ahead of an equally-confident single-source lead (its
                     // dispatch is likelier to yield genuine children).
-                    let mut weight =
-                        crate::core::scan::expansion_weight_for_strategy(
-                            opts.expansion_strategy,
-                            tk,
-                            entity.c_effective(),
-                            &entity.value,
-                            has_paid,
-                            richness,
-                        ) * crate::core::scan::corroboration_prior(entity.source_count());
+                    let mut weight = crate::core::scan::expansion_weight_for_strategy(
+                        opts.expansion_strategy,
+                        tk,
+                        c_eff,
+                        &entity.value,
+                        has_paid,
+                        richness,
+                    ) * crate::core::scan::corroboration_prior(source_count);
                     // Convex (optionality / barbell) budget allocation, opt-in:
                     // multiply by a convexity premium for heavy-tailed upside over
                     // per-kind dispatch cost, so the bounded budget favours cheap,
@@ -894,8 +914,8 @@ impl ScanEngine {
                     if opts.convex_budget {
                         weight *= crate::core::convex::optionality_multiplier(
                             tk,
-                            entity.source_count(),
-                            entity.c_effective(),
+                            source_count,
+                            c_eff,
                             richness,
                         );
                     }
