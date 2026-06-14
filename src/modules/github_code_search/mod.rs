@@ -23,6 +23,7 @@
 //! string matches in large codebases.
 
 use async_trait::async_trait;
+use futures::future::join_all;
 
 use crate::core::{
     entity::EntityKind,
@@ -128,21 +129,27 @@ impl Module for GithubCodeSearch {
         let mut result = ModuleResult::new();
         let mut seen_repos: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        for item in &body.items {
-            let full_name = item
-                .repository
-                .as_ref()
-                .and_then(|r| r.full_name.as_deref())
-                .unwrap_or("")
-                .to_string();
-            if full_name.is_empty() || !seen_repos.insert(full_name.clone()) {
-                continue;
-            }
+        // Deduplicate repos and build base entities in one pass.
+        let unique_items: Vec<(&CodeItem, String)> = body
+            .items
+            .iter()
+            .filter_map(|item| {
+                let full_name = item
+                    .repository
+                    .as_ref()
+                    .and_then(|r| r.full_name.as_deref())
+                    .unwrap_or("")
+                    .to_string();
+                if full_name.is_empty() || !seen_repos.insert(full_name.clone()) {
+                    return None;
+                }
+                result.extend(build_repo_entities(item, seed, target.kind, &ctx.scan_id));
+                Some((item, full_name))
+            })
+            .collect();
 
-            result.extend(build_repo_entities(item, seed, target.kind, &ctx.scan_id));
-
-            // Fetch recent commits for the repo to harvest author emails.
-            // Best-effort: skip on any error (rate limit, private repo).
+        // Fetch commits for all repos concurrently (best-effort).
+        let commit_futures = unique_items.iter().map(|(_, full_name)| {
             let commits_url = format!("{API}/repos/{full_name}/commits?per_page=5");
             let mut creq = ctx
                 .http
@@ -153,14 +160,21 @@ impl Module for GithubCodeSearch {
             if let Some(tok) = token {
                 creq = creq.header("Authorization", format!("Bearer {tok}"));
             }
-            if let Ok(cr) = creq.send_tagged(SRC).await
-                && cr.status().is_success()
-                && let Ok(raw) = cr.bytes().await
-                && let Ok(arr) = serde_json::from_slice::<Vec<CommitItem>>(&raw)
-            {
-                let wrapped = CommitsResp { commits: arr };
-                result.extend(build_commit_emails(&wrapped, &full_name, &ctx.scan_id));
+            let full_name = full_name.clone();
+            async move {
+                if let Ok(cr) = creq.send_tagged(SRC).await
+                    && cr.status().is_success()
+                    && let Ok(raw) = cr.bytes().await
+                    && let Ok(arr) = serde_json::from_slice::<Vec<CommitItem>>(&raw)
+                {
+                    Some((full_name, CommitsResp { commits: arr }))
+                } else {
+                    None
+                }
             }
+        });
+        for (full_name, commits) in join_all(commit_futures).await.into_iter().flatten() {
+            result.extend(build_commit_emails(&commits, &full_name, &ctx.scan_id));
         }
 
         Ok(result)
