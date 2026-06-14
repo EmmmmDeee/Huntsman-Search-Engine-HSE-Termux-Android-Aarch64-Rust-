@@ -133,30 +133,61 @@ pub(super) fn build_ioc_entity(
     if !families.is_empty() {
         ev = ev.with_attr(
             "malware_families",
-            families
-                .into_iter()
-                .take(MAX_FAMILIES)
-                .collect::<Vec<_>>()
-                .join(","),
+            families.into_iter().take(MAX_FAMILIES).enumerate().fold(
+                String::new(),
+                |mut acc, (i, s)| {
+                    if i > 0 {
+                        acc.push(',');
+                    }
+                    acc.push_str(&s);
+                    acc
+                },
+            ),
         );
     }
     if !types.is_empty() {
-        ev = ev.with_attr("ioc_types", types.into_iter().collect::<Vec<_>>().join(","));
+        ev = ev.with_attr(
+            "ioc_types",
+            types
+                .into_iter()
+                .enumerate()
+                .fold(String::new(), |mut acc, (i, s)| {
+                    if i > 0 {
+                        acc.push(',');
+                    }
+                    acc.push_str(&s);
+                    acc
+                }),
+        );
     }
     if !threat_types.is_empty() {
         ev = ev.with_attr(
             "threat_types",
-            threat_types.into_iter().collect::<Vec<_>>().join(","),
+            threat_types
+                .into_iter()
+                .enumerate()
+                .fold(String::new(), |mut acc, (i, s)| {
+                    if i > 0 {
+                        acc.push(',');
+                    }
+                    acc.push_str(&s);
+                    acc
+                }),
         );
     }
     if !ioc_tags.is_empty() {
         ev = ev.with_attr(
             "ioc_tags",
-            ioc_tags
-                .into_iter()
-                .take(MAX_IOC_TAGS)
-                .collect::<Vec<_>>()
-                .join(","),
+            ioc_tags.into_iter().take(MAX_IOC_TAGS).enumerate().fold(
+                String::new(),
+                |mut acc, (i, s)| {
+                    if i > 0 {
+                        acc.push(',');
+                    }
+                    acc.push_str(&s);
+                    acc
+                },
+            ),
         );
     }
     if max_confidence > 0 {
