@@ -185,10 +185,17 @@ impl Module for OathnetPro {
         parent.add_evidence(ev);
         result.push(parent);
 
+        // Hoist the per-target match context out of the per-record loop:
+        // `target_lower` and the significant-term split depend only on the
+        // target value, not the row, so computing them once (instead of once
+        // per breach record) eliminates a `to_lowercase()` allocation and a
+        // term-`Vec` build for every item on large breach pages.
+        let match_ctx = TargetMatch::new(&target.value);
+        result.entities.reserve(items.len());
         for item in &items {
-            extract_breach_entities(
+            extract_breach_entities_with(
                 item,
-                &target.value,
+                &match_ctx,
                 &ctx.scan_id,
                 &key_fp,
                 &mut seen,
@@ -208,6 +215,7 @@ impl Module for OathnetPro {
             && let Ok(stealer_items) =
                 oathnet::search(key, paths::STEALER, field, &target.value, 100).await
         {
+            result.entities.reserve(stealer_items.len());
             for item in &stealer_items {
                 extract_stealer_entities(item, &ctx.scan_id, &key_fp, &mut seen, &mut result);
                 store_api_credential(item);
@@ -390,9 +398,96 @@ fn push_oathnet_entity(
     result.push(e);
 }
 
+/// Pre-computed, row-independent matching context for a single scan target.
+///
+/// Built once per `process` call (not per breach record) and reused across
+/// every row, so the `to_lowercase()` allocation and the significant-term
+/// split happen exactly once instead of once per item on large breach pages.
+struct TargetMatch {
+    /// Lowercased target value, used both for the exact-equality short-circuit
+    /// and as the backing store the borrowed `terms` slice into.
+    lower: String,
+    /// Significant (`len >= 3`) alphanumeric terms of `lower`.
+    terms: Vec<(usize, usize)>,
+    /// Multi-term targets must match EVERY term within a single field.
+    require_all_terms: bool,
+}
+
+impl TargetMatch {
+    fn new(target_value: &str) -> Self {
+        let lower = target_value.to_lowercase();
+        // Store term spans (byte ranges) rather than `&str` to sidestep the
+        // self-referential borrow of `lower`; resolved on demand in `matches`.
+        let terms: Vec<(usize, usize)> = lower
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() >= 3)
+            .map(|w| {
+                let start = w.as_ptr() as usize - lower.as_ptr() as usize;
+                (start, start + w.len())
+            })
+            .collect();
+        let require_all_terms = terms.len() >= 2;
+        Self {
+            lower,
+            terms,
+            require_all_terms,
+        }
+    }
+
+    /// True if any matchable field of `item` identifies the target.
+    fn matches(&self, item: &Value) -> bool {
+        for field in ["email", "username", "phone_number", "full_name"] {
+            if let Some(v) = val_str(item, field) {
+                let vl = v.to_lowercase();
+                if vl == self.lower {
+                    return true;
+                }
+                if self.terms.is_empty() {
+                    continue;
+                }
+                let mut terms = self.terms.iter().map(|&(s, e)| &self.lower[s..e]);
+                // Multi-term targets (a full name like "Jordan Avery", or an
+                // email) must match EVERY significant term within a single
+                // field — not just one — so a row for "Jordan Parker" no longer
+                // counts as the target on the shared first name (the dominant
+                // junk source on name scans). Single-term targets keep
+                // substring-contains matching.
+                let hit = if self.require_all_terms {
+                    terms.all(|t| vl.contains(t))
+                } else {
+                    terms.any(|t| vl.contains(t))
+                };
+                if hit {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+#[cfg(test)]
 fn extract_breach_entities(
     item: &Value,
     target_value: &str,
+    scan_id: &str,
+    key_fp: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    extract_breach_entities_with(
+        item,
+        &TargetMatch::new(target_value),
+        scan_id,
+        key_fp,
+        seen,
+        result,
+    );
+}
+
+fn extract_breach_entities_with(
+    item: &Value,
+    match_ctx: &TargetMatch,
     scan_id: &str,
     key_fp: &str,
     seen: &mut HashSet<String>,
@@ -410,40 +505,7 @@ fn extract_breach_entities(
     // is NOT discarded — `push_oathnet_entity` demotes it to a quarantined
     // `candidate` (out of the default view and the correlator) so genuine
     // leads survive without flooding the result with strangers.
-    let target_lower = target_value.to_lowercase();
-    let target_terms: Vec<&str> = target_lower
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.len() >= 3)
-        .collect();
-    // Multi-term targets (a full name like "Jordan Avery", or an email)
-    // must match EVERY significant term within a single field — not just one —
-    // so a row for "Jordan Parker" no longer counts as the target on the
-    // shared first name (the dominant junk source on name scans). Single-term
-    // targets keep substring-contains matching.
-    let require_all_terms = target_terms.len() >= 2;
-    let row_matches_target = |item: &Value| -> bool {
-        for field in ["email", "username", "phone_number", "full_name"] {
-            if let Some(v) = val_str(item, field) {
-                let vl = v.to_lowercase();
-                if vl == target_lower {
-                    return true;
-                }
-                if target_terms.is_empty() {
-                    continue;
-                }
-                let hit = if require_all_terms {
-                    target_terms.iter().all(|t| vl.contains(t))
-                } else {
-                    target_terms.iter().any(|t| vl.contains(t))
-                };
-                if hit {
-                    return true;
-                }
-            }
-        }
-        false
-    };
-    let is_target_row = row_matches_target(item);
+    let is_target_row = match_ctx.matches(item);
 
     if let Some(email) = val_str(item, "email") {
         let lower = email.to_lowercase();
