@@ -5,6 +5,8 @@
 //! (`build_queries`, `detect_region`, `generate_username_variants`,
 //! `build_queries_fullname`); the rest are internal to this module.
 
+mod exposure;
+
 use super::regional_enabled;
 use crate::core::scan::{Target, TargetKind};
 
@@ -201,13 +203,17 @@ pub(super) fn regional_dorks(target: &Target) -> Vec<String> {
 }
 
 /// The dork set for a seed: the geolocation-neutral base, plus minimal
-/// autonomous region-scoped dorks when regional searching is toggled on.
+/// autonomous region-scoped dorks when regional searching is toggled on,
+/// plus supplementary exposure/secrets dorks appended after the base set.
 pub(super) fn build_queries(target: &Target) -> Vec<String> {
     let base = build_queries_base(target);
-    if !regional_enabled() {
-        return base;
-    }
-    interleave_regional(base, regional_dorks(target))
+    let mut queries = if !regional_enabled() {
+        base
+    } else {
+        interleave_regional(base, regional_dorks(target))
+    };
+    queries.extend(exposure::build_queries_exposure(target));
+    queries
 }
 
 /// Order the dork set so Australian regional coverage isn't starved under a tight
