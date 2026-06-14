@@ -108,37 +108,48 @@ impl Module for EmployerPivot {
             "/team",
         ];
 
+        // Fetch all contact pages concurrently (was: sequential for-loop).
+        // Each future is independent — a failure on one URL must not abort
+        // the others; the Result/None branches after join handle that.
+        // The host is an attacker-influenceable discovered domain, so every
+        // request still goes through the SSRF-guarded reqwest client.
+        let fetch_futures = paths.iter().map(|path| {
+            let url = format!("https://{}{}", domain, path);
+            let http = ctx.http.clone();
+            async move {
+                let fetched = match http
+                    .get(&url)
+                    .header(reqwest::header::USER_AGENT, curl::UA_DESKTOP)
+                    .timeout(std::time::Duration::from_millis(6_000))
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        crate::util::http::read_body_capped(resp, 512 * 1024).await
+                    }
+                    _ => None,
+                };
+                (url, fetched)
+            }
+        });
+
+        // Drive all 8 fetches concurrently, then pick the first 4 successes
+        // (same cap as the old `visited.len() >= 4` guard) to bound memory.
+        let fetch_results = futures::future::join_all(fetch_futures).await;
+
         let mut all_text = String::new();
         let mut visited: Vec<String> = Vec::new();
-        for path in paths {
-            let url = format!("https://{}{}", domain, path);
-            // The host is an attacker-influenceable discovered domain, so fetch
-            // through the SSRF-guarded reqwest client (private-IP-filtering DNS
-            // resolver + redirect policy cover the initial request AND every
-            // redirect hop) rather than the curl fallback. Keep the desktop UA.
-            let fetched = match ctx
-                .http
-                .get(&url)
-                .header(reqwest::header::USER_AGENT, curl::UA_DESKTOP)
-                .timeout(std::time::Duration::from_millis(6_000))
-                .send()
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => {
-                    crate::util::http::read_body_capped(resp, 512 * 1024).await
-                }
-                _ => None,
-            };
-            if let Some(html) = fetched {
+        for (url, maybe_html) in fetch_results {
+            if visited.len() >= 4 {
+                break;
+            }
+            if let Some(html) = maybe_html {
                 if html.len() < 200 {
                     continue;
                 }
-                visited.push(url.clone());
+                visited.push(url);
                 all_text.push_str(&strip_html(&html));
                 all_text.push('\n');
-                if visited.len() >= 4 {
-                    break;
-                }
             }
         }
         if all_text.is_empty() {
