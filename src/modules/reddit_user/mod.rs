@@ -19,7 +19,7 @@
 //! multi-service identity confirmation. Anonymous calls are rate-limited; the
 //! engine's circuit breaker trips on the 429 so a busy run stops re-hitting it.
 
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 use async_trait::async_trait;
 use regex::Regex;
@@ -68,16 +68,13 @@ struct Subreddit {
     title: Option<String>,
 }
 
-/// Email + http(s) URL extractors for the free-text profile bio. Compiled once.
-fn bio_patterns() -> &'static (Regex, Regex) {
-    static RES: OnceLock<(Regex, Regex)> = OnceLock::new();
-    RES.get_or_init(|| {
-        (
-            Regex::new(r"[\w.+-]+@[\w-]+\.[\w.-]+").unwrap(),
-            Regex::new(r#"https?://[^\s"'<>)]+"#).unwrap(),
-        )
-    })
-}
+/// Email extractor for the free-text profile bio. Compiled once.
+static BIO_EMAIL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[\w.+-]+@[\w-]+\.[\w.-]+").unwrap());
+
+/// HTTP(S) URL extractor for the free-text profile bio. Compiled once.
+static BIO_URL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"https?://[^\s"'<>)]+"#).unwrap());
 
 #[async_trait]
 impl Module for RedditUser {
@@ -175,8 +172,7 @@ impl Module for RedditUser {
                 sr.public_description.as_deref().unwrap_or(""),
                 sr.title.as_deref().unwrap_or("")
             );
-            let (email_re, url_re) = bio_patterns();
-            if let Some(m) = email_re.find(&bio) {
+            if let Some(m) = BIO_EMAIL_RE.find(&bio) {
                 let email = m.as_str().to_lowercase();
                 let mut e = Entity::new(EntityKind::Email, &email, 0.76, &ctx.scan_id);
                 e.tag("reddit");
@@ -187,7 +183,7 @@ impl Module for RedditUser {
                 );
                 result.push(e);
             }
-            if let Some(m) = url_re.find(&bio) {
+            if let Some(m) = BIO_URL_RE.find(&bio) {
                 let link = m.as_str().trim_end_matches(['.', ',', ')']);
                 let mut url_e = Entity::new(EntityKind::Url, link, 0.70, &ctx.scan_id);
                 url_e.tag("reddit");

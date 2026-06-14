@@ -1,6 +1,8 @@
 use super::{BINARY_EXTENSIONS, CrawlState, MAX_DEPTH, MAX_PAGES};
 use crate::core::error::{Error, Result};
+use regex::Regex;
 use std::collections::HashSet;
+use std::sync::LazyLock;
 use std::time::Duration;
 use url::Url;
 
@@ -432,6 +434,22 @@ const ASSET_EXTENSIONS: &[&str] = &[
     ".mjs", ".woff", ".woff2", ".ttf", ".otf", ".eot", ".pdf",
 ];
 
+// Tracking-ID regexes compiled once.
+static TRACKING_UA_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bUA-\d{4,10}-\d{1,4}\b").unwrap());
+static TRACKING_GA4_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bG-[A-Z0-9]{8,12}\b").unwrap());
+static TRACKING_GTM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bGTM-[A-Z0-9]{4,10}\b").unwrap());
+static TRACKING_ADSENSE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bca-pub-\d{10,20}\b").unwrap());
+static TRACKING_FB_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"fbq\(\s*['"]init['"]\s*,\s*['"](\d{6,20})['"]"#).unwrap());
+static TRACKING_YM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"ym\(\s*(\d{5,12})\s*,").unwrap());
+static TRACKING_HOTJAR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"hjid\s*[:=]\s*(\d{4,10})").unwrap());
+
 /// Extract web-analytics / tracking identifiers from page HTML. A tracking ID
 /// shared across otherwise-unrelated sites is strong evidence of common
 /// ownership — the "affiliate" pivot. **Pure regex over the page body, no API.**
@@ -439,27 +457,16 @@ const ASSET_EXTENSIONS: &[&str] = &[
 /// two providers can't collide on the same number. Capped so a hostile page can't
 /// flood the set.
 pub(super) fn extract_tracking_ids(body: &str, out: &mut HashSet<(String, String)>) {
-    use regex::Regex;
-    use std::sync::OnceLock;
     // (regex, provider, capture-group, prefix-for-bare-numeric-ids)
-    static PATS: OnceLock<Vec<(Regex, &'static str, usize, &'static str)>> = OnceLock::new();
-    let pats = PATS.get_or_init(|| {
-        let c = |re: &str| Regex::new(re).expect("valid tracking-id regex");
-        vec![
-            (c(r"\bUA-\d{4,10}-\d{1,4}\b"), "google-analytics", 0, ""),
-            (c(r"\bG-[A-Z0-9]{8,12}\b"), "google-analytics-4", 0, ""),
-            (c(r"\bGTM-[A-Z0-9]{4,10}\b"), "google-tag-manager", 0, ""),
-            (c(r"\bca-pub-\d{10,20}\b"), "google-adsense", 0, ""),
-            (
-                c(r#"fbq\(\s*['"]init['"]\s*,\s*['"](\d{6,20})['"]"#),
-                "facebook-pixel",
-                1,
-                "fb-pixel:",
-            ),
-            (c(r"ym\(\s*(\d{5,12})\s*,"), "yandex-metrica", 1, "yandex:"),
-            (c(r"hjid\s*[:=]\s*(\d{4,10})"), "hotjar", 1, "hotjar:"),
-        ]
-    });
+    let pats: &[(&Regex, &str, usize, &str)] = &[
+        (&*TRACKING_UA_RE, "google-analytics", 0, ""),
+        (&*TRACKING_GA4_RE, "google-analytics-4", 0, ""),
+        (&*TRACKING_GTM_RE, "google-tag-manager", 0, ""),
+        (&*TRACKING_ADSENSE_RE, "google-adsense", 0, ""),
+        (&*TRACKING_FB_RE, "facebook-pixel", 1, "fb-pixel:"),
+        (&*TRACKING_YM_RE, "yandex-metrica", 1, "yandex:"),
+        (&*TRACKING_HOTJAR_RE, "hotjar", 1, "hotjar:"),
+    ];
     const CAP: usize = 64;
     for (re, provider, grp, prefix) in pats {
         for caps in re.captures_iter(body) {

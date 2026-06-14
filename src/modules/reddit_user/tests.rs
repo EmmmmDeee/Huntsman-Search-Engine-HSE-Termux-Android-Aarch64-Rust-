@@ -32,13 +32,12 @@ use super::*;
 
     #[test]
     fn bio_extracts_email_and_url() {
-        let (email_re, url_re) = bio_patterns();
         let bio = "Reach Me@Example.com — https://example.com/profile.";
         assert_eq!(
-            email_re.find(bio).unwrap().as_str().to_lowercase(),
+            BIO_EMAIL_RE.find(bio).unwrap().as_str().to_lowercase(),
             "me@example.com"
         );
-        let link = url_re
+        let link = BIO_URL_RE
             .find(bio)
             .unwrap()
             .as_str()

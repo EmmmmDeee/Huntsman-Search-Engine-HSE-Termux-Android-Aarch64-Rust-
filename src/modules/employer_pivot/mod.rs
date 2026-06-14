@@ -21,7 +21,7 @@
 
 use async_trait::async_trait;
 use std::collections::HashSet;
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 use regex::Regex;
 
@@ -261,11 +261,20 @@ fn domain_for_target(t: &Target) -> Option<String> {
     }
 }
 
+/// Email address extractor. Compiled once.
+static EXTRACT_EMAIL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}").unwrap());
+
+/// Social/professional profile URL extractor. Compiled once.
+static EXTRACT_PROFILE_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"https?://(?:www\.)?(?:linkedin\.com|facebook\.com|instagram\.com|twitter\.com|x\.com|youtube\.com)/[A-Za-z0-9_./@\-]+"
+    ).unwrap()
+});
+
 fn extract_emails(text: &str, employer_domain: &str) -> Vec<String> {
-    static R: OnceLock<Regex> = OnceLock::new();
-    let re =
-        R.get_or_init(|| Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}").unwrap());
-    re.find_iter(text)
+    EXTRACT_EMAIL_RE
+        .find_iter(text)
         .map(|m| m.as_str().to_lowercase())
         .filter(|s| {
             s.rsplit_once('@')
@@ -275,13 +284,8 @@ fn extract_emails(text: &str, employer_domain: &str) -> Vec<String> {
 }
 
 fn extract_profile_urls(text: &str) -> Vec<String> {
-    static R: OnceLock<Regex> = OnceLock::new();
-    let re = R.get_or_init(|| {
-        Regex::new(
-            r"https?://(?:www\.)?(?:linkedin\.com|facebook\.com|instagram\.com|twitter\.com|x\.com|youtube\.com)/[A-Za-z0-9_./@\-]+"
-        ).unwrap()
-    });
-    re.find_iter(text)
+    EXTRACT_PROFILE_URL_RE
+        .find_iter(text)
         .map(|m| m.as_str().trim_end_matches(['/', '.', ',']).to_string())
         .collect()
 }

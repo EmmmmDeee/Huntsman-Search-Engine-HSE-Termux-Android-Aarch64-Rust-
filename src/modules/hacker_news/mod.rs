@@ -16,7 +16,7 @@
 //! correlator's AU-045 "multi-service identity confirmation" (rather than echoing
 //! a single source). Official, stable, and rate-limit-free.
 
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 use async_trait::async_trait;
 use regex::Regex;
@@ -47,17 +47,13 @@ struct HnUser {
     submitted: Option<Vec<i64>>,
 }
 
-/// Email + http(s) URL extractors for the free-text `about` bio. Compiled once
-/// (codebase convention) — the bio is small but the module runs per scan.
-fn bio_patterns() -> &'static (Regex, Regex) {
-    static RES: OnceLock<(Regex, Regex)> = OnceLock::new();
-    RES.get_or_init(|| {
-        (
-            Regex::new(r"[\w.+-]+@[\w-]+\.[\w.-]+").unwrap(),
-            Regex::new(r#"https?://[^\s"'<>)]+"#).unwrap(),
-        )
-    })
-}
+/// Email extractor for the free-text `about` bio. Compiled once.
+static BIO_EMAIL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[\w.+-]+@[\w-]+\.[\w.-]+").unwrap());
+
+/// HTTP(S) URL extractor for the free-text `about` bio. Compiled once.
+static BIO_URL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"https?://[^\s"'<>)]+"#).unwrap());
 
 #[async_trait]
 impl Module for HackerNews {
@@ -147,8 +143,7 @@ impl Module for HackerNews {
         // a high-value, operator-published link from the handle to a real
         // identifier — exactly the cross-reference the correlator wants.
         if let Some(about) = user.about.as_deref() {
-            let (email_re, url_re) = bio_patterns();
-            if let Some(m) = email_re.find(about) {
+            if let Some(m) = BIO_EMAIL_RE.find(about) {
                 let email = m.as_str().to_lowercase();
                 let mut e = Entity::new(EntityKind::Email, &email, 0.78, &ctx.scan_id);
                 e.tag("hacker-news");
@@ -159,7 +154,7 @@ impl Module for HackerNews {
                 );
                 result.push(e);
             }
-            if let Some(m) = url_re.find(about) {
+            if let Some(m) = BIO_URL_RE.find(about) {
                 let link = m.as_str().trim_end_matches(['.', ',', ')']);
                 let mut url_e = Entity::new(EntityKind::Url, link, 0.72, &ctx.scan_id);
                 url_e.tag("hacker-news");
