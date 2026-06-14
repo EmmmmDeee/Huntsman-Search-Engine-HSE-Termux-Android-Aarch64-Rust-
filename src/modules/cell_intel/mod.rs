@@ -22,6 +22,7 @@ mod tests;
 use std::collections::HashSet;
 
 use async_trait::async_trait;
+use futures::future::join_all;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -33,6 +34,19 @@ use crate::util::termux::termux_cmd;
 
 use helpers::{accuracy_to_confidence, build_tower_device, mcc_to_centroid, query_opencellid};
 use types::TowerKey;
+
+/// Owned data for one geolocatable tower — survives `async move` closures.
+struct TowerGeo {
+    mcc: String,
+    mnc: String,
+    lac: i64,
+    cid: i64,
+    radio: &'static str,
+    tower_id: String,
+    dbm: Option<i64>,
+    registered: Option<bool>,
+    ctype_lower: String,
+}
 
 const OPENCELLID_KEY_ENV: &str = "HUNTSMAN_OPENCELLID_KEY";
 
@@ -106,35 +120,69 @@ impl Module for CellIntel {
 
         let api_key = ctx.key_opt(OPENCELLID_KEY_ENV);
         let mut result = ModuleResult::new();
-        let mut seen = HashSet::new();
+        let mut seen: HashSet<String> = HashSet::new();
 
+        // Pass 1: DeviceId entities (no HTTP) + collect unique geolocatable towers.
+        // TowerKey<'a> borrows from Cell, so we clone fields into owned TowerGeo
+        // before moving into async closures.
+        let mut geo_work: Vec<TowerGeo> = Vec::new();
         for cell in &cells {
-            // Parse + survey-skip policy in one place (TowerKey::from_cell):
-            // None when the cell lacks the minimum keys (no MCC / no CID).
             let Some(key) = TowerKey::from_cell(cell) else {
                 continue;
             };
-
-            // ---- 1. DeviceId entity (from former cell_survey) ----
             result.push(build_tower_device(cell, &key, &ctx.scan_id));
-
-            // ---- 2. Coordinates entity (from former cell_locate) ----
-            // Needs MNC + non-zero LAC/TAC; skip duplicate geolocation per tower.
             if !key.is_geolocatable() || !seen.insert(key.tower_id.clone()) {
                 continue;
             }
+            geo_work.push(TowerGeo {
+                mcc: key.mcc.as_ref().to_owned(),
+                mnc: key.mnc.as_ref().to_owned(),
+                lac: key.lac,
+                cid: key.cid,
+                radio: key.radio_code(),
+                tower_id: key.tower_id.clone(),
+                dbm: cell.dbm,
+                registered: cell.registered,
+                ctype_lower: key.ctype.to_lowercase(),
+            });
+        }
 
-            let radio = key.radio_code();
+        if geo_work.is_empty() {
+            return Ok(result);
+        }
 
-            if let Some(api) = api_key
-                && let Some((lat, lon, range)) = query_opencellid(&ctx.http, api, &key, radio).await
-            {
+        // Pass 2: fire all OpenCelliD queries concurrently (or skip when no key).
+        let scan_id = &ctx.scan_id;
+        let geo_futures = geo_work.iter().map(|tg| {
+            let http = ctx.http.clone();
+            let api_key = api_key.map(str::to_owned);
+            async move {
+                if let Some(api) = api_key.as_deref() {
+                    // Build a temporary TowerKey with owned Cow for the query helper.
+                    let tmp_key = TowerKey {
+                        mcc: std::borrow::Cow::Borrowed(tg.mcc.as_str()),
+                        mnc: std::borrow::Cow::Borrowed(tg.mnc.as_str()),
+                        lac: tg.lac,
+                        cid: tg.cid,
+                        ctype: tg.ctype_lower.as_str(),
+                        tower_id: tg.tower_id.clone(),
+                    };
+                    query_opencellid(&http, api, &tmp_key, tg.radio).await
+                } else {
+                    None
+                }
+            }
+        });
+        let geo_results: Vec<Option<(f64, f64, u64)>> = join_all(geo_futures).await;
+
+        for (tg, geo) in geo_work.iter().zip(geo_results) {
+            if let Some((lat, lon, range)) = geo {
                 let coords = format!("{lat:.6},{lon:.6}");
                 let confidence = accuracy_to_confidence(range);
-                let mut e = Entity::new(EntityKind::Coordinates, &coords, confidence, &ctx.scan_id);
+                let mut e = Entity::new(EntityKind::Coordinates, &coords, confidence, scan_id);
                 e.tag("geoint");
                 e.tag("cell-tower");
-                e.tag(format!("radio:{}", key.ctype.to_lowercase()));
+                e.tag(["radio:", tg.ctype_lower.as_str()].concat());
                 if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
                     e.tag(format!("au-state:{state}"));
                     e.tag("country:AU");
@@ -142,25 +190,21 @@ impl Module for CellIntel {
                 e.add_evidence(
                     Evidence::new(
                         SRC,
-                        format!("Cell tower {radio} {} -> {coords}", key.tower_id),
+                        format!("Cell tower {} {} -> {coords}", tg.radio, tg.tower_id),
                     )
-                    .with_attr("tower_id", &key.tower_id)
-                    .with_attr("radio", radio)
-                    .with_attr("mcc", key.mcc.as_ref())
-                    .with_attr("mnc", key.mnc.as_ref())
+                    .with_attr("tower_id", &tg.tower_id)
+                    .with_attr("radio", tg.radio)
+                    .with_attr("mcc", &tg.mcc)
+                    .with_attr("mnc", &tg.mnc)
                     .with_attr("range_m", range.to_string())
                     .with_attr("source", "OpenCelliD")
-                    .with_attr("dbm", cell.dbm.unwrap_or(0).to_string())
-                    .with_attr("registered", cell.registered.unwrap_or(false).to_string()),
+                    .with_attr("dbm", tg.dbm.unwrap_or(0).to_string())
+                    .with_attr("registered", tg.registered.unwrap_or(false).to_string()),
                 );
                 result.push(e);
-                continue;
-            }
-
-            // Fallback: MCC -> country centroid (coarse but free, offline)
-            if let Some((lat, lon, country)) = mcc_to_centroid(&key.mcc) {
+            } else if let Some((lat, lon, country)) = mcc_to_centroid(&tg.mcc) {
                 let coords = format!("{lat:.4},{lon:.4}");
-                let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.25, &ctx.scan_id);
+                let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.25, scan_id);
                 e.tag("geoint");
                 e.tag("cell-tower");
                 e.tag("coarse");
@@ -173,10 +217,10 @@ impl Module for CellIntel {
                 e.add_evidence(
                     Evidence::new(
                         SRC,
-                        format!("Cell tower MCC {} -> {country} (country centroid)", key.mcc),
+                        format!("Cell tower MCC {} -> {country} (country centroid)", tg.mcc),
                     )
-                    .with_attr("tower_id", &key.tower_id)
-                    .with_attr("mcc", key.mcc.as_ref())
+                    .with_attr("tower_id", &tg.tower_id)
+                    .with_attr("mcc", &tg.mcc)
                     .with_attr("country", country)
                     .with_attr("source", "mcc-centroid")
                     .with_attr("accuracy", "country-level"),

@@ -11,6 +11,7 @@
 //! hickory-resolver's DNS wire format.
 
 use async_trait::async_trait;
+use futures::future::select_ok;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -90,59 +91,67 @@ impl Module for DnsAxfr {
             .take(3)
             .collect();
 
-        for ns_host in &ns_hosts {
-            let ns_ip = match resolver.lookup_ip(ns_host.as_str()).await {
-                Ok(ips) => {
-                    let ip: Option<std::net::IpAddr> =
-                        ips.as_lookup()
-                            .answers()
-                            .iter()
-                            .find_map(|r| match &r.data {
-                                RData::A(a) => Some(std::net::IpAddr::V4(a.0)),
-                                RData::AAAA(aaaa) => Some(std::net::IpAddr::V6(aaaa.0)),
-                                _ => None,
-                            });
-                    match ip {
-                        Some(addr) => addr.to_string(),
-                        None => continue,
+        // Race all NS servers concurrently — first one to return records wins.
+        // Each future resolves the NS IP and attempts AXFR, returning
+        // Err(()) when the server is unreachable or refuses the transfer.
+        let resolver = std::sync::Arc::new(resolver);
+        let axfr_futures: Vec<_> = ns_hosts
+            .iter()
+            .map(|ns_host| {
+                let resolver = resolver.clone();
+                let domain = domain.clone();
+                let ns_host = ns_host.clone();
+                Box::pin(async move {
+                    let ips = resolver.lookup_ip(ns_host.as_str()).await.map_err(|_| ())?;
+                    let ip = ips
+                        .as_lookup()
+                        .answers()
+                        .iter()
+                        .find_map(|r| match &r.data {
+                            RData::A(a) => Some(std::net::IpAddr::V4(a.0)),
+                            RData::AAAA(aaaa) => Some(std::net::IpAddr::V6(aaaa.0)),
+                            _ => None,
+                        })
+                        .ok_or(())?;
+                    let records = attempt_axfr(&ip.to_string(), &domain)
+                        .await
+                        .map_err(|_| ())?;
+                    if records.is_empty() {
+                        return Err(());
                     }
-                }
-                Err(_) => continue,
-            };
+                    Ok((ns_host, records))
+                })
+            })
+            .collect();
 
-            match attempt_axfr(&ns_ip, &domain).await {
-                Ok(records) if !records.is_empty() => {
-                    result.extend(records.iter().map(|record| {
-                        let mut e = Entity::new(EntityKind::Domain, record, 0.80, &ctx.scan_id);
-                        e.tag("subdomain");
-                        e.tag("axfr");
-                        e.add_evidence(
-                            Evidence::new(SRC, format!("Zone transfer from {ns_host}"))
-                                .with_attr("nameserver", ns_host)
-                                .with_attr("method", "AXFR"),
-                        );
-                        e
-                    }));
+        if let Ok(((ns_host, records), _)) = select_ok(axfr_futures).await {
+            result.extend(records.iter().map(|record| {
+                let mut e = Entity::new(EntityKind::Domain, record, 0.80, &ctx.scan_id);
+                e.tag("subdomain");
+                e.tag("axfr");
+                e.add_evidence(
+                    Evidence::new(SRC, format!("Zone transfer from {ns_host}"))
+                        .with_attr("nameserver", &ns_host)
+                        .with_attr("method", "AXFR"),
+                );
+                e
+            }));
 
-                    let mut zone_e = Entity::new(EntityKind::Domain, &domain, 0.95, &ctx.scan_id);
-                    zone_e.tag("axfr-permitted");
-                    zone_e.tag("vulnerable");
-                    zone_e.add_evidence(
-                        Evidence::new(
-                            SRC,
-                            format!(
-                                "Zone transfer permitted by {ns_host} — {} records exposed",
-                                records.len()
-                            ),
-                        )
-                        .with_attr("nameserver", ns_host)
-                        .with_attr("record_count", records.len().to_string()),
-                    );
-                    result.push(zone_e);
-                    break;
-                }
-                _ => continue,
-            }
+            let mut zone_e = Entity::new(EntityKind::Domain, &domain, 0.95, &ctx.scan_id);
+            zone_e.tag("axfr-permitted");
+            zone_e.tag("vulnerable");
+            zone_e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!(
+                        "Zone transfer permitted by {ns_host} — {} records exposed",
+                        records.len()
+                    ),
+                )
+                .with_attr("nameserver", &ns_host)
+                .with_attr("record_count", records.len().to_string()),
+            );
+            result.push(zone_e);
         }
 
         Ok(result)
