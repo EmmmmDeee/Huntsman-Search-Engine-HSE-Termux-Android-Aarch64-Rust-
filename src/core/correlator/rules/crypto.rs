@@ -17,10 +17,19 @@ pub(in crate::core::correlator) fn rule_au_039_wallet_identity(
     if wallets.is_empty() {
         return Vec::new();
     }
-    let anchor = entities
-        .iter()
-        .find(|e| e.kind == EntityKind::Person)
-        .or_else(|| entities.iter().find(|e| e.kind == EntityKind::Email));
+    // Single pass for the anchor: track the best (Person preferred over Email)
+    // candidate seen so far instead of scanning the entity list once for each
+    // kind. A Person found at any point wins outright and ends the search.
+    let mut anchor: Option<&Entity> = None;
+    for e in entities {
+        if e.kind == EntityKind::Person {
+            anchor = Some(e);
+            break;
+        }
+        if anchor.is_none() && e.kind == EntityKind::Email {
+            anchor = Some(e);
+        }
+    }
     let Some(anchor) = anchor else {
         return Vec::new();
     };

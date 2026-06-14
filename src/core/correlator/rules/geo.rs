@@ -144,10 +144,14 @@ pub(in crate::core::correlator) fn rule_au_013_local_network_discovery(
     ts: u64,
 ) -> Vec<Correlation> {
     const LAN_TAGS: &[&str] = &["local-arp", "local-interface", "wifi-ap"];
+    // Single filter pass: kind gate and tag probe folded together so each entity
+    // is visited once (the kind check short-circuits the tag scan).
     let hits: Vec<&Entity> = entities
         .iter()
-        .filter(|e| matches!(e.kind, EntityKind::IpAddress | EntityKind::MacAddress))
-        .filter(|e| LAN_TAGS.iter().any(|t| e.has_tag(t)))
+        .filter(|e| {
+            matches!(e.kind, EntityKind::IpAddress | EntityKind::MacAddress)
+                && LAN_TAGS.iter().any(|t| e.has_tag(t))
+        })
         .collect();
     if hits.len() < 2 {
         return Vec::new();
@@ -256,19 +260,25 @@ pub(in crate::core::correlator) fn rule_au_017_multi_geo_convergence(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let coords: Vec<&Entity> = entities_of_kind(entities, EntityKind::Coordinates)
-        .into_iter()
-        .filter(|e| e.confidence >= 0.50)
-        .collect();
-    if coords.len() < 2 {
+    // Cheap precondition: fewer than two confirmed coordinate entities can never
+    // form a cluster, so bail before parsing anything.
+    if entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates && e.confidence >= 0.50)
+        .take(2)
+        .count()
+        < 2
+    {
         return Vec::new();
     }
     // Parse once through the canonical, range-validating helper so out-of-range
     // junk ("200,300") is dropped here rather than silently clustered. Each
     // surviving entity carries its (lat, lon) so the inner loop never re-parses.
-    let mut parsed: Vec<(&Entity, (f64, f64))> = coords
+    // Filter and parse fuse into one pass — no intermediate `coords` Vec.
+    let mut parsed: Vec<(&Entity, (f64, f64))> = entities
         .iter()
-        .filter_map(|c| crate::util::geohash::parse_coords(&c.value).map(|ll| (*c, ll)))
+        .filter(|e| e.kind == EntityKind::Coordinates && e.confidence >= 0.50)
+        .filter_map(|c| crate::util::geohash::parse_coords(&c.value).map(|ll| (c, ll)))
         .collect();
     // Deterministic clustering: the greedy single-link assignment below
     // compares each point against the FIRST member of each cluster, so both
@@ -327,16 +337,19 @@ pub(in crate::core::correlator) fn rule_au_018_email_address_colocation(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let emails: Vec<&Entity> = entities_of_kind(entities, EntityKind::Email)
-        .into_iter()
-        .filter(|e| e.confidence >= 0.60)
-        .collect();
-    let addresses: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| {
-            matches!(e.kind, EntityKind::Address | EntityKind::Coordinates) && e.confidence >= 0.50
-        })
-        .collect();
+    // Single pass partitions the two member classes instead of filtering the
+    // entity list twice (once for emails, once for addresses/coordinates).
+    let mut emails: Vec<&Entity> = Vec::new();
+    let mut addresses: Vec<&Entity> = Vec::new();
+    for e in entities {
+        if e.kind == EntityKind::Email && e.confidence >= 0.60 {
+            emails.push(e);
+        } else if matches!(e.kind, EntityKind::Address | EntityKind::Coordinates)
+            && e.confidence >= 0.50
+        {
+            addresses.push(e);
+        }
+    }
     if emails.is_empty() || addresses.is_empty() {
         return Vec::new();
     }
