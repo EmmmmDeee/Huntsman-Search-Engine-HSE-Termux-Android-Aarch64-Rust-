@@ -383,7 +383,15 @@ fn entity_source_labels(e: &crate::core::entity::Entity) -> String {
     if seen.is_empty() {
         return "—".to_string();
     }
-    seen.into_iter().collect::<Vec<_>>().join(", ")
+    seen.into_iter()
+        .enumerate()
+        .fold(String::new(), |mut acc, (i, s)| {
+            if i > 0 {
+                acc.push_str(", ");
+            }
+            acc.push_str(&s);
+            acc
+        })
 }
 
 fn print_dossier(

@@ -136,7 +136,16 @@ fn build_domain_entity(domain: &str, body: &RdapResp, scan_id: &str) -> Entity {
     if !roles.is_empty() {
         ev = ev.with_attr(
             "contact_roles",
-            roles.into_iter().collect::<Vec<_>>().join(","),
+            roles
+                .into_iter()
+                .enumerate()
+                .fold(String::new(), |mut acc, (i, s)| {
+                    if i > 0 {
+                        acc.push(',');
+                    }
+                    acc.push_str(s);
+                    acc
+                }),
         );
     }
     if let Some(sd) = &body.secure_dns

@@ -5,7 +5,13 @@ use crate::core::error::{Error, Result};
 /// Comma-join an iterator of strings, or `(none)` when empty — so an empty
 /// provenance line is explicit rather than a confusing blank.
 pub(super) fn join_or_dash<'a>(it: impl Iterator<Item = &'a String>) -> String {
-    let joined = it.cloned().collect::<Vec<_>>().join(", ");
+    let joined = it.enumerate().fold(String::new(), |mut acc, (i, s)| {
+        if i > 0 {
+            acc.push_str(", ");
+        }
+        acc.push_str(s.as_str());
+        acc
+    });
     if joined.is_empty() {
         "(none)".to_string()
     } else {
