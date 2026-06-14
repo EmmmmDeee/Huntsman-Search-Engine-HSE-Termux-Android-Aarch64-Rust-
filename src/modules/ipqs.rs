@@ -204,8 +204,9 @@ impl Module for IpQs {
         // IPQualityScore is a paid fraud/reputation vendor scoring IP / email /
         // phone, so beyond the Infrastructure default (T1590.005 IP Addresses +
         // T1596.005 Scan Databases) it is Search Closed Sources: Threat Intel
-        // Vendors (T1597.001). Superset of the default — coverage cannot regress.
-        &["T1590.005", "T1596.005", "T1597.001"]
+        // Vendors (T1597.001). Scoring also surfaces Email entities (T1589.002)
+        // and Phone entities (T1589 Gather Victim Identity Info). Superset.
+        &["T1589", "T1589.002", "T1590.005", "T1596.005", "T1597.001"]
     }
 
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {

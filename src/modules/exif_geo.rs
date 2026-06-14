@@ -90,6 +90,13 @@ impl Module for ExifGeo {
         ModuleCategory::Geo
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Geo default (T1591.001 Physical Locations) covers the GPS Coordinates.
+        // EXIF metadata also exposes the image author/owner as a Person entity
+        // → T1589.003 Employee Names, which the Geo default omits.
+        &["T1589.003", "T1591.001"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         // Coordinates (GPS IFD), DeviceId (camera serial — a cross-image
         // correlation anchor), and Person (the owner/artist named in metadata).

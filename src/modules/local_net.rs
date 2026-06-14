@@ -54,6 +54,13 @@ impl Module for LocalNet {
         ModuleCategory::Sensor
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Sensor default (T1592 Host Information) covers MAC address discovery
+        // (hardware identification). local_net also enumerates local network
+        // IpAddress entities → T1590.005 IP Addresses, absent from Sensor default.
+        &["T1590.005", "T1592"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::MacAddress, EntityKind::IpAddress];
         KINDS

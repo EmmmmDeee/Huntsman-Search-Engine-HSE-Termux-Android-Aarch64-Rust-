@@ -229,33 +229,29 @@ fn strip_electoral_html(html: &str) -> String {
 /// Looks for AU postcode patterns to anchor a suburb name. Pure.
 fn extract_suburb_hint(window: &str) -> Option<String> {
     // A 4-digit postcode in range 2000..9999 indicates a suburb is nearby.
-    let bytes = window.as_bytes();
-    for i in 0..bytes.len().saturating_sub(4) {
-        if bytes[i].is_ascii_digit()
-            && bytes[i + 1].is_ascii_digit()
-            && bytes[i + 2].is_ascii_digit()
-            && bytes[i + 3].is_ascii_digit()
-        {
-            let pc: u32 = window[i..i + 4].parse().ok()?;
-            if (2000..=9999).contains(&pc) {
-                // Walk backwards to collect the suburb name before the postcode.
-                let before = window[..i].trim_end();
-                let suburb: String = before
-                    .chars()
-                    .rev()
-                    .take_while(|c| c.is_alphabetic() || *c == ' ')
-                    .collect::<String>()
-                    .chars()
-                    .rev()
-                    .collect();
-                let suburb = suburb.trim().to_string();
-                if !suburb.is_empty() && suburb.len() < 30 {
-                    return Some(suburb);
-                }
-            }
+    // Walk byte windows to find the first ASCII-digit quad that parses as
+    // a valid AU postcode, then extract the suburb name that precedes it.
+    window.as_bytes().windows(4).enumerate().find_map(|(i, w)| {
+        if !w.iter().all(u8::is_ascii_digit) {
+            return None;
         }
-    }
-    None
+        let pc: u32 = window[i..i + 4].parse().ok()?;
+        if !(2000..=9999).contains(&pc) {
+            return None;
+        }
+        // Walk backwards from the postcode to collect the suburb name.
+        let before = window[..i].trim_end();
+        let suburb: String = before
+            .chars()
+            .rev()
+            .take_while(|c| c.is_alphabetic() || *c == ' ')
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        let suburb = suburb.trim().to_string();
+        (!suburb.is_empty() && suburb.len() < 30).then_some(suburb)
+    })
 }
 
 /// Build entity set from a confirmed electoral division match. Pure.

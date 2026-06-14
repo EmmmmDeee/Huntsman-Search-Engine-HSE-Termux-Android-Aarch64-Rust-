@@ -197,6 +197,13 @@ impl Module for IntelX {
         ModuleCategory::Breach
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Breach default covers Credentials (T1589.001) + Email Addresses
+        // (T1589.002). IntelX also surfaces real-name Person entities →
+        // T1589.003 Employee Names, which the Breach default omits.
+        &["T1589.001", "T1589.002", "T1589.003"]
+    }
+
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
         use crate::core::entity::EntityKind;
         // The module re-emits the scanned target as its own entity (it does not
@@ -374,16 +381,14 @@ impl Module for IntelX {
 
         // Tag by coarse source family so downstream correlation can group on
         // breach/leak/darknet/paste exposure.
-        for fam in &family_tags {
-            match fam.as_str() {
-                "leaks" => {
-                    entity.tag(tags::BREACH);
-                    entity.tag(tags::PASSWORD_AT_RISK);
-                }
-                "pastes" => entity.tag(tags::PASTE_EXPOSED),
-                other => entity.tag(format!("intelx-source:{other}")),
+        family_tags.iter().for_each(|fam| match fam.as_str() {
+            "leaks" => {
+                entity.tag(tags::BREACH);
+                entity.tag(tags::PASSWORD_AT_RISK);
             }
-        }
+            "pastes" => entity.tag(tags::PASTE_EXPOSED),
+            other => entity.tag(format!("intelx-source:{other}")),
+        });
 
         // Top buckets by frequency (source breakdown), deterministic ordering.
         let mut top_buckets: Vec<(String, u32)> = bucket_counts.into_iter().collect();

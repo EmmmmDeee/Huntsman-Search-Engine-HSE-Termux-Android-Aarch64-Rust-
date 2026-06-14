@@ -81,6 +81,14 @@ impl Module for HackerNews {
         ModuleCategory::Social
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Social default (T1593.001 Social Media + T1589.003 Employee Names).
+        // HN profiles carry no real-name Person entity — only a Username and
+        // optionally an email/URL from the bio. T1589.003 is over-claimed;
+        // T1589.002 (Email Addresses) is the correct addition for bio emails.
+        &["T1589.002", "T1593.001"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Username, EntityKind::Email, EntityKind::Url];
         KINDS

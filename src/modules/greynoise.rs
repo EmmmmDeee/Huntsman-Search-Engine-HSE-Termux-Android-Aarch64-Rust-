@@ -77,6 +77,14 @@ impl Module for GreyNoise {
         ModuleCategory::Infrastructure
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // GreyNoise is an internet-noise classification / scan database (T1596.005)
+        // and gathers IP address info (T1590.005). It also identifies the
+        // ISP/network operator as an Organisation (T1591.002 Business Relationships)
+        // — absent from the Infrastructure default.
+        &["T1590.005", "T1591.002", "T1596.005"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Organisation];
         KINDS

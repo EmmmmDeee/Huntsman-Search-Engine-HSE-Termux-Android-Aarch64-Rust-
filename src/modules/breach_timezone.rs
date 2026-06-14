@@ -139,22 +139,21 @@ fn infer_timezone(hours: &[u32]) -> Option<TimezoneInference> {
     }
     let total = hours.len() as f64;
 
-    let mut best_offset: i32 = 0;
-    let mut best_count: u32 = 0;
-
-    // Slide a 14-hour window and find the offset where most activity
-    // falls between 08:00-22:00 local time
-    for offset in -12_i32..=12 {
-        let mut count = 0u32;
-        for local_hour in 8_i32..22 {
-            let utc_hour = (local_hour - offset).rem_euclid(24) as usize;
-            count += histogram[utc_hour];
-        }
-        if count > best_count {
-            best_count = count;
-            best_offset = offset;
-        }
-    }
+    // Slide a 14-hour window; first-wins on ties (equiv. to original `>`).
+    let (best_offset, best_count) = (-12_i32..=12)
+        .map(|offset| {
+            let count: u32 = (8_i32..22)
+                .map(|h| histogram[(h - offset).rem_euclid(24) as usize])
+                .sum();
+            (offset, count)
+        })
+        .fold((0_i32, 0_u32), |(best_off, best_cnt), (off, cnt)| {
+            if cnt > best_cnt {
+                (off, cnt)
+            } else {
+                (best_off, best_cnt)
+            }
+        });
 
     let concentration = best_count as f64 / total;
     if concentration < MIN_CONCENTRATION {

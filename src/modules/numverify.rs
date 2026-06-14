@@ -71,6 +71,13 @@ impl Module for NumVerify {
         8_000
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Phone default (T1589 Gather Victim Identity Information) is correct for
+        // phone number lookup, but numverify also maps the carrier country to an
+        // Address entity — Determine Physical Locations (T1591.001).
+        &["T1589", "T1591.001"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Address];
         KINDS

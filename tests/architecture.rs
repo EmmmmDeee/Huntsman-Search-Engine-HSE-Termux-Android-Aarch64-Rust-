@@ -344,6 +344,300 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "opencorporates lists officers → also Identify Roles",
     );
 
+    // IP geolocation modules (Geo or Infrastructure category) all emit
+    // Coordinates + Address (T1591.001 Physical Locations) and an ISP/Organisation
+    // entity (T1591.002 Business Relationships) alongside ASN info (T1590.005).
+    // The Geo default (T1591.001 only) and Infrastructure default (T1590.005 +
+    // T1596.005 Scan Databases) both under-claim; all five declare the precise
+    // triple instead — none are scan databases, all are passive geolocation APIs.
+    for name in ["ip_geo", "ip2location", "ip_whois_geo", "ipinfo", "ipquery"] {
+        assert_eq!(
+            techniques(name),
+            vec!["T1590.005", "T1591.001", "T1591.002"],
+            "{name} → IP Addresses + Physical Locations + Business Relationships"
+        );
+        assert!(
+            !techniques(name).contains(&"T1596.005"),
+            "{name} is a passive geolocation API, not a scan database (T1596.005)"
+        );
+    }
+
+    // Scan-database Infrastructure modules that also geocode hosts:
+    // Shodan is a genuine scan db (T1596.005) + IP info (T1590.005) but also
+    // maps country→Address (T1591.001) and ASN→Organisation (T1591.002).
+    assert_eq!(
+        techniques("shodan"),
+        vec!["T1590.005", "T1591.001", "T1591.002", "T1596.005"],
+        "shodan → scan-db + IP info + physical location + org"
+    );
+    // Censys likewise: scan db (T1596.005) + IP info (T1590.005) + datacenter
+    // coordinates and city as physical location (T1591.001).
+    assert_eq!(
+        techniques("censys"),
+        vec!["T1590.005", "T1596.005", "T1591.001"],
+        "censys → scan-db + IP info + physical location"
+    );
+
+    // ipapi is a passive geolocation API identical in surface to the geo-5 above:
+    // IP address info + physical location + ISP/operator organisation.
+    assert_eq!(
+        techniques("ipapi"),
+        vec!["T1590.005", "T1591.001", "T1591.002"],
+        "ipapi → IP Addresses + Physical Locations + Business Relationships"
+    );
+    assert!(
+        !techniques("ipapi").contains(&"T1596.005"),
+        "ipapi is a passive geo API, not a scan database (T1596.005)"
+    );
+
+    // Keybase: Social category but profiles include a user-declared location
+    // string → Physical Locations (T1591.001) alongside Social Media (T1593.001)
+    // and Employee Names (T1589.003).
+    assert_eq!(
+        techniques("keybase"),
+        vec!["T1591.001", "T1593.001", "T1589.003"],
+        "keybase → Physical Locations + Social Media + Employee Names"
+    );
+
+    // NumVerify: Phone category, maps carrier country to a geocodable Address
+    // → T1591.001 Physical Locations alongside the base T1589 phone identity.
+    assert_eq!(
+        techniques("numverify"),
+        vec!["T1589", "T1591.001"],
+        "numverify → Gather Victim Identity Info (Phone) + Physical Locations"
+    );
+
+    // AbuseIPDB: Infrastructure (scan database T1596.005 + IP info T1590.005)
+    // but also identifies the ISP as an Organisation → T1591.002 Business
+    // Relationships, which the Infrastructure default omits.
+    assert_eq!(
+        techniques("abuseipdb"),
+        vec!["T1590.005", "T1591.002", "T1596.005"],
+        "abuseipdb → IP Addresses + Business Relationships + Scan Databases"
+    );
+
+    // GreyNoise: same surface as AbuseIPDB — scan-db + IP info + ISP org.
+    assert_eq!(
+        techniques("greynoise"),
+        vec!["T1590.005", "T1591.002", "T1596.005"],
+        "greynoise → IP Addresses + Business Relationships + Scan Databases"
+    );
+
+    // ip_reputation (AlienVault OTX + Tor): threat intel vendor (T1597.001)
+    // rather than passive scan database (T1596.005). Also emits ISP/adversary
+    // Organisation (T1591.002) alongside IP info (T1590.005).
+    assert_eq!(
+        techniques("ip_reputation"),
+        vec!["T1590.005", "T1591.002", "T1597.001"],
+        "ip_reputation → IP Addresses + Business Relationships + Threat Intel Vendors"
+    );
+    assert!(
+        !techniques("ip_reputation").contains(&"T1596.005"),
+        "ip_reputation uses OTX (threat intel vendor T1597.001), not a scan database"
+    );
+
+    // Gravatar: People category, but profile location → T1591.001 Physical
+    // Locations. T1591.004 (Identify Roles) dropped — Gravatar profiles carry
+    // no role information.
+    assert_eq!(
+        techniques("gravatar"),
+        vec!["T1591.001", "T1589.003"],
+        "gravatar → Physical Locations + Employee Names (no roles)"
+    );
+    assert!(
+        !techniques("gravatar").contains(&"T1591.004"),
+        "gravatar surfaces no role/job info; must not claim Identify Roles"
+    );
+
+    // netblock: pure offline CIDR expansion — no scan database → drops T1596.005.
+    assert_eq!(
+        techniques("netblock"),
+        vec!["T1590.005"],
+        "netblock → IP Addresses only (no scan database queried)"
+    );
+    assert!(
+        !techniques("netblock").contains(&"T1596.005"),
+        "netblock is a pure CIDR math expansion, not a scan database"
+    );
+
+    // urlscan: scan database (T1596.005) + IP info (T1590.005) + hosting country
+    // → Address entity → T1591.001 Physical Locations (missing from default).
+    assert_eq!(
+        techniques("urlscan"),
+        vec!["T1590.005", "T1591.001", "T1596.005"],
+        "urlscan → IP Addresses + Physical Locations + Scan Databases"
+    );
+
+    // DeHashed + IntelX: Breach category covers Credentials (T1589.001) and
+    // Email Addresses (T1589.002) but both modules also emit real-name Person
+    // entities → T1589.003 Employee Names must be declared explicitly.
+    for name in ["dehashed", "intelx"] {
+        assert_eq!(
+            techniques(name),
+            vec!["T1589.001", "T1589.002", "T1589.003"],
+            "{name} → Credentials + Email Addresses + Employee Names"
+        );
+        assert!(
+            techniques(name).contains(&"T1589.003"),
+            "{name} emits Person entities; must claim Employee Names (T1589.003)"
+        );
+    }
+
+    // WiGLE: Geo category (T1591.001 Physical Locations) but also surfaces
+    // the cellular carrier / WiFi network operator as an Organisation →
+    // T1591.002 Business Relationships.
+    assert_eq!(
+        techniques("wigle"),
+        vec!["T1591.001", "T1591.002"],
+        "wigle → Physical Locations + Business Relationships (carrier/operator)"
+    );
+
+    // ip_registry: queries RDAP (T1596.002 WHOIS) + BGPView (T1590.005 IP Addresses).
+    // Emits abuse-contact emails (T1589.002) and ASN operator org (T1591.002).
+    // T1596.005 (Scan Databases) does not apply to registration/routing databases.
+    assert_eq!(
+        techniques("ip_registry"),
+        vec!["T1589.002", "T1590.005", "T1591.002", "T1596.002"],
+        "ip_registry → Email Addresses + IP Addresses + Business Relationships + WHOIS"
+    );
+    assert!(
+        !techniques("ip_registry").contains(&"T1596.005"),
+        "ip_registry queries RDAP/BGPView — not a scan database (T1596.005)"
+    );
+
+    // exif_geo: Geo category (T1591.001) but EXIF Author field → Person entity
+    // → T1589.003 Employee Names, which the Geo default omits.
+    assert_eq!(
+        techniques("exif_geo"),
+        vec!["T1589.003", "T1591.001"],
+        "exif_geo → Employee Names (EXIF author) + Physical Locations (GPS)"
+    );
+
+    // search_engines: Search category (T1593.002) but SERP scraping surfaces
+    // emails, real names, addresses, and organisations — all techniques absent
+    // from the narrow Search category default.
+    assert_eq!(
+        techniques("search_engines"),
+        vec![
+            "T1589.002",
+            "T1589.003",
+            "T1591.001",
+            "T1591.002",
+            "T1593.002"
+        ],
+        "search_engines → Email + Employee Names + Physical Locations + Business Relationships + Search Engines"
+    );
+
+    // pgp: People default (T1589.003 + T1591.004 Identify Roles) but PGP keys
+    // carry no role info — only real name (T1589.003) and email (T1589.002).
+    assert_eq!(
+        techniques("pgp"),
+        vec!["T1589.002", "T1589.003"],
+        "pgp → Email Addresses + Employee Names (no role data)"
+    );
+    assert!(
+        !techniques("pgp").contains(&"T1591.004"),
+        "pgp profiles carry no role/job info; must not claim Identify Roles"
+    );
+
+    // hacker_news: Social default (T1593.001 Social Media + T1589.003 Employee Names)
+    // but HN profiles carry no real-name Person entity → T1589.003 over-claimed.
+    // Bio emails → T1589.002 Email Addresses must be declared.
+    assert_eq!(
+        techniques("hacker_news"),
+        vec!["T1589.002", "T1593.001"],
+        "hacker_news → Email Addresses + Social Media (no real-name Person)"
+    );
+    assert!(
+        !techniques("hacker_news").contains(&"T1589.003"),
+        "hacker_news emits no Person entity; must not claim Employee Names"
+    );
+
+    // hudsonrock: Breach default (T1589.001 + T1589.002). Stealer logs also
+    // capture the victim device IP → T1590.005 IP Addresses must be declared.
+    assert_eq!(
+        techniques("hudsonrock"),
+        vec!["T1589.001", "T1589.002", "T1590.005"],
+        "hudsonrock → Credentials + Email Addresses + IP Addresses (stealer device IP)"
+    );
+
+    // wifi_intel: Geo default (T1591.001 Physical Locations) but also enumerates
+    // WiFi AP MAC addresses → T1592 Host Information (hardware identification).
+    assert_eq!(
+        techniques("wifi_intel"),
+        vec!["T1591.001", "T1592"],
+        "wifi_intel → Physical Locations + Host Information (AP MAC addresses)"
+    );
+
+    // cell_intel: Sensor default (T1592 Host Information) but primarily determines
+    // the device's physical location from cell-tower triangulation → T1591.001.
+    assert_eq!(
+        techniques("cell_intel"),
+        vec!["T1591.001", "T1592"],
+        "cell_intel → Physical Locations (triangulated) + Host Information"
+    );
+
+    // reddit_user: same profile as hacker_news — Social default over-claims
+    // T1589.003 (no Person entity emitted); adds T1589.002 for bio emails.
+    assert_eq!(
+        techniques("reddit_user"),
+        vec!["T1589.002", "T1593.001"],
+        "reddit_user → Email Addresses + Social Media (no real-name Person)"
+    );
+    assert!(
+        !techniques("reddit_user").contains(&"T1589.003"),
+        "reddit_user emits no Person entity; must not claim Employee Names"
+    );
+
+    // epieos: People default drops over-claimed T1591.004 (no roles); adds
+    // T1589.002 for the email seed and T1591.001 for location Address.
+    assert_eq!(
+        techniques("epieos"),
+        vec!["T1589.002", "T1589.003", "T1591.001"],
+        "epieos → Email Addresses + Employee Names + Physical Locations"
+    );
+    assert!(
+        !techniques("epieos").contains(&"T1591.004"),
+        "epieos carries no role/job data; must not claim Identify Roles"
+    );
+
+    // local_net: Sensor default (T1592) adds T1590.005 for IpAddress enumeration.
+    assert_eq!(
+        techniques("local_net"),
+        vec!["T1590.005", "T1592"],
+        "local_net → IP Addresses (local network sweep) + Host Information (MAC)"
+    );
+
+    // leakix: existing override adds T1590.005 for the exposed-service IpAddress.
+    assert_eq!(
+        techniques("leakix"),
+        vec!["T1589.001", "T1589.002", "T1590.005", "T1596.005"],
+        "leakix → Credentials + Email Addresses + IP Addresses + Scan Databases"
+    );
+
+    // ipqs: existing override adds T1589 + T1589.002 for Phone and Email scoring.
+    assert_eq!(
+        techniques("ipqs"),
+        vec!["T1589", "T1589.002", "T1590.005", "T1596.005", "T1597.001"],
+        "ipqs → Victim Identity (Phone) + Email Addresses + IP Addresses + Scan Databases + Threat Intel Vendors"
+    );
+
+    // criminal_ip: existing override adds T1591.002 for ASN operator Organisation.
+    assert_eq!(
+        techniques("criminal_ip"),
+        vec!["T1590.005", "T1591.002", "T1596.005", "T1597.001"],
+        "criminal_ip → IP Addresses + Business Relationships + Scan Databases + Threat Intel Vendors"
+    );
+
+    // device_sensors: Sensor default (T1592 Host Information) but GPS coordinates
+    // also Determine Physical Locations (T1591.001) and the device IP is
+    // T1590.005 IP Addresses — both omitted from the Sensor default.
+    assert_eq!(
+        techniques("device_sensors"),
+        vec!["T1590.005", "T1591.001", "T1592"],
+        "device_sensors → IP Addresses + Physical Locations + Host Information"
+    );
+
     // Every overridden ID is still a real catalogue entry (no typos).
     for name in [
         "github_user",
@@ -353,6 +647,36 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "securitytrails",
         "hackertarget",
         "subdomain_takeover",
+        "ip_geo",
+        "ip2location",
+        "ip_whois_geo",
+        "ipapi",
+        "keybase",
+        "numverify",
+        "abuseipdb",
+        "greynoise",
+        "ip_reputation",
+        "gravatar",
+        "netblock",
+        "urlscan",
+        "dehashed",
+        "intelx",
+        "wigle",
+        "ip_registry",
+        "exif_geo",
+        "search_engines",
+        "pgp",
+        "hacker_news",
+        "hudsonrock",
+        "wifi_intel",
+        "cell_intel",
+        "reddit_user",
+        "epieos",
+        "local_net",
+        "leakix",
+        "ipqs",
+        "criminal_ip",
+        "device_sensors",
     ] {
         for id in techniques(name) {
             assert!(

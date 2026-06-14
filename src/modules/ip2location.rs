@@ -74,6 +74,15 @@ impl Module for Ip2Location {
         ModuleCategory::Infrastructure
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Infrastructure default (T1590.005 + T1596.005) covers IP address info
+        // but misses the physical location (T1591.001) and ISP/AS organisation
+        // (T1591.002) this module emits; T1596.005 (Scan Databases) is for
+        // Shodan-style scan engines, not a geolocation lookup service. Override
+        // with the precise surface.
+        &["T1590.005", "T1591.001", "T1591.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::Coordinates,

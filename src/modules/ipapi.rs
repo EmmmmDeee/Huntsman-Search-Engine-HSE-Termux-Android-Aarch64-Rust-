@@ -95,6 +95,14 @@ impl Module for IpApi {
         ModuleCategory::Infrastructure
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Passive IP geolocation API — same surface as ip2location, ipinfo, etc.
+        // Maps IPs to physical location (T1591.001) and identifies the ISP/AS
+        // operator as an Organisation (T1591.002); T1596.005 (Scan Databases) does
+        // not describe a passive geolocation lookup.
+        &["T1590.005", "T1591.001", "T1591.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::Coordinates,

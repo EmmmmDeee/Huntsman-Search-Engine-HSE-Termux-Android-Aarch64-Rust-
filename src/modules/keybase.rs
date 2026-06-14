@@ -106,6 +106,14 @@ impl Module for Keybase {
         ModuleCategory::Social
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Social default (T1593.001 Social Media + T1589.003 Employee Names) but
+        // Keybase profiles surface a user-declared location string and an inline
+        // geocoded Coordinates entity — both mapping to T1591.001 Physical
+        // Locations, absent from the Social default.
+        &["T1591.001", "T1593.001", "T1589.003"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::Person,

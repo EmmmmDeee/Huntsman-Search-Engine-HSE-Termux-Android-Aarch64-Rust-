@@ -122,6 +122,14 @@ impl Module for Gravatar {
         ModuleCategory::People
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // People default (T1589.003 Employee Names + T1591.004 Identify Roles) but
+        // Gravatar surfaces no role information — only Person, Username, URL, and a
+        // profile location Address (T1591.001 Determine Physical Locations). Drop
+        // the over-claimed T1591.004 and add the correct T1591.001.
+        &["T1591.001", "T1589.003"]
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         // One small JSON GET, but mobile networks are slow; budget well above
         // the 3s default so a single slow response isn't a spurious timeout.
@@ -235,16 +243,13 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
     }
 
     // Profile + avatar URLs, and any personal URLs the owner listed.
-    for u in [entry.profile_url.as_deref(), entry.thumbnail_url.as_deref()]
+    [entry.profile_url.as_deref(), entry.thumbnail_url.as_deref()]
         .into_iter()
         .flatten()
         .chain(entry.urls.iter().filter_map(|u| u.value.as_deref()))
-    {
-        let u = u.trim();
-        if u.starts_with("http") {
-            push(result, EntityKind::Url, u, 0.60, &[]);
-        }
-    }
+        .map(str::trim)
+        .filter(|u| u.starts_with("http"))
+        .for_each(|u| push(result, EntityKind::Url, u, 0.60, &[]));
 
     // Linked social accounts — each becomes a platform-prefixed Username pivot
     // (mirrors the see_know/breach convention) plus its account URL.

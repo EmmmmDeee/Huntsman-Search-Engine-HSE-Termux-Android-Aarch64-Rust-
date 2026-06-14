@@ -389,43 +389,24 @@ async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Ent
                 let b = t.as_bytes();
                 if crate::util::spf::is_spf(t) {
                     dom.tag("spf");
-                    for member in crate::util::spf::members(t) {
-                        match member {
+                    entities.extend(crate::util::spf::members(t).map(|member| {
+                        let (kind, value, conf, tag2, ev_label) = match member {
                             crate::util::spf::Member::Ip(ip) => {
-                                let mut ie =
-                                    Entity::new(EntityKind::IpAddress, ip, 0.75, &ctx.scan_id);
-                                ie.tag("dns");
-                                ie.tag("spf");
-                                ie.add_evidence(Evidence::new(
-                                    SRC,
-                                    format!("SPF authorised sender for {domain}"),
-                                ));
-                                entities.push(ie);
+                                (EntityKind::IpAddress, ip, 0.75, "spf", "authorised sender")
                             }
                             crate::util::spf::Member::Include(inc) => {
-                                let mut de =
-                                    Entity::new(EntityKind::Domain, inc, 0.65, &ctx.scan_id);
-                                de.tag("dns");
-                                de.tag("spf-include");
-                                de.add_evidence(Evidence::new(
-                                    SRC,
-                                    format!("SPF include for {domain}"),
-                                ));
-                                entities.push(de);
+                                (EntityKind::Domain, inc, 0.65, "spf-include", "include")
                             }
                             crate::util::spf::Member::Redirect(red) => {
-                                let mut de =
-                                    Entity::new(EntityKind::Domain, red, 0.65, &ctx.scan_id);
-                                de.tag("dns");
-                                de.tag("spf-redirect");
-                                de.add_evidence(Evidence::new(
-                                    SRC,
-                                    format!("SPF redirect for {domain}"),
-                                ));
-                                entities.push(de);
+                                (EntityKind::Domain, red, 0.65, "spf-redirect", "redirect")
                             }
-                        }
-                    }
+                        };
+                        let mut e = Entity::new(kind, value, conf, &ctx.scan_id);
+                        e.tag("dns");
+                        e.tag(tag2);
+                        e.add_evidence(Evidence::new(SRC, format!("SPF {ev_label} for {domain}")));
+                        e
+                    }));
                 } else if b.len() >= 7 && b[..7].eq_ignore_ascii_case(b"v=dkim1") {
                     dom.tag("dkim");
                 } else if b.len() >= 8 && b[..8].eq_ignore_ascii_case(b"v=dmarc1") {
@@ -802,26 +783,17 @@ fn unescape_dns_label(s: &str) -> String {
 /// e.g. `mailto:dmarc@x.com!10m`) which is stripped before the address is taken.
 /// Only syntactically plausible addresses (contain `@`, length ≥ 5) are returned.
 fn dmarc_report_addresses(txt: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    for part in txt.split(';') {
-        let Some(uri_list) = part
-            .trim()
-            .strip_prefix("rua=")
-            .or_else(|| part.trim().strip_prefix("ruf="))
-        else {
-            continue;
-        };
-        for addr in uri_list.split(',') {
-            if let Some(email) = addr.trim().strip_prefix("mailto:") {
-                // Drop the optional "!size" report-size limit (RFC 7489 §6.2).
-                let email = email.split('!').next().unwrap_or(email).trim();
-                if email.contains('@') && email.len() >= 5 {
-                    out.push(email);
-                }
-            }
-        }
-    }
-    out
+    txt.split(';')
+        .filter_map(|part| {
+            let t = part.trim();
+            t.strip_prefix("rua=").or_else(|| t.strip_prefix("ruf="))
+        })
+        .flat_map(|uri_list| uri_list.split(','))
+        .filter_map(|addr| addr.trim().strip_prefix("mailto:"))
+        // Drop the optional "!size" report-size limit (RFC 7489 §6.2).
+        .map(|email| email.split('!').next().unwrap_or(email).trim())
+        .filter(|email| email.contains('@') && email.len() >= 5)
+        .collect()
 }
 
 /// Domain-ownership verification TXT prefixes → the vendor they prove a

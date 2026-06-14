@@ -184,6 +184,13 @@ impl Module for DeHashed {
         ModuleCategory::Breach
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Breach default covers Credentials (T1589.001) + Email Addresses
+        // (T1589.002). DeHashed also surfaces real-name Person entities →
+        // T1589.003 Employee Names, which the Breach default omits.
+        &["T1589.001", "T1589.002", "T1589.003"]
+    }
+
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
         use crate::core::entity::EntityKind;
         const KINDS: &[EntityKind] = &[

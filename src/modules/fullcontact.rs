@@ -186,9 +186,7 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
         }
         let mut e = Entity::new(kind, v, conf, scan_id);
         e.tag(SRC);
-        for t in tags {
-            e.tag(*t);
-        }
+        tags.iter().for_each(|t| e.tag(*t));
         e.add_evidence(ev());
         out.push(e);
     };
@@ -207,11 +205,10 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
             .iter()
             .filter_map(|e| e.name.as_deref()),
     );
-    for (i, o) in orgs.iter().enumerate() {
-        // First (current) employer highest; later/historical slightly lower.
+    orgs.iter().enumerate().for_each(|(i, o)| {
         let conf = if i == 0 { 0.65 } else { 0.55 };
         push(&mut out, EntityKind::Organisation, o, conf, &["employer"]);
-    }
+    });
     // Location(s): top-level convenience string + structured formatted addresses.
     let mut seen_loc = std::collections::HashSet::new();
     let locs = r.location.iter().map(String::as_str).chain(
@@ -255,7 +252,7 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
         }
     }
     // Social profiles: platform-prefixed Username pivots + their profile URLs.
-    for (network, p) in &r.details.profiles {
+    r.details.profiles.iter().for_each(|(network, p)| {
         let net = network.trim();
         if let Some(u) = p
             .username
@@ -279,7 +276,7 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
         {
             push(&mut out, EntityKind::Url, url, 0.55, &[net]);
         }
-    }
+    });
     out
 }
 

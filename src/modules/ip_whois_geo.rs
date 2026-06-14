@@ -91,6 +91,15 @@ impl Module for IpWhois {
         KINDS
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Infrastructure default (T1590.005 + T1596.005): T1590.005 is correct
+        // for the ASN/IP block, but T1596.005 (Scan Databases like Shodan) does
+        // not describe a passive geolocation API. Additionally the module maps
+        // IPs to physical locations (T1591.001) and identifies the ISP/operator
+        // as an Organisation (T1591.002) — both absent from the default.
+        &["T1590.005", "T1591.001", "T1591.002"]
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         // Single network request with no per-request timeout; the 3s default
         // would kill a slow-but-connected response as a spurious "timeout".

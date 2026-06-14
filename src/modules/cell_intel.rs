@@ -166,6 +166,14 @@ impl Module for CellIntel {
         ModuleCategory::Sensor
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Sensor default (T1592 Host Information) is accurate for device
+        // fingerprinting, but cell_intel primarily resolves the device's
+        // physical location from cell-tower triangulation → T1591.001
+        // Determine Physical Locations, which the Sensor default omits.
+        &["T1591.001", "T1592"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Coordinates];
         KINDS
