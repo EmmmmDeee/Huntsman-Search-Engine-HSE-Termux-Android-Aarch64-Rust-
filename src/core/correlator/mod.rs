@@ -160,15 +160,23 @@ impl Correlator {
         if entities.is_empty() {
             return Ok(Vec::new());
         }
-        let mut firings = evaluate_rules(&entities, scan_id);
+        // Build the quarantine-filtered confirmed view ONCE and share it across
+        // both the entity-only and the graph-aware passes. Each pass otherwise
+        // re-filtered + re-cloned the full entity slice (`confirmed_only`); for a
+        // finalise pass that runs both, that was two full clones of the entity
+        // set per scan.
+        let confirmed = confirmed_only(&entities);
+        let now = crate::core::entity::unix_now();
+        let mut firings = evaluate_rules_on(&confirmed, scan_id, now);
 
         // Graph-aware pass: rules that need the typed relation edges (the
         // attribution graph), not just the flat entity list. Relations are
         // persisted by `finalise_scan` before the correlator runs.
         let relations = self.store.relations_for_scan(scan_id)?;
         if !relations.is_empty() {
-            let now = crate::core::entity::unix_now();
-            firings.extend(evaluate_relation_rules(&entities, &relations, scan_id, now));
+            firings.extend(evaluate_relation_rules_on(
+                &confirmed, &relations, scan_id, now,
+            ));
         }
 
         // Rank each firing by severity × highest child C_eff and sort
@@ -266,9 +274,17 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     // corroboration out of noise. The entities remain in the store and the
     // candidates view; they simply don't get to assert relationships.
     let confirmed = confirmed_only(entities);
+    evaluate_rules_on(&confirmed, scan_id, now)
+}
+
+/// Run every entity-only rule over an already quarantine-filtered, confirmed
+/// entity slice. Split out from [`evaluate_rules`] so a caller that runs both
+/// the entity and the relation passes (`Correlator::run`) can filter once and
+/// share the confirmed view instead of cloning it per pass.
+fn evaluate_rules_on(confirmed: &[Entity], scan_id: &str, now: u64) -> Vec<Correlation> {
     let mut out = Vec::new();
     for rule in RULES {
-        out.extend(rule(&confirmed, scan_id, now));
+        out.extend(rule(confirmed, scan_id, now));
     }
     out
 }
@@ -308,17 +324,18 @@ const RELATION_RULES: &[RelationRuleFn] = &[
     rule_au_032_colocation_cluster,
 ];
 
-fn evaluate_relation_rules(
-    entities: &[Entity],
+/// Run every relation-aware rule over an already quarantine-filtered, confirmed
+/// entity slice (see [`evaluate_rules_on`]). Lets `Correlator::run` reuse the
+/// single confirmed view it already built for the entity pass.
+fn evaluate_relation_rules_on(
+    confirmed: &[Entity],
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
-    // Same quarantine as the entity-only pass: candidates don't assert edges.
-    let confirmed = confirmed_only(entities);
     let mut out = Vec::new();
     for rule in RELATION_RULES {
-        out.extend(rule(&confirmed, relations, scan_id, now));
+        out.extend(rule(confirmed, relations, scan_id, now));
     }
     out
 }

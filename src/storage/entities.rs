@@ -41,10 +41,14 @@ impl super::Store {
         // with no SELECT round-trip. Serialization is deferred so the
         // conflict path doesn't pay for a wasted to_string.
         let json = serde_json::to_string(entity)?;
-        let inserted = tx.execute(
+        // Cached: this INSERT fires once per entity, and `upsert_entities_batch`
+        // drives it in a tight loop under one transaction — recompiling the same
+        // SQL per row is wasted work on aarch64.
+        let inserted = tx.prepare_cached(
             "INSERT INTO entities(uid, scan_id, kind, value, confidence, corroboration, observed_at, data_json)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(uid) DO NOTHING",
+        )?.execute(
             params![
                 entity.uid,
                 entity.scan_id,
@@ -67,49 +71,57 @@ impl super::Store {
             let old_value = merged.value.clone();
             merged.merge(entity.clone());
             let merged_json = serde_json::to_string(&merged)?;
-            tx.execute(
+            tx.prepare_cached(
                 "UPDATE entities SET scan_id = ?1, confidence = ?2, corroboration = ?3,
                  observed_at = ?4, data_json = ?5 WHERE uid = ?6",
-                params![
-                    merged.scan_id,
-                    merged.confidence,
-                    merged.corroboration as i64,
-                    merged.observed_at as i64,
-                    merged_json,
-                    merged.uid,
-                ],
-            )?;
+            )?
+            .execute(params![
+                merged.scan_id,
+                merged.confidence,
+                merged.corroboration as i64,
+                merged.observed_at as i64,
+                merged_json,
+                merged.uid,
+            ])?;
             // Keep the FTS index synchronized. For a contentless-external FTS5
             // table the app must emit an explicit delete (old text, keyed by
             // rowid) then re-insert the new text. Only the value column is
             // indexed, so skip the churn when the value is unchanged (the
             // common merge case — same uid implies same normalised value).
             if old_value != merged.value {
-                tx.execute(
+                // `prepare_cached` so a batch of value-changing merges reuses
+                // the compiled statements instead of recompiling the same SQL
+                // per entity — statement compilation is pure overhead on
+                // aarch64.
+                tx.prepare_cached(
                     "INSERT INTO entities_fts(entities_fts, rowid, value, kind)
                      VALUES('delete', ?1, ?2, ?3)",
-                    params![rowid, old_value, kind_str],
-                )?;
-                tx.execute(
+                )?
+                .execute(params![rowid, old_value, kind_str])?;
+                tx.prepare_cached(
                     "INSERT INTO entities_fts(rowid, value, kind) VALUES(?1, ?2, ?3)",
-                    params![rowid, merged.value, kind_str],
-                )?;
+                )?
+                .execute(params![rowid, merged.value, kind_str])?;
             }
         } else {
             // Fast path inserted a new entity — mirror it into the FTS index
-            // under the same rowid, in the same transaction.
+            // under the same rowid, in the same transaction. Cached because
+            // this is the hot first-pass insert path (one per new entity in a
+            // batch).
             let rowid = tx.last_insert_rowid();
-            tx.execute(
-                "INSERT INTO entities_fts(rowid, value, kind) VALUES(?1, ?2, ?3)",
-                params![rowid, entity.value, kind_str],
-            )?;
+            tx.prepare_cached("INSERT INTO entities_fts(rowid, value, kind) VALUES(?1, ?2, ?3)")?
+                .execute(params![rowid, entity.value, kind_str])?;
         }
 
-        tx.execute(
+        tx.prepare_cached(
             "INSERT OR IGNORE INTO entity_observations(entity_uid, scan_id, observed_at)
              VALUES(?1, ?2, ?3)",
-            params![entity.uid, entity.scan_id, entity.observed_at as i64],
-        )?;
+        )?
+        .execute(params![
+            entity.uid,
+            entity.scan_id,
+            entity.observed_at as i64
+        ])?;
         Ok(())
     }
 
