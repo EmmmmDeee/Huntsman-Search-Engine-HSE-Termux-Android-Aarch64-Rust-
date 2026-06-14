@@ -195,6 +195,27 @@
     body.dark-theme .keyrow{background:#222;border-color:#333}
     body.dark-theme .mod-grid{background:#1f1f1f;border-color:#333}
     body.dark-theme .mod-grid label{background:#272727;border-color:#333;color:#ddd}
+    /* Browse sidebar — SpiderFoot two-column layout */
+    #browse-rollup tr.active-kind td{background:#059CD7 !important;color:#fff !important}
+    #browse-rollup tr.active-kind .kind-pill{background:rgba(255,255,255,.25);color:#fff}
+    #b-sidebar .panel{position:sticky;top:65px}
+    body.dark-theme #browse-rollup{background:#1f1f1f}
+    body.dark-theme #browse-rollup tr td{color:#ccc;border-color:#333}
+    body.dark-theme #browse-rollup tr:hover td{background:#2a2a2a !important}
+    body.dark-theme #browse-rollup tr.active-kind td{background:#059CD7 !important;color:#fff !important}
+    body.dark-theme #b-sidebar .panel{background:#1f1f1f;border-color:#333}
+    body.dark-theme #b-sidebar .panel-heading{background:#2a2a2a;border-color:#333;color:#ddd}
+    /* SpiderFoot uses #1c1c1c for the body in dark mode — closer than #1a1a1a */
+    body.dark-theme{background:#1c1c1c}
+    /* Input/select dark mode */
+    body.dark-theme .form-control{background:#2a2a2a;color:#ddd;border-color:#444}
+    body.dark-theme .form-control:focus{background:#333;border-color:#059CD7}
+    body.dark-theme .input-group-btn .btn{background:#2a2a2a;color:#ccc;border-color:#444}
+    /* Table header dark */
+    body.dark-theme .table>thead>tr>th{background:#222;color:#bbb;border-color:#333}
+    /* btn-default dark */
+    body.dark-theme .btn-default{background:#2a2a2a;color:#ccc;border-color:#444}
+    body.dark-theme .btn-default:hover{background:#333;color:#fff}
   </style>
 </head>
 <body>
@@ -1530,38 +1551,53 @@ function renderBrowse(host){
   const roll = {};
   S.entities.forEach(e=>{ const r = roll[e.kind] || (roll[e.kind] = {u:0, t:0}); r.u++; r.t += (e.corroboration||1); });
   const rollRows = Object.keys(roll).sort((a,b)=>roll[b].u-roll[a].u);
-  const rollupHtml = rollRows.length ? `
-    <table class="table table-striped table-condensed" id="browse-rollup" style="margin-bottom:14px">
-      <thead><tr><th>Data Element</th><th class="text-right">Unique</th><th class="text-right">Total</th></tr></thead>
-      <tbody>${rollRows.map(k=>`<tr class="rollup-row" data-kind="${attr(k)}" style="cursor:pointer">
-        <td>${kindPill(k)}</td>
-        <td class="text-right"><code>${roll[k].u}</code></td>
-        <td class="text-right"><code>${roll[k].t}</code></td>
-      </tr>`).join('')}</tbody>
-    </table>` : '';
+  // SpiderFoot-identical two-column Browse layout:
+  // left = sticky "Data Element" sidebar with per-kind counts (click to filter);
+  // right = search/tier controls + paginated results table.
+  const sidebarRows = rollRows.map(k=>`
+    <tr class="rollup-row${k===qKind?' active-kind':''}" data-kind="${attr(k)}" style="cursor:pointer">
+      <td>${kindPill(k)}</td>
+      <td class="text-right"><b>${roll[k].u}</b></td>
+      <td class="text-right text-muted">${roll[k].t}</td>
+    </tr>`).join('');
+  const sidebarHtml = rollRows.length ? `
+    <div class="panel panel-default" style="margin-bottom:0">
+      <div class="panel-heading" style="padding:8px 12px;font-size:12px;font-weight:600">
+        Data Elements &nbsp;<span class="badge">${S.entities.length}</span>
+        <a href="#" id="b-all-types" class="pull-right" style="font-size:11px;font-weight:400">All</a>
+      </div>
+      <div style="max-height:calc(100vh - 180px);overflow-y:auto">
+        <table class="table table-condensed table-hover" id="browse-rollup" style="margin:0;font-size:12px">
+          <thead><tr><th>Type</th><th class="text-right" title="Unique values">Uniq</th><th class="text-right" title="Total corroboration">Tot</th></tr></thead>
+          <tbody>${sidebarRows}</tbody>
+        </table>
+      </div>
+    </div>` : '';
+
   host.innerHTML = `
-    ${rollupHtml}
-    <div class="row" style="margin-bottom:12px">
-      <div class="col-sm-4">
-        <input type="search" id="b-q" class="form-control input-sm" placeholder="Filter value, evidence, tags…">
+    <div class="row">
+      ${sidebarHtml ? `<div class="col-sm-3 col-md-2" id="b-sidebar">${sidebarHtml}</div>` : ''}
+      <div class="${sidebarHtml ? 'col-sm-9 col-md-10' : 'col-sm-12'}" id="b-main">
+        <div class="row" style="margin-bottom:10px">
+          <div class="col-sm-5">
+            <input type="search" id="b-q" class="form-control input-sm" placeholder="Filter value, evidence, tags…" autocomplete="off">
+          </div>
+          <div class="col-sm-3">
+            <select id="b-cls" class="form-control input-sm">
+              <option value="">All tiers</option>
+              <option value="VERIFIED">✓ Verified</option>
+              <option value="PROBABLE">~ Probable+</option>
+              <option value="CANDIDATE">? Candidate only</option>
+            </select>
+          </div>
+          <div class="col-sm-4 text-right" style="padding-top:6px">
+            <span class="text-muted" style="font-size:11px" id="b-ct"></span>
+          </div>
+        </div>
+        <input type="hidden" id="b-kind" value="${attr(qKind)}">
+        <div id="b-table-host"></div>
       </div>
-      <div class="col-sm-3">
-        <select id="b-kind" class="form-control input-sm">
-          <option value="">All types (${S.entities.length})</option>
-          ${kinds.map(k=>`<option value="${attr(k)}"${k===qKind?' selected':''}>${esc(k)} (${S.entities.filter(e=>e.kind===k).length})</option>`).join('')}
-        </select>
-      </div>
-      <div class="col-sm-3">
-        <select id="b-cls" class="form-control input-sm">
-          <option value="">All tiers</option>
-          <option value="VERIFIED">Verified only</option>
-          <option value="PROBABLE">Probable+</option>
-          <option value="CANDIDATE">Candidate only</option>
-        </select>
-      </div>
-      <div class="col-sm-2 text-right text-muted" style="padding-top:6px;font-size:11px" id="b-ct"></div>
     </div>
-    <div id="b-table-host"></div>
   `;
   function refresh(){
     const q = $('#b-q').value.trim().toLowerCase();
@@ -1580,19 +1616,19 @@ function renderBrowse(host){
     }
   }
   $('#b-q').addEventListener('input', refresh);
-  $('#b-kind').addEventListener('change', refresh);
   $('#b-cls').addEventListener('change', refresh);
+  // Sidebar: click a row to filter by kind (toggle off if already active)
   host.querySelectorAll('.rollup-row').forEach(tr=>tr.addEventListener('click', ()=>{
     const k = tr.getAttribute('data-kind');
-    const sel = $('#b-kind');
-    sel.value = (sel.value === k) ? '' : k;  // toggle drill-down, SpiderFoot-style
+    const inp = $('#b-kind');
+    inp.value = (inp.value === k) ? '' : k;
+    host.querySelectorAll('.rollup-row').forEach(r=>r.classList.toggle('active-kind', r.getAttribute('data-kind')===inp.value && inp.value!==''));
     refresh();
   }));
-  // Deep-link: a `q` query param (e.g. from a correlation-member pivot) pre-fills
-  // the value filter so the browser lands focused on that entity.
-  if (S.route.query.q){
-    $('#b-q').value = S.route.query.q;
-  }
+  const allLink = $('#b-all-types');
+  if (allLink) allLink.addEventListener('click', e=>{ e.preventDefault(); $('#b-kind').value=''; host.querySelectorAll('.rollup-row').forEach(r=>r.classList.remove('active-kind')); refresh(); });
+  // Deep-link: a `q` query param pre-fills the value filter
+  if (S.route.query.q){ $('#b-q').value = S.route.query.q; }
   refresh();
 }
 function renderBrowseTable(rows){
@@ -2608,7 +2644,9 @@ async function renderLive(v){
 }
 
 function applyTheme(){
-  const dark = localStorage.getItem('theme') === 'dark-theme';
+  // SpiderFoot-compatible: dark is the default; only opt out explicitly.
+  const stored = localStorage.getItem('theme');
+  const dark = stored !== 'light-theme';
   document.body.classList.toggle('dark-theme', dark);
   $('#theme-label').textContent = dark ? 'Light Mode' : 'Dark Mode';
 }
