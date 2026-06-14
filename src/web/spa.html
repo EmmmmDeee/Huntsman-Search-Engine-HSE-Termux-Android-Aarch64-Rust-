@@ -239,6 +239,20 @@
     body.dark-theme .stat-card{background:#222;border-color:#333}
     body.dark-theme .stat-card .val{color:#ddd}
     body.dark-theme .stat-card .lab{color:#777}
+    /* Correlation cards — keep the severity hue on the left border, dark-tint the fill */
+    body.dark-theme .corr-card{background:#1f1f1f;border-left-color:#777;color:#ccc}
+    body.dark-theme .cv-critical{border-left-color:#c64fc6;background:#2a1430}
+    body.dark-theme .cv-high{border-left-color:#cf6b6a;background:#2c1818}
+    body.dark-theme .cv-medium{border-left-color:#c0a060;background:#2a2516}
+    body.dark-theme .cv-low{border-left-color:#5aa0cf;background:#16222c}
+    body.dark-theme .corr-d{color:#bbb}
+    body.dark-theme .corr-h{color:#999}
+    /* Scan-log message text — #log-box sets #ddd but .msg overrode it to #444 */
+    body.dark-theme .log-row .msg{color:#cfcfcf}
+    body.dark-theme .log-row .ts{color:#888}
+    /* Row hovers: the light-blue #f0f7ff is invisible on a dark table */
+    body.dark-theme #browse-table tbody tr:hover{background:#243240 !important}
+    body.dark-theme .search-results .sr-item:hover{background:#243240}
   </style>
 </head>
 <body>
