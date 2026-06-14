@@ -8,6 +8,7 @@
 //! mail servers from MX, nameservers from NS, SPF/DKIM/DMARC from TXT.
 
 use async_trait::async_trait;
+use futures::future::join_all;
 use serde::Deserialize;
 use std::collections::HashSet;
 
@@ -252,11 +253,13 @@ impl Module for DohResolver {
         let mut result = ModuleResult::new();
         let mut seen: HashSet<String> = HashSet::new();
 
-        for rtype in RECORD_TYPES {
-            if ctx.cancel.is_cancelled() {
-                break;
-            }
-            let records = query_doh(&domain, rtype, &ctx.http).await;
+        let futures = RECORD_TYPES.iter().map(|rtype| {
+            let domain = domain.as_str();
+            let http = ctx.http.clone();
+            async move { (*rtype, query_doh(domain, rtype, &http).await) }
+        });
+        let all_records = join_all(futures).await;
+        for (rtype, records) in all_records {
             result.entities.extend(records_for_type(
                 rtype,
                 &records,
