@@ -158,7 +158,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ---
 
-## Module Overview (118 modules — 88 free, 25 key-gated/paid)
+## Module Overview (118 modules — 93 free, 20 key-gated, 5 paid)
 
 > Generated from `hse modules --json`. The full catalogue with target
 > kinds and output entities (kept honest by the

@@ -288,6 +288,48 @@ pub async fn scan_debug_bundle(
     }
 }
 
+/// `GET /api/v1/scans/{id}/stix.json` — STIX 2.1 bundle export.
+pub async fn scan_export_stix(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    match crate::cli::export::render_stix(s.store.as_ref(), &id) {
+        Ok(body) => download_response(body, "application/json; charset=utf-8", &id, "stix.json"),
+        Err(e) => internal_error(&e),
+    }
+}
+
+/// `GET /api/v1/scans/{id}/misp.json` — MISP 2.4 JSON event export.
+pub async fn scan_export_misp(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    match crate::cli::export::render_misp(s.store.as_ref(), &id) {
+        Ok(body) => download_response(body, "application/json; charset=utf-8", &id, "misp.json"),
+        Err(e) => internal_error(&e),
+    }
+}
+
+/// `GET /api/v1/scans/{id}/maltego.xml` — Maltego entity XML export.
+pub async fn scan_export_maltego(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    match crate::cli::export::render_maltego(s.store.as_ref(), &id) {
+        Ok(body) => download_response(body, "application/xml; charset=utf-8", &id, "maltego.xml"),
+        Err(e) => internal_error(&e),
+    }
+}
+
 pub(crate) fn download_response(
     body: String,
     content_type: &'static str,

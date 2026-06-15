@@ -1,4 +1,6 @@
-use super::parse::extract_case_links;
+use super::{AuCourtRecords, parse::extract_case_links};
+use crate::core::module::Module;
+use crate::core::scan::{Target, TargetKind};
 
 #[test]
 fn extracts_case_links() {
@@ -28,4 +30,12 @@ fn deduplicates_urls() {
     "#;
     let hits = extract_case_links(html);
     assert_eq!(hits.len(), 1);
+}
+
+#[test]
+fn accepts_fullname_and_organisation() {
+    let m = AuCourtRecords;
+    assert!(m.accepts(&Target::new(TargetKind::FullName, "Haigen Bamford")));
+    assert!(m.accepts(&Target::new(TargetKind::Organisation, "Acme Pty Ltd")));
+    assert!(!m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
 }

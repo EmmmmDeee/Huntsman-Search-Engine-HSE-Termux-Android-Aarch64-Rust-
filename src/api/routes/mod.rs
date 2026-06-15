@@ -194,6 +194,12 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         )
         .route("/scans/{id}/graph.gexf", get(scan_export::scan_export_gexf))
         .route("/scans/{id}/debug.txt", get(scan_export::scan_debug_bundle))
+        .route("/scans/{id}/stix.json", get(scan_export::scan_export_stix))
+        .route("/scans/{id}/misp.json", get(scan_export::scan_export_misp))
+        .route(
+            "/scans/{id}/maltego.xml",
+            get(scan_export::scan_export_maltego),
+        )
         .route(
             "/scans/{id}/correlations",
             get(scan_handlers::scan_correlations),

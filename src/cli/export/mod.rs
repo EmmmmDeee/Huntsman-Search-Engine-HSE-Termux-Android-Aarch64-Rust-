@@ -16,7 +16,9 @@ mod renderers;
 mod tests;
 
 pub(crate) use dossier::write_full_dossier;
-pub(crate) use renderers::{render_debug_bundle, render_full};
+pub(crate) use renderers::{
+    render_debug_bundle, render_full, render_maltego, render_misp, render_stix,
+};
 
 use crate::core::error::{Error, Result};
 use crate::default_db_path;

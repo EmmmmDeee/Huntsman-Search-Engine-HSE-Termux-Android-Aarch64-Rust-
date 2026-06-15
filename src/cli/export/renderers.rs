@@ -57,7 +57,7 @@ fn epoch_to_stix_ts(epoch: u64) -> String {
 }
 
 /// Render the scan identified by `sid` as a STIX 2.1 Bundle JSON string.
-pub(super) fn render_stix(store: &Store, sid: &str) -> Result<String> {
+pub(crate) fn render_stix(store: &dyn crate::core::port::StoragePort, sid: &str) -> Result<String> {
     use serde_json::{Value, json};
 
     let scan = store
@@ -676,7 +676,7 @@ fn misp_type(kind: EntityKind) -> (&'static str, &'static str) {
 }
 
 /// Render as a MISP 2.4 JSON event (importable via `/events/add` REST API).
-pub(super) fn render_misp(store: &Store, sid: &str) -> Result<String> {
+pub(crate) fn render_misp(store: &dyn crate::core::port::StoragePort, sid: &str) -> Result<String> {
     use serde_json::json;
 
     let scan = store
@@ -754,7 +754,10 @@ fn xml_escape(s: &str) -> String {
 }
 
 /// Render as Maltego entity XML (importable via Maltego's Import Graph feature).
-pub(super) fn render_maltego(store: &Store, sid: &str) -> Result<String> {
+pub(crate) fn render_maltego(
+    store: &dyn crate::core::port::StoragePort,
+    sid: &str,
+) -> Result<String> {
     let entities = store.entities_for_scan(sid)?;
     let mut out = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
