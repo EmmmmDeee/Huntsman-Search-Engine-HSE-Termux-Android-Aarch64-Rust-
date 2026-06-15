@@ -127,6 +127,76 @@ enough to embed in `huntsman.db` directly.
 
 ---
 
+### 1C — WiGLE Corpus Enrichment (Deferred — runs after 1A is complete)
+
+The raw `wigle_au` table built by `hse wigle-harvest` is already a high-value
+corpus, but every row can be enriched cross-referencing data already collected
+by other HSE modules. This phase runs autonomously on the local DB — no
+additional API quota required beyond what Phase 1A already spent.
+
+**Enrichment actions (all scheduled as a background `hse wigle-enrich` command):**
+
+1. **MAC OUI resolution.** The `netid` (BSSID) of every Wi-Fi record encodes a
+   vendor OUI in the first 3 octets. Cross-reference the local IEEE OUI table
+   (already used by `mac_lookup`) to populate a `vendor` column without any API
+   call. This turns a raw BSSID into a router make/model hint (e.g.,
+   `DC:A6:32` → Raspberry Pi Trading Ltd).
+
+2. **Postcode ↔ suburb normalisation.** `postalcode` from WiGLE's reverse-geocode
+   is often a raw postcode string. Cross-reference `src/util/postcode_au` to
+   attach the official suburb name, SA2/SA3 statistical area, and
+   state/territory code. Enables `GROUP BY suburb` analytics without re-querying.
+
+3. **Cell-tower cross-reference.** For `kind = 'cell'` rows, parse the `netid`
+   (WiGLE stores cell IDs as `MCC-MNC-LAC-CID` strings) and join against
+   `opencellid_au` (Phase 1B) to attach the OpenCelliD `range_m`, `samples`,
+   and `avg_signal` columns. Combined rows have both crowd-sourced location
+   fixes from two independent sources — the fusion improves position accuracy.
+
+4. **SSID pattern tagging.** Apply regex classifiers to `ssid` to populate a
+   `tags` column: `isp_default` (e.g., `Telstra…`, `Optus…`, `TPG…`),
+   `hidden` (null/empty SSID), `corporate` (matches known AU company name
+   patterns from the local OathNet corpus), `residential`, `iot_device`
+   (common IoT SSID patterns). Tags enable rapid cohort filtering.
+
+5. **Stale-coordinates refresh trigger.** Records whose `last_updated` is older
+   than 180 days and whose `harvest_count` == 1 (seen only once) are flagged
+   with `needs_refresh = 1`. The next `hse wigle-harvest --refresh-stale` pass
+   prioritises these tiles, updating position and metadata from the live API
+   only for tiles that contain stale rows — not a full re-harvest.
+
+6. **HSE entity back-linking.** For every `wigle_au` BSSID that appears as a
+   `MacAddress` entity in `huntsman.db`, write a reverse link: update the
+   entity's `evidence` JSON to include `{ "source": "wigle_au", "lat": …,
+   "lon": …, "ssid": …, "last_seen": … }`. This surfaces WiGLE position data
+   automatically in `hse scan` results without a separate lookup step.
+
+**Schema additions for enrichment:**
+
+```sql
+ALTER TABLE wigle_au ADD COLUMN vendor        TEXT;   -- OUI → manufacturer
+ALTER TABLE wigle_au ADD COLUMN suburb        TEXT;   -- normalised AU suburb
+ALTER TABLE wigle_au ADD COLUMN sa2           TEXT;   -- ABS SA2 code
+ALTER TABLE wigle_au ADD COLUMN state_code    TEXT;   -- 'NSW'|'VIC'|'QLD'|…
+ALTER TABLE wigle_au ADD COLUMN tags          TEXT;   -- JSON array of tags
+ALTER TABLE wigle_au ADD COLUMN needs_refresh INTEGER DEFAULT 0;
+ALTER TABLE wigle_au ADD COLUMN oci_range_m   INTEGER; -- from opencellid_au join
+ALTER TABLE wigle_au ADD COLUMN oci_samples   INTEGER;
+```
+
+**Automation:**
+
+- `hse wigle-enrich` runs enrichment actions 1–5 in a single pass, updating
+  only rows where the target column is NULL (idempotent re-runs are safe).
+- Action 6 is triggered automatically on each `hse scan` that produces a
+  `MacAddress` entity, as a post-processing hook in `wigle/mod.rs`.
+- All enrichment is local-only: zero additional API quota, zero network access.
+
+**Estimated enrichment time on-device:** < 10 minutes for 5 million rows
+(bulk SQL joins, no per-row HTTP calls).
+
+---
+
 ## Phase 2 — Australian Breach & People-Search Corpus Ingestion
 
 The goal is a locally-indexed, offline-searchable corpus of every Australian

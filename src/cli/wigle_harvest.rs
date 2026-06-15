@@ -3,9 +3,11 @@
 //! Tiles the Australian bounding box (lat −44 → −10, lon 113 → 154) in
 //! configurable degree steps, pages the WiGLE `/api/v2/network/search`
 //! endpoint with cursor-based pagination, and bulk-inserts results into a
-//! local SQLite table `wigle_au`. Completed tiles are checkpointed in
+//! local SQLite table `wigle_au`. Every field returned by the WiGLE API is
+//! stored — nothing is discarded. Completed tiles are checkpointed in
 //! `wigle_harvest_tiles` so interrupted runs resume from the last completed
-//! tile rather than restarting from scratch.
+//! tile. On re-encounter, existing rows are updated with the latest position
+//! and metadata while `first_seen` is preserved.
 
 use std::time::Duration;
 
@@ -52,40 +54,139 @@ struct WigleResponse {
     search_after: Option<String>,
 }
 
+/// Full WiGLE network record — every field the API returns is captured.
 #[derive(Deserialize, Debug)]
 struct WigleNetwork {
+    /// BSSID (Wi-Fi), cell ID string, or Bluetooth MAC.
     netid: String,
+    /// Human-readable network name (SSID for Wi-Fi, cell name for towers).
     ssid: Option<String>,
+    /// Best-estimate latitude from WiGLE trilat.
     trilat: f64,
+    /// Best-estimate longitude from WiGLE trilat.
     trilong: f64,
+    /// Horizontal accuracy of the trilat estimate (metres).
     accuracy: Option<f64>,
+    /// ISO-8601 timestamp of last sighting in WiGLE's database.
     lastupdt: Option<String>,
+    /// First time ever seen in WiGLE's database.
+    firsttime: Option<String>,
+    /// Last time a contributor submitted an observation.
+    lasttime: Option<String>,
+    /// Wi-Fi channel (1–14 for 2.4 GHz, 36–165 for 5 GHz).
     channel: Option<i64>,
+    /// WiGLE encryption label: "WEP", "WPA", "WPA2", "WPA3", "Unknown", "None".
     encryption: Option<String>,
+    /// Country code stored by WiGLE.
+    country: Option<String>,
+    /// State / region / territory.
+    region: Option<String>,
+    /// City name from reverse-geocoding.
+    city: Option<String>,
+    /// Road / street name.
+    road: Option<String>,
+    /// House / building number.
+    housenumber: Option<String>,
+    /// Postal code.
+    postalcode: Option<String>,
+    /// Altitude of best position fix (metres, ellipsoid height).
+    posalt: Option<f64>,
+    /// Beacon interval (ms, Wi-Fi only).
+    bcninterval: Option<i64>,
+    /// Whether DHCP was detected on the network.
+    dhcp: Option<String>,
+    /// Whether WiGLE classifies this as a free/open community network.
+    freenet: Option<bool>,
+    /// Whether WiGLE classifies this as a pay/captive-portal network.
+    paynet: Option<bool>,
+    /// Whether the submitting user found the network (vs. pre-existing).
+    userfound: Option<bool>,
+    /// Original network type tag from submitter.
+    otype: Option<String>,
+    /// Alternate frequency (MHz, Wi-Fi 5/6 dual-band APs).
+    altfreq: Option<i64>,
+    /// Quality-of-service class (WiGLE internal).
+    qos: Option<i64>,
+    /// Mobile carrier name (for cell tower records).
+    carrier: Option<String>,
+    /// Network name / carrier alias.
+    name: Option<String>,
+    /// Raw WEP flag (pre-encryption field, legacy).
+    wep: Option<String>,
+    /// Robust security network / PMF capabilities (OUI-level, where available).
+    rcois: Option<String>,
+    /// Router vendor string if detected.
+    #[serde(rename = "routerbrands")]
+    router_brands: Option<String>,
+    /// Attribution tag (e.g., import batch label).
+    attribution: Option<String>,
+    /// GPS device identifier that captured the best fix.
+    gpsid: Option<String>,
+    /// WiGLE internal transaction ID for the best contributing observation.
+    transid: Option<String>,
 }
 
-// ── DB schema ────────────────────────────────────────────────────────────────
+// ── DB schema ─────────────────────────────────────────────────────────────────
 
 const SCHEMA: &str = "
+PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
+
 CREATE TABLE IF NOT EXISTS wigle_au (
-    netid       TEXT PRIMARY KEY,
-    kind        TEXT NOT NULL DEFAULT 'wifi',
-    ssid        TEXT,
-    lat         REAL NOT NULL,
-    lon         REAL NOT NULL,
-    accuracy    INTEGER,
-    last_seen   TEXT,
-    channel     INTEGER,
-    encryption  TEXT,
-    updated_at  TEXT NOT NULL
+    -- Identity
+    netid           TEXT PRIMARY KEY,    -- BSSID / cell-id / BT MAC
+    kind            TEXT NOT NULL,       -- 'wifi' | 'cell' | 'bluetooth' | 'wimax'
+    ssid            TEXT,
+    name            TEXT,                -- cell name / AP friendly name
+    wep             TEXT,                -- legacy WEP flag
+    encryption      TEXT,                -- 'WEP'|'WPA'|'WPA2'|'WPA3'|'None'|'Unknown'
+    channel         INTEGER,
+    altfreq         INTEGER,             -- secondary frequency MHz (dual-band)
+    bcninterval     INTEGER,             -- beacon interval ms
+    freenet         INTEGER,             -- 0/1
+    paynet          INTEGER,             -- 0/1
+    dhcp            TEXT,
+    qos             INTEGER,
+    carrier         TEXT,                -- mobile carrier (cell records)
+    rcois           TEXT,                -- RSN/OUI capability string
+    router_brands   TEXT,
+    -- Position
+    lat             REAL NOT NULL,
+    lon             REAL NOT NULL,
+    posalt          REAL,
+    accuracy        REAL,                -- metres
+    -- Timestamps (all ISO-8601 strings as WiGLE sends them)
+    first_seen      TEXT,                -- firsttime from WiGLE; never overwritten
+    last_seen       TEXT,                -- lasttime from WiGLE
+    last_updated    TEXT,                -- lastupdt from WiGLE (record change)
+    -- Reverse-geocoded address components
+    country         TEXT DEFAULT 'AU',
+    region          TEXT,
+    city            TEXT,
+    road            TEXT,
+    housenumber     TEXT,
+    postalcode      TEXT,
+    -- WiGLE provenance
+    otype           TEXT,
+    transid         TEXT,
+    attribution     TEXT,
+    gpsid           TEXT,
+    userfound       INTEGER,             -- 0/1
+    -- Harvest bookkeeping
+    harvested_at    TEXT NOT NULL,       -- when we wrote this row (UTC ISO-8601)
+    harvest_count   INTEGER NOT NULL DEFAULT 1  -- times re-observed across harvests
 );
-CREATE INDEX IF NOT EXISTS wigle_au_geo  ON wigle_au (lat, lon);
-CREATE INDEX IF NOT EXISTS wigle_au_ssid ON wigle_au (ssid);
+
+CREATE INDEX IF NOT EXISTS wigle_au_geo      ON wigle_au (lat, lon);
+CREATE INDEX IF NOT EXISTS wigle_au_ssid     ON wigle_au (ssid);
+CREATE INDEX IF NOT EXISTS wigle_au_region   ON wigle_au (region, city);
+CREATE INDEX IF NOT EXISTS wigle_au_kind     ON wigle_au (kind);
+CREATE INDEX IF NOT EXISTS wigle_au_postal   ON wigle_au (postalcode);
 
 CREATE TABLE IF NOT EXISTS wigle_harvest_tiles (
-    tile_key       TEXT PRIMARY KEY,
-    rows_inserted  INTEGER NOT NULL DEFAULT 0,
-    completed_at   TEXT NOT NULL
+    tile_key        TEXT PRIMARY KEY,
+    rows_upserted   INTEGER NOT NULL DEFAULT 0,
+    completed_at    TEXT NOT NULL
 );
 ";
 
@@ -108,7 +209,7 @@ fn tile_done(conn: &Connection, tile_key: &str) -> bool {
 fn mark_tile_done(conn: &Connection, tile_key: &str, rows: u64) -> Result<()> {
     let now = chrono_now();
     conn.execute(
-        "INSERT OR REPLACE INTO wigle_harvest_tiles (tile_key, rows_inserted, completed_at) \
+        "INSERT OR REPLACE INTO wigle_harvest_tiles (tile_key, rows_upserted, completed_at) \
          VALUES (?1, ?2, ?3)",
         rusqlite::params![tile_key, rows as i64, now],
     )
@@ -116,43 +217,121 @@ fn mark_tile_done(conn: &Connection, tile_key: &str, rows: u64) -> Result<()> {
     Ok(())
 }
 
-fn insert_page(conn: &mut Connection, kind: &str, networks: &[WigleNetwork]) -> Result<u64> {
+/// Upsert a page of networks. Existing rows keep their `first_seen` and have
+/// `harvest_count` incremented; position and all metadata are updated from
+/// the freshest WiGLE data.
+fn upsert_page(conn: &mut Connection, kind: &str, networks: &[WigleNetwork]) -> Result<u64> {
     let now = chrono_now();
     let tx = conn
         .transaction()
         .map_err(|e| Error::Other(e.to_string()))?;
+
     let mut stmt = tx
         .prepare_cached(
-            "INSERT OR IGNORE INTO wigle_au \
-             (netid, kind, ssid, lat, lon, accuracy, last_seen, channel, encryption, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO wigle_au (
+                netid, kind, ssid, name, wep, encryption, channel, altfreq, bcninterval,
+                freenet, paynet, dhcp, qos, carrier, rcois, router_brands,
+                lat, lon, posalt, accuracy,
+                first_seen, last_seen, last_updated,
+                country, region, city, road, housenumber, postalcode,
+                otype, transid, attribution, gpsid, userfound,
+                harvested_at, harvest_count
+            ) VALUES (
+                ?1,?2,?3,?4,?5,?6,?7,?8,?9,
+                ?10,?11,?12,?13,?14,?15,?16,
+                ?17,?18,?19,?20,
+                ?21,?22,?23,
+                ?24,?25,?26,?27,?28,?29,
+                ?30,?31,?32,?33,?34,
+                ?35, 1
+            )
+            ON CONFLICT(netid) DO UPDATE SET
+                ssid          = excluded.ssid,
+                name          = excluded.name,
+                wep           = excluded.wep,
+                encryption    = excluded.encryption,
+                channel       = excluded.channel,
+                altfreq       = excluded.altfreq,
+                bcninterval   = excluded.bcninterval,
+                freenet       = excluded.freenet,
+                paynet        = excluded.paynet,
+                dhcp          = excluded.dhcp,
+                qos           = excluded.qos,
+                carrier       = excluded.carrier,
+                rcois         = excluded.rcois,
+                router_brands = excluded.router_brands,
+                lat           = excluded.lat,
+                lon           = excluded.lon,
+                posalt        = excluded.posalt,
+                accuracy      = excluded.accuracy,
+                first_seen    = COALESCE(wigle_au.first_seen, excluded.first_seen),
+                last_seen     = excluded.last_seen,
+                last_updated  = excluded.last_updated,
+                country       = excluded.country,
+                region        = excluded.region,
+                city          = excluded.city,
+                road          = excluded.road,
+                housenumber   = excluded.housenumber,
+                postalcode    = excluded.postalcode,
+                otype         = excluded.otype,
+                transid       = excluded.transid,
+                attribution   = excluded.attribution,
+                gpsid         = excluded.gpsid,
+                userfound     = excluded.userfound,
+                harvested_at  = excluded.harvested_at,
+                harvest_count = wigle_au.harvest_count + 1",
         )
         .map_err(|e| Error::Other(e.to_string()))?;
-    let mut inserted = 0u64;
+
+    let mut affected = 0u64;
     for n in networks {
         let rows = stmt
             .execute(rusqlite::params![
                 n.netid,
                 kind,
                 n.ssid,
+                n.name,
+                n.wep,
+                n.encryption,
+                n.channel,
+                n.altfreq,
+                n.bcninterval,
+                n.freenet.map(|b| b as i64),
+                n.paynet.map(|b| b as i64),
+                n.dhcp,
+                n.qos,
+                n.carrier,
+                n.rcois,
+                n.router_brands,
                 n.trilat,
                 n.trilong,
-                n.accuracy.map(|a| a as i64),
+                n.posalt,
+                n.accuracy,
+                n.firsttime,
+                n.lasttime,
                 n.lastupdt,
-                n.channel,
-                n.encryption,
+                n.country.as_deref().unwrap_or("AU"),
+                n.region,
+                n.city,
+                n.road,
+                n.housenumber,
+                n.postalcode,
+                n.otype,
+                n.transid,
+                n.attribution,
+                n.gpsid,
+                n.userfound.map(|b| b as i64),
                 now,
             ])
             .map_err(|e| Error::Other(e.to_string()))?;
-        inserted += rows as u64;
+        affected += rows as u64;
     }
     drop(stmt);
     tx.commit().map_err(|e| Error::Other(e.to_string()))?;
-    Ok(inserted)
+    Ok(affected)
 }
 
 fn chrono_now() -> String {
-    // RFC 3339 UTC without chrono dependency — use std SystemTime.
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -162,7 +341,6 @@ fn chrono_now() -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
 }
 
-/// Minimal epoch → (Y, M, D, H, Min, S) decomposition (no chrono).
 fn epoch_to_ymd_hms(mut secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     let s = (secs % 60) as u32;
     secs /= 60;
@@ -202,7 +380,6 @@ fn is_leap(y: u32) -> bool {
 
 // ── Tile grid helper ──────────────────────────────────────────────────────────
 
-/// Generate all (lat_lo, lon_lo) tile corners for the AU bounding box.
 fn generate_tiles(step: f64) -> Vec<(f64, f64)> {
     let mut tiles = Vec::new();
     let mut lat = AU_LAT_MIN;
@@ -243,7 +420,7 @@ struct PageRequest<'a> {
     search_after: Option<&'a str>,
 }
 
-/// Fetch one page of WiGLE results; returns `(networks, search_after)`.
+/// Fetch one page; returns `(networks, search_after)`.
 /// Handles 429 with exponential backoff; other non-200 → `Err`.
 async fn fetch_page(p: PageRequest<'_>) -> Result<(Vec<WigleNetwork>, Option<String>)> {
     let mut backoff = BACKOFF_BASE_SECS;
@@ -307,7 +484,6 @@ pub async fn cmd_wigle_harvest(args: WigleHarvestArgs) -> Result<()> {
         kinds,
     } = args;
 
-    // Clamp step to a sane minimum to avoid near-infinite loops.
     let step = step.max(0.01);
     let interval_ms = if rate > 0.0 {
         ((1.0 / rate) * 1000.0) as u64
@@ -345,7 +521,6 @@ pub async fn cmd_wigle_harvest(args: WigleHarvestArgs) -> Result<()> {
         return Ok(());
     }
 
-    // Resolve credentials: env vars first, then built-in defaults.
     let user =
         std::env::var("HUNTSMAN_WIGLE_USER").unwrap_or_else(|_| WIGLE_DEFAULT_USER.to_string());
     let token =
@@ -379,7 +554,6 @@ pub async fn cmd_wigle_harvest(args: WigleHarvestArgs) -> Result<()> {
             let mut cursor: Option<String> = None;
 
             loop {
-                // Rate limiting: sleep before every request except the very first.
                 if pages > 0 || work_idx > 1 {
                     sleep(Duration::from_millis(interval_ms)).await;
                 }
@@ -409,12 +583,12 @@ pub async fn cmd_wigle_harvest(args: WigleHarvestArgs) -> Result<()> {
                         let count = networks.len();
                         pages += 1;
 
-                        let inserted = insert_page(&mut conn, kind, &networks)?;
-                        tile_rows += inserted;
+                        let upserted = upsert_page(&mut conn, kind, &networks)?;
+                        tile_rows += upserted;
 
                         eprintln!(
                             "[tile {work_idx}/{total_work}] {lat_lo:.3}/{lon_lo:.3} kind={kind} \
-                             pages={pages} rows={tile_rows} (+{inserted} this page)"
+                             pages={pages} rows={tile_rows} (+{upserted} this page)"
                         );
 
                         let is_last = count < RESULTS_PER_PAGE as usize || next_cursor.is_none();
@@ -427,7 +601,6 @@ pub async fn cmd_wigle_harvest(args: WigleHarvestArgs) -> Result<()> {
                 }
             }
 
-            // Checkpoint (even if the tile errored, so we don't retry indefinitely).
             mark_tile_done(&conn, &key, tile_rows)?;
         }
     }
