@@ -119,8 +119,8 @@ pub(crate) fn parse_ntec(html: &str) -> (bool, Option<String>) {
     (true, division)
 }
 
-/// Extract a division name from patterns like "division of <Name>" or
-/// "enrolled in <Name>" / "enrolled for <Name>". Pure.
+/// Extract a division name from patterns like `"division of NAME"` or
+/// `"enrolled in NAME"` / `"enrolled for NAME"`. Pure.
 fn extract_named_division(text: &str, lc: &str) -> Option<String> {
     // "division of <Name>"
     if let Some(pos) = lc.find("division of ") {
@@ -151,7 +151,7 @@ fn extract_named_division(text: &str, lc: &str) -> Option<String> {
     None
 }
 
-/// Extract a division from "electorate: <Name>" or "electorate:<Name>". Pure.
+/// Extract a division from `"electorate: NAME"` or `"electorate:NAME"`. Pure.
 fn extract_electorate_label(text: &str, lc: &str) -> Option<String> {
     for marker in &["electorate: ", "electorate:"] {
         if let Some(pos) = lc.find(marker) {
@@ -170,7 +170,7 @@ fn extract_electorate_label(text: &str, lc: &str) -> Option<String> {
     None
 }
 
-/// Extract a division from "district: <Name>" or "district:<Name>". Pure.
+/// Extract a division from `"district: NAME"` or `"district:NAME"`. Pure.
 fn extract_district_label(text: &str, lc: &str) -> Option<String> {
     for marker in &["district: ", "district:"] {
         if let Some(pos) = lc.find(marker) {
