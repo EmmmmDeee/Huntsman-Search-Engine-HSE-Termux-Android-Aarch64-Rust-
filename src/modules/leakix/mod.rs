@@ -194,27 +194,47 @@ impl Module for LeakIx {
             _ => return Ok(ModuleResult::new()),
         };
         let url = format!("https://leakix.net/{path}/{value}");
-        let mut retries = 2u8;
-        let body: HostResp = loop {
-            let resp = ctx
-                .http
-                .get(&url)
-                .header("api-key", key)
-                .header("Accept", "application/json")
-                .send_tagged(SRC)
-                .await?;
-            let status = resp.status();
-            if status.as_u16() == 404 {
-                return Ok(ModuleResult::new());
-            }
-            if !status.is_success() {
-                let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
-                    continue;
+        let cache_key = format!("{path}:{}", value.to_lowercase());
+        let body: HostResp = if let Some(cached) =
+            crate::core::api_cache::global().get(SRC, &cache_key)
+        {
+            serde_json::from_str(&cached.body)
+                .map_err(|e| crate::core::error::Error::module(SRC, format!("cache JSON: {e}")))?
+        } else {
+            let mut retries = 2u8;
+            let fetched: HostResp = loop {
+                let resp = ctx
+                    .http
+                    .get(&url)
+                    .header("api-key", key)
+                    .header("Accept", "application/json")
+                    .send_tagged(SRC)
+                    .await?;
+                let status = resp.status();
+                if status.as_u16() == 404 {
+                    return Ok(ModuleResult::new());
                 }
-                return Err(crate::util::http::http_status_error(SRC, resp).await);
-            }
-            break crate::util::http::json_decode(SRC, resp).await?;
+                if !status.is_success() {
+                    let code = status.as_u16();
+                    if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
+                        continue;
+                    }
+                    return Err(crate::util::http::http_status_error(SRC, resp).await);
+                }
+                let text = resp
+                    .text()
+                    .await
+                    .map_err(|e| crate::core::error::Error::module(SRC, format!("body: {e}")))?;
+                crate::core::api_cache::global().put(
+                    SRC,
+                    &cache_key,
+                    &text,
+                    crate::core::api_cache::ttl_secs(SRC),
+                );
+                break serde_json::from_str(&text)
+                    .map_err(|e| crate::core::error::Error::module(SRC, format!("JSON: {e}")))?;
+            };
+            fetched
         };
         if body.services.is_empty() && body.leaks.is_empty() {
             return Ok(ModuleResult::new());

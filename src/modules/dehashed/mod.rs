@@ -119,31 +119,52 @@ impl Module for DeHashed {
             "size": PAGE_SIZE,
         });
 
-        let mut retries = 2u8;
-        let body: DehashedResp = loop {
-            let resp = ctx
-                .http
-                .post(V2_SEARCH_URL)
-                .header("Dehashed-Api-Key", key)
-                .header("Accept", "application/json")
-                .json(&payload)
-                .send_tagged(build::SRC)
-                .await?;
-            let status = resp.status();
-            if !status.is_success() {
-                let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, build::SRC, key, ctx)
-                    .await
-                {
-                    continue;
+        let cache_key = format!("{}:{}", target.kind.canonical_str(), value.to_lowercase());
+        let body: DehashedResp = if let Some(cached) =
+            crate::core::api_cache::global().get(build::SRC, &cache_key)
+        {
+            serde_json::from_str(&cached.body).map_err(|e| {
+                crate::core::error::Error::module(build::SRC, format!("cache JSON: {e}"))
+            })?
+        } else {
+            let mut retries = 2u8;
+            let live_body: DehashedResp = loop {
+                let resp = ctx
+                    .http
+                    .post(V2_SEARCH_URL)
+                    .header("Dehashed-Api-Key", key)
+                    .header("Accept", "application/json")
+                    .json(&payload)
+                    .send_tagged(build::SRC)
+                    .await?;
+                let status = resp.status();
+                if !status.is_success() {
+                    let code = status.as_u16();
+                    if handle_keyed_error(code, resp.headers(), &mut retries, build::SRC, key, ctx)
+                        .await
+                    {
+                        continue;
+                    }
+                    // The body carries DeHashed's own reason — notably the 401
+                    // "You need a search subscription and API credits to use the
+                    // API" that an account without an active search plan returns —
+                    // so surface it verbatim for the operator.
+                    return Err(crate::util::http::http_status_error(build::SRC, resp).await);
                 }
-                // The body carries DeHashed's own reason — notably the 401
-                // "You need a search subscription and API credits to use the
-                // API" that an account without an active search plan returns —
-                // so surface it verbatim for the operator.
-                return Err(crate::util::http::http_status_error(build::SRC, resp).await);
-            }
-            break crate::util::http::json_decode(build::SRC, resp).await?;
+                let body_text = resp.text().await.map_err(|e| {
+                    crate::core::error::Error::module(build::SRC, format!("body: {e}"))
+                })?;
+                crate::core::api_cache::global().put(
+                    build::SRC,
+                    &cache_key,
+                    &body_text,
+                    crate::core::api_cache::ttl_secs(build::SRC),
+                );
+                break serde_json::from_str(&body_text).map_err(|e| {
+                    crate::core::error::Error::module(build::SRC, format!("JSON: {e}"))
+                })?;
+            };
+            live_body
         };
 
         let entries = body.entries.unwrap_or_default();

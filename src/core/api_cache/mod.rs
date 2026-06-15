@@ -21,18 +21,18 @@ use crate::core::error::{Error, Result};
 /// Used to accumulate the "$ saved" counter when a cache hit skips a call.
 pub fn cost_cents(module: &str) -> u64 {
     match module {
-        "dehashed"    => 500, // ~$5/search
-        "proxycurl"   => 5,   // ~$0.05/call
-        "seon"        => 25,  // ~$0.25/call
-        "fullcontact" => 10,  // ~$0.10/call
-        "hunter_io"   => 5,   // free quota ≈ $0.05/search equivalent
-        "whoisxml"    => 1,   // bulk plan ~$0.01/lookup
-        "censys"      => 1,
-        "virustotal"  => 1,
-        "abuseipdb"   => 1,
-        "leakix"      => 1,
-        "numverify"   => 0,
-        _             => 0,
+        "dehashed" => 500,   // ~$5/search
+        "proxycurl" => 5,    // ~$0.05/call
+        "seon" => 25,        // ~$0.25/call
+        "fullcontact" => 10, // ~$0.10/call
+        "hunter_io" => 5,    // free quota ≈ $0.05/search equivalent
+        "whoisxml" => 1,     // bulk plan ~$0.01/lookup
+        "censys" => 1,
+        "virustotal" => 1,
+        "abuseipdb" => 1,
+        "leakix" => 1,
+        "numverify" => 0,
+        _ => 0,
     }
 }
 
@@ -90,17 +90,21 @@ pub struct ApiCache {
 impl ApiCache {
     /// Open (or create) a persistent cache at `path`.
     pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path)
-            .map_err(|e| Error::Other(format!("api_cache open: {e}")))?;
+        let conn =
+            Connection::open(path).map_err(|e| Error::Other(format!("api_cache open: {e}")))?;
         Self::init_schema(&conn)?;
-        Ok(Self { db: Mutex::new(conn) })
+        Ok(Self {
+            db: Mutex::new(conn),
+        })
     }
 
     /// In-memory cache — used in tests; never persists to disk.
     pub fn in_memory() -> Self {
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
         Self::init_schema(&conn).expect("schema");
-        Self { db: Mutex::new(conn) }
+        Self {
+            db: Mutex::new(conn),
+        }
     }
 
     fn init_schema(conn: &Connection) -> Result<()> {
@@ -161,7 +165,10 @@ impl ApiCache {
             params![module, cost as i64],
         )
         .ok();
-        Some(CachedResponse { body, is_novel: false })
+        Some(CachedResponse {
+            body,
+            is_novel: false,
+        })
     }
 
     /// Store a response body.
@@ -238,7 +245,7 @@ impl ApiCache {
 
 fn body_hash(s: &str) -> String {
     let h = Sha256::digest(s.as_bytes());
-    format!("{h:x}")
+    hex::encode(h)
 }
 
 // ── Global singleton ──────────────────────────────────────────────────────────

@@ -891,6 +891,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
         </div>
       </form>
       <ul class="nav navbar-nav navbar-right">
+        <li id="cache-savings-li" style="display:none"><a href="#/stats" title="API cache savings — avoided API calls"><span id="cache-savings-badge" style="color:#07aef1;font-weight:600"></span></a></li>
         <li><a href="#" id="theme-toggle"><i class="glyphicon glyphicon-adjust"></i>&nbsp;<span id="theme-label">Dark Mode</span></a></li>
         <li><a href="#aboutmodal" data-toggle="modal" data-target="#aboutmodal"><i class="glyphicon glyphicon-info-sign"></i>&nbsp;About</a></li>
       </ul>
@@ -1160,6 +1161,7 @@ const API = {
   togglesGet: ()=>API._req('/api/v1/settings/toggles'),
   togglesPut: body=>API._req('/api/v1/settings/toggles',{method:'PUT',body}),
   stats:     ()=>API._req('/api/v1/stats'),
+  cacheStats:()=>API._req('/api/v1/cache/stats'),
   search:    (q,limit)=>API._req('/api/v1/search?q='+encodeURIComponent(q)+'&limit='+(limit||50)),
   liveList:   ()=>API._req('/api/v1/live'),
   liveCreate: body=>API._req('/api/v1/live',{method:'POST',body}),
@@ -1233,8 +1235,9 @@ async function render(){
 
 /* ═══════════ Page: DASHBOARD (#/dash) ═══════════ */
 async function renderDash(v){
-  const [stats, mods, scansData] = await Promise.all([API.stats(), API.modules(), API.scans()]);
+  const [stats, mods, scansData, cacheStats] = await Promise.all([API.stats(), API.modules(), API.scans(), API._req('/api/v1/cache/stats').catch(()=>null)]);
   const s = stats;
+  const cs = cacheStats || {};
   const recent = (scansData.scans || []).slice(0, 8);
   const byStatus = s.scans_by_status || {};
   v.innerHTML = `
@@ -1266,6 +1269,11 @@ async function renderDash(v){
           <div class="val">${s.live_sessions||0}</div>
         </a>
       </div>
+    </div>
+    <div id="cache-stats" style="margin-top:8px;padding:6px 12px;background:#f5f5f5;border-radius:4px;font-size:13px;color:#555">
+      <i class="glyphicon glyphicon-compressed"></i>&nbsp;
+      <span id="cache-hits">${cs.total_hits||0}</span> cache hits &mdash;
+      $<span id="cache-saved">${((cs.total_saved_usd_cents||0)/100).toFixed(2)}</span> saved
     </div>
     <div class="row" style="margin-top:12px">
       <div class="col-md-4">
@@ -1306,6 +1314,12 @@ async function renderDash(v){
     </div>
 
     ${apiBudgetsPanel(s)}
+
+    <div id="cache-stats" class="alert alert-info" style="margin-top:12px;padding:8px 14px">
+      <i class="glyphicon glyphicon-saved"></i>&nbsp;
+      <b><span id="cache-hits">${cs.total_hits||0}</span></b> cache hits &mdash;
+      <b>$<span id="cache-saved">${((cs.total_saved_usd_cents||0)/100).toFixed(2)}</span></b> saved
+    </div>
 
     <div class="panel panel-default" style="margin-top:12px">
       <div class="panel-heading"><b>Recent Scans</b>
@@ -3413,6 +3427,15 @@ document.addEventListener('DOMContentLoaded', ()=>{
   } catch {
     $('#ver').textContent = 'offline';
   }
+  // Load API cache savings badge (only shown when total_hits > 0).
+  try {
+    const cs = await fetch('/api/v1/cache/stats').then(r => r.ok ? r.json() : null);
+    if (cs && cs.total_hits > 0) {
+      const dollars = (cs.total_saved_usd_cents / 100).toFixed(2);
+      $('#cache-savings-badge').textContent = '💰 $' + dollars + ' saved (' + cs.total_hits + ' hits)';
+      $('#cache-savings-li').style.display = '';
+    }
+  } catch {}
   await render();
 })();
 </script>

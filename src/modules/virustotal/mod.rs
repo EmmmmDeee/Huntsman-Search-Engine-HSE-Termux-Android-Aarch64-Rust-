@@ -15,7 +15,7 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -165,17 +165,43 @@ impl Module for VirusTotal {
             _ => return Ok(result),
         };
 
-        let Some(body) = crate::util::http::fetch_keyed_json::<VtResponse>(
-            ctx,
-            SRC,
-            &url,
-            "HUNTSMAN_VIRUSTOTAL_KEY",
-            "x-apikey",
-        )
-        .await?
-        else {
-            return Ok(result);
-        };
+        let cache_key = target.value.trim().to_lowercase();
+        let body: VtResponse =
+            if let Some(cached) = crate::core::api_cache::global().get(SRC, &cache_key) {
+                serde_json::from_str(&cached.body)
+                    .map_err(|e| Error::module(SRC, format!("cache JSON: {e}")))?
+            } else {
+                let key = ctx.key("HUNTSMAN_VIRUSTOTAL_KEY")?;
+                let resp = ctx
+                    .http
+                    .get(&url)
+                    .header("x-apikey", key)
+                    .send()
+                    .await
+                    .map_err(|e| Error::module(SRC, e.to_string()))?;
+                let status = resp.status();
+                if status.as_u16() == 404 {
+                    return Ok(result);
+                }
+                if !status.is_success() {
+                    if matches!(status.as_u16(), 401 | 403 | 429) {
+                        ctx.report_key_exhausted(SRC, key, status.as_u16());
+                    }
+                    return Err(Error::module(SRC, format!("HTTP {status}")));
+                }
+                let body_text = resp
+                    .text()
+                    .await
+                    .map_err(|e| Error::module(SRC, format!("body: {e}")))?;
+                crate::core::api_cache::global().put(
+                    SRC,
+                    &cache_key,
+                    &body_text,
+                    crate::core::api_cache::ttl_secs(SRC),
+                );
+                serde_json::from_str(&body_text)
+                    .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?
+            };
 
         let Some(attrs) = body.data.and_then(|d| d.attributes) else {
             return Ok(result);

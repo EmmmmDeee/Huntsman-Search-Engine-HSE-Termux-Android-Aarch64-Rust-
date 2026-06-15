@@ -75,17 +75,46 @@ impl Module for AbuseIpDb {
             crate::util::http::urlencode(&target.value)
         );
 
-        let Some(body) = crate::util::http::fetch_keyed_json::<AbuseResponse>(
-            ctx,
-            SRC,
-            &url,
-            "HUNTSMAN_ABUSEIPDB_KEY",
-            "Key",
-        )
-        .await?
-        else {
-            return Ok(result);
-        };
+        let cache_key = target.value.trim().to_lowercase();
+        let abuse_body_text: String =
+            if let Some(cached) = crate::core::api_cache::global().get(SRC, &cache_key) {
+                cached.body
+            } else {
+                let key = ctx.key("HUNTSMAN_ABUSEIPDB_KEY")?;
+                let resp = ctx
+                    .http
+                    .get(&url)
+                    .header("Key", key)
+                    .send()
+                    .await
+                    .map_err(|e| crate::core::error::Error::module(SRC, e.to_string()))?;
+                let status = resp.status();
+                if status.as_u16() == 404 {
+                    return Ok(result);
+                }
+                if !status.is_success() {
+                    if matches!(status.as_u16(), 401 | 403 | 429) {
+                        ctx.report_key_exhausted(SRC, key, status.as_u16());
+                    }
+                    return Err(crate::core::error::Error::module(
+                        SRC,
+                        format!("HTTP {status}"),
+                    ));
+                }
+                let text = resp
+                    .text()
+                    .await
+                    .map_err(|e| crate::core::error::Error::module(SRC, format!("body: {e}")))?;
+                crate::core::api_cache::global().put(
+                    SRC,
+                    &cache_key,
+                    &text,
+                    crate::core::api_cache::ttl_secs(SRC),
+                );
+                text
+            };
+        let body: AbuseResponse = serde_json::from_str(&abuse_body_text)
+            .map_err(|e| crate::core::error::Error::module(SRC, format!("JSON: {e}")))?;
 
         let Some(data) = body.data else {
             return Ok(result);

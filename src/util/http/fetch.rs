@@ -409,3 +409,64 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
         .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
     Ok(Some(data))
 }
+
+/// Keyed GET with persistent API response caching.
+///
+/// Checks the global [`crate::core::api_cache`] before making the outbound
+/// request. On a cache hit the saved body is deserialised and returned
+/// without touching the network. On a miss the live response is stored
+/// under `(module, cache_key)` with the module's default TTL.
+///
+/// `cache_key` should be a stable, lowercase identifier for the target
+/// (e.g. `target.value.trim().to_lowercase()`).
+pub async fn fetch_keyed_json_cached<T: DeserializeOwned>(
+    ctx: &crate::core::module::ModuleContext,
+    module: &'static str,
+    url: &str,
+    key_env: &str,
+    header_name: &str,
+    cache_key: &str,
+) -> Result<Option<T>> {
+    let cache = crate::core::api_cache::global();
+    // Cache hit path — deserialise from the stored body and return early.
+    if let Some(cached) = cache.get(module, cache_key) {
+        let data = serde_json::from_str::<T>(&cached.body)
+            .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
+        return Ok(Some(data));
+    }
+    // Cache miss — perform the live request.
+    let key = ctx.key(key_env)?;
+    let resp = ctx
+        .http
+        .get(url)
+        .header(header_name, key)
+        .send()
+        .await
+        .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
+
+    let status = resp.status();
+    if status.as_u16() == 404 {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        if matches!(status.as_u16(), 401 | 403 | 429) {
+            ctx.report_key_exhausted(module, key, status.as_u16());
+        }
+        return Err(Error::module(
+            module,
+            format!("HTTP {status}: {}", error_snippet(resp).await),
+        ));
+    }
+    let text = read_json_text(resp, module).await?;
+    scan_for_api_keys(&text);
+    // Store in cache before deserialising so a parse error doesn't lose the body.
+    cache.put(
+        module,
+        cache_key,
+        &text,
+        crate::core::api_cache::ttl_secs(module),
+    );
+    let data = serde_json::from_str::<T>(&text)
+        .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
+    Ok(Some(data))
+}

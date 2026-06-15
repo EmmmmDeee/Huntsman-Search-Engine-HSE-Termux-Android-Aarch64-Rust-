@@ -109,25 +109,41 @@ impl Seon {
             return Ok(ModuleResult::new());
         }
 
-        let resp = ctx
-            .http
-            .post("https://api.seon.io/SeonRestService/email-api/v3")
-            .header("X-API-KEY", key)
-            .header("Content-Type", "application/json")
-            .json(&serde_json::json!({ "email": email }))
-            .send_tagged(SRC)
-            .await?;
+        let cache_key = email.to_ascii_lowercase();
+        let cache = crate::core::api_cache::global();
+        let body: SeonEmailResp = if let Some(cached) = cache.get(self.name(), &cache_key) {
+            serde_json::from_str(&cached.body)
+                .map_err(|e| crate::core::error::Error::module(SRC, format!("cache JSON: {e}")))?
+        } else {
+            let resp = ctx
+                .http
+                .post("https://api.seon.io/SeonRestService/email-api/v3")
+                .header("X-API-KEY", key)
+                .header("Content-Type", "application/json")
+                .json(&serde_json::json!({ "email": email }))
+                .send_tagged(SRC)
+                .await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let code = status.as_u16();
-            crate::util::http::note_keyed_error(code, SRC, key, ctx);
-            return Err(crate::util::http::http_status_error(SRC, resp).await);
-        }
+            let status = resp.status();
+            if !status.is_success() {
+                let code = status.as_u16();
+                crate::util::http::note_keyed_error(code, SRC, key, ctx);
+                return Err(crate::util::http::http_status_error(SRC, resp).await);
+            }
 
-        let body: SeonEmailResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| crate::core::error::Error::module(SRC, format!("body: {e}")))?;
+            cache.put(
+                self.name(),
+                &cache_key,
+                &text,
+                crate::core::api_cache::ttl_secs(self.name()),
+            );
+            serde_json::from_str(&text)
+                .map_err(|e| crate::core::error::Error::module(SRC, e.to_string()))?
+        };
 
         if body.success != Some(true) {
             return Ok(ModuleResult::new());
@@ -152,25 +168,40 @@ impl Seon {
             return Ok(ModuleResult::new());
         }
 
-        let resp = ctx
-            .http
-            .post("https://api.seon.io/SeonRestService/phone-api/v2")
-            .header("X-API-KEY", key)
-            .header("Content-Type", "application/json")
-            .json(&serde_json::json!({ "phone": phone }))
-            .send_tagged(SRC)
-            .await?;
+        let cache_key = format!("phone:{}", phone.to_lowercase());
+        let phone_text: String =
+            if let Some(cached) = crate::core::api_cache::global().get(SRC, &cache_key) {
+                cached.body
+            } else {
+                let resp = ctx
+                    .http
+                    .post("https://api.seon.io/SeonRestService/phone-api/v2")
+                    .header("X-API-KEY", key)
+                    .header("Content-Type", "application/json")
+                    .json(&serde_json::json!({ "phone": phone }))
+                    .send_tagged(SRC)
+                    .await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let code = status.as_u16();
-            crate::util::http::note_keyed_error(code, SRC, key, ctx);
-            return Err(crate::util::http::http_status_error(SRC, resp).await);
-        }
-
-        let body: SeonPhoneResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+                let status = resp.status();
+                if !status.is_success() {
+                    let code = status.as_u16();
+                    crate::util::http::note_keyed_error(code, SRC, key, ctx);
+                    return Err(crate::util::http::http_status_error(SRC, resp).await);
+                }
+                let text = resp
+                    .text()
+                    .await
+                    .map_err(|e| crate::core::error::Error::module(SRC, format!("body: {e}")))?;
+                crate::core::api_cache::global().put(
+                    SRC,
+                    &cache_key,
+                    &text,
+                    crate::core::api_cache::ttl_secs(SRC),
+                );
+                text
+            };
+        let body: SeonPhoneResp = serde_json::from_str(&phone_text)
+            .map_err(|e| crate::core::error::Error::module(SRC, format!("JSON: {e}")))?;
 
         if body.success != Some(true) {
             return Ok(ModuleResult::new());

@@ -92,22 +92,38 @@ impl Module for NumVerify {
             "https://api.apilayer.com/number_verification/validate?number={}",
             urlencode(number)
         );
-        let resp = ctx
-            .http
-            .get(&url)
-            .header("apikey", key)
-            .send_tagged(SRC)
-            .await?;
+        let cache_key = number.to_lowercase();
+        let nv_text: String =
+            if let Some(cached) = crate::core::api_cache::global().get(SRC, &cache_key) {
+                cached.body
+            } else {
+                let resp = ctx
+                    .http
+                    .get(&url)
+                    .header("apikey", key)
+                    .send_tagged(SRC)
+                    .await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let code = status.as_u16();
-            crate::util::http::note_keyed_error(code, SRC, key, ctx);
-            return Err(Error::module(SRC, format!("HTTP {status}")));
-        }
-        let parsed: NvResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| Error::module(SRC, e))?;
+                let status = resp.status();
+                if !status.is_success() {
+                    let code = status.as_u16();
+                    crate::util::http::note_keyed_error(code, SRC, key, ctx);
+                    return Err(Error::module(SRC, format!("HTTP {status}")));
+                }
+                let text = resp
+                    .text()
+                    .await
+                    .map_err(|e| Error::module(SRC, format!("body: {e}")))?;
+                crate::core::api_cache::global().put(
+                    SRC,
+                    &cache_key,
+                    &text,
+                    crate::core::api_cache::ttl_secs(SRC),
+                );
+                text
+            };
+        let parsed: NvResp =
+            serde_json::from_str(&nv_text).map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
 
         let mut result = ModuleResult::new();
         if let Some(e) = build_entity(&parsed, &ctx.scan_id) {

@@ -146,6 +146,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // ── diagnostics: self-test + downloadable verbose logs ──
         .route("/selftest", get(handlers::selftest_run))
         .route("/logs", get(handlers::logs_download))
+        .route("/cache/stats", get(handlers::cache_stats))
         // ── key-detector catalogue (v1.4+) ──
         .route("/keys/patterns", get(settings_handlers::keys_patterns))
         .route("/keys/status", get(settings_handlers::keys_status))

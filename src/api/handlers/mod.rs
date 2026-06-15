@@ -545,6 +545,14 @@ pub async fn live_events_sse(
     })
 }
 
+// ─── Cache stats handler ───────────────────────────────────────────────────
+
+/// `GET /api/v1/cache/stats` — accumulated API-response cache statistics.
+pub async fn cache_stats() -> impl axum::response::IntoResponse {
+    let stats = crate::core::api_cache::global().stats();
+    axum::Json(stats)
+}
+
 // ─── Tests (from scan.rs) ─────────────────────────────────────────────────
 
 #[cfg(test)]

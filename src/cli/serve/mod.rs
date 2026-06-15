@@ -37,7 +37,7 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
 
     let (store, bus, engine) = build_runtime(1024)?;
     crate::core::api_cache::init(
-        &crate::default_db_path().with_file_name("api_cache.db"),
+        &std::path::PathBuf::from(crate::default_db_path()).with_file_name("api_cache.db"),
     );
     let http = build_client();
     let live = LiveScanner::new(

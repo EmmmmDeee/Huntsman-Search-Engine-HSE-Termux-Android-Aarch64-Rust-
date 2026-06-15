@@ -112,19 +112,37 @@ impl Module for Proxycurl {
             return Ok(ModuleResult::new());
         };
 
-        let resp = ctx
-            .http
-            .get(&api_url)
-            .bearer_auth(key)
-            .header("Accept", "application/json")
-            .send_tagged(SRC)
-            .await?;
+        let cache_key = target.value.trim().to_lowercase();
+        let profile: types::LinkedInProfile = if let Some(cached) =
+            crate::core::api_cache::global().get(SRC, &cache_key)
+        {
+            serde_json::from_str(&cached.body)
+                .map_err(|e| crate::core::error::Error::module(SRC, format!("cache JSON: {e}")))?
+        } else {
+            let resp = ctx
+                .http
+                .get(&api_url)
+                .bearer_auth(key)
+                .header("Accept", "application/json")
+                .send_tagged(SRC)
+                .await?;
 
-        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
-            return Ok(ModuleResult::new());
+            let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
+                return Ok(ModuleResult::new());
+            };
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| crate::core::error::Error::module(SRC, format!("body: {e}")))?;
+            crate::core::api_cache::global().put(
+                SRC,
+                &cache_key,
+                &text,
+                crate::core::api_cache::ttl_secs(SRC),
+            );
+            serde_json::from_str(&text)
+                .map_err(|e| crate::core::error::Error::module(SRC, format!("JSON: {e}")))?
         };
-
-        let profile: types::LinkedInProfile = crate::util::http::json_decode(SRC, resp).await?;
 
         Ok(build::build_entities(&profile, target, &ctx.scan_id))
     }

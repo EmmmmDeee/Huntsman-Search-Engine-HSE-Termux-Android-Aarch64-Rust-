@@ -90,32 +90,55 @@ impl Module for Censys {
         }
 
         let url = format!("https://search.censys.io/api/v2/hosts/{}", urlencode(ip),);
-        let mut retries = 2u8;
-        let body: CensysResp = loop {
-            let resp = ctx
-                .http
-                .get(&url)
-                .basic_auth(api_id, Some(api_secret))
-                .header("Accept", "application/json")
-                .send_tagged(SRC)
-                .await?;
 
-            let status = resp.status();
+        let cache_key = ip.to_lowercase();
+        let body: CensysResp = if let Some(cached) =
+            crate::core::api_cache::global().get(SRC, &cache_key)
+        {
+            serde_json::from_str(&cached.body)
+                .map_err(|e| crate::core::error::Error::module(SRC, format!("cache JSON: {e}")))?
+        } else {
+            let mut retries = 2u8;
+            let fetched: CensysResp = loop {
+                let resp = ctx
+                    .http
+                    .get(&url)
+                    .basic_auth(api_id, Some(api_secret))
+                    .header("Accept", "application/json")
+                    .send_tagged(SRC)
+                    .await?;
 
-            // Unknown host returns 404 — not an error, just no data.
-            if status.as_u16() == 404 {
-                return Ok(ModuleResult::new());
-            }
+                let status = resp.status();
 
-            if !status.is_success() {
-                let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, api_id, ctx).await {
-                    continue;
+                // Unknown host returns 404 — not an error, just no data.
+                if status.as_u16() == 404 {
+                    return Ok(ModuleResult::new());
                 }
-                return Err(crate::util::http::http_status_error("censys", resp).await);
-            }
 
-            break crate::util::http::json_decode(SRC, resp).await?;
+                if !status.is_success() {
+                    let code = status.as_u16();
+                    if handle_keyed_error(code, resp.headers(), &mut retries, SRC, api_id, ctx)
+                        .await
+                    {
+                        continue;
+                    }
+                    return Err(crate::util::http::http_status_error("censys", resp).await);
+                }
+
+                let text = resp
+                    .text()
+                    .await
+                    .map_err(|e| crate::core::error::Error::module(SRC, format!("body: {e}")))?;
+                crate::core::api_cache::global().put(
+                    SRC,
+                    &cache_key,
+                    &text,
+                    crate::core::api_cache::ttl_secs(SRC),
+                );
+                break serde_json::from_str(&text)
+                    .map_err(|e| crate::core::error::Error::module(SRC, format!("JSON: {e}")))?;
+            };
+            fetched
         };
 
         let host = match body.result {

@@ -76,6 +76,26 @@ pub(super) async fn query_opencellid(
     tower: &TowerKey<'_>,
     radio: &str,
 ) -> Option<(f64, f64, u64)> {
+    // Cache key: stable identifier for the tower.
+    let cache_key = format!(
+        "{}-{}-{}-{}-{}",
+        radio, tower.mcc, tower.mnc, tower.lac, tower.cid
+    );
+
+    // Cache hit path — parse stored body.
+    if let Some(cached) = crate::core::api_cache::global().get("cell_intel", &cache_key) {
+        let data: OpenCellidResp = serde_json::from_str(&cached.body).ok()?;
+        if data.status.as_deref() == Some("error") {
+            return None;
+        }
+        let lat = data.lat?;
+        let lon = data.lon?;
+        if !is_valid_coords(lat, lon) {
+            return None;
+        }
+        return Some((lat, lon, data.range.unwrap_or(5000)));
+    }
+
     // URL-encode every interpolated value (consistent with censys). mcc/mnc
     // come from json_to_str of arbitrary cellinfo JSON; a malformed value with
     // a `&`/space would otherwise corrupt the query string. Numeric codes
@@ -101,7 +121,14 @@ pub(super) async fn query_opencellid(
         return None;
     }
 
-    let data: OpenCellidResp = crate::util::http::json_scanned(resp, SRC).await.ok()?;
+    let body_text = resp.text().await.ok()?;
+    crate::core::api_cache::global().put(
+        "cell_intel",
+        &cache_key,
+        &body_text,
+        crate::core::api_cache::ttl_secs("cell_intel"),
+    );
+    let data: OpenCellidResp = serde_json::from_str(&body_text).ok()?;
 
     if data.status.as_deref() == Some("error") {
         return None;

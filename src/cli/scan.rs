@@ -214,7 +214,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     let sid = scan_id(target_kind.canonical_str(), &cmd.value);
     let (store, bus, engine) = build_runtime(64)?;
     crate::core::api_cache::init(
-        &crate::default_db_path().with_file_name("api_cache.db"),
+        &std::path::PathBuf::from(crate::default_db_path()).with_file_name("api_cache.db"),
     );
 
     let scan = Scan::new(sid.clone(), target.clone()).with_options(options);

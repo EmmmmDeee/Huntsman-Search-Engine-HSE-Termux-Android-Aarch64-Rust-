@@ -150,34 +150,49 @@ impl Module for HunterIo {
             crate::util::http::urlencode(key),
         );
 
-        let resp = ctx
-            .http
-            .get(&url)
-            .send()
-            .await
-            // `without_url()` strips the URL (which carries the API key
-            // as a query param) before formatting, so transport errors
-            // don't leak the key into logs / events.
-            .map_err(|e| Error::module(SRC, e.without_url().to_string()))?;
-        let status = resp.status();
-        if status.as_u16() == 401 || status.as_u16() == 403 {
-            ctx.report_key_exhausted(SRC, key, status.as_u16());
-            return Err(Error::module(
-                SRC,
-                format!("HTTP {status}: invalid or expired API key"),
-            ));
-        }
-        if status.as_u16() == 429 {
-            ctx.report_key_exhausted(SRC, key, 429);
-            return Err(Error::module(SRC, "rate-limited (429)"));
-        }
-        if !status.is_success() {
-            return Err(crate::util::http::http_status_error(SRC, resp).await);
-        }
+        let cache_key = domain.to_ascii_lowercase();
+        let cache = crate::core::api_cache::global();
+        let body_text: String = if let Some(cached) = cache.get(self.name(), &cache_key) {
+            cached.body
+        } else {
+            let resp = ctx
+                .http
+                .get(&url)
+                .send()
+                .await
+                // `without_url()` strips the URL (which carries the API key
+                // as a query param) before formatting, so transport errors
+                // don't leak the key into logs / events.
+                .map_err(|e| Error::module(SRC, e.without_url().to_string()))?;
+            let status = resp.status();
+            if status.as_u16() == 401 || status.as_u16() == 403 {
+                ctx.report_key_exhausted(SRC, key, status.as_u16());
+                return Err(Error::module(
+                    SRC,
+                    format!("HTTP {status}: invalid or expired API key"),
+                ));
+            }
+            if status.as_u16() == 429 {
+                ctx.report_key_exhausted(SRC, key, 429);
+                return Err(Error::module(SRC, "rate-limited (429)"));
+            }
+            if !status.is_success() {
+                return Err(crate::util::http::http_status_error(SRC, resp).await);
+            }
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| Error::module(SRC, format!("body: {e}")))?;
+            cache.put(
+                self.name(),
+                &cache_key,
+                &text,
+                crate::core::api_cache::ttl_secs(self.name()),
+            );
+            text
+        };
 
-        let wrap: Wrap = resp
-            .json()
-            .await
+        let wrap: Wrap = serde_json::from_str(&body_text)
             .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
         // HTTP-200-with-errors array: Hunter signals quota / scope /
         // plan problems out-of-band of the HTTP status. Mark the

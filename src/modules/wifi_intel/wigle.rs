@@ -46,6 +46,17 @@ pub(super) async fn query_wigle_detail(
     let encoded = crate::util::http::urlencode(bssid);
     let url = format!("https://api.wigle.net/api/v2/network/detail?netid={encoded}&type=wifi");
 
+    // Cache check: BSSID geolocation results change rarely.
+    let cache_key = bssid.to_lowercase();
+    if let Some(cached) = crate::core::api_cache::global().get("wifi_intel", &cache_key) {
+        let detail_resp: DetailResp =
+            serde_json::from_str(&cached.body).unwrap_or_else(|_| DetailResp {
+                success: None,
+                results: Vec::new(),
+            });
+        return Ok(detail_resp.results.into_iter().next());
+    }
+
     let resp = http
         .get(&url)
         .basic_auth(user, Some(token))
@@ -83,7 +94,18 @@ pub(super) async fn query_wigle_detail(
         ));
     }
 
-    let body: DetailResp = crate::util::http::json_decode(SOURCE, resp).await?;
+    let body_text = resp
+        .text()
+        .await
+        .map_err(|e| Error::module(SOURCE, format!("body: {e}")))?;
+    crate::core::api_cache::global().put(
+        "wifi_intel",
+        &cache_key,
+        &body_text,
+        crate::core::api_cache::ttl_secs("wifi_intel"),
+    );
+    let body: DetailResp = serde_json::from_str(&body_text)
+        .map_err(|e| Error::module(SOURCE, format!("JSON: {e}")))?;
 
     if body.success != Some(true) {
         return Ok(None);

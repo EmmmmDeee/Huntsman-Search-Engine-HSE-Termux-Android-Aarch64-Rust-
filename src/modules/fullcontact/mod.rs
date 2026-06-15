@@ -141,24 +141,39 @@ impl Module for FullContact {
         };
         let body = format!(r#"{{"{field}":"{}"}}"#, escape_json(v));
 
-        let resp = ctx
-            .http
-            .post("https://api.fullcontact.com/v3/person.enrich")
-            .header("Authorization", format!("Bearer {key}"))
-            .header("Content-Type", "application/json")
-            .body(body)
-            .send_tagged(SRC)
-            .await?;
+        let cache_key = format!("{}:{}", field, v.to_lowercase());
+        let fc_text: String = if let Some(cached) =
+            crate::core::api_cache::global().get(SRC, &cache_key)
+        {
+            cached.body
+        } else {
+            let resp = ctx
+                .http
+                .post("https://api.fullcontact.com/v3/person.enrich")
+                .header("Authorization", format!("Bearer {key}"))
+                .header("Content-Type", "application/json")
+                .body(body)
+                .send_tagged(SRC)
+                .await?;
 
-        // 404 = no person matched — a clean miss, not an error.
-        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
-            return Ok(ModuleResult::new());
+            // 404 = no person matched — a clean miss, not an error.
+            let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
+                return Ok(ModuleResult::new());
+            };
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| Error::module(SRC, format!("body: {e}")))?;
+            crate::core::api_cache::global().put(
+                SRC,
+                &cache_key,
+                &text,
+                crate::core::api_cache::ttl_secs(SRC),
+            );
+            text
         };
-        // Via json_scanned: the response is retained in the raw archive and
-        // scanned for leaked keys, then deserialised.
-        let parsed: FcResp = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| Error::module(SRC, e))?;
+        let parsed: FcResp =
+            serde_json::from_str(&fc_text).map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
 
         let mut result = ModuleResult::new();
         result
