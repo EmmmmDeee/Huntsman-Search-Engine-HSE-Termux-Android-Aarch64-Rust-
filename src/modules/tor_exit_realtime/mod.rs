@@ -1,28 +1,35 @@
-//! Tor exit node realtime check.
+//! Real-time Tor exit node check via the Tor Project's bulk exit list.
 //!
-//! Fetches the live Tor Project bulk exit list
-//! (`https://check.torproject.org/torbulkexitlist`) and checks whether the
-//! target IP is a current Tor exit node.
+//! Fetches `https://check.torproject.org/torbulkexitlist` and checks whether
+//! the target IP address appears in the current list. A confirmed Tor exit node
+//! is tagged so downstream modules and correlators can treat anonymised traffic
+//! differently from regular IP addresses.
+//!
+//! MITRE ATT&CK:
+//!   * T1597.001 — Threat Intel Vendors (Tor exit list lookup)
+
+#[cfg(test)]
+mod tests;
 
 use async_trait::async_trait;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleCategory, ModuleCost, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{RequestBuilderExt, error_snippet};
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "tor_exit_realtime";
-const LIST_URL: &str = "https://check.torproject.org/torbulkexitlist";
+const TOR_EXIT_LIST_URL: &str = "https://check.torproject.org/torbulkexitlist";
 
 pub struct TorExitRealtime;
 
 #[async_trait]
 impl Module for TorExitRealtime {
     fn name(&self) -> &'static str {
-        SRC
+        "tor_exit_realtime"
     }
 
     fn description(&self) -> &'static str {
@@ -42,7 +49,7 @@ impl Module for TorExitRealtime {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::IpAddress)
+        t.kind == TargetKind::IpAddress
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -54,62 +61,59 @@ impl Module for TorExitRealtime {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        &["T1090.003"]
+        &["T1597.001"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        &[EntityKind::IpAddress]
+        const KINDS: &[EntityKind] = &[EntityKind::IpAddress];
+        KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let ip = target.value.trim();
 
-        let resp = ctx.http.get(LIST_URL).send_tagged(SRC).await?;
+        let resp = ctx
+            .http
+            .get(TOR_EXIT_LIST_URL)
+            .header("Accept", "text/plain")
+            .send_tagged(SRC)
+            .await?;
 
         if !resp.status().is_success() {
-            let snippet = error_snippet(resp).await;
             return Err(Error::module(
                 SRC,
-                format!("HTTP error fetching Tor exit list: {snippet}"),
+                format!("Tor exit list HTTP {}", resp.status()),
             ));
         }
 
-        let body = resp.text().await.map_err(|e| {
-            Error::module(SRC, format!("failed to read Tor exit list body: {e}"))
-        })?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| Error::module(SRC, format!("read body: {e}")))?;
 
-        let found = parse_exit_list(&body).any(|line_ip| line_ip == ip);
-
-        let mut result = ModuleResult::new();
-
-        if found {
-            let mut e = Entity::new(EntityKind::IpAddress, ip, 0.95, &ctx.scan_id);
-            e.tag("tor-exit");
-            e.tag("anonymisation");
-            e.tag("threat-intel");
-            let ev = Evidence::new(SRC, "Confirmed Tor exit node (live consensus)")
-                .with_attr("source", "torproject.org")
-                .with_attr("list_url", LIST_URL);
-            e.add_evidence(ev);
-            result.push(e);
+        if !is_tor_exit(ip, &body) {
+            return Ok(ModuleResult::new());
         }
 
+        let mut e = Entity::new(EntityKind::IpAddress, ip, 0.95, &ctx.scan_id);
+        e.tag("tor-exit");
+        e.tag("anonymisation");
+        e.tag("threat-intel");
+        e.add_evidence(
+            Evidence::new(SRC, "Confirmed Tor exit node (live consensus)")
+                .with_attr("source", "torproject.org")
+                .with_attr("list_url", TOR_EXIT_LIST_URL),
+        );
+
+        let mut result = ModuleResult::new();
+        result.push(e);
         Ok(result)
     }
 }
 
-/// Parse the Tor bulk exit list text, yielding one IP per line.
-/// Blank lines and lines starting with `#` are skipped.
-fn parse_exit_list(body: &str) -> impl Iterator<Item = &str> {
-    body.lines()
-        .filter(|line| {
-            let trimmed = line.trim();
-            !trimmed.is_empty() && !trimmed.starts_with('#')
-        })
-        .map(str::trim)
-}
-
-#[cfg(test)]
-mod tests {
-    include!("tests.rs");
+/// Check whether `ip` appears in the Tor bulk exit list text.
+pub(crate) fn is_tor_exit(ip: &str, list: &str) -> bool {
+    list.lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+        .any(|l| l.trim() == ip)
 }

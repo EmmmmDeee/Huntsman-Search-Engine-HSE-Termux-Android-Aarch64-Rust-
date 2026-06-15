@@ -1634,8 +1634,9 @@ fn get_gzip(uri: &str) -> Request<Body> {
 
 #[tokio::test]
 async fn spa_is_gzip_compressed_for_a_gzip_capable_client() {
-    // The ~118 KB SPA is the heaviest single asset on a fresh load; on a phone's
-    // mobile link it must arrive gzip-compressed. Guard both that the encoding is
+    // The ~312 KB SPA (includes inlined Leaflet 1.9.4) is the heaviest single
+    // asset on a fresh load; on a phone's mobile link it must arrive
+    // gzip-compressed. Guard both that the encoding is
     // negotiated AND that the wire body is materially smaller than the source.
     let app = test_app("spa-gzip");
     let resp = app.oneshot(get_gzip("/")).await.unwrap();
@@ -1660,14 +1661,15 @@ async fn spa_is_gzip_compressed_for_a_gzip_capable_client() {
         vary.contains("accept-encoding"),
         "compressed response must Vary on Accept-Encoding, got {vary:?}"
     );
-    let bytes = axum::body::to_bytes(resp.into_body(), 2_000_000)
+    let bytes = axum::body::to_bytes(resp.into_body(), 4_000_000)
         .await
         .unwrap();
-    // The uncompressed SPA is ~118 KB; gzip should bring the wire body well
-    // under half that. (Generous bound so a future SPA edit doesn't flake.)
+    // The uncompressed SPA is ~312 KB (includes inlined Leaflet 1.9.4); gzip
+    // brings the wire body well under half that. (Generous bound so a future
+    // SPA edit doesn't flake.)
     assert!(
-        bytes.len() < 60_000,
-        "gzipped SPA should be much smaller than the ~118 KB source, got {} bytes",
+        bytes.len() < 120_000,
+        "gzipped SPA should be much smaller than the ~312 KB source, got {} bytes",
         bytes.len()
     );
 }

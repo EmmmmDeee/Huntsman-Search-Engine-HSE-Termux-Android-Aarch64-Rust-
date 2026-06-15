@@ -10,6 +10,7 @@ pub mod abuseipdb;
 pub mod acnc_charities;
 pub mod api_key_probe;
 pub mod asic_director;
+pub mod au_court_records;
 pub mod au_electoral;
 pub mod au_people;
 pub mod au_property;
@@ -65,8 +66,10 @@ pub mod ipapi;
 pub mod ipinfo;
 pub mod ipqs;
 pub mod ipquery;
+pub mod ipv6_asn_expand;
 pub mod keybase;
 pub mod leakix;
+pub mod linkedin_public;
 pub mod local_net;
 pub mod mls;
 pub mod mylnikov;
@@ -96,12 +99,14 @@ pub mod securitytrails;
 pub mod see_know;
 pub mod seon;
 pub mod shodan;
+pub mod signal_radar_au;
 pub mod smtp_vrfy;
 pub mod social_location;
 pub mod social_probe;
 pub mod subdomain_takeover;
 pub mod sunrise_sunset;
 pub mod threatfox;
+pub mod tor_exit_realtime;
 pub mod typosquat;
 pub mod urlhaus;
 pub mod urlscan;
@@ -305,6 +310,11 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(au_property::AuProperty),
         Arc::new(acnc_charities::AcncCharities),
         Arc::new(gleif_lei::GleifLei),
+        Arc::new(au_court_records::AuCourtRecords),
+        Arc::new(linkedin_public::LinkedinPublic),
+        Arc::new(signal_radar_au::SignalRadarAu),
+        Arc::new(tor_exit_realtime::TorExitRealtime),
+        Arc::new(ipv6_asn_expand::Ipv6AsnExpand),
     ]
 }
 

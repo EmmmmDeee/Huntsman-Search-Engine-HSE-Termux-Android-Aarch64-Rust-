@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (113 modules: 88 free · 20 key-gated · 5 paid)
+## Catalogue (118 modules: 93 free · 20 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -29,6 +29,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `reddit_user` | username | free | no | 105 | username, email, url |
 | `npm_author` | username | free | no | 104 | username, email, url, domain |
 | `crates_io` | username | free | no | 103 | username, person, url |
+| `ipv6_asn_expand` | asn | free | no | 44 | cidr |
 | `keybase` | username | free | no | 100 | person, username, email, domain, address |
 | `username_variants` | username | free | **yes** | 98 | username |
 
@@ -78,6 +79,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `intelx` | email, username, phone, full_name, ip_address, domain | paid | no | 116 | — |
 | `pwned_passwords` | email, username | free | no | 115 | — |
 | `leakix` | ip_address, domain | key_gated | no | 102 | — |
+| `linkedin_public` | full_name, organisation | free | no | 52 | url, username |
 
 ### threat (3)
 
@@ -95,6 +97,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `au_electoral` | full_name | free | no | 85 | address, coordinates |
 | `au_people` | full_name | free | no | 88 | address, phone, email, person |
 | `au_property` | full_name | free | no | 84 | address, coordinates |
+| `au_court_records` | full_name, organisation | free | no | 46 | url |
 | `au_unclaimed` | full_name, organisation | free | no | 86 | address, coordinates |
 | `abn_lookup` | full_name, organisation, abn_acn | key_gated | no | 118 | abn_acn, address, organisation, person |
 | `opencorporates` | full_name, organisation, abn_acn | free | no | 116 | organisation, abn_acn, address |
@@ -116,6 +119,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `rdap_domain` | domain, url | free | no | 31 | domain |
 | `crtsh` | email, domain, url | free | no | 29 | domain, email, organisation |
 | `typosquat` | domain | free | no | 34 | domain |
+| `tor_exit_realtime` | ip_address | free | no | 48 | ip_address |
 | `hackertarget` | ip_address, domain, url | free | no | 24 | domain, ip_address |
 | `domainsdb` | full_name, domain, organisation | free | no | 19 | domain |
 
@@ -126,6 +130,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `hudsonrock` | email, username, domain | free | no | 130 | — |
 | `ripestat` | ip_address, asn | free | no | 107 | asn, organisation, email |
 | `shodan` | ip_address | free | no | 105 | domain, url, asn, organisation, address, ip_address |
+| `signal_radar_au` | coordinates | free | no | 72 | mac_address, device_id |
 | `criminal_ip` | ip_address | key_gated | no | 103 | organisation, asn |
 | `ipqs` | email, phone, ip_address | key_gated | no | 100 | — |
 | `ip_reputation` | ip_address, domain | free | no | 78 | ip_address |
