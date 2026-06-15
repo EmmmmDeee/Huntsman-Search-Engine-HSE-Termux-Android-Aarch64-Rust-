@@ -14,7 +14,7 @@ access point and cell tower in WiGLE and OpenCelliD, so that `Coordinates`,
 the per-scan API quota constraint entirely and makes HSE viable in the field
 without network access.
 
-### 1A — WiGLE Australia Full Extract
+### 1A — WiGLE Australia Full Extract ✓
 
 WiGLE holds the world's largest crowd-sourced RF survey. The Australian subset
 (bounding box: lat −10 to −44, lon 113 to 154) currently has several million
@@ -72,7 +72,7 @@ Store in `ATTACH`-able sidecar DB (`wigle_au.db`) to keep `huntsman.db` lean.
 
 ---
 
-### 1B — OpenCelliD Australia Full Extract
+### 1B — OpenCelliD Australia Full Extract ✓
 
 OpenCelliD is the world's largest open cell tower database. The Australian
 export (`mcc=505`) has approximately 500 000–800 000 tower records covering
@@ -127,7 +127,7 @@ enough to embed in `huntsman.db` directly.
 
 ---
 
-### 1C — WiGLE Corpus Enrichment (Deferred — runs after 1A is complete)
+### 1C — WiGLE Corpus Enrichment ✓
 
 The raw `wigle_au` table built by `hse wigle-harvest` is already a high-value
 corpus, but every row can be enriched cross-referencing data already collected
@@ -203,7 +203,7 @@ The goal is a locally-indexed, offline-searchable corpus of every Australian
 entry in OathNet and Seek-Search EU, enabling instant sub-second lookups with
 no per-query API spend.
 
-### 2A — OathNet Australia Deep Pull
+### 2A — OathNet Australia Deep Pull ✓
 
 OathNet holds breach and stealer data indexed by email, username, phone, and
 domain. The Australian population skews toward `@gmail.com`, `@hotmail.com`,
@@ -244,7 +244,7 @@ space. A targeted corpus pull strategy avoids pulling the global index
 
 ---
 
-### 2B — Seek-Search EU Australia Pull
+### 2B — Seek-Search EU Australia Pull ✓
 
 Seek-Search EU (SeekNow) indexes professional and social profile data. The
 Australian slice is identified by AU-specific signals: `@` handles at AU
@@ -276,6 +276,9 @@ IDs, and ASIC-registered entity names.
 ---
 
 ## Phase 3 — Offline Identity Graph
+
+> **Status:** `hse scan --offline` and `hse live --delta` are implemented.
+> FTS ranking improvements and graph-diff alerts remain as enhancements.
 
 Once Phases 1 and 2 are complete, the local DB contains enough data to answer
 most Australian identity queries without any network call. Phase 3 makes this

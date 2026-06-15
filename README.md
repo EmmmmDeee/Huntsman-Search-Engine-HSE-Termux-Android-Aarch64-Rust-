@@ -99,6 +99,31 @@ hse scan --kind domain --value example.com --output json    # machine-readable o
 hse scan                                                    # bare scan: uses HUNTSMAN_DEFAULT_SEED (optional, see docs/INSTALL.md)
 hse serve                                                   # Web UI → http://127.0.0.1:8080
 hse live --kind domain --value example.com --interval 60    # continuous monitoring
+
+# Australian corpus harvest (run once to build offline data)
+hse wigle-harvest --dry-run                                 # preview AU Wi-Fi/cell/BT tile plan
+hse wigle-harvest --kinds wifi,cell,bluetooth               # download full AU corpus to wigle_au
+hse opencellid-harvest                                      # download AU cell towers to opencellid_au
+hse oathnet-harvest --dry-run                               # preview AU breach sweep plan
+hse seeknow-harvest --dry-run                               # preview AU people-search sweep plan
+
+# Corpus enrichment (run after harvest)
+hse wigle-enrich                                            # OUI vendor + SSID tags + cell cross-ref
+
+# Native-format export (lossless round-trip)
+hse wigle-export --format wigle-csv --output au_wifi.csv   # WiGLE CSV v1.4 (WiGLE-uploadable)
+hse wigle-export --format kml --output au_wifi.kml         # KML for Google Earth
+hse opencellid-export --output au_cells.csv                # OpenCelliD cell_towers.csv format
+hse oathnet-export --surface breach                        # OathNet records as NDJSON
+hse seeknow-export --output au_people.ndjson               # SeekNow records as NDJSON
+
+# Offline scanning (after corpus built)
+hse scan --kind mac --value "AA:BB:CC:DD:EE:FF" --offline  # BSSID lookup from local corpus only
+hse live --kind domain --value example.com --interval 60 --delta  # delta-only change alerts
+
+# Operator self-monitoring
+hse self-scan                                               # scan HUNTSMAN_SELF_SEED, show delta
+hse self-scan --seed "your@email.com" --delta-only         # show only new findings
 ```
 
 **Standard acceptance run** — one command exercises the free, keyless pipeline
@@ -210,6 +235,55 @@ Coordinates → reverse_geocode → Address
 Australian-optimised: 70+ QLD/NSW/VIC suburbs in the address extractor,
 postcode detection, court/electoral/property record dorks, ABN/ACN
 extraction from search results.
+
+---
+
+## Australian Corpus Harvest
+
+HSE can build a permanent offline-first database of every Australian Wi-Fi
+network, Bluetooth device, and cell tower from WiGLE and OpenCelliD, plus
+Australian breach and people-search records from OathNet and SeekNow. Once
+built, all lookups become instant local reads with zero API quota consumed.
+
+### 1. Build the corpus (one-time, then refresh periodically)
+
+```bash
+# Wi-Fi, Bluetooth and cell towers from WiGLE
+hse wigle-harvest --kinds wifi,cell,bluetooth   # ~days on free tier (100 req/day)
+hse wigle-enrich                                # OUI vendor + SSID tagging + cell cross-ref
+
+# Cell towers from OpenCelliD (faster — single bulk download)
+hse opencellid-harvest                          # ~30 seconds, ~500k AU towers
+
+# Breach records from OathNet
+hse oathnet-harvest --max 5000                  # AU domain + phone prefix sweep
+
+# People-search from SeekNow
+hse seeknow-harvest --abn --postcodes           # ABN + postcode anchored sweep
+```
+
+### 2. Export in native formats
+
+All corpus data is exportable in the service's own native format — lossless
+round-trip, no conversion required:
+
+| Command | Output |
+|---|---|
+| `hse wigle-export --format wigle-csv` | WiGLE CSV v1.4 (uploadable to WiGLE) |
+| `hse wigle-export --format kml` | KML for Google Earth / Maps |
+| `hse opencellid-export` | OpenCelliD `cell_towers.csv` format |
+| `hse oathnet-export` | OathNet records as NDJSON |
+| `hse seeknow-export` | SeekNow records as NDJSON |
+
+### 3. Offline scans
+
+After building the corpus, use `--offline` to restrict all lookups to the
+local database — no network calls, no rate limits, instant results:
+
+```bash
+hse scan --kind mac --value "AA:BB:CC:DD:EE:FF" --offline
+hse scan --kind coordinates --value "-33.865,151.209" --offline
+```
 
 ---
 
