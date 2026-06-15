@@ -1462,6 +1462,7 @@ async fn spa_references_only_registered_api_endpoints() {
             "selftest" => "/api/v1/selftest".to_string(),
             "logs" => "/api/v1/logs".to_string(),
             "live" => "/api/v1/live".to_string(),
+            "cache" => "/api/v1/cache/stats".to_string(),
             other => panic!(
                 "SPA references /api/v1/{other} but this test has no probe for it — \
                  add one and confirm the route is registered in src/api/routes.rs"
