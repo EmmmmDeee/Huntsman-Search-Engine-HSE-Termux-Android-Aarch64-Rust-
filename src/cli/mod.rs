@@ -22,6 +22,7 @@ mod provision;
 mod radar;
 mod scan;
 mod seeknow_import;
+mod self_scan;
 mod selftest;
 mod serve;
 mod wigle_import;
@@ -563,6 +564,30 @@ pub enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Scan your own identity seed and diff against the previous self-scan.
+    ///
+    /// Reads seed from --seed, then HUNTSMAN_SELF_SEED env, then prompts stdin.
+    /// Each run persists its scan_id; the next run diffs against the previous
+    /// entity set and prints +NEW / ~MOVED / -GONE. Ideal for Termux cron.
+    #[command(name = "self-scan", visible_alias = "selfscan")]
+    SelfScan {
+        /// Seed value (email, username, phone, etc.).
+        #[arg(short, long)]
+        seed: Option<String>,
+        /// Target kind. Omit for auto-detection.
+        #[arg(short, long)]
+        kind: Option<String>,
+        /// Only print the delta block; suppress the full entity list.
+        #[arg(long)]
+        delta_only: bool,
+        /// Comma-separated module allowlist.
+        #[arg(short, long)]
+        modules: Option<String>,
+        /// Output format: table | json. Default `table`.
+        #[arg(short, long, default_value = "table")]
+        output: String,
+    },
 }
 
 pub async fn run() -> Result<()> {
@@ -813,6 +838,22 @@ pub async fn run() -> Result<()> {
         }),
         Command::SeeknowImport { path, dry_run } => {
             seeknow_import::cmd_seeknow_import(seeknow_import::SeeknowImportArgs { path, dry_run })
+        }
+        Command::SelfScan {
+            seed,
+            kind,
+            delta_only,
+            modules,
+            output,
+        } => {
+            self_scan::cmd_self_scan(self_scan::SelfScanCmd {
+                seed,
+                kind,
+                delta_only,
+                modules,
+                output,
+            })
+            .await
         }
     }
 }
