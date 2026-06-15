@@ -154,3 +154,130 @@ fn empty_response_yields_only_the_anchor() {
     assert_eq!(es.len(), 1);
     assert_eq!(es[0].kind, EntityKind::Email);
 }
+
+// ── Offline API emulation ────────────────────────────────────────────
+//
+// The live endpoint (`POST https://api.epieos.com/api/v1/email`) is key-gated
+// and would send the target email to a third party. This stands in a
+// hand-crafted body — the exact JSON shape the API returns — and drives it
+// through the *real* module logic (`build_entities`, the same mapper `process`
+// runs after `json_decode`). No key, no network, no PII leaves the host: a
+// faithful emulation of a lookup.
+//
+// Run it as a live demo:
+//   cargo test --lib epieos::tests::emulated_lookup -- --nocapture
+//
+// Every value below is SYNTHETIC. The resolved identity is seeded on the
+// authorised self-test name (CLAUDE.md); the lookup uses the reserved
+// `example.com` documentation domain so it can never be mistaken for real PII.
+const EMULATED_API_RESPONSE: &str = r#"{
+    "google_id": "104729183746520183927",
+    "name": "Haigen Bamford",
+    "profile_picture": "https://lh3.googleusercontent.com/a/emulated-avatar",
+    "calendar": { "name": "Haigen Bamford" },
+    "maps_reviews": [
+        {
+            "place_name": "Queensland Art Gallery, Brisbane QLD",
+            "rating": 5.0,
+            "text": "World-class GOMA exhibitions - spent the whole afternoon here.",
+            "date": "2024-09-12"
+        },
+        {
+            "place_name": "South Bank Parklands, Brisbane QLD",
+            "rating": 4.0,
+            "text": "Great riverside walk on the weekend.",
+            "date": "2024-07-03"
+        }
+    ],
+    "skype": {
+        "handle": "haigen.bamford",
+        "name": "Haigen Bamford",
+        "city": "Brisbane",
+        "country": "AU"
+    }
+}"#;
+
+/// Render the resolved entity graph as a compact dossier (visible under
+/// `--nocapture`). Pure formatting — ASCII only (Termux terminal-safe).
+fn render_dossier(email: &str, entities: &[Entity]) {
+    println!("\n=== EPIEOS - EMULATED EMAIL->IDENTITY RESOLUTION (offline) ===");
+    println!("  Lookup:   email = {email}");
+    println!("  Source:   epieos (emulated API response; no network, no key)");
+    println!("  Entities: {}\n", entities.len());
+    for e in entities {
+        println!(
+            "  [{}] {}  (conf={:.2} c_eff={:.2} class={})",
+            e.kind,
+            e.value,
+            e.confidence,
+            e.c_effective(),
+            e.classify()
+        );
+        if !e.tags.is_empty() {
+            println!("      tags: {}", e.tags.join(", "));
+        }
+        for ev in &e.evidence {
+            println!("      - {} :: {}", ev.source, ev.summary);
+            for (k, v) in &ev.attributes {
+                println!("          {k} = {v}");
+            }
+        }
+    }
+    println!();
+}
+
+/// End-to-end emulation: an Epieos API response we synthesise locally is
+/// resolved into the full identity graph by the genuine module mapper, with no
+/// live call. Prints a dossier (under `--nocapture`) and asserts the extraction.
+#[test]
+fn emulated_lookup_resolves_full_identity_offline() {
+    let email = "haigen.bamford@example.com";
+    let target = Target::new(TargetKind::Email, email);
+
+    // Mirror `process`: decode the (emulated) body, then run the real mapper.
+    let body: EpieosResp =
+        serde_json::from_str(EMULATED_API_RESPONSE).expect("emulated response parses");
+    let entities = build_entities(&target, &body, "emulated-scan");
+
+    render_dossier(email, &entities);
+
+    // The enriched Email anchor carries every cross-source signal.
+    let anchor = entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("email anchor");
+    assert_eq!(anchor.value, email);
+    assert!(anchor.has_tag("google-account"));
+    assert!(anchor.has_tag("skype"));
+    assert!(anchor.has_tag("has-maps-reviews"));
+
+    // Google and Skype names agree here → one deduplicated Person lead.
+    let people: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .collect();
+    assert_eq!(people.len(), 1);
+    assert_eq!(people[0].value, "Haigen Bamford");
+
+    // Skype handle → Username.
+    assert!(
+        entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Username && e.value == "haigen.bamford")
+    );
+
+    // GEOINT: Skype location + both reviewed places become Address leads; the
+    // QLD places pick up the Australian state/country tags.
+    let addrs: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address)
+        .collect();
+    assert!(addrs.iter().any(|a| a.value == "Brisbane, AU"));
+    let qag = addrs
+        .iter()
+        .find(|a| a.value.starts_with("Queensland Art Gallery"))
+        .expect("reviewed place becomes an Address");
+    assert!(qag.has_tag("geoint"));
+    assert!(qag.has_tag("country:AU"));
+    assert!(qag.has_tag("au-state:QLD"));
+}
