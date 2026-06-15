@@ -21,6 +21,11 @@
 //! | GET    | `/api/v1/scans/{id}/relations`    | `scan_relations`         |
 //! | GET    | `/api/v1/scans/{id}/audit`        | `scan_audit` (v1.3+)     |
 //! | GET    | `/api/v1/scans/{id}/events`       | `scan_events_sse` (SSE)  |
+//! | GET    | `/api/v1/scans/{id}/graph.gexf`   | `scan_export_gexf`       |
+//! | GET    | `/api/v1/scans/{id}/debug.txt`    | `scan_debug_bundle`      |
+//! | GET    | `/api/v1/scans/{id}/stix.json`    | `scan_export_stix`       |
+//! | GET    | `/api/v1/scans/{id}/misp.json`    | `scan_export_misp`       |
+//! | GET    | `/api/v1/scans/{id}/maltego.xml`  | `scan_export_maltego`    |
 //! | POST   | `/api/v1/live`                    | `live_create` (v0.5+)    |
 //! | GET    | `/api/v1/live`                    | `live_list`              |
 //! | GET    | `/api/v1/live/{id}`               | `live_get`               |

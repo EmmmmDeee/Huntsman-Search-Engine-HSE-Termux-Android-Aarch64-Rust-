@@ -1,6 +1,6 @@
 use super::renderers::{
     render_csv, render_debug_bundle, render_full, render_gexf, render_json, render_maltego,
-    render_misp, render_report, write_spiderfoot_db,
+    render_misp, render_report, render_stix, write_spiderfoot_db,
 };
 use crate::core::scan::{Scan, Target, TargetKind};
 use crate::storage::Store;
@@ -188,8 +188,14 @@ fn export_formats_determinism_audit() {
         let b = render(&store, "scan-au").unwrap();
         assert_eq!(a, b, "format `{name}` is not byte-deterministic");
     }
-    // full + debug take `&dyn StoragePort`.
-    let port_fmts: &[(&str, PortFmt)] = &[("full", render_full), ("debug", render_debug_bundle)];
+    // full + debug + stix + misp + maltego take `&dyn StoragePort`.
+    let port_fmts: &[(&str, PortFmt)] = &[
+        ("full", render_full),
+        ("debug", render_debug_bundle),
+        ("stix", render_stix),
+        ("misp", render_misp),
+        ("maltego", render_maltego),
+    ];
     for (name, render) in port_fmts {
         let a = render(&store, "scan-au").unwrap();
         let b = render(&store, "scan-au").unwrap();
