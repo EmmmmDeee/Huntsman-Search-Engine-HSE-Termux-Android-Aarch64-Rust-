@@ -649,3 +649,270 @@ pub(super) fn render_report(store: &Store, sid: &str) -> Result<String> {
     serde_json::to_string_pretty(&report)
         .map_err(|e| Error::Other(format!("report serialise: {e}")))
 }
+
+// ── MISP 2.4 JSON ─────────────────────────────────────────────────────────────
+
+/// Map an [`EntityKind`] to a MISP attribute `(type, category)` pair.
+fn misp_type(kind: EntityKind) -> (&'static str, &'static str) {
+    match kind {
+        EntityKind::IpAddress => ("ip-dst", "Network activity"),
+        EntityKind::Domain => ("domain", "Network activity"),
+        EntityKind::Email => ("email-dst", "Network activity"),
+        EntityKind::Url => ("url", "External analysis"),
+        EntityKind::Phone => ("phone-number", "Person"),
+        EntityKind::Username => ("github-username", "Social network"),
+        EntityKind::Person => ("full-name", "Person"),
+        EntityKind::Organisation => ("target-org", "Targeting data"),
+        EntityKind::Address => ("text", "Person"),
+        EntityKind::Password => ("text", "Payload delivery"),
+        EntityKind::Credential => ("text", "Payload delivery"),
+        EntityKind::ApiKey => ("text", "Payload delivery"),
+        EntityKind::Cidr => ("ip-dst/cidr", "Network activity"),
+        EntityKind::MacAddress => ("mac-address", "Network activity"),
+        EntityKind::Coordinates => ("text", "External analysis"),
+        EntityKind::Asn => ("AS", "Network activity"),
+        _ => ("text", "External analysis"),
+    }
+}
+
+/// Render as a MISP 2.4 JSON event (importable via `/events/add` REST API).
+pub(super) fn render_misp(store: &Store, sid: &str) -> Result<String> {
+    use serde_json::json;
+
+    let scan = store
+        .get_scan(sid)?
+        .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
+    let entities = store.entities_for_scan(sid)?;
+
+    let date = epoch_to_stix_ts(scan.started_at);
+    let date_only = &date[..10]; // YYYY-MM-DD
+
+    let mut attributes = Vec::new();
+    for entity in &entities {
+        let (misp_ty, category) = misp_type(entity.kind.clone());
+        let comment = if entity.tags.is_empty() {
+            format!("confidence:{:.2}", entity.confidence)
+        } else {
+            format!(
+                "confidence:{:.2} tags:{}",
+                entity.confidence,
+                entity.tags.join(",")
+            )
+        };
+        attributes.push(json!({
+            "type": misp_ty,
+            "category": category,
+            "value": entity.value,
+            "to_ids": false,
+            "comment": comment,
+            "distribution": 0
+        }));
+    }
+
+    let event = json!({
+        "Event": {
+            "info": format!("Huntsman Search Engine — scan {sid} (seed: {})", scan.target.value),
+            "date": date_only,
+            "threat_level_id": "3",
+            "analysis": "2",
+            "distribution": "0",
+            "Attribute": attributes
+        }
+    });
+    serde_json::to_string_pretty(&event).map_err(|e| Error::Other(format!("misp serialise: {e}")))
+}
+
+// ── Maltego entity XML ────────────────────────────────────────────────────────
+
+/// Map an [`EntityKind`] to a Maltego entity type string.
+fn maltego_type(kind: EntityKind) -> &'static str {
+    match kind {
+        EntityKind::IpAddress => "maltego.IPv4Address",
+        EntityKind::Domain => "maltego.DNSName",
+        EntityKind::Email => "maltego.EmailAddress",
+        EntityKind::Url => "maltego.URL",
+        EntityKind::Phone => "maltego.PhoneNumber",
+        EntityKind::Username => "maltego.Alias",
+        EntityKind::Person => "maltego.Person",
+        EntityKind::Organisation => "maltego.Organization",
+        EntityKind::Credential | EntityKind::ApiKey | EntityKind::Password => "maltego.Phrase",
+        EntityKind::MacAddress => "maltego.MACAddress",
+        EntityKind::Coordinates => "maltego.Location",
+        EntityKind::Cidr => "maltego.Netblock",
+        EntityKind::Address => "maltego.Location",
+        EntityKind::Asn => "maltego.AS",
+        _ => "maltego.Unknown",
+    }
+}
+
+/// Escape a string for XML text content (minimal: `&`, `<`, `>`).
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Render as Maltego entity XML (importable via Maltego's Import Graph feature).
+pub(super) fn render_maltego(store: &Store, sid: &str) -> Result<String> {
+    let entities = store.entities_for_scan(sid)?;
+    let mut out = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <MaltegoMessage>\n  \
+         <MaltegoTransformResponseMessage>\n    \
+         <Entities>\n",
+    );
+    for entity in &entities {
+        let ty = maltego_type(entity.kind.clone());
+        let val = xml_escape(&entity.value);
+        let weight = (entity.confidence * 100.0) as u32;
+        let tags = xml_escape(&entity.tags.join(","));
+        out.push_str(&format!(
+            "      <Entity Type=\"{ty}\">\n\
+                     <Value>{val}</Value>\n\
+                     <Weight>{weight}</Weight>\n\
+                     <AdditionalFields>\n\
+                       <Field Name=\"confidence\" DisplayName=\"Confidence\">{:.2}</Field>\n\
+                       <Field Name=\"tags\" DisplayName=\"Tags\">{tags}</Field>\n\
+                       <Field Name=\"hse.scan_id\" DisplayName=\"Scan ID\">{sid}</Field>\n\
+                     </AdditionalFields>\n\
+                   </Entity>\n",
+            entity.confidence,
+            sid = xml_escape(sid),
+        ));
+    }
+    out.push_str("    </Entities>\n  </MaltegoTransformResponseMessage>\n</MaltegoMessage>\n");
+    Ok(out)
+}
+
+// ── SpiderFoot SQLite ─────────────────────────────────────────────────────────
+
+/// Map an [`EntityKind`] to a SpiderFoot data type string.
+fn sf_type(kind: EntityKind) -> &'static str {
+    match kind {
+        EntityKind::IpAddress => "IP_ADDRESS",
+        EntityKind::Domain => "INTERNET_NAME",
+        EntityKind::Email => "EMAILADDR",
+        EntityKind::Url => "LINKED_URL_INTERNAL",
+        EntityKind::Phone => "PHONE_NUMBER",
+        EntityKind::Username => "USERNAME",
+        EntityKind::Person => "HUMAN_NAME",
+        EntityKind::Organisation => "COMPANY_NAME",
+        EntityKind::Address => "PHYSICAL_ADDRESS",
+        EntityKind::Password | EntityKind::Credential => "PASSWORD",
+        EntityKind::ApiKey => "API_KEY",
+        EntityKind::Cidr => "NETBLOCK_MEMBER",
+        EntityKind::MacAddress => "MAC_ADDRESS",
+        EntityKind::Coordinates => "GEOINFO",
+        EntityKind::Asn => "BGP_AS_MEMBER",
+        EntityKind::DeviceId => "DEVICE_TYPE",
+        _ => "RAW_RIR_DATA",
+    }
+}
+
+/// Write a SpiderFoot-compatible SQLite database to `out_path`.
+///
+/// The SpiderFoot schema is recreated faithfully so the file can be opened
+/// directly in SpiderFoot's scan import feature or analysed with any SQLite
+/// tool. Only requires a file path (binary format, not returned as String).
+pub(super) fn write_spiderfoot_db(store: &Store, sid: &str, out_path: &str) -> Result<()> {
+    use rusqlite::{Connection, params};
+
+    let scan = store
+        .get_scan(sid)?
+        .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
+    let entities = store.entities_for_scan(sid)?;
+
+    let conn =
+        Connection::open(out_path).map_err(|e| Error::Other(format!("open spiderfoot db: {e}")))?;
+
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS tbl_scan_instance (
+             guid TEXT NOT NULL,
+             name TEXT NOT NULL,
+             seed_target TEXT,
+             created INTEGER NOT NULL,
+             started INTEGER,
+             ended INTEGER,
+             status TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS tbl_scan_log (
+             scan_instance_guid TEXT NOT NULL,
+             generated INTEGER NOT NULL,
+             component TEXT,
+             type TEXT,
+             message TEXT
+         );
+         CREATE TABLE IF NOT EXISTS tbl_scan_results (
+             scan_instance_guid TEXT NOT NULL,
+             hash TEXT NOT NULL,
+             type TEXT NOT NULL,
+             generated INTEGER NOT NULL,
+             confidence INTEGER NOT NULL,
+             visibility INTEGER NOT NULL,
+             risk INTEGER NOT NULL,
+             module TEXT NOT NULL,
+             source_data TEXT,
+             false_positive INTEGER NOT NULL,
+             source_event_hash TEXT,
+             data TEXT NOT NULL
+         );",
+    )
+    .map_err(|e| Error::Other(format!("spiderfoot schema: {e}")))?;
+
+    let now = scan.started_at as i64;
+    conn.execute(
+        "INSERT INTO tbl_scan_instance (guid, name, seed_target, created, started, ended, status)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            sid,
+            format!("HSE scan {sid}"),
+            &scan.target.value,
+            now,
+            now,
+            now,
+            "FINISHED"
+        ],
+    )
+    .map_err(|e| Error::Other(format!("insert scan instance: {e}")))?;
+
+    for entity in &entities {
+        let sf_ty = sf_type(entity.kind.clone());
+        let conf = (entity.confidence * 100.0) as i64;
+        let module = entity
+            .evidence
+            .first()
+            .map(|ev| ev.source.as_str())
+            .unwrap_or("hse");
+        // Deterministic hash: sf uses sha256 hex; we use a stable string hash.
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        entity.value.hash(&mut h);
+        sf_ty.hash(&mut h);
+        let hash = format!("{:016x}", h.finish());
+        conn.execute(
+            "INSERT OR IGNORE INTO tbl_scan_results
+             (scan_instance_guid, hash, type, generated, confidence, visibility,
+              risk, module, source_data, false_positive, source_event_hash, data)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            params![
+                sid,
+                hash,
+                sf_ty,
+                now,
+                conf,
+                5i64,
+                0i64,
+                module,
+                &scan.target.value,
+                0i64,
+                "ROOT",
+                &entity.value
+            ],
+        )
+        .map_err(|e| Error::Other(format!("insert result: {e}")))?;
+    }
+
+    Ok(())
+}

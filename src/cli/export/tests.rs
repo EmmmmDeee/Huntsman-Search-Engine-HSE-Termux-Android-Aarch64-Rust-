@@ -1,5 +1,6 @@
 use super::renderers::{
-    render_csv, render_debug_bundle, render_full, render_gexf, render_json, render_report,
+    render_csv, render_debug_bundle, render_full, render_gexf, render_json, render_maltego,
+    render_misp, render_report, write_spiderfoot_db,
 };
 use crate::core::scan::{Scan, Target, TargetKind};
 use crate::storage::Store;
@@ -240,4 +241,103 @@ fn explicit_scan_id_is_existence_checked_no_silent_empty_export() {
         crate::cli::resolve_scan_id(&store, "scan-present").unwrap(),
         "scan-present"
     );
+}
+
+#[test]
+fn render_misp_produces_valid_event_json() {
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::scan::{Scan, Target, TargetKind};
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("misp.db").to_str().unwrap()).unwrap();
+    let scan = Scan::new(
+        "scan-misp",
+        Target::new(TargetKind::Email, "a@example-real.com"),
+    );
+    store.upsert_scan(&scan).unwrap();
+    store
+        .upsert_entities_batch(&[
+            Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.9, "scan-misp"),
+            Entity::new(EntityKind::Email, "a@example-real.com", 0.8, "scan-misp"),
+            Entity::new(EntityKind::Domain, "example-real.com", 0.7, "scan-misp"),
+        ])
+        .unwrap();
+    let out = render_misp(&store, "scan-misp").unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).expect("MISP output must be valid JSON");
+    assert!(v.get("Event").is_some(), "top-level Event key missing");
+    let attrs = v["Event"]["Attribute"].as_array().unwrap();
+    assert_eq!(attrs.len(), 3);
+    assert!(attrs.iter().any(|a| a["type"] == "ip-dst"));
+    assert!(attrs.iter().any(|a| a["type"] == "email-dst"));
+    assert!(attrs.iter().any(|a| a["type"] == "domain"));
+}
+
+#[test]
+fn render_maltego_produces_valid_xml() {
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::scan::{Scan, Target, TargetKind};
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("maltego.db").to_str().unwrap()).unwrap();
+    let scan = Scan::new(
+        "scan-mt",
+        Target::new(TargetKind::Email, "b@example-real.com"),
+    );
+    store.upsert_scan(&scan).unwrap();
+    store
+        .upsert_entities_batch(&[
+            Entity::new(EntityKind::IpAddress, "5.6.7.8", 0.85, "scan-mt"),
+            Entity::new(EntityKind::Domain, "example-real.com", 0.7, "scan-mt"),
+        ])
+        .unwrap();
+    let out = render_maltego(&store, "scan-mt").unwrap();
+    assert!(out.contains("<?xml"), "missing XML declaration");
+    assert!(out.contains("MaltegoMessage"), "missing root element");
+    assert!(
+        out.contains("maltego.IPv4Address"),
+        "missing IP entity type"
+    );
+    assert!(
+        out.contains("maltego.DNSName"),
+        "missing domain entity type"
+    );
+    assert!(out.contains("5.6.7.8"), "IP value missing");
+    assert!(out.contains("example-real.com"), "domain value missing");
+}
+
+#[test]
+fn write_spiderfoot_db_creates_readable_sqlite() {
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::scan::{Scan, Target, TargetKind};
+    use rusqlite::Connection;
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("sf.db");
+    let store_path = dir.path().join("hse.db");
+    let store = Store::open(store_path.to_str().unwrap()).unwrap();
+    let scan = Scan::new(
+        "scan-sf",
+        Target::new(TargetKind::Email, "c@example-real.com"),
+    );
+    store.upsert_scan(&scan).unwrap();
+    store
+        .upsert_entities_batch(&[
+            Entity::new(EntityKind::IpAddress, "9.10.11.12", 0.9, "scan-sf"),
+            Entity::new(EntityKind::Email, "c@example-real.com", 0.8, "scan-sf"),
+        ])
+        .unwrap();
+    write_spiderfoot_db(&store, "scan-sf", db_path.to_str().unwrap()).unwrap();
+    let conn = Connection::open(&db_path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tbl_scan_results", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 2, "expected 2 result rows in SpiderFoot DB");
+    let types: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT type FROM tbl_scan_results ORDER BY type")
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+    assert!(types.contains(&"IP_ADDRESS".to_string()));
+    assert!(types.contains(&"EMAILADDR".to_string()));
 }

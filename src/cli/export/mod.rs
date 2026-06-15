@@ -1,5 +1,5 @@
 //! `hse export` — dump a previous scan's entities in JSON / CSV /
-//! GEXF / pretty-JSON-report.
+//! GEXF / STIX 2.1 / MISP JSON / Maltego XML / SpiderFoot SQLite.
 //!
 //! Resolves the scan id (or `latest` → most-recent completed scan in
 //! the store), renders the entities in the chosen format, and writes
@@ -29,6 +29,15 @@ pub(super) async fn cmd_export(scan_id: String, format: String, out: Option<Stri
     // indistinguishable from a real scan that found nothing). Shared with
     // `diff`/`audit` via `super::resolve_scan_id`.
     let sid = super::resolve_scan_id(&store, &scan_id)?;
+    // SpiderFoot exports a binary SQLite file — handled separately.
+    if format.to_lowercase() == "spiderfoot" {
+        let path =
+            out.ok_or_else(|| Error::Other("--format spiderfoot requires --out <path.db>".into()))?;
+        renderers::write_spiderfoot_db(&store, &sid, &path)?;
+        eprintln!("SpiderFoot database written to {path}");
+        return Ok(());
+    }
+
     let body = match format.to_lowercase().as_str() {
         "json" => renderers::render_json(&store, &sid)?,
         "csv" => renderers::render_csv(&store, &sid)?,
@@ -37,9 +46,11 @@ pub(super) async fn cmd_export(scan_id: String, format: String, out: Option<Stri
         "full" => render_full(&store, &sid)?,
         "debug" => render_debug_bundle(&store, &sid)?,
         "stix" => renderers::render_stix(&store, &sid)?,
+        "misp" => renderers::render_misp(&store, &sid)?,
+        "maltego" => renderers::render_maltego(&store, &sid)?,
         other => {
             return Err(Error::Other(format!(
-                "unknown --format '{other}'. Valid: json, csv, gexf, report, full, debug, stix"
+                "unknown --format '{other}'. Valid: json, csv, gexf, report, full, debug, stix, misp, maltego, spiderfoot"
             )));
         }
     };
