@@ -17,12 +17,14 @@ mod keys_cmd;
 mod live;
 mod modules;
 mod oathnet_batch;
+mod oathnet_export;
 mod oathnet_harvest;
 mod opencellid_export;
 mod opencellid_harvest;
 mod provision;
 mod radar;
 mod scan;
+mod seeknow_export;
 mod seeknow_harvest;
 mod selftest;
 mod serve;
@@ -669,6 +671,36 @@ pub enum Command {
         #[arg(long, default_value = "0")]
         limit: u64,
     },
+
+    /// Export the local oathnet_au_cache corpus in OathNet's native JSON format.
+    /// Output is NDJSON or JSON array of raw API records — 100% lossless,
+    /// re-importable by any tool that accepts OathNet response data.
+    #[command(name = "oathnet-export")]
+    OathnetExport {
+        #[arg(long, default_value = "ndjson")]
+        format: String,
+        #[arg(long, short = 'o')]
+        output: Option<String>,
+        #[arg(long)]
+        surface: Option<String>,
+        #[arg(long)]
+        field: Option<String>,
+        #[arg(long, default_value = "0")]
+        limit: u64,
+    },
+
+    /// Export the local seeknow_au_cache corpus in SeekNow's native JSON format.
+    #[command(name = "seeknow-export")]
+    SeeknowExport {
+        #[arg(long, default_value = "ndjson")]
+        format: String,
+        #[arg(long, short = 'o')]
+        output: Option<String>,
+        #[arg(long)]
+        field: Option<String>,
+        #[arg(long, default_value = "0")]
+        limit: u64,
+    },
 }
 
 pub async fn run() -> Result<()> {
@@ -997,6 +1029,30 @@ pub async fn run() -> Result<()> {
         } => opencellid_export::cmd_opencellid_export(opencellid_export::OpencellidExportArgs {
             output,
             radio,
+            limit,
+        }),
+        Command::OathnetExport {
+            format,
+            output,
+            surface,
+            field,
+            limit,
+        } => oathnet_export::cmd_oathnet_export(oathnet_export::OathnetExportArgs {
+            format,
+            output,
+            surface,
+            field,
+            limit,
+        }),
+        Command::SeeknowExport {
+            format,
+            output,
+            field,
+            limit,
+        } => seeknow_export::cmd_seeknow_export(seeknow_export::SeeknowExportArgs {
+            format,
+            output,
+            field,
             limit,
         }),
     }
