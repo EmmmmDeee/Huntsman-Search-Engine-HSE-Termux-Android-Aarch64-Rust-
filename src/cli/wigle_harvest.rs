@@ -527,6 +527,7 @@ pub async fn cmd_wigle_harvest(args: WigleHarvestArgs) -> Result<()> {
         std::env::var("HUNTSMAN_WIGLE_TOKEN").unwrap_or_else(|_| WIGLE_DEFAULT_TOKEN.to_string());
 
     let db_path = crate::default_db_path();
+    crate::cli::harvest_util::check_disk_space(db_path.as_str(), 512)?;
     let mut conn = open_db(&db_path)?;
     let client = build_client()?;
 

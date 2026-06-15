@@ -12,6 +12,7 @@ mod diff;
 mod doctor;
 mod engines;
 pub(crate) mod export;
+mod harvest_util;
 mod keys_cmd;
 mod live;
 mod modules;
@@ -119,6 +120,11 @@ pub enum Command {
         /// Skip non-passive modules (network-reaching).
         #[arg(long)]
         passive_only: bool,
+        /// Restrict scan to local-corpus and sensor modules only (no network egress).
+        /// Equivalent to --passive-only. Useful after running hse wigle-harvest and
+        /// hse opencellid-harvest to exploit offline corpuses without API calls.
+        #[arg(long)]
+        offline: bool,
         /// Per-module timeout override, in milliseconds.
         #[arg(long)]
         timeout: Option<u64>,
@@ -391,6 +397,9 @@ pub enum Command {
         /// Same as `scan --passive-only`.
         #[arg(long)]
         passive_only: bool,
+        /// Same as --passive-only; alias for field operators who want zero network egress.
+        #[arg(long)]
+        offline: bool,
         /// Comma-separated module allowlist.
         #[arg(short, long)]
         modules: Option<String>,
@@ -683,6 +692,7 @@ pub async fn run() -> Result<()> {
             min_confidence,
             free_only,
             passive_only,
+            offline,
             timeout,
             depth,
             recursive,
@@ -715,7 +725,7 @@ pub async fn run() -> Result<()> {
                 throttle_ms: throttle,
                 min_confidence,
                 free_only: free_only && !full,
-                passive_only: passive_only && !full,
+                passive_only: (passive_only || offline) && !full,
                 module_timeout_ms: timeout,
                 depth,
                 recursive: recursive || full,
@@ -770,6 +780,7 @@ pub async fn run() -> Result<()> {
             depth,
             free_only,
             passive_only,
+            offline,
             modules,
             radar,
             json,
@@ -782,7 +793,7 @@ pub async fn run() -> Result<()> {
                 iterations,
                 depth,
                 free_only,
-                passive_only,
+                passive_only: passive_only || offline,
                 modules,
                 radar,
                 json,

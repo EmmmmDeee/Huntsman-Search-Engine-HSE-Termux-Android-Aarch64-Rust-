@@ -133,6 +133,7 @@ pub async fn cmd_seeknow_harvest(args: SeeknowHarvestArgs) -> Result<()> {
     }
 
     let db_path = crate::default_db_path();
+    crate::cli::harvest_util::check_disk_space(db_path.as_str(), 200)?;
     let mut conn = Connection::open(&db_path)
         .map_err(|e| Error::Other(format!("cannot open DB at {db_path:?}: {e}")))?;
 
