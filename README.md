@@ -48,13 +48,19 @@ See [`docs/INSTALL.md`](docs/INSTALL.md) for every install path, knobs
 Then launch the Web UI:
 
 ```bash
-hse serve   # binds 127.0.0.1:8080
+hse serve   # binds 127.0.0.1:8080 (loopback only)
 ```
 
-Open **Chrome or Firefox** on your phone and go to `http://127.0.0.1:8080`.
-You'll see a SpiderFoot-identical dark-navbar UI with Dashboard, New Scan
-wizard, entity browser with D3 force graph, correlations, and a **Settings
-page where you can paste & save API keys** straight from the browser.
+Open **Chrome** (or Firefox) on the phone and go to `http://127.0.0.1:8080`.
+You'll get a SpiderFoot-style dark-navbar UI — **Dashboard · New Scan · Scans ·
+Live · Engines · Settings** — where **New Scan** drives the engine and each
+scan's results page tabs through a sortable entity browser, a D3 force graph,
+severity-tagged correlations, and a real-time (SSE) event log. The **Settings
+page lets you paste & save API keys** straight from the browser (loopback-only,
+so keys never leave the device).
+
+> That's the whole install: **one command, then `hse serve`, then open
+> `http://127.0.0.1:8080` in Chrome.** Everything below is reference detail.
 
 ### Manual build (advanced — the installer already does this)
 
