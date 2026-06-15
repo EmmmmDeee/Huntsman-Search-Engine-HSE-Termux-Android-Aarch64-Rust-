@@ -69,6 +69,9 @@ kamadak-exif       = "0.6"
 # the tree transitively via reqwest; declared directly so the
 # decode-through path doesn't break if reqwest drops it.
 base64             = "0.22"
+# Pure-Rust gzip decompression for `opencellid-harvest` bulk import.
+# Already transitive via tower-http; declared directly for explicit use.
+flate2             = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

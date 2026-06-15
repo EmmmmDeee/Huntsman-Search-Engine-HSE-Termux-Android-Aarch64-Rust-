@@ -764,6 +764,7 @@ dependencies = [
  "base64",
  "clap",
  "dotenvy",
+ "flate2",
  "futures",
  "hex",
  "hickory-resolver",

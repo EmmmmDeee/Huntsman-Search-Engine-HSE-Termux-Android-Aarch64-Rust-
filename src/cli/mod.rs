@@ -16,9 +16,12 @@ mod keys_cmd;
 mod live;
 mod modules;
 mod oathnet_batch;
+mod oathnet_harvest;
+mod opencellid_harvest;
 mod provision;
 mod radar;
 mod scan;
+mod seeknow_harvest;
 mod selftest;
 mod serve;
 mod wigle_harvest;
@@ -523,9 +526,76 @@ pub enum Command {
         /// Tile step in degrees (default 0.5 ≈ ~55 km tiles).
         #[arg(long, default_value_t = 0.5)]
         step: f64,
-        /// Network kinds to harvest: wifi, cell, bluetooth (comma-separated or repeated).
+        /// Network kinds to harvest: wifi, cell, bluetooth (comma-separated).
         #[arg(long, value_delimiter = ',', default_values_t = vec!["wifi".to_string()])]
         kinds: Vec<String>,
+    },
+
+    /// Download the Australian OpenCelliD cell tower database into local SQLite.
+    /// Fetches the MCC=505 bulk export (~50 MB), decompresses, and inserts
+    /// ~800k rows. Requires HUNTSMAN_OPENCELLID_KEY
+    /// (free at <https://opencellid.org/register.php>).
+    #[command(name = "opencellid-harvest")]
+    OpencellidHarvest {
+        /// Print sample rows without writing to the DB.
+        #[arg(long)]
+        dry_run: bool,
+        /// Re-download only if local table has fewer than 100k rows.
+        #[arg(long)]
+        update: bool,
+        /// Force re-download even if local table is already populated.
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Bulk-pull Australian OathNet breach and stealer records into a local
+    /// SQLite cache using domain-anchored and phone-prefix sweeps.
+    /// Requires HUNTSMAN_OATHNET_KEY.
+    #[command(name = "oathnet-harvest")]
+    OathnetHarvest {
+        /// Print the query plan without making any API calls.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip high-volume freemail domains (gmail, hotmail, outlook …).
+        #[arg(long)]
+        no_freemail: bool,
+        /// Also sweep Australian phone prefixes (04xx, +614xx, landlines).
+        #[arg(long)]
+        phones: bool,
+        /// Cap the total number of API queries. 0 = no cap.
+        #[arg(long, default_value_t = 0)]
+        max_queries: usize,
+        /// Records per page (default 100).
+        #[arg(long, default_value_t = 100)]
+        page_size: u32,
+        /// Search surfaces to query: breach, stealer (comma-separated).
+        #[arg(long, value_delimiter = ',', default_values_t = vec!["breach".to_string()])]
+        surfaces: Vec<String>,
+    },
+
+    /// Pull Australian SeekNow profiles into a local SQLite cache using
+    /// ABN-anchored and postcode-anchored sweeps with linked-entity enrichment.
+    /// Requires HUNTSMAN_SEEKNOW_KEY.
+    #[command(name = "seeknow-harvest")]
+    SeeknowHarvest {
+        /// Print the query plan without making any API calls.
+        #[arg(long)]
+        dry_run: bool,
+        /// Sweep registered Australian business names (ABN-anchored queries).
+        #[arg(long)]
+        abn: bool,
+        /// Sweep Australian postcodes with a 10 km radius.
+        #[arg(long)]
+        postcodes: bool,
+        /// Linked-entity enrichment depth (default 1 — follow employer domains).
+        #[arg(long, default_value_t = 1)]
+        depth: u32,
+        /// Cap the total number of queries. 0 = no cap.
+        #[arg(long, default_value_t = 0)]
+        max_queries: usize,
+        /// Path to a newline-delimited seed file (postcodes or entity names).
+        #[arg(long)]
+        seed_file: Option<String>,
     },
 }
 
@@ -731,32 +801,6 @@ pub async fn run() -> Result<()> {
             out,
         } => export::cmd_export(scan_id, format, out).await,
         Command::Diff { from, to, format } => diff::cmd_diff(from, to, format),
-        Command::OpencellidHarvest {
-            dry_run,
-            update,
-            force,
-        } => {
-            opencellid_harvest::cmd_opencellid_harvest(opencellid_harvest::OpencellidHarvestArgs {
-                dry_run,
-                update,
-                force,
-            })
-            .await
-        }
-        Command::WigleHarvest {
-            dry_run,
-            rate,
-            step,
-            kinds,
-        } => {
-            wigle_harvest::cmd_wigle_harvest(wigle_harvest::WigleHarvestArgs {
-                dry_run,
-                rate,
-                step,
-                kinds,
-            })
-            .await
-        }
         Command::OathnetBatch {
             value,
             kind,
@@ -778,6 +822,68 @@ pub async fn run() -> Result<()> {
                 page_size,
                 execute,
                 json,
+            })
+            .await
+        }
+        Command::WigleHarvest {
+            dry_run,
+            rate,
+            step,
+            kinds,
+        } => {
+            wigle_harvest::cmd_wigle_harvest(wigle_harvest::WigleHarvestArgs {
+                dry_run,
+                rate,
+                step,
+                kinds,
+            })
+            .await
+        }
+        Command::OpencellidHarvest {
+            dry_run,
+            update,
+            force,
+        } => {
+            opencellid_harvest::cmd_opencellid_harvest(opencellid_harvest::OpencellidHarvestArgs {
+                dry_run,
+                update,
+                force,
+            })
+            .await
+        }
+        Command::OathnetHarvest {
+            dry_run,
+            no_freemail,
+            phones,
+            max_queries,
+            page_size,
+            surfaces,
+        } => {
+            oathnet_harvest::cmd_oathnet_harvest(oathnet_harvest::OathnetHarvestArgs {
+                dry_run,
+                no_freemail,
+                phones,
+                max_queries,
+                page_size,
+                surfaces,
+            })
+            .await
+        }
+        Command::SeeknowHarvest {
+            dry_run,
+            abn,
+            postcodes,
+            depth,
+            max_queries,
+            seed_file,
+        } => {
+            seeknow_harvest::cmd_seeknow_harvest(seeknow_harvest::SeeknowHarvestArgs {
+                dry_run,
+                abn,
+                postcodes,
+                depth,
+                max_queries,
+                seed_file,
             })
             .await
         }
