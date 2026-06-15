@@ -10,7 +10,6 @@ pub mod abuseipdb;
 pub mod acnc_charities;
 pub mod api_key_probe;
 pub mod asic_director;
-pub mod au_court_records;
 pub mod au_electoral;
 pub mod au_people;
 pub mod au_property;
@@ -40,6 +39,7 @@ pub mod email_parse;
 pub mod emailrep;
 pub mod employer_pivot;
 pub mod epieos;
+pub mod epieos_free;
 pub mod exa_search;
 pub mod exif_geo;
 pub mod fullcontact;
@@ -66,10 +66,8 @@ pub mod ipapi;
 pub mod ipinfo;
 pub mod ipqs;
 pub mod ipquery;
-pub mod ipv6_asn_expand;
 pub mod keybase;
 pub mod leakix;
-pub mod linkedin_public;
 pub mod local_net;
 pub mod mls;
 pub mod mylnikov;
@@ -99,14 +97,13 @@ pub mod securitytrails;
 pub mod see_know;
 pub mod seon;
 pub mod shodan;
-pub mod signal_radar_au;
+pub mod signal_radar;
 pub mod smtp_vrfy;
 pub mod social_location;
 pub mod social_probe;
 pub mod subdomain_takeover;
 pub mod sunrise_sunset;
 pub mod threatfox;
-pub mod tor_exit_realtime;
 pub mod typosquat;
 pub mod urlhaus;
 pub mod urlscan;
@@ -261,6 +258,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(cell_intel::CellIntel),
         Arc::new(wifi_intel::WifiIntel),
         Arc::new(local_net::LocalNet),
+        Arc::new(signal_radar::SignalRadar),
         Arc::new(abn_lookup::AbnLookup),
         Arc::new(api_key_probe::ApiKeyProbe),
         Arc::new(chain_intel::ChainIntel),
@@ -269,6 +267,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(keybase::Keybase),
         Arc::new(emailrep::EmailRep),
         Arc::new(epieos::Epieos),
+        Arc::new(epieos_free::EpieosFree),
         Arc::new(proxycurl::Proxycurl),
         Arc::new(fullcontact::FullContact),
         Arc::new(numverify::NumVerify),
@@ -310,11 +309,6 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(au_property::AuProperty),
         Arc::new(acnc_charities::AcncCharities),
         Arc::new(gleif_lei::GleifLei),
-        Arc::new(au_court_records::AuCourtRecords),
-        Arc::new(linkedin_public::LinkedinPublic),
-        Arc::new(signal_radar_au::SignalRadarAu),
-        Arc::new(tor_exit_realtime::TorExitRealtime),
-        Arc::new(ipv6_asn_expand::Ipv6AsnExpand),
     ]
 }
 
@@ -348,73 +342,6 @@ pub fn reconnaissance_coverage<'a>(
 }
 
 #[cfg(test)]
-mod registry_invariants {
-    use super::{reconnaissance_coverage, registry};
-    use crate::core::dependency::{ALL_TARGET_KINDS, PROBE_VALUE};
-    use crate::core::scan::Target;
-
-    #[test]
-    fn reconnaissance_coverage_resolves_real_sources_and_ignores_the_rest() {
-        // A scan whose findings came from search_engines + crtsh + a non-module
-        // source (`seed`) covers exactly the union of the two real modules'
-        // techniques; `seed` contributes nothing.
-        let cov = reconnaissance_coverage(["search_engines", "crtsh", "seed"]);
-        let ids: Vec<&str> = cov.iter().map(|t| t.id).collect();
-        // search_engines (Search) → T1593.002; crtsh (DnsRecon) → cert/DNS/WHOIS.
-        assert!(
-            ids.contains(&"T1593.002"),
-            "search engines technique present"
-        );
-        assert!(
-            ids.contains(&"T1596.003"),
-            "crt.sh is digital-certificate recon: {ids:?}"
-        );
-        // Sorted + deduped, and no phantom entries from the unknown `seed` source.
-        let mut sorted = ids.clone();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(ids, sorted, "coverage must be sorted and deduped");
-        // An all-unknown source set yields nothing.
-        assert!(reconnaissance_coverage(["seed", "geo_normalize"]).is_empty());
-    }
-
-    /// Every registered module's `consumes()` must cover every `TargetKind`
-    /// its `accepts()` matches against the canonical probe value.
-    ///
-    /// Why this is load-bearing: the engine builds its O(1) dispatch index
-    /// from `consumes()` (see `core::dependency::ModuleGraph`). A module that
-    /// hand-rolls `consumes()` and declares FEWER kinds than `accepts()`
-    /// actually matches is silently never indexed for the missing kind — so
-    /// it never dispatches there, and the engine's belt-and-braces `accepts()`
-    /// recheck never even runs (the module isn't in the candidate list). This
-    /// test turns that class of mis-declaration into a CI failure instead of a
-    /// silent loss of coverage.
-    ///
-    /// The default `consumes()` derives itself by probing `accepts()`, so
-    /// non-overriding modules satisfy this by construction; the test guards
-    /// the modules that override `consumes()` by hand. A `consumes()` that is
-    /// a strict *superset* of the probed-accepts set is fine (value-shape
-    /// gates legitimately declare kinds the generic probe value can't match).
-    #[test]
-    fn module_consumes_covers_probed_accepts() {
-        let mut violations = Vec::new();
-        for m in registry() {
-            let declared = m.consumes();
-            for &kind in ALL_TARGET_KINDS {
-                if m.accepts(&Target::new(kind, PROBE_VALUE)) && !declared.contains(&kind) {
-                    violations.push(format!(
-                        "  {}: accepts() matches {:?} (probe) but consumes() omits it \
-                         → dispatch index would never serve it for that kind",
-                        m.name(),
-                        kind
-                    ));
-                }
-            }
-        }
-        assert!(
-            violations.is_empty(),
-            "consumes()/accepts() divergence detected:\n{}",
-            violations.join("\n")
-        );
-    }
+mod tests {
+    include!("tests.rs");
 }

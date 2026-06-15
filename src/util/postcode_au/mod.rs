@@ -168,6 +168,15 @@ fn offline_fallback(postcode: &str) -> Vec<Locality> {
     }
 }
 
+/// Resolve a 4-digit AU postcode to a primary suburb name using the offline
+/// gazetteer only (no network). Returns `None` for postcodes not in the table.
+pub fn resolve_suburb(postcode: &str) -> Option<String> {
+    offline_fallback(postcode)
+        .into_iter()
+        .next()
+        .map(|l| l.suburb)
+}
+
 /// Resolve an AU postcode to its localities. Best-effort: a network/parse
 /// failure falls back to the offline gazetteer ([`offline_fallback`]) and, for
 /// postcodes outside it, to an empty list (so callers degrade to the bare

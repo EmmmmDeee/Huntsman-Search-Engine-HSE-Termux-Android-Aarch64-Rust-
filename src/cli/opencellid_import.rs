@@ -3,6 +3,11 @@
 //!
 //! Format: `radio,mcc,net,area,cell,unit,lon,lat,range,samples,changeable,created,updated,averageSignal`
 //! (first line is the header, which is skipped).
+//!
+//! Delta mode (`--update`): only imports rows whose `updated` Unix timestamp
+//! exceeds the `last_import_ts` watermark stored in `opencellid_harvest_meta`.
+//! The watermark is updated at the end of each successful run so subsequent
+//! calls are incremental.
 
 use std::io::{BufRead, BufReader};
 
@@ -18,6 +23,9 @@ pub struct OpencellidImportArgs {
     pub path: String,
     /// Count rows without writing to DB.
     pub dry_run: bool,
+    /// Only import rows whose `updated` timestamp is newer than the last
+    /// successful import recorded in `opencellid_harvest_meta`.
+    pub update: bool,
 }
 
 // ── Schema (identical to opencellid_harvest.rs — CREATE TABLE IF NOT EXISTS) ──
@@ -98,24 +106,12 @@ fn parse_row(line: &str) -> Option<CellRow> {
         cid,
         lon,
         lat,
-        range_m: if range_raw == 0 {
-            None
-        } else {
-            Some(range_raw)
-        },
-        samples: if samples_raw == 0 {
-            None
-        } else {
-            Some(samples_raw)
-        },
+        range_m: if range_raw == 0 { None } else { Some(range_raw) },
+        samples: if samples_raw == 0 { None } else { Some(samples_raw) },
         changeable,
         created,
         updated,
-        avg_signal: if avg_signal_raw == 0 {
-            None
-        } else {
-            Some(avg_signal_raw)
-        },
+        avg_signal: if avg_signal_raw == 0 { None } else { Some(avg_signal_raw) },
     })
 }
 
@@ -154,6 +150,32 @@ fn flush_batch(conn: &mut Connection, batch: &mut Vec<CellRow>) -> Result<usize>
         .map_err(|e| Error::Other(format!("commit: {e}")))?;
     batch.clear();
     Ok(n)
+}
+
+// ── Delta watermark helpers ───────────────────────────────────────────────────
+
+/// Read the `last_import_ts` from the meta table (0 if absent).
+fn last_import_ts(conn: &Connection) -> i64 {
+    conn.query_row(
+        "SELECT value FROM opencellid_harvest_meta WHERE key = 'last_import_ts'",
+        [],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|v| v.parse::<i64>().ok())
+    .unwrap_or(0)
+}
+
+/// Persist the `last_import_ts` (Unix seconds of the maximum `updated` value
+/// seen in this import run).
+fn save_import_ts(conn: &Connection, ts: i64) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO opencellid_harvest_meta (key, value) \
+         VALUES ('last_import_ts', ?1)",
+        params![ts.to_string()],
+    )
+    .map_err(|e| Error::Other(format!("save_import_ts: {e}")))?;
+    Ok(())
 }
 
 // ── Main command ──────────────────────────────────────────────────────────────
@@ -197,7 +219,18 @@ pub fn cmd_opencellid_import(args: OpencellidImportArgs) -> Result<()> {
         .map_err(|e| Error::Other(format!("cannot open DB at {db_path:?}: {e}")))?;
     ensure_schema(&conn)?;
 
+    // In delta mode, skip rows not newer than the last import.
+    let cutoff_ts: i64 = if args.update {
+        let ts = last_import_ts(&conn);
+        eprintln!("[opencellid-import] --update: skipping rows with updated <= {ts}");
+        ts
+    } else {
+        0
+    };
+
     let mut imported: usize = 0;
+    let mut skipped: usize = 0;
+    let mut max_ts: i64 = cutoff_ts;
     let mut batch: Vec<CellRow> = Vec::with_capacity(BATCH);
 
     for line_res in lines {
@@ -207,6 +240,13 @@ pub fn cmd_opencellid_import(args: OpencellidImportArgs) -> Result<()> {
             continue;
         }
         if let Some(row) = parse_row(&line) {
+            if args.update && row.updated <= cutoff_ts {
+                skipped += 1;
+                continue;
+            }
+            if row.updated > max_ts {
+                max_ts = row.updated;
+            }
             batch.push(row);
             if batch.len() >= BATCH {
                 imported += flush_batch(&mut conn, &mut batch)?;
@@ -218,6 +258,17 @@ pub fn cmd_opencellid_import(args: OpencellidImportArgs) -> Result<()> {
         imported += flush_batch(&mut conn, &mut batch)?;
     }
 
-    println!("[opencellid-import] {imported} rows imported.");
+    // Persist the high-water mark so the next `--update` knows where to cut.
+    if imported > 0 {
+        save_import_ts(&conn, max_ts)?;
+    }
+
+    if args.update {
+        println!(
+            "[opencellid-import] {imported} rows imported, {skipped} skipped (delta mode)."
+        );
+    } else {
+        println!("[opencellid-import] {imported} rows imported.");
+    }
     Ok(())
 }

@@ -4,9 +4,10 @@
 //! Steps (all idempotent, all local-only):
 //! 1. Schema migration — add enrichment columns if absent.
 //! 2. OUI vendor resolution — resolve BSSIDs/Bluetooth MACs to vendor strings.
-//! 3. SSID pattern tagging — classify SSIDs into semantic tag buckets.
-//! 4. OpenCelliD cross-reference — match cell netids against `opencellid_au`.
-//! 5. Stale flag — mark records unseen for >180 days as `needs_refresh=1`.
+//! 3. Postcode → suburb normalisation — resolve `postalcode` to a suburb name.
+//! 4. SSID pattern tagging — classify SSIDs into semantic tag buckets.
+//! 5. OpenCelliD cross-reference — match cell netids against `opencellid_au`.
+//! 6. Stale flag — mark records unseen for >180 days as `needs_refresh=1`.
 
 use rusqlite::{Connection, params};
 
@@ -21,6 +22,8 @@ pub struct WigleEnrichArgs {
     pub dry_run: bool,
     /// Run only the OUI vendor-resolution step.
     pub vendor: bool,
+    /// Run only the postcode → suburb normalisation step.
+    pub postcode: bool,
     /// Run only the SSID classification/tagging step.
     pub tags: bool,
     /// Run only the OpenCelliD cell cross-reference step.
@@ -32,7 +35,7 @@ pub struct WigleEnrichArgs {
 impl WigleEnrichArgs {
     /// Returns `true` when no step flag is set (run all steps).
     fn run_all(&self) -> bool {
-        !self.vendor && !self.tags && !self.cell_xref && !self.stale
+        !self.vendor && !self.postcode && !self.tags && !self.cell_xref && !self.stale
     }
 }
 
@@ -52,6 +55,9 @@ pub async fn cmd_wigle_enrich(args: WigleEnrichArgs) -> Result<()> {
 
     if run_all || args.vendor {
         step_oui_vendor(&conn, args.dry_run)?;
+    }
+    if run_all || args.postcode {
+        step_postcode_au(&conn, args.dry_run)?;
     }
     if run_all || args.tags {
         step_ssid_tags(&conn, args.dry_run)?;
@@ -78,6 +84,7 @@ fn migrate_schema(conn: &Connection) -> Result<()> {
         "ALTER TABLE wigle_au ADD COLUMN needs_refresh INTEGER DEFAULT 0",
         "ALTER TABLE wigle_au ADD COLUMN oci_range_m INTEGER",
         "ALTER TABLE wigle_au ADD COLUMN oci_samples INTEGER",
+        "ALTER TABLE wigle_au ADD COLUMN suburb TEXT",
     ];
     for sql in &alters {
         match conn.execute_batch(sql) {
@@ -142,7 +149,58 @@ fn step_oui_vendor(conn: &Connection, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-// ── Step 3: SSID pattern tagging ─────────────────────────────────────────────
+// ── Step 3: postcode → suburb normalisation ───────────────────────────────────
+
+fn step_postcode_au(conn: &Connection, dry_run: bool) -> Result<()> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT netid, postalcode FROM wigle_au \
+             WHERE postalcode IS NOT NULL AND suburb IS NULL",
+        )
+        .map_err(|e| Error::Other(format!("postcode SELECT prepare: {e}")))?;
+
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| Error::Other(format!("postcode SELECT query: {e}")))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let total = rows.len();
+
+    if dry_run {
+        eprintln!("[{SRC}] Postcodes: {total} rows would be resolved (dry-run)");
+        return Ok(());
+    }
+
+    let mut resolved = 0usize;
+
+    for chunk in rows.chunks(1000) {
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| Error::Other(format!("postcode tx begin: {e}")))?;
+        {
+            let mut update = tx
+                .prepare_cached("UPDATE wigle_au SET suburb=?1 WHERE netid=?2")
+                .map_err(|e| Error::Other(format!("postcode UPDATE prepare: {e}")))?;
+
+            for (netid, postcode) in chunk {
+                if let Some(suburb) = crate::util::postcode_au::resolve_suburb(postcode) {
+                    update
+                        .execute(rusqlite::params![suburb, netid])
+                        .map_err(|e| Error::Other(format!("postcode UPDATE: {e}")))?;
+                    resolved += 1;
+                }
+            }
+        }
+        tx.commit()
+            .map_err(|e| Error::Other(format!("postcode tx commit: {e}")))?;
+    }
+
+    eprintln!("[{SRC}] Postcodes: {resolved}/{total} rows resolved to suburbs");
+    Ok(())
+}
+
+// ── Step 4: SSID pattern tagging ─────────────────────────────────────────────
 
 /// Build the JSON tag array for a given SSID and network kind.
 fn classify_ssid(ssid: &str, kind: &str) -> String {
@@ -173,14 +231,16 @@ fn classify_ssid(ssid: &str, kind: &str) -> String {
     // Corporate: AU TLD suffixes or company-name patterns.
     const AU_TLDS: &[&str] = &[".com.au", ".net.au", ".org.au", ".gov.au"];
     const CORP_PATTERNS: &[&str] = &["pty ltd", "p/l", "pty. ltd."];
-    if AU_TLDS.iter().any(|t| lower.ends_with(t)) || CORP_PATTERNS.iter().any(|p| lower.contains(p))
+    if AU_TLDS.iter().any(|t| lower.ends_with(t))
+        || CORP_PATTERNS.iter().any(|p| lower.contains(p))
     {
         tags.push("corporate");
     }
 
     // IoT device SSIDs.
     const IOT_PATTERNS: &[&str] = &[
-        "esp_", "esp32", "tuya", "fritz!", "ring-", "nest-", "wyze", "shelly", "tasmota", "sonoff",
+        "esp_", "esp32", "tuya", "fritz!", "ring-", "nest-", "wyze", "shelly", "tasmota",
+        "sonoff",
     ];
     if IOT_PATTERNS.iter().any(|p| lower.contains(p)) {
         tags.push("iot_device");
@@ -194,7 +254,7 @@ fn classify_ssid(ssid: &str, kind: &str) -> String {
     // Serialise as a compact JSON array.
     let inner = tags
         .iter()
-        .map(|t| format!("\"{}\"", t))
+        .map(|t| format!("\"{}\"" , t))
         .collect::<Vec<_>>()
         .join(",");
     format!("[{inner}]")
@@ -249,7 +309,7 @@ fn step_ssid_tags(conn: &Connection, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-// ── Step 4: OpenCelliD cross-reference ───────────────────────────────────────
+// ── Step 5: OpenCelliD cross-reference ───────────────────────────────────────
 
 /// Parse a WiGLE cell netid of the form `MCC-MNC-LAC-CID`.
 fn parse_cell_netid(netid: &str) -> Option<(i64, i64, i64, i64)> {
@@ -310,7 +370,9 @@ fn step_cell_xref(conn: &Connection, dry_run: bool) -> Result<()> {
             .map_err(|e| Error::Other(format!("cell tx begin: {e}")))?;
         {
             let mut update = tx
-                .prepare_cached("UPDATE wigle_au SET oci_range_m=?1, oci_samples=?2 WHERE netid=?3")
+                .prepare_cached(
+                    "UPDATE wigle_au SET oci_range_m=?1, oci_samples=?2 WHERE netid=?3",
+                )
                 .map_err(|e| Error::Other(format!("cell UPDATE prepare: {e}")))?;
 
             for netid in chunk {
@@ -343,7 +405,7 @@ fn step_cell_xref(conn: &Connection, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-// ── Step 5: stale flag ───────────────────────────────────────────────────────
+// ── Step 6: stale flag ───────────────────────────────────────────────────────
 
 fn step_stale_flag(conn: &Connection, dry_run: bool) -> Result<()> {
     if dry_run {
@@ -427,5 +489,18 @@ mod tests {
     #[test]
     fn parse_cell_netid_invalid_non_numeric() {
         assert!(parse_cell_netid("abc-def-ghi-jkl").is_none());
+    }
+
+    #[test]
+    fn resolve_suburb_known_postcode() {
+        assert_eq!(
+            crate::util::postcode_au::resolve_suburb("2000"),
+            Some("Sydney CBD".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_suburb_unknown_postcode() {
+        assert!(crate::util::postcode_au::resolve_suburb("9999").is_none());
     }
 }
