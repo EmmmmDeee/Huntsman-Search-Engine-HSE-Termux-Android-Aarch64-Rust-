@@ -415,6 +415,113 @@ fn point_in_convex_hull_uses_real_hull_orientation() {
     assert!(!point_in_convex_hull(&[(0.0, 0.0), (1.0, 1.0)], (0.5, 0.5)));
 }
 
+// ── Wolfram-verified ground truth for the location-fusion estimators ────────
+//
+// `geometric_median` and `min_enclosing_circle` are the project's two critical
+// GEOINT location-fusion estimators, so their optima are pinned here to values
+// computed INDEPENDENTLY in Wolfram Language — a different implementation and a
+// different algorithm — over the *same* equirectangular frame the code uses
+// (longitude scaled by cos(mean-latitude)):
+//
+//   median: FindArgMin[Total[EuclideanDistance[{x,y}, #] & /@ proj], {x,y}]
+//   circle: BoundingRegion[proj, "MinDisk"]            (Chebyshev centre)
+//
+// each then unprojected back to (lat, lon). A refactor that drifted either
+// estimator off its optimum would now have to disagree with Wolfram to pass.
+
+/// Assert a `(lat, lon)` estimate agrees with Wolfram's optimum within `tol`
+/// degrees on each axis.
+fn assert_wolfram_latlon(got: (f64, f64), want: (f64, f64), tol: f64, what: &str) {
+    assert!(
+        (got.0 - want.0).abs() < tol && (got.1 - want.1).abs() < tol,
+        "{what}: got {got:?}, Wolfram optimum {want:?} (tol +/-{tol})"
+    );
+}
+
+#[test]
+fn geometric_median_matches_wolfram_ground_truth() {
+    // Tight cluster at the origin + a far outlier at (10,10): Wolfram's Weber
+    // point stays in the cluster — the 0.5 breakdown point in action.
+    let m = geometric_median(&[(0.0, 0.0), (0.0, 0.01), (0.01, 0.0), (10.0, 10.0)]).unwrap();
+    assert_wolfram_latlon(
+        m,
+        (0.005_000_000, 0.004_999_994),
+        1e-5,
+        "outlier-cluster median",
+    );
+
+    // Realistic: four Brisbane sightings + one Sydney outlier ~730 km away.
+    // Wolfram's optimum stays on the Brisbane cluster, not between the two cities.
+    let m = geometric_median(&[
+        (-27.4700, 153.0250),
+        (-27.4690, 153.0240),
+        (-27.4710, 153.0260),
+        (-27.4705, 153.0255),
+        (-33.8688, 151.2093),
+    ])
+    .unwrap();
+    assert_wolfram_latlon(
+        m,
+        (-27.470_500_8, 153.025_496_9),
+        1e-4,
+        "brisbane-cluster median",
+    );
+
+    // Equilateral triangle: the Fermat point is the centroid (all angles 60deg).
+    let m = geometric_median(&[(0.0, 0.0), (0.0, 1.0), (0.866_025_403_784_438_6, 0.5)]).unwrap();
+    assert_wolfram_latlon(
+        m,
+        (0.288_671_468, 0.499_999_995),
+        1e-5,
+        "equilateral Fermat median",
+    );
+}
+
+#[test]
+fn weighted_geometric_median_snaps_onto_a_dominant_high_confidence_point() {
+    // The confidence-weighted Weber point is the PRODUCTION estimator. A
+    // GPS-exact sighting (w=0.9) at the origin plus two coarse guesses (w=0.2) at
+    // (0,0.1) and (0.1,0). Wolfram's optimum is exactly the origin: the resultant
+    // pull of the two coarse points, ||0.2*(0,1) + 0.2*(1,0)|| = 0.283, is <= the
+    // origin's weight 0.9, so the origin satisfies the weighted optimality
+    // condition and the estimate sits ON the trusted sighting — exactly the
+    // outlier/low-confidence rejection the weighting is meant to deliver.
+    let m = weighted_geometric_median(&[((0.0, 0.0), 0.9), ((0.0, 0.1), 0.2), ((0.1, 0.0), 0.2)])
+        .unwrap();
+    assert_wolfram_latlon(m, (0.0, 0.0), 1e-3, "dominant-confidence weighted median");
+}
+
+#[test]
+fn min_enclosing_circle_matches_wolfram_min_disk() {
+    // Chebyshev centres = Wolfram BoundingRegion[.., "MinDisk"], unprojected.
+    let c = min_enclosing_circle(&[(0.0, 0.0), (0.0, 0.01), (0.01, 0.0), (10.0, 10.0)]).unwrap();
+    assert_wolfram_latlon(c.center, (5.0, 5.0), 1e-6, "outlier-cluster MEC centre");
+
+    let c = min_enclosing_circle(&[
+        (-27.4700, 153.0250),
+        (-27.4690, 153.0240),
+        (-27.4710, 153.0260),
+        (-27.4705, 153.0255),
+        (-33.8688, 151.2093),
+    ])
+    .unwrap();
+    assert_wolfram_latlon(
+        c.center,
+        (-30.668_900, 152.116_650),
+        1e-5,
+        "brisbane MEC centre",
+    );
+
+    let c =
+        min_enclosing_circle(&[(0.0, 0.0), (0.0, 1.0), (0.866_025_403_784_438_6, 0.5)]).unwrap();
+    assert_wolfram_latlon(
+        c.center,
+        (0.288_678_799, 0.5),
+        1e-6,
+        "equilateral MEC centre",
+    );
+}
+
 // Suppress unused-import warnings for items imported for potential future tests.
 #[allow(unused_imports)]
 use self::{

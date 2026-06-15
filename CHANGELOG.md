@@ -12,6 +12,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Wolfram-verified ground-truth tests for the GEOINT location-fusion
+  estimators.** The geometric median (Weiszfeld), its confidence-weighted form,
+  and the minimum enclosing circle are the engine's critical "where is the
+  subject" estimators, so their optima are now pinned to values computed
+  independently in **Wolfram Language** — `FindArgMin` over the projected
+  distance sum for the medians, `BoundingRegion[…,"MinDisk"]` for the circle —
+  over the same equirectangular frame the code uses. The Rust implementations
+  reproduce Wolfram's optima exactly for the Chebyshev centres and to ~1e-6° for
+  the medians (no production change was needed — the algorithms were already
+  correct), including a singularity case where a dominant high-confidence
+  sighting *is* the weighted Weber point. A future refactor that drifts either
+  estimator off its optimum now has to disagree with Wolfram to pass CI.
 - **Built-in OathNet batch query generator (`hse oathnet-batch`).** A new
   command + pure `util::oathnet_batch` generator that expands a single seed into
   a large, de-duplicated array of distinct OathNet queries across three axes:
