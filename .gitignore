@@ -21,3 +21,7 @@
 .huntsman.env
 .claude/worktrees/
 .claude/settings.local.json
+
+# Temporary CI log files
+_a.log
+_d.log
