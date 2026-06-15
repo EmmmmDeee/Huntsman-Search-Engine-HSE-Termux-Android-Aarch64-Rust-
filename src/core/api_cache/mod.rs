@@ -19,30 +19,47 @@ use crate::core::error::{Error, Result};
 
 /// USD cents charged per live API call for a given module.
 /// Used to accumulate the "$ saved" counter when a cache hit skips a call.
+///
+/// Values reflect the most cost-effective confirmed plan for each service
+/// (rounded to whole cents); sub-cent and free-tier modules — e.g.
+/// `oathnet_pro` (~$0.003), `see_know` (~$0.0002), `whoisxml` (free tier),
+/// `virustotal`/`abuseipdb`/`leakix`/`numverify` — fall through to `0`, since
+/// a cache hit on a near-free call saves no meaningful amount.
 pub fn cost_cents(module: &str) -> u64 {
     match module {
-        "dehashed" => 500,   // ~$5/search
-        "proxycurl" => 5,    // ~$0.05/call
-        "seon" => 25,        // ~$0.25/call
-        "fullcontact" => 10, // ~$0.10/call
-        "hunter_io" => 5,    // free quota ≈ $0.05/search equivalent
-        "whoisxml" => 1,     // bulk plan ~$0.01/lookup
-        "censys" => 1,
-        "virustotal" => 1,
-        "abuseipdb" => 1,
-        "leakix" => 1,
-        "numverify" => 0,
+        "epieos" => 110, // ~$1.10/call (Osinter plan; API otherwise enterprise)
+        "seon" | "opencorporates" => 28, // ~$0.28/call
+        "censys" => 20,  // ~$0.20/call (credit-based)
+        "dehashed" => 7, // ~$0.07/search effective (Professional + per-credit)
+        "fullcontact" => 6, // ~$0.06/call (Growth)
+        "intelx" => 4,   // ~$0.043/search (API licence)
+        "proxycurl" | "securitytrails" => 3, // ~$0.03 / ~$0.025 per call
+        "ipqs" | "emailrep" => 2, // ~$0.02/call
+        "hunter_io" | "hibp" | "shodan" | "criminal_ip" | "exa_search" => 1, // ~$0.007–0.011/call
         _ => 0,
     }
 }
 
-/// Cache TTL in seconds per module.
+/// Cache TTL in seconds per module, banded by how fast each source's data
+/// goes stale (its current-state validity half-life):
+///   * fast-decay infrastructure / reputation (banners, scores, geo) — 12h,
+///   * identity / breach / profile data (perishable but slower) — 7 days,
+///   * durable domain / certificate / corporate / routing records — 30 days,
+///   * everything else (live scrape, DNS, default) — 1 hour.
 pub fn ttl_secs(module: &str) -> u64 {
     match module {
-        "dehashed" | "proxycurl" | "fullcontact" | "seon" => 7 * 86_400,
-        "numverify" => 30 * 86_400,
-        "hunter_io" | "whoisxml" | "censys" => 86_400,
-        "virustotal" | "abuseipdb" | "leakix" => 12 * 3_600,
+        // Fast-decay: scan banners, IP reputation, file/url verdicts.
+        "shodan" | "censys" | "criminal_ip" | "ipqs" | "virustotal" | "abuseipdb" | "leakix" => {
+            12 * 3_600
+        }
+        // Perishable identity/credential/profile data.
+        "dehashed" | "see_know" | "oathnet_pro" | "hunter_io" | "proxycurl" | "fullcontact"
+        | "seon" | "epieos" | "hibp" | "emailrep" => 7 * 86_400,
+        // Durable: domains, certificates, corporate registries, routing, archives.
+        "crtsh" | "whoisxml" | "securitytrails" | "intelx" | "gleif" | "opencorporates"
+        | "bgpview" | "wayback" | "gov_apis" | "wikidata" | "wifi_intel" | "numverify" => {
+            30 * 86_400
+        }
         _ => 3_600,
     }
 }
