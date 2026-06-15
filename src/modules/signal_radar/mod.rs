@@ -8,8 +8,11 @@
 //! MITRE ATT&CK Reconnaissance (TA0043):
 //!   T1590.005 — IP Addresses (LAN ARP)
 //!   T1592     — Gather Victim Host Information
-//!   T1592.001 — Hardware (Bluetooth / WiFi MACs)
-//!   T1040     — Network Sniffing / passive network observation
+//!   T1592.001 — Hardware (Bluetooth / WiFi / cell-radio identifiers)
+//!
+//! (Passive RF observation is *like* T1040 Network Sniffing, but that technique
+//! belongs to Collection/Credential-Access, not Reconnaissance — so it is
+//! deliberately not claimed against this Reconnaissance-only mapping.)
 
 mod bluetooth;
 mod cell;
@@ -70,7 +73,7 @@ impl Module for SignalRadar {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        &["T1590.005", "T1592", "T1592.001", "T1040"]
+        &["T1590.005", "T1592", "T1592.001"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {

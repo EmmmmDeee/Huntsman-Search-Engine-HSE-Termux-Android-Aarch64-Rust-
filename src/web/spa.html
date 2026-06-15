@@ -376,13 +376,13 @@ const USE_CASES = {
   footprint: {
     label:'Footprint',
     desc:"<b>Understand what information this target exposes to the Internet.</b><br><br>Gain an understanding about the target's network perimeter, associated identities and other information that is obtained through web crawling and infrastructure lookups.",
-    pick:m=>['crtsh','dns_resolver','reverse_dns','dns_brute','wayback','bgpview','whois','ip_geo','ip_rdap','phone_intl','webserver_banner'].includes(m.name),
+    pick:m=>['crtsh','dns_intel','doh_resolver','dns_axfr','wayback','bgpview','whois','ip_geo','rdap_domain','phone_intl','webserver_banner'].includes(m.name),
     options:picked=>({modules:picked})
   },
   investigate: {
     label:'Investigate',
     desc:'<b>Best for when you suspect the target to be malicious but need more information.</b><br><br>Some basic footprinting will be performed in addition to querying of breach datasets, threat-intelligence feeds, identity sources, and credential exposure databases (paid sources used when keys are present).',
-    pick:m=>['hudsonrock','xposed_or_not','alienvault_otx','urlhaus','tor_exit_check','gravatar','github_user','username_search','email_to_username','oathnet_pro'].includes(m.name),
+    pick:m=>['hudsonrock','xposed_or_not','threatfox','urlhaus','greynoise','gravatar','github_user','username_search','email_parse','oathnet_pro'].includes(m.name),
     options:picked=>({modules:picked})
   },
   passive: {

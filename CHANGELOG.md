@@ -103,6 +103,36 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Finished the `signal_radar` module's integration so the build is green.**
+  The real-time multi-sensor radar module was registered but its supporting
+  declarations had not caught up, leaving three architecture-guard tests red:
+  it claimed MITRE ATT&CK sub-technique **`T1592.001` (Hardware)** — the correct
+  mapping for the Bluetooth / WiFi MAC and cell-radio identifiers it collects —
+  but that ID was absent from the `core::attack` Reconnaissance catalogue; it
+  was missing from `docs/MODULES.md`; and the README headline module count still
+  read 113. Added `T1592.001 (Hardware)` to the catalogue (sorted between
+  `T1592` and `T1592.002`), listed `signal_radar` in the MODULES.md `sensor`
+  section, and bumped every operator-facing count to the live registry size
+  (**114 modules — 89 free · 20 key-gated · 5 paid**). `cargo test --all` is
+  green again.
+- **Repaired dead module references in the web-UI scan presets.** The New-Scan
+  use-case presets selected their module set by name, and seven names had rotted
+  past module renames/merges — `dns_resolver` / `reverse_dns` / `dns_brute` /
+  `ip_rdap` (Footprint) and `alienvault_otx` / `tor_exit_check` /
+  `email_to_username` (Investigate) — so those modules silently dropped out of
+  the preset with no error, quietly shrinking coverage in Chrome. Each is now
+  mapped to its current equivalent (the DNS trio → `dns_intel` / `doh_resolver`
+  / `dns_axfr`, `ip_rdap` → `rdap_domain`, `alienvault_otx` → `threatfox`,
+  `tor_exit_check` → `greynoise`, `email_to_username` → `email_parse`). A new
+  `spa_scan_preset_modules_are_all_registered` guard test pins every preset name
+  to the live registry so this class of drift fails CI instead of degrading the
+  UI unnoticed.
+- **Corrected stale figures in `docs/INSTALL.md`** — the verification snippet
+  cited `hse 1.3.0` (now `1.4.0`), `92 modules` (now `114`), a non-existent
+  `email_to_username` module in the example scan (now `email_parse`), and an
+  outdated web-UI tab list; the smoke test now names the real nav tabs
+  (Dashboard, New Scan, Scans, Live, Engines, Settings).
+
 - **WiGLE account introspection now actually detects the email-unverified
   throttle.** `refresh_account_status` deserialised the `/api/v2/profile/user`
   response with the wrong field names — it read `user`/`verified`, but the

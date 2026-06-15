@@ -244,10 +244,10 @@ In Termux, `$HOME` resolves to `/data/data/com.termux/files/home`.
 ## Verifying the install
 
 ```bash
-hse --version           # → hse 1.3.0
+hse --version           # → hse 1.4.0
 hse doctor              # environment report — should print "Termux: detected" on-device
-hse modules             # 92 modules listed (see docs/MODULES.md for full catalogue)
-hse scan --kind email --value test@example.com --modules email_to_username,gravatar
+hse modules             # 114 modules listed (see docs/MODULES.md for full catalogue)
+hse scan --kind email --value test@example.com --modules email_parse,gravatar
 ```
 
 ### Web UI smoke test
@@ -257,9 +257,9 @@ hse serve               # listens on 127.0.0.1:8080
 ```
 
 Open Chrome (or Firefox) on the device and visit
-[`http://127.0.0.1:8080`](http://127.0.0.1:8080). The SPA loads with five
-tabs: Scan, Live, Entities, Correlate, History, Modules. Trigger a scan
-from the Scan tab — module-progress events stream in via SSE as the
-engine dispatches.
+[`http://127.0.0.1:8080`](http://127.0.0.1:8080). The SPA loads with six
+nav tabs: Dashboard, New Scan, Scans, Live, Engines, Settings. Start a scan
+from **New Scan** — module-progress events stream into the scan's Event Log
+tab via SSE as the engine dispatches.
 
 If anything looks wrong, see [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).

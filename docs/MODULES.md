@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (113 modules: 88 free · 20 key-gated · 5 paid)
+## Catalogue (114 modules: 89 free · 20 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -177,12 +177,13 @@ records. The engine knows nothing else — every module is a one-file change.
 | `sunrise_sunset` | coordinates | free | no | 10 | coordinates |
 | `breach_timezone` | email, username, phone | free | **yes** | 7 | address |
 
-### sensor (3)
+### sensor (4)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `device_sensors` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn, mac_address, api_key | free | **yes** | 70 | coordinates, mac_address, ip_address |
 | `cell_intel` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn, mac_address, api_key | free | **yes** | 64 | coordinates |
+| `signal_radar` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn, mac_address, api_key | free | **yes** | 60 | mac_address, ip_address, coordinates, device_id |
 | `local_net` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn, mac_address, api_key | free | **yes** | 58 | mac_address, ip_address |
 
 ### other (3)

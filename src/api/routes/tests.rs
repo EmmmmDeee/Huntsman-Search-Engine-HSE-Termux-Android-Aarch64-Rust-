@@ -185,3 +185,45 @@ use super::*;
             "same-origin is fine"
         );
     }
+
+    #[test]
+    fn spa_scan_preset_modules_are_all_registered() {
+        // The New-Scan use-case presets (Footprint / Investigate / …) select their
+        // module set by name from a hard-coded `pick:m=>['a','b',…].includes(m.name)`
+        // list in the SPA. A renamed or removed module silently drops out of the
+        // preset — the name simply stops matching — quietly shrinking coverage in
+        // the web UI with no error anywhere. Pin every preset name to the live
+        // registry so a module rename/removal can't rot a preset unnoticed: the
+        // same no-silent-drift guard the README / MODULES.md counts already carry.
+        let registered: std::collections::BTreeSet<&str> =
+            crate::modules::registry().iter().map(|m| m.name()).collect();
+
+        let mut checked = 0usize;
+        let mut idx = 0;
+        while let Some(rel) = SPA_HTML[idx..].find("pick:m=>[") {
+            let start = idx + rel + "pick:m=>[".len();
+            let end = SPA_HTML[start..]
+                .find(']')
+                .map_or(SPA_HTML.len(), |e| start + e);
+            for raw in SPA_HTML[start..end].split(',') {
+                let name = raw.trim().trim_matches(['\'', '"']);
+                if name.is_empty() {
+                    continue;
+                }
+                assert!(
+                    registered.contains(name),
+                    "New-Scan preset references unknown module `{name}` — update \
+                     src/web/spa.html after a module rename/removal"
+                );
+                checked += 1;
+            }
+            idx = end;
+        }
+        // Sanity floor: the literal-list presets (Footprint + Investigate) name
+        // ~20 modules between them, so a refactor that drops the `pick:m=>[…]`
+        // syntax can't quietly make this guard vacuous.
+        assert!(
+            checked >= 20,
+            "expected the SPA scan presets to name many modules, saw {checked}"
+        );
+    }
