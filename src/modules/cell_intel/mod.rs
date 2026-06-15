@@ -162,6 +162,7 @@ impl Module for CellIntel {
         let geo_futures = geo_work.iter().map(|tg| {
             let http = ctx.http.clone();
             let api_key = api_key.map(str::to_owned);
+            let ctx_clone = ctx.clone();
             async move {
                 // Try local corpus first — no network, no quota.
                 if let Some(hit) =
@@ -179,7 +180,7 @@ impl Module for CellIntel {
                         ctype: tg.ctype_lower.as_str(),
                         tower_id: tg.tower_id.clone(),
                     };
-                    query_opencellid(&http, api, &tmp_key, tg.radio).await
+                    query_opencellid(&http, api, &tmp_key, tg.radio, &ctx_clone).await
                 } else {
                     None
                 }

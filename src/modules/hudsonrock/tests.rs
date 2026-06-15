@@ -27,6 +27,7 @@ use super::*;
             keys: std::collections::HashMap::new(),
             cancel: crate::core::cancel::CancelHandle::new(),
             proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+            response_sink: None,
         };
         let r = HudsonRock
             .process(&Target::new(TargetKind::Username, "javery88"), &ctx)

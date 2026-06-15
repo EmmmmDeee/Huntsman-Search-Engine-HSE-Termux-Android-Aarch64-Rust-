@@ -79,6 +79,7 @@ async fn keyed_ok_or_404_classifies_miss_success_and_error() {
         keys: HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
         proxy_pool: Default::default(),
+        response_sink: None,
     };
     let resp = |code: u16| {
         reqwest::Response::from(

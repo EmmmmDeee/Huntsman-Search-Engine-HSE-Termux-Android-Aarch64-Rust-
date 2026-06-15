@@ -116,6 +116,7 @@ pub const MAX_CONCURRENT_SCANS: usize = 8;
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<dyn StoragePort>,
+    pub response_sink: Arc<dyn crate::core::module::ApiResponseSink>,
     pub engine: Arc<ScanEngine>,
     pub bus: EventBus,
     pub live: LiveScanner,

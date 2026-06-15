@@ -357,6 +357,7 @@ async fn run_smoke(target: Target, options: ScanOptions) -> Result<SmokeResult> 
         keys: keys::load(),
         cancel: crate::core::cancel::CancelHandle::new(),
         proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+        response_sink: None,
     };
 
     // Capture ModuleError events to extract `missing key: …` strings —

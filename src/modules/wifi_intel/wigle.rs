@@ -42,6 +42,7 @@ pub(super) async fn query_wigle_detail(
     user: &str,
     token: &str,
     bssid: &str,
+    ctx: &crate::core::module::ModuleContext,
 ) -> Result<Option<DetailNetwork>> {
     let encoded = crate::util::http::urlencode(bssid);
     let url = format!("https://api.wigle.net/api/v2/network/detail?netid={encoded}&type=wifi");
@@ -98,12 +99,13 @@ pub(super) async fn query_wigle_detail(
         .text()
         .await
         .map_err(|e| Error::module(SOURCE, format!("body: {e}")))?;
-    crate::core::api_cache::global().put(
+    let is_novel = crate::core::api_cache::global().put(
         "wifi_intel",
         &cache_key,
         &body_text,
         crate::core::api_cache::ttl_secs("wifi_intel"),
     );
+    ctx.record_response("wifi_intel", &url, &cache_key, &body_text, is_novel);
     let body: DetailResp = serde_json::from_str(&body_text)
         .map_err(|e| Error::module(SOURCE, format!("JSON: {e}")))?;
 

@@ -154,12 +154,13 @@ impl Module for DeHashed {
                 let body_text = resp.text().await.map_err(|e| {
                     crate::core::error::Error::module(build::SRC, format!("body: {e}"))
                 })?;
-                crate::core::api_cache::global().put(
+                let is_novel = crate::core::api_cache::global().put(
                     build::SRC,
                     &cache_key,
                     &body_text,
                     crate::core::api_cache::ttl_secs(build::SRC),
                 );
+                ctx.record_response(build::SRC, V2_SEARCH_URL, &cache_key, &body_text, is_novel);
                 break serde_json::from_str(&body_text).map_err(|e| {
                     crate::core::error::Error::module(build::SRC, format!("JSON: {e}"))
                 })?;

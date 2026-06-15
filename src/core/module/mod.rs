@@ -13,6 +13,21 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 
+/// Sink for recording raw API responses per scan. Implemented by the storage
+/// layer and wired in by the engine; modules call
+/// [`ModuleContext::record_response`] — never this trait directly.
+pub trait ApiResponseSink: Send + Sync {
+    fn record(
+        &self,
+        scan_id: &str,
+        module: &str,
+        origin_url: &str,
+        cache_key: &str,
+        body: &str,
+        is_novel: bool,
+    );
+}
+
 /// Module funding/access cost — drives the `free_only` filter on a scan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -306,6 +321,9 @@ pub struct ModuleContext {
     /// Shared proxy pool for free scraping modules. Populated once at
     /// scan start; modules call `ctx.proxy_pool.next()` to rotate.
     pub proxy_pool: std::sync::Arc<crate::util::proxy::ProxyPool>,
+    /// Sink for persisting raw API responses to the main database.
+    /// `None` in tests and passive-only CLI paths that do not open a store.
+    pub response_sink: Option<std::sync::Arc<dyn ApiResponseSink>>,
 }
 
 impl ModuleContext {
@@ -321,6 +339,20 @@ impl ModuleContext {
     /// Fetch an optional key — None if absent (no error).
     pub fn key_opt(&self, name: &str) -> Option<&str> {
         self.keys.get(name).map(String::as_str)
+    }
+
+    /// Record a raw API response for the current scan. No-op when no sink is wired.
+    pub fn record_response(
+        &self,
+        module: &str,
+        origin_url: &str,
+        cache_key: &str,
+        body: &str,
+        is_novel: bool,
+    ) {
+        if let Some(sink) = &self.response_sink {
+            sink.record(&self.scan_id, module, origin_url, cache_key, body, is_novel);
+        }
     }
 
     /// Report that a key received a rate-limit (429) or auth failure (401/403).

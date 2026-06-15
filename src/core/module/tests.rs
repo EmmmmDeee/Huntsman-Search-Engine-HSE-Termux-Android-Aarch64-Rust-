@@ -10,6 +10,7 @@ use super::*;
             keys,
             cancel: crate::core::cancel::CancelHandle::new(),
             proxy_pool: Default::default(),
+            response_sink: None,
         }
     }
 

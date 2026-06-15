@@ -950,22 +950,25 @@ pub(super) fn split_csv(s: Option<String>) -> Option<Vec<String>> {
     s.map(|s| s.split(',').map(|m| m.trim().to_string()).collect())
 }
 
-pub(super) fn build_runtime(
-    bus_capacity: usize,
-) -> Result<(
+type Runtime = (
     Arc<dyn crate::core::port::StoragePort>,
+    Arc<dyn crate::core::module::ApiResponseSink>,
     crate::core::event::EventBus,
     Arc<ScanEngine>,
-)> {
-    let db = Store::open(&default_db_path())?;
+);
+
+pub(super) fn build_runtime(bus_capacity: usize) -> Result<Runtime> {
+    let db = Arc::new(Store::open(&default_db_path())?);
     let _ = db.prune_events(
         crate::core::port::EVENTS_RETENTION_SECS,
         crate::core::port::EVENTS_MAX_ROWS,
     );
-    let store: Arc<dyn crate::core::port::StoragePort> = Arc::new(db);
+    let db2 = Arc::clone(&db);
+    let sink: Arc<dyn crate::core::module::ApiResponseSink> = db2;
+    let store: Arc<dyn crate::core::port::StoragePort> = db;
     let (bus, _rx) = tokio::sync::broadcast::channel(bus_capacity);
     let engine = Arc::new(ScanEngine::new(registry(), Arc::clone(&store), bus.clone()));
-    Ok((store, bus, engine))
+    Ok((store, sink, bus, engine))
 }
 
 pub(super) fn use_color() -> bool {

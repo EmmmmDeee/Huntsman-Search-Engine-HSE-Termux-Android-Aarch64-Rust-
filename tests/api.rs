@@ -78,8 +78,10 @@ fn test_app(suffix: &str) -> axum::Router {
         reqwest::Client::new(),
         Default::default(),
     );
+    let sink: Arc<dyn huntsman_search_engine::core::module::ApiResponseSink> = store.clone();
     let state = Arc::new(AppState {
         store,
+        response_sink: sink,
         engine,
         bus,
         live,
@@ -113,8 +115,10 @@ fn test_app_with_store(suffix: &str) -> (axum::Router, Arc<Store>) {
         reqwest::Client::new(),
         Default::default(),
     );
+    let sink: Arc<dyn huntsman_search_engine::core::module::ApiResponseSink> = store.clone();
     let state = Arc::new(AppState {
         store: Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
+        response_sink: sink,
         engine,
         bus,
         live,

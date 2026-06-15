@@ -405,6 +405,7 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
     }
     let text = read_json_text(resp, module).await?;
     scan_for_api_keys(&text);
+    ctx.record_response(module, url, url, &text, true);
     let data = serde_json::from_str::<T>(&text)
         .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
     Ok(Some(data))
@@ -460,12 +461,13 @@ pub async fn fetch_keyed_json_cached<T: DeserializeOwned>(
     let text = read_json_text(resp, module).await?;
     scan_for_api_keys(&text);
     // Store in cache before deserialising so a parse error doesn't lose the body.
-    cache.put(
+    let is_novel = cache.put(
         module,
         cache_key,
         &text,
         crate::core::api_cache::ttl_secs(module),
     );
+    ctx.record_response(module, url, cache_key, &text, is_novel);
     let data = serde_json::from_str::<T>(&text)
         .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
     Ok(Some(data))

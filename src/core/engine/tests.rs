@@ -1049,6 +1049,7 @@ async fn run_bench_scan(max_entities: usize) -> (usize, std::time::Duration) {
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
         proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+        response_sink: None,
     };
     let start = std::time::Instant::now();
     let _ = engine.run(scan, target, ctx).await;

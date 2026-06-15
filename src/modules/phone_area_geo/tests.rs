@@ -128,6 +128,7 @@ async fn module_produces_address() {
         keys: Default::default(),
         cancel: Default::default(),
         proxy_pool: Default::default(),
+        response_sink: None,
     };
     let r = m.process(&target, &ctx).await.unwrap();
     // Address always emitted; Coordinates emitted when city_coords matches.

@@ -93,6 +93,7 @@ pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, t
     let engine = Arc::clone(&state.engine);
     let sem = Arc::clone(&state.scan_semaphore);
     let store_clone = Arc::clone(&state.store);
+    let sink_clone = Arc::clone(&state.response_sink);
     tokio::spawn(async move {
         let _cancel_guard = cancel_guard;
         let api_keys = keys::populate_and_load().await;
@@ -103,6 +104,7 @@ pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, t
             keys: api_keys,
             cancel,
             proxy_pool: proxy_clone,
+            response_sink: Some(sink_clone),
         };
         let Ok(_permit) = sem.acquire().await else {
             tracing::warn!(scan_id = %sid, "scan semaphore closed");

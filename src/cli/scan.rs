@@ -212,7 +212,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     }
 
     let sid = scan_id(target_kind.canonical_str(), &cmd.value);
-    let (store, bus, engine) = build_runtime(64)?;
+    let (store, response_sink, bus, engine) = build_runtime(64)?;
     crate::core::api_cache::init(
         &std::path::PathBuf::from(crate::default_db_path()).with_file_name("api_cache.db"),
     );
@@ -228,6 +228,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         keys,
         cancel: crate::core::cancel::CancelHandle::new(),
         proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+        response_sink: Some(response_sink),
     };
 
     let scan = engine.run(scan, target, ctx).await?;

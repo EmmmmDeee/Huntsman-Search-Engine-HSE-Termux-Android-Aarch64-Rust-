@@ -124,12 +124,13 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
         radar: cmd.radar,
     };
 
-    let (store, bus, engine) = build_runtime(1024)?;
-    let scanner = LiveScanner::new(
+    let (store, response_sink, bus, engine) = build_runtime(1024)?;
+    let scanner = LiveScanner::with_sink(
         Arc::clone(&engine),
         bus.clone(),
         crate::util::http::build_client(),
         crate::util::keys::populate_and_load().await,
+        Some(response_sink),
     );
 
     let live_id = scanner.start(target, scan_options, live_options);

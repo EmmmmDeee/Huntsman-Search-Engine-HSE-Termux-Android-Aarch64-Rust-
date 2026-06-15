@@ -82,6 +82,17 @@ const SCHEMA_DDL: &str = "
                 data_json   TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS api_responses (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id    TEXT    NOT NULL,
+                module     TEXT    NOT NULL,
+                origin_url TEXT    NOT NULL DEFAULT '',
+                cache_key  TEXT    NOT NULL,
+                body       TEXT    NOT NULL,
+                fetched_at INTEGER NOT NULL,
+                is_novel   INTEGER NOT NULL DEFAULT 1
+            );
+
             CREATE INDEX IF NOT EXISTS idx_entities_scan ON entities(scan_id);
             CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind);
             CREATE INDEX IF NOT EXISTS idx_scans_started ON scans(started_at DESC);
@@ -89,7 +100,9 @@ const SCHEMA_DDL: &str = "
             CREATE INDEX IF NOT EXISTS idx_obs_scan      ON entity_observations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_entity    ON entity_observations(entity_uid);
             CREATE INDEX IF NOT EXISTS idx_events_scan   ON events(scan_id, id);
-            CREATE INDEX IF NOT EXISTS idx_relations_scan ON relations(scan_id);
+            CREATE INDEX IF NOT EXISTS idx_relations_scan  ON relations(scan_id);
+            CREATE INDEX IF NOT EXISTS idx_api_resp_scan   ON api_responses(scan_id);
+            CREATE INDEX IF NOT EXISTS idx_api_resp_module ON api_responses(module);
             -- Full-text index over entity values. Contentless-external FTS5
             -- table keyed by the entities.rowid; kept synchronized inside the
             -- same transaction as every entity write (see
@@ -663,6 +676,122 @@ impl crate::core::port::StoragePort for Store {
 
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {
         Store::events_for_scan(self, scan_id)
+    }
+}
+
+// ── API response log ──────────────────────────────────────────────────────
+
+/// One recorded raw API response, tied to a scan and its originating module.
+#[derive(Debug, serde::Serialize)]
+pub struct ApiResponseRecord {
+    pub id: i64,
+    pub scan_id: String,
+    /// Module name — the authoritative origin of the data.
+    pub module: String,
+    pub origin_url: String,
+    pub cache_key: String,
+    pub body: String,
+    pub fetched_at: u64,
+    /// `true` when the body differed from the previously cached value for
+    /// this `(module, cache_key)` — i.e. the API returned new data.
+    pub is_novel: bool,
+}
+
+impl Store {
+    /// Persist a raw API response. Best-effort — callers must not treat
+    /// failure as fatal (a missing log row is preferable to a failed scan).
+    pub fn record_api_response(
+        &self,
+        scan_id: &str,
+        module: &str,
+        origin_url: &str,
+        cache_key: &str,
+        body: &str,
+        is_novel: bool,
+    ) -> Result<()> {
+        let now = crate::core::entity::unix_now() as i64;
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO api_responses
+                 (scan_id, module, origin_url, cache_key, body, fetched_at, is_novel)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                scan_id,
+                module,
+                origin_url,
+                cache_key,
+                body,
+                now,
+                is_novel as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// All API responses recorded for a scan, ordered by insertion.
+    pub fn api_responses_for_scan(&self, scan_id: &str) -> Result<Vec<ApiResponseRecord>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, scan_id, module, origin_url, cache_key, body, fetched_at, is_novel
+             FROM api_responses WHERE scan_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![scan_id], |r| {
+            Ok(ApiResponseRecord {
+                id: r.get(0)?,
+                scan_id: r.get(1)?,
+                module: r.get(2)?,
+                origin_url: r.get(3)?,
+                cache_key: r.get(4)?,
+                body: r.get(5)?,
+                fetched_at: r.get::<_, i64>(6)? as u64,
+                is_novel: r.get::<_, i64>(7)? != 0,
+            })
+        })?;
+        Ok(rows.filter_map(std::result::Result::ok).collect())
+    }
+
+    /// API responses recorded for a specific module within a scan.
+    pub fn api_responses_for_module(
+        &self,
+        scan_id: &str,
+        module: &str,
+    ) -> Result<Vec<ApiResponseRecord>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, scan_id, module, origin_url, cache_key, body, fetched_at, is_novel
+             FROM api_responses WHERE scan_id = ?1 AND module = ?2 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![scan_id, module], |r| {
+            Ok(ApiResponseRecord {
+                id: r.get(0)?,
+                scan_id: r.get(1)?,
+                module: r.get(2)?,
+                origin_url: r.get(3)?,
+                cache_key: r.get(4)?,
+                body: r.get(5)?,
+                fetched_at: r.get::<_, i64>(6)? as u64,
+                is_novel: r.get::<_, i64>(7)? != 0,
+            })
+        })?;
+        Ok(rows.filter_map(std::result::Result::ok).collect())
+    }
+}
+
+impl crate::core::module::ApiResponseSink for Store {
+    fn record(
+        &self,
+        scan_id: &str,
+        module: &str,
+        origin_url: &str,
+        cache_key: &str,
+        body: &str,
+        is_novel: bool,
+    ) {
+        if let Err(e) =
+            self.record_api_response(scan_id, module, origin_url, cache_key, body, is_novel)
+        {
+            tracing::warn!(module, %e, "failed to record api response");
+        }
     }
 }
 

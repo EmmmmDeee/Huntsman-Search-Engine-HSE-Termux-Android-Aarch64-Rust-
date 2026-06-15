@@ -35,19 +35,21 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
     // Pin `localhost` to the v4 loopback for reliable Chrome-on-device access.
     let bind = normalise_bind(&bind);
 
-    let (store, bus, engine) = build_runtime(1024)?;
+    let (store, response_sink, bus, engine) = build_runtime(1024)?;
     crate::core::api_cache::init(
         &std::path::PathBuf::from(crate::default_db_path()).with_file_name("api_cache.db"),
     );
     let http = build_client();
-    let live = LiveScanner::new(
+    let live = LiveScanner::with_sink(
         Arc::clone(&engine),
         bus.clone(),
         http.clone(),
         crate::util::keys::populate_and_load().await,
+        Some(Arc::clone(&response_sink)),
     );
     let state = Arc::new(AppState {
         store,
+        response_sink,
         engine,
         bus,
         live,

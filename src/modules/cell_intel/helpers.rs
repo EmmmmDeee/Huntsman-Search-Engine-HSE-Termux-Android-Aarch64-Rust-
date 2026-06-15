@@ -75,6 +75,7 @@ pub(super) async fn query_opencellid(
     api_key: &str,
     tower: &TowerKey<'_>,
     radio: &str,
+    ctx: &crate::core::module::ModuleContext,
 ) -> Option<(f64, f64, u64)> {
     // Cache key: stable identifier for the tower.
     let cache_key = format!(
@@ -122,12 +123,13 @@ pub(super) async fn query_opencellid(
     }
 
     let body_text = resp.text().await.ok()?;
-    crate::core::api_cache::global().put(
+    let is_novel = crate::core::api_cache::global().put(
         "cell_intel",
         &cache_key,
         &body_text,
         crate::core::api_cache::ttl_secs("cell_intel"),
     );
+    ctx.record_response("cell_intel", &url, &cache_key, &body_text, is_novel);
     let data: OpenCellidResp = serde_json::from_str(&body_text).ok()?;
 
     if data.status.as_deref() == Some("error") {

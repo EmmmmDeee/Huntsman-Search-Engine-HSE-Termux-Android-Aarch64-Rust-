@@ -62,6 +62,7 @@ pub fn engine_setup(
         keys: Default::default(),
         cancel: Default::default(),
         proxy_pool: Default::default(),
+        response_sink: None,
     };
     (engine, store, sid, target, ctx)
 }

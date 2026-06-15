@@ -50,6 +50,7 @@ fn live_ctx() -> ModuleContext {
         keys: HashMap::new(),
         cancel: CancelHandle::new(),
         proxy_pool: Arc::new(ProxyPool::new()),
+        response_sink: None,
     }
 }
 

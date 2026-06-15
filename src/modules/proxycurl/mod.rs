@@ -134,12 +134,13 @@ impl Module for Proxycurl {
                 .text()
                 .await
                 .map_err(|e| crate::core::error::Error::module(SRC, format!("body: {e}")))?;
-            crate::core::api_cache::global().put(
+            let is_novel = crate::core::api_cache::global().put(
                 SRC,
                 &cache_key,
                 &text,
                 crate::core::api_cache::ttl_secs(SRC),
             );
+            ctx.record_response(SRC, &api_url, &cache_key, &text, is_novel);
             serde_json::from_str(&text)
                 .map_err(|e| crate::core::error::Error::module(SRC, format!("JSON: {e}")))?
         };

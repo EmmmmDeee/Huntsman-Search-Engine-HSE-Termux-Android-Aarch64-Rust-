@@ -193,12 +193,13 @@ impl Module for VirusTotal {
                     .text()
                     .await
                     .map_err(|e| Error::module(SRC, format!("body: {e}")))?;
-                crate::core::api_cache::global().put(
+                let is_novel = crate::core::api_cache::global().put(
                     SRC,
                     &cache_key,
                     &body_text,
                     crate::core::api_cache::ttl_secs(SRC),
                 );
+                ctx.record_response(SRC, &url, &cache_key, &body_text, is_novel);
                 serde_json::from_str(&body_text)
                     .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?
             };

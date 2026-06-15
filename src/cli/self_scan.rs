@@ -175,7 +175,7 @@ pub(super) async fn cmd_self_scan(cmd: SelfScanCmd) -> Result<()> {
     };
 
     let sid = scan_id(target_kind.canonical_str(), &seed_value);
-    let (store, bus, engine) = build_runtime(64)?;
+    let (store, response_sink, bus, engine) = build_runtime(64)?;
 
     let scan = Scan::new(sid.clone(), target.clone()).with_options(scan_options);
     let kys = keys::populate_and_load().await;
@@ -186,6 +186,7 @@ pub(super) async fn cmd_self_scan(cmd: SelfScanCmd) -> Result<()> {
         keys: kys,
         cancel: crate::core::cancel::CancelHandle::new(),
         proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+        response_sink: Some(response_sink),
     };
 
     let _scan = engine.run(scan, target, ctx).await?;

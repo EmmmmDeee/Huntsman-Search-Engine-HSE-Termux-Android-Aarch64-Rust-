@@ -153,12 +153,13 @@ impl Module for WifiIntel {
             let user = user.to_string();
             let token = token.to_string();
             let bssid = ap.bssid.clone();
+            let ctx_clone = ctx.clone();
             async move {
                 // Local corpus first — zero quota, sub-millisecond.
                 if let Some(local) = wigle::query_wigle_local(&bssid) {
                     return Ok(Some(local));
                 }
-                wigle::query_wigle_detail(&http, &user, &token, &bssid).await
+                wigle::query_wigle_detail(&http, &user, &token, &bssid, &ctx_clone).await
             }
         });
         let wigle_results = join_all(wigle_futures).await;

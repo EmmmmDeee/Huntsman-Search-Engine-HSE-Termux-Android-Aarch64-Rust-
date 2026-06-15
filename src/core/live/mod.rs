@@ -176,6 +176,7 @@ struct LiveInner {
     bus: EventBus,
     http: reqwest::Client,
     keys: std::collections::HashMap<String, String>,
+    response_sink: Option<Arc<dyn crate::core::module::ApiResponseSink>>,
 }
 
 impl LiveScanner {
@@ -185,6 +186,16 @@ impl LiveScanner {
         http: reqwest::Client,
         keys: std::collections::HashMap<String, String>,
     ) -> Self {
+        Self::with_sink(engine, bus, http, keys, None)
+    }
+
+    pub fn with_sink(
+        engine: Arc<ScanEngine>,
+        bus: EventBus,
+        http: reqwest::Client,
+        keys: std::collections::HashMap<String, String>,
+        response_sink: Option<Arc<dyn crate::core::module::ApiResponseSink>>,
+    ) -> Self {
         Self {
             inner: Arc::new(LiveInner {
                 sessions: RwLock::new(HashMap::new()),
@@ -193,6 +204,7 @@ impl LiveScanner {
                 bus,
                 http,
                 keys,
+                response_sink,
             }),
         }
     }
@@ -399,6 +411,7 @@ async fn session_loop(
             // its full expansion depth before stopping.
             cancel: cancel.clone(),
             proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+            response_sink: inner.response_sink.clone(),
         };
 
         // Radar mode threads the persistent ledger so keyed modules skip

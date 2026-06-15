@@ -105,12 +105,13 @@ impl Module for AbuseIpDb {
                     .text()
                     .await
                     .map_err(|e| crate::core::error::Error::module(SRC, format!("body: {e}")))?;
-                crate::core::api_cache::global().put(
+                let is_novel = crate::core::api_cache::global().put(
                     SRC,
                     &cache_key,
                     &text,
                     crate::core::api_cache::ttl_secs(SRC),
                 );
+                ctx.record_response(SRC, &url, &cache_key, &text, is_novel);
                 text
             };
         let body: AbuseResponse = serde_json::from_str(&abuse_body_text)

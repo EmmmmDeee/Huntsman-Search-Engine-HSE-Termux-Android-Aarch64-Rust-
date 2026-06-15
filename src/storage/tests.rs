@@ -1183,6 +1183,8 @@ fn open_produces_exact_schema_and_pragmas() {
         .collect();
     drop(stmt);
     let expected = [
+        "index|idx_api_resp_module",
+        "index|idx_api_resp_scan",
         "index|idx_corr_scan",
         "index|idx_entities_kind",
         "index|idx_entities_scan",
@@ -1196,6 +1198,7 @@ fn open_produces_exact_schema_and_pragmas() {
         "index|sqlite_autoindex_entity_observations_1",
         "index|sqlite_autoindex_relations_1",
         "index|sqlite_autoindex_scans_1",
+        "table|api_responses",
         "table|correlations",
         "table|entities",
         "table|entities_fts",

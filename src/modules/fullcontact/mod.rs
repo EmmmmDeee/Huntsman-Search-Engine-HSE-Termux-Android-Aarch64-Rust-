@@ -164,11 +164,18 @@ impl Module for FullContact {
                 .text()
                 .await
                 .map_err(|e| Error::module(SRC, format!("body: {e}")))?;
-            crate::core::api_cache::global().put(
+            let is_novel = crate::core::api_cache::global().put(
                 SRC,
                 &cache_key,
                 &text,
                 crate::core::api_cache::ttl_secs(SRC),
+            );
+            ctx.record_response(
+                SRC,
+                "https://api.fullcontact.com/v3/person.enrich",
+                &cache_key,
+                &text,
+                is_novel,
             );
             text
         };

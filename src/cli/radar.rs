@@ -40,7 +40,7 @@ pub(super) async fn cmd_radar(
         )
     );
 
-    let (store, bus, engine) = build_runtime(1024)?;
+    let (store, response_sink, bus, engine) = build_runtime(1024)?;
     let mut seen_entities: HashSet<String> = HashSet::new();
     let mut sweep_num = 0u32;
 
@@ -77,6 +77,7 @@ pub(super) async fn cmd_radar(
             keys: sweep_keys,
             cancel: crate::core::cancel::CancelHandle::new(),
             proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
+            response_sink: Some(Arc::clone(&response_sink)),
         };
 
         let sweep_result = engine.run(sweep_scan, sweep_target, sweep_ctx).await?;
@@ -151,6 +152,7 @@ pub(super) async fn cmd_radar(
                     keys: pivot_keys,
                     cancel: crate::core::cancel::CancelHandle::new(),
                     proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
+                    response_sink: Some(Arc::clone(&response_sink)),
                 };
 
                 let result = engine.run(pivot_scan, pivot_target, pivot_ctx).await?;

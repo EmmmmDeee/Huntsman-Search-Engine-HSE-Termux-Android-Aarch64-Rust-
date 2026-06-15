@@ -10,6 +10,7 @@ fn ctx() -> ModuleContext {
         keys: HashMap::default(),
         cancel: crate::core::cancel::CancelHandle::new(),
         proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+        response_sink: None,
     }
 }
 
