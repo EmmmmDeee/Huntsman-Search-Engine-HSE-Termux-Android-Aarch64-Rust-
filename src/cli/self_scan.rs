@@ -10,9 +10,9 @@ use std::io::{BufRead, Write as _};
 
 use rusqlite::{Connection, params};
 
+use crate::core::error::{Error, Result};
 use crate::core::module::ModuleContext;
 use crate::core::scan::{Scan, ScanOptions, Target};
-use crate::core::error::{Error, Result};
 use crate::util::{keys, uid::scan_id};
 
 use super::{build_runtime, parse_target_kind, split_csv};
@@ -31,8 +31,7 @@ pub(super) struct SelfScanCmd {
 
 fn db_conn() -> Result<Connection> {
     let path = crate::default_db_path();
-    let conn = Connection::open(&path)
-        .map_err(|e| Error::Other(format!("cannot open DB: {e}")))?;
+    let conn = Connection::open(&path).map_err(|e| Error::Other(format!("cannot open DB: {e}")))?;
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
          CREATE TABLE IF NOT EXISTS self_scan_meta (
@@ -151,7 +150,10 @@ pub(super) async fn cmd_self_scan(cmd: SelfScanCmd) -> Result<()> {
     let kind_arg = cmd.kind.as_deref().unwrap_or("auto");
     let target_kind = if kind_arg.is_empty() || kind_arg.eq_ignore_ascii_case("auto") {
         let k = crate::core::scan::detect_kind(&seed_value);
-        eprintln!("auto-detected kind: {} (override with --kind)", k.canonical_str());
+        eprintln!(
+            "auto-detected kind: {} (override with --kind)",
+            k.canonical_str()
+        );
         k
     } else {
         parse_target_kind(kind_arg)?

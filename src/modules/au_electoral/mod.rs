@@ -1,17 +1,22 @@
 //! Australian Electoral Commission (AEC) and state electoral roll lookups.
 //!
 //! Queries the AEC's public "Check your enrolment" tool and the equivalent
-//! state commission pages (NSW, VIC, QLD) to confirm enrolment and extract
-//! the electoral division (which maps to a suburb/postcode range). Electoral
-//! roll enrolment in Australia is compulsory, so this is a high-confidence
-//! residential-address signal orthogonal to business registers, unclaimed-money
-//! records, and people-finder directories.
+//! state commission pages (NSW, VIC, QLD, SA, WA, TAS, ACT, NT) to confirm
+//! enrolment and extract the electoral division (which maps to a suburb/postcode
+//! range). Electoral roll enrolment in Australia is compulsory, so this is a
+//! high-confidence residential-address signal orthogonal to business registers,
+//! unclaimed-money records, and people-finder directories.
 //!
 //! Sources (all free, keyless, public HTML):
 //!   * AEC — `https://electorate.aec.gov.au/NameSearch.aspx`
 //!   * NSW Electoral Commission — `https://check.elections.nsw.gov.au/`
 //!   * VEC (Victoria) — `https://check.vec.vic.gov.au/`
 //!   * ECQ (Queensland) — `https://enrol.ecq.qld.gov.au/check`
+//!   * ECSA (South Australia) — `https://www.ecsa.sa.gov.au/enrolment/check-enrolment`
+//!   * WAEC (Western Australia) — `https://check.elections.wa.gov.au/CheckEnrolment`
+//!   * TEC (Tasmania) — `https://www.tec.tas.gov.au/rolls/Check_Enrolment/search`
+//!   * Elections ACT — `https://www.elections.act.gov.au/electoral_rolls/check_your_enrolment`
+//!   * NTEC (Northern Territory) — `https://ntec.nt.gov.au/voters/check-enrolment`
 //!
 //! MITRE ATT&CK:
 //!   * T1591.001 — Determine Physical Locations (electoral division → suburb)
@@ -33,6 +38,7 @@ mod parse;
 mod tests;
 
 use async_trait::async_trait;
+use futures::future::join_all;
 
 use crate::core::{
     entity::{Entity, EntityKind},
@@ -83,7 +89,7 @@ impl Module for AuElectoral {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        // Four sequential EC lookups (AEC → NSW → VIC → ECQ), each ~3–5 s.
+        // Nine parallel EC lookups; each ~3–5 s, so 20 s covers the batch.
         20_000
     }
 
@@ -186,6 +192,152 @@ impl Module for AuElectoral {
                     full_name,
                     &ctx.scan_id,
                 ));
+            }
+        }
+
+        // ── SA, WA, TAS, ACT, NT — run in parallel ───────────────────────
+        if all_entities.is_empty() {
+            let (enc_surname, enc_first) = {
+                let (f, l) = split_name(full_name);
+                (
+                    crate::util::http::urlencode(l),
+                    crate::util::http::urlencode(f),
+                )
+            };
+
+            let ecsa_url = format!(
+                "https://www.ecsa.sa.gov.au/enrolment/check-enrolment?surname={}&firstname={}",
+                enc_surname, enc_first,
+            );
+            let waec_url = format!(
+                "https://check.elections.wa.gov.au/CheckEnrolment?Surname={}&FirstName={}",
+                enc_surname, enc_first,
+            );
+            let tec_url = format!(
+                "https://www.tec.tas.gov.au/rolls/Check_Enrolment/search?surname={}&first_name={}",
+                enc_surname, enc_first,
+            );
+            let act_url = format!(
+                "https://www.elections.act.gov.au/electoral_rolls/check_your_enrolment?surname={}&firstname={}",
+                enc_surname, enc_first,
+            );
+            let ntec_url = format!(
+                "https://ntec.nt.gov.au/voters/check-enrolment?surname={}&firstname={}",
+                enc_surname, enc_first,
+            );
+
+            let make_req = |url: &str| {
+                ctx.http
+                    .get(url)
+                    .header("Accept", "text/html,application/xhtml+xml")
+                    .header(
+                        "User-Agent",
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
+                         (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    )
+                    .send_tagged(SRC)
+            };
+
+            let (ecsa_res, waec_res, tec_res, act_res, ntec_res) = {
+                let futs = join_all([
+                    make_req(&ecsa_url),
+                    make_req(&waec_url),
+                    make_req(&tec_url),
+                    make_req(&act_url),
+                    make_req(&ntec_url),
+                ]);
+                let mut v = futs.await;
+                // Drain in order: ECSA, WAEC, TEC, ACT, NTEC.
+                let ntec = v.pop().unwrap();
+                let act = v.pop().unwrap();
+                let tec = v.pop().unwrap();
+                let waec = v.pop().unwrap();
+                let ecsa = v.pop().unwrap();
+                (ecsa, waec, tec, act, ntec)
+            };
+
+            // ── ECSA (SA) ────────────────────────────────────────────────
+            if let Ok(resp) = ecsa_res
+                && let Ok(body) = resp.text().await
+            {
+                let (enrolled, div) = parse::parse_ecsa(&body);
+                if enrolled {
+                    let div_name = div.as_deref().unwrap_or("SA electorate");
+                    all_entities.extend(build_electoral_entities(
+                        div_name,
+                        None,
+                        full_name,
+                        &ctx.scan_id,
+                    ));
+                }
+            }
+
+            // ── WAEC (WA) ────────────────────────────────────────────────
+            if all_entities.is_empty()
+                && let Ok(resp) = waec_res
+                && let Ok(body) = resp.text().await
+            {
+                let (enrolled, div) = parse::parse_waec(&body);
+                if enrolled {
+                    let div_name = div.as_deref().unwrap_or("WA electorate");
+                    all_entities.extend(build_electoral_entities(
+                        div_name,
+                        None,
+                        full_name,
+                        &ctx.scan_id,
+                    ));
+                }
+            }
+
+            // ── TEC (TAS) ────────────────────────────────────────────────
+            if all_entities.is_empty()
+                && let Ok(resp) = tec_res
+                && let Ok(body) = resp.text().await
+            {
+                let (enrolled, div) = parse::parse_tec(&body);
+                if enrolled {
+                    let div_name = div.as_deref().unwrap_or("TAS electorate");
+                    all_entities.extend(build_electoral_entities(
+                        div_name,
+                        None,
+                        full_name,
+                        &ctx.scan_id,
+                    ));
+                }
+            }
+
+            // ── Elections ACT ─────────────────────────────────────────────
+            if all_entities.is_empty()
+                && let Ok(resp) = act_res
+                && let Ok(body) = resp.text().await
+            {
+                let (enrolled, div) = parse::parse_elections_act(&body);
+                if enrolled {
+                    let div_name = div.as_deref().unwrap_or("ACT electorate");
+                    all_entities.extend(build_electoral_entities(
+                        div_name,
+                        None,
+                        full_name,
+                        &ctx.scan_id,
+                    ));
+                }
+            }
+
+            // ── NTEC (NT) ─────────────────────────────────────────────────
+            if all_entities.is_empty()
+                && let Ok(resp) = ntec_res
+                && let Ok(body) = resp.text().await
+            {
+                let (enrolled, div) = parse::parse_ntec(&body);
+                if enrolled {
+                    let div_name = div.as_deref().unwrap_or("NT electorate");
+                    all_entities.extend(build_electoral_entities(
+                        div_name,
+                        None,
+                        full_name,
+                        &ctx.scan_id,
+                    ));
+                }
             }
         }
 

@@ -147,19 +147,16 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
         {
             let is_terminator =
                 matches!(event.kind, crate::core::event::EventKind::LiveStop { .. });
-            let completed_scan_id = if let crate::core::event::EventKind::ScanComplete {
-                scan_id,
-                ..
-            } = &event.kind
-            {
-                if want_delta {
-                    Some(scan_id.clone())
+            let completed_scan_id =
+                if let crate::core::event::EventKind::ScanComplete { scan_id, .. } = &event.kind {
+                    if want_delta {
+                        Some(scan_id.clone())
+                    } else {
+                        None
+                    }
                 } else {
                     None
-                }
-            } else {
-                None
-            };
+                };
             // Default: human-readable, fully-unredacted structured view (every
             // entity with its complete evidence chain and every attribute).
             // `--json`: the raw NDJSON line for piping. Both carry identical

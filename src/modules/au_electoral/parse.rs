@@ -38,6 +38,157 @@ pub(crate) fn extract_division(html: &str) -> Option<(String, Option<String>)> {
     })
 }
 
+/// Parse an ECSA (SA) enrolment response.
+/// Returns `(enrolled, division)`. Pure.
+pub(crate) fn parse_ecsa(html: &str) -> (bool, Option<String>) {
+    let text = strip_electoral_html(html);
+    let lc = text.to_lowercase();
+    let enrolled = lc.contains("you are enrolled")
+        || lc.contains("enrolled in")
+        || lc.contains("enrolled for");
+    if !enrolled {
+        return (false, None);
+    }
+    let division =
+        extract_named_division(&text, &lc).or_else(|| extract_electorate_label(&text, &lc));
+    (true, division)
+}
+
+/// Parse a WAEC (WA) enrolment response.
+/// Returns `(enrolled, district)`. Pure.
+pub(crate) fn parse_waec(html: &str) -> (bool, Option<String>) {
+    let text = strip_electoral_html(html);
+    let lc = text.to_lowercase();
+    let enrolled = lc.contains("you are enrolled")
+        || lc.contains("enrolled in")
+        || lc.contains("enrolled for");
+    if !enrolled {
+        return (false, None);
+    }
+    let division = extract_named_division(&text, &lc)
+        .or_else(|| extract_electorate_label(&text, &lc))
+        .or_else(|| extract_district_label(&text, &lc));
+    (true, division)
+}
+
+/// Parse a TEC (TAS) enrolment response.
+/// Returns `(enrolled, division)`. Pure.
+pub(crate) fn parse_tec(html: &str) -> (bool, Option<String>) {
+    let text = strip_electoral_html(html);
+    let lc = text.to_lowercase();
+    let enrolled = lc.contains("you are enrolled")
+        || lc.contains("enrolled in")
+        || lc.contains("enrolled for");
+    if !enrolled {
+        return (false, None);
+    }
+    let division =
+        extract_named_division(&text, &lc).or_else(|| extract_electorate_label(&text, &lc));
+    (true, division)
+}
+
+/// Parse an Elections ACT enrolment response.
+/// Returns `(enrolled, electorate)`. Pure.
+pub(crate) fn parse_elections_act(html: &str) -> (bool, Option<String>) {
+    let text = strip_electoral_html(html);
+    let lc = text.to_lowercase();
+    let enrolled = lc.contains("you are enrolled")
+        || lc.contains("enrolled in")
+        || lc.contains("enrolled for");
+    if !enrolled {
+        return (false, None);
+    }
+    let division =
+        extract_named_division(&text, &lc).or_else(|| extract_electorate_label(&text, &lc));
+    (true, division)
+}
+
+/// Parse an NTEC (NT) enrolment response.
+/// Returns `(enrolled, electorate)`. Pure.
+pub(crate) fn parse_ntec(html: &str) -> (bool, Option<String>) {
+    let text = strip_electoral_html(html);
+    let lc = text.to_lowercase();
+    let enrolled = lc.contains("you are enrolled")
+        || lc.contains("enrolled in")
+        || lc.contains("enrolled for");
+    if !enrolled {
+        return (false, None);
+    }
+    let division =
+        extract_named_division(&text, &lc).or_else(|| extract_electorate_label(&text, &lc));
+    (true, division)
+}
+
+/// Extract a division name from patterns like "division of <Name>" or
+/// "enrolled in <Name>" / "enrolled for <Name>". Pure.
+fn extract_named_division(text: &str, lc: &str) -> Option<String> {
+    // "division of <Name>"
+    if let Some(pos) = lc.find("division of ") {
+        let rest = &text[pos + "division of ".len()..];
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_alphabetic() || *c == '-' || *c == ' ')
+            .collect();
+        let name = name.trim().to_string();
+        if !name.is_empty() && name.len() < 40 {
+            return Some(name);
+        }
+    }
+    // "enrolled in/for <Name>"
+    for marker in &["enrolled in ", "enrolled for "] {
+        if let Some(pos) = lc.find(marker) {
+            let rest = &text[pos + marker.len()..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphabetic() || *c == '-' || *c == ' ')
+                .collect();
+            let name = name.trim().to_string();
+            if !name.is_empty() && name.len() < 40 {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+/// Extract a division from "electorate: <Name>" or "electorate:<Name>". Pure.
+fn extract_electorate_label(text: &str, lc: &str) -> Option<String> {
+    for marker in &["electorate: ", "electorate:"] {
+        if let Some(pos) = lc.find(marker) {
+            let rest = &text[pos + marker.len()..];
+            let name: String = rest
+                .chars()
+                .skip_while(|c| c.is_whitespace())
+                .take_while(|c| c.is_alphabetic() || *c == '-' || *c == ' ')
+                .collect();
+            let name = name.trim().to_string();
+            if !name.is_empty() && name.len() < 40 {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+/// Extract a division from "district: <Name>" or "district:<Name>". Pure.
+fn extract_district_label(text: &str, lc: &str) -> Option<String> {
+    for marker in &["district: ", "district:"] {
+        if let Some(pos) = lc.find(marker) {
+            let rest = &text[pos + marker.len()..];
+            let name: String = rest
+                .chars()
+                .skip_while(|c| c.is_whitespace())
+                .take_while(|c| c.is_alphabetic() || *c == '-' || *c == ' ')
+                .collect();
+            let name = name.trim().to_string();
+            if !name.is_empty() && name.len() < 40 {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
 /// Strip HTML tags from an electoral response, inserting spaces at each tag
 /// boundary to prevent word concatenation. Pure.
 pub(super) fn strip_electoral_html(html: &str) -> String {
