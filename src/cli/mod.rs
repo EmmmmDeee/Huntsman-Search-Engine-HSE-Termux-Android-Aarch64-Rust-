@@ -25,6 +25,7 @@ mod scan;
 mod seeknow_harvest;
 mod selftest;
 mod serve;
+mod wigle_enrich;
 mod wigle_harvest;
 
 use keys_cmd::KeysAction;
@@ -606,6 +607,28 @@ pub enum Command {
         #[arg(long)]
         seed_file: Option<String>,
     },
+
+    /// Enrich the local wigle_au corpus with OUI vendor tags, SSID classification,
+    /// OpenCelliD cell cross-reference, and stale-record flags. All operations are
+    /// local-only — no network calls, no API quota consumed.
+    #[command(name = "wigle-enrich")]
+    WigleEnrich {
+        /// Print enrichment plan and row counts; make no changes.
+        #[arg(long)]
+        dry_run: bool,
+        /// Run only the OUI vendor-resolution step.
+        #[arg(long)]
+        vendor: bool,
+        /// Run only the SSID classification/tagging step.
+        #[arg(long)]
+        tags: bool,
+        /// Run only the OpenCelliD cell cross-reference step.
+        #[arg(long, name = "cell-xref")]
+        cell_xref: bool,
+        /// Run only the stale-record flagging step.
+        #[arg(long)]
+        stale: bool,
+    },
 }
 
 pub async fn run() -> Result<()> {
@@ -895,6 +918,22 @@ pub async fn run() -> Result<()> {
                 depth,
                 max_queries,
                 seed_file,
+            })
+            .await
+        }
+        Command::WigleEnrich {
+            dry_run,
+            vendor,
+            tags,
+            cell_xref,
+            stale,
+        } => {
+            wigle_enrich::cmd_wigle_enrich(wigle_enrich::WigleEnrichArgs {
+                dry_run,
+                vendor,
+                tags,
+                cell_xref,
+                stale,
             })
             .await
         }
