@@ -18,6 +18,7 @@ mod live;
 mod modules;
 mod oathnet_batch;
 mod oathnet_harvest;
+mod opencellid_export;
 mod opencellid_harvest;
 mod provision;
 mod radar;
@@ -26,6 +27,7 @@ mod seeknow_harvest;
 mod selftest;
 mod serve;
 mod wigle_enrich;
+mod wigle_export;
 mod wigle_harvest;
 
 use keys_cmd::KeysAction;
@@ -629,6 +631,44 @@ pub enum Command {
         #[arg(long)]
         stale: bool,
     },
+
+    /// Export the local wigle_au corpus in WiGLE-native formats (wigle-csv, kml).
+    /// Output is byte-compatible with WiGLE's own export and can be re-imported
+    /// by any wardriving tool that accepts the WiGLE CSV format.
+    #[command(name = "wigle-export")]
+    WigleExport {
+        /// Output format: "wigle-csv" (default) or "kml".
+        #[arg(long, default_value = "wigle-csv")]
+        format: String,
+        /// File path to write to. Omit for stdout.
+        #[arg(long, short = 'o')]
+        output: Option<String>,
+        /// Filter by kind: wifi, cell, bluetooth.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Filter to bounding box: "lat1,lon1,lat2,lon2".
+        #[arg(long)]
+        bbox: Option<String>,
+        /// Max rows to export (0 = all).
+        #[arg(long, default_value = "0")]
+        limit: u64,
+    },
+
+    /// Export the local opencellid_au corpus in OpenCelliD bulk CSV format.
+    /// Output matches OpenCelliD's cell_towers.csv exactly and can be
+    /// re-imported by any tool that accepts the OpenCelliD CSV format.
+    #[command(name = "opencellid-export")]
+    OpencellidExport {
+        /// File path to write to. Omit for stdout.
+        #[arg(long, short = 'o')]
+        output: Option<String>,
+        /// Filter by radio type: GSM, LTE, UMTS, NR.
+        #[arg(long)]
+        radio: Option<String>,
+        /// Max rows to export (0 = all).
+        #[arg(long, default_value = "0")]
+        limit: u64,
+    },
 }
 
 pub async fn run() -> Result<()> {
@@ -937,6 +977,28 @@ pub async fn run() -> Result<()> {
             })
             .await
         }
+        Command::WigleExport {
+            format,
+            output,
+            kind,
+            bbox,
+            limit,
+        } => wigle_export::cmd_wigle_export(wigle_export::WigleExportArgs {
+            format,
+            output,
+            kind,
+            bbox,
+            limit,
+        }),
+        Command::OpencellidExport {
+            output,
+            radio,
+            limit,
+        } => opencellid_export::cmd_opencellid_export(opencellid_export::OpencellidExportArgs {
+            output,
+            radio,
+            limit,
+        }),
     }
 }
 
