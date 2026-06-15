@@ -4,6 +4,7 @@
 //! and streams events from the broadcast bus until Ctrl-C or the
 //! iterations cap.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::core::error::Result;
@@ -26,6 +27,61 @@ pub(super) struct LiveCmd {
     pub radar: bool,
     /// Emit the raw NDJSON event stream instead of the human-readable view.
     pub json: bool,
+    /// After each iteration, print a delta block showing new / moved / gone
+    /// entities compared to the previous iteration.
+    pub delta: bool,
+}
+
+/// Snapshot of entities from one scan iteration: maps `"kind\x1fvalue"` → confidence.
+type EntitySnapshot = HashMap<String, (String, String, f64)>;
+
+fn print_delta(prev: &EntitySnapshot, curr: &EntitySnapshot, iteration: u32, as_json: bool) {
+    let mut new_entities: Vec<(&str, &str, f64)> = Vec::new();
+    let mut moved: Vec<(&str, &str, f64, f64)> = Vec::new();
+    let mut gone: Vec<(&str, &str, f64)> = Vec::new();
+
+    for (key, (kind, value, conf)) in curr {
+        match prev.get(key) {
+            None => new_entities.push((kind.as_str(), value.as_str(), *conf)),
+            Some((_, _, prev_conf)) => {
+                if (conf - prev_conf).abs() > 0.001 {
+                    moved.push((kind.as_str(), value.as_str(), *prev_conf, *conf));
+                }
+            }
+        }
+    }
+    for (key, (kind, value, conf)) in prev {
+        if !curr.contains_key(key) {
+            gone.push((kind.as_str(), value.as_str(), *conf));
+        }
+    }
+
+    if as_json {
+        let obj = serde_json::json!({
+            "type": "delta",
+            "iteration": iteration,
+            "new": new_entities.iter().map(|(k,v,c)| serde_json::json!({"kind":k,"value":v,"confidence":c})).collect::<Vec<_>>(),
+            "moved": moved.iter().map(|(k,v,p,c)| serde_json::json!({"kind":k,"value":v,"prev_confidence":p,"confidence":c})).collect::<Vec<_>>(),
+            "gone": gone.iter().map(|(k,v,c)| serde_json::json!({"kind":k,"value":v,"was_confidence":c})).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string(&obj).unwrap_or_default());
+        return;
+    }
+
+    println!("\n=== DELTA [iter {iteration}] ===");
+    if new_entities.is_empty() && moved.is_empty() && gone.is_empty() {
+        println!("  (no changes)");
+    } else {
+        for (kind, value, conf) in &new_entities {
+            println!("  + NEW    {kind}  {value}  ({conf:.2})");
+        }
+        for (kind, value, prev_conf, conf) in &moved {
+            println!("  ~ MOVED  {kind}  {value}  ({prev_conf:.2}\u{2192}{conf:.2})");
+        }
+        for (kind, value, conf) in &gone {
+            println!("  - GONE   {kind}  {value}  (was {conf:.2})");
+        }
+    }
 }
 
 pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
@@ -68,7 +124,7 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
         radar: cmd.radar,
     };
 
-    let (_store, bus, engine) = build_runtime(1024)?;
+    let (store, bus, engine) = build_runtime(1024)?;
     let scanner = LiveScanner::new(
         Arc::clone(&engine),
         bus.clone(),
@@ -83,6 +139,7 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
     let scanner_clone = scanner.clone();
     let target_lid = live_id.clone();
     let as_json = cmd.json;
+    let want_delta = cmd.delta;
     let mut stream = BroadcastStream::new(rx).filter_map(move |msg| match msg {
         Ok(event)
             if event.scan_id == target_lid
@@ -90,6 +147,19 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
         {
             let is_terminator =
                 matches!(event.kind, crate::core::event::EventKind::LiveStop { .. });
+            let completed_scan_id = if let crate::core::event::EventKind::ScanComplete {
+                scan_id,
+                ..
+            } = &event.kind
+            {
+                if want_delta {
+                    Some(scan_id.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             // Default: human-readable, fully-unredacted structured view (every
             // entity with its complete evidence chain and every attribute).
             // `--json`: the raw NDJSON line for piping. Both carry identical
@@ -99,7 +169,7 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
             } else {
                 render_event(&event.kind)
             };
-            Some((line, is_terminator))
+            Some((line, is_terminator, completed_scan_id))
         }
         Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
             eprintln!("warning: event stream lagged, {n} event(s) dropped");
@@ -108,6 +178,9 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
         _ => None,
     });
 
+    let mut prev_snapshot: EntitySnapshot = HashMap::new();
+    let mut delta_iteration: u32 = 0;
+
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -115,11 +188,25 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
                 scanner.stop(&live_id);
             }
             line = stream.next() => match line {
-                Some((s, is_terminator)) => {
+                Some((s, is_terminator, completed_scan_id)) => {
                     // A renderer may intentionally yield "" for an event with no
                     // operator value in the human view; never print a blank line.
                     if !s.is_empty() {
                         println!("{s}");
+                    }
+                    if let Some(sid) = completed_scan_id {
+                        delta_iteration += 1;
+                        if let Ok(entities) = store.entities_for_scan(&sid) {
+                            let curr_snapshot: EntitySnapshot = entities
+                                .iter()
+                                .map(|e| {
+                                    let key = format!("{}\x1f{}", e.kind, e.value);
+                                    (key, (e.kind.to_string(), e.value.clone(), e.confidence))
+                                })
+                                .collect();
+                            print_delta(&prev_snapshot, &curr_snapshot, delta_iteration, as_json);
+                            prev_snapshot = curr_snapshot;
+                        }
                     }
                     if is_terminator {
                         break;

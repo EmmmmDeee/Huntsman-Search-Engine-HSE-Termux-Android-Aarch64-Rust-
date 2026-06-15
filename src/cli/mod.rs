@@ -16,9 +16,12 @@ mod keys_cmd;
 mod live;
 mod modules;
 mod oathnet_batch;
+mod oathnet_import;
+mod opencellid_import;
 mod provision;
 mod radar;
 mod scan;
+mod seeknow_import;
 mod selftest;
 mod serve;
 mod wigle_import;
@@ -402,6 +405,11 @@ pub enum Command {
         /// human interpreter; `--json` is for piping into another tool.
         #[arg(long)]
         json: bool,
+        /// After each iteration completes, print a delta block showing entities
+        /// that are new (`+ NEW`), re-scored (`~ MOVED`), or no longer present
+        /// (`- GONE`) compared to the previous iteration.
+        #[arg(long)]
+        delta: bool,
     },
     /// Radar mode: continuous Termux signal sweep → automatic pivoting.
     ///
@@ -514,6 +522,42 @@ pub enum Command {
     #[command(name = "wigle-import")]
     WigleImport {
         /// Path to WiGLE CSV file (use "-" for stdin).
+        path: String,
+        /// Count rows without writing to DB.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Import an OpenCelliD cell_towers.csv file into the local opencellid_au corpus.
+    /// Accepts the standard OpenCelliD bulk export format.
+    #[command(name = "opencellid-import")]
+    OpencellidImport {
+        /// Path to cell_towers.csv (use "-" for stdin).
+        path: String,
+        /// Count rows without writing to DB.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Import OathNet NDJSON records back into the local oathnet_au_cache corpus.
+    /// Each line should be a raw JSON object as produced by hse oathnet-export.
+    #[command(name = "oathnet-import")]
+    OathnetImport {
+        /// Path to NDJSON file (use "-" for stdin).
+        path: String,
+        /// Count rows without writing to DB.
+        #[arg(long)]
+        dry_run: bool,
+        /// Override the surface tag for imported records.
+        #[arg(long)]
+        surface: Option<String>,
+    },
+
+    /// Import SeekNow NDJSON records back into the local seeknow_au_cache corpus.
+    /// Each line should be a raw JSON object as produced by hse seeknow-export.
+    #[command(name = "seeknow-import")]
+    SeeknowImport {
+        /// Path to NDJSON file (use "-" for stdin).
         path: String,
         /// Count rows without writing to DB.
         #[arg(long)]
@@ -695,6 +739,7 @@ pub async fn run() -> Result<()> {
             modules,
             radar,
             json,
+            delta,
         } => {
             let value = resolve_seed(value, keys::default_seed())?;
             live::cmd_live(live::LiveCmd {
@@ -708,6 +753,7 @@ pub async fn run() -> Result<()> {
                 modules,
                 radar,
                 json,
+                delta,
             })
             .await
         }
@@ -749,6 +795,24 @@ pub async fn run() -> Result<()> {
         }
         Command::WigleImport { path, dry_run } => {
             wigle_import::cmd_wigle_import(wigle_import::WigleImportArgs { path, dry_run })
+        }
+        Command::OpencellidImport { path, dry_run } => {
+            opencellid_import::cmd_opencellid_import(opencellid_import::OpencellidImportArgs {
+                path,
+                dry_run,
+            })
+        }
+        Command::OathnetImport {
+            path,
+            dry_run,
+            surface,
+        } => oathnet_import::cmd_oathnet_import(oathnet_import::OathnetImportArgs {
+            path,
+            dry_run,
+            surface,
+        }),
+        Command::SeeknowImport { path, dry_run } => {
+            seeknow_import::cmd_seeknow_import(seeknow_import::SeeknowImportArgs { path, dry_run })
         }
     }
 }
