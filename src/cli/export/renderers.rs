@@ -242,7 +242,7 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
 
 /// The **one-file debug bundle** — everything needed to understand and improve a
 /// scan from a single artifact, with no black boxes. It concatenates:
-///   0. the environment fingerprint ([`render_environment`]) — build/host, module
+///   0. the environment fingerprint (`render_environment`) — build/host, module
 ///      set, and key-PRESENCE (names only) the scan ran under;
 ///   1. the full dossier ([`render_full`]) — every entity, every evidence field,
 ///      provenance, foreign keys, and the verbatim raw source records;
