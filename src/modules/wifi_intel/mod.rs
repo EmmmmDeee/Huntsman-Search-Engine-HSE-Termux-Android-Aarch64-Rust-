@@ -153,7 +153,13 @@ impl Module for WifiIntel {
             let user = user.to_string();
             let token = token.to_string();
             let bssid = ap.bssid.clone();
-            async move { wigle::query_wigle_detail(&http, &user, &token, &bssid).await }
+            async move {
+                // Local corpus first — zero quota, sub-millisecond.
+                if let Some(local) = wigle::query_wigle_local(&bssid) {
+                    return Ok(Some(local));
+                }
+                wigle::query_wigle_detail(&http, &user, &token, &bssid).await
+            }
         });
         let wigle_results = join_all(wigle_futures).await;
         for (ap, detail_result) in valid_aps.iter().zip(wigle_results) {

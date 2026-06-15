@@ -1,11 +1,41 @@
-//! WiGLE detail-API query helper.
+//! WiGLE detail-API query helper, with local corpus fallback.
 
 use crate::core::error::{Error, Result};
+use crate::util::geo::is_valid_coords;
 use crate::util::http::RequestBuilderExt;
 use crate::util::http::error_snippet;
 
 use super::SOURCE;
 use super::types::{DetailNetwork, DetailResp};
+
+/// Query the local `wigle_au` SQLite corpus (populated by `hse wigle-harvest`)
+/// before spending API quota. Returns a `DetailNetwork`-shaped value on hit.
+pub(super) fn query_wigle_local(bssid: &str) -> Option<DetailNetwork> {
+    let db_path = crate::default_db_path();
+    let conn = rusqlite::Connection::open(&db_path).ok()?;
+    conn.query_row(
+        "SELECT lat, lon, ssid, city, region, country, postalcode, last_seen, encryption \
+         FROM wigle_au WHERE netid = ?1 LIMIT 1",
+        rusqlite::params![bssid],
+        |row| {
+            Ok(DetailNetwork {
+                trilat: row.get(0)?,
+                trilong: row.get(1)?,
+                ssid: row.get(2)?,
+                city: row.get(3)?,
+                region: row.get(4)?,
+                country: row.get(5)?,
+                postalcode: row.get(6)?,
+                lastupdt: row.get(7)?,
+                encryption: row.get(8)?,
+            })
+        },
+    )
+    .ok()
+    .filter(
+        |d| matches!((d.trilat, d.trilong), (Some(lat), Some(lon)) if is_valid_coords(lat, lon)),
+    )
+}
 
 pub(super) async fn query_wigle_detail(
     http: &reqwest::Client,

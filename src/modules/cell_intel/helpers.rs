@@ -13,6 +13,39 @@ use crate::util::http::urlencode;
 use super::SRC;
 use super::types::{Cell, OpenCellidResp, TowerKey};
 
+/// Query the local `opencellid_au` SQLite corpus (populated by
+/// `hse opencellid-harvest`) before hitting the remote API.
+/// Returns `(lat, lon, range_m)` on a cache hit, `None` on miss or if the
+/// table doesn't exist yet.
+pub(super) fn query_opencellid_local(
+    mcc: &str,
+    mnc: &str,
+    lac: i64,
+    cid: i64,
+    radio: &str,
+) -> Option<(f64, f64, u64)> {
+    let db_path = crate::default_db_path();
+    let conn = rusqlite::Connection::open(&db_path).ok()?;
+    // mcc/mnc are stored as INTEGER; rusqlite coerces "505" → 505 via SQLite
+    // type affinity, so string params are fine here.
+    conn.query_row(
+        "SELECT lat, lon, COALESCE(range_m, 1000) \
+         FROM opencellid_au \
+         WHERE radio = ?1 AND mcc = ?2 AND mnc = ?3 AND lac = ?4 AND cid = ?5 \
+         LIMIT 1",
+        rusqlite::params![radio, mcc, mnc, lac, cid],
+        |row| {
+            Ok((
+                row.get::<_, f64>(0)?,
+                row.get::<_, f64>(1)?,
+                row.get::<_, i64>(2)? as u64,
+            ))
+        },
+    )
+    .ok()
+    .filter(|&(lat, lon, _)| is_valid_coords(lat, lon))
+}
+
 /// Build the `DeviceId` entity for one cell tower. Single source of truth for
 /// the tower-survey entity shape, shared by the live `process()` path and the
 /// `parse_cells_survey` test helper so the two can never drift in their tags or

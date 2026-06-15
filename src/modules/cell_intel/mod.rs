@@ -32,7 +32,10 @@ use crate::core::{
 };
 use crate::util::termux::termux_cmd;
 
-use helpers::{accuracy_to_confidence, build_tower_device, mcc_to_centroid, query_opencellid};
+use helpers::{
+    accuracy_to_confidence, build_tower_device, mcc_to_centroid, query_opencellid,
+    query_opencellid_local,
+};
 use types::TowerKey;
 
 /// Owned data for one geolocatable tower — survives `async move` closures.
@@ -151,14 +154,23 @@ impl Module for CellIntel {
             return Ok(result);
         }
 
-        // Pass 2: fire all OpenCelliD queries concurrently (or skip when no key).
+        // Pass 2: geolocate each tower.
+        // Priority: (1) local opencellid_au corpus (instant, zero quota)
+        //           (2) OpenCelliD remote API (requires key)
+        //           (3) MCC centroid fallback (coarse, always available)
         let scan_id = &ctx.scan_id;
         let geo_futures = geo_work.iter().map(|tg| {
             let http = ctx.http.clone();
             let api_key = api_key.map(str::to_owned);
             async move {
+                // Try local corpus first — no network, no quota.
+                if let Some(hit) =
+                    query_opencellid_local(&tg.mcc, &tg.mnc, tg.lac, tg.cid, tg.radio)
+                {
+                    return Some(hit);
+                }
+                // Fall back to remote API when a key is available.
                 if let Some(api) = api_key.as_deref() {
-                    // Build a temporary TowerKey with owned Cow for the query helper.
                     let tmp_key = TowerKey {
                         mcc: std::borrow::Cow::Borrowed(tg.mcc.as_str()),
                         mnc: std::borrow::Cow::Borrowed(tg.mnc.as_str()),
