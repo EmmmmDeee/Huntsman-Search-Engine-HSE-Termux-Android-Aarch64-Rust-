@@ -21,6 +21,7 @@ mod radar;
 mod scan;
 mod selftest;
 mod serve;
+mod wigle_harvest;
 
 use keys_cmd::KeysAction;
 
@@ -507,6 +508,25 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+
+    /// Download every Australian WiGLE network entry into a local SQLite cache.
+    /// Tiles the AU bounding box and pages the WiGLE search API, checkpointing
+    /// progress so interrupted harvests resume from the last completed tile.
+    #[command(name = "wigle-harvest")]
+    WigleHarvest {
+        /// Print the tile plan without making any API calls.
+        #[arg(long)]
+        dry_run: bool,
+        /// Requests per second (default 1.0 — WiGLE free-tier safe).
+        #[arg(long, default_value_t = 1.0)]
+        rate: f64,
+        /// Tile step in degrees (default 0.5 ≈ ~55 km tiles).
+        #[arg(long, default_value_t = 0.5)]
+        step: f64,
+        /// Network kinds to harvest: wifi, cell, bluetooth (comma-separated or repeated).
+        #[arg(long, value_delimiter = ',', default_values_t = vec!["wifi".to_string()])]
+        kinds: Vec<String>,
+    },
 }
 
 pub async fn run() -> Result<()> {
@@ -711,6 +731,32 @@ pub async fn run() -> Result<()> {
             out,
         } => export::cmd_export(scan_id, format, out).await,
         Command::Diff { from, to, format } => diff::cmd_diff(from, to, format),
+        Command::OpencellidHarvest {
+            dry_run,
+            update,
+            force,
+        } => {
+            opencellid_harvest::cmd_opencellid_harvest(opencellid_harvest::OpencellidHarvestArgs {
+                dry_run,
+                update,
+                force,
+            })
+            .await
+        }
+        Command::WigleHarvest {
+            dry_run,
+            rate,
+            step,
+            kinds,
+        } => {
+            wigle_harvest::cmd_wigle_harvest(wigle_harvest::WigleHarvestArgs {
+                dry_run,
+                rate,
+                step,
+                kinds,
+            })
+            .await
+        }
         Command::OathnetBatch {
             value,
             kind,
