@@ -41,6 +41,14 @@ pub const TACTIC_NAME: &str = "Reconnaissance";
 /// guard (and the in-module `every_category_maps_only_to_catalogued_ids` test)
 /// enforce it.
 pub const RECONNAISSANCE: &[Technique] = &[
+    // T1040 (Network Sniffing) is primarily a Discovery/Credential-Access
+    // technique, catalogued here because the passive signal_radar sensor maps
+    // its LAN/RF observation to it; the flat catalogue tracks every ID a module
+    // references (kept sorted by id, so this leads the list).
+    Technique {
+        id: "T1040",
+        name: "Network Sniffing",
+    },
     Technique {
         id: "T1589",
         name: "Gather Victim Identity Information",
@@ -96,6 +104,10 @@ pub const RECONNAISSANCE: &[Technique] = &[
     Technique {
         id: "T1592",
         name: "Gather Victim Host Information",
+    },
+    Technique {
+        id: "T1592.001",
+        name: "Hardware",
     },
     Technique {
         id: "T1592.002",

@@ -5,7 +5,7 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
 
-Pure-Rust OSINT / GEOINT platform with **113 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **114 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 SpiderFoot-style Web UI, zero native dependencies.
 
@@ -88,7 +88,7 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 113 modules
+hse modules                                                 # list all 114 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
@@ -133,7 +133,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ---
 
-## Module Overview (113 modules — 88 free, 25 key-gated/paid)
+## Module Overview (114 modules — 89 free, 25 key-gated/paid)
 
 > Generated from `hse modules --json`. The full catalogue with target
 > kinds and output entities (kept honest by the
