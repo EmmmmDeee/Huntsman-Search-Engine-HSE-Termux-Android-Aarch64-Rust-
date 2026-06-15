@@ -1261,24 +1261,39 @@ fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
             fs::read_to_string(&flat)
                 .unwrap_or_else(|_| panic!("coarse provider {provider} missing at {flat:?}"))
         } else if dir.is_dir() {
-            let mut combined = String::new();
-            for entry in fs::read_dir(&dir)
+            // Concatenate the module's PRODUCTION source. Read in a deterministic
+            // (sorted) order and strip each file's own `mod tests` section BEFORE
+            // concatenating: for a multi-file module whose gate call lives outside
+            // `mod.rs` (e.g. wigle's is in `emit.rs`), a `mod.rs` concatenated
+            // ahead of it would otherwise be truncated away by the later
+            // `split("mod tests")`, making this guard pass or fail on
+            // `fs::read_dir` order alone — green locally yet red in CI.
+            let mut paths: Vec<_> = fs::read_dir(&dir)
                 .unwrap_or_else(|_| panic!("cannot read dir {dir:?}"))
                 .flatten()
-            {
-                let p = entry.path();
-                if p.extension().and_then(|e| e.to_str()) == Some("rs")
-                    && let Ok(s) = fs::read_to_string(&p)
-                {
-                    combined.push_str(&s);
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("rs"))
+                .collect();
+            paths.sort();
+            let mut combined = String::new();
+            for p in paths {
+                // `tests.rs` is pure unit-test code — never part of the gate.
+                if p.file_name().and_then(|n| n.to_str()) == Some("tests.rs") {
+                    continue;
+                }
+                if let Ok(s) = fs::read_to_string(&p) {
+                    // Drop this file's own `#[cfg(test)] mod tests` tail so a
+                    // `use is_valid_coords` in a unit test can't satisfy the gate.
+                    combined.push_str(s.split("mod tests").next().unwrap_or(&s));
+                    combined.push('\n');
                 }
             }
             combined
         } else {
             panic!("coarse provider {provider} missing at {flat:?}");
         };
-        // Strip the test module so a `use is_valid_coords` in a unit test
-        // doesn't count against the production gate.
+        // Flat-file modules keep their test tail here (directory modules were
+        // already stripped per-file above; this is a no-op for them).
         let prod = src.split("mod tests").next().unwrap_or(&src);
         // The gate is satisfied either by calling `is_plausible_provider_coord`
         // directly OR by building the entity through `coarse_provider_coords`,
