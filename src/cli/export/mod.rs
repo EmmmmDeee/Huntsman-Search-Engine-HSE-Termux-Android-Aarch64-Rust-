@@ -36,9 +36,10 @@ pub(super) async fn cmd_export(scan_id: String, format: String, out: Option<Stri
         "report" => renderers::render_report(&store, &sid)?,
         "full" => render_full(&store, &sid)?,
         "debug" => render_debug_bundle(&store, &sid)?,
+        "stix" => renderers::render_stix(&store, &sid)?,
         other => {
             return Err(Error::Other(format!(
-                "unknown --format '{other}'. Valid: json, csv, gexf, report, full, debug"
+                "unknown --format '{other}'. Valid: json, csv, gexf, report, full, debug, stix"
             )));
         }
     };

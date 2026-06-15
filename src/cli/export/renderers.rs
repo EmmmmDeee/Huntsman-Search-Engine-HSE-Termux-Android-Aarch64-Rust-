@@ -1,7 +1,202 @@
 //! Format renderers — JSON, CSV, GEXF, report, full dossier, debug bundle.
 
+use crate::core::entity::EntityKind;
 use crate::core::error::{Error, Result};
 use crate::storage::Store;
+
+// ── STIX 2.1 helpers ──────────────────────────────────────────────────────────
+
+/// Deterministic STIX UUID from a type prefix and a value string.
+///
+/// Uses [`std::hash::DefaultHasher`] to produce a stable 64-bit hash of
+/// `value`, then folds it into a UUID-shaped string so every entity maps
+/// to the same STIX id across export runs.
+fn stix_id(stix_type: &str, value: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    value.hash(&mut h);
+    let n = h.finish();
+    let hi = (n >> 32) as u32;
+    let lo = n as u32;
+    format!("{stix_type}--{hi:08x}-{lo:04x}-4{lo:03x}-a000-{hi:012x}")
+}
+
+/// Fixed STIX identity id for Huntsman Search Engine itself.
+const HSE_IDENTITY_ID: &str = "identity--68756e74-736d-4e53-4500-000000000000";
+
+/// Convert a unix epoch (seconds) into an ISO-8601 / STIX timestamp string.
+fn epoch_to_stix_ts(epoch: u64) -> String {
+    // Build a naive UTC datetime from the epoch offset from the Unix epoch.
+    // We avoid the `chrono` crate here and produce a simple UTC string ourselves.
+    // Days since Unix epoch, handling leap years.
+    let secs_per_min: u64 = 60;
+    let secs_per_hour: u64 = 3600;
+    let secs_per_day: u64 = 86400;
+
+    let days = epoch / secs_per_day;
+    let rem = epoch % secs_per_day;
+    let hh = rem / secs_per_hour;
+    let mm = (rem % secs_per_hour) / secs_per_min;
+    let ss = rem % secs_per_min;
+
+    // Gregorian calendar calculation from day count since 1970-01-01.
+    // Algorithm: civil_from_days (Howard Hinnant, public domain).
+    let z: i64 = days as i64 + 719468;
+    let era: i64 = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe: i64 = z - era * 146097;
+    let yoe: i64 = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y: i64 = yoe + era * 400;
+    let doy: i64 = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp: i64 = (5 * doy + 2) / 153;
+    let d: i64 = doy - (153 * mp + 2) / 5 + 1;
+    let m: i64 = mp + if mp < 10 { 3 } else { -9 };
+    let y: i64 = y + if m <= 2 { 1 } else { 0 };
+
+    format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
+}
+
+/// Render the scan identified by `sid` as a STIX 2.1 Bundle JSON string.
+pub(super) fn render_stix(store: &Store, sid: &str) -> Result<String> {
+    use serde_json::{Value, json};
+
+    let scan = store
+        .get_scan(sid)?
+        .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
+    let entities = store.entities_for_scan(sid)?;
+
+    let ts = epoch_to_stix_ts(scan.started_at);
+
+    // Bundle id — deterministic from scan id.
+    let bundle_id = stix_id("bundle", sid);
+    let report_id = stix_id("report", sid);
+
+    // ── HSE identity object ───────────────────────────────────────────────────
+    let hse_identity = json!({
+        "type": "identity",
+        "spec_version": "2.1",
+        "id": HSE_IDENTITY_ID,
+        "name": "Huntsman Search Engine",
+        "identity_class": "system",
+        "created": ts,
+        "modified": ts
+    });
+
+    // ── Entity objects ────────────────────────────────────────────────────────
+    let mut objects: Vec<Value> = vec![hse_identity];
+    let mut object_refs: Vec<String> = vec![HSE_IDENTITY_ID.to_string()];
+
+    for entity in &entities {
+        let val = &entity.value;
+
+        let (stix_type, extra_fields): (&str, Value) = match entity.kind {
+            EntityKind::IpAddress => {
+                let t = if val.contains(':') {
+                    "ipv6-addr"
+                } else {
+                    "ipv4-addr"
+                };
+                (t, json!({ "value": val }))
+            }
+            EntityKind::Domain => ("domain-name", json!({ "value": val })),
+            EntityKind::Email => ("email-addr", json!({ "value": val })),
+            EntityKind::Url => ("url", json!({ "value": val })),
+            EntityKind::MacAddress => ("mac-addr", json!({ "value": val })),
+            EntityKind::Username => ("user-account", json!({ "user_id": val })),
+            EntityKind::Person => (
+                "identity",
+                json!({ "name": val, "identity_class": "individual" }),
+            ),
+            EntityKind::Organisation => (
+                "identity",
+                json!({ "name": val, "identity_class": "organization" }),
+            ),
+            _ => ("x-hse-observable", json!({ "value": val })),
+        };
+
+        let obj_id = stix_id(stix_type, val);
+
+        // Confidence: entity.confidence is 0.0–1.0; STIX uses 0–100 integer.
+        let confidence_int = (entity.confidence * 100.0).round() as u64;
+
+        // Evidence: first evidence record description (max 200 chars).
+        let evidence_desc = entity
+            .evidence
+            .first()
+            .map(|ev| {
+                let s = ev.summary.as_str();
+                if s.chars().count() > 200 {
+                    s.chars().take(199).collect::<String>() + "…"
+                } else {
+                    s.to_string()
+                }
+            })
+            .unwrap_or_default();
+
+        // Sources: comma-joined unique source names from all evidence.
+        let sources: Vec<&str> = {
+            let mut seen = std::collections::BTreeSet::new();
+            entity
+                .evidence
+                .iter()
+                .filter_map(|ev| {
+                    let s = ev.source.as_str();
+                    if seen.insert(s) { Some(s) } else { None }
+                })
+                .collect()
+        };
+        let sources_str = sources.join(", ");
+
+        // Labels: entity tags.
+        let labels: Vec<&str> = entity.tags.iter().map(|s| s.as_str()).collect();
+
+        let mut obj = json!({
+            "type": stix_type,
+            "spec_version": "2.1",
+            "id": obj_id,
+            "created": ts,
+            "modified": ts,
+            "confidence": confidence_int,
+            "x_hse_evidence": evidence_desc,
+            "x_hse_sources": sources_str
+        });
+
+        if !labels.is_empty() {
+            obj["labels"] = json!(labels);
+        }
+
+        // Merge entity-type-specific fields into the object.
+        if let (Some(obj_map), Value::Object(extra_map)) = (obj.as_object_mut(), extra_fields) {
+            for (k, v) in extra_map {
+                obj_map.insert(k, v);
+            }
+        }
+
+        object_refs.push(obj_id);
+        objects.push(obj);
+    }
+
+    // ── Report object ─────────────────────────────────────────────────────────
+    object_refs.push(report_id.clone());
+    let report = json!({
+        "type": "report",
+        "spec_version": "2.1",
+        "id": report_id,
+        "name": format!("HSE Scan: {sid}"),
+        "published": ts,
+        "created_by_ref": HSE_IDENTITY_ID,
+        "object_refs": object_refs
+    });
+    objects.push(report);
+
+    let bundle = json!({
+        "type": "bundle",
+        "id": bundle_id,
+        "objects": objects
+    });
+
+    serde_json::to_string_pretty(&bundle).map_err(|e| Error::Other(format!("stix serialise: {e}")))
+}
 
 pub(super) fn render_json(store: &Store, sid: &str) -> Result<String> {
     let entities = store.entities_for_scan(sid)?;
@@ -242,7 +437,7 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
 
 /// The **one-file debug bundle** — everything needed to understand and improve a
 /// scan from a single artifact, with no black boxes. It concatenates:
-///   0. the environment fingerprint (`render_environment`) — build/host, module
+///   0. the environment fingerprint ([`render_environment`](super::environment::render_environment)) — build/host, module
 ///      set, and key-PRESENCE (names only) the scan ran under;
 ///   1. the full dossier ([`render_full`]) — every entity, every evidence field,
 ///      provenance, foreign keys, and the verbatim raw source records;

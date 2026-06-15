@@ -12,25 +12,16 @@ mod diff;
 mod doctor;
 mod engines;
 pub(crate) mod export;
-mod harvest_util;
 mod keys_cmd;
 mod live;
 mod modules;
 mod oathnet_batch;
-mod oathnet_export;
-mod oathnet_harvest;
-mod opencellid_export;
-mod opencellid_harvest;
 mod provision;
 mod radar;
 mod scan;
-mod seeknow_export;
-mod seeknow_harvest;
 mod selftest;
 mod serve;
-mod wigle_enrich;
-mod wigle_export;
-mod wigle_harvest;
+mod wigle_import;
 
 use keys_cmd::KeysAction;
 
@@ -125,11 +116,6 @@ pub enum Command {
         /// Skip non-passive modules (network-reaching).
         #[arg(long)]
         passive_only: bool,
-        /// Restrict scan to local-corpus and sensor modules only (no network egress).
-        /// Equivalent to --passive-only. Useful after running hse wigle-harvest and
-        /// hse opencellid-harvest to exploit offline corpuses without API calls.
-        #[arg(long)]
-        offline: bool,
         /// Per-module timeout override, in milliseconds.
         #[arg(long)]
         timeout: Option<u64>,
@@ -402,9 +388,6 @@ pub enum Command {
         /// Same as `scan --passive-only`.
         #[arg(long)]
         passive_only: bool,
-        /// Same as --passive-only; alias for field operators who want zero network egress.
-        #[arg(long)]
-        offline: bool,
         /// Comma-separated module allowlist.
         #[arg(short, long)]
         modules: Option<String>,
@@ -526,180 +509,15 @@ pub enum Command {
         json: bool,
     },
 
-    /// Download every Australian WiGLE network entry into a local SQLite cache.
-    /// Tiles the AU bounding box and pages the WiGLE search API, checkpointing
-    /// progress so interrupted harvests resume from the last completed tile.
-    #[command(name = "wigle-harvest")]
-    WigleHarvest {
-        /// Print the tile plan without making any API calls.
+    /// Import a WiGLE CSV file into the local wigle_au corpus.
+    /// Accepts WiGLE CSV v1.4 format — the same format produced by hse wigle-export.
+    #[command(name = "wigle-import")]
+    WigleImport {
+        /// Path to WiGLE CSV file (use "-" for stdin).
+        path: String,
+        /// Count rows without writing to DB.
         #[arg(long)]
         dry_run: bool,
-        /// Requests per second (default 1.0 — WiGLE free-tier safe).
-        #[arg(long, default_value_t = 1.0)]
-        rate: f64,
-        /// Tile step in degrees (default 0.5 ≈ ~55 km tiles).
-        #[arg(long, default_value_t = 0.5)]
-        step: f64,
-        /// Network kinds to harvest: wifi, cell, bluetooth (comma-separated).
-        #[arg(long, value_delimiter = ',', default_values_t = vec!["wifi".to_string()])]
-        kinds: Vec<String>,
-    },
-
-    /// Download the Australian OpenCelliD cell tower database into local SQLite.
-    /// Fetches the MCC=505 bulk export (~50 MB), decompresses, and inserts
-    /// ~800k rows. Requires HUNTSMAN_OPENCELLID_KEY
-    /// (free at <https://opencellid.org/register.php>).
-    #[command(name = "opencellid-harvest")]
-    OpencellidHarvest {
-        /// Print sample rows without writing to the DB.
-        #[arg(long)]
-        dry_run: bool,
-        /// Re-download only if local table has fewer than 100k rows.
-        #[arg(long)]
-        update: bool,
-        /// Force re-download even if local table is already populated.
-        #[arg(long)]
-        force: bool,
-    },
-
-    /// Bulk-pull Australian OathNet breach and stealer records into a local
-    /// SQLite cache using domain-anchored and phone-prefix sweeps.
-    /// Requires HUNTSMAN_OATHNET_KEY.
-    #[command(name = "oathnet-harvest")]
-    OathnetHarvest {
-        /// Print the query plan without making any API calls.
-        #[arg(long)]
-        dry_run: bool,
-        /// Skip high-volume freemail domains (gmail, hotmail, outlook …).
-        #[arg(long)]
-        no_freemail: bool,
-        /// Also sweep Australian phone prefixes (04xx, +614xx, landlines).
-        #[arg(long)]
-        phones: bool,
-        /// Cap the total number of API queries. 0 = no cap.
-        #[arg(long, default_value_t = 0)]
-        max_queries: usize,
-        /// Records per page (default 100).
-        #[arg(long, default_value_t = 100)]
-        page_size: u32,
-        /// Search surfaces to query: breach, stealer (comma-separated).
-        #[arg(long, value_delimiter = ',', default_values_t = vec!["breach".to_string()])]
-        surfaces: Vec<String>,
-    },
-
-    /// Pull Australian SeekNow profiles into a local SQLite cache using
-    /// ABN-anchored and postcode-anchored sweeps with linked-entity enrichment.
-    /// Requires HUNTSMAN_SEEKNOW_KEY.
-    #[command(name = "seeknow-harvest")]
-    SeeknowHarvest {
-        /// Print the query plan without making any API calls.
-        #[arg(long)]
-        dry_run: bool,
-        /// Sweep registered Australian business names (ABN-anchored queries).
-        #[arg(long)]
-        abn: bool,
-        /// Sweep Australian postcodes with a 10 km radius.
-        #[arg(long)]
-        postcodes: bool,
-        /// Linked-entity enrichment depth (default 1 — follow employer domains).
-        #[arg(long, default_value_t = 1)]
-        depth: u32,
-        /// Cap the total number of queries. 0 = no cap.
-        #[arg(long, default_value_t = 0)]
-        max_queries: usize,
-        /// Path to a newline-delimited seed file (postcodes or entity names).
-        #[arg(long)]
-        seed_file: Option<String>,
-    },
-
-    /// Enrich the local wigle_au corpus with OUI vendor tags, SSID classification,
-    /// OpenCelliD cell cross-reference, and stale-record flags. All operations are
-    /// local-only — no network calls, no API quota consumed.
-    #[command(name = "wigle-enrich")]
-    WigleEnrich {
-        /// Print enrichment plan and row counts; make no changes.
-        #[arg(long)]
-        dry_run: bool,
-        /// Run only the OUI vendor-resolution step.
-        #[arg(long)]
-        vendor: bool,
-        /// Run only the SSID classification/tagging step.
-        #[arg(long)]
-        tags: bool,
-        /// Run only the OpenCelliD cell cross-reference step.
-        #[arg(long, name = "cell-xref")]
-        cell_xref: bool,
-        /// Run only the stale-record flagging step.
-        #[arg(long)]
-        stale: bool,
-    },
-
-    /// Export the local wigle_au corpus in WiGLE-native formats (wigle-csv, kml).
-    /// Output is byte-compatible with WiGLE's own export and can be re-imported
-    /// by any wardriving tool that accepts the WiGLE CSV format.
-    #[command(name = "wigle-export")]
-    WigleExport {
-        /// Output format: "wigle-csv" (default) or "kml".
-        #[arg(long, default_value = "wigle-csv")]
-        format: String,
-        /// File path to write to. Omit for stdout.
-        #[arg(long, short = 'o')]
-        output: Option<String>,
-        /// Filter by kind: wifi, cell, bluetooth.
-        #[arg(long)]
-        kind: Option<String>,
-        /// Filter to bounding box: "lat1,lon1,lat2,lon2".
-        #[arg(long)]
-        bbox: Option<String>,
-        /// Max rows to export (0 = all).
-        #[arg(long, default_value = "0")]
-        limit: u64,
-    },
-
-    /// Export the local opencellid_au corpus in OpenCelliD bulk CSV format.
-    /// Output matches OpenCelliD's cell_towers.csv exactly and can be
-    /// re-imported by any tool that accepts the OpenCelliD CSV format.
-    #[command(name = "opencellid-export")]
-    OpencellidExport {
-        /// File path to write to. Omit for stdout.
-        #[arg(long, short = 'o')]
-        output: Option<String>,
-        /// Filter by radio type: GSM, LTE, UMTS, NR.
-        #[arg(long)]
-        radio: Option<String>,
-        /// Max rows to export (0 = all).
-        #[arg(long, default_value = "0")]
-        limit: u64,
-    },
-
-    /// Export the local oathnet_au_cache corpus in OathNet's native JSON format.
-    /// Output is NDJSON or JSON array of raw API records — 100% lossless,
-    /// re-importable by any tool that accepts OathNet response data.
-    #[command(name = "oathnet-export")]
-    OathnetExport {
-        #[arg(long, default_value = "ndjson")]
-        format: String,
-        #[arg(long, short = 'o')]
-        output: Option<String>,
-        #[arg(long)]
-        surface: Option<String>,
-        #[arg(long)]
-        field: Option<String>,
-        #[arg(long, default_value = "0")]
-        limit: u64,
-    },
-
-    /// Export the local seeknow_au_cache corpus in SeekNow's native JSON format.
-    #[command(name = "seeknow-export")]
-    SeeknowExport {
-        #[arg(long, default_value = "ndjson")]
-        format: String,
-        #[arg(long, short = 'o')]
-        output: Option<String>,
-        #[arg(long)]
-        field: Option<String>,
-        #[arg(long, default_value = "0")]
-        limit: u64,
     },
 }
 
@@ -787,7 +605,6 @@ pub async fn run() -> Result<()> {
             min_confidence,
             free_only,
             passive_only,
-            offline,
             timeout,
             depth,
             recursive,
@@ -820,7 +637,7 @@ pub async fn run() -> Result<()> {
                 throttle_ms: throttle,
                 min_confidence,
                 free_only: free_only && !full,
-                passive_only: (passive_only || offline) && !full,
+                passive_only: passive_only && !full,
                 module_timeout_ms: timeout,
                 depth,
                 recursive: recursive || full,
@@ -875,7 +692,6 @@ pub async fn run() -> Result<()> {
             depth,
             free_only,
             passive_only,
-            offline,
             modules,
             radar,
             json,
@@ -888,7 +704,7 @@ pub async fn run() -> Result<()> {
                 iterations,
                 depth,
                 free_only,
-                passive_only: passive_only || offline,
+                passive_only,
                 modules,
                 radar,
                 json,
@@ -931,130 +747,9 @@ pub async fn run() -> Result<()> {
             })
             .await
         }
-        Command::WigleHarvest {
-            dry_run,
-            rate,
-            step,
-            kinds,
-        } => {
-            wigle_harvest::cmd_wigle_harvest(wigle_harvest::WigleHarvestArgs {
-                dry_run,
-                rate,
-                step,
-                kinds,
-            })
-            .await
+        Command::WigleImport { path, dry_run } => {
+            wigle_import::cmd_wigle_import(wigle_import::WigleImportArgs { path, dry_run })
         }
-        Command::OpencellidHarvest {
-            dry_run,
-            update,
-            force,
-        } => {
-            opencellid_harvest::cmd_opencellid_harvest(opencellid_harvest::OpencellidHarvestArgs {
-                dry_run,
-                update,
-                force,
-            })
-            .await
-        }
-        Command::OathnetHarvest {
-            dry_run,
-            no_freemail,
-            phones,
-            max_queries,
-            page_size,
-            surfaces,
-        } => {
-            oathnet_harvest::cmd_oathnet_harvest(oathnet_harvest::OathnetHarvestArgs {
-                dry_run,
-                no_freemail,
-                phones,
-                max_queries,
-                page_size,
-                surfaces,
-            })
-            .await
-        }
-        Command::SeeknowHarvest {
-            dry_run,
-            abn,
-            postcodes,
-            depth,
-            max_queries,
-            seed_file,
-        } => {
-            seeknow_harvest::cmd_seeknow_harvest(seeknow_harvest::SeeknowHarvestArgs {
-                dry_run,
-                abn,
-                postcodes,
-                depth,
-                max_queries,
-                seed_file,
-            })
-            .await
-        }
-        Command::WigleEnrich {
-            dry_run,
-            vendor,
-            tags,
-            cell_xref,
-            stale,
-        } => {
-            wigle_enrich::cmd_wigle_enrich(wigle_enrich::WigleEnrichArgs {
-                dry_run,
-                vendor,
-                tags,
-                cell_xref,
-                stale,
-            })
-            .await
-        }
-        Command::WigleExport {
-            format,
-            output,
-            kind,
-            bbox,
-            limit,
-        } => wigle_export::cmd_wigle_export(wigle_export::WigleExportArgs {
-            format,
-            output,
-            kind,
-            bbox,
-            limit,
-        }),
-        Command::OpencellidExport {
-            output,
-            radio,
-            limit,
-        } => opencellid_export::cmd_opencellid_export(opencellid_export::OpencellidExportArgs {
-            output,
-            radio,
-            limit,
-        }),
-        Command::OathnetExport {
-            format,
-            output,
-            surface,
-            field,
-            limit,
-        } => oathnet_export::cmd_oathnet_export(oathnet_export::OathnetExportArgs {
-            format,
-            output,
-            surface,
-            field,
-            limit,
-        }),
-        Command::SeeknowExport {
-            format,
-            output,
-            field,
-            limit,
-        } => seeknow_export::cmd_seeknow_export(seeknow_export::SeeknowExportArgs {
-            format,
-            output,
-            field,
-            limit,
-        }),
     }
 }
 
@@ -1216,185 +911,5 @@ pub(super) fn truncate(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::core::scan::TargetKind;
-
-    // ── parse_target_kind ───────────────────────────────────────────────────
-
-    #[test]
-    fn parse_email() {
-        assert_eq!(parse_target_kind("email").unwrap(), TargetKind::Email);
-        assert_eq!(parse_target_kind("EMAIL").unwrap(), TargetKind::Email);
-        assert_eq!(parse_target_kind(" Email ").unwrap(), TargetKind::Email);
-    }
-
-    #[test]
-    fn parse_username() {
-        assert_eq!(parse_target_kind("username").unwrap(), TargetKind::Username);
-    }
-
-    #[test]
-    fn parse_phone() {
-        assert_eq!(parse_target_kind("phone").unwrap(), TargetKind::Phone);
-    }
-
-    #[test]
-    fn parse_name_aliases() {
-        assert_eq!(parse_target_kind("name").unwrap(), TargetKind::FullName);
-        assert_eq!(parse_target_kind("fullname").unwrap(), TargetKind::FullName);
-    }
-
-    #[test]
-    fn parse_ip_aliases() {
-        assert_eq!(parse_target_kind("ip").unwrap(), TargetKind::IpAddress);
-        assert_eq!(
-            parse_target_kind("ipaddress").unwrap(),
-            TargetKind::IpAddress
-        );
-    }
-
-    #[test]
-    fn parse_domain() {
-        assert_eq!(parse_target_kind("domain").unwrap(), TargetKind::Domain);
-    }
-
-    #[test]
-    fn parse_asn() {
-        assert_eq!(parse_target_kind("asn").unwrap(), TargetKind::Asn);
-    }
-
-    #[test]
-    fn parse_coords_aliases() {
-        assert_eq!(
-            parse_target_kind("coords").unwrap(),
-            TargetKind::Coordinates
-        );
-        assert_eq!(
-            parse_target_kind("coordinates").unwrap(),
-            TargetKind::Coordinates
-        );
-    }
-
-    #[test]
-    fn parse_address() {
-        assert_eq!(parse_target_kind("address").unwrap(), TargetKind::Address);
-    }
-
-    #[test]
-    fn parse_unknown_kind_is_err() {
-        assert!(parse_target_kind("foobar").is_err());
-        assert!(parse_target_kind("").is_err());
-    }
-
-    #[test]
-    fn every_seed_kind_canonical_form_round_trips() {
-        // Total invariant: the canonical string the system emits for EVERY seed
-        // kind (`canonical_str` — also serde/API/entity `kind`) must parse back to
-        // that exact kind via the CLI parser. Regression: `full_name`/`ip_address`
-        // did not (only `fullname`/`ipaddress` were accepted), so a copied
-        // canonical kind failed on the CLI. Driven over the complete kind list so
-        // a newly-added kind that forgets the alias fails here.
-        for &kind in crate::core::dependency::ALL_TARGET_KINDS {
-            let canon = kind.canonical_str();
-            assert_eq!(
-                parse_target_kind(canon).ok(),
-                Some(kind),
-                "canonical form {canon:?} must round-trip through parse_target_kind"
-            );
-        }
-    }
-
-    // ── split_csv ───────────────────────────────────────────────────────────
-
-    #[test]
-    fn split_csv_none_stays_none() {
-        assert!(split_csv(None).is_none());
-    }
-
-    #[test]
-    fn split_csv_single_entry() {
-        let r = split_csv(Some("dns_resolver".into())).unwrap();
-        assert_eq!(r, vec!["dns_resolver"]);
-    }
-
-    #[test]
-    fn split_csv_multiple_entries() {
-        let r = split_csv(Some("a, b ,c".into())).unwrap();
-        assert_eq!(r, vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn split_csv_empty_string() {
-        let r = split_csv(Some(String::new())).unwrap();
-        assert_eq!(r, vec![""]);
-    }
-
-    // ── cost_label ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn cost_labels() {
-        assert_eq!(cost_label(ModuleCost::Free), "free");
-        assert_eq!(cost_label(ModuleCost::KeyGated), "key-gated");
-        assert_eq!(cost_label(ModuleCost::Paid), "paid");
-    }
-
-    // ── truncate ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn truncate_short_string_unchanged() {
-        assert_eq!(truncate("hello", 10), "hello");
-    }
-
-    #[test]
-    fn truncate_exact_length_unchanged() {
-        assert_eq!(truncate("hello", 5), "hello");
-    }
-
-    #[test]
-    fn truncate_long_string_adds_ellipsis() {
-        let r = truncate("hello world", 5);
-        assert!(r.contains('…'));
-        assert_eq!(r.chars().count(), 5);
-    }
-
-    #[test]
-    fn truncate_unicode() {
-        let r = truncate("café latte", 5);
-        assert_eq!(r.chars().count(), 5);
-        assert!(r.ends_with('…'));
-    }
-
-    // ── resolve_seed ────────────────────────────────────────────────────────
-
-    #[test]
-    fn resolve_seed_prefers_explicit_cli_value() {
-        let got = resolve_seed(Some("alice".to_string()), Some("default".to_string())).unwrap();
-        assert_eq!(got, "alice");
-    }
-
-    #[test]
-    fn resolve_seed_falls_back_to_default_when_value_absent() {
-        let got = resolve_seed(None, Some("default".to_string())).unwrap();
-        assert_eq!(got, "default");
-    }
-
-    #[test]
-    fn resolve_seed_blank_cli_value_falls_back_to_default() {
-        // `-v "  "` is treated as absent, not as a blank target.
-        let got = resolve_seed(Some("   ".to_string()), Some("default".to_string())).unwrap();
-        assert_eq!(got, "default");
-    }
-
-    #[test]
-    fn resolve_seed_trims_explicit_value() {
-        let got = resolve_seed(Some("  bob  ".to_string()), None).unwrap();
-        assert_eq!(got, "bob");
-    }
-
-    #[test]
-    fn resolve_seed_errors_when_nothing_set() {
-        let err = resolve_seed(None, None).unwrap_err().to_string();
-        assert!(err.contains("--value"), "{err}");
-        assert!(err.contains("HUNTSMAN_DEFAULT_SEED"), "{err}");
-    }
+    include!("tests.rs");
 }
