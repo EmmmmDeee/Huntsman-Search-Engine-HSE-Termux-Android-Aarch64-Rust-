@@ -36,6 +36,9 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
     let bind = normalise_bind(&bind);
 
     let (store, bus, engine) = build_runtime(1024)?;
+    crate::core::api_cache::init(
+        &crate::default_db_path().with_file_name("api_cache.db"),
+    );
     let http = build_client();
     let live = LiveScanner::new(
         Arc::clone(&engine),

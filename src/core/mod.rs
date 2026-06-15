@@ -3,6 +3,7 @@
 //! Nothing in `core` imports from `modules/` — modules depend on core, never
 //! the other way around. This keeps the engine module-agnostic.
 
+pub mod api_cache;
 pub mod attack;
 pub mod cancel;
 pub mod convex;
@@ -30,6 +31,7 @@ pub mod timeline;
 pub mod validation;
 pub mod webhook;
 
+pub use api_cache::{CacheStats, ModuleStats as CacheModuleStats};
 pub use cancel::CancelHandle;
 pub use correlator::{Correlation, Correlator, Severity};
 pub use dependency::{ModuleGraph, ModuleGraphSummary};

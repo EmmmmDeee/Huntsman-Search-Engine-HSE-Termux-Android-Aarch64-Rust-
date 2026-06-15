@@ -220,9 +220,7 @@ pub(super) fn parse_cells_survey(
         Err(_) => return crate::core::module::ModuleResult::new(),
     };
 
-    let mut result = crate::core::module::ModuleResult {
-        entities: Vec::with_capacity(cells.len()),
-    };
+    let mut result = crate::core::module::ModuleResult::with_capacity(cells.len());
     for cell in &cells {
         // Same parse/skip + builder the live process() path uses, so these
         // tests pin the real entity shape rather than a parallel copy.
