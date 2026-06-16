@@ -55,7 +55,10 @@ fn build_target_summary_evidence_lists_confirmed_platforms() {
     let t = Target::new(TargetKind::Username, "testuser");
     let confirmed = &["github", "reddit"];
     let e = build_target_summary(&t, 2, 30, confirmed, "scan").unwrap();
-    let attr = e.evidence[0].attributes.get("platforms").map(String::as_str);
+    let attr = e.evidence[0]
+        .attributes
+        .get("platforms")
+        .map(String::as_str);
     assert!(attr.is_some(), "platforms attribute must be present");
     let platforms = attr.unwrap();
     assert!(platforms.contains("github") && platforms.contains("reddit"));

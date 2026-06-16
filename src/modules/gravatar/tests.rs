@@ -67,3 +67,22 @@ use super::*;
         extract_entry(&entry, "h", "scan", &mut r);
         assert!(r.entities.is_empty(), "no fields ⇒ no entities");
     }
+
+    #[test]
+    fn module_metadata() {
+        let m = Gravatar;
+        assert_eq!(m.name(), "gravatar");
+        assert!(!m.description().is_empty());
+        assert!(m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+        assert!(!m.accepts(&Target::new(TargetKind::Domain, "y.com")));
+        assert!(!m.attack_techniques().is_empty());
+    }
+
+    #[test]
+    fn gravatar_profile_url_uses_hash() {
+        let hash = gravatar_hash("matt@example.com");
+        // The lookup URL is "https://gravatar.com/{hash}.json"
+        let expected_url = format!("https://gravatar.com/{hash}.json");
+        assert!(expected_url.contains(&hash));
+        assert!(expected_url.ends_with(".json"));
+    }

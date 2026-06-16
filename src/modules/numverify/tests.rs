@@ -50,3 +50,28 @@ use super::*;
         assert!(m.accepts(&Target::new(TargetKind::Phone, "+61400000000")));
         assert!(!m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
     }
+
+    #[test]
+    fn module_metadata_full() {
+        let m = NumVerify;
+        assert_eq!(m.name(), "numverify");
+        assert!(!m.description().is_empty());
+        assert_eq!(m.max_timeout_ms(), 8_000);
+        assert!(!m.attack_techniques().is_empty());
+        assert!(m.produces().contains(&EntityKind::Address));
+    }
+
+    #[test]
+    fn build_entity_line_type_tag() {
+        for lt in ["mobile", "landline", "voip"] {
+            let r = NvResp {
+                valid: true,
+                country_name: Some("Australia".into()),
+                location: Some("Queensland".into()),
+                line_type: Some(lt.to_string()),
+                ..Default::default()
+            };
+            let e = build_entity(&r, "s").unwrap();
+            assert!(e.has_tag(&format!("line:{lt}")), "missing line:{lt} tag");
+        }
+    }

@@ -55,3 +55,30 @@ use super::*;
         assert!(m.accepts(&Target::new(TargetKind::Phone, "+61400000000")));
         assert!(!m.accepts(&Target::new(TargetKind::Domain, "x.com")));
     }
+
+    #[test]
+    fn build_entities_no_org_emits_person_and_location_only() {
+        let json = serde_json::json!({
+            "fullName": "Solo Person",
+            "location": "Melbourne, VIC",
+            "details": {
+                "locations": [{ "formatted": "Melbourne, VIC, AU" }]
+            }
+        });
+        let r: FcResp = serde_json::from_value(json).unwrap();
+        let es = build_entities(&r, "scan");
+        assert!(es.iter().any(|e| e.kind == EntityKind::Person && e.value == "Solo Person"));
+        assert!(es.iter().any(|e| e.kind == EntityKind::Address));
+        assert!(!es.iter().any(|e| e.kind == EntityKind::Organisation));
+    }
+
+    #[test]
+    fn build_entities_all_sources_carry_fullcontact_tag() {
+        let r = fixture();
+        let es = build_entities(&r, "scan");
+        assert!(!es.is_empty());
+        assert!(
+            es.iter().all(|e| e.has_tag("fullcontact")),
+            "every emitted entity must carry the fullcontact source tag"
+        );
+    }

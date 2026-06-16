@@ -58,3 +58,29 @@ use super::*;
         extract("info:1:0\n", "x@y.com", "scan", &mut r);
         assert!(r.entities.is_empty());
     }
+
+    #[test]
+    fn module_metadata() {
+        let m = Pgp;
+        assert_eq!(m.name(), "pgp");
+        assert!(!m.description().is_empty());
+        assert!(m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+        assert!(!m.accepts(&Target::new(TargetKind::Domain, "y.com")));
+        assert!(!m.attack_techniques().is_empty());
+    }
+
+    #[test]
+    fn extract_deduplicates_person_across_uids() {
+        // Two UIDs carry the same name — Person must be emitted exactly once.
+        let body = "info:1:1\n\
+            pub:ABCDEF0123456789ABCDEF0123456789ABCDEF01:1:4096:1500000000::\n\
+            uid:Jordan%20Avery%20%3Ca%40example.com%3E:1500000000::\n\
+            uid:Jordan%20Avery%20%3Cb%40example.com%3E:1500000000::\n";
+        let mut r = ModuleResult::new();
+        extract(body, "a@example.com", "scan", &mut r);
+        assert_eq!(
+            r.entities.iter().filter(|e| e.kind == EntityKind::Person).count(),
+            1,
+            "duplicate name across UIDs must be emitted once"
+        );
+    }
