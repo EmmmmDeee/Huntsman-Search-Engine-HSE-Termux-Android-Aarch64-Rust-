@@ -75,3 +75,48 @@ use super::*;
         assert!(parse_iso_epoch("garbage").is_none());
         assert!(parse_iso_epoch("").is_none());
     }
+
+    #[test]
+    fn module_metadata_full() {
+        let m = HudsonRock;
+        assert_eq!(m.name(), "hudsonrock");
+        assert!(!m.description().is_empty());
+        assert_eq!(m.priority(), 130);
+        assert_eq!(m.max_timeout_ms(), 10_000);
+        assert_eq!(m.category(), ModuleCategory::Breach);
+        assert!(m.attack_techniques().contains(&"T1589.001"));
+        assert!(m.attack_techniques().contains(&"T1590.005"));
+        use crate::core::entity::EntityKind;
+        assert!(m.produces().contains(&EntityKind::IpAddress));
+    }
+
+    #[test]
+    fn compute_confidence_mixed_stealers_yields_fresh() {
+        // One old + one recent stealer → FRESH_CONFIDENCE (any-recent wins)
+        let old = Stealer {
+            date_compromised: Some("2020-01-01T00:00:00Z".into()),
+            stealer_family: None,
+            computer_name: None,
+            operating_system: None,
+            date_uploaded: None,
+            ip: None,
+            malware_path: None,
+            credentials: vec![],
+        };
+        let recent = Stealer {
+            date_compromised: Some("2026-05-01T00:00:00Z".into()),
+            stealer_family: None,
+            computer_name: None,
+            operating_system: None,
+            date_uploaded: None,
+            ip: None,
+            malware_path: None,
+            credentials: vec![],
+        };
+        assert!((compute_confidence(&[old, recent]) - FRESH_CONFIDENCE).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compute_confidence_empty_yields_base() {
+        assert!((compute_confidence(&[]) - BASE_CONFIDENCE).abs() < 1e-9);
+    }

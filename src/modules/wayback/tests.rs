@@ -69,3 +69,32 @@ use super::*;
         // 200 appears twice, 301 once → ranked by frequency.
         assert_eq!(attr(&e, "status_distribution"), Some("200×2, 301×1"));
     }
+
+    #[test]
+    fn build_entity_url_target_yields_url_kind() {
+        let rows = [
+            row(&["timestamp", "statuscode"]),
+            row(&["20230601120000", "200"]),
+        ];
+        let e = build_entity(
+            EntityKind::Url,
+            "https://example.com/page",
+            &rows,
+            "s",
+        )
+        .unwrap();
+        assert_eq!(e.kind, EntityKind::Url);
+        assert_eq!(e.value, "https://example.com/page");
+        assert!(e.has_tag("archived"));
+    }
+
+    #[test]
+    fn module_metadata() {
+        let m = Wayback;
+        assert_eq!(m.name(), "wayback");
+        assert!(!m.description().is_empty());
+        assert_eq!(m.priority(), 38);
+        assert_eq!(m.max_timeout_ms(), 10_000);
+        assert!(m.produces().contains(&EntityKind::Domain));
+        assert!(m.produces().contains(&EntityKind::Url));
+    }
