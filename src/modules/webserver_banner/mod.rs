@@ -116,7 +116,12 @@ impl Module for WebserverBanner {
                 Evidence::new(SRC, format!("HTTP headers from {scheme} HEAD of {host}"))
                     .with_attr("scheme", scheme)
                     .with_attr("status", status.as_u16().to_string()),
-                |ev, (h, v)| ev.with_attr(h.as_str(), v.chars().take(240).collect::<String>()),
+                |ev, (h, v)| {
+                    ev.with_attr(
+                        h.as_str(),
+                        crate::util::str_util::truncate_safe(v, 240).to_string(),
+                    )
+                },
             );
             entity.add_evidence(ev);
 

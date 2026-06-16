@@ -116,16 +116,18 @@ impl Module for Wayback {
         ModuleCategory::Web
     }
 
+    fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
+        use crate::core::entity::EntityKind;
+        // Wayback enriches the seed domain/URL with historical snapshot metadata;
+        // no new pivot entities are emitted.
+        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::Url];
+        KINDS
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         // Single network request with no per-request timeout; the 3s default
         // would kill a slow-but-connected response as a spurious "timeout".
         10_000
-    }
-
-    fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
-        use crate::core::entity::EntityKind;
-        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::Url];
-        KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

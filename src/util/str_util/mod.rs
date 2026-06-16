@@ -220,6 +220,58 @@ pub fn fold_ascii_lower(s: &str) -> String {
     out
 }
 
+/// URL/tag-safe slug: lowercase alphanumeric runs joined by single `-`, with
+/// leading and trailing `-` stripped. Non-alphanumeric characters (spaces,
+/// dots, underscores, etc.) are collapsed into a single dash separator.
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::slugify;
+///
+/// assert_eq!(slugify("Hello World"), "hello-world");
+/// assert_eq!(slugify("github.com"), "github-com");
+/// assert_eq!(slugify("---"), "");
+/// assert_eq!(slugify("client transfer prohibited"), "client-transfer-prohibited");
+/// ```
+#[must_use]
+pub fn slugify(s: &str) -> String {
+    let mut slug = String::with_capacity(s.len());
+    let mut last_dash = true;
+    for ch in s.chars() {
+        if ch.is_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            last_dash = false;
+        } else if !last_dash {
+            slug.push('-');
+            last_dash = true;
+        }
+    }
+    if slug.ends_with('-') {
+        slug.pop();
+    }
+    slug
+}
+
+/// Char-boundary-safe truncation that appends `…` when the string exceeds
+/// `max_chars`. Uses char count, not byte length, so multibyte characters
+/// are never split.
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::truncate_display;
+///
+/// assert_eq!(truncate_display("hello", 10), "hello");
+/// assert_eq!(truncate_display("hello world", 5), "hello…");
+/// ```
+#[must_use]
+pub fn truncate_display(s: &str, max_chars: usize) -> String {
+    let mut chars = s.chars();
+    let head: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    }
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

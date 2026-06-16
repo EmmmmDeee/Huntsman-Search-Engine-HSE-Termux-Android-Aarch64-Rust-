@@ -72,11 +72,13 @@ pub mod mls;
 pub mod mylnikov;
 pub mod name_intel;
 pub mod netblock;
+pub mod niamonx;
 pub mod npm_author;
 pub mod numverify;
 pub mod oathnet_pro;
 pub mod onyphe;
 pub mod opencorporates;
+pub mod osintcat;
 pub mod overpass;
 pub mod pgp;
 pub mod phone_area_geo;
@@ -204,6 +206,8 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(hibp::Hibp),
         Arc::new(hudsonrock::HudsonRock),
         Arc::new(xposed_or_not::XposedOrNot),
+        Arc::new(osintcat::OsintCat),
+        Arc::new(niamonx::NiamonX),
         Arc::new(pwned_passwords::PwnedPasswords),
         Arc::new(ip_reputation::IpReputation),
         Arc::new(oathnet_pro::OathnetPro),

@@ -64,8 +64,7 @@ pub(super) async fn cmd_doctor() -> Result<()> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .is_ok_and(|s| s.success());
     if curl_ok {
         println!("  curl:      present");
     } else {

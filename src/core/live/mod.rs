@@ -490,8 +490,7 @@ fn new_live_id(target: &Target) -> String {
     let mut h = Sha256::new();
     let ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     h.update(format!("live-{ns}-{:?}-{}", target.kind, target.value).as_bytes());
     let full = hex::encode(h.finalize());
     format!("live-{}", &full[..16])

@@ -62,9 +62,7 @@ fn collect(dir: &Path, out: &mut Vec<(String, u32)>) {
             // Watch this file so a content change reruns us (a directory watch
             // alone does NOT catch edits to files in subdirectories).
             println!("cargo:rerun-if-changed={}", path.display());
-            let lines = std::fs::read_to_string(&path)
-                .map(|s| s.lines().count() as u32)
-                .unwrap_or(0);
+            let lines = std::fs::read_to_string(&path).map_or(0, |s| s.lines().count() as u32);
             // Normalise to forward slashes for a stable, readable key.
             let rel = path.to_string_lossy().replace('\\', "/");
             out.push((rel, lines));

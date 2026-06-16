@@ -15,7 +15,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::geo::is_valid_coords;
-use crate::util::http::urlencode;
+use crate::util::http::{fetch_json, urlencode};
 
 const SRC: &str = "mylnikov";
 
@@ -128,19 +128,7 @@ impl Module for Mylnikov {
             urlencode(bssid),
         );
 
-        let resp = match ctx.http.get(&url).send().await {
-            Ok(r) => r,
-            Err(_) => return Ok(ModuleResult::new()),
-        };
-
-        if !resp.status().is_success() {
-            return Ok(ModuleResult::new());
-        }
-
-        let body: MylnikovResp = match crate::util::http::json_scanned(resp, SRC).await {
-            Ok(b) => b,
-            Err(_) => return Ok(ModuleResult::new()),
-        };
+        let body: MylnikovResp = fetch_json(&ctx.http, SRC, &url).await?;
 
         if body.result != Some(200) {
             return Ok(ModuleResult::new());

@@ -382,9 +382,7 @@ pub async fn scan_attack_coverage_diff(
     }
     let coverage_of = |id: &str| -> Result<Vec<&'static crate::core::attack::Technique>, _> {
         s.store.entities_for_scan(id).map(|ents| {
-            crate::modules::reconnaissance_coverage(
-                crate::core::entity::evidence_sources(&ents).into_iter(),
-            )
+            crate::modules::reconnaissance_coverage(crate::core::entity::evidence_sources(&ents))
         })
     };
     let current = match coverage_of(&a) {

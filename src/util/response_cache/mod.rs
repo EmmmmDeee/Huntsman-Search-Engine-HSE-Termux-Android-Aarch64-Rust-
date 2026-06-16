@@ -76,7 +76,7 @@ impl<T: Clone + Send + 'static> ResponseCache<T> {
     /// Number of entries currently cached. Useful for tests; the
     /// production module layer doesn't care about live size.
     pub fn len(&self) -> usize {
-        self.lock().lock().map(|c| c.len()).unwrap_or(0)
+        self.lock().lock().map_or(0, |c| c.len())
     }
 
     /// True if the cache is empty.
