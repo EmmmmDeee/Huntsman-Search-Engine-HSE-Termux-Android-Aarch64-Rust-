@@ -1175,3 +1175,61 @@ async fn recall_prior_entities_pulls_and_tags_prior_scan_findings() {
         "the sole prior scan is the requesting scan ⇒ empty recall"
     );
 }
+
+/// A FullName seed must recall prior intel even though the stored Person anchor
+/// is reformatted by name parsing: the `seed_uid` derives from the raw,
+/// un-title-cased input and misses, so the value-match fallback's token-set key
+/// has to rescue case, comma order, and a trailing year. Run against a REAL
+/// SQLite store because the fallback depends on FTS token matching, which the
+/// in-memory test double's substring search can't model.
+#[test]
+fn recall_resolves_a_fullname_seed_despite_reformatting() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::storage::Store;
+
+    let path = format!(
+        "{}/.hse-recall-name-{}.db",
+        std::env::temp_dir().to_string_lossy(),
+        std::process::id()
+    );
+    let cleanup = |p: &str| {
+        let _ = std::fs::remove_file(p);
+        let _ = std::fs::remove_file(format!("{p}-wal"));
+        let _ = std::fs::remove_file(format!("{p}-shm"));
+    };
+    cleanup(&path);
+    let store: Arc<dyn StoragePort> = Arc::new(Store::open(&path).unwrap());
+
+    // A prior scan stored the Person anchor TITLE-CASED (as name parsing does)
+    // plus a discovered email no live module will re-emit.
+    store
+        .upsert_scan(&Scan::new(
+            "prior",
+            Target::new(TargetKind::FullName, "Jordan Meyers"),
+        ))
+        .unwrap();
+    let mut person = Entity::new(EntityKind::Person, "Jordan Meyers", 0.9, "prior");
+    person.add_evidence(Evidence::new("name_intel", "seed"));
+    let mut email = Entity::new(EntityKind::Email, "jordanlead@gmail.com", 0.8, "prior");
+    email.add_evidence(Evidence::new("hibp", "breach"));
+    store.upsert_entity(&person).unwrap();
+    store.upsert_entity(&email).unwrap();
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let engine = ScanEngine::new(vec![], store, bus);
+
+    // Each input mismatches the stored title-case `seed_uid`, so recall depends
+    // on the token-set fallback: lower-case, "Last, First" order, trailing year.
+    for input in ["jordan meyers", "Meyers, Jordan", "Jordan Meyers 1987"] {
+        let target = Target::new(TargetKind::FullName, input);
+        let recalled = engine.recall_prior_entities(&target, "current");
+        assert!(
+            recalled
+                .iter()
+                .any(|e| e.value == "jordanlead@gmail.com" && e.has_tag("recalled")),
+            "recall must resolve FullName '{input}' to the prior scan's email via the token-set fallback"
+        );
+    }
+
+    cleanup(&path);
+}

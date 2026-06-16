@@ -746,10 +746,27 @@ impl ScanEngine {
     /// a 4 GB device. Best-effort: storage errors log and yield nothing rather
     /// than failing the scan.
     fn recall_prior_entities(&self, target: &Target, scan_id: &str) -> Vec<Entity> {
-        use crate::core::entity::{Evidence, derive_uid, normalise};
+        use crate::core::entity::{EntityKind, Evidence, derive_uid, normalise};
         const MAX_PRIOR_SCANS: usize = 8;
         const MAX_ENTITIES: usize = 300;
         const VALUE_MATCH_CAP: usize = 64;
+
+        // Order/case/punctuation-insensitive token-set key (pure-digit tokens
+        // dropped) so a FullName seed survives the reformatting name parsing
+        // applies to the stored Person anchor — case ("jordan meyers" vs the
+        // stored title-cased "Jordan Meyers"), comma order ("Meyers, Jordan"),
+        // and a trailing year ("Jordan Meyers 1987" → "Jordan Meyers"). Exact
+        // equality on the sorted alphabetic tokens stays conservative: it never
+        // conflates "John Smith" with "John A Smith" or a different name.
+        fn token_set_key(s: &str) -> String {
+            let lower = s.to_lowercase();
+            let mut toks: Vec<&str> = lower
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|t| !t.is_empty() && !t.bytes().all(|b| b.is_ascii_digit()))
+                .collect();
+            toks.sort_unstable();
+            toks.join(" ")
+        }
 
         // Gather candidate scan-id lists from both recall paths, then flatten
         // into a recency-ordered, de-duplicated list (excluding this scan).
@@ -760,10 +777,35 @@ impl ScanEngine {
             Ok(ids) => id_lists.push(ids),
             Err(e) => warn!(scan_id, error = %e, "recall: seed history lookup failed"),
         }
-        if let Ok(matches) = self.store.search_entities(&target.value, VALUE_MATCH_CAP) {
-            let tv = target.value.trim().to_lowercase();
+        // Value-match fallback — catches scans where the target surfaced as a
+        // discovered node, and rescues the FullName seed whose stored anchor was
+        // reformatted (the seed_uid above derives from the raw, un-title-cased
+        // input, so it misses for names). A Person seed matches on the token-set
+        // key; exact-valued kinds keep strict case-insensitive equality (their
+        // seed_uid path is already exact, and a looser key could mis-pull a
+        // structurally-different value, e.g. reorder an email's tokens).
+        let is_name = matches!(kind, EntityKind::Person);
+        let key = |v: &str| -> String {
+            if is_name {
+                token_set_key(v)
+            } else {
+                v.trim().to_lowercase()
+            }
+        };
+        let target_key = key(&target.value);
+        // Search the digit-stripped token form for a name so a trailing year
+        // can't defeat the all-tokens-required FTS match; the raw value otherwise.
+        let search_q = if is_name {
+            token_set_key(&target.value)
+        } else {
+            target.value.trim().to_string()
+        };
+        if !target_key.is_empty()
+            && !search_q.is_empty()
+            && let Ok(matches) = self.store.search_entities(&search_q, VALUE_MATCH_CAP)
+        {
             for m in matches {
-                if m.value.trim().to_lowercase() == tv
+                if key(&m.value) == target_key
                     && let Ok(ids) = self.store.scan_ids_for_entity(&m.uid)
                 {
                     id_lists.push(ids);
