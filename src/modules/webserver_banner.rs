@@ -113,7 +113,7 @@ impl Module for WebserverBanner {
             for (h, v) in &captured {
                 // Clip individual values so a verbose CSP doesn't bloat
                 // the evidence row past sanity.
-                let clipped: String = v.chars().take(240).collect();
+                let clipped = crate::util::str_util::truncate_safe(v, 240).to_string();
                 ev = ev.with_attr(h.as_str(), clipped);
             }
             entity.add_evidence(ev);

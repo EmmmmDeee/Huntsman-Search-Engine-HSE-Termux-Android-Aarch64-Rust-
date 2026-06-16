@@ -134,9 +134,61 @@ pub fn fold_ascii_lower(s: &str) -> String {
     out
 }
 
+/// URL/tag-safe slug: lowercase alphanumeric runs joined by single `-`, with
+/// leading and trailing `-` stripped. Non-alphanumeric characters (spaces,
+/// dots, underscores, etc.) are collapsed into a single dash separator.
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::slugify;
+///
+/// assert_eq!(slugify("Hello World"), "hello-world");
+/// assert_eq!(slugify("github.com"), "github-com");
+/// assert_eq!(slugify("---"), "");
+/// assert_eq!(slugify("client transfer prohibited"), "client-transfer-prohibited");
+/// ```
+#[must_use]
+pub fn slugify(s: &str) -> String {
+    let mut slug = String::with_capacity(s.len());
+    let mut last_dash = true;
+    for ch in s.chars() {
+        if ch.is_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            last_dash = false;
+        } else if !last_dash {
+            slug.push('-');
+            last_dash = true;
+        }
+    }
+    if slug.ends_with('-') {
+        slug.pop();
+    }
+    slug
+}
+
+/// Char-boundary-safe truncation that appends `…` when the string exceeds
+/// `max_chars`. Uses char count, not byte length, so multibyte characters
+/// are never split.
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::truncate_display;
+///
+/// assert_eq!(truncate_display("hello", 10), "hello");
+/// assert_eq!(truncate_display("hello world", 5), "hello…");
+/// ```
+#[must_use]
+pub fn truncate_display(s: &str, max_chars: usize) -> String {
+    let mut chars = s.chars();
+    let head: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ascii_digits, fold_ascii_lower, nonempty, truncate_safe};
+    use super::{ascii_digits, fold_ascii_lower, nonempty, slugify, truncate_display, truncate_safe};
 
     #[test]
     fn nonempty_trims_and_treats_blank_as_absent() {
@@ -253,5 +305,26 @@ mod tests {
             let once = fold_ascii_lower(s);
             assert_eq!(fold_ascii_lower(&once), once, "not idempotent for {s:?}");
         }
+    }
+
+    #[test]
+    fn slugify_lowercases_and_collapses_non_alnum_to_dash() {
+        assert_eq!(slugify("Hello World"), "hello-world");
+        assert_eq!(slugify("github.com"), "github-com");
+        assert_eq!(slugify("---"), "");
+        assert_eq!(slugify("client transfer prohibited"), "client-transfer-prohibited");
+        assert_eq!(slugify("no-spaces"), "no-spaces");
+        assert_eq!(slugify("a  b   c"), "a-b-c");
+        assert_eq!(slugify(""), "");
+    }
+
+    #[test]
+    fn truncate_display_appends_ellipsis_when_long() {
+        assert_eq!(truncate_display("hello", 10), "hello");
+        assert_eq!(truncate_display("hello world", 5), "hello…");
+        let long: String = "a".repeat(300);
+        let t = truncate_display(&long, 200);
+        assert!(t.ends_with('…'));
+        assert_eq!(t.chars().count(), 201);
     }
 }

@@ -20,6 +20,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::http::{fetch_keyed_json, json_scanned, keyed_ok_or_404, urlencode};
+use crate::util::str_util::slugify;
 
 const SRC: &str = "osintcat";
 const KEY_ENV: &str = "HUNTSMAN_OSINTCAT_KEY";
@@ -273,27 +274,6 @@ fn emit_email_osint(raw: &Value, entity: &mut Entity) {
     entity.add_evidence(ev);
 }
 
-// ── Utilities ──────────────────────────────────────────────────────────────────
-
-/// Lowercase + replace non-alphanumeric runs with `-`, strip leading/trailing.
-fn slugify(s: &str) -> String {
-    let mut slug = String::with_capacity(s.len());
-    let mut last_dash = true;
-    for ch in s.chars() {
-        if ch.is_alphanumeric() {
-            slug.push(ch.to_ascii_lowercase());
-            last_dash = false;
-        } else if !last_dash {
-            slug.push('-');
-            last_dash = true;
-        }
-    }
-    if slug.ends_with('-') {
-        slug.pop();
-    }
-    slug
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,14 +283,6 @@ mod tests {
         let m = OsintCat;
         assert!(m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
         assert!(!m.accepts(&Target::new(TargetKind::Domain, "y.com")));
-    }
-
-    #[test]
-    fn slugify_normalises() {
-        assert_eq!(slugify("github.com"), "github-com");
-        assert_eq!(slugify("Stealer Logs"), "stealer-logs");
-        assert_eq!(slugify("LinkedIn 2021"), "linkedin-2021");
-        assert_eq!(slugify("---"), "");
     }
 
     #[test]

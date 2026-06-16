@@ -264,7 +264,7 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
         // OTX `adversary` is sometimes a long freeform paragraph after the
         // group name — keep just the lead name, capped.
         let name = a.split('(').next().unwrap_or(a).trim();
-        let capped: String = name.chars().take(64).collect();
+        let capped = crate::util::str_util::truncate_safe(name, 64).to_string();
         if !capped.is_empty() {
             ev = ev.with_attr("adversary", &capped);
         }

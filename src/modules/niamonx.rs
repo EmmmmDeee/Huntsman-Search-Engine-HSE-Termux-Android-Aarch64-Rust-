@@ -23,6 +23,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::str_util::{slugify, truncate_display};
 
 const SRC: &str = "niamonx";
 const KEY_ENV: &str = "HUNTSMAN_NIAMONX_KEY";
@@ -409,7 +410,7 @@ fn emit_pbs_v1(
         entity.tag(format!("niamonx:breach:{}", slugify(source)));
         if let Some(desc) = &block.description {
             entity.add_evidence(
-                Evidence::new(SRC, format!("[{source}] {}", truncate(desc, 200)))
+                Evidence::new(SRC, format!("[{source}] {}", truncate_display(desc, 200)))
                     .with_attr("source", source),
             );
         }
@@ -597,35 +598,6 @@ fn emit_ulp(
     }
 }
 
-// ── Utilities ──────────────────────────────────────────────────────────────────
-
-fn slugify(s: &str) -> String {
-    let mut slug = String::with_capacity(s.len());
-    let mut last_dash = true;
-    for ch in s.chars() {
-        if ch.is_alphanumeric() {
-            slug.push(ch.to_ascii_lowercase());
-            last_dash = false;
-        } else if !last_dash {
-            slug.push('-');
-            last_dash = true;
-        }
-    }
-    if slug.ends_with('-') {
-        slug.pop();
-    }
-    slug
-}
-
-fn truncate(s: &str, max_chars: usize) -> String {
-    let mut chars = s.chars();
-    let head: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{head}…")
-    } else {
-        head
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -640,21 +612,6 @@ mod tests {
         assert!(m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
         assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));
         assert!(!m.accepts(&Target::new(TargetKind::Phone, "+61400000000")));
-    }
-
-    #[test]
-    fn slugify_normalises() {
-        assert_eq!(slugify("Stealer Logs"), "stealer-logs");
-        assert_eq!(slugify("github.com"), "github-com");
-        assert_eq!(slugify("---"), "");
-    }
-
-    #[test]
-    fn truncate_appends_ellipsis_when_long() {
-        let long: String = "a".repeat(300);
-        let t = truncate(&long, 200);
-        assert!(t.ends_with('…'));
-        assert_eq!(t.chars().count(), 201);
     }
 
     #[test]

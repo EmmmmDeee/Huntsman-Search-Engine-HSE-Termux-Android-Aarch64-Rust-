@@ -22,6 +22,7 @@ use crate::core::{
 };
 use crate::util::http::RequestBuilderExt;
 use crate::util::http::urlencode;
+use crate::util::str_util::slugify;
 
 #[derive(Deserialize)]
 struct RdapResp {
@@ -63,26 +64,6 @@ struct Nameserver {
 struct SecureDns {
     #[serde(default, rename = "delegationSigned")]
     delegation_signed: Option<bool>,
-}
-
-/// Replace each run of ASCII whitespace with a single `-` so RDAP's
-/// human-readable status phrases ("client transfer prohibited") fit
-/// the project's whitespace-free tag convention.
-fn slugify(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut prev_dash = false;
-    for ch in s.chars() {
-        if ch.is_ascii_whitespace() {
-            if !prev_dash {
-                out.push('-');
-                prev_dash = true;
-            }
-        } else {
-            out.push(ch.to_ascii_lowercase());
-            prev_dash = false;
-        }
-    }
-    out
 }
 
 const SRC: &str = "rdap_domain";
@@ -291,17 +272,6 @@ mod tests {
         assert!(RdapDomain.priority() < 32);
     }
 
-    #[test]
-    fn slugify_collapses_whitespace_and_lowercases() {
-        assert_eq!(
-            slugify("client transfer prohibited"),
-            "client-transfer-prohibited"
-        );
-        assert_eq!(slugify("Active"), "active");
-        assert_eq!(slugify("a  b   c"), "a-b-c");
-        assert_eq!(slugify("no-spaces"), "no-spaces");
-        assert_eq!(slugify(""), "");
-    }
 
     fn resp(json: &str) -> RdapResp {
         serde_json::from_str(json).unwrap()
