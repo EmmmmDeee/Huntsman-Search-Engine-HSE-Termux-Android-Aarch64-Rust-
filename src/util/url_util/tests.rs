@@ -30,6 +30,25 @@ use super::{host_from_url, host_only};
     }
 
     #[test]
+    fn host_only_path_without_scheme() {
+        // No scheme: the whole string is treated as host/authority + path.
+        assert_eq!(host_only("example.com/some/path"), "example.com");
+        assert_eq!(host_only("example.com:8080/path"), "example.com");
+    }
+
+    #[test]
+    fn host_from_url_dotted_ip_returns_some() {
+        assert_eq!(
+            host_from_url("http://1.2.3.4/path"),
+            Some("1.2.3.4".to_string())
+        );
+        assert_eq!(
+            host_from_url("https://192.0.2.1"),
+            Some("192.0.2.1".to_string())
+        );
+    }
+
+    #[test]
     fn host_from_url_lowercases_and_requires_a_dot() {
         assert_eq!(
             host_from_url("https://Sub.Example.COM/p"),

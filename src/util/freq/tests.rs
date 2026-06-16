@@ -21,6 +21,12 @@ use super::*;
     }
 
     #[test]
+    fn top_n_n_zero_returns_empty() {
+        let items = ["a", "b", "a"];
+        assert!(top_n(items.iter().copied(), 0).is_empty());
+    }
+
+    #[test]
     fn top_n_tiebreaker_is_alphabetical() {
         let items = ["b", "a", "c"];
         let result = top_n(items.iter().copied(), 3);

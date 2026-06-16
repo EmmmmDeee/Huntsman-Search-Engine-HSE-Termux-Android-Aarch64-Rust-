@@ -43,6 +43,13 @@ use super::*;
     }
 
     #[test]
+    fn parse_skips_blank_place_name() {
+        // An entry with an empty place name must be skipped even if coords parse.
+        let json = r#"{"places":[{"place name":"","latitude":"-27.5","longitude":"153.0"}]}"#;
+        assert!(parse(json).is_empty());
+    }
+
+    #[test]
     fn tolerates_garbage_and_empty() {
         assert!(parse("not json").is_empty());
         assert!(parse(r#"{"places":[]}"#).is_empty());

@@ -20,3 +20,25 @@ use super::*;
         let e: Error = bad.unwrap_err().into();
         assert!(e.to_string().contains("json"));
     }
+
+    #[test]
+    fn error_invalid_target_display() {
+        let e = Error::InvalidTarget("not-a-valid-ip".into());
+        let s = e.to_string();
+        assert!(s.contains("invalid target"));
+        assert!(s.contains("not-a-valid-ip"));
+    }
+
+    #[test]
+    fn error_other_is_passthrough_display() {
+        let e = Error::Other("custom error message".into());
+        assert_eq!(e.to_string(), "custom error message");
+    }
+
+    #[test]
+    fn error_io_from_std() {
+        use std::io;
+        let io_err = io::Error::new(io::ErrorKind::TimedOut, "timeout");
+        let e: Error = io_err.into();
+        assert!(e.to_string().starts_with("io:"));
+    }

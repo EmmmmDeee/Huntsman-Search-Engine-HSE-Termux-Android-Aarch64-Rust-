@@ -50,6 +50,16 @@ use super::{Member, is_spf, members};
     }
 
     #[test]
+    fn members_ip_without_cidr_returned_verbatim() {
+        // IP addresses without a CIDR suffix are returned as-is.
+        let got: Vec<Member> = members("v=spf1 ip4:203.0.113.5 ip6:2001:db8::cafe").collect();
+        assert_eq!(
+            got,
+            vec![Member::Ip("203.0.113.5"), Member::Ip("2001:db8::cafe")]
+        );
+    }
+
+    #[test]
     fn members_yields_redirect_target_and_skips_macros() {
         let got: Vec<Member> =
             members("v=spf1 redirect=_spf.example.net include:%{i}._spf.macro.test").collect();

@@ -19,6 +19,19 @@ use super::*;
     }
 
     #[test]
+    fn strip_html_empty_and_plain_text() {
+        assert_eq!(strip_html(""), "");
+        assert_eq!(strip_html("plain text no tags"), "plain text no tags");
+    }
+
+    #[test]
+    fn decode_entities_no_amp_fast_path() {
+        // When no '&' is present, the fast path returns without scanning.
+        assert_eq!(decode_entities(""), "");
+        assert_eq!(decode_entities("no ampersands here"), "no ampersands here");
+    }
+
+    #[test]
     fn decodes_numeric_refs_and_is_double_decode_safe() {
         // Numeric refs (decimal + hex): the pervasive curly-quote/dash/nbsp cases.
         assert_eq!(

@@ -34,6 +34,18 @@ use super::*;
     }
 
     #[test]
+    fn phones_deduplicates_same_number() {
+        let text = "+61412345678 and again +61412345678";
+        assert_eq!(phones(text), vec!["+61412345678"]);
+    }
+
+    #[test]
+    fn page_emails_deduplicates_case_insensitive() {
+        let text = "Contact Alice@Example.com or alice@example.com";
+        assert_eq!(page_emails(text), vec!["alice@example.com"]);
+    }
+
+    #[test]
     fn page_emails_drops_asset_refs() {
         assert!(page_emails("logo@2x.png").is_empty());
         assert_eq!(page_emails("bob@example.com"), ["bob@example.com"]);
