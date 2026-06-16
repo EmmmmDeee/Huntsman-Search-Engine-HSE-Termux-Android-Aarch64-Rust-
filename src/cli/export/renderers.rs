@@ -382,6 +382,14 @@ pub(crate) fn render_debug_bundle(
         report.tiers.2,
         report.noise_ratio * 100.0
     );
+    if report.quarantined > 0 {
+        let _ = writeln!(
+            s,
+            "  quarantined: {} breach co-occurrence row(s) — non-subject, excluded from \
+             view/export/correlator & grade",
+            report.quarantined
+        );
+    }
     if report.geo.coord_count > 0 {
         let _ = writeln!(
             s,

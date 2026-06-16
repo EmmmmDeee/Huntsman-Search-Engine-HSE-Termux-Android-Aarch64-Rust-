@@ -14,6 +14,51 @@ fn ent(kind: &str, value: &str, c: f64, corr: u32, tags: &[&str]) -> AuditEntity
 }
 
 #[test]
+fn quarantined_breach_co_occurrence_is_excluded_from_the_grade() {
+    use crate::core::tags;
+    // The breach modules deliberately quarantine records that don't match the
+    // subject (tag `candidate`). They're already excluded from the scan view,
+    // export, and correlator, so the audit must agree: a thorough breach search
+    // that quarantined dozens of strangers must NOT be graded as "noise" for raw
+    // material it correctly set aside. One real subject finding + three strangers:
+    let entities = vec![
+        ent("person", "Subject Name", 0.90, 3, &[]),
+        ent(
+            "person",
+            "Stranger One",
+            0.30,
+            1,
+            &[tags::BREACH, tags::CANDIDATE],
+        ),
+        ent(
+            "email",
+            "x@dump.example",
+            0.30,
+            1,
+            &[tags::BREACH, tags::CANDIDATE],
+        ),
+        ent(
+            "person",
+            "Stranger Three",
+            0.30,
+            1,
+            &[tags::BREACH, tags::CANDIDATE],
+        ),
+    ];
+    let r = audit(&entities, LogSignals::default());
+    assert_eq!(r.entity_total, 1, "only the actionable entity is graded");
+    assert_eq!(r.tiers, (1, 0, 0), "1 verified, zero candidate noise");
+    assert_eq!(
+        r.quarantined, 3,
+        "the strangers are reported separately, not as noise"
+    );
+    assert!(
+        r.noise_ratio < 1e-9,
+        "the operator's actionable view is clean → 0% noise"
+    );
+}
+
+#[test]
 fn empty_scan_is_flagged_not_scored_as_clean() {
     // A 0-entity scan must NOT score a misleading 100/100 "well-sourced": it
     // is flagged with an `empty-result` finding and drops out of the A band.
@@ -196,6 +241,7 @@ fn grade_bands_are_monotonic() {
         by_kind: vec![],
         tiers: (0, 0, 0),
         noise_ratio: 0.0,
+        quarantined: 0,
         findings: vec![],
         score,
         log: LogSignals::default(),

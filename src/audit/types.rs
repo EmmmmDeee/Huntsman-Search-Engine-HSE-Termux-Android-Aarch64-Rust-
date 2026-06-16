@@ -132,8 +132,13 @@ pub struct AuditReport {
     pub by_kind: Vec<(String, usize)>,
     /// (verified ≥0.75, probable ≥0.40, candidate <0.40) by c_effective.
     pub tiers: (usize, usize, usize),
-    /// Share of entities in the candidate (low-confidence) tier, 0.0–1.0.
+    /// Share of *actionable* entities in the candidate (low-confidence) tier,
+    /// 0.0–1.0 — excludes deliberately-quarantined breach co-occurrence.
     pub noise_ratio: f64,
+    /// Breach co-occurrence rows the breach modules deliberately quarantined
+    /// (already excluded from the scan view, export, and correlator). Reported
+    /// for visibility; NOT counted in `entity_total`, `tiers`, or `noise_ratio`.
+    pub quarantined: usize,
     pub findings: Vec<Finding>,
     /// 0–100 — 100 is a clean, individualised, well-sourced scan.
     pub score: u32,
@@ -185,6 +190,7 @@ impl AuditReport {
                 "candidate": self.tiers.2,
             },
             "noise_ratio": self.noise_ratio,
+            "quarantined": self.quarantined,
             "by_kind": by_kind,
             "findings": findings,
             "source_health": {

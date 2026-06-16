@@ -152,7 +152,22 @@ fn geo_consistency(entities: &[AuditEntity]) -> (GeoSummary, Option<Finding>) {
 /// Build the scored report from normalised entities and (optional) log signals.
 /// Pure: every input is owned/borrowed data, no IO, fully unit-testable.
 #[must_use]
-pub fn audit(entities: &[AuditEntity], log: LogSignals) -> AuditReport {
+pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
+    // Grade the operator's ACTIONABLE result. Breach co-occurrence that the
+    // breach modules deliberately quarantined (tagged `candidate` — a record that
+    // did not match the subject identity) is already excluded from the scan view,
+    // the JSON/CSV export, and the correlator. Exclude it from the grade too, and
+    // report it separately, so a thorough breach search is not perversely scored
+    // as "noise" for raw material it correctly set aside — the audit was the one
+    // consumer still counting quarantined rows against the result.
+    let is_quarantined = |e: &AuditEntity| e.tags.iter().any(|t| t == crate::core::tags::CANDIDATE);
+    let quarantined = all_entities.iter().filter(|e| is_quarantined(e)).count();
+    let entities: Vec<AuditEntity> = all_entities
+        .iter()
+        .filter(|e| !is_quarantined(e))
+        .cloned()
+        .collect();
+    let entities = entities.as_slice();
     let entity_total = entities.len();
 
     // ── Tiers + kind histogram ──────────────────────────────────────────────
@@ -497,6 +512,7 @@ pub fn audit(entities: &[AuditEntity], log: LogSignals) -> AuditReport {
         by_kind,
         tiers: (verified, probable, candidate),
         noise_ratio,
+        quarantined,
         findings,
         score,
         log,
