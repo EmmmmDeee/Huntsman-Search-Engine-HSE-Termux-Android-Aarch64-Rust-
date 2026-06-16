@@ -100,3 +100,47 @@ use super::*;
         assert!(second.page.is_none());
         assert!(second.verdicts.is_none());
     }
+
+    fn results(raw: &str) -> Vec<ScanResult> {
+        serde_json::from_str::<SearchResp>(raw).unwrap().results
+    }
+
+    #[test]
+    fn summarize_dedups_every_field() {
+        let r = results(
+            r#"{"results":[
+              {"page":{"url":"https://a.example.com/x","domain":"a.example.com","ip":"1.1.1.1","country":"US","server":"nginx"},"verdicts":{"malicious":false}},
+              {"page":{"url":"https://a.example.com/x","domain":"a.example.com","ip":"1.1.1.1","country":"US","server":"nginx"},"verdicts":{"malicious":true}},
+              {"page":{"url":"https://b.example.com/y","domain":"b.example.com","ip":"2.2.2.2","country":"DE","server":"cloudflare"}}
+            ]}"#,
+        );
+        let i = summarize(&r);
+        assert_eq!(i.scan_count, 3);
+        assert_eq!(i.unique_ips.len(), 2);
+        assert_eq!(i.urls.len(), 2);
+        assert_eq!(i.domains.len(), 2);
+        assert!(i.any_malicious);
+    }
+
+    #[test]
+    fn child_entities_surface_domains_and_urls_and_drop_seed_echo() {
+        let r = results(
+            r#"{"results":[
+              {"page":{"url":"https://shop.example.com/login","domain":"shop.example.com","ip":"93.184.216.34","country":"US"}},
+              {"page":{"url":"https://example.com/","domain":"example.com","ip":"93.184.216.34","country":"US"}}
+            ]}"#,
+        );
+        let es = child_entities(&summarize(&r), "example.com", "s");
+        let have = |k: EntityKind, v: &str| es.iter().any(|e| e.kind == k && e.value == v);
+        // Subdomain surfaces as a Domain pivot…
+        assert!(have(EntityKind::Domain, "shop.example.com"));
+        // …but the seed domain itself is not echoed back.
+        assert!(!have(EntityKind::Domain, "example.com"));
+        // Scanned URLs become Url pivots (both distinct URLs; value is the
+        // entity's normalised form, so assert by count + the path-bearing one).
+        assert!(have(EntityKind::Url, "https://shop.example.com/login"));
+        assert_eq!(es.iter().filter(|e| e.kind == EntityKind::Url).count(), 2);
+        // IP + country still emitted; IP deduped.
+        assert_eq!(es.iter().filter(|e| e.kind == EntityKind::IpAddress).count(), 1);
+        assert!(have(EntityKind::Address, "US"));
+    }
