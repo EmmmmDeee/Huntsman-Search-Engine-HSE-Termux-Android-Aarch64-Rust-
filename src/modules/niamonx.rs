@@ -32,7 +32,7 @@ const ULP_LIMIT: u32 = 200;
 
 pub struct NiamonX;
 
-// ── Request bodies ─────────────────────────────────────────────────────────────
+// ── Request bodies ─────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct PbsV1Body<'a> {
@@ -56,7 +56,7 @@ struct UlpBody<'a> {
     limit: u32,
 }
 
-// ── Response types — PBS v1 ────────────────────────────────────────────────────
+// ── Response types — PBS v1 ────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct PbsV1Response {
@@ -97,7 +97,7 @@ struct PbsV1Rate {
     remaining: u32,
 }
 
-// ── Response types — PBS v2 ────────────────────────────────────────────────────
+// ── Response types — PBS v2 ────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct PbsV2Response {
@@ -142,7 +142,7 @@ struct PbsV2Source {
     compilation: Option<u8>,
 }
 
-// ── Response types — ULP ──────────────────────────────────────────────────────
+// ── Response types — ULP ─────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct UlpResponse {
@@ -172,7 +172,7 @@ struct UlpRecord {
     // `pass` field intentionally absent — never stored or emitted.
 }
 
-// ── Module trait ───────────────────────────────────────────────────────────────
+// ── Module trait ─────────────────────────────────────────────────────────
 
 #[async_trait]
 impl Module for NiamonX {
@@ -262,7 +262,7 @@ impl Module for NiamonX {
     }
 }
 
-// ── HTTP helpers ───────────────────────────────────────────────────────────────
+// ── HTTP helpers ─────────────────────────────────────────────────────────
 
 async fn fetch_pbs_v1(
     http: &reqwest::Client,
@@ -340,7 +340,7 @@ async fn fetch_ulp(
         .map_err(|e| Error::module(SRC, e))
 }
 
-// ── Emitters ───────────────────────────────────────────────────────────────────
+// ── Emitters ──────────────────────────────────────────────────────────────
 
 fn emit_pbs_v1(
     resp: PbsV1Response,
@@ -377,6 +377,9 @@ fn emit_pbs_v1(
 
     if let Some(meta) = &data.meta {
         if meta.blocks_total > 0 {
+            // A breach hit even when risk score is 0/absent — tag it so
+            // downstream consumers that key off `breach` see the hit.
+            entity.tag("breach");
             entity.add_evidence(
                 Evidence::new(
                     SRC,
@@ -405,7 +408,12 @@ fn emit_pbs_v1(
         warn!(remaining = rate.remaining, "niamonx pbs_v1 quota low");
     }
 
-    for block in data.blocks.unwrap_or_default() {
+    let blocks = data.blocks.unwrap_or_default();
+    if !blocks.is_empty() {
+        // Block records are breach hits even when risk score is 0/absent.
+        entity.tag("breach");
+    }
+    for block in blocks {
         let source = block.title.as_deref().unwrap_or("unknown");
         entity.tag(format!("niamonx:breach:{}", slugify(source)));
         if let Some(desc) = &block.description {
@@ -598,7 +606,6 @@ fn emit_ulp(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -633,6 +640,35 @@ mod tests {
         emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s");
         assert!(!entity.has_tag("breach"));
         assert!(entity.evidence.is_empty());
+    }
+
+    #[test]
+    fn pbs_v1_tags_breach_on_blocks_without_risk() {
+        // A real hit with breach blocks but no/zero risk score must still set
+        // the generic `breach` tag so downstream consumers see it.
+        let resp = PbsV1Response {
+            success: true,
+            data: Some(PbsV1Data {
+                status: Some("ok".to_string()),
+                error: None,
+                meta: Some(PbsV1Meta {
+                    blocks_total: 2,
+                    emails: None,
+                }),
+                risk: None,
+                blocks: Some(vec![PbsV1Block {
+                    title: Some("ExampleLeak".to_string()),
+                    description: Some("leak".to_string()),
+                }]),
+                rate: None,
+            }),
+        };
+        let target = Target::new(TargetKind::Email, "x@y.com");
+        let mut entity = target.to_entity(0.80, "s");
+        let mut result = ModuleResult::new();
+        emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s");
+        assert!(entity.has_tag("breach"));
+        assert!(entity.has_tag("niamonx:breach:exampleleak"));
     }
 
     #[test]
