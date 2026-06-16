@@ -11,3 +11,14 @@ use super::*;
         // Fallback wrapper.
         assert_eq!(mode_or(&[], "fallback"), "fallback");
     }
+
+    #[test]
+    fn mode_single_item_is_that_item() {
+        assert_eq!(mode(&["only"]), Some("only"));
+    }
+
+    #[test]
+    fn mode_or_returns_winner_not_fallback_when_non_empty() {
+        // The fallback is ignored when there is a winner.
+        assert_eq!(mode_or(&["a", "b", "b"], "fallback"), "b");
+    }
