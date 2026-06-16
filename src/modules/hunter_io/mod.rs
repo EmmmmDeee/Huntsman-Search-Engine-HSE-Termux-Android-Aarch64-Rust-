@@ -9,6 +9,8 @@
 //! `email_parse` (parsed Emails feed back as new targets) and
 //! `hibp` (each discovered Email gets a breach check).
 
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -46,7 +48,9 @@ struct HunterApiError {
 
 #[derive(Deserialize)]
 struct HunterData {
-    #[allow(dead_code)]
+    /// Canonical domain Hunter resolved for the organisation. Surfaced as a
+    /// `Domain` pivot by [`build_entities`] (it can differ from the queried
+    /// host, e.g. a redirect/brand domain).
     #[serde(default)]
     domain: Option<String>,
     #[serde(default)]
@@ -128,6 +132,10 @@ impl Module for HunterIo {
             EntityKind::Email,
             EntityKind::Person,
             EntityKind::Organisation,
+            // Hunter's canonical org domain + every email's source domain.
+            EntityKind::Domain,
+            // The public source pages where Hunter saw each address.
+            EntityKind::Url,
         ]
     }
 
@@ -197,78 +205,231 @@ impl Module for HunterIo {
         };
 
         let mut result = ModuleResult::new();
-
-        // ── Organisation entity (if Hunter resolved one for the domain) ──
-        if let Some(org) = data.organization.as_deref().filter(|s| !s.is_empty()) {
-            let mut e = Entity::new(EntityKind::Organisation, org, 0.70, &ctx.scan_id);
-            e.tag("hunter-io");
-            let mut ev =
-                Evidence::new(SRC, format!("Hunter.io resolved organisation for {domain}"))
-                    .with_attr("domain", domain);
-            if let Some(c) = data.country.as_deref() {
-                ev = ev.with_attr("country", c);
-            }
-            if let Some(p) = data.pattern.as_deref() {
-                ev = ev.with_attr("email_pattern", p);
-            }
-            e.add_evidence(ev);
+        for e in build_entities(&data, domain, &ctx.scan_id) {
             result.push(e);
         }
-
-        // ── Email entities + co-located Person entities ──
-        for entry in &data.emails {
-            let Some(addr) = entry.value.as_deref().filter(|s| !s.is_empty()) else {
-                continue;
-            };
-            let conf = confidence_from_hunter_score(entry.confidence);
-            let mut ee = Entity::new(EntityKind::Email, addr, conf, &ctx.scan_id);
-            ee.tag("hunter-io");
-            ee.tag("email-finder");
-            let mut ev = Evidence::new(SRC, format!("Hunter.io email for {domain}"))
-                .with_attr("domain", domain)
-                .with_attr(
-                    "hunter_confidence",
-                    entry.confidence.unwrap_or(0).to_string(),
-                );
-            if let Some(p) = entry.position.as_deref() {
-                ev = ev.with_attr("position", p);
-            }
-            if let Some(d) = entry.department.as_deref() {
-                ev = ev.with_attr("department", d);
-            }
-            if let Some(src) = entry.sources.first()
-                && let Some(uri) = src.uri.as_deref()
-            {
-                ev = ev.with_attr("source_url", uri);
-                if let Some(d) = src.domain.as_deref() {
-                    ev = ev.with_attr("source_domain", d);
-                }
-            }
-            ee.add_evidence(ev);
-            result.push(ee);
-
-            // ── Person entity if Hunter has a name attached ──
-            if let (Some(first), Some(last)) = (
-                entry.first_name.as_deref().filter(|s| !s.is_empty()),
-                entry.last_name.as_deref().filter(|s| !s.is_empty()),
-            ) {
-                let full = format!("{first} {last}");
-                let mut pe = Entity::new(EntityKind::Person, &full, conf.min(0.75), &ctx.scan_id);
-                pe.tag("hunter-io");
-                pe.tag("email-attribution");
-                let mut pev = Evidence::new(SRC, format!("Hunter.io attributed {addr} to {full}"))
-                    .with_attr("email", addr)
-                    .with_attr("domain", domain);
-                if let Some(p) = entry.position.as_deref() {
-                    pev = pev.with_attr("position", p);
-                }
-                pe.add_evidence(pev);
-                result.push(pe);
-            }
-        }
-
         Ok(result)
     }
+}
+
+/// Map a Hunter.io `domain-search` payload to graph entities. **Pure** (no IO,
+/// no quota) so the field-mapping, confidence, source-pivot and
+/// pattern-synthesis logic is unit-tested directly, decoupled from the network.
+///
+/// Surfaces, beyond the headline Email/Person pairs:
+///   • the resolved **organisation** (with country + email pattern on evidence);
+///   • Hunter's **canonical domain** for the org as a `Domain` pivot (it can
+///     differ from the queried host — a redirect or brand domain);
+///   • every email's **source** page (`Url`) and source **domain** — the public
+///     pages where Hunter saw the address, each a fresh OSINT pivot — not just
+///     the first one as an evidence attribute;
+///   • for a person Hunter names but gives **no confirmed address**, a
+///     pattern-**synthesised** candidate email (`{first}.{last}`-style),
+///     emitted as a low-confidence `weak-lead` so it never outranks a verified
+///     address but still seeds the email→breach/parse chain.
+///
+/// A `seen` set collapses duplicate sources/synthesised addresses within one
+/// response; the engine's canonical dedup still applies across modules.
+fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<Entity> {
+    let mut out: Vec<Entity> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    let nonempty = |s: &Option<String>| -> Option<String> {
+        s.as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+
+    let canonical = nonempty(&data.domain);
+    let pattern = nonempty(&data.pattern);
+
+    // ── Organisation entity (if Hunter resolved one for the domain) ──
+    if let Some(org) = nonempty(&data.organization) {
+        let mut e = Entity::new(EntityKind::Organisation, &org, 0.70, scan_id);
+        e.tag("hunter-io");
+        let mut ev = Evidence::new(
+            SRC,
+            format!("Hunter.io resolved organisation for {target_domain}"),
+        )
+        .with_attr("domain", target_domain);
+        if let Some(c) = nonempty(&data.country) {
+            ev = ev.with_attr("country", &c);
+        }
+        if let Some(p) = &pattern {
+            ev = ev.with_attr("email_pattern", p);
+        }
+        if let Some(c) = &canonical {
+            ev = ev.with_attr("canonical_domain", c);
+        }
+        e.add_evidence(ev);
+        out.push(e);
+    }
+
+    // ── Canonical org domain pivot (previously discarded). ──
+    if let Some(dom) = &canonical
+        && seen.insert(format!("dom:{}", dom.to_lowercase()))
+    {
+        let mut e = Entity::new(EntityKind::Domain, dom, 0.60, scan_id);
+        e.tag("hunter-io");
+        e.tag("org-domain");
+        e.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("Hunter.io canonical domain for {target_domain}"),
+            )
+            .with_attr("queried_domain", target_domain),
+        );
+        out.push(e);
+    }
+
+    // Domain to synthesise candidate addresses against: prefer Hunter's
+    // canonical domain, fall back to the queried host.
+    let synth_domain = canonical.as_deref().unwrap_or(target_domain);
+
+    // ── Email entities + co-located Person entities + source pivots ──
+    for entry in &data.emails {
+        let conf = confidence_from_hunter_score(entry.confidence);
+        let first = nonempty(&entry.first_name);
+        let last = nonempty(&entry.last_name);
+
+        // The confirmed address, or — when Hunter names a person but withholds
+        // their address — a pattern-synthesised candidate (low-confidence lead).
+        let (addr, synthesised) = match nonempty(&entry.value) {
+            Some(v) => (Some(v), false),
+            None => match (&pattern, &first, &last) {
+                (Some(p), Some(f), Some(l)) => (apply_email_pattern(p, f, l, synth_domain), true),
+                _ => (None, false),
+            },
+        };
+        let Some(addr) = addr else {
+            continue;
+        };
+        if !seen.insert(format!("mail:{}", addr.to_lowercase())) {
+            continue;
+        }
+
+        let email_conf = if synthesised { 0.40 } else { conf };
+        let mut ee = Entity::new(EntityKind::Email, &addr, email_conf, scan_id);
+        ee.tag("hunter-io");
+        ee.tag("email-finder");
+        if synthesised {
+            ee.tag("email-pattern-synthesised");
+            ee.tag("weak-lead");
+        }
+        let mut ev = Evidence::new(SRC, format!("Hunter.io email for {target_domain}"))
+            .with_attr("domain", target_domain)
+            .with_attr(
+                "hunter_confidence",
+                entry.confidence.unwrap_or(0).to_string(),
+            );
+        if synthesised && let Some(p) = &pattern {
+            ev = ev.with_attr("synthesised_from_pattern", p);
+        }
+        if let Some(p) = nonempty(&entry.position) {
+            ev = ev.with_attr("position", &p);
+        }
+        if let Some(d) = nonempty(&entry.department) {
+            ev = ev.with_attr("department", &d);
+        }
+        if let Some(src) = entry.sources.first() {
+            if let Some(uri) = nonempty(&src.uri) {
+                ev = ev.with_attr("source_url", &uri);
+            }
+            if let Some(d) = nonempty(&src.domain) {
+                ev = ev.with_attr("source_domain", &d);
+            }
+        }
+        ee.add_evidence(ev);
+        out.push(ee);
+
+        // ── Person entity if Hunter has a name attached ──
+        if let (Some(first), Some(last)) = (&first, &last) {
+            let full = format!("{first} {last}");
+            let mut pe = Entity::new(EntityKind::Person, &full, email_conf.min(0.75), scan_id);
+            pe.tag("hunter-io");
+            pe.tag("email-attribution");
+            let mut pev = Evidence::new(SRC, format!("Hunter.io attributed {addr} to {full}"))
+                .with_attr("email", &addr)
+                .with_attr("domain", target_domain);
+            if let Some(p) = nonempty(&entry.position) {
+                pev = pev.with_attr("position", &p);
+            }
+            pe.add_evidence(pev);
+            out.push(pe);
+        }
+
+        // ── Source pivots: every page Hunter saw the address on. ──
+        for src in &entry.sources {
+            if let Some(uri) = nonempty(&src.uri)
+                && seen.insert(format!("url:{}", uri.to_lowercase()))
+            {
+                let mut e = Entity::new(EntityKind::Url, &uri, 0.45, scan_id);
+                e.tag("hunter-io");
+                e.tag("email-source");
+                e.add_evidence(
+                    Evidence::new(SRC, format!("Hunter.io source page for {addr}"))
+                        .with_attr("email", &addr),
+                );
+                out.push(e);
+            }
+            if let Some(d) = nonempty(&src.domain)
+                && seen.insert(format!("dom:{}", d.to_lowercase()))
+            {
+                let mut e = Entity::new(EntityKind::Domain, &d, 0.40, scan_id);
+                e.tag("hunter-io");
+                e.tag("email-source");
+                e.add_evidence(
+                    Evidence::new(SRC, format!("Hunter.io source domain for {addr}"))
+                        .with_attr("email", &addr),
+                );
+                out.push(e);
+            }
+        }
+    }
+
+    out
+}
+
+/// Render a Hunter.io email *pattern* into a concrete local-part + domain.
+///
+/// Hunter expresses an organisation's address convention as a token string —
+/// `{first}.{last}`, `{f}{last}`, `{first}`, `{f}.{l}`, … — where `{first}` /
+/// `{last}` are the full name parts and `{f}` / `{l}` their initials. Literal
+/// separators between tokens (`.`, `_`, `-`) are preserved.
+///
+/// Returns `None` when the pattern needs a name part the caller doesn't have
+/// (so we never emit a malformed `john.@acme.com`), when the domain is empty,
+/// or when no token resolved. **Pure.**
+fn apply_email_pattern(pattern: &str, first: &str, last: &str, domain: &str) -> Option<String> {
+    let first = first.trim().to_lowercase();
+    let last = last.trim().to_lowercase();
+    let domain = domain.trim().trim_start_matches('@');
+    if pattern.trim().is_empty() || domain.is_empty() {
+        return None;
+    }
+
+    let needs_first = pattern.contains("{first}") || pattern.contains("{f}");
+    let needs_last = pattern.contains("{last}") || pattern.contains("{l}");
+    if (needs_first && first.is_empty()) || (needs_last && last.is_empty()) {
+        return None;
+    }
+
+    let mut local = pattern.trim().to_string();
+    local = local.replace("{first}", &first).replace("{last}", &last);
+    if let Some(c) = first.chars().next() {
+        local = local.replace("{f}", &c.to_string());
+    }
+    if let Some(c) = last.chars().next() {
+        local = local.replace("{l}", &c.to_string());
+    }
+
+    // Any unresolved token means the pattern referenced something we can't
+    // fill — refuse rather than emit a broken address.
+    if local.contains('{') || local.contains('}') || local.is_empty() {
+        return None;
+    }
+    Some(format!("{local}@{domain}"))
 }
 
 /// Map Hunter's 0-100 confidence score to an HSE confidence in
