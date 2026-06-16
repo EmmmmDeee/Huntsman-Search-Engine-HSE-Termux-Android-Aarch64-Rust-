@@ -58,6 +58,28 @@ struct Issues {
     is_dark_web: Option<bool>,
 }
 
+impl Issues {
+    /// The issue flags that are set, each paired with its `(tag, evidence-attr)`
+    /// names. Single-sourced (CONVENTIONS rule 3): a flag's short tag (`vpn`)
+    /// and its evidence key (`is_vpn`) live in one table, so the two passes —
+    /// tagging the subject and recording evidence — cannot drift apart.
+    fn active(&self) -> impl Iterator<Item = (&'static str, &'static str)> {
+        [
+            (self.is_vpn, "vpn", "is_vpn"),
+            (self.is_proxy, "proxy", "is_proxy"),
+            (self.is_tor, "tor", "is_tor"),
+            (self.is_hosting, "hosting", "is_hosting"),
+            (self.is_anonymous_vpn, "anonymous-vpn", "is_anonymous_vpn"),
+            (self.is_cloud, "cloud", "is_cloud"),
+            (self.is_scanner, "scanner", "is_scanner"),
+            (self.is_dark_web, "dark-web", "is_dark_web"),
+        ]
+        .into_iter()
+        .filter(|(flag, _, _)| *flag == Some(true))
+        .map(|(_, tag, attr)| (tag, attr))
+    }
+}
+
 #[derive(Deserialize)]
 struct Score {
     #[serde(default)]
@@ -97,6 +119,118 @@ struct VulnBlock {
 }
 
 const SRC: &str = "criminal_ip";
+
+/// Criminal IP grades risk as a textual band; only the top three bands warrant
+/// a `high-risk-*` tag on the subject IP.
+fn risk_is_high(level: &str) -> bool {
+    matches!(level, "Critical" | "Dangerous" | "High")
+}
+
+/// `Some(trimmed)` only when a field is present and non-blank — keeps empty API
+/// strings out of evidence (the same dead-field hygiene applied tree-wide).
+fn nonblank(v: Option<&str>) -> Option<&str> {
+    v.map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Map a decoded Criminal IP report to its entities. **Pure** (no network/IO),
+/// so the whole risk→tag→evidence→pivot mapping is unit-testable directly.
+///
+/// | source                                  | output                                |
+/// |-----------------------------------------|---------------------------------------|
+/// | the queried IP                          | subject `IpAddress` (+ `criminal_ip`) |
+/// | `score.inbound`/`outbound` in top bands | `high-risk-inbound`/`-outbound` tags  |
+/// | `issues.is_*` flags that are `true`     | one tag each + an `is_*=true` attr     |
+/// | `whois[0].org_country_code`             | `country:<CC>` tag (uppercased)       |
+/// | `score.*`, `whois[0].*`, `port`, `vuln` | evidence attributes                   |
+/// | `whois[0].org_name` (non-blank)         | `Organisation` pivot                   |
+/// | `whois[0].as_no`                        | `Asn` pivot (`AS<n>`)                  |
+///
+/// The subject is always emitted (the caller has already gated on a
+/// `status == 200` report); the Organisation/Asn pivots only when the whois
+/// block carries them.
+fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
+    let ip = target.value.trim();
+    let mut out = Vec::new();
+
+    let mut entity = target.to_entity(0.88, scan_id);
+    entity.tag("criminal_ip");
+    if let Some(s) = &body.score {
+        if s.inbound.as_deref().is_some_and(risk_is_high) {
+            entity.tag("high-risk-inbound");
+        }
+        if s.outbound.as_deref().is_some_and(risk_is_high) {
+            entity.tag("high-risk-outbound");
+        }
+    }
+    if let Some(issues) = &body.issues {
+        for (tag, _) in issues.active() {
+            entity.tag(tag);
+        }
+    }
+    if let Some(cc) = body
+        .whois
+        .as_ref()
+        .and_then(|w| w.data.first())
+        .and_then(|w| nonblank(w.org_country_code.as_deref()))
+    {
+        entity.tag(format!("country:{}", cc.to_uppercase()));
+    }
+
+    let mut ev = Evidence::new(SRC, format!("Criminal IP report for {ip}"));
+    if let Some(s) = body.score.as_ref() {
+        if let Some(i) = nonblank(s.inbound.as_deref()) {
+            ev = ev.with_attr("inbound_risk", i);
+        }
+        if let Some(o) = nonblank(s.outbound.as_deref()) {
+            ev = ev.with_attr("outbound_risk", o);
+        }
+    }
+    if let Some(w) = body.whois.as_ref().and_then(|w| w.data.first()) {
+        if let Some(v) = w.as_no {
+            ev = ev.with_attr("asn", v.to_string());
+        }
+        if let Some(v) = nonblank(w.as_name.as_deref()) {
+            ev = ev.with_attr("as_name", v);
+        }
+        if let Some(v) = nonblank(w.org_name.as_deref()) {
+            ev = ev.with_attr("org", v);
+        }
+        if let Some(v) = nonblank(w.org_country_code.as_deref()) {
+            ev = ev.with_attr("country", v);
+        }
+    }
+    if let Some(p) = body.port.as_ref().and_then(|p| p.count) {
+        ev = ev.with_attr("open_port_count", p.to_string());
+    }
+    if let Some(v) = body.vulnerability.as_ref().and_then(|v| v.count) {
+        ev = ev.with_attr("vuln_count", v.to_string());
+    }
+    if let Some(issues) = &body.issues {
+        ev = issues
+            .active()
+            .fold(ev, |ev, (_, attr)| ev.with_attr(attr, "true"));
+    }
+    entity.add_evidence(ev);
+    out.push(entity);
+
+    if let Some(w) = body.whois.as_ref().and_then(|w| w.data.first()) {
+        if let Some(org) = nonblank(w.org_name.as_deref()) {
+            let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, scan_id);
+            oe.tag("criminal_ip");
+            oe.add_evidence(Evidence::new(SRC, format!("IP org for {ip}")));
+            out.push(oe);
+        }
+        if let Some(asn) = w.as_no {
+            let asn_str = format!("AS{asn}");
+            let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, scan_id);
+            ae.tag("criminal_ip");
+            ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
+            out.push(ae);
+        }
+    }
+
+    out
+}
 
 pub struct CriminalIp;
 
@@ -172,109 +306,8 @@ impl Module for CriminalIp {
             return Ok(ModuleResult::new());
         }
 
-        let mut entity = target.to_entity(0.88, &ctx.scan_id);
-        entity.tag("criminal_ip");
-        if let Some(s) = &body.score {
-            if let Some(i) = s.inbound.as_deref()
-                && matches!(i, "Critical" | "Dangerous" | "High")
-            {
-                entity.tag("high-risk-inbound");
-            }
-            if let Some(o) = s.outbound.as_deref()
-                && matches!(o, "Critical" | "Dangerous" | "High")
-            {
-                entity.tag("high-risk-outbound");
-            }
-        }
-        if let Some(is) = &body.issues {
-            // Each true issue flag raises its tag — one table, one pass.
-            [
-                (is.is_vpn, "vpn"),
-                (is.is_proxy, "proxy"),
-                (is.is_tor, "tor"),
-                (is.is_hosting, "hosting"),
-                (is.is_anonymous_vpn, "anonymous-vpn"),
-                (is.is_cloud, "cloud"),
-                (is.is_scanner, "scanner"),
-                (is.is_dark_web, "dark-web"),
-            ]
-            .into_iter()
-            .filter(|(flag, _)| *flag == Some(true))
-            .for_each(|(_, tag)| entity.tag(tag));
-        }
-        if let Some(w) = body.whois.as_ref().and_then(|w| w.data.first())
-            && let Some(c) = w.org_country_code.as_deref()
-        {
-            entity.tag(format!("country:{}", c.to_uppercase()));
-        }
-
-        let mut ev = Evidence::new(SRC, format!("Criminal IP report for {ip}"));
-        if let Some(s) = body.score.as_ref() {
-            if let Some(i) = s.inbound.as_deref() {
-                ev = ev.with_attr("inbound_risk", i);
-            }
-            if let Some(o) = s.outbound.as_deref() {
-                ev = ev.with_attr("outbound_risk", o);
-            }
-        }
-        if let Some(w) = body.whois.as_ref().and_then(|w| w.data.first()) {
-            if let Some(v) = w.as_no {
-                ev = ev.with_attr("asn", v.to_string());
-            }
-            if let Some(v) = w.as_name.as_deref() {
-                ev = ev.with_attr("as_name", v);
-            }
-            if let Some(v) = w.org_name.as_deref() {
-                ev = ev.with_attr("org", v);
-            }
-            if let Some(v) = w.org_country_code.as_deref() {
-                ev = ev.with_attr("country", v);
-            }
-        }
-        if let Some(p) = body.port.and_then(|p| p.count) {
-            ev = ev.with_attr("open_port_count", p.to_string());
-        }
-        if let Some(v) = body.vulnerability.and_then(|v| v.count) {
-            ev = ev.with_attr("vuln_count", v.to_string());
-        }
-        if let Some(is) = &body.issues {
-            // Mirror the true issue flags as evidence attributes in one fold.
-            ev = [
-                (is.is_vpn, "is_vpn"),
-                (is.is_proxy, "is_proxy"),
-                (is.is_tor, "is_tor"),
-                (is.is_hosting, "is_hosting"),
-                (is.is_anonymous_vpn, "is_anonymous_vpn"),
-                (is.is_cloud, "is_cloud"),
-                (is.is_scanner, "is_scanner"),
-                (is.is_dark_web, "is_dark_web"),
-            ]
-            .into_iter()
-            .filter(|(flag, _)| *flag == Some(true))
-            .fold(ev, |ev, (_, k)| ev.with_attr(k, "true"));
-        }
-        entity.add_evidence(ev);
         let mut result = ModuleResult::new();
-        result.push(entity);
-
-        if let Some(w) = body.whois.as_ref().and_then(|w| w.data.first()) {
-            if let Some(org) = w.org_name.as_deref()
-                && !org.is_empty()
-            {
-                let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, &ctx.scan_id);
-                oe.tag("criminal_ip");
-                oe.add_evidence(Evidence::new(SRC, format!("IP org for {ip}")));
-                result.push(oe);
-            }
-            if let Some(asn) = w.as_no {
-                let asn_str = format!("AS{asn}");
-                let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, &ctx.scan_id);
-                ae.tag("criminal_ip");
-                ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
-                result.push(ae);
-            }
-        }
-
+        result.entities = build_entities(&body, target, &ctx.scan_id);
         Ok(result)
     }
 }
