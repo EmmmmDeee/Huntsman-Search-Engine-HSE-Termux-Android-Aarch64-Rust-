@@ -40,5 +40,6 @@ pub mod spf;
 pub mod stats;
 pub mod str_util;
 pub mod termux;
+pub mod threat;
 pub mod uid;
 pub mod url_util;

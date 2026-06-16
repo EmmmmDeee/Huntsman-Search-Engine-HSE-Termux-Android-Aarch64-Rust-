@@ -1,5 +1,5 @@
 
-use super::{ascii_digits, char_window, fold_ascii_lower, nonempty, truncate_safe};
+use super::{ascii_digits, char_window, fold_ascii_lower, nonempty, slugify, truncate_display, truncate_safe};
 
     #[test]
     fn nonempty_trims_and_treats_blank_as_absent() {
@@ -139,4 +139,25 @@ use super::{ascii_digits, char_window, fold_ascii_lower, nonempty, truncate_safe
             let once = fold_ascii_lower(s);
             assert_eq!(fold_ascii_lower(&once), once, "not idempotent for {s:?}");
         }
+    }
+
+    #[test]
+    fn slugify_lowercases_and_collapses_non_alnum_to_dash() {
+        assert_eq!(slugify("Hello World"), "hello-world");
+        assert_eq!(slugify("github.com"), "github-com");
+        assert_eq!(slugify("---"), "");
+        assert_eq!(slugify("client transfer prohibited"), "client-transfer-prohibited");
+        assert_eq!(slugify("no-spaces"), "no-spaces");
+        assert_eq!(slugify("a  b   c"), "a-b-c");
+        assert_eq!(slugify(""), "");
+    }
+
+    #[test]
+    fn truncate_display_appends_ellipsis_when_long() {
+        assert_eq!(truncate_display("hello", 10), "hello");
+        assert_eq!(truncate_display("hello world", 5), "hello…");
+        let long: String = "a".repeat(300);
+        let t = truncate_display(&long, 200);
+        assert!(t.ends_with('…'));
+        assert_eq!(t.chars().count(), 201);
     }

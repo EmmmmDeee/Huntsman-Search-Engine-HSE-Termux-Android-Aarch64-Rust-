@@ -146,6 +146,8 @@ impl Module for VirusTotal {
 
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
         use crate::core::entity::EntityKind;
+        // VT enriches the target entity in-place (Domain or IpAddress);
+        // no new pivot entities are emitted by this module.
         const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress];
         KINDS
     }

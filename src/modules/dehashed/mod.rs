@@ -88,6 +88,8 @@ impl Module for DeHashed {
 
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
         use crate::core::entity::EntityKind;
+        // DeHashed enriches the seed entity only — breach metadata is attached
+        // as evidence attrs rather than new pivot entities.
         const KINDS: &[EntityKind] = &[
             EntityKind::Email,
             EntityKind::Username,
