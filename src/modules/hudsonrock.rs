@@ -96,17 +96,19 @@ impl Module for HudsonRock {
         ModuleCategory::Breach
     }
 
+    fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
+        use crate::core::entity::EntityKind;
+        // Primary entity enriches the seed; discovered stealer-origin IPs
+        // become IpAddress pivots (exposed_machine_ip from the stealer log).
+        const KINDS: &[EntityKind] =
+            &[EntityKind::Email, EntityKind::Domain, EntityKind::IpAddress];
+        KINDS
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         // Single network request with no per-request timeout; the 3s default
         // would kill a slow-but-connected response as a spurious "timeout".
         10_000
-    }
-
-    fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
-        use crate::core::entity::EntityKind;
-        const KINDS: &[EntityKind] =
-            &[EntityKind::Email, EntityKind::Domain, EntityKind::IpAddress];
-        KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

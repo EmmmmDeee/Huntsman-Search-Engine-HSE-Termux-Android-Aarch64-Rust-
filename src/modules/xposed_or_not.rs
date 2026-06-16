@@ -127,17 +127,17 @@ impl Module for XposedOrNot {
         ModuleCategory::Breach
     }
 
+    fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
+        use crate::core::entity::EntityKind;
+        const KINDS: &[EntityKind] = &[EntityKind::Email];
+        KINDS
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         // Up to ~3 sequential network requests, none with a per-request
         // timeout. The 3s default could not cover even one slow response,
         // let alone the chain; budget for the full sequence.
         15_000
-    }
-
-    fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
-        use crate::core::entity::EntityKind;
-        const KINDS: &[EntityKind] = &[EntityKind::Email];
-        KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
