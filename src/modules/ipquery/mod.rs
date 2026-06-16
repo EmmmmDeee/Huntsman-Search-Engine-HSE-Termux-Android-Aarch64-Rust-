@@ -206,9 +206,11 @@ impl Module for IpQuery {
 /// identity-location correlation. (Mobile IPs are *not* suppressed: a carrier
 /// IP still places the subject in a real region.) **Pure.**
 fn untrusted_geo_reason(ip: &str, risk: Option<&RiskBlock>) -> Option<&'static str> {
-    if crate::core::validation::is_cdn_edge_ip(ip) {
-        return Some("cdn/anycast edge");
+    // Shared base gate (CDN/anycast edge, and any future infra rule) …
+    if let Some(reason) = crate::core::validation::untrusted_ip_geo_reason(ip) {
+        return Some(reason);
     }
+    // … plus ipquery's risk-flag signals layered on top.
     let r = risk?;
     if r.is_tor == Some(true) {
         return Some("tor exit");

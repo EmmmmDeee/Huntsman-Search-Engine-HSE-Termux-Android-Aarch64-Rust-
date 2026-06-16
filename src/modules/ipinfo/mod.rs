@@ -51,14 +51,15 @@ struct IpInfoResp {
 fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
 
-    // A CDN/anycast edge IP geolocates to the answering datacenter, not the
-    // subject — its city/coords/org are pure infrastructure. Skip them so they
-    // can't pollute identity-location correlation (see ip_geo.rs for the rule).
-    if crate::core::validation::is_cdn_edge_ip(ip) {
+    // Shared trust gate: an IP whose geolocation is infrastructure (a
+    // CDN/anycast edge) is not the subject's, so skip its findings rather than
+    // pollute identity-location correlation.
+    if let Some(reason) = crate::core::validation::untrusted_ip_geo_reason(ip) {
         tracing::debug!(
             module = SRC,
             %ip,
-            "skipping IP-geo — CDN/anycast edge IP, location is datacenter not subject"
+            reason,
+            "skipping IP-geo — location is the infrastructure, not the subject"
         );
         return out;
     }

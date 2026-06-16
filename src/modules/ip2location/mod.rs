@@ -115,18 +115,21 @@ impl Module for Ip2Location {
             .await
             .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
 
-        // A CDN/anycast edge IP geolocates to the answering datacenter, not the
-        // subject — skip its Coordinates/Address so they can't pollute
-        // identity-location correlation, consistent with the ip_geo rule. The
-        // ASN/network entities below still describe the infrastructure itself.
-        let skip_geo = crate::core::validation::is_cdn_edge_ip(ip);
-        if skip_geo {
+        // The shared trust gate: an IP whose geolocation is infrastructure (a
+        // CDN/anycast edge) is not the subject's location, so its
+        // Coordinates/Address are suppressed; the ASN/network entities still
+        // describe the infrastructure itself.
+        let skip_geo = if let Some(reason) = crate::core::validation::untrusted_ip_geo_reason(ip) {
             tracing::debug!(
                 module = SRC,
                 %ip,
-                "skipping IP-geo Coordinates/Address — CDN/anycast edge IP, location is datacenter not subject"
+                reason,
+                "skipping IP-geo Coordinates/Address — location is the infrastructure, not the subject"
             );
-        }
+            true
+        } else {
+            false
+        };
 
         let mut result = ModuleResult::new();
         for e in build_entities(&data, ip, skip_geo, &ctx.scan_id) {

@@ -139,6 +139,25 @@ pub fn is_cdn_edge_ip(s: &str) -> bool {
     }
 }
 
+/// Reason an IP's geolocation must NOT be attributed to the **subject** — its
+/// coordinates describe infrastructure, not a person — or `None` when the
+/// location can be trusted as the subject's own. Today that is a CDN/anycast
+/// edge ([`is_cdn_edge_ip`]): its geo resolves to the answering datacenter.
+///
+/// This is the single shared gate every IP-geolocation module consults before
+/// emitting `Coordinates`/`Address`, so the trust policy — and any future rule
+/// (bogon ranges, known hosting blocks) — lives in one place and applies
+/// uniformly across providers instead of being re-derived per module. Risk-aware
+/// providers (e.g. `ipquery`, which knows VPN/Tor/proxy/datacenter flags) layer
+/// their extra signals on top of this base reason. **Pure.**
+#[must_use]
+pub fn untrusted_ip_geo_reason(s: &str) -> Option<&'static str> {
+    if is_cdn_edge_ip(s) {
+        return Some("cdn/anycast edge");
+    }
+    None
+}
+
 /// True if `s` parses to an IP that can **never** be a real host *anywhere*:
 /// RFC5737 documentation (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`),
 /// RFC2544 benchmarking (`198.18.0.0/15`), IETF-protocol (`192.0.0.0/24`),

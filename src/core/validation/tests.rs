@@ -279,6 +279,23 @@ fn ipv4_mapped_spellings_classify_like_their_v4_form() {
 }
 
 #[test]
+fn untrusted_ip_geo_reason_gates_cdn_edges_only() {
+    // CDN/anycast edge → its geo is the datacenter, not the subject.
+    assert_eq!(
+        untrusted_ip_geo_reason("104.16.0.1"),
+        Some("cdn/anycast edge")
+    );
+    assert_eq!(
+        untrusted_ip_geo_reason("151.101.1.1"),
+        Some("cdn/anycast edge")
+    );
+    // A real public host's geo is trusted (no reason to suppress).
+    assert_eq!(untrusted_ip_geo_reason("8.8.8.8"), None);
+    // Garbage parses to no reason rather than panicking.
+    assert_eq!(untrusted_ip_geo_reason("not-an-ip"), None);
+}
+
+#[test]
 fn non_routable_ip_catches_reserved_and_documentation_ranges() {
     // RFC5737 documentation (the canonical "example IP" that leaks in
     // from scraped tutorial pages and used to get expanded).
