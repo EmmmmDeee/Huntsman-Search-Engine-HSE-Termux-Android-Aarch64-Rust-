@@ -1,5 +1,5 @@
 use super::DeHashed;
-use super::build::{balance_str, build_breach_entity, db_names, selector_for};
+use super::build::{balance_str, build_breach_entity, build_entities, db_names, selector_for};
 use super::types::{DehashedResp, Entry};
 use crate::core::{
     entity::{Entity, EntityKind},
@@ -10,7 +10,15 @@ use crate::core::{
 use serde_json::json;
 
 fn entry(db: serde_json::Value) -> Entry {
-    Entry { database_name: db }
+    Entry {
+        database_name: db,
+        email: json!(null),
+        username: json!(null),
+        name: json!(null),
+        phone: json!(null),
+        ip_address: json!(null),
+        domain: json!(null),
+    }
 }
 
 fn attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {
@@ -176,4 +184,67 @@ fn resp_parses_v2_shape_and_drops_credential_fields() {
     assert!(!all_attr_vals.contains("hunter2"));
     assert!(!all_attr_vals.contains("5f4dcc3b"));
     assert_eq!(attr(&e, "top_databases"), Some("Collection#1×1"));
+}
+
+#[test]
+fn build_entities_surfaces_breach_linked_pivots_but_never_credentials() {
+    // Querying email:a@b.com returns records that also tie the subject to OTHER
+    // identifiers (a second email, a username, a real name, a phone, an IP, a
+    // domain). Those are legitimate OSINT pivots; passwords/hashes must not be.
+    let raw = r#"{
+        "total": 1,
+        "entries": [
+            {
+                "email": ["a@b.com", "alt@other.com"],
+                "username": ["alice99"],
+                "name": ["Alice Smith"],
+                "phone": ["+1 555 123 4567"],
+                "ip_address": ["198.51.100.7", "not-an-ip"],
+                "domain": ["evilcorp.com", "127.0.0.1"],
+                "password": ["hunter2"],
+                "hashed_password": ["5f4dcc3b5aa765d61d8327deb882cf99"],
+                "database_name": ["Collection#1"]
+            }
+        ]
+    }"#;
+    let r: DehashedResp = serde_json::from_str(raw).unwrap();
+    let entries = r.entries.unwrap();
+    let out = build_entities(EntityKind::Email, "a@b.com", "email", &entries, 1, None, "s");
+
+    let has = |k: EntityKind, v: &str| {
+        out.iter()
+            .any(|e| e.kind == k && e.value.eq_ignore_ascii_case(v) && e.has_tag("breach-linked"))
+    };
+    // The seed email is NOT echoed; the alternate one IS a pivot.
+    assert!(!out.iter().any(|e| e.value == "a@b.com" && e.has_tag("breach-linked")));
+    assert!(has(EntityKind::Email, "alt@other.com"));
+    assert!(has(EntityKind::Username, "alice99"));
+    assert!(has(EntityKind::Person, "Alice Smith"));
+    // Phone value is normalised by Entity::new (formatting stripped), so assert
+    // a breach-linked Phone pivot exists carrying the right digits.
+    assert!(out.iter().any(|e| e.kind == EntityKind::Phone
+        && e.has_tag("breach-linked")
+        && e.value.chars().filter(char::is_ascii_digit).collect::<String>() == "15551234567"));
+    assert!(has(EntityKind::IpAddress, "198.51.100.7"));
+    assert!(has(EntityKind::Domain, "evilcorp.com"));
+    // Junk gated out: a non-IP in ip_address, and an IP literal in domain.
+    assert!(!out.iter().any(|e| e.value == "not-an-ip"));
+    assert!(!out.iter().any(|e| e.kind == EntityKind::Domain && e.value == "127.0.0.1"));
+
+    // The aggregate breach entity is still first, and the no-credentials
+    // invariant holds across EVERY emitted entity's evidence.
+    assert_eq!(out[0].kind, EntityKind::Email);
+    let all: String = out
+        .iter()
+        .flat_map(|e| &e.evidence)
+        .flat_map(|ev| ev.attributes.values())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("|");
+    assert!(!all.contains("hunter2") && !all.contains("5f4dcc3b"));
+
+    // A linked pivot records what tied it to the subject.
+    let alt = out.iter().find(|e| e.value == "alt@other.com").unwrap();
+    assert_eq!(attr(alt, "linked_to"), Some("a@b.com"));
+    assert_eq!(attr(alt, "linked_via"), Some("email"));
 }

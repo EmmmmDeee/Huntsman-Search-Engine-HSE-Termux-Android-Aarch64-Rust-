@@ -92,3 +92,95 @@ pub(super) fn build_breach_entity(
     entity.add_evidence(ev);
     entity
 }
+
+/// Per-field cap on breach-linked pivot identifiers — a heavily-breached subject
+/// can co-occur with hundreds of stale aliases; a sample is enough to pivot on
+/// without flooding expansion or the credit-bounded page.
+pub(super) const MAX_PIVOTS_PER_FIELD: usize = 25;
+
+/// Validity gate for a candidate pivot of `kind`. **Pure.** Keeps obvious junk
+/// (a bare IP masquerading as a domain, a 1-char "name", a non-numeric phone)
+/// out of the graph so a breach-linked pivot is always a usable identifier.
+fn valid_pivot(kind: &EntityKind, v: &str) -> bool {
+    match kind {
+        EntityKind::Email => v.contains('@') && v.contains('.'),
+        EntityKind::IpAddress => v.parse::<std::net::IpAddr>().is_ok(),
+        EntityKind::Domain => v.contains('.') && v.parse::<std::net::IpAddr>().is_err(),
+        EntityKind::Phone => v.chars().filter(char::is_ascii_digit).count() >= 7,
+        EntityKind::Person => v.len() >= 2,
+        // Username (and any other kind): any non-blank token.
+        _ => !v.is_empty(),
+    }
+}
+
+/// Build the full entity set for a DeHashed v2 response: the aggregate breach
+/// entity ([`build_breach_entity`]) **plus** the non-credential identifiers the
+/// returned records tie to the subject — the subject's *other* emails,
+/// usernames, real name, phone, IPs and domains seen in the same leaks, emitted
+/// as deduplicated `breach-linked` pivots. **Pure** (no network/IO). The queried
+/// value is never echoed back, each field is capped at [`MAX_PIVOTS_PER_FIELD`],
+/// and — per the no-credentials invariant — only the non-secret fields `Entry`
+/// binds can appear here (passwords/hashes are unbound upstream).
+pub(super) fn build_entities(
+    kind: EntityKind,
+    value: &str,
+    selector: &str,
+    entries: &[Entry],
+    total: u64,
+    balance: Option<&str>,
+    scan_id: &str,
+) -> Vec<Entity> {
+    let mut out = vec![build_breach_entity(
+        kind, value, selector, entries, total, balance, scan_id,
+    )];
+
+    let seed = value.trim().to_ascii_lowercase();
+    let mut seen: std::collections::HashSet<(EntityKind, String)> = std::collections::HashSet::new();
+
+    // (kind, the per-entry field carrying that identifier). One pass per field
+    // keeps the cap per-field rather than global, so a noisy `username` list
+    // can't starve the rarer `name`/`phone` pivots.
+    // (identifier kind, the per-entry field that carries it).
+    type FieldAccessor = fn(&Entry) -> &serde_json::Value;
+    let fields: [(EntityKind, FieldAccessor); 6] = [
+        (EntityKind::Email, |e| &e.email),
+        (EntityKind::Username, |e| &e.username),
+        (EntityKind::Person, |e| &e.name),
+        (EntityKind::Phone, |e| &e.phone),
+        (EntityKind::IpAddress, |e| &e.ip_address),
+        (EntityKind::Domain, |e| &e.domain),
+    ];
+
+    for (ekind, accessor) in fields {
+        let mut emitted = 0usize;
+        for raw in entries.iter().flat_map(|e| db_names(accessor(e))) {
+            if emitted >= MAX_PIVOTS_PER_FIELD {
+                break;
+            }
+            let v = raw.trim();
+            let lc = v.to_ascii_lowercase();
+            if v.is_empty() || lc == seed || !valid_pivot(&ekind, v) {
+                continue;
+            }
+            if !seen.insert((ekind.clone(), lc)) {
+                continue;
+            }
+            let mut e = Entity::new(ekind.clone(), v, 0.55, scan_id);
+            e.tag(tags::BREACH);
+            e.tag("dehashed");
+            e.tag("breach-linked");
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("Identifier co-occurring with {selector}={value} in DeHashed leak(s)"),
+                )
+                .with_attr("linked_to", value)
+                .with_attr("linked_via", selector),
+            );
+            out.push(e);
+            emitted += 1;
+        }
+    }
+
+    out
+}

@@ -24,4 +24,22 @@ pub(super) struct DehashedResp {
 pub(super) struct Entry {
     #[serde(default)]
     pub(super) database_name: serde_json::Value,
+    // Non-credential identifiers a record ties to the subject — legitimate OSINT
+    // pivots (the subject's *other* emails/usernames/name/phone/IP/domain seen in
+    // the same leak). Each is a raw JSON value because v2 returns most fields as
+    // arrays; flattened by [`db_names`](super::build::db_names). `password` /
+    // `hashed_password` remain deliberately UNBOUND — serde drops them, upholding
+    // the no-credentials-in-evidence invariant.
+    #[serde(default)]
+    pub(super) email: serde_json::Value,
+    #[serde(default)]
+    pub(super) username: serde_json::Value,
+    #[serde(default)]
+    pub(super) name: serde_json::Value,
+    #[serde(default)]
+    pub(super) phone: serde_json::Value,
+    #[serde(default)]
+    pub(super) ip_address: serde_json::Value,
+    #[serde(default)]
+    pub(super) domain: serde_json::Value,
 }

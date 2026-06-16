@@ -30,7 +30,7 @@ mod types;
 use types::DehashedResp;
 
 mod build;
-use build::{balance_str, build_breach_entity, selector_for};
+use build::{balance_str, build_entities, selector_for};
 
 #[cfg(test)]
 mod tests;
@@ -154,7 +154,7 @@ impl Module for DeHashed {
 
         let balance = balance_str(&body.balance);
         let mut result = ModuleResult::new();
-        result.push(build_breach_entity(
+        result.extend(build_entities(
             target.kind.to_entity_kind(),
             value,
             selector,
