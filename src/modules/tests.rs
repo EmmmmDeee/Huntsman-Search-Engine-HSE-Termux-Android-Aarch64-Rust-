@@ -1,5 +1,5 @@
 
-use super::{reconnaissance_coverage, registry};
+use super::{reconnaissance_coverage, registry, technique_module_index};
     use crate::core::dependency::{ALL_TARGET_KINDS, PROBE_VALUE};
     use crate::core::scan::Target;
 
@@ -66,4 +66,41 @@ use super::{reconnaissance_coverage, registry};
             "consumes()/accepts() divergence detected:\n{}",
             violations.join("\n")
         );
+    }
+
+    #[test]
+    fn technique_module_index_is_a_clean_reverse_map() {
+        let index = technique_module_index();
+        assert!(!index.is_empty(), "registry maps to ATT&CK techniques");
+        for (id, mods) in &index {
+            // Only catalogued technique IDs are keyed.
+            assert!(
+                crate::core::attack::technique(id).is_some(),
+                "{id} must be a catalogued technique"
+            );
+            // Module lists are deduplicated and sorted.
+            let mut sorted = mods.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(&sorted, mods, "module list for {id} must be sorted+deduped");
+            assert!(!mods.is_empty(), "a keyed technique has at least one module");
+        }
+    }
+
+    #[test]
+    fn technique_module_index_inverts_the_forward_map() {
+        // Every (module, technique) edge in the forward map appears in the
+        // reverse index, and vice versa — the two are consistent.
+        let index = technique_module_index();
+        for m in registry() {
+            for &id in m.attack_techniques() {
+                if crate::core::attack::technique(id).is_some() {
+                    assert!(
+                        index.get(id).is_some_and(|mods| mods.contains(&m.name())),
+                        "module {} maps to {id} but the reverse index omits it",
+                        m.name()
+                    );
+                }
+            }
+        }
     }

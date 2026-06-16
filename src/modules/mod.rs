@@ -354,6 +354,34 @@ pub fn reconnaissance_coverage<'a>(
     crate::core::attack::coverage(ids)
 }
 
+/// Reverse index of the module ⇆ technique map: each ATT&CK Reconnaissance
+/// technique ID → the registered module names that implement it. Only
+/// catalogued technique IDs are keyed (unknown IDs are dropped), and the module
+/// lists are sorted + deduplicated, so the output is deterministic.
+///
+/// This is the single source the coverage assessment uses to answer two
+/// questions from one structure: which modules *would close* a gap technique,
+/// and which modules in a given scan *exercised* a covered one (intersect the
+/// list with the scan's evidence sources).
+#[must_use]
+pub fn technique_module_index() -> std::collections::BTreeMap<&'static str, Vec<&'static str>> {
+    use std::collections::BTreeMap;
+    let mut index: BTreeMap<&'static str, Vec<&'static str>> = BTreeMap::new();
+    for m in registry() {
+        let name = m.name();
+        for &id in m.attack_techniques() {
+            if crate::core::attack::technique(id).is_some() {
+                index.entry(id).or_default().push(name);
+            }
+        }
+    }
+    for names in index.values_mut() {
+        names.sort_unstable();
+        names.dedup();
+    }
+    index
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

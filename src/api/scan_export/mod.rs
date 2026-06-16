@@ -320,6 +320,34 @@ pub async fn scan_attack_coverage(
     let covered = crate::modules::reconnaissance_coverage(module_sources.iter().copied());
     let assessment = crate::core::attack::Assessment::from_covered(covered);
 
+    // Reverse index (technique → implementing modules), used twice: a covered
+    // technique lists the modules in THIS scan that exercised it (index ∩ the
+    // scan's evidence sources); a gap lists the idle modules that would close it
+    // (the full registry list) — turning the assessment into next-best-action.
+    let index = crate::modules::technique_module_index();
+    let covered_json: Vec<_> = assessment
+        .covered
+        .iter()
+        .map(|t| {
+            let by: Vec<&str> = index
+                .get(t.id)
+                .into_iter()
+                .flatten()
+                .filter(|m| module_sources.contains(*m))
+                .copied()
+                .collect();
+            json!({ "id": t.id, "name": t.name, "modules": by })
+        })
+        .collect();
+    let gaps_json: Vec<_> = assessment
+        .gaps
+        .iter()
+        .map(|t| {
+            let by = index.get(t.id).cloned().unwrap_or_default();
+            json!({ "id": t.id, "name": t.name, "modules": by })
+        })
+        .collect();
+
     let payload = json!({
         "scan_id": id,
         "tactic": crate::core::attack::TACTIC_NAME,
@@ -327,8 +355,8 @@ pub async fn scan_attack_coverage(
         "coverage_pct": assessment.coverage_pct(),
         "covered_count": assessment.covered.len(),
         "total": assessment.covered.len() + assessment.gaps.len(),
-        "covered": assessment.covered,
-        "gaps": assessment.gaps,
+        "covered": covered_json,
+        "gaps": gaps_json,
     });
     let body = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
     (

@@ -1511,7 +1511,13 @@ async function renderScanInfo(v){
       const a = await API.attackCov(id);
       if(!a || !a.total){ el.innerHTML=''; return; }
       const pct = Math.round(a.coverage_pct||0);
-      const chip = (t,on)=>`<span title="${attr((t.name||'')+' ('+(on?'covered':'gap')+')')}" style="display:inline-block;margin:2px;padding:1px 6px;border-radius:3px;font-size:11px;font-family:monospace;background:${on?'#096dd9':'#eee'};color:${on?'#fff':'#999'}">${esc(t.id)}</span>`;
+      const chip = (t,on)=>{
+        const mods = (t.modules||[]).join(', ');
+        const tip = (t.name||'') + (on
+          ? (mods ? ' — covered by: '+mods : ' — covered')
+          : (mods ? ' — gap; enable: '+mods : ' — gap (no module implements this)'));
+        return `<span title="${attr(t.id+'  '+tip)}" style="display:inline-block;margin:2px;padding:1px 6px;border-radius:3px;font-size:11px;font-family:monospace;cursor:help;background:${on?'#096dd9':'#eee'};color:${on?'#fff':'#999'}">${esc(t.id)}</span>`;
+      };
       const chips = (a.covered||[]).map(t=>chip(t,true)).join('') + (a.gaps||[]).map(t=>chip(t,false)).join('');
       el.innerHTML =
         `<div style="font-size:12px;margin-bottom:3px"><b>MITRE ATT&CK ${esc(a.tactic)} (${esc(a.tactic_id)})</b>`
