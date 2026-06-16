@@ -260,3 +260,26 @@ async fn evidence_source_is_email_parse() {
         }
     }
 }
+
+// ── capitalise ────────────────────────────────────────────────────────────────
+
+#[test]
+fn capitalise_uppercases_first_char() {
+    assert_eq!(capitalise("john"), "John");
+    assert_eq!(capitalise("jane doe"), "Jane doe");
+}
+
+#[test]
+fn capitalise_empty_string_returns_empty() {
+    assert_eq!(capitalise(""), "");
+}
+
+#[test]
+fn capitalise_preserves_already_uppercase_first_char() {
+    assert_eq!(capitalise("Alice"), "Alice");
+}
+
+#[test]
+fn capitalise_handles_multibyte_first_char() {
+    assert_eq!(capitalise("ñoño"), "Ñoño");
+}

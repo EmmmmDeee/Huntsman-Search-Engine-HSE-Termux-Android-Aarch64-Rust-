@@ -82,3 +82,27 @@ use super::*;
             "every emitted entity must carry the fullcontact source tag"
         );
     }
+
+    // ── escape_json ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn escape_json_leaves_plain_strings_unchanged() {
+        assert_eq!(escape_json("hello world"), "hello world");
+    }
+
+    #[test]
+    fn escape_json_escapes_double_quotes() {
+        assert_eq!(escape_json("say \"hi\""), "say \\\"hi\\\"");
+    }
+
+    #[test]
+    fn escape_json_escapes_backslashes() {
+        assert_eq!(escape_json("path\\to\\file"), "path\\\\to\\\\file");
+    }
+
+    #[test]
+    fn escape_json_escapes_both_backslash_and_quote() {
+        // Input:  a"b\c
+        // Output: a\"b\\c
+        assert_eq!(escape_json("a\"b\\c"), "a\\\"b\\\\c");
+    }
