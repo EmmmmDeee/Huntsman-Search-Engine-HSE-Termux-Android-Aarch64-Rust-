@@ -578,6 +578,9 @@ const API = {
   // Temporal diff of two stored scans of the same subject → what the later run
   // added/removed/re-scored. {added,removed,common,confidence_shifts}.
   diff:       (a,b)=>API._req('/api/v1/scans/'+encodeURIComponent(a)+'/diff/'+encodeURIComponent(b)),
+  // MITRE ATT&CK Reconnaissance coverage delta between two scans:
+  // {gained,lost,shared} technique lists + counts.
+  attackDiff: (a,b)=>API._req('/api/v1/scans/'+encodeURIComponent(a)+'/attack-coverage-diff/'+encodeURIComponent(b)),
   // Module capability graph: which input kinds flow to which produced kinds.
   modulesGraph: ()=>API._req('/api/v1/modules/graph'),
   // Cross-scan entity pivot: everywhere an identifier appears, across every
@@ -930,7 +933,10 @@ async function renderDiff(v){
     host.innerHTML = '<p class="text-muted">Computing diff…</p>';
     try {
       const d = await API.diff(av, bv);
-      host.innerHTML = renderDiffResult(d);
+      // Entity diff first, then the MITRE ATT&CK coverage delta (filled async
+      // so a slow coverage compute never blocks the entity diff render).
+      host.innerHTML = renderDiffResult(d) + '<div id="attack-diff" style="margin-top:12px"></div>';
+      renderAttackDiff(av, bv);
     } catch(e){ host.innerHTML = `<div class="alert alert-danger">${esc(e.message)}</div>`; }
   };
   $('#d-go').addEventListener('click', run);
@@ -961,6 +967,36 @@ function renderDiffResult(d){
     ${tbl('Added','#3c763d',added,diffRow)}
     ${tbl('Removed','#a94442',removed,diffRow)}
     ${tbl('Re-scored','#8a6d3b',shifts,shiftRow)}`;
+}
+
+// Fill #attack-diff with the MITRE ATT&CK Reconnaissance coverage delta between
+// two scans: techniques GAINED (the later run widened collection), LOST
+// (narrowed), and SHARED. Each chip's tooltip names the implementing modules.
+// Self-contained, inline-styled, silent on failure.
+async function renderAttackDiff(a, b){
+  const el = $('#attack-diff'); if(!el) return;
+  try {
+    const d = await API.attackDiff(a, b);
+    if(!d || !d.tactic_id){ el.innerHTML=''; return; }
+    const chip = (t,fg,bg)=>{
+      const m = (t.modules||[]).join(', ');
+      return `<span title="${attr(t.id+'  '+(t.name||'')+(m?' — '+m:''))}" style="display:inline-block;margin:2px;padding:1px 6px;border-radius:3px;font-size:11px;font-family:monospace;cursor:help;background:${bg};color:${fg}">${esc(t.id)}</span>`;
+    };
+    const sec = (label,arr,fg,bg)=> arr.length
+      ? `<div style="margin-top:4px"><span class="text-muted" style="font-size:11px">${label} (${arr.length}):</span> ${arr.map(t=>chip(t,fg,bg)).join('')}</div>`
+      : '';
+    const body = d.unchanged
+      ? '<span class="text-muted">No change in ATT&CK technique coverage between these scans.</span>'
+      : sec('Gained', d.gained||[], '#fff', '#3c763d') + sec('Lost', d.lost||[], '#fff', '#a94442');
+    el.innerHTML =
+      `<div class="panel panel-default"><div class="panel-heading" style="font-weight:600">`
+      + `MITRE ATT&amp;CK ${esc(d.tactic)} (${esc(d.tactic_id)}) coverage delta `
+      + `<span class="text-muted" style="font-weight:400">— +${d.gained_count} gained / −${d.lost_count} lost / ${d.shared_count} shared</span>`
+      + `</div><div class="panel-body" style="padding:8px 12px">`
+      + body
+      + sec('Shared', d.shared||[], '#777', '#eee')
+      + `</div></div>`;
+  } catch(_){ el.innerHTML=''; }
 }
 
 /* ═══════════ Page: NEWSCAN (#/newscan) ═══════════ */
