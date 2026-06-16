@@ -69,7 +69,7 @@ pub(super) async fn parse_oathnet_json(
             stats.victim_records += 1;
             let total_docs = victim
                 .get("total_docs")
-                .and_then(|v| v.as_u64())
+                .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0);
             let log_id = victim.get("log_id").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -336,8 +336,8 @@ pub(super) async fn parse_oathnet_json(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             let country = info.get("country").and_then(|v| v.as_str()).unwrap_or("");
-            let lat = info.get("lat").and_then(|v| v.as_f64());
-            let lon = info.get("lon").and_then(|v| v.as_f64());
+            let lat = info.get("lat").and_then(serde_json::Value::as_f64);
+            let lon = info.get("lon").and_then(serde_json::Value::as_f64);
             let isp = info.get("isp").and_then(|v| v.as_str()).unwrap_or("");
             create_geolocation_entities(
                 &GeoFields {

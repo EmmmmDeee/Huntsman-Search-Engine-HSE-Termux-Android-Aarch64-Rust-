@@ -240,8 +240,7 @@ async fn persist_import(
         .iter()
         .find(|e| e.kind == EntityKind::Person)
         .or_else(|| entities.iter().find(|e| e.kind == EntityKind::Email))
-        .map(|e| e.value.clone())
-        .unwrap_or_else(|| "imported dossier".to_string());
+        .map_or_else(|| "imported dossier".to_string(), |e| e.value.clone());
 
     let store: Arc<dyn StoragePort> =
         Arc::new(crate::storage::Store::open(&crate::default_db_path())?);

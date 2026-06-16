@@ -284,7 +284,7 @@ pub(super) fn is_disallowed(url: &str, rules: &[String]) -> bool {
     // Borrow the parsed path instead of allocating a `String`; `Url` owns the
     // backing buffer for the duration of this call.
     let parsed = Url::parse(url).ok();
-    let path = parsed.as_ref().map(|u| u.path()).unwrap_or("");
+    let path = parsed.as_ref().map_or("", url::Url::path);
     rules.iter().any(|r| path.starts_with(r))
 }
 

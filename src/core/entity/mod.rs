@@ -850,8 +850,8 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             let trimmed = value.trim();
             let hex: String = trimmed
                 .chars()
-                .filter(|c| c.is_ascii_hexdigit())
-                .flat_map(|c| c.to_lowercase())
+                .filter(char::is_ascii_hexdigit)
+                .flat_map(char::to_lowercase)
                 .collect();
             if hex.len() == 12 {
                 format!(

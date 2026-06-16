@@ -79,8 +79,7 @@ pub fn set_bool(key: &str, value: bool) -> std::io::Result<()> {
 pub fn overrides() -> BTreeMap<String, bool> {
     CACHE
         .read()
-        .map(|m| m.clone())
-        .unwrap_or_else(|e| e.into_inner().clone())
+        .map_or_else(|e| e.into_inner().clone(), |m| m.clone())
 }
 
 /// Built-in *feature* toggles — capability switches that aren't a single search

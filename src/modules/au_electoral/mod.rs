@@ -125,7 +125,7 @@ impl Module for AuElectoral {
 
         // ── NSW Electoral Commission ─────────────────────────────────────
         if all_entities.is_empty() {
-            let nsw_url = format!("https://check.elections.nsw.gov.au/search?name={}", encoded);
+            let nsw_url = format!("https://check.elections.nsw.gov.au/search?name={encoded}");
             if let Ok(resp) = ctx
                 .http
                 .get(&nsw_url)
@@ -147,7 +147,7 @@ impl Module for AuElectoral {
 
         // ── Victorian Electoral Commission ────────────────────────────────
         if all_entities.is_empty() {
-            let vec_url = format!("https://check.vec.vic.gov.au/search?name={}", encoded);
+            let vec_url = format!("https://check.vec.vic.gov.au/search?name={encoded}");
             if let Ok(resp) = ctx
                 .http
                 .get(&vec_url)
@@ -169,7 +169,7 @@ impl Module for AuElectoral {
 
         // ── ECQ Queensland ───────────────────────────────────────────────
         if all_entities.is_empty() {
-            let ecq_url = format!("https://enrol.ecq.qld.gov.au/check?name={}", encoded);
+            let ecq_url = format!("https://enrol.ecq.qld.gov.au/check?name={encoded}");
             if let Ok(resp) = ctx
                 .http
                 .get(&ecq_url)

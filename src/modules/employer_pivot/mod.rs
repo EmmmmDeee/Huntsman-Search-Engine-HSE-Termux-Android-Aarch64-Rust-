@@ -111,7 +111,7 @@ impl Module for EmployerPivot {
         let mut all_text = String::new();
         let mut visited: Vec<String> = Vec::new();
         for path in paths {
-            let url = format!("https://{}{}", domain, path);
+            let url = format!("https://{domain}{path}");
             // The host is an attacker-influenceable discovered domain, so fetch
             // through the SSRF-guarded reqwest client (private-IP-filtering DNS
             // resolver + redirect policy cover the initial request AND every
@@ -164,7 +164,7 @@ impl Module for EmployerPivot {
                     e.tag(format!("postcode:{}", addr.postcode));
                     let mut ev = Evidence::new(
                         SRC,
-                        format!("Business address extracted from {} contact pages", domain),
+                        format!("Business address extracted from {domain} contact pages"),
                     )
                     .with_attr("addr_country", "Australia")
                     .with_attr("addr_iso", "AU")
@@ -200,7 +200,7 @@ impl Module for EmployerPivot {
                     e.tag("employer-pivot");
                     e.tag("country:AU");
                     e.add_evidence(
-                        Evidence::new(SRC, format!("Business phone from {}", domain))
+                        Evidence::new(SRC, format!("Business phone from {domain}"))
                             .with_attr("employer_domain", &domain)
                             .with_attr("e164", &ph),
                     );
@@ -221,7 +221,7 @@ impl Module for EmployerPivot {
                     e.tag("business");
                     e.tag("employer-pivot");
                     e.add_evidence(
-                        Evidence::new(SRC, format!("Employer email from {} site", domain))
+                        Evidence::new(SRC, format!("Employer email from {domain} site"))
                             .with_attr("employer_domain", &domain),
                     );
                     Some(e)
@@ -241,7 +241,7 @@ impl Module for EmployerPivot {
                     e.tag("employer-pivot");
                     e.tag("social-profile");
                     e.add_evidence(
-                        Evidence::new(SRC, format!("Linked profile from {} site", domain))
+                        Evidence::new(SRC, format!("Linked profile from {domain} site"))
                             .with_attr("employer_domain", &domain)
                             .with_attr("profile_url", &url),
                     );

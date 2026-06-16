@@ -34,7 +34,7 @@ use super::*;
     }
 
     fn row(cells: &[&str]) -> Row {
-        Row(cells.iter().map(|s| s.to_string()).collect())
+        Row(cells.iter().map(std::string::ToString::to_string).collect())
     }
 
     fn attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {

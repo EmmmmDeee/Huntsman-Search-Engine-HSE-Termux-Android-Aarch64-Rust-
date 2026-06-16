@@ -78,7 +78,7 @@ pub struct OuiInfo {
 pub fn classify_mac(mac: &str) -> Option<OuiInfo> {
     let hex: String = mac
         .chars()
-        .filter(|c| c.is_ascii_hexdigit())
+        .filter(char::is_ascii_hexdigit)
         .take(6)
         .collect();
     if hex.len() != 6 {

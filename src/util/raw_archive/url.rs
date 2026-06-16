@@ -48,8 +48,7 @@ pub(super) fn describe_url(url: &str) -> (String, String) {
         // segment (or host), the looked-up value is the first query parameter.
         let endpoint = segs
             .last()
-            .map(|s| (*s).to_string())
-            .unwrap_or_else(|| host.to_string());
+            .map_or_else(|| host.to_string(), |s| (*s).to_string());
         (endpoint, urldecode(qv))
     } else if segs.len() >= 2 {
         // Path-style API (`…/breachedaccount/<value>`): the last segment is the

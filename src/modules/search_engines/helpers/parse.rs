@@ -62,7 +62,7 @@ pub(in crate::modules::search_engines) fn resolve_href(href: &str) -> Option<Str
 
     // Absolute HTTP(S)
     if href.starts_with("http://") || href.starts_with("https://") {
-        return Some(href.to_string());
+        return Some(href.clone());
     }
 
     None

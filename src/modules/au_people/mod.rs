@@ -118,7 +118,7 @@ pub(super) fn parse_whitepages_html(html: &str, full_name: &str, scan_id: &str) 
             if digits == 10 {
                 let raw: String = html[start..j]
                     .chars()
-                    .filter(|c| c.is_ascii_digit())
+                    .filter(char::is_ascii_digit)
                     .collect();
                 // Convert local AU 04XX → E.164 +614XX
                 if raw.starts_with('0') {

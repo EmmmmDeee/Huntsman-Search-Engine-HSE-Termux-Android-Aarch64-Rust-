@@ -162,10 +162,7 @@ impl ModuleGraph {
     /// Indices into the engine's `modules` vec of every module that
     /// accepts `kind`, in priority-descending order.
     pub fn modules_for(&self, kind: TargetKind) -> &[usize] {
-        self.dispatch_index
-            .get(&kind)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+        self.dispatch_index.get(&kind).map_or(&[], Vec::as_slice)
     }
 
     /// Number of modules that consume `kind`. Zero is legal (e.g. a
@@ -193,7 +190,7 @@ impl ModuleGraph {
     /// Entity kinds for which at least one module declares production.
     pub fn produced_kinds(&self) -> Vec<EntityKind> {
         let mut v: Vec<_> = self.producer_index.keys().cloned().collect();
-        v.sort_by_key(|k| k.to_string());
+        v.sort_by_key(std::string::ToString::to_string);
         v
     }
 

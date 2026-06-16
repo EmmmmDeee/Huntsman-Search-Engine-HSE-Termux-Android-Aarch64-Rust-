@@ -266,7 +266,7 @@ fn check_module_probes() -> Check {
     check(
         "modules.probe",
         Status::Pass,
-        format!("{} module metadata + accepts() probes, no panic", probes),
+        format!("{probes} module metadata + accepts() probes, no panic"),
     )
 }
 

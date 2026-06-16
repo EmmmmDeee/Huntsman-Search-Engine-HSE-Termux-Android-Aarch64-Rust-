@@ -27,8 +27,7 @@ pub fn urlencode(s: &str) -> String {
 pub fn urldecode(s: &str) -> String {
     url::form_urlencoded::parse(format!("={s}").as_bytes())
         .next()
-        .map(|(_, v)| v.into_owned())
-        .unwrap_or_else(|| s.to_string())
+        .map_or_else(|| s.to_string(), |(_, v)| v.into_owned())
 }
 
 /// Parse a reqwest Response as JSON while scanning the raw body for API

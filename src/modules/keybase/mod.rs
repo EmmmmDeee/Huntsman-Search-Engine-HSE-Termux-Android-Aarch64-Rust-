@@ -181,11 +181,7 @@ impl Module for Keybase {
         let mut entity = Entity::new(EntityKind::Username, kb_username, 0.90, &ctx.scan_id);
         entity.tag("keybase");
 
-        let proof_count = user
-            .proofs_summary
-            .as_ref()
-            .map(|p| p.all.len())
-            .unwrap_or(0);
+        let proof_count = user.proofs_summary.as_ref().map_or(0, |p| p.all.len());
         let profile = user.profile.as_ref();
         let ev = [
             (

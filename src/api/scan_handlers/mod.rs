@@ -145,8 +145,7 @@ pub async fn scan_import(State(s): State<Arc<AppState>>, body: String) -> impl I
         .iter()
         .find(|e| e.kind == EntityKind::Person)
         .or_else(|| entities.iter().find(|e| e.kind == EntityKind::Email))
-        .map(|e| e.value.clone())
-        .unwrap_or_else(|| "uploaded dossier".to_string());
+        .map_or_else(|| "uploaded dossier".to_string(), |e| e.value.clone());
 
     let mut scan = Scan::new(sid.clone(), Target::new(TargetKind::FullName, label));
     scan.status = ScanStatus::Complete;

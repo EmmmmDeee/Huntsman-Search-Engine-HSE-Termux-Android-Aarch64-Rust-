@@ -49,7 +49,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     // Unified scan: an omitted (or `auto`) --kind is inferred from the value's
     // shape; an explicit kind is parsed as before. Detection is reported on
     // stderr so the operator sees (and can override) what was chosen.
-    let kind_arg = cmd.kind.as_deref().map(str::trim).unwrap_or("");
+    let kind_arg = cmd.kind.as_deref().map_or("", str::trim);
     let target_kind = if kind_arg.is_empty() || kind_arg.eq_ignore_ascii_case("auto") {
         let detected = crate::core::scan::detect_kind(&cmd.value);
         eprintln!(
@@ -81,10 +81,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     let (depth, min_expand_confidence, max_concurrent) = if cmd.auto && cmd.depth.is_none() {
         let has_paid = keys::load().contains_key("HUNTSMAN_OATHNET_KEY");
         let (auto_depth, auto_conf) = crate::core::scan::optimal_depth(target_kind, has_paid);
-        eprintln!(
-            "auto: depth={auto_depth} min_conf={auto_conf:.2} (paid_keys={})",
-            has_paid
-        );
+        eprintln!("auto: depth={auto_depth} min_conf={auto_conf:.2} (paid_keys={has_paid})");
         (auto_depth, auto_conf, cmd.max_concurrent.max(2))
     } else if cmd.recursive && cmd.depth.is_none() {
         (
@@ -409,7 +406,7 @@ fn print_dossier(
     println!("║  HUNTSMAN SEARCH ENGINE — INTELLIGENCE DOSSIER              ║");
     println!("╚══════════════════════════════════════════════════════════════╝");
     println!();
-    println!("  Target:    {} = {}", kind, value);
+    println!("  Target:    {kind} = {value}");
     println!("  Scan ID:   {}", &sid[..16]);
     println!("  Status:    {}", scan.status.as_str());
     println!("  Entities:  {}", scan.entity_count);
@@ -500,7 +497,7 @@ fn print_dossier(
                 // breach passwords, complete addresses, etc.
                 for (k, v) in &ev.attributes {
                     if !v.is_empty() {
-                        println!("    │  {}: {}", k, v);
+                        println!("    │  {k}: {v}");
                     }
                 }
             }
@@ -531,10 +528,10 @@ fn print_dossier(
         let by_uid: HashMap<&str, &crate::core::entity::Entity> =
             entities.iter().map(|e| (e.uid.as_str(), e)).collect();
         let label = |uid: &str| -> String {
-            by_uid
-                .get(uid)
-                .map(|e| truncate(&e.value, 40))
-                .unwrap_or_else(|| format!("{}…", &uid[..uid.len().min(8)]))
+            by_uid.get(uid).map_or_else(
+                || format!("{}…", &uid[..uid.len().min(8)]),
+                |e| truncate(&e.value, 40),
+            )
         };
         println!("━━━ RELATIONS ({}) ━━━", relations.len());
         println!();
@@ -727,7 +724,7 @@ fn print_dossier(
     println!("━━━ OPTIMIZATION HINTS ━━━");
     println!();
     for hint in &diag.optimization_hints {
-        println!("  • {}", hint);
+        println!("  • {hint}");
     }
     println!();
 

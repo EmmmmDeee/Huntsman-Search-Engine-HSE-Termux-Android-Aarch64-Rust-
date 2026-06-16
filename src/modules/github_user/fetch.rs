@@ -162,8 +162,7 @@ pub(super) async fn fetch_events(login: &str, ctx: &ModuleContext, result: &mut 
         .iter()
         .enumerate()
         .max_by_key(|(_, count)| **count)
-        .map(|(h, _)| h)
-        .unwrap_or(0);
+        .map_or(0, |(h, _)| h);
 
     if let Some(first) = result.entities.first_mut() {
         let mut ev = Evidence::new(

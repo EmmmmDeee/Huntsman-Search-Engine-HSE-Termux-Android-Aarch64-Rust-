@@ -32,10 +32,10 @@ fn json_to_str(v: &Option<serde_json::Value>) -> String {
 }
 
 fn tech_tag(cell_type: Option<&str>) -> &'static str {
-    match cell_type.map(|s| s.to_lowercase()).as_deref() {
+    match cell_type.map(str::to_lowercase).as_deref() {
         Some("lte") => "lte",
-        Some("nr") | Some("5g") => "nr",
-        Some("umts") | Some("wcdma") => "umts",
+        Some("nr" | "5g") => "nr",
+        Some("umts" | "wcdma") => "umts",
         Some("gsm") => "gsm",
         _ => "unknown",
     }

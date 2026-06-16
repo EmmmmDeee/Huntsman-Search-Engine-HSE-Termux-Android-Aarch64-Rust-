@@ -136,8 +136,7 @@ impl Module for AuProperty {
             let vic_url = format!(
                 "https://mapshare.vic.gov.au/mapsharevic/ows?service=WFS&version=1.0.0\
                  &request=GetFeature&typeName=CADASTRE:PARCEL&outputFormat=application/json\
-                 &CQL_FILTER=OWNER_NAME+LIKE+%27{}%25%27&maxFeatures=10",
-                encoded_sname
+                 &CQL_FILTER=OWNER_NAME+LIKE+%27{encoded_sname}%25%27&maxFeatures=10"
             );
             if let Ok(resp) = ctx
                 .http
@@ -160,8 +159,7 @@ impl Module for AuProperty {
         // ── QLD Globe / titles ────────────────────────────────────────────
         if all_entities.is_empty() {
             let qld_url = format!(
-                "https://www.qld.gov.au/environment/land/title/searching/owners?owner={}",
-                encoded_full
+                "https://www.qld.gov.au/environment/land/title/searching/owners?owner={encoded_full}"
             );
             if let Ok(resp) = ctx
                 .http

@@ -263,10 +263,7 @@ pub fn analyse(
 
     // Compute novelty + finalise modules_by_yield
     for perf in by_source.values_mut() {
-        let conf = source_confidence
-            .get(&perf.name)
-            .map(|s| s.mean)
-            .unwrap_or(0.0);
+        let conf = source_confidence.get(&perf.name).map_or(0.0, |s| s.mean);
         perf.mean_confidence = conf;
         let unique = entity_sources
             .iter()

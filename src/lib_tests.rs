@@ -45,9 +45,7 @@ use super::*;
         ] {
             let recorded = SOURCE_FILES
                 .iter()
-                .find(|(p, _)| *p == rel)
-                .map(|(_, n)| *n)
-                .unwrap_or_else(|| panic!("{rel} missing from manifest"));
+                .find(|(p, _)| *p == rel).map_or_else(|| panic!("{rel} missing from manifest"), |(_, n)| *n);
             let actual = std::fs::read_to_string(format!("{root}/{rel}"))
                 .unwrap_or_else(|_| panic!("cannot read {rel}"))
                 .lines()

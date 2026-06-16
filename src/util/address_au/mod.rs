@@ -265,10 +265,10 @@ pub fn normalise_phone(s: &str) -> Option<String> {
             || digits.starts_with('7')
             || digits.starts_with('8'))
     {
-        return Some(format!("+61{}", digits));
+        return Some(format!("+61{digits}"));
     }
     if digits.starts_with("1300") || digits.starts_with("1800") {
-        return Some(format!("+61{}", digits));
+        return Some(format!("+61{digits}"));
     }
     None
 }

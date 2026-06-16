@@ -120,10 +120,7 @@ impl Module for EmailHeaderGeo {
             e.add_evidence(
                 Evidence::new(
                     SRC,
-                    format!(
-                        "Email domain '{}' uses {} (regional provider)",
-                        domain, provider
-                    ),
+                    format!("Email domain '{domain}' uses {provider} (regional provider)"),
                 )
                 .with_attr("domain", domain)
                 .with_attr("provider", provider),

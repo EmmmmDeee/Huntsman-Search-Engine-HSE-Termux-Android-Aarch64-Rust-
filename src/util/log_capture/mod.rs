@@ -48,7 +48,8 @@ static RING: LazyLock<Mutex<Ring>> = LazyLock::new(|| {
 /// Lock the ring, recovering from a poisoned mutex (a panic mid-log must never
 /// take logging down with it).
 fn lock() -> MutexGuard<'static, Ring> {
-    RING.lock().unwrap_or_else(|e| e.into_inner())
+    RING.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Append raw formatted bytes from the fmt layer, committing whole lines on

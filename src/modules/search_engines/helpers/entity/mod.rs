@@ -108,7 +108,7 @@ pub(in crate::modules::search_engines) fn score_username(
         .iter()
         .flat_map(|t| t.split(|c: char| c.is_ascii_digit()))
         .any(|s| s.len() >= 4 && cand.contains(s));
-    let seed = terms.first().map(String::as_str).unwrap_or("");
+    let seed = terms.first().map_or("", String::as_str);
     if stem_match || bigram_similarity(cand, seed) >= 0.25 {
         score += 2;
     }

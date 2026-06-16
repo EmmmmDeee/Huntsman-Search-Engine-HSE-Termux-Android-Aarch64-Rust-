@@ -98,7 +98,7 @@ pub(crate) fn extract_postcode(text: &str) -> Option<String> {
             && bytes[i + 2].is_ascii_digit()
             && bytes[i + 3].is_ascii_digit()
             // Reject 5+ digit runs (not a standalone 4-digit code).
-            && !bytes.get(i + 4).map(u8::is_ascii_digit).unwrap_or(false)
+            && !bytes.get(i + 4).is_some_and(u8::is_ascii_digit)
             && (i == 0 || !bytes[i - 1].is_ascii_digit())
         {
             let pc: u32 = text[i..i + 4].parse().ok()?;
@@ -130,7 +130,7 @@ fn extract_suburb_from_line(line: &str, state: &str) -> String {
             .collect::<Vec<_>>()
             .iter()
             .rev()
-            .cloned()
+            .copied()
             .collect::<Vec<_>>()
             .join(" ");
         if !suburb.is_empty() && suburb.len() <= 30 {

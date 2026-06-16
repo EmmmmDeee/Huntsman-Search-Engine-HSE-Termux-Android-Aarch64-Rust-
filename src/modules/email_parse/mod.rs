@@ -178,8 +178,8 @@ impl Module for EmailParse {
                 if parts.len() == 2
                     && parts[0].len() >= 2
                     && parts[1].len() >= 2
-                    && parts[0].chars().all(|c| c.is_alphabetic())
-                    && parts[1].chars().all(|c| c.is_alphabetic())
+                    && parts[0].chars().all(char::is_alphabetic)
+                    && parts[1].chars().all(char::is_alphabetic)
                     && is_corporate
                 {
                     let name = format!("{} {}", capitalise(parts[0]), capitalise(parts[1]));

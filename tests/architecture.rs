@@ -939,7 +939,7 @@ fn every_declared_module_is_registered() {
         })
         .collect();
 
-    let body = src.split_once("fn registry(").map(|(_, b)| b).unwrap_or("");
+    let body = src.split_once("fn registry(").map_or("", |(_, b)| b);
 
     let missing: Vec<&String> = declared
         .iter()
@@ -1081,7 +1081,7 @@ fn correlation_rule_ids_match_their_function_number() {
                 Some(fnum) if fnum.parse::<u32>().ok() == n.parse::<u32>().ok() => {}
                 Some(fnum) => mismatches.push(format!("fn rule_au_{fnum} emits \"AU-{n}\"")),
                 None => {
-                    mismatches.push(format!("\"AU-{n}\" emitted outside any rule_au_* function"))
+                    mismatches.push(format!("\"AU-{n}\" emitted outside any rule_au_* function"));
                 }
             }
         }

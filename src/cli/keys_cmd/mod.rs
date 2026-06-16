@@ -189,8 +189,7 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
                         let scan = e
                             .discovered_in_scan
                             .as_deref()
-                            .map(|s| &s[..8.min(s.len())])
-                            .unwrap_or("-");
+                            .map_or("-", |s| &s[..8.min(s.len())]);
                         let src = e.source_entity.as_deref().unwrap_or("-");
                         println!("       discovered: ts={ts} by={by} scan={scan} entity={src}");
                     }
@@ -475,8 +474,7 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
                             && !entry
                                 .discovered_by
                                 .as_deref()
-                                .map(|s| s.starts_with("tsv_import:"))
-                                .unwrap_or(false)
+                                .is_some_and(|s| s.starts_with("tsv_import:"))
                         {
                             continue;
                         }

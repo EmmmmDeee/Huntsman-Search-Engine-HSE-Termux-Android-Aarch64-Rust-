@@ -55,7 +55,8 @@ struct Sink {
 static SINK: LazyLock<Mutex<Sink>> = LazyLock::new(|| Mutex::new(Sink::default()));
 
 fn lock() -> MutexGuard<'static, Sink> {
-    SINK.lock().unwrap_or_else(|e| e.into_inner())
+    SINK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Token-length window: below 16 chars almost nothing real matches; above 512

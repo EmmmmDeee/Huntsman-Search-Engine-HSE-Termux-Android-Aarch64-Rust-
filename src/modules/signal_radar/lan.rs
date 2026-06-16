@@ -131,7 +131,7 @@ pub(super) async fn scan_lan(scan_id: &str) -> ModuleResult {
         if let Some(colon) = open_addr.rfind(':') {
             let ip = &open_addr[..colon];
             let port = &open_addr[colon + 1..];
-            for e in result.entities.iter_mut() {
+            for e in &mut result.entities {
                 if e.kind == EntityKind::IpAddress && e.value == ip {
                     e.tag(format!("open:{port}"));
                 }

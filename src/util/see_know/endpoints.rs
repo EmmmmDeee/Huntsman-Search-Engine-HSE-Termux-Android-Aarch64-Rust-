@@ -146,7 +146,7 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
     // Human archive label: the endpoint path (e.g. `stealer`,
     // `breachhub/search`) and the actual looked-up value (first query param),
     // so the saved filename names exactly what was queried.
-    let archive_query = params.first().map(|(_, v)| *v).unwrap_or("");
+    let archive_query = params.first().map_or("", |(_, v)| *v);
     // One retry on a transient transport error — flaky mobile/Termux networks
     // drop GETs, and a single-shot call silently loses that endpoint's data
     // (the live transcripts are full of such drops). The retry reuses the same

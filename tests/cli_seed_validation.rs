@@ -67,12 +67,12 @@ fn diff_wiring_self_compare_is_empty_and_json_clean() {
     let d: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("diff -f json stdout is not pure JSON ({e}):\n{stdout}"));
     assert_eq!(
-        d["added"].as_array().map(|a| a.len()),
+        d["added"].as_array().map(std::vec::Vec::len),
         Some(0),
         "a scan compared to itself must add nothing: {d}"
     );
     assert_eq!(
-        d["removed"].as_array().map(|a| a.len()),
+        d["removed"].as_array().map(std::vec::Vec::len),
         Some(0),
         "a scan compared to itself must remove nothing: {d}"
     );

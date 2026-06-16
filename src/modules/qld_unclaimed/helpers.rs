@@ -288,9 +288,7 @@ pub(super) fn exact_postcodes(
     let mut out = Vec::new();
     for rec in records {
         let exact = !broadened
-            || field_str(rec, "Owner")
-                .map(|o| owner_matches_full_name(&o, seed))
-                .unwrap_or(false);
+            || field_str(rec, "Owner").is_some_and(|o| owner_matches_full_name(&o, seed));
         if !exact {
             continue;
         }

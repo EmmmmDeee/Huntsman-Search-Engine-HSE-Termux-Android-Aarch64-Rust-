@@ -5,7 +5,7 @@ use super::*;
 
     #[test]
     fn identifies_foreign_keys_with_provenance_and_dedups() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         reset();
         // A Stripe-style live key embedded in a record body, twice. Built from
         // fragments so the synthetic test key isn't a contiguous `sk_live_…`
@@ -32,7 +32,7 @@ use super::*;
 
     #[test]
     fn generic_hex_hash_is_not_reported_as_a_key() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         reset();
         // Breach data is full of 32-char MD5 hashes. The universal scan uses the
         // vendor-only identifier, so a bare hex hash is NOT misreported as a
@@ -70,7 +70,7 @@ use super::*;
 
     #[test]
     fn excludes_our_own_auth_keys() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         reset();
         // An operator's OWN configured key that happens to be vendor-shaped must
         // never be reported as a foreign finding. Build it from fragments so the
@@ -88,7 +88,7 @@ use super::*;
 
     #[test]
     fn scan_body_survives_multibyte_and_adversarial_input() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         reset();
         let key = format!("sk_{}_{}", "live", "4eC39HqLyjWDarjtT1zdp7dc");
         // Multibyte UTF-8 tokens, NUL/control bytes, and a 200 KB delimiter-free
@@ -112,7 +112,7 @@ use super::*;
 
     #[test]
     fn scan_body_enforces_token_length_bounds() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         reset();
         // A vendor-prefixed token longer than MAX_TOKEN is the DoS shape: it must
         // be rejected by the cheap length gate, never handed to the identifier.
@@ -159,7 +159,7 @@ use super::*;
 
     #[test]
     fn scan_body_is_quiet_on_empty_and_whitespace_bodies() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         reset();
         scan_body("p", "q", "");
         scan_body("p", "q", "   \n\t  \r\n ");
@@ -180,7 +180,7 @@ use super::*;
     #[test]
     #[ignore = "throughput baseline; run with --ignored --nocapture"]
     fn bench_scan_body_throughput() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         reset();
         let key = format!("sk_{}_{}", "live", "4eC39HqLyjWDarjtT1zdp7dc");
         let unit = format!(

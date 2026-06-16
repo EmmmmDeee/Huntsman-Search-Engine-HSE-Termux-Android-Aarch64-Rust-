@@ -25,7 +25,7 @@ static UNAVAILABLE: LazyLock<Mutex<HashMap<String, Instant>>> =
 fn skip_until(cmd: &str) -> Option<Instant> {
     UNAVAILABLE
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(cmd)
         .copied()
 }
@@ -33,14 +33,14 @@ fn skip_until(cmd: &str) -> Option<Instant> {
 fn mark_unavailable(cmd: &str) {
     UNAVAILABLE
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(cmd.to_string(), Instant::now() + UNAVAILABLE_TTL);
 }
 
 fn mark_available(cmd: &str) {
     UNAVAILABLE
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(cmd);
 }
 

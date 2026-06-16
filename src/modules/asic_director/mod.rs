@@ -117,7 +117,7 @@ fn build_director_entities(
 
     // ACN entity → feeds abn_lookup for full address/coords.
     if !acn.is_empty() {
-        let acn_clean: String = acn.chars().filter(|c| c.is_ascii_digit()).collect();
+        let acn_clean: String = acn.chars().filter(char::is_ascii_digit).collect();
         if acn_clean.len() == 9 {
             let mut acn_e = Entity::new(EntityKind::AbnAcn, &acn_clean, 0.82, scan_id);
             acn_e.tag(SRC);
@@ -178,7 +178,7 @@ fn parse_asic_html(html: &str, full_name: &str) -> Vec<(String, String, Option<S
 
 /// Extract the first 9-digit ACN-like sequence from text. Pure.
 fn extract_acn(text: &str) -> Option<String> {
-    let digits_only: String = text.chars().filter(|c| c.is_ascii_digit()).collect();
+    let digits_only: String = text.chars().filter(char::is_ascii_digit).collect();
     (digits_only.len() >= 9).then(|| digits_only[..9].to_string())
 }
 

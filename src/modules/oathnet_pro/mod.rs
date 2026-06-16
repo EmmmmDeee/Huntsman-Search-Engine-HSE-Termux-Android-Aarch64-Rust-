@@ -262,8 +262,8 @@ fn should_skip_preflight(kind: TargetKind, v: &str) -> bool {
         }
         // Phone < 6 digits or all-zeros = placeholder.
         TargetKind::Phone => {
-            let digits = v.chars().filter(|c| c.is_ascii_digit()).count();
-            digits < 6 || v.chars().filter(|c| c.is_ascii_digit()).all(|c| c == '0')
+            let digits = v.chars().filter(char::is_ascii_digit).count();
+            digits < 6 || v.chars().filter(char::is_ascii_digit).all(|c| c == '0')
         }
         // Single-word "names" are noise; real full-name matches have a space.
         TargetKind::FullName => !v.contains(' ') || v.len() < 5,

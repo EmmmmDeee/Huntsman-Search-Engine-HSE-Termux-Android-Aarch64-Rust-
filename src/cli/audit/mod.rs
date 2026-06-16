@@ -100,7 +100,7 @@ fn parse_csv(text: &str) -> Result<Vec<AuditEntity>> {
             continue;
         }
         let f = split_csv(line);
-        let get = |i: Option<usize>| i.and_then(|i| f.get(i)).map(String::as_str).unwrap_or("");
+        let get = |i: Option<usize>| i.and_then(|i| f.get(i)).map_or("", String::as_str);
         let kind = f.get(ci_kind).cloned().unwrap_or_default();
         let value = f.get(ci_val).cloned().unwrap_or_default();
         if kind.is_empty() {

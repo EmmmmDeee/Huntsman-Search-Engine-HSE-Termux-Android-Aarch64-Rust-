@@ -276,7 +276,7 @@ fn mine_snippet(text: &str, scan_id: &str, source_url: &str, result: &mut Module
             .chars()
             .filter(|c| c.is_ascii_digit() || *c == '+')
             .collect();
-        if digits.chars().filter(|c| c.is_ascii_digit()).count() < 7 {
+        if digits.chars().filter(char::is_ascii_digit).count() < 7 {
             continue;
         }
         let mut p = Entity::new(EntityKind::Phone, &digits, 0.55, scan_id);

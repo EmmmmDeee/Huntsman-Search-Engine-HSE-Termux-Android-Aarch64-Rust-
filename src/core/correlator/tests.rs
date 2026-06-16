@@ -3644,7 +3644,7 @@ mod all_eleven_classes {
                 .collect();
 
             if au059(&corrs).is_none() {
-                failures.push(format!("{:?}", selected));
+                failures.push(format!("{selected:?}"));
             }
             checked += 1;
         }

@@ -76,8 +76,7 @@ fn search_evidence_flags_truncated_snippet_and_preserves_full_length() {
     assert!(
         ev.attributes
             .get("snippet")
-            .map(|s| s.len() <= 4000)
-            .unwrap_or(false)
+            .is_some_and(|s| s.len() <= 4000)
     );
     assert_eq!(
         ev.attributes.get("url").map(String::as_str),

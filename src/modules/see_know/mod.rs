@@ -390,7 +390,7 @@ fn should_skip_seed(kind: TargetKind, v: &str) -> bool {
         TargetKind::Username => {
             v.len() < 4 || v.chars().all(|c| c.is_ascii_digit()) || is_placeholder_username(v)
         }
-        TargetKind::Phone => v.chars().filter(|c| c.is_ascii_digit()).count() < 6,
+        TargetKind::Phone => v.chars().filter(char::is_ascii_digit).count() < 6,
         TargetKind::FullName => !v.contains(' ') || v.len() < 5,
         TargetKind::IpAddress => is_private_ip(v),
         TargetKind::Domain => is_local_domain(v),

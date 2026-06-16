@@ -210,7 +210,10 @@ pub fn email_domains() -> Vec<String> {
 }
 
 fn default_domains() -> Vec<String> {
-    DEFAULT_DOMAINS.iter().map(|s| s.to_string()).collect()
+    DEFAULT_DOMAINS
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect()
 }
 
 /// Generate scored login/username permutations, deduplicated (keeping the

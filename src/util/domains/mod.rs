@@ -156,7 +156,7 @@ pub fn is_role_localpart(local: &str) -> bool {
         .next()
         .unwrap_or(local)
         .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
+        .filter(char::is_ascii_alphanumeric)
         .collect::<String>();
     const ROLE: &[&str] = &[
         "admin",

@@ -103,8 +103,7 @@ impl Module for SubdomainTakeover {
                     Evidence::new(
                         SRC,
                         format!(
-                            "CNAME {} points to {} — {} may be claimable",
-                            domain, cname_target, service
+                            "CNAME {domain} points to {cname_target} — {service} may be claimable"
                         ),
                     )
                     .with_attr("cname_target", &cname_target)

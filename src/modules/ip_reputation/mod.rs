@@ -172,7 +172,7 @@ fn is_meaningful_tag(t: &str) -> bool {
     let len = t.len();
     (3..=32).contains(&len)
         && t.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-        && t.chars().filter(|c| c.is_ascii_alphabetic()).count() * 2 >= len
+        && t.chars().filter(char::is_ascii_alphabetic).count() * 2 >= len
         && !t.contains(['/', '\\', ':', '|', '=', '(', ')'])
         && !t.to_ascii_lowercase().contains("hash")
         && t.split_whitespace().count() <= 4

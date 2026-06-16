@@ -16,6 +16,31 @@ path = "src/main.rs"
 name = "huntsman_search_engine"
 path = "src/lib.rs"
 
+# Lint policy, codified in the manifest (Cargo `[lints]`, stable since 1.74) so
+# the standard travels with the crate and is enforced uniformly — local builds,
+# rust-analyzer, and CI alike — instead of living only in the CI `clippy
+# -D warnings` argv. CI still passes `-D warnings` as a belt-and-braces backstop.
+[lints.rust]
+# Architecture invariant (also asserted in src/lib.rs and tests/architecture.rs).
+unsafe_code = "forbid"
+
+[lints.clippy]
+# Deny the default clippy groups; `priority = -1` lets the specific lints below
+# (and any in-source `#[allow(...)]`) override the blanket level.
+all = { level = "deny", priority = -1 }
+# Curated high-signal modernizations the tree already satisfies — promoted to
+# deny so they can't regress. (Stylistic/high-churn lints such as
+# `manual_let_else` are deliberately NOT enforced.)
+uninlined_format_args = "deny"
+semicolon_if_nothing_returned = "deny"
+explicit_iter_loop = "deny"
+redundant_closure_for_method_calls = "deny"
+cloned_instead_of_copied = "deny"
+implicit_clone = "deny"
+inefficient_to_string = "deny"
+map_unwrap_or = "deny"
+unnested_or_patterns = "deny"
+
 [dependencies]
 tokio              = { version = "1",    features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util", "net", "fs", "signal"] }
 serde              = { version = "1",    features = ["derive"] }

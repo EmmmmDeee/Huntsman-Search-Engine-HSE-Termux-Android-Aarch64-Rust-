@@ -51,11 +51,7 @@ impl Module for PhoneCarrierGeo {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
-        let digits: String = target
-            .value
-            .chars()
-            .filter(|c| c.is_ascii_digit())
-            .collect();
+        let digits: String = target.value.chars().filter(char::is_ascii_digit).collect();
 
         if digits.len() < 10 {
             return Ok(result);

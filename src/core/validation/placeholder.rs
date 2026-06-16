@@ -34,7 +34,7 @@ pub fn is_placeholder_domain(host: &str) -> bool {
 /// Host of a URL value is a [`is_placeholder_domain`]. Cheap hand-parse (no `url`
 /// crate dependency here): strips scheme, userinfo, port, and path/query/frag.
 pub(super) fn url_host_is_placeholder(u: &str) -> bool {
-    let after_scheme = u.split_once("://").map(|(_, r)| r).unwrap_or(u);
+    let after_scheme = u.split_once("://").map_or(u, |(_, r)| r);
     let authority = after_scheme
         .split(['/', '?', '#'])
         .next()

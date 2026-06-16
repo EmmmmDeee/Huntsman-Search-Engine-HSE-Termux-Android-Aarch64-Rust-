@@ -438,7 +438,7 @@ pub(in crate::core::correlator) fn rule_au_031_malicious_adjacency(
             let mut uids: Vec<String> = neighbours
                 .keys()
                 .take(AGG_SAMPLE)
-                .map(|u| u.to_string())
+                .map(std::string::ToString::to_string)
                 .collect();
             uids.push(bad.uid.clone());
             out.push(Correlation::new(

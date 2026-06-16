@@ -100,7 +100,7 @@ impl Module for WebserverBanner {
                 .values()
                 .filter_map(|v| v.to_str().ok())
                 .for_each(|val| {
-                    crate::util::http::scan_for_api_keys_with_source(val, "http_header")
+                    crate::util::http::scan_for_api_keys_with_source(val, "http_header");
                 });
             if captured.is_empty() {
                 continue;

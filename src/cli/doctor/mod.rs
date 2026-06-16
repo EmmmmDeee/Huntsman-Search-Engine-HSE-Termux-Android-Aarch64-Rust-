@@ -32,7 +32,7 @@ pub(super) async fn cmd_doctor() -> Result<()> {
             // Explicit corruption check (T5): a healthy DB reports a single "ok".
             match store.integrity_check() {
                 Ok(rows) if rows.iter().all(|r| r == "ok") => {
-                    println!("  integrity:  ok")
+                    println!("  integrity:  ok");
                 }
                 Ok(rows) => {
                     println!("  integrity:  FAIL — {} issue(s) reported:", rows.len());
