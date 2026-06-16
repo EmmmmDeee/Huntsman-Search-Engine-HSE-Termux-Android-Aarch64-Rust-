@@ -161,9 +161,7 @@ fn embedded_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
 /// String form of [`is_private_addr`]. Non-IP strings (hostnames) return false
 /// — those are vetted at resolution time by the HTTP client's SSRF DNS filter.
 pub fn is_private_ip(ip: &str) -> bool {
-    ip.parse::<std::net::IpAddr>()
-        .map(is_private_addr)
-        .unwrap_or(false)
+    ip.parse::<std::net::IpAddr>().is_ok_and(is_private_addr)
 }
 
 /// True if `host` is configured network infrastructure — a proxy

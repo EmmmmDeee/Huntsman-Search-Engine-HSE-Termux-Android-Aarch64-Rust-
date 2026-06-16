@@ -26,8 +26,7 @@ pub(super) fn persist_ledger(modules: &[ModulePerformance], kinds: &HashMap<Stri
     ledger.total_scans = ledger.total_scans.saturating_add(1);
     ledger.last_updated = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
 
     for m in modules {
         let entry: &mut LedgerEntry = ledger.per_module.entry(m.name.clone()).or_default();

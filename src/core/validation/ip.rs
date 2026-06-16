@@ -174,6 +174,5 @@ pub fn is_bogus_ip(s: &str) -> bool {
     // Exactly the documentation/reserved set — no private/loopback/local ranges,
     // which on-device sensors legitimately surface (see the doc comment above).
     s.parse::<IpAddr>()
-        .map(|addr| is_documentation_or_reserved(&addr))
-        .unwrap_or(false)
+        .is_ok_and(|addr| is_documentation_or_reserved(&addr))
 }

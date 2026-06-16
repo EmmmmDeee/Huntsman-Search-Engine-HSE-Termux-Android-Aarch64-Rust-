@@ -1268,7 +1268,7 @@ fn checkpoint_truncate_resets_wal_file_and_keeps_data() {
             ))
             .unwrap();
     }
-    let pre = std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
+    let pre = std::fs::metadata(&wal).map_or(0, |m| m.len());
     assert!(
         pre > 0,
         "WAL should hold frames before checkpoint (was {pre})"
@@ -1276,7 +1276,7 @@ fn checkpoint_truncate_resets_wal_file_and_keeps_data() {
 
     store.checkpoint_truncate().unwrap();
 
-    let post = std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
+    let post = std::fs::metadata(&wal).map_or(0, |m| m.len());
     assert_eq!(post, 0, "TRUNCATE checkpoint must reset the -wal to zero");
     // Data survived the fold-back into the main DB.
     assert_eq!(

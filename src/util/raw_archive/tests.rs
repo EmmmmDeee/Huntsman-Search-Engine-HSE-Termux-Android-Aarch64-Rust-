@@ -126,8 +126,7 @@ fn describe_url_derives_endpoint_and_query() {
 fn records_in_window_recovers_full_responses_and_filters_by_time() {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     let dir = std::env::temp_dir().join(format!("hse_win_{}_{nanos}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     // Two in-window responses (one structured, one thin/no-entity) + one out.
@@ -201,8 +200,7 @@ fn write_file_persists_individual_named_response_on_disk() {
     // named file is written and reads back to the structured paid response.
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     let dir = std::env::temp_dir().join(format!("hse_raw_{}_{nanos}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let name = build_filename(

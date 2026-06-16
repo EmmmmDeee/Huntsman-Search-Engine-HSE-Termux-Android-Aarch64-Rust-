@@ -94,8 +94,7 @@ fn is_public_proxy(addr: &str) -> bool {
     }
     let host = host.trim_start_matches('[').trim_end_matches(']');
     host.parse::<std::net::IpAddr>()
-        .map(|ip| !crate::util::preflight::is_private_addr(ip))
-        .unwrap_or(false)
+        .is_ok_and(|ip| !crate::util::preflight::is_private_addr(ip))
 }
 
 /// Collect `host:port`-looking lines from a text proxy list.

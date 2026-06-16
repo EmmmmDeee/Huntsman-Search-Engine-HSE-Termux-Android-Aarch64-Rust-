@@ -81,8 +81,7 @@ pub fn record(provider: &str, endpoint: &str, query: &str, raw: &str) {
     }
     let unix_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     let seq = config::SEQ.fetch_add(1, Ordering::Relaxed);
     let filename = format::build_filename(provider, endpoint, query, unix_secs, seq);
     let body = format::build_body(provider, endpoint, query, unix_secs, raw);
