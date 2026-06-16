@@ -270,6 +270,30 @@ pub async fn scan_export_gexf(
     download_response(body, "application/xml; charset=utf-8", &id, "gexf")
 }
 
+/// `GET /api/v1/scans/{id}/attack-navigator.json` — a MITRE ATT&CK Navigator
+/// layer of the Reconnaissance (TA0043) techniques the scan exercised. Same
+/// artifact as `hse export {id} --format navigator` (one shared renderer, so
+/// CLI and web can't diverge); the web UI's "ATT&CK layer" button downloads it
+/// for import into the ATT&CK Navigator.
+pub async fn scan_export_attack_navigator(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    match crate::cli::export::render_attack_layer(s.store.as_ref(), &id) {
+        Ok(body) => download_named(
+            body,
+            "application/json; charset=utf-8",
+            &id,
+            "attack-navigator",
+            "json",
+        ),
+        Err(e) => internal_error(&e),
+    }
+}
+
 /// `GET /api/v1/scans/{id}/debug.txt` — the one-click debug bundle: the entire
 /// scan state (every entity + evidence, relations, correlations, the complete
 /// event sequence, and the scored self-audit with every weakness) in one
@@ -294,8 +318,23 @@ pub(crate) fn download_response(
     scan_id: &str,
     ext: &str,
 ) -> axum::response::Response {
+    // Label and file extension coincide for the simple formats (gexf, debug.txt).
+    download_named(body, content_type, scan_id, ext, ext)
+}
+
+/// As [`download_response`], but with the descriptive name label and the file
+/// extension specified separately — for artifacts whose canonical extension
+/// differs from their label (e.g. an ATT&CK Navigator layer: label
+/// `attack-navigator`, extension `json`).
+pub(crate) fn download_named(
+    body: String,
+    content_type: &'static str,
+    scan_id: &str,
+    label: &str,
+    extension: &str,
+) -> axum::response::Response {
     let short_id: String = scan_id.chars().take(12).collect();
-    let filename = format!("hse-{ext}-{short_id}.{ext}");
+    let filename = format!("hse-{label}-{short_id}.{extension}");
     let disposition = format!("attachment; filename=\"{filename}\"");
     let mut resp = (StatusCode::OK, body).into_response();
     let headers = resp.headers_mut();

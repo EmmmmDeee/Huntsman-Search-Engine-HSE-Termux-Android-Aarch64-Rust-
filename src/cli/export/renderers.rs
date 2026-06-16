@@ -28,7 +28,10 @@ pub(super) fn render_gexf(store: &Store, sid: &str) -> Result<String> {
 /// collection footprint can be reviewed (and diffed across scans) in the
 /// framework's own visual surface. Same coverage reducer as the `report`/CLI
 /// views, so the technique set never diverges between outputs.
-pub(super) fn render_attack_layer(store: &Store, sid: &str) -> Result<String> {
+pub(crate) fn render_attack_layer(
+    store: &dyn crate::core::port::StoragePort,
+    sid: &str,
+) -> Result<String> {
     use std::collections::BTreeSet;
 
     let entities = store.entities_for_scan(sid)?;

@@ -193,6 +193,10 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             get(scan_export::scan_report_json),
         )
         .route("/scans/{id}/graph.gexf", get(scan_export::scan_export_gexf))
+        .route(
+            "/scans/{id}/attack-navigator.json",
+            get(scan_export::scan_export_attack_navigator),
+        )
         .route("/scans/{id}/debug.txt", get(scan_export::scan_debug_bundle))
         .route(
             "/scans/{id}/correlations",
