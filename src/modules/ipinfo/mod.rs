@@ -67,8 +67,8 @@ struct IpDomains {
 
 #[derive(Deserialize)]
 struct IpInfoResp {
-    #[serde(default)]
-    ip: Option<String>,
+    // The echoed `ip` field is intentionally not deserialized — the queried IP
+    // is already known from the target, so serde simply ignores it.
     #[serde(default)]
     hostname: Option<String>,
     #[serde(default)]

@@ -34,7 +34,7 @@ pub struct Censys;
 /// Build the [`ModuleResult`] from a parsed [`HostResult`].
 ///
 /// Extracted so unit tests can exercise entity-building without HTTP.
-pub(super) fn build_entities(host: HostResult, ip: &str, scan_id: &str) -> ModuleResult {
+fn build_entities(host: HostResult, ip: &str, scan_id: &str) -> ModuleResult {
     let mut result = ModuleResult::new();
 
     // ── IP entity with service evidence ─────────────────────────
@@ -128,6 +128,22 @@ pub(super) fn build_entities(host: HostResult, ip: &str, scan_id: &str) -> Modul
             let mut sorted = software_strs;
             sorted.sort_unstable();
             ev = ev.with_attr("software", sorted.join(", "));
+        }
+
+        // Censys-assigned per-service labels (e.g. "remote-access", "database",
+        // "tls") — deduplicated across services, a quick attack-surface tag set.
+        let mut svc_labels: Vec<&str> = host
+            .services
+            .iter()
+            .flat_map(|s| s.labels.iter())
+            .map(String::as_str)
+            .filter(|l| !l.is_empty())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        if !svc_labels.is_empty() {
+            svc_labels.sort_unstable();
+            ev = ev.with_attr("service_labels", svc_labels.join(","));
         }
 
         entity.add_evidence(ev);

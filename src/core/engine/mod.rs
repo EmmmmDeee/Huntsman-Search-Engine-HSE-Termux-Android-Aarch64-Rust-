@@ -78,6 +78,20 @@ pub struct ScanEngine {
     graph: Arc<ModuleGraph>,
 }
 
+#[cfg(test)]
+impl ScanEngine {
+    /// Test-only shim onto [`recall::recall_prior_entities`] so the recall unit
+    /// tests can drive it through an engine instance without reaching into the
+    /// private `store` handle. Production code calls the free function directly.
+    fn recall_prior_entities(
+        &self,
+        target: &crate::core::scan::Target,
+        scan_id: &str,
+    ) -> Vec<crate::core::entity::Entity> {
+        recall::recall_prior_entities(self.store.as_ref(), target, scan_id)
+    }
+}
+
 /// Reason an expansion round stopped before depth was exhausted.
 enum StopReason {
     NoMoreCandidates,
