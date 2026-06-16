@@ -86,7 +86,13 @@ impl Module for EmailParse {
             && d.contains('.')
         {
             let domain = d.to_lowercase();
-            if !is_freemail(&domain) {
+            // Only a *corporate/self-owned* mail domain is a real finding. Beyond
+            // the freemail list, suppress every mega/social/shared-infrastructure
+            // host (ISP webmail like `rr.com`, regional providers like `web.de`,
+            // data brokers like `peekyou.com`) — `is_noncentral_domain` is the
+            // authoritative set. These leaked as standalone Domain entities and
+            // drove the CRITICAL infrastructure-pollution an on-device scan flagged.
+            if !is_freemail(&domain) && !crate::core::scan::is_noncentral_domain(&domain) {
                 let mut entity = Entity::new(EntityKind::Domain, &domain, 0.80, &ctx.scan_id);
                 entity.tag("derived");
                 entity.tag("email-domain");

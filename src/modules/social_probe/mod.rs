@@ -272,11 +272,20 @@ impl Module for SocialProbe {
                 );
                 result.push(entity);
 
-                // Also extract the domain for infrastructure expansion
+                // A confirmed profile's value is the URL + handle, already
+                // emitted above. The platform's APEX domain (instagram.com,
+                // tiktok.com, …) is the provider's estate, never the subject's
+                // asset — emitting it as a Domain entity drags the scan into
+                // mapping the platform's DNS/CDN infrastructure and inflates
+                // correlations (a real on-device scan flagged exactly this as
+                // CRITICAL infrastructure-pollution). Only surface a platform host
+                // that is NOT a known mega/social/infra domain — i.e. a niche or
+                // self-hosted site that might genuinely belong to the subject.
                 if let Some(host) = url::Url::parse(&url)
                     .ok()
                     .and_then(|u| u.host_str().map(str::to_lowercase))
                     && host.contains('.')
+                    && !crate::core::scan::is_noncentral_domain(&host)
                 {
                     let mut dom = Entity::new(EntityKind::Domain, &host, 0.40, &ctx.scan_id);
                     dom.tag("social-platform");

@@ -115,6 +115,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Fixed
 
+- **Stopped two modules from emitting shared-infrastructure domains as
+  entities (CRITICAL dossier pollution).** On-device scans flagged
+  *infrastructure-pollution* — provider/platform domains that map a third
+  party's estate, not the subject, inflating the entity set and correlations.
+  Two emitters bypassed the authoritative `is_noncentral_domain` gate:
+  - `social_probe` emitted each confirmed platform's **apex domain**
+    (`instagram.com`, `tiktok.com`, `twitch.tv`, `pinterest.com`, `threads.net`)
+    as a `Domain` entity "for infrastructure expansion" — dragging the scan into
+    mapping the platform's own DNS/CDN. The profile URL + handle (the actual
+    findings) are still emitted; only mega/social/infra apexes are now
+    suppressed, so a niche or self-hosted host that might belong to the subject
+    still surfaces.
+  - `email_parse` gated its extracted mail domain on the narrow freemail list
+    only, so providers in the authoritative set but absent from it — ISP webmail
+    (`rr.com`), regional providers (`web.de`), data brokers (`peekyou.com`) —
+    leaked as `Domain` entities. It now also consults `is_noncentral_domain`; a
+    genuine corporate/self-owned mail domain is unaffected.
+
+  Both paths are pinned by regression tests.
+
 - **Finished the `signal_radar` module's integration so the build is green.**
   The real-time multi-sensor radar module was registered but its supporting
   declarations had not caught up, leaving three architecture-guard tests red:

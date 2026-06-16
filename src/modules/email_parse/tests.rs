@@ -45,6 +45,34 @@ async fn skips_freemail_providers() {
 }
 
 #[tokio::test]
+async fn skips_noncentral_provider_domains_beyond_freemail() {
+    // ISP webmail (rr.com), regional providers (web.de) and data brokers
+    // (peekyou.com) are caught by the authoritative is_noncentral_domain set but
+    // not the narrower freemail list. They must NOT become standalone Domain
+    // entities — they are the haystack a mention sits in, not the subject's asset.
+    // (Regression for the CRITICAL infrastructure-pollution an on-device scan hit.)
+    for addr in ["user@web.de", "user@rochester.rr.com", "user@peekyou.com"] {
+        let t = Target::new(TargetKind::Email, addr);
+        let r = EmailParse.process(&t, &ctx()).await.unwrap();
+        let domains: Vec<&Entity> = r
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Domain)
+            .collect();
+        assert!(domains.is_empty(), "should skip noncentral domain: {addr}");
+    }
+    // A genuine corporate/self-owned mail domain is still surfaced.
+    let t = Target::new(TargetKind::Email, "jane@acmecorp.com.au");
+    let r = EmailParse.process(&t, &ctx()).await.unwrap();
+    assert!(
+        r.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Domain && e.value == "acmecorp.com.au"),
+        "a real corporate domain must still be emitted"
+    );
+}
+
+#[tokio::test]
 async fn skips_domain_for_malformed_email() {
     let t = Target::new(TargetKind::Email, "noatsign");
     let r = EmailParse.process(&t, &ctx()).await.unwrap();
@@ -101,18 +129,14 @@ async fn emits_both_domain_and_usernames() {
 
 #[tokio::test]
 async fn role_localpart_yields_domain_but_no_username_or_person() {
-    // A role mailbox (`admin@`, `dns@`, `noreply@`) is not a person's handle:
-    // emit the Domain, but never a Username/Person (the `dns@cloudflare.com`
-    // → VERIFIED username `dns` bug).
+    // A role mailbox (`admin@`, `dns@`, `noreply@`) is not a person's handle: it
+    // must never seed a Username/Person (the `dns@cloudflare.com` → VERIFIED
+    // username `dns` bug).
     for addr in ["admin@corp.io", "dns@cloudflare.com", "noreply@example.org"] {
         let r = EmailParse
             .process(&Target::new(TargetKind::Email, addr), &ctx())
             .await
             .unwrap();
-        assert!(
-            r.entities.iter().any(|e| e.kind == EntityKind::Domain),
-            "{addr}: domain still extracted"
-        );
         assert!(
             !r.entities
                 .iter()
@@ -120,6 +144,28 @@ async fn role_localpart_yields_domain_but_no_username_or_person() {
             "{addr}: role mailbox must not seed a Username/Person"
         );
     }
+    // The Domain is still emitted for a real corporate host, but a role mailbox at
+    // a shared-infrastructure provider (cloudflare.com) yields no Domain entity —
+    // it is the provider's estate, not the subject's (is_noncentral_domain gate).
+    let corp = EmailParse
+        .process(&Target::new(TargetKind::Email, "admin@corp.io"), &ctx())
+        .await
+        .unwrap();
+    assert!(
+        corp.entities.iter().any(|e| e.kind == EntityKind::Domain),
+        "a real corporate domain (corp.io) is still extracted"
+    );
+    let infra = EmailParse
+        .process(
+            &Target::new(TargetKind::Email, "dns@cloudflare.com"),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !infra.entities.iter().any(|e| e.kind == EntityKind::Domain),
+        "a shared-infrastructure host (cloudflare.com) must be suppressed"
+    );
     use crate::util::domains::is_role_localpart;
     assert!(is_role_localpart("dns") && is_role_localpart("no-reply"));
     assert!(!is_role_localpart("jane.doe") && !is_role_localpart("jordanavery"));
