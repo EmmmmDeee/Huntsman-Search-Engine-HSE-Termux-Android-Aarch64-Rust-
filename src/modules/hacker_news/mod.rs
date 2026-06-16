@@ -35,16 +35,16 @@ const SRC: &str = "hacker_news";
 pub struct HackerNews;
 
 #[derive(Deserialize)]
-struct HnUser {
-    id: String,
+pub(super) struct HnUser {
+    pub(super) id: String,
     #[serde(default)]
-    created: Option<u64>,
+    pub(super) created: Option<u64>,
     #[serde(default)]
-    karma: Option<i64>,
+    pub(super) karma: Option<i64>,
     #[serde(default)]
-    about: Option<String>,
+    pub(super) about: Option<String>,
     #[serde(default)]
-    submitted: Option<Vec<i64>>,
+    pub(super) submitted: Option<Vec<i64>>,
 }
 
 /// Email + http(s) URL extractors for the free-text `about` bio. Compiled once
@@ -120,60 +120,65 @@ impl Module for HackerNews {
         };
 
         let mut result = ModuleResult::new();
-
-        // The confirmed-on-HN username, carrying account metadata as evidence.
-        let mut u = Entity::new(EntityKind::Username, &user.id, 0.90, &ctx.scan_id);
-        u.tag("hacker-news");
-        let submissions = user.submitted.as_ref().map_or(0, Vec::len);
-        let ev = [
-            ("karma", user.karma.map(|k| k.to_string())),
-            ("created_unix", user.created.map(|c| c.to_string())),
-        ]
-        .into_iter()
-        .filter_map(|(key, value)| value.map(|v| (key, v)))
-        .fold(
-            Evidence::new(SRC, format!("Hacker News account '{}'", user.id))
-                .with_attr(
-                    "profile_url",
-                    format!("https://news.ycombinator.com/user?id={}", user.id),
-                )
-                .with_attr("submissions", submissions.to_string()),
-            |ev, (key, v)| ev.with_attr(key, v),
-        );
-        u.add_evidence(ev);
-        result.push(u);
-
-        // Mine the free-text bio for identity: an email or personal site here is
-        // a high-value, operator-published link from the handle to a real
-        // identifier — exactly the cross-reference the correlator wants.
-        if let Some(about) = user.about.as_deref() {
-            let (email_re, url_re) = bio_patterns();
-            if let Some(m) = email_re.find(about) {
-                let email = m.as_str().to_lowercase();
-                let mut e = Entity::new(EntityKind::Email, &email, 0.78, &ctx.scan_id);
-                e.tag("hacker-news");
-                e.tag("public-profile");
-                e.add_evidence(
-                    Evidence::new(SRC, format!("Email in HN bio of '{}'", user.id))
-                        .with_attr("source", "hn_bio"),
-                );
-                result.push(e);
-            }
-            if let Some(m) = url_re.find(about) {
-                let link = m.as_str().trim_end_matches(['.', ',', ')']);
-                let mut url_e = Entity::new(EntityKind::Url, link, 0.72, &ctx.scan_id);
-                url_e.tag("hacker-news");
-                url_e.tag("personal-site");
-                url_e.add_evidence(
-                    Evidence::new(SRC, format!("Link in HN bio of '{}'", user.id))
-                        .with_attr("source", "hn_bio"),
-                );
-                result.push(url_e);
-            }
-        }
-
+        result.entities = build_entities(user, &ctx.scan_id);
         Ok(result)
     }
+}
+
+/// Pure account→entity mapping. Separated from `process()` so every branch is
+/// unit-testable without I/O. Emits the confirmed Username with account metadata,
+/// plus an Email and/or Url when found in the free-text `about` bio.
+pub(super) fn build_entities(user: HnUser, scan_id: &str) -> Vec<Entity> {
+    let mut result = ModuleResult::new();
+
+    let mut u = Entity::new(EntityKind::Username, &user.id, 0.90, scan_id);
+    u.tag("hacker-news");
+    let submissions = user.submitted.as_ref().map_or(0, Vec::len);
+    let ev = [
+        ("karma", user.karma.map(|k| k.to_string())),
+        ("created_unix", user.created.map(|c| c.to_string())),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.map(|v| (key, v)))
+    .fold(
+        Evidence::new(SRC, format!("Hacker News account '{}'", user.id))
+            .with_attr(
+                "profile_url",
+                format!("https://news.ycombinator.com/user?id={}", user.id),
+            )
+            .with_attr("submissions", submissions.to_string()),
+        |ev, (key, v)| ev.with_attr(key, v),
+    );
+    u.add_evidence(ev);
+    result.push(u);
+
+    if let Some(about) = user.about.as_deref() {
+        let (email_re, url_re) = bio_patterns();
+        if let Some(m) = email_re.find(about) {
+            let email = m.as_str().to_lowercase();
+            let mut e = Entity::new(EntityKind::Email, &email, 0.78, scan_id);
+            e.tag("hacker-news");
+            e.tag("public-profile");
+            e.add_evidence(
+                Evidence::new(SRC, format!("Email in HN bio of '{}'", user.id))
+                    .with_attr("source", "hn_bio"),
+            );
+            result.push(e);
+        }
+        if let Some(m) = url_re.find(about) {
+            let link = m.as_str().trim_end_matches(['.', ',', ')']);
+            let mut url_e = Entity::new(EntityKind::Url, link, 0.72, scan_id);
+            url_e.tag("hacker-news");
+            url_e.tag("personal-site");
+            url_e.add_evidence(
+                Evidence::new(SRC, format!("Link in HN bio of '{}'", user.id))
+                    .with_attr("source", "hn_bio"),
+            );
+            result.push(url_e);
+        }
+    }
+
+    result.entities
 }
 
 #[cfg(test)]

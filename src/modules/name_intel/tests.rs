@@ -93,3 +93,68 @@ use super::*;
             .unwrap();
         assert!(out.entities.is_empty());
     }
+
+    #[tokio::test]
+    async fn non_latin_name_emits_person_and_pivots_but_no_handles() {
+        // Cyrillic name: Иван Петров (Ivan Petrov). ASCII-folds to empty handle
+        // tokens, so username/email permutation must be skipped. A Person anchor
+        // and display-name search pivots must still be emitted.
+        let m = NameIntel;
+        let out = m
+            .process(
+                &Target::new(TargetKind::FullName, "Иван Петров"),
+                &ctx("scan-z"),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            out.entities.iter().any(|e| e.kind == EntityKind::Person),
+            "Person anchor must be emitted for non-Latin name"
+        );
+        assert!(
+            out.entities.iter().any(|e| e.kind == EntityKind::Url),
+            "search-pivot Urls must be emitted for non-Latin name"
+        );
+        assert!(
+            !out.entities.iter().any(|e| e.kind == EntityKind::Username),
+            "no Username should be emitted when ASCII handle is empty"
+        );
+        assert!(
+            !out.entities.iter().any(|e| e.kind == EntityKind::Email),
+            "no Email should be emitted when ASCII handle is empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn subject_person_confidence_is_probable_tier() {
+        let m = NameIntel;
+        let out = m
+            .process(
+                &Target::new(TargetKind::FullName, "Alex Torres"),
+                &ctx("scan-p"),
+            )
+            .await
+            .unwrap();
+        let person = out
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Person)
+            .expect("Person anchor must be present");
+        assert!(
+            person.confidence >= permute::SUBJECT_CONF,
+            "Person anchor confidence {:.2} must be at least SUBJECT_CONF ({:.2})",
+            person.confidence,
+            permute::SUBJECT_CONF
+        );
+        assert!(
+            person.has_tag("seed") && person.has_tag("subject"),
+            "Person anchor must carry 'seed' and 'subject' tags"
+        );
+    }
+
+    #[tokio::test]
+    async fn attack_techniques_non_empty() {
+        let m = NameIntel;
+        assert!(!m.attack_techniques().is_empty());
+    }

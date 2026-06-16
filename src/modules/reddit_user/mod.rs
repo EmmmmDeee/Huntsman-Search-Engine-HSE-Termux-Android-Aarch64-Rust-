@@ -38,34 +38,34 @@ const SRC: &str = "reddit_user";
 pub struct RedditUser;
 
 #[derive(Deserialize)]
-struct AboutResp {
+pub(super) struct AboutResp {
     #[serde(default)]
-    data: Option<AboutData>,
+    pub(super) data: Option<AboutData>,
 }
 
 #[derive(Deserialize)]
-struct AboutData {
-    name: String,
+pub(super) struct AboutData {
+    pub(super) name: String,
     #[serde(default)]
-    created_utc: Option<f64>,
+    pub(super) created_utc: Option<f64>,
     #[serde(default)]
-    link_karma: Option<i64>,
+    pub(super) link_karma: Option<i64>,
     #[serde(default)]
-    comment_karma: Option<i64>,
+    pub(super) comment_karma: Option<i64>,
     #[serde(default)]
-    verified: Option<bool>,
+    pub(super) verified: Option<bool>,
     #[serde(default)]
-    is_gold: Option<bool>,
+    pub(super) is_gold: Option<bool>,
     #[serde(default)]
-    subreddit: Option<Subreddit>,
+    pub(super) subreddit: Option<Subreddit>,
 }
 
 #[derive(Deserialize)]
-struct Subreddit {
+pub(super) struct Subreddit {
     #[serde(default)]
-    public_description: Option<String>,
+    pub(super) public_description: Option<String>,
     #[serde(default)]
-    title: Option<String>,
+    pub(super) title: Option<String>,
 }
 
 /// Email + http(s) URL extractors for the free-text profile bio. Compiled once.
@@ -140,68 +140,76 @@ impl Module for RedditUser {
         };
 
         let mut result = ModuleResult::new();
-
-        let mut u = Entity::new(EntityKind::Username, &data.name, 0.90, &ctx.scan_id);
-        u.tag("reddit");
-        if data.verified == Some(true) {
-            u.tag("verified");
-        }
-        let ev = [
-            ("link_karma", data.link_karma.map(|k| k.to_string())),
-            ("comment_karma", data.comment_karma.map(|k| k.to_string())),
-            (
-                "created_unix",
-                data.created_utc.map(|c| (c as u64).to_string()),
-            ),
-            ("is_gold", data.is_gold.map(|g| g.to_string())),
-            ("verified", data.verified.map(|v| v.to_string())),
-        ]
-        .into_iter()
-        .filter_map(|(key, value)| value.map(|v| (key, v)))
-        .fold(
-            Evidence::new(SRC, format!("Reddit account u/{}", data.name)).with_attr(
-                "profile_url",
-                format!("https://www.reddit.com/user/{}", data.name),
-            ),
-            |ev, (key, v)| ev.with_attr(key, v),
-        );
-        u.add_evidence(ev);
-        result.push(u);
-
-        // Mine the profile bio (public_description + title) for identity links.
-        if let Some(sr) = data.subreddit.as_ref() {
-            let bio = format!(
-                "{} {}",
-                sr.public_description.as_deref().unwrap_or(""),
-                sr.title.as_deref().unwrap_or("")
-            );
-            let (email_re, url_re) = bio_patterns();
-            if let Some(m) = email_re.find(&bio) {
-                let email = m.as_str().to_lowercase();
-                let mut e = Entity::new(EntityKind::Email, &email, 0.76, &ctx.scan_id);
-                e.tag("reddit");
-                e.tag("public-profile");
-                e.add_evidence(
-                    Evidence::new(SRC, format!("Email in Reddit bio of u/{}", data.name))
-                        .with_attr("source", "reddit_bio"),
-                );
-                result.push(e);
-            }
-            if let Some(m) = url_re.find(&bio) {
-                let link = m.as_str().trim_end_matches(['.', ',', ')']);
-                let mut url_e = Entity::new(EntityKind::Url, link, 0.70, &ctx.scan_id);
-                url_e.tag("reddit");
-                url_e.tag("personal-site");
-                url_e.add_evidence(
-                    Evidence::new(SRC, format!("Link in Reddit bio of u/{}", data.name))
-                        .with_attr("source", "reddit_bio"),
-                );
-                result.push(url_e);
-            }
-        }
-
+        result.entities = build_entities(data, &ctx.scan_id);
         Ok(result)
     }
+}
+
+/// Pure account→entity mapping. Separated from `process()` so every branch is
+/// unit-testable without I/O. Emits the confirmed Username with account metadata,
+/// the `verified` tag when set, and an Email and/or Url mined from the profile bio.
+pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
+    let mut result = ModuleResult::new();
+
+    let mut u = Entity::new(EntityKind::Username, &data.name, 0.90, scan_id);
+    u.tag("reddit");
+    if data.verified == Some(true) {
+        u.tag("verified");
+    }
+    let ev = [
+        ("link_karma", data.link_karma.map(|k| k.to_string())),
+        ("comment_karma", data.comment_karma.map(|k| k.to_string())),
+        (
+            "created_unix",
+            data.created_utc.map(|c| (c as u64).to_string()),
+        ),
+        ("is_gold", data.is_gold.map(|g| g.to_string())),
+        ("verified", data.verified.map(|v| v.to_string())),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.map(|v| (key, v)))
+    .fold(
+        Evidence::new(SRC, format!("Reddit account u/{}", data.name)).with_attr(
+            "profile_url",
+            format!("https://www.reddit.com/user/{}", data.name),
+        ),
+        |ev, (key, v)| ev.with_attr(key, v),
+    );
+    u.add_evidence(ev);
+    result.push(u);
+
+    if let Some(sr) = data.subreddit.as_ref() {
+        let bio = format!(
+            "{} {}",
+            sr.public_description.as_deref().unwrap_or(""),
+            sr.title.as_deref().unwrap_or("")
+        );
+        let (email_re, url_re) = bio_patterns();
+        if let Some(m) = email_re.find(&bio) {
+            let email = m.as_str().to_lowercase();
+            let mut e = Entity::new(EntityKind::Email, &email, 0.76, scan_id);
+            e.tag("reddit");
+            e.tag("public-profile");
+            e.add_evidence(
+                Evidence::new(SRC, format!("Email in Reddit bio of u/{}", data.name))
+                    .with_attr("source", "reddit_bio"),
+            );
+            result.push(e);
+        }
+        if let Some(m) = url_re.find(&bio) {
+            let link = m.as_str().trim_end_matches(['.', ',', ')']);
+            let mut url_e = Entity::new(EntityKind::Url, link, 0.70, scan_id);
+            url_e.tag("reddit");
+            url_e.tag("personal-site");
+            url_e.add_evidence(
+                Evidence::new(SRC, format!("Link in Reddit bio of u/{}", data.name))
+                    .with_attr("source", "reddit_bio"),
+            );
+            result.push(url_e);
+        }
+    }
+
+    result.entities
 }
 
 #[cfg(test)]
