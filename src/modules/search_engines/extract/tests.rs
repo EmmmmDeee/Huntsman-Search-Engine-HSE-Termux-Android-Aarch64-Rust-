@@ -67,3 +67,41 @@ use super::*;
         let results = [sr("Jane Smith", "")];
         assert!(extract_family_names(&results, &target).is_empty());
     }
+
+    fn social_sr(username: &str, query: &str) -> SearchResult {
+        SearchResult {
+            url: format!("https://twitter.com/{username}"),
+            title: format!("{username} on Twitter"),
+            snippet: format!("{username} tweets"),
+            engine: "test",
+            query: query.to_string(),
+        }
+    }
+
+    #[test]
+    fn extract_username_pivots_emits_scored_social_profiles() {
+        // "john" appears inside path handle "johndoe" → Signal 1 (+3) → emitted.
+        // The handle differs from target "john" so the equality guard is bypassed.
+        let target = Target::new(TargetKind::Username, "john");
+        let results = [social_sr("johndoe", "john")];
+        let pivots = extract_username_pivots(&results, &target);
+        assert!(
+            pivots.iter().any(|p| p.contains("johndoe")),
+            "johndoe profile must be returned as a pivot: {pivots:?}"
+        );
+    }
+
+    #[test]
+    fn extract_username_pivots_skips_non_social_hosts() {
+        // Same path handle but on a non-social host → skipped.
+        let target = Target::new(TargetKind::Username, "alice");
+        let results = [SearchResult {
+            url: "https://example.com/alice".to_string(),
+            title: "Alice".to_string(),
+            snippet: "alice".to_string(),
+            engine: "test",
+            query: "alice".to_string(),
+        }];
+        let pivots = extract_username_pivots(&results, &target);
+        assert!(pivots.is_empty(), "non-social host must be skipped: {pivots:?}");
+    }

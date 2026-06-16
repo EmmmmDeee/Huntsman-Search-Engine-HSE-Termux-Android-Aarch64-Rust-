@@ -103,3 +103,25 @@ fn accepts_only_crypto_address() {
     assert!(ChainIntel.accepts(&Target::new(TargetKind::CryptoAddress, "x")));
     assert!(!ChainIntel.accepts(&Target::new(TargetKind::Email, "a@b.com")));
 }
+
+#[test]
+fn module_metadata_full() {
+    let m = ChainIntel;
+    assert_eq!(m.name(), "chain_intel");
+    assert!(!m.description().is_empty());
+    assert_eq!(m.priority(), 90);
+    assert_eq!(m.max_timeout_ms(), 12_000);
+    assert!(m.attack_techniques().contains(&"T1596"));
+    assert!(m.produces().contains(&EntityKind::CryptoAddress));
+}
+
+#[test]
+fn format_units_zero_and_minimal() {
+    // Zero balance → "0" with any decimal scale.
+    assert_eq!(format_units(0, 8), "0");
+    assert_eq!(format_units(0, 18), "0");
+    // 1 satoshi = 0.00000001 BTC (8 decimals).
+    assert_eq!(format_units(1, 8), "0.00000001");
+    // Exactly 1 unit.
+    assert_eq!(format_units(100_000_000, 8), "1");
+}
