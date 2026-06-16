@@ -72,6 +72,8 @@ pub(super) struct CrawlState {
     pub(super) subdomains: HashSet<String>,
     pub(super) emails: HashSet<String>,
     pub(super) phones: HashSet<String>,
+    /// `(platform, handle)` social-media profile handles linked from pages.
+    pub(super) social_handles: HashSet<SocialHandle>,
     /// `(canonical_id, provider)` web-analytics IDs seen across crawled pages.
     pub(super) tracking_ids: HashSet<(String, String)>,
     pub(super) frameworks: HashSet<&'static str>,
@@ -110,6 +112,7 @@ impl Module for WebCrawler {
             EntityKind::Url,
             EntityKind::Domain,
             EntityKind::Phone,
+            EntityKind::Username,
             EntityKind::ApiKey,
             EntityKind::TrackingId,
         ];
@@ -169,6 +172,7 @@ impl Module for WebCrawler {
             subdomains: HashSet::new(),
             emails: HashSet::new(),
             phones: HashSet::new(),
+            social_handles: HashSet::new(),
             tracking_ids: HashSet::new(),
             frameworks: HashSet::new(),
             page_types: HashSet::new(),
@@ -306,6 +310,7 @@ impl Module for WebCrawler {
 
             extract_emails(&body, &mut state.emails);
             extract_phones(&body, &mut state.phones);
+            extract_social_handles(&body, &mut state.social_handles);
             extract_tracking_ids(&body, &mut state.tracking_ids);
             extract_api_keys_from_body(&body, &domain);
 
@@ -417,6 +422,10 @@ fn build_entities(
     ev = ev.with_attr("subdomains_found", state.subdomains.len().to_string());
     ev = ev.with_attr("emails_found", state.emails.len().to_string());
     ev = ev.with_attr("phones_found", state.phones.len().to_string());
+    ev = ev.with_attr(
+        "social_handles_found",
+        state.social_handles.len().to_string(),
+    );
 
     if !missing_headers.is_empty() {
         ev = ev.with_attr("missing_security_headers", missing_headers.join(", "));
@@ -476,6 +485,29 @@ fn build_entities(
             );
             e
         }));
+    }
+
+    // Social-media handle entities. A handle linked from the subject's own site
+    // is high-signal attribution (0.78) — the same `(platform, handle)` may also
+    // surface from other modules and merge. Subject to the contact-dump guard:
+    // a page that links hundreds of profiles is a directory, not the subject's.
+    if state.social_handles.len() <= CONTACT_DUMP_LIMIT {
+        state
+            .result
+            .extend(state.social_handles.iter().map(|(platform, handle)| {
+                let mut e = Entity::new(EntityKind::Username, handle.as_str(), 0.78, scan_id);
+                e.tag(tags::WEB_SCRAPED);
+                e.tag(format!("social:{platform}"));
+                e.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("{platform} handle @{handle} linked from {domain}"),
+                    )
+                    .with_attr("platform", *platform)
+                    .with_attr("source_domain", domain),
+                );
+                e
+            }));
     }
 
     // Tracking-ID entities (web-analytics affiliate pivot). The id is a hard

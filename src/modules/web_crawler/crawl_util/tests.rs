@@ -1,5 +1,13 @@
-use super::*;
+use super::discovery::{
+        LinkIter, extract_links, extract_registrable_domain, is_binary_url, is_disallowed,
+    };
+    use super::extract::{
+        audit_security_headers, detect_frameworks, detect_page_types, extract_emails,
+        extract_phones, extract_social_handles, extract_tracking_ids, is_domain_char, is_email_char,
+    };
+    use super::CrawlState;
     use crate::core::module::ModuleResult;
+    use std::collections::HashSet;
     use reqwest::header::HeaderMap;
     use std::collections::VecDeque;
 
@@ -14,6 +22,7 @@ use super::*;
             subdomains: HashSet::new(),
             emails: HashSet::new(),
             phones: HashSet::new(),
+            social_handles: HashSet::new(),
             tracking_ids: HashSet::new(),
             frameworks: HashSet::new(),
             page_types: HashSet::new(),
@@ -346,4 +355,47 @@ use super::*;
             "private/reserved IP-literal links must never be enqueued, got {:?}",
             state.queue
         );
+    }
+
+    #[test]
+    fn social_handles_parsed_from_profile_links() {
+        let html = r##"
+            <a href="https://twitter.com/JaneDoe">tw</a>
+            <a href="https://x.com/jane_doe2">x</a>
+            <a href="https://www.instagram.com/jane.doe/">ig</a>
+            <a href="https://www.linkedin.com/in/jane-doe-123">li</a>
+            <a href="https://github.com/janedoe">gh</a>
+            <a href="https://youtube.com/channel/UCabc123">yt</a>
+            <a href="https://t.me/janedoe">tg</a>
+            <!-- reserved routes / non-profiles must be rejected -->
+            <a href="https://twitter.com/search?q=x">srch</a>
+            <a href="https://github.com/features">feat</a>
+            <a href="https://instagram.com/p/Abc123/">post</a>
+            <a href="https://example.com/about">notsocial</a>
+        "##;
+        let mut out = HashSet::new();
+        extract_social_handles(html, &mut out);
+        let got: std::collections::BTreeSet<(&str, &str)> =
+            out.iter().map(|(p, h)| (*p, h.as_str())).collect();
+        for want in [
+            ("twitter", "janedoe"),
+            ("twitter", "jane_doe2"),
+            ("instagram", "jane.doe"),
+            ("linkedin", "jane-doe-123"),
+            ("github", "janedoe"),
+            ("youtube", "ucabc123"),
+            ("telegram", "janedoe"),
+        ] {
+            assert!(got.contains(&want), "missing {want:?}: {got:?}");
+        }
+        // Reserved routes and non-social links are not handles.
+        assert!(!got.iter().any(|(_, h)| *h == "search"));
+        assert!(!got.iter().any(|(_, h)| *h == "features"));
+        assert!(!got.iter().any(|(p, _)| *p == "example"));
+        // The `/p/<id>` Instagram post is a reserved route, not a profile.
+        assert!(!got.iter().any(|(p, h)| *p == "instagram" && *h == "p"));
+
+        let mut none = HashSet::new();
+        extract_social_handles("<p>no links here</p>", &mut none);
+        assert!(none.is_empty());
     }
