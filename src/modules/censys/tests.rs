@@ -1,5 +1,7 @@
 use super::Censys;
+use super::build_entities;
 use super::types::CensysResp;
+use crate::core::entity::EntityKind;
 use crate::core::module::{Module, ModuleCost};
 use crate::core::scan::{Target, TargetKind};
 use crate::util::geo::is_valid_coords;
@@ -115,4 +117,126 @@ fn coordinate_gate_rejects_null_island() {
     assert!(!is_valid_coords(0.0, 0.0));
     assert!(!is_valid_coords(91.0, 10.0));
     assert!(is_valid_coords(-33.8688, 151.2093));
+}
+
+// ── build_entities unit tests ────────────────────────────────────────────────
+
+#[test]
+fn build_entities_surfaces_asn_and_org() {
+    let json = r#"{
+        "result": {
+            "services": [{ "port": 80, "service_name": "HTTP", "transport_protocol": "TCP" }],
+            "autonomous_system": {
+                "asn": 13335,
+                "name": "CLOUDFLARENET",
+                "bgp_prefix": "1.1.1.0/24",
+                "country_code": "US",
+                "description": "Cloudflare, Inc."
+            }
+        }
+    }"#;
+    let resp: CensysResp = serde_json::from_str(json).unwrap();
+    let host = resp.result.unwrap();
+    let result = build_entities(host, "1.1.1.1", "scan-test");
+
+    let entities = &result.entities;
+    let asn_entity = entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Asn)
+        .expect("ASN entity must be emitted");
+    assert_eq!(asn_entity.value, "AS13335");
+    assert!(
+        asn_entity.tags.iter().any(|t| t == "country:US"),
+        "ASN entity must carry country:US tag"
+    );
+
+    // bgp_prefix in evidence attrs
+    assert!(
+        asn_entity.evidence.iter().any(|ev| ev
+            .attributes
+            .iter()
+            .any(|(k, v)| k == "bgp_prefix" && v == "1.1.1.0/24")),
+        "bgp_prefix must appear as evidence attr on ASN entity"
+    );
+
+    // Organisation entity
+    let org_entity = entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Organisation)
+        .expect("Organisation entity must be emitted");
+    assert_eq!(org_entity.value, "CLOUDFLARENET");
+}
+
+#[test]
+fn build_entities_surfaces_dns_names_as_domains() {
+    let json = r#"{
+        "result": {
+            "services": [{ "port": 443, "service_name": "HTTPS", "transport_protocol": "TCP" }],
+            "dns": {
+                "reverse_dns": {
+                    "names": ["one.one.one.one.", "dns.cloudflare.com"]
+                }
+            }
+        }
+    }"#;
+    let resp: CensysResp = serde_json::from_str(json).unwrap();
+    let host = resp.result.unwrap();
+    let result = build_entities(host, "1.1.1.1", "scan-test");
+
+    let entities = &result.entities;
+    let domains: Vec<_> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain)
+        .collect();
+    assert_eq!(domains.len(), 2, "two Domain entities expected");
+
+    let values: Vec<&str> = domains.iter().map(|e| e.value.as_str()).collect();
+    assert!(
+        values.contains(&"one.one.one.one"),
+        "trailing dot must be stripped"
+    );
+    assert!(values.contains(&"dns.cloudflare.com"));
+
+    // Each domain must carry the ptr tag and ip evidence attr.
+    for dom in &domains {
+        assert!(
+            dom.tags.iter().any(|t| t == "ptr"),
+            "Domain entity must be ptr-tagged"
+        );
+        assert!(
+            dom.evidence.iter().any(|ev| ev
+                .attributes
+                .iter()
+                .any(|(k, v)| k == "ip" && v == "1.1.1.1")),
+            "Domain evidence must carry ip attr"
+        );
+    }
+}
+
+#[test]
+fn build_entities_labels_tagged_on_ip() {
+    let json = r#"{
+        "result": {
+            "services": [{ "port": 80, "service_name": "HTTP", "transport_protocol": "TCP" }],
+            "labels": ["honeypot", "cdn"]
+        }
+    }"#;
+    let resp: CensysResp = serde_json::from_str(json).unwrap();
+    let host = resp.result.unwrap();
+    let result = build_entities(host, "203.0.113.5", "scan-test");
+
+    let entities = &result.entities;
+    let ip_entity = entities
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress)
+        .expect("IpAddress entity must be emitted");
+
+    assert!(
+        ip_entity.tags.iter().any(|t| t == "censys:honeypot"),
+        "host label 'honeypot' must appear as tag 'censys:honeypot'"
+    );
+    assert!(
+        ip_entity.tags.iter().any(|t| t == "censys:cdn"),
+        "host label 'cdn' must appear as tag 'censys:cdn'"
+    );
 }
