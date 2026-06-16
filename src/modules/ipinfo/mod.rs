@@ -21,10 +21,7 @@ use crate::util::http::RequestBuilderExt;
 const SRC: &str = "ipinfo";
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct IpInfoResp {
-    #[serde(default)]
-    ip: Option<String>,
     #[serde(default)]
     hostname: Option<String>,
     #[serde(default)]
@@ -80,6 +77,9 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
                 ("city", data.city.as_deref()),
                 ("region", data.region.as_deref()),
                 ("country", data.country.as_deref()),
+                // IANA tz (e.g. "Australia/Brisbane") — a locale signal that
+                // corroborates the coordinate's region for identity-geo fusion.
+                ("timezone", data.timezone.as_deref()),
             ]
             .into_iter()
             .filter_map(|(key, value)| value.map(|v| (key, v)))
@@ -103,7 +103,13 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
         };
         let mut ae = Entity::new(EntityKind::Address, &addr, 0.60, scan_id);
         ae.tag("ipinfo");
-        ae.add_evidence(Evidence::new(SRC, format!("Address for {ip}")));
+        // Postal/ZIP narrows the address below city granularity — surface it as
+        // evidence (it refines, but does not redefine, the address identity).
+        let mut ev = Evidence::new(SRC, format!("Address for {ip}"));
+        if let Some(postal) = data.postal.as_deref().filter(|s| !s.is_empty()) {
+            ev = ev.with_attr("postal", postal);
+        }
+        ae.add_evidence(ev);
         out.push(ae);
     }
 

@@ -24,11 +24,7 @@ use crate::util::http::{fetch_json_or_404, urlencode};
 // ── Response types ────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub(crate) struct CommunityResp {
-    /// IP address queried.
-    #[serde(default)]
-    pub ip: Option<String>,
     /// `true` if the IP has been observed scanning the internet.
     #[serde(default)]
     pub noise: bool,
@@ -154,6 +150,9 @@ impl Module for GreyNoise {
         let ev = [
             ("name", data.name.as_deref()),
             ("link", data.link.as_deref()),
+            // GreyNoise's own status text (e.g. the RIOT service description) —
+            // surfaced as the API's words, not synthesised from the booleans.
+            ("message", data.message.as_deref()),
         ]
         .into_iter()
         .filter_map(|(key, value)| value.filter(|s| !s.is_empty()).map(|v| (key, v)))

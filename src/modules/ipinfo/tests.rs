@@ -17,6 +17,8 @@ use super::*;
         let r: IpInfoResp = serde_json::from_str(j).unwrap();
         assert_eq!(r.city.as_deref(), Some("Mountain View"));
         assert_eq!(r.org.as_deref(), Some("AS15169 Google LLC"));
+        assert_eq!(r.postal.as_deref(), Some("94043"));
+        assert_eq!(r.timezone.as_deref(), Some("America/Los_Angeles"));
     }
 
     fn data(json: &str) -> IpInfoResp {
@@ -32,7 +34,8 @@ use super::*;
         let d = data(
             r#"{"ip":"8.8.8.8","hostname":"dns.google","city":"Mountain View",
                 "region":"California","country":"US","loc":"37.4056,-122.0775",
-                "org":"AS15169 Google LLC"}"#,
+                "org":"AS15169 Google LLC","postal":"94043",
+                "timezone":"America/Los_Angeles"}"#,
         );
         let ents = build_entities("8.8.8.8", &d, "s");
         assert_eq!(ents.len(), 5);
@@ -48,10 +51,22 @@ use super::*;
                 .map(String::as_str),
             Some("Mountain View")
         );
-
         assert_eq!(
-            one(&ents, EntityKind::Address).unwrap().value,
-            "Mountain View, California, US"
+            coords.evidence[0]
+                .attributes
+                .get("timezone")
+                .map(String::as_str),
+            Some("America/Los_Angeles")
+        );
+
+        let address = one(&ents, EntityKind::Address).unwrap();
+        assert_eq!(address.value, "Mountain View, California, US");
+        assert_eq!(
+            address.evidence[0]
+                .attributes
+                .get("postal")
+                .map(String::as_str),
+            Some("94043")
         );
         assert_eq!(
             one(&ents, EntityKind::Organisation).unwrap().value,

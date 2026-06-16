@@ -34,7 +34,6 @@ use super::*;
             "message": "Success"
         }"#;
         let resp: CommunityResp = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.ip.as_deref(), Some("8.8.8.8"));
         assert!(resp.noise);
         assert!(resp.riot);
         assert_eq!(resp.classification.as_deref(), Some("benign"));
@@ -43,6 +42,7 @@ use super::*;
             resp.link.as_deref(),
             Some("https://viz.greynoise.io/ip/8.8.8.8")
         );
+        assert_eq!(resp.message.as_deref(), Some("Success"));
     }
 
     #[test]
