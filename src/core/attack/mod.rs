@@ -173,6 +173,45 @@ pub fn technique(id: &str) -> Option<&'static Technique> {
     RECONNAISSANCE.iter().find(|t| t.id == id)
 }
 
+/// An ATT&CK Reconnaissance **coverage assessment** for one scan: the
+/// catalogued techniques partitioned into those the scan's collection
+/// `covered` and the `gaps` it did not exercise. Together they always equal the
+/// full [`RECONNAISSANCE`] catalogue, so the pair is a complete assessment —
+/// the "coverage *and gaps*" view any ATT&CK review produces.
+#[derive(Debug, Clone, Serialize)]
+pub struct Assessment {
+    /// Techniques the scan exercised (sorted, deduplicated).
+    pub covered: Vec<&'static Technique>,
+    /// Catalogued techniques the scan did **not** exercise — the collection gaps.
+    pub gaps: Vec<&'static Technique>,
+}
+
+impl Assessment {
+    /// Partition the [`RECONNAISSANCE`] catalogue against a covered set (typically
+    /// [`coverage`]'s output). Unknown IDs in `covered` are ignored — every entry
+    /// is a catalogue technique — so `covered` and `gaps` always partition the
+    /// catalogue exactly. **Pure.**
+    #[must_use]
+    pub fn from_covered(covered: Vec<&'static Technique>) -> Self {
+        let ids: std::collections::HashSet<&str> = covered.iter().map(|t| t.id).collect();
+        let gaps: Vec<&'static Technique> = RECONNAISSANCE
+            .iter()
+            .filter(|t| !ids.contains(t.id))
+            .collect();
+        Self { covered, gaps }
+    }
+
+    /// Share of the catalogue exercised, as a percentage in `[0, 100]`.
+    #[must_use]
+    pub fn coverage_pct(&self) -> f64 {
+        let total = self.covered.len() + self.gaps.len();
+        if total == 0 {
+            return 0.0;
+        }
+        (self.covered.len() as f64 / total as f64) * 100.0
+    }
+}
+
 /// Build a MITRE ATT&CK **Navigator layer** (schema 4.5) marking each supplied
 /// Reconnaissance technique as exercised (score 1). The JSON imports directly
 /// into the ATT&CK Navigator (`https://mitre-attack.github.io/attack-navigator/`),

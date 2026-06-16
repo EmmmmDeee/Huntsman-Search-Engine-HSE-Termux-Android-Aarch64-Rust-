@@ -294,6 +294,53 @@ pub async fn scan_export_attack_navigator(
     }
 }
 
+/// `GET /api/v1/scans/{id}/attack-coverage.json` — the scan's MITRE ATT&CK
+/// Reconnaissance (TA0043) **assessment**: the catalogued techniques split into
+/// those the collection `covered` and the `gaps` it missed, plus a coverage
+/// percentage. Returned **inline** (not a download) so the web UI renders it as
+/// a live panel. Same coverage reducer as the report / Navigator-layer views,
+/// so the figures never diverge.
+pub async fn scan_attack_coverage(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    use std::collections::BTreeSet;
+
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let entities = match s.store.entities_for_scan(&id) {
+        Ok(entities) => entities,
+        Err(e) => return internal_error(&e),
+    };
+    let module_sources: BTreeSet<&str> = entities
+        .iter()
+        .flat_map(|e| e.evidence.iter().map(|ev| ev.source.as_str()))
+        .collect();
+    let covered = crate::modules::reconnaissance_coverage(module_sources.iter().copied());
+    let assessment = crate::core::attack::Assessment::from_covered(covered);
+
+    let payload = json!({
+        "scan_id": id,
+        "tactic": crate::core::attack::TACTIC_NAME,
+        "tactic_id": crate::core::attack::TACTIC_ID,
+        "coverage_pct": assessment.coverage_pct(),
+        "covered_count": assessment.covered.len(),
+        "total": assessment.covered.len() + assessment.gaps.len(),
+        "covered": assessment.covered,
+        "gaps": assessment.gaps,
+    });
+    let body = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/json; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response()
+}
+
 /// `GET /api/v1/scans/{id}/debug.txt` — the one-click debug bundle: the entire
 /// scan state (every entity + evidence, relations, correlations, the complete
 /// event sequence, and the scored self-audit with every weakness) in one

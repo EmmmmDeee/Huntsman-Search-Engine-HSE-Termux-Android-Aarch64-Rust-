@@ -553,6 +553,7 @@ const API = {
   reportUrl: id=>'/api/v1/scans/'+encodeURIComponent(id)+'/report.json',
   gexfUrl:   id=>'/api/v1/scans/'+encodeURIComponent(id)+'/graph.gexf',
   attackUrl: id=>'/api/v1/scans/'+encodeURIComponent(id)+'/attack-navigator.json',
+  attackCov: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/attack-coverage.json'),
   debugUrl:  id=>'/api/v1/scans/'+encodeURIComponent(id)+'/debug.txt',
   keysGet:   ()=>API._req('/api/v1/settings/keys'),
   keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body}),
@@ -1455,6 +1456,8 @@ async function renderScanInfo(v){
       <div class="col-sm-3 col-xs-6"><div class="stat-card"><div class="lab">Duration</div><div class="val dim">${esc(fmtDuration(dur))}</div></div></div>
     </div>
 
+    <div id="attack-cov" style="margin:2px 0 12px 0"></div>
+
     <ul class="nav nav-tabs">
       ${subTab('status',  'Status',       null,                tab)}
       ${subTab('browse',  'Browse',       S.entities.length,   tab)}
@@ -1497,6 +1500,27 @@ async function renderScanInfo(v){
   $$('.nav-tabs a[data-sub]').forEach(a=>a.addEventListener('click', e=>{
     e.preventDefault(); nav(`#/scaninfo?id=${id}&tab=${a.dataset.sub}`);
   }));
+
+  // MITRE ATT&CK Reconnaissance coverage + gaps — fetched inline so the panel
+  // appears under the stat cards without blocking the scan render. Covered
+  // techniques are filled, gaps dimmed; the "layer" link downloads the
+  // Navigator file. Failure is silent (the panel just stays empty).
+  (async()=>{
+    const el = $('#attack-cov'); if(!el) return;
+    try{
+      const a = await API.attackCov(id);
+      if(!a || !a.total){ el.innerHTML=''; return; }
+      const pct = Math.round(a.coverage_pct||0);
+      const chip = (t,on)=>`<span title="${attr((t.name||'')+' ('+(on?'covered':'gap')+')')}" style="display:inline-block;margin:2px;padding:1px 6px;border-radius:3px;font-size:11px;font-family:monospace;background:${on?'#096dd9':'#eee'};color:${on?'#fff':'#999'}">${esc(t.id)}</span>`;
+      const chips = (a.covered||[]).map(t=>chip(t,true)).join('') + (a.gaps||[]).map(t=>chip(t,false)).join('');
+      el.innerHTML =
+        `<div style="font-size:12px;margin-bottom:3px"><b>MITRE ATT&CK ${esc(a.tactic)} (${esc(a.tactic_id)})</b>`
+        + ` <span class="text-muted">— ${a.covered_count}/${a.total} techniques, ${pct}% coverage</span>`
+        + ` <a href="${API.attackUrl(id)}" download style="margin-left:6px;font-size:11px" title="Download the ATT&CK Navigator layer">&#x2913; layer</a></div>`
+        + `<div style="height:6px;background:#eee;border-radius:3px;overflow:hidden;margin-bottom:5px"><div style="height:100%;width:${pct}%;background:#096dd9"></div></div>`
+        + `<div>${chips}</div>`;
+    }catch(_){ el.innerHTML=''; }
+  })();
 
   const body = $('#scan-body');
   if (tab==='status')      renderStatus(body, scan);

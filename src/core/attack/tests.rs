@@ -119,3 +119,31 @@ fn navigator_layer_empty_coverage_is_still_valid() {
     assert_eq!(v["techniques"].as_array().map(Vec::len), Some(0));
     assert_eq!(v["domain"], "enterprise-attack");
 }
+
+#[test]
+fn assessment_partitions_the_catalogue() {
+    let covered = coverage(["T1589.002", "T1596.002"]);
+    let a = Assessment::from_covered(covered);
+    // covered + gaps == the whole catalogue, with no overlap.
+    assert_eq!(a.covered.len() + a.gaps.len(), RECONNAISSANCE.len());
+    let cov_ids: std::collections::HashSet<&str> = a.covered.iter().map(|t| t.id).collect();
+    assert!(a.gaps.iter().all(|t| !cov_ids.contains(t.id)), "no technique in both sets");
+    assert!(cov_ids.contains("T1589.002"));
+    // A covered technique must not also appear as a gap.
+    assert!(!a.gaps.iter().any(|t| t.id == "T1596.002"));
+}
+
+#[test]
+fn assessment_coverage_pct_bounds() {
+    let none = Assessment::from_covered(vec![]);
+    assert_eq!(none.covered.len(), 0);
+    assert!((none.coverage_pct() - 0.0).abs() < f64::EPSILON);
+
+    let all = Assessment::from_covered(RECONNAISSANCE.iter().collect());
+    assert!(all.gaps.is_empty());
+    assert!((all.coverage_pct() - 100.0).abs() < f64::EPSILON);
+
+    let some = Assessment::from_covered(coverage(["T1589"]));
+    let pct = some.coverage_pct();
+    assert!(pct > 0.0 && pct < 100.0, "partial coverage in (0,100): {pct}");
+}
