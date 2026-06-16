@@ -1104,6 +1104,56 @@ async fn scan_report_json_not_found() {
     assert_eq!(resp.status(), 404);
 }
 
+#[tokio::test]
+async fn attack_assessment_endpoint_returns_full_heatmap() {
+    // The assessment heatmap must paint the WHOLE Reconnaissance surface
+    // (covered + gaps), unlike the covered-only navigator layer, and ride a
+    // download content-type so Chrome saves it for the ATT&CK Navigator.
+    let (app, scan_id) = create_scan("attack_assess").await;
+    let resp = app
+        .oneshot(get(&format!(
+            "/api/v1/scans/{scan_id}/attack-assessment.json"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(ct.contains("application/json"));
+
+    let json = body_json(resp).await;
+    assert_eq!(json["domain"], "enterprise-attack");
+    assert_eq!(json["versions"]["layer"], "4.5");
+    // Gaps are shown, so disabled techniques are not hidden, and the achieved
+    // coverage percentage is embedded in the layer metadata.
+    assert_eq!(json["hideDisabled"], false);
+    let techs = json["techniques"].as_array().expect("techniques array");
+    assert!(
+        techs.len() >= 30,
+        "heatmap spans the full catalogue, got {}",
+        techs.len()
+    );
+    let meta = json["metadata"].as_array().expect("metadata array");
+    assert!(
+        meta.iter().any(|m| m["name"] == "coverage_pct"),
+        "coverage_pct embedded in metadata"
+    );
+}
+
+#[tokio::test]
+async fn attack_assessment_endpoint_not_found() {
+    let app = test_app("attack_assess_nf");
+    let resp = app
+        .oneshot(get("/api/v1/scans/nonexistent/attack-assessment.json"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
 // ── Events history ──────────────────────────────────────────────────────
 
 #[tokio::test]
