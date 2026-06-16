@@ -78,6 +78,9 @@ struct PbsV1Data {
 struct PbsV1Meta {
     blocks_total: u32,
     emails: Option<Vec<String>>,
+    names: Option<Vec<String>>,
+    first_seen: Option<String>,
+    last_seen: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -209,7 +212,13 @@ impl Module for NiamonX {
 
     fn produces(&self) -> &'static [EntityKind] {
         // Domain is accepted as input but no Domain pivot entity is ever emitted.
-        const KINDS: &[EntityKind] = &[EntityKind::Email, EntityKind::Username, EntityKind::Phone];
+        // Person is emitted from PBS v1 meta.names corroboration.
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Email,
+            EntityKind::Username,
+            EntityKind::Phone,
+            EntityKind::Person,
+        ];
         KINDS
     }
 
@@ -357,7 +366,12 @@ fn emit_pbs_v1(
         debug!(reason = %err, "niamonx pbs_v1 dataguard");
         return;
     }
-    if data.status.as_deref() != Some("ok") {
+    // The documented no-results response carries status "not_found"; a hit
+    // carries a positive status string (e.g. "found") that the API does not
+    // pin to a fixed constant. Skip only the explicit negative so a real hit
+    // is never silently dropped — the content checks below gate the actual
+    // emission, so an unexpected or absent status is safe to fall through.
+    if data.status.as_deref() == Some("not_found") {
         return;
     }
 
@@ -380,21 +394,35 @@ fn emit_pbs_v1(
             // A breach hit even when risk score is 0/absent — tag it so
             // downstream consumers that key off `breach` see the hit.
             entity.tag("breach");
-            entity.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!(
-                        "{} breach block(s) in NiamonX 140B dataset",
-                        meta.blocks_total
-                    ),
-                )
-                .with_attr("blocks_total", meta.blocks_total.to_string()),
-            );
+            let mut ev = Evidence::new(
+                SRC,
+                format!(
+                    "{} breach block(s) in NiamonX 140B dataset",
+                    meta.blocks_total
+                ),
+            )
+            .with_attr("blocks_total", meta.blocks_total.to_string());
+            if let Some(first_seen) = &meta.first_seen {
+                ev = ev.with_attr("first_seen", first_seen);
+            }
+            if let Some(last_seen) = &meta.last_seen {
+                ev = ev.with_attr("last_seen", last_seen);
+            }
+            entity.add_evidence(ev);
         }
         // Corroborating emails as BFS pivots.
         for email in meta.emails.iter().flatten() {
             if !email.eq_ignore_ascii_case(query) {
                 let mut pivot = Entity::new(EntityKind::Email, email, 0.70, scan_id);
+                pivot.tag(SRC);
+                pivot.tag("pbs-v1-pivot");
+                result.push(pivot);
+            }
+        }
+        // Corroborating names as Person pivots.
+        for name in meta.names.iter().flatten() {
+            if !name.eq_ignore_ascii_case(query) {
+                let mut pivot = Entity::new(EntityKind::Person, name, 0.65, scan_id);
                 pivot.tag(SRC);
                 pivot.tag("pbs-v1-pivot");
                 result.push(pivot);
@@ -622,14 +650,23 @@ mod tests {
     }
 
     #[test]
-    fn pbs_v1_skips_non_ok_status() {
+    fn pbs_v1_skips_not_found_status() {
         let resp = PbsV1Response {
             success: true,
             data: Some(PbsV1Data {
                 status: Some("not_found".to_string()),
                 error: None,
-                meta: None,
-                risk: None,
+                meta: Some(PbsV1Meta {
+                    blocks_total: 0,
+                    emails: None,
+                    names: None,
+                    first_seen: None,
+                    last_seen: None,
+                }),
+                risk: Some(PbsV1Risk {
+                    score: 0,
+                    level: "Low".to_string(),
+                }),
                 blocks: None,
                 rate: None,
             }),
@@ -643,17 +680,20 @@ mod tests {
     }
 
     #[test]
-    fn pbs_v1_tags_breach_on_blocks_without_risk() {
-        // A real hit with breach blocks but no/zero risk score must still set
-        // the generic `breach` tag so downstream consumers see it.
+    fn pbs_v1_found_with_blocks_tags_breach_and_pivots_names() {
+        // A real hit: positive status "found" (NOT "ok"), breach blocks, and
+        // corroborating names. Must tag breach and emit a Person pivot.
         let resp = PbsV1Response {
             success: true,
             data: Some(PbsV1Data {
-                status: Some("ok".to_string()),
+                status: Some("found".to_string()),
                 error: None,
                 meta: Some(PbsV1Meta {
                     blocks_total: 2,
-                    emails: None,
+                    emails: Some(vec!["other@example.com".to_string()]),
+                    names: Some(vec!["Jane Roe".to_string()]),
+                    first_seen: Some("2019-01-01".to_string()),
+                    last_seen: Some("2023-06-01".to_string()),
                 }),
                 risk: None,
                 blocks: Some(vec![PbsV1Block {
@@ -669,6 +709,19 @@ mod tests {
         emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s");
         assert!(entity.has_tag("breach"));
         assert!(entity.has_tag("niamonx:breach:exampleleak"));
+        // One Email pivot + one Person pivot.
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Person && e.value == "Jane Roe")
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == "other@example.com")
+        );
     }
 
     #[test]
