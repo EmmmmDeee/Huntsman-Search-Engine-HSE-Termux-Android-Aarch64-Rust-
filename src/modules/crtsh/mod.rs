@@ -41,6 +41,23 @@ fn build_query(kind: TargetKind, value: &str) -> Option<String> {
     }
 }
 
+/// Shared evidence for a CT-log entity (a SAN `Email` or a discovered `Domain`):
+/// the issuing CA, the validity window (`not_before`/`not_after`), and — recovered
+/// here — the certificate **serial**, an infrastructure-attribution pivot (the
+/// same serial seen across hosts links their certificates / operator). Issuer and
+/// validity are always stamped (empty when absent, preserving the prior shape);
+/// the serial is added only when present. **Pure.**
+fn cert_evidence(entry: &CrtEntry, summary: &str) -> Evidence {
+    let mut ev = Evidence::new(SRC, summary.to_string())
+        .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or(""))
+        .with_attr("not_before", entry.not_before.as_deref().unwrap_or(""))
+        .with_attr("not_after", entry.not_after.as_deref().unwrap_or(""));
+    if let Some(serial) = entry.serial_number.as_deref().filter(|s| !s.is_empty()) {
+        ev = ev.with_attr("cert_serial", serial);
+    }
+    ev
+}
+
 /// Map crt.sh certificate entries to deduplicated Domain/Email entities.
 /// **Pure** (no network/IO): splits each cert's SAN list + common name, skips
 /// wildcards, classifies a name as a subdomain of `domain_base` (case-folded) for
@@ -76,11 +93,7 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
                 }
                 let mut e = Entity::new(EntityKind::Email, &name, 0.70, scan_id);
                 e.tag(tags::CT_LOG);
-                e.add_evidence(
-                    Evidence::new(SRC, "Email in certificate SAN".to_string())
-                        .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or(""))
-                        .with_attr("not_before", entry.not_before.as_deref().unwrap_or("")),
-                );
+                e.add_evidence(cert_evidence(entry, "Email in certificate SAN"));
                 Some(e)
             } else if name.contains('.') && seen_domains.insert(name.clone()) {
                 let is_sub = name == base || name.ends_with(&dot_base);
@@ -90,12 +103,7 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
                 if is_sub {
                     e.tag(tags::SUBDOMAIN);
                 }
-                e.add_evidence(
-                    Evidence::new(SRC, "Certificate Transparency log".to_string())
-                        .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or(""))
-                        .with_attr("not_before", entry.not_before.as_deref().unwrap_or(""))
-                        .with_attr("not_after", entry.not_after.as_deref().unwrap_or("")),
-                );
+                e.add_evidence(cert_evidence(entry, "Certificate Transparency log"));
                 Some(e)
             } else {
                 None
@@ -113,7 +121,6 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct CrtEntry {
     #[serde(default)]
     common_name: Option<String>,

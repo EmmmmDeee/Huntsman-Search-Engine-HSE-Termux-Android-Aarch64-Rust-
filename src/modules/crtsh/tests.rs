@@ -130,3 +130,33 @@ fn results_are_capped_highest_confidence_first() {
     assert_eq!(out[0].value, "keep.example.com"); // highest confidence first
     assert!(out.windows(2).all(|w| w[0].confidence >= w[1].confidence));
 }
+
+#[test]
+fn recovers_certificate_serial_as_attribution_pivot() {
+    // crt.sh returns serial_number; it must now surface as cert_serial on the
+    // discovered-domain evidence (an infrastructure-attribution pivot).
+    let e = entries(
+        r#"[{"common_name":"www.example.com","name_value":"www.example.com",
+             "issuer_name":"Let's Encrypt","not_before":"2024-01-01",
+             "not_after":"2024-04-01","serial_number":"04ab9f"}]"#,
+    );
+    let out = build_entities(&e, "example.com", "s");
+    let dom = out.iter().find(|x| x.kind == EntityKind::Domain).unwrap();
+    assert_eq!(
+        dom.evidence[0].attributes.get("cert_serial").map(String::as_str),
+        Some("04ab9f")
+    );
+    // Validity window still present (preserved shape).
+    assert_eq!(
+        dom.evidence[0].attributes.get("not_after").map(String::as_str),
+        Some("2024-04-01")
+    );
+}
+
+#[test]
+fn absent_serial_omits_the_attribute() {
+    let e = entries(r#"[{"name_value":"a.example.com","issuer_name":"CA"}]"#);
+    let out = build_entities(&e, "example.com", "s");
+    let dom = out.iter().find(|x| x.kind == EntityKind::Domain).unwrap();
+    assert!(!dom.evidence[0].attributes.contains_key("cert_serial"));
+}
