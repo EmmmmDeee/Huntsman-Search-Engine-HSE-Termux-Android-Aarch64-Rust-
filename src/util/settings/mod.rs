@@ -91,6 +91,12 @@ pub const FEATURE_TOGGLES: &[(&str, bool)] = &[
     // geolocation-neutral). Turning it on makes regional the baseline for every
     // scan; the per-scan `--regional` flag still forces it on for one scan.
     ("feature.regional", false),
+    // Recall prior-scan findings from the local database at scan start, so the
+    // store acts as a SOURCE for every scan and expansion round (not just a
+    // sink). Default ON — total retention + reuse of collected intel. Turn off
+    // (`hse config feature.recall off`) for a leave-no-memory session that must
+    // ignore everything previously gathered.
+    ("feature.recall", true),
 ];
 
 /// The feature toggles with their current effective state (override else

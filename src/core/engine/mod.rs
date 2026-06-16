@@ -328,6 +328,36 @@ impl ScanEngine {
         {
             entity_map.insert(anchor.uid.clone(), anchor);
         }
+
+        // ─── Recall: the persistent database as a source ────────────────────
+        // Pre-populate the working set with everything prior scans of this
+        // target already discovered, so the local store feeds the seed round,
+        // every expansion round, and cross-scan corroboration — the database is
+        // a SOURCE, not just a sink. Recalled nodes merge by uid with whatever
+        // live modules re-discover this scan. Universal toggle `feature.recall`
+        // (default on); `hse config feature.recall off` for a leave-no-memory
+        // session. Skipped on a pre-cancelled scan (clean no-op invariant).
+        if !ctx.cancel.is_cancelled() && crate::util::settings::get_bool("feature.recall", true) {
+            let recalled = self.recall_prior_entities(&target, &scan.id);
+            let n = recalled.len();
+            for entity in recalled {
+                if let Some(existing) = entity_map.get_mut(&entity.uid) {
+                    existing.merge(entity);
+                } else {
+                    entity_map.insert(entity.uid.clone(), entity);
+                }
+            }
+            if n > 0 {
+                info!(scan_id = %scan.id, recalled = n, "recall: injected prior-scan entities from the local database");
+                self.emit(
+                    &scan.id,
+                    EventKind::ModuleDone {
+                        module: "recall".to_string(),
+                        found: n,
+                    },
+                );
+            }
+        }
         // Seed-dispatch errors are warn-and-continue, exactly like
         // expansion-round dispatch below: propagating here returned before
         // finalise_scan (losing every collected entity and leaving the scan
@@ -690,6 +720,101 @@ impl ScanEngine {
         if let Err(e) = self.store.upsert_entities_batch(entities) {
             warn!(scan_id, error = %e, "entity checkpoint failed (will retry at finalise)");
         }
+    }
+
+    /// Recall everything the local database already knows about this target, for
+    /// injection into the working set — so the persistent store is a SOURCE for
+    /// every scan, not just a sink. A target ever scanned before re-enters the
+    /// graph pre-populated with the entities prior runs (and their expansion
+    /// rounds) discovered, ready to corroborate live findings and seed
+    /// expansion. This is what makes the database "utilised as a source for all
+    /// recursion and future scans".
+    ///
+    /// The store is content-addressed (same kind+value ⇒ same uid) with a
+    /// per-entity observation history, so the relevant prior scans are those
+    /// that observed the exact seed identity, plus any that observed an entity
+    /// whose value equals the target (robust to `FullName` re-formatting, and
+    /// catching scans where the target surfaced as a *discovered* node rather
+    /// than the seed). Each recalled entity is stamped with the current scan id
+    /// (a first-class member of this scan's graph — so it counts as observed now
+    /// and chains into future recalls), tagged
+    /// [`RECALLED`](crate::core::tags::RECALLED), and carries its stored
+    /// confidence; live modules merge onto it by uid.
+    ///
+    /// Bounded (`MAX_PRIOR_SCANS` scans, `MAX_ENTITIES` nodes, confidence-sorted
+    /// so the caps drop the weakest leads first) to keep the working set sane on
+    /// a 4 GB device. Best-effort: storage errors log and yield nothing rather
+    /// than failing the scan.
+    fn recall_prior_entities(&self, target: &Target, scan_id: &str) -> Vec<Entity> {
+        use crate::core::entity::{Evidence, derive_uid, normalise};
+        const MAX_PRIOR_SCANS: usize = 8;
+        const MAX_ENTITIES: usize = 300;
+        const VALUE_MATCH_CAP: usize = 64;
+
+        // Gather candidate scan-id lists from both recall paths, then flatten
+        // into a recency-ordered, de-duplicated list (excluding this scan).
+        let kind = target.kind.to_entity_kind();
+        let seed_uid = derive_uid(&kind, &normalise(&kind, &target.value));
+        let mut id_lists: Vec<Vec<String>> = Vec::new();
+        match self.store.scan_ids_for_entity(&seed_uid) {
+            Ok(ids) => id_lists.push(ids),
+            Err(e) => warn!(scan_id, error = %e, "recall: seed history lookup failed"),
+        }
+        if let Ok(matches) = self.store.search_entities(&target.value, VALUE_MATCH_CAP) {
+            let tv = target.value.trim().to_lowercase();
+            for m in matches {
+                if m.value.trim().to_lowercase() == tv
+                    && let Ok(ids) = self.store.scan_ids_for_entity(&m.uid)
+                {
+                    id_lists.push(ids);
+                }
+            }
+        }
+        let mut prior: Vec<String> = Vec::new();
+        let mut seen_scan: HashSet<String> = HashSet::new();
+        for id in id_lists.into_iter().flatten() {
+            if id != scan_id && seen_scan.insert(id.clone()) {
+                prior.push(id);
+            }
+        }
+        if prior.is_empty() {
+            return Vec::new();
+        }
+
+        // Pull each relevant prior scan's full entity graph, dedup-merging
+        // across scans, then stamp/tag every node for this scan.
+        let mut merged: HashMap<String, Entity> = HashMap::new();
+        for pid in prior.into_iter().take(MAX_PRIOR_SCANS) {
+            let ents = match self.store.entities_for_scan(&pid) {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!(scan_id, prior = %pid, error = %e, "recall: prior entities load failed");
+                    continue;
+                }
+            };
+            for mut e in ents {
+                e.scan_id = scan_id.to_string();
+                e.tag(crate::core::tags::RECALLED);
+                e.add_evidence(Evidence::new(
+                    "recall",
+                    "Recalled from the local intelligence database (prior scan)",
+                ));
+                if let Some(existing) = merged.get_mut(&e.uid) {
+                    existing.merge(e);
+                } else {
+                    merged.insert(e.uid.clone(), e);
+                }
+            }
+        }
+
+        let mut out: Vec<Entity> = merged.into_values().collect();
+        out.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        out.truncate(MAX_ENTITIES);
+        out
     }
 
     /// Drive the expansion loop. Returns the stop reason for diagnostics.

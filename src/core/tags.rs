@@ -47,3 +47,6 @@ pub const CANDIDATE: &str = "candidate";
 // Discovery method
 pub const SEARCH_DISCOVERED: &str = "search-discovered";
 pub const BREACH_DERIVED: &str = "breach-derived";
+/// Entity injected from the persistent store at scan start — prior-scan
+/// knowledge recalled so the local database acts as a source, not just a sink.
+pub const RECALLED: &str = "recalled";

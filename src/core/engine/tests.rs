@@ -1111,3 +1111,61 @@ fn roi_cutoff_releases_visited_keys_of_truncated_candidates() {
     );
     assert!(!visited.contains(&visit_key(&mk("tail-b.com"))));
 }
+
+/// The persistent store is a SOURCE, not just a sink: prior-scan findings for a
+/// target are pulled back at scan start, stamped as observed this scan, and
+/// tagged `recalled` (provenance) while keeping their original tags/evidence.
+/// Exercises `recall_prior_entities` directly (no full `run`, so the global
+/// search-regional toggle the engine sets is left untouched).
+#[tokio::test]
+async fn recall_prior_entities_pulls_and_tags_prior_scan_findings() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+
+    // A prior scan ("prior-scan") of this Username: the seed anchor plus a
+    // discovered email that NO live module will re-emit.
+    let mut seed = Entity::new(EntityKind::Username, "recallsubject", 0.9, "prior-scan");
+    seed.add_evidence(Evidence::new("anchor", "seed"));
+    let mut email = Entity::new(
+        EntityKind::Email,
+        "plantedlead@gmail.com",
+        0.8,
+        "prior-scan",
+    );
+    email.tag("planted");
+    email.add_evidence(Evidence::new("plant", "found in an earlier scan"));
+    store.upsert_entity(&seed).unwrap();
+    store.upsert_entity(&email).unwrap();
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let engine = ScanEngine::new(vec![], store_port, bus);
+    let target = Target::new(TargetKind::Username, "recallsubject");
+
+    // Recall for a NEW scan id surfaces the prior email, re-stamped + tagged.
+    let recalled = engine.recall_prior_entities(&target, "current-scan");
+    let got = recalled
+        .iter()
+        .find(|e| e.value == "plantedlead@gmail.com")
+        .expect("recall surfaces the prior scan's email from the database");
+    assert!(
+        got.has_tag("recalled"),
+        "recalled node carries the provenance tag"
+    );
+    assert!(got.has_tag("planted"), "original tags survive recall");
+    assert_eq!(
+        got.scan_id, "current-scan",
+        "recalled node is stamped as observed in the current scan"
+    );
+
+    // A scan never recalls its own rows: asking as "prior-scan" (the only scan
+    // that observed the seed) excludes itself ⇒ nothing to recall.
+    assert!(
+        engine
+            .recall_prior_entities(&target, "prior-scan")
+            .is_empty(),
+        "the sole prior scan is the requesting scan ⇒ empty recall"
+    );
+}
