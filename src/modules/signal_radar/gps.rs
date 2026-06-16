@@ -113,3 +113,99 @@ pub(super) async fn scan_gps(scan_id: &str) -> ModuleResult {
     }
     fetch_fix("network", 8_000, scan_id).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::entity::EntityKind;
+
+    // ── is_valid_fix ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_valid_fix_accepts_real_coordinates() {
+        assert!(is_valid_fix(-27.4705, 153.0260));
+        assert!(is_valid_fix(51.5074, -0.1278));
+    }
+
+    #[test]
+    fn is_valid_fix_rejects_null_island() {
+        assert!(!is_valid_fix(0.0, 0.0));
+    }
+
+    #[test]
+    fn is_valid_fix_rejects_out_of_range_coords() {
+        assert!(!is_valid_fix(91.0, 0.0));
+        assert!(!is_valid_fix(0.0, 181.0));
+        assert!(!is_valid_fix(-91.0, 0.0));
+    }
+
+    // ── fix_confidence ────────────────────────────────────────────────────────
+
+    #[test]
+    fn fix_confidence_gps_no_accuracy_returns_ceiling() {
+        let c = fix_confidence("gps", None);
+        assert!((c - 0.90).abs() < 1e-9, "gps ceiling = {c}");
+    }
+
+    #[test]
+    fn fix_confidence_network_no_accuracy_returns_ceiling() {
+        let c = fix_confidence("network", None);
+        assert!((c - 0.65).abs() < 1e-9, "network ceiling = {c}");
+    }
+
+    #[test]
+    fn fix_confidence_gps_accuracy_tiers() {
+        assert!((fix_confidence("gps", Some(10.0)) - 0.90).abs() < 1e-9);
+        assert!((fix_confidence("gps", Some(20.0)) - 0.90).abs() < 1e-9);
+        assert!((fix_confidence("gps", Some(50.0)) - 0.85).abs() < 1e-9);
+        assert!((fix_confidence("gps", Some(200.0)) - 0.75).abs() < 1e-9);
+        assert!((fix_confidence("gps", Some(1000.0)) - 0.65).abs() < 1e-9);
+        assert!((fix_confidence("gps", Some(5000.0)) - 0.55).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fix_confidence_network_large_radius_clamps_to_floor() {
+        // network ceiling 0.65 − 0.35 = 0.30, which is the clamp floor.
+        assert!((fix_confidence("network", Some(5000.0)) - 0.30).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fix_confidence_zero_accuracy_falls_through_to_ceiling() {
+        // a = 0.0 does not satisfy `a > 0.0`; falls through to the `_ =>` arm.
+        assert!((fix_confidence("gps", Some(0.0)) - 0.90).abs() < 1e-9);
+    }
+
+    // ── parse_fix ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_fix_valid_gps_json_emits_coordinates_entity() {
+        let json = br#"{"latitude":-27.4705,"longitude":153.0260,"altitude":10.0,"accuracy":5.0,"speed":0.0,"bearing":0.0,"provider":"gps"}"#;
+        let result = parse_fix(json, "test-scan");
+        assert_eq!(result.len(), 1);
+        let e = &result.entities[0];
+        assert_eq!(e.kind, EntityKind::Coordinates);
+        assert!(e.has_tag("geoint"));
+        assert!(e.has_tag("device-sensor"));
+        assert!(e.has_tag("provider:gps"));
+        assert!(e.has_tag("accuracy:5m"));
+    }
+
+    #[test]
+    fn parse_fix_null_island_returns_empty() {
+        let json = br#"{"latitude":0.0,"longitude":0.0,"provider":"gps"}"#;
+        assert!(parse_fix(json, "test-scan").is_empty());
+    }
+
+    #[test]
+    fn parse_fix_malformed_json_returns_empty() {
+        assert!(parse_fix(b"not valid json", "test-scan").is_empty());
+    }
+
+    #[test]
+    fn parse_fix_absent_provider_defaults_to_network_tag() {
+        let json = br#"{"latitude":51.5074,"longitude":-0.1278}"#;
+        let result = parse_fix(json, "test-scan");
+        assert_eq!(result.len(), 1);
+        assert!(result.entities[0].has_tag("provider:network"));
+    }
+}
