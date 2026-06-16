@@ -781,11 +781,16 @@ impl ScanEngine {
             return Vec::new();
         }
 
-        // Pull each relevant prior scan's full entity graph, dedup-merging
-        // across scans, then stamp/tag every node for this scan.
+        // Pull each relevant prior scan's entity graph, dedup-merging across
+        // scans, then stamp/tag every node for this scan. `entities_filtered`
+        // (not `entities_for_scan`) bounds the pull: it applies a SQL `LIMIT` on
+        // the confidence-DESC preorder and skips the Rust relevance re-sort —
+        // both wasted here, since recall confidence-sorts and caps the merged
+        // set anyway. So a heavily-scanned prior target can't make scan start
+        // deserialise its entire historical graph on a 4 GB device.
         let mut merged: HashMap<String, Entity> = HashMap::new();
         for pid in prior.into_iter().take(MAX_PRIOR_SCANS) {
-            let ents = match self.store.entities_for_scan(&pid) {
+            let ents = match self.store.entities_filtered(&pid, None, None, None) {
                 Ok(e) => e,
                 Err(e) => {
                     warn!(scan_id, prior = %pid, error = %e, "recall: prior entities load failed");
@@ -808,6 +813,16 @@ impl ScanEngine {
         }
 
         let mut out: Vec<Entity> = merged.into_values().collect();
+        // A recalled node contributes ZERO corroboration. Recall re-injects
+        // STORED data the database already counts, so re-persisting it must be
+        // idempotent: with corroboration 0 the GREATEST-merge keeps the DB's
+        // true count (`absorb` sums then floors at 1) instead of compounding it
+        // every re-scan. A live module that re-discovers the entity this scan
+        // still adds its own +1 on top. Applied AFTER the cross-scan dedup merge
+        // above (which would otherwise floor a duplicate back up to 1).
+        for e in &mut out {
+            e.corroboration = 0;
+        }
         out.sort_by(|a, b| {
             b.confidence
                 .partial_cmp(&a.confidence)

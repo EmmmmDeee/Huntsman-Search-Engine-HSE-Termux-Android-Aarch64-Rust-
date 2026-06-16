@@ -1159,6 +1159,12 @@ async fn recall_prior_entities_pulls_and_tags_prior_scan_findings() {
         got.scan_id, "current-scan",
         "recalled node is stamped as observed in the current scan"
     );
+    assert_eq!(
+        got.corroboration, 0,
+        "recalled nodes contribute zero corroboration so re-persisting is \
+         idempotent — the DB already holds the true count; re-scans must not \
+         compound it"
+    );
 
     // A scan never recalls its own rows: asking as "prior-scan" (the only scan
     // that observed the seed) excludes itself ⇒ nothing to recall.
