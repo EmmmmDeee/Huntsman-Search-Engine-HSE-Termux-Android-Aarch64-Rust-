@@ -41,7 +41,6 @@ struct IspBlock {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct LocationBlock {
     #[serde(default)]
     country: Option<String>,
@@ -179,71 +178,128 @@ impl Module for IpQuery {
         ip_entity.add_evidence(ev);
         result.push(ip_entity);
 
-        // A CDN/anycast edge IP geolocates to the answering datacenter, not the
-        // subject — its city/coords are pure infrastructure. Skip the geo
-        // (Coordinates/Address) entities so they can't pollute identity-location
-        // correlation, consistent with the ip_geo/ipinfo rule. The IP, ASN and
-        // ISP-org entities above are still emitted (they describe the
-        // infrastructure itself, not a claimed subject location).
-        let skip_geo = crate::core::validation::is_cdn_edge_ip(ip);
-        if skip_geo {
+        // Geolocation is only the SUBJECT's when the IP isn't a CDN edge or an
+        // anonymiser/datacenter exit; otherwise the coords are the facility, not
+        // the person. Log the suppression reason for the operator; the builder
+        // applies the same gate.
+        if let Some(reason) = untrusted_geo_reason(ip, data.risk.as_ref()) {
             tracing::debug!(
                 module = SRC,
                 %ip,
-                "skipping IP-geo Coordinates/Address — CDN/anycast edge IP, location is datacenter not subject"
+                reason,
+                "skipping IP-geo Coordinates/Address — location is the infrastructure, not the subject"
             );
         }
-        if let Some(loc) = data.location.as_ref().filter(|_| !skip_geo) {
-            // Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs.
-            if let (Some(lat), Some(lon)) = (loc.latitude, loc.longitude)
-                && let Some(mut ce) =
-                    crate::util::geo::coarse_provider_coords(lat, lon, 0.58, &ctx.scan_id)
-            {
-                ce.tag("ipquery");
-                if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
-                    ce.tag(format!("au-state:{state}"));
-                    ce.tag("country:AU");
-                }
-                ce.add_evidence(Evidence::new(SRC, format!("Geolocation for {ip}")));
-                result.push(ce);
-            }
-            let city = loc.city.as_deref().unwrap_or("");
-            let state = loc.state.as_deref().unwrap_or("");
-            let country = loc.country.as_deref().unwrap_or("");
-            if !city.is_empty() && !country.is_empty() {
-                let addr = if !state.is_empty() {
-                    format!("{city}, {state}, {country}")
-                } else {
-                    format!("{city}, {country}")
-                };
-                let mut ae = Entity::new(EntityKind::Address, &addr, 0.62, &ctx.scan_id);
-                ae.tag("ipquery");
-                ae.add_evidence(Evidence::new(SRC, format!("Address for {ip}")));
-                result.push(ae);
-            }
-        }
-
-        if let Some(isp) = &data.isp {
-            if let Some(asn) = isp.asn.as_deref()
-                && !asn.is_empty()
-            {
-                let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, &ctx.scan_id);
-                ae.tag("ipquery");
-                ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
-                result.push(ae);
-            }
-            if let Some(org) = isp.org.as_deref()
-                && !org.is_empty()
-            {
-                let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, &ctx.scan_id);
-                oe.tag("ipquery");
-                oe.add_evidence(Evidence::new(SRC, format!("ISP org for {ip}")));
-                result.push(oe);
-            }
+        for e in build_geo_isp_entities(ip, &data, &ctx.scan_id) {
+            result.push(e);
         }
 
         Ok(result)
     }
+}
+
+/// Reason an IP's geolocation must NOT be trusted as the *subject's* location,
+/// or `None` when it can. A CDN/anycast edge resolves to the answering
+/// datacenter; a VPN / Tor / proxy / datacenter IP resolves to the
+/// anonymiser-exit or hosting facility — in every case the coordinates are
+/// infrastructure, so admitting them as a person's location poisons
+/// identity-location correlation. (Mobile IPs are *not* suppressed: a carrier
+/// IP still places the subject in a real region.) **Pure.**
+fn untrusted_geo_reason(ip: &str, risk: Option<&RiskBlock>) -> Option<&'static str> {
+    if crate::core::validation::is_cdn_edge_ip(ip) {
+        return Some("cdn/anycast edge");
+    }
+    let r = risk?;
+    if r.is_tor == Some(true) {
+        return Some("tor exit");
+    }
+    if r.is_vpn == Some(true) {
+        return Some("vpn");
+    }
+    if r.is_proxy == Some(true) {
+        return Some("proxy");
+    }
+    if r.is_datacenter == Some(true) {
+        return Some("datacenter");
+    }
+    None
+}
+
+/// Build the geolocation + ISP entities for an ipquery response. **Pure** (no
+/// IO) so the untrusted-geo suppression, AU tagging, and ISO-country / timezone
+/// surfacing are unit-tested directly.
+///
+/// `Coordinates` / `Address` are emitted only when [`untrusted_geo_reason`]
+/// clears the IP; the previously-discarded `country_code` (→ `country_iso` +
+/// the `country:AU` tag) and `timezone` (a chronolocation lead) are stamped on
+/// the geo evidence. `Asn` / `Organisation` describe the infrastructure itself
+/// and are always emitted.
+fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
+    let mut out: Vec<Entity> = Vec::new();
+    let trusted_geo = untrusted_geo_reason(ip, data.risk.as_ref()).is_none();
+
+    if let Some(loc) = data.location.as_ref().filter(|_| trusted_geo) {
+        let cc = loc.country_code.as_deref().unwrap_or("");
+        let tz = loc.timezone.as_deref().unwrap_or("");
+        let geo_ev = || {
+            let mut ev = Evidence::new(SRC, format!("Geolocation for {ip}"));
+            if !cc.is_empty() {
+                ev = ev.with_attr("country_iso", cc);
+            }
+            if !tz.is_empty() {
+                ev = ev.with_attr("timezone", tz);
+            }
+            ev
+        };
+
+        // Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs.
+        if let (Some(lat), Some(lon)) = (loc.latitude, loc.longitude)
+            && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.58, scan_id)
+        {
+            ce.tag("ipquery");
+            if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
+                ce.tag(format!("au-state:{state}"));
+                ce.tag("country:AU");
+            }
+            ce.add_evidence(geo_ev());
+            out.push(ce);
+        }
+
+        let city = loc.city.as_deref().unwrap_or("");
+        let state = loc.state.as_deref().unwrap_or("");
+        let country = loc.country.as_deref().unwrap_or("");
+        if !city.is_empty() && !country.is_empty() {
+            let addr = if !state.is_empty() {
+                format!("{city}, {state}, {country}")
+            } else {
+                format!("{city}, {country}")
+            };
+            let mut ae = Entity::new(EntityKind::Address, &addr, 0.62, scan_id);
+            ae.tag("ipquery");
+            if cc.eq_ignore_ascii_case("AU") {
+                ae.tag("country:AU");
+            }
+            ae.add_evidence(geo_ev());
+            out.push(ae);
+        }
+    }
+
+    if let Some(isp) = &data.isp {
+        if let Some(asn) = isp.asn.as_deref().filter(|s| !s.is_empty()) {
+            let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, scan_id);
+            ae.tag("ipquery");
+            ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
+            out.push(ae);
+        }
+        if let Some(org) = isp.org.as_deref().filter(|s| !s.is_empty()) {
+            let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, scan_id);
+            oe.tag("ipquery");
+            oe.add_evidence(Evidence::new(SRC, format!("ISP org for {ip}")));
+            out.push(oe);
+        }
+    }
+
+    out
 }
 
 #[cfg(test)]
