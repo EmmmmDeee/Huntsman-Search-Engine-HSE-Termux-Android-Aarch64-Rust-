@@ -57,3 +57,16 @@ use super::*;
         assert_eq!(EngineStatus::Blocked.as_str(), "blocked");
         assert_eq!(EngineStatus::Down.as_str(), "down");
     }
+
+    #[test]
+    fn classify_reachable_empty_body_is_blocked() {
+        // A body with content but zero parsed results is a soft-block.
+        let body = FetchOutcome::Body("some page content here".into());
+        assert_eq!(classify(&body, 0), EngineStatus::Blocked);
+        assert_ne!(classify(&body, 0), EngineStatus::Up);
+    }
+
+    #[test]
+    fn external_link_count_handles_empty_body() {
+        assert_eq!(external_link_count("", "bing"), 0);
+    }

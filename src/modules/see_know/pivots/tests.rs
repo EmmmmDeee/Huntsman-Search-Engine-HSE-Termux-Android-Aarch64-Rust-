@@ -82,3 +82,20 @@ use super::*;
         let ids = discover_steam_pivots(&r);
         assert_eq!(ids, vec!["76561198000000000".to_string()]);
     }
+
+    #[test]
+    fn discover_discord_pivots_ignores_non_username_entities() {
+        let mut r = ModuleResult::new();
+        // Email entity with discord: prefix — must be skipped (wrong kind)
+        r.push(Entity::new(EntityKind::Email, "discord:359023095012345678", 0.6, "test"));
+        // Domain entity — must be skipped
+        r.push(Entity::new(EntityKind::Domain, "discord.com", 0.6, "test"));
+        assert!(discover_discord_pivots(&r).is_empty());
+    }
+
+    #[test]
+    fn discover_steam_pivots_returns_empty_for_no_steam_entities() {
+        let mut r = ModuleResult::new();
+        r.push(Entity::new(EntityKind::Username, "discord:359023095012345678", 0.7, "test"));
+        assert!(discover_steam_pivots(&r).is_empty());
+    }
