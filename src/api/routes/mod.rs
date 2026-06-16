@@ -135,6 +135,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/version", get(handlers::version))
         // ── modules ──
         .route("/modules", get(handlers::modules_list))
+        .route("/attack/capability.json", get(handlers::attack_capability))
         .route("/modules/graph", get(handlers::modules_graph))
         .route("/engines/health", get(handlers::engines_health))
         .route("/stats", get(handlers::stats))

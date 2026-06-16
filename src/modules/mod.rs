@@ -383,6 +383,22 @@ pub fn reconnaissance_coverage<'a>(
     crate::core::attack::coverage(ids)
 }
 
+/// HSE's **static** ATT&CK Reconnaissance capability: the catalogued techniques
+/// at least one registered module can exercise (`covered`) versus those the
+/// catalogue lists that **no** module covers (`gaps`) — the tool's own
+/// collection ceiling, where a new module would extend reach.
+///
+/// This is distinct from a per-scan [`reconnaissance_coverage`] assessment
+/// (what a scan *did* exercise): this is what the tool *can* do, independent of
+/// any scan. Cheap — reads the cached module⇆technique map.
+#[must_use]
+pub fn capability_assessment() -> crate::core::attack::Assessment {
+    let ids = MODULE_TECHNIQUES
+        .values()
+        .flat_map(|slice| slice.iter().copied());
+    crate::core::attack::Assessment::from_covered(crate::core::attack::coverage(ids))
+}
+
 /// Reverse index of the module ⇆ technique map: each ATT&CK Reconnaissance
 /// technique ID → the registered module names that implement it. Only
 /// catalogued technique IDs are keyed (unknown IDs are dropped), and the module

@@ -104,3 +104,23 @@ use super::{reconnaissance_coverage, registry, technique_module_index};
             }
         }
     }
+
+    #[test]
+    fn capability_assessment_partitions_catalogue_and_reflects_real_reach() {
+        let a = super::capability_assessment();
+        // covered ∪ gaps == the whole catalogue (Assessment invariant).
+        assert_eq!(
+            a.covered.len() + a.gaps.len(),
+            crate::core::attack::RECONNAISSANCE.len()
+        );
+        // HSE has many modules → it covers most of the curated catalogue.
+        assert!(a.covered.len() >= 20, "covered {} techniques", a.covered.len());
+        // Every covered technique is implemented by ≥1 module (consistent with
+        // the reverse index); every gap is implemented by none.
+        let index = super::technique_module_index();
+        assert!(a.covered.iter().all(|t| index.contains_key(t.id)));
+        assert!(a.gaps.iter().all(|t| !index.contains_key(t.id)));
+        // coverage_pct is a sane percentage.
+        let pct = a.coverage_pct();
+        assert!((0.0..=100.0).contains(&pct) && pct > 50.0);
+    }
