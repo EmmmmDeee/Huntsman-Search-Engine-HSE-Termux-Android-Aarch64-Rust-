@@ -18,3 +18,45 @@ pub fn val_str(item: &Value, key: &str) -> Option<String> {
 pub fn val_str_or(item: &Value, keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|k| val_str(item, k))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn val_str_returns_value_for_present_key() {
+        let v = json!({"name": "Alice"});
+        assert_eq!(val_str(&v, "name"), Some("Alice".to_string()));
+    }
+
+    #[test]
+    fn val_str_treats_empty_string_as_absent() {
+        let v = json!({"name": ""});
+        assert!(val_str(&v, "name").is_none());
+    }
+
+    #[test]
+    fn val_str_returns_none_for_missing_key() {
+        let v = json!({"other": "x"});
+        assert!(val_str(&v, "name").is_none());
+    }
+
+    #[test]
+    fn val_str_returns_none_for_non_string_value() {
+        let v = json!({"count": 42});
+        assert!(val_str(&v, "count").is_none());
+    }
+
+    #[test]
+    fn val_str_or_returns_first_non_empty() {
+        let v = json!({"a": "", "b": "found", "c": "other"});
+        assert_eq!(val_str_or(&v, &["a", "b", "c"]), Some("found".to_string()));
+    }
+
+    #[test]
+    fn val_str_or_returns_none_when_all_absent() {
+        let v = json!({"x": ""});
+        assert!(val_str_or(&v, &["a", "b"]).is_none());
+    }
+}
