@@ -583,6 +583,9 @@ const API = {
   attackDiff: (a,b)=>API._req('/api/v1/scans/'+encodeURIComponent(a)+'/attack-coverage-diff/'+encodeURIComponent(b)),
   // Module capability graph: which input kinds flow to which produced kinds.
   modulesGraph: ()=>API._req('/api/v1/modules/graph'),
+  // HSE's static MITRE ATT&CK capability: which Reconnaissance techniques the
+  // tool can exercise (covered, with modules) vs the catalogue gaps.
+  attackCapability: ()=>API._req('/api/v1/attack/capability.json'),
   // Cross-scan entity pivot: everywhere an identifier appears, across every
   // scan. {entity, scan_ids:[…], observation_count}.
   entityGet:  uid=>API._req('/api/v1/entities/'+encodeURIComponent(uid))
@@ -716,6 +719,8 @@ async function renderDash(v){
 
     ${apiBudgetsPanel(s)}
 
+    <div id="attack-cap" style="margin-top:12px"></div>
+
     <div class="panel panel-default" style="margin-top:12px">
       <div class="panel-heading"><b>Recent Scans</b>
         <a href="#/scans" class="pull-right" style="font-size:12px">View all &rarr;</a>
@@ -724,6 +729,34 @@ async function renderDash(v){
         : '<div class="panel-body text-center text-muted">No scans yet — start one from <a href="#/newscan">New Scan</a>.</div>'}
     </div>`;
   if (recent.length) wireScansTable();
+  renderAttackCapability();
+}
+
+// Fill #attack-cap with HSE's STATIC MITRE ATT&CK Reconnaissance capability:
+// the techniques the tool can collect (covered, each chip tooltipping its
+// modules) vs the catalogue gaps. Answers "what can HSE collect?" up front.
+// Self-contained, inline-styled, silent on failure.
+async function renderAttackCapability(){
+  const el = $('#attack-cap'); if(!el) return;
+  try {
+    const a = await API.attackCapability();
+    if(!a || !a.total){ el.innerHTML=''; return; }
+    const pct = Math.round(a.coverage_pct||0);
+    const chip = (t,fg,bg)=>{
+      const m = (t.modules||[]).join(', ');
+      return `<span title="${attr(t.id+'  '+(t.name||'')+(m?' — '+m:''))}" style="display:inline-block;margin:2px;padding:1px 6px;border-radius:3px;font-size:11px;font-family:monospace;cursor:help;background:${bg};color:${fg}">${esc(t.id)}</span>`;
+    };
+    const covered = (a.covered||[]).map(t=>chip(t,'#fff','#096dd9')).join('');
+    const gaps = (a.gaps||[]).map(t=>chip(t,'#999','#eee')).join('');
+    el.innerHTML =
+      `<div class="panel panel-default"><div class="panel-heading"><b>MITRE ATT&amp;CK ${esc(a.tactic)} (${esc(a.tactic_id)}) capability</b>`
+      + ` <span class="text-muted" style="font-weight:400">— ${a.covered_count}/${a.total} techniques collectable (${pct}%)</span></div>`
+      + `<div class="panel-body" style="padding:8px 12px">`
+      + `<div style="height:6px;background:#eee;border-radius:3px;overflow:hidden;margin-bottom:6px"><div style="height:100%;width:${pct}%;background:#096dd9"></div></div>`
+      + `<div>${covered}${gaps}</div>`
+      + (gaps ? `<div class="text-muted" style="font-size:11px;margin-top:4px">Dimmed = no module collects this technique (a capability gap).</div>` : '')
+      + `</div></div>`;
+  } catch(_){ el.innerHTML=''; }
 }
 
 /* ═══════════ Page: SCANLIST (#/scans) ═══════════ */
