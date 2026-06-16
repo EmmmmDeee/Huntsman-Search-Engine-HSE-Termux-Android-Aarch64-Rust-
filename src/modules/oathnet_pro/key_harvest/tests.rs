@@ -1491,3 +1491,136 @@ fn pattern_catalogue_preserves_declaration_order() {
         "specific-before-generic violated for sk- family"
     );
 }
+
+// ── Harvested-key value tiers ─────────────────────────────────
+
+#[test]
+fn key_value_tier_ranks_critical_services() {
+    for svc in [
+        "aws",
+        "aws_sts",
+        "gcp_service",
+        "azure",
+        "cloudflare",
+        "mongodb_uri",
+        "postgres_uri",
+        "redis_uri",
+        "supabase",
+        "vault_service",
+        "doppler_service_token",
+        "1password",
+        "stripe",
+        "razorpay_live",
+        "square",
+        "npm",
+        "pypi",
+        "docker_hub_pat",
+    ] {
+        assert_eq!(key_value_tier(svc), KeyValue::Critical, "service {svc}");
+        assert!(key_value_tier(svc).is_high_value());
+    }
+}
+
+#[test]
+fn key_value_tier_treats_private_keys_as_critical() {
+    for svc in [
+        "pem_rsa_private",
+        "pem_openssh_private",
+        "pem_pkcs8_encrypted",
+        "pem_pgp_private",
+        "age_encryption",
+    ] {
+        assert_eq!(key_value_tier(svc), KeyValue::Critical, "service {svc}");
+    }
+}
+
+#[test]
+fn key_value_tier_ranks_high_services() {
+    for svc in [
+        "sendgrid",
+        "twilio",
+        "mailgun",
+        "slack_bot",
+        "discord_bot",
+        "github",
+        "github_app",
+        "gitlab_pat",
+        "bitbucket_oauth",
+        "anthropic",
+        "openai",
+        "openrouter",
+        "huggingface",
+        "replicate",
+        "shopify",
+        "vercel_project",
+        "netlify",
+        "railway",
+    ] {
+        assert_eq!(key_value_tier(svc), KeyValue::High, "service {svc}");
+        assert!(key_value_tier(svc).is_high_value());
+    }
+}
+
+#[test]
+fn key_value_tier_demotes_public_and_webhook_identifiers() {
+    for svc in [
+        "stripe_pub",
+        "clerk_pub",
+        "newrelic_browser",
+        "sentry_dsn",
+        "discord_webhook_url",
+        "slack_webhook_url",
+        "stripe_webhook",
+        "mapbox",
+        "geocodio",
+        "google",
+    ] {
+        assert_eq!(key_value_tier(svc), KeyValue::Low, "service {svc}");
+        assert!(!key_value_tier(svc).is_high_value());
+    }
+}
+
+#[test]
+fn key_value_tier_defaults_unknown_vendor_key_to_medium() {
+    // A recognised vendor key of unproven impact must never rank as throwaway.
+    assert_eq!(key_value_tier("some_unlisted_vendor"), KeyValue::Medium);
+    assert_eq!(key_value_tier("sentry"), KeyValue::Medium);
+    assert_eq!(key_value_tier("stripe_test"), KeyValue::Medium);
+}
+
+#[test]
+fn key_value_confidence_is_monotonic_by_tier() {
+    // Higher value ⇒ higher confidence, so the graph/export surfaces the most
+    // dangerous leaked keys first.
+    assert!(KeyValue::Critical.confidence() > KeyValue::High.confidence());
+    assert!(KeyValue::High.confidence() > KeyValue::Medium.confidence());
+    assert!(KeyValue::Medium.confidence() > KeyValue::Low.confidence());
+    for v in [
+        KeyValue::Critical,
+        KeyValue::High,
+        KeyValue::Medium,
+        KeyValue::Low,
+    ] {
+        let c = v.confidence();
+        assert!((0.0..=1.0).contains(&c), "{v:?} confidence out of range");
+    }
+}
+
+#[test]
+fn every_catalogued_service_classifies_and_high_value_set_is_populated() {
+    // Guard: every prefix-table service maps to a tier (the match is total via
+    // its `_ => Medium` arm, but this pins that real services aren't silently
+    // mis-bucketed) and the critical/high lists are non-trivially populated.
+    let cat = pattern_catalogue();
+    let mut high_value = 0usize;
+    for entry in &cat {
+        let tier = key_value_tier(entry.service);
+        if tier.is_high_value() {
+            high_value += 1;
+        }
+    }
+    assert!(
+        high_value >= 40,
+        "expected many high-value services in the catalogue, got {high_value}"
+    );
+}

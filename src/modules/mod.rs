@@ -163,20 +163,31 @@ pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
                 );
                 return e;
             }
-            let mut e = Entity::new(EntityKind::ApiKey, &fk.key, 0.80, scan_id);
+            // Rank by operational value (blast radius if live) so the harvested
+            // key set is a value-ordered database: a leaked cloud secret /
+            // private key / DB URI ranks above a publishable token or webhook.
+            let tier = oathnet_pro::key_harvest::key_value_tier(&fk.service);
+            let mut e = Entity::new(EntityKind::ApiKey, &fk.key, tier.confidence(), scan_id);
             e.tag("api-key");
             e.tag("foreign-key");
             e.tag("retrieved");
             e.tag(format!("service:{}", fk.service));
+            e.tag(format!("value:{}", tier.as_str()));
+            if tier.is_high_value() {
+                e.tag("high-value");
+            }
             e.add_evidence(
                 Evidence::new(
                     "found_keys",
                     format!(
-                        "Foreign {} API key retrieved from {} data",
-                        fk.service, fk.provider
+                        "Foreign {} API key ({} value) retrieved from {} data",
+                        fk.service,
+                        tier.as_str(),
+                        fk.provider
                     ),
                 )
                 .with_attr("service", &fk.service)
+                .with_attr("value_tier", tier.as_str())
                 .with_attr("source_provider", &fk.provider)
                 .with_attr("source_query", &fk.query)
                 .with_attr("occurrences", fk.count.to_string()),

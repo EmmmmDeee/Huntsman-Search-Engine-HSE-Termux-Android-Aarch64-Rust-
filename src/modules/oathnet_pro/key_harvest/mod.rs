@@ -40,6 +40,195 @@ pub fn pattern_catalogue() -> Vec<PatternEntry> {
         .collect()
 }
 
+/// Operational value of a harvested foreign API key — its blast radius if the
+/// leaked credential is live. Drives the confidence and the `high-value` tag on
+/// the `ApiKey` entities drained from [`crate::util::found_keys`], so the
+/// persisted key set is a *ranked* database: a leaked AWS secret or a private
+/// key is not filed alongside a publishable Stripe key or a webhook URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum KeyValue {
+    /// Full infrastructure / data / money compromise, or an irrevocable secret:
+    /// cloud root creds, DB connection URIs, secret managers, payment *live*
+    /// secrets, private keys, package-registry publish tokens.
+    Critical,
+    /// Send-as-victim (email/SMS/chat), source-control, billable compute (AI),
+    /// or deploy/hosting control.
+    High,
+    /// Scoped / test / restricted keys, monitoring, and SaaS-data tokens.
+    Medium,
+    /// Public/publishable identifiers, webhook URLs, geocoding — low blast radius.
+    Low,
+}
+
+impl KeyValue {
+    /// Stable lower-case identifier (entity tag / evidence attr / API).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Critical => "critical",
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+        }
+    }
+
+    /// Confidence to stamp on the drained `ApiKey` entity. Higher-value keys
+    /// rank above the flat baseline so the graph/dossier/export surfaces them
+    /// first; low-value identifiers sink below it.
+    #[must_use]
+    pub fn confidence(self) -> f64 {
+        match self {
+            Self::Critical => 0.95,
+            Self::High => 0.90,
+            Self::Medium => 0.80,
+            Self::Low => 0.65,
+        }
+    }
+
+    /// Whether to flag the key `high-value` for filtering — Critical/High only.
+    #[must_use]
+    pub fn is_high_value(self) -> bool {
+        matches!(self, Self::Critical | Self::High)
+    }
+}
+
+/// Classify a harvested key's [`KeyValue`] from its identified `service` (the
+/// string returned by [`identify_vendor_api_key`]). **Pure.** Unknown but
+/// vendor-recognised services default to [`KeyValue::Medium`] — a real foreign
+/// key of unproven impact should never silently rank as throwaway.
+#[must_use]
+pub fn key_value_tier(service: &str) -> KeyValue {
+    // PEM private keys → always Critical (irrevocable host/identity secret).
+    if service.starts_with("pem_") || service == "age_encryption" {
+        return KeyValue::Critical;
+    }
+    match service {
+        // ── Critical: cloud root/secret, secret managers, DB URIs, payment
+        //    live secrets, supply-chain publish. ──
+        "aws"
+        | "aws_sts"
+        | "gcp_service"
+        | "google_service"
+        | "azure"
+        | "azure_devops"
+        | "alibaba_cloud"
+        | "digitalocean"
+        | "cloudflare"
+        | "cloudflare_acct"
+        | "cloudflare_worker"
+        | "vault_batch"
+        | "vault_service"
+        | "doppler_cli"
+        | "doppler_personal"
+        | "doppler_service_acct"
+        | "doppler_service_token"
+        | "1password"
+        | "pulumi"
+        | "mongodb_uri"
+        | "mongodb_atlas"
+        | "mysql_uri"
+        | "postgres_uri"
+        | "redis_uri"
+        | "rabbitmq_uri"
+        | "supabase"
+        | "planetscale_password"
+        | "planetscale_token"
+        | "stripe"
+        | "razorpay_live"
+        | "square"
+        | "paystack"
+        | "npm"
+        | "pypi"
+        | "docker_hub_pat"
+        | "clojars_deploy" => KeyValue::Critical,
+
+        // ── High: send-as-victim, source control, billable AI, deploy/hosting. ──
+        "sendgrid"
+        | "mailgun"
+        | "mailchimp"
+        | "twilio"
+        | "twilio_api_sid"
+        | "brevo"
+        | "mailersend"
+        | "resend"
+        | "postmark"
+        | "telegram_bot"
+        | "discord_bot"
+        | "slack_bot"
+        | "slack_app"
+        | "slack_user"
+        | "slack_enterprise"
+        | "slack_refresh"
+        | "github"
+        | "github_app"
+        | "github_oauth"
+        | "github_refresh"
+        | "github_user_server"
+        | "gitlab_pat"
+        | "gitlab_oauth"
+        | "gitlab_deploy"
+        | "gitlab_runner"
+        | "bitbucket_app_password"
+        | "bitbucket_oauth"
+        | "anthropic"
+        | "openai"
+        | "openai_svc"
+        | "openai_admin"
+        | "openai_or_stripe"
+        | "openai_session"
+        | "openrouter"
+        | "cohere"
+        | "mistral"
+        | "groq"
+        | "huggingface"
+        | "replicate"
+        | "together_ai"
+        | "xai_grok"
+        | "nvidia"
+        | "perplexity"
+        | "fal_ai"
+        | "langsmith"
+        | "wandb"
+        | "lightning_ai"
+        | "tavily"
+        | "shopify"
+        | "shopify_custom_app"
+        | "shopify_partner"
+        | "shopify_shared_secret"
+        | "vercel_account"
+        | "vercel_integration"
+        | "vercel_kv"
+        | "vercel_project"
+        | "vercel_runtime"
+        | "vercel_v2"
+        | "netlify"
+        | "render"
+        | "railway"
+        | "flyio"
+        | "databricks"
+        | "aptible" => KeyValue::High,
+
+        // ── Low: public/publishable identifiers, webhook URLs, geocoding. ──
+        "discord_webhook_url"
+        | "slack_webhook_url"
+        | "stripe_webhook"
+        | "stripe_pub"
+        | "clerk_pub"
+        | "newrelic_browser"
+        | "mapbox"
+        | "sentry_dsn"
+        | "geocodio"
+        | "facebook"
+        | "google"
+        | "google_oauth"
+        | "jwt_token" => KeyValue::Low,
+
+        // ── Everything else (test/restricted/scoped, monitoring, SaaS data, and
+        //    any unlisted vendor key) → Medium. ──
+        _ => KeyValue::Medium,
+    }
+}
+
 /// High-confidence, CHEAP key identification: recognised **vendor prefixes**,
 /// **PEM** private-key blocks, and **crypto** addresses only. Deliberately
 /// excludes the generic-hex / URL-param / `user:pass` heuristics.
