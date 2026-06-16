@@ -14,6 +14,38 @@ pub(super) struct HostResult {
     pub(super) services: Vec<Service>,
     #[serde(default)]
     pub(super) location: Option<Location>,
+    #[serde(default)]
+    pub(super) autonomous_system: Option<AutonomousSystem>,
+    #[serde(default)]
+    pub(super) labels: Vec<String>,
+    #[serde(default)]
+    pub(super) dns: Option<Dns>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct AutonomousSystem {
+    #[serde(default)]
+    pub(super) asn: Option<u32>,
+    #[serde(default)]
+    pub(super) name: Option<String>,
+    #[serde(default)]
+    pub(super) bgp_prefix: Option<String>,
+    #[serde(default)]
+    pub(super) country_code: Option<String>,
+    #[serde(default)]
+    pub(super) description: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct Dns {
+    #[serde(default)]
+    pub(super) reverse_dns: Option<ReverseDns>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct ReverseDns {
+    #[serde(default)]
+    pub(super) names: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -24,6 +56,20 @@ pub(super) struct Service {
     pub(super) service_name: Option<String>,
     #[serde(default)]
     pub(super) transport_protocol: Option<String>,
+    #[serde(default)]
+    pub(super) extended_service_name: Option<String>,
+    #[serde(default)]
+    pub(super) software: Vec<Software>,
+    #[serde(default)]
+    pub(super) labels: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct Software {
+    #[serde(default)]
+    pub(super) product: Option<String>,
+    #[serde(default)]
+    pub(super) version: Option<String>,
 }
 
 #[derive(Deserialize)]

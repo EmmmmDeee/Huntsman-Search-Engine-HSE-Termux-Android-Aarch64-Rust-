@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <title>Huntsman Search Engine</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <!-- Colours Chrome-on-Android's address bar to match the dark navbar. -->
   <meta name="theme-color" content="#222222">
   <!-- Installable as a standalone fullscreen app on Chrome-for-Android (Add to
@@ -261,6 +261,108 @@
     /* Row hovers: the light-blue #f0f7ff is invisible on a dark table */
     body.dark-theme #browse-table tbody tr:hover{background:#243240 !important}
     body.dark-theme .search-results .sr-item:hover{background:#243240}
+
+    /* ── Mobile / touch UX (Chrome for Android, Termux AArch64) ──────────────
+       These rules are additive — they never override logic, only geometry and
+       touch behaviour.  All breakpoints target the 320–767 px range typical of
+       Android phones in portrait orientation. */
+
+    /* 1. Tap-delay elimination: tell the browser not to intercept the first
+          tap to decide whether a double-tap zoom is coming.  Applies to every
+          element that accepts a tap/click so 300 ms delays disappear.         */
+    a, button, input, select, textarea, label,
+    .btn, .nav-tabs > li > a, .rollup-row, .corr-card, .sr-item, .mod-grid label {
+      touch-action: manipulation;
+    }
+
+    /* 2. Minimum touch-target height: 44 px for all buttons.  btn-xs in
+          Bootstrap 3 renders at ~22 px — far too small for a finger.  We
+          keep the visual appearance but pad the click zone.                   */
+    .btn { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+    /* btn-xs / btn-sm: still visually small but tappable.                    */
+    .btn-xs { min-height: 36px; padding-left: 8px; padding-right: 8px; }
+    .btn-sm { min-height: 40px; }
+    /* Nav-tab links must also be tall enough.                                 */
+    .nav-tabs > li > a { min-height: 44px; display: flex; align-items: center; }
+
+    /* 3. Input fields — 16 px font prevents iOS/Chrome auto-zoom on focus.
+          Min-height of 44 px for comfortable tap.                             */
+    input.form-control, select.form-control, textarea.form-control {
+      font-size: 16px;
+      min-height: 44px;
+    }
+    /* input-sm / input-group-sm: relax to 40 px — still tappable.           */
+    .input-sm, .form-control.input-sm, .input-group-sm > .form-control,
+    .input-group-sm > .input-group-btn > .btn {
+      font-size: 15px;
+      min-height: 40px;
+    }
+    /* Textarea is taller by design; just ensure font-size is adequate.       */
+    textarea.form-control { min-height: 80px; }
+
+    /* 4. Prevent horizontal overflow on the main container.                  */
+    body { overflow-x: hidden; }
+    #mainbody { max-width: 100%; overflow-x: hidden; }
+
+    /* 5. Long values / URLs in result cells must wrap, not overflow.         */
+    td, th { word-break: break-word; }
+    /* Entity value cells specifically.                                        */
+    #browse-table td:nth-child(2),
+    #scans-table td:nth-child(1),
+    .corr-d, .log-row .msg { word-break: break-all; }
+
+    /* 6. Phone-specific overrides (≤ 767 px).                                */
+    @media (max-width: 767px) {
+      /* Navbar: fixed-top creates a paint-layer that Chrome Android sometimes
+         mis-positions when the address bar auto-hides.  Keep it fixed (for
+         the brand/nav), but lift the body padding by an extra 8 px safety
+         margin so content never hides under the bar on layout shift.          */
+      #mainbody { padding-top: 68px !important; }
+
+      /* Stat-cards: full-width on very small screens (< 360 px).             */
+      @media (max-width: 359px) {
+        .col-xs-6 { width: 100%; }
+      }
+
+      /* Scan-info action buttons: wrap gracefully instead of overflowing.    */
+      h2 .pull-right { float: none !important; display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+
+      /* Sidebar rollup table: collapse to full-width above the main content. */
+      #b-sidebar { width: 100% !important; margin-bottom: 10px; }
+      #b-main    { width: 100% !important; }
+      #b-sidebar .panel { position: static !important; }
+
+      /* Browse filter row: stack inputs vertically.                           */
+      #b-main .col-sm-5,
+      #b-main .col-sm-3,
+      #b-main .col-sm-4 { width: 100%; }
+
+      /* Wizard batch textarea: readable on small screen.                     */
+      #batch-targets { font-size: 14px; }
+
+      /* Key-pool and key-row actions: wrap to avoid overflow.                */
+      .keyrow { flex-wrap: wrap; }
+      .kactions { margin-left: 0 !important; width: 100%; justify-content: flex-start; }
+
+      /* Log box: keep monospace readable but not too small.                  */
+      #log-box { font-size: 12px; }
+      .log-row .ts  { width: 60px; font-size: 11px; }
+      .log-row .typ { width: 80px; font-size: 11px; }
+
+      /* Module capability graph: hide the D3 hint text (not useful on touch).*/
+      .graph-hint { display: none; }
+
+      /* Graph legend: keep it but make it smaller.                            */
+      .graph-legend { font-size: 10px; padding: 4px 8px; }
+
+      /* Live-form: stack form-inline controls vertically.                    */
+      #live-form { display: flex; flex-direction: column; gap: 6px; }
+      #live-form .form-control { width: 100% !important; }
+      #live-form label { margin-left: 0 !important; }
+
+      /* Diff picker: selects full width.                                     */
+      #d-a, #d-b { width: 100%; }
+    }
   </style>
 </head>
 <body>
@@ -786,7 +888,8 @@ async function renderScans(v){
       <div class="panel-heading">
         Recent scans
         <input id="scan-filter" type="search" class="form-control input-sm pull-right"
-               style="width:240px;margin-top:-4px" placeholder="Filter scans…">
+               style="width:240px;margin-top:-4px" placeholder="Filter scans…"
+               autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
       </div>
       <div id="scans-table-host">${renderScansTable(S.scans)}</div>
     </div>
@@ -1075,7 +1178,7 @@ async function renderNewScan(v){
         <div class="col-sm-4" style="padding-bottom:10px">
           <label for="scanname">Scan Name</label>
           <div class="input-group" style="padding-bottom:10px">
-            <input class="form-control" type="text" id="scanname" value="${attr(W.name)}" placeholder="The name of this scan.">
+            <input class="form-control" type="text" id="scanname" value="${attr(W.name)}" placeholder="The name of this scan." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
           </div>
           <label for="scantarget">Scan Target</label>
           <div class="input-group" style="padding-bottom:10px">
@@ -1833,7 +1936,7 @@ function renderBrowse(host){
       <div class="${sidebarHtml ? 'col-sm-9 col-md-10' : 'col-sm-12'}" id="b-main">
         <div class="row" style="margin-bottom:10px">
           <div class="col-sm-5">
-            <input type="search" id="b-q" class="form-control input-sm" placeholder="Filter value, evidence, tags…" autocomplete="off">
+            <input type="search" id="b-q" class="form-control input-sm" placeholder="Filter value, evidence, tags…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
           </div>
           <div class="col-sm-3">
             <select id="b-cls" class="form-control input-sm">
@@ -2407,7 +2510,8 @@ async function renderOpts(v){
         </p>
         <input id="tg-filter" type="text" class="form-control input-sm"
                placeholder="Filter by name… (e.g. yandex, wikidata, regional)"
-               autocomplete="off" style="max-width:340px;margin-bottom:12px">
+               autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+               style="max-width:340px;margin-bottom:12px">
         ${(toggles.groups||[]).map(g=>`
           <div class="tg-group" data-group="${attr(g.group)}" style="margin-top:8px">
             <h5 style="margin:6px 0"><b>${esc(g.label)}</b>
@@ -2860,7 +2964,7 @@ async function renderLive(v){
           <select id="live-kind" class="form-control input-sm">
             ${TARGET_KINDS.map(k=>`<option value="${attr(k.v)}"${k.v==='auto'?' selected':''}>${esc(k.label)}</option>`).join('')}
           </select>
-          <input id="live-value" type="text" class="form-control input-sm" placeholder="target value…" style="min-width:200px" autocomplete="off" autocapitalize="off" spellcheck="false">
+          <input id="live-value" type="text" class="form-control input-sm" placeholder="target value…" style="min-width:200px" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
           <label class="text-muted" style="font-weight:normal;margin-left:8px">every</label>
           <input id="live-interval" type="number" class="form-control input-sm" value="60" min="1" style="width:80px"> s
           <label class="text-muted" style="font-weight:normal;margin-left:8px">for</label>
