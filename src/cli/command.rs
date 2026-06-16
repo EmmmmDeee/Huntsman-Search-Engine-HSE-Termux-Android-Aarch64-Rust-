@@ -396,7 +396,9 @@ pub enum Command {
         /// Scan ID (or `latest` for the most-recent completed scan).
         #[arg(short, long)]
         scan_id: String,
-        /// Output format: json | csv | gexf | report | full. Default `json`.
+        /// Output format: json | csv | gexf | report | full | navigator.
+        /// `navigator` emits a MITRE ATT&CK Navigator layer of the
+        /// Reconnaissance techniques the scan exercised. Default `json`.
         #[arg(short, long, default_value = "json")]
         format: String,
         /// File path to write to. Omit for stdout.

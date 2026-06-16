@@ -22,6 +22,37 @@ pub(super) fn render_gexf(store: &Store, sid: &str) -> Result<String> {
     ))
 }
 
+/// MITRE ATT&CK **Navigator layer** for the scan — the Reconnaissance (TA0043)
+/// techniques its collection exercised, resolved from the modules that produced
+/// the evidence. Imports directly into the ATT&CK Navigator, so a scan's
+/// collection footprint can be reviewed (and diffed across scans) in the
+/// framework's own visual surface. Same coverage reducer as the `report`/CLI
+/// views, so the technique set never diverges between outputs.
+pub(super) fn render_attack_layer(store: &Store, sid: &str) -> Result<String> {
+    use std::collections::BTreeSet;
+
+    let entities = store.entities_for_scan(sid)?;
+    let module_sources: BTreeSet<&str> = entities
+        .iter()
+        .flat_map(|e| e.evidence.iter().map(|ev| ev.source.as_str()))
+        .collect();
+    let coverage = crate::modules::reconnaissance_coverage(module_sources.iter().copied());
+
+    let name = format!("HSE scan {sid}");
+    let description = format!(
+        "MITRE ATT&CK {} ({}) techniques exercised by Huntsman Search Engine scan {sid} \
+         ({} technique(s)).",
+        crate::core::attack::TACTIC_NAME,
+        crate::core::attack::TACTIC_ID,
+        coverage.len(),
+    );
+    Ok(crate::core::attack::navigator_layer(
+        &name,
+        &description,
+        &coverage,
+    ))
+}
+
 /// The **full dossier** — Huntsman's standard of maximum output detail. Emits
 /// EVERY entity (including quarantined `candidate` rows — nothing is hidden),
 /// each with its confidence/corroboration/tags and its COMPLETE evidence chain:

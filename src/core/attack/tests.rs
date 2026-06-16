@@ -84,3 +84,38 @@ use super::*;
             }
         }
     }
+
+#[test]
+fn navigator_layer_is_valid_and_marks_exercised_techniques() {
+    let cov = coverage(["T1589.002", "T1596.002", "T1589.002"]); // dup collapses
+    let json = navigator_layer("HSE scan abc", "test layer", &cov);
+
+    let v: serde_json::Value = serde_json::from_str(&json).expect("layer is valid JSON");
+    // Navigator layer envelope.
+    assert_eq!(v["domain"], "enterprise-attack");
+    assert_eq!(v["versions"]["layer"], "4.5");
+    assert_eq!(v["name"], "HSE scan abc");
+
+    let techs = v["techniques"].as_array().expect("techniques array");
+    assert_eq!(techs.len(), 2, "deduped to two techniques");
+    // Every entry is a reconnaissance technique scored as exercised.
+    for t in techs {
+        assert_eq!(t["tactic"], "reconnaissance");
+        assert_eq!(t["score"], 1);
+        assert_eq!(t["enabled"], true);
+    }
+    let ids: Vec<&str> = techs
+        .iter()
+        .filter_map(|t| t["techniqueID"].as_str())
+        .collect();
+    assert!(ids.contains(&"T1589.002"));
+    assert!(ids.contains(&"T1596.002"));
+}
+
+#[test]
+fn navigator_layer_empty_coverage_is_still_valid() {
+    let json = navigator_layer("empty", "no techniques", &[]);
+    let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    assert_eq!(v["techniques"].as_array().map(Vec::len), Some(0));
+    assert_eq!(v["domain"], "enterprise-attack");
+}

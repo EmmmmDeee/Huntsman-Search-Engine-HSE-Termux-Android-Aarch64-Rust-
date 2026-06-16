@@ -173,6 +173,61 @@ pub fn technique(id: &str) -> Option<&'static Technique> {
     RECONNAISSANCE.iter().find(|t| t.id == id)
 }
 
+/// Build a MITRE ATT&CK **Navigator layer** (schema 4.5) marking each supplied
+/// Reconnaissance technique as exercised (score 1). The JSON imports directly
+/// into the ATT&CK Navigator (`https://mitre-attack.github.io/attack-navigator/`),
+/// so an HSE scan's collection footprint is reviewable in the framework's own
+/// visual surface — the same vocabulary a blue/red team already speaks.
+///
+/// **Pure.** `name` / `description` identify the source (e.g. a scan id);
+/// `techniques` is typically [`coverage`]'s output. Output is deterministic
+/// (techniques are emitted in the given order — pass a sorted slice for stable
+/// diffs).
+#[must_use]
+pub fn navigator_layer(name: &str, description: &str, techniques: &[&Technique]) -> String {
+    use serde_json::json;
+
+    let techs: Vec<serde_json::Value> = techniques
+        .iter()
+        .map(|t| {
+            json!({
+                "techniqueID": t.id,
+                "tactic": "reconnaissance",
+                "score": 1,
+                "enabled": true,
+                "comment": t.name,
+            })
+        })
+        .collect();
+
+    let layer = json!({
+        "name": name,
+        "description": description,
+        "domain": "enterprise-attack",
+        "versions": { "attack": "15", "navigator": "4.9.5", "layer": "4.5" },
+        "sorting": 0,
+        "hideDisabled": true,
+        "techniques": techs,
+        "gradient": {
+            "colors": ["#ffffff", "#66b1ff", "#096dd9"],
+            "minValue": 0,
+            "maxValue": 1
+        },
+        "legendItems": [
+            { "label": "Exercised by this HSE scan", "color": "#096dd9" }
+        ],
+        "metadata": [
+            { "name": "tactic", "value": TACTIC_NAME },
+            { "name": "tactic_id", "value": TACTIC_ID },
+            { "name": "generator", "value": "Huntsman Search Engine" }
+        ]
+    });
+
+    // A `json!`-built value over string keys and finite numbers is always
+    // serialisable; the pretty form is the canonical Navigator file shape.
+    serde_json::to_string_pretty(&layer).expect("navigator layer is serialisable")
+}
+
 /// Resolve a set of technique IDs into their catalogue entries, deduplicated
 /// and sorted by ID; unknown IDs are dropped. The shared reducer behind every
 /// "which Reconnaissance techniques did this exercise" report — the module
