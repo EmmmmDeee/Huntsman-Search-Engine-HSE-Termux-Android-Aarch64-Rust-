@@ -1,6 +1,7 @@
 use super::GeoIntel;
-use super::ip_geo::{FreeIpApiResp, IpApiCoResp};
+use super::ip_geo::{FreeIpApiResp, IpApiCoResp, build_freeipapi_entity, build_ipapico_entity};
 use super::phone_geo::{phone_prefix_to_country, process_phone_prefix_only};
+use crate::core::entity::EntityKind;
 use crate::core::module::Module;
 use crate::core::module::{ModuleContext, ModuleCost};
 use crate::core::scan::{Target, TargetKind};
@@ -160,4 +161,37 @@ fn freeipapi_resp_deserializes() {
     assert!((r.latitude.unwrap() - (-27.4766)).abs() < 0.001);
     assert_eq!(r.country_code.as_deref(), Some("AU"));
     assert_eq!(r.is_proxy, Some(false));
+}
+
+#[test]
+fn ipapico_builder_emits_for_clean_ip_with_iso_and_skips_untrusted() {
+    let json = r#"{"city":"South Brisbane","region":"Queensland","country_name":"Australia","country_code":"AU","postal":"4101","latitude":-27.4766,"longitude":153.0166,"timezone":"Australia/Brisbane","org":"APNIC","asn":"AS13335"}"#;
+    let r: IpApiCoResp = serde_json::from_str(json).unwrap();
+    let e = build_ipapico_entity(&r, "1.2.3.4", false, "t").expect("coords");
+    assert_eq!(e.kind, EntityKind::Coordinates);
+    assert_eq!(
+        e.evidence[0]
+            .attributes
+            .get("country_iso")
+            .map(String::as_str),
+        Some("AU")
+    );
+    assert!(e.tags.iter().any(|t| t == "country:AU"));
+    assert!(e.tags.iter().any(|t| t.starts_with("au-state:")));
+    assert!(build_ipapico_entity(&r, "104.16.0.1", true, "t").is_none());
+    let err: IpApiCoResp = serde_json::from_str(r#"{"error":true}"#).unwrap();
+    assert!(build_ipapico_entity(&err, "1.2.3.4", false, "t").is_none());
+}
+
+#[test]
+fn freeipapi_builder_suppresses_proxy_and_untrusted() {
+    let clean = r#"{"latitude":-27.47,"longitude":153.02,"countryName":"Australia","countryCode":"AU","cityName":"South Brisbane","isProxy":false}"#;
+    let r: FreeIpApiResp = serde_json::from_str(clean).unwrap();
+    assert!(build_freeipapi_entity(&r, "1.2.3.4", false, "t").is_some());
+    assert!(build_freeipapi_entity(&r, "104.16.0.1", true, "t").is_none());
+    let proxy: FreeIpApiResp = serde_json::from_str(
+        r#"{"latitude":52.37,"longitude":4.89,"countryCode":"NL","isProxy":true}"#,
+    )
+    .unwrap();
+    assert!(build_freeipapi_entity(&proxy, "1.2.3.4", false, "t").is_none());
 }
