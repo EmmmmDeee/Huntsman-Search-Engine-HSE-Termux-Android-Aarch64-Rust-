@@ -27,6 +27,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::http::{fetch_json_or_404, urlencode};
+use crate::util::threat::is_meaningful_tag;
 
 // ── OTX response types ─────────────────────────────────────────────
 
@@ -155,22 +156,6 @@ impl Module for IpReputation {
 
 // ── OTX sub-routine ────────────────────────────────────────────────
 
-/// True if an OTX pulse `tag` is a clean, human-meaningful threat category
-/// (e.g. "malware", "Mirai", "NSO Group") rather than the hashes, filenames,
-/// metadata lines, and single-character noise OTX also stuffs into `tags`.
-///
-/// Heuristic: 3–32 chars, starts with a letter, ≥50% alphabetic, at most four
-/// words, and free of path/metadata punctuation or an explicit "hash" marker.
-fn is_meaningful_tag(t: &str) -> bool {
-    let len = t.len();
-    (3..=32).contains(&len)
-        && t.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-        && t.chars().filter(|c| c.is_ascii_alphabetic()).count() * 2 >= len
-        && !t.contains(['/', '\\', ':', '|', '=', '(', ')'])
-        && !t.to_ascii_lowercase().contains("hash")
-        && t.split_whitespace().count() <= 4
-}
-
 async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult) {
     let itype = match target.kind {
         TargetKind::IpAddress => "IPv4",
@@ -264,7 +249,7 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
         // OTX `adversary` is sometimes a long freeform paragraph after the
         // group name — keep just the lead name, capped.
         let name = a.split('(').next().unwrap_or(a).trim();
-        let capped = crate::util::str_util::truncate_safe(name, 64).to_string();
+        let capped: String = name.chars().take(64).collect();
         if !capped.is_empty() {
             ev = ev.with_attr("adversary", &capped);
         }
