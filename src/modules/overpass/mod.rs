@@ -29,7 +29,9 @@ struct OverpassResp {
 
 #[derive(Deserialize)]
 struct OsmElement {
-    #[allow(dead_code)]
+    /// `node` | `way` | `relation`. Surfaced on each node's evidence + tag so an
+    /// area-mapped facility (a substation drawn as a `way`) is distinguishable
+    /// from a point (a `node` mast).
     #[serde(default, rename = "type")]
     osm_type: Option<String>,
     #[serde(default)]
@@ -38,8 +40,32 @@ struct OsmElement {
     lat: Option<f64>,
     #[serde(default)]
     lon: Option<f64>,
+    /// Centroid Overpass emits for `way`/`relation` elements under `out center;`
+    /// — those have no own lat/lon. Lets area-mapped infrastructure be located.
+    #[serde(default)]
+    center: Option<Center>,
     #[serde(default)]
     tags: Option<std::collections::HashMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+struct Center {
+    #[serde(default)]
+    lat: Option<f64>,
+    #[serde(default)]
+    lon: Option<f64>,
+}
+
+impl OsmElement {
+    /// Located coordinates: a `node`'s own `lat`/`lon`, else a `way`/`relation`
+    /// centroid (`center`). `None` when the element carries neither.
+    fn coords(&self) -> Option<(f64, f64)> {
+        if let (Some(lat), Some(lon)) = (self.lat, self.lon) {
+            return Some((lat, lon));
+        }
+        let c = self.center.as_ref()?;
+        Some((c.lat?, c.lon?))
+    }
 }
 
 /// Per-node entities mapped from one Overpass response — a busy urban query can
@@ -108,7 +134,7 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
         let category = classify_element(tags);
         *categories.entry(category).or_default() += 1;
 
-        if let (Some(nlat), Some(nlon)) = (elem.lat, elem.lon)
+        if let Some((nlat, nlon)) = elem.coords()
             && crate::util::geo::is_valid_coords(nlat, nlon)
         {
             let node_coords = format!("{nlat:.6},{nlon:.6}");
@@ -116,12 +142,18 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
             ce.tag("overpass");
             ce.tag("geoint");
             ce.tag(format!("infra:{category}"));
+            if let Some(ty) = elem.osm_type.as_deref().filter(|s| !s.is_empty()) {
+                ce.tag(format!("osm:{ty}"));
+            }
             if let Some(state) = crate::util::geo::au_state_for_coords(nlat, nlon) {
                 ce.tag(format!("au-state:{state}"));
                 ce.tag("country:AU");
             }
             let mut ev = Evidence::new(SRC, format!("OSM {category} near {coord}"))
                 .with_attr("category", category);
+            if let Some(ty) = elem.osm_type.as_deref().filter(|s| !s.is_empty()) {
+                ev = ev.with_attr("osm_type", ty);
+            }
             if let Some(name) = tags.get("name") {
                 ev = ev.with_attr("name", name);
             }
@@ -181,17 +213,21 @@ impl Module for Overpass {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
 
+        // `nwr` (node/way/relation) + `out center;` so AREA-mapped infrastructure
+        // — substations, police/fire stations are commonly drawn as ways, not
+        // points — is found too, each with a centroid. `out body;`/`node` alone
+        // silently missed all of it.
         let query = format!(
             r#"[out:json][timeout:25];
 (
-  node["man_made"="mast"](around:500,{lat},{lon});
-  node["man_made"="tower"]["tower:type"="communication"](around:500,{lat},{lon});
-  node["man_made"="surveillance"](around:500,{lat},{lon});
-  node["power"="substation"](around:500,{lat},{lon});
-  node["amenity"="police"](around:500,{lat},{lon});
-  node["amenity"="fire_station"](around:500,{lat},{lon});
+  nwr["man_made"="mast"](around:500,{lat},{lon});
+  nwr["man_made"="tower"]["tower:type"="communication"](around:500,{lat},{lon});
+  nwr["man_made"="surveillance"](around:500,{lat},{lon});
+  nwr["power"="substation"](around:500,{lat},{lon});
+  nwr["amenity"="police"](around:500,{lat},{lon});
+  nwr["amenity"="fire_station"](around:500,{lat},{lon});
 );
-out body;"#
+out center;"#
         );
 
         let resp = ctx

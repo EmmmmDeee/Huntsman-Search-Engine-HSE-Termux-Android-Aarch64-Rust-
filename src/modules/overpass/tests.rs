@@ -156,3 +156,44 @@ fn accepts_coordinates_only() {
         // ...but only MAX_NODES node entities are emitted (+1 summary).
         assert_eq!(out.len(), MAX_NODES + 1);
     }
+
+    #[test]
+    fn way_and_relation_located_via_centroid_with_osm_type() {
+        // A substation mapped as a WAY (no own lat/lon) carries a center; a node
+        // carries its own coords. Both must be located, and tagged by osm type.
+        let els = elements(
+            r#"[
+              {"type":"way","id":10,"center":{"lat":-33.87,"lon":151.21},
+               "tags":{"power":"substation","operator":"Ausgrid"}},
+              {"type":"node","id":11,"lat":-33.8702,"lon":151.2103,
+               "tags":{"amenity":"police","name":"Sydney City"}}
+            ]"#,
+        );
+        let out = build_entities("-33.87,151.21", &els, "s");
+        // Summary + 2 located nodes (the way resolved via its centroid).
+        assert_eq!(out.len(), 3);
+
+        let way = &out[1];
+        assert_eq!(way.value, "-33.870000,151.210000");
+        assert!(way.has_tag("infra:substation"));
+        assert!(way.has_tag("osm:way"));
+        assert_eq!(way.evidence[0].attributes.get("osm_type").map(String::as_str), Some("way"));
+
+        let node = &out[2];
+        assert!(node.has_tag("infra:police") && node.has_tag("osm:node"));
+    }
+
+    #[test]
+    fn element_without_coords_or_center_is_skipped() {
+        // A relation with neither lat/lon nor a resolvable center contributes to
+        // the count but yields no located node entity.
+        let els = elements(
+            r#"[{"type":"relation","id":20,"tags":{"amenity":"fire_station"}}]"#,
+        );
+        let out = build_entities("-33.0,151.0", &els, "s");
+        assert_eq!(out.len(), 1, "only the summary — the unlocatable relation is skipped");
+        assert_eq!(
+            out[0].evidence[0].attributes.get("node_count").map(String::as_str),
+            Some("1")
+        );
+    }
