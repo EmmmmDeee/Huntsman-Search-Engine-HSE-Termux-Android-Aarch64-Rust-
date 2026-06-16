@@ -22,10 +22,7 @@ use crate::util::http::RequestBuilderExt;
 const SRC: &str = "ip2location";
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct Resp {
-    #[serde(default)]
-    ip: Option<String>,
     #[serde(default)]
     country_code: Option<String>,
     #[serde(default)]
@@ -118,8 +115,6 @@ impl Module for Ip2Location {
             .await
             .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
 
-        let mut result = ModuleResult::new();
-
         // A CDN/anycast edge IP geolocates to the answering datacenter, not the
         // subject — skip its Coordinates/Address so they can't pollute
         // identity-location correlation, consistent with the ip_geo rule. The
@@ -133,83 +128,117 @@ impl Module for Ip2Location {
             );
         }
 
-        let city = data.city_name.as_deref().unwrap_or("");
-        let region = data.region_name.as_deref().unwrap_or("");
-        let country = data.country_name.as_deref().unwrap_or("");
-        let zip = data.zip_code.as_deref().unwrap_or("");
-
-        // Confidence recalibrated 0.72 → 0.62 — see ip_geo.rs. The ip2location
-        // commercial DB is marginally better than the freemium competitors so it
-        // stays slightly above ipinfo.
-        if let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
-            && !skip_geo
-            && let Some(mut ce) =
-                crate::util::geo::coarse_provider_coords(lat, lon, 0.62, &ctx.scan_id)
-        {
-            ce.tag("ip2location");
-            if data.is_proxy == Some(true) {
-                ce.tag(tags::PROXY);
-            }
-            if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
-                ce.tag(format!("au-state:{state}"));
-                ce.tag("country:AU");
-            }
-            let ev = [
-                ("city", (!city.is_empty()).then_some(city)),
-                ("region", (!region.is_empty()).then_some(region)),
-                ("country", (!country.is_empty()).then_some(country)),
-                ("postcode", (!zip.is_empty()).then_some(zip)),
-            ]
-            .into_iter()
-            .filter_map(|(key, value)| value.map(|v| (key, v)))
-            .fold(
-                Evidence::new(
-                    SRC,
-                    format!("IP geolocation for {ip}: {city}, {region}, {country}"),
-                )
-                .with_attr("ip", ip),
-                |ev, (key, v)| ev.with_attr(key, v),
-            );
-            ce.add_evidence(ev);
-            result.push(ce);
+        let mut result = ModuleResult::new();
+        for e in build_entities(&data, ip, skip_geo, &ctx.scan_id) {
+            result.push(e);
         }
-
-        if !skip_geo && !city.is_empty() && !country.is_empty() {
-            let addr = if !region.is_empty() && !zip.is_empty() {
-                format!("{city}, {region} {zip}, {country}")
-            } else if !region.is_empty() {
-                format!("{city}, {region}, {country}")
-            } else {
-                format!("{city}, {country}")
-            };
-            let mut ae = Entity::new(EntityKind::Address, &addr, 0.68, &ctx.scan_id);
-            ae.tag("ip2location");
-            ae.tag(tags::GEOINT);
-            ae.add_evidence(Evidence::new(SRC, format!("Address for {ip}")));
-            result.push(ae);
-        }
-
-        if let Some(asn) = &data.asn
-            && !asn.is_empty()
-        {
-            let asn_str = format!("AS{asn}");
-            let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, &ctx.scan_id);
-            ae.tag("ip2location");
-            ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
-            result.push(ae);
-        }
-
-        if let Some(as_name) = &data.as_name
-            && !as_name.is_empty()
-        {
-            let mut oe = Entity::new(EntityKind::Organisation, as_name, 0.65, &ctx.scan_id);
-            oe.tag("ip2location");
-            oe.add_evidence(Evidence::new(SRC, format!("ISP for {ip}")));
-            result.push(oe);
-        }
-
         Ok(result)
     }
+}
+
+/// Map an ip2location.io response to graph entities. **Pure** (no IO) so the
+/// geo/ASN/ISP assembly, CDN-edge suppression, proxy/AU tagging and the
+/// timezone + ISO-country surfacing are unit-tested directly.
+///
+/// `skip_geo` (a CDN/anycast edge IP, decided by the caller) drops the
+/// Coordinates/Address — their location is the datacenter, not the subject —
+/// while the ASN/ISP infrastructure entities are still emitted. Beyond the
+/// prior surface this also stamps the API's own `timezone` (a chronolocation
+/// lead) and ISO `country_code` onto the geo evidence, and tags an AU address
+/// `country:AU` directly from the country code.
+fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<Entity> {
+    let mut out: Vec<Entity> = Vec::new();
+
+    let city = data.city_name.as_deref().unwrap_or("");
+    let region = data.region_name.as_deref().unwrap_or("");
+    let country = data.country_name.as_deref().unwrap_or("");
+    let zip = data.zip_code.as_deref().unwrap_or("");
+    let tz = data.time_zone.as_deref().unwrap_or("");
+    let cc = data.country_code.as_deref().unwrap_or("");
+    let is_au = cc.eq_ignore_ascii_case("AU");
+
+    // Confidence recalibrated 0.72 → 0.62 — see ip_geo.rs. The ip2location
+    // commercial DB is marginally better than the freemium competitors so it
+    // stays slightly above ipinfo.
+    if let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
+        && !skip_geo
+        && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.62, scan_id)
+    {
+        ce.tag("ip2location");
+        if data.is_proxy == Some(true) {
+            ce.tag(tags::PROXY);
+        }
+        if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
+            ce.tag(format!("au-state:{state}"));
+            ce.tag("country:AU");
+        }
+        let ev = [
+            ("city", (!city.is_empty()).then_some(city)),
+            ("region", (!region.is_empty()).then_some(region)),
+            ("country", (!country.is_empty()).then_some(country)),
+            ("postcode", (!zip.is_empty()).then_some(zip)),
+            ("country_iso", (!cc.is_empty()).then_some(cc)),
+            ("timezone", (!tz.is_empty()).then_some(tz)),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(
+            Evidence::new(
+                SRC,
+                format!("IP geolocation for {ip}: {city}, {region}, {country}"),
+            )
+            .with_attr("ip", ip),
+            |ev, (key, v)| ev.with_attr(key, v),
+        );
+        ce.add_evidence(ev);
+        out.push(ce);
+    }
+
+    if !skip_geo && !city.is_empty() && !country.is_empty() {
+        let addr = if !region.is_empty() && !zip.is_empty() {
+            format!("{city}, {region} {zip}, {country}")
+        } else if !region.is_empty() {
+            format!("{city}, {region}, {country}")
+        } else {
+            format!("{city}, {country}")
+        };
+        let mut ae = Entity::new(EntityKind::Address, &addr, 0.68, scan_id);
+        ae.tag("ip2location");
+        ae.tag(tags::GEOINT);
+        if is_au {
+            ae.tag("country:AU");
+        }
+        let mut ev = Evidence::new(SRC, format!("Address for {ip}"));
+        if !cc.is_empty() {
+            ev = ev.with_attr("country_iso", cc);
+        }
+        if !tz.is_empty() {
+            ev = ev.with_attr("timezone", tz);
+        }
+        ae.add_evidence(ev);
+        out.push(ae);
+    }
+
+    if let Some(asn) = &data.asn
+        && !asn.is_empty()
+    {
+        let asn_str = format!("AS{asn}");
+        let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, scan_id);
+        ae.tag("ip2location");
+        ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
+        out.push(ae);
+    }
+
+    if let Some(as_name) = &data.as_name
+        && !as_name.is_empty()
+    {
+        let mut oe = Entity::new(EntityKind::Organisation, as_name, 0.65, scan_id);
+        oe.tag("ip2location");
+        oe.add_evidence(Evidence::new(SRC, format!("ISP for {ip}")));
+        out.push(oe);
+    }
+
+    out
 }
 
 #[cfg(test)]
