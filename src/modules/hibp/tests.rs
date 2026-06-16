@@ -92,3 +92,82 @@ fn breach_deser_minimal() {
     assert!(breaches[0].domain.is_none());
     assert!(breaches[0].data_classes.is_empty());
 }
+
+fn one_breach(json: &str) -> Breach {
+    serde_json::from_str::<Vec<Breach>>(json)
+        .unwrap()
+        .pop()
+        .unwrap()
+}
+
+#[test]
+fn breach_evidence_surfaces_every_field() {
+    let b = one_breach(
+        r#"[{
+            "Name": "Adobe", "Title": "Adobe Systems", "Domain": "adobe.com",
+            "BreachDate": "2013-10-04", "AddedDate": "2013-12-04",
+            "ModifiedDate": "2022-05-15", "PwnCount": 152445165,
+            "Description": "In October 2013, 153M Adobe accounts were breached.",
+            "DataClasses": ["Email addresses", "Passwords"],
+            "IsVerified": true, "IsFabricated": false, "IsSensitive": false,
+            "IsRetired": false, "IsSpamList": false, "IsSubscriptionFree": false,
+            "LogoPath": "https://example/Adobe.png"
+        }]"#,
+    );
+    let ev = breach_evidence(&b);
+    let a = &ev.attributes;
+    // Previously-discarded fields now surfaced.
+    assert_eq!(a.get("title").map(String::as_str), Some("Adobe Systems"));
+    assert!(a.get("description").is_some_and(|d| d.contains("153M")));
+    assert_eq!(a.get("added_date").map(String::as_str), Some("2013-12-04"));
+    assert_eq!(
+        a.get("modified_date").map(String::as_str),
+        Some("2022-05-15")
+    );
+    assert_eq!(a.get("verified").map(String::as_str), Some("true"));
+    assert_eq!(a.get("fabricated").map(String::as_str), Some("false"));
+    assert_eq!(
+        a.get("logo_path").map(String::as_str),
+        Some("https://example/Adobe.png")
+    );
+    // Core fields retained.
+    assert_eq!(a.get("breach_name").map(String::as_str), Some("Adobe"));
+    assert_eq!(a.get("pwn_count").map(String::as_str), Some("152445165"));
+    // Summary prefers the human Title.
+    assert!(ev.summary.contains("Adobe Systems"));
+}
+
+#[test]
+fn breach_evidence_omits_absent_fields() {
+    let b = one_breach(r#"[{"Name": "Unknown"}]"#);
+    let ev = breach_evidence(&b);
+    assert_eq!(
+        ev.attributes.get("breach_name").map(String::as_str),
+        Some("Unknown")
+    );
+    assert!(!ev.attributes.contains_key("title"));
+    assert!(!ev.attributes.contains_key("description"));
+    assert!(!ev.attributes.contains_key("fabricated"));
+}
+
+#[test]
+fn tag_breach_quality_flags_low_trust_and_sensitive() {
+    let b = one_breach(
+        r#"[{"Name": "X", "IsFabricated": true, "IsSpamList": true,
+             "IsSensitive": true, "IsRetired": false}]"#,
+    );
+    let mut e = Entity::new(EntityKind::Domain, "x.com", 0.5, "t");
+    tag_breach_quality(&mut e, &b);
+    assert!(e.tags.iter().any(|t| t == "breach-fabricated"));
+    assert!(e.tags.iter().any(|t| t == "breach-spam-list"));
+    assert!(e.tags.iter().any(|t| t == "breach-sensitive"));
+    assert!(!e.tags.iter().any(|t| t == "breach-retired"));
+}
+
+#[test]
+fn tag_breach_quality_clean_breach_gets_no_quality_tags() {
+    let b = one_breach(r#"[{"Name": "Clean", "IsVerified": true, "IsFabricated": false}]"#);
+    let mut e = Entity::new(EntityKind::Domain, "x.com", 0.5, "t");
+    tag_breach_quality(&mut e, &b);
+    assert!(!e.tags.iter().any(|t| t.starts_with("breach-")));
+}

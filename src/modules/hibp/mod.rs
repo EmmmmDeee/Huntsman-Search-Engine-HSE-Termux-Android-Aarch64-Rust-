@@ -43,7 +43,6 @@ pub(super) fn resolve_key(ctx_key: Option<&str>) -> &str {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
-#[allow(dead_code)]
 pub(super) struct Breach {
     pub(super) name: String,
     #[serde(default)]
@@ -76,6 +75,76 @@ pub(super) struct Breach {
     pub(super) is_subscription_free: Option<bool>,
     #[serde(default)]
     pub(super) logo_path: Option<String>,
+}
+
+/// Full-fidelity [`Evidence`] for one HIBP breach. Surfaces **every** field the
+/// v3 API returns — title/description, the date trail (breach/added/modified),
+/// pwn_count, data classes, the logo, and the data-quality flags
+/// (verified/fabricated/sensitive/retired/spam/subscription-free) — so a
+/// breach-derived finding carries HIBP's complete characterisation, not just a
+/// name + date. **Pure** (no IO) and unit-tested directly.
+fn breach_evidence(breach: &Breach) -> Evidence {
+    let nonempty = |o: &Option<String>| o.as_deref().filter(|s| !s.is_empty()).map(str::to_string);
+
+    let mut ev = Evidence::new(
+        SRC,
+        format!(
+            "Breach '{}' ({})",
+            breach.title.as_deref().unwrap_or(&breach.name),
+            breach.breach_date.as_deref().unwrap_or("unknown date"),
+        ),
+    )
+    .with_attr("breach_name", &breach.name)
+    .with_attr("pwn_count", breach.pwn_count.unwrap_or(0).to_string())
+    .with_attr("data_classes", breach.data_classes.join(", "));
+
+    for (key, val) in [
+        ("title", nonempty(&breach.title)),
+        ("breach_domain", nonempty(&breach.domain)),
+        ("breach_date", nonempty(&breach.breach_date)),
+        ("added_date", nonempty(&breach.added_date)),
+        ("modified_date", nonempty(&breach.modified_date)),
+        ("description", nonempty(&breach.description)),
+        ("logo_path", nonempty(&breach.logo_path)),
+    ] {
+        if let Some(v) = val {
+            ev = ev.with_attr(key, &v);
+        }
+    }
+
+    // Data-quality flags — the signal that separates a corroborated breach from
+    // fabricated / spam-list / unverified noise.
+    for (key, flag) in [
+        ("verified", breach.is_verified),
+        ("fabricated", breach.is_fabricated),
+        ("sensitive", breach.is_sensitive),
+        ("retired", breach.is_retired),
+        ("spam_list", breach.is_spam_list),
+        ("subscription_free", breach.is_subscription_free),
+    ] {
+        if let Some(b) = flag {
+            ev = ev.with_attr(key, b.to_string());
+        }
+    }
+    ev
+}
+
+/// Tag a breach-derived entity with HIBP's data-quality flags so the operator
+/// can filter low-trust breach intel (fabricated / spam-list) and flag
+/// sensitive/retired breaches. Only `Some(true)` flags emit a tag.
+fn tag_breach_quality(e: &mut Entity, breach: &Breach) {
+    if breach.is_fabricated == Some(true) {
+        e.tag("breach-fabricated");
+    }
+    if breach.is_spam_list == Some(true) {
+        e.tag("breach-spam-list");
+    }
+    if breach.is_sensitive == Some(true) {
+        e.tag("breach-sensitive");
+    }
+    if breach.is_retired == Some(true) {
+        e.tag("breach-retired");
+    }
 }
 
 // ── Module impl ─────────────────────────────────────────────────────
@@ -297,20 +366,8 @@ impl Hibp {
             de.tag(tags::BREACH);
             de.tag("hibp");
             de.tag(tags::BREACH_DERIVED);
-            de.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!(
-                        "Domain from breach '{}' ({})",
-                        breach.name,
-                        breach.breach_date.as_deref().unwrap_or("unknown date")
-                    ),
-                )
-                .with_attr("breach_name", &breach.name)
-                .with_attr("pwn_count", breach.pwn_count.unwrap_or(0).to_string())
-                .with_attr("data_classes", breach.data_classes.join(", "))
-                .with_attr("breach_date", breach.breach_date.as_deref().unwrap_or("")),
-            );
+            tag_breach_quality(&mut de, breach);
+            de.add_evidence(breach_evidence(breach));
             Some(de)
         }));
 
