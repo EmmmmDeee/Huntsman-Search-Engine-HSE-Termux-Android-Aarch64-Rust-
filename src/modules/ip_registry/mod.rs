@@ -13,6 +13,10 @@
 //!   - `https://api.bgpview.io/ip/{ip}`   (IP-to-ASN reverse mapping)
 //!
 //! Both APIs are free, keyless, and rate-limited to ~1 req/s.
+//!
+//! Each network fn is a thin transport shell over a **pure** `build_*`
+//! function that owns the record→entity mapping, so the extraction logic is
+//! unit-tested directly off JSON fixtures with no network.
 
 use async_trait::async_trait;
 
@@ -89,6 +93,8 @@ impl Module for IpRegistry {
     }
 }
 
+// ── Transport (network) ─────────────────────────────────────────────────────
+
 async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
     let ip = target.value.trim();
     let (rdap_res, bgp_res) = tokio::join!(rdap_lookup_ip(ip, ctx), bgp_lookup_ip(ip, ctx),);
@@ -102,7 +108,45 @@ async fn rdap_lookup_ip(ip: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
     let Some(body): Option<RdapResp> = fetch_json_or_404(&ctx.http, SRC, &url).await? else {
         return Ok(ModuleResult::new());
     };
+    let mut result = ModuleResult::new();
+    result.entities = build_rdap_entities(&body, ip, &ctx.scan_id);
+    Ok(result)
+}
 
+async fn bgp_lookup_ip(ip: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
+    let url = format!("https://api.bgpview.io/ip/{ip}");
+    let Some(body): Option<IpResp> = fetch_json_or_404(&ctx.http, SRC, &url).await? else {
+        return Ok(ModuleResult::new());
+    };
+    let mut result = ModuleResult::new();
+    result.entities = build_bgp_ip_entities(&body, ip, &ctx.scan_id);
+    Ok(result)
+}
+
+async fn bgp_lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+    let raw = target.value.trim().to_uppercase();
+    let digits = raw.trim_start_matches("AS").trim();
+    let Ok(asn) = digits.parse::<u64>() else {
+        return Ok(ModuleResult::new());
+    };
+
+    let url = format!("https://api.bgpview.io/asn/{asn}");
+    let Some(body): Option<AsnResp> = fetch_json_or_404(&ctx.http, SRC, &url).await? else {
+        return Ok(ModuleResult::new());
+    };
+    let mut result = ModuleResult::new();
+    result.entities = build_asn_entities(&body, asn, &ctx.scan_id);
+    Ok(result)
+}
+
+// ── Pure builders (record → entities, no I/O) ────────────────────────────────
+
+/// Build the `IpAddress` allocation entity from an RDAP record. **Pure.** The
+/// CIDR derivation (explicit prefix, else the start–end range), the `country:`
+/// tag, and the registration/event evidence all live here. RDAP returning a
+/// record at all means the block is allocated, so exactly one entity is always
+/// produced.
+fn build_rdap_entities(body: &RdapResp, ip: &str, scan_id: &str) -> Vec<Entity> {
     let cidr = body
         .cidr0_cidrs
         .iter()
@@ -120,9 +164,9 @@ async fn rdap_lookup_ip(ip: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
             },
         );
 
-    let mut entity = Entity::new(EntityKind::IpAddress, ip, 0.90, &ctx.scan_id);
+    let mut entity = Entity::new(EntityKind::IpAddress, ip, 0.90, scan_id);
     entity.tag("rdap");
-    if let Some(c) = body.country.as_deref() {
+    if let Some(c) = body.country.as_deref().filter(|c| !c.is_empty()) {
         entity.tag(format!("country:{}", c.to_uppercase()));
     }
 
@@ -135,7 +179,7 @@ async fn rdap_lookup_ip(ip: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
         ("parent_handle", body.parent_handle.as_deref()),
     ]
     .into_iter()
-    .filter_map(|(key, value)| value.map(|v| (key, v)))
+    .filter_map(|(key, value)| value.filter(|v| !v.is_empty()).map(|v| (key, v)))
     .fold(
         Evidence::new(SRC, format!("RDAP allocation record for {ip}")),
         |ev, (key, v)| ev.with_attr(key, v),
@@ -149,115 +193,105 @@ async fn rdap_lookup_ip(ip: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
         });
     entity.add_evidence(ev);
 
-    let mut result = ModuleResult::new();
-    result.push(entity);
-    Ok(result)
+    vec![entity]
 }
 
-async fn bgp_lookup_ip(ip: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
-    let url = format!("https://api.bgpview.io/ip/{ip}");
-    let Some(body): Option<IpResp> = fetch_json_or_404(&ctx.http, SRC, &url).await? else {
-        return Ok(ModuleResult::new());
-    };
+/// Build the announcing-`Asn` entity for an IP from a BGPView `ip` record.
+/// **Pure.** Empty unless the response is `ok` and the leading (most-specific)
+/// prefix carries an ASN — mirroring BGPView's prefix ordering.
+fn build_bgp_ip_entities(body: &IpResp, ip: &str, scan_id: &str) -> Vec<Entity> {
     if body.status != "ok" {
-        return Ok(ModuleResult::new());
+        return Vec::new();
     }
-    let Some(data) = body.data else {
-        return Ok(ModuleResult::new());
+    let Some(data) = body.data.as_ref() else {
+        return Vec::new();
+    };
+    let Some(prefix) = data.prefixes.iter().flatten().next() else {
+        return Vec::new();
+    };
+    let Some(asn_ref) = prefix.asn.as_ref() else {
+        return Vec::new();
+    };
+    let Some(asn_num) = asn_ref.asn else {
+        return Vec::new();
     };
 
-    let mut result = ModuleResult::new();
-    if let Some(prefix) = data.prefixes.into_iter().flatten().next()
-        && let Some(asn_ref) = prefix.asn
-        && let Some(asn_num) = asn_ref.asn
-    {
-        let asn_num_str = asn_num.to_string();
-        let mut e = Entity::new(EntityKind::Asn, format!("AS{asn_num}"), 0.88, &ctx.scan_id);
-        e.tag("announcing");
-        let mut ev = Evidence::new(SRC, format!("ASN announcing {ip}"))
-            .with_attr("asn_number", &asn_num_str);
-        if let Some(p) = prefix.prefix.as_deref() {
-            ev = ev.with_attr("prefix", p);
-        }
-        if let Some(n) = asn_ref.name.as_deref() {
-            ev = ev.with_attr("handle", n);
-        }
-        if let Some(d) = asn_ref.description.as_deref() {
-            ev = ev.with_attr("name", d);
-        }
-        if let Some(c) = asn_ref.country_code.as_deref() {
-            ev = ev.with_attr("country", c);
-        }
-        e.add_evidence(ev);
-        result.push(e);
+    let asn_num_str = asn_num.to_string();
+    let mut e = Entity::new(EntityKind::Asn, format!("AS{asn_num}"), 0.88, scan_id);
+    e.tag("announcing");
+    let mut ev =
+        Evidence::new(SRC, format!("ASN announcing {ip}")).with_attr("asn_number", &asn_num_str);
+    if let Some(p) = prefix.prefix.as_deref().filter(|p| !p.is_empty()) {
+        ev = ev.with_attr("prefix", p);
     }
-    Ok(result)
-}
-
-async fn bgp_lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-    let raw = target.value.trim().to_uppercase();
-    let digits = raw.trim_start_matches("AS").trim();
-    let Ok(asn) = digits.parse::<u64>() else {
-        return Ok(ModuleResult::new());
-    };
-
-    let url = format!("https://api.bgpview.io/asn/{asn}");
-    let Some(body): Option<AsnResp> = fetch_json_or_404(&ctx.http, SRC, &url).await? else {
-        return Ok(ModuleResult::new());
-    };
-    if body.status != "ok" {
-        return Ok(ModuleResult::new());
-    }
-    let Some(data) = body.data else {
-        return Ok(ModuleResult::new());
-    };
-
-    let mut result = ModuleResult::new();
-    let asn_label = format!("AS{asn}");
-    let asn_str = asn.to_string();
-    let mut entity = Entity::new(EntityKind::Asn, &asn_label, 0.92, &ctx.scan_id);
-    entity.tag("registered");
-
-    let mut ev = Evidence::new(SRC, format!("ASN {asn_label} registry record"))
-        .with_attr("asn_number", &asn_str);
-    if let Some(n) = data.name.as_deref() {
+    if let Some(n) = asn_ref.name.as_deref().filter(|n| !n.is_empty()) {
         ev = ev.with_attr("handle", n);
     }
-    if let Some(d) = data.description_short.as_deref() {
+    if let Some(d) = asn_ref.description.as_deref().filter(|d| !d.is_empty()) {
         ev = ev.with_attr("name", d);
     }
-    if let Some(c) = data.country_code.as_deref() {
+    if let Some(c) = asn_ref.country_code.as_deref().filter(|c| !c.is_empty()) {
+        ev = ev.with_attr("country", c);
+    }
+    e.add_evidence(ev);
+    vec![e]
+}
+
+/// Build the registry `Asn` entity, its contact `Email`s, and the operator
+/// `Url` from a BGPView `asn` record. **Pure.** Empty unless the response is
+/// `ok` with data.
+fn build_asn_entities(body: &AsnResp, asn: u64, scan_id: &str) -> Vec<Entity> {
+    if body.status != "ok" {
+        return Vec::new();
+    }
+    let Some(data) = body.data.as_ref() else {
+        return Vec::new();
+    };
+
+    let asn_label = format!("AS{asn}");
+    let asn_str = asn.to_string();
+    let mut result = Vec::new();
+
+    let mut entity = Entity::new(EntityKind::Asn, &asn_label, 0.92, scan_id);
+    entity.tag("registered");
+    let mut ev = Evidence::new(SRC, format!("ASN {asn_label} registry record"))
+        .with_attr("asn_number", &asn_str);
+    if let Some(n) = data.name.as_deref().filter(|n| !n.is_empty()) {
+        ev = ev.with_attr("handle", n);
+    }
+    if let Some(d) = data.description_short.as_deref().filter(|d| !d.is_empty()) {
+        ev = ev.with_attr("name", d);
+    }
+    if let Some(c) = data.country_code.as_deref().filter(|c| !c.is_empty()) {
         ev = ev.with_attr("country", c);
     }
     if let Some(rir) = &data.rir_allocation {
-        if let Some(n) = rir.rir_name.as_deref() {
+        if let Some(n) = rir.rir_name.as_deref().filter(|n| !n.is_empty()) {
             ev = ev.with_attr("rir", n);
         }
-        if let Some(d) = rir.date_allocated.as_deref() {
+        if let Some(d) = rir.date_allocated.as_deref().filter(|d| !d.is_empty()) {
             ev = ev.with_attr("allocated", d);
         }
     }
-    if let Some(w) = data.website.as_deref()
-        && !w.is_empty()
-    {
+    if let Some(w) = data.website.as_deref().filter(|w| !w.is_empty()) {
         ev = ev.with_attr("website", w);
     }
     entity.add_evidence(ev);
     result.push(entity);
 
     result.extend(contact_emails(
-        data.email_contacts,
+        data.email_contacts.as_deref(),
         "admin",
         &asn_label,
         &asn_str,
-        &ctx.scan_id,
+        scan_id,
     ));
     result.extend(contact_emails(
-        data.abuse_contacts,
+        data.abuse_contacts.as_deref(),
         "abuse",
         &asn_label,
         &asn_str,
-        &ctx.scan_id,
+        scan_id,
     ));
 
     if let Some(w) = data
@@ -265,7 +299,7 @@ async fn bgp_lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleRe
         .as_deref()
         .filter(|w| w.starts_with("http://") || w.starts_with("https://"))
     {
-        let mut u = Entity::new(EntityKind::Url, w, 0.75, &ctx.scan_id);
+        let mut u = Entity::new(EntityKind::Url, w, 0.75, scan_id);
         u.tag("asn-website");
         u.add_evidence(
             Evidence::new(SRC, format!("Website of {asn_label}")).with_attr("asn", &asn_str),
@@ -273,23 +307,25 @@ async fn bgp_lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleRe
         result.push(u);
     }
 
-    Ok(result)
+    result
 }
 
 /// Build `Email` entities for an ASN's contact list. Pure (no network).
+/// Non-email strings (no `@`) are skipped; each address is tagged with its
+/// contact `role` (admin/abuse).
 fn contact_emails(
-    emails: Option<Vec<String>>,
+    emails: Option<&[String]>,
     role: &'static str,
     asn_label: &str,
     asn_str: &str,
     scan_id: &str,
 ) -> Vec<Entity> {
     emails
-        .into_iter()
-        .flatten()
+        .unwrap_or_default()
+        .iter()
         .filter(|email| email.contains('@'))
         .map(|email| {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.78, scan_id);
+            let mut e = Entity::new(EntityKind::Email, email.as_str(), 0.78, scan_id);
             e.tag("asn-contact");
             e.tag(format!("role:{role}"));
             e.add_evidence(
