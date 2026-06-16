@@ -12,6 +12,22 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **New `onyphe` module — ONYPHE cyber-defence search (key-gated).** Wires up
+  the `HUNTSMAN_ONYPHE_KEY` that was registered in the service registry but had
+  no consuming module (a held key doing nothing). Queries ONYPHE's API v2
+  `summary/ip/{ip}` and `summary/domain/{domain}` endpoints (lowercase `bearer`
+  auth) and extracts geolocation (coordinates + city/country), the ASN + operator
+  org, resolved IPs, and passive-DNS hostnames/subdomains. The parser is
+  **schema-tolerant by design** — it walks ONYPHE's heterogeneous `@category`
+  result documents as raw JSON and pulls whatever identifying fields are present
+  (`location` "lat,lon" string *or* separate `latitude`/`longitude`; `hostname`/
+  `domain` as string *or* array), so it degrades to fewer entities rather than
+  failing on ONYPHE's per-category / per-plan shape variance. Emitted domains
+  pass through `is_noncentral_domain`, so a resolver's CDN/mega host can't
+  pollute the graph. Brings the catalogue to **115 modules (89 free · 21
+  key-gated · 5 paid)**. The live response shape should be confirmed once on a
+  real key — the request/auth/endpoints follow ONYPHE's documented v2 schema.
+
 - **Wolfram-verified ground-truth tests for the GEOINT location-fusion
   estimators.** The geometric median (Weiszfeld), its confidence-weighted form,
   and the minimum enclosing circle are the engine's critical "where is the

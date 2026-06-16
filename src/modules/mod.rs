@@ -75,6 +75,7 @@ pub mod netblock;
 pub mod npm_author;
 pub mod numverify;
 pub mod oathnet_pro;
+pub mod onyphe;
 pub mod opencorporates;
 pub mod overpass;
 pub mod pgp;
@@ -205,6 +206,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(securitytrails::SecurityTrails),
         Arc::new(leakix::LeakIx),
         Arc::new(criminal_ip::CriminalIp),
+        Arc::new(onyphe::Onyphe),
         Arc::new(ipqs::IpQs),
         Arc::new(contact_enrich::ContactEnrich),
         Arc::new(hunter_io::HunterIo),
