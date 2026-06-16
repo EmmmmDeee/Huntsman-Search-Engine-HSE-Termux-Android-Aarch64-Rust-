@@ -178,3 +178,48 @@ fn coverage_diff_from_empty_baseline_is_all_gained() {
     assert!(d.lost.is_empty() && d.shared.is_empty());
     assert!(!d.is_unchanged());
 }
+
+#[test]
+fn assessment_is_complete_only_with_full_catalogue() {
+    assert!(!Assessment::from_covered(coverage(["T1589"])).is_complete());
+    assert!(Assessment::from_covered(RECONNAISSANCE.iter().collect()).is_complete());
+}
+
+#[test]
+fn navigator_assessment_layer_paints_full_surface_with_gaps() {
+    let a = Assessment::from_covered(coverage(["T1589.002", "T1596.002"]));
+    let json = navigator_assessment_layer("HSE assessment", "covered + gaps", &a);
+    let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+
+    // Heatmap shows gaps too, so disabled techniques are NOT hidden.
+    assert_eq!(v["hideDisabled"], false);
+    assert_eq!(v["domain"], "enterprise-attack");
+
+    let techs = v["techniques"].as_array().expect("techniques array");
+    // Every catalogued technique is emitted (full tactic surface).
+    assert_eq!(techs.len(), RECONNAISSANCE.len());
+
+    let score_of = |id: &str| -> i64 {
+        techs
+            .iter()
+            .find(|t| t["techniqueID"] == id)
+            .and_then(|t| t["score"].as_i64())
+            .expect("technique present with score")
+    };
+    // Covered → 1, gap → 0.
+    assert_eq!(score_of("T1589.002"), 1);
+    assert_eq!(score_of("T1596.002"), 1);
+    assert_eq!(score_of("T1594"), 0);
+
+    // A gap is commented as such; the achieved coverage % rides in metadata.
+    let gap = techs.iter().find(|t| t["techniqueID"] == "T1594").unwrap();
+    assert!(
+        gap["comment"].as_str().unwrap().starts_with("GAP:"),
+        "gaps are labelled"
+    );
+    let meta = v["metadata"].as_array().unwrap();
+    assert!(
+        meta.iter().any(|m| m["name"] == "coverage_pct"),
+        "coverage_pct embedded in layer metadata"
+    );
+}

@@ -199,6 +199,10 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             get(scan_export::scan_export_attack_navigator),
         )
         .route(
+            "/scans/{id}/attack-assessment.json",
+            get(scan_export::scan_export_attack_assessment),
+        )
+        .route(
             "/scans/{id}/attack-coverage.json",
             get(scan_export::scan_attack_coverage),
         )

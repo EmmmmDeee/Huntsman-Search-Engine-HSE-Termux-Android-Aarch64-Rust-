@@ -210,6 +210,13 @@ impl Assessment {
         }
         (self.covered.len() as f64 / total as f64) * 100.0
     }
+
+    /// True when the scan exercised every catalogued Reconnaissance technique —
+    /// no collection gaps remain. **Pure.**
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.gaps.is_empty()
+    }
 }
 
 /// A scan-to-scan **coverage diff**: how a current scan's ATT&CK Reconnaissance
@@ -284,27 +291,106 @@ pub fn navigator_layer(name: &str, description: &str, techniques: &[&Technique])
         })
         .collect();
 
+    build_layer(
+        name,
+        description,
+        techs,
+        // Covered-only layer: hide everything not exercised so the file is a
+        // clean "what this scan did" footprint.
+        true,
+        json!([{ "label": "Exercised by this HSE scan", "color": "#096dd9" }]),
+        &[],
+    )
+}
+
+/// Build a MITRE ATT&CK **Navigator assessment layer** (schema 4.5) from a
+/// per-scan [`Assessment`]: the *full* Reconnaissance surface as a heatmap —
+/// `covered` techniques scored 1 (blue) and `gaps` scored 0 (white, commented
+/// `GAP`) — rather than the covered-only footprint of [`navigator_layer`]. This
+/// is the standard ATT&CK review view: coverage *and* the un-exercised
+/// techniques an operator should consider closing, in the framework's own
+/// visual surface. The achieved coverage percentage is embedded in the layer
+/// metadata. **Pure**; technique order follows [`RECONNAISSANCE`] for stable
+/// diffs.
+#[must_use]
+pub fn navigator_assessment_layer(name: &str, description: &str, assessment: &Assessment) -> String {
+    use serde_json::json;
+
+    let covered: std::collections::HashSet<&str> =
+        assessment.covered.iter().map(|t| t.id).collect();
+
+    // Emit every catalogued technique so the heatmap shows the whole tactic.
+    let techs: Vec<serde_json::Value> = RECONNAISSANCE
+        .iter()
+        .map(|t| {
+            let hit = covered.contains(t.id);
+            json!({
+                "techniqueID": t.id,
+                "tactic": "reconnaissance",
+                "score": if hit { 1 } else { 0 },
+                "enabled": true,
+                "comment": if hit { t.name.to_string() } else { format!("GAP: {}", t.name) },
+            })
+        })
+        .collect();
+
+    let pct = format!("{:.1}", assessment.coverage_pct());
+    build_layer(
+        name,
+        description,
+        techs,
+        // Show gaps too — the whole point of an assessment heatmap.
+        false,
+        json!([
+            { "label": "Exercised", "color": "#096dd9" },
+            { "label": "Gap (not exercised)", "color": "#ffffff" }
+        ]),
+        &[("coverage_pct", pct.as_str())],
+    )
+}
+
+/// Shared Navigator (schema 4.5) layer skeleton: wraps a pre-built `techniques`
+/// array in the envelope every HSE layer uses — TA0043 metadata, the blue
+/// gradient, generator tag — so [`navigator_layer`] and
+/// [`navigator_assessment_layer`] can't drift. `hide_disabled` controls whether
+/// un-scored techniques are hidden; `extra_metadata` appends to the standard
+/// metadata block. **Pure.**
+fn build_layer(
+    name: &str,
+    description: &str,
+    techniques: Vec<serde_json::Value>,
+    hide_disabled: bool,
+    legend_items: serde_json::Value,
+    extra_metadata: &[(&str, &str)],
+) -> String {
+    use serde_json::json;
+
+    let mut metadata = vec![
+        json!({ "name": "tactic", "value": TACTIC_NAME }),
+        json!({ "name": "tactic_id", "value": TACTIC_ID }),
+        json!({ "name": "generator", "value": "Huntsman Search Engine" }),
+    ];
+    metadata.extend(
+        extra_metadata
+            .iter()
+            .map(|(k, v)| json!({ "name": k, "value": v })),
+    );
+
     let layer = json!({
         "name": name,
         "description": description,
         "domain": "enterprise-attack",
         "versions": { "attack": "15", "navigator": "4.9.5", "layer": "4.5" },
         "sorting": 0,
-        "hideDisabled": true,
-        "techniques": techs,
+        "hideDisabled": hide_disabled,
+        "techniques": techniques,
         "gradient": {
             "colors": ["#ffffff", "#66b1ff", "#096dd9"],
             "minValue": 0,
             "maxValue": 1
         },
-        "legendItems": [
-            { "label": "Exercised by this HSE scan", "color": "#096dd9" }
-        ],
-        "metadata": [
-            { "name": "tactic", "value": TACTIC_NAME },
-            { "name": "tactic_id", "value": TACTIC_ID },
-            { "name": "generator", "value": "Huntsman Search Engine" }
-        ]
+        "legendItems": legend_items,
+        "metadata": metadata
     });
 
     // A `json!`-built value over string keys and finite numbers is always

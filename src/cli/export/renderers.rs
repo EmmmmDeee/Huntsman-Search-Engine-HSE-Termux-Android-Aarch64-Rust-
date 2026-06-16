@@ -51,6 +51,38 @@ pub(crate) fn render_attack_layer(
     ))
 }
 
+/// MITRE ATT&CK **Navigator assessment heatmap** for the scan — the *full*
+/// Reconnaissance (TA0043) surface with exercised techniques scored 1 and the
+/// remaining catalogue marked as gaps (score 0). Unlike [`render_attack_layer`]
+/// (a covered-only footprint), this is the standard ATT&CK review view: coverage
+/// *and* the un-exercised techniques worth closing, with the achieved coverage
+/// percentage in the layer metadata. Shares the same coverage reducer, so the
+/// covered set never diverges from the other ATT&CK views.
+pub(crate) fn render_attack_assessment_layer(
+    store: &dyn crate::core::port::StoragePort,
+    sid: &str,
+) -> Result<String> {
+    let entities = store.entities_for_scan(sid)?;
+    let module_sources = crate::core::entity::evidence_sources(&entities);
+    let coverage = crate::modules::reconnaissance_coverage(module_sources.iter().copied());
+    let assessment = crate::core::attack::Assessment::from_covered(coverage);
+
+    let name = format!("HSE assessment {sid}");
+    let description = format!(
+        "MITRE ATT&CK {} ({}) coverage assessment for Huntsman Search Engine scan {sid}: \
+         {:.1}% of the catalogued technique surface exercised, {} gap(s) remaining.",
+        crate::core::attack::TACTIC_NAME,
+        crate::core::attack::TACTIC_ID,
+        assessment.coverage_pct(),
+        assessment.gaps.len(),
+    );
+    Ok(crate::core::attack::navigator_assessment_layer(
+        &name,
+        &description,
+        &assessment,
+    ))
+}
+
 /// The **full dossier** — Huntsman's standard of maximum output detail. Emits
 /// EVERY entity (including quarantined `candidate` rows — nothing is hidden),
 /// each with its confidence/corroboration/tags and its COMPLETE evidence chain:

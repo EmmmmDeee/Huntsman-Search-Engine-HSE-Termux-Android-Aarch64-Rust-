@@ -294,6 +294,32 @@ pub async fn scan_export_attack_navigator(
     }
 }
 
+/// `GET /api/v1/scans/{id}/attack-assessment.json` — a MITRE ATT&CK Navigator
+/// **assessment heatmap**: the full Reconnaissance (TA0043) surface with
+/// exercised techniques scored 1 and the remaining catalogue marked as gaps,
+/// the achieved coverage percentage embedded in the layer metadata. Same
+/// artifact as `hse export {id} --format navigator-assessment` (one shared
+/// renderer); the web UI's "ATT&CK heatmap" button downloads it for import into
+/// the ATT&CK Navigator.
+pub async fn scan_export_attack_assessment(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    match crate::cli::export::render_attack_assessment_layer(s.store.as_ref(), &id) {
+        Ok(body) => download_named(
+            body,
+            "application/json; charset=utf-8",
+            &id,
+            "attack-assessment",
+            "json",
+        ),
+        Err(e) => internal_error(&e),
+    }
+}
+
 /// `GET /api/v1/scans/{id}/attack-coverage.json` — the scan's MITRE ATT&CK
 /// Reconnaissance (TA0043) **assessment**: the catalogued techniques split into
 /// those the collection `covered` and the `gaps` it missed, plus a coverage

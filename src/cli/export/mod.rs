@@ -16,7 +16,9 @@ mod renderers;
 mod tests;
 
 pub(crate) use dossier::write_full_dossier;
-pub(crate) use renderers::{render_attack_layer, render_debug_bundle, render_full};
+pub(crate) use renderers::{
+    render_attack_assessment_layer, render_attack_layer, render_debug_bundle, render_full,
+};
 
 use crate::core::error::{Error, Result};
 use crate::default_db_path;
@@ -38,9 +40,13 @@ pub(super) async fn cmd_export(scan_id: String, format: String, out: Option<Stri
         "debug" => render_debug_bundle(&store, &sid)?,
         // MITRE ATT&CK Navigator layer (TA0043 Reconnaissance coverage).
         "navigator" | "attack" => renderers::render_attack_layer(&store, &sid)?,
+        // Full assessment heatmap: covered techniques + the gaps worth closing.
+        "navigator-assessment" | "attack-assessment" => {
+            renderers::render_attack_assessment_layer(&store, &sid)?
+        }
         other => {
             return Err(Error::Other(format!(
-                "unknown --format '{other}'. Valid: json, csv, gexf, report, full, debug, navigator"
+                "unknown --format '{other}'. Valid: json, csv, gexf, report, full, debug, navigator, navigator-assessment"
             )));
         }
     };
