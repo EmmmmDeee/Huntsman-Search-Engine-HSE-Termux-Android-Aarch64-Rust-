@@ -126,6 +126,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `hudsonrock` | email, username, domain | free | no | 130 | — |
 | `ripestat` | ip_address, asn | free | no | 107 | asn, organisation, email |
 | `onyphe` | ip_address, domain | key_gated | no | 34 | ip_address, coordinates, address, asn, organisation, domain |
+| `zoomeye` | ip_address, domain | key_gated | no | 34 | ip_address, coordinates, address, asn, organisation |
 | `shodan` | ip_address | free | no | 105 | domain, url, asn, organisation, address, ip_address |
 | `criminal_ip` | ip_address | key_gated | no | 103 | organisation, asn |
 | `ipqs` | email, phone, ip_address | key_gated | no | 100 | — |

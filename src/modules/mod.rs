@@ -120,6 +120,7 @@ pub mod wifi_intel;
 pub mod wigle;
 pub mod wikidata;
 pub mod xposed_or_not;
+pub mod zoomeye;
 
 use std::sync::Arc;
 
@@ -218,6 +219,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(leakix::LeakIx),
         Arc::new(criminal_ip::CriminalIp),
         Arc::new(onyphe::Onyphe),
+        Arc::new(zoomeye::ZoomEye),
         Arc::new(ipqs::IpQs),
         Arc::new(contact_enrich::ContactEnrich),
         Arc::new(hunter_io::HunterIo),
