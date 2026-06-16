@@ -116,6 +116,16 @@ fn build_entities(data: &AbuseData, ip: &str, scan_id: &str) -> Vec<Entity> {
     if data.is_tor.unwrap_or(false) {
         ip_entity.tag("tor-exit");
     }
+    // Usage type → a first-class infrastructure tag (consistent with the
+    // ipquery/ip2location "hosting" signal), so a datacenter/hosting IP — whose
+    // geolocation is the facility, not a subject — is filterable, not just an
+    // evidence string.
+    if data.usage_type.as_deref().is_some_and(|u| {
+        let u = u.to_ascii_lowercase();
+        u.contains("data center") || u.contains("datacenter") || u.contains("hosting")
+    }) {
+        ip_entity.tag("hosting");
+    }
 
     let ev = [
         ("isp", data.isp.as_deref()),
@@ -186,7 +196,6 @@ struct AbuseResponse {
     data: Option<AbuseData>,
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize)]
 struct AbuseData {
     #[serde(rename = "abuseConfidenceScore")]

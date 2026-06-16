@@ -115,3 +115,25 @@ fn build_entities_surfaces_resolved_domains_and_isp() {
     assert!(ents.iter().any(|e| e.kind == EntityKind::Organisation
         && e.value.to_lowercase().contains("digitalocean")));
 }
+
+#[test]
+fn usage_type_datacenter_tags_ip_hosting() {
+    let dc: AbuseData = serde_json::from_str(
+        r#"{"abuseConfidenceScore":10,"usageType":"Data Center/Web Hosting/Transit","isp":"OVH"}"#,
+    ).unwrap();
+    let ip = build_entities(&dc, "1.2.3.4", "s")
+        .into_iter()
+        .find(|e| e.kind == EntityKind::IpAddress)
+        .unwrap();
+    assert!(ip.has_tag("hosting"), "datacenter usage type must tag hosting");
+
+    // A residential/ISP usage type must NOT be tagged hosting.
+    let res: AbuseData = serde_json::from_str(
+        r#"{"abuseConfidenceScore":5,"usageType":"Fixed Line ISP","isp":"Telstra"}"#,
+    ).unwrap();
+    let ip2 = build_entities(&res, "5.6.7.8", "s")
+        .into_iter()
+        .find(|e| e.kind == EntityKind::IpAddress)
+        .unwrap();
+    assert!(!ip2.has_tag("hosting"));
+}
