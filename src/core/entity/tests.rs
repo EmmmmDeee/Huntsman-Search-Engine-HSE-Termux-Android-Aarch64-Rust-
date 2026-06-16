@@ -1023,3 +1023,22 @@ fn with_attr_accumulates_repeated_keys_additively_and_dedups() {
         Some("M; F")
     );
 }
+
+#[test]
+fn evidence_sources_dedups_sorts_and_spans_entities() {
+    use super::{Entity, EntityKind, Evidence, evidence_sources};
+    let mut a = Entity::new(EntityKind::Email, "a@x.com", 0.6, "t");
+    a.add_evidence(Evidence::new("hibp", "s1"));
+    a.add_evidence(Evidence::new("dehashed", "s2"));
+    a.add_evidence(Evidence::new("hibp", "s3")); // dup source within an entity
+    let mut b = Entity::new(EntityKind::Domain, "x.com", 0.6, "t");
+    b.add_evidence(Evidence::new("crtsh", "s4"));
+    b.add_evidence(Evidence::new("dehashed", "s5")); // dup source across entities
+
+    let ents = [a, b];
+    let got: Vec<&str> = evidence_sources(&ents).into_iter().collect();
+    // Deduplicated and sorted (BTreeSet) across the whole slice.
+    assert_eq!(got, vec!["crtsh", "dehashed", "hibp"]);
+    let empty: &[Entity] = &[];
+    assert!(evidence_sources(empty).is_empty());
+}

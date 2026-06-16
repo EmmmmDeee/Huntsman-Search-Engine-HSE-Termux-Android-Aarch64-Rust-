@@ -32,13 +32,8 @@ pub(crate) fn render_attack_layer(
     store: &dyn crate::core::port::StoragePort,
     sid: &str,
 ) -> Result<String> {
-    use std::collections::BTreeSet;
-
     let entities = store.entities_for_scan(sid)?;
-    let module_sources: BTreeSet<&str> = entities
-        .iter()
-        .flat_map(|e| e.evidence.iter().map(|ev| ev.source.as_str()))
-        .collect();
+    let module_sources = crate::core::entity::evidence_sources(&entities);
     let coverage = crate::modules::reconnaissance_coverage(module_sources.iter().copied());
 
     let name = format!("HSE scan {sid}");
@@ -138,10 +133,7 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
     // collection exercised, resolved from the modules that produced the
     // evidence. Persisted here so the archived investigation reads in the
     // framework's vocabulary, not just the live CLI/JSON view.
-    let module_sources: BTreeSet<&str> = entities
-        .iter()
-        .flat_map(|e| e.evidence.iter().map(|ev| ev.source.as_str()))
-        .collect();
+    let module_sources = crate::core::entity::evidence_sources(&entities);
     let attack_cov = crate::modules::reconnaissance_coverage(module_sources.iter().copied());
     if !attack_cov.is_empty() {
         let _ = writeln!(

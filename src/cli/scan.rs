@@ -243,10 +243,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     // (each evidence record cites its source module). Lets an investigation be
     // reported in the framework's vocabulary, not just per-module metadata.
     let attack_cov = {
-        let sources: std::collections::BTreeSet<&str> = entities
-            .iter()
-            .flat_map(|e| e.evidence.iter().map(|ev| ev.source.as_str()))
-            .collect();
+        let sources = crate::core::entity::evidence_sources(&entities);
         crate::modules::reconnaissance_coverage(sources.iter().copied())
     };
 

@@ -304,8 +304,6 @@ pub async fn scan_attack_coverage(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    use std::collections::BTreeSet;
-
     if let Some(resp) = scan_missing(&s, &id) {
         return resp;
     }
@@ -313,10 +311,7 @@ pub async fn scan_attack_coverage(
         Ok(entities) => entities,
         Err(e) => return internal_error(&e),
     };
-    let module_sources: BTreeSet<&str> = entities
-        .iter()
-        .flat_map(|e| e.evidence.iter().map(|ev| ev.source.as_str()))
-        .collect();
+    let module_sources = crate::core::entity::evidence_sources(&entities);
     let covered = crate::modules::reconnaissance_coverage(module_sources.iter().copied());
     let assessment = crate::core::attack::Assessment::from_covered(covered);
 

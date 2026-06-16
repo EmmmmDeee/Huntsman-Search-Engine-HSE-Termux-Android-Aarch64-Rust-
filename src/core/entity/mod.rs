@@ -924,6 +924,22 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
     }
 }
 
+/// The distinct evidence-source names across a set of entities — the modules /
+/// providers that contributed to this collection. `BTreeSet` gives a
+/// deduplicated, sorted, reproducible view. **Pure.**
+///
+/// This is the single primitive every "which sources/modules produced this
+/// scan" surface reduces through — per-scan MITRE ATT&CK coverage (Navigator
+/// layer, coverage JSON, report) and provenance roll-ups alike — so the source
+/// set is computed one way everywhere and the surfaces cannot diverge.
+#[must_use]
+pub fn evidence_sources(entities: &[Entity]) -> std::collections::BTreeSet<&str> {
+    entities
+        .iter()
+        .flat_map(|e| e.evidence.iter().map(|ev| ev.source.as_str()))
+        .collect()
+}
+
 /// Current Unix timestamp in seconds.
 #[inline]
 pub fn unix_now() -> u64 {
