@@ -36,14 +36,14 @@ pub(super) async fn recycle_entities(
                 }
             }
             EntityKind::Username if entity.value.len() >= 3 => {
-                Some(format!("\"{}\"\ address OR location OR city", entity.value))
+                Some(format!("\"{}\" address OR location OR city", entity.value))
             }
-            EntityKind::Person => Some(format!("\"{}\"\ address OR email OR phone", entity.value)),
+            EntityKind::Person => Some(format!("\"{}\" address OR email OR phone", entity.value)),
             EntityKind::Address if entity.confidence >= 0.40 => Some(format!(
-                "\"{}\"\ name OR resident OR owner OR phone",
+                "\"{}\" name OR resident OR owner OR phone",
                 entity.value
             )),
-            EntityKind::Phone => Some(format!("\"{}\"\ name OR address OR owner", entity.value)),
+            EntityKind::Phone => Some(format!("\"{}\" name OR address OR owner", entity.value)),
             EntityKind::Domain if entity.confidence >= 0.55 => {
                 let domain = &entity.value;
                 Some(format!(
@@ -51,7 +51,7 @@ pub(super) async fn recycle_entities(
                 ))
             }
             EntityKind::Organisation if entity.confidence >= 0.50 => {
-                Some(format!("\"{}\"\ address OR ABN OR location", entity.value))
+                Some(format!("\"{}\" address OR ABN OR location", entity.value))
             }
             _ => None,
         };
@@ -298,7 +298,7 @@ pub(super) fn extract_family_names(
     found
 }
 
-// ─── Secondary pivot: extract usernames from discovered URLs ──────────────────────────
+// ─── Secondary pivot: extract usernames from discovered URLs ──────────────────
 
 /// Extract potential username pivots from search results. Social
 /// profile URLs contain usernames in their path that can be used
