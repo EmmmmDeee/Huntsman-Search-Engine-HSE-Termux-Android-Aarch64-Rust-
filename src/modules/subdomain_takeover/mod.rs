@@ -21,6 +21,50 @@ const SRC: &str = "subdomain_takeover";
 
 pub struct SubdomainTakeover;
 
+/// One takeover fingerprint: the CNAME substring that points at a cloud
+/// provider, the human-readable service name, and the HTTP body marker that
+/// proves the resource is unclaimed (`None` ⇒ prove via NXDOMAIN instead).
+type Fingerprint = (&'static str, &'static str, Option<&'static str>);
+
+/// The fingerprints whose CNAME pattern is a substring of `cname_target`, in
+/// table order. **Pure** — the pattern-matching half of detection, split out so
+/// the "which providers does this CNAME implicate" logic is testable without
+/// DNS or HTTP. The caller still runs each candidate's (network) claim check.
+fn matching_fingerprints(cname_target: &str) -> impl Iterator<Item = &'static Fingerprint> {
+    TAKEOVER_FINGERPRINTS
+        .iter()
+        .filter(move |(pattern, _, _)| cname_target.contains(pattern))
+}
+
+/// Build the vulnerable-subdomain entity once a dangling CNAME has been
+/// confirmed claimable. **Pure** (no network), so the
+/// CNAME→tag→evidence mapping is unit-testable directly.
+///
+/// Emits a single `Domain` entity for `domain` tagged `vulnerable` +
+/// `subdomain-takeover` + `takeover:<service>`, carrying the CNAME target and
+/// service as evidence. A blank `service` adds no `takeover:` tag and no
+/// `service` attr; a blank `cname_target` adds no `cname_target` attr.
+fn build_entities(domain: &str, cname_target: &str, service: &str, scan_id: &str) -> Vec<Entity> {
+    let mut e = Entity::new(EntityKind::Domain, domain, 0.90, scan_id);
+    e.tag("vulnerable");
+    e.tag("subdomain-takeover");
+    if !service.is_empty() {
+        e.tag(format!("takeover:{service}"));
+    }
+    let mut ev = Evidence::new(
+        SRC,
+        format!("CNAME {domain} points to {cname_target} — {service} may be claimable"),
+    );
+    if !cname_target.is_empty() {
+        ev = ev.with_attr("cname_target", cname_target);
+    }
+    if !service.is_empty() {
+        ev = ev.with_attr("service", service);
+    }
+    e.add_evidence(ev);
+    vec![e]
+}
+
 #[async_trait]
 impl Module for SubdomainTakeover {
     fn name(&self) -> &'static str {
@@ -83,11 +127,7 @@ impl Module for SubdomainTakeover {
             return Ok(result);
         };
 
-        for &(pattern, service, fingerprint_path) in TAKEOVER_FINGERPRINTS {
-            if !cname_target.contains(pattern) {
-                continue;
-            }
-
+        for &(_, service, fingerprint_path) in matching_fingerprints(&cname_target) {
             let vulnerable = if let Some(path) = fingerprint_path {
                 check_http_fingerprint(&ctx.http, &domain, path).await
             } else {
@@ -95,21 +135,12 @@ impl Module for SubdomainTakeover {
             };
 
             if vulnerable {
-                let mut e = Entity::new(EntityKind::Domain, &domain, 0.90, &ctx.scan_id);
-                e.tag("vulnerable");
-                e.tag("subdomain-takeover");
-                e.tag(format!("takeover:{service}"));
-                e.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!(
-                            "CNAME {domain} points to {cname_target} — {service} may be claimable"
-                        ),
-                    )
-                    .with_attr("cname_target", &cname_target)
-                    .with_attr("service", service),
-                );
-                result.push(e);
+                result.extend(build_entities(
+                    &domain,
+                    &cname_target,
+                    service,
+                    &ctx.scan_id,
+                ));
                 break;
             }
         }

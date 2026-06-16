@@ -61,6 +61,102 @@ struct Timezone {
     id: Option<String>,
 }
 
+/// Map a decoded ipwho.is record to its entities. **Pure** (no network/IO), so
+/// the geo → Coordinates/Address/Asn/Organisation mapping is unit-testable
+/// directly off JSON fixtures.
+///
+/// Gates internally (both moved here from the transport shell so they are
+/// tested): ipwho.is signals a failed lookup with `success:false` (→ empty
+/// `Vec`), and a CDN/anycast edge IP geolocates to the answering datacenter, not
+/// the subject — [`crate::core::validation::is_cdn_edge_ip`] (→ empty `Vec`).
+///
+/// Coordinates pass through the shared [`crate::util::geo::coarse_provider_coords`]
+/// gate (null-island band / out-of-range / non-finite rejected); blank scalar
+/// fields are kept out of evidence; the Organisation pivot needs an org of ≥3
+/// chars.
+fn build_entities(data: &IpWhoResp, ip: &str, scan_id: &str) -> Vec<Entity> {
+    // ipwho.is signals lookup failure (private/reserved IP, quota) with
+    // `success:false` rather than an HTTP error — treat it as no-data.
+    if !data.success {
+        return Vec::new();
+    }
+
+    // A CDN/anycast edge IP geolocates to whichever datacenter answered, not
+    // to the subject — skip it (the same guard ip_geo applies).
+    if crate::core::validation::is_cdn_edge_ip(ip) {
+        return Vec::new();
+    }
+
+    let mut result = Vec::new();
+
+    let conn = data.connection.as_ref();
+    let city = data.city.as_deref().unwrap_or("");
+    let region = data.region.as_deref().unwrap_or("");
+    let country = data.country.as_deref().unwrap_or("");
+    let isp = conn.and_then(|c| c.isp.as_deref()).unwrap_or("");
+    let asn = conn.and_then(|c| c.asn).map(|n| format!("AS{n}"));
+    let org = conn.and_then(|c| c.org.as_deref());
+    let tz = data.timezone.as_ref().and_then(|t| t.id.as_deref());
+
+    let ev = [
+        ("city", (!city.is_empty()).then(|| city.to_string())),
+        ("region", (!region.is_empty()).then(|| region.to_string())),
+        (
+            "country",
+            (!country.is_empty()).then(|| country.to_string()),
+        ),
+        ("isp", (!isp.is_empty()).then(|| isp.to_string())),
+        ("asn", asn.clone()),
+        // Skip a blank org so an empty API string never lands in evidence.
+        ("org", org.filter(|s| !s.is_empty()).map(String::from)),
+        ("timezone", tz.filter(|s| !s.is_empty()).map(String::from)),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.map(|v| (key, v)))
+    .fold(
+        Evidence::new(SRC, format!("IP geolocation: {city}, {region}, {country}"))
+            .with_attr("ip", ip),
+        |ev, (key, v)| ev.with_attr(key, v),
+    );
+
+    // Coordinates — `coarse_provider_coords` gates implausible / null-island
+    // fixes (the same shared validator every coarse IP-geo provider uses).
+    if let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
+        && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.60, scan_id)
+    {
+        ce.add_evidence(ev.clone());
+        result.push(ce);
+    }
+
+    if !city.is_empty() {
+        let addr = if !region.is_empty() && !country.is_empty() {
+            format!("{city}, {region}, {country}")
+        } else if !country.is_empty() {
+            format!("{city}, {country}")
+        } else {
+            city.to_string()
+        };
+        let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, scan_id);
+        ae.tag(tags::GEOINT);
+        ae.add_evidence(ev.clone());
+        result.push(ae);
+    }
+
+    if let Some(asn) = &asn {
+        let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, scan_id);
+        ae.add_evidence(ev.clone());
+        result.push(ae);
+    }
+
+    if let Some(org) = org.filter(|o| o.len() >= 3) {
+        let mut oe = Entity::new(EntityKind::Organisation, org, 0.60, scan_id);
+        oe.add_evidence(ev);
+        result.push(oe);
+    }
+
+    result
+}
+
 pub struct IpApi;
 
 #[async_trait]
@@ -134,84 +230,8 @@ impl Module for IpApi {
             .await
             .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
 
-        // ipwho.is signals lookup failure (private/reserved IP, quota) with
-        // `success:false` rather than an HTTP error — treat it as no-data.
-        if !data.success {
-            return Ok(ModuleResult::new());
-        }
-
-        // A CDN/anycast edge IP geolocates to whichever datacenter answered, not
-        // to the subject — skip it (the same guard ip_geo applies).
-        if crate::core::validation::is_cdn_edge_ip(ip) {
-            return Ok(ModuleResult::new());
-        }
-
         let mut result = ModuleResult::new();
-
-        let conn = data.connection.unwrap_or_default();
-        let city = data.city.as_deref().unwrap_or("");
-        let region = data.region.as_deref().unwrap_or("");
-        let country = data.country.as_deref().unwrap_or("");
-        let isp = conn.isp.as_deref().unwrap_or("");
-        let asn = conn.asn.map(|n| format!("AS{n}"));
-        let tz = data.timezone.and_then(|t| t.id);
-
-        let ev = [
-            ("city", (!city.is_empty()).then(|| city.to_string())),
-            ("region", (!region.is_empty()).then(|| region.to_string())),
-            (
-                "country",
-                (!country.is_empty()).then(|| country.to_string()),
-            ),
-            ("isp", (!isp.is_empty()).then(|| isp.to_string())),
-            ("asn", asn.clone()),
-            ("org", conn.org.clone()),
-            ("timezone", tz),
-        ]
-        .into_iter()
-        .filter_map(|(key, value)| value.map(|v| (key, v)))
-        .fold(
-            Evidence::new(SRC, format!("IP geolocation: {city}, {region}, {country}"))
-                .with_attr("ip", ip),
-            |ev, (key, v)| ev.with_attr(key, v),
-        );
-
-        // Coordinates — `coarse_provider_coords` gates implausible / null-island
-        // fixes (the same shared validator every coarse IP-geo provider uses).
-        if let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
-            && let Some(mut ce) =
-                crate::util::geo::coarse_provider_coords(lat, lon, 0.60, &ctx.scan_id)
-        {
-            ce.add_evidence(ev.clone());
-            result.push(ce);
-        }
-
-        if !city.is_empty() {
-            let addr = if !region.is_empty() && !country.is_empty() {
-                format!("{city}, {region}, {country}")
-            } else if !country.is_empty() {
-                format!("{city}, {country}")
-            } else {
-                city.to_string()
-            };
-            let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, &ctx.scan_id);
-            ae.tag(tags::GEOINT);
-            ae.add_evidence(ev.clone());
-            result.push(ae);
-        }
-
-        if let Some(asn) = &asn {
-            let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, &ctx.scan_id);
-            ae.add_evidence(ev.clone());
-            result.push(ae);
-        }
-
-        if let Some(org) = conn.org.as_deref().filter(|o| o.len() >= 3) {
-            let mut oe = Entity::new(EntityKind::Organisation, org, 0.60, &ctx.scan_id);
-            oe.add_evidence(ev);
-            result.push(oe);
-        }
-
+        result.entities = build_entities(&data, ip, &ctx.scan_id);
         Ok(result)
     }
 }

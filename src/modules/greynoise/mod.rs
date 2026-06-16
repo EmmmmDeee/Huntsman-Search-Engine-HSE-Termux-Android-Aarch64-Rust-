@@ -49,6 +49,92 @@ pub(crate) struct CommunityResp {
 
 const SRC: &str = "greynoise";
 
+/// Map a decoded GreyNoise Community record to its entities. **Pure** (no
+/// network/IO), so the noise/riot/classification → tag → evidence → operator
+/// mapping is unit-testable directly off JSON fixtures.
+///
+/// Gates internally: GreyNoise answers 200 with only a `message` for IPs not in
+/// its dataset, so a record with no noise, no RIOT and no classification yields
+/// an empty `Vec` (the caller's prior no-findings short-circuit). When a finding
+/// is present the subject `IpAddress` is always emitted; the operator
+/// `Organisation` pivot only when `name` is a usable (≥2 chars, non-"unknown")
+/// value.
+fn build_entities(data: &CommunityResp, ip: &str, scan_id: &str) -> Vec<Entity> {
+    // GreyNoise returns 200 with `message: "IP not observed ..."` for IPs not in
+    // its dataset. Treat those as no-findings.
+    if !data.noise && !data.riot && data.classification.is_none() {
+        return Vec::new();
+    }
+
+    let confidence = match data.classification.as_deref() {
+        Some("malicious") => 0.80,
+        Some("benign") => 0.70,
+        _ => 0.55,
+    };
+
+    let mut entity = Entity::new(EntityKind::IpAddress, ip, confidence, scan_id);
+
+    // ── Tags ──────────────────────────────────────────────────
+    if data.noise {
+        entity.tag("greynoise-noise");
+    }
+    if data.riot {
+        entity.tag("greynoise-riot");
+    }
+    match data.classification.as_deref() {
+        Some("malicious") => {
+            entity.tag("malicious");
+            entity.tag("greynoise-malicious");
+        }
+        Some("benign") => entity.tag("greynoise-benign"),
+        _ => entity.tag("greynoise-unknown"),
+    }
+
+    // ── Evidence ──────────────────────────────────────────────
+    let classification = data.classification.as_deref().unwrap_or("unknown");
+    let summary = format!(
+        "GreyNoise: classification={classification}, noise={}, riot={}",
+        data.noise, data.riot
+    );
+
+    let base = Evidence::new(SRC, summary)
+        .with_attr("classification", classification)
+        .with_attr("noise", data.noise.to_string())
+        .with_attr("riot", data.riot.to_string());
+    let ev = [
+        ("name", data.name.as_deref()),
+        ("link", data.link.as_deref()),
+        // GreyNoise's own status text (e.g. the RIOT service description) —
+        // surfaced as the API's words, not synthesised from the booleans.
+        ("message", data.message.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.filter(|s| !s.is_empty()).map(|v| (key, v)))
+    .fold(base, |ev, (key, v)| ev.with_attr(key, v));
+    entity.add_evidence(ev);
+
+    let mut out = vec![entity];
+
+    // The operator/actor name (e.g. "Cloudflare", "Shodan.io") is a real
+    // Organisation pivot — surface it, don't leave it in evidence only.
+    if let Some(name) = data
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| n.len() >= 2 && !n.eq_ignore_ascii_case("unknown"))
+    {
+        let mut o = Entity::new(EntityKind::Organisation, name, 0.62, scan_id);
+        o.tag("greynoise");
+        o.tag("ip-operator");
+        o.add_evidence(
+            Evidence::new(SRC, format!("Operator/actor of {ip} per GreyNoise")).with_attr("ip", ip),
+        );
+        out.push(o);
+    }
+
+    out
+}
+
 pub struct GreyNoise;
 
 #[async_trait]
@@ -106,79 +192,8 @@ impl Module for GreyNoise {
             return Ok(ModuleResult::new());
         };
 
-        // GreyNoise returns 200 with `message: "IP not observed ..."` for
-        // IPs not in its dataset. Treat those as no-findings.
-        if !data.noise && !data.riot && data.classification.is_none() {
-            return Ok(ModuleResult::new());
-        }
-
-        let confidence = match data.classification.as_deref() {
-            Some("malicious") => 0.80,
-            Some("benign") => 0.70,
-            _ => 0.55,
-        };
-
-        let mut entity = Entity::new(EntityKind::IpAddress, ip, confidence, &ctx.scan_id);
-
-        // ── Tags ──────────────────────────────────────────────────
-        if data.noise {
-            entity.tag("greynoise-noise");
-        }
-        if data.riot {
-            entity.tag("greynoise-riot");
-        }
-        match data.classification.as_deref() {
-            Some("malicious") => {
-                entity.tag("malicious");
-                entity.tag("greynoise-malicious");
-            }
-            Some("benign") => entity.tag("greynoise-benign"),
-            _ => entity.tag("greynoise-unknown"),
-        }
-
-        // ── Evidence ──────────────────────────────────────────────
-        let classification = data.classification.as_deref().unwrap_or("unknown");
-        let summary = format!(
-            "GreyNoise: classification={classification}, noise={}, riot={}",
-            data.noise, data.riot
-        );
-
-        let base = Evidence::new(SRC, summary)
-            .with_attr("classification", classification)
-            .with_attr("noise", data.noise.to_string())
-            .with_attr("riot", data.riot.to_string());
-        let ev = [
-            ("name", data.name.as_deref()),
-            ("link", data.link.as_deref()),
-            // GreyNoise's own status text (e.g. the RIOT service description) —
-            // surfaced as the API's words, not synthesised from the booleans.
-            ("message", data.message.as_deref()),
-        ]
-        .into_iter()
-        .filter_map(|(key, value)| value.filter(|s| !s.is_empty()).map(|v| (key, v)))
-        .fold(base, |ev, (key, v)| ev.with_attr(key, v));
-        entity.add_evidence(ev);
-
         let mut result = ModuleResult::new();
-        result.push(entity);
-
-        // The operator/actor name (e.g. "Cloudflare", "Shodan.io") is a real
-        // Organisation pivot — surface it, don't leave it in evidence only.
-        if let Some(name) = data
-            .name
-            .as_deref()
-            .map(str::trim)
-            .filter(|n| n.len() >= 2 && !n.eq_ignore_ascii_case("unknown"))
-        {
-            let mut o = Entity::new(EntityKind::Organisation, name, 0.62, &ctx.scan_id);
-            o.tag("greynoise");
-            o.tag("ip-operator");
-            o.add_evidence(
-                Evidence::new(SRC, format!("Operator/actor of {ip} per GreyNoise"))
-                    .with_attr("ip", ip),
-            );
-            result.push(o);
-        }
+        result.entities = build_entities(&data, ip, &ctx.scan_id);
         Ok(result)
     }
 }

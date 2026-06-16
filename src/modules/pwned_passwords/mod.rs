@@ -22,6 +22,61 @@ const SRC: &str = "pwned_passwords";
 
 pub struct PwnedPasswords;
 
+/// Parse the breach count for `suffix` out of a k-Anonymity range body.
+/// **Pure** (no network). The body is the plain-text `SUFFIX:count` listing
+/// returned for one 5-char SHA-1 prefix; the (unique) line whose suffix matches
+/// `suffix` (case-insensitively) yields its count. `None` when the suffix is
+/// absent or its count is unparseable — `find` stops at the first match,
+/// mirroring the original break.
+fn parse_breach_count(body: &str, suffix: &str) -> Option<u64> {
+    body.lines()
+        .filter_map(|line| line.trim().split_once(':'))
+        .find(|(hash_suffix, _)| hash_suffix.eq_ignore_ascii_case(suffix))
+        .and_then(|(_, count_str)| count_str.trim().parse().ok())
+}
+
+/// Confidence band for a pwned-password hit: more breach occurrences ⇒ higher
+/// confidence the credential is genuinely compromised. **Pure.**
+fn confidence_for(count: u64) -> f64 {
+    if count >= 100 {
+        0.90
+    } else if count >= 10 {
+        0.80
+    } else {
+        0.70
+    }
+}
+
+/// Map a k-Anonymity breach `count` for `target` to its entities. **Pure** (no
+/// network), so the count→confidence→tag→evidence mapping is unit-testable.
+///
+/// Emits a single subject entity (the queried Email/Username) tagged
+/// `pwned-password` + `breach`, carrying the breach count and the SHA-1 prefix
+/// as evidence. Returns an empty `Vec` when `count == 0` (the API's "not found"
+/// signal — padding rows report a zero count), so a non-hit produces nothing.
+fn build_entities(target: &Target, count: u64, prefix: &str, scan_id: &str) -> Vec<Entity> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let mut entity = Entity::new(
+        target.kind.to_entity_kind(),
+        &target.value,
+        confidence_for(count),
+        scan_id,
+    );
+    entity.tag("pwned-password");
+    entity.tag("breach");
+    entity.add_evidence(
+        Evidence::new(
+            SRC,
+            format!("HIBP Pwned Passwords: value seen in {count} breach(es) (k-Anonymity check)"),
+        )
+        .with_attr("breach_count", count.to_string())
+        .with_attr("sha1_prefix", prefix),
+    );
+    vec![entity]
+}
+
 #[async_trait]
 impl Module for PwnedPasswords {
     fn name(&self) -> &'static str {
@@ -96,50 +151,12 @@ impl Module for PwnedPasswords {
             .await
             .map_err(|e| Error::module(SRC, e.to_string()))?;
 
-        // Find the (unique) suffix line in the k-anonymity range and parse its
-        // breach count; `find` stops at the first match, mirroring the break.
-        let breach_count: Option<u64> = body
-            .lines()
-            .filter_map(|line| line.trim().split_once(':'))
-            .find(|(hash_suffix, _)| hash_suffix.eq_ignore_ascii_case(suffix))
-            .and_then(|(_, count_str)| count_str.trim().parse().ok());
-
-        let Some(count) = breach_count else {
+        let Some(count) = parse_breach_count(&body, suffix) else {
             return Ok(ModuleResult::new());
         };
-        if count == 0 {
-            return Ok(ModuleResult::new());
-        }
 
         let mut result = ModuleResult::new();
-        let confidence = if count >= 100 {
-            0.90
-        } else if count >= 10 {
-            0.80
-        } else {
-            0.70
-        };
-        let mut entity = Entity::new(
-            target.kind.to_entity_kind(),
-            &target.value,
-            confidence,
-            &ctx.scan_id,
-        );
-        entity.tag("pwned-password");
-        entity.tag("breach");
-
-        entity.add_evidence(
-            Evidence::new(
-                SRC,
-                format!(
-                    "HIBP Pwned Passwords: value seen in {count} breach(es) (k-Anonymity check)"
-                ),
-            )
-            .with_attr("breach_count", count.to_string())
-            .with_attr("sha1_prefix", prefix),
-        );
-
-        result.push(entity);
+        result.entities = build_entities(target, count, prefix, &ctx.scan_id);
         Ok(result)
     }
 }

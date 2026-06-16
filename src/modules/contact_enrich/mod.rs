@@ -236,15 +236,36 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     let Some(body) = body_opt else {
         return Ok(ModuleResult::new());
     };
+
+    let mut result = ModuleResult::new();
+    result.entities = build_phone_entities(&body, target, transport, &ctx.scan_id);
+    Ok(result)
+}
+
+/// Map a decoded Numverify validation to its entities. **Pure** (no
+/// network/IO), so the validity gate, tags, and evidence folding are
+/// unit-testable directly off JSON fixtures.
+///
+/// Returns empty unless the number is `valid`; the subject `Phone` carries the
+/// `numverify`/`validated`/`transport:`/`country:`/`line:` tags and folds the
+/// present optional fields into one evidence record. `transport` is the scheme
+/// the caller's request actually succeeded over (https/http fallback).
+pub(super) fn build_phone_entities(
+    body: &NumverifyResp,
+    target: &Target,
+    transport: &'static str,
+    scan_id: &str,
+) -> Vec<Entity> {
     if body.valid != Some(true) {
-        return Ok(ModuleResult::new());
+        return Vec::new();
     }
 
-    let mut entity = target.to_entity(0.92, &ctx.scan_id);
+    let mut entity = target.to_entity(0.92, scan_id);
     entity.tag("numverify");
     entity.tag("validated");
     entity.tag(format!("transport:{transport}"));
-    if let Some(c) = body.country_code.as_deref() {
+    // Skip a blank country code (no `country:` tag for an empty string).
+    if let Some(c) = body.country_code.as_deref().filter(|c| !c.is_empty()) {
         entity.tag(format!("country:{}", c.to_uppercase()));
     }
     if let Some(lt) = body.line_type.as_deref()
@@ -265,7 +286,8 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         ("line_type", body.line_type.as_deref()),
     ]
     .into_iter()
-    .filter_map(|(k, v)| v.map(|val| (k, val)))
+    // Skip blank/empty evidence attributes (dead-field hygiene).
+    .filter_map(|(k, v)| v.filter(|val| !val.is_empty()).map(|val| (k, val)))
     .fold(
         Evidence::new(
             SRC,
@@ -276,9 +298,7 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     );
     entity.add_evidence(ev);
 
-    let mut result = ModuleResult::new();
-    result.push(entity);
-    Ok(result)
+    vec![entity]
 }
 
 // ---------------------------------------------------------------------------
@@ -322,24 +342,55 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         return Ok(ModuleResult::new());
     };
 
-    let mut entity = target.to_entity(0.88, &ctx.scan_id);
+    let mut result = ModuleResult::new();
+    result.entities = build_email_entities(&entry, target, &normalised, &hash, &ctx.scan_id);
+    Ok(result)
+}
+
+/// Map a decoded Gravatar profile entry to its entities. **Pure** (no
+/// network/IO), so the profile→Person/Username/Address/Url derivation is
+/// unit-testable directly off JSON fixtures.
+///
+/// `normalised` is the queried email (used in evidence summaries) and `hash`
+/// its md5 (used for the profile URL). The subject email entity is always
+/// emitted; the `Person` (formatted name with a space, ≥3 chars), `Username`
+/// (≥3 chars), `Address` (location ≥3 chars, AU-state-tagged when recognised),
+/// and `Url` pivots (http(s) links) each appear only when present.
+pub(super) fn build_email_entities(
+    entry: &ProfileEntry,
+    target: &Target,
+    normalised: &str,
+    hash: &str,
+    scan_id: &str,
+) -> Vec<Entity> {
+    let mut entity = target.to_entity(0.88, scan_id);
     entity.tag("gravatar");
     let mut ev = Evidence::new(SRC, format!("Gravatar profile for {normalised}"))
-        .with_attr("md5", &hash)
+        .with_attr("md5", hash)
         .with_attr("profile_url", format!("https://www.gravatar.com/{hash}"));
-    if let Some(d) = entry.display_name.as_deref() {
+    // Skip blank/empty evidence attributes (dead-field hygiene).
+    if let Some(d) = entry.display_name.as_deref().filter(|s| !s.is_empty()) {
         ev = ev.with_attr("display_name", d);
     }
-    if let Some(u) = entry.preferred_username.as_deref() {
+    if let Some(u) = entry
+        .preferred_username
+        .as_deref()
+        .filter(|s| !s.is_empty())
+    {
         ev = ev.with_attr("preferred_username", u);
     }
-    if let Some(n) = entry.name.as_ref().and_then(|n| n.formatted.as_deref()) {
+    if let Some(n) = entry
+        .name
+        .as_ref()
+        .and_then(|n| n.formatted.as_deref())
+        .filter(|s| !s.is_empty())
+    {
         ev = ev.with_attr("name", n);
     }
-    if let Some(loc) = entry.location.as_deref() {
+    if let Some(loc) = entry.location.as_deref().filter(|s| !s.is_empty()) {
         ev = ev.with_attr("location", loc);
     }
-    if let Some(bio) = entry.about_me.as_deref() {
+    if let Some(bio) = entry.about_me.as_deref().filter(|s| !s.is_empty()) {
         ev = ev.with_attr("bio", bio);
     }
     if let Some(avatar) = entry
@@ -347,6 +398,7 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         .as_ref()
         .and_then(|p| p.first())
         .and_then(|p| p.value.as_deref())
+        .filter(|s| !s.is_empty())
     {
         ev = ev.with_attr("avatar_url", avatar);
     }
@@ -371,7 +423,7 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         && name.len() >= 3
         && name.contains(' ')
     {
-        let mut pe = Entity::new(EntityKind::Person, name, 0.75, &ctx.scan_id);
+        let mut pe = Entity::new(EntityKind::Person, name, 0.75, scan_id);
         pe.tag("gravatar");
         pe.add_evidence(Evidence::new(
             SRC,
@@ -382,7 +434,7 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     if let Some(username) = entry.preferred_username.as_deref()
         && username.len() >= 3
     {
-        let mut ue = Entity::new(EntityKind::Username, username, 0.70, &ctx.scan_id);
+        let mut ue = Entity::new(EntityKind::Username, username, 0.70, scan_id);
         ue.tag("gravatar");
         ue.add_evidence(Evidence::new(
             SRC,
@@ -393,7 +445,7 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     if let Some(loc) = entry.location.as_deref()
         && loc.len() >= 3
     {
-        let mut ae = Entity::new(EntityKind::Address, loc, 0.55, &ctx.scan_id);
+        let mut ae = Entity::new(EntityKind::Address, loc, 0.55, scan_id);
         ae.tag("gravatar");
         ae.tag("geoint");
         if let Some(sc) = crate::util::address_au::state_code(loc) {
@@ -411,7 +463,7 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         if !url.starts_with("http") {
             return None;
         }
-        let mut ue = Entity::new(EntityKind::Url, url, 0.60, &ctx.scan_id);
+        let mut ue = Entity::new(EntityKind::Url, url, 0.60, scan_id);
         ue.tag("gravatar");
         ue.add_evidence(Evidence::new(
             SRC,
@@ -420,5 +472,5 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         Some(ue)
     }));
 
-    Ok(result)
+    result.entities
 }

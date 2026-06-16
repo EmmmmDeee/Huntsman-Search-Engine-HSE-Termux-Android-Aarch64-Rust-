@@ -47,6 +47,80 @@ struct CrateUser {
     url: Option<String>,
 }
 
+/// Map a decoded crates.io user record to its entities. **Pure** (no network),
+/// so the account→identity→linked-profile mapping is unit-testable off JSON.
+///
+/// | source                              | output                                 |
+/// |-------------------------------------|----------------------------------------|
+/// | `user.login`                        | `Username` (+ `crates-io`/`code` tags) |
+/// | `user.name` (non-blank, ≥ 2 words)  | `Person` pivot + `name` attr           |
+/// | `user.url` (`http(s)://…`)          | `Url` linked-profile pivot             |
+///
+/// Empty when the response carries no `user` (the caller maps a 404 to the same
+/// no-user shape). A blank `name` adds neither the evidence attr nor the Person
+/// pivot; a placeholder name (per [`crate::core::validation::is_placeholder_entity`])
+/// is likewise not promoted.
+fn build_entities(body: &UserResp, scan_id: &str) -> Vec<Entity> {
+    let Some(user) = body.user.as_ref() else {
+        return Vec::new();
+    };
+
+    let mut result = Vec::new();
+
+    // The confirmed-on-crates.io username.
+    let mut u = Entity::new(EntityKind::Username, &user.login, 0.88, scan_id);
+    u.tag("crates-io");
+    u.tag("code");
+    let mut ev = Evidence::new(SRC, format!("crates.io registry account '{}'", user.login))
+        .with_attr(
+            "profile_url",
+            format!("https://crates.io/users/{}", user.login),
+        );
+    if let Some(n) = user.name.as_deref().filter(|n| !n.is_empty()) {
+        ev = ev.with_attr("name", n);
+    }
+    u.add_evidence(ev);
+    result.push(u);
+
+    // Real name → Person (handle→identity).
+    if let Some(name) = user.name.as_deref()
+        && name.split_whitespace().count() >= 2
+        && !crate::core::validation::is_placeholder_entity(&EntityKind::Person, name)
+    {
+        let mut p = Entity::new(EntityKind::Person, name.trim(), 0.70, scan_id);
+        p.tag("crates-io");
+        p.tag("derived");
+        p.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("Real name from crates.io account '{}'", user.login),
+            )
+            .with_attr("crates_login", &user.login),
+        );
+        result.push(p);
+    }
+
+    // The linked profile URL (crates.io auths via GitHub, so this is usually
+    // the owner's GitHub profile — a cross-platform confirmation).
+    if let Some(link) = user.url.as_deref()
+        && (link.starts_with("http://") || link.starts_with("https://"))
+    {
+        let mut url_e = Entity::new(EntityKind::Url, link, 0.74, scan_id);
+        url_e.tag("crates-io");
+        url_e.tag("linked-profile");
+        url_e.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("Linked profile of crates.io user '{}'", user.login),
+            )
+            .with_attr("source", "crates_io_profile"),
+        );
+        result.push(url_e);
+    }
+
+    result
+}
+
 #[async_trait]
 impl Module for CratesIo {
     fn name(&self) -> &'static str {
@@ -96,64 +170,12 @@ impl Module for CratesIo {
         }
 
         let url = format!("https://crates.io/api/v1/users/{handle}");
-        let resp: Option<UserResp> = fetch_json_or_404(&ctx.http, SRC, &url).await?;
-        let Some(user) = resp.and_then(|r| r.user) else {
+        let Some(body): Option<UserResp> = fetch_json_or_404(&ctx.http, SRC, &url).await? else {
             return Ok(ModuleResult::new());
         };
 
         let mut result = ModuleResult::new();
-
-        // The confirmed-on-crates.io username.
-        let mut u = Entity::new(EntityKind::Username, &user.login, 0.88, &ctx.scan_id);
-        u.tag("crates-io");
-        u.tag("code");
-        let mut ev = Evidence::new(SRC, format!("crates.io registry account '{}'", user.login))
-            .with_attr(
-                "profile_url",
-                format!("https://crates.io/users/{}", user.login),
-            );
-        if let Some(n) = user.name.as_deref() {
-            ev = ev.with_attr("name", n);
-        }
-        u.add_evidence(ev);
-        result.push(u);
-
-        // Real name → Person (handle→identity).
-        if let Some(name) = user.name.as_deref()
-            && name.split_whitespace().count() >= 2
-            && !crate::core::validation::is_placeholder_entity(&EntityKind::Person, name)
-        {
-            let mut p = Entity::new(EntityKind::Person, name.trim(), 0.70, &ctx.scan_id);
-            p.tag("crates-io");
-            p.tag("derived");
-            p.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Real name from crates.io account '{}'", user.login),
-                )
-                .with_attr("crates_login", &user.login),
-            );
-            result.push(p);
-        }
-
-        // The linked profile URL (crates.io auths via GitHub, so this is usually
-        // the owner's GitHub profile — a cross-platform confirmation).
-        if let Some(link) = user.url.as_deref()
-            && (link.starts_with("http://") || link.starts_with("https://"))
-        {
-            let mut url_e = Entity::new(EntityKind::Url, link, 0.74, &ctx.scan_id);
-            url_e.tag("crates-io");
-            url_e.tag("linked-profile");
-            url_e.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Linked profile of crates.io user '{}'", user.login),
-                )
-                .with_attr("source", "crates_io_profile"),
-            );
-            result.push(url_e);
-        }
-
+        result.entities = build_entities(&body, &ctx.scan_id);
         Ok(result)
     }
 }

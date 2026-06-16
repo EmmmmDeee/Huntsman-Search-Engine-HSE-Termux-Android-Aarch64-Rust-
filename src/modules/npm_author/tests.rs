@@ -46,3 +46,156 @@ use super::*;
         assert!(!valid("has space"));
         assert!(!valid("bad/slash"));
     }
+
+    // ── build_entities (pure extraction) ───────────────────────────────
+
+    fn search(json: &str) -> SearchResp {
+        serde_json::from_str(json).expect("fixture is valid SearchResp JSON")
+    }
+    fn of_kind(ents: &[Entity], kind: EntityKind) -> Vec<&Entity> {
+        ents.iter().filter(|e| e.kind == kind).collect()
+    }
+    fn values(ents: &[Entity], kind: EntityKind) -> Vec<&str> {
+        of_kind(ents, kind)
+            .into_iter()
+            .map(|e| e.value.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn full_record_yields_username_email_and_urls() {
+        let body = search(
+            r#"{"objects":[{"package":{"name":"foo",
+                "links":{"homepage":"https://foo.dev","repository":"https://github.com/k/foo"},
+                "author":{"username":"kylo4kylo","email":"K@Example.com","url":"https://k.dev"},
+                "maintainers":[{"username":"kylo4kylo","email":"k@example.com"}]}}],"total":3}"#,
+        );
+        let ents = build_entities(&body, "kylo4kylo", "s");
+
+        // Confirmed-on-npm username is always present, with package coverage.
+        let user = of_kind(&ents, EntityKind::Username);
+        assert_eq!(user.len(), 1);
+        let user = user[0];
+        assert_eq!(user.value, "kylo4kylo");
+        assert!(user.has_tag("npm") && user.has_tag("code"));
+        let attr = |k: &str| user.evidence[0].attributes.get(k).map(String::as_str);
+        // package_count comes from `total`, not the objects length.
+        assert_eq!(attr("package_count"), Some("3"));
+        assert_eq!(attr("packages"), Some("foo"));
+        assert_eq!(attr("profile_url"), Some("https://www.npmjs.com/~kylo4kylo"));
+
+        // The author/maintainer email (subject-owned), normalised + de-duped to one.
+        let emails = values(&ents, EntityKind::Email);
+        assert_eq!(emails, vec!["k@example.com"], "email lowercased and deduped");
+        let email_e = of_kind(&ents, EntityKind::Email)[0];
+        assert!(email_e.has_tag("npm") && email_e.has_tag("public-profile"));
+        assert_eq!(
+            email_e.evidence[0].attributes.get("package").map(String::as_str),
+            Some("foo")
+        );
+
+        // Author URL + homepage + repository, all de-duplicated across records.
+        let mut urls = values(&ents, EntityKind::Url);
+        urls.sort_unstable();
+        assert_eq!(
+            urls,
+            vec!["https://foo.dev", "https://github.com/k/foo", "https://k.dev"]
+        );
+    }
+
+    #[test]
+    fn co_maintainer_email_not_attributed_to_subject() {
+        // The subject `alice` publishes; `bob` is a co-maintainer with a username
+        // that does NOT match — his email must be skipped.
+        let body = search(
+            r#"{"objects":[{"package":{"name":"pkg",
+                "maintainers":[
+                    {"username":"alice","email":"alice@example.com"},
+                    {"username":"bob","email":"bob@example.com"}
+                ]}}],"total":1}"#,
+        );
+        let ents = build_entities(&body, "alice", "s");
+        let emails = values(&ents, EntityKind::Email);
+        assert_eq!(emails, vec!["alice@example.com"]);
+    }
+
+    #[test]
+    fn usernameless_record_email_is_kept() {
+        // A record with an email but no username is treated as the subject's.
+        let body = search(
+            r#"{"objects":[{"package":{"name":"pkg",
+                "author":{"email":"author@example.com"}}}],"total":1}"#,
+        );
+        let ents = build_entities(&body, "alice", "s");
+        let emails = values(&ents, EntityKind::Email);
+        assert_eq!(emails, vec!["author@example.com"]);
+    }
+
+    #[test]
+    fn short_or_invalid_emails_are_skipped() {
+        // `a@b` is 3 chars (< 5) and `not-an-email` has no `@`: neither qualifies.
+        let body = search(
+            r#"{"objects":[{"package":{"name":"pkg",
+                "maintainers":[
+                    {"username":"alice","email":"a@b"},
+                    {"username":"alice","email":"not-an-email"}
+                ]}}],"total":1}"#,
+        );
+        assert!(values(&build_entities(&body, "alice", "s"), EntityKind::Email).is_empty());
+    }
+
+    #[test]
+    fn non_http_urls_are_skipped() {
+        let body = search(
+            r#"{"objects":[{"package":{"name":"pkg",
+                "links":{"homepage":"ftp://files.example","repository":"git@github.com:x/y"},
+                "author":{"username":"alice","url":"mailto:alice@example.com"}}}],"total":1}"#,
+        );
+        assert!(values(&build_entities(&body, "alice", "s"), EntityKind::Url).is_empty());
+    }
+
+    #[test]
+    fn urls_deduplicated_across_packages() {
+        // The same homepage on two packages yields a single Url entity.
+        let body = search(
+            r#"{"objects":[
+                {"package":{"name":"a","links":{"homepage":"https://shared.dev"}}},
+                {"package":{"name":"b","links":{"homepage":"https://shared.dev"}}}
+            ],"total":2}"#,
+        );
+        let ents = build_entities(&body, "alice", "s");
+        let urls = values(&ents, EntityKind::Url);
+        assert_eq!(urls, vec!["https://shared.dev"]);
+    }
+
+    #[test]
+    fn package_sample_is_capped_at_eight() {
+        // 10 packages → coverage sample lists only the first 8, but the count
+        // reflects `total`.
+        let objects: Vec<String> = (0..10)
+            .map(|i| format!(r#"{{"package":{{"name":"p{i}"}}}}"#))
+            .collect();
+        let json = format!(r#"{{"objects":[{}],"total":42}}"#, objects.join(","));
+        let ents = build_entities(&search(&json), "alice", "s");
+        let user = of_kind(&ents, EntityKind::Username)[0];
+        let attr = |k: &str| user.evidence[0].attributes.get(k).map(String::as_str);
+        assert_eq!(attr("package_count"), Some("42"));
+        assert_eq!(attr("packages"), Some("p0, p1, p2, p3, p4, p5, p6, p7"));
+    }
+
+    #[test]
+    fn package_cap_bounds_scanned_objects() {
+        // More than MAX_PACKAGES objects: only the first MAX_PACKAGES are
+        // scanned for emails/urls. Give each a unique homepage and count them.
+        let objects: Vec<String> = (0..(MAX_PACKAGES + 5))
+            .map(|i| format!(r#"{{"package":{{"name":"p{i}","links":{{"homepage":"https://h{i}.dev"}}}}}}"#))
+            .collect();
+        let json = format!(
+            r#"{{"objects":[{}],"total":{}}}"#,
+            objects.join(","),
+            MAX_PACKAGES + 5
+        );
+        let ents = build_entities(&search(&json), "alice", "s");
+        // One Url per scanned package, capped at MAX_PACKAGES.
+        assert_eq!(of_kind(&ents, EntityKind::Url).len(), MAX_PACKAGES);
+    }

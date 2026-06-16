@@ -76,3 +76,152 @@ use super::*;
         assert!(!is_plausible_provider_coord(0.0, 153.0)); // one component in band
         assert!(is_plausible_provider_coord(-27.4766, 153.0166)); // real Brisbane fix
     }
+
+    // ── build_entities (pure extraction) ───────────────────────────────
+
+    fn resp(json: &str) -> Resp {
+        serde_json::from_str(json).expect("fixture is valid Resp JSON")
+    }
+    fn of_kind(ents: &[Entity], kind: EntityKind) -> Option<&Entity> {
+        ents.iter().find(|e| e.kind == kind)
+    }
+
+    #[test]
+    fn full_au_record_yields_coords_address_org_and_asn() {
+        let body = resp(
+            r#"{
+                "success": true, "country": "Australia", "country_code": "AU",
+                "region": "Queensland", "city": "South Brisbane",
+                "latitude": -27.4766, "longitude": 153.0166, "postal": "4101",
+                "timezone_id": "Australia/Brisbane",
+                "connection": { "isp": "Cloudflare Inc", "org": "APNIC Research", "asn": 13335 }
+            }"#,
+        );
+        let ents = build_entities(&body, "1.1.1.1", "s");
+        assert_eq!(ents.len(), 4);
+
+        let coords = of_kind(&ents, EntityKind::Coordinates).expect("Coordinates entity");
+        // ip_whois_geo formats coords to 6 dp directly.
+        assert_eq!(coords.value, "-27.476600,153.016600");
+        assert!((coords.confidence - 0.55).abs() < 1e-9);
+        assert!(coords.has_tag("geoint"));
+        assert!(coords.has_tag("country:AU"), "country code is uppercased");
+        assert!(coords.has_tag("au-state:QLD"), "Brisbane → QLD box");
+        let attr = |k: &str| coords.evidence[0].attributes.get(k).map(String::as_str);
+        assert_eq!(attr("source"), Some("ipwho.is"));
+        assert_eq!(attr("country"), Some("Australia"));
+        assert_eq!(attr("country_code"), Some("AU"));
+        assert_eq!(attr("region"), Some("Queensland"));
+        assert_eq!(attr("city"), Some("South Brisbane"));
+        assert_eq!(attr("postal"), Some("4101"));
+        assert_eq!(attr("timezone"), Some("Australia/Brisbane"));
+        assert_eq!(attr("isp"), Some("Cloudflare Inc"));
+        assert_eq!(attr("asn"), Some("AS13335"));
+        assert_eq!(attr("org"), Some("APNIC Research"));
+
+        let addr = of_kind(&ents, EntityKind::Address).expect("derived Address");
+        assert_eq!(addr.value, "South Brisbane, Queensland, Australia");
+        assert!(addr.has_tag("geoint") && addr.has_tag("derived"));
+
+        let org = of_kind(&ents, EntityKind::Organisation).expect("Organisation");
+        assert_eq!(org.value, "APNIC Research");
+        let oattr = |k: &str| org.evidence[0].attributes.get(k).map(String::as_str);
+        assert_eq!(oattr("asn"), Some("AS13335"));
+        assert_eq!(oattr("isp"), Some("Cloudflare Inc"));
+
+        let asn = of_kind(&ents, EntityKind::Asn).expect("Asn");
+        assert_eq!(asn.value, "AS13335");
+        assert!(asn.has_tag("ip-whois"));
+    }
+
+    #[test]
+    fn unsuccessful_lookup_yields_nothing() {
+        let body = resp(r#"{"success": false, "latitude": 1.0, "longitude": 1.0}"#);
+        assert!(build_entities(&body, "1.2.3.4", "s").is_empty());
+    }
+
+    #[test]
+    fn cdn_edge_ip_is_skipped_entirely() {
+        // 104.16.0.1 ∈ Cloudflare 104.16/13 — geo belongs to the datacenter.
+        let body = resp(
+            r#"{"success": true, "country": "United States", "city": "San Francisco",
+                "latitude": 37.77, "longitude": -122.42, "connection": {"asn": 13335}}"#,
+        );
+        assert!(build_entities(&body, "104.16.0.1", "s").is_empty());
+    }
+
+    #[test]
+    fn null_island_coords_reject_drops_the_whole_record() {
+        // Sub-degree null-island jitter fails the coarse-provider gate, which
+        // returns early from the builder. That gate precedes the Organisation/ASN
+        // construction, so an implausible fix drops the ENTIRE record — matching
+        // the pre-refactor process(), whose early `return` exited the function.
+        let body = resp(
+            r#"{"success": true, "country": "Ghana", "region": "Greater Accra",
+                "city": "Accra", "latitude": 0.005, "longitude": 0.005,
+                "connection": {"org": "Some ISP", "asn": 30986}}"#,
+        );
+        assert!(
+            build_entities(&body, "8.8.4.4", "s").is_empty(),
+            "an implausible provider coord returns early, emitting nothing"
+        );
+    }
+
+    #[test]
+    fn blank_country_code_adds_no_country_tag() {
+        let body = resp(
+            r#"{"success": true, "country_code": "", "latitude": -27.4766, "longitude": 153.0166}"#,
+        );
+        let coords = build_entities(&body, "1.1.1.1", "s")
+            .into_iter()
+            .find(|e| e.kind == EntityKind::Coordinates)
+            .expect("Coordinates entity");
+        assert!(
+            !coords.tags.iter().any(|t| t.starts_with("country:")),
+            "a blank country code adds no country tag"
+        );
+        assert!(!coords.evidence[0].attributes.contains_key("country_code"));
+    }
+
+    #[test]
+    fn non_au_fix_gets_no_au_state_tag() {
+        let body = resp(
+            r#"{"success": true, "country_code": "US",
+                "latitude": 37.77, "longitude": -122.42}"#,
+        );
+        let coords = build_entities(&body, "9.9.9.9", "s")
+            .into_iter()
+            .find(|e| e.kind == EntityKind::Coordinates)
+            .expect("Coordinates entity");
+        assert!(coords.has_tag("country:US"));
+        assert!(!coords.tags.iter().any(|t| t.starts_with("au-state:")));
+    }
+
+    #[test]
+    fn one_part_address_is_not_emitted() {
+        // Only city present (region/country absent) → <2 parts → no Address.
+        let body = resp(
+            r#"{"success": true, "city": "Brisbane",
+                "latitude": -27.4766, "longitude": 153.0166}"#,
+        );
+        let ents = build_entities(&body, "1.1.1.1", "s");
+        assert!(of_kind(&ents, EntityKind::Coordinates).is_some());
+        assert!(
+            of_kind(&ents, EntityKind::Address).is_none(),
+            "a single locality part must not synthesise an Address"
+        );
+    }
+
+    #[test]
+    fn no_coords_still_yields_org_and_asn() {
+        // No lat/lon at all: the coords block is skipped, but the connection
+        // still produces Organisation + ASN entities.
+        let body = resp(r#"{"success": true, "connection": {"org": "Telstra", "asn": 1221}}"#);
+        let ents = build_entities(&body, "1.2.3.4", "s");
+        assert!(of_kind(&ents, EntityKind::Coordinates).is_none());
+        assert_eq!(
+            of_kind(&ents, EntityKind::Organisation).unwrap().value,
+            "Telstra"
+        );
+        assert_eq!(of_kind(&ents, EntityKind::Asn).unwrap().value, "AS1221");
+    }

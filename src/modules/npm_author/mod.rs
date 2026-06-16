@@ -146,103 +146,124 @@ impl Module for NpmAuthor {
         }
 
         let mut result = ModuleResult::new();
-        let mut seen_emails: HashSet<String> = HashSet::new();
-        let mut seen_urls: HashSet<String> = HashSet::new();
-        let mut package_names: Vec<String> = Vec::new();
+        result.entities = build_entities(&resp, &handle, &ctx.scan_id);
+        Ok(result)
+    }
+}
 
-        let push_email =
-            |result: &mut ModuleResult, seen: &mut HashSet<String>, raw: &str, pkg: &str| {
-                let email = raw.trim().to_lowercase();
-                if email.contains('@') && email.len() >= 5 && seen.insert(email.clone()) {
-                    let mut e = Entity::new(EntityKind::Email, &email, 0.74, &ctx.scan_id);
-                    e.tag("npm");
-                    e.tag("public-profile");
-                    e.add_evidence(
-                        Evidence::new(SRC, format!("npm maintainer email (package {pkg})"))
-                            .with_attr("source", "npm_registry")
-                            .with_attr("package", pkg),
-                    );
-                    result.push(e);
+/// Map a decoded npm maintainer search to its entities. **Pure** (no
+/// network/IO), so the package→email/url/username mapping is unit-testable
+/// directly off JSON fixtures.
+///
+/// `handle` is the already-lowercased queried username; the caller has already
+/// short-circuited an empty `objects` list, so the confirmed-on-npm `Username`
+/// (carrying package coverage as evidence) is always emitted. Emails are taken
+/// only from author/publisher/maintainer records whose username matches the
+/// subject (or carry no username), so a co-maintainer's address isn't
+/// mis-attributed; emails and URLs are de-duplicated and packages capped at
+/// [`MAX_PACKAGES`].
+fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity> {
+    let mut result = ModuleResult::new();
+    let mut seen_emails: HashSet<String> = HashSet::new();
+    let mut seen_urls: HashSet<String> = HashSet::new();
+    let mut package_names: Vec<String> = Vec::new();
+
+    let push_email =
+        |result: &mut ModuleResult, seen: &mut HashSet<String>, raw: &str, pkg: &str| {
+            let email = raw.trim().to_lowercase();
+            if email.contains('@') && email.len() >= 5 && seen.insert(email.clone()) {
+                let mut e = Entity::new(EntityKind::Email, &email, 0.74, scan_id);
+                e.tag("npm");
+                e.tag("public-profile");
+                let mut ev = Evidence::new(SRC, format!("npm maintainer email (package {pkg})"))
+                    .with_attr("source", "npm_registry");
+                // Skip a blank package attribute (dead-field hygiene).
+                if !pkg.is_empty() {
+                    ev = ev.with_attr("package", pkg);
                 }
-            };
-
-        for obj in resp.objects.iter().take(MAX_PACKAGES) {
-            let Some(pkg) = obj.package.as_ref() else {
-                continue;
-            };
-            let pkg_name = pkg.name.as_deref().unwrap_or("");
-            if !pkg_name.is_empty() {
-                package_names.push(pkg_name.to_string());
+                e.add_evidence(ev);
+                result.push(e);
             }
+        };
 
-            // Emails: only from records whose username matches the queried handle
-            // (the author/publisher/maintainer that IS the subject), so a
-            // co-maintainer's address isn't mis-attributed.
-            for person in std::iter::once(pkg.publisher.as_ref())
-                .chain(std::iter::once(pkg.author.as_ref()))
-                .flatten()
-                .chain(pkg.maintainers.iter())
+    for obj in resp.objects.iter().take(MAX_PACKAGES) {
+        let Some(pkg) = obj.package.as_ref() else {
+            continue;
+        };
+        let pkg_name = pkg.name.as_deref().unwrap_or("");
+        if !pkg_name.is_empty() {
+            package_names.push(pkg_name.to_string());
+        }
+
+        // Emails: only from records whose username matches the queried handle
+        // (the author/publisher/maintainer that IS the subject), so a
+        // co-maintainer's address isn't mis-attributed.
+        for person in std::iter::once(pkg.publisher.as_ref())
+            .chain(std::iter::once(pkg.author.as_ref()))
+            .flatten()
+            .chain(pkg.maintainers.iter())
+        {
+            let is_subject = person
+                .username
+                .as_deref()
+                .is_some_and(|u| u.eq_ignore_ascii_case(handle));
+            if let Some(email) = person.email.as_deref()
+                && (is_subject || person.username.is_none())
             {
-                let is_subject = person
-                    .username
-                    .as_deref()
-                    .is_some_and(|u| u.eq_ignore_ascii_case(&handle));
-                if let Some(email) = person.email.as_deref()
-                    && (is_subject || person.username.is_none())
-                {
-                    push_email(&mut result, &mut seen_emails, email, pkg_name);
-                }
-                if let Some(u) = person.url.as_deref()
-                    && (u.starts_with("http://") || u.starts_with("https://"))
-                    && seen_urls.insert(u.to_string())
-                {
-                    let mut url_e = Entity::new(EntityKind::Url, u, 0.66, &ctx.scan_id);
-                    url_e.tag("npm");
-                    url_e.add_evidence(
-                        Evidence::new(SRC, format!("npm author URL ({pkg_name})"))
-                            .with_attr("package", pkg_name),
-                    );
-                    result.push(url_e);
-                }
+                push_email(&mut result, &mut seen_emails, email, pkg_name);
             }
-
-            // The package homepage/repository — a personal-site / code link.
-            if let Some(links) = pkg.links.as_ref() {
-                for link in [links.homepage.as_deref(), links.repository.as_deref()]
-                    .into_iter()
-                    .flatten()
-                {
-                    if (link.starts_with("http://") || link.starts_with("https://"))
-                        && seen_urls.insert(link.to_string())
-                    {
-                        let mut url_e = Entity::new(EntityKind::Url, link, 0.60, &ctx.scan_id);
-                        url_e.tag("npm");
-                        url_e.tag("code");
-                        url_e.add_evidence(
-                            Evidence::new(SRC, format!("npm package link ({pkg_name})"))
-                                .with_attr("package", pkg_name),
-                        );
-                        result.push(url_e);
-                    }
+            if let Some(u) = person.url.as_deref()
+                && (u.starts_with("http://") || u.starts_with("https://"))
+                && seen_urls.insert(u.to_string())
+            {
+                let mut url_e = Entity::new(EntityKind::Url, u, 0.66, scan_id);
+                url_e.tag("npm");
+                let mut ev = Evidence::new(SRC, format!("npm author URL ({pkg_name})"));
+                if !pkg_name.is_empty() {
+                    ev = ev.with_attr("package", pkg_name);
                 }
+                url_e.add_evidence(ev);
+                result.push(url_e);
             }
         }
 
-        // The confirmed-on-npm username, carrying package coverage as evidence.
-        let mut u = Entity::new(EntityKind::Username, &handle, 0.88, &ctx.scan_id);
-        u.tag("npm");
-        u.tag("code");
-        let sample: Vec<&str> = package_names.iter().take(8).map(String::as_str).collect();
-        u.add_evidence(
-            Evidence::new(SRC, format!("npm maintainer of {} package(s)", resp.total))
-                .with_attr("package_count", resp.total.to_string())
-                .with_attr("packages", sample.join(", "))
-                .with_attr("profile_url", format!("https://www.npmjs.com/~{handle}")),
-        );
-        result.push(u);
-
-        Ok(result)
+        // The package homepage/repository — a personal-site / code link.
+        if let Some(links) = pkg.links.as_ref() {
+            for link in [links.homepage.as_deref(), links.repository.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                if (link.starts_with("http://") || link.starts_with("https://"))
+                    && seen_urls.insert(link.to_string())
+                {
+                    let mut url_e = Entity::new(EntityKind::Url, link, 0.60, scan_id);
+                    url_e.tag("npm");
+                    url_e.tag("code");
+                    let mut ev = Evidence::new(SRC, format!("npm package link ({pkg_name})"));
+                    if !pkg_name.is_empty() {
+                        ev = ev.with_attr("package", pkg_name);
+                    }
+                    url_e.add_evidence(ev);
+                    result.push(url_e);
+                }
+            }
+        }
     }
+
+    // The confirmed-on-npm username, carrying package coverage as evidence.
+    let mut u = Entity::new(EntityKind::Username, handle, 0.88, scan_id);
+    u.tag("npm");
+    u.tag("code");
+    let sample: Vec<&str> = package_names.iter().take(8).map(String::as_str).collect();
+    u.add_evidence(
+        Evidence::new(SRC, format!("npm maintainer of {} package(s)", resp.total))
+            .with_attr("package_count", resp.total.to_string())
+            .with_attr("packages", sample.join(", "))
+            .with_attr("profile_url", format!("https://www.npmjs.com/~{handle}")),
+    );
+    result.push(u);
+
+    result.entities
 }
 
 #[cfg(test)]
