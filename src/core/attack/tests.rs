@@ -147,3 +147,34 @@ fn assessment_coverage_pct_bounds() {
     let pct = some.coverage_pct();
     assert!(pct > 0.0 && pct < 100.0, "partial coverage in (0,100): {pct}");
 }
+
+#[test]
+fn coverage_diff_partitions_gained_lost_shared() {
+    let current = coverage(["T1589.002", "T1596.002", "T1593.002"]);
+    let baseline = coverage(["T1596.002", "T1590.002"]);
+    let d = CoverageDiff::new(&current, &baseline);
+
+    let ids = |v: &[&Technique]| v.iter().map(|t| t.id).collect::<Vec<_>>();
+    assert_eq!(ids(&d.gained), vec!["T1589.002", "T1593.002"]); // in current, not baseline
+    assert_eq!(ids(&d.lost), vec!["T1590.002"]); // in baseline, not current
+    assert_eq!(ids(&d.shared), vec!["T1596.002"]); // both
+    assert!(!d.is_unchanged());
+}
+
+#[test]
+fn coverage_diff_identical_scans_are_unchanged() {
+    let cov = coverage(["T1589.002", "T1596.002"]);
+    let d = CoverageDiff::new(&cov, &cov);
+    assert!(d.is_unchanged());
+    assert!(d.gained.is_empty() && d.lost.is_empty());
+    assert_eq!(d.shared.len(), 2);
+}
+
+#[test]
+fn coverage_diff_from_empty_baseline_is_all_gained() {
+    let current = coverage(["T1589.002", "T1596.002"]);
+    let d = CoverageDiff::new(&current, &[]);
+    assert_eq!(d.gained.len(), 2);
+    assert!(d.lost.is_empty() && d.shared.is_empty());
+    assert!(!d.is_unchanged());
+}

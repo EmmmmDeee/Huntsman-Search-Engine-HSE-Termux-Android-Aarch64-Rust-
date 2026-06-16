@@ -212,6 +212,51 @@ impl Assessment {
     }
 }
 
+/// A scan-to-scan **coverage diff**: how a current scan's ATT&CK Reconnaissance
+/// footprint changed against a baseline scan. `gained` techniques are newly
+/// exercised, `lost` ones the baseline had but the current scan did not, and
+/// `shared` ones both exercised. Together they describe whether a re-scan (new
+/// keys, deeper expansion, a changed module set) widened or narrowed collection.
+#[derive(Debug, Clone, Serialize)]
+pub struct CoverageDiff {
+    /// In the current scan but not the baseline — collection widened here.
+    pub gained: Vec<&'static Technique>,
+    /// In the baseline but not the current scan — collection narrowed here.
+    pub lost: Vec<&'static Technique>,
+    /// Exercised by both scans.
+    pub shared: Vec<&'static Technique>,
+}
+
+impl CoverageDiff {
+    /// Diff `current` against `baseline` (each typically [`coverage`]'s output).
+    /// Partitions are computed over catalogue IDs and emitted in [`RECONNAISSANCE`]
+    /// order, so the result is deterministic and free of duplicates/unknowns.
+    /// **Pure.**
+    #[must_use]
+    pub fn new(current: &[&Technique], baseline: &[&Technique]) -> Self {
+        use std::collections::HashSet;
+        let cur: HashSet<&str> = current.iter().map(|t| t.id).collect();
+        let base: HashSet<&str> = baseline.iter().map(|t| t.id).collect();
+        let pick = |keep: &dyn Fn(bool, bool) -> bool| -> Vec<&'static Technique> {
+            RECONNAISSANCE
+                .iter()
+                .filter(|t| keep(cur.contains(t.id), base.contains(t.id)))
+                .collect()
+        };
+        Self {
+            gained: pick(&|c, b| c && !b),
+            lost: pick(&|c, b| !c && b),
+            shared: pick(&|c, b| c && b),
+        }
+    }
+
+    /// True when the two scans exercised exactly the same technique set.
+    #[must_use]
+    pub fn is_unchanged(&self) -> bool {
+        self.gained.is_empty() && self.lost.is_empty()
+    }
+}
+
 /// Build a MITRE ATT&CK **Navigator layer** (schema 4.5) marking each supplied
 /// Reconnaissance technique as exercised (score 1). The JSON imports directly
 /// into the ATT&CK Navigator (`https://mitre-attack.github.io/attack-navigator/`),

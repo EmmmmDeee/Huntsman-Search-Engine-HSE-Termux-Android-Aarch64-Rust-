@@ -201,6 +201,10 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             "/scans/{id}/attack-coverage.json",
             get(scan_export::scan_attack_coverage),
         )
+        .route(
+            "/scans/{a}/attack-coverage-diff/{b}",
+            get(scan_export::scan_attack_coverage_diff),
+        )
         .route("/scans/{id}/debug.txt", get(scan_export::scan_debug_bundle))
         .route(
             "/scans/{id}/correlations",

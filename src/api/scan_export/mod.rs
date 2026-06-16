@@ -364,6 +364,75 @@ pub async fn scan_attack_coverage(
         .into_response()
 }
 
+/// `GET /api/v1/scans/{a}/attack-coverage-diff/{b}` — how scan `a`'s MITRE
+/// ATT&CK Reconnaissance coverage changed against baseline scan `b`: techniques
+/// `gained` (newly exercised in `a`), `lost` (in `b` but not `a`), and `shared`.
+/// Each technique carries the registry modules that implement it. Returned
+/// inline so the web UI can render a re-scan's collection delta. Reuses the same
+/// evidence-source → coverage path as every other ATT&CK surface.
+pub async fn scan_attack_coverage_diff(
+    State(s): State<Arc<AppState>>,
+    Path((a, b)): Path<(String, String)>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &a) {
+        return resp;
+    }
+    if let Some(resp) = scan_missing(&s, &b) {
+        return resp;
+    }
+    let coverage_of = |id: &str| -> Result<Vec<&'static crate::core::attack::Technique>, _> {
+        s.store.entities_for_scan(id).map(|ents| {
+            crate::modules::reconnaissance_coverage(
+                crate::core::entity::evidence_sources(&ents).into_iter(),
+            )
+        })
+    };
+    let current = match coverage_of(&a) {
+        Ok(c) => c,
+        Err(e) => return internal_error(&e),
+    };
+    let baseline = match coverage_of(&b) {
+        Ok(c) => c,
+        Err(e) => return internal_error(&e),
+    };
+    let diff = crate::core::attack::CoverageDiff::new(&current, &baseline);
+
+    let index = crate::modules::technique_module_index();
+    let with_modules =
+        |techs: &[&'static crate::core::attack::Technique]| -> Vec<serde_json::Value> {
+            techs
+                .iter()
+                .map(|t| {
+                    let by = index.get(t.id).cloned().unwrap_or_default();
+                    json!({ "id": t.id, "name": t.name, "modules": by })
+                })
+                .collect()
+        };
+
+    let payload = json!({
+        "current_scan": a,
+        "baseline_scan": b,
+        "tactic": crate::core::attack::TACTIC_NAME,
+        "tactic_id": crate::core::attack::TACTIC_ID,
+        "unchanged": diff.is_unchanged(),
+        "gained_count": diff.gained.len(),
+        "lost_count": diff.lost.len(),
+        "shared_count": diff.shared.len(),
+        "gained": with_modules(&diff.gained),
+        "lost": with_modules(&diff.lost),
+        "shared": with_modules(&diff.shared),
+    });
+    let body = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/json; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response()
+}
+
 /// `GET /api/v1/scans/{id}/debug.txt` — the one-click debug bundle: the entire
 /// scan state (every entity + evidence, relations, correlations, the complete
 /// event sequence, and the scored self-audit with every weakness) in one
