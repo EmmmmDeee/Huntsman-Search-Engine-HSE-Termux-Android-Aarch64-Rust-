@@ -85,3 +85,131 @@ fn extract_proofs_maps_verified_links_and_urls() {
         .unwrap();
     assert!(gh.has_tag("verified") && gh.has_tag("keybase"));
 }
+
+// ── build_entities (pure profile→entity mapping) ───────────────────
+
+fn kb(raw: &str) -> KbResp {
+    serde_json::from_str(raw).expect("valid KbResp fixture")
+}
+
+#[test]
+fn build_entities_full_au_profile_emits_username_person_address_coords() {
+    let body = kb(r#"{
+        "status": {"code": 0},
+        "them": [{
+            "id": "abc123",
+            "basics": {"username": "alice", "ctime": 1500000000},
+            "profile": {"full_name": "Alice Smith", "location": "Sydney, NSW", "bio": "dev"},
+            "proofs_summary": {"all": []}
+        }]
+    }"#);
+    let ents = build_entities(body, "alice", "scan");
+    let find = |k: EntityKind, v: &str| ents.iter().find(|e| e.kind == k && e.value == v);
+
+    // Subject Username carries the folded profile evidence.
+    let u = find(EntityKind::Username, "alice").expect("username entity");
+    assert!(u.has_tag("keybase"));
+    let attr = |k: &str| u.evidence[0].attributes.get(k).map(String::as_str);
+    assert_eq!(attr("profile_url"), Some("https://keybase.io/alice"));
+    assert_eq!(attr("proof_count"), Some("0"));
+    assert_eq!(attr("full_name"), Some("Alice Smith"));
+    assert_eq!(attr("location"), Some("Sydney, NSW"));
+    assert_eq!(attr("keybase_id"), Some("abc123"));
+    assert_eq!(attr("created_at_unix"), Some("1500000000"));
+
+    // full_name (≥3 chars, has a space) → Person pivot.
+    assert!(find(EntityKind::Person, "Alice Smith").is_some());
+
+    // Self-reported AU location → Address tagged with state + country.
+    let a = find(EntityKind::Address, "Sydney, NSW").expect("address entity");
+    assert!(a.has_tag("self-reported") && a.has_tag("geoint"));
+    assert!(a.has_tag("au-state:NSW") && a.has_tag("country:AU"));
+
+    // Inline geocode → Coordinates carrying the same AU tags.
+    let c = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("coords entity");
+    assert!(c.has_tag("addr-derived") && c.has_tag("keybase"));
+    assert!(c.has_tag("au-state:NSW") && c.has_tag("country:AU"));
+}
+
+#[test]
+fn build_entities_non_au_location_has_no_state_or_coords() {
+    let body = kb(r#"{
+        "status": {"code": 0},
+        "them": [{
+            "basics": {"username": "bob"},
+            "profile": {"location": "Berlin, Germany"}
+        }]
+    }"#);
+    let ents = build_entities(body, "bob", "scan");
+
+    let a = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("address entity");
+    assert!(a.has_tag("self-reported"));
+    assert!(
+        !a.has_tag("country:AU"),
+        "non-AU location must not be AU-tagged"
+    );
+    // No AU city match → no derived Coordinates.
+    assert!(!ents.iter().any(|e| e.kind == EntityKind::Coordinates));
+}
+
+#[test]
+fn build_entities_status_not_ok_is_empty() {
+    let body = kb(r#"{"status": {"code": 1}, "them": []}"#);
+    assert!(build_entities(body, "alice", "scan").is_empty());
+}
+
+#[test]
+fn build_entities_empty_them_is_empty() {
+    let body = kb(r#"{"status": {"code": 0}, "them": []}"#);
+    assert!(build_entities(body, "alice", "scan").is_empty());
+}
+
+#[test]
+fn build_entities_name_without_space_emits_no_person() {
+    let body = kb(r#"{
+        "status": {"code": 0},
+        "them": [{"basics": {"username": "bob"}, "profile": {"full_name": "Bob"}}]
+    }"#);
+    let ents = build_entities(body, "bob", "scan");
+    assert!(!ents.iter().any(|e| e.kind == EntityKind::Person));
+    // Only the subject Username survives.
+    assert_eq!(ents.len(), 1);
+    assert_eq!(ents[0].kind, EntityKind::Username);
+}
+
+#[test]
+fn build_entities_short_location_is_skipped() {
+    let body = kb(r#"{
+        "status": {"code": 0},
+        "them": [{"basics": {"username": "bob"}, "profile": {"location": "Hi"}}]
+    }"#);
+    let ents = build_entities(body, "bob", "scan");
+    assert!(
+        !ents
+            .iter()
+            .any(|e| matches!(e.kind, EntityKind::Address | EntityKind::Coordinates))
+    );
+    assert_eq!(ents.len(), 1);
+}
+
+#[test]
+fn build_entities_falls_back_to_query_username_when_basics_absent() {
+    let body = kb(r#"{"status": {"code": 0}, "them": [{"id": "x"}]}"#);
+    let ents = build_entities(body, "fallback", "scan");
+    let u = &ents[0];
+    assert_eq!(u.kind, EntityKind::Username);
+    assert_eq!(u.value, "fallback");
+    assert_eq!(
+        u.evidence[0]
+            .attributes
+            .get("profile_url")
+            .map(String::as_str),
+        Some("https://keybase.io/fallback")
+    );
+}

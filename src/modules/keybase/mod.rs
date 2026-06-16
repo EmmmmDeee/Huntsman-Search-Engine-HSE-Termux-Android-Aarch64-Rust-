@@ -161,110 +161,121 @@ impl Module for Keybase {
             Err(_) => return Ok(ModuleResult::new()),
         };
 
-        if body.status.as_ref().and_then(|s| s.code) != Some(0) {
-            return Ok(ModuleResult::new());
-        }
-
-        let users = body.them.unwrap_or_default();
-        let Some(user) = users.into_iter().next() else {
-            return Ok(ModuleResult::new());
-        };
-
         let mut result = ModuleResult::new();
-
-        let kb_username = user
-            .basics
-            .as_ref()
-            .and_then(|b| b.username.as_deref())
-            .unwrap_or(username);
-
-        let mut entity = Entity::new(EntityKind::Username, kb_username, 0.90, &ctx.scan_id);
-        entity.tag("keybase");
-
-        let proof_count = user.proofs_summary.as_ref().map_or(0, |p| p.all.len());
-        let profile = user.profile.as_ref();
-        let ev = [
-            (
-                "created_at_unix",
-                user.basics
-                    .as_ref()
-                    .and_then(|b| b.ctime)
-                    .map(|c| c.to_string()),
-            ),
-            ("keybase_id", user.id.clone()),
-            ("full_name", profile.and_then(|p| p.full_name.clone())),
-            ("location", profile.and_then(|p| p.location.clone())),
-            ("bio", profile.and_then(|p| p.bio.clone())),
-        ]
-        .into_iter()
-        .filter_map(|(key, value)| value.map(|v| (key, v)))
-        .fold(
-            Evidence::new(SRC, format!("Keybase profile for {kb_username}"))
-                .with_attr("profile_url", format!("https://keybase.io/{kb_username}"))
-                .with_attr("proof_count", proof_count.to_string()),
-            |ev, (key, v)| ev.with_attr(key, v),
-        );
-
-        entity.add_evidence(ev);
-        result.push(entity);
-
-        if let Some(profile) = &user.profile {
-            if let Some(name) = profile.full_name.as_deref()
-                && name.len() >= 3
-                && name.contains(' ')
-            {
-                let mut pe = Entity::new(EntityKind::Person, name, 0.75, &ctx.scan_id);
-                pe.tag("keybase");
-                pe.add_evidence(Evidence::new(
-                    SRC,
-                    format!("Name from Keybase profile {kb_username}"),
-                ));
-                result.push(pe);
-            }
-
-            if let Some(loc) = profile.location.as_deref()
-                && loc.len() >= 3
-            {
-                let mut ae = Entity::new(EntityKind::Address, loc, 0.52, &ctx.scan_id);
-                ae.tag("keybase");
-                ae.tag("geoint");
-                ae.tag("self-reported");
-                if let Some(sc) = crate::util::address_au::state_code(loc) {
-                    ae.tag(format!("au-state:{sc}"));
-                    ae.tag("country:AU");
-                }
-                ae.add_evidence(Evidence::new(
-                    SRC,
-                    format!("Location from Keybase profile {kb_username}"),
-                ));
-                result.push(ae);
-
-                if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
-                    let coord_val = format!("{lat:.4},{lon:.4}");
-                    let mut c =
-                        Entity::new(EntityKind::Coordinates, &coord_val, 0.50, &ctx.scan_id);
-                    c.tag("addr-derived");
-                    c.tag("geoint");
-                    c.tag("keybase");
-                    if let Some(sc) = crate::util::address_au::state_code(loc) {
-                        c.tag(format!("au-state:{sc}"));
-                        c.tag("country:AU");
-                    }
-                    c.add_evidence(Evidence::new(
-                        SRC,
-                        format!("Inline geocode of Keybase location '{loc}' → {coord_val}"),
-                    ));
-                    result.push(c);
-                }
-            }
-        }
-
-        if let Some(proofs) = &user.proofs_summary {
-            extract_proofs(&proofs.all, kb_username, &ctx.scan_id, &mut result);
-        }
-
+        result.entities = build_entities(body, username, &ctx.scan_id);
         Ok(result)
     }
+}
+
+/// Pure profile→entity mapping for a Keybase `user/lookup` response. Owns the
+/// whole record→entity transform — the `status.code == 0` gate, first-user
+/// selection, the subject [`EntityKind::Username`] entity (+ folded profile
+/// evidence), the `full_name` [`EntityKind::Person`] pivot, the self-reported
+/// [`EntityKind::Address`] (AU-state-tagged) with its inline-geocoded
+/// [`EntityKind::Coordinates`], and the verified-proof links via
+/// [`extract_proofs`] — so [`Keybase::process`] is left a thin fetch→build shell
+/// and every branch here is unit-testable without I/O.
+pub(super) fn build_entities(body: KbResp, query_username: &str, scan_id: &str) -> Vec<Entity> {
+    if body.status.as_ref().and_then(|s| s.code) != Some(0) {
+        return Vec::new();
+    }
+    let Some(user) = body.them.unwrap_or_default().into_iter().next() else {
+        return Vec::new();
+    };
+
+    let mut result = ModuleResult::new();
+
+    let kb_username = user
+        .basics
+        .as_ref()
+        .and_then(|b| b.username.as_deref())
+        .unwrap_or(query_username);
+
+    let mut entity = Entity::new(EntityKind::Username, kb_username, 0.90, scan_id);
+    entity.tag("keybase");
+
+    let proof_count = user.proofs_summary.as_ref().map_or(0, |p| p.all.len());
+    let profile = user.profile.as_ref();
+    let ev = [
+        (
+            "created_at_unix",
+            user.basics
+                .as_ref()
+                .and_then(|b| b.ctime)
+                .map(|c| c.to_string()),
+        ),
+        ("keybase_id", user.id.clone()),
+        ("full_name", profile.and_then(|p| p.full_name.clone())),
+        ("location", profile.and_then(|p| p.location.clone())),
+        ("bio", profile.and_then(|p| p.bio.clone())),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.map(|v| (key, v)))
+    .fold(
+        Evidence::new(SRC, format!("Keybase profile for {kb_username}"))
+            .with_attr("profile_url", format!("https://keybase.io/{kb_username}"))
+            .with_attr("proof_count", proof_count.to_string()),
+        |ev, (key, v)| ev.with_attr(key, v),
+    );
+
+    entity.add_evidence(ev);
+    result.push(entity);
+
+    if let Some(profile) = &user.profile {
+        if let Some(name) = profile.full_name.as_deref()
+            && name.len() >= 3
+            && name.contains(' ')
+        {
+            let mut pe = Entity::new(EntityKind::Person, name, 0.75, scan_id);
+            pe.tag("keybase");
+            pe.add_evidence(Evidence::new(
+                SRC,
+                format!("Name from Keybase profile {kb_username}"),
+            ));
+            result.push(pe);
+        }
+
+        if let Some(loc) = profile.location.as_deref()
+            && loc.len() >= 3
+        {
+            let mut ae = Entity::new(EntityKind::Address, loc, 0.52, scan_id);
+            ae.tag("keybase");
+            ae.tag("geoint");
+            ae.tag("self-reported");
+            if let Some(sc) = crate::util::address_au::state_code(loc) {
+                ae.tag(format!("au-state:{sc}"));
+                ae.tag("country:AU");
+            }
+            ae.add_evidence(Evidence::new(
+                SRC,
+                format!("Location from Keybase profile {kb_username}"),
+            ));
+            result.push(ae);
+
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.50, scan_id);
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.tag("keybase");
+                if let Some(sc) = crate::util::address_au::state_code(loc) {
+                    c.tag(format!("au-state:{sc}"));
+                    c.tag("country:AU");
+                }
+                c.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Inline geocode of Keybase location '{loc}' → {coord_val}"),
+                ));
+                result.push(c);
+            }
+        }
+    }
+
+    if let Some(proofs) = &user.proofs_summary {
+        extract_proofs(&proofs.all, kb_username, scan_id, &mut result);
+    }
+
+    result.entities
 }
 
 /// Fold the verified Keybase proofs into entities. Pure (no I/O) so the
