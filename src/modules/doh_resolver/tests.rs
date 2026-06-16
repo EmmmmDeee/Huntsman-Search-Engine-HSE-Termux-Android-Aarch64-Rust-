@@ -198,3 +198,63 @@ fn ns_and_cname_strip_trailing_dot_and_need_a_dot() {
     );
     assert!(run("CNAME", &["localhost"]).is_empty());
 }
+
+fn rec_typed(rtype: u16, name: &str, data: &str) -> DohRecord {
+    DohRecord {
+        name: name.to_string(),
+        rtype,
+        data: data.to_string(),
+    }
+}
+
+#[test]
+fn rtype_name_maps_handled_types() {
+    assert_eq!(rtype_name(1), Some("A"));
+    assert_eq!(rtype_name(28), Some("AAAA"));
+    assert_eq!(rtype_name(5), Some("CNAME"));
+    assert_eq!(rtype_name(15), Some("MX"));
+    assert_eq!(rtype_name(16), Some("TXT"));
+    assert_eq!(rtype_name(2), Some("NS"));
+    assert_eq!(rtype_name(99), None); // unmapped → caller falls back to queried type
+}
+
+#[test]
+fn answer_classified_by_actual_record_type_not_queried_type() {
+    // An A query whose Answer is a CNAME chain: [CNAME www→cdn, A 1.2.3.4].
+    // The CNAME must become a Domain (not parsed as an A/IP), the A an IP.
+    let records = vec![
+        rec_typed(5, "www.example.com.", "cdn.example.net."),
+        rec_typed(1, "cdn.example.net.", "1.2.3.4"),
+    ];
+    let mut seen = HashSet::new();
+    let out = records_for_type("A", &records, "www.example.com", &mut seen, "s");
+    assert!(out.iter().any(|e| e.kind == EntityKind::Domain
+        && e.value == "cdn.example.net"
+        && e.has_tag("cname")));
+    assert!(
+        out.iter()
+            .any(|e| e.kind == EntityKind::IpAddress && e.value == "1.2.3.4")
+    );
+    // The owner name is surfaced as evidence on the CNAME finding.
+    let cn = out.iter().find(|e| e.has_tag("cname")).unwrap();
+    assert_eq!(
+        cn.evidence[0]
+            .attributes
+            .get("record_name")
+            .map(String::as_str),
+        Some("www.example.com")
+    );
+}
+
+#[test]
+fn untyped_record_falls_back_to_queried_type() {
+    // rtype 0 (test/hand-built) → dispatch on the queried type, preserving the
+    // prior behaviour relied on by the rest of the suite.
+    let records = vec![rec_typed(0, "", "5.6.7.8")];
+    let mut seen = HashSet::new();
+    let out = records_for_type("A", &records, "example.com", &mut seen, "s");
+    assert!(
+        out.iter()
+            .any(|e| e.kind == EntityKind::IpAddress && e.value == "5.6.7.8")
+    );
+}

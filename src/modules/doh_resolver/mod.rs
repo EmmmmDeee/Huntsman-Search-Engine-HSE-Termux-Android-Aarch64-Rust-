@@ -29,7 +29,6 @@ struct DohResp {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct DohRecord {
     #[serde(default)]
     name: String,
@@ -37,6 +36,23 @@ struct DohRecord {
     rtype: u16,
     #[serde(default)]
     data: String,
+}
+
+/// DNS record TYPE number → the mnemonic this module handles, per IANA. Lets
+/// each answer be classified by its **own** type rather than the queried type —
+/// a resolver returns a CNAME chain inside an `A` query's `Answer`, and the
+/// intermediate CNAME must be read as a `Domain`, not parsed as an `A`/IP.
+/// `None` for types this module does not map. **Pure.**
+fn rtype_name(t: u16) -> Option<&'static str> {
+    match t {
+        1 => Some("A"),
+        2 => Some("NS"),
+        5 => Some("CNAME"),
+        15 => Some("MX"),
+        16 => Some("TXT"),
+        28 => Some("AAAA"),
+        _ => None,
+    }
 }
 
 /// The record types we query, in order.
@@ -106,16 +122,30 @@ fn records_for_type(
 ) -> Vec<Entity> {
     let mut out = Vec::new();
     for rec in records {
-        match rtype {
+        // Classify by the record's OWN type; fall back to the queried type only
+        // when the record carries no type number (e.g. a hand-built test record).
+        let effective = rtype_name(rec.rtype).unwrap_or(rtype);
+        // The record's owner name (the FQDN the answer is for) — surfaced on
+        // every finding so a CNAME/alias chain is traceable to its source.
+        let owner = rec.name.trim().trim_end_matches('.').to_string();
+        let base = |summary: String| {
+            let ev = Evidence::new(SRC, summary);
+            if owner.is_empty() {
+                ev
+            } else {
+                ev.with_attr("record_name", &owner)
+            }
+        };
+        match effective {
             "A" | "AAAA" => {
                 let ip = rec.data.trim().trim_matches('"');
                 if !ip.is_empty() && seen.insert(format!("ip:{ip}")) {
                     let mut e = Entity::new(EntityKind::IpAddress, ip, 0.80, scan_id);
                     e.tag("dns");
-                    e.tag(if rtype == "A" { "ipv4" } else { "ipv6" });
+                    e.tag(if effective == "A" { "ipv4" } else { "ipv6" });
                     e.add_evidence(
-                        Evidence::new(SRC, format!("{rtype} record for {domain}"))
-                            .with_attr("record_type", rtype),
+                        base(format!("{effective} record for {domain}"))
+                            .with_attr("record_type", effective),
                     );
                     out.push(e);
                 }
@@ -132,8 +162,7 @@ fn records_for_type(
                     e.tag("dns");
                     e.tag("mx");
                     e.add_evidence(
-                        Evidence::new(SRC, format!("MX record for {domain}"))
-                            .with_attr("mx_host", mx),
+                        base(format!("MX record for {domain}")).with_attr("mx_host", mx),
                     );
                     out.push(e);
                 }
@@ -144,7 +173,7 @@ fn records_for_type(
                     let mut e = Entity::new(EntityKind::Domain, ns, 0.70, scan_id);
                     e.tag("dns");
                     e.tag("nameserver");
-                    e.add_evidence(Evidence::new(SRC, format!("NS record for {domain}")));
+                    e.add_evidence(base(format!("NS record for {domain}")));
                     out.push(e);
                 }
             }
@@ -200,7 +229,7 @@ fn records_for_type(
                     let mut e = Entity::new(EntityKind::Domain, cname, 0.80, scan_id);
                     e.tag("dns");
                     e.tag("cname");
-                    e.add_evidence(Evidence::new(SRC, format!("CNAME for {domain}")));
+                    e.add_evidence(base(format!("CNAME for {domain}")));
                     out.push(e);
                 }
             }
