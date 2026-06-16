@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::entity::Entity;
 
     #[test]
     fn module_timeout_exceeds_seeknow_curl_outer_budget() {
