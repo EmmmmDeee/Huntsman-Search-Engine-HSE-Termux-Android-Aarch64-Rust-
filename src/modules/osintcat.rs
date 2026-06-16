@@ -19,6 +19,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::{fetch_keyed_json, json_scanned, keyed_ok_or_404, urlencode};
 
 const SRC: &str = "osintcat";
 const KEY_ENV: &str = "HUNTSMAN_OSINTCAT_KEY";
@@ -107,26 +108,40 @@ impl Module for OsintCat {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let email = &target.value;
-        let key = ctx.key(KEY_ENV)?;
 
-        let credits = fetch_credits(&ctx.http, key, ctx).await?;
+        // Credits preflight — no query param needed.
+        let user: OcUserResponse =
+            fetch_keyed_json(ctx, SRC, &format!("{BASE}/user"), KEY_ENV, "x-api-key")
+                .await?
+                .ok_or_else(|| Error::module(SRC, "credits endpoint returned 404"))?;
+        let credits = user.email_osint_credits;
         debug!(balance = credits.current_balance, "osintcat credit check");
 
         let mut entity = target.to_entity(0.75, &ctx.scan_id);
         entity.tag(SRC);
 
-        match fetch_footprint(&ctx.http, key, email, ctx).await {
-            Ok(fp) => emit_footprint(&fp, &mut entity, &mut result),
+        // Footprint — free endpoint.
+        let fp_url = format!("{BASE}/email-footprint?query={}", urlencode(email));
+        match fetch_keyed_json::<OcFootprintResponse>(ctx, SRC, &fp_url, KEY_ENV, "x-api-key")
+            .await
+        {
+            Ok(Some(fp)) => emit_footprint(&fp, &mut entity, &mut result),
+            Ok(None) => {} // 404 — no footprint data
             Err(e) => warn!(error = %e, "osintcat footprint failed"),
         }
 
-        match fetch_breach(&ctx.http, key, email, ctx).await {
-            Ok(br) => emit_breach(&br, &mut entity),
+        // Breach — free endpoint.
+        let br_url = format!("{BASE}/breach?query={}", urlencode(email));
+        match fetch_keyed_json::<OcBreachResponse>(ctx, SRC, &br_url, KEY_ENV, "x-api-key").await {
+            Ok(Some(br)) => emit_breach(&br, &mut entity),
+            Ok(None) => {} // 404 — no breach data
             Err(e) => warn!(error = %e, "osintcat breach failed"),
         }
 
+        // Deep email-osint — paid; needs an extra `x-purpose` header so we
+        // can't use `fetch_keyed_json` directly.
         if credits.has_sufficient_credits {
-            match fetch_email_osint(&ctx.http, key, email, ctx).await {
+            match fetch_email_osint(email, ctx).await {
                 Ok(raw) => emit_email_osint(&raw, &mut entity),
                 Err(e) => warn!(error = %e, "osintcat email-osint failed"),
             }
@@ -149,90 +164,24 @@ impl Module for OsintCat {
 
 // ── HTTP helpers ───────────────────────────────────────────────────────────────
 
-async fn fetch_credits(
-    http: &reqwest::Client,
-    key: &str,
-    ctx: &crate::core::module::ModuleContext,
-) -> Result<OcCredits> {
-    let resp = http
-        .get(format!("{BASE}/user"))
-        .header("x-api-key", key)
-        .send()
-        .await
-        .map_err(|e| Error::module(SRC, e.to_string()))?;
-    if !resp.status().is_success() {
-        crate::util::http::note_keyed_error(resp.status().as_u16(), SRC, key, ctx);
-        return Err(crate::util::http::http_status_error(SRC, resp).await);
-    }
-    let r: OcUserResponse = crate::util::http::json_scanned(resp, SRC)
-        .await
-        .map_err(|e| Error::module(SRC, e))?;
-    Ok(r.email_osint_credits)
-}
-
-async fn fetch_footprint(
-    http: &reqwest::Client,
-    key: &str,
-    email: &str,
-    ctx: &crate::core::module::ModuleContext,
-) -> Result<OcFootprintResponse> {
-    let resp = http
-        .get(format!("{BASE}/email-footprint"))
-        .header("x-api-key", key)
-        .query(&[("query", email)])
-        .send()
-        .await
-        .map_err(|e| Error::module(SRC, e.to_string()))?;
-    if !resp.status().is_success() {
-        crate::util::http::note_keyed_error(resp.status().as_u16(), SRC, key, ctx);
-        return Err(crate::util::http::http_status_error(SRC, resp).await);
-    }
-    crate::util::http::json_scanned(resp, SRC)
-        .await
-        .map_err(|e| Error::module(SRC, e))
-}
-
-async fn fetch_breach(
-    http: &reqwest::Client,
-    key: &str,
-    email: &str,
-    ctx: &crate::core::module::ModuleContext,
-) -> Result<OcBreachResponse> {
-    let resp = http
-        .get(format!("{BASE}/breach"))
-        .header("x-api-key", key)
-        .query(&[("query", email)])
-        .send()
-        .await
-        .map_err(|e| Error::module(SRC, e.to_string()))?;
-    if !resp.status().is_success() {
-        crate::util::http::note_keyed_error(resp.status().as_u16(), SRC, key, ctx);
-        return Err(crate::util::http::http_status_error(SRC, resp).await);
-    }
-    crate::util::http::json_scanned(resp, SRC)
-        .await
-        .map_err(|e| Error::module(SRC, e))
-}
-
-async fn fetch_email_osint(
-    http: &reqwest::Client,
-    key: &str,
-    email: &str,
-    ctx: &crate::core::module::ModuleContext,
-) -> Result<Value> {
-    let resp = http
-        .get(format!("{BASE}/email-osint"))
+/// Fetch the paid email-osint endpoint. Needs an extra `x-purpose` header that
+/// [`fetch_keyed_json`] does not support, so we build the request manually and
+/// delegate status classification to [`keyed_ok_or_404`].
+async fn fetch_email_osint(email: &str, ctx: &ModuleContext) -> Result<Value> {
+    let key = ctx.key(KEY_ENV)?;
+    let resp = ctx
+        .http
+        .get(format!("{BASE}/email-osint?query={}", urlencode(email)))
         .header("x-api-key", key)
         .header("x-purpose", PURPOSE)
-        .query(&[("query", email)])
         .send()
         .await
         .map_err(|e| Error::module(SRC, e.to_string()))?;
-    if !resp.status().is_success() {
-        crate::util::http::note_keyed_error(resp.status().as_u16(), SRC, key, ctx);
-        return Err(crate::util::http::http_status_error(SRC, resp).await);
-    }
-    crate::util::http::json_scanned(resp, SRC)
+
+    let Some(resp) = keyed_ok_or_404(SRC, key, ctx, resp).await? else {
+        return Ok(Value::Null);
+    };
+    json_scanned(resp, SRC)
         .await
         .map_err(|e| Error::module(SRC, e))
 }
