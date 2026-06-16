@@ -263,9 +263,7 @@ impl Module for IntelX {
                 tokio::time::sleep(Duration::from_secs(retry_secs)).await;
                 continue;
             }
-            if code == 401 || code == 403 || code == 429 {
-                ctx.report_key_exhausted(SRC, key, code);
-            }
+            crate::util::http::note_keyed_error(code, SRC, key, ctx);
             return Err(Error::module(
                 "intelx",
                 format!("HTTP {status} on start: {}", error_snippet(resp).await),
@@ -313,8 +311,8 @@ impl Module for IntelX {
                     poll_retries += 1;
                     tokio::time::sleep(Duration::from_secs(retry_secs)).await;
                 }
-                if code == 401 || code == 403 || (code == 429 && poll_retries >= 2) {
-                    ctx.report_key_exhausted(SRC, key, code);
+                if code != 429 || poll_retries >= 2 {
+                    crate::util::http::note_keyed_error(code, SRC, key, ctx);
                 }
                 continue;
             }
