@@ -267,14 +267,35 @@ impl KeyPool {
         }
     }
 
+    /// Status of an existing key (by service + value), if the pool holds it.
+    /// Enables the "validate once" policy: a caller can skip a live re-probe of
+    /// a key whose verdict the pool has already settled.
+    #[must_use]
+    pub fn entry_status(&self, service: &str, value: &str) -> Option<KeyStatus> {
+        let data = self.data.lock();
+        data.services
+            .get(&service.to_lowercase())?
+            .iter()
+            .find(|e| e.value == value)
+            .map(|e| e.status)
+    }
+
     /// Remove keys with error rates above the threshold. Returns the number
     /// of keys pruned.
+    ///
+    /// High-value keys (Standard/Premium tier) are **always retained**: a scarce,
+    /// expensive credential isn't discarded over a transient error streak — the
+    /// operator revokes those deliberately. Trial/Basic keys prune normally.
     pub fn prune_degraded(&self, max_error_rate: f64, min_uses: u64) -> usize {
         let mut data = self.data.lock();
         let mut pruned = 0;
         for entries in data.services.values_mut() {
             let before = entries.len();
-            entries.retain(|e| e.use_count < min_uses || e.success_rate() >= max_error_rate);
+            entries.retain(|e| {
+                e.tier >= KeyTier::Standard
+                    || e.use_count < min_uses
+                    || e.success_rate() >= max_error_rate
+            });
             pruned += before - entries.len();
         }
         pruned

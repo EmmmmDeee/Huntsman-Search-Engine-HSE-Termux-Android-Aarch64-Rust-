@@ -12,6 +12,20 @@ use crate::util::service_defs::{KeyPlacement, ServiceDef, find_service};
 /// Returns true if the key is valid and was stored.
 pub async fn add_and_validate(service: &str, key_value: &str, notes: Option<String>) -> bool {
     let pool = super::global_pool();
+
+    // Validate once: if the pool already holds this exact key with a settled
+    // verdict, don't re-probe it. Re-running an import (or any repeated add)
+    // must not spend the operator's quota re-confirming a known-good (Active)
+    // or known-bad (Invalid/Revoked) credential. Untested / Exhausted /
+    // RateLimited are unsettled, so they fall through to a fresh live check.
+    if let Some(status) = pool.entry_status(service, key_value) {
+        match status {
+            KeyStatus::Active => return true,
+            KeyStatus::Invalid | KeyStatus::Revoked => return false,
+            KeyStatus::Untested | KeyStatus::Exhausted | KeyStatus::RateLimited => {}
+        }
+    }
+
     let mut entry = KeyEntry::new(key_value);
     entry.notes = notes;
 

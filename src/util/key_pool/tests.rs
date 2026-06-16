@@ -325,3 +325,70 @@ fn prune_degraded_spares_low_use_keys() {
     let pruned = pool.prune_degraded(0.50, 10);
     assert_eq!(pruned, 0, "keys below min_uses should be spared");
 }
+
+#[test]
+fn entry_status_reports_pooled_key_verdict() {
+    let pool = KeyPool::new();
+    pool.add("shodan", KeyEntry::new("k1"));
+    // Newly added keys are Untested until validated.
+    assert_eq!(pool.entry_status("shodan", "k1"), Some(KeyStatus::Untested));
+    // Case-insensitive service lookup, like the rest of the pool API.
+    pool.mark_validated("shodan", "k1", true);
+    assert_eq!(pool.entry_status("SHODAN", "k1"), Some(KeyStatus::Active));
+    // Absent keys / services report None.
+    assert_eq!(pool.entry_status("shodan", "nope"), None);
+    assert_eq!(pool.entry_status("censys", "k1"), None);
+}
+
+#[test]
+fn prune_degraded_always_retains_high_value_keys() {
+    let pool = KeyPool::new();
+
+    // A degraded Basic key (10 uses, all errors → 0% success): prunable.
+    let mut basic = KeyEntry::new("basic-bad");
+    basic.tier = KeyTier::Basic;
+    basic.use_count = 10;
+    basic.error_count = 10;
+    pool.add("shodan", basic);
+
+    // An equally-degraded Premium key: must be retained regardless.
+    let mut premium = KeyEntry::new("premium-bad");
+    premium.tier = KeyTier::Premium;
+    premium.use_count = 10;
+    premium.error_count = 10;
+    pool.add("shodan", premium);
+
+    // A degraded Standard key: also retained (high-value floor is Standard).
+    let mut standard = KeyEntry::new("standard-bad");
+    standard.tier = KeyTier::Standard;
+    standard.use_count = 10;
+    standard.error_count = 10;
+    pool.add("shodan", standard);
+
+    let pruned = pool.prune_degraded(0.5, 1);
+    assert_eq!(pruned, 1, "only the Basic key should prune");
+    assert_eq!(pool.entry_status("shodan", "basic-bad"), None);
+    assert_eq!(
+        pool.entry_status("shodan", "premium-bad"),
+        Some(KeyStatus::Untested),
+        "Premium key retained"
+    );
+    assert_eq!(
+        pool.entry_status("shodan", "standard-bad"),
+        Some(KeyStatus::Untested),
+        "Standard key retained"
+    );
+}
+
+#[test]
+fn prune_degraded_still_drops_unused_low_value_keys_only_when_degraded() {
+    let pool = KeyPool::new();
+    // Under min_uses → retained (not enough signal to judge).
+    let mut fresh = KeyEntry::new("fresh");
+    fresh.tier = KeyTier::Basic;
+    fresh.use_count = 0;
+    pool.add("shodan", fresh);
+    let pruned = pool.prune_degraded(0.5, 5);
+    assert_eq!(pruned, 0);
+    assert!(pool.entry_status("shodan", "fresh").is_some());
+}
