@@ -16,7 +16,7 @@ use tracing::{debug, warn};
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleCategory, ModuleCost, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -37,26 +37,26 @@ struct OcUserResponse {
 #[derive(Deserialize)]
 struct OcCredits {
     has_sufficient_credits: bool,
-    current_balance:        f64,
-    price_per_search:       f64,
+    current_balance: f64,
+    price_per_search: f64,
 }
 
 #[derive(Deserialize)]
 struct OcFootprintResponse {
-    stats:   OcFootprintStats,
+    stats: OcFootprintStats,
     results: Vec<OcFootprintResult>,
 }
 
 #[derive(Deserialize)]
 struct OcFootprintStats {
-    total_checked:    u32,
+    total_checked: u32,
     registered_count: u32,
 }
 
 #[derive(Deserialize)]
 struct OcFootprintResult {
-    domain:     String,
-    taken:      bool,
+    domain: String,
+    taken: bool,
     #[serde(rename = "ExtraData")]
     extra_data: Option<Map<String, Value>>,
 }
@@ -64,7 +64,7 @@ struct OcFootprintResult {
 #[derive(Deserialize)]
 struct OcBreachResponse {
     results_count: u32,
-    breach_data:   Vec<Value>,
+    breach_data: Vec<Value>,
 }
 
 // ── Module trait ───────────────────────────────────────────────────────────────
@@ -109,47 +109,51 @@ impl Module for OsintCat {
         let email = &target.value;
         let key = ctx.key(KEY_ENV)?;
 
-        // 1. Credit preflight — abort cleanly if this fails.
-        let credits = fetch_credits(&ctx.http, key).await?;
+        let credits = fetch_credits(&ctx.http, key, ctx).await?;
         debug!(balance = credits.current_balance, "osintcat credit check");
 
         let mut entity = target.to_entity(0.75, &ctx.scan_id);
         entity.tag(SRC);
 
-        // 2. Email footprint (free).
-        match fetch_footprint(&ctx.http, key, email).await {
-            Ok(fp)  => emit_footprint(&fp, &mut entity, &mut result),
-            Err(e)  => warn!(error = %e, "osintcat footprint failed"),
+        match fetch_footprint(&ctx.http, key, email, ctx).await {
+            Ok(fp) => emit_footprint(&fp, &mut entity, &mut result),
+            Err(e) => warn!(error = %e, "osintcat footprint failed"),
         }
 
-        // 3. Breach lookup (free).
-        match fetch_breach(&ctx.http, key, email).await {
-            Ok(br)  => emit_breach(&br, &mut entity),
-            Err(e)  => warn!(error = %e, "osintcat breach failed"),
+        match fetch_breach(&ctx.http, key, email, ctx).await {
+            Ok(br) => emit_breach(&br, &mut entity),
+            Err(e) => warn!(error = %e, "osintcat breach failed"),
         }
 
-        // 4. Paid email-osint — guarded by credit check.
         if credits.has_sufficient_credits {
-            match fetch_email_osint(&ctx.http, key, email).await {
+            match fetch_email_osint(&ctx.http, key, email, ctx).await {
                 Ok(raw) => emit_email_osint(&raw, &mut entity),
-                Err(e)  => warn!(error = %e, "osintcat email-osint failed"),
+                Err(e) => warn!(error = %e, "osintcat email-osint failed"),
             }
         } else {
             warn!(
                 balance = credits.current_balance,
-                price   = credits.price_per_search,
+                price = credits.price_per_search,
                 "osintcat skipping email-osint: insufficient credits"
             );
         }
 
-        result.push(entity);
+        // Only emit the entity when at least one endpoint contributed evidence.
+        // A bare entity with only the SRC tag and no evidence adds no value.
+        if !entity.evidence.is_empty() {
+            result.push(entity);
+        }
         Ok(result)
     }
 }
 
 // ── HTTP helpers ───────────────────────────────────────────────────────────────
 
-async fn fetch_credits(http: &reqwest::Client, key: &str) -> Result<OcCredits> {
+async fn fetch_credits(
+    http: &reqwest::Client,
+    key: &str,
+    ctx: &crate::core::module::ModuleContext,
+) -> Result<OcCredits> {
     let resp = http
         .get(format!("{BASE}/user"))
         .header("x-api-key", key)
@@ -157,6 +161,7 @@ async fn fetch_credits(http: &reqwest::Client, key: &str) -> Result<OcCredits> {
         .await
         .map_err(|e| Error::module(SRC, e.to_string()))?;
     if !resp.status().is_success() {
+        crate::util::http::note_keyed_error(resp.status().as_u16(), SRC, key, ctx);
         return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
     let r: OcUserResponse = crate::util::http::json_scanned(resp, SRC)
@@ -169,6 +174,7 @@ async fn fetch_footprint(
     http: &reqwest::Client,
     key: &str,
     email: &str,
+    ctx: &crate::core::module::ModuleContext,
 ) -> Result<OcFootprintResponse> {
     let resp = http
         .get(format!("{BASE}/email-footprint"))
@@ -178,6 +184,7 @@ async fn fetch_footprint(
         .await
         .map_err(|e| Error::module(SRC, e.to_string()))?;
     if !resp.status().is_success() {
+        crate::util::http::note_keyed_error(resp.status().as_u16(), SRC, key, ctx);
         return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
     crate::util::http::json_scanned(resp, SRC)
@@ -189,6 +196,7 @@ async fn fetch_breach(
     http: &reqwest::Client,
     key: &str,
     email: &str,
+    ctx: &crate::core::module::ModuleContext,
 ) -> Result<OcBreachResponse> {
     let resp = http
         .get(format!("{BASE}/breach"))
@@ -198,6 +206,7 @@ async fn fetch_breach(
         .await
         .map_err(|e| Error::module(SRC, e.to_string()))?;
     if !resp.status().is_success() {
+        crate::util::http::note_keyed_error(resp.status().as_u16(), SRC, key, ctx);
         return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
     crate::util::http::json_scanned(resp, SRC)
@@ -205,7 +214,12 @@ async fn fetch_breach(
         .map_err(|e| Error::module(SRC, e))
 }
 
-async fn fetch_email_osint(http: &reqwest::Client, key: &str, email: &str) -> Result<Value> {
+async fn fetch_email_osint(
+    http: &reqwest::Client,
+    key: &str,
+    email: &str,
+    ctx: &crate::core::module::ModuleContext,
+) -> Result<Value> {
     let resp = http
         .get(format!("{BASE}/email-osint"))
         .header("x-api-key", key)
@@ -215,6 +229,7 @@ async fn fetch_email_osint(http: &reqwest::Client, key: &str, email: &str) -> Re
         .await
         .map_err(|e| Error::module(SRC, e.to_string()))?;
     if !resp.status().is_success() {
+        crate::util::http::note_keyed_error(resp.status().as_u16(), SRC, key, ctx);
         return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
     crate::util::http::json_scanned(resp, SRC)
@@ -258,8 +273,7 @@ fn emit_footprint(fp: &OcFootprintResponse, entity: &mut Entity, result: &mut Mo
                 if k.eq_ignore_ascii_case("username")
                     && let Some(uname) = v.as_str()
                 {
-                    let mut pivot =
-                        Entity::new(EntityKind::Username, uname, 0.70, &entity.scan_id);
+                    let mut pivot = Entity::new(EntityKind::Username, uname, 0.70, &entity.scan_id);
                     pivot.tag("osintcat");
                     pivot.tag("footprint-pivot");
                     result.push(pivot);
@@ -368,7 +382,10 @@ mod tests {
 
     #[test]
     fn emit_breach_noop_on_zero() {
-        let br = OcBreachResponse { results_count: 0, breach_data: vec![] };
+        let br = OcBreachResponse {
+            results_count: 0,
+            breach_data: vec![],
+        };
         let target = Target::new(TargetKind::Email, "x@y.com");
         let mut entity = target.to_entity(0.75, "s");
         emit_breach(&br, &mut entity);

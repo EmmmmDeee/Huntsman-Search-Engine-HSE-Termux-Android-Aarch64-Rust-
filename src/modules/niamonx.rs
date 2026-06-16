@@ -20,7 +20,7 @@ use tracing::{debug, warn};
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
-    module::{Module, ModuleCategory, ModuleCost, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 
@@ -60,23 +60,23 @@ struct UlpBody<'a> {
 #[derive(Deserialize)]
 struct PbsV1Response {
     success: bool,
-    data:    Option<PbsV1Data>,
+    data: Option<PbsV1Data>,
 }
 
 #[derive(Deserialize)]
 struct PbsV1Data {
     status: Option<String>,
-    error:  Option<String>,
-    meta:   Option<PbsV1Meta>,
-    risk:   Option<PbsV1Risk>,
+    error: Option<String>,
+    meta: Option<PbsV1Meta>,
+    risk: Option<PbsV1Risk>,
     blocks: Option<Vec<PbsV1Block>>,
-    rate:   Option<PbsV1Rate>,
+    rate: Option<PbsV1Rate>,
 }
 
 #[derive(Deserialize)]
 struct PbsV1Meta {
     blocks_total: u32,
-    emails:       Option<Vec<String>>,
+    emails: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -87,7 +87,7 @@ struct PbsV1Risk {
 
 #[derive(Deserialize)]
 struct PbsV1Block {
-    title:       Option<String>,
+    title: Option<String>,
     description: Option<String>,
 }
 
@@ -101,15 +101,15 @@ struct PbsV1Rate {
 #[derive(Deserialize)]
 struct PbsV2Response {
     success: bool,
-    data:    Option<PbsV2Data>,
+    data: Option<PbsV2Data>,
 }
 
 #[derive(Deserialize)]
 struct PbsV2Data {
     #[serde(default = "default_true")]
     niamonx_success: bool,
-    error:   Option<String>,
-    stats:   Option<PbsV2Stats>,
+    error: Option<String>,
+    stats: Option<PbsV2Stats>,
     records: Option<Vec<PbsV2Record>>,
 }
 
@@ -119,24 +119,24 @@ fn default_true() -> bool {
 
 #[derive(Deserialize)]
 struct PbsV2Stats {
-    found:          u32,
+    found: u32,
     with_passwords: u32,
     unique_sources: u32,
 }
 
 #[derive(Deserialize)]
 struct PbsV2Record {
-    source:   Option<PbsV2Source>,
-    email:    Option<String>,
+    source: Option<PbsV2Source>,
+    email: Option<String>,
     username: Option<String>,
-    phone:    Option<String>,
+    phone: Option<String>,
     // `password` field intentionally absent — never stored or emitted.
     fields: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
 struct PbsV2Source {
-    name:        Option<String>,
+    name: Option<String>,
     breach_date: Option<String>,
     compilation: Option<u8>,
 }
@@ -146,27 +146,27 @@ struct PbsV2Source {
 #[derive(Deserialize)]
 struct UlpResponse {
     success: bool,
-    data:    Option<UlpData>,
+    data: Option<UlpData>,
 }
 
 #[derive(Deserialize)]
 struct UlpData {
-    error:   Option<String>,
-    stats:   Option<UlpStats>,
+    error: Option<String>,
+    stats: Option<UlpStats>,
     records: Option<Vec<UlpRecord>>,
 }
 
 #[derive(Deserialize)]
 struct UlpStats {
-    total:         u32,
-    unique_hosts:  u32,
+    total: u32,
+    unique_hosts: u32,
     with_password: u32,
 }
 
 #[derive(Deserialize)]
 struct UlpRecord {
-    url:   Option<String>,
-    host:  Option<String>,
+    url: Option<String>,
+    host: Option<String>,
     login: Option<String>,
     // `pass` field intentionally absent — never stored or emitted.
 }
@@ -198,10 +198,7 @@ impl Module for NiamonX {
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,
-            TargetKind::Email
-                | TargetKind::Username
-                | TargetKind::IpAddress
-                | TargetKind::Domain
+            TargetKind::Email | TargetKind::Username | TargetKind::IpAddress | TargetKind::Domain
         )
     }
 
@@ -210,12 +207,8 @@ impl Module for NiamonX {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[
-            EntityKind::Email,
-            EntityKind::Username,
-            EntityKind::Phone,
-            EntityKind::Domain,
-        ];
+        // Domain is accepted as input but no Domain pivot entity is ever emitted.
+        const KINDS: &[EntityKind] = &[EntityKind::Email, EntityKind::Username, EntityKind::Phone];
         KINDS
     }
 
@@ -224,43 +217,58 @@ impl Module for NiamonX {
         let query = &target.value;
         let key = ctx.key(KEY_ENV)?;
         let ulp_type = match target.kind {
-            TargetKind::Email    => "email",
+            TargetKind::Email => "email",
             TargetKind::Username => "username",
-            TargetKind::Domain   => "domain",
-            _                    => "auto",
+            TargetKind::Domain => "domain",
+            _ => "auto",
         };
 
         // All three endpoints are independent — run concurrently.
         let (r1, r2, r3) = tokio::join!(
-            fetch_pbs_v1(&ctx.http, key, query),
-            fetch_pbs_v2(&ctx.http, key, query),
-            fetch_ulp(&ctx.http, key, query, ulp_type),
+            fetch_pbs_v1(&ctx.http, key, query, ctx),
+            fetch_pbs_v2(&ctx.http, key, query, ctx),
+            fetch_ulp(&ctx.http, key, query, ulp_type, ctx),
         );
 
         let mut entity = target.to_entity(0.80, &ctx.scan_id);
         entity.tag(SRC);
 
         match r1 {
-            Ok(r)  => emit_pbs_v1(r, &mut entity, &mut result, query, &ctx.scan_id),
+            Ok(r) => emit_pbs_v1(r, &mut entity, &mut result, query, &ctx.scan_id),
             Err(e) => warn!(error = %e, "niamonx pbs_v1 failed"),
         }
         match r2 {
-            Ok(r)  => emit_pbs_v2(r, &mut entity, &mut result, query, &ctx.scan_id),
+            Ok(r) => emit_pbs_v2(r, &mut entity, &mut result, query, &ctx.scan_id),
             Err(e) => warn!(error = %e, "niamonx pbs_v2 failed"),
         }
         match r3 {
-            Ok(r)  => emit_ulp(r, target.kind, &mut entity, &mut result, query, &ctx.scan_id),
+            Ok(r) => emit_ulp(
+                r,
+                target.kind,
+                &mut entity,
+                &mut result,
+                query,
+                &ctx.scan_id,
+            ),
             Err(e) => warn!(error = %e, "niamonx ulp failed"),
         }
 
-        result.push(entity);
+        // Only emit the entity when at least one endpoint contributed evidence.
+        if !entity.evidence.is_empty() {
+            result.push(entity);
+        }
         Ok(result)
     }
 }
 
 // ── HTTP helpers ───────────────────────────────────────────────────────────────
 
-async fn fetch_pbs_v1(http: &reqwest::Client, key: &str, query: &str) -> Result<PbsV1Response> {
+async fn fetch_pbs_v1(
+    http: &reqwest::Client,
+    key: &str,
+    query: &str,
+    ctx: &crate::core::module::ModuleContext,
+) -> Result<PbsV1Response> {
     let resp = http
         .post(format!("{BASE}/breaches_search"))
         .header("X-API-Key", key)
@@ -269,6 +277,7 @@ async fn fetch_pbs_v1(http: &reqwest::Client, key: &str, query: &str) -> Result<
         .await
         .map_err(|e| Error::module(SRC, e.to_string()))?;
     if !resp.status().is_success() {
+        crate::util::http::note_keyed_error(resp.status().as_u16(), SRC, key, ctx);
         return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
     crate::util::http::json_scanned(resp, SRC)
@@ -276,15 +285,24 @@ async fn fetch_pbs_v1(http: &reqwest::Client, key: &str, query: &str) -> Result<
         .map_err(|e| Error::module(SRC, e))
 }
 
-async fn fetch_pbs_v2(http: &reqwest::Client, key: &str, query: &str) -> Result<PbsV2Response> {
+async fn fetch_pbs_v2(
+    http: &reqwest::Client,
+    key: &str,
+    query: &str,
+    ctx: &crate::core::module::ModuleContext,
+) -> Result<PbsV2Response> {
     let resp = http
         .post(format!("{BASE}/breaches_s_v2"))
         .header("X-API-Key", key)
-        .json(&PbsV2Body { value: query, kind: "auto" })
+        .json(&PbsV2Body {
+            value: query,
+            kind: "auto",
+        })
         .send()
         .await
         .map_err(|e| Error::module(SRC, e.to_string()))?;
     if !resp.status().is_success() {
+        crate::util::http::note_keyed_error(resp.status().as_u16(), SRC, key, ctx);
         return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
     crate::util::http::json_scanned(resp, SRC)
@@ -297,21 +315,23 @@ async fn fetch_ulp(
     key: &str,
     query: &str,
     ulp_type: &str,
+    ctx: &crate::core::module::ModuleContext,
 ) -> Result<UlpResponse> {
     let resp = http
         .post(format!("{BASE}/ulp_search"))
         .header("X-API-Key", key)
         .json(&UlpBody {
             action: "search",
-            value:  query,
-            kind:   ulp_type,
-            exact:  true,
-            limit:  ULP_LIMIT,
+            value: query,
+            kind: ulp_type,
+            exact: true,
+            limit: ULP_LIMIT,
         })
         .send()
         .await
         .map_err(|e| Error::module(SRC, e.to_string()))?;
     if !resp.status().is_success() {
+        crate::util::http::note_keyed_error(resp.status().as_u16(), SRC, key, ctx);
         return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
     crate::util::http::json_scanned(resp, SRC)
@@ -359,7 +379,10 @@ fn emit_pbs_v1(
             entity.add_evidence(
                 Evidence::new(
                     SRC,
-                    format!("{} breach block(s) in NiamonX 140B dataset", meta.blocks_total),
+                    format!(
+                        "{} breach block(s) in NiamonX 140B dataset",
+                        meta.blocks_total
+                    ),
                 )
                 .with_attr("blocks_total", meta.blocks_total.to_string()),
             );
@@ -375,9 +398,10 @@ fn emit_pbs_v1(
         }
     }
 
-    if data.rate.as_ref().is_some_and(|r| r.remaining < 10) {
-        let rem = data.rate.as_ref().map_or(0, |r| r.remaining);
-        warn!(remaining = rem, "niamonx pbs_v1 quota low");
+    if let Some(rate) = &data.rate
+        && rate.remaining < 10
+    {
+        warn!(remaining = rate.remaining, "niamonx pbs_v1 quota low");
     }
 
     for block in data.blocks.unwrap_or_default() {
@@ -411,6 +435,9 @@ fn emit_pbs_v2(
         return;
     }
 
+    // Guard: if stats are present and found == 0 there is nothing to emit.
+    // When stats are absent we still process any records in the response
+    // (forward-compatible with API changes) but we need the same breach tag.
     if let Some(stats) = &data.stats {
         if stats.found == 0 {
             return;
@@ -430,7 +457,15 @@ fn emit_pbs_v2(
         );
     }
 
-    for record in data.records.unwrap_or_default() {
+    let records = data.records.unwrap_or_default();
+    if records.is_empty() {
+        return;
+    }
+    // Ensure the breach tag is always set when records are present, even if
+    // the stats block was absent (forward-compatibility with API changes).
+    entity.tag("breach");
+
+    for record in records {
         let source_name = record
             .source
             .as_ref()
@@ -461,13 +496,21 @@ fn emit_pbs_v2(
                 .with_attr("breach_date", breach_date),
         );
 
-        if let Some(email) = record.email.as_deref().filter(|e| !e.eq_ignore_ascii_case(query)) {
+        if let Some(email) = record
+            .email
+            .as_deref()
+            .filter(|e| !e.eq_ignore_ascii_case(query))
+        {
             let mut pivot = Entity::new(EntityKind::Email, email, 0.70, scan_id);
             pivot.tag(SRC);
             pivot.tag("pbs-v2-pivot");
             result.push(pivot);
         }
-        if let Some(uname) = record.username.as_deref().filter(|u| !u.eq_ignore_ascii_case(query)) {
+        if let Some(uname) = record
+            .username
+            .as_deref()
+            .filter(|u| !u.eq_ignore_ascii_case(query))
+        {
             let mut pivot = Entity::new(EntityKind::Username, uname, 0.70, scan_id);
             pivot.tag(SRC);
             pivot.tag("pbs-v2-pivot");
@@ -480,9 +523,9 @@ fn emit_pbs_v2(
             result.push(pivot);
         }
         if let Some(fields) = &record.fields {
+            let joined = fields.join(", ");
             entity.add_evidence(
-                Evidence::new(SRC, format!("Fields exposed: {}", fields.join(", ")))
-                    .with_attr("fields", fields.join(", ")),
+                Evidence::new(SRC, format!("Fields exposed: {joined}")).with_attr("fields", joined),
             );
         }
     }
@@ -619,12 +662,12 @@ mod tests {
         let resp = PbsV1Response {
             success: true,
             data: Some(PbsV1Data {
-                status:  Some("not_found".to_string()),
-                error:   None,
-                meta:    None,
-                risk:    None,
-                blocks:  None,
-                rate:    None,
+                status: Some("not_found".to_string()),
+                error: None,
+                meta: None,
+                risk: None,
+                blocks: None,
+                rate: None,
             }),
         };
         let target = Target::new(TargetKind::Email, "x@y.com");
@@ -641,10 +684,14 @@ mod tests {
             success: true,
             data: Some(UlpData {
                 error: None,
-                stats: Some(UlpStats { total: 1, unique_hosts: 1, with_password: 1 }),
+                stats: Some(UlpStats {
+                    total: 1,
+                    unique_hosts: 1,
+                    with_password: 1,
+                }),
                 records: Some(vec![UlpRecord {
-                    url:   Some("https://bank.example.com/login".to_string()),
-                    host:  Some("bank.example.com".to_string()),
+                    url: Some("https://bank.example.com/login".to_string()),
+                    host: Some("bank.example.com".to_string()),
                     login: Some("other@example.com".to_string()),
                 }]),
             }),
@@ -652,7 +699,14 @@ mod tests {
         let target = Target::new(TargetKind::Email, "victim@example.com");
         let mut entity = target.to_entity(0.80, "s");
         let mut result = ModuleResult::new();
-        emit_ulp(resp, TargetKind::Email, &mut entity, &mut result, "victim@example.com", "s");
+        emit_ulp(
+            resp,
+            TargetKind::Email,
+            &mut entity,
+            &mut result,
+            "victim@example.com",
+            "s",
+        );
         assert!(entity.has_tag("stealer-log"));
         assert!(entity.has_tag("infostealer"));
         // login differs from query and target is Email → pivot emitted
