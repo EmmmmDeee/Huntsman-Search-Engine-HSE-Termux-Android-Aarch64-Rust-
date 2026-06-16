@@ -13,6 +13,8 @@
 //!   - registrar identity + status flags (`clientTransferProhibited`
 //!     etc.) the raw protocol returns as unstructured text
 
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -50,7 +52,9 @@ struct ApiError {
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct WhoisRecord {
-    #[allow(dead_code)]
+    /// The registrable domain the registry holds the record under. Can differ
+    /// from the queried host (e.g. a subdomain query resolves to its parent);
+    /// [`build_entities`] surfaces it as a `Domain` pivot when it does.
     #[serde(default)]
     domain_name: Option<String>,
     #[serde(default)]
@@ -140,6 +144,8 @@ impl Module for WhoisXml {
             EntityKind::Person,
             EntityKind::Organisation,
             EntityKind::Domain,
+            // Registrant/admin/tech WHOIS location (state, country) as a geo lead.
+            EntityKind::Address,
         ]
     }
 
@@ -208,92 +214,180 @@ impl Module for WhoisXml {
         };
 
         let mut result = ModuleResult::new();
-        let mut base_ev =
-            Evidence::new(SRC, format!("WhoisXML lookup for {domain}")).with_attr("domain", domain);
-        if let Some(c) = rec.created_date.as_deref() {
-            base_ev = base_ev.with_attr("created", c);
+        for e in build_entities(&rec, domain, &ctx.scan_id) {
+            result.push(e);
         }
-        if let Some(u) = rec.updated_date.as_deref() {
-            base_ev = base_ev.with_attr("updated", u);
+        Ok(result)
+    }
+}
+
+/// Trim a field and drop it if empty.
+fn nonempty(s: &Option<String>) -> Option<String> {
+    s.as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
+/// Shared evidence stamped on every entity from one lookup: the queried domain
+/// plus the record-level metadata (dates, registrar, age, status).
+fn base_evidence(rec: &WhoisRecord, domain: &str) -> Evidence {
+    let mut ev =
+        Evidence::new(SRC, format!("WhoisXML lookup for {domain}")).with_attr("domain", domain);
+    if let Some(c) = nonempty(&rec.created_date) {
+        ev = ev.with_attr("created", &c);
+    }
+    if let Some(u) = nonempty(&rec.updated_date) {
+        ev = ev.with_attr("updated", &u);
+    }
+    if let Some(e) = nonempty(&rec.expires_date) {
+        ev = ev.with_attr("expires", &e);
+    }
+    if let Some(reg) = nonempty(&rec.registrar_name) {
+        ev = ev.with_attr("registrar", &reg);
+    }
+    if let Some(age) = rec.estimated_domain_age {
+        ev = ev.with_attr("estimated_age_days", age.to_string());
+    }
+    if let Some(status) = nonempty(&rec.status) {
+        ev = ev.with_attr("status", &status);
+    }
+    if let Some(d) = nonempty(&rec.domain_name) {
+        ev = ev.with_attr("registered_domain", &d);
+    }
+    ev
+}
+
+/// Map a WhoisXML record to graph entities. **Pure** (no IO, no quota) so the
+/// contact extraction, cross-role de-duplication, location-pivot and
+/// registered-domain logic is unit-tested directly, decoupled from the network.
+///
+/// The registrant / administrative / technical contacts are very often byte
+/// identical (one privacy proxy or one owner), so the same org / person / email
+/// is collapsed to a single node — tagged with the FIRST role that carried it
+/// (registrant wins) — instead of three near-duplicate entities. Beyond the
+/// prior org/person/email/nameserver set this also surfaces:
+///   • the registry's **registrable domain** as a `Domain` pivot when it differs
+///     from the queried host (previously a discarded field);
+///   • each contact's **WHOIS location** (`state, country`) as a low-confidence
+///     `Address` geo-hint — a real person-locating lead for AU-centric scans.
+fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity> {
+    let mut out: Vec<Entity> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let base_ev = base_evidence(rec, domain);
+
+    // ── Registrable domain pivot (previously discarded `domain_name`). ──
+    if let Some(reg_dom) = nonempty(&rec.domain_name) {
+        let low = reg_dom.trim_end_matches('.').to_ascii_lowercase();
+        if low != domain.trim_end_matches('.').to_ascii_lowercase()
+            && low.contains('.')
+            && seen.insert(format!("dom:{low}"))
+        {
+            let mut e = Entity::new(EntityKind::Domain, &low, 0.65, scan_id);
+            e.tag("whoisxml");
+            e.tag("registered-domain");
+            e.add_evidence(base_ev.clone().with_attr("queried_domain", domain));
+            out.push(e);
         }
-        if let Some(e) = rec.expires_date.as_deref() {
-            base_ev = base_ev.with_attr("expires", e);
-        }
-        if let Some(reg) = rec.registrar_name.as_deref() {
-            base_ev = base_ev.with_attr("registrar", reg);
-        }
-        if let Some(age) = rec.estimated_domain_age {
-            base_ev = base_ev.with_attr("estimated_age_days", age.to_string());
-        }
-        if let Some(status) = rec.status.as_deref() {
-            base_ev = base_ev.with_attr("status", status);
+    }
+
+    // ── Contacts: org / person / email / location, deduped across roles. ──
+    for (contact, role) in [
+        (rec.registrant.as_ref(), "registrant"),
+        (rec.administrative_contact.as_ref(), "admin"),
+        (rec.technical_contact.as_ref(), "technical"),
+    ] {
+        let Some(c) = contact else { continue };
+
+        if let Some(org) = nonempty(&c.organization)
+            && seen.insert(format!("org:{}", org.to_lowercase()))
+        {
+            let mut e = Entity::new(EntityKind::Organisation, &org, 0.70, scan_id);
+            e.tag("whoisxml");
+            e.tag(format!("whois-{role}"));
+            let mut ev = base_ev.clone().with_attr("contact_role", role);
+            if let Some(cc) = nonempty(&c.country_code) {
+                ev = ev.with_attr("country_code", &cc);
+            }
+            e.add_evidence(ev);
+            out.push(e);
         }
 
-        // ── Emit Registrant / Organisation entities ──
-        for (contact, role) in [
-            (rec.registrant.as_ref(), "registrant"),
-            (rec.administrative_contact.as_ref(), "admin"),
-            (rec.technical_contact.as_ref(), "technical"),
-        ] {
-            let Some(c) = contact else { continue };
-            if let Some(org) = c.organization.as_deref().filter(|s| !s.is_empty()) {
-                let mut e = Entity::new(EntityKind::Organisation, org, 0.70, &ctx.scan_id);
-                e.tag("whoisxml");
-                e.tag(format!("whois-{role}"));
-                let mut ev = base_ev.clone().with_attr("contact_role", role);
-                if let Some(cc) = c.country_code.as_deref().filter(|s| !s.is_empty()) {
-                    ev = ev.with_attr("country_code", cc);
-                }
-                e.add_evidence(ev);
-                result.push(e);
+        if let Some(name) = nonempty(&c.name)
+            && seen.insert(format!("person:{}", name.to_lowercase()))
+        {
+            let mut e = Entity::new(EntityKind::Person, &name, 0.60, scan_id);
+            e.tag("whoisxml");
+            e.tag(format!("whois-{role}"));
+            let mut ev = base_ev.clone().with_attr("contact_role", role);
+            if let Some(country) = nonempty(&c.country) {
+                ev = ev.with_attr("country", &country);
             }
-            if let Some(name) = c.name.as_deref().filter(|s| !s.is_empty()) {
-                let mut e = Entity::new(EntityKind::Person, name, 0.60, &ctx.scan_id);
-                e.tag("whoisxml");
-                e.tag(format!("whois-{role}"));
-                let mut ev = base_ev.clone().with_attr("contact_role", role);
-                if let Some(country) = c.country.as_deref().filter(|s| !s.is_empty()) {
-                    ev = ev.with_attr("country", country);
-                }
-                if let Some(state) = c.state.as_deref().filter(|s| !s.is_empty()) {
-                    ev = ev.with_attr("state", state);
-                }
-                e.add_evidence(ev);
-                result.push(e);
+            if let Some(state) = nonempty(&c.state) {
+                ev = ev.with_attr("state", &state);
             }
-            if let Some(email) = c.email.as_deref().filter(|s| s.contains('@')) {
-                let mut e = Entity::new(EntityKind::Email, email, 0.70, &ctx.scan_id);
+            e.add_evidence(ev);
+            out.push(e);
+        }
+
+        if let Some(email) = nonempty(&c.email).filter(|s| s.contains('@')) {
+            let low = email.to_lowercase();
+            if seen.insert(format!("mail:{low}")) {
+                let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
                 e.tag("whoisxml");
                 e.tag(format!("whois-{role}-email"));
-                let ev = base_ev.clone().with_attr("contact_role", role);
-                e.add_evidence(ev);
-                result.push(e);
+                e.add_evidence(base_ev.clone().with_attr("contact_role", role));
+                out.push(e);
             }
         }
 
-        // ── Emit Name Server entities (Domain entities, tagged ns) ──
-        if let Some(ns) = rec.name_servers {
-            let mut seen_ns: std::collections::HashSet<String> = std::collections::HashSet::new();
-            for host in ns.host_names {
-                // Strip FQDN trailing dot before lowercasing so
-                // `ns1.example.com.` and `ns1.example.com` collapse
-                // to a single entity instead of emitting duplicates.
-                let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
-                if host.is_empty() || !host.contains('.') {
-                    continue;
-                }
-                if !seen_ns.insert(host.clone()) {
-                    continue;
-                }
-                let mut e = Entity::new(EntityKind::Domain, &host, 0.65, &ctx.scan_id);
-                e.tag("whoisxml");
-                e.tag("nameserver");
-                e.add_evidence(base_ev.clone().with_attr("ns_for", domain));
-                result.push(e);
-            }
+        // WHOIS registrant location → low-confidence Address geo-hint.
+        if let Some(loc) = contact_location(c)
+            && seen.insert(format!("addr:{}", loc.to_lowercase()))
+        {
+            let mut e = Entity::new(EntityKind::Address, &loc, 0.45, scan_id);
+            e.tag("whoisxml");
+            e.tag(format!("whois-{role}"));
+            e.tag("geo-hint");
+            e.add_evidence(base_ev.clone().with_attr("contact_role", role));
+            out.push(e);
         }
+    }
 
-        Ok(result)
+    // ── Name servers as Domain entities (tagged nameserver). ──
+    if let Some(ns) = &rec.name_servers {
+        for host in &ns.host_names {
+            // Strip the FQDN trailing dot before lowercasing so
+            // `ns1.example.com.` and `ns1.example.com` collapse together.
+            let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+            if host.is_empty() || !host.contains('.') {
+                continue;
+            }
+            if !seen.insert(format!("dom:{host}")) {
+                continue;
+            }
+            let mut e = Entity::new(EntityKind::Domain, &host, 0.65, scan_id);
+            e.tag("whoisxml");
+            e.tag("nameserver");
+            e.add_evidence(base_ev.clone().with_attr("ns_for", domain));
+            out.push(e);
+        }
+    }
+
+    out
+}
+
+/// Compose a WHOIS contact's `state, country` into a single location string for
+/// an `Address` geo-hint. `None` when neither part is present.
+fn contact_location(c: &Contact) -> Option<String> {
+    let parts: Vec<String> = [nonempty(&c.state), nonempty(&c.country)]
+        .into_iter()
+        .flatten()
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(", "))
     }
 }
 
