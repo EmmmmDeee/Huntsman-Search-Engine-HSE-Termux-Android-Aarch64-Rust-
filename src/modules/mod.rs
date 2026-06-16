@@ -64,6 +64,8 @@ pub mod leakix;
 pub mod local_net;
 pub mod mls;
 pub mod mylnikov;
+pub mod niamonx;
+pub mod osintcat;
 pub mod name_intel;
 pub mod netblock;
 pub mod npm_author;
@@ -183,6 +185,8 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(hibp::Hibp),
         Arc::new(hudsonrock::HudsonRock),
         Arc::new(xposed_or_not::XposedOrNot),
+        Arc::new(osintcat::OsintCat),
+        Arc::new(niamonx::NiamonX),
         Arc::new(pwned_passwords::PwnedPasswords),
         Arc::new(ip_reputation::IpReputation),
         Arc::new(oathnet_pro::OathnetPro),
