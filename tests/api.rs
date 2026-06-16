@@ -1450,6 +1450,9 @@ async fn spa_references_only_registered_api_endpoints() {
         }
         // A representative, parameter-free URL for this endpoint family.
         let url = match base.as_str() {
+            // Static ATT&CK capability assessment — scan-independent and
+            // parameter-free, so a bare GET exercises the registered route.
+            "attack" => "/api/v1/attack/capability.json".to_string(),
             "health" => "/api/v1/health".to_string(),
             "version" => "/api/v1/version".to_string(),
             "keys" => "/api/v1/keys/pool".to_string(),
