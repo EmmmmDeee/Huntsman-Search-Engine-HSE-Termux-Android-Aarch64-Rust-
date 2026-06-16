@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::json;
 
 #[test]
 fn accepts_email_only() {
@@ -61,4 +62,51 @@ fn emit_breach_tags_multiple_sources() {
     assert!(entity.has_tag("breach"));
     assert!(entity.has_tag("osintcat:breach:leaka"));
     assert!(entity.has_tag("osintcat:breach:leakb"));
+}
+
+#[test]
+fn emit_footprint_noop_on_zero_registrations() {
+    let fp: OcFootprintResponse = serde_json::from_value(json!({
+        "stats": {"total_checked": 50, "registered_count": 0},
+        "results": []
+    }))
+    .unwrap();
+    let target = Target::new(TargetKind::Email, "x@y.com");
+    let mut entity = target.to_entity(0.75, "s");
+    let mut result = ModuleResult::new();
+    emit_footprint(&fp, &mut entity, &mut result);
+    assert!(entity.evidence.is_empty(), "zero registrations → no evidence");
+    assert!(result.is_empty());
+}
+
+#[test]
+fn emit_footprint_tags_taken_platform() {
+    let fp: OcFootprintResponse = serde_json::from_value(json!({
+        "stats": {"total_checked": 50, "registered_count": 1},
+        "results": [
+            {"domain": "github.com", "taken": true},
+            {"domain": "twitter.com", "taken": false}
+        ]
+    }))
+    .unwrap();
+    let target = Target::new(TargetKind::Email, "x@y.com");
+    let mut entity = target.to_entity(0.75, "s");
+    let mut result = ModuleResult::new();
+    emit_footprint(&fp, &mut entity, &mut result);
+    assert!(!entity.evidence.is_empty(), "registrations → evidence");
+    assert!(entity.has_tag("osintcat:registered:github-com"));
+    assert!(!entity.has_tag("osintcat:registered:twitter-com"), "not taken");
+}
+
+#[test]
+fn emit_email_osint_skips_nulls_and_adds_non_null_fields() {
+    let raw = json!({"score": 42, "null_field": null, "label": "risky"});
+    let target = Target::new(TargetKind::Email, "x@y.com");
+    let mut entity = target.to_entity(0.5, "s");
+    emit_email_osint(&raw, &mut entity);
+    assert_eq!(entity.evidence.len(), 1);
+    let ev = &entity.evidence[0];
+    assert!(ev.attributes.contains_key("score"));
+    assert!(ev.attributes.contains_key("label"));
+    assert!(!ev.attributes.contains_key("null_field"), "null fields skipped");
 }
