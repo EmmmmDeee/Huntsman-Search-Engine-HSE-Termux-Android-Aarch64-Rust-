@@ -1,13 +1,15 @@
-//! ip-api.com — free IP geolocation with ISP/ASN/proxy detection.
+//! ipwho.is — free IP geolocation over **HTTPS** (no key).
 //!
-//! Endpoint: `GET http://ip-api.com/json/{ip}?fields=66846719`
-//! Auth: None — 45 requests/minute, no key required.
+//! Endpoint: `GET https://ipwho.is/{ip}`
+//! Auth: None — generous free quota, HTTPS, no key required.
 //!
-//! Returns city/region/country, lat/lon, ISP, ASN, org, mobile/proxy/
-//! hosting flags, reverse DNS, and timezone. The numeric `fields` bitmask
-//! requests all available fields.
-//!
-//! Note: free tier requires HTTP (not HTTPS). HTTPS is paid only.
+//! Returns city/region/country, lat/lon, and the connection's ISP / org / ASN.
+//! Chosen over the (HTTP-only free tier) ip-api.com so the subject's IP is not
+//! geolocated in cleartext from the device, and so this module is a genuinely
+//! INDEPENDENT geo source from [`crate::modules::ip_geo`] — which keeps
+//! ip-api.com for its proxy/hosting/mobile flags. With two distinct providers
+//! the correlator's "two sources agree on location" is real corroboration, not
+//! the same provider counted twice.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -22,49 +24,41 @@ use crate::core::{
 use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "ipapi";
-const FIELDS: u64 = 66846719;
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
-struct IpApiResp {
+struct IpWhoResp {
     #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
-    country: Option<String>,
-    #[serde(rename = "countryCode", default)]
-    country_code: Option<String>,
-    #[serde(default)]
-    region: Option<String>,
-    #[serde(rename = "regionName", default)]
-    region_name: Option<String>,
+    success: bool,
     #[serde(default)]
     city: Option<String>,
     #[serde(default)]
-    zip: Option<String>,
+    region: Option<String>,
     #[serde(default)]
-    lat: Option<f64>,
+    country: Option<String>,
     #[serde(default)]
-    lon: Option<f64>,
+    latitude: Option<f64>,
     #[serde(default)]
-    timezone: Option<String>,
+    longitude: Option<f64>,
     #[serde(default)]
-    isp: Option<String>,
+    connection: Option<Connection>,
+    #[serde(default)]
+    timezone: Option<Timezone>,
+}
+
+#[derive(Deserialize, Default)]
+struct Connection {
+    #[serde(default)]
+    asn: Option<u64>,
     #[serde(default)]
     org: Option<String>,
-    #[serde(rename = "as", default)]
-    asn: Option<String>,
-    #[serde(rename = "asname", default)]
-    as_name: Option<String>,
     #[serde(default)]
-    reverse: Option<String>,
+    isp: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct Timezone {
     #[serde(default)]
-    mobile: Option<bool>,
-    #[serde(default)]
-    proxy: Option<bool>,
-    #[serde(default)]
-    hosting: Option<bool>,
-    #[serde(default)]
-    district: Option<String>,
+    id: Option<String>,
 }
 
 pub struct IpApi;
@@ -76,7 +70,7 @@ impl Module for IpApi {
     }
 
     fn description(&self) -> &'static str {
-        "Free IP geolocation via ip-api.com (city, ISP, ASN, proxy detection)"
+        "Free IP geolocation via ipwho.is (HTTPS; city, ISP, ASN, org)"
     }
 
     fn priority(&self) -> u8 {
@@ -109,21 +103,20 @@ impl Module for IpApi {
             EntityKind::Address,
             EntityKind::Asn,
             EntityKind::Organisation,
-            EntityKind::Domain,
         ];
         KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        // ip-api.com free tier is IPv4-only — the universal dispatcher
-        // gate allows public IPv6 through, so this module needs its own
-        // IPv6 rejection on top.
+        // IPv4-only gate retained for parity with ip_geo; also skips private /
+        // reserved space. (ipwho.is does resolve IPv6 — enabling it is a separate
+        // change that must also teach `is_cdn_edge_ip` about v6 edge ranges.)
         if crate::util::preflight::should_skip_external_ipv4(&target.value) {
             return Ok(ModuleResult::new());
         }
         let ip = target.value.trim();
 
-        let url = format!("http://ip-api.com/json/{ip}?fields={FIELDS}");
+        let url = format!("https://ipwho.is/{ip}");
 
         let resp = ctx
             .http
@@ -136,30 +129,44 @@ impl Module for IpApi {
             return Err(Error::module(SRC, format!("HTTP {}", resp.status())));
         }
 
-        let data: IpApiResp = resp
+        let data: IpWhoResp = resp
             .json()
             .await
             .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
 
-        if data.status.as_deref() != Some("success") {
+        // ipwho.is signals lookup failure (private/reserved IP, quota) with
+        // `success:false` rather than an HTTP error — treat it as no-data.
+        if !data.success {
+            return Ok(ModuleResult::new());
+        }
+
+        // A CDN/anycast edge IP geolocates to whichever datacenter answered, not
+        // to the subject — skip it (the same guard ip_geo applies).
+        if crate::core::validation::is_cdn_edge_ip(ip) {
             return Ok(ModuleResult::new());
         }
 
         let mut result = ModuleResult::new();
 
+        let conn = data.connection.unwrap_or_default();
         let city = data.city.as_deref().unwrap_or("");
-        let region = data.region_name.as_deref().unwrap_or("");
+        let region = data.region.as_deref().unwrap_or("");
         let country = data.country.as_deref().unwrap_or("");
-        let isp = data.isp.as_deref().unwrap_or("");
+        let isp = conn.isp.as_deref().unwrap_or("");
+        let asn = conn.asn.map(|n| format!("AS{n}"));
+        let tz = data.timezone.and_then(|t| t.id);
 
         let ev = [
-            ("city", (!city.is_empty()).then_some(city)),
-            ("region", (!region.is_empty()).then_some(region)),
-            ("country", (!country.is_empty()).then_some(country)),
-            ("isp", (!isp.is_empty()).then_some(isp)),
-            ("asn", data.asn.as_deref()),
-            ("org", data.org.as_deref()),
-            ("timezone", data.timezone.as_deref()),
+            ("city", (!city.is_empty()).then(|| city.to_string())),
+            ("region", (!region.is_empty()).then(|| region.to_string())),
+            (
+                "country",
+                (!country.is_empty()).then(|| country.to_string()),
+            ),
+            ("isp", (!isp.is_empty()).then(|| isp.to_string())),
+            ("asn", asn.clone()),
+            ("org", conn.org.clone()),
+            ("timezone", tz),
         ]
         .into_iter()
         .filter_map(|(key, value)| value.map(|v| (key, v)))
@@ -169,21 +176,12 @@ impl Module for IpApi {
             |ev, (key, v)| ev.with_attr(key, v),
         );
 
-        // Confidence recalibrated 0.70 → 0.60 — see ip_geo.rs for rationale
-        // (single-source free IP geo overstates residential precision; the
-        // corroboration boost lifts the real value at the merge step).
-        if let (Some(lat), Some(lon)) = (data.lat, data.lon)
+        // Coordinates — `coarse_provider_coords` gates implausible / null-island
+        // fixes (the same shared validator every coarse IP-geo provider uses).
+        if let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
             && let Some(mut ce) =
                 crate::util::geo::coarse_provider_coords(lat, lon, 0.60, &ctx.scan_id)
         {
-            [
-                (data.mobile, "mobile"),
-                (data.proxy, tags::PROXY),
-                (data.hosting, "hosting"),
-            ]
-            .into_iter()
-            .filter(|(flag, _)| *flag == Some(true))
-            .for_each(|(_, tag)| ce.tag(tag));
             ce.add_evidence(ev.clone());
             result.push(ce);
         }
@@ -202,29 +200,16 @@ impl Module for IpApi {
             result.push(ae);
         }
 
-        if let Some(asn) = &data.asn {
+        if let Some(asn) = &asn {
             let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, &ctx.scan_id);
             ae.add_evidence(ev.clone());
             result.push(ae);
         }
 
-        if let Some(org) = &data.org
-            && !org.is_empty()
-            && org.len() >= 3
-        {
+        if let Some(org) = conn.org.as_deref().filter(|o| o.len() >= 3) {
             let mut oe = Entity::new(EntityKind::Organisation, org, 0.60, &ctx.scan_id);
-            oe.add_evidence(ev.clone());
+            oe.add_evidence(ev);
             result.push(oe);
-        }
-
-        if let Some(rev) = &data.reverse
-            && !rev.is_empty()
-            && rev.contains('.')
-        {
-            let mut de = Entity::new(EntityKind::Domain, rev, 0.65, &ctx.scan_id);
-            de.tag(tags::PTR);
-            de.add_evidence(ev);
-            result.push(de);
         }
 
         Ok(result)

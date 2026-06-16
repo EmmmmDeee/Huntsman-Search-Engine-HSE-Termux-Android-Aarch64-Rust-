@@ -138,7 +138,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `ip_whois_geo` | ip_address | free | no | 27 | coordinates, address, asn, organisation |
 | `ipquery` | ip_address | free | no | 27 | coordinates, address, asn, organisation |
 | `ip2location` | ip_address | free | no | 26 | coordinates, address, asn, organisation |
-| `ipapi` | ip_address | free | no | 26 | coordinates, address, asn, organisation, domain |
+| `ipapi` | ip_address | free | no | 26 | coordinates, address, asn, organisation |
 | `ipinfo` | ip_address | free | no | 25 | coordinates, address, asn, organisation, domain |
 | `ip_registry` | ip_address, asn | free | no | 23 | ip_address, asn, email, url |
 | `urlscan` | ip_address, domain, url | free | no | 15 | ip_address |

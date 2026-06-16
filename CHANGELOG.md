@@ -49,6 +49,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **`ipapi` IP-geolocation moved to ipwho.is over HTTPS (was HTTP-only
+  ip-api.com).** The free ip-api.com tier is HTTP-only, so every IP the module
+  geolocated travelled in cleartext — on the phone target, a network observer
+  could read which IPs the device was investigating. Worse, `ip_geo` *also* used
+  ip-api.com, so the correlator counted the same provider twice as if it were
+  two independent sources ("two sources agree on location"). `ipapi` now uses
+  **ipwho.is** (HTTPS, free, no key): the IP-geo query is encrypted, and `ip_geo`
+  (kept on ip-api.com for its proxy/hosting/mobile flags) and `ipapi` are now
+  genuinely independent providers, so geo corroboration is real. Trade-off:
+  ipwho.is exposes no proxy/hosting flags or reverse-DNS, so `ipapi` no longer
+  tags those or emits a PTR `Domain` (both still come from `ip_geo` / `dns_intel`
+  respectively). Response shape verified against the live API.
+
 - **Airtight, offline-by-construction local web console (Termux/phone
   hardening).** The embedded UI already shipped a strict CSP, security-header
   middleware, vendored same-origin assets, and a `data:` favicon — so it makes
