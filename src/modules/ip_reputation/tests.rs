@@ -50,3 +50,31 @@ fn meaningful_tag_keeps_threat_categories_drops_noise() {
         assert_eq!(m.priority(), 78);
         assert_eq!(m.max_timeout_ms(), 10_000);
     }
+
+    #[test]
+    fn meaningful_tag_minimum_length_boundary() {
+        // Tags ≤ 2 chars are always noise regardless of content.
+        assert!(!is_meaningful_tag("ab"));
+        assert!(!is_meaningful_tag("a"));
+        assert!(!is_meaningful_tag(""));
+        // 3-char tags need to be all-uppercase (acronyms like "APT") to pass.
+        assert!(is_meaningful_tag("APT"), "3-char uppercase acronym should pass");
+    }
+
+    #[test]
+    fn meaningful_tag_hash_patterns_dropped() {
+        // MD5/SHA hashes with their label prefixes are noise from the OTX dump.
+        assert!(!is_meaningful_tag("MD5 Hash: abc123"));
+        assert!(!is_meaningful_tag("Imphash: deadbeef"));
+        // A long SHA hash-like prefix that starts with digits/hex and contains
+        // none of the minimum meaningful tokens must be filtered.
+        assert!(!is_meaningful_tag("cd3989830da99a69380901769fd78902efb3cd8ba"));
+    }
+
+    #[test]
+    fn meaningful_tag_url_extension_noise_dropped() {
+        // File extension fragments from OTX pulse noise.
+        for noise in [".cc", ".exe", ".dll", ".bin", ".php"] {
+            assert!(!is_meaningful_tag(noise), "{noise:?} should be noise");
+        }
+    }

@@ -121,3 +121,71 @@ fn ulp_emits_stealer_tag_and_pivots() {
     assert_eq!(result.entities.len(), 1);
     assert_eq!(result.entities[0].kind, EntityKind::Email);
 }
+
+#[test]
+fn module_metadata() {
+    let m = NiamonX;
+    assert_eq!(m.name(), "niamonx");
+    assert!(!m.description().is_empty());
+    assert_eq!(m.cost(), crate::core::module::ModuleCost::KeyGated);
+    assert!(!m.attack_techniques().is_empty());
+    assert!(m.produces().contains(&EntityKind::Email));
+}
+
+#[test]
+fn pbs_v2_found_with_records_tags_breach() {
+    let resp = PbsV2Response {
+        success: true,
+        data: Some(PbsV2Data {
+            niamonx_success: true,
+            error: None,
+            stats: Some(PbsV2Stats {
+                found: 1,
+                with_passwords: 1,
+                unique_sources: 1,
+            }),
+            records: Some(vec![PbsV2Record {
+                source: Some(PbsV2Source {
+                    name: Some("LeakSite".to_string()),
+                    breach_date: Some("2022-03-01".to_string()),
+                    compilation: Some(0),
+                }),
+                email: Some("other@example.com".to_string()),
+                username: None,
+                phone: None,
+                fields: None,
+            }]),
+        }),
+    };
+    let target = Target::new(TargetKind::Email, "victim@example.com");
+    let mut entity = target.to_entity(0.80, "s");
+    let mut result = ModuleResult::new();
+    emit_pbs_v2(resp, &mut entity, &mut result, "victim@example.com", "s");
+    assert!(entity.has_tag("breach"), "breach tag must be set on hit");
+    assert!(entity.has_tag("niamonx:breach:leaksite"));
+    // The alternate email pivot is emitted.
+    assert!(result.entities.iter().any(|e| e.kind == EntityKind::Email && e.value == "other@example.com"));
+}
+
+#[test]
+fn pbs_v2_zero_found_is_quiet() {
+    let resp = PbsV2Response {
+        success: true,
+        data: Some(PbsV2Data {
+            niamonx_success: true,
+            error: None,
+            stats: Some(PbsV2Stats {
+                found: 0,
+                with_passwords: 0,
+                unique_sources: 0,
+            }),
+            records: None,
+        }),
+    };
+    let target = Target::new(TargetKind::Email, "clean@example.com");
+    let mut entity = target.to_entity(0.80, "s");
+    let mut result = ModuleResult::new();
+    emit_pbs_v2(resp, &mut entity, &mut result, "clean@example.com", "s");
+    assert!(!entity.has_tag("breach"));
+    assert!(result.entities.is_empty());
+}

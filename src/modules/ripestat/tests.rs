@@ -62,3 +62,32 @@ use super::*;
         assert!(RipeStat.accepts(&Target::new(TargetKind::Asn, "AS15169")));
         assert!(!RipeStat.accepts(&Target::new(TargetKind::Email, "a@b.com")));
     }
+
+    #[test]
+    fn module_metadata() {
+        let m = RipeStat;
+        assert_eq!(m.name(), "ripestat");
+        assert!(!m.description().is_empty());
+        assert_eq!(m.priority(), 107);
+        assert_eq!(m.max_timeout_ms(), 14_000);
+        assert!(!m.attack_techniques().is_empty());
+        assert!(m.produces().contains(&EntityKind::Asn));
+    }
+
+    #[test]
+    fn build_asns_rejects_non_numeric_and_empty() {
+        let ni = NetworkInfo {
+            asns: vec!["".into(), "not-a-number".into(), "abc123".into()],
+            prefix: None,
+        };
+        assert!(build_asns(&ni, "scan").is_empty());
+    }
+
+    #[test]
+    fn build_abuse_emits_multiple_distinct() {
+        // Two different non-infrastructure contacts → both emitted.
+        let emails = vec!["ops@example.org".to_string(), "sec@example.net".to_string()];
+        let es = build_abuse(&emails, "scan");
+        assert_eq!(es.len(), 2);
+        assert!(es.iter().all(|e| e.kind == crate::core::entity::EntityKind::Email));
+    }
