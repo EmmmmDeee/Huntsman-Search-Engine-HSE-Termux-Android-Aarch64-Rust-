@@ -263,8 +263,10 @@ fn domain_for_target(t: &Target) -> Option<String> {
 
 fn extract_emails(text: &str, employer_domain: &str) -> Vec<String> {
     static R: OnceLock<Regex> = OnceLock::new();
-    let re =
-        R.get_or_init(|| Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}").unwrap());
+    let re = R.get_or_init(|| {
+        Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+            .expect("constant employer email regex")
+    });
     re.find_iter(text)
         .map(|m| m.as_str().to_lowercase())
         .filter(|s| {
@@ -279,7 +281,7 @@ fn extract_profile_urls(text: &str) -> Vec<String> {
     let re = R.get_or_init(|| {
         Regex::new(
             r"https?://(?:www\.)?(?:linkedin\.com|facebook\.com|instagram\.com|twitter\.com|x\.com|youtube\.com)/[A-Za-z0-9_./@\-]+"
-        ).unwrap()
+        ).expect("constant social profile-url regex")
     });
     re.find_iter(text)
         .map(|m| m.as_str().trim_end_matches(['/', '.', ',']).to_string())

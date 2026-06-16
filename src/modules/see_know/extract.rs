@@ -29,8 +29,9 @@ use super::SRC;
 use super::pivots::looks_like_steam_id;
 
 /// Matches `<@id>` and `<@!id>` Discord user-mention shapes.
-static MESSAGE_MENTION_RE: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"<@!?(\d{17,20})>").unwrap());
+static MESSAGE_MENTION_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"<@!?(\d{17,20})>").expect("constant discord-mention regex")
+});
 
 /// Mine a `discord_messages` item's free-text `content` for embedded emails
 /// and emit each as a low-confidence `Email` entity (0.30 — below pivot floor).

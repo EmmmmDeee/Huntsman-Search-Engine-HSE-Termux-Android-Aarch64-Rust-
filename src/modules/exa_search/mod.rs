@@ -291,10 +291,12 @@ fn mine_snippet(text: &str, scan_id: &str, source_url: &str, result: &mut Module
 }
 
 static EMAIL_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").unwrap()
+    regex::Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+        .expect("constant email regex")
 });
-static PHONE_RE: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"\+?\d[\d\s\-().]{6,18}\d").unwrap());
+static PHONE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"\+?\d[\d\s\-().]{6,18}\d").expect("constant phone regex")
+});
 
 #[cfg(test)]
 mod tests {

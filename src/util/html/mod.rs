@@ -15,9 +15,12 @@ pub fn strip_html(html: &str) -> String {
     static SCRIPT: OnceLock<Regex> = OnceLock::new();
     static STYLE: OnceLock<Regex> = OnceLock::new();
     static TAG: OnceLock<Regex> = OnceLock::new();
-    let script = SCRIPT.get_or_init(|| Regex::new(r"(?is)<script[^>]*>.*?</script>").unwrap());
-    let style = STYLE.get_or_init(|| Regex::new(r"(?is)<style[^>]*>.*?</style>").unwrap());
-    let tag = TAG.get_or_init(|| Regex::new(r"(?s)<[^>]+>").unwrap());
+    let script = SCRIPT.get_or_init(|| {
+        Regex::new(r"(?is)<script[^>]*>.*?</script>").expect("constant script regex")
+    });
+    let style = STYLE
+        .get_or_init(|| Regex::new(r"(?is)<style[^>]*>.*?</style>").expect("constant style regex"));
+    let tag = TAG.get_or_init(|| Regex::new(r"(?s)<[^>]+>").expect("constant html-tag regex"));
     let no_script = script.replace_all(html, " ");
     let no_style = style.replace_all(&no_script, " ");
     let no_tags = tag.replace_all(&no_style, " ");

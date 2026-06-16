@@ -19,9 +19,10 @@ pub(super) fn parse_oathnet_html(body: &str, sid: &str) -> Vec<crate::core::enti
     static RES: OnceLock<(Regex, Regex, Regex)> = OnceLock::new();
     let (ip_re, email_re, domain_re) = RES.get_or_init(|| {
         (
-            Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap(),
-            Regex::new(r"[\w.+-]+@[\w.-]+\.\w{2,}").unwrap(),
-            Regex::new(r"(?:https?://)?([a-z0-9][-a-z0-9]*(?:\.[a-z0-9][-a-z0-9]*)+)").unwrap(),
+            Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").expect("constant ipv4 regex"),
+            Regex::new(r"[\w.+-]+@[\w.-]+\.\w{2,}").expect("constant email regex"),
+            Regex::new(r"(?:https?://)?([a-z0-9][-a-z0-9]*(?:\.[a-z0-9][-a-z0-9]*)+)")
+                .expect("constant domain regex"),
         )
     });
 

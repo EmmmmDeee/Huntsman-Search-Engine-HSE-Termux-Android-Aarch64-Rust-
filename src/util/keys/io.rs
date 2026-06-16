@@ -88,11 +88,12 @@ pub fn load() -> HashMap<String, String> {
     let pool = crate::util::key_pool::global_pool();
     for svc in crate::util::key_pool::service_defs() {
         // Avoid cloning the value in the common case (no comma / no rotation).
-        // Only clone when we detect a comma and need to split + re-insert.
-        let has_comma = map.get(svc.env_var).is_some_and(|v| v.contains(','));
-        if has_comma {
-            // Clone only here, after confirming rotation is needed.
-            let val = map.get(svc.env_var).unwrap().clone();
+        // Bind the entry once and clone only after confirming rotation is needed
+        // — a single map lookup with no fallible unwrap.
+        if let Some(raw) = map.get(svc.env_var)
+            && raw.contains(',')
+        {
+            let val = raw.clone();
             let keys: Vec<&str> = val
                 .split(',')
                 .map(str::trim)

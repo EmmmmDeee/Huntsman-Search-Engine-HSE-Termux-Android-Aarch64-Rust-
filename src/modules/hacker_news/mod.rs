@@ -53,8 +53,8 @@ fn bio_patterns() -> &'static (Regex, Regex) {
     static RES: OnceLock<(Regex, Regex)> = OnceLock::new();
     RES.get_or_init(|| {
         (
-            Regex::new(r"[\w.+-]+@[\w-]+\.[\w.-]+").unwrap(),
-            Regex::new(r#"https?://[^\s"'<>)]+"#).unwrap(),
+            Regex::new(r"[\w.+-]+@[\w-]+\.[\w.-]+").expect("constant bio email regex"),
+            Regex::new(r#"https?://[^\s"'<>)]+"#).expect("constant bio url regex"),
         )
     })
 }
