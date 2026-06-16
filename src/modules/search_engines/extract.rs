@@ -9,6 +9,7 @@ use super::fetch::fetch_and_parse;
 use super::helpers::*;
 use super::{INTER_ENGINE_MS, engine_enabled, is_social_host};
 use crate::core::module::{ModuleContext, ModuleResult};
+use crate::util::str_util::truncate_safe;
 
 pub(super) async fn recycle_entities(
     ctx: &ModuleContext,
@@ -35,14 +36,14 @@ pub(super) async fn recycle_entities(
                 }
             }
             EntityKind::Username if entity.value.len() >= 3 => {
-                Some(format!("\"{}\" address OR location OR city", entity.value))
+                Some(format!("\"{}\"\ address OR location OR city", entity.value))
             }
-            EntityKind::Person => Some(format!("\"{}\" address OR email OR phone", entity.value)),
+            EntityKind::Person => Some(format!("\"{}\"\ address OR email OR phone", entity.value)),
             EntityKind::Address if entity.confidence >= 0.40 => Some(format!(
-                "\"{}\" name OR resident OR owner OR phone",
+                "\"{}\"\ name OR resident OR owner OR phone",
                 entity.value
             )),
-            EntityKind::Phone => Some(format!("\"{}\" name OR address OR owner", entity.value)),
+            EntityKind::Phone => Some(format!("\"{}\"\ name OR address OR owner", entity.value)),
             EntityKind::Domain if entity.confidence >= 0.55 => {
                 let domain = &entity.value;
                 Some(format!(
@@ -50,7 +51,7 @@ pub(super) async fn recycle_entities(
                 ))
             }
             EntityKind::Organisation if entity.confidence >= 0.50 => {
-                Some(format!("\"{}\" address OR ABN OR location", entity.value))
+                Some(format!("\"{}\"\ address OR ABN OR location", entity.value))
             }
             _ => None,
         };
@@ -161,8 +162,8 @@ pub(super) async fn recycle_entities(
 /// and the surrounding text where the value actually appears — so the finding
 /// can be manually verified without reconstructing the lost context.
 fn recycled_evidence(r: &SearchResult, label: &str, value: &str, combined: &str) -> Evidence {
-    let title: String = r.title.chars().take(500).collect();
-    let snippet: String = r.snippet.chars().take(4000).collect();
+    let title: String = truncate_safe(&r.title, 500).to_owned();
+    let snippet: String = truncate_safe(&r.snippet, 4000).to_owned();
     let context = extract_surrounding_text(combined, value, 240);
     let mut ev = Evidence::new(
         "search_engines",
@@ -297,7 +298,7 @@ pub(super) fn extract_family_names(
     found
 }
 
-// ─── Secondary pivot: extract usernames from discovered URLs ────────────────
+// ─── Secondary pivot: extract usernames from discovered URLs ──────────────────────────
 
 /// Extract potential username pivots from search results. Social
 /// profile URLs contain usernames in their path that can be used
