@@ -72,7 +72,7 @@ use super::{reconnaissance_coverage, registry, technique_module_index};
     fn technique_module_index_is_a_clean_reverse_map() {
         let index = technique_module_index();
         assert!(!index.is_empty(), "registry maps to ATT&CK techniques");
-        for (id, mods) in &index {
+        for (id, mods) in index {
             // Only catalogued technique IDs are keyed.
             assert!(
                 crate::core::attack::technique(id).is_some(),

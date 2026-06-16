@@ -336,19 +336,48 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
 /// techniques needs the module registry — and `core` may not depend on
 /// `modules`. `core::attack` owns the pure technique data; this owns the
 /// registry-backed lookup.
+/// Module name → its ATT&CK technique IDs. The mapping is constant (the registry
+/// and each module's `attack_techniques()` are `'static`), so it is built once
+/// and reused — every per-scan / per-request coverage lookup avoids
+/// reconstructing the whole 130-module registry.
+static MODULE_TECHNIQUES: std::sync::LazyLock<
+    std::collections::HashMap<&'static str, &'static [&'static str]>,
+> = std::sync::LazyLock::new(|| {
+    registry()
+        .iter()
+        .map(|m| (m.name(), m.attack_techniques()))
+        .collect()
+});
+
+/// Reverse of [`MODULE_TECHNIQUES`]: ATT&CK technique ID → the module names that
+/// implement it. Catalogued IDs only; module lists sorted + deduplicated. Also
+/// constant, so it is built once.
+static TECHNIQUE_MODULES: std::sync::LazyLock<
+    std::collections::BTreeMap<&'static str, Vec<&'static str>>,
+> = std::sync::LazyLock::new(|| {
+    let mut index: std::collections::BTreeMap<&'static str, Vec<&'static str>> =
+        std::collections::BTreeMap::new();
+    for (name, techniques) in MODULE_TECHNIQUES.iter() {
+        for &id in *techniques {
+            if crate::core::attack::technique(id).is_some() {
+                index.entry(id).or_default().push(name);
+            }
+        }
+    }
+    for names in index.values_mut() {
+        names.sort_unstable();
+        names.dedup();
+    }
+    index
+});
+
 #[must_use]
 pub fn reconnaissance_coverage<'a>(
     sources: impl IntoIterator<Item = &'a str>,
 ) -> Vec<&'static crate::core::attack::Technique> {
-    use std::collections::HashMap;
-    let reg = registry();
-    let by_name: HashMap<&str, &'static [&'static str]> = reg
-        .iter()
-        .map(|m| (m.name(), m.attack_techniques()))
-        .collect();
     let ids: Vec<&'static str> = sources
         .into_iter()
-        .filter_map(|s| by_name.get(s).copied())
+        .filter_map(|s| MODULE_TECHNIQUES.get(s).copied())
         .flat_map(|slice| slice.iter().copied())
         .collect();
     crate::core::attack::coverage(ids)
@@ -362,24 +391,12 @@ pub fn reconnaissance_coverage<'a>(
 /// This is the single source the coverage assessment uses to answer two
 /// questions from one structure: which modules *would close* a gap technique,
 /// and which modules in a given scan *exercised* a covered one (intersect the
-/// list with the scan's evidence sources).
+/// list with the scan's evidence sources). Returns the process-wide cached
+/// index ([`TECHNIQUE_MODULES`]) — built once, not per call.
 #[must_use]
-pub fn technique_module_index() -> std::collections::BTreeMap<&'static str, Vec<&'static str>> {
-    use std::collections::BTreeMap;
-    let mut index: BTreeMap<&'static str, Vec<&'static str>> = BTreeMap::new();
-    for m in registry() {
-        let name = m.name();
-        for &id in m.attack_techniques() {
-            if crate::core::attack::technique(id).is_some() {
-                index.entry(id).or_default().push(name);
-            }
-        }
-    }
-    for names in index.values_mut() {
-        names.sort_unstable();
-        names.dedup();
-    }
-    index
+pub fn technique_module_index()
+-> &'static std::collections::BTreeMap<&'static str, Vec<&'static str>> {
+    &TECHNIQUE_MODULES
 }
 
 #[cfg(test)]
