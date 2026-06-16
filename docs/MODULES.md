@@ -71,7 +71,7 @@ records. The engine knows nothing else — every module is a one-file change.
 |---|---|---|---|---|---|
 | `xposed_or_not` | email | free | no | 128 | — |
 | `osintcat` | email | key_gated | no | 128 | email, username |
-| `niamonx` | email, username, ip_address, domain | key_gated | no | 122 | email, username, phone |
+| `niamonx` | email, username, ip_address, domain | key_gated | no | 122 | email, username, phone, person |
 | `see_know` | email, username, phone, full_name, ip_address, domain | paid | no | 126 | email, username, phone, person, ip_address, domain, address, coordinates, organisation, asn, credential, api_key |
 | `psbdmp` | email, username, domain | free | no | 125 | url |
 | `hibp` | email, domain | key_gated | no | 120 | email, domain |
