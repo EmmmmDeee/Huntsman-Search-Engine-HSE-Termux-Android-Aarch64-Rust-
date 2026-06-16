@@ -77,3 +77,100 @@ use super::*;
         assert!(!resp.riot);
         assert_eq!(resp.classification.as_deref(), Some("malicious"));
     }
+
+    // ── build_entities tests ──────────────────────────────────────
+
+    #[test]
+    fn build_entities_benign_with_operator() {
+        let data = CommunityResp {
+            ip: Some("8.8.8.8".into()),
+            noise: true,
+            riot: true,
+            classification: Some("benign".into()),
+            name: Some("Google Public DNS".into()),
+            link: Some("https://viz.greynoise.io/ip/8.8.8.8".into()),
+            message: Some("Success".into()),
+        };
+        let entities = build_entities(&data, "8.8.8.8", "scan-1");
+
+        // Should produce IpAddress + Organisation.
+        assert_eq!(entities.len(), 2);
+
+        let ip_ent = &entities[0];
+        assert_eq!(ip_ent.kind, EntityKind::IpAddress);
+        assert_eq!(ip_ent.value, "8.8.8.8");
+        assert!((ip_ent.confidence - 0.70).abs() < f64::EPSILON);
+        assert!(ip_ent.tags.iter().any(|t| t == "greynoise-noise"));
+        assert!(ip_ent.tags.iter().any(|t| t == "greynoise-riot"));
+        assert!(ip_ent.tags.iter().any(|t| t == "greynoise-benign"));
+
+        // Evidence should contain queried_ip, link, and message.
+        let ev = &ip_ent.evidence[0];
+        assert_eq!(
+            ev.attributes.get("queried_ip").map(String::as_str),
+            Some("8.8.8.8")
+        );
+        assert_eq!(
+            ev.attributes.get("link").map(String::as_str),
+            Some("https://viz.greynoise.io/ip/8.8.8.8")
+        );
+        assert_eq!(
+            ev.attributes.get("message").map(String::as_str),
+            Some("Success")
+        );
+
+        let org = &entities[1];
+        assert_eq!(org.kind, EntityKind::Organisation);
+        assert_eq!(org.value, "Google Public DNS");
+        assert!(org.tags.iter().any(|t| t == "ip-operator"));
+    }
+
+    #[test]
+    fn build_entities_malicious_no_org_for_unknown_name() {
+        let data = CommunityResp {
+            ip: Some("71.6.135.131".into()),
+            noise: true,
+            riot: false,
+            classification: Some("malicious".into()),
+            name: Some("unknown".into()),
+            link: Some("https://viz.greynoise.io/ip/71.6.135.131".into()),
+            message: None,
+        };
+        let entities = build_entities(&data, "71.6.135.131", "scan-2");
+
+        // "unknown" name must not produce an Organisation pivot.
+        assert_eq!(entities.len(), 1);
+        let ip_ent = &entities[0];
+        assert_eq!(ip_ent.kind, EntityKind::IpAddress);
+        assert!((ip_ent.confidence - 0.80).abs() < f64::EPSILON);
+        assert!(ip_ent.tags.iter().any(|t| t == "malicious"));
+        assert!(ip_ent.tags.iter().any(|t| t == "greynoise-malicious"));
+        assert!(ip_ent.tags.iter().any(|t| t == "greynoise-noise"));
+    }
+
+    #[test]
+    fn build_entities_unknown_classification() {
+        let data = CommunityResp {
+            ip: None,
+            noise: false,
+            riot: false,
+            classification: Some("unknown".into()),
+            name: None,
+            link: None,
+            message: Some("No data".into()),
+        };
+        let entities = build_entities(&data, "1.2.3.4", "scan-3");
+
+        assert_eq!(entities.len(), 1);
+        let ip_ent = &entities[0];
+        assert!((ip_ent.confidence - 0.55).abs() < f64::EPSILON);
+        assert!(ip_ent.tags.iter().any(|t| t == "greynoise-unknown"));
+
+        // message should still appear in evidence; queried_ip absent when None.
+        let ev = &ip_ent.evidence[0];
+        assert_eq!(
+            ev.attributes.get("message").map(String::as_str),
+            Some("No data")
+        );
+        assert!(!ev.attributes.contains_key("queried_ip"));
+    }
