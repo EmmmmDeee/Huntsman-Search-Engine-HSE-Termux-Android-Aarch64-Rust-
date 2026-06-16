@@ -267,6 +267,20 @@ pub fn top_dbnames(items: &[Value], n: usize) -> Vec<String> {
     sorted.into_iter().take(n).map(|(k, _)| k).collect()
 }
 
+/// Distinct, order-preserving non-empty values of `field` across every item in
+/// `items` (empties skipped via [`val_str`]). The additive companion to
+/// [`top_dbnames`]: identity attributes (country, full_name, gender, …) are
+/// aggregated across ALL records so multiple hits and aliases are retained,
+/// never collapsed to a single record's value by a last-write-wins overwrite.
+pub fn distinct_field(items: &[Value], field: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    items
+        .iter()
+        .filter_map(|item| val_str(item, field))
+        .filter(|v| seen.insert(v.clone()))
+        .collect()
+}
+
 pub mod paths;
 
 // ─── Query vocabulary — single source of truth ──────────────────────────────

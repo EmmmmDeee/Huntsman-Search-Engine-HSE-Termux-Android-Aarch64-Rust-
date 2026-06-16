@@ -161,26 +161,32 @@ impl Module for OathnetPro {
         let mut parent = target.to_entity(0.85, &ctx.scan_id);
         parent.tag(tags::BREACH);
         parent.tag("oathnet-pro");
+        // Aggregate identity attributes ADDITIVELY across every breach record:
+        // each record contributes its distinct country / name / gender / DOB so
+        // multiple hits (and aliases) are all retained and cross-correlatable,
+        // never overwritten to the last record. Order-preserving, deduplicated.
+        let countries = oathnet::distinct_field(&items, "country");
+        let names = oathnet::distinct_field(&items, "full_name");
+        let genders = oathnet::distinct_field(&items, "gender");
+        let dobs = oathnet::distinct_field(&items, "date_birth");
+
         let mut ev = Evidence::new(
             SRC,
             format!("OathNet: {total} breach record(s) — {}", top_dbs.join(", ")),
         )
         .with_attr("hits", total.to_string())
         .with_attr("top_dbnames", top_dbs.join(", "));
-
-        for item in &items {
-            if let Some(c) = val_str(item, "country") {
-                ev = ev.with_attr("country", c);
-            }
-            if let Some(n) = val_str(item, "full_name") {
-                ev = ev.with_attr("name", n);
-            }
-            if let Some(g) = val_str(item, "gender") {
-                ev = ev.with_attr("gender", g);
-            }
-            if let Some(dob) = val_str(item, "date_birth") {
-                ev = ev.with_attr("date_of_birth", dob);
-            }
+        if !countries.is_empty() {
+            ev = ev.with_attr("countries", countries.join(", "));
+        }
+        if !names.is_empty() {
+            ev = ev.with_attr("names", names.join("; "));
+        }
+        if !genders.is_empty() {
+            ev = ev.with_attr("genders", genders.join(", "));
+        }
+        if !dobs.is_empty() {
+            ev = ev.with_attr("dates_of_birth", dobs.join(", "));
         }
         parent.add_evidence(ev);
         result.push(parent);

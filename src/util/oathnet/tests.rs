@@ -84,6 +84,35 @@ use super::*;
     }
 
     #[test]
+    fn distinct_field_aggregates_every_record_additively() {
+        // Regression guard: a last-write-wins overwrite would keep only "GB" and
+        // only the final name. The additive aggregator retains ALL distinct
+        // values across records, in first-seen order.
+        let items = vec![
+            json!({"country": "AU", "full_name": "Haigen Bamford"}),
+            json!({"country": "GB", "full_name": "H Bamford"}),
+            json!({"country": "AU", "full_name": "Haigen Bamford"}),
+            json!({"full_name": "Haigen R Bamford"}),
+        ];
+        assert_eq!(distinct_field(&items, "country"), vec!["AU", "GB"]);
+        assert_eq!(
+            distinct_field(&items, "full_name"),
+            vec!["Haigen Bamford", "H Bamford", "Haigen R Bamford"]
+        );
+    }
+
+    #[test]
+    fn distinct_field_skips_empty_and_absent_values() {
+        let items = vec![
+            json!({"country": ""}),
+            json!({"other": "x"}),
+            json!({"country": "AU"}),
+        ];
+        assert_eq!(distinct_field(&items, "country"), vec!["AU"]);
+        assert!(distinct_field(&[], "country").is_empty());
+    }
+
+    #[test]
     fn paths_are_non_empty() {
         assert!(!paths::BREACH.is_empty());
         assert!(!paths::STEALER.is_empty());
