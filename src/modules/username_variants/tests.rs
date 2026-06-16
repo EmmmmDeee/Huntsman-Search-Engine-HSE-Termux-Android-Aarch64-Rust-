@@ -102,3 +102,24 @@ use super::*;
         assert!(UsernameVariants.is_passive());
         assert_eq!(UsernameVariants.category(), ModuleCategory::Social);
     }
+
+    #[test]
+    fn is_trailing_decorator_matches_vanity_tokens_and_digits() {
+        // All-digit suffixes and known vanity tokens are decorators.
+        assert!(is_trailing_decorator("1990"));
+        assert!(is_trailing_decorator("007"));
+        assert!(is_trailing_decorator("real"));
+        assert!(is_trailing_decorator("official"));
+        // Mixed and pure alpha non-vanity tokens are not decorators.
+        assert!(!is_trailing_decorator("alice"));
+        assert!(!is_trailing_decorator("johndoe"));
+    }
+
+    #[test]
+    fn module_metadata() {
+        let m = UsernameVariants;
+        assert_eq!(m.name(), "username_variants");
+        assert!(!m.description().is_empty());
+        assert!(!m.attack_techniques().is_empty());
+        assert!(m.produces().contains(&EntityKind::Username));
+    }

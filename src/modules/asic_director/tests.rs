@@ -75,3 +75,27 @@ fn parse_asic_html_extracts_name_match() {
     // but at minimum it should not panic.
     let _ = results;
 }
+
+#[test]
+fn extract_company_name_strips_acn_and_trailing_punct() {
+    // The ACN portion and trailing punctuation are stripped; the company name
+    // remains clean.
+    assert_eq!(
+        extract_company_name("Bamford Holdings Pty Ltd ACN 123456789 -", "123456789"),
+        "Bamford Holdings Pty Ltd ACN"
+    );
+    // No ACN → full line cleaned of trailing punct.
+    assert_eq!(extract_company_name("Acme Corp,", ""), "Acme Corp");
+    // Empty → empty.
+    assert_eq!(extract_company_name("", ""), "");
+}
+
+#[test]
+fn extract_au_address_requires_valid_postcode_range() {
+    // 4000 is a valid QLD postcode.
+    assert!(extract_au_address("Brisbane QLD 4000 Australia").is_some());
+    // 9999 is out of the AU postcode range (2000–7999) → no address.
+    assert!(extract_au_address("Invalid NSW 9999").is_none());
+    // No state abbreviation → no address.
+    assert!(extract_au_address("Somewhere 3000").is_none());
+}
