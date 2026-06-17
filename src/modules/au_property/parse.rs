@@ -22,43 +22,7 @@ pub(super) fn surname(full: &str) -> &str {
 
 // ─── HTML stripping ───────────────────────────────────────────────────────
 
-/// Strip HTML tags from a property portal response, injecting a space at
-/// each tag boundary to prevent word concatenation. Pure.
-pub(super) fn strip_html(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for ch in html.chars() {
-        match ch {
-            '<' => {
-                in_tag = true;
-                out.push(' ');
-            }
-            '>' => {
-                in_tag = false;
-                out.push(' ');
-            }
-            '&' if !in_tag => out.push(' '), // entity start
-            ';' if !in_tag => out.push(' '), // entity end
-            _ if !in_tag => out.push(ch),
-            _ => {}
-        }
-    }
-    // Collapse whitespace runs.
-    let mut result = String::with_capacity(out.len());
-    let mut prev_ws = false;
-    for ch in out.chars() {
-        if ch.is_whitespace() {
-            if !prev_ws {
-                result.push(' ');
-            }
-            prev_ws = true;
-        } else {
-            result.push(ch);
-            prev_ws = false;
-        }
-    }
-    result.trim().to_string()
-}
+pub(super) use crate::util::html::strip_html;
 
 // ─── Result parsing ───────────────────────────────────────────────────────
 

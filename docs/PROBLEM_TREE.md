@@ -180,7 +180,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
   `use crate::modules`. Remove the allowlist; add
   `tests/architecture.rs::core_does_not_import_modules` scanning `src/core/**`.
   **P1** (gates "highest-quality product": velocity & testability downstream.)
-- **`[ ]` T1.5 · `finalise_scan` still blocks one reactor worker at scan-end (LOW-MED)** —
+- **`[x]` T1.5 · `finalise_scan` still blocks one reactor worker at scan-end (LOW-MED)** —
   `finalise_scan` is a sync `fn` called directly from the async
   `run_with_ledger_inner`; it makes four blocking rusqlite calls in sequence:
   `upsert_entities_batch` (entity bulk persist), `upsert_scan` (scan record update),
@@ -199,6 +199,12 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
   `spawn_blocking` task's completion (guaranteed — `flush` is called after the
   `spawn_blocking` join resolves). **LOW-MED** (server-mode impact only; single-scan
   CLI-transparent). *Surfaced by cycle 11 S→P.*
+  ✅ **Delivered (cycle 14, 2026-06-17): SOL-FINALISE-BLOCKING.** `finalise_scan`
+  made `async fn`; body dispatched to `tokio::task::spawn_blocking` capturing
+  `Arc::clone(&store)` + `emitter.clone()` + `cancelled` bool snapshot.
+  `persist_relations` and `run_correlator` inlined into the closure (single
+  call-sites, removed as methods). **Paired:** `SOLUTION_TREE` SOL-FINALISE-BLOCKING
+  `[ ]`→`[x]` + §2/§3/§4/§5 updated — same commit.
 
 ### 3.F — Tier F · Foundations (build the primitives once; everything after is cheap)
 
@@ -1535,3 +1541,19 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   trimmed to `bstr` only. **Paired:** `SOLUTION_TREE` SOL-F1 node + §4b + §4d + §5
   refreshed — same commit; gate green, 3,032 lib + 24 arch + 67 api + 54 smoke +
   3 halting + 6 cli-seed + 2 audit-regression tests, 0 failures.
+- **2026-06-17** — **Cycle 14 (P→S): SOL-FINALISE-BLOCKING + local `strip_html`
+  dedup — T1.5 `[ ]`→`[x]`.** Two gap items from the cycle 13 S→P pass resolved
+  together. **(1) `strip_html` dedup (LOW):** `au_property/parse.rs` local `strip_html`
+  function replaced with `pub(super) use crate::util::html::strip_html` (re-export
+  — import path unchanged for existing tests); `au_people/mod.rs` local
+  `strip_html_tags` function deleted, canonical `use crate::util::html::strip_html`
+  added at the import block, two call sites updated, `strip_html_tags_removes_markup`
+  test deleted (function gone). Zero behaviour change; the copy-drift risk is closed.
+  **(2) SOL-FINALISE-BLOCKING (LOW-MED):** `finalise_scan` changed from `fn` to
+  `async fn`; body dispatched to `tokio::task::spawn_blocking` capturing
+  `Arc::clone(&store)`, `emitter.clone()`, and `cancelled` (bool snapshot —
+  CancellationToken is not `'static`); `persist_relations` and `run_correlator`
+  inlined into the closure (both had single call-sites; removed as methods). T1.5
+  `[ ]`→`[x]`. Gate green: fmt/clippy/doc clean, 3,229 tests (prev 3,230 — the
+  removed `strip_html_tags` test), 0 failures. **Paired:** `SOLUTION_TREE`
+  SOL-FINALISE-BLOCKING `[ ]`→`[x]` + §2/§3/§4/§5 updated — same commit.

@@ -186,6 +186,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   becomes a non-blocking `submit`; `run_with_ledger_inner` calls
   `writer.flush().await` after `finalise_scan` so all events (including ScanComplete)
   are durably written before the scan is returned. T1.2 `[~]`→`[x]`. ✅ fully closed.
+- **`[x]` SOL-FINALISE-BLOCKING · `finalise_scan` off the async reactor** —
+  `finalise_scan` made `async fn`; body dispatched to `tokio::task::spawn_blocking`
+  capturing `Arc::clone(&store)`, `emitter.clone()`, and a `cancelled` bool snapshot
+  (CancellationToken is not `'static` and cannot cross the closure's `'static` bound).
+  `persist_relations` and `run_correlator` inlined into the closure (both had single
+  call-sites; removed as methods). *Closes:* **T1.5** (`[ ]`→`[x]`). ✅ cycle 14.
 - **`[~]` SOL-BUDGET · Atomic quota reservation** — `QuotaBudget::try_increment`
   (CAS, saturating session rollback) replaces every racy `remaining()`-then-
   `increment()`. *Closes:* **T2.11** (oathnet — done; mirrors see_know). *Gap:* the
@@ -344,6 +350,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-ARCH | T1.4 | `[x]` |
 | SOL-OUTPUT-ESCAPE | §7 SPA XSS | `[x]` |
 | SOL-BLOCKING | T2.2 · T1.2 (all write paths) | `[x]` |
+| SOL-FINALISE-BLOCKING | T1.5 | `[x]` |
 | SOL-BUDGET | T2.11 oathnet | `[~]` |
 | SOL-CAP | T2.1 · T2.8 (all sub-items) | `[x]` |
 | SOL-ISOLATE | T2.11 found_keys | `[x]` |
@@ -366,21 +373,6 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **Local `strip_html` duplicates (LOW)** — cycle 13 S→P discovery: `au_property/parse.rs`
-  and `au_people/mod.rs` each define their own `strip_html`/`strip_html_tags` instead of
-  routing to `util::html::strip_html`. Both modules work; the risk is future divergence
-  from the canonical entity decoder (if `decode_entities` or tag-stripping logic changes,
-  these copies won't inherit it). Solution: route each to `crate::util::html::strip_html`
-  (a one-line change per module — the canonical function already covers their usage).
-  **LOW** (no current bug; contained SOL-F1 cleanup). To build: next available P→S slot,
-  or fold into a T2.7 scraper-health pass.
-- **T1.5** `finalise_scan` reactor blocking at scan-end — new node (cycle 11 S→P):
-  the four bulk transactions (`upsert_entities_batch`, `upsert_scan`,
-  `persist_relations` loop, `Correlator::run`) still run synchronously in the async
-  context. Solution shape is known (wrap `finalise_scan` in `spawn_blocking`; emitter
-  is already non-blocking) but no solution node has been built. **LOW-MED** (server
-  mode only). To build: add `SOL-FINALISE-BLOCKING` node under S.RESOURCE when
-  prioritised.
 - **T2.10** schema versioning — *no* solution node exists beyond the advisory; the
   cleanest is a `SOL-SCHEMA-VERSION` (set `PRAGMA user_version` at create + an
   idempotent upgrade ladder). **Latent, no current bug** → deliberately unbuilt; add
@@ -406,9 +398,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `memchr(b';', …)` replace `str::find`/`contains` on the hot page-body decode path).
   *Remaining:* `bstr` (no natural consumer yet — all scraped HTML arrives as `&str`
   via `read_body_capped`→`String::from_utf8_lossy`; `bstr` promotes only when a
-  module takes raw `&[u8]` response bytes directly). Two local `strip_html` duplicates
-  (`au_property/parse.rs`, `au_people/mod.rs`) are a LOW cleanup item — route to
-  `util::html::strip_html` (see §4a). Unblocks T2.7 + sharpens C6.
+  module takes raw `&[u8]` response bytes directly). Unblocks T2.7 + sharpens C6.
 - **SOL-F2** — de-dup done; `fst` for the large tables outstanding.
 - **SOL-F3** — proptest (str/entity/geo/html/cert/dns + import parsers) + criterion
   landed; only `cargo-fuzz` (nightly CI lane) left.
@@ -425,9 +415,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### 4d · Coverage snapshot (problem tier × solution status)
 - **T0 (crashes):** fully solved (SOL-BOUNDARY + SOL-F3 guard). ✔
-- **T1 (core guarantees):** T1.1/T1.2/T1.3/T1.4 all solved (SOL-BLOCKING `[~]`→`[x]`);
-  T1.5 `[ ]` LOW-MED open — `finalise_scan` bulk transactions still block one worker
-  at scan-end (server mode only; solution shape known, no node built yet).
+- **T1 (core guarantees):** T1.1/T1.2/T1.3/T1.4/T1.5 all solved — SOL-BLOCKING
+  `[x]` (all write paths); SOL-FINALISE-BLOCKING `[x]` (cycle 14, T1.5 closed). ✔
 - **§3.F (foundations):** all three `[~]` — the largest unrealised leverage block.
   `memchr` now a direct dep (cycle 12); remaining: `bstr` + `fst` large tables + `cargo-fuzz`.
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
@@ -700,6 +689,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (13.5s needed vs 30s; no change to the 30s constant). SOL-STREAMING description and
   C8 problem node updated to reflect 42-site scope. Gate green: fmt/clippy/doc clean,
   3,027 lib + 67 arch tests, 0 failures.
+- **2026-06-17** — **Cycle 14 (P→S): SOL-FINALISE-BLOCKING `[ ]`→`[x]` + local
+  `strip_html` dedup — T1.5 fully closed.** Two gap items from cycle 13's S→P pass
+  resolved together. **(1) `strip_html` dedup (LOW, contained):** `au_property/parse.rs`
+  local `strip_html` replaced with `pub(super) use crate::util::html::strip_html`
+  (re-export, import path unchanged for tests); `au_people/mod.rs` local `strip_html_tags`
+  function deleted, canonical `use crate::util::html::strip_html` added, two call sites
+  updated, `strip_html_tags_removes_markup` test deleted. Zero behaviour change; the
+  copy-drift risk (future `decode_entities`/tag-stripping changes not propagating) is
+  closed. **(2) SOL-FINALISE-BLOCKING (LOW-MED):** `finalise_scan` changed from
+  `fn` to `async fn`; body dispatched to `tokio::task::spawn_blocking` capturing
+  `Arc::clone(&store)`, `emitter.clone()`, and `cancelled` (bool snapshot — the
+  CancellationToken is not `'static`); `persist_relations` and `run_correlator`
+  inlined into the closure (both had single call-sites; removed as methods). T1.5
+  `[ ]`→`[x]`. **Gap refresh:** §4a loses strip_html and T1.5 (both closed); §4b
+  SOL-F1 remaining trimmed; §4d T1 row now "T1.1–T1.5 all closed ✔"; §3 leverage
+  map gains SOL-FINALISE-BLOCKING row. Gate green: fmt/clippy/doc clean, 3,229 tests
+  (prev 3,230 — one removed test), 0 failures. Paired: `PROBLEM_TREE` T1.5
+  `[ ]`→`[x]` + §8 — same commit.
 - **2026-06-17** — **Cycle 13 (S→P): memchr delivery exposes `bstr` deferral rationale
   + two local `strip_html` duplicates.** S→P pass on cycle 12's `decode_entities`
   change: grepped all callers of `strip_html` / `decode_entities` across the codebase.

@@ -25,14 +25,6 @@ fn split_name_standard() {
 }
 
 #[test]
-fn strip_html_tags_removes_markup() {
-    // Tags are replaced by spaces; adjacent content stays separated.
-    let r = strip_html_tags("<b>Sydney</b>, <span>NSW</span> 2000");
-    assert!(r.contains("Sydney") && r.contains("NSW") && r.contains("2000"));
-    assert_eq!(strip_html_tags("plain text"), "plain text");
-}
-
-#[test]
 fn parse_tps_html_extracts_au_address() {
     let html = "<div>Results for Test Person</div><p>Bondi Beach, NSW 2026</p><p>Other line</p>";
     let ents = parse_tps_html(html, "Test Person", "s");
