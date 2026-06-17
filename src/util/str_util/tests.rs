@@ -196,3 +196,114 @@ use super::{
         // A multibyte char's bytes never ASCII-fold-equal an ASCII needle byte.
         assert_eq!(find_ascii_ci("İ", "i"), None);
     }
+
+// ── Property tests (proptest) ──────────────────────────────────────────────
+// These pin the *invariants* the doc comments promise — "Total: never panics",
+// "Prefix", "Bounded", boundary-safety — over thousands of arbitrary inputs
+// (incl. multibyte / non-Latin / control chars), the exact class of input that
+// produced the T0 `to_lowercase()`-offset slice panics. A regression that
+// reintroduces a non-boundary slice fails here, not in production on a stranger's
+// scraped homepage.
+mod prop {
+    use proptest::prelude::*;
+
+    use super::super::{
+        ascii_digits, ceil_char_boundary, char_window, find_ascii_ci, floor_char_boundary,
+        slugify, truncate_display, truncate_safe,
+    };
+
+    proptest! {
+        /// `find_ascii_ci` returns an offset that is always safe to slice the
+        /// ORIGINAL haystack at (the whole point of the helper) and that actually
+        /// matches case-insensitively.
+        #[test]
+        fn find_ascii_ci_offset_is_boundary_safe_and_matches(h in ".{0,64}", n in ".{0,8}") {
+            if let Some(i) = find_ascii_ci(&h, &n) {
+                prop_assert!(i + n.len() <= h.len());
+                prop_assert!(h.is_char_boundary(i), "start {i} not a boundary in {h:?}");
+                prop_assert!(h.is_char_boundary(i + n.len()), "end not a boundary");
+                // The slice is valid (no panic) AND matches the needle ASCII-CI.
+                prop_assert!(h[i..i + n.len()].eq_ignore_ascii_case(&n));
+            }
+        }
+
+        /// An empty needle is found at 0; a needle longer than the haystack is
+        /// never found.
+        #[test]
+        fn find_ascii_ci_edge_lengths(h in ".{0,32}") {
+            prop_assert_eq!(find_ascii_ci(&h, ""), Some(0));
+            let longer = format!("{h}x");
+            prop_assert_eq!(find_ascii_ci(&h, &longer), None);
+        }
+
+        /// `truncate_safe` is a bounded, char-boundary prefix — for ANY `max`.
+        #[test]
+        fn truncate_safe_is_a_bounded_prefix(s in ".{0,64}", max in 0usize..80) {
+            let t = truncate_safe(&s, max);
+            prop_assert!(s.starts_with(t));
+            prop_assert!(t.len() <= max);
+            prop_assert!(s.is_char_boundary(t.len()));
+            // Lossless when it fits.
+            if s.len() <= max {
+                prop_assert_eq!(t, &s);
+            }
+        }
+
+        /// `char_window` never panics and always yields a real substring of `s`
+        /// (both ends rounded to boundaries, never inverted), for any offsets.
+        #[test]
+        fn char_window_is_a_real_substring(s in ".{0,64}", a in 0usize..80, b in 0usize..80) {
+            let w = char_window(&s, a, b);
+            // It is literally a sub-slice of s (so boundaries held — no panic).
+            prop_assert!(s.contains(w) || w.is_empty());
+            prop_assert!(w.len() <= s.len());
+        }
+
+        /// `floor`/`ceil` return valid boundaries that bracket the (clamped) index
+        /// and are always safe to slice at.
+        #[test]
+        fn char_boundaries_are_valid_and_ordered(s in ".{0,64}", i in 0usize..80) {
+            let lo = floor_char_boundary(&s, i);
+            let hi = ceil_char_boundary(&s, i);
+            prop_assert!(s.is_char_boundary(lo));
+            prop_assert!(s.is_char_boundary(hi));
+            prop_assert!(lo <= hi);
+            prop_assert!(hi <= s.len());
+            // Both slice positions are valid (would panic otherwise).
+            let _ = (&s[..lo], &s[hi..]);
+        }
+
+        /// `slugify` output is the promised charset with no edge/double dashes.
+        #[test]
+        fn slugify_charset_and_shape(s in ".{0,64}") {
+            let slug = slugify(&s);
+            prop_assert!(
+                slug.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+                "unexpected char in slug {slug:?}"
+            );
+            prop_assert!(!slug.starts_with('-') && !slug.ends_with('-'));
+            prop_assert!(!slug.contains("--"));
+        }
+
+        /// `ascii_digits` keeps only ASCII digits and never grows the string.
+        #[test]
+        fn ascii_digits_keeps_only_digits(s in ".{0,64}") {
+            let d = ascii_digits(&s);
+            prop_assert!(d.bytes().all(|b| b.is_ascii_digit()));
+            prop_assert!(d.len() <= s.len());
+        }
+
+        /// `truncate_display` is char-bounded; lossless when it already fits.
+        #[test]
+        fn truncate_display_char_bound(s in ".{0,64}", max in 0usize..40) {
+            let t = truncate_display(&s, max);
+            if s.chars().count() <= max {
+                prop_assert_eq!(&t, &s);
+            } else {
+                // head (max chars) + the single ellipsis.
+                prop_assert_eq!(t.chars().count(), max + 1);
+                prop_assert!(t.ends_with('…'));
+            }
+        }
+    }
+}

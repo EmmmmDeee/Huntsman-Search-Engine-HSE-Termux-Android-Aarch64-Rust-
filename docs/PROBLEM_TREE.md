@@ -166,8 +166,8 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
   table (kills the B5.3 drift), **flat RAM** (memory-mapped FST — critical on a
   phone), O(key) lookups, and trivial fuzzy/prefix queries (Levenshtein automata)
   for free → directly powers typosquat/username-variant/suburb-matching. **P1-enabler**
-- **`[ ]` F.3 · Proof & measurement infrastructure** — there is no property
-  testing, no fuzzing, and only `#[ignore]` perf baselines.
+- **`[~]` F.3 · Proof & measurement infrastructure** — was: no property testing,
+  no fuzzing, only `#[ignore]` perf baselines.
   → **Solution:** add (dev-only, zero runtime cost): **`proptest`** suites for
   every pure function (parsers: no-panic; `Entity::absorb`: commutative +
   idempotent + clamped; geo: `parse_coords`↔`format` round-trip; `normalise_*`:
@@ -176,7 +176,16 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
   wire, DER), seeded from `raw_archive` samples; **`criterion`** benches for
   dispatch throughput, the correlation pass (formalise the existing O(n²) guard),
   `aho-corasick` scan, and `fst` lookup. CI compiles benches (`--no-run`) and
-  runs the fuzz corpora as regression tests. **P1-enabler**
+  runs the fuzz corpora as regression tests. **P1-enabler** ✅ **proptest landed**
+  (dev-dep, pinned 1.11): 13 properties pinning the T0-panic-class boundary
+  guarantees (`find_ascii_ci`/`truncate_safe`/`char_window`/char-boundaries
+  never slice mid-codepoint), `slugify`/`ascii_digits`/`truncate_display` charset
+  + shape, `normalise` **idempotency for every kind** (UID-stability invariant),
+  `derive_uid` determinism, and `geohash`/`parse_coords` totality + round-trip.
+  Regression seeds committed. **Found + fixed a real bug** (`slugify` leaked raw
+  non-ASCII/uppercase-accented chars into correlation tags). *Remaining:*
+  `cargo-fuzz` (nightly/libfuzzer — gate on a CI lane, not on-device aarch64) +
+  `criterion` benches.
 
 ### 3.2 — Tier 2 · P2 robustness & quality
 
@@ -456,3 +465,20 @@ legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
   (identifying it as Cloudflare IS the finding), so a blanket dispatch-skip would
   be wrong. The deeper win — origin-unmasking — is recorded under §4 C4. Gate
   green: clippy/fmt/doc clean, 2,967 lib tests (+1), 0 failures.
+- **2026-06-17** — **Executed F.3 (proptest portion).** Added `proptest` (dev-only,
+  pinned 1.11, zero shipped cost) and 13 property tests over the pure core: the
+  T0-panic-class boundary guarantees (`find_ascii_ci` returns a slice-safe offset
+  that matches; `truncate_safe` is a bounded char-boundary prefix; `char_window`
+  is always a real substring; `floor`/`ceil_char_boundary` are valid + ordered —
+  i.e. the "never slice mid-codepoint" contract is now machine-checked over
+  thousands of multibyte/control inputs), `slugify`/`ascii_digits`/
+  `truncate_display` charset + shape, `normalise` **idempotency across every
+  EntityKind** (the UID-stability / cross-scan-dedup invariant), `derive_uid`
+  determinism, and `geohash`/`parse_coords` totality + round-trip on arbitrary
+  f64s. proptest immediately **found a real bug**: `slugify` used
+  `char::is_alphanumeric` + `to_ascii_lowercase` (a no-op on non-ASCII), so a
+  Unicode-alphanumeric source name (`É`, `¹`) leaked a raw non-ASCII/uppercase
+  byte into correlation tags (`niamonx:breach:{slug}`), breaking tag determinism;
+  switched to `is_ascii_alphanumeric` (output now strictly `[a-z0-9-]`). Regression
+  seed committed. Remaining F.3: cargo-fuzz (CI lane) + criterion benches. Gate
+  green: clippy/fmt/doc clean, 2,980 lib tests (+13), 0 failures.

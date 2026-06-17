@@ -220,9 +220,16 @@ pub fn fold_ascii_lower(s: &str) -> String {
     out
 }
 
-/// URL/tag-safe slug: lowercase alphanumeric runs joined by single `-`, with
-/// leading and trailing `-` stripped. Non-alphanumeric characters (spaces,
-/// dots, underscores, etc.) are collapsed into a single dash separator.
+/// URL/tag-safe slug: lowercase **ASCII** alphanumeric runs joined by single `-`,
+/// with leading and trailing `-` stripped. Every other character — spaces, dots,
+/// underscores, AND non-ASCII letters/digits (`é`, `¹`, `Ⅳ`, fullwidth digits) —
+/// is collapsed into a single dash separator. The output is therefore always pure
+/// `[a-z0-9-]`: a slug feeds correlation **tags** (`niamonx:breach:{slug}`,
+/// `status:{slug}`), so two inputs differing only in the case/accent of a
+/// non-ASCII letter must not yield different tags, and a tag must never carry a
+/// raw uppercase-accented byte. (Using `char::is_alphanumeric` +
+/// `to_ascii_lowercase` did exactly that — `to_ascii_lowercase` is a no-op on
+/// non-ASCII, so `slugify("É")` leaked `"É"`.)
 ///
 /// ```
 /// use huntsman_search_engine::util::str_util::slugify;
@@ -231,13 +238,14 @@ pub fn fold_ascii_lower(s: &str) -> String {
 /// assert_eq!(slugify("github.com"), "github-com");
 /// assert_eq!(slugify("---"), "");
 /// assert_eq!(slugify("client transfer prohibited"), "client-transfer-prohibited");
+/// assert_eq!(slugify("café¹"), "caf"); // non-ASCII → separator, trailing dash stripped
 /// ```
 #[must_use]
 pub fn slugify(s: &str) -> String {
     let mut slug = String::with_capacity(s.len());
     let mut last_dash = true;
     for ch in s.chars() {
-        if ch.is_alphanumeric() {
+        if ch.is_ascii_alphanumeric() {
             slug.push(ch.to_ascii_lowercase());
             last_dash = false;
         } else if !last_dash {

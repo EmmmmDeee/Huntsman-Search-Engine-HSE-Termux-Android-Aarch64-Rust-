@@ -169,3 +169,54 @@ fn reverse_country_iso_aliases_us_subregions() {
     assert_eq!(reverse_country_iso(21.3, -157.8), Some("US")); // Hawaii → US
     assert_eq!(reverse_country_iso(0.0, -30.0), None); // mid-Atlantic
 }
+
+// ── Property tests (proptest) ──────────────────────────────────────────────
+mod prop {
+    use proptest::prelude::*;
+
+    use super::{geohash, parse_coords};
+
+    proptest! {
+        /// `geohash` is **total**: any `f64` lat/lon (incl. NaN/inf/out-of-range)
+        /// and any precision yields a result without panicking. In-range inputs
+        /// produce a string of the clamped precision (1..=12) drawn only from the
+        /// base-32 geohash alphabet; out-of-range (or non-finite) yields "".
+        #[test]
+        fn geohash_is_total_and_well_formed(
+            lat in proptest::num::f64::ANY,
+            lon in proptest::num::f64::ANY,
+            prec in 0u8..20,
+        ) {
+            let h = geohash(lat, lon, prec);
+            if (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon) {
+                prop_assert_eq!(h.len(), prec.clamp(1, 12) as usize);
+                prop_assert!(
+                    h.bytes().all(|b| b"0123456789bcdefghjkmnpqrstuvwxyz".contains(&b)),
+                    "non-base32 char in {h:?}"
+                );
+            } else {
+                prop_assert!(h.is_empty(), "out-of-range/non-finite must yield empty, got {h:?}");
+            }
+        }
+
+        /// `parse_coords` round-trips a formatted valid coordinate pair (within
+        /// f64 formatting tolerance) and rejects out-of-range pairs.
+        #[test]
+        fn parse_coords_round_trips_valid(lat in -90.0f64..=90.0, lon in -180.0f64..=180.0) {
+            let s = format!("{lat},{lon}");
+            let (rlat, rlon) = parse_coords(&s).expect("valid pair must parse");
+            prop_assert!((rlat - lat).abs() < 1e-9);
+            prop_assert!((rlon - lon).abs() < 1e-9);
+        }
+
+        /// `parse_coords` never panics on arbitrary text and only ever returns
+        /// in-range pairs.
+        #[test]
+        fn parse_coords_is_total_and_bounded(s in ".{0,40}") {
+            if let Some((lat, lon)) = parse_coords(&s) {
+                prop_assert!((-90.0..=90.0).contains(&lat));
+                prop_assert!((-180.0..=180.0).contains(&lon));
+            }
+        }
+    }
+}

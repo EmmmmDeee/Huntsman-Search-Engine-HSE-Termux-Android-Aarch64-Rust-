@@ -1133,3 +1133,55 @@ fn absorb_dedups_identically_on_both_branches() {
         "the shared (source,summary) row must be folded to one on the HashSet branch"
     );
 }
+
+// ── Property tests (proptest) ──────────────────────────────────────────────
+mod prop {
+    use proptest::prelude::*;
+
+    use super::super::{EntityKind, derive_uid, normalise};
+
+    /// A representative spread of kinds covering every non-trivial `normalise`
+    /// arm (case-fold, `@`/`www.` stripping, phone digit-keep, coord canonical
+    /// form, URL host-lowercase) plus the trim-only default.
+    fn any_kind() -> impl Strategy<Value = EntityKind> {
+        prop::sample::select(vec![
+            EntityKind::Email,
+            EntityKind::Username,
+            EntityKind::Domain,
+            EntityKind::Phone,
+            EntityKind::Url,
+            EntityKind::Coordinates,
+            EntityKind::Address,
+            EntityKind::Organisation,
+            EntityKind::IpAddress,
+            EntityKind::AbnAcn,
+            EntityKind::CryptoAddress,
+            EntityKind::MacAddress,
+            EntityKind::Person,
+            EntityKind::Asn,
+        ])
+    }
+
+    proptest! {
+        /// `normalise` is **idempotent** for every kind — the UID-stability
+        /// invariant. Re-normalising an already-normalised value must be a fixed
+        /// point; otherwise the same real-world entity could key to two different
+        /// UIDs across scans (the `www.www.` fixed-point bug class), silently
+        /// fragmenting one identity into two and breaking cross-scan dedup.
+        #[test]
+        fn normalise_is_idempotent(kind in any_kind(), v in ".{0,48}") {
+            let once = normalise(&kind, &v);
+            let twice = normalise(&kind, &once);
+            prop_assert_eq!(&once, &twice, "kind={:?} value={:?}", kind, v);
+        }
+
+        /// `derive_uid` is a pure, total function of `(kind, normalised value)`:
+        /// equal inputs yield the equal UID, and it never panics on arbitrary
+        /// (possibly multibyte/control-char) normalised text.
+        #[test]
+        fn derive_uid_is_deterministic(kind in any_kind(), v in ".{0,48}") {
+            let n = normalise(&kind, &v);
+            prop_assert_eq!(derive_uid(&kind, &n), derive_uid(&kind, &n));
+        }
+    }
+}
