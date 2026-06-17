@@ -113,8 +113,10 @@ source ~/.bashrc
 
 Several possibilities:
 
-1. **No network.** All v0.2 modules except `email_to_username` need network.
-   Confirm with `curl -I https://crt.sh`.
+1. **No network.** Almost every module needs network; the exceptions are the
+   local-only derivers (e.g. `name_intel`, `email_parse`, `email_canonical`,
+   `username_variants`) and the on-device sensors. Confirm with
+   `curl -I https://crt.sh`.
 2. **Wrong target kind for the module.** Run `hse modules` and check the
    `ACCEPTS` column. E.g. `hudsonrock` accepts `email` and `domain` only —
    passing `--kind username` will skip it.
@@ -126,16 +128,15 @@ Several possibilities:
 
 ### Expansion doesn't trigger even with `--depth 2`
 
-Default `--min-expand-confidence` is 0.75 (Verified tier). Most v0.2
-modules produce entities below this — they're deliberate to avoid
-runaway speculation. Lower the bar:
+Default `--min-expand-confidence` is 0.50 (Probable tier). Entities below this
+are deliberately not expanded, to avoid runaway speculation. Lower the bar:
 
 ```bash
-hse scan --kind domain --value example.com --depth 2 --min-expand-confidence 0.5
+hse scan --kind domain --value example.com --depth 2 --min-expand-confidence 0.4
 ```
 
-Or use specific modules that produce high-confidence entities (`dns_resolver`
-gives 0.95 for A records, which always expand).
+Or use specific modules that produce high-confidence entities (`dns_intel`
+resolves A records at high confidence, which always expand).
 
 ### `database is locked`
 

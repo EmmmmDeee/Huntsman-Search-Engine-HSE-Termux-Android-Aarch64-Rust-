@@ -6,16 +6,25 @@ suitable for scripting.
 ## Subcommands
 
 ```
-hse scan      Run a single scan, print results
-hse live      Re-run a scan periodically (v0.5+)
-hse diff      Compare two scans: entities added / removed / re-scored
-hse modules   List registered modules with cost / target / passive flags
-hse engines   Liveness panel: probe each free search engine (up/blocked/down)
-hse config    View/set persistent capability toggles (e.g. engine.google off)
-hse doctor    Verify environment (DB, keys, Termux, modules)
-hse serve     Start the HTTP server + SPA (browse to http://127.0.0.1:8080)
-hse --help    Top-level help
-hse --version Print version
+hse scan          Run a single scan, print results
+hse live          Re-run a scan periodically
+hse serve         Start the HTTP server + SPA (browse to http://127.0.0.1:8080)
+hse modules       List registered modules with cost / target / passive flags
+hse engines       Liveness panel: probe each free search engine (up/blocked/down)
+hse diff          Compare two scans: entities added / removed / re-scored
+hse export        Export a stored scan (json / csv / gexf / report / dossier / debug)
+hse import        Ingest an OathNet / breach / dossier export as a scan
+hse audit         Score a scan's output quality (alias: score)
+hse keys          Manage the API-key pool (list / add / validate)
+hse provision     First-run setup (alias: setup)
+hse diagnostics   Module-health / ledger diagnostics (alias: diag, check)
+hse selftest      Run built-in self-checks
+hse radar         Local RF / sensor sweep (Termux)
+hse oathnet-batch Generate a de-duplicated OathNet query plan from one seed
+hse config        View/set persistent capability toggles (e.g. engine.google off)
+hse doctor        Verify environment (DB, keys, Termux, modules)
+hse --help        Top-level help
+hse --version     Print version
 ```
 
 ---
@@ -43,7 +52,7 @@ hse scan [OPTIONS] --kind <KIND> --value <VALUE>
 
 | Flag | Description |
 |------|-------------|
-| `-m, --modules <CSV>`  | Allowlist: only these modules run (e.g. `crtsh,dns_resolver`) |
+| `-m, --modules <CSV>`  | Allowlist: only these modules run (e.g. `crtsh,dns_intel`) |
 | `--exclude <CSV>`      | Denylist: these modules are skipped |
 | `--free-only`          | Skip key-gated and paid modules (only `cost() == Free`) |
 | `--passive-only`       | Skip non-passive modules (only `is_passive() == true`) |
@@ -67,7 +76,7 @@ hse scan [OPTIONS] --kind <KIND> --value <VALUE>
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-d, --depth <N>`             | `2`    | Rounds of recursive expansion. Omit to use the product default (2); `0` = single-round scan (v0.1 behaviour). `--auto`/`--recursive` override an omitted value. |
-| `--min-expand-confidence <F>` | `0.75` | Only expand entities whose `c_effective()` is ≥ this. Default is the Verified tier — strong filter. |
+| `--min-expand-confidence <F>` | `0.50` | Only expand entities whose `c_effective()` is ≥ this. Default is the Probable tier; pass `0.75` to expand Verified-only. |
 | `--max-entities <N>`          | none   | Stop expansion when entity count reaches this. |
 | `--max-wall-time <SECS>`      | none   | Stop expansion when wall-time exceeds this. |
 
@@ -92,7 +101,7 @@ hse scan --kind domain --value example.com
 
 # Only run two specific modules, throttle, JSON output
 hse scan --kind domain --value example.com \
-  --modules crtsh,dns_resolver --throttle 500 --output json
+  --modules crtsh,dns_intel --throttle 500 --output json
 
 # Free APIs only (good for unattended runs)
 hse scan --kind email --value target@example.com --free-only
@@ -165,7 +174,7 @@ Returns a JSON object:
       "observed_at": 1716468001,
       "evidence": [
         {
-          "source": "dns_resolver",
+          "source": "dns_intel",
           "summary": "A record for example.com",
           "attributes": { "record_type": "A", "domain": "example.com" },
           "recorded_at": 1716468001
@@ -195,9 +204,9 @@ Lists all registered modules in priority order, with cost and target acceptance:
 MODULE                      PRI  COST       PASSIVE  ACCEPTS
 --------------------------------------------------------------------------------
 hudsonrock                  130  free       no       email,domain
-email_to_username            95  free       yes      email
+name_intel            95  free       yes      email
 crtsh                        35  free       no       domain
-dns_resolver                 30  free       no       domain
+dns_intel                 30  free       no       domain
 ip_geo                       28  free       no       ip
 ```
 
@@ -287,8 +296,8 @@ All endpoints are under `/api/v1/`.
 
 | Method | Path                       | Notes |
 |--------|----------------------------|-------|
-| GET    | `/health`                  | `{ "status": "ok", "version": "0.3.0" }` |
-| GET    | `/version`                 | `{ "version": "0.3.0" }` |
+| GET    | `/health`                  | `{ "status": "ok", "version": "1.4.0" }` |
+| GET    | `/version`                 | `{ "version": "1.4.0" }` |
 | GET    | `/modules`                 | `{ "count": N, "modules": [{ name, priority, cost, passive }, ...] }` |
 | GET    | `/keys/status`             | `{ count, services: [{ service, total, active, rate_limited, exhausted, invalid, untested, uses, errors }, ...] }` — key-pool quota health, **never key values**. |
 | GET    | `/settings/keys`           | `{ keys: [{ name, set }], count, write_enabled, env_path }` — which `HUNTSMAN_*` keys are configured, **never their values**. Drives the Settings page. |
@@ -444,7 +453,7 @@ hse diff before.json latest
 Verifies the environment. Run after install and after any system change:
 
 ```
-HSE v0.2.0 — doctor
+HSE v1.4.0 — doctor
 
 Termux:    detected
 DB path:   /data/data/com.termux/files/home/.huntsman/huntsman.db
@@ -453,8 +462,10 @@ Keys path: /data/data/com.termux/files/home/.huntsman.env
 Storage:
   ok — database opens cleanly
 
-Modules (5 registered):
-  free       5
+Modules (118 registered):
+  free       89
+  key-gated  24
+  paid        5
 
 HUNTSMAN_* keys loaded: 0
   (none set; all free modules still work)

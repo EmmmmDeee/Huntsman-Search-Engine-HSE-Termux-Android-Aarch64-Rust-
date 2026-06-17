@@ -133,32 +133,32 @@ explodes.
   password_hash, ApiKey
 - Force-multiplier tagging on Multiplier-tier discovered keys
 
-### `src/modules/oathnet_pro/key_harvest.rs`
+### `src/modules/oathnet_pro/key_harvest/`
 - Scans 20 password-like fields per record
 - Scans URL query parameters for `?key=`, `?token=`, `?api_key=`
 - Scans the `extra` JSON object
 - Scans the `username` field (some logs store keys as usernames)
-- Matches against 80+ prefix patterns
+- Matches against 300+ prefix patterns
 - Matches against 165+ service-domain URLs
 - Promotes discovered keys to the `force-multiplier` tag when
   the service is a Multiplier-tier (Shodan, Censys, etc.)
 
-### `src/modules/web_crawler/crawl_util.rs`  **← where the magic happens**
+### `src/modules/web_crawler/crawl_util/mod.rs`  **← where the magic happens**
 - `probe_config_leaks` fires on every Domain entity
-- 108 config-file paths probed in parallel (semaphore=16)
+- 103 config-file paths probed in parallel (semaphore=16)
 - 3-second timeout per request
 - Body cap: 1 MB
 - Skips HTML responses (catches the silent-redirect-to-login case)
 - Each discovered key → ApiKey entity → pool → AU-021 correlation
 
-### `src/core/engine.rs` — hot-inject
+### `src/core/engine/dispatch.rs` — hot-inject
 - Two-phase concurrent dispatch:
   - Phase 1 (synchronous): all Paid modules run, ctx refreshed after each
   - Phase 2 (concurrent): all Free + KeyGated modules spawn with key-rich ctx
 - Sequential dispatch path also refreshes ctx after every module
 - Both paths log the ROI tier when injecting (Multiplier / Expansion / Terminal)
 
-### `src/util/key_roi.rs`
+### `src/util/key_roi/mod.rs`
 - Classifies each service into one of three tiers:
   - **Multiplier**: Shodan, Censys, SecurityTrails, Hunter, Proxycurl,
     HIBP, Dehashed, IntelX, OathNet itself, see-know.eu, snusbase,
@@ -360,13 +360,13 @@ are auto-prioritised in the ROI classification.
 | ...plus 25 more covering Mailchimp, Discord bots, Azure, Square, Atlassian variants |
 
 Full canonical list lives in
-`src/modules/oathnet_pro/key_harvest.rs::KEY_PATTERNS`.
+`src/modules/oathnet_pro/key_harvest/patterns.rs::KEY_PATTERNS`.
 
 ---
 
-## Config-file paths probed (108)
+## Config-file paths probed (103)
 
-Full list in `src/modules/web_crawler/crawl_util.rs::CONFIG_LEAK_PATHS`.
+Full list in `src/modules/web_crawler/crawl_util/mod.rs::CONFIG_LEAK_PATHS`.
 
 Categories:
 - 18 `.env` variants (apex + /api, /admin, /private, /backend, /server)
@@ -387,14 +387,14 @@ Categories:
 
 | Resource | Default cap | Where set |
 |----------|-------------|-----------|
-| OathNet queries per scan | 4 | `src/util/oathnet.rs::MAX_QUERIES_PER_SCAN` |
+| OathNet queries per scan | 4 | `src/util/oathnet/mod.rs` (per-scan `BUDGET` cap) |
 | OathNet queries per process session | 30 | `HUNTSMAN_OATHNET_SESSION_CAP` env var |
 | OathNet record page size | 100 (50 for infra) | `src/modules/oathnet_pro/mod.rs::page_size` |
-| Wigle queries per scan | 3 geo + 2 BSSID | `src/modules/wigle.rs` |
+| Wigle queries per scan | 3 geo · 5 BSSID · 2 cell · 2 bluetooth | `src/modules/wigle/mod.rs` |
 | Web crawler pages per scan | 60 | `src/modules/web_crawler/mod.rs::MAX_PAGES` |
 | Web crawler max depth | 3 | `src/modules/web_crawler/mod.rs::MAX_DEPTH` |
-| Web crawler config-probe concurrency | 16 | `src/modules/web_crawler/crawl_util.rs` |
-| Concurrent modules per dispatch | 4 | `--max-concurrent` CLI flag |
+| Web crawler config-probe concurrency | 16 | `src/modules/web_crawler/crawl_util/mod.rs` |
+| Concurrent modules per dispatch | default 2 (profiles raise to 4/8) | `--max-concurrent` |
 | Free modules | unlimited | (intentional) |
 
 To run with maximum throughput:
@@ -417,13 +417,13 @@ service's live test endpoint:
 hse scan --kind api_key --value <DISCOVERED_KEY>
 ```
 
-Test endpoints used (defined in `src/util/service_defs.rs`):
+Test endpoints used (defined in `src/util/service_defs/mod.rs`):
 - Shodan: `GET /api-info?key=<KEY>`
 - HIBP: `GET /api/v3/breaches` with `hibp-api-key: <KEY>`
 - Censys: HTTP Basic Auth against `/api/v2/hosts/1.1.1.1`
 - VirusTotal: `x-apikey: <KEY>` against `/api/v3/urls`
 - AbuseIPDB: `Key: <KEY>` against `/api/v2/check`
-- See `src/util/service_defs.rs` for the full list (40 services)
+- See `src/util/service_defs/mod.rs` for the full list (40 services)
 
 A 200/201/204/3xx response confirms the key is live and adds it as
 `Active` to the pool. A 401/403/429 marks it `Invalid` or rate-limited.
@@ -470,8 +470,8 @@ queries, payment authorizations, repo access — is on you to justify.
 ## See also
 
 - `docs/OATHNET_API_GUIDE.txt` — complete OathNet API reference
-- `src/util/key_roi.rs` — ROI tier classification source
-- `src/modules/oathnet_pro/key_harvest.rs` — key pattern matchers
-- `src/modules/web_crawler/crawl_util.rs::probe_config_leaks` — the 108-path probe
-- `src/core/engine.rs::dispatch_target_concurrent` — Phase 1 / Phase 2 hot-inject
+- `src/util/key_roi/mod.rs` — ROI tier classification source
+- `src/modules/oathnet_pro/key_harvest/` — key pattern matchers
+- `src/modules/web_crawler/crawl_util/mod.rs::probe_config_leaks` — the 108-path probe
+- `src/core/engine/dispatch.rs::dispatch_target_concurrent` — Phase 1 / Phase 2 hot-inject
 - `tests/smoke.rs::key_chaining_*` — load-bearing tests for the chain

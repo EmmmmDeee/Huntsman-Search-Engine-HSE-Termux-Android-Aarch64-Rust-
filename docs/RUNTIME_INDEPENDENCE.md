@@ -32,11 +32,11 @@ maintainable, documented, deterministic Rust before it ships.
 
 ## Where the determinism lives (code, not magic)
 
-- **Confidence fusion** — `Entity::c_effective` (`src/core/entity.rs`): a
+- **Confidence fusion** — `Entity::c_effective` (`src/core/entity/mod.rs`): a
   closed-form noisy-OR / multiplicative model over the count of *distinct*
   corroborating sources, `max(C·(1+0.15·ln n), 1−(1−C)·0.65^(n−1))`. Pure
   function; no training, no inference.
-- **Correlation** — the `AU-0xx` rules in `src/core/correlator/rules.rs`: each is
+- **Correlation** — the `AU-0xx` rules in `src/core/correlator/rules/`: each is
   a hand-written, named, documented rule (e.g. AU-033 links an ABN/ACN to its
   registered organisation by registry tag). Inspectable and unit-tested.
 - **Heuristics** — e.g. `breach_timezone::infer_timezone` is a deterministic

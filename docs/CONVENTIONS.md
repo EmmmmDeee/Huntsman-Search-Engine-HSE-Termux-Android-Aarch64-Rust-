@@ -8,13 +8,22 @@ drift a CI failure.**
 
 ## 1. Layering
 
-`core` → `modules` → `util` is the only legal import direction into `core`:
-core never imports from `modules` (the engine is module-agnostic), and core
+The intended dependency direction is `cli`/`api` → `core` → `util`, with
+`modules` depending only on `core` types: **core is meant to be module-agnostic**
+— the engine drives modules through the registry, never the reverse. Core
 reaches `util` only through the deliberate exceptions listed in the test.
 Persistence is consumed through the `core::port::StoragePort` trait; `core/`
 and `api/` never name `storage::Store` directly — the only `Store::open` sites
 are the CLI composition roots.
-*Enforced:* `tests/architecture.rs`.
+
+*Partially enforced:* `tests/architecture.rs` guards `core → util`
+(`core_does_not_import_util_directly`), `core → storage`
+(`core_does_not_import_storage_directly`), and `modules → engine/storage`
+(`modules_do_not_import_engine_or_storage`). **Known gap:** `core → modules` is
+not yet guarded and is currently violated — `core/engine/mod.rs` and
+`core/engine/enrich.rs` import `crate::modules` (tracked in
+`docs/PROBLEM_TREE.md` §3.1 T1.4; the fix inverts the edge via a registry of
+hooks installed by the module layer).
 
 ## 2. One module per file; hubs declare, never house
 
@@ -80,7 +89,8 @@ fold (clustering, collision resolution), use deterministic tie-breaks in every
 ranking comparator (NaN handled explicitly), canonicalise evidence/tag order
 before persistence, and derive ids by hashing canonical inputs. New
 order-sensitive code gets a permutation test (see
-`rule_017_clustering_is_order_independent`).
+`canonicalize_order_is_merge_order_independent` and
+`correlation_key_is_order_independent_over_uids`).
 
 ## 6. Drift-guards for hand-maintained facts
 

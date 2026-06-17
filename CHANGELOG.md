@@ -12,6 +12,29 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Unit-test coverage expansion (~2,944 lib tests passing).** Added direct
+  unit tests for previously-untested pure functions across the tree —
+  `signal_radar/gps`, search-engine/email/fullcontact helpers, the `util`
+  (`oathnet`, `key_pool`, `key_roi`, `oathnet_batch`), `storage`, `cli`
+  import/export, and the `core` correlator/engine/entity/timeline/crypto layers
+  (parsers, classifiers, confidence math, determinism).
+- **`docs/PROBLEM_TREE.md` — a single, prioritised, living problem + capability
+  tree** (functionality scope), with an optimal solution on every node and a
+  capability program to surpass SpiderFoot/Maltego without heavy graphing.
+
+### Changed
+
+- **Documentation accuracy sweep — every doc reconciled to ground truth.**
+  Converged all docs on the authoritative counts (**118 modules = 89 free · 24
+  key-gated · 5 paid**, **59 rules** AU-001…AU-059, v1.4.0, rusqlite 0.39,
+  reqwest 0.12). Fixed stale module names (`dns_resolver`→`dns_intel`,
+  `email_to_username`→`name_intel`, the consolidated sensor modules), `*.rs`→
+  directory path-rot, the `panic="unwind"` facts (correcting `FAULT_TREE`'s
+  inverted premise), re-bucketed the `MODULES.md` catalogue (the AU `People`
+  modules), and regenerated `ARCHITECTURE_AUDIT.md` as a current-state reference.
+- **Neutralised militarised framing in code comments** to neutral OSINT
+  terminology (SpiderFoot/Maltego-aligned); no behaviour change.
+
 - **New `onyphe` module — ONYPHE cyber-defence search (key-gated).** Wires up
   the `HUNTSMAN_ONYPHE_KEY` that was registered in the service registry but had
   no consuming module (a held key doing nothing). Queries ONYPHE's API v2
@@ -24,7 +47,7 @@ versions can include breaking changes; patch versions are bug-fix-only.
   `domain` as string *or* array), so it degrades to fewer entities rather than
   failing on ONYPHE's per-category / per-plan shape variance. Emitted domains
   pass through `is_noncentral_domain`, so a resolver's CDN/mega host can't
-  pollute the graph. Brings the catalogue to **115 modules (89 free · 21
+  pollute the graph. Brings the catalogue to **118 modules (89 free · 24
   key-gated · 5 paid)**. The live response shape should be confirmed once on a
   real key — the request/auth/endpoints follow ONYPHE's documented v2 schema.
 

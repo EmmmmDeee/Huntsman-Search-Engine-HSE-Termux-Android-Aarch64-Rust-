@@ -119,7 +119,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ---
 
-## Seed Types (13 supported)
+## Seed Types (14 supported)
 
 | Seed | Flag | Example | Modules |
 |------|------|---------|---------|
@@ -136,6 +136,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 | Organisation | `--kind org` | `ACME Pty Ltd` | 2 |
 | ABN/ACN | `--kind abn` | `51824753556` | 1 |
 | MAC Address | `--kind mac` | `AA:BB:CC:DD:EE:FF` | 3 |
+| API Key | `--kind apikey` | `AKIA…` | 1 |
 
 ---
 
@@ -199,16 +200,16 @@ Name/Email/Username → search_engines (17 engines, free)
                     → oathnet_pro (breach IPs)
                     → ip_geo + ip_whois_geo (free HTTPS)
                     → Coordinates
-                    → reverse_geocode (Nominatim, free) → Address
+                    → geocode (Nominatim, free) → Address
                     → wigle (WiFi density + SSID intel + AP MAC addresses)
 
 IP Address → ip_geo (free) + ip_whois_geo (free) → Coordinates + Address
-           → reverse_geocode → precise Address
+           → geocode → precise Address
 
-Address → forward_geocode (Nominatim, free) → Coordinates
+Address → geocode (Nominatim, free) → Coordinates
         → search_engines → name/phone/business associations
 
-Coordinates → reverse_geocode → Address
+Coordinates → geocode → Address
             → wigle (adaptive bbox, conserves API quota)
             → search_engines → map/property associations
 ```
@@ -231,7 +232,7 @@ Round 2: Discovered IPs → geo modules → coordinates → address.
 
 | Knob | Default | Purpose |
 |------|---------|---------|
-| `--depth N` | `0` | Max expansion rounds |
+| `--depth N` | `2` | Max expansion rounds (0 = single seed round) |
 | `--min-expand-confidence F` | `0.50` | Min C_eff to expand (0.75 = Verified-only) |
 | `--max-entities N` | none | Stop at N total entities |
 | `--max-wall-time SECS` | none | Stop after SECS wall-time |
@@ -290,8 +291,8 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 - **Runtime AI-independence** — zero AI/ML/LLM/inference/vector/embedding deps; every result is deterministic Rust, identical on Termux aarch64 (no root), Linux and CI with no AI available (CI-enforced; charter: [`docs/RUNTIME_INDEPENDENCE.md`](docs/RUNTIME_INDEPENDENCE.md))
 - rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
-- 1600+ tests (unit + API integration + architecture boundary enforcement)
-- 43 correlator rules (AU-001 through AU-043), incl. 2 graph-aware edge rules
+- 2900+ tests (unit + API integration + architecture boundary enforcement)
+- 59 correlator rules (AU-001 through AU-059), incl. graph-aware edge rules
 - 2 tokio worker threads (tuned for Termux low-power devices)
 - Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)
 

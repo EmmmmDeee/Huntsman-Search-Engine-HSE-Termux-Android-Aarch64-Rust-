@@ -204,10 +204,10 @@ termux-setup-storage    # grants access to /sdcard etc. — only needed if you w
 pkg update -y
 ```
 
-### Optional: termux-api for on-device sensors (v0.6+)
+### Optional: termux-api for on-device sensors
 
-The four `termux-*` sensor modules (`wifi_scan`, `wifi_connect`,
-`gps_fix`, `cell_survey`) need both the binaries and the companion app:
+The on-device sensor modules (`device_sensors`, `cell_intel`, `wifi_intel`,
+`signal_radar`) need both the `termux-*` binaries and the companion app:
 
 ```bash
 pkg install termux-api
@@ -217,14 +217,14 @@ pkg install termux-api
 
 After installing the app, grant it the relevant Android permissions
 (Location, Phone, Wi-Fi as required) in Android Settings. The Termux:API
-app must have *Allow all the time* location permission for `cell_survey`
+app must have *Allow all the time* location permission for `cell_intel`
 to work (Android Q+ restricts cell info to apps with foreground
 location).
 
-When termux-api is unavailable, the four sensor modules return empty
-results rather than erroring (via `util::termux::termux_cmd` helper),
-so HSE remains fully usable. The two file-reading sensors (`arp_scan`,
-`net_interfaces`) don't need termux-api and work on any Linux host.
+When termux-api is unavailable, these sensor modules return empty
+results rather than erroring (via the `util::termux::termux_cmd` helper),
+so HSE remains fully usable. The file-reading sensor (`local_net`)
+doesn't need termux-api and works on any Linux host.
 
 ### Storage paths
 
@@ -246,7 +246,7 @@ In Termux, `$HOME` resolves to `/data/data/com.termux/files/home`.
 ```bash
 hse --version           # → hse 1.4.0
 hse doctor              # environment report — should print "Termux: detected" on-device
-hse modules             # 114 modules listed (see docs/MODULES.md for full catalogue)
+hse modules             # 118 modules listed (see docs/MODULES.md for full catalogue)
 hse scan --kind email --value test@example.com --modules email_parse,gravatar
 ```
 

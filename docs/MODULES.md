@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (115 modules: 89 free · 21 key-gated · 5 paid)
+## Catalogue (118 modules: 89 free · 24 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -17,7 +17,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `exa_search` | email, username, phone, full_name, domain, organisation | key_gated | no | 87 | url, domain, email, phone |
 | `search_engines` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn | free | no | 113 | url, domain, email, username, phone, address, coordinates, person, organisation, abn_acn |
 
-### social (5)
+### social (10)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -32,7 +32,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `keybase` | username | free | no | 100 | person, username, email, domain, address |
 | `username_variants` | username | free | **yes** | 98 | username |
 
-### people (11)
+### people (15)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -47,6 +47,10 @@ records. The engine knows nothing else — every module is a one-file change.
 | `fullcontact` | email, phone | key_gated | no | 89 | person, organisation, address, username, url |
 | `proxycurl` | email, username, url | paid | no | 88 | person, address, email, domain, phone, organisation |
 | `contact_enrich` | email, phone | free | no | 85 | person, username, address, url |
+| `au_people` | full_name | free | no | 88 | address, phone, email, person |
+| `au_electoral` | full_name | free | no | 85 | address, coordinates |
+| `au_property` | full_name | free | no | 84 | address, coordinates |
+| `qld_unclaimed` | full_name, organisation | free | no | 58 | address, coordinates, organisation |
 
 ### email (6)
 
@@ -66,7 +70,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `numverify` | phone | key_gated | no | 139 | address |
 | `phone_intl` | phone | free | **yes** | 140 | phone |
 
-### breach (8)
+### breach (11)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -80,6 +84,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `intelx` | email, username, phone, full_name, ip_address, domain | paid | no | 116 | — |
 | `pwned_passwords` | email, username | free | no | 115 | — |
 | `leakix` | ip_address, domain | key_gated | no | 102 | — |
+| `hudsonrock` | email, username, domain | free | no | 130 | — |
 
 ### threat (3)
 
@@ -89,21 +94,18 @@ records. The engine knows nothing else — every module is a one-file change.
 | `threatfox` | ip_address, domain | key_gated | no | 109 | domain, ip_address, url |
 | `virustotal` | ip_address, domain | key_gated | no | 55 | — |
 
-### corporate (4)
+### corporate (6)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `asic_director` | full_name | free | no | 89 | organisation, abn_acn, address |
-| `au_electoral` | full_name | free | no | 85 | address, coordinates |
-| `au_people` | full_name | free | no | 88 | address, phone, email, person |
-| `au_property` | full_name | free | no | 84 | address, coordinates |
 | `au_unclaimed` | full_name, organisation | free | no | 86 | address, coordinates |
 | `abn_lookup` | full_name, organisation, abn_acn | key_gated | no | 118 | abn_acn, address, organisation, person |
 | `opencorporates` | full_name, organisation, abn_acn | free | no | 116 | organisation, abn_acn, address |
 | `acnc_charities` | organisation | free | no | 112 | organisation, abn_acn, address, domain |
 | `gleif_lei` | organisation | free | no | 111 | organisation, abn_acn, address |
 
-### dns_recon (12)
+### dns_recon (13)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -121,11 +123,10 @@ records. The engine knows nothing else — every module is a one-file change.
 | `hackertarget` | ip_address, domain, url | free | no | 24 | domain, ip_address |
 | `domainsdb` | full_name, domain, organisation | free | no | 19 | domain |
 
-### infrastructure (18)
+### infrastructure (20)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
-| `hudsonrock` | email, username, domain | free | no | 130 | — |
 | `ripestat` | ip_address, asn | free | no | 107 | asn, organisation, email |
 | `onyphe` | ip_address, domain | key_gated | no | 34 | ip_address, coordinates, address, asn, organisation, domain |
 | `zoomeye` | ip_address, domain | key_gated | no | 34 | ip_address, coordinates, address, asn, organisation |
@@ -190,13 +191,12 @@ records. The engine knows nothing else — every module is a one-file change.
 | `signal_radar` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn, mac_address, api_key | free | **yes** | 60 | mac_address, ip_address, coordinates, device_id |
 | `local_net` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn, mac_address, api_key | free | **yes** | 58 | mac_address, ip_address |
 
-### other (3)
+### other (2)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `api_key_probe` | api_key | free | **yes** | 200 | api_key, domain |
 | `chain_intel` | crypto_address | free | no | 90 | crypto_address, username |
-| `qld_unclaimed` | full_name, organisation | free | no | 58 | address, coordinates, organisation |
 
 ## Synergy map
 
@@ -208,7 +208,7 @@ the generated Catalogue above):
 ```
 Seed: Email (foo@example.com)
 ├─ hudsonrock        → Email (with breach evidence — same as input)
-└─ name_to_username  → Username × N
+└─ name_intel        → Username × N
    └─ username_search / github_user / keybase accept Username → profiles
 
 Seed: Domain (example.com)
@@ -220,8 +220,9 @@ Seed: Domain (example.com)
       └─ per discovered IP (depth=2): ip_geo → Coordinates, Organisation
 ```
 
-`min_expand_confidence` (default 0.75) prevents low-confidence speculative
-expansions from runaway. Adjust as needed via `--min-expand-confidence`.
+`min_expand_confidence` (default 0.50, the Probable tier) prevents
+low-confidence speculative expansions from running away. Adjust via
+`--min-expand-confidence` (set 0.75 to expand Verified-tier only).
 
 ---
 
@@ -231,10 +232,11 @@ expansions from runaway. Adjust as needed via `--min-expand-confidence`.
 > original module set and have not been kept in lockstep with the registry.
 > Several describe modules that were since merged or renamed (e.g.
 > `wifi_scan` + `bssid_locate` → `wifi_intel`, `cell_survey` → `cell_intel`,
-> `dns_resolver` → `dns_intel`, `email_to_username` → `name_to_username`).
-> They remain as worked examples of how a module is structured. For the
-> authoritative, always-current list of what ships, see the generated
-> **Catalogue** above or run `hse modules` / `hse modules --json`.
+> `dns_resolver` → `dns_intel`, `email_to_username` → `name_intel`). **Do not
+> rely on any module name in this section** — it is frozen as a structural
+> worked-example of how a module is built, not a list of what ships. For the
+> authoritative, always-current list, see the generated **Catalogue** above or
+> run `hse modules` / `hse modules --json`.
 
 ### `hudsonrock`
 
@@ -485,8 +487,7 @@ return an empty `ModuleResult` rather than an error.
 
 ## Adding a module
 
-The full walkthrough is in [`CONTRIBUTING.md`](../CONTRIBUTING.md#adding-a-new-module).
-TL;DR — three changes, all in one PR:
+Three changes, all in one PR:
 
 1. `src/modules/your_module.rs` — implement `Module`.
 2. `src/modules/mod.rs` — `pub mod your_module;` + push `Arc::new(your_module::YourModule)` into `registry()`.

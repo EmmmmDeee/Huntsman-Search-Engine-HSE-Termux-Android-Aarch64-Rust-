@@ -1,6 +1,6 @@
 # WiGLE Geolocation Synergy — Verified Integration Reference
 
-**Status:** Corrected against the live `main` codebase and external endpoints **verified 2026-06-12**.
+**Status:** Corrected against the live `main` codebase and external endpoints **re-verified 2026-06-17**.
 **Supersedes:** an earlier draft that used renamed/legacy module names, a fictional entity/target
 model, a fabricated confidence-scoring ladder, a non-existent WiGLE quota endpoint, and several
 wrong external URLs. The "what the draft got wrong" table at the end records the specifics.
@@ -15,7 +15,7 @@ design and is where the previous draft went off the rails.
 **Target kinds** (`src/core/scan/mod.rs`): `Email, Username, Phone, FullName, IpAddress, Domain, Url,
 Asn, Cidr, Coordinates, Address, Organisation, AbnAcn, MacAddress, ApiKey, CryptoAddress`.
 
-**Entity kinds** (`src/core/entity.rs`): `Person, Email, Phone, Username, Credential, ApiKey,
+**Entity kinds** (`src/core/entity/mod.rs`): `Person, Email, Phone, Username, Credential, ApiKey,
 Password, IpAddress, Domain, Url, Asn, Cidr, Address, Coordinates, Organisation, AbnAcn, MacAddress,
 DeviceId, TrackingId, CryptoAddress` (+ a few more).
 
@@ -29,8 +29,8 @@ Consequences that the design **must** obey:
    (`TargetKind::from_entity_kind` returns `None` for it). So a module **cannot** receive a cell
    tower as a downstream target. Cell→coordinates enrichment therefore belongs **inside
    `cell_intel`** (which already holds MCC/MNC/LAC/CID at capture), not in a new `cell_geo` module.
-3. **Confidence is not an unbounded ladder.** `c_effective` is `min(1.0, C·(1 + 0.15·ln(distinct_sources)))`
-   — **clamped to 1.0** (`src/core/scan/scoring.rs`). Corroboration beyond saturation only affects
+3. **Confidence is not an unbounded ladder.** `c_effective` is `max(C·(1+0.15·ln n), 1−(1−C)·0.65^(n−1))`,
+   **clamped to 1.0** (`src/core/entity/mod.rs`). Corroboration beyond saturation only affects
    *expansion ranking*, via a separate **uncapped** `corroboration_prior = 1 + 0.25·ln(sources)`
    (coefficient **0.25**, not 0.15). There is no "1.27× C_eff" effect.
 4. **Reuse, don't reinvent.** These already ship: `geocode` + `photon` (reverse-geocode
@@ -40,7 +40,7 @@ Consequences that the design **must** obey:
 
 ---
 
-## 1. WiGLE — existing module, facts as-built (`src/modules/wigle.rs`)
+## 1. WiGLE — existing module, facts as-built (`src/modules/wigle/`)
 
 - **Base / auth:** `https://api.wigle.net/api/v2`, HTTP Basic — `HUNTSMAN_WIGLE_USER` (API name) +
   `HUNTSMAN_WIGLE_TOKEN`. **Both** are required.
@@ -123,7 +123,7 @@ Consequences that the design **must** obey:
   layer metadata before coding.**
 - **Why it's distinct:** `au_property` is **name-keyed** (`full_name`); this is a **coordinate-keyed**
   lot/plan lookup — a different capability.
-- **Status: shipped** as `src/modules/qld_cadastre.rs` (priority 18, free, `Geo`). Accepts
+- **Status: shipped** as `src/modules/qld_cadastre/` (priority 18, free, `Geo`). Accepts
   `Coordinates`, gates on `au_state_for_coords == QLD` (no network off-state), and emits an enriched
   `Coordinates` (lot/plan/locality/tenure as evidence) plus a locality `Address`. The `outFields`
   were confirmed against the live `/4` layer: `lot, plan, lotplan, locality, shire_name, tenure,
@@ -198,7 +198,7 @@ All new code must keep HSE conventions: `#![forbid(unsafe_code)]`, errors via
 | OpenCelliD `accuracy` field, `format` default json, `mnc=01` | field is `range`; default **xml**; `mnc` integer `1/2/3` |
 | QLD `spatial-img…`/`gisservices…`, layer 1 | host `spatial-gis.information.qld.gov.au`, layer **4** |
 | NBN `/autocomplete?query=`, `technology_type` | `/v1/nearby?lat&lng` + `/v2/details/LOC…`; `techTypeDescription` |
-| UA `HuntsmanSearchEngine/9.0` | repo is v1.0.0 — use the real crate version |
+| UA `HuntsmanSearchEngine/9.0` | repo is v1.4.0 — use the real crate version |
 
 ---
 
@@ -209,4 +209,4 @@ All new code must keep HSE conventions: `#![forbid(unsafe_code)]`, errors via
 - ACMA RRL data — <https://www.acma.gov.au/radiocomms-licence-data>, offline tool <https://web.acma.gov.au/offline-rrl/>, import precedent <https://github.com/kronicd/rrl_import>
 - QLD DCDB — <https://spatial-gis.information.qld.gov.au/arcgis/rest/services/PlanningCadastre/LandParcelPropertyFramework/MapServer>
 - NBN (undocumented) — endpoints per community reverse-engineering (`github.com/LukePrior/nbn-service-check`); not an official API
-- WiGLE — facts taken from `src/modules/wigle.rs` as-built; API <https://api.wigle.net/>
+- WiGLE — facts taken from `src/modules/wigle/` as-built; API <https://api.wigle.net/>

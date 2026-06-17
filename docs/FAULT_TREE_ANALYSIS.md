@@ -1,7 +1,7 @@
 # Fault Tree Analysis — Huntsman Search Engine (HSE)
 
 **Scope:** the whole `hse` binary + `huntsman_search_engine` library (CLI, HTTP
-API, embedded SPA, scan engine, 89 modules, SQLite store, Termux/aarch64
+API, embedded SPA, scan engine, 118 modules, SQLite store, Termux/aarch64
 deployment).
 **Method:** top-down Fault Tree Analysis. Gates: `[OR]`, `[AND]`, `[PAND]`
 (priority-AND, left-to-right ordered), `[INHIBIT]` (fires only while a
@@ -10,12 +10,21 @@ High), **Impact** (Low → Critical), **Detectability** (how readily the fault i
 caught *before* it reaches a user), and **Mitigation** (with status: ✅ in
 place · ⚒ shipped this cycle · ⚠ open/recommended).
 
-This document is descriptive of the **current** system, which is healthy:
-`cargo clippy --all-targets -D warnings` clean, `cargo fmt --check` clean,
-full test suite green (1432 lib + 117 integration), `#![forbid(unsafe_code)]`
-crate-wide, and a CI matrix (fmt · clippy · test · MSRV 1.88 · aarch64-Android
-cross-build · shellcheck). The trees below therefore emphasise **residual** and
-**latent** risk and the controls that hold it down — not fabricated defects.
+> **Currency note (2026-06-17).** This FTA was generated against an earlier
+> snapshot and has drifted. Corrected facts: the project now ships **118
+> modules** (not 89); the release profile uses **`panic = "unwind"`** (not
+> `"abort"`) with a `catch_unwind` guard at the dispatch boundary, so a module
+> panic is **contained, not process-fatal** — which re-frames **E3.1 / SPOF #2**
+> below; `audit.yml` is triple-gated (`cargo audit` + `cargo deny` + `cargo
+> machete`); the suite is ~2,944 lib tests. The live, prioritised view of open
+> engineering issues is [`PROBLEM_TREE.md`](PROBLEM_TREE.md). The methodology and
+> trees T1–T11 remain valid; treat count/profile claims as historical unless
+> corrected inline.
+
+The system remains healthy: `clippy -D warnings` clean, `fmt --check` clean,
+`#![forbid(unsafe_code)]` crate-wide, MSRV 1.88, and an aarch64-Android
+cross-build in CI. The trees emphasise **residual** and **latent** risk and the
+controls that hold it down — not fabricated defects.
 
 ---
 
@@ -47,7 +56,8 @@ cross-build · shellcheck). The trees below therefore emphasise **residual** and
 
 **Build profiles**
 - `release`: `opt-level="s"`, `lto=true`, `codegen-units=1`, `strip=true`,
-  **`panic="abort"`** (size-optimised published artifact).
+  **`panic="unwind"`** (a panicking module is trapped at the dispatch boundary
+  via `catch_unwind`, never aborting the process).
 - `fast`: installer default on Termux (drops single-threaded LTO link).
 - `dev`/test: `panic="unwind"` (so tests trap panics).
 
@@ -119,7 +129,7 @@ T2
 ```
 T3
 ├─[OR] E3.1  Process aborts
-│        └─[PAND] module panic → panic="abort" (release) → whole process down
+│        └─[PAND] module panic → caught at dispatch (panic="unwind") → module degraded, process survives
 ├─[OR] E3.2  Event loop starved / blocked
 │        ├─[OR] B3.2.1  Blocking call on an async worker (only 2 threads)
 │        └─      B3.2.2  Unbounded SSE/broadcast backpressure
@@ -128,7 +138,7 @@ T3
 
 | ID | Description | Likelihood | Impact | Detectability | Mitigation |
 |----|-------------|-----------|--------|---------------|------------|
-| **E3.1** | A module panic aborts the **entire server** because the release profile uses `panic="abort"` (Tokio cannot isolate an abort to one task) | Low | High | Low | ✅ Strong *preventive* panic-freedom: `forbid(unsafe)`, ~0 production `unwrap`, exhaustive `match`es (arch test), clippy `-D warnings`, fuzz-ish detect tests. **Recovery path today:** the abort exits `serve`; the operator restarts with `hse-bg start`, and Termux:Boot relaunches it on device reboot (neither is restart-*on-crash*). ⚠ Two options remain the maintainer's call: (a) flip `panic="abort"`→`"unwind"` for the server artifact (costs binary size); (b) an auto-restart supervisor in `hse-bg` — **prototyped + lifecycle-tested this cycle but NOT shipped**: a correct, low-latency stop depends on `nohup`/`wait`/signal semantics that couldn't be verified on Termux's bash build, and a naïve loop has up-to-30 s stop latency during crash-backoff + an orphan-respawn risk. Not worth shipping unverified to battery-constrained devices. ⚒ This cycle's exhaustive panic audit found + fixed a **live E3.1 instance**: `search_engines::extract_organisations_from_text` indexed the original SERP text with byte offsets taken from `text.to_lowercase()` — which is not length-preserving (`İ`→`i̇`, `ẞ`→`ß`) — so a hostile result snippet triggered a UTF-8 slice panic that would abort `serve`. Now searches the original text case-insensitively at ASCII boundaries (regression-tested). Confirms the preventive approach must be *re-run*, not assumed |
+| **E3.1** | A module panics during a scan | Very Low | Low | Medium | ✅ **Contained by design:** the release profile is `panic="unwind"` and the dispatch boundary wraps each module in `catch_unwind` (`run_module_guarded`), so a panicking module yields no results and is logged — it does **not** abort `serve`. Preventive panic-freedom also holds: `forbid(unsafe)`, ~0 production `unwrap`, exhaustive `match`es (arch test), clippy `-D warnings`. ⚠ One panic *class* is not fully eliminated: byte offsets from `str::to_lowercase()` (not length-preserving — `İ`→`i̇`, `ẞ`→`ß`) used to slice the **original** string. Fixed in `search_engines::extract_organisations_from_text`, but two instances remain in the `au_electoral` / `au_property` parsers (see [`PROBLEM_TREE.md`](PROBLEM_TREE.md) §3.0 **T0.1/T0.2**). Under `unwind` these degrade the module, not the process — still to be fixed. Confirms the preventive approach must be *re-run*, not assumed |
 | B3.2.1 | Blocking on a 2-thread runtime | Low | Medium | Medium | ✅ Fully async I/O (reqwest/hickory); SQLite calls are short; per-module `tokio::timeout` |
 | B3.2.2 | SSE backpressure | Low | Medium | Medium | ✅ `broadcast` channel (bounded, lagging receivers drop frames, never block producers); history endpoint backfills |
 | E3.3 | Bind fails | Low | Low | High | ✅ Bind error surfaced as a clean `Error::Other("bind …")` and non-zero exit |
@@ -290,7 +300,7 @@ T11
 | # | SPOF / latent defect | Status |
 |---|----------------------|--------|
 | 1 | SQLite store (single file) — the one stateful SPOF | ✅ WAL + checkpoint; ⚒ `integrity_check` + WAL-size now reported by `hse doctor` |
-| 2 | `panic="abort"` couples any module panic to total `serve` availability | ⚠ Documented trade-off; preventive controls strong (see E3.1) |
+| 2 | A module panic during `serve` | ✅ Contained — `panic="unwind"` + `catch_unwind` at dispatch degrade the module, not the process (see E3.1); residual `to_lowercase()` slice class tracked in `PROBLEM_TREE.md` T0.1/T0.2 |
 | 3 | In-repo OSINT output contains third-party PII | ✅ Accepted by design (E2.1); exposure governed by repo visibility, never by redaction |
 | 4 | Scraping detector / selectors track moving third-party targets | ⚒ Hardened + data-driven this cycle; inherently needs upkeep |
 | 5 | Crawler follows attacker-controlled discovered links (SSRF) | ✅ Mitigated — client-level `SsrfResolver` DNS filter + private-IP redirect guard (B2.3.2) |
@@ -327,20 +337,16 @@ deterministic UIDs, graceful shutdown, prebuilt + fast build paths.
   remediation applies, and none is performed.
 
 **Open / recommended (⚠)**
-1. **E3.1 / SPOF #2** — bound a module panic's blast radius on `serve`. Two
-   options, both deliberately **left for the maintainer**:
-   - flip `panic="abort"`→`"unwind"` (or a dedicated server profile) — trades
-     away binary size, a deliberate choice;
-   - an `hse-bg` auto-restart supervisor — **prototyped and lifecycle-tested
-     this cycle, then reverted unshipped**: prompt/clean `stop` depends on
-     `nohup`/`wait`/signal semantics unverifiable on Termux's bash from CI, and
-     a naïve loop has up-to-30 s stop latency in crash-backoff + an
-     orphan-respawn risk on a battery-constrained device. The known-good
-     single-shot wrapper is retained; restart is manual (`hse-bg start`) or on
-     reboot (Termux:Boot).
+1. **E3.1 panic class** — `panic="unwind"` + `catch_unwind` at dispatch already
+   bound a module panic's blast radius (it degrades the module, not `serve`), so
+   the former "flip `abort`→`unwind`" recommendation is **done**. The residual is
+   the `to_lowercase()` byte-offset slice class: fixed in `search_engines`, but
+   the `au_electoral` / `au_property` parsers still carry it — tracked in
+   [`PROBLEM_TREE.md`](PROBLEM_TREE.md) §3.0 (T0.1/T0.2).
 
-   This is the sole remaining actionable FTA item; every other finding is
-   mitigated or a recorded accepted risk.
+   Open engineering items are tracked centrally in `PROBLEM_TREE.md`; the trees
+   above are a point-in-time analysis.
 
-*Generated as part of the system audit; the trees reflect the codebase at the
-head of branch `claude/hopeful-einstein-3GECc`.*
+*Generated as part of a system audit; treat the trees as a point-in-time
+analysis. For the current, prioritised issue list see
+[`PROBLEM_TREE.md`](PROBLEM_TREE.md).*
