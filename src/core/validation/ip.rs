@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 
 /// The "can never be a real host *anywhere*" ranges shared by [`is_bogus_ip`]
 /// and [`is_non_routable_ip`]: RFC5737 documentation (`192.0.2.0/24`,
@@ -99,18 +99,23 @@ pub fn is_non_routable_ip(s: &str) -> bool {
 /// in the same round — no tag-ordering race. IPv6 returns `false` (the reverse-IP
 /// modules here are v4-only and the v6 CDN space is impractical to enumerate).
 ///
-/// Cloudflare ranges are stable and authoritative (`cloudflare.com/ips-v4`); a
-/// stray IP that drifts out of the list simply isn't gated (graceful, never a
-/// false skip of a non-CDN host).
+/// Cloudflare ranges are stable and authoritative (`cloudflare.com/ips-v4` +
+/// `/ips-v6`); a stray IP that drifts out of the list simply isn't gated
+/// (graceful, never a false skip of a non-CDN host).
+///
+/// Both address families are covered: a Cloudflare-fronted domain commonly
+/// publishes AAAA records too, so gating only v4 would let the v6 edge
+/// (`2606:4700::/32`, …) leak through as a "trusted" host with the answering
+/// datacenter's geo — the exact noise this predicate exists to suppress.
 pub fn is_cdn_edge_ip(s: &str) -> bool {
     // The v4 ranges below, with an IPv4-mapped v6 spelling (::ffff:104.16.0.1)
-    // unmapped first so it gates identically to its v4 form. Native v6
-    // addresses return false by design (see above).
+    // unmapped first so it gates identically to its v4 form. A native v6 address
+    // is checked against the published v6 anycast ranges (`is_cdn_edge_ipv6`).
     let v4 = match s.parse::<IpAddr>() {
         Ok(IpAddr::V4(v4)) => v4,
         Ok(IpAddr::V6(v6)) => match v6.to_ipv4_mapped() {
             Some(v4) => v4,
-            None => return false,
+            None => return is_cdn_edge_ipv6(&v6),
         },
         Err(_) => return false,
     };
@@ -136,6 +141,32 @@ pub fn is_cdn_edge_ip(s: &str) -> bool {
         }
         151 => o[1] == 101, // Fastly 151.101.0.0/16
         _ => false,
+    }
+}
+
+/// True if `v6` is inside a major CDN's published IPv6 anycast range
+/// (Cloudflare's `cloudflare.com/ips-v6` blocks + Fastly's v6 anycast).
+///
+/// The v6 counterpart of [`is_cdn_edge_ip`]'s v4 table. Keyed on the leading 32
+/// bits, since every Cloudflare v6 block is a `/32` except `2a06:98c0::/29`
+/// (handled by masking the low 3 bits of that 32-bit prefix). Ranges are taken
+/// verbatim from Cloudflare's authoritative published list; like the v4 side, an
+/// address that drifts off it is simply not gated (never a false skip).
+fn is_cdn_edge_ipv6(v6: &Ipv6Addr) -> bool {
+    let seg = v6.segments();
+    let prefix32 = (u32::from(seg[0]) << 16) | u32::from(seg[1]);
+    match prefix32 {
+        // Cloudflare /32 blocks.
+        0x2400_cb00 // 2400:cb00::/32
+        | 0x2606_4700 // 2606:4700::/32
+        | 0x2803_f800 // 2803:f800::/32
+        | 0x2405_b500 // 2405:b500::/32
+        | 0x2405_8100 // 2405:8100::/32
+        | 0x2c0f_f248 // 2c0f:f248::/32
+        // Fastly's primary v6 anycast block (parity with the v4 151.101/16 entry).
+        | 0x2a04_4e42 => true, // 2a04:4e42::/32
+        // Cloudflare 2a06:98c0::/29 — fix the top 29 bits of the 32-bit prefix.
+        _ => (prefix32 & 0xFFFF_FFF8) == 0x2a06_98c0,
     }
 }
 

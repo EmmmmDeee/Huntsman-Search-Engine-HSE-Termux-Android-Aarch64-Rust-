@@ -205,8 +205,9 @@ impl Module for IpApi {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         // IPv4-only gate retained for parity with ip_geo; also skips private /
-        // reserved space. (ipwho.is does resolve IPv6 — enabling it is a separate
-        // change that must also teach `is_cdn_edge_ip` about v6 edge ranges.)
+        // reserved space. (ipwho.is does resolve IPv6 — enabling it is now only a
+        // matter of swapping this gate, since `is_cdn_edge_ip` already covers the
+        // v6 anycast edge ranges.)
         if crate::util::preflight::should_skip_external_ipv4(&target.value) {
             return Ok(ModuleResult::new());
         }

@@ -273,11 +273,18 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   BYO-key, all AU-first. **CAP-high (AU bias)**
 - **`[ ]` C4 · NETINT depth** — *Current:* `dns_intel`, `cert_intel`, `crtsh`,
   `shodan` (free InternetDB), `censys`, `zoomeye`, `subdomain_takeover`,
-  `waf_detect`, `portscan`, `bgpview`, `ripestat`. → **Solution:** union
-  subdomain discovery (brute ∪ CT ∪ passive); ASN/BGP → org/prefix pivots feeding
-  correlation; passive-DNS/WHOIS history via `securitytrails` BYO-key (G7);
-  faceted asset depth via `shodan`/`censys` keys (G6); broaden takeover
-  fingerprints. **CAP-med**
+  `waf_detect`, `portscan`, `bgpview`, `ripestat`. CDN/Cloudflare noise is already
+  suppressed at 5 layers (range-based `is_cdn_edge_ip` v4+**v6**, the shared
+  IP-geo trust gate, the expansion gate, storage-ranking demotion, infra-domain +
+  challenge-page detection). → **Solution:** union subdomain discovery (brute ∪ CT
+  ∪ passive); ASN/BGP → org/prefix pivots feeding correlation; passive-DNS/WHOIS
+  history via `securitytrails` BYO-key (G7); faceted asset depth via
+  `shodan`/`censys` keys (G6); broaden takeover fingerprints. **Cloudflare
+  origin-unmasking** (turn the CDN from noise into a solved puzzle — surpasses
+  Spiderfoot/Maltego): MX/SPF/TXT records (mail isn't proxied → origin leak),
+  pre-onboarding passive-DNS history, SSL-cert-hash pivot on Censys/Shodan, and
+  direct-connect subdomains (`cpanel.`/`ftp.`/`mail.`/`dev.` often non-proxied) →
+  emit a tagged `origin-candidate` IP for the fronted domain. **CAP-med**
 - **`[ ]` C5 · GEOINT convergence — *already ahead; widen the lead*** — *Current:*
   multi-source fusion (WiGLE + EXIF + cell + IP + address→coords) with AU-state
   attribution and convergence rules (AU-052/056/057/059). Neither competitor
@@ -434,3 +441,18 @@ legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
   null-trim) are now covered end-to-end through the real `exif::Reader`. The older
   synthetic fragment tests still pass (the wrapper-descent + version-skip are
   conditional). Gate green: clippy/fmt/doc clean, 2,966 lib tests (+7), 0 failures.
+- **2026-06-17** — **Fixed the IPv6 Cloudflare-edge gap** (surfaced by an operator
+  question on CDN noise). `is_cdn_edge_ip` covered only IPv4, returning `false` for
+  every native IPv6 — so a Cloudflare-fronted domain's AAAA records leaked the v6
+  edge (`2606:4700::/32`, …) through as a *trusted* host: false subject geo + an
+  expandable target. A standing code comment in `ipapi` had flagged the gap. Added
+  `is_cdn_edge_ipv6` (Cloudflare's published `/ips-v6` blocks — six `/32` + the
+  `2a06:98c0::/29` — plus Fastly `2a04:4e42::/32`, keyed on the leading 32 bits)
+  and routed native v6 through it; the shared `untrusted_ip_geo_reason`,
+  expansion, and storage-demotion gates inherit it automatically (all consume the
+  one predicate). The other CDN behaviours examined are correct as-is and left
+  unchanged: edge IPs are *demoted not dropped* (deliberate — preserves the
+  "fronted by Cloudflare" signal), and `waf_detect`/`bgpview` still run on a CDN IP
+  (identifying it as Cloudflare IS the finding), so a blanket dispatch-skip would
+  be wrong. The deeper win — origin-unmasking — is recorded under §4 C4. Gate
+  green: clippy/fmt/doc clean, 2,967 lib tests (+1), 0 failures.

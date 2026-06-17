@@ -333,7 +333,32 @@ fn cdn_edge_ip_catches_cloudflare_and_fastly() {
     assert!(!is_cdn_edge_ip("8.8.8.8"));
     assert!(!is_cdn_edge_ip("1.1.1.1")); // CF resolver, not an edge range
     assert!(!is_cdn_edge_ip("not-an-ip"));
-    assert!(!is_cdn_edge_ip("2606:4700::1")); // v6 → false by design
+}
+
+#[test]
+fn cdn_edge_ip_catches_ipv6_anycast() {
+    // A Cloudflare-fronted domain commonly has AAAA records too; the v6 edge must
+    // gate exactly like the v4 edge (else its datacenter geo leaks as the
+    // subject's, and the address gets pivoted on).
+    assert!(is_cdn_edge_ip("2606:4700::1")); // Cloudflare 2606:4700::/32
+    assert!(is_cdn_edge_ip("2606:4700:4700::1111")); // CF (1.1.1.1's v6 sibling block)
+    assert!(is_cdn_edge_ip("2400:cb00::1")); // Cloudflare 2400:cb00::/32
+    assert!(is_cdn_edge_ip("2803:f800::1")); // Cloudflare 2803:f800::/32
+    assert!(is_cdn_edge_ip("2405:b500::1")); // Cloudflare 2405:b500::/32
+    assert!(is_cdn_edge_ip("2405:8100::1")); // Cloudflare 2405:8100::/32
+    assert!(is_cdn_edge_ip("2c0f:f248::1")); // Cloudflare 2c0f:f248::/32
+    assert!(is_cdn_edge_ip("2a06:98c0::1")); // Cloudflare 2a06:98c0::/29 (low edge)
+    assert!(is_cdn_edge_ip("2a06:98c7:ffff::1")); // …/29 (top of range)
+    assert!(is_cdn_edge_ip("2a04:4e42::1")); // Fastly 2a04:4e42::/32
+    // Untrusted-geo gate consumes the same predicate, so it follows for v6.
+    assert_eq!(
+        untrusted_ip_geo_reason("2606:4700::1"),
+        Some("cdn/anycast edge")
+    );
+    // Just outside the /29 (2a06:98c8::) and unrelated public v6 are NOT gated.
+    assert!(!is_cdn_edge_ip("2a06:98c8::1")); // one block past the /29
+    assert!(!is_cdn_edge_ip("2001:4860:4860::8888")); // Google DNS v6
+    assert!(!is_cdn_edge_ip("2a00:1450:4001::1")); // Google v6
 }
 
 #[test]
