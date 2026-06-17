@@ -561,9 +561,70 @@ remaining `on*`-handler interpolations; the pivot click behaviour is unchanged
 (the `data-` value decodes to the same string), so nothing is degraded.
 *(The rest of the SPA's `esc()`/`extLink()` discipline was verified sound — this
 was the one dual-context
-sink.)* · also indexed: hardcoded default keys `util/keys/constants.rs:137`,
-whois-referral SSRF, key-in-URL leaks, cleartext-secret persistence, dossier
-perms, root `DOSSIER_*.md` real-looking secrets · **Privacy/Legal/Licensing** (PII fixture & root `DOSSIER_*.md`, source
+sink.)*
+
+The **2026-06-17 security hardening pass** worked the rest of the §7 Security list
+into concrete, verified findings (the SPA XSS above is fixed; these remain open —
+security stays a deliberately separate track, and S1 needs *operator* action):
+
+- **S1 · `[ ]` P0 — LIVE paid credentials hardcoded in the public binary.**
+  `util/keys/constants.rs:137-168` embeds five **real, in-use** keys — OathNet,
+  **HIBP (paid)**, WiGLE user+token, and **SeekNow enterprise** (the doc comment
+  itself reads *"Enterprise plan, 5,000 daily credits. Live-verified"*) — committed
+  to the public repo and `strings`-extractable from the shipped binary. Anyone who
+  clones the repo or greps the binary gets working paid keys: drain the quota, get
+  the keys revoked (DoS for every HSE user), or abuse them under the owner's
+  identity. The `SEEKNOW_SUPERSEDED_KEY*` slots also leak the rotation history.
+  → **(a) rotate all five at the providers now** — they are already public, and
+  de-embedding alone does NOT un-leak them (git history + every released binary
+  retain them). **(b)** move the embedded defaults to a build-time injection
+  (`option_env!` from a CI secret / git-ignored `.env`), falling back to "module
+  skipped + `signup_hint`" when absent (that machinery exists). If zero-config is
+  mandatory, embed only a *free-tier* key, never the paid HIBP / enterprise SeekNow.
+- **S2 · `[ ]` P1 (HIGH) — whois-referral SSRF (raw TCP/43 bypasses SsrfResolver).**
+  `modules/whois/{mod.rs:97-104, client.rs:38-53}` follows the referral server taken
+  **verbatim** from the (attacker-influenceable) WHOIS response —
+  `TcpStream::connect(format!("{server}:43"))` or an embedded `host:port` — with
+  **no validation**; the `SsrfResolver` only guards the reqwest client, not raw TCP.
+  A registry/registrar in the chain (or a MITM on cleartext port 43) returns
+  `refer: 127.0.0.1:6379` / `169.254.169.254:80` / `internal:8080`, turning HSE into
+  an internal port-prober that also writes the query line to the target (the
+  embedded `:port` widens it past 43; NAT64/link-local worsen it on Termux). → parse
+  `host:port`, reject ports ≠ 43, resolve and drop any `util::preflight::is_private
+  _addr` address (reuse `filter_public`), pin the connection to the vetted address,
+  reject `is_local_domain` hosts.
+- **S3 · `[ ]` P2 (MED) — world-readable secrets at rest (Linux/macOS).** The dossier
+  (`cli/export/dossier.rs:42-44`, written on *every* `hse scan`), `hse export -o`
+  (`cli/export/mod.rs:49`), and the SQLite DB (`storage/mod.rs:143`) use
+  `std::fs::write`/`Connection::open` with **no mode** → umask 0644; `~/.huntsman/`
+  is created with no 0700. They embed full PII + the raw API corpus (incl. harvested
+  third-party keys) — inconsistent with the 0600 on `.huntsman.env`/`key_pool.json`/
+  `raw/`. *Low on stock Termux* (Android sandbox), real on the Linux/macOS install
+  paths. → route dossier/export through `util::atomic_file::write` (0600),
+  `set_permissions(0o600)` the DB + `-wal`/`-shm`, `DirBuilder::mode(0o700)` the dir.
+- **S4 · `[ ]` P3 (LOW) — key-in-URL (mostly mitigated, one residual).** ~7 modules
+  put the key in the query string (`shodan`/`hunter_io`/`whoisxml`/`numverify`/
+  `opencellid`/`opencorporates`/`mls`). Well-contained: no module logs the keyed URL,
+  `redact_credentials` masks `key=`/`token=` + literal `HUNTSMAN_*` on error paths,
+  `raw_archive` stores only `provider/endpoint/query` (not the URL). *Residual:* the
+  archived success **body** is verbatim, so a key echoed by an upstream persists in
+  `raw/*.json` (0600, but pulled into the non-0600 DB/dossiers via S3). → prefer
+  header auth where supported; optionally `redact_literal_secrets(body,
+  own_api_keys())` the archived body.
+- **S5 · `[ ]` P3 (LOW) — install.sh prebuilt auto-trust.** The installer
+  auto-discovers and runs an `hse` from world-writable `Downloads`/`/sdcard`; the
+  SHA-256 check fires only *if a sidecar `.sha256` exists* — without one it runs an
+  unverified binary another app could plant. Plus `curl|bash` of unpinned
+  `HSE_REF=main`. → require the sidecar checksum (or only auto-trust installer-cached
+  binaries); README note to pin `HSE_REF=<tag>`. Otherwise `install.sh`/`build.rs`
+  are defensively sound (atomic swap, quoting, `set -euo pipefail`, ELF/size filters).
+- **Verified clean (no finding):** argv-only command construction (no shell);
+  `KeyPool` rotation is `Mutex`-guarded (no TOCTOU/overspend on the pool itself); no
+  key value logged at info/debug (only `key_tail` last-4); `settings.json` is toggles
+  only and the keys API never returns values (test-pinned); export path-traversal is
+  operator-only (local CLI), web import is size-bounded.
+
+· also indexed: root `DOSSIER_*.md` real-looking secrets · **Privacy/Legal/Licensing** (PII fixture & root `DOSSIER_*.md`, source
 legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
 · **Terminology** ("operator"→user/analyst; `key_harvest`/`API_KEY_HUNTING_GUIDE`)
 · **Docs** (module-count drift across README/MODULES.md/CHANGELOG/FAULT_TREE —
@@ -893,3 +954,19 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   unbounded reads.** Open: `found_keys` isolation + the LOW/MED T2.8 caps + the LOW
   T2.11 over-dispatch. Lib suite 2,995, gate green throughout; single-scan CLI
   behaviour unchanged by any fix.
+- **2026-06-17** — **Security hardening pass (§7) — the deferred "separate pass",
+  now worked into concrete findings (analysis only).** Elevated §7 Security from a
+  one-line index to verified S1–S5 entries. Two are serious: **S1 (P0) — five LIVE
+  paid credentials (OathNet, paid HIBP, WiGLE, enterprise SeekNow) are hardcoded in
+  `util/keys/constants.rs` and committed to the public repo / shipped binary**
+  (the comments themselves mark them live-verified) → the operator must **rotate
+  them at the providers** (de-embedding alone can't un-leak git history + released
+  binaries), then move defaults to a build-time `option_env!` injection; and **S2
+  (P1) — whois-referral SSRF**: `modules/whois` follows the referral host verbatim
+  over raw TCP/43, bypassing the `SsrfResolver` (which only guards reqwest), letting
+  a malicious referral point HSE at `127.0.0.1:6379`/`169.254.169.254` etc. S3 (MED)
+  world-readable DB/dossiers on Linux/macOS; S4/S5 (LOW) key-in-URL residual +
+  install-script prebuilt auto-trust. **Verified clean:** argv-only exec, KeyPool
+  Mutex (no TOCTOU), no key logged, keys-API returns no values. The S2/S3 fixes are
+  contained and behaviour-preserving (offered); S1 is an operator decision (rotate +
+  UX trade-off) so it is flagged, not silently changed.
