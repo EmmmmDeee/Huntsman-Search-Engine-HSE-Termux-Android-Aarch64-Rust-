@@ -254,7 +254,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### S.QUALITY — Periphery correctness (paired with `PROBLEM_TREE` T2.12)
 
-- **`[~]` SOL-CLI-CONTRACT · Honest CLI result/exit semantics** — `keys add` now
+- **`[x]` SOL-CLI-CONTRACT · Honest CLI result/exit semantics** — `keys add` now
   pre-checks `is_poolable_service` and `Err`s for a non-poolable service (no false
   "already exists" + silent drop) ✅; `provision --verify` returns non-zero on a
   failed smoke/missing-key sub-test ✅. *+SOL-CLI-CONTRACT-DIFF (2026-06-17):*
@@ -264,9 +264,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *+SOL-CLI-CONTRACT-AUDIT (2026-06-17, cycle 5):* `cmd_audit` returns `Err` after
   printing the report when any finding carries `Severity::Critical | Severity::High`
   — `hse audit` was previously always `Ok(())` regardless of scan quality ✅. Test
-  `empty_scan_triggers_high_severity_exit_path` guards it. *Residual:*
-  `resolve_scan_id` accepting incomplete scans. *Closes:* **T2.12** (two MED CLI
-  bugs + diff exit-code + audit exit-code).
+  `empty_scan_triggers_high_severity_exit_path` guards it.
+  *+SOL-CLI-CONTRACT-SCAN (2026-06-17, cycle 6):* `resolve_scan_id` now rejects
+  non-`Complete` scans with `Err("scan {id} is {status} — only complete scans can be
+  exported, diffed, or audited")` — previously returned the id regardless of status,
+  allowing export/diff/audit on mid-run or failed scans ✅. Test
+  `resolve_scan_id_rejects_incomplete_scans` guards it. *Closes:* **T2.12** (two MED
+  CLI bugs + diff exit-code + audit exit-code + scan-id status-check). ✅ **Fully
+  closed.**
 - **`[x]` SOL-DIFF-DEDUP · uid-deduped diff** — `diff_entities` iterates the deduped
   `HashMap` values, so dup-uid CLI snapshots don't over-count; unique-uid input is
   byte-identical. *Closes:* **T2.12** diff over-count. ✅ test
@@ -310,7 +315,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-SECRETS / -EXTEND | env/pool/archive · §7 S3 | `[x]`/`[x]` |
 | SOL-REDACT | §7 S4 | ◑ |
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
-| SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[~]`/`[x]`/`[x]` |
+| SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-CORR…SOL-FORENSIC | C1–C7 | `[ ]` |
 
 ---
@@ -338,11 +343,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   enablers landing first, by design).
 
 ### 4b · Solutions begun but unfinished (the finish queue)
-- **SOL-F1** — substrate + **five** consumers landed (`is_captcha_page`,
+- **SOL-F1** — substrate + **six** consumers landed (`is_captcha_page`,
   key-harvest `contains_excluded_context`, wigle `is_generic_ssid`, the
   **prefix-table `PrefixMatcher`** — 170 prefixes, `LeftmostFirst`, group map for
-  same-prefix duplicates, proptest-backed — and `au_electoral` HTML markers via
-  `MatchSet::find_range`). *Remaining:* au_property HTML markers; `memchr`/`bstr`.
+  same-prefix duplicates, proptest-backed — `au_electoral` HTML markers via
+  `MatchSet::find_range`, and `address_au::state_code` step-2 via `MatchSet::find_id`).
+  *Remaining:* `memchr`/`bstr` (no direct consumer yet → promote with first use).
   Each contained (unblocks T2.7 + sharpens C6).
 - **SOL-F2** — de-dup done; `fst` for the large tables outstanding.
 - **SOL-F3** — proptest + criterion landed; `cargo-fuzz` + import-parser proptest left.
@@ -368,10 +374,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   + `stats` (`spawn_blocking`) + engine `insert_event` (`block_in_place`) all done
   (SOL-BLOCKING); only the DB-writer actor remains; T1.3 partial.
 - **§3.F (foundations):** all three `[~]` — the largest unrealised leverage block.
-- **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅; T2.12
-  further advanced (6 items fixed: 2 MED + 2 LOW-MED + diff exit-code + audit
-  exit-code; `resolve_scan_id` incomplete-scan-resolve is the sole residual);
-  T2.7/T2.10 open; T2.11 mostly done
+- **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
+  **T2.12 fully closed** ✅ (7 items fixed: 2 MED + 2 LOW-MED + diff exit-code +
+  audit exit-code + `resolve_scan_id` status-check); T2.7/T2.10 open; T2.11 mostly done
   (oathnet + found_keys/SOL-ISOLATE delivered; LOW over-dispatch + budget-reset-zeroing
   remain).
 - **§7 (security):** XSS + S2 (whois SSRF) + S3 (file perms) solved; S1 accepted;
@@ -536,6 +541,29 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   unchanged (all `[~]` — HTML markers next). Paired: `PROBLEM_TREE` F.1 cycle-4 note
   + §8 — same commit; gate green, 3,009 lib + 67 api + 23 arch + 54 smoke + 3 halting
   + 6 cli-seed + 2 audit-regression tests, 0 failures.
+- **2026-06-17** — **Cycle 6 (P→S): SOL-F1 `address_au` state-name scan +
+  SOL-CLI-CONTRACT `resolve_scan_id` status-check — T2.12 fully closed.**
+  P→S gap pass identified two remaining contained items in §4b and T2.12 LOW-misc.
+  **(1) SOL-F1 sixth consumer — `address_au::state_code` step 2:** Added
+  `MatchSet::find_id(&str) -> Option<usize>` (pattern index of leftmost match —
+  complements `find_range`; enables pattern-indexed dispatch without a second table
+  scan). Added `STATE_NAMES_MATCHER: LazyLock<MatchSet>` static (8-pattern ASCII-CI
+  automaton over `STATE_NAMES`). Replaced `to_lowercase()` + 8-way `contains` loop
+  with `find_id(text).map(|id| STATE_NAMES[id].1)` — one Teddy/SIMD pass, no alloc.
+  Test `find_id_returns_pattern_index`. The au_property `extract_suburb_from_line`
+  path was examined and ruled out (single dynamic state string already known from
+  `extract_state` — not a MatchSet target). **(2) SOL-CLI-CONTRACT-SCAN
+  `resolve_scan_id`:** `match` on `get_scan(raw)?` now additionally checks
+  `scan.status != ScanStatus::Complete` and returns a `{status}`-named `Err` — was
+  returning the id regardless of scan completeness. Updated two caller tests
+  (`diff::load_side_tags`, `export::explicit_scan_id`) to create `Complete` scans;
+  added `resolve_scan_id_rejects_incomplete_scans`. SOL-CLI-CONTRACT `[~]`→`[x]`
+  (all four exit-code sub-items done). **Gap refresh:** §4b SOL-F1 "6 consumers;
+  remaining = memchr/bstr only"; SOL-CLI-CONTRACT removed from finish queue; §4d T2
+  "T2.12 fully closed ✅". §3.F enabler block remains the sole unrealised
+  high-leverage tier. Paired: `PROBLEM_TREE` T2.12 + F.1 + §8 — same commit; gate
+  green, 3,018 lib + 67 api + 23 arch + 54 smoke + 3 halting + 6 cli-seed + 2
+  audit-regression tests, 0 failures.
 - **2026-06-17** — **Cycle 5 (S→P): SOL-F1 `au_electoral` HTML markers +
   SOL-CLI-CONTRACT `audit` exit-code.** S→P pass on cycle 4 deliverables: §4b held
   two contained finish-queue items. **(1) SOL-F1 `au_electoral`:** extended

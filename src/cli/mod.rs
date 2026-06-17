@@ -33,7 +33,7 @@ use crate::{
         engine::ScanEngine,
         error::{Error, Result},
         module::ModuleCost,
-        scan::TargetKind,
+        scan::{ScanStatus, TargetKind},
     },
     default_db_path,
     modules::registry,
@@ -53,10 +53,14 @@ pub(crate) fn resolve_scan_id(store: &Store, raw: &str) -> Result<String> {
             .map(|s| s.id)
             .ok_or_else(|| Error::Other("no completed scans in store".into()));
     }
-    if store.get_scan(raw)?.is_none() {
-        return Err(Error::Other(format!("scan {raw} not found")));
+    match store.get_scan(raw)? {
+        None => Err(Error::Other(format!("scan {raw} not found"))),
+        Some(scan) if scan.status != ScanStatus::Complete => Err(Error::Other(format!(
+            "scan {raw} is {status} — only complete scans can be exported, diffed, or audited",
+            status = scan.status.as_str()
+        ))),
+        Some(_) => Ok(raw.to_string()),
     }
-    Ok(raw.to_string())
 }
 
 mod command;

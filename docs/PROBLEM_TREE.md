@@ -471,7 +471,7 @@ direct.**
   sized for a single in-process scan; `serve`'s concurrency (8) makes them shared
   mutable state. The clean fix is per-`scan_id` keying (or threading the state
   through `ModuleContext`), which also subsumes the budget-reset race. **P2**
-- **`[~]` T2.12 · Periphery correctness bugs (CLI / diff / cache / pool)** — the
+- **`[x]` T2.12 · Periphery correctness bugs (CLI / diff / cache / pool)** — the
   2026-06-17 internals audit of the least-covered subsystems found a cluster of
   real but contained defects (the cores — key_pool rotation, crypto, proxy SSRF,
   budget, roi, timeline — verified clean, see §6):
@@ -526,7 +526,11 @@ direct.**
     now returns `Err` after printing the report when any finding carries
     `Severity::Critical` or `Severity::High`, so `hse audit` exits non-zero
     on a problematic result. Test `empty_scan_triggers_high_severity_exit_path`
-    guards it. *Residual:* `resolve_scan_id` accepting an incomplete scan.
+    guards it. **`resolve_scan_id` status-check fixed (2026-06-17, cycle 6):**
+    explicit scan IDs for `Pending`/`Running`/`Failed`/`Aborted` scans now return
+    `Err` with a diagnostic naming the status — only `Complete` scans are accepted
+    (export/diff/audit on a non-complete scan was silent, misleading, or empty).
+    Test `resolve_scan_id_rejects_incomplete_scans` guards it. T2.12 fully closed ✅.
     **P3.** *(All contained; none crash or corrupt persisted scan data.)*
 
 ---
@@ -1300,6 +1304,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy/doc clean, 3,009 lib + 67 api + 23 arch + 54 smoke + 3 halting
   + 6 cli-seed + 2 audit-regression tests, 0 failures. **Paired:** `SOLUTION_TREE`
   SOL-F1 + §4b + §5 refreshed — same commit.
+- **2026-06-17** — **Paired-tree cycle 6 (P→S): SOL-F1 `address_au` state-name scan
+  + SOL-CLI-CONTRACT `resolve_scan_id` status-check.** P→S gap pass on cycle 5: §4b
+  held two remaining contained items. **(1) SOL-F1 `address_au::state_code` step 2:**
+  Added `MatchSet::find_id(&str) -> Option<usize>` to `util::scan` — returns the
+  zero-based index of the matched pattern, enabling pattern-indexed dispatch without a
+  second linear scan. Added `STATE_NAMES_MATCHER: LazyLock<MatchSet>` static in
+  `util/address_au/mod.rs` compiled over `STATE_NAMES` (8 full state/territory names,
+  ASCII-CI). Replaced `let lower = text.to_lowercase()` + 8-way `lower.contains(name)`
+  loop in `state_code` step 2 with a single aho-corasick pass: `STATE_NAMES_MATCHER
+  .find_id(text).map(|id| STATE_NAMES[id].1)` — eliminates the `to_lowercase()` alloc
+  per call. Test `find_id_returns_pattern_index` guards the new API. **(2)
+  SOL-CLI-CONTRACT `resolve_scan_id`:** explicit scan IDs for non-complete scans now
+  return `Err("scan {id} is {status} — only complete scans can be exported…")` — was
+  silently returning the id regardless of status (export/diff/audit on a mid-run or
+  failed scan produced empty or misleading output). Updated two existing tests
+  (`diff::load_side`, `export::explicit_scan_id`) to create `Complete` scans so they
+  exercise the happy path; added new test `resolve_scan_id_rejects_incomplete_scans`.
+  **T2.12 `[~]`→`[x]` — fully closed.** SOL-F1 `[~]` — 6 consumers done; remaining =
+  memchr/bstr only. Gate green: fmt/clippy/doc clean, 3,018 lib + 67 api + 23 arch
+  + 54 smoke + 3 halting + 6 cli-seed + 2 audit-regression tests, 0 failures.
+  **Paired:** `SOLUTION_TREE` SOL-F1 + SOL-CLI-CONTRACT + §4b + §5 refreshed — same
+  commit.
 - **2026-06-17** — **Paired-tree cycle 5 (S→P): SOL-F1 `au_electoral` HTML markers
   + SOL-CLI-CONTRACT `audit` exit-code.** S→P pass after cycle 4 examined what the
   PrefixMatcher delivery exposed: the §4b finish queue still held two contained items.

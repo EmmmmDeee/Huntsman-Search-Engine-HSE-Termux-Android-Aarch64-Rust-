@@ -80,6 +80,16 @@ impl MatchSet {
     pub fn find_range(&self, haystack: &str) -> Option<(usize, usize)> {
         self.ac.find(haystack).map(|m| (m.start(), m.end()))
     }
+
+    /// Zero-based index of the matched pattern in the slice supplied to
+    /// `new` / `new_ascii_ci`, or `None` when no pattern is found.
+    /// Complements [`Self::find`] for callers that need to dispatch on *which*
+    /// pattern matched rather than *where* it matched — e.g. looking up the
+    /// associated value in a parallel table without a second linear scan.
+    #[must_use]
+    pub fn find_id(&self, haystack: &str) -> Option<usize> {
+        self.ac.find(haystack).map(|m| m.pattern().as_usize())
+    }
 }
 
 /// A compiled set of literal prefix patterns for fast "which prefix does this
@@ -177,5 +187,16 @@ mod tests {
         assert_eq!(&hay[start..end], "enrolled for ");
         assert_eq!(&hay[end..], "Sydney NSW");
         assert_eq!(m.find_range("no match here"), None);
+    }
+
+    #[test]
+    fn find_id_returns_pattern_index() {
+        let m =
+            MatchSet::new_ascii_ci(["northern territory", "south australia", "western australia"]);
+        // "south australia" is index 1; case-insensitive
+        assert_eq!(m.find_id("somewhere in South Australia"), Some(1));
+        // "western australia" is index 2
+        assert_eq!(m.find_id("Perth WA, Western Australia"), Some(2));
+        assert_eq!(m.find_id("nowhere"), None);
     }
 }

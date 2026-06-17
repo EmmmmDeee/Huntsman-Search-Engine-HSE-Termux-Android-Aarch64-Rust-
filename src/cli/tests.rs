@@ -179,3 +179,21 @@ use super::*;
         assert!(err.contains("--value"), "{err}");
         assert!(err.contains("HUNTSMAN_DEFAULT_SEED"), "{err}");
     }
+
+    // ── resolve_scan_id ─────────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_scan_id_rejects_incomplete_scans() {
+        use crate::core::scan::{Scan, ScanStatus, Target};
+        use crate::storage::Store;
+
+        let store = Store::open(":memory:").unwrap();
+        let target = Target { kind: TargetKind::Email, value: "test@example.com".to_string() };
+        let mut scan = Scan::new("abc123", target);
+        scan.status = ScanStatus::Running;
+        store.upsert_scan(&scan).unwrap();
+
+        let err = resolve_scan_id(&store, "abc123").unwrap_err().to_string();
+        assert!(err.contains("abc123"), "{err}");
+        assert!(err.contains("running"), "{err}");
+    }
