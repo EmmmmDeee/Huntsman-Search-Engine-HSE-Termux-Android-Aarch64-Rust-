@@ -386,7 +386,21 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
     must filter on the id the hook already threads. The see_know/wigle/oathnet
     `QuotaBudget` per-scan statics share the same `reset_scan`-zeroing
     contamination (collective per-scan overspend; the per-*session* ceiling still
-    holds). **P2**
+    holds). **P2** ⏳ **Deferred (deliberately, per the "no functionality degraded"
+    bar) — needs a dedicated layering-aware refactor.** The write path is the
+    blocker: `found_keys::scan_body` is fed only at the `raw_archive::record`
+    chokepoint (`util/http/fetch.rs`, `curl`, `oathnet`, `see_know`), which carries
+    the module *name* but **not** `scan_id`; `ModuleContext` has `scan_id` but
+    modules reach the archive via the shared `ctx.http` client. A `tokio::task_local`
+    in `util::found_keys` is the clean design, **but** the `core_does_not_import_util
+    _directly` guard blocks the engine from scoping it, and `core::hooks` are
+    fn-pointers (can't wrap a future). So the real fix is **either** (a) thread
+    `scan_id` through the whole util HTTP layer + every module call site, **or**
+    (b) add a future-wrapping scope hook to `core::hooks`. Both are invasive enough
+    to risk a regression (a mis-scoped task silently drops keys), so this is staged
+    for its own focused change rather than rushed alongside the contained fixes.
+    *(Single-scan `hse scan`/CLI is unaffected — contamination needs ≥2 concurrent
+    `serve` scans.)*
   - **LOW — bounded over-dispatch.** `core/engine/dispatch.rs:684-762` (concurrent
     path) judges the `max_entities` budget + the cross-correlation gate against
     round-start `entity_map.len()`, but merges happen only in the post-spawn
@@ -862,3 +876,20 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   cap, the AU-gov scraper `resp.text()` caps, the hibp cast, and the LOW CLI-import
   cap remain (lower-risk; batched later). *Remaining headline item: T2.11
   found_keys.*
+- **2026-06-17** — **Fixes, batch 3 — assessed `found_keys` (T2.11), deferred on the
+  "no functionality degraded" bar.** Traced the write path end-to-end:
+  `found_keys::scan_body` has exactly one production caller (the
+  `raw_archive::record` chokepoint), fed from the util HTTP helpers (`fetch`/`curl`/
+  `oathnet`/`see_know`) which carry the module *name* but not `scan_id`. The clean
+  design — a `tokio::task_local` scan-id in `util::found_keys` — is blocked by the
+  `core_does_not_import_util_directly` guard (the engine can't scope a util
+  task-local) and by `core::hooks` being fn-pointers (can't wrap a future). The
+  layering-clean fix is therefore either threading `scan_id` through the entire util
+  HTTP layer + every module call site, or adding a future-wrapping scope hook —
+  both invasive enough that a mis-scope would *silently drop discovered keys*, i.e.
+  degrade the feature. Staged for a dedicated change. **Campaign tally:** of the
+  audit backlog the operator green-lit, **landed (tested + gated): SPA stored XSS
+  (HIGH), oathnet paid-overspend race, all four T2.9 SQL tie-breaks, both T2.8 HIGH
+  unbounded reads.** Open: `found_keys` isolation + the LOW/MED T2.8 caps + the LOW
+  T2.11 over-dispatch. Lib suite 2,995, gate green throughout; single-scan CLI
+  behaviour unchanged by any fix.
