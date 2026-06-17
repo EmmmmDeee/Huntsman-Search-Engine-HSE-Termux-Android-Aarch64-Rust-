@@ -137,6 +137,14 @@ pub(super) const SITES: &[Site] = &[
         200,
         "cam"
     ),
+    // Runetki — Russia's leading cam platform; performers register with a handle
+    // that maps directly to their profile URL. Major source for Eastern European
+    // performers who maintain a Russian-language presence alongside Western sites.
+    s!("Runetki", "https://runetki.com/{}", H, 200, "cam"),
+    // Cherry.tv — newer international cam platform with Eastern European roots;
+    // popular with Romanian, Ukrainian, and Moldovan performers seeking audiences
+    // outside their home markets.
+    s!("Cherry.tv", "https://cherry.tv/{}", H, 200, "cam"),
     // ── Fan / Subscription Platforms ────────────────────────────────────────
     //
     // OnlyFans: CloudFlare-rendered; missing profiles return 200 with
@@ -181,6 +189,36 @@ pub(super) const SITES: &[Site] = &[
     ),
     // AdmireMe (UK-based fan platform).
     s!("AdmireMe", "https://www.admireme.vip/{}", H, 200, "fans"),
+    // Mym — the dominant French-language OF alternative; heavily used in France,
+    // Belgium, French Canada, Morocco, and Ivory Coast. A subject active in
+    // French-speaking markets often appears here but nowhere else in the English
+    // platform set.
+    s!("Mym", "https://mym.fans/{}", H, 200, "fans"),
+    // Boosty — Russian Patreon/OnlyFans hybrid; the primary subscription-content
+    // platform for Russian and CIS-country creators who avoid Western platforms to
+    // stay below English-language OSINT radar. 404s absent creators.
+    s!("Boosty", "https://boosty.to/{}", H, 200, "fans"),
+    // 4Based — Ukrainian/Eastern European OnlyFans alternative built post-2022 as
+    // a domestic alternative to Western platforms. Popular with Ukrainian,
+    // Belarusian, and Russian creators who want a platform outside Western
+    // payment-processor reach.
+    s!("4Based", "https://4based.com/{}", H, 200, "fans"),
+    // JustForFans — international fan platform targeting gay, bisexual, and
+    // queer performers; widely used outside the English-speaking world by creators
+    // who maintain a discreet presence on a niche platform rather than mainstream
+    // OF/Fansly.
+    s!("JustForFans", "https://justfor.fans/{}", H, 200, "fans"),
+    // OhMyFans — Spanish-language OnlyFans alternative dominant in Spain, Mexico,
+    // Colombia, and Argentina. A subject with a Latin American or Spanish audience
+    // often uses this instead of, or alongside, English-language platforms.
+    s!("OhMyFans", "https://ohmyfans.com/{}", H, 200, "fans"),
+    // Unlockd — British adult fan platform popular with UK creators who consider
+    // OnlyFans overexposed; 404s absent creators cleanly.
+    s!("Unlockd", "https://unlockd.me/{}", H, 200, "fans"),
+    // Cam.tv — Italian-origin hybrid cam/fan platform with a significant European
+    // presence (Italy, France, Spain, Eastern Europe). Creators publish both live
+    // streams and subscriber content under the same handle.
+    s!("Cam.tv", "https://cam.tv/{}", H, 200, "fans"),
     // ── Adult Video / Profile Pages ─────────────────────────────────────────
     //
     // Pornhub model pages 404 for absent performer handles.
@@ -219,4 +257,29 @@ pub(super) const SITES: &[Site] = &[
         200,
         "adult"
     ),
+    // MyDirtyHobby — Germany's largest amateur and prosumer adult platform;
+    // widely used by German, Austrian, and Swiss creators who maintain a European
+    // profile not indexed by English-language discovery tools.
+    s!(
+        "MyDirtyHobby",
+        "https://www.mydirtyhobby.com/{}",
+        H,
+        200,
+        "adult"
+    ),
+    // SuicideGirls — international alternative/indie adult community with members
+    // across North America, Europe, Australia, and South America; a subject with
+    // alt-subculture ties frequently appears here before mainstream platforms.
+    s!(
+        "SuicideGirls",
+        "https://www.suicidegirls.com/girls/{}/",
+        H,
+        200,
+        "adult"
+    ),
+    // Iwara — Japanese-origin 3D-animation adult community (MMD, VRChat, etc.)
+    // with a large international audience. Creators use consistent handles across
+    // Iwara and mainstream cam/fan platforms, making it a useful pivot point for
+    // subjects active in Japanese or anime-adjacent communities.
+    s!("Iwara", "https://www.iwara.tv/profile/{}", H, 200, "adult"),
 ];

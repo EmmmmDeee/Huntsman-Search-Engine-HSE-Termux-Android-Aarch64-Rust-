@@ -233,17 +233,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### S.CAPABILITY — Surpass-the-competition program (paired with `PROBLEM_TREE` §4)
 
-- **`[x]` SOL-STREAMING · Streaming/cam/fan/adult platform identity prober** — 30-site
-  parallel HEAD/GET username prober across three category buckets (`cam` 14, `fans` 11,
-  `adult` 6); `StatusEq(200)` HEAD for platforms with clean 404s; `StatusAndNotBody(200,
+- **`[x]` SOL-STREAMING · Streaming/cam/fan/adult platform identity prober** — 42-site
+  parallel HEAD/GET username prober across three category buckets (`cam` 16, `fans` 18,
+  `adult` 8); `StatusEq(200)` HEAD for platforms with clean 404s; `StatusAndNotBody(200,
   needle)` GET for JS-rendered 200-for-all platforms (OnlyFans, Chaturbate); per-profile
   `Url` entities tagged `cam-profile`/`fans-profile`/`adult-profile` + `platform:<name>`;
   summary `Username` entity with `cam-identity-exposed`, `subscription-platform-found`,
   `adult-profile-found`, `high-streaming-exposure` (≥3 platforms) tags; `ModuleCategory::
   Social` (MITRE T1593.001 + T1589.003); priority 108; 16-concurrent semaphore; 30 s
   timeout envelope; `BROWSER_UA` to avoid Cloudflare scoring; 8 unit tests.
-  *Closes / powers:* **C8** (webcam/fan/adult platform presence — the identity surface
-  `username_search` left uncovered). ✅ delivered.
+  **International expansion (42 sites total):** Runetki/Boosty (Russia/CIS),
+  Cherry.tv/4Based (Eastern Europe), Mym (France/Francophone), MyDirtyHobby (Germany),
+  JustForFans (LGBTQ+ intl), OhMyFans (Spanish LATAM), Cam.tv (Italy/Europe),
+  Unlockd (UK), SuicideGirls (global alt), Iwara (Japan/3D).
+  *Closes / powers:* **C8** (webcam/fan/adult platform presence including non-English
+  markets — the identity surface `username_search` left uncovered). ✅ delivered.
 - **`[ ]` SOL-CORR · Correlation & identity depth** → **C1** (Maltego-without-graphs):
   transitive identity closure (property-tested convergence), a text "Connections"
   dossier section, first-class timeline, AU-0xx rule-gap fill. Built on SOL-MERGE.
@@ -612,3 +616,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   enabler block remains the sole unrealised high-leverage tier. Paired:
   `PROBLEM_TREE` C8 + §8 — same commit; gate green, 3,031 lib + 67 arch + 54 smoke
   + 3 halting + 23 cli + 6 cli-seed + 2 audit-regression tests, 0 failures.
+- **2026-06-17** — **SOL-STREAMING expansion: +12 international sites (30→42).**
+  Operator request: "find these in difficult to find overseas countries where people
+  hide their true behaviour." Extended `streaming_probe` site table with the non-English
+  platforms most used to maintain a covert streaming identity: Runetki, Cherry.tv (cam);
+  Mym, Boosty, 4Based, JustForFans, OhMyFans, Unlockd, Cam.tv (fans);
+  MyDirtyHobby, SuicideGirls, Iwara (adult). Each entry documented with its geographic
+  significance and the subject-behaviour pattern it targets. Timeout comment updated
+  (13.5s needed vs 30s; no change to the 30s constant). SOL-STREAMING description and
+  C8 problem node updated to reflect 42-site scope. Gate green: fmt/clippy/doc clean,
+  3,027 lib + 67 arch tests, 0 failures.

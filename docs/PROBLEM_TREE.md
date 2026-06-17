@@ -610,16 +610,23 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   only; webcam performers, fan-content creators, and adult-video contributors are an
   increasingly significant OSINT surface that the engine left entirely blind. A
   subject's streaming identity may be the only corroborating hit not already indexed
-  by general-purpose social probers. *Target:* enumerate username presence across the
-  specialist cam/fans/adult platform set so a streaming identity is surfaced
-  alongside mainstream social profiles in the same scan pass. → **Solution:**
-  `streaming_probe` — 30-site parallel HEAD/GET prober across three category buckets
-  (`cam` 14, `fans` 11, `adult` 6); `StatusEq` HEAD for platforms with clean 404s;
+  by general-purpose social probers. Subjects who maintain activity in non-English
+  markets (Russia, France, Germany, Eastern Europe, Japan, Spanish LATAM) routinely
+  use region-specific platforms invisible to English-centric tooling.
+  *Target:* enumerate username presence across the full specialist cam/fans/adult
+  platform set — including international platforms used to hide behaviour from
+  domestic or English-language observers — so a streaming identity is surfaced
+  regardless of which region's platforms the subject chose. → **Solution:**
+  `streaming_probe` — 42-site parallel HEAD/GET prober across three category buckets
+  (`cam` 16, `fans` 18, `adult` 8); `StatusEq` HEAD for platforms with clean 404s;
   `StatusAndNotBody` GET for JS-rendered 200-for-all platforms (OnlyFans, Chaturbate);
   summary `Username` entity with `cam-identity-exposed`, `subscription-platform-found`,
   `adult-profile-found`, and `high-streaming-exposure` (≥3 platforms) tags;
   `ModuleCategory::Social` (MITRE T1593.001 + T1589.003); priority 108; 8 unit tests.
-  **CAP-high (identity breadth)** ✅
+  **International coverage:** Runetki/Boosty (Russia/CIS), Cherry.tv/4Based (Eastern
+  Europe), Mym (France/Francophone), MyDirtyHobby (Germany), JustForFans (LGBTQ+ intl),
+  OhMyFans (Spanish LATAM), Cam.tv (Italy/Europe), Unlockd (UK), SuicideGirls (global
+  alt), Iwara (Japan/3D). **CAP-high (identity breadth)** ✅
 
 ---
 
@@ -1365,6 +1372,18 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   fmt/clippy/doc clean, 3,016 lib + 67 api + 23 arch + 54 smoke + 3 halting
   + 6 cli-seed + 2 audit-regression tests, 0 failures. **Paired:** `SOLUTION_TREE`
   SOL-F1 + SOL-CLI-CONTRACT + §4b + §5 refreshed — same commit.
+- **2026-06-17** — **Cycle 7 expansion: `streaming_probe` +12 international platforms.**
+  Operator request: "ensure expanded capabilities to find these in difficult to find
+  overseas countries where people hide their true behaviour." Extended `streaming_probe`
+  from 30 to 42 sites across the existing three categories, targeting the non-English
+  platforms most used to maintain a covert streaming presence: **cam** — Runetki
+  (Russia), Cherry.tv (Eastern Europe); **fans** — Mym (France/Francophone), Boosty
+  (Russia/CIS), 4Based (Ukraine/Eastern Europe), JustForFans (LGBTQ+ international),
+  OhMyFans (Spanish LATAM), Unlockd (UK), Cam.tv (Italy/Europe); **adult** —
+  MyDirtyHobby (Germany), SuicideGirls (global alternative), Iwara (Japan/3D animation).
+  C8 node updated to reflect full 42-site scope. Timeout comment updated (13.5s needed vs
+  30s budget). Gate green: fmt/clippy/doc clean, 3,027 lib + 67 arch tests, 0 failures.
+  **Paired:** `SOLUTION_TREE` SOL-STREAMING + §5 — same commit.
 - **2026-06-17** — **Paired-tree cycle 7 (CAP): `streaming_probe` — webcam, fan-subscription
   & adult-video platform identity discovery.** Operator-directed capability request:
   "incorporate all forms of webcam or similar site identities as a comprehensive OSINT

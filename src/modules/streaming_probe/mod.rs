@@ -1,16 +1,21 @@
 //! Webcam, fan-subscription, and adult-video platform identity discovery.
 //!
-//! Fans out parallel HTTP probes across ~30 platforms that are specific to live
+//! Fans out parallel HTTP probes across ~40 platforms that are specific to live
 //! streaming, cam performance, and subscription-content creation — categories
 //! not covered by the general `username_search` module (which targets mainstream
 //! social/dev/gaming/music platforms). The full platform set spans:
 //!
 //! - **cam** — Live webcam / performer streaming (Chaturbate, Stripchat,
-//!   BongaCams, Cam4, CamSoda, MyFreeCams, Streamate, LiveJasmin, ImLive, …)
+//!   BongaCams, Cam4, CamSoda, MyFreeCams, Streamate, LiveJasmin, ImLive,
+//!   Runetki/Russia, Cherry.tv/Eastern-Europe, …)
 //! - **fans** — Fan-subscription / content-creator platforms (OnlyFans, Fansly,
-//!   ManyVids, FanCentro, Fanvue, Loyalfans, AVN Stars, PocketStars, …)
+//!   ManyVids, FanCentro, Fanvue, Loyalfans, AVN Stars, PocketStars,
+//!   Mym/France-Francophone, Boosty/Russia-CIS, 4Based/Ukraine-Eastern-Europe,
+//!   JustForFans/LGBTQ-intl, OhMyFans/Spanish-LATAM, Unlockd/UK,
+//!   Cam.tv/Italy-Europe, …)
 //! - **adult** — Adult-video profile pages (Pornhub model, xHamster, xVideos,
-//!   SpankBang, Erome, RedTube)
+//!   SpankBang, Erome, RedTube, MyDirtyHobby/Germany, SuicideGirls/intl,
+//!   Iwara/Japan-3D)
 //!
 //! For every hit, emits one `Url` entity tagged `cam-profile`/`fans-profile`/
 //! `adult-profile` (matching the platform's category bucket) plus
@@ -67,7 +72,10 @@ impl Module for StreamingProbe {
 
     fn description(&self) -> &'static str {
         "Webcam, fan-subscription, and adult-video platform identity discovery \
-         across ~30 sites (Chaturbate, OnlyFans, Fansly, Pornhub model, xHamster, …)."
+         across ~40 sites including international platforms: Russia (Runetki, Boosty), \
+         France (Mym), Germany (MyDirtyHobby), Eastern Europe (Cherry.tv, 4Based), \
+         LGBTQ+ (JustForFans), Spanish LATAM (OhMyFans), Japan (Iwara), \
+         and the English-language mainstream (Chaturbate, OnlyFans, Fansly, Pornhub, …)."
     }
 
     fn is_passive(&self) -> bool {
@@ -90,9 +98,10 @@ impl Module for StreamingProbe {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        // ceil(30 sites / 16 concurrent) × 4.5s/probe = 9s needed;
-        // 30s envelope gives generous headroom for CloudFlare challenges and
-        // JS-rendered responses (OnlyFans body reads take ~1–2s extra).
+        // ceil(42 sites / 16 concurrent) × 4.5s/probe = 13.5s needed;
+        // 30s envelope gives generous headroom for CloudFlare challenges,
+        // JS-rendered responses (OnlyFans body reads take ~1–2s extra), and
+        // the higher latency of probing non-CDN international platforms.
         30_000
     }
 
