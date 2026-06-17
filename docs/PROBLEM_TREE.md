@@ -13,8 +13,13 @@
 > scope here** (indexed under §7 *Deferred*, to be handled in a separate pass).
 
 This is a **running document**: it is the single source of truth for what is
-wrong, what is missing, and exactly how each is to be solved. Update it in the
-same commit as the work (status flips + a line in §8 *Maintained log*).
+wrong, what is missing, and exactly how each is to be solved. It is **paired with
+its dual, [`SOLUTION_TREE.md`](SOLUTION_TREE.md)** (organised by *what we build* —
+so a primitive that closes many problems shows up as the leverage point it is). The
+two are maintained **in lockstep** (see `SOLUTION_TREE` §0): a change touches both in
+the same commit, analysis alternates **problem→solution** and **solution→problem**,
+and **gap analysis** (`SOLUTION_TREE` §4) is the live bridge between them. Update
+both in the same commit as the work (status flips + a line in each maintained log).
 **Every change lands on `main`.**
 
 ---
@@ -1040,3 +1045,14 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   once full (stale served). Plus LOW pool/proxy/timeline/exit-code edges. None
   crash or corrupt persisted data. The agent also independently re-verified the
   shipped T2.9 `latest` tie-break fix is correct.
+- **2026-06-17** — **Paired this tree with its dual, [`SOLUTION_TREE.md`](SOLUTION_TREE.md)**
+  (operator request). The solution tree inverts the axis — organised by *what we
+  build* — so a primitive that closes many problems (boundary-safe scanning,
+  capped reads, per-`scan_id` isolation) reads as the leverage point it is. Wired the
+  same-commit lockstep protocol (`SOLUTION_TREE` §0): every change touches both trees,
+  analysis alternates problem→solution and solution→problem, and gap analysis
+  (`SOLUTION_TREE` §4) is the live bridge. First gap pass: largest unrealised leverage
+  is the §3.F enabler block (SOL-F1/F2/F3 all `[~]`); highest-value discrete open
+  solution is SOL-ISOLATE (T2.11 found_keys); highest-value contained security
+  solution is SOL-SSRF-WHOIS (§7 S2); **no over-build** found. Header updated to
+  reference the pair.
