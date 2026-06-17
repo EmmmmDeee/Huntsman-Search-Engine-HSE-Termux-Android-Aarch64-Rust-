@@ -394,3 +394,77 @@ pub(in crate::core::correlator) fn rule_au_051_shared_surname_kin(
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::entity::Evidence;
+
+    // ── normalise_address ─────────────────────────────────────────────────────
+
+    #[test]
+    fn normalise_address_collapses_punctuation_and_case() {
+        // Two spellings of the same residence must collapse to one key.
+        assert_eq!(
+            normalise_address("123 Main St, Apt 4"),
+            normalise_address("123 main st apt 4")
+        );
+        assert_eq!(normalise_address("123 Main St, Apt 4"), "123 main st apt 4");
+    }
+
+    #[test]
+    fn normalise_address_drops_format_punctuation_and_trims() {
+        // `#`, `.`, `-`, `/`, `\` are removed (joining adjacent tokens, so
+        // `Main-St` ⇒ `mainst`); commas/whitespace runs collapse; ends trimmed.
+        assert_eq!(
+            normalise_address("  Apt #4, 123 Main-St.  "),
+            "apt 4 123 mainst"
+        );
+    }
+
+    // ── normalise_phone ───────────────────────────────────────────────────────
+
+    #[test]
+    fn normalise_phone_collapses_formatting_to_digits() {
+        assert_eq!(
+            normalise_phone("+1 (415) 555-0100"),
+            Some("14155550100".into())
+        );
+        assert_eq!(normalise_phone("14155550100"), Some("14155550100".into()));
+    }
+
+    #[test]
+    fn normalise_phone_rejects_short_and_placeholder_runs() {
+        assert_eq!(normalise_phone("12345"), None); // < 8 digits
+        assert_eq!(normalise_phone("+00000000"), None); // all-same-digit placeholder
+    }
+
+    // ── surname ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn surname_takes_last_alpha_token_lowercased() {
+        assert_eq!(surname("Jane Mary Doe"), Some("doe".into()));
+        assert_eq!(surname("Cher"), Some("cher".into()));
+    }
+
+    #[test]
+    fn surname_none_when_trailing_token_too_short() {
+        // After alpha-filtering, a 1-char trailing token is rejected.
+        assert_eq!(surname("Alice B"), None);
+        assert_eq!(surname("Bob 3"), None); // digits filtered out → empty
+    }
+
+    // ── entity_phones ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn entity_phones_normalises_and_dedups_across_evidence() {
+        let mut e = Entity::new(EntityKind::Person, "Jane Doe", 0.6, "s");
+        e.add_evidence(Evidence::new("oathnet", "hit").with_attr("phone", "+1 (415) 555-0100"));
+        // Same line, different formatting → one key after normalisation.
+        e.add_evidence(Evidence::new("dehashed", "hit").with_attr("phone", "1-415-555-0100"));
+        // A short fragment is dropped.
+        e.add_evidence(Evidence::new("see_know", "hit").with_attr("phone", "911"));
+        let phones = entity_phones(&e);
+        assert_eq!(phones, vec!["14155550100".to_string()]);
+    }
+}

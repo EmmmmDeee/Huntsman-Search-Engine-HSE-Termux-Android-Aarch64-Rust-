@@ -167,3 +167,69 @@ use super::*;
         let tl = reconstruct(&[e.clone(), e]);
         assert_eq!(tl.len(), 1);
     }
+
+    // ── classify ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn classify_maps_attr_keys_to_event_kinds() {
+        use TimelineEventKind::*;
+        assert!(matches!(classify("breach_date"), Some(BreachExposure)));
+        assert!(matches!(classify("data_breach"), Some(BreachExposure)));
+        assert!(matches!(classify("created_at_unix"), Some(Registered)));
+        assert!(matches!(classify("expire_secs"), Some(Expiry)));
+        assert!(matches!(classify("date_of_birth"), Some(DateOfBirth)));
+        assert!(matches!(classify("timestamp"), Some(Generic)));
+    }
+
+    #[test]
+    fn classify_is_case_insensitive_and_none_for_unknown() {
+        assert!(matches!(
+            classify("BREACH_DATE"),
+            Some(TimelineEventKind::BreachExposure)
+        ));
+        assert!(classify("favourite_colour").is_none());
+        assert!(classify("").is_none());
+    }
+
+    // ── is_leap ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_leap_follows_the_gregorian_rule() {
+        assert!(is_leap(2024)); // divisible by 4, not by 100
+        assert!(!is_leap(1900)); // century not divisible by 400
+        assert!(is_leap(2000)); // divisible by 400
+        assert!(!is_leap(2023)); // ordinary year
+    }
+
+    // ── days_from_civil ───────────────────────────────────────────────────────
+
+    #[test]
+    fn days_from_civil_anchors_on_the_epoch() {
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(1970, 1, 2), 1);
+        assert_eq!(days_from_civil(1969, 12, 31), -1);
+        assert_eq!(days_from_civil(2000, 1, 1), 10957);
+    }
+
+    // ── civil_to_unix ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn civil_to_unix_renders_date_only_at_midnight() {
+        let (ts, iso) = civil_to_unix(1970, 1, 1, 0, 0, 0);
+        assert_eq!(ts, 0);
+        assert_eq!(iso, "1970-01-01");
+    }
+
+    #[test]
+    fn civil_to_unix_renders_iso_z_when_time_present() {
+        let (ts, iso) = civil_to_unix(1970, 1, 1, 1, 0, 0);
+        assert_eq!(ts, 3600);
+        assert_eq!(iso, "1970-01-01T01:00:00Z");
+    }
+
+    #[test]
+    fn civil_to_unix_keeps_pre_epoch_dates_negative() {
+        let (ts, iso) = civil_to_unix(1969, 12, 31, 0, 0, 0);
+        assert_eq!(ts, -86400);
+        assert_eq!(iso, "1969-12-31");
+    }

@@ -98,3 +98,30 @@ use super::*;
             Some("crypto_eth")
         );
     }
+
+    // ── is_base58 ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_base58_accepts_alphabet_and_rejects_ambiguous_chars() {
+        // Boundary members of each accepted span.
+        for c in ['1', '9', 'A', 'H', 'J', 'N', 'P', 'Z', 'a', 'k', 'm', 'z'] {
+            assert!(is_base58(c), "{c} should be base58");
+        }
+        // The four visually-ambiguous exclusions.
+        for c in ['0', 'O', 'I', 'l'] {
+            assert!(!is_base58(c), "{c} must be excluded");
+        }
+        // Non-alphanumerics are never base58.
+        assert!(!is_base58('+'));
+        assert!(!is_base58(' '));
+    }
+
+    // ── is_all_ascii_hex ──────────────────────────────────────────────────────
+
+    #[test]
+    fn is_all_ascii_hex_requires_nonempty_all_hex() {
+        assert!(is_all_ascii_hex("deadBEEF0123"));
+        assert!(!is_all_ascii_hex("")); // empty → false
+        assert!(!is_all_ascii_hex("dead beef")); // space is not hex
+        assert!(!is_all_ascii_hex("xyz")); // non-hex letters
+    }

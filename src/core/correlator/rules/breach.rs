@@ -704,3 +704,156 @@ pub(in crate::core::correlator) fn rule_au_043_paste_exposure(
         ts,
     )]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::entity::Evidence;
+
+    // ── is_salted_hash ────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_salted_hash_accepts_every_salted_scheme() {
+        for h in [
+            "$2a$10$abcdefghijklmnopqrstuv",
+            "$2b$12$....",
+            "$2y$10$....",
+            "$argon2id$v=19$m=65536",
+            "$scrypt$ln=16",
+            "$y$j9T$salt",
+            "$7$DU..../....",
+            "$6$rounds=5000$salt",
+            "$5$rounds=5000$salt",
+        ] {
+            assert!(is_salted_hash(h), "should be salted: {h}");
+        }
+    }
+
+    #[test]
+    fn is_salted_hash_rejects_bare_hex_and_trims() {
+        assert!(!is_salted_hash("5f4dcc3b5aa765d61d8327deb882cf99")); // md5 hex
+        assert!(!is_salted_hash("not a hash"));
+        // Leading/trailing whitespace is trimmed before the prefix test.
+        assert!(is_salted_hash("  $2a$10$x  "));
+    }
+
+    // ── is_hex_digest ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_hex_digest_requires_16_plus_all_hex() {
+        assert!(is_hex_digest("5f4dcc3b5aa765d6")); // exactly 16 hex
+        assert!(is_hex_digest("5f4dcc3b5aa765d61d8327deb882cf99")); // 32 hex
+        assert!(!is_hex_digest("5f4dcc3b5aa765d")); // 15 chars — too short
+        assert!(!is_hex_digest("z5f4dcc3b5aa765d6")); // contains non-hex 'z'
+    }
+
+    // ── is_common_password ────────────────────────────────────────────────────
+
+    #[test]
+    fn is_common_password_matches_denylist_case_insensitively() {
+        assert!(is_common_password("password123"));
+        assert!(is_common_password("PASSWORD123"));
+        assert!(is_common_password("  letmein  "));
+        assert!(!is_common_password("Xy7$kq2Lm9wz")); // not in the list
+    }
+
+    // ── is_reusable_password ──────────────────────────────────────────────────
+
+    #[test]
+    fn is_reusable_password_accepts_rare_high_entropy_strings() {
+        // 12 chars, 7 distinct, all-lowercase entropy 12*log2(26)≈56 ≥ 50.
+        assert!(is_reusable_password("correcthorse"));
+    }
+
+    #[test]
+    fn is_reusable_password_rejects_hashes_common_and_low_variety() {
+        assert!(!is_reusable_password("5f4dcc3b5aa765d61d8327deb882cf99")); // hex digest
+        assert!(!is_reusable_password("password123")); // common
+        assert!(!is_reusable_password("aaaaaaaaaa")); // 10 chars, 1 distinct
+        assert!(!is_reusable_password("short1")); // < 10 chars
+    }
+
+    // ── is_substantial_token ──────────────────────────────────────────────────
+
+    #[test]
+    fn is_substantial_token_accepts_long_high_variety_string() {
+        assert!(is_substantial_token("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"));
+    }
+
+    #[test]
+    fn is_substantial_token_rejects_short_or_low_distinct() {
+        assert!(!is_substantial_token("abc123")); // < 16 chars
+        assert!(!is_substantial_token("aaaaaaaaaaaaaaaa")); // 16 chars, 1 distinct
+    }
+
+    // ── Secret::classify ──────────────────────────────────────────────────────
+
+    #[test]
+    fn classify_admits_wallet_and_api_key_unconditionally() {
+        let wallet = Entity::new(EntityKind::CryptoAddress, "0xabc", 0.5, "s");
+        let api = Entity::new(EntityKind::ApiKey, "sk-xyz", 0.5, "s");
+        assert!(matches!(
+            Secret::classify(&wallet),
+            Some(Secret::WalletAddress)
+        ));
+        assert!(matches!(Secret::classify(&api), Some(Secret::ApiKey)));
+    }
+
+    #[test]
+    fn classify_routes_salted_hash_password_to_salted_hash() {
+        let e = Entity::new(EntityKind::Password, "$2a$10$abcdefghijklmnop", 0.5, "s");
+        assert!(matches!(Secret::classify(&e), Some(Secret::SaltedHash)));
+    }
+
+    #[test]
+    fn classify_session_token_requires_tag_and_shape() {
+        let token = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6";
+        // With the session-token provenance tag → SessionToken.
+        let mut tagged = Entity::new(EntityKind::Credential, token, 0.5, "s");
+        tagged.tag("session-token");
+        assert!(matches!(
+            Secret::classify(&tagged),
+            Some(Secret::SessionToken)
+        ));
+        // Same value, no tag: the hex shape is an unsalted-digest lookalike, so it
+        // is NOT admitted as a plaintext password → None.
+        let untagged = Entity::new(EntityKind::Credential, token, 0.5, "s");
+        assert!(Secret::classify(&untagged).is_none());
+    }
+
+    #[test]
+    fn classify_reusable_plaintext_password_is_admitted() {
+        let e = Entity::new(EntityKind::Password, "correcthorse", 0.5, "s");
+        let c = Secret::classify(&e).expect("rare plaintext password links");
+        assert!(c.is_plaintext_password());
+        assert_eq!(c.label(), "password");
+    }
+
+    #[test]
+    fn classify_rejects_non_credential_kinds_and_weak_passwords() {
+        let email = Entity::new(EntityKind::Email, "a@b.com", 0.5, "s");
+        assert!(Secret::classify(&email).is_none());
+        let weak = Entity::new(EntityKind::Password, "123456", 0.5, "s");
+        assert!(Secret::classify(&weak).is_none());
+    }
+
+    // ── distinct_sources ──────────────────────────────────────────────────────
+
+    #[test]
+    fn distinct_sources_unions_attrs_splits_lists_and_drops_sentinels() {
+        let mut e = Entity::new(EntityKind::Password, "$2a$10$x", 0.5, "s");
+        e.add_evidence(Evidence::new("oathnet", "hit").with_attr("dbname", "LinkedIn"));
+        e.add_evidence(
+            Evidence::new("dehashed", "hit").with_attr("top_databases", "Adobe, MySpace, unknown"),
+        );
+        // A pure sentinel contributes nothing.
+        e.add_evidence(Evidence::new("see_know", "hit").with_attr("source", "stealer"));
+        let srcs = distinct_sources(&e);
+        assert!(srcs.contains("linkedin")); // lowercased
+        assert!(srcs.contains("adobe"));
+        assert!(srcs.contains("myspace"));
+        assert!(!srcs.contains("unknown"), "sentinel dropped");
+        assert!(!srcs.contains("stealer"), "sentinel dropped");
+        assert_eq!(srcs.len(), 3);
+    }
+}
