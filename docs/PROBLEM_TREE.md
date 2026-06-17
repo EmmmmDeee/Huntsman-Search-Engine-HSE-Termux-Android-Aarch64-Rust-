@@ -188,9 +188,13 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
   + shape, `normalise` **idempotency for every kind** (UID-stability invariant),
   `derive_uid` determinism, and `geohash`/`parse_coords` totality + round-trip.
   Regression seeds committed. **Found + fixed a real bug** (`slugify` leaked raw
-  non-ASCII/uppercase-accented chars into correlation tags). *Remaining:*
-  `cargo-fuzz` (nightly/libfuzzer — gate on a CI lane, not on-device aarch64) +
-  `criterion` benches.
+  non-ASCII/uppercase-accented chars into correlation tags). **`criterion` landed**
+  too (dev-dep, lean — no plotters/rayon): `benches/scan_throughput.rs` measures
+  the hottest pure parse-path scanners (`find_ascii_ci` hit/miss on a 14 KB body,
+  `fold_ascii_lower`, `slugify`, `geohash`); CI compiles them (`--no-run`) so a
+  perf-path API change can't rot them. *Remaining:* `cargo-fuzz` (nightly/libfuzzer
+  — gate on a CI lane, not on-device aarch64); widen criterion to the correlation
+  pass once a bench-visible entry point exists.
 
 ### 3.2 — Tier 2 · P2 robustness & quality
 
@@ -523,3 +527,14 @@ legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
   delegated. `KEY_ENV` left (module-local literals can't drift — cosmetic only).
   F.2's `fst` layer remains as a pure optimisation for the *large* tables. Gate
   green: clippy/fmt/doc clean, 2,986 lib tests (+1 regression guard), 0 failures.
+- **2026-06-17** — **F.3 (criterion).** Added `criterion` (dev-only, lean —
+  `cargo_bench_support` only, no plotters/rayon, so it stays Termux-friendly) and
+  `benches/scan_throughput.rs` benching the hottest pure parse-path scanners:
+  `find_ascii_ci` (hit + worst-case miss on a 14 KB multibyte body),
+  `fold_ascii_lower`, `slugify`, `geohash`. `harness = false` + a `[[bench]]`
+  manifest entry; CI compiles them via clippy `--all-targets` / `cargo bench
+  --no-run`, so they double as a perf-path API-drift guard (and give the
+  on-device MB/s number the "structurally faster than CPython SpiderFoot" claim
+  needs). The internal dispatch/correlation pass isn't `pub`, so it's deferred
+  until a bench-visible entry exists. Gate green: clippy `--all-targets` + fmt
+  clean, benches compile, 2,986 lib tests, 0 failures.

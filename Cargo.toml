@@ -16,6 +16,14 @@ path = "src/main.rs"
 name = "huntsman_search_engine"
 path = "src/lib.rs"
 
+# Criterion micro-benchmarks (dev-only). `harness = false` hands main() to
+# criterion. CI compiles them (`cargo bench --no-run` / clippy `--all-targets`)
+# so a perf-path API change can't rot the benches unnoticed; run locally with
+# `cargo bench`. Scope: the hottest pure scanners on the parse path.
+[[bench]]
+name = "scan_throughput"
+harness = false
+
 # Lint policy, codified in the manifest (Cargo `[lints]`, stable since 1.74) so
 # the standard travels with the crate and is enforced uniformly — local builds,
 # rust-analyzer, and CI alike — instead of living only in the CI `clippy
@@ -101,6 +109,7 @@ tempfile = "3"
 tower  = { version = "0.5", features = ["util"] }
 http   = "1"
 proptest = "1.11.0"
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 
 [profile.release]
 opt-level     = "s"
