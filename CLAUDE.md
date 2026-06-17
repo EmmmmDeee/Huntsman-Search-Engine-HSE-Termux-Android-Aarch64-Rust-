@@ -28,4 +28,4 @@ Notes:
 
 - Edition 2024, MSRV 1.88, `#![forbid(unsafe_code)]`; pinned reqwest 0.12 / rusqlite 0.39 (Termux aarch64, no root).
 - Layering: `core` must not import `modules`; module layer may use `util`. Architecture guards in `tests/architecture.rs` enforce this.
-- MITRE ATT&CK Reconnaissance (TA0043) alignment lives in `core::attack`; every collection module declares `attack_techniques()` (guarded — no module may be left unmapped).
+- MITRE ATT&CK Reconnaissance (TA0043) alignment lives in `core::attack`; every module is mapped to `attack_techniques()` — via a per-category default (`techniques_for_category`) or an explicit override — and a guard rejects any unmapped module or out-of-register technique ID.

@@ -173,12 +173,12 @@ records. The engine knows nothing else — every module is a one-file change.
 | `geo_intel` | phone, ip_address | free | no | 22 | coordinates |
 | `geocode` | coordinates, address | free | no | 21 | coordinates, address |
 | `photon` | coordinates, address | free | no | 20 | coordinates, address |
-| `wigle` | coordinates, mac_address | key_gated | no | 18 | coordinates, address, mac_address, organisation |
 | `qld_cadastre` | coordinates | free | no | 18 | coordinates, address |
 | `mylnikov` | mac_address | free | no | 17 | coordinates |
 | `overpass` | coordinates | free | no | 15 | coordinates |
 | `social_location` | — | free | no | 15 | address |
 | `mls` | mac_address | free | no | 12 | coordinates |
+| `wigle` | coordinates, mac_address | key_gated | no | 10 | coordinates, address, mac_address, organisation |
 | `sunrise_sunset` | coordinates | free | no | 10 | coordinates |
 | `breach_timezone` | email, username, phone | free | **yes** | 7 | address |
 

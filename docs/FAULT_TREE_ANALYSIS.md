@@ -16,10 +16,12 @@ place · ⚒ shipped this cycle · ⚠ open/recommended).
 > `"abort"`) with a `catch_unwind` guard at the dispatch boundary, so a module
 > panic is **contained, not process-fatal** — which re-frames **E3.1 / SPOF #2**
 > below; `audit.yml` is triple-gated (`cargo audit` + `cargo deny` + `cargo
-> machete`); the suite is ~2,944 lib tests. The live, prioritised view of open
-> engineering issues is [`PROBLEM_TREE.md`](PROBLEM_TREE.md). The methodology and
-> trees T1–T11 remain valid; treat count/profile claims as historical unless
-> corrected inline.
+> machete`); the suite is ~2,992 lib tests. The `to_lowercase()` byte-offset slice
+> panic class flagged below at **E3.1 / SPOF #2 / Open-item #1** is now **fully
+> closed** (T0.1/T0.2 done — boundary-safe `find_ascii_ci` + `proptest`); those
+> rows are corrected inline. The live, prioritised view of open engineering issues
+> is [`PROBLEM_TREE.md`](PROBLEM_TREE.md). The methodology and trees T1–T11 remain
+> valid; treat count/profile claims as historical unless corrected inline.
 
 The system remains healthy: `clippy -D warnings` clean, `fmt --check` clean,
 `#![forbid(unsafe_code)]` crate-wide, MSRV 1.88, and an aarch64-Android
@@ -138,7 +140,7 @@ T3
 
 | ID | Description | Likelihood | Impact | Detectability | Mitigation |
 |----|-------------|-----------|--------|---------------|------------|
-| **E3.1** | A module panics during a scan | Very Low | Low | Medium | ✅ **Contained by design:** the release profile is `panic="unwind"` and the dispatch boundary wraps each module in `catch_unwind` (`run_module_guarded`), so a panicking module yields no results and is logged — it does **not** abort `serve`. Preventive panic-freedom also holds: `forbid(unsafe)`, ~0 production `unwrap`, exhaustive `match`es (arch test), clippy `-D warnings`. ⚠ One panic *class* is not fully eliminated: byte offsets from `str::to_lowercase()` (not length-preserving — `İ`→`i̇`, `ẞ`→`ß`) used to slice the **original** string. Fixed in `search_engines::extract_organisations_from_text`, but two instances remain in the `au_electoral` / `au_property` parsers (see [`PROBLEM_TREE.md`](PROBLEM_TREE.md) §3.0 **T0.1/T0.2**). Under `unwind` these degrade the module, not the process — still to be fixed. Confirms the preventive approach must be *re-run*, not assumed |
+| **E3.1** | A module panics during a scan | Very Low | Low | Medium | ✅ **Contained by design:** the release profile is `panic="unwind"` and the dispatch boundary wraps each module in `catch_unwind` (`run_module_guarded`), so a panicking module yields no results and is logged — it does **not** abort `serve`. Preventive panic-freedom also holds: `forbid(unsafe)`, ~0 production `unwrap`, exhaustive `match`es (arch test), clippy `-D warnings`. ✅ The `str::to_lowercase()` byte-offset slice *class* (not length-preserving — `İ`→`i̇`, `ẞ`→`ß` — used to slice the **original** string) is now **fully closed**: `search_engines`, `au_electoral`, and `au_property` all route through the boundary-safe `util::str_util::find_ascii_ci`, machine-checked by `proptest` no-panic properties (see [`PROBLEM_TREE.md`](PROBLEM_TREE.md) §3.0 **T0.1/T0.2**, done). A 2026-06-17 multi-agent re-audit found **no remaining instance** of this class anywhere. Confirms the preventive approach must be *re-run*, not assumed — which is exactly how these were caught and fixed |
 | B3.2.1 | Blocking on a 2-thread runtime | Low | Medium | Medium | ✅ Fully async I/O (reqwest/hickory); SQLite calls are short; per-module `tokio::timeout` |
 | B3.2.2 | SSE backpressure | Low | Medium | Medium | ✅ `broadcast` channel (bounded, lagging receivers drop frames, never block producers); history endpoint backfills |
 | E3.3 | Bind fails | Low | Low | High | ✅ Bind error surfaced as a clean `Error::Other("bind …")` and non-zero exit |
@@ -270,7 +272,7 @@ T10
 
 | ID | Description | Likelihood | Impact | Detectability | Mitigation |
 |----|-------------|-----------|--------|---------------|------------|
-| E10.1 | Count/catalogue drift | Low | Low | High | ⚒ Engine-count drift fixed (13→17) + a test ties the module description to `ENGINES.len()`; ✅ `modules_md_lists_every_registered_module`. ⚒ README/INSTALL module-count drift fixed (was 60+/63/89; now 89 everywhere) + seed-type count corrected (12→13); `readme_module_overview_count_matches_registry` ties the README headline count to `registry().len()` so it can't rot again |
+| E10.1 | Count/catalogue drift | Low | Low | High | ⚒ Engine-count drift fixed (13→17) + a test ties the module description to `ENGINES.len()`; ✅ `modules_md_lists_every_registered_module`. ⚒ README/INSTALL module-count drift fixed (now **118** everywhere); `readme_module_overview_count_matches_registry` ties the README headline count to `registry().len()` so the *headline* can't rot. ⚠ The README per-category *catalogue list* is **not** CI-guarded (only the headline count + `MODULES.md` are) — it had drifted to 98 of 118 and was re-completed in the 2026-06-17 doc audit; a list-completeness guard against `registry()` would prevent recurrence |
 | E10.2 | Orphan key | Low | Low | High | ✅ `env_template_keys_are_all_consumed` fails CI on a documented-but-unread key |
 | E10.3 | Layer coupling | Low | Medium | High | ✅ Source-scanning architecture tests fail CI on a forbidden import; the `core`→`util` allowlist is explicit and reviewed |
 
@@ -300,7 +302,7 @@ T11
 | # | SPOF / latent defect | Status |
 |---|----------------------|--------|
 | 1 | SQLite store (single file) — the one stateful SPOF | ✅ WAL + checkpoint; ⚒ `integrity_check` + WAL-size now reported by `hse doctor` |
-| 2 | A module panic during `serve` | ✅ Contained — `panic="unwind"` + `catch_unwind` at dispatch degrade the module, not the process (see E3.1); residual `to_lowercase()` slice class tracked in `PROBLEM_TREE.md` T0.1/T0.2 |
+| 2 | A module panic during `serve` | ✅ Contained — `panic="unwind"` + `catch_unwind` at dispatch degrade the module, not the process (see E3.1); the `to_lowercase()` slice class (T0.1/T0.2) is now **fixed** (boundary-safe `find_ascii_ci` + `proptest`), not just contained |
 | 3 | In-repo OSINT output contains third-party PII | ✅ Accepted by design (E2.1); exposure governed by repo visibility, never by redaction |
 | 4 | Scraping detector / selectors track moving third-party targets | ⚒ Hardened + data-driven this cycle; inherently needs upkeep |
 | 5 | Crawler follows attacker-controlled discovered links (SSRF) | ✅ Mitigated — client-level `SsrfResolver` DNS filter + private-IP redirect guard (B2.3.2) |
@@ -336,13 +338,17 @@ deterministic UIDs, graceful shutdown, prebuilt + fast build paths.
   Visibility) if the data should not be world-readable. No code-level
   remediation applies, and none is performed.
 
-**Open / recommended (⚠)**
-1. **E3.1 panic class** — `panic="unwind"` + `catch_unwind` at dispatch already
-   bound a module panic's blast radius (it degrades the module, not `serve`), so
-   the former "flip `abort`→`unwind`" recommendation is **done**. The residual is
-   the `to_lowercase()` byte-offset slice class: fixed in `search_engines`, but
-   the `au_electoral` / `au_property` parsers still carry it — tracked in
-   [`PROBLEM_TREE.md`](PROBLEM_TREE.md) §3.0 (T0.1/T0.2).
+**Resolved since this analysis (was ⚠ — now ✅)**
+1. **E3.1 panic class** — `panic="unwind"` + `catch_unwind` at dispatch bound a
+   module panic's blast radius (it degrades the module, not `serve`), so the
+   former "flip `abort`→`unwind`" recommendation is **done**; and the residual
+   `to_lowercase()` byte-offset slice class is now **also closed** —
+   `search_engines`, `au_electoral`, and `au_property` all route through the
+   boundary-safe `find_ascii_ci`, machine-checked by `proptest` no-panic
+   properties (PROBLEM_TREE §3.0 T0.1/T0.2, done); the 2026-06-17 re-audit found
+   no remaining instance. **No open items remain in this register** — the live,
+   prioritised robustness frontier is in [`PROBLEM_TREE.md`](PROBLEM_TREE.md)
+   (currently **T2.8** unbounded response-body reads, **T2.9** SQL tie-breaks).
 
    Open engineering items are tracked centrally in `PROBLEM_TREE.md`; the trees
    above are a point-in-time analysis.

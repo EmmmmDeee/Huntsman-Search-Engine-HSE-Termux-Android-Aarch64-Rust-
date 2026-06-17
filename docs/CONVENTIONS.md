@@ -8,22 +8,22 @@ drift a CI failure.**
 
 ## 1. Layering
 
-The intended dependency direction is `cli`/`api` → `core` → `util`, with
-`modules` depending only on `core` types: **core is meant to be module-agnostic**
-— the engine drives modules through the registry, never the reverse. Core
-reaches `util` only through the deliberate exceptions listed in the test.
-Persistence is consumed through the `core::port::StoragePort` trait; `core/`
-and `api/` never name `storage::Store` directly — the only `Store::open` sites
-are the CLI composition roots.
+The dependency direction is `cli`/`api` → `core` → `util`, with `modules`
+depending only on `core` types: **core is module-agnostic** — the engine drives
+modules through the registry, never the reverse. Core reaches `util` only through
+the deliberate exceptions listed in the test. Persistence is consumed through the
+`core::port::StoragePort` trait; `core/` and `api/` never name `storage::Store`
+directly — the only `Store::open` sites are the CLI composition roots.
 
-*Partially enforced:* `tests/architecture.rs` guards `core → util`
+*Enforced:* `tests/architecture.rs` guards `core → util`
 (`core_does_not_import_util_directly`), `core → storage`
-(`core_does_not_import_storage_directly`), and `modules → engine/storage`
-(`modules_do_not_import_engine_or_storage`). **Known gap:** `core → modules` is
-not yet guarded and is currently violated — `core/engine/mod.rs` and
-`core/engine/enrich.rs` import `crate::modules` (tracked in
-`docs/PROBLEM_TREE.md` §3.1 T1.4; the fix inverts the edge via a registry of
-hooks installed by the module layer).
+(`core_does_not_import_storage_directly`), `core → modules`
+(`core_does_not_import_modules`), and `modules → engine/storage`
+(`modules_do_not_import_engine_or_storage`). The `core → modules` edge was
+inverted in **T1.4** (`docs/PROBLEM_TREE.md` §3.1): `core` calls a
+function-pointer registry (`core::hooks`) that the module layer installs at
+startup, so `core` never names `crate::modules` — and no laundering allowlist
+remains.
 
 ## 2. One module per file; hubs declare, never house
 

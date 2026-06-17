@@ -12,12 +12,13 @@ hse serve         Start the HTTP server + SPA (browse to http://127.0.0.1:8080)
 hse modules       List registered modules with cost / target / passive flags
 hse engines       Liveness panel: probe each free search engine (up/blocked/down)
 hse diff          Compare two scans: entities added / removed / re-scored
-hse export        Export a stored scan (json / csv / gexf / report / dossier / debug)
+hse export        Export a stored scan (json / csv / gexf / report / full / debug / navigator)
 hse import        Ingest an OathNet / breach / dossier export as a scan
 hse audit         Score a scan's output quality (alias: score)
-hse keys          Manage the API-key pool (list / add / validate)
+hse keys          Manage the API-key pool (add / list / validate / rotate / revoke / export / import-json / import-tsv / remove / status / services)
+hse set-key       Write a single HUNTSMAN_* key to ~/.huntsman.env
 hse provision     First-run setup (alias: setup)
-hse diagnostics   Module-health / ledger diagnostics (alias: diag, check)
+hse diagnostics   Run all health checks in one pass: doctor + selftest + engines (alias: diag, check)
 hse selftest      Run built-in self-checks
 hse radar         Local RF / sensor sweep (Termux)
 hse oathnet-batch Generate a de-duplicated OathNet query plan from one seed
@@ -84,7 +85,7 @@ hse scan [OPTIONS] --kind <KIND> --value <VALUE>
 
 | Flag | Description |
 |------|-------------|
-| `-o, --output <table\|json>` | `table` (human) or `json` (full scan + entities) |
+| `-o, --output <table\|json\|dossier>` | `table` (human), `json` (full scan + entities), or `dossier` (full intel grouped by category) |
 
 ### Example invocations
 
@@ -252,11 +253,12 @@ hse config module.wikidata          # show one toggle's current state
 Toggle keys:
 
 - `feature.<name>` — a capability switch that isn't a single engine or module.
-  The first is `feature.regional` (default **off**): the standing default for
-  autonomous region-scoped search. Regional augmentation applies when **either**
-  `feature.regional` is on **or** the per-scan `--regional` flag is passed, so
-  `hse config feature.regional on` makes regional the baseline for every scan
-  while `--regional` still forces it on for a one-off run.
+  E.g. `feature.regional` (persistent, default **off**): the standing default for
+  autonomous region-scoped search. Note: per scan, regional augmentation is **on
+  by default** — pass **`--no-regional`** to disable it for one run. There is no
+  `--regional` flag (regional is already the per-scan default); turning
+  `hse config feature.regional on` raises the *persistent* baseline so it survives
+  even if the per-scan default ever changes.
 - `engine.<name>` — a single search engine (names from `hse engines`). Honoured
   by the search dispatch, the priority waterfall, and the liveness probe.
 - `module.<name>` — any registered module (names from `hse modules`). A disabled

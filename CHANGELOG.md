@@ -12,15 +12,40 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
-- **Unit-test coverage expansion (~2,944 lib tests passing).** Added direct
-  unit tests for previously-untested pure functions across the tree —
-  `signal_radar/gps`, search-engine/email/fullcontact helpers, the `util`
+- **Test-coverage & proof-infrastructure expansion (~2,992 lib tests passing).**
+  Added direct unit tests for previously-untested pure functions across the tree
+  — `signal_radar/gps`, search-engine/email/fullcontact helpers, the `util`
   (`oathnet`, `key_pool`, `key_roi`, `oathnet_batch`), `storage`, `cli`
   import/export, and the `core` correlator/engine/entity/timeline/crypto layers
-  (parsers, classifiers, confidence math, determinism).
+  (parsers, classifiers, confidence math, determinism) — plus, under
+  PROBLEM_TREE **F.3**, `proptest` property suites (boundary-safety, `normalise`
+  idempotency, `Entity::merge` GREATEST-semantics + order-independence, geo
+  round-trips, and no-panic crash-resistance for every network-facing byte parser)
+  and lean `criterion` scan-throughput benches (`benches/scan_throughput.rs`),
+  both dev-only with zero shipped cost.
 - **`docs/PROBLEM_TREE.md` — a single, prioritised, living problem + capability
   tree** (functionality scope), with an optimal solution on every node and a
   capability program to surpass SpiderFoot/Maltego without heavy graphing.
+
+### Fixed
+
+- **Correctness & robustness hardening (PROBLEM_TREE T0–T2).** Closed the
+  `to_lowercase()` byte-offset slice **panic class** (T0.1/T0.2) —
+  `au_electoral`/`au_property`/`search_engines` now route through a boundary-safe
+  `find_ascii_ci`, so multibyte-uppercase response HTML can no longer abort a
+  scan; hardened untrusted numeric casts (T0.3); made GEXF exports and the
+  live-session list **deterministic** (T1.1); added firing assertions for 12
+  previously-unasserted correlation rules (T1.3); inverted the `core → modules`
+  layering via a `core::hooks` registry, now guarded (T1.4); added a global HTTP
+  read-timeout backstop (T2.1); moved the heavy blocking API/export handlers off
+  the 2-worker async reactor via `spawn_blocking` (T1.2/T2.2). A real-certificate
+  fixture exposed and fixed **two genuine `cert_intel` DER bugs** (T2.3): SAN
+  discovery returned **zero SANs on every real certificate** (its core
+  subdomain-discovery feature was dead), and the serial read returned the
+  version field. Also fixed a `slugify` bug that leaked non-ASCII/uppercase bytes
+  into correlation tags, and **gated IPv6 Cloudflare/Fastly anycast edges** in
+  `is_cdn_edge_ip` (a fronted domain's native AAAA records were being trusted as
+  origin hosts → false subject geo + an expandable target).
 
 ### Changed
 
@@ -32,6 +57,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   directory path-rot, the `panic="unwind"` facts (correcting `FAULT_TREE`'s
   inverted premise), re-bucketed the `MODULES.md` catalogue (the AU `People`
   modules), and regenerated `ARCHITECTURE_AUDIT.md` as a current-state reference.
+  A follow-up **2026-06-17 multi-agent doc audit** re-reconciled the whole set:
+  corrected the stale `core → modules` "Known gap" in `ARCHITECTURE_AUDIT`/
+  `CONVENTIONS` (T1.4 is done + guarded), **completed the README per-category
+  catalogue** (it listed only 98 of 118 modules), fixed `MODULES.md`'s `wigle`
+  priority (18→10), corrected several USAGE command/flag descriptions
+  (`diagnostics`, `export` formats, the non-existent `--regional` flag, the
+  missing `set-key`), refreshed metrics (`.rs`/LOC/locked-pkg/test counts), and
+  logged two new robustness nodes (**T2.8** unbounded response-body reads,
+  **T2.9** non-deterministic UI-summary SQL orderings).
 - **Neutralised militarised framing in code comments** to neutral OSINT
   terminology (SpiderFoot/Maltego-aligned); no behaviour change.
 

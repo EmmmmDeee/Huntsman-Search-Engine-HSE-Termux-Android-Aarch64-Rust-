@@ -119,7 +119,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ---
 
-## Seed Types (14 supported)
+## Seed Types (16 supported)
 
 | Seed | Flag | Example | Modules |
 |------|------|---------|---------|
@@ -130,44 +130,48 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 | IP Address | `--kind ip` | `1.1.1.1` | 33 |
 | Domain | `--kind domain` | `example.com` | 39 |
 | ASN | `--kind asn` | `AS13335` | 1 |
+| CIDR | `--kind cidr` | `1.1.1.0/24` | 3 |
 | Coordinates | `--kind coords` | `-27.47,153.02` | 6 |
 | Address | `--kind address` | `Nundah, QLD 4012` | 2 |
 | URL | `--kind url` | `https://example.com/page` | 2 |
 | Organisation | `--kind org` | `ACME Pty Ltd` | 2 |
 | ABN/ACN | `--kind abn` | `51824753556` | 1 |
 | MAC Address | `--kind mac` | `AA:BB:CC:DD:EE:FF` | 3 |
+| Crypto Address | `--kind crypto` | `bc1q…` | 2 |
 | API Key | `--kind apikey` | `AKIA…` | 1 |
 
 ---
 
 ## Module Overview (118 modules — 89 free, 29 key-gated/paid)
 
-> Generated from `hse modules --json`. The full catalogue with target
-> kinds and output entities (kept honest by the
-> `modules_md_lists_every_registered_module` CI test) lives in
-> [`docs/MODULES.md`](docs/MODULES.md); run `hse modules` for the live list.
+> Grouped highlights below (all 118). The **complete** catalogue with target
+> kinds and output entities — kept exhaustive by the
+> `modules_md_lists_every_registered_module` CI guard — lives in
+> [`docs/MODULES.md`](docs/MODULES.md). The headline count is swept against
+> `registry()` in CI; run `hse modules` for the live list.
 
-**API-Free (no keys required):**
-- **Breach/identity**: `pwned_passwords`, `xposed_or_not`
-- **Social**: `github_user`, `hacker_news`, `reddit_user`, `npm_author`, `crates_io`, `keybase`, `social_probe`, `username_search`, `username_variants`
-- **People**: `contact_enrich`, `employer_pivot`, `name_intel`, `wikidata`
-- **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `rdap_domain`, `subdomain_takeover`, `whois`
-- **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipapi`, `ipinfo`, `ipquery`, `shodan`, `urlscan`
-- **Geolocation**: `breach_timezone`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `overpass`, `phone_area_geo`, `phone_carrier_geo`, `photon`, `social_location`, `sunrise_sunset`
+**API-Free (no keys required) — 89:**
+- **Breach/identity**: `psbdmp`, `pwned_passwords`, `xposed_or_not`
+- **Social**: `crates_io`, `github_code_search`, `github_user`, `hacker_news`, `keybase`, `npm_author`, `reddit_user`, `social_probe`, `username_search`, `username_variants`
+- **People**: `au_electoral`, `au_people`, `au_property`, `contact_enrich`, `employer_pivot`, `gravatar`, `name_intel`, `pgp`, `wikidata`
+- **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `rdap_domain`, `subdomain_takeover`, `typosquat`, `whois`
+- **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipapi`, `ipinfo`, `ipquery`, `netblock`, `portscan`, `ripestat`, `shodan`, `urlscan`
+- **Geolocation**: `breach_timezone`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `overpass`, `phone_area_geo`, `phone_carrier_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
 - **Threat intel**: `urlhaus`
 - **Email**: `disposable_check`, `email_canonical`, `email_parse`, `smtp_vrfy`
 - **Phone**: `phone_intl`
-- **Corporate**: `acnc_charities`, `gleif_lei`, `opencorporates`
+- **Corporate**: `acnc_charities`, `asic_director`, `au_unclaimed`, `gleif_lei`, `opencorporates`
 - **Search**: `search_engines`
 - **Web analysis**: `cloud_storage`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
 - **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`, `signal_radar`
-- **Other**: `api_key_probe`, `qld_unclaimed`
+- **Other**: `api_key_probe`, `chain_intel`, `qld_unclaimed`
 
-**Key-gated / Paid:**
+**Key-gated / Paid — 29 (24 key-gated · 5 paid):**
 - `abn_lookup`, `abuseipdb`, `censys`, `criminal_ip`, `dehashed`, `emailrep`
-- `epieos`, `exa_search`, `hibp`, `hunter_io`, `intelx`, `ipqs`
-- `leakix`, `oathnet_pro`, `onyphe`, `proxycurl`, `securitytrails`, `see_know`, `seon`
-- `threatfox`, `virustotal`, `whoisxml`, `wifi_intel`, `wigle`
+- `epieos`, `exa_search`, `fullcontact`, `hibp`, `hunter_io`, `intelx`, `ipqs`
+- `leakix`, `niamonx`, `numverify`, `oathnet_pro`, `onyphe`, `osintcat`, `proxycurl`
+- `securitytrails`, `see_know`, `seon`, `threatfox`, `virustotal`, `whoisxml`
+- `wifi_intel`, `wigle`, `zoomeye`
 
 
 ## Web UI (SpiderFoot-style)

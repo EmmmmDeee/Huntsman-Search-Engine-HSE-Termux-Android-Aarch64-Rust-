@@ -72,8 +72,9 @@ Current baseline (grounded in the codebase, 2026-06-17): 118 modules across 14
 categories (Infrastructure 20, Geo 19, People 15, DnsRecon 13, Breach 11, Social
 10, Email 6, Corporate 6, Web 5, Sensor 4, Threat 3, Search/Phone/Other 2 each);
 59 native correlation rules (AU-001…AU-059); 0 `unsafe`; deterministic entity
-merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
-`memchr`, `bstr`, `fst`, `proptest`, `criterion`, `arbitrary` NOT yet direct.**
+merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
+`criterion` 0.8 now direct (dev-only, zero shipped cost — F.3); `aho-corasick`,
+`memchr`, `bstr`, `fst`, `arbitrary` still NOT direct.**
 
 ---
 
@@ -114,7 +115,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
   render. Extend to a general "renderers are permutation-invariant" property over
   CSV/JSON/GEXF/dossier. **P1**
 - **`[~]` T1.2 · Throughput (the on-device perf guarantee)** —
-  `core/engine/mod.rs:132` runs blocking rusqlite `insert_event` **per entity**
+  `core/engine/mod.rs:154` runs blocking rusqlite `insert_event` **per entity**
   from async + spawned dispatch tasks; `api/scan_handlers` (8 sites) +
   `api/scan_export` (4) call sync `Store` on async workers with no
   `spawn_blocking`. On a ~2-worker Termux reactor this serialises "concurrent"
@@ -125,14 +126,22 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
   **Measure it:** `criterion` bench of events/sec and p99 dispatch latency pinned
   to 2 worker threads, before/after; this becomes the published "fast on a phone"
   number. **P1**
-- **`[x]` T1.3 · Verified correctness — 12 unasserted rules** — AU-019, 020, 022,
+- **`[~]` T1.3 · Verified correctness — 12 unasserted rules** — AU-019, 020, 022,
   023, 024, 025, 026, 028, 029, 040, 041, 042 are dispatched but **no test
   asserts they fire** (only id-presence is checked). A silently-dead rule passes
   CI.
   → **Solution:** a table-driven suite `[(id, build_fixture_entities, expect:
   {fires, severity, uid_set})]`; one assertion per rule. Add a **meta-guard**:
   every `AU-NNN` in the dispatch `RULES` table must have ≥1 firing fixture (so no
-  future rule ships un-pinned). **P1**
+  future rule ships un-pinned). **P1** ◑ **Per-rule half done; meta-guard
+  outstanding** (reopened from `[x]` in the 2026-06-17 doc audit): the 12 firing
+  assertions shipped (`core/correlator/tests.rs`, each asserting `rule_id` +
+  `severity`), so the named rules are pinned — but the meta-guard that forces a
+  *future* `AU-NNN` to ship with a firing fixture was never built. The existing
+  guards (`every_defined_correlation_rule_is_dispatched`,
+  `correlation_rule_ids_match_their_function_number`) check wiring + id-correctness,
+  not firing, so a new un-pinned `AU-060` would still pass CI. Stays `[~]` until the
+  dispatch-table-enumerating firing meta-guard lands.
 - **`[x]` T1.4 · Architecture — `core` imports `crate::modules`** —
   `core/engine/mod.rs` (8 sites) + `enrich.rs:240`, violating the CLAUDE.md
   invariant; `tests/architecture.rs:140` *allowlists* the `modules::*` paths
@@ -261,6 +270,43 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
   add a per-source **health signal** (last-success, parse-rate) surfaced in
   `hse doctor` + the SPA; auto-flag a source "drifted" when parse-rate drops.
   **P2** *(robustness only; source legality is parked in §7.)*
+- **`[ ]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** — several
+  fetch paths buffer an *entire* response body into RAM with the size check applied
+  only *after* the read (or no cap at all), bypassing the codebase's own
+  `JSON_BODY_CAP` / `read_body_capped` discipline (§1.5 "cap everything, stream
+  don't slurp"). On a phone a hostile or compromised endpoint can OOM the process.
+  Surfaced by the 2026-06-17 critical re-audit:
+  - **HIGH** `modules/exif_geo/mod.rs:158` — `resp.bytes().await` buffers the whole
+    image *before* the `MAX_BYTES` check (the `Range: bytes=0-…` header is only a
+    polite request a hostile image host can ignore). `target.value` is a
+    scraper-discovered URL → attacker-controlled. → stream via
+    `bytes_stream()` / `read_body_capped` and abort mid-stream past `MAX_BYTES`.
+  - **HIGH** `modules/smtp_vrfy/mod.rs:280` — `BufReader::read_line` has no byte
+    ceiling (only a 5 s timeout); a single newline-less line from a hostile MX
+    buffers unbounded into a `String`. → cap with `(&mut reader).take(N).read_line`.
+  - **MED** `util/http/url.rs:54` (`json_decode`) — `resp.json::<T>()` reads the full
+    body uncapped, unlike its sibling `json_scanned` (which routes through
+    `read_json_text` / `JSON_BODY_CAP`). ~24 call-sites inherit the gap (shodan,
+    censys, dehashed, zoomeye, onyphe, leakix, …) plus direct `resp.json()` in
+    `doh_resolver:310,322` and `wigle/account:95`. → route `json_decode` through
+    `read_json_text` (one fix closes ~20 sites); patch the three direct callers.
+  - **MED** AU-gov HTML scrapers (`asic_director:287`, `au_electoral:114/136/158/180`,
+    `au_people:368/389`, `au_property:125/149/172`) — `resp.text()` uncapped. → route
+    through `http::read_body_capped(resp, ~1 MB)` (the pattern `web_crawler` uses).
+  - **P3** `modules/hibp/mod.rs:325,428` — `count() as u32` on an untrusted-JSON
+    breach vector; clamp before the cast (folds into the T0.3 "trust no input
+    number" rule). **P2** *(robustness/DoS hardening; ties directly to the §1.5
+    bounded-memory doctrine and F.1's single capped-read substrate.)*
+- **`[ ]` T2.9 · Residual non-deterministic SQL orderings** — two read-back queries
+  lack a deterministic tie-break, so equal-key rows can reorder between identical
+  runs (the §1.7 determinism feature, in the UI-summary layer):
+  `storage/entities.rs:255` (`entity_facets`, `ORDER BY COUNT(*) DESC` → add
+  `, e.kind ASC`) and `storage/entities.rs:185` (`scan_ids_for_entity`,
+  `ORDER BY observed_at DESC` → add `, scan_id ASC`). Neither touches *persisted*
+  scan output (the engine-finalise and entity/correlation/relation read paths are
+  already totally ordered — re-verified clean in the 2026-06-17 audit), so impact is
+  a wobble in API/SPA summary ordering, not dossier bytes. → add the secondary sort
+  keys; pair with a permutation test. **P3**
 
 ---
 
@@ -345,7 +391,8 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
 3. **T1.1, T1.2, T1.3, T1.4** — restore determinism, throughput, verification,
    layering.
 4. **F.2** — `fst` datasets *(folds in T2.6 de-duplication)*.
-5. **T2.1–T2.7** — robustness/quality.
+5. **T2.1–T2.9** — robustness/quality (T2.8 unbounded reads + T2.9 SQL tie-breaks
+   added by the 2026-06-17 re-audit; T2.8 rides on F.1's capped-read substrate).
 6. **C1 → C7** — capability program, AU-first, each gated on its §3.F primitive.
 
 ## 6. Verified sound (checked — do not re-investigate)
@@ -356,7 +403,17 @@ the other panic leads guarded (`abn:209`, html decode, geometry, `address_au`);
 every fan-out semaphore-capped; confidence `clamp` + saturating corroboration;
 deterministic merge; **0 `unsafe`**, 0 arch-specific code, Termux sensors no-op
 cleanly off-device; all 118 modules registered with tests + `produces()` +
-non-empty `attack_techniques()`.
+non-empty `attack_techniques()` (per-category default or override — the two
+`Other`-category modules `api_key_probe`/`chain_intel` override their empty
+default; a guard rejects any unmapped module).
+**Re-confirmed by an independent multi-agent re-audit (2026-06-17):** the T0
+`to_lowercase`/byte-offset panic class is fully closed (every untrusted-byte slice
+routes through `find_ascii_ci`/`char_window`/`truncate_safe`/`floor_char_boundary`
+or an ASCII-only byte scan), all non-test `unwrap`/`expect` are constant- or
+guard-protected, the `#[allow]`s are all justified, error handling honours
+"no silent failures", and every *persisted* output path is totally ordered. The
+only residual robustness gaps found are the unbounded reads (T2.8) and two
+UI-summary tie-breaks (T2.9) — both newly logged above.
 
 ## 7. Deferred (out of scope here — separate pass)
 
@@ -365,7 +422,11 @@ whois-referral SSRF, key-in-URL leaks, cleartext-secret persistence, dossier
 perms) · **Privacy/Legal/Licensing** (PII fixture & root `DOSSIER_*.md`, source
 legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
 · **Terminology** ("operator"→user/analyst; `key_harvest`/`API_KEY_HUNTING_GUIDE`)
-· **Docs** (module-count drift across README/MODULES.md/CHANGELOG/FAULT_TREE).
+· **Docs** (module-count drift across README/MODULES.md/CHANGELOG/FAULT_TREE —
+**reconciled in the 2026-06-17 doc audit:** README catalogue completed to all 118
+with corrected free/paid labels, MODULES.md `wigle` priority fixed, the two root
+`OSINT_*` analyses refreshed to 118, FAULT_TREE stale facts corrected; the
+historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
 
 ## 8. Maintained log
 
@@ -565,3 +626,31 @@ legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
   into output. No bug; the GREATEST-merge invariant is now machine-checked over
   thousands of (confidence, corroboration, spelling) combinations. Gate green:
   clippy/fmt clean, 2,992 lib tests (+2), 0 failures.
+- **2026-06-17** — **Critical codebase re-audit + full documentation reconciliation
+  (no code change).** Ran four parallel audit streams (user-facing docs,
+  architecture/dev docs, problem/fault-tree status, fresh code-quality) cross-checking
+  every doc claim against the live tree. Outcomes:
+  **(1) Two genuinely new robustness nodes logged** — **T2.8** (unbounded
+  response-body reads: `exif_geo` buffers-then-checks, `smtp_vrfy` `read_line` has no
+  byte ceiling, `json_decode` is uncapped across ~24 sites vs. its capped sibling
+  `json_scanned`, AU-gov scrapers `resp.text()` uncapped → on-device OOM/DoS) and
+  **T2.9** (two UI-summary SQL `ORDER BY`s without a deterministic tie-break). Both
+  ride the existing §1.5/§1.7 doctrine; neither touches persisted scan bytes.
+  **(2) T1.3 reopened `[x]`→`[~]`** — the 12 per-rule firing assertions shipped but
+  the dispatch-table firing **meta-guard** never did, so a future un-pinned `AU-060`
+  would still pass CI.
+  **(3) Doc drift fixed:** `ARCHITECTURE_AUDIT.md` + `CONVENTIONS.md` still described
+  the `core → modules` edge (T1.4) as a violated "Known gap" — corrected to the
+  guarded, hooks-inverted reality; metrics refreshed (602 `.rs`, ~137k LOC, 311
+  locked pkgs, ~2,992 tests, `panic` line); the "every module *declares*
+  `attack_techniques()`" overstatement corrected to the category-default-or-override
+  contract. `README` module catalogue completed (it listed 98 of 118 — 20 missing;
+  now 89 free / 29 key-gated-paid, with the false "CI keeps this list honest"
+  footnote corrected). `MODULES.md` `wigle` priority 18→10. `FAULT_TREE_ANALYSIS.md`
+  three stale facts corrected (closed T0 panic class, test count, the E10.1 "89"
+  cell). Root `OSINT_*` analyses refreshed 112→118. Baseline deps line updated
+  (`proptest`/`criterion` now direct). **(4) Re-confirmed sound (§6):** the T0
+  panic class is fully closed, all non-test `unwrap`/`expect` are guard/constant
+  protected, `#[allow]`s justified, persisted paths totally ordered — the codebase
+  is exceptionally hardened; the only residual gaps are T2.8/T2.9. No code touched;
+  `cargo test --lib` re-run green at 2,992 to anchor the cited counts.

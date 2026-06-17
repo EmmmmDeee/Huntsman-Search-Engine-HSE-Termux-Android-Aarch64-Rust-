@@ -11,13 +11,13 @@
 | Metric | Value |
 |---|---|
 | Version / edition / MSRV | 1.4.0 · edition 2024 · 1.88 |
-| Source | ~136k LOC · 603 `.rs` files |
+| Source | ~137k LOC · 602 `.rs` files |
 | Modules | **118** registered — 89 Free · 24 KeyGated · 5 Paid · 14 categories |
 | Correlation rules | **59** deterministic (AU-001 … AU-059) |
-| Tests | ~2,944 lib + API/integration + architecture guards |
+| Tests | ~2,992 lib + API/integration + architecture guards |
 | Unsafe | **0** — `#![forbid(unsafe_code)]` (`src/lib.rs:22`) |
-| Panic strategy | `panic = "unwind"` (`Cargo.toml:115`) + per-module `catch_unwind` at the dispatch boundary |
-| Dependencies | 285 crates · **0** AI/ML/LLM/vector (guard-enforced) · 100% permissive licences (`cargo deny`) · 0 unused (`cargo machete`) |
+| Panic strategy | `panic = "unwind"` (`Cargo.toml:125`) + per-module `catch_unwind` at the dispatch boundary |
+| Dependencies | 311 locked packages (`Cargo.lock`) · **0** AI/ML/LLM/vector (guard-enforced) · 100% permissive licences (`cargo deny`) · 0 unused (`cargo machete`) |
 | HTTP / DB | reqwest 0.12 (rustls, no native-TLS) · rusqlite 0.39 bundled (WAL + FTS5) · axum 0.8 · hickory-resolver 0.26 |
 | Release profile | `opt-level="s"`, `lto=true`, `codegen-units=1` |
 | Runtime | tokio, 2 worker threads (Termux-tuned) |
@@ -34,23 +34,25 @@ Threat 3 · Search 2 · Phone 2 · Other 2.
  http (api/axum) ──────┘    │
  web (embedded SPA) ◀─ api  ├─▶ correlator (59 rules)
                             └─▶ storage (rusqlite WAL + FTS5, via StoragePort)
- modules (118) ─▶ core types
+ modules (118) ─▶ core types + core::hooks (fn-ptr registry, installed at startup)
 ```
 
-**Intended invariant:** `core` is module-agnostic — the engine drives modules
-through `modules::registry()`, never the reverse.
+**Invariant (enforced):** `core` is module-agnostic — the engine drives modules
+through `modules::registry()`, never the reverse. The one deliberate
+`modules → core` wiring edge is hook installation: the module layer installs a
+function-pointer registry into `core::hooks` (`reset_per_scan`, `set_regional`,
+`refresh_round_budget`, `identify_api_key`, `drain_found_keys`), which `core`
+calls through instead of ever naming `crate::modules`.
 
 **Enforcement (`tests/architecture.rs`):** guards `core → util`
 (`core_does_not_import_util_directly`), `core → storage`
-(`core_does_not_import_storage_directly`), and `modules → engine/storage`
+(`core_does_not_import_storage_directly`), `core → modules`
+(`core_does_not_import_modules`), and `modules → engine/storage`
 (`modules_do_not_import_engine_or_storage`); also pins the module registry, the
 README / `docs/MODULES.md` counts, and runtime AI-independence
-(`runtime_carries_no_ai_ml_inference_dependency`).
-
-**Known gap:** there is no guard forbidding `core → modules`, and it is
-currently **violated** — `core/engine/mod.rs` and `core/engine/enrich.rs` import
-`crate::modules`. Tracked as [`PROBLEM_TREE.md`](PROBLEM_TREE.md) §3.1 **T1.4**
-(fix: invert the edge via a registry of hooks installed by the module layer).
+(`runtime_carries_no_ai_ml_inference_dependency`). The `core → modules` edge was
+inverted via `core::hooks` in **T1.4** (PROBLEM_TREE §3.1, done) — no laundering
+allowlist remains.
 
 ## Core subsystems
 
@@ -69,8 +71,11 @@ currently **violated** — `core/engine/mod.rs` and `core/engine/enrich.rs` impo
   monotone, contract-tested), SHA-256 deterministic UIDs, GREATEST-semantics
   merge.
 - **`modules`** (118) — OSINT sources, each `Module: accepts/produces/process`,
-  registered in `modules::registry()`; every collection module declares
-  `attack_techniques()` (MITRE ATT&CK Reconnaissance, TA0043).
+  registered in `modules::registry()`; every module is mapped to MITRE ATT&CK
+  Reconnaissance (TA0043) — by a per-category default (`techniques_for_category`),
+  overridden where the category is too coarse (the two `Other`-category modules,
+  `api_key_probe`/`chain_intel`, must override, their default being empty). A
+  guard rejects any unmapped module or out-of-register technique ID.
 - **`storage`** (`src/storage/`) — the single `StoragePort` implementation over
   rusqlite (WAL + FTS5): events, entities, correlations, relations.
 - **`api`** (axum 0.8) — versioned `/api/v1`, SSE live stream, embedded SPA +
@@ -98,8 +103,9 @@ table / dossier / JSON, or the SPA.
 
 The foundations are sound: a typed domain model, deterministic offline-capable
 logic, 0 unsafe, rustls + bundled SQLite (no C / native-TLS), enforced runtime
-AI-independence, `0600` atomic secrets, and a loopback-only server. The open
-engineering work — correctness, performance, coverage, and the `core → modules`
-layering fix — is enumerated and prioritised in
-[`PROBLEM_TREE.md`](PROBLEM_TREE.md). No ground-up rewrite is warranted; the work
-is targeted hardening and capability expansion.
+AI-independence, `0600` atomic secrets, and a loopback-only server. The layering
+invariants (incl. `core → modules`, T1.4) are now guarded; the remaining open
+engineering work — correctness, performance, coverage, and capability expansion —
+is enumerated and prioritised in [`PROBLEM_TREE.md`](PROBLEM_TREE.md). No
+ground-up rewrite is warranted; the work is targeted hardening and capability
+expansion.
