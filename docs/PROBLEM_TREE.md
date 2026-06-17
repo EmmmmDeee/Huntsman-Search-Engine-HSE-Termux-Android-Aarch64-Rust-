@@ -648,7 +648,15 @@ security stays a deliberately separate track, and S1 needs *operator* action):
   embedded `:port` widens it past 43; NAT64/link-local worsen it on Termux). → parse
   `host:port`, reject ports ≠ 43, resolve and drop any `util::preflight::is_private
   _addr` address (reuse `filter_public`), pin the connection to the vetted address,
-  reject `is_local_domain` hosts.
+  reject `is_local_domain` hosts. ✅ **Fixed (the SOL-SSRF-WHOIS solution):**
+  `client::resolve_public_whois` now parses `host:port` (incl. `[v6]:port`), refuses
+  any non-43 port, refuses `is_local_domain` hosts, and resolves to the first
+  **public** address (`!is_private_addr`), returning a concrete `SocketAddr` that
+  **pins** the dial (no resolve-then-connect rebind). `client::query` is generic so
+  the referral path connects to that pinned address while the IANA bootstrap keeps
+  the trusted constant. A malicious `refer: 127.0.0.1:6379` / `169.254.169.254:80`
+  is refused and IANA's answer kept. Behaviour-preserving (real referrals are public
+  `:43`). Hermetic regression test `blocks_ssrf_and_non_whois_referrals`.
 - **S3 · `[ ]` P2 (MED) — world-readable secrets at rest (Linux/macOS).** The dossier
   (`cli/export/dossier.rs:42-44`, written on *every* `hse scan`), `hse export -o`
   (`cli/export/mod.rs:49`), and the SQLite DB (`storage/mod.rs:143`) use
@@ -1068,3 +1076,15 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   clean (clippy `await_holding_lock`-safe via `sync_scope` in the sync test), 2,996
   lib tests (+1). **Paired update:** `SOLUTION_TREE` SOL-ISOLATE `[ ]`→`[x]` and §4
   gap analysis refreshed in the same commit.
+- **2026-06-17** — **Paired-tree cycle: gap analysis → fixed §7 S2 whois SSRF
+  (SOL-SSRF-WHOIS).** Ran the alternating methodology: the §4 gap analysis named
+  SOL-SSRF-WHOIS the highest-value *contained* open solution, so it was driven to
+  done. `modules/whois` followed the referral host verbatim over raw TCP/43,
+  bypassing the HTTP `SsrfResolver`. Added `client::resolve_public_whois` (port-43
+  only, `is_local_domain` refused, resolves to a public `!is_private_addr` address,
+  **pinned** `SocketAddr`); made `client::query` generic so the referral connects to
+  the pinned address. Behaviour-preserving (real referrals are public `:43`).
+  Hermetic test `blocks_ssrf_and_non_whois_referrals`. Gate green: clippy/fmt/doc
+  clean, 2,997 lib tests (+1), 0 failures. **Paired:** `SOLUTION_TREE` SOL-SSRF-WHOIS
+  `[ ]`→`[x]` + §4 gap analysis refreshed in the same commit (§7 S2 now off the
+  build queue; the §3.F enabler block is the sole remaining high-leverage tier).

@@ -165,10 +165,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   private-IP redirect guard + curl IP-pin on the **HTTP** client. *Closes:* the
   reqwest-path SSRF (verified sound, §6). *Gap:* the **raw whois TCP/43** path
   bypasses it — see SOL-SSRF-WHOIS. **(§4a)**
-- **`[ ]` SOL-SSRF-WHOIS · Validate whois referrals** — before connecting to a
-  referral server, parse `host:port`, reject ports ≠ 43, drop `is_private_addr`
-  addresses (reuse `filter_public`), pin the connection, reject `is_local_domain`.
-  *Closes:* **§7 S2** (HIGH, contained). Planned. **(§4a)**
+- **`[x]` SOL-SSRF-WHOIS · Validate whois referrals** — `client::resolve_public_whois`
+  parses `host:port` (incl. `[v6]:port`), refuses non-43 ports + `is_local_domain`
+  hosts, resolves to a public `!is_private_addr` address, and returns a **pinned**
+  `SocketAddr` (no resolve-then-connect rebind); `client::query` is generic so the
+  referral dials the pinned address while IANA keeps the trusted constant.
+  *Closes:* **§7 S2** (HIGH, contained). ✅ Behaviour-preserving (real referrals are
+  public `:43`); hermetic regression test `blocks_ssrf_and_non_whois_referrals`.
 - **`[x]/[ ]` SOL-SECRETS · Secrets at rest** — `util::atomic_file::write` (0600 +
   unique-temp + `sync_all` + atomic rename) covers `.huntsman.env`, `key_pool.json`,
   `raw/`. *Closes:* the env/pool/archive perms. *Gap (SOL-SECRETS-EXTEND):* the
@@ -252,7 +255,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-BUDGET | T2.11 oathnet | `[~]` |
 | SOL-CAP | T2.1 · T2.8 (2 HIGH) | `[x]`/`[~]` |
 | SOL-ISOLATE | T2.11 found_keys | `[x]` |
-| SOL-SSRF / -WHOIS | §6 (HTTP) · §7 S2 | `[x]`/`[ ]` |
+| SOL-SSRF / -WHOIS | §6 (HTTP) · §7 S2 | `[x]`/`[x]` |
 | SOL-SECRETS / -EXTEND | env/pool/archive · §7 S3 | `[x]`/`[ ]` |
 | SOL-REDACT | §7 S4 | ◑ |
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
@@ -276,9 +279,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **T2.7** scraper-health signal — covered *in principle* by SOL-F1 (parser rewrites)
   but the per-source health surface (last-success/parse-rate in `doctor`+SPA) has no
   solution node. Gap.
-- **§7 S2 / S3 / S4 / S5** — solution nodes exist (SOL-SSRF-WHOIS, -SECRETS-EXTEND,
-  -REDACT residual, the install checksum) but are **unstarted**. Contained; awaiting
-  the operator's prioritisation (S2 the highest).
+- **§7 S3 / S4 / S5** — solution nodes exist (SOL-SECRETS-EXTEND, SOL-REDACT
+  residual, the install checksum) but are **unstarted**. Contained; awaiting the
+  operator's prioritisation. *(S2/SOL-SSRF-WHOIS — the previous top contained item —
+  delivered 2026-06-17, so it's off this queue.)*
 - **C1–C7** — capability nodes; solutions sketched, none started (gated on the §3.F
   enablers landing first, by design).
 
@@ -309,7 +313,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; T2.8 partial; T2.7/T2.10/T2.12 open;
   T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE delivered; only the LOW
   over-dispatch + budget-reset-zeroing remain).
-- **§7 (security):** XSS solved; S1 accepted; S2–S5 open with solutions named.
+- **§7 (security):** XSS + S2 (whois SSRF) solved; S1 accepted; S3–S5 open with
+  solutions named.
 - **§4 (capability C1–C7):** open by design, gated on §3.F.
 
 ---
@@ -337,3 +342,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   SOL-BUDGET). Gap analysis refreshed: §4a/§4b no longer list found_keys; the §3.F
   enabler block (SOL-F1/F2/F3) is now the clear top of the finish queue. Paired:
   `PROBLEM_TREE` T2.11 + §8 updated in the same commit.
+- **2026-06-17** — **Cycle run on request: gap analysis → SOL-SSRF-WHOIS `[ ]`→`[x]`.**
+  Exercised the methodology rather than regenerating the tree. **P→S/gap step:** §4
+  named SOL-SSRF-WHOIS the highest-value *contained* open solution, so it was driven
+  to done — `client::resolve_public_whois` (port-43 only, `is_local_domain` refused,
+  public-`!is_private_addr` resolve, pinned `SocketAddr`) closes the §7 S2 whois SSRF
+  (raw TCP/43 had bypassed the HTTP `SsrfResolver`). Behaviour-preserving; hermetic
+  test. **S→P/gap-refresh step:** §4a now lists only S3/S4/S5; §4d §7 row shows XSS+S2
+  solved; with both SOL-ISOLATE and SOL-SSRF-WHOIS delivered, the **§3.F enabler
+  block (SOL-F1 automata / SOL-F2 fst / SOL-F3 cargo-fuzz)** is the sole remaining
+  high-leverage tier and the unambiguous next target. Paired: `PROBLEM_TREE` §7 S2 +
+  §8 updated in the same commit; gate green, 2,997 lib tests.

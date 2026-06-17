@@ -20,7 +20,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 
-use client::{find_referral, query};
+use client::{find_referral, query, resolve_public_whois};
 use parse::{WhoisFields, field, parse_whois};
 
 const SRC: &str = "whois";
@@ -95,14 +95,15 @@ impl Module for Whois {
 
         // 2) If IANA's response references another whois server, follow once.
         let response = match find_referral(&raw) {
-            Some(server) => {
-                let target_server = if server.contains(':') {
-                    server.clone()
-                } else {
-                    format!("{server}:43")
-                };
-                query(&target_server, &query_value).await.unwrap_or(raw)
-            }
+            // SSRF gate (PROBLEM_TREE §7 S2): the referral host comes verbatim from
+            // the WHOIS response (attacker-influenceable) and this raw TCP/43 path
+            // bypasses the HTTP `SsrfResolver`, so resolve it to a vetted PUBLIC :43
+            // address (pinned) before dialling. Refuse a private/internal/non-43
+            // referral and keep IANA's answer rather than probing an internal host.
+            Some(server) => match resolve_public_whois(&server).await {
+                Some(addr) => query(addr, &query_value).await.unwrap_or(raw),
+                None => raw,
+            },
             None => raw,
         };
 
