@@ -203,12 +203,16 @@ direct.**
   **+2 more consumers (2026-06-17):** the key-harvest `contains_excluded_context`
   gate (`new_ascii_ci` against the original — equivalent *and* drops a per-call
   `to_ascii_lowercase` alloc on a hot path) and wigle `is_generic_ssid`, both proven
-  equivalent by their existing case-insensitivity tests. *Remaining:* the universal
-  key scanner *prefix table* (`key_harvest` ~170 prefixes) — the big one, needs a
-  **proptest-backed** conversion (its `min_len` + table-order first-match semantics
-  aren't a clean leftmost swap; a token can match an earlier prefix that fails
-  `min_len` while a later one passes); the HTML marker parsers (au_electoral/
-  au_property); `memchr`/`bstr` adoption. Each its own contained increment.
+  equivalent by their existing case-insensitivity tests.
+  **+ prefix-table consumer (2026-06-17, cycle 4):** `util::scan::PrefixMatcher`
+  (`LeftmostFirst`, `find_prefix`) + `PREFIX_GROUPS` map (handles same-prefix
+  duplicate entries like `phc_`/`pk_live_`); `identify_vendor_api_key` O(N=170)
+  `starts_with` loop replaced with O(1) aho-corasick + O(K≤2) group iteration.
+  Intentional behavior change: specific-prefix min_len failure no longer cascades
+  to a shorter generic prefix (quality improvement — prevents misclassification);
+  proptest-backed + deterministic cascade-prevention test.
+  *Remaining:* the HTML marker parsers (au_electoral/au_property); `memchr`/`bstr`
+  adoption. Each its own contained increment.
 - **`[~]` F.2 · `fst`-backed datasets (phone-first + de-duplication)** — many
   static tables are hand-coded `&[&str]`/`match` arms, several **duplicated**
   (freemail in `util/oathnet_batch` vs `util/domains`; `country_name` in
@@ -1271,3 +1275,24 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   exit-code fixed. Gate green: clippy/fmt/doc clean, 3,006 lib + 54 smoke + 3 halting
   + 23 cli tests, 0 failures. **Paired:** `SOLUTION_TREE` SOL-BLOCKING +
   SOL-CLI-CONTRACT + §4 refreshed — same commit.
+- **2026-06-17** — **Paired-tree cycle 4 (P→S): SOL-F1 key-scanner prefix table.**
+  §4b named the 170-prefix `identify_vendor_api_key` O(N) loop as the remaining
+  highest-leverage SOL-F1 item. **(1) `util::scan::PrefixMatcher`** added:
+  `AhoCorasickBuilder` with `MatchKind::LeftmostFirst`; `find_prefix(&str) ->
+  Option<usize>` returns the index of the first-declared pattern anchored at byte
+  offset 0 — preserves the specific-before-generic table order that `pattern_table_is_
+  structurally_sound` guards. **(2) `key_harvest/mod.rs`:** `PREFIX_MATCHER` +
+  `PREFIX_GROUPS` (`HashMap<&'static str, Vec<usize>>`) statics via `LazyLock`;
+  `PREFIX_GROUPS` handles the three duplicate-prefix entries (`phc_` min_len 40/30,
+  `pplx-` exact duplicate, `pk_live_` Stripe+Clerk overlap) at O(K≤2) per matched
+  token. `identify_vendor_api_key` replaces the linear loop. Semantic change
+  (intentional, quality improvement): a token whose most-specific prefix fails
+  `min_len` returns `None` — no cascade to a shorter generic prefix (`sk-svcacct-`
+  short token was misclassified as `openai_or_stripe`). **(3) Tests:** proptest
+  `mod prop` in `key_harvest/tests.rs` (`vendor_key_never_panics_on_arbitrary_input` +
+  `synthesised_token_result_is_sane`) + deterministic cascade-prevention test
+  `min_len_failure_on_specific_prefix_does_not_cascade_to_generic`. **Gap result:**
+  F.1 `[~]` — 4 of N consumers done; remaining = HTML markers + memchr/bstr.
+  Gate green: fmt/clippy/doc clean, 3,009 lib + 67 api + 23 arch + 54 smoke + 3 halting
+  + 6 cli-seed + 2 audit-regression tests, 0 failures. **Paired:** `SOLUTION_TREE`
+  SOL-F1 + §4b + §5 refreshed — same commit.

@@ -72,6 +72,44 @@ impl MatchSet {
     }
 }
 
+/// A compiled set of literal prefix patterns for fast "which prefix does this
+/// string start with?" lookups. Backed by aho-corasick with
+/// [`MatchKind::LeftmostFirst`] so that declaration order is preserved: when
+/// multiple patterns anchor at position 0, the one declared first is returned.
+/// Build once (typically in a `std::sync::LazyLock`) and query many times.
+pub struct PrefixMatcher {
+    ac: AhoCorasick,
+}
+
+impl PrefixMatcher {
+    /// Build a case-sensitive prefix matcher over `patterns`. Build is
+    /// infallible for the static pattern tables we use; an error panics.
+    pub fn new<I, P>(patterns: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<[u8]>,
+    {
+        let ac = AhoCorasickBuilder::new()
+            .match_kind(MatchKind::LeftmostFirst)
+            .build(patterns)
+            .expect("util::scan::PrefixMatcher: aho-corasick build over static patterns");
+        Self { ac }
+    }
+
+    /// Returns the index of the first-declared pattern whose text appears at
+    /// byte offset 0 of `haystack`, or `None` if no pattern anchors to the
+    /// start. When two patterns both match at offset 0, the one with the
+    /// lower index (declared first) wins — preserving specific-before-generic
+    /// table order without a full O(N) scan.
+    #[must_use]
+    pub fn find_prefix(&self, haystack: &str) -> Option<usize> {
+        self.ac
+            .find(haystack.as_bytes())
+            .filter(|m| m.start() == 0)
+            .map(|m| m.pattern().as_usize())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::MatchSet;

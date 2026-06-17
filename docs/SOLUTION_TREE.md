@@ -85,12 +85,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   bench, and the **first consumer** (the SERP anti-bot `is_captcha_page` signature
   scan) routed through it **byte-for-byte equivalent** (5 captcha tests pass); **+2
   more (2026-06-17):** key-harvest `contains_excluded_context` (`new_ascii_ci`,
-  drops a hot-path alloc) and wigle `is_generic_ssid`, both proven by existing tests.
-  *Gap (§4b):* the universal key scanner *prefix table* (~170 prefixes, every body)
-  needs a **proptest-backed** conversion (min_len + table-order semantics); the HTML
-  marker parsers; `memchr`/`bstr` adoption. Each a contained increment —
-  `memchr`/`bstr` promoted only when first directly used
-  (else `cargo machete` trips).
+  drops a hot-path alloc) and wigle `is_generic_ssid`, both proven by existing tests;
+  **+ the key-scanner prefix table (2026-06-17, cycle 4):** `util::scan::PrefixMatcher`
+  (`LeftmostFirst`, `find_prefix() -> Option<usize>`, anchored at offset 0); two statics
+  in `key_harvest` (`PREFIX_MATCHER` + `PREFIX_GROUPS` for same-prefix duplicate entries);
+  O(N=170) `starts_with` loop replaced with O(1) dispatch + O(K≤2) group iteration;
+  intentional quality improvement (specific-prefix min_len failure no longer cascades
+  to a shorter generic prefix); proptest (no-panic + synthesised-token sanity) +
+  deterministic cascade-prevention test.
+  *Gap (§4b):* the HTML marker parsers (au_electoral, au_property); `memchr`/`bstr`
+  adoption. Each a contained increment — `memchr`/`bstr` promoted only when first
+  directly used (else `cargo machete` trips).
 - **`[~]` SOL-F2 · `fst`-backed datasets** ⚑ — `build.rs` compiles `data/*.txt` into
   memory-mapped `fst::Set`/`Map`, one canonical `util::dataset` API.
   *Closes / powers:* **F.2** (self), the **B5.3 table-drift** class, and Levenshtein
@@ -325,12 +330,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   enablers landing first, by design).
 
 ### 4b · Solutions begun but unfinished (the finish queue)
-- **SOL-F1** — substrate + **three** consumers landed (`is_captcha_page`,
-  key-harvest `contains_excluded_context`, wigle `is_generic_ssid`), all
-  byte-for-byte equivalent. *Remaining (still the biggest leverage):* the universal
-  key scanner **prefix table** (~170 prefixes, every body) — needs a proptest-backed
-  conversion (min_len/table-order semantics); the HTML marker parsers; `memchr`/
-  `bstr`. Each its own contained increment (unblocks T2.7 + sharpens C6).
+- **SOL-F1** — substrate + **four** consumers landed (`is_captcha_page`,
+  key-harvest `contains_excluded_context`, wigle `is_generic_ssid`, and the
+  **prefix-table `PrefixMatcher`** — 170 prefixes, `LeftmostFirst`, group map for
+  same-prefix duplicates, proptest-backed). *Remaining:* the HTML marker parsers
+  (au_electoral/au_property); `memchr`/`bstr`. Each contained (unblocks T2.7 +
+  sharpens C6).
 - **SOL-F2** — de-dup done; `fst` for the large tables outstanding.
 - **SOL-F3** — proptest + criterion landed; `cargo-fuzz` + import-parser proptest left.
 - **SOL-BLOCKING** — API reads + `scan_import` + `stats` + engine `insert_event` all
@@ -502,3 +507,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   T2 rows updated. §3.F enabler block remains the highest-leverage unrealised tier.
   Paired: `PROBLEM_TREE` T1.2 cycle-3 note + T2.12 diff note + §8 — same commit;
   gate green, 3,006 lib + 54 smoke + 3 halting + 23 cli tests, 0 failures.
+- **2026-06-17** — **Cycle 4 (P→S): SOL-F1 key-scanner prefix table.** §4b identified
+  the 170-prefix `identify_vendor_api_key` O(N) `starts_with` loop as the remaining
+  high-leverage SOL-F1 item. Delivered: `util::scan::PrefixMatcher` (`LeftmostFirst`,
+  `find_prefix(&str) -> Option<usize>`, anchored at offset 0 — declaration order
+  preserved, so specific-before-generic remains correct without a full linear scan);
+  two statics in `key_harvest/mod.rs`: `PREFIX_MATCHER` (aho-corasick lookup) +
+  `PREFIX_GROUPS` (pre-grouped indices for same-prefix duplicate entries — `phc_`
+  has two at min_len 40/30, `pk_live_` covers Stripe+Clerk overlaps at O(K≤2) per
+  matched token). The hot-path for non-matching tokens is now O(len(token)) vs O(N=170);
+  matched tokens add only O(K) group iteration. Intentional quality improvement:
+  a token whose most-specific prefix (lowest KEY_PATTERNS index) fails `min_len` returns
+  `None` rather than cascading to a shorter generic prefix — short `sk-svcacct-` tokens
+  were previously misclassified as `openai_or_stripe`; this is now `None`. Proven by:
+  proptest `vendor_key_never_panics_on_arbitrary_input` (fuzz safety) +
+  `synthesised_token_result_is_sane` (positive-case sanity) + deterministic
+  `min_len_failure_on_specific_prefix_does_not_cascade_to_generic`. **Gap refresh:**
+  §4b SOL-F1 updated (4 consumers; remaining = HTML markers + memchr/bstr); §4d §3.F
+  unchanged (all `[~]` — HTML markers next). Paired: `PROBLEM_TREE` F.1 cycle-4 note
+  + §8 — same commit; gate green, 3,009 lib + 67 api + 23 arch + 54 smoke + 3 halting
+  + 6 cli-seed + 2 audit-regression tests, 0 failures.

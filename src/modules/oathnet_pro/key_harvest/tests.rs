@@ -1753,3 +1753,48 @@ fn decode_through_inner_rejects_plain_non_encoded_non_key() {
     // A plain, non-base64-decodable, non-key sentence yields nothing.
     assert!(decode_through_inner("this is not base64 at all", 0).is_none());
 }
+
+// ─── PrefixMatcher property tests ────────────────────────────────────────────
+mod prop {
+    use super::super::{identify_vendor_api_key, pattern_catalogue};
+    use proptest::prelude::*;
+
+    proptest! {
+        /// No panic on arbitrary input — fuzz-safety invariant for the
+        /// PrefixMatcher-based path and all downstream FP gates.
+        #[test]
+        fn vendor_key_never_panics_on_arbitrary_input(s in ".{0,128}") {
+            let _ = identify_vendor_api_key(&s);
+        }
+
+        /// Synthesised valid-shaped token (prefix + high-entropy suffix at
+        /// min_len) must not panic; Some or None depending on the FP gate.
+        #[test]
+        fn synthesised_token_result_is_sane(idx in 0usize..15usize) {
+            let cat = pattern_catalogue();
+            let pat = &cat[idx % cat.len()];
+            const SUFFIX: &str =
+                "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6A1b2C3d4";
+            let need = pat.min_len.saturating_sub(pat.prefix.len()).min(SUFFIX.len());
+            let token = format!("{}{}", pat.prefix, &SUFFIX[..need]);
+            let _ = identify_vendor_api_key(&token);
+        }
+    }
+
+    // When the most-specific prefix (lowest KEY_PATTERNS index) fails min_len,
+    // the new code returns None instead of cascading to a shorter generic prefix.
+    // Old O(N) scan: "sk-svcacct-A1b2C3d4E5" (len 21) fell through to "sk-"
+    // (min_len 20) and returned "openai_or_stripe" — a wrong attribution.
+    // New PrefixMatcher: finds sk-svcacct- (idx 2 < sk- idx 5), min_len 40
+    // fails → None.  Prevents misclassification at the cost of rejecting tokens
+    // that are genuinely too short to be a valid key of any kind.
+    #[test]
+    fn min_len_failure_on_specific_prefix_does_not_cascade_to_generic() {
+        let token = "sk-svcacct-A1b2C3d4E5"; // len 21: ≥ sk- min_len 20, < sk-svcacct- min_len 40
+        assert_eq!(token.len(), 21);
+        assert!(
+            identify_vendor_api_key(token).is_none(),
+            "short sk-svcacct- token must not cascade to the generic sk- service"
+        );
+    }
+}

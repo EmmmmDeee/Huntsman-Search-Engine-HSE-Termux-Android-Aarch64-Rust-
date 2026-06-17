@@ -237,6 +237,30 @@ pub fn key_value_tier(service: &str) -> KeyValue {
 /// no Shannon-entropy pass, no lowercase allocation. That matters because the
 /// universal response scanner (`util::found_keys`) runs key identification on
 /// EVERY response body across every module: profiling showed the full
+// Compiled aho-corasick automaton over the KEY_PATTERNS prefix table.
+// LeftmostFirst preserves declaration order (specific-before-generic): when
+// two patterns both anchor at position 0, the one declared first wins.
+// Avoids the O(N) starts_with scan for the common case of no prefix match.
+static PREFIX_MATCHER: std::sync::LazyLock<crate::util::scan::PrefixMatcher> =
+    std::sync::LazyLock::new(|| {
+        crate::util::scan::PrefixMatcher::new(KEY_PATTERNS.iter().map(|p| p.prefix))
+    });
+
+// Pre-grouped indices: prefix → [idx, …] in declaration order.
+// A handful of prefixes appear more than once (phc_, pplx-, pk_live_) — they
+// represent either multiple token shapes for the same service or provider
+// overlaps (Stripe + Clerk both issue pk_live_). After aho-corasick identifies
+// WHICH prefix matches, iterate only the K entries for that prefix (K ≤ 2).
+static PREFIX_GROUPS: std::sync::LazyLock<std::collections::HashMap<&'static str, Vec<usize>>> =
+    std::sync::LazyLock::new(|| {
+        let mut map: std::collections::HashMap<&'static str, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, pat) in KEY_PATTERNS.iter().enumerate() {
+            map.entry(pat.prefix).or_default().push(i);
+        }
+        map
+    });
+
 /// [`identify_api_key`] at ~2.8 MB/s, dominated by `is_likely_real_key`
 /// (entropy + context exclusion) triggering on every 32/64-char hex token — and
 /// breach corpora are *full* of hex password hashes. Those hashes are already
@@ -252,12 +276,26 @@ pub fn identify_vendor_api_key(value: &str) -> Option<(&'static str, &str)> {
     // False-positive gate (entropy + context exclusion + UUID suppression) runs
     // only on an actual prefix MATCH — rare, so the common no-match token pays
     // nothing for it.
-    for pat in KEY_PATTERNS {
-        if trimmed.starts_with(pat.prefix) && trimmed.len() >= pat.min_len {
-            if !is_likely_real_key(trimmed) {
-                return None;
+    //
+    // aho-corasick identifies the FIRST-declared prefix that anchors at
+    // position 0 (LeftmostFirst = declaration order wins). Then we iterate
+    // the K entries for that prefix (usually 1, at most 2) to find one that
+    // also satisfies min_len. A token whose most-specific prefix fails
+    // min_len returns None rather than cascading to a shorter generic prefix
+    // (which would misclassify it — e.g. a short `sk-svcacct-` token should
+    // not be attributed to the generic `sk-` "openai_or_stripe" service).
+    if let Some(first_idx) = PREFIX_MATCHER.find_prefix(trimmed) {
+        let matched_prefix = KEY_PATTERNS[first_idx].prefix;
+        if let Some(group) = PREFIX_GROUPS.get(matched_prefix) {
+            for &idx in group {
+                let pat = &KEY_PATTERNS[idx];
+                if trimmed.len() >= pat.min_len {
+                    if !is_likely_real_key(trimmed) {
+                        return None;
+                    }
+                    return Some((pat.service, trimmed));
+                }
             }
-            return Some((pat.service, trimmed));
         }
     }
     // PEM private-key blocks (id_rsa / id_ed25519 / OpenVPN configs in stealer
