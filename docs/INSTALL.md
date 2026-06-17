@@ -54,6 +54,10 @@ is no separate release download to go stale.)
 | `HSE_INSTALL_DEBUG` | `0` | Enable shell trace (`set -x`) |
 | `CARGO_TARGET_DIR` | `$HOME/.cache/hse-build` | Build cache location |
 | `CARGO_BUILD_JOBS` | (auto) | Limit parallel rustc jobs (set 1 on <1.5 GB RAM) |
+| `HSE_BUILD_PROFILE` | `fast` (Termux) / `release` (else) | Build profile: `fast` or `release` (size-optimised) |
+| `HSE_FULL_BUILD`  | `0` | Shortcut for `HSE_BUILD_PROFILE=release` (force the size-optimised build) |
+| `HSE_PREBUILT`    | (none) | Absolute path to a precompiled aarch64 `hse` to install directly (skips building) |
+| `HSE_PREFER_BUILD` | `0` | Skip the prebuilt scan and always build from source |
 
 Example — install a specific tag from a fork without touching apt:
 

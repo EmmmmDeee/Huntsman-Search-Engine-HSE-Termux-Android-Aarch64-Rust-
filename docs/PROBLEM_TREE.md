@@ -125,7 +125,15 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
   transaction. API reads go through `spawn_blocking` (or the actor + `oneshot`).
   **Measure it:** `criterion` bench of events/sec and p99 dispatch latency pinned
   to 2 worker threads, before/after; this becomes the published "fast on a phone"
-  number. **P1**
+  number. **P1** ◑ **API-read part shipped** (T2.2: the 11 heavy read/export
+  handlers now `spawn_blocking`), but the 2026-06-17 deep re-audit found **two
+  handlers still blocking the reactor**: `api/scan_handlers::scan_import` runs the
+  upload parse + `upsert_entities_batch` + `derive_all` + a **full `Correlator::run`**
+  synchronously in the handler future (`mod.rs:176`) **and bypasses `scan_semaphore`**
+  (so concurrent 16 MB imports aren't bounded), and `api/handlers::stats:164` runs
+  `list_scans(10_000)` + full-JSON deserialise on the reactor. → wrap both in
+  `spawn_blocking` (gate `scan_import` behind `scan_semaphore`; fold `stats` into a
+  SQL `GROUP BY status` aggregate); roll into the DB-writer-actor pass.
 - **`[~]` T1.3 · Verified correctness — 12 unasserted rules** — AU-019, 020, 022,
   023, 024, 025, 026, 028, 029, 040, 041, 042 are dispatched but **no test
   asserts they fire** (only id-presence is checked). A silently-dead rule passes
@@ -295,18 +303,48 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
     through `http::read_body_capped(resp, ~1 MB)` (the pattern `web_crawler` uses).
   - **P3** `modules/hibp/mod.rs:325,428` — `count() as u32` on an untrusted-JSON
     breach vector; clamp before the cast (folds into the T0.3 "trust no input
-    number" rule). **P2** *(robustness/DoS hardening; ties directly to the §1.5
+    number" rule).
+  - **LOW (local)** `cli/import/mod.rs:24` — `std::fs::read_to_string(path)` is
+    **uncapped** on the CLI import path (`html.rs` then clones the whole file via
+    `to_lowercase`), while the *web* upload path caps at `MAX_UPLOAD_BYTES` (16 MB,
+    enforced twice). `hse import <hugefile>` can OOM the device. → share the
+    `MAX_UPLOAD_BYTES` bound across both paths (`audit`/`diff`/`keys_cmd` reads are
+    the same lower-risk class — operator's own files). Lower severity than the
+    network reads: operator-supplied input, and the OOM is a clean abort not
+    memory-unsafety. The import *parsers themselves are panic-safe* (codepoint-safe
+    `truncate_safe`/`char_window`, no `unwrap` on input, fuzz-style
+    `upload_dispatcher_never_panics_on_adversarial_input` test) — only the read
+    size is unbounded. **P2** *(robustness/DoS hardening; ties directly to the §1.5
     bounded-memory doctrine and F.1's single capped-read substrate.)*
-- **`[ ]` T2.9 · Residual non-deterministic SQL orderings** — two read-back queries
-  lack a deterministic tie-break, so equal-key rows can reorder between identical
-  runs (the §1.7 determinism feature, in the UI-summary layer):
-  `storage/entities.rs:255` (`entity_facets`, `ORDER BY COUNT(*) DESC` → add
-  `, e.kind ASC`) and `storage/entities.rs:185` (`scan_ids_for_entity`,
-  `ORDER BY observed_at DESC` → add `, scan_id ASC`). Neither touches *persisted*
-  scan output (the engine-finalise and entity/correlation/relation read paths are
-  already totally ordered — re-verified clean in the 2026-06-17 audit), so impact is
-  a wobble in API/SPA summary ordering, not dossier bytes. → add the secondary sort
-  keys; pair with a permutation test. **P3**
+- **`[ ]` T2.9 · Non-deterministic SQL read-back orderings** — four read queries
+  lack a unique final tie-break, so equal-key rows can reorder between identical
+  runs (violating the §1.7 determinism feature). The deep storage re-audit
+  (2026-06-17) found two that matter **beyond cosmetics**:
+  - `storage/mod.rs:307` (`latest_completed_scan`, `ORDER BY started_at DESC
+    LIMIT 1`) — `started_at` is **1-second** resolution (`unix_now().as_secs()`),
+    so two scans completing in the same second tie and SQLite picks one in
+    unspecified order. This resolves `hse export/diff/audit latest` and the SPA's
+    "open latest" → **the wrong scan can be selected** on repeated calls against an
+    unchanged DB. Correctness, not just ordering.
+  - `storage/mod.rs:285` (`list_scans`, `ORDER BY started_at DESC LIMIT ?1`) —
+    same 1-s tie; backs `GET /api/v1/scans` + `stats`, so *which* scans appear
+    (when more exist than the limit) and their order is non-deterministic.
+  - `storage/entities.rs:255` (`entity_facets`, `ORDER BY COUNT(*) DESC`) and
+    `:185` (`scan_ids_for_entity`, `ORDER BY observed_at DESC`) — UI-summary
+    cosmetics only.
+  Persisted scan output (engine-finalise + entity/correlation/relation read paths)
+  is already totally ordered — re-verified clean. → add a unique final key to each
+  (`, id ASC` / `, e.kind ASC` / `, scan_id ASC`); pair with a permutation test.
+  **P2** (the `latest` case is wrong-scan selection; the other three P3.)
+- **`[ ]` T2.10 · No schema version stamp (latent migration risk)** —
+  `storage/mod.rs` evolves the SQLite schema **additively only** (`CREATE TABLE`/
+  `INDEX IF NOT EXISTS`; no `ALTER TABLE`, no `PRAGMA user_version`, no version
+  table). Fine today and a deliberate design, but there is **no path for a
+  non-additive migration** (adding a `NOT NULL`, changing the `correlations`
+  UNIQUE key, dropping a column) and no way to detect/upgrade an old on-disk DB —
+  a future structural change would silently mismatch existing databases. → set
+  `PRAGMA user_version` at create and gate any future structural change on an
+  idempotent upgrade ladder. **P3 (latent — no current bug; advisory).**
 
 ---
 
@@ -411,9 +449,20 @@ default; a guard rejects any unmapped module).
 routes through `find_ascii_ci`/`char_window`/`truncate_safe`/`floor_char_boundary`
 or an ASCII-only byte scan), all non-test `unwrap`/`expect` are constant- or
 guard-protected, the `#[allow]`s are all justified, error handling honours
-"no silent failures", and every *persisted* output path is totally ordered. The
-only residual robustness gaps found are the unbounded reads (T2.8) and two
-UI-summary tie-breaks (T2.9) — both newly logged above.
+"no silent failures", and every *persisted* output path is totally ordered.
+A follow-up **deep storage/API audit (2026-06-17)** further confirmed: every SQL
+query is parameterised (no value string-interpolated; FTS5 `MATCH` injection is
+neutralised by quote-stripping + per-token quoting in `fts_prefix_query`), all
+multi-statement writes are transaction-wrapped with the FTS index kept in-sync
+in-txn, the SSE broadcast is bounded (1024-cap; lagging receivers drop frames —
+never block or panic), request input can't panic a handler (no `unwrap` on
+path/query/body; body-size bounded), loopback peer-checks gate every key/toggle
+write, and CSV export defangs formula-injection. The import parsers are panic-safe
+(codepoint-safe truncation, fuzz-tested). The residual gaps it surfaced are all
+logged above: T2.8 unbounded reads (network + the CLI-import read size), T2.9
+read-back tie-breaks (the `latest` one is wrong-scan selection), T1.2's two missed
+reactor-blocking handlers (`scan_import`/`stats`), and T2.10 schema versioning
+(latent).
 
 ## 7. Deferred (out of scope here — separate pass)
 
@@ -654,3 +703,27 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   protected, `#[allow]`s justified, persisted paths totally ordered — the codebase
   is exceptionally hardened; the only residual gaps are T2.8/T2.9. No code touched;
   `cargo test --lib` re-run green at 2,992 to anchor the cited counts.
+- **2026-06-17** — **Second (deeper) audit pass — storage/API + import parsers +
+  the remaining un-audited docs (no code change).** Self-audited the prior pass
+  first: the README free/key-gated/paid partition exactly matches each module's
+  `cost()` in code (KeyGated 24 / Paid 5 verified), all T2.8/T2.9 citations are
+  current, and the cross-doc figure sweep is clean (the only `2,9xx` hits are the
+  correctly-frozen historical log lines). New findings logged:
+  **(1) T2.9 expanded** with two higher-impact orderings the storage deep-dive
+  found — `latest_completed_scan` and `list_scans` both `ORDER BY started_at DESC`
+  with no tie-break, and `started_at` is 1-second resolution, so `hse
+  export/diff/audit latest` can resolve to the **wrong scan**; bumped to P2.
+  **(2) T1.2 addendum** — the `spawn_blocking` sweep missed two handlers:
+  `scan_import` (runs a full `Correlator::run` synchronously + bypasses
+  `scan_semaphore`) and `stats`. **(3) T2.8 extended** with the uncapped CLI-import
+  `read_to_string` (the web path caps at 16 MB; the parsers themselves are
+  fuzz-tested panic-safe). **(4) T2.10 added** — additive-only schema with no
+  `PRAGMA user_version` (latent). **(5) Doc fixes:** `API_KEY_HUNTING_GUIDE`
+  count drift (108→103 config paths, 300+→~170 patterns, 165+→~160 domains) and
+  the `-A` flag (it auto-selects *depth*; the max-coverage preset is `-F`/`--full`)
+  — corrected; `INSTALL` knob table completed (4 build env vars); `DOSSIER`
+  version annotated. **Confirmed clean (§6):** SQL is fully parameterised, FTS5
+  `MATCH` injection neutralised, transactions atomic, SSE bounded, no handler
+  panics on input. Storage/API audit also flagged a **secrets-hygiene** concern
+  (the root `DOSSIER_*.md` prints real-looking key/secret values) — already indexed
+  under §7 *Deferred*; left for an explicit decision, not silently edited.

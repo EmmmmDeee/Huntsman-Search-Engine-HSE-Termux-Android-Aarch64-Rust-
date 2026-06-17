@@ -8,11 +8,14 @@ running scans — the ordering matters.
 
 ```bash
 # The single command that yields the most keys per OathNet lookup:
-hse scan --kind domain --value <target.com> --depth 3 -A
+hse scan --kind domain --value <target.com> --depth 3 --full
 ```
 
-That's it. The rest of this guide explains *why* that works, what each
-link in the chain produces, and how to tune it.
+That's it (`-F`/`--full` = the "get everything" preset — every module, pruning
+off — the max-coverage choice for key hunting; `-A`/`--auto` instead auto-selects
+the expansion *depth* by expected-value analysis, an alternative to passing
+`--depth`). The rest of this guide explains *why* that works, what each link in
+the chain produces, and how to tune it.
 
 ---
 
@@ -86,7 +89,7 @@ Browser stealers never see them. Shodan does.
                            │
                            ▼
                 ┌──────────────────────┐  THIS IS WHERE THE KEYS ARE
-                │  web_crawler         │  108 config-file paths
+                │  web_crawler         │  103 config-file paths
                 │  probe_config_leaks  │  per Domain, parallel
                 │  (R1+ per domain)    │  semaphore=16
                 └──────────┬───────────┘
@@ -138,8 +141,8 @@ explodes.
 - Scans URL query parameters for `?key=`, `?token=`, `?api_key=`
 - Scans the `extra` JSON object
 - Scans the `username` field (some logs store keys as usernames)
-- Matches against 300+ prefix patterns
-- Matches against 165+ service-domain URLs
+- Matches against ~170 prefix patterns (`KEY_PATTERNS`)
+- Matches against ~160 service-domain URLs (`API_SERVICE_DOMAINS`)
 - Promotes discovered keys to the `force-multiplier` tag when
   the service is a Multiplier-tier (Shodan, Censys, etc.)
 
@@ -181,7 +184,7 @@ hse scan --kind domain --value target.com --depth 3 -A --max-concurrent 4
 
 This runs:
 1. R0: oathnet_pro (1 lookup) + every free identity/infra module
-2. web_crawler probes all 108 config-file paths on the apex
+2. web_crawler probes all 103 config-file paths on the apex
 3. Hot-inject any discovered keys
 4. R1-R5: every discovered subdomain → web_crawler again → more probes
 
@@ -423,7 +426,7 @@ Test endpoints used (defined in `src/util/service_defs/mod.rs`):
 - Censys: HTTP Basic Auth against `/api/v2/hosts/1.1.1.1`
 - VirusTotal: `x-apikey: <KEY>` against `/api/v3/urls`
 - AbuseIPDB: `Key: <KEY>` against `/api/v2/check`
-- See `src/util/service_defs/mod.rs` for the full list (40 services)
+- See `src/util/service_defs/mod.rs` for the full list (40 entries, 39 distinct services)
 
 A 200/201/204/3xx response confirms the key is live and adds it as
 `Active` to the pool. A 401/403/429 marks it `Invalid` or rate-limited.
@@ -436,7 +439,7 @@ A 200/201/204/3xx response confirms the key is live and adds it as
 |-------|--------|
 | 1 OathNet lookup | 100 breach + 100 stealer records |
 | Direct entity extraction | 50-150 entities |
-| Domains discovered → web_crawler | 108 config probes × N domains |
+| Domains discovered → web_crawler | 103 config probes × N domains |
 | Per leaky domain | typically 1-5 exposed `.env` keys |
 | Per Multiplier-tier key found | unlocks an entire module |
 | Expansion depth-5 cascade | 500-1500 entities final total |
@@ -472,6 +475,6 @@ queries, payment authorizations, repo access — is on you to justify.
 - `docs/OATHNET_API_GUIDE.txt` — complete OathNet API reference
 - `src/util/key_roi/mod.rs` — ROI tier classification source
 - `src/modules/oathnet_pro/key_harvest/` — key pattern matchers
-- `src/modules/web_crawler/crawl_util/mod.rs::probe_config_leaks` — the 108-path probe
+- `src/modules/web_crawler/crawl_util/mod.rs::probe_config_leaks` — the 103-path probe
 - `src/core/engine/dispatch.rs::dispatch_target_concurrent` — Phase 1 / Phase 2 hot-inject
 - `tests/smoke.rs::key_chaining_*` — load-bearing tests for the chain

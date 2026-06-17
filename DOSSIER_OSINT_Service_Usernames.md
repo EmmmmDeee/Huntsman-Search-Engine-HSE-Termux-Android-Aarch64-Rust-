@@ -3,7 +3,7 @@
 **Classification:** OSINT — Open-Source Intelligence  
 **Date Compiled:** 2026-05-27  
 **Methodology:** OathNet Pro breach/stealer API (primary), HIBP v3 (secondary)  
-**Analyst Tool:** Huntsman Search Engine v1.0.0  
+**Analyst Tool:** Huntsman Search Engine v1.0.0 (investigation snapshot; current release v1.4.0)  
 **Query Budget Used:** ~30 of 500 daily OathNet queries  
 
 ---
