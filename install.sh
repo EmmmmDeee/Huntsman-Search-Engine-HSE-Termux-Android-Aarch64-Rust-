@@ -5,16 +5,18 @@
 # any Linux / macOS with rustc 1.88+ and git. Idempotent: re-running upgrades
 # in place.
 #
-# Usage (Termux or any Unix):
-#   curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh | bash
+# Usage (Termux or any Unix) — paste this one line:
+#   curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/claude/vigilant-galileo-vmjk3e/install.sh | bash
 #
-# Or, if you've already cloned the repo:
-#   ./install.sh
+# Or, if you've already cloned the repo (~/hse, ~/hse-src, or any HSE dir):
+#   bash ~/hse/install.sh
 #
 # Environment knobs (all optional):
-#   HSE_INSTALL_DIR   Where to clone the source (default: $HOME/.local/share/hse)
+#   HSE_INSTALL_DIR   Where to clone the source (default: auto-detects ~/hse;
+#                     falls back to $HOME/.local/share/hse)
 #   HSE_BIN_DIR       Where to install the binary (default: $PREFIX/bin on Termux, $HOME/.local/bin elsewhere)
-#   HSE_REF           Git ref to install (branch / tag / SHA). Default: main
+#   HSE_REF           Git ref to install (branch / tag / SHA).
+#                     Default: claude/vigilant-galileo-vmjk3e
 #   HSE_REPO_URL      Upstream URL (default: the GitHub repo)
 #   HSE_INSTALL_DEBUG Set to 1 to enable shell trace (set -x)
 #   HSE_SKIP_BUILD    Set to 1 to clone-only and stop before cargo build
@@ -69,14 +71,22 @@ trap on_exit EXIT
 
 # ─── Defaults ────────────────────────────────────────────────────────────────
 HSE_REPO_URL="${HSE_REPO_URL:-https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git}"
-HSE_REF="${HSE_REF:-main}"
-# If invoked from inside an existing HSE clone (`./install.sh` from `~/hse`),
-# upgrade THAT clone in place — so a manual `git clone` install and the
-# scripted / curl-pipe install converge on one source tree instead of leaving
-# two. Gated on the exact package name so it can't hijack an unrelated dir.
-if [[ -z "${HSE_INSTALL_DIR:-}" && -d .git && -f Cargo.toml ]] \
-    && grep -q '^name *= *"huntsman-search-engine"' Cargo.toml 2>/dev/null; then
-    HSE_INSTALL_DIR="$(pwd)"
+HSE_REF="${HSE_REF:-claude/vigilant-galileo-vmjk3e}"
+# Resolve HSE_INSTALL_DIR in priority order:
+#   1. Explicit env override (HSE_INSTALL_DIR already set)
+#   2. Running from inside an existing HSE clone (./install.sh from ~/hse)
+#   3. ~/hse  — the most common manual-clone location
+#   4. ~/hse-src — second common location
+#   5. $HOME/.local/share/hse — canonical default
+_hse_pkg_check() { grep -q '^name *= *"huntsman-search-engine"' "${1}/Cargo.toml" 2>/dev/null; }
+if [[ -z "${HSE_INSTALL_DIR:-}" ]]; then
+    if [[ -d .git && -f Cargo.toml ]] && _hse_pkg_check "."; then
+        HSE_INSTALL_DIR="$(pwd)"
+    elif [[ -d "$HOME/hse/.git" && -f "$HOME/hse/Cargo.toml" ]] && _hse_pkg_check "$HOME/hse"; then
+        HSE_INSTALL_DIR="$HOME/hse"
+    elif [[ -d "$HOME/hse-src/.git" && -f "$HOME/hse-src/Cargo.toml" ]] && _hse_pkg_check "$HOME/hse-src"; then
+        HSE_INSTALL_DIR="$HOME/hse-src"
+    fi
 fi
 HSE_INSTALL_DIR="${HSE_INSTALL_DIR:-$HOME/.local/share/hse}"
 RUST_MIN_VERSION="1.88"

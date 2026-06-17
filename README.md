@@ -15,12 +15,12 @@ SpiderFoot-style Web UI, zero native dependencies.
 
 ### ⭐ The installer — one line, all-in-one
 
-This **single command is the installation** — it always tracks the latest
-`main`, does **absolutely everything**, and is **safe to re-run** (re-running
-upgrades an existing install in place to the newest version):
+This **single command is the installation** — does **absolutely everything**,
+and is **safe to re-run** (re-running upgrades an existing install in place to
+the newest version):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/claude/vigilant-galileo-vmjk3e/install.sh | bash
 ```
 
 It installs the toolchain (`rust`, `clang`, `binutils`, `git`, …), clones **or

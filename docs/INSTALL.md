@@ -11,7 +11,7 @@ upgrades in place.
 Open Termux (or any shell) and paste:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/claude/vigilant-galileo-vmjk3e/install.sh | bash
 ```
 
 That's everything. The installer:
@@ -76,7 +76,7 @@ Example — install a specific tag from a fork without touching apt:
 
 ```bash
 HSE_REF=v0.2.0 HSE_NO_PKG=1 HSE_REPO_URL=https://github.com/you/hse.git \
-  curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/claude/vigilant-galileo-vmjk3e/install.sh | bash
 ```
 
 ---
@@ -185,7 +185,7 @@ Just re-run the same command you used to install. The installer detects an
 existing clone and pulls the latest changes:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/claude/vigilant-galileo-vmjk3e/install.sh | bash
 ```
 
 Or, if you cloned manually:
