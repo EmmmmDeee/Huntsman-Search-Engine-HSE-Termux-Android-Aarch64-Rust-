@@ -103,6 +103,7 @@ pub mod signal_radar;
 pub mod smtp_vrfy;
 pub mod social_location;
 pub mod social_probe;
+pub mod streaming_probe;
 pub mod subdomain_takeover;
 pub mod sunrise_sunset;
 pub mod threatfox;
@@ -281,6 +282,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(employer_pivot::EmployerPivot),
         Arc::new(social_probe::SocialProbe),
         Arc::new(username_search::UsernameSearch),
+        Arc::new(streaming_probe::StreamingProbe),
         Arc::new(username_variants::UsernameVariants),
         Arc::new(github_user::GithubUser),
         Arc::new(github_code_search::GithubCodeSearch),

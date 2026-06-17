@@ -6,6 +6,7 @@
 
 use std::sync::OnceLock;
 
+use memchr::memchr;
 use regex::Regex;
 
 /// Strip `<script>`/`<style>` blocks, remove remaining tags, and decode
@@ -36,17 +37,16 @@ pub fn strip_html(html: &str) -> String {
 /// for the whole codebase — `search_engines` delegates here so a title decoded in
 /// a module matches one decoded in core/util.
 pub fn decode_entities(s: &str) -> String {
-    if !s.contains('&') {
+    if memchr(b'&', s.as_bytes()).is_none() {
         return s.to_string();
     }
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
-    while let Some(amp) = rest.find('&') {
+    while let Some(amp) = memchr(b'&', rest.as_bytes()) {
         out.push_str(&rest[..amp]);
         let inner = &rest[amp + 1..]; // text after the '&'
-        // Entity bodies are short and ASCII; `find(';')` lands on an ASCII byte
-        // (a char boundary), so the slice below can never split a codepoint.
-        if let Some(semi) = inner.find(';')
+        // `&` and `;` are single-byte ASCII so their byte offsets are valid char boundaries.
+        if let Some(semi) = memchr(b';', inner.as_bytes())
             && semi <= 10
             && let Some(ch) = decode_one_entity(&inner[..semi])
         {

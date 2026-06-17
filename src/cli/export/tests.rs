@@ -2,7 +2,7 @@ use super::dossier::join_or_dash;
 use super::renderers::{
     render_csv, render_debug_bundle, render_full, render_gexf, render_json, render_report,
 };
-use crate::core::scan::{Scan, Target, TargetKind};
+use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
 use crate::storage::Store;
 
 #[test]
@@ -232,11 +232,11 @@ fn explicit_scan_id_is_existence_checked_no_silent_empty_export() {
         "expected not-found error, got: {err}"
     );
 
-    // After the scan exists, resolution returns the id.
+    // After a *complete* scan exists, resolution returns the id.
     let target = Target::new(TargetKind::Email, "x@b.com");
-    store
-        .upsert_scan(&Scan::new("scan-present", target))
-        .unwrap();
+    let mut scan = Scan::new("scan-present", target);
+    scan.status = ScanStatus::Complete;
+    store.upsert_scan(&scan).unwrap();
     assert_eq!(
         crate::cli::resolve_scan_id(&store, "scan-present").unwrap(),
         "scan-present"

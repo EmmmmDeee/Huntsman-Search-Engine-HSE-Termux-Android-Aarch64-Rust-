@@ -13,7 +13,7 @@
 //! They compose: `hse audit --scan-id latest --log debug.log` audits the stored
 //! scan AND folds in what the log reveals about engine/module health.
 
-use crate::audit::{AuditEntity, AuditReport, LogSignals, audit};
+use crate::audit::{AuditEntity, AuditReport, LogSignals, Severity, audit};
 use crate::core::error::{Error, Result};
 
 pub(super) async fn cmd_audit(
@@ -66,6 +66,18 @@ pub(super) async fn cmd_audit(
         );
     } else {
         print_report(&report, &source_label);
+    }
+
+    if report
+        .findings
+        .iter()
+        .any(|f| matches!(f.severity, Severity::Critical | Severity::High))
+    {
+        return Err(Error::Other(
+            "audit: HIGH/CRITICAL findings detected — address the weaknesses above \
+             before treating these results as reliable"
+                .into(),
+        ));
     }
     Ok(())
 }

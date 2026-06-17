@@ -3856,3 +3856,25 @@ fn au042_fires_for_pgp_linked_email() {
     assert_eq!(r[0].rule_id, "AU-042");
     assert_eq!(r[0].severity, Severity::High);
 }
+
+#[test]
+fn au021_fires_for_api_key_entity() {
+    let e = Entity::new(EntityKind::ApiKey, "AKIAIOSFODNN7EXAMPLE", 0.9, "s");
+    let r = rule_au_021_api_key_exposure(&[e], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-021");
+    assert_eq!(r[0].severity, Severity::Critical);
+}
+
+#[test]
+fn au030_fires_for_three_source_geo_cluster() {
+    let mut c1 = Entity::new(EntityKind::Coordinates, "51.5,0.1", 0.7, "s");
+    c1.add_evidence(Evidence::new("ip_geo", "x"));
+    c1.add_evidence(Evidence::new("ipinfo", "x"));
+    let mut c2 = Entity::new(EntityKind::Coordinates, "51.6,0.2", 0.7, "s");
+    c2.add_evidence(Evidence::new("maxmind", "x"));
+    let r = rule_au_030_geo_convergence_score(&[c1, c2], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-030");
+    assert_eq!(r[0].severity, Severity::Medium);
+}

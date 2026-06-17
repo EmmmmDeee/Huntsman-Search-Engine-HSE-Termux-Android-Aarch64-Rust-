@@ -70,6 +70,64 @@ impl MatchSet {
     pub fn find(&self, haystack: &str) -> Option<usize> {
         self.ac.find(haystack).map(|m| m.start())
     }
+
+    /// Byte range `[start, end)` of the leftmost(-longest) match, or `None`.
+    /// Both offsets are valid `&str` boundaries (patterns match original bytes).
+    /// `&haystack[start..]` covers the match and everything that follows;
+    /// `&haystack[end..]` is the text immediately after the match — use `end`
+    /// to skip past a matched marker without knowing its length in advance.
+    #[must_use]
+    pub fn find_range(&self, haystack: &str) -> Option<(usize, usize)> {
+        self.ac.find(haystack).map(|m| (m.start(), m.end()))
+    }
+
+    /// Zero-based index of the matched pattern in the slice supplied to
+    /// `new` / `new_ascii_ci`, or `None` when no pattern is found.
+    /// Complements [`Self::find`] for callers that need to dispatch on *which*
+    /// pattern matched rather than *where* it matched — e.g. looking up the
+    /// associated value in a parallel table without a second linear scan.
+    #[must_use]
+    pub fn find_id(&self, haystack: &str) -> Option<usize> {
+        self.ac.find(haystack).map(|m| m.pattern().as_usize())
+    }
+}
+
+/// A compiled set of literal prefix patterns for fast "which prefix does this
+/// string start with?" lookups. Backed by aho-corasick with
+/// [`MatchKind::LeftmostFirst`] so that declaration order is preserved: when
+/// multiple patterns anchor at position 0, the one declared first is returned.
+/// Build once (typically in a `std::sync::LazyLock`) and query many times.
+pub struct PrefixMatcher {
+    ac: AhoCorasick,
+}
+
+impl PrefixMatcher {
+    /// Build a case-sensitive prefix matcher over `patterns`. Build is
+    /// infallible for the static pattern tables we use; an error panics.
+    pub fn new<I, P>(patterns: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<[u8]>,
+    {
+        let ac = AhoCorasickBuilder::new()
+            .match_kind(MatchKind::LeftmostFirst)
+            .build(patterns)
+            .expect("util::scan::PrefixMatcher: aho-corasick build over static patterns");
+        Self { ac }
+    }
+
+    /// Returns the index of the first-declared pattern whose text appears at
+    /// byte offset 0 of `haystack`, or `None` if no pattern anchors to the
+    /// start. When two patterns both match at offset 0, the one with the
+    /// lower index (declared first) wins — preserving specific-before-generic
+    /// table order without a full O(N) scan.
+    #[must_use]
+    pub fn find_prefix(&self, haystack: &str) -> Option<usize> {
+        self.ac
+            .find(haystack.as_bytes())
+            .filter(|m| m.start() == 0)
+            .map(|m| m.pattern().as_usize())
+    }
 }
 
 #[cfg(test)]
@@ -119,5 +177,26 @@ mod tests {
         assert!(m.is_match("café résumé 日本語 \u{0}\u{7f} secret here"));
         let _ = m.find("ключ \u{1} key 🔑");
         let _ = m.is_match("");
+    }
+
+    #[test]
+    fn find_range_returns_boundary_safe_start_and_end() {
+        let m = MatchSet::new_ascii_ci(["enrolled in ", "enrolled for "]);
+        let hay = "You are enrolled for Sydney NSW";
+        let (start, end) = m.find_range(hay).expect("match");
+        assert_eq!(&hay[start..end], "enrolled for ");
+        assert_eq!(&hay[end..], "Sydney NSW");
+        assert_eq!(m.find_range("no match here"), None);
+    }
+
+    #[test]
+    fn find_id_returns_pattern_index() {
+        let m =
+            MatchSet::new_ascii_ci(["northern territory", "south australia", "western australia"]);
+        // "south australia" is index 1; case-insensitive
+        assert_eq!(m.find_id("somewhere in South Australia"), Some(1));
+        // "western australia" is index 2
+        assert_eq!(m.find_id("Perth WA, Western Australia"), Some(2));
+        assert_eq!(m.find_id("nowhere"), None);
     }
 }

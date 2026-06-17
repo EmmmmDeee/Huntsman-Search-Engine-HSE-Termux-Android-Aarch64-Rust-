@@ -12,6 +12,8 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
+use crate::util::scan::MatchSet;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuAddress {
     pub full: String,
@@ -189,6 +191,13 @@ const STATE_NAMES: &[(&str, &str)] = &[
     ("victoria", "VIC"),
 ];
 
+/// One-time compiled automaton over `STATE_NAMES` patterns (ASCII-CI).
+/// Replaces the 8-way `lower.contains(name)` loop in [`state_code`] step 2
+/// with a single Teddy/SIMD pass; `find_id` returns the pattern index so the
+/// matching code is `STATE_NAMES[id].1` — no second table scan needed.
+static STATE_NAMES_MATCHER: std::sync::LazyLock<MatchSet> =
+    std::sync::LazyLock::new(|| MatchSet::new_ascii_ci(STATE_NAMES.iter().map(|(n, _)| *n)));
+
 /// Best-effort canonical AU state/territory code for a free-text fragment
 /// (`"Brisbane City, Queensland, Australia"`, `"… QLD 4000"`, `"4017"`).
 ///
@@ -199,7 +208,6 @@ const STATE_NAMES: &[(&str, &str)] = &[
 /// (the `WA` in "Walesby", the `SA` in "Sandgate"). Pure; no I/O.
 #[must_use]
 pub fn state_code(text: &str) -> Option<&'static str> {
-    let lower = text.to_lowercase();
     // 1) Whole-token abbreviation (case-insensitive), split on non-alphanumerics.
     for tok in text.split(|c: char| !c.is_ascii_alphanumeric()) {
         if tok.len() == 2 || tok.len() == 3 {
@@ -210,11 +218,11 @@ pub fn state_code(text: &str) -> Option<&'static str> {
         }
     }
     // 2) Full state name as a substring (names are distinctive multi-word or
-    //    long single words; ordered longest-first in STATE_NAMES).
-    for (name, code) in STATE_NAMES {
-        if lower.contains(name) {
-            return Some(code);
-        }
+    //    long single words; ordered longest-first in STATE_NAMES). One
+    //    aho-corasick pass replaces the former 8-way `to_lowercase().contains`
+    //    loop; `find_id` returns the pattern index for O(1) code lookup.
+    if let Some(id) = STATE_NAMES_MATCHER.find_id(text) {
+        return Some(STATE_NAMES[id].1);
     }
     // 3) Any 4-digit run that maps to a postcode range.
     for tok in text.split(|c: char| !c.is_ascii_digit()) {

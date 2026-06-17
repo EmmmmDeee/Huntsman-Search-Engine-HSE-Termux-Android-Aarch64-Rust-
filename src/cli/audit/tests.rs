@@ -70,3 +70,17 @@ use super::*;
         assert_eq!(field("a results=0 b", "results"), Some("0"));
         assert_eq!(field("no key here", "status"), None);
     }
+
+    #[test]
+    fn empty_scan_triggers_high_severity_exit_path() {
+        // An empty entity list produces a HIGH "empty-result" finding — exactly
+        // the condition that now causes cmd_audit to return Err (non-zero exit).
+        let report = audit(&[], LogSignals::default());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| matches!(f.severity, Severity::Critical | Severity::High)),
+            "empty-result should produce a HIGH finding that triggers non-zero exit"
+        );
+    }

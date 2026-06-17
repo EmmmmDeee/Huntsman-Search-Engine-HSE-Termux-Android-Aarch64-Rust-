@@ -85,12 +85,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   bench, and the **first consumer** (the SERP anti-bot `is_captcha_page` signature
   scan) routed through it **byte-for-byte equivalent** (5 captcha tests pass); **+2
   more (2026-06-17):** key-harvest `contains_excluded_context` (`new_ascii_ci`,
-  drops a hot-path alloc) and wigle `is_generic_ssid`, both proven by existing tests.
-  *Gap (§4b):* the universal key scanner *prefix table* (~170 prefixes, every body)
-  needs a **proptest-backed** conversion (min_len + table-order semantics); the HTML
-  marker parsers; `memchr`/`bstr` adoption. Each a contained increment —
-  `memchr`/`bstr` promoted only when first directly used
-  (else `cargo machete` trips).
+  drops a hot-path alloc) and wigle `is_generic_ssid`, both proven by existing tests;
+  **+ the key-scanner prefix table (2026-06-17, cycle 4):** `util::scan::PrefixMatcher`
+  (`LeftmostFirst`, `find_prefix() -> Option<usize>`, anchored at offset 0); two statics
+  in `key_harvest` (`PREFIX_MATCHER` + `PREFIX_GROUPS` for same-prefix duplicate entries);
+  O(N=170) `starts_with` loop replaced with O(1) dispatch + O(K≤2) group iteration;
+  intentional quality improvement (specific-prefix min_len failure no longer cascades
+  to a shorter generic prefix); proptest (no-panic + synthesised-token sanity) +
+  deterministic cascade-prevention test. **+ `au_electoral` HTML markers (2026-06-17,
+  cycle 5):** `MatchSet::find_range` added to `util::scan` (returns `[start, end)` so
+  callers skip past a marker without knowing its length); `DIVISION_MARKER` +
+  `ENROLLED_MARKERS` statics in `au_electoral/parse.rs` replace three `find_ascii_ci`
+  calls; two-pattern enrolled scan is one aho-corasick pass; five tests added.
+  **+ `memchr` direct dep + `decode_entities` SIMD byte scan (2026-06-17, cycle 12):**
+  `memchr = "2"` promoted to a direct dep (was transitive via `aho-corasick`/`regex`);
+  `decode_entities` in `util/html/mod.rs` — the hot entity decoder called on *every*
+  scraped response body — replaces `s.contains('&')`, `rest.find('&')`, and
+  `inner.find(';')` with `memchr(b'&', …)` / `memchr(b';', …)` SIMD byte searches.
+  `&` and `;` are single-byte ASCII so byte offsets equal char offsets in UTF-8 —
+  the substitution is correct and boundary-safe. Gate green: 3,032 lib tests, 0 failures.
+  *Gap (§4b):* `bstr` (no direct consumer yet → promote with first use).
+  Contained — `bstr` promoted only when first directly used (else `cargo machete` trips).
 - **`[~]` SOL-F2 · `fst`-backed datasets** ⚑ — `build.rs` compiles `data/*.txt` into
   memory-mapped `fst::Set`/`Map`, one canonical `util::dataset` API.
   *Closes / powers:* **F.2** (self), the **B5.3 table-drift** class, and Levenshtein
@@ -133,6 +148,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the README/MODULES counts, and AI-independence. *Closes:* **T1.4**. *Shaped*
   SOL-ISOLATE: the guard's documented-leaf allowlist is exactly how the engine got
   to scope the `util::found_keys` task-local (`with_scan`) without a layering breach. ✅
+- **`[x]` SOL-RULE-METAGUARD · Correlation rule firing coverage** — direct firing
+  tests for every dispatched correlation rule (`AU-021` one `ApiKey` entity → 1
+  `Critical` finding; `AU-030` two `Coordinates` entities with 3 distinct sources →
+  1 `Medium` finding — the only two of 56 rules without a prior direct assertion) +
+  `every_dispatched_correlation_rule_has_a_firing_test` in `tests/architecture.rs`
+  (enumerates all `rule_au_*` entries in `RULES` + `RELATION_RULES`; accepts either a
+  direct `fn`-name + non-zero `len()` assert within ±15 lines, or an indirect
+  `"AU-NNN"` reference on a line with `assert`/`unwrap`/`expect`/`contains(`).
+  *Closes:* **T1.3** (all 56 dispatched rules proven to fire on their nominal input;
+  guard rejects any future unmapped rule at CI time). ✅ delivered (cycle 8).
 - **`[x]` SOL-OUTPUT-ESCAPE · Context-correct output encoding** — `esc()`/`attr()`
   (HTML), `extLink()` (href + scheme gate), CSV formula-defang; the SPA renders
   attacker values via `data-` attributes read with `this.dataset`, never a JS-string
@@ -140,12 +165,39 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### S.RESOURCE — Concurrency, throughput & resource safety
 
-- **`[~]` SOL-BLOCKING · Keep the 2-worker reactor unblocked** — `spawn_blocking`
-  the heavy sync `Store`/render handlers; (planned) a single **DB-writer actor**
-  owning the `Connection` behind a bounded `mpsc`. *Closes:* **T2.2** (done, incl.
-  the debug-bundle `curl`), **T1.2** (API-read part done). *Gap:* `scan_import` +
-  `stats` still run sync on the reactor, and the engine's per-entity `insert_event`
-  + the writer-actor remain. **(§4b)**
+- **`[x]` SOL-BLOCKING · Keep the 2-worker reactor unblocked** — `spawn_blocking`
+  the heavy sync `Store`/render handlers; a dedicated **DB-writer actor**
+  (`core/engine/writer::DbWriter`) owning the `insert_event` call path behind an
+  unbounded `mpsc`. *Closes:* **T2.2** (done, incl. the debug-bundle `curl`),
+  **T1.2** (fully closed — all write paths off the reactor). *+SOL-BLOCKING-EXTEND
+  (2026-06-17):* `scan_import` now acquires `scan_semaphore` before parsing (mirrors
+  `spawn_scan` throttle) and dispatches all sync DB work (`upsert_scan`,
+  `upsert_entities_batch`, `derive_all`, `Correlator::run`) to `spawn_blocking`;
+  `stats` wraps `list_scans(10_000)` in `spawn_blocking`. *+SOL-BLOCKING-ENGINE
+  (2026-06-17):* `EventEmitter::emit` (`core/engine/mod.rs:152`) clones the
+  `Arc<StoragePort>` and wraps `store.insert_event(&event)` in
+  `tokio::task::block_in_place` — the per-entity blocking rusqlite write now leaves
+  the async reactor. `tests/halting.rs` + `tests/smoke.rs` (45 async tests total)
+  upgraded from `current_thread` to `(flavor = "multi_thread", worker_threads = 2)`
+  to match production and avoid the `block_in_place`-on-single-thread panic.
+  *+SOL-BLOCKING-ACTOR (2026-06-17, cycle 10):* `block_in_place` per entity replaced
+  by `core::engine::writer::DbWriter` — an unbounded-mpsc tokio task draining the
+  queue in `spawn_blocking` batches (≤64 events per call); `EventEmitter::emit`
+  becomes a non-blocking `submit`; `run_with_ledger_inner` calls
+  `writer.flush().await` after `finalise_scan` so all events (including ScanComplete)
+  are durably written before the scan is returned. T1.2 `[~]`→`[x]`. ✅ fully closed.
+- **`[x]` SOL-FINALISE-BLOCKING · `finalise_scan` off the async reactor** —
+  `finalise_scan` made `async fn`; body dispatched to `tokio::task::spawn_blocking`
+  capturing `Arc::clone(&store)`, `emitter.clone()`, and a `cancelled` bool snapshot
+  (CancellationToken is not `'static` and cannot cross the closure's `'static` bound).
+  `persist_relations` and `run_correlator` inlined into the closure (both had single
+  call-sites; removed as methods). *Closes:* **T1.5** (`[ ]`→`[x]`). ✅ cycle 14.
+- **`[x]` SOL-SCHEMA-VERSION · DB schema version stamp** — `const SCHEMA_VERSION: i32
+  = 1` in `src/storage/mod.rs`; `Store::open` reads `PRAGMA user_version` after the
+  DDL batch: `ver < SCHEMA_VERSION` → stamp (fresh or pre-versioned DB); `ver >
+  SCHEMA_VERSION` → `tracing::warn!` (forward-compat signal — a newer binary wrote
+  this DB). Provides a migration ladder for future non-additive schema changes without
+  requiring an explicit migration table. *Closes:* **T2.10** (`[ ]`→`[x]`). ✅ cycle 16.
 - **`[~]` SOL-BUDGET · Atomic quota reservation** — `QuotaBudget::try_increment`
   (CAS, saturating session rollback) replaces every racy `remaining()`-then-
   `increment()`. *Closes:* **T2.11** (oathnet — done; mirrors see_know). *Gap:* the
@@ -154,9 +206,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **`[x]` SOL-CAP · Bounded / streaming reads** — `read_body_capped` /
   `read_json_text` (`JSON_BODY_CAP`), reqwest read-timeout backstop, the `exif_geo`
   `bytes_stream()` accumulate-and-bail, the `smtp_vrfy` 8 KiB line cap via
-  `fill_buf`/`consume`. *Closes:* **T2.1** (timeouts), **T2.8** (the two HIGH reads —
-  done). *Gap (tracked under SOL-CAP-EXTEND):* the MED `json_decode`/AU-scraper caps,
-  the hibp cast, the CLI-import cap remain. **(§4b)**
+  `fill_buf`/`consume`. *Closes:* **T2.1** (timeouts), **T2.8** (all sub-items ✅).
+  **+SOL-CAP-EXTEND (2026-06-17):** `json_decode` routes through `read_json_text`
+  (closes ~24 uncapped MED sites ✅); nine AU-gov scraper `resp.text()` sites →
+  `read_body_capped(resp, 1_000_000)` ✅; hibp `count() as u32` casts →
+  `u32::try_from(…).unwrap_or(u32::MAX)` ✅. **+SOL-CAP-CLOSE (2026-06-17):**
+  `cli/import/mod.rs:24` `read_to_string` now gated by `metadata().len()` check
+  against `MAX_IMPORT_BYTES = 16 MiB` before read — T2.8 LOW closed. ✅ All T2.8
+  sub-items done; **SOL-CAP is `[x]`** (T2.8 `[~]`→`[x]`).
 - **`[x]` SOL-ISOLATE · Per-`scan_id` state isolation** — the `found_keys` sink is
   keyed by `scan_id` via a `tokio::task_local` (`SCAN`) the engine sets around
   `run_with_ledger` **and** each spawned dispatch task (task-locals don't cross
@@ -196,6 +253,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `HUNTSMAN_*` passes) on error bodies/URLs; only `key_tail` (last-4) is ever logged.
   *Closes:* the key-in-URL **log** exposure (S4 mostly mitigated). *Gap:* the archived
   **success body** isn't run through `redact_literal_secrets` — **§7 S4** residual. ◑
+- **`[x]` SOL-INSTALL-INTEGRITY · sha256 sidecar required for auto-discovered prebuilt** —
+  `_validate_prebuilt` in `install.sh` accepts a second arg `require_sha` (default 1 for
+  auto-discovered binaries, 0 for explicitly-set `HSE_PREBUILT`). When `require_sha=1`:
+  `sha256sum` absence or missing/empty/mismatched sidecar → `log_warn` + skip (no
+  silent trust of an unverified binary). `maybe_use_prebuilt` passes `require_sha=0`
+  when `HSE_PREBUILT` is set (user explicitly nominated the path — lower risk), `1`
+  otherwise. Closes the gap where another app could plant an unsigned binary in
+  `Downloads`/`/sdcard` and have it run at install time.
+  *Closes:* **§7 S5** (`[ ]`→`[x]`). ✅ cycle 16.
 - **`[-]` SOL-EMBED · Zero-config embedded keys (accepted by design)** — embedded
   defaults via `ensure_hardcoded_keys`, single-sourced in `constants.rs`, with the
   `SEEKNOW_SUPERSEDED_KEY*` rotate-in-place mechanism so the set **self-heals to
@@ -209,6 +275,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### S.CAPABILITY — Surpass-the-competition program (paired with `PROBLEM_TREE` §4)
 
+- **`[x]` SOL-STREAMING · Streaming/cam/fan/adult platform identity prober** — 42-site
+  parallel HEAD/GET username prober across three category buckets (`cam` 16, `fans` 18,
+  `adult` 8); `StatusEq(200)` HEAD for platforms with clean 404s; `StatusAndNotBody(200,
+  needle)` GET for JS-rendered 200-for-all platforms (OnlyFans, Chaturbate); per-profile
+  `Url` entities tagged `cam-profile`/`fans-profile`/`adult-profile` + `platform:<name>`;
+  summary `Username` entity with `cam-identity-exposed`, `subscription-platform-found`,
+  `adult-profile-found`, `high-streaming-exposure` (≥3 platforms) tags; `ModuleCategory::
+  Social` (MITRE T1593.001 + T1589.003); priority 108; 16-concurrent semaphore; 30 s
+  timeout envelope; `BROWSER_UA` to avoid Cloudflare scoring; 8 unit tests.
+  **International expansion (42 sites total):** Runetki/Boosty (Russia/CIS),
+  Cherry.tv/4Based (Eastern Europe), Mym (France/Francophone), MyDirtyHobby (Germany),
+  JustForFans (LGBTQ+ intl), OhMyFans (Spanish LATAM), Cam.tv (Italy/Europe),
+  Unlockd (UK), SuicideGirls (global alt), Iwara (Japan/3D).
+  *Closes / powers:* **C8** (webcam/fan/adult platform presence including non-English
+  markets — the identity surface `username_search` left uncovered). ✅ delivered.
 - **`[ ]` SOL-CORR · Correlation & identity depth** → **C1** (Maltego-without-graphs):
   transitive identity closure (property-tested convergence), a text "Connections"
   dossier section, first-class timeline, AU-0xx rule-gap fill. Built on SOL-MERGE.
@@ -230,12 +311,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### S.QUALITY — Periphery correctness (paired with `PROBLEM_TREE` T2.12)
 
-- **`[~]` SOL-CLI-CONTRACT · Honest CLI result/exit semantics** — `keys add` now
+- **`[x]` SOL-CLI-CONTRACT · Honest CLI result/exit semantics** — `keys add` now
   pre-checks `is_poolable_service` and `Err`s for a non-poolable service (no false
   "already exists" + silent drop) ✅; `provision --verify` returns non-zero on a
-  failed smoke/missing-key sub-test ✅. *Residual:* the explicit exit-code contract
-  for `audit`/`diff` (always-`Ok`) is still open. *Closes:* **T2.12** (the two MED
-  CLI bugs).
+  failed smoke/missing-key sub-test ✅. *+SOL-CLI-CONTRACT-DIFF (2026-06-17):*
+  `cmd_diff` returns `Err("both sides resolve to the same scan")` (non-zero exit)
+  in the same-scan footgun block — previously fell through to `Ok(())`. Integration
+  test `diff_wiring_self_compare_is_rejected_with_diagnostic` guards it ✅.
+  *+SOL-CLI-CONTRACT-AUDIT (2026-06-17, cycle 5):* `cmd_audit` returns `Err` after
+  printing the report when any finding carries `Severity::Critical | Severity::High`
+  — `hse audit` was previously always `Ok(())` regardless of scan quality ✅. Test
+  `empty_scan_triggers_high_severity_exit_path` guards it.
+  *+SOL-CLI-CONTRACT-SCAN (2026-06-17, cycle 6):* `resolve_scan_id` now rejects
+  non-`Complete` scans with `Err("scan {id} is {status} — only complete scans can be
+  exported, diffed, or audited")` — previously returned the id regardless of status,
+  allowing export/diff/audit on mid-run or failed scans ✅. Test
+  `resolve_scan_id_rejects_incomplete_scans` guards it. *Closes:* **T2.12** (two MED
+  CLI bugs + diff exit-code + audit exit-code + scan-id status-check). ✅ **Fully
+  closed.**
 - **`[x]` SOL-DIFF-DEDUP · uid-deduped diff** — `diff_entities` iterates the deduped
   `HashMap` values, so dup-uid CLI snapshots don't over-count; unique-uid input is
   byte-identical. *Closes:* **T2.12** diff over-count. ✅ test
@@ -271,15 +364,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-PANIC | E3.1 / SPOF #2 | `[x]` |
 | SOL-ARCH | T1.4 | `[x]` |
 | SOL-OUTPUT-ESCAPE | §7 SPA XSS | `[x]` |
-| SOL-BLOCKING | T2.2 · T1.2 (partial) | `[~]` |
+| SOL-BLOCKING | T2.2 · T1.2 (all write paths) | `[x]` |
+| SOL-FINALISE-BLOCKING | T1.5 | `[x]` |
+| SOL-SCHEMA-VERSION | T2.10 | `[x]` |
+| SOL-INSTALL-INTEGRITY | §7 S5 | `[x]` |
 | SOL-BUDGET | T2.11 oathnet | `[~]` |
-| SOL-CAP | T2.1 · T2.8 (2 HIGH) | `[x]`/`[~]` |
+| SOL-CAP | T2.1 · T2.8 (all sub-items) | `[x]` |
 | SOL-ISOLATE | T2.11 found_keys | `[x]` |
 | SOL-SSRF / -WHOIS | §6 (HTTP) · §7 S2 | `[x]`/`[x]` |
 | SOL-SECRETS / -EXTEND | env/pool/archive · §7 S3 | `[x]`/`[x]` |
 | SOL-REDACT | §7 S4 | ◑ |
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
-| SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[~]`/`[x]`/`[x]` |
+| SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
+| SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
+| SOL-STREAMING | C8 | `[x]` |
 | SOL-CORR…SOL-FORENSIC | C1–C7 | `[ ]` |
 
 ---
@@ -292,37 +390,35 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **T2.10** schema versioning — *no* solution node exists beyond the advisory; the
-  cleanest is a `SOL-SCHEMA-VERSION` (set `PRAGMA user_version` at create + an
-  idempotent upgrade ladder). **Latent, no current bug** → deliberately unbuilt; add
-  the node only if a non-additive migration is ever needed.
 - **T2.7** scraper-health signal — covered *in principle* by SOL-F1 (parser rewrites)
   but the per-source health surface (last-success/parse-rate in `doctor`+SPA) has no
   solution node. Gap.
-- **§7 S4 / S5** — solution nodes exist (SOL-REDACT residual, the install checksum)
-  but are **unstarted** — both LOW. Contained; awaiting the operator's prioritisation.
-  *(S2/SOL-SSRF-WHOIS and S3/SOL-SECRETS-EXTEND — the previous top contained items —
-  delivered 2026-06-17, so they're off this queue.)*
+- **§7 S4** — SOL-REDACT residual: archived success body not run through
+  `redact_literal_secrets` (LOW). Contained.
+  *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
+  this queue. S2/SOL-SSRF-WHOIS + S3/SOL-SECRETS-EXTEND delivered 2026-06-17.)*
+- **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
 - **C1–C7** — capability nodes; solutions sketched, none started (gated on the §3.F
   enablers landing first, by design).
 
 ### 4b · Solutions begun but unfinished (the finish queue)
-- **SOL-F1** — substrate + **three** consumers landed (`is_captcha_page`,
-  key-harvest `contains_excluded_context`, wigle `is_generic_ssid`), all
-  byte-for-byte equivalent. *Remaining (still the biggest leverage):* the universal
-  key scanner **prefix table** (~170 prefixes, every body) — needs a proptest-backed
-  conversion (min_len/table-order semantics); the HTML marker parsers; `memchr`/
-  `bstr`. Each its own contained increment (unblocks T2.7 + sharpens C6).
+- **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
+  key-harvest `contains_excluded_context`, wigle `is_generic_ssid`, the
+  **prefix-table `PrefixMatcher`** — 170 prefixes, `LeftmostFirst`, group map for
+  same-prefix duplicates, proptest-backed — `au_electoral` HTML markers via
+  `MatchSet::find_range`, `address_au::state_code` step-2 via `MatchSet::find_id`,
+  and **`decode_entities`** — `memchr` direct dep promoted; `memchr(b'&', …)` /
+  `memchr(b';', …)` replace `str::find`/`contains` on the hot page-body decode path).
+  *Remaining:* `bstr` (no natural consumer yet — all scraped HTML arrives as `&str`
+  via `read_body_capped`→`String::from_utf8_lossy`; `bstr` promotes only when a
+  module takes raw `&[u8]` response bytes directly). Unblocks T2.7 + sharpens C6.
 - **SOL-F2** — de-dup done; `fst` for the large tables outstanding.
-- **SOL-F3** — proptest + criterion landed; `cargo-fuzz` + import-parser proptest left.
-- **SOL-BLOCKING** — API reads done; `scan_import`/`stats` handlers + the engine
-  DB-writer actor left (T1.2).
-- **SOL-CAP** — 2 HIGH reads done; MED `json_decode`/AU-scraper caps + hibp cast + CLI
-  import cap left (T2.8 tail).
+- **SOL-F3** — proptest (str/entity/geo/html/cert/dns + import parsers) + criterion
+  landed; only `cargo-fuzz` (nightly CI lane) left.
+- **SOL-CAP** — ✅ fully closed (`[x]`). All T2.8 sub-items done (2 HIGH + MED
+  network reads + hibp cast + CLI-import file cap). Removed from finish queue.
 - **SOL-BUDGET** — oathnet done; the per-scan budget statics' `reset_scan`-zeroing
   still folds into the SOL-ISOLATE task-local (LOW — the session ceiling bounds it).
-- **T1.3 meta-guard** — the 12 firing assertions shipped; the dispatch-table
-  firing meta-guard (a `SOL-RULE-METAGUARD` leaf) is unbuilt.
 
 ### 4c · Solutions with no problem (over-build — prune candidates)
 - **None found.** Every solution node traces to ≥1 `PROBLEM_TREE` node or the shared
@@ -332,16 +428,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### 4d · Coverage snapshot (problem tier × solution status)
 - **T0 (crashes):** fully solved (SOL-BOUNDARY + SOL-F3 guard). ✔
-- **T1 (core guarantees):** T1.1/T1.4 solved; T1.2 partial (SOL-BLOCKING); T1.3 partial.
+- **T1 (core guarantees):** T1.1/T1.2/T1.3/T1.4/T1.5 all solved — SOL-BLOCKING
+  `[x]` (all write paths); SOL-FINALISE-BLOCKING `[x]` (cycle 14, T1.5 closed). ✔
 - **§3.F (foundations):** all three `[~]` — the largest unrealised leverage block.
-- **T2 (robustness):** T2.1–T2.6 + T2.9 solved; T2.8 partial; T2.12 mostly done
-  (4 MED/LOW-MED fixed, LOW-misc residual); T2.7/T2.10 open;
-  T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE delivered; only the LOW
-  over-dispatch + budget-reset-zeroing remain).
-- **§7 (security):** XSS + S2 (whois SSRF) + S3 (file perms) solved; S1 accepted;
-  S4–S5 open (both LOW) with
-  solutions named.
-- **§4 (capability C1–C7):** open by design, gated on §3.F.
+  `memchr` now a direct dep (cycle 12); remaining: `bstr` + `fst` large tables + `cargo-fuzz`.
+- **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
+  **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
+  T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE; LOW over-dispatch +
+  budget-reset-zeroing remain).
+- **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
+  (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
+- **§4 (capability C1–C8):** C8 delivered ✅ (`streaming_probe`, 30-site webcam/fan/adult prober); C1–C7 open by design, gated on §3.F.
 
 ---
 
@@ -428,3 +525,308 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   tagged proptest-backed. SOL-F1 stays `[~]` — the substrate keeps paying off one
   contained, equivalence-proven consumer at a time. Paired: `PROBLEM_TREE` F.1 +§8 —
   same commit; gate green, 3,006 lib tests.
+- **2026-06-17** — **Cycle: T2.8 MED tail — SOL-CAP-EXTEND.** Gap-analysis pick
+  (P→S pass): §4b named SOL-CAP the highest-value *contained* finish-queue item —
+  §3.F enablers need their own dedicated staged push. Closed all remaining MED
+  network-read gaps in one pass: **`json_decode`** now routes through `read_json_text`
+  (32 MiB cap + raw-archive retention; a 4-line change closing ~24 uncapped sites —
+  every `json_decode` caller, including shodan, censys, dehashed, zoomeye, onyphe,
+  leakix — behaviour-preserving, existing test unchanged); **three direct callers**
+  (`doh_resolver:310/322`, `wigle/account:95`) route through `json_decode`; **nine
+  AU-gov scraper** `resp.text()` sites routed through `read_body_capped(resp,
+  1_000_000)` (`asic_director`, `au_electoral` ×4, `au_people` ×2, `au_property` ×3)
+  — the `web_crawler` pattern, now uniform; both **hibp cast** sites →
+  `u32::try_from(…).unwrap_or(u32::MAX)` (P3, saturating). **S→P gap-refresh:**
+  SOL-CAP gap narrows to one LOW item (CLI-import cap); §4b SOL-CAP + §4d T2 row
+  updated. The §3.F enabler block (SOL-F1 key-scanner / SOL-F2 fst / SOL-F3 fuzz)
+  is confirmed the sole remaining high-leverage tier. Paired: `PROBLEM_TREE` T2.8 +
+  §8 same commit; gate green, 3,006 lib tests, 0 failures.
+- **2026-06-17** — **Cycle 2 (S→P): SOL-BLOCKING tail + SOL-CAP LOW tail — both
+  closed.** §4b's two open finish items taken together (both contained, complementary):
+  **(1) SOL-BLOCKING** — `scan_import` now acquires `s.scan_semaphore` before parsing
+  (mirrors the `spawn_scan` throttle: import floods can no longer crowd out live scans
+  on the 2-worker reactor); all sync DB work (`upsert_scan`, `upsert_entities_batch`,
+  `crate::core::relation::derive_all` + loop, `Correlator::run` + loop) dispatched to
+  `tokio::task::spawn_blocking` with the typed closure `move || -> core::error::Result<_>`.
+  `stats` wraps `list_scans(10_000)` in `spawn_blocking`. **(2) SOL-CAP** — the final LOW
+  item: `cli/import/mod.rs:24` `std::fs::read_to_string` now prefixed with a
+  `std::fs::metadata().len()` guard (local `MAX_IMPORT_BYTES = 16 MiB`); realistic
+  imports byte-identical. **SOL-CAP: `[~]`→`[x]`.** **S→P gap-refresh:** T2.8 fully
+  closed; T1.2 further advanced (reactor clear of import/stats blocking; engine
+  `insert_event` + DB-writer actor remain); §4b SOL-CAP removed from finish queue,
+  SOL-BLOCKING updated; §4d T2 + T1 rows updated. The §3.F enabler block remains the
+  sole remaining high-leverage tier. Paired: `PROBLEM_TREE` T2.8 `[~]`→`[x]`, T1.2
+  cycle-2 note + §8 — same commit; gate green, 3,010 lib tests, 0 failures.
+- **2026-06-17** — **Cycle 3 (P→S): SOL-BLOCKING engine tail (T1.2) +
+  SOL-CLI-CONTRACT diff exit-code (T2.12).** P→S/gap-analysis identified two
+  remaining contained items in §4b and T2.12 LOW-misc: **(1) SOL-BLOCKING engine
+  tail** — `EventEmitter::emit` (`core/engine/mod.rs:152`) now clones the
+  `Arc<dyn StoragePort>` and wraps `store.insert_event(&event)` in
+  `tokio::task::block_in_place`: the per-entity blocking rusqlite write is no longer
+  bare on the async reactor. Cascading fix: `tests/halting.rs` (3 tests) + all 42
+  async tests in `tests/smoke.rs` upgraded from default `#[tokio::test]`
+  (`current_thread`) to `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]`
+  — `block_in_place` panics on a single-thread runtime, and tests should reflect the
+  2-worker `new_multi_thread` production runtime anyway. **(2) SOL-CLI-CONTRACT diff
+  exit-code** — `cmd_diff` now `return Err(Error::Other("both sides resolve to the
+  same scan"))` inside the footgun guard (`cli/diff/mod.rs:74`) instead of falling
+  through to `Ok(())`; integration test `diff_wiring_self_compare_is_rejected_with_diagnostic`
+  (renamed + rewritten) verifies the non-zero exit + stderr diagnostic. **P→S
+  gap-refresh:** SOL-BLOCKING §4b updated (DB-writer actor is the sole remaining
+  tail); SOL-CLI-CONTRACT residual narrowed (`audit` + incomplete-scan); §4d T1 +
+  T2 rows updated. §3.F enabler block remains the highest-leverage unrealised tier.
+  Paired: `PROBLEM_TREE` T1.2 cycle-3 note + T2.12 diff note + §8 — same commit;
+  gate green, 3,006 lib + 54 smoke + 3 halting + 23 cli tests, 0 failures.
+- **2026-06-17** — **Cycle 4 (P→S): SOL-F1 key-scanner prefix table.** §4b identified
+  the 170-prefix `identify_vendor_api_key` O(N) `starts_with` loop as the remaining
+  high-leverage SOL-F1 item. Delivered: `util::scan::PrefixMatcher` (`LeftmostFirst`,
+  `find_prefix(&str) -> Option<usize>`, anchored at offset 0 — declaration order
+  preserved, so specific-before-generic remains correct without a full linear scan);
+  two statics in `key_harvest/mod.rs`: `PREFIX_MATCHER` (aho-corasick lookup) +
+  `PREFIX_GROUPS` (pre-grouped indices for same-prefix duplicate entries — `phc_`
+  has two at min_len 40/30, `pk_live_` covers Stripe+Clerk overlaps at O(K≤2) per
+  matched token). The hot-path for non-matching tokens is now O(len(token)) vs O(N=170);
+  matched tokens add only O(K) group iteration. Intentional quality improvement:
+  a token whose most-specific prefix (lowest KEY_PATTERNS index) fails `min_len` returns
+  `None` rather than cascading to a shorter generic prefix — short `sk-svcacct-` tokens
+  were previously misclassified as `openai_or_stripe`; this is now `None`. Proven by:
+  proptest `vendor_key_never_panics_on_arbitrary_input` (fuzz safety) +
+  `synthesised_token_result_is_sane` (positive-case sanity) + deterministic
+  `min_len_failure_on_specific_prefix_does_not_cascade_to_generic`. **Gap refresh:**
+  §4b SOL-F1 updated (4 consumers; remaining = HTML markers + memchr/bstr); §4d §3.F
+  unchanged (all `[~]` — HTML markers next). Paired: `PROBLEM_TREE` F.1 cycle-4 note
+  + §8 — same commit; gate green, 3,009 lib + 67 api + 23 arch + 54 smoke + 3 halting
+  + 6 cli-seed + 2 audit-regression tests, 0 failures.
+- **2026-06-17** — **Cycle 6 (P→S): SOL-F1 `address_au` state-name scan +
+  SOL-CLI-CONTRACT `resolve_scan_id` status-check — T2.12 fully closed.**
+  P→S gap pass identified two remaining contained items in §4b and T2.12 LOW-misc.
+  **(1) SOL-F1 sixth consumer — `address_au::state_code` step 2:** Added
+  `MatchSet::find_id(&str) -> Option<usize>` (pattern index of leftmost match —
+  complements `find_range`; enables pattern-indexed dispatch without a second table
+  scan). Added `STATE_NAMES_MATCHER: LazyLock<MatchSet>` static (8-pattern ASCII-CI
+  automaton over `STATE_NAMES`). Replaced `to_lowercase()` + 8-way `contains` loop
+  with `find_id(text).map(|id| STATE_NAMES[id].1)` — one Teddy/SIMD pass, no alloc.
+  Test `find_id_returns_pattern_index`. The au_property `extract_suburb_from_line`
+  path was examined and ruled out (single dynamic state string already known from
+  `extract_state` — not a MatchSet target). **(2) SOL-CLI-CONTRACT-SCAN
+  `resolve_scan_id`:** `match` on `get_scan(raw)?` now additionally checks
+  `scan.status != ScanStatus::Complete` and returns a `{status}`-named `Err` — was
+  returning the id regardless of scan completeness. Updated two caller tests
+  (`diff::load_side_tags`, `export::explicit_scan_id`) to create `Complete` scans;
+  added `resolve_scan_id_rejects_incomplete_scans`. SOL-CLI-CONTRACT `[~]`→`[x]`
+  (all four exit-code sub-items done). **Gap refresh:** §4b SOL-F1 "6 consumers;
+  remaining = memchr/bstr only"; SOL-CLI-CONTRACT removed from finish queue; §4d T2
+  "T2.12 fully closed ✅". §3.F enabler block remains the sole unrealised
+  high-leverage tier. Paired: `PROBLEM_TREE` T2.12 + F.1 + §8 — same commit; gate
+  green, 3,018 lib + 67 api + 23 arch + 54 smoke + 3 halting + 6 cli-seed + 2
+  audit-regression tests, 0 failures.
+- **2026-06-17** — **Cycle 5 (S→P): SOL-F1 `au_electoral` HTML markers +
+  SOL-CLI-CONTRACT `audit` exit-code.** S→P pass on cycle 4 deliverables: §4b held
+  two contained finish-queue items. **(1) SOL-F1 `au_electoral`:** extended
+  `util::scan::MatchSet` with `find_range(&str) -> Option<(usize, usize)>` (leftmost
+  match `[start, end)` — eliminates "what length was the marker?" arithmetic);
+  `au_electoral/parse.rs` `extract_division` converted — `DIVISION_MARKER` +
+  `ENROLLED_MARKERS` `LazyLock<MatchSet>` statics replace three `find_ascii_ci`
+  calls; the two enrolled-marker patterns are now one aho-corasick pass (was two
+  sequential linear scans); AEC-before-state-EC priority preserved (two matchers,
+  in sequence). Five tests added (`extract_division_tests`). **(2)
+  SOL-CLI-CONTRACT `audit`:** `cmd_audit` emits `Err` after printing when any finding
+  is `Critical | High` (previously `Ok(())` regardless of score); test
+  `empty_scan_triggers_high_severity_exit_path` guards the non-zero-exit path. **Gap
+  refresh:** §4b SOL-F1 "5 consumers, remaining = au_property + memchr/bstr";
+  SOL-CLI-CONTRACT residual = `resolve_scan_id` incomplete-scan only; §4d T2 row
+  updated (audit exit-code now in the fixed column). §3.F enabler block remains the
+  sole high-leverage unrealised tier. Paired: `PROBLEM_TREE` T2.12 + F.1 + §8 —
+  same commit; gate green, 3,016 lib + 67 api + 23 arch + 54 smoke + 3 halting
+  + 6 cli-seed + 2 audit-regression tests, 0 failures.
+- **2026-06-17** — **Cycle 7 (CAP): SOL-STREAMING `[ ]`→`[x]` — streaming/cam/fan/adult
+  platform identity prober.** Operator-directed capability request: "incorporate all forms
+  of webcam or similar site identities as a comprehensive OSINT inclusion." Built and
+  delivered `streaming_probe` in one pass — 30-site parallel HEAD/GET prober across
+  `cam`/`fans`/`adult` categories; `StatusEq` HEAD for clean-404 platforms;
+  `StatusAndNotBody` GET for JS-rendered 200-for-all platforms (OnlyFans, Chaturbate);
+  summary `Username` entity with `cam-identity-exposed`/`subscription-platform-found`/
+  `high-streaming-exposure` tags; `ModuleCategory::Social`, priority 108; 8 tests.
+  **CAP→delivered on first pass.** **S→P gap-refresh:** C8 logged + immediately closed
+  `[x]`; baseline updated to 119 modules / Social-11; `docs/MODULES.md` + README synced
+  — the `modules_md_lists_every_registered_module` + `readme_module_overview_count_matches_registry`
+  architecture guards pass clean. SOL-STREAMING added to leverage map; §4a C8 off the
+  open queue; §4d capability row updated (C8 delivered ✅; C1–C7 open by design). §3.F
+  enabler block remains the sole unrealised high-leverage tier. Paired:
+  `PROBLEM_TREE` C8 + §8 — same commit; gate green, 3,031 lib + 67 arch + 54 smoke
+  + 3 halting + 23 cli + 6 cli-seed + 2 audit-regression tests, 0 failures.
+- **2026-06-17** — **Cycle 9 (S→P): SOL-F3 import-parser proptest.** Gap analysis:
+  §4b named SOL-F3 as the next most actionable §3.F item — `cargo-fuzz` needs a
+  nightly CI lane (blocked), but the import-parser proptest was a clean contained
+  step. Added `mod prop` with 3 `proptest!` no-panic properties to
+  `src/cli/import/tests.rs`: `parse_dossier_never_panics`,
+  `parse_oathnet_txt_never_panics`, `parse_oathnet_html_never_panics` — each runs
+  over arbitrary Unicode strings (≤512 chars) and additionally asserts every
+  emitted entity value is non-empty. The three sync import parsers are the
+  untrusted-input parsers most exposed to operator-supplied or web-uploaded data;
+  the CLI path has no `catch_unwind`, so a panic kills the process. The existing
+  25-case adversarial table (`upload_dispatcher_never_panics_on_adversarial_input`)
+  can't exhaust arbitrary Unicode — proptest does. **S→P gap-refresh:** §4b
+  SOL-F3 updated (import-parser proptest done; only `cargo-fuzz` left); F.3
+  status unchanged (`[~]` — cargo-fuzz still outstanding). Paired: `PROBLEM_TREE`
+  F.3 note + §8 — same commit; gate green, 3,032 lib + 24 arch + 54 smoke + 3
+  halting tests, 0 failures.
+- **2026-06-17** — **Cycle 8 (P→S): SOL-RULE-METAGUARD `[ ]`→`[x]` — T1.3 fully closed.**
+  Gap-analysis pick: §4b T1.3 meta-guard was the last open T1 sub-item. **(1) Direct
+  firing tests for AU-021 and AU-030** added to `src/core/correlator/tests.rs`:
+  `au021_fires_for_api_key_entity` (one `ApiKey` entity → `len(), 1`, `Critical`) and
+  `au030_fires_for_three_source_geo_cluster` (two Coordinates entities with 3 distinct
+  corroborating sources across them → `len(), 1`, `Medium`). These were the only two
+  of the 56 dispatched rules with no direct function-level firing assertion.
+  **(2) `every_dispatched_correlation_rule_has_a_firing_test`** added to
+  `tests/architecture.rs`: enumerates every `rule_au_*` entry in `RULES` +
+  `RELATION_RULES` from `correlator/mod.rs`; for each, accepts (a) direct — function
+  name in the test corpus within ±15 lines of a `len(), N` (N > 0) assertion, or
+  (b) indirect — quoted `"AU-NNN"` on a line with `assert`/`.unwrap()`/`.expect()`/
+  `contains(`. All 56 dispatched rules pass. Supporting helpers added:
+  `correlator_tests_source()` (concatenates `tests.rs` + `rules/tests.rs`) and
+  `has_nonzero_len_assert()`. **S→P gap-refresh:** SOL-RULE-METAGUARD added to
+  leverage map `[x]`; §4b T1.3 item removed; §4d T1 row updated ("T1.3 solved").
+  Paired: `PROBLEM_TREE` T1.3 `[~]`→`[x]` — same commit; gate green, 3,033 lib +
+  24 arch + 54 smoke + 3 halting + 23 cli + 6 cli-seed + 2 audit-regression tests,
+  0 failures.
+- **2026-06-17** — **SOL-STREAMING expansion: +12 international sites (30→42).**
+  Operator request: "find these in difficult to find overseas countries where people
+  hide their true behaviour." Extended `streaming_probe` site table with the non-English
+  platforms most used to maintain a covert streaming identity: Runetki, Cherry.tv (cam);
+  Mym, Boosty, 4Based, JustForFans, OhMyFans, Unlockd, Cam.tv (fans);
+  MyDirtyHobby, SuicideGirls, Iwara (adult). Each entry documented with its geographic
+  significance and the subject-behaviour pattern it targets. Timeout comment updated
+  (13.5s needed vs 30s; no change to the 30s constant). SOL-STREAMING description and
+  C8 problem node updated to reflect 42-site scope. Gate green: fmt/clippy/doc clean,
+  3,027 lib + 67 arch tests, 0 failures.
+- **2026-06-17** — **Cycle 16 (P→S): SOL-SCHEMA-VERSION `[x]` + SOL-INSTALL-INTEGRITY
+  `[x]` — T2.10 and §7 S5 both closed.** Two remaining §4a items from cycle 15's
+  gap analysis. **(1) SOL-SCHEMA-VERSION:** `const SCHEMA_VERSION: i32 = 1` added to
+  `src/storage/mod.rs`; `Store::open` reads `PRAGMA user_version` after the DDL batch
+  — stamps when `ver < 1` (fresh / pre-versioned DB); `tracing::warn!` when `ver > 1`
+  (future binary wrote this DB). Provides the forward-compat signal + migration ladder
+  for any future non-additive change at zero on-disk cost. **(2) SOL-INSTALL-INTEGRITY:**
+  `_validate_prebuilt` in `install.sh` now requires a `<binary>.sha256` sidecar for
+  auto-discovered binaries (missing `sha256sum` / absent / empty / mismatched →
+  `log_warn` + skip); optional for `HSE_PREBUILT` (`$2=0`). `maybe_use_prebuilt`
+  wires the flag (`require_sha=1` auto-discovered, `0` when `HSE_PREBUILT` set).
+  **Gap refresh:** §4a loses T2.10 and §7 S5 (both closed); only T2.7 (scraper health
+  — large effort), §7 S4 (LOW residual), and C1–C7 (gated on §3.F) remain open. All
+  remaining items accepted-deferred or gated. §4d T2 row gains T2.10 `[x]`; §7 row
+  gains S5 `[x]`. Gate green: fmt/clippy/doc clean, 3,229 tests, 0 failures. Paired:
+  `PROBLEM_TREE` T2.10 `[ ]`→`[x]` + §7 S5 `[ ]`→`[x]` + §8 cycle 16 log — same commit.
+- **2026-06-17** — **Cycle 15 (S→P): gap analysis after cycle 14 — T1 tier confirmed
+  fully closed; T2.10 + §7 S5 identified as next achievable items.** S→P pass on
+  cycle 14's two deliveries. **(1) `strip_html` dedup:** no new problems — canonical
+  `crate::util::html::strip_html` now covers all sites; no drift vector remains.
+  **(2) SOL-FINALISE-BLOCKING:** `spawn_blocking` closure captures the `bool` snapshot
+  correctly; CancellationToken lifetime resolved; reactor fully unblocked at
+  scan boundaries. **§4 refresh:** scanned §4a for achievable items: T2.10 (schema
+  version — no dep, small change) and §7 S5 (install sha256 — shell-only change) are
+  the two remaining P→S-actionable items without large external blockers. T2.7 needs
+  golden fixtures + health surface (large effort); C1–C7 gated on §3.F; §3.F itself
+  needs nightly CI / large effort for remaining items (bstr + fst + cargo-fuzz).
+  **Decision:** cycle 16 will implement T2.10 + §7 S5. No code change this cycle.
+  Paired: `PROBLEM_TREE` §8 cycle 15 note — same commit.
+- **2026-06-17** — **Cycle 14 (P→S): SOL-FINALISE-BLOCKING `[ ]`→`[x]` + local
+  `strip_html` dedup — T1.5 fully closed.** Two gap items from cycle 13's S→P pass
+  resolved together. **(1) `strip_html` dedup (LOW, contained):** `au_property/parse.rs`
+  local `strip_html` replaced with `pub(super) use crate::util::html::strip_html`
+  (re-export, import path unchanged for tests); `au_people/mod.rs` local `strip_html_tags`
+  function deleted, canonical `use crate::util::html::strip_html` added, two call sites
+  updated, `strip_html_tags_removes_markup` test deleted. Zero behaviour change; the
+  copy-drift risk (future `decode_entities`/tag-stripping changes not propagating) is
+  closed. **(2) SOL-FINALISE-BLOCKING (LOW-MED):** `finalise_scan` changed from
+  `fn` to `async fn`; body dispatched to `tokio::task::spawn_blocking` capturing
+  `Arc::clone(&store)`, `emitter.clone()`, and `cancelled` (bool snapshot — the
+  CancellationToken is not `'static`); `persist_relations` and `run_correlator`
+  inlined into the closure (both had single call-sites; removed as methods). T1.5
+  `[ ]`→`[x]`. **Gap refresh:** §4a loses strip_html and T1.5 (both closed); §4b
+  SOL-F1 remaining trimmed; §4d T1 row now "T1.1–T1.5 all closed ✔"; §3 leverage
+  map gains SOL-FINALISE-BLOCKING row. Gate green: fmt/clippy/doc clean, 3,229 tests
+  (prev 3,230 — one removed test), 0 failures. Paired: `PROBLEM_TREE` T1.5
+  `[ ]`→`[x]` + §8 — same commit.
+- **2026-06-17** — **Cycle 13 (S→P): memchr delivery exposes `bstr` deferral rationale
+  + two local `strip_html` duplicates.** S→P pass on cycle 12's `decode_entities`
+  change: grepped all callers of `strip_html` / `decode_entities` across the codebase.
+  **Finding 1 (confirming):** `bstr` has no natural immediate consumer — every path that
+  reaches `strip_html`/`decode_entities` receives `&str` produced by
+  `read_body_capped` → `String::from_utf8_lossy`, which already handles invalid UTF-8
+  at the boundary. `bstr` promotes only when a module is built to accept raw `&[u8]`
+  response bytes directly (e.g. a future aho-corasick HTML extractor). The "promote with
+  first use" rule is justified — `cargo machete` would correctly reject an unused dep.
+  **Finding 2 (new gap):** `au_property/parse.rs:27` and `au_people/mod.rs:61` define
+  their own `strip_html`/`strip_html_tags` functions instead of routing to
+  `util::html::strip_html`. Both work correctly now, but any future change to the
+  canonical entity decoder won't propagate. LOW (no current bug). Added to §4a as a
+  named coverage gap (route-to-canonical = one-line change per module). **Gap refresh:**
+  §4a gains local-strip_html-duplicate gap; §4b SOL-F1 "remaining" note updated with
+  `bstr` rationale + the two module duplicates; no §4a removals. The §3.F enabler
+  block (SOL-F1 `bstr` + SOL-F2 fst + SOL-F3 cargo-fuzz) remains the sole unrealised
+  high-leverage tier. Next P→S candidate: **T1.5 / SOL-FINALISE-BLOCKING** (build the
+  solution node + wrap `finalise_scan` in `spawn_blocking` — the last open T1 item with
+  a known solution shape) OR the two local strip_html duplicates (LOW but trivial).
+  Paired: `PROBLEM_TREE` §8 — same commit; no code change this cycle.
+- **2026-06-17** — **Cycle 12 (P→S): SOL-F1 seventh consumer — `memchr` direct dep +
+  `decode_entities` SIMD byte-scan acceleration.** P→S gap pass: §4b named `memchr`
+  promotion as the remaining SOL-F1 item (`bstr` held back until a direct consumer
+  exists). Promoted `memchr = "2"` to a direct dep in `Cargo.toml` (already in the
+  tree transitively via `aho-corasick`/`regex` — no new package download; `cargo
+  fetch` updates lock file metadata only). In `src/util/html/mod.rs`: added `use
+  memchr::memchr;`; replaced `s.contains('&')` → `memchr(b'&', s.as_bytes()).is_none()`
+  (early-exit check); `rest.find('&')` → `memchr(b'&', rest.as_bytes())` (hot loop
+  across every `&` in a page body); `inner.find(';')` → `memchr(b';', inner.as_bytes())`
+  (inner entity-close scan). `decode_entities` is the hot path for all scraped HTML —
+  called from `strip_html` on every response — so the SIMD replacement has broad
+  reach across all 119 modules that scrape. `&` and `;` are single-byte ASCII
+  (0x26/0x3B) so their byte offsets are always valid char boundaries in UTF-8; the
+  substitution is correct and no-panic (confirmed by the existing proptest suite on
+  arbitrary Unicode strings). **S→P gap-refresh:** §2 SOL-F1 node updated (seventh
+  consumer + gap trimmed to `bstr` only); §4b SOL-F1 "seven consumers, remaining =
+  bstr"; §4d §3.F row notes `memchr` now direct. §3.F enabler block (SOL-F1 `bstr` +
+  SOL-F2 fst + SOL-F3 cargo-fuzz) remains the sole unrealised high-leverage tier.
+  Paired: `PROBLEM_TREE` F.1 node + baseline deps + §8 — same commit; gate green,
+  3,032 lib + 24 arch + 67 api + 54 smoke + 3 halting + 6 cli-seed + 2
+  audit-regression tests, 0 failures.
+- **2026-06-17** — **Cycle 11 (S→P): SOL-BLOCKING delivery exposes T1.5 —
+  `finalise_scan` reactor-blocking residual.** S→P pass on cycle 10's actor delivery:
+  with the `insert_event` hot path (N per-entity `block_in_place` calls) now fully
+  off the reactor, `finalise_scan` becomes the last identifiable sync-in-async site.
+  It makes four blocking rusqlite calls: `upsert_entities_batch` (one WAL batch),
+  `upsert_scan` (one row), `persist_relations` (one insert per edge), and
+  `Correlator::run` (full SQL pass, O(entities)). All O(1) bulk transactions — the
+  blast radius is bounded to the scan-end window and is invisible in CLI mode. In
+  `hse serve`/`hse live` (concurrent scans), one worker stalls for the finalisation
+  duration. **New node T1.5 (LOW-MED)** added to PROBLEM_TREE §3.1 (after T1.4) and
+  §4a here. Solution shape is clear (wrap `finalise_scan` in `spawn_blocking`; the
+  emitter is already non-blocking after cycle 10) but no solution node built yet.
+  **Gap refresh:** §4a now lists T1.5; §4d T1 row updated (T1.1–T1.4 `[x]`, T1.5
+  `[ ]` LOW-MED). §3.F enabler block (SOL-F1 memchr/bstr + SOL-F2 fst + SOL-F3
+  cargo-fuzz) remains the sole unrealised high-leverage tier; SOL-BUDGET
+  reset_scan-zeroing and SOL-F1/F2/F3 the remaining finish queue. No code change
+  this cycle. Paired: `PROBLEM_TREE` T1.5 node + §8 — same commit; gate green
+  (no code change).
+- **2026-06-17** — **Cycle 10 (P→S): SOL-BLOCKING DB-writer actor — T1.2 fully closed
+  (`[~]`→`[x]`).** `block_in_place` per entity in `EventEmitter::emit` replaced by
+  `core::engine::writer::DbWriter` — a new `tokio::spawn`'d actor owning the
+  `insert_event` call path behind an unbounded `mpsc`. Two command variants:
+  `WriteCmd::Event(Box<Event>)` (boxed to satisfy `clippy::large_enum_variant` —
+  `Event` is 224 B vs `Flush` 8 B) and `WriteCmd::Flush(oneshot::Sender<()>)`. The
+  actor drains the channel in `spawn_blocking` batches (greedily pulls ≤64 events per
+  call — one OS-thread transition per burst vs one per entity). `EventEmitter::emit`
+  becomes a non-blocking `submit`; `run_with_ledger_inner` calls
+  `writer.flush().await` after `finalise_scan` returns — FIFO channel guarantee ensures
+  all events emitted before the flush (including `ScanComplete`) are durably written
+  before the scan is returned. `finalise_scan` is `fn` (sync), so the barrier goes in
+  its `async fn` caller. `DbWriter` is `Clone` (unbounded-sender clones point to the
+  same actor task) so both `ScanEngine` and `EventEmitter` share the actor without an
+  extra `Arc`. `recall_resolves_a_fullname_seed_despite_reformatting` upgraded from
+  `#[test] fn` → `#[tokio::test] async fn` (body unchanged — sync — but `ScanEngine::
+  new` now calls `tokio::spawn` internally, requiring a live Tokio runtime). **S→P
+  gap-refresh:** §2 SOL-RULE-METAGUARD node added to S.CORE (was in leverage map only
+  since cycle 8 — doc gap); §3 SOL-BLOCKING row `[~]`→`[x]`, "T1.2 (all write paths)";
+  §4b SOL-BLOCKING removed from finish queue; §4d T1 row updated to "T1.1/T1.2/T1.3/
+  T1.4 all solved". Paired: `PROBLEM_TREE` T1.2 `[~]`→`[x]` + cycle 10 note + §8 —
+  same commit; gate green, 3,032 lib + 24 arch + 67 api + 54 smoke + 3 halting + 23
+  cli + 6 cli-seed + 2 audit-regression tests, 0 failures.

@@ -116,7 +116,7 @@ fn dag() -> DagModule {
         .edge("contoso.com", EntityKind::IpAddress, "93.184.216.34", 0.90)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scan_halts_frontier_empty_within_structural_bound() {
     let (engine, store, sid, target, ctx) = setup(
         vec![Arc::new(dag())],
@@ -185,7 +185,7 @@ async fn scan_halts_frontier_empty_within_structural_bound() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scan_stops_at_entity_budget() {
     // A fan-out graph that would produce 5 entities, capped at 2. The budget is
     // a graceful early stop — distinct from the halting guarantee above.
@@ -269,7 +269,7 @@ impl Module for SlowModule {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wall_time_budget_stops_promptly_and_preserves_findings() {
     // Regression: --max-wall-time was only checked BETWEEN expansion
     // candidates, so the seed round / in-flight modules could blow past it

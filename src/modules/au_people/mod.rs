@@ -35,7 +35,8 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::extract::page_emails;
-use crate::util::http::RequestBuilderExt;
+use crate::util::html::strip_html;
+use crate::util::http::{RequestBuilderExt, read_body_capped};
 
 pub(crate) const SRC: &str = "au_people";
 
@@ -55,27 +56,6 @@ pub(super) fn split_name(full: &str) -> (&str, &str) {
 /// Extract au-state tag from suburb/state text. Pure.
 pub(super) fn state_tag_from_text(text: &str) -> Option<String> {
     crate::util::address_au::state_code(text).map(|s| format!("au-state:{s}"))
-}
-
-/// Strip HTML tags from a string slice, replacing each tag with a space. Pure.
-pub(super) fn strip_html_tags(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for ch in html.chars() {
-        match ch {
-            '<' => {
-                in_tag = true;
-                // Replace the tag with a space so adjacent text stays separated.
-                if !out.ends_with(' ') {
-                    out.push(' ');
-                }
-            }
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(ch),
-            _ => {}
-        }
-    }
-    out
 }
 
 /// Parse White Pages AU result HTML for address/phone/name entries.
@@ -164,7 +144,7 @@ pub(super) fn parse_whitepages_html(html: &str, full_name: &str, scan_id: &str) 
                 let context =
                     crate::util::str_util::char_window(html, i.saturating_sub(60), i + 64);
                 // Strip HTML tags from context.
-                let stripped = strip_html_tags(context);
+                let stripped = strip_html(context);
                 let trimmed = stripped.trim().replace("  ", " ");
                 if !trimmed.is_empty()
                     && trimmed.len() > 5
@@ -234,7 +214,7 @@ pub(super) fn parse_whitepages_html(html: &str, full_name: &str, scan_id: &str) 
 /// Uses a simpler heuristic — TPS structures results as JSON-LD or visible text blocks. Pure.
 pub(super) fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
-    let stripped = strip_html_tags(html);
+    let stripped = strip_html(html);
 
     // TPS embeds addresses as "Suburb, STATE POSTCODE" patterns.
     // Use a simple line-by-line scan for lines that look like AU addresses.
@@ -365,7 +345,7 @@ impl Module for AuPeople {
             .send_tagged(SRC)
             .await
             && resp.status().is_success()
-            && let Ok(html) = resp.text().await
+            && let Some(html) = read_body_capped(resp, 1_000_000).await
         {
             result.extend(parse_whitepages_html(&html, full_name, &ctx.scan_id));
         }
@@ -386,7 +366,7 @@ impl Module for AuPeople {
             .send_tagged(SRC)
             .await
             && resp.status().is_success()
-            && let Ok(html) = resp.text().await
+            && let Some(html) = read_body_capped(resp, 1_000_000).await
         {
             result.extend(parse_tps_html(&html, full_name, &ctx.scan_id));
         }

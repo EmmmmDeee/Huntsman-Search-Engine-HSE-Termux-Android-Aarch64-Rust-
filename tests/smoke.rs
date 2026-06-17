@@ -343,7 +343,7 @@ fn reset_chain_pool() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn key_chaining_sequential_dispatch() {
     // Sequential mode (max_concurrent=0). The discoverer runs first,
     // stores the key in the pool. The per-module hot-inject after
@@ -375,7 +375,7 @@ async fn key_chaining_sequential_dispatch() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn key_chaining_concurrent_dispatch() {
     // Concurrent mode (max_concurrent>0). Paid modules run in Phase 1
     // synchronously; ctx is refreshed from the pool; THEN Free + KeyGated
@@ -407,7 +407,7 @@ async fn key_chaining_concurrent_dispatch() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn key_chaining_classifies_multiplier_tier() {
     // Verify the ROI classification is wired up for the services that
     // matter most. Shodan, Censys, Hunter, Proxycurl should all be
@@ -464,7 +464,7 @@ fn all_registered_modules_have_descriptions() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn engine_dispatches_synthetic_module_end_to_end() {
     let (engine, store, sid, target, ctx) = setup(
         vec![Arc::new(SyntheticModule)],
@@ -488,7 +488,7 @@ async fn engine_dispatches_synthetic_module_end_to_end() {
 /// bounded purely by `max_entities`, even with a large depth. Wrapped in a hard
 /// wall-clock timeout so a regression that breaks termination FAILS rather than
 /// hangs the suite.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recursion_halts_under_unbounded_generation() {
     let (engine, store, sid, target, ctx) = setup(
         vec![Arc::new(HydraModule)],
@@ -522,7 +522,7 @@ async fn recursion_halts_under_unbounded_generation() {
     assert!(store.entities_for_scan(&sid).unwrap().len() <= 13);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scan_options_allowlist_excludes_module() {
     let (engine, store, sid, target, ctx) = setup(
         vec![Arc::new(SyntheticModule)],
@@ -555,7 +555,7 @@ async fn scan_options_allowlist_excludes_module() {
     drop(store);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn expansion_depth_zero_is_single_round() {
     let (engine, _store, sid, target, ctx) = setup(
         vec![
@@ -577,7 +577,7 @@ async fn expansion_depth_zero_is_single_round() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn seed_is_anchored_as_a_subject_entity_even_with_no_modules() {
     // G1: the queried subject must always be a node in the result graph — the
     // hub relations/correlations hang off — even when no module emits anything.
@@ -614,7 +614,7 @@ async fn seed_is_anchored_as_a_subject_entity_even_with_no_modules() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fullname_seed_is_not_engine_anchored_delegated_to_name_intel() {
     // FullName is the one kind the engine does NOT anchor: name_intel owns the
     // Person anchor at its own (deliberately Probable-tier) confidence, and the
@@ -637,7 +637,7 @@ async fn fullname_seed_is_not_engine_anchored_delegated_to_name_intel() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn expansion_depth_one_chains_two_modules() {
     let (engine, store, sid, target, ctx) = setup(
         vec![
@@ -665,7 +665,7 @@ async fn expansion_depth_one_chains_two_modules() {
     assert!(kinds.contains(&&EntityKind::Phone));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn expansion_skips_incidental_mega_domains() {
     // A username scan that discovers a platform mega-domain (facebook.com) and a
     // target-specific domain must expand ONLY the latter — deep-expanding the
@@ -699,7 +699,7 @@ async fn expansion_skips_incidental_mega_domains() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn expansion_depth_two_chains_three_modules() {
     let (engine, store, sid, target, ctx) = setup(
         vec![
@@ -729,7 +729,7 @@ async fn expansion_depth_two_chains_three_modules() {
     assert!(kinds.contains(&&EntityKind::Phone));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_dispatch_produces_same_entities_as_sequential() {
     let modules: Vec<Arc<dyn Module>> =
         vec![Arc::new(EmailToUsernameSynth), Arc::new(SyntheticModule)];
@@ -768,7 +768,7 @@ async fn concurrent_dispatch_produces_same_entities_as_sequential() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn expansion_respects_min_expand_confidence() {
     let (engine, _store, sid, target, ctx) = setup(
         vec![
@@ -794,7 +794,7 @@ async fn expansion_respects_min_expand_confidence() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn expansion_respects_max_entities_budget() {
     // 3 modules chain forever in principle, but max_entities=1 stops after seed round.
     let (engine, _store, sid, target, ctx) = setup(
@@ -821,7 +821,7 @@ async fn expansion_respects_max_entities_budget() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancellation_pre_run_aborts_immediately() {
     // Pre-set the cancel flag before engine.run starts. The first
     // per-module gate (issue #23) catches it; no modules get
@@ -845,7 +845,7 @@ async fn cancellation_pre_run_aborts_immediately() {
     assert_eq!(result.entity_count, 0);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pre_cancellation_aborts_scan_before_any_module_runs() {
     // Deterministic pre-flight scenario: the operator's `cancel()` has
     // already fired before `engine.run()` starts. The sequential
@@ -877,7 +877,7 @@ async fn pre_cancellation_aborts_scan_before_any_module_runs() {
     assert_eq!(result.entity_count, 0);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mid_flight_cancellation_aborts_running_scan() {
     // Real operator flow: a scan is already running when the cancel
     // flag flips. We use a slow synthetic module that signals when its
@@ -973,7 +973,7 @@ async fn mid_flight_cancellation_aborts_running_scan() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn expansion_visited_prevents_cycle() {
     // SyntheticModule echoes the seed email back as the same email entity.
     // With depth>0, expansion would try to re-scan it — visited set must stop that.
@@ -1021,7 +1021,7 @@ impl Module for KeyGatedMultiAccept {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn keyed_module_runs_exactly_once_per_target_in_expansion() {
     let (engine, store, sid, target, ctx) = setup(
         vec![
@@ -1054,7 +1054,7 @@ async fn keyed_module_runs_exactly_once_per_target_in_expansion() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dispatch_dedup_allows_free_module_to_rerun() {
     let (engine, _store, sid, target, ctx) = setup(
         vec![Arc::new(EmailToUsernameSynth), Arc::new(SyntheticModule)],
@@ -1102,7 +1102,7 @@ impl Module for CountingPaid {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn radar_persistent_ledger_does_not_re_query_paid_apis_on_covered_seeds() {
     use huntsman_search_engine::core::engine::DispatchLog;
     use std::sync::atomic::Ordering;
@@ -1207,7 +1207,7 @@ impl Module for SlowEchoModule {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_dispatch_is_faster_than_sequential() {
     // Four 200 ms modules. Sequential ≈ 800 ms wall-time; concurrent
     // with max_concurrent=4 should complete in ≈ 200 ms.
@@ -1284,7 +1284,7 @@ async fn concurrent_dispatch_is_faster_than_sequential() {
     eprintln!("dispatch timing: sequential {seq:?}, concurrent {con:?}");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_dispatch_respects_max_concurrent_cap() {
     // 6 modules, max_concurrent=2: peak in-flight should be ≤ 2.
     let counters = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1329,7 +1329,7 @@ async fn concurrent_dispatch_respects_max_concurrent_cap() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn max_concurrent_zero_uses_sequential_path() {
     // With max_concurrent=0, peak in-flight should be exactly 1 — modules
     // run one at a time in priority order (the v0.1 behaviour).
@@ -1411,7 +1411,7 @@ impl Module for SlowModule {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn module_max_timeout_override_extends_engine_cap() {
     let (engine, store, sid, target, ctx) = setup(
         vec![Arc::new(SlowModule)],
@@ -1431,7 +1431,7 @@ async fn module_max_timeout_override_extends_engine_cap() {
     assert!(entities.iter().any(|e| e.has_tag("slow-completed")));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn user_timeout_override_still_wins_over_module_max() {
     // The user-pinned `--timeout` must override the module's declared
     // ceiling — that's how an operator throttles a misbehaving module
@@ -1486,7 +1486,7 @@ impl Module for TiedConfidenceModule {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn persisted_entity_order_is_deterministic_on_confidence_ties() {
     // End-to-end determinism guard. Two independent scans of the same seed —
     // separate engines, separate stores — must persist entities in IDENTICAL
@@ -1532,7 +1532,7 @@ async fn persisted_entity_order_is_deterministic_on_confidence_ties() {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_key_is_a_clean_skip_not_an_error() {
     // A keyed module with no key must be counted as SKIPPED, never ERRORED, and
     // must not stop the scan or stop other modules from producing findings.
@@ -1573,7 +1573,7 @@ fn tempfile_path(suffix: &str) -> String {
 
 // ── Live mode tests ────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_session_runs_two_iterations_and_completes() {
     use huntsman_search_engine::core::live::{LiveOptions, LiveScanner, LiveStatus};
 
@@ -1617,7 +1617,7 @@ async fn live_session_runs_two_iterations_and_completes() {
     assert_eq!(session.scan_ids.len(), 2, "should have spawned 2 scans");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_session_stops_on_explicit_cancel() {
     use huntsman_search_engine::core::live::{LiveOptions, LiveScanner, LiveStatus};
 
@@ -1874,7 +1874,7 @@ fn module_graph_richness_is_normalised_and_zero_for_unconsumed_kinds() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dispatch_index_drives_synthetic_engine_to_skip_non_accepting_modules() {
     // The engine built from the dispatch index must never invoke a
     // module whose accepts() returns false for the seed kind.
@@ -1979,7 +1979,7 @@ fn module_categories_attach_to_module_info() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn richest_first_strategy_prefers_high_unlock_targets() {
     // Synthetic registry: one Email-only module, one Domain-accepting
     // module. Domain is "richer" because exactly one module covers
@@ -2058,7 +2058,7 @@ async fn richest_first_strategy_prefers_high_unlock_targets() {
     assert!(kinds.contains(&&EntityKind::IpAddress));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn breadth_first_strategy_runs_chain_under_default_confidence() {
     use huntsman_search_engine::core::scan::ExpansionStrategy;
 
@@ -2127,7 +2127,7 @@ impl Module for DomainPairModule {
 /// End-to-end: a scan that yields a subdomain + apex must persist a
 /// `SubdomainOf` relation via `finalise_scan` → `persist_relations`. Guards
 /// the engine→relation-builder→store wiring against silent removal.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scan_persists_structural_subdomain_relation() {
     use huntsman_search_engine::core::relation::RelationKind;
 
@@ -2168,7 +2168,7 @@ async fn scan_persists_structural_subdomain_relation() {
 /// child entity to the parent whose expansion surfaced it. Seed Email →
 /// (seed round) Username → (expansion round 1) Phone, so the engine should
 /// persist a Username ──DerivedFrom──▶ Phone edge.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn expansion_records_derived_from_lineage() {
     use huntsman_search_engine::core::relation::RelationKind;
 
@@ -2248,7 +2248,7 @@ impl Module for MaliciousDomainModule {
 /// End-to-end: a benign subdomain of a malicious apex must surface AU-031
 /// (adjacency to known-bad) through the engine → relations → correlator chain —
 /// a finding the flat entity list / tag-only rules can't produce.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn correlator_surfaces_malicious_adjacency_via_relations() {
     let (engine, store, sid, target, ctx) = setup(
         vec![Arc::new(MaliciousDomainModule)],
@@ -2339,7 +2339,7 @@ impl Module for ExpansionMarker {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn correlations_stream_live_during_ingestion_not_at_finalise() {
     use huntsman_search_engine::core::event::EventKind;
 
@@ -2511,7 +2511,7 @@ impl StoragePort for CountingStore {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn entities_are_checkpointed_each_round_for_durability() {
     let tmp = tempfile_path("durability");
     let store = Arc::new(Store::open(&tmp).unwrap());
@@ -2629,7 +2629,7 @@ impl Module for IpSeenMarker {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn non_routable_ips_are_not_expanded() {
     let (engine, store, sid, target, ctx) = setup(
         vec![Arc::new(DualIpModule), Arc::new(IpSeenMarker)],
@@ -2700,7 +2700,7 @@ impl Module for MixedIpModule {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bogus_ips_are_dropped_at_admission() {
     let (engine, store, sid, target, ctx) = setup(
         vec![Arc::new(MixedIpModule)],
@@ -2755,7 +2755,7 @@ impl Module for KeyGatedNeedsKey {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_key_releases_the_dispatch_ledger_entry() {
     use huntsman_search_engine::core::engine::DispatchLog;
 

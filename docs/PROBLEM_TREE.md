@@ -73,14 +73,14 @@ Priority: **P0** crash/corruption · **P1** breaks a core guarantee · **P2**
 quality/robustness · **P3** minor · **CAP** capability/feature.
 Each node: **ID · statement · location · impact · → optimal solution · prio · status**.
 
-Current baseline (grounded in the codebase, 2026-06-17): 118 modules across 14
+Current baseline (grounded in the codebase, 2026-06-17): 119 modules across 14
 categories (Infrastructure 20, Geo 19, People 15, DnsRecon 13, Breach 11, Social
-10, Email 6, Corporate 6, Web 5, Sensor 4, Threat 3, Search/Phone/Other 2 each);
+11, Email 6, Corporate 6, Web 5, Sensor 4, Threat 3, Search/Phone/Other 2 each);
 59 native correlation rules (AU-001…AU-059); 0 `unsafe`; deterministic entity
 merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
-`criterion` 0.8 direct (dev-only, zero shipped cost — F.3); `aho-corasick` now a
-direct dep (F.1, `util::scan`); `memchr`, `bstr`, `fst`, `arbitrary` still NOT
-direct.**
+`criterion` 0.8 direct (dev-only, zero shipped cost — F.3); `aho-corasick` +
+`memchr` now direct deps (F.1, `util::scan` + `util::html`); `bstr`, `fst`,
+`arbitrary` still NOT direct.**
 
 ---
 
@@ -120,7 +120,7 @@ direct.**
   `proptest` that permuting input entity/session order yields **byte-identical**
   render. Extend to a general "renderers are permutation-invariant" property over
   CSV/JSON/GEXF/dossier. **P1**
-- **`[~]` T1.2 · Throughput (the on-device perf guarantee)** —
+- **`[x]` T1.2 · Throughput (the on-device perf guarantee)** —
   `core/engine/mod.rs:154` runs blocking rusqlite `insert_event` **per entity**
   from async + spawned dispatch tasks; `api/scan_handlers` (8 sites) +
   `api/scan_export` (4) call sync `Store` on async workers with no
@@ -140,22 +140,36 @@ direct.**
   `list_scans(10_000)` + full-JSON deserialise on the reactor. → wrap both in
   `spawn_blocking` (gate `scan_import` behind `scan_semaphore`; fold `stats` into a
   SQL `GROUP BY status` aggregate); roll into the DB-writer-actor pass.
-- **`[~]` T1.3 · Verified correctness — 12 unasserted rules** — AU-019, 020, 022,
-  023, 024, 025, 026, 028, 029, 040, 041, 042 are dispatched but **no test
-  asserts they fire** (only id-presence is checked). A silently-dead rule passes
-  CI.
-  → **Solution:** a table-driven suite `[(id, build_fixture_entities, expect:
-  {fires, severity, uid_set})]`; one assertion per rule. Add a **meta-guard**:
-  every `AU-NNN` in the dispatch `RULES` table must have ≥1 firing fixture (so no
-  future rule ships un-pinned). **P1** ◑ **Per-rule half done; meta-guard
-  outstanding** (reopened from `[x]` in the 2026-06-17 doc audit): the 12 firing
-  assertions shipped (`core/correlator/tests.rs`, each asserting `rule_id` +
-  `severity`), so the named rules are pinned — but the meta-guard that forces a
-  *future* `AU-NNN` to ship with a firing fixture was never built. The existing
-  guards (`every_defined_correlation_rule_is_dispatched`,
-  `correlation_rule_ids_match_their_function_number`) check wiring + id-correctness,
-  not firing, so a new un-pinned `AU-060` would still pass CI. Stays `[~]` until the
-  dispatch-table-enumerating firing meta-guard lands.
+  ✅ **Cycle 2 (2026-06-17): `scan_import` + `stats` both fixed.** `scan_import`
+  now acquires `scan_semaphore` before parsing, then dispatches all sync store
+  work (`upsert_scan`, `upsert_entities_batch`, `derive_all`, `Correlator::run`)
+  to `tokio::task::spawn_blocking`. `stats` wraps `list_scans(10_000)` in
+  `spawn_blocking`. Remaining: the engine's per-entity `insert_event` + the full
+  DB-writer actor (the planned long-term home for the write path).
+  ✅ **Cycle 3 (2026-06-17): engine `insert_event` fixed with `block_in_place`.**
+  `EventEmitter::emit` now clones the `Arc<StoragePort>` and wraps
+  `store.insert_event(&event)` in `tokio::task::block_in_place`, moving the
+  blocking rusqlite call off the async reactor thread. Requires multi-thread
+  runtime (production: 2-worker `new_multi_thread`); `tests/halting.rs` (3 tests)
+  + `tests/smoke.rs` (42 async tests) upgraded from default `current_thread` to
+  `multi_thread, 2` flavor to match production and avoid a panic.
+  ✅ **Cycle 10 (2026-06-17): DB-writer actor — T1.2 fully closed.**
+  `block_in_place` per entity replaced by a dedicated `DbWriter` actor
+  (`core/engine/writer.rs`): an unbounded-mpsc-backed tokio task that drains the
+  queue in `spawn_blocking` chunks (up to 64 events per call), so `EventEmitter::emit`
+  is fully non-blocking. `ScanEngine::new` spawns the actor; `run_with_ledger_inner`
+  calls `writer.flush().await` after the last `ScanComplete` emit so the caller
+  always sees a complete event log. The one sync test that created a `ScanEngine`
+  (`recall_resolves_a_fullname_seed_despite_reformatting`) is now
+  `#[tokio::test] async fn` (it already used Tokio broadcast). T1.2 `[~]`→`[x]`.
+- **`[x]` T1.3 · Verified correctness — all dispatched rules have firing fixtures** —
+  AU-019, 020, 022, 023, 024, 025, 026, 028, 029, 040, 041, 042 had per-rule firing
+  assertions added (2026-06-17). AU-021 and AU-030 lacked direct firing tests
+  entirely. The dispatch-table **meta-guard**
+  (`every_dispatched_correlation_rule_has_a_firing_test` in `tests/architecture.rs`)
+  now enumerates every entry in `RULES` + `RELATION_RULES` and verifies ≥1 positive
+  firing assertion exists — a future `AU-060` without a firing fixture fails CI. All
+  56 dispatched rules pass. `[x]` — fully closed.
 - **`[x]` T1.4 · Architecture — `core` imports `crate::modules`** —
   `core/engine/mod.rs` (8 sites) + `enrich.rs:240`, violating the CLAUDE.md
   invariant; `tests/architecture.rs:140` *allowlists* the `modules::*` paths
@@ -166,6 +180,31 @@ direct.**
   `use crate::modules`. Remove the allowlist; add
   `tests/architecture.rs::core_does_not_import_modules` scanning `src/core/**`.
   **P1** (gates "highest-quality product": velocity & testability downstream.)
+- **`[x]` T1.5 · `finalise_scan` still blocks one reactor worker at scan-end (LOW-MED)** —
+  `finalise_scan` is a sync `fn` called directly from the async
+  `run_with_ledger_inner`; it makes four blocking rusqlite calls in sequence:
+  `upsert_entities_batch` (entity bulk persist), `upsert_scan` (scan record update),
+  `persist_relations` (one SQL insert per edge in a loop), and `Correlator::run` (a
+  full SQL correlation pass over all 56 rules, O(entities)). In CLI single-scan mode
+  this is invisible (no concurrent work). In `hse serve`/`hse live` with multiple
+  scans running concurrently, this blocks one of the 2 Termux reactor workers for
+  O(entities) time during scan finalisation, delaying concurrent API requests (e.g.
+  SSE pushes, other scan dispatch). Unlike the now-fixed per-entity `insert_event`
+  hot path (T1.2: N separate `block_in_place` calls), these are O(1) bulk
+  transactions — the blast radius is bounded to the scan-end window.
+  → **Solution:** wrap `finalise_scan`'s body in `tokio::task::spawn_blocking`;
+  `EventEmitter::emit` is already a non-blocking `submit` to the DB-writer actor, so
+  the emitter clone passes safely into the `'static + Send` closure. The
+  `writer.flush().await` barrier in `run_with_ledger_inner` must follow the
+  `spawn_blocking` task's completion (guaranteed — `flush` is called after the
+  `spawn_blocking` join resolves). **LOW-MED** (server-mode impact only; single-scan
+  CLI-transparent). *Surfaced by cycle 11 S→P.*
+  ✅ **Delivered (cycle 14, 2026-06-17): SOL-FINALISE-BLOCKING.** `finalise_scan`
+  made `async fn`; body dispatched to `tokio::task::spawn_blocking` capturing
+  `Arc::clone(&store)` + `emitter.clone()` + `cancelled` bool snapshot.
+  `persist_relations` and `run_correlator` inlined into the closure (single
+  call-sites, removed as methods). **Paired:** `SOLUTION_TREE` SOL-FINALISE-BLOCKING
+  `[ ]`→`[x]` + §2/§3/§4/§5 updated — same commit.
 
 ### 3.F — Tier F · Foundations (build the primitives once; everything after is cheap)
 
@@ -188,12 +227,28 @@ direct.**
   **+2 more consumers (2026-06-17):** the key-harvest `contains_excluded_context`
   gate (`new_ascii_ci` against the original — equivalent *and* drops a per-call
   `to_ascii_lowercase` alloc on a hot path) and wigle `is_generic_ssid`, both proven
-  equivalent by their existing case-insensitivity tests. *Remaining:* the universal
-  key scanner *prefix table* (`key_harvest` ~170 prefixes) — the big one, needs a
-  **proptest-backed** conversion (its `min_len` + table-order first-match semantics
-  aren't a clean leftmost swap; a token can match an earlier prefix that fails
-  `min_len` while a later one passes); the HTML marker parsers (au_electoral/
-  au_property); `memchr`/`bstr` adoption. Each its own contained increment.
+  equivalent by their existing case-insensitivity tests.
+  **+ prefix-table consumer (2026-06-17, cycle 4):** `util::scan::PrefixMatcher`
+  (`LeftmostFirst`, `find_prefix`) + `PREFIX_GROUPS` map (handles same-prefix
+  duplicate entries like `phc_`/`pk_live_`); `identify_vendor_api_key` O(N=170)
+  `starts_with` loop replaced with O(1) aho-corasick + O(K≤2) group iteration.
+  Intentional behavior change: specific-prefix min_len failure no longer cascades
+  to a shorter generic prefix (quality improvement — prevents misclassification);
+  proptest-backed + deterministic cascade-prevention test.
+  **+ `au_electoral` HTML markers (2026-06-17, cycle 5):** `MatchSet::find_range`
+  added to `util::scan`; `DIVISION_MARKER` + `ENROLLED_MARKERS` statics in
+  `au_electoral/parse.rs`; two-pattern enrolled scan is one aho-corasick pass.
+  **+ `address_au::state_code` state-name scan (2026-06-17, cycle 6):**
+  `MatchSet::find_id` API added; `STATE_NAMES_MATCHER` static in `util/address_au`;
+  replaces `to_lowercase()` + 8-way contains loop with one SIMD pass. The
+  `au_property` path was examined and ruled out (single dynamic state string already
+  known from `extract_state` — not a MatchSet target).
+  **+ `memchr` direct dep + `decode_entities` SIMD byte scan (2026-06-17, cycle 12):**
+  `memchr = "2"` promoted to a direct dep; `decode_entities` in `util/html/mod.rs` (the
+  hot entity decoder on *every* scraped response body) replaces `s.contains('&')`,
+  `rest.find('&')`, and `inner.find(';')` with `memchr(b'&', …)` / `memchr(b';', …)`
+  SIMD byte searches. `&` and `;` are ASCII so byte offsets are valid char boundaries.
+  *Remaining:* `bstr` adoption (no direct consumer yet — promote with first direct use).
 - **`[~]` F.2 · `fst`-backed datasets (phone-first + de-duplication)** — many
   static tables are hand-coded `&[&str]`/`match` arms, several **duplicated**
   (freemail in `util/oathnet_batch` vs `util/domains`; `country_name` in
@@ -231,9 +286,15 @@ direct.**
   too (dev-dep, lean — no plotters/rayon): `benches/scan_throughput.rs` measures
   the hottest pure parse-path scanners (`find_ascii_ci` hit/miss on a 14 KB body,
   `fold_ascii_lower`, `slugify`, `geohash`); CI compiles them (`--no-run`) so a
-  perf-path API change can't rot them. *Remaining:* `cargo-fuzz` (nightly/libfuzzer
-  — gate on a CI lane, not on-device aarch64); widen criterion to the correlation
-  pass once a bench-visible entry point exists.
+  perf-path API change can't rot them.
+  **+import-parser proptest (2026-06-17, SOL-F3):** `parse_dossier`,
+  `parse_oathnet_txt`, and `parse_oathnet_html` each get a `proptest!` no-panic
+  property (`mod prop` in `cli/import/tests.rs`) over arbitrary Unicode strings
+  (≤512 chars); also asserts every emitted entity value is non-empty. 3 new
+  properties, 3,032 lib tests, gate green.
+  *Remaining:* `cargo-fuzz` (nightly/libfuzzer — gate on a CI lane, not on-device
+  aarch64); widen criterion to the correlation pass once a bench-visible entry
+  point exists.
 
 ### 3.2 — Tier 2 · P2 robustness & quality
 
@@ -300,7 +361,7 @@ direct.**
   add a per-source **health signal** (last-success, parse-rate) surfaced in
   `hse doctor` + the SPA; auto-flag a source "drifted" when parse-rate drops.
   **P2** *(robustness only; source legality is parked in §7.)*
-- **`[~]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** — several
+- **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
   `JSON_BODY_CAP` / `read_body_capped` discipline (§1.5 "cap everything, stream
@@ -326,12 +387,25 @@ direct.**
     censys, dehashed, zoomeye, onyphe, leakix, …) plus direct `resp.json()` in
     `doh_resolver:310,322` and `wigle/account:95`. → route `json_decode` through
     `read_json_text` (one fix closes ~20 sites); patch the three direct callers.
+    ✅ **Fixed:** `json_decode` now routes through `read_json_text` (32 MiB cap +
+    raw-archive retention — same as `json_scanned`, minus key scanning); the two
+    `doh_resolver` and one `wigle/account` direct callers now go through
+    `json_decode`. All call-sites behaviour-preserving.
   - **MED** AU-gov HTML scrapers (`asic_director:287`, `au_electoral:114/136/158/180`,
     `au_people:368/389`, `au_property:125/149/172`) — `resp.text()` uncapped. → route
     through `http::read_body_capped(resp, ~1 MB)` (the pattern `web_crawler` uses).
+    ✅ **Fixed:** all nine `resp.text().await` sites in the four AU-gov scrapers now
+    route through `read_body_capped(resp, 1_000_000)`; let-chain `Ok(body)` arms
+    changed to `Some(body)` (semantically identical — both short-circuit on
+    transport error). Behaviour-preserving on any response ≤ 1 MB (all real
+    AEC/ECQ/ASIC/whitepages responses are well under 500 KB).
   - **P3** `modules/hibp/mod.rs:325,428` — `count() as u32` on an untrusted-JSON
     breach vector; clamp before the cast (folds into the T0.3 "trust no input
     number" rule).
+    ✅ **Fixed:** both `verified_count.max(1) as u32` sites replaced with
+    `u32::try_from(verified_count.max(1)).unwrap_or(u32::MAX)` — saturates at
+    `u32::MAX` instead of wrapping; the realistic range (< 1000 breaches) is
+    entirely unaffected.
   - **LOW (local)** `cli/import/mod.rs:24` — `std::fs::read_to_string(path)` is
     **uncapped** on the CLI import path (`html.rs` then clones the whole file via
     `to_lowercase`), while the *web* upload path caps at `MAX_UPLOAD_BYTES` (16 MB,
@@ -344,6 +418,10 @@ direct.**
     `upload_dispatcher_never_panics_on_adversarial_input` test) — only the read
     size is unbounded. **P2** *(robustness/DoS hardening; ties directly to the §1.5
     bounded-memory doctrine and F.1's single capped-read substrate.)*
+    ✅ **Fixed:** `cmd_import` now checks `std::fs::metadata(path).len()` against a
+    local `MAX_IMPORT_BYTES = 16 MiB` constant before calling `read_to_string`.
+    Returns a clean `Error::Other("file too large …")` for oversized files; the
+    realistic-size path is byte-identical.
 - **`[x]` T2.9 · Non-deterministic SQL read-back orderings** *(fixed 2026-06-17)* — four read queries
   lack a unique final tie-break, so equal-key rows can reorder between identical
   runs (violating the §1.7 determinism feature). The deep storage re-audit
@@ -369,7 +447,7 @@ direct.**
   `, e.kind ASC`, `scan_ids_for_entity` → `, scan_id DESC`; regression test
   `latest_completed_scan_is_deterministic_on_same_second_ties`. Non-tie behaviour
   is byte-identical, so nothing is degraded.
-- **`[ ]` T2.10 · No schema version stamp (latent migration risk)** —
+- **`[x]` T2.10 · No schema version stamp (latent migration risk)** —
   `storage/mod.rs` evolves the SQLite schema **additively only** (`CREATE TABLE`/
   `INDEX IF NOT EXISTS`; no `ALTER TABLE`, no `PRAGMA user_version`, no version
   table). Fine today and a deliberate design, but there is **no path for a
@@ -378,6 +456,11 @@ direct.**
   a future structural change would silently mismatch existing databases. → set
   `PRAGMA user_version` at create and gate any future structural change on an
   idempotent upgrade ladder. **P3 (latent — no current bug; advisory).**
+  ✅ **Delivered (cycle 16, 2026-06-17): SOL-SCHEMA-VERSION.** `const SCHEMA_VERSION:
+  i32 = 1` added; `Store::open` reads `PRAGMA user_version` after the DDL batch:
+  stamps to `SCHEMA_VERSION` when 0 (fresh or pre-versioned DB); `tracing::warn!`
+  when `>SCHEMA_VERSION` (forward-compat signal — a newer binary wrote this DB).
+  **Paired:** `SOLUTION_TREE` SOL-SCHEMA-VERSION `[x]` + §3/§4/§5 — same commit.
 - **`[~]` T2.11 · Concurrency — process-global state not isolated across the 8
   concurrent `serve` scans** — `hse serve` runs up to `MAX_CONCURRENT_SCANS = 8`
   scans at once, but several **process-global `static`s** are shared without
@@ -435,7 +518,7 @@ direct.**
   sized for a single in-process scan; `serve`'s concurrency (8) makes them shared
   mutable state. The clean fix is per-`scan_id` keying (or threading the state
   through `ModuleContext`), which also subsumes the budget-reset race. **P2**
-- **`[~]` T2.12 · Periphery correctness bugs (CLI / diff / cache / pool)** — the
+- **`[x]` T2.12 · Periphery correctness bugs (CLI / diff / cache / pool)** — the
   2026-06-17 internals audit of the least-covered subsystems found a cluster of
   real but contained defects (the cores — key_pool rotation, crypto, proxy SSRF,
   budget, roi, timeline — verified clean, see §6):
@@ -481,7 +564,20 @@ direct.**
     scoping is broken → re-validates *every* tsv-imported key, spending budget);
     `core/timeline/mod.rs:185` (pure-digit epochs not exactly 4/10/13 digits are
     silently dropped — a real date omitted, no crash); CLI exit-code contracts
-    (`audit`/`diff` always `Ok`) + `resolve_scan_id` accepting an incomplete scan.
+    (`audit` always `Ok`) + `resolve_scan_id` accepting an incomplete scan. ✅
+    **`diff` same-scan fixed (2026-06-17, cycle 3):** `cmd_diff` now returns
+    `Err("both sides resolve to the same scan")` (non-zero exit) after the
+    footgun `eprintln!` — previously fell through to `Ok(())`. Integration test
+    `diff_wiring_self_compare_is_rejected_with_diagnostic` guards the new
+    behaviour. **`audit` exit-code fixed (2026-06-17, cycle 5):** `cmd_audit`
+    now returns `Err` after printing the report when any finding carries
+    `Severity::Critical` or `Severity::High`, so `hse audit` exits non-zero
+    on a problematic result. Test `empty_scan_triggers_high_severity_exit_path`
+    guards it. **`resolve_scan_id` status-check fixed (2026-06-17, cycle 6):**
+    explicit scan IDs for `Pending`/`Running`/`Failed`/`Aborted` scans now return
+    `Err` with a diagnostic naming the status — only `Complete` scans are accepted
+    (export/diff/audit on a non-complete scan was silent, misleading, or empty).
+    Test `resolve_scan_id_rejects_incomplete_scans` guards it. T2.12 fully closed ✅.
     **P3.** *(All contained; none crash or corrupt persisted scan data.)*
 
 ---
@@ -556,6 +652,28 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   the auditable intelligence product, keep GEXF as the optional graph. This is a
   capability **neither** SpiderFoot nor Maltego offers (reproducible,
   machine-diffable intelligence). **CAP-med**
+- **`[x]` C8 · Webcam, fan-subscription & adult-video platform identity (DELIVERED)**
+  — *Problem:* `username_search` covers mainstream social/dev/gaming/music platforms
+  only; webcam performers, fan-content creators, and adult-video contributors are an
+  increasingly significant OSINT surface that the engine left entirely blind. A
+  subject's streaming identity may be the only corroborating hit not already indexed
+  by general-purpose social probers. Subjects who maintain activity in non-English
+  markets (Russia, France, Germany, Eastern Europe, Japan, Spanish LATAM) routinely
+  use region-specific platforms invisible to English-centric tooling.
+  *Target:* enumerate username presence across the full specialist cam/fans/adult
+  platform set — including international platforms used to hide behaviour from
+  domestic or English-language observers — so a streaming identity is surfaced
+  regardless of which region's platforms the subject chose. → **Solution:**
+  `streaming_probe` — 42-site parallel HEAD/GET prober across three category buckets
+  (`cam` 16, `fans` 18, `adult` 8); `StatusEq` HEAD for platforms with clean 404s;
+  `StatusAndNotBody` GET for JS-rendered 200-for-all platforms (OnlyFans, Chaturbate);
+  summary `Username` entity with `cam-identity-exposed`, `subscription-platform-found`,
+  `adult-profile-found`, and `high-streaming-exposure` (≥3 platforms) tags;
+  `ModuleCategory::Social` (MITRE T1593.001 + T1589.003); priority 108; 8 unit tests.
+  **International coverage:** Runetki/Boosty (Russia/CIS), Cherry.tv/4Based (Eastern
+  Europe), Mym (France/Francophone), MyDirtyHobby (Germany), JustForFans (LGBTQ+ intl),
+  OhMyFans (Spanish LATAM), Cam.tv (Italy/Europe), Unlockd (UK), SuicideGirls (global
+  alt), Iwara (Japan/3D). **CAP-high (identity breadth)** ✅
 
 ---
 
@@ -706,13 +824,19 @@ security stays a deliberately separate track, and S1 needs *operator* action):
   `raw/*.json` (0600, but pulled into the non-0600 DB/dossiers via S3). → prefer
   header auth where supported; optionally `redact_literal_secrets(body,
   own_api_keys())` the archived body.
-- **S5 · `[ ]` P3 (LOW) — install.sh prebuilt auto-trust.** The installer
+- **S5 · `[x]` P3 (LOW) — install.sh prebuilt auto-trust.** The installer
   auto-discovers and runs an `hse` from world-writable `Downloads`/`/sdcard`; the
   SHA-256 check fires only *if a sidecar `.sha256` exists* — without one it runs an
   unverified binary another app could plant. Plus `curl|bash` of unpinned
   `HSE_REF=main`. → require the sidecar checksum (or only auto-trust installer-cached
   binaries); README note to pin `HSE_REF=<tag>`. Otherwise `install.sh`/`build.rs`
   are defensively sound (atomic swap, quoting, `set -euo pipefail`, ELF/size filters).
+  ✅ **Fixed (cycle 16, 2026-06-17): SOL-INSTALL-INTEGRITY.** `_validate_prebuilt`
+  now requires a `<binary>.sha256` sidecar for auto-discovered binaries (missing
+  `sha256sum` / absent / empty / mismatched sidecar → `log_warn` + skip). Optional for
+  explicitly-set `HSE_PREBUILT` (`$2=0` passed by `maybe_use_prebuilt` when
+  `HSE_PREBUILT` is set — user nominated the path, lower risk).
+  **Paired:** `SOLUTION_TREE` SOL-INSTALL-INTEGRITY `[x]` + §3/§4/§5 — same commit.
 - **Verified clean (no finding):** argv-only command construction (no shell);
   `KeyPool` rotation is `Mutex`-guarded (no TOCTOU/overspend on the pool itself); no
   key value logged at info/debug (only `key_tail` last-4); `settings.json` is toggles
@@ -1181,3 +1305,288 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   (min_len/table-order). F.1 stays `[~]` (3 consumers done). Gate green: clippy/fmt/doc
   clean, 3,006 lib tests, 0 failures. **Paired:** `SOLUTION_TREE` SOL-F1 +§4b refreshed
   — same commit.
+- **2026-06-17** — **Paired-tree cycle: T2.8 MED tail — SOL-CAP-EXTEND.**
+  Gap-analysis pick: §4b named SOL-CAP the highest-value contained item in the
+  finish queue; the §3.F enabler items (SOL-F1 key-scanner, SOL-F3 fuzz) require
+  their own dedicated staged effort. Closed all MED network-path items in one pass:
+  **(1)** `json_decode` now routes through `read_json_text` (32 MiB cap + raw-archive;
+  a single 4-line change that closes ~24 uncapped sites — shodan, censys, dehashed,
+  zoomeye, onyphe, leakix, and every other `json_decode` caller — with zero behaviour
+  change below the cap); **(2)** the two `doh_resolver` and one `wigle/account` direct
+  `resp.json()` calls go through `json_decode`; **(3)** nine `resp.text().await` sites
+  in the four AU-gov scrapers (`asic_director`, `au_electoral`, `au_people`,
+  `au_property`) routed through `read_body_capped(resp, 1_000_000)` — the pattern
+  `web_crawler` already used, now uniform; **(4)** both hibp `count() as u32` cast
+  sites replaced with `u32::try_from(…).unwrap_or(u32::MAX)` (P3). Remaining open:
+  the LOW `cli/import/mod.rs` `read_to_string` cap. T2.8 stays `[~]`. Gate green:
+  clippy/fmt/doc clean, 3,006 lib tests (count unchanged — all existing tests pass,
+  including `json_decode_parses_ok_and_tags_decode_errors_with_module`), 0 failures.
+  **Paired:** `SOLUTION_TREE` SOL-CAP + §4 refreshed — same commit.
+- **2026-06-17** — **Paired-tree cycle 2: SOL-BLOCKING tail (T1.2) + SOL-CAP LOW
+  tail (T2.8) — both closed in one pass.** S→P/gap-analysis pass: §4b had two open
+  finish-queue items: SOL-BLOCKING (`scan_import`/`stats` still blocking reactor)
+  and SOL-CAP (ONE LOW item: CLI-import cap). Both contained; taken together.
+  **(1) `scan_import`:** gated behind `Arc::clone(&s.scan_semaphore).acquire()`
+  (mirrors `spawn_scan` throttle; prevents import flood from crowding live scans);
+  all sync work — `upsert_scan`, `upsert_entities_batch`, `derive_all`, the full
+  `Correlator::run` loop — dispatched to `tokio::task::spawn_blocking`. Permit held
+  for the entire handler (parse phase + DB phase). **(2) `stats`:** `list_scans(10_000)`
+  + aggregation now run in `spawn_blocking`. **(3) `cli/import/mod.rs:24`:** added a
+  `std::fs::metadata` size check (local `MAX_IMPORT_BYTES = 16 MiB`) before
+  `read_to_string`; clean `Error::Other` on oversized files; realistic input
+  byte-identical. **P→S gap result:** T2.8 `[~]`→`[x]` (every sub-item closed);
+  T1.2 further advanced (the engine's per-entity `insert_event` + the DB-writer
+  actor remain). Gate green: clippy/fmt/doc clean, 3,010 lib tests, 0 failures.
+  **Paired:** `SOLUTION_TREE` SOL-CAP `[~]`→`[x]`, SOL-BLOCKING updated, §4
+  refreshed — same commit.
+- **2026-06-17** — **Paired-tree cycle 3: SOL-BLOCKING engine tail (T1.2) +
+  SOL-CLI-CONTRACT diff exit-code (T2.12).** P→S/gap-analysis pass: §4b SOL-BLOCKING
+  had one remaining open sub-item (engine `insert_event`); §4a / T2.12 LOW-misc still
+  had `diff` always-`Ok`. Both contained; taken together. **(1) T1.2 engine tail:**
+  `EventEmitter::emit` (`core/engine/mod.rs:152-166`) now clones the `Arc<StoragePort>`
+  and wraps `store.insert_event` in `tokio::task::block_in_place`, moving the per-entity
+  blocking rusqlite write off the async reactor. `tests/halting.rs` (3 tests) +
+  `tests/smoke.rs` (42 async tests) upgraded from default `current_thread` to
+  `(flavor = "multi_thread", worker_threads = 2)` — `block_in_place` panics on a
+  single-thread runtime, and the tests should reflect production (also 2-worker
+  `new_multi_thread`). **(2) T2.12 `diff` exit-code:** `cmd_diff` returns
+  `Err(Error::Other("both sides resolve to the same scan"))` in the same-scan footgun
+  block (`cli/diff/mod.rs:74`) — previously fell through to `Ok(())` after the
+  `eprintln!`. Integration test `diff_wiring_self_compare_is_rejected_with_diagnostic`
+  (renamed + rewritten) guards the new non-zero-exit behaviour. **Gap result:**
+  T1.2 SOL-BLOCKING engine tail `[x]` (only DB-writer actor remains); T2.12 diff
+  exit-code fixed. Gate green: clippy/fmt/doc clean, 3,006 lib + 54 smoke + 3 halting
+  + 23 cli tests, 0 failures. **Paired:** `SOLUTION_TREE` SOL-BLOCKING +
+  SOL-CLI-CONTRACT + §4 refreshed — same commit.
+- **2026-06-17** — **Paired-tree cycle 4 (P→S): SOL-F1 key-scanner prefix table.**
+  §4b named the 170-prefix `identify_vendor_api_key` O(N) loop as the remaining
+  highest-leverage SOL-F1 item. **(1) `util::scan::PrefixMatcher`** added:
+  `AhoCorasickBuilder` with `MatchKind::LeftmostFirst`; `find_prefix(&str) ->
+  Option<usize>` returns the index of the first-declared pattern anchored at byte
+  offset 0 — preserves the specific-before-generic table order that `pattern_table_is_
+  structurally_sound` guards. **(2) `key_harvest/mod.rs`:** `PREFIX_MATCHER` +
+  `PREFIX_GROUPS` (`HashMap<&'static str, Vec<usize>>`) statics via `LazyLock`;
+  `PREFIX_GROUPS` handles the three duplicate-prefix entries (`phc_` min_len 40/30,
+  `pplx-` exact duplicate, `pk_live_` Stripe+Clerk overlap) at O(K≤2) per matched
+  token. `identify_vendor_api_key` replaces the linear loop. Semantic change
+  (intentional, quality improvement): a token whose most-specific prefix fails
+  `min_len` returns `None` — no cascade to a shorter generic prefix (`sk-svcacct-`
+  short token was misclassified as `openai_or_stripe`). **(3) Tests:** proptest
+  `mod prop` in `key_harvest/tests.rs` (`vendor_key_never_panics_on_arbitrary_input` +
+  `synthesised_token_result_is_sane`) + deterministic cascade-prevention test
+  `min_len_failure_on_specific_prefix_does_not_cascade_to_generic`. **Gap result:**
+  F.1 `[~]` — 4 of N consumers done; remaining = HTML markers + memchr/bstr.
+  Gate green: fmt/clippy/doc clean, 3,009 lib + 67 api + 23 arch + 54 smoke + 3 halting
+  + 6 cli-seed + 2 audit-regression tests, 0 failures. **Paired:** `SOLUTION_TREE`
+  SOL-F1 + §4b + §5 refreshed — same commit.
+- **2026-06-17** — **Paired-tree cycle 6 (P→S): SOL-F1 `address_au` state-name scan
+  + SOL-CLI-CONTRACT `resolve_scan_id` status-check.** P→S gap pass on cycle 5: §4b
+  held two remaining contained items. **(1) SOL-F1 `address_au::state_code` step 2:**
+  Added `MatchSet::find_id(&str) -> Option<usize>` to `util::scan` — returns the
+  zero-based index of the matched pattern, enabling pattern-indexed dispatch without a
+  second linear scan. Added `STATE_NAMES_MATCHER: LazyLock<MatchSet>` static in
+  `util/address_au/mod.rs` compiled over `STATE_NAMES` (8 full state/territory names,
+  ASCII-CI). Replaced `let lower = text.to_lowercase()` + 8-way `lower.contains(name)`
+  loop in `state_code` step 2 with a single aho-corasick pass: `STATE_NAMES_MATCHER
+  .find_id(text).map(|id| STATE_NAMES[id].1)` — eliminates the `to_lowercase()` alloc
+  per call. Test `find_id_returns_pattern_index` guards the new API. **(2)
+  SOL-CLI-CONTRACT `resolve_scan_id`:** explicit scan IDs for non-complete scans now
+  return `Err("scan {id} is {status} — only complete scans can be exported…")` — was
+  silently returning the id regardless of status (export/diff/audit on a mid-run or
+  failed scan produced empty or misleading output). Updated two existing tests
+  (`diff::load_side`, `export::explicit_scan_id`) to create `Complete` scans so they
+  exercise the happy path; added new test `resolve_scan_id_rejects_incomplete_scans`.
+  **T2.12 `[~]`→`[x]` — fully closed.** SOL-F1 `[~]` — 6 consumers done; remaining =
+  memchr/bstr only. Gate green: fmt/clippy/doc clean, 3,018 lib + 67 api + 23 arch
+  + 54 smoke + 3 halting + 6 cli-seed + 2 audit-regression tests, 0 failures.
+  **Paired:** `SOLUTION_TREE` SOL-F1 + SOL-CLI-CONTRACT + §4b + §5 refreshed — same
+  commit.
+- **2026-06-17** — **Paired-tree cycle 5 (S→P): SOL-F1 `au_electoral` HTML markers
+  + SOL-CLI-CONTRACT `audit` exit-code.** S→P pass after cycle 4 examined what the
+  PrefixMatcher delivery exposed: the §4b finish queue still held two contained items.
+  **(1) SOL-F1 `au_electoral` HTML markers (`src/modules/au_electoral/parse.rs`):**
+  Added `MatchSet::find_range(&str) -> Option<(usize, usize)>` to `util::scan` —
+  returns both `start` and `end` of the leftmost match so callers skip past a matched
+  marker without knowing its length. Replaced the three `find_ascii_ci` calls in
+  `extract_division` with two `LazyLock<MatchSet>` statics: `DIVISION_MARKER`
+  (`new_ascii_ci(["division of "])`) and `ENROLLED_MARKERS`
+  (`new_ascii_ci(["enrolled in ", "enrolled for "])`) — the two-pattern enrolled scan
+  is now one aho-corasick pass instead of two sequential linear scans; AEC-before-stateEC
+  priority preserved (two separate matchers, in sequence). Five tests added in
+  `extract_division_tests`. **(2) SOL-CLI-CONTRACT `audit` exit-code (T2.12 LOW residual,
+  `src/cli/audit/mod.rs`):** `cmd_audit` now returns
+  `Err(Error::Other("audit: HIGH/CRITICAL findings detected…"))` after printing the report
+  when `report.findings` contains any `Severity::Critical | Severity::High` entry —
+  `hse audit` exits non-zero on a problematic result (was always `Ok(())`). Test
+  `empty_scan_triggers_high_severity_exit_path` (an empty entity list → HIGH
+  "empty-result" finding) guards the new path. **Gap result:** F.1 `[~]` — 5 consumers
+  done; remaining = HTML markers (au_property only) + memchr/bstr. T2.12 residual
+  narrowed to `resolve_scan_id` accepting incomplete scans. Gate green:
+  fmt/clippy/doc clean, 3,016 lib + 67 api + 23 arch + 54 smoke + 3 halting
+  + 6 cli-seed + 2 audit-regression tests, 0 failures. **Paired:** `SOLUTION_TREE`
+  SOL-F1 + SOL-CLI-CONTRACT + §4b + §5 refreshed — same commit.
+- **2026-06-17** — **Cycle 9 (S→P): SOL-F3 import-parser proptest.** S→P gap pass:
+  §4b named SOL-F3 the next actionable §3.F item (`cargo-fuzz` blocked on nightly
+  CI). Added 3 `proptest!` no-panic properties (`mod prop`) to
+  `src/cli/import/tests.rs`: `parse_dossier_never_panics`,
+  `parse_oathnet_txt_never_panics`, `parse_oathnet_html_never_panics` — each
+  generates arbitrary Unicode strings (≤512 chars) and asserts the sync parser
+  neither panics nor emits an empty-value entity. The CLI import path has no
+  `catch_unwind`; a panic kills the process. The existing 25-case adversarial table
+  tests fixed scenarios; proptest tests the infinite space. Gate green: fmt/clippy/
+  doc clean, 3,032 lib tests (+3), 0 failures. **Paired:** `SOLUTION_TREE` SOL-F3
+  §4b + §5 refreshed — same commit.
+- **2026-06-17** — **Cycle 8 (P→S): T1.3 firing meta-guard (SOL-RULE-METAGUARD) — fully
+  closed.** Gap-analysis pick from the paired-tree §4b: T1.3 was the last open T1
+  sub-item. **(1)** Added direct firing tests for the two rules with no function-level
+  firing assertion: `au021_fires_for_api_key_entity` (`ApiKey` entity →
+  `rule_au_021_api_key_exposure`, `len(), 1`, `Critical`) and
+  `au030_fires_for_three_source_geo_cluster` (two `Coordinates` entities with 3
+  distinct corroborating sources → `rule_au_030_geo_convergence_score`, `len(), 1`,
+  `Medium`). **(2)** Added `every_dispatched_correlation_rule_has_a_firing_test` to
+  `tests/architecture.rs`: reads `RULES` + `RELATION_RULES` from `correlator/mod.rs`,
+  then checks the test corpus (`tests.rs` + `rules/tests.rs`) for either a direct
+  firing assertion (function name within ±15 lines of `len(), N`, N > 0) or an
+  indirect one (`"AU-NNN"` on a line with assert/unwrap/expect/contains). All 56
+  dispatched rules pass. A future `AU-060` without a firing test now fails CI.
+  T1.3 `[~]`→`[x]`. Gate green: fmt/clippy/doc clean, 3,033 lib + 24 arch tests,
+  0 failures. **Paired:** `SOLUTION_TREE` SOL-RULE-METAGUARD `[x]` + §4 + §5 — same
+  commit.
+- **2026-06-17** — **Cycle 7 expansion: `streaming_probe` +12 international platforms.**
+  Operator request: "ensure expanded capabilities to find these in difficult to find
+  overseas countries where people hide their true behaviour." Extended `streaming_probe`
+  from 30 to 42 sites across the existing three categories, targeting the non-English
+  platforms most used to maintain a covert streaming presence: **cam** — Runetki
+  (Russia), Cherry.tv (Eastern Europe); **fans** — Mym (France/Francophone), Boosty
+  (Russia/CIS), 4Based (Ukraine/Eastern Europe), JustForFans (LGBTQ+ international),
+  OhMyFans (Spanish LATAM), Unlockd (UK), Cam.tv (Italy/Europe); **adult** —
+  MyDirtyHobby (Germany), SuicideGirls (global alternative), Iwara (Japan/3D animation).
+  C8 node updated to reflect full 42-site scope. Timeout comment updated (13.5s needed vs
+  30s budget). Gate green: fmt/clippy/doc clean, 3,027 lib + 67 arch tests, 0 failures.
+  **Paired:** `SOLUTION_TREE` SOL-STREAMING + §5 — same commit.
+- **2026-06-17** — **Paired-tree cycle 7 (CAP): `streaming_probe` — webcam, fan-subscription
+  & adult-video platform identity discovery.** Operator-directed capability request:
+  "incorporate all forms of webcam or similar site identities as a comprehensive OSINT
+  inclusion." New module `src/modules/streaming_probe/`: 30-site parallel HEAD/GET
+  username prober across three category buckets — `cam` (14: Chaturbate, Stripchat,
+  BongaCams, Cam4, CamSoda, MyFreeCams, Streamate, LiveJasmin, ImLive, Flirt4Free,
+  Amateur.tv, Cams.com, JerkMate, SexLikeReal), `fans` (11: OnlyFans, Fansly, ManyVids,
+  FanCentro, Fanvue, Loyalfans, AVN Stars, PocketStars, Passes, SextPanther, AdmireMe),
+  `adult` (6: Pornhub, xHamster, xVideos, SpankBang, Erome, RedTube). Detection:
+  `StatusEq(200)` HEAD for platforms with clean 404s; `StatusAndNotBody(200, needle)` GET
+  for JS-rendered 200-for-all platforms. Per-profile `Url` entities tagged
+  `cam-profile`/`fans-profile`/`adult-profile` + `platform:<name>`. Summary `Username`
+  entity with `cam-identity-exposed`, `subscription-platform-found`, `adult-profile-found`,
+  `high-streaming-exposure` (≥3 platforms) tags. `ModuleCategory::Social`
+  (MITRE T1593.001 + T1589.003); priority 108; accepts `Username`; produces
+  `Url`/`Username`; 16-concurrent semaphore; 30 s timeout envelope; 8 unit tests.
+  New capability node C8 logged and immediately closed `[x]` (delivered on first pass).
+  Baseline updated to 119 modules / Social-11; `docs/MODULES.md` + README updated
+  (119 modules, 90 free); the `modules_md_lists_every_registered_module` and
+  `readme_module_overview_count_matches_registry` architecture guards passed clean.
+  Gate green: fmt/clippy/doc clean, 3,031 lib + 67 arch + 54 smoke + 3 halting + 23 cli
+  + 6 cli-seed + 2 audit-regression tests, 0 failures. **Paired:** `SOLUTION_TREE`
+  SOL-STREAMING + C8 + §4 + §5 refreshed — same commit.
+- **2026-06-17** — **Cycle 10 (P→S): DB-writer actor — T1.2 fully closed
+  (SOL-BLOCKING `[~]`→`[x]`).** P→S gap-analysis pick: §4b named SOL-BLOCKING
+  (DB-writer actor) as T1.2's final tail — the only remaining P1 core guarantee not
+  fully closed. Implemented `core::engine::writer::DbWriter`: unbounded-mpsc actor
+  (`WriteCmd::Event(Box<Event>) | Flush(oneshot::Sender<()>)`); `writer_loop` tokio
+  task drains the queue in `spawn_blocking` batches (greedily pulls up to 64 events
+  per `spawn_blocking` call — fewer context switches than N separate `block_in_place`
+  calls); `flush().await` sends a `Flush` barrier and waits for the oneshot ack, so
+  all events submitted before the barrier are durably written when the future resolves.
+  `EventEmitter` replaces `Arc<StoragePort>` + `block_in_place` with `DbWriter`
+  (non-blocking `submit`). `ScanEngine::new` spawns the actor and keeps a clone for
+  `flush`; `run_with_ledger_inner` calls `writer.flush().await` after `finalise_scan`
+  returns — the barrier sits between the last `emit` and the caller seeing the
+  completed scan. One test upgraded `#[test] fn` → `#[tokio::test] async fn`
+  (`recall_resolves_a_fullname_seed_despite_reformatting`) since `ScanEngine::new`
+  now requires an active runtime. **Paired:** `SOLUTION_TREE` SOL-BLOCKING `[~]`→`[x]`
+  + §4b + §4d + §5 refreshed — same commit. Gate green: fmt/clippy/doc clean,
+  3,032 lib + 24 arch + 67 api + 54 smoke + 3 halting + 23 cli + 6 cli-seed +
+  2 audit-regression tests, 0 failures.
+- **2026-06-17** — **Cycle 11 (S→P): SOL-BLOCKING's completion exposes T1.5.**
+  S→P pass on cycle 10's DB-writer actor delivery: asked "what does the now-clean
+  event path expose?" Answer — `finalise_scan` (a sync `fn` called directly from the
+  async `run_with_ledger_inner`) still makes four blocking rusqlite calls:
+  `upsert_entities_batch`, `upsert_scan`, `persist_relations` loop, and
+  `Correlator::run` (the full SQL correlation pass). These are O(1) bulk transactions,
+  not the N per-entity hot path that T1.2 fixed, so the blast radius is bounded to
+  the scan-end window — invisible in CLI mode, a short reactor stall in `hse serve`
+  concurrent scans. New node **T1.5 (LOW-MED)** logged. **Gap refresh:** §4a gains
+  T1.5 (no solution node yet); §4d T1 row updated (T1.1/T1.2/T1.3/T1.4 `[x]`,
+  T1.5 `[ ]` LOW-MED open). §3.F enabler block (SOL-F1 memchr/bstr + SOL-F2 fst +
+  SOL-F3 fuzz) remains the sole unrealised high-leverage tier; SOL-BUDGET
+  reset_scan-zeroing remains LOW in the finish queue. No code change this cycle.
+  **Paired:** `SOLUTION_TREE` §4a + §4d + §5 refreshed — same commit.
+- **2026-06-17** — **Cycle 13 (S→P): `bstr` deferral confirmed + two local
+  `strip_html` duplicates surfaced.** S→P pass on cycle 12's memchr delivery.
+  Grepped all callers of `strip_html`/`decode_entities`/`util::html` across the tree.
+  **(1) `bstr` deferral rationale confirmed:** every production path reaching
+  `strip_html` or `decode_entities` passes `&str` from `read_body_capped` →
+  `String::from_utf8_lossy` — invalid UTF-8 is already handled at the reqwest boundary.
+  Promoting `bstr` without a raw-bytes consumer would trip `cargo machete`. Deferred
+  correctly per the "promote with first use" rule. **(2) New gap:** `au_property/parse.rs:27`
+  (`strip_html`) and `au_people/mod.rs:61` (`strip_html_tags`) are independent local
+  implementations — both bypass `crate::util::html::strip_html`. They work now but
+  won't inherit canonical entity decoder improvements. **LOW** (no current bug; route-to-
+  canonical is a one-line change per module — fold into the next SOL-F1 or T2.7 pass).
+  Added to `SOLUTION_TREE` §4a as a named gap; §4b SOL-F1 remaining note updated.
+  No code change this cycle. **Paired:** `SOLUTION_TREE` §4a + §4b + §5 — same commit.
+- **2026-06-17** — **Cycle 12 (P→S): F.1 seventh consumer — `memchr` direct dep +
+  `decode_entities` SIMD byte-scan.** P→S gap pass: §4b named `memchr` promotion as
+  the remaining SOL-F1 item (`bstr` held back until a direct consumer exists, else
+  `cargo machete` trips). Added `memchr = "2"` to `[dependencies]` in `Cargo.toml`
+  (already in the tree transitively; `cargo fetch` updates lock file metadata only —
+  no new package download). In `src/util/html/mod.rs`: `use memchr::memchr;` added;
+  three `str` single-char searches in `decode_entities` replaced with SIMD equivalents:
+  `s.contains('&')` → `memchr(b'&', s.as_bytes()).is_none()` (fast-path empty check);
+  `rest.find('&')` → `memchr(b'&', rest.as_bytes())` (hot loop per `&` in page body);
+  `inner.find(';')` → `memchr(b';', inner.as_bytes())` (entity-close scan). The
+  function is called from `strip_html` on every scraped response across all 119 modules.
+  `&` (0x26) and `;` (0x3B) are single-byte ASCII so byte offsets are always valid
+  UTF-8 char boundaries — no correctness risk. Existing proptest suite on arbitrary
+  Unicode strings re-confirms no-panic. Baseline deps updated (§2): `memchr` now
+  direct. F.1 node body updated (§3.F): cycles 5/6/12 delivery notes + *Remaining*
+  trimmed to `bstr` only. **Paired:** `SOLUTION_TREE` SOL-F1 node + §4b + §4d + §5
+  refreshed — same commit; gate green, 3,032 lib + 24 arch + 67 api + 54 smoke +
+  3 halting + 6 cli-seed + 2 audit-regression tests, 0 failures.
+- **2026-06-17** — **Cycle 15 (S→P): gap analysis — T1 fully closed; identifies T2.10
+  + §7 S5 as next achievable items.** S→P pass on cycle 14 deliveries. `strip_html`
+  dedup exposes no new problems; SOL-FINALISE-BLOCKING bool-snapshot design confirmed
+  correct. §4a scanned: T2.10 (schema versioning, no dep) and §7 S5 (install sha256,
+  shell-only) are achievable. T2.7 (scraper health) and C1–C7 (gated on §3.F) deferred.
+  No code change; planned cycle 16. **Paired:** `SOLUTION_TREE` §4/§5 — same commit.
+- **2026-06-17** — **Cycle 16 (P→S): T2.10 schema versioning + §7 S5 install integrity
+  — both closed.** Gap-analysis (cycle 15) directed two remaining achievable §4a items.
+  **(1) T2.10 SOL-SCHEMA-VERSION:** `const SCHEMA_VERSION: i32 = 1` added to
+  `src/storage/mod.rs`; `Store::open` reads `PRAGMA user_version` after the DDL batch
+  — stamps to `SCHEMA_VERSION` when `ver < 1` (fresh or pre-versioned DB), emits
+  `tracing::warn!` when `ver > SCHEMA_VERSION` (forward-compat signal for a newer
+  binary). Provides the migration ladder for any future non-additive schema change.
+  **(2) §7 S5 SOL-INSTALL-INTEGRITY:** `_validate_prebuilt` in `install.sh` now
+  requires a `<binary>.sha256` sidecar for auto-discovered binaries: missing
+  `sha256sum` / absent / empty / mismatched sidecar → `log_warn` + skip. Optional for
+  explicitly-set `HSE_PREBUILT` (`$2=0`). `maybe_use_prebuilt` passes `require_sha=1`
+  for all auto-discovered binaries, `0` when `HSE_PREBUILT` is set. **Gap result:**
+  T2.10 and §7 S5 both `[ ]`→`[x]`; §4a now holds only T2.7 (scraper health, large),
+  §7 S4 (LOW residual), and C1–C7 (gated on §3.F). All remaining items accepted-deferred
+  or gated. Gate green: fmt/clippy/doc clean, 3,229 tests, 0 failures. **Paired:**
+  `SOLUTION_TREE` SOL-SCHEMA-VERSION + SOL-INSTALL-INTEGRITY + §3/§4/§5 — same commit.
+- **2026-06-17** — **Cycle 14 (P→S): SOL-FINALISE-BLOCKING + local `strip_html`
+  dedup — T1.5 `[ ]`→`[x]`.** Two gap items from the cycle 13 S→P pass resolved
+  together. **(1) `strip_html` dedup (LOW):** `au_property/parse.rs` local `strip_html`
+  function replaced with `pub(super) use crate::util::html::strip_html` (re-export
+  — import path unchanged for existing tests); `au_people/mod.rs` local
+  `strip_html_tags` function deleted, canonical `use crate::util::html::strip_html`
+  added at the import block, two call sites updated, `strip_html_tags_removes_markup`
+  test deleted (function gone). Zero behaviour change; the copy-drift risk is closed.
+  **(2) SOL-FINALISE-BLOCKING (LOW-MED):** `finalise_scan` changed from `fn` to
+  `async fn`; body dispatched to `tokio::task::spawn_blocking` capturing
+  `Arc::clone(&store)`, `emitter.clone()`, and `cancelled` (bool snapshot —
+  CancellationToken is not `'static`); `persist_relations` and `run_correlator`
+  inlined into the closure (both had single call-sites; removed as methods). T1.5
+  `[ ]`→`[x]`. Gate green: fmt/clippy/doc clean, 3,229 tests (prev 3,230 — the
+  removed `strip_html_tags` test), 0 failures. **Paired:** `SOLUTION_TREE`
+  SOL-FINALISE-BLOCKING `[ ]`→`[x]` + §2/§3/§4/§5 updated — same commit.

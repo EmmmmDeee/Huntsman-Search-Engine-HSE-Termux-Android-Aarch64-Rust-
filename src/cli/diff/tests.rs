@@ -29,9 +29,10 @@ use super::*;
         // A store-scan side carries its resolved id; two sides resolving to the
         // same id is what `cmd_diff` detects as a self-diff. Seed a scan and
         // confirm both the id is set and it round-trips equal for the same arg.
-        use crate::core::scan::{Scan, Target, TargetKind};
+        use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
         let store = Store::open(":memory:").unwrap();
-        let scan = Scan::new("scan-x", Target::new(TargetKind::Domain, "example.com"));
+        let mut scan = Scan::new("scan-x", Target::new(TargetKind::Domain, "example.com"));
+        scan.status = ScanStatus::Complete;
         store.upsert_scan(&scan).unwrap();
         store
             .upsert_entity(&Entity::new(

@@ -35,8 +35,10 @@ mod expansion;
 mod ledger;
 mod passes;
 mod timeout;
+mod writer;
 pub use ledger::DispatchLog;
 use passes::{consolidate_address_localities, hot_inject_keys};
+use writer::DbWriter;
 // The per-target dispatch context (`DispatchCx`) and the mutable accumulator
 // bundle (`DispatchState`) are constructed here — at the seed-round and
 // expansion call sites — and threaded into the loops that live in `dispatch`.
@@ -78,6 +80,9 @@ pub struct ScanEngine {
     /// the O(M) `accepts()` scan and so the expansion ranker can pull
     /// the richness factor in constant time.
     graph: Arc<ModuleGraph>,
+    /// Handle to the DB-writer actor; used to flush pending events at scan
+    /// completion before returning the finished scan to the caller.
+    writer: DbWriter,
 }
 
 /// Reason an expansion round stopped before depth was exhausted.
@@ -136,32 +141,28 @@ impl StopReason {
     }
 }
 
-/// Cheaply-cloneable event emitter. Persist-first, then broadcast.
-/// Spawned tasks clone this instead of cloning store + bus separately.
+/// Cheaply-cloneable event emitter. Enqueues to the DB-writer actor, then
+/// broadcasts on the in-process SSE bus. Spawned tasks clone this instead of
+/// re-cloning store + bus separately.
 #[derive(Clone)]
 struct EventEmitter {
-    store: Arc<dyn StoragePort>,
+    writer: DbWriter,
     bus: EventBus,
 }
 
 impl EventEmitter {
-    fn new(store: Arc<dyn StoragePort>, bus: EventBus) -> Self {
-        Self { store, bus }
+    fn new(writer: DbWriter, bus: EventBus) -> Self {
+        Self { writer, bus }
     }
 
     fn emit(&self, scan_id: &str, kind: EventKind) {
         let event = Event::new(scan_id, kind);
-        if let Err(e) = self.store.insert_event(&event) {
-            warn!(scan_id = %event.scan_id, error = %e, "failed to persist event to store");
-        }
+        // Non-blocking enqueue to the DB-writer actor; persisted asynchronously.
+        self.writer.submit(event.clone());
         // Best-effort live fan-out to SSE subscribers. `broadcast::send` errors
         // ONLY when there are zero active receivers — the normal case for a CLI
-        // scan with no `/events` client attached. The event is already durably
-        // persisted above (and the CLI/report reads from the store, not the
-        // bus), so a missing subscriber is a no-op, NOT a condition worth
-        // logging: at the default TRACE verbosity a per-event log here floods
-        // the terminal with one line per entity — hundreds on a breach-heavy
-        // scan — burying the real output. Drop silently.
+        // scan with no `/events` client attached. Drop silently (see previous
+        // rationale: per-event logging floods the terminal on breach-heavy scans).
         let _ = self.bus.send(event);
     }
 }
@@ -173,7 +174,8 @@ impl ScanEngine {
         bus: EventBus,
     ) -> Self {
         modules.sort_by_key(|m| std::cmp::Reverse(m.priority()));
-        let emitter = EventEmitter::new(Arc::clone(&store), bus.clone());
+        let writer = DbWriter::spawn(Arc::clone(&store));
+        let emitter = EventEmitter::new(writer.clone(), bus.clone());
         let graph = Arc::new(ModuleGraph::build(&modules));
         Self {
             modules,
@@ -181,6 +183,7 @@ impl ScanEngine {
             bus,
             emitter,
             graph,
+            writer,
         }
     }
 
@@ -462,236 +465,244 @@ impl ScanEngine {
             handle.abort();
         }
 
-        self.finalise_scan(&mut scan, entity_map, &ctx, stats, lineage, emitted_corr)
+        let outcome = self
+            .finalise_scan(scan, entity_map, &ctx, stats, lineage, emitted_corr)
+            .await;
+        // Drain the DB-writer actor so the ScanComplete event (and all events
+        // before it) are persisted before we hand the scan back to the caller.
+        self.writer.flush().await;
+        outcome
     }
 
     /// Persist entities, run the correlator, and mark the scan terminal.
-    fn finalise_scan(
+    /// Runs on a dedicated blocking thread (`tokio::task::spawn_blocking`) so
+    /// the four synchronous rusqlite round-trips never stall the async worker
+    /// pool — critical on low-core aarch64 where the pool is typically 4–8
+    /// threads and a single blocked worker visibly degrades concurrency.
+    async fn finalise_scan(
         &self,
-        scan: &mut Scan,
+        mut scan: Scan,
         entity_map: HashMap<String, Entity>,
         ctx: &ModuleContext,
         stats: ModuleStats,
         lineage_relations: Vec<Relation>,
         mut emitted_corr: HashSet<String>,
     ) -> Result<Scan> {
-        // Persist the scan's entities in a single transaction. On the common
-        // path (every entity is new or a clean GREATEST-merge) this collapses
-        // N per-entity commits into one WAL fsync — a material win on
-        // low-power aarch64 where each commit is the dominant cost. The batch
-        // is all-or-nothing, so on any error we fall back to per-entity
-        // upserts: this salvages whatever is persistable and recovers the
-        // granular `first_err`, preserving the prior continue-on-error
-        // resilience semantics (partial persist → Complete-with-error;
-        // nothing persisted → Failed).
-        // Mint ApiKey entities for every FOREIGN key identified in this scan's
-        // endpoint responses (deduped by value across all modules; our own auth
-        // keys already excluded by the sink). This guarantees leaked third-party
-        // keys land in the graph + dossier no matter which module surfaced the
-        // data — not only the breach pools that scan their own record fields.
-        // They are merged THROUGH `entity_map` by UID (not appended to the batch)
-        // so a key a specialised module already emitted with richer
-        // tags/evidence is GREATEST-merged, never duplicated or blindly
-        // overwritten.
-        let mut entity_map = entity_map;
-        for e in crate::core::hooks::drain_found_keys(&scan.id) {
-            match entity_map.get_mut(&e.uid) {
-                Some(existing) => existing.merge(e),
-                None => {
-                    entity_map.insert(e.uid.clone(), e);
+        let store = Arc::clone(&self.store);
+        let emitter = self.emitter.clone();
+        // Snapshot the cancellation state before crossing into the blocking
+        // thread: CancellationToken is not 'static and cannot be moved.
+        let cancelled = ctx.cancel.is_cancelled();
+        tokio::task::spawn_blocking(move || -> Result<Scan> {
+            // Persist the scan's entities in a single transaction. On the common
+            // path (every entity is new or a clean GREATEST-merge) this collapses
+            // N per-entity commits into one WAL fsync — a material win on
+            // low-power aarch64 where each commit is the dominant cost. The batch
+            // is all-or-nothing, so on any error we fall back to per-entity
+            // upserts: this salvages whatever is persistable and recovers the
+            // granular `first_err`, preserving the prior continue-on-error
+            // resilience semantics (partial persist → Complete-with-error;
+            // nothing persisted → Failed).
+            // Mint ApiKey entities for every FOREIGN key identified in this scan's
+            // endpoint responses (deduped by value across all modules; our own auth
+            // keys already excluded by the sink). This guarantees leaked third-party
+            // keys land in the graph + dossier no matter which module surfaced the
+            // data — not only the breach pools that scan their own record fields.
+            // They are merged THROUGH `entity_map` by UID (not appended to the batch)
+            // so a key a specialised module already emitted with richer
+            // tags/evidence is GREATEST-merged, never duplicated or blindly
+            // overwritten.
+            let mut entity_map = entity_map;
+            for e in crate::core::hooks::drain_found_keys(&scan.id) {
+                match entity_map.get_mut(&e.uid) {
+                    Some(existing) => existing.merge(e),
+                    None => {
+                        entity_map.insert(e.uid.clone(), e);
+                    }
                 }
             }
-        }
-        let mut entities: Vec<Entity> = entity_map.into_values().collect();
-        // Codebase-wide address-locality consolidation. The UID merge above
-        // dedups by exact normalised value, so "X, NSW" and "X, NSW 2582" (one
-        // place at two granularities) survive as two Address entities — which
-        // double-counts the location in the geo correlations. This runs once,
-        // AFTER every module (APIs included) and every expansion round has
-        // contributed, folding such variants into the most-specific one. It is
-        // the engine-level backstop to the per-module dedup in `search_engines`.
-        consolidate_address_localities(&mut entities);
-        // Determinism: normalise each entity's evidence/tags ordering before
-        // persist, so concurrent dispatch's completion-order merging can't leak
-        // into the stored/exported result (see `Entity::canonicalize_order`).
-        for e in &mut entities {
-            e.canonicalize_order();
-        }
-        let total = entities.len();
-        let (persisted, first_err): (usize, Option<String>) = match self
-            .store
-            .upsert_entities_batch(&entities)
-        {
-            Ok(n) => (n, None),
-            Err(batch_err) => {
-                warn!(scan_id = %scan.id, error = %batch_err, "batch entity persist rolled back; falling back to per-entity upserts");
-                let mut persisted = 0usize;
-                let mut first_err: Option<String> = None;
-                for entity in &entities {
-                    match self.store.upsert_entity(entity) {
-                        Ok(()) => persisted += 1,
-                        Err(e) => {
-                            warn!(scan_id = %scan.id, entity_uid = %entity.uid, error = %e, "entity persist failed");
-                            if first_err.is_none() {
-                                first_err = Some(e.to_string());
+            let mut entities: Vec<Entity> = entity_map.into_values().collect();
+            // Codebase-wide address-locality consolidation. The UID merge above
+            // dedups by exact normalised value, so "X, NSW" and "X, NSW 2582" (one
+            // place at two granularities) survive as two Address entities — which
+            // double-counts the location in the geo correlations. This runs once,
+            // AFTER every module (APIs included) and every expansion round has
+            // contributed, folding such variants into the most-specific one. It is
+            // the engine-level backstop to the per-module dedup in `search_engines`.
+            consolidate_address_localities(&mut entities);
+            // Determinism: normalise each entity's evidence/tags ordering before
+            // persist, so concurrent dispatch's completion-order merging can't leak
+            // into the stored/exported result (see `Entity::canonicalize_order`).
+            for e in &mut entities {
+                e.canonicalize_order();
+            }
+            let total = entities.len();
+            let (persisted, first_err): (usize, Option<String>) = match store
+                .upsert_entities_batch(&entities)
+            {
+                Ok(n) => (n, None),
+                Err(batch_err) => {
+                    warn!(scan_id = %scan.id, error = %batch_err, "batch entity persist rolled back; falling back to per-entity upserts");
+                    let mut persisted = 0usize;
+                    let mut first_err: Option<String> = None;
+                    for entity in &entities {
+                        match store.upsert_entity(entity) {
+                            Ok(()) => persisted += 1,
+                            Err(e) => {
+                                warn!(scan_id = %scan.id, entity_uid = %entity.uid, error = %e, "entity persist failed");
+                                if first_err.is_none() {
+                                    first_err = Some(e.to_string());
+                                }
                             }
                         }
                     }
+                    (persisted, first_err)
                 }
-                (persisted, first_err)
+            };
+            let entity_count = persisted;
+            let failed = total - persisted;
+
+            scan.modules_run = stats.run;
+            scan.modules_errored = stats.errored;
+            scan.modules_timed_out = stats.timed_out;
+            scan.modules_deduped = stats.deduped;
+            scan.modules_skipped = stats.skipped;
+
+            if persisted == 0 && first_err.is_some() {
+                scan.status = ScanStatus::Failed;
+                scan.entity_count = 0;
+                scan.error = first_err;
+                scan.finished_at = Some(crate::core::entity::unix_now());
+                // Persist the failed-scan record. Best-effort like the WAL
+                // checkpoint below — we still return the failed scan to the
+                // caller — but log on error rather than discarding it silently,
+                // matching the success path's `upsert_scan(scan)?` and the
+                // "no silent failures" invariant.
+                if let Err(e) = store.upsert_scan(&scan) {
+                    warn!(scan_id = %scan.id, error = %e, "failed to persist failed-scan record");
+                }
+                emitter.emit(
+                    &scan.id,
+                    EventKind::ScanComplete {
+                        scan_id: scan.id.clone(),
+                        entity_count: 0,
+                    },
+                );
+                return Ok(scan);
             }
-        };
-        let entity_count = persisted;
-        let failed = total - persisted;
 
-        scan.modules_run = stats.run;
-        scan.modules_errored = stats.errored;
-        scan.modules_timed_out = stats.timed_out;
-        scan.modules_deduped = stats.deduped;
-        scan.modules_skipped = stats.skipped;
-
-        if persisted == 0 && first_err.is_some() {
-            scan.status = ScanStatus::Failed;
-            scan.entity_count = 0;
-            scan.error = first_err;
+            scan.status = if cancelled {
+                ScanStatus::Aborted
+            } else {
+                ScanStatus::Complete
+            };
+            scan.entity_count = entity_count;
+            if failed > 0 {
+                scan.error = Some(format!(
+                    "{failed}/{total} entities failed to persist: {}",
+                    first_err.as_deref().unwrap_or("unknown")
+                ));
+            }
             scan.finished_at = Some(crate::core::entity::unix_now());
-            // Persist the failed-scan record. Best-effort like the WAL
-            // checkpoint below — we still return the failed scan to the
-            // caller — but log on error rather than discarding it silently,
-            // matching the success path's `upsert_scan(scan)?` and the
-            // "no silent failures" invariant.
-            if let Err(e) = self.store.upsert_scan(scan) {
-                warn!(scan_id = %scan.id, error = %e, "failed to persist failed-scan record");
+            store.upsert_scan(&scan)?;
+
+            // Derive + persist the typed entity-relation edges (attribution
+            // graph): the lineage edges captured during expansion plus the
+            // structural edges derived from the persisted entity set. The
+            // lineage-free structural set (structural/colocation/resolution/
+            // registration/name-lineage) is derived identically here and on the
+            // import paths via `derive_all`, so a live scan and an imported
+            // dossier can't drift on which edges a finished scan carries.
+            // Best-effort: a relation that fails to persist is logged, never
+            // fatal to the scan.
+            {
+                let derived = crate::core::relation::derive_all(&entities, &scan.id);
+                if !lineage_relations.is_empty() || !derived.is_empty() {
+                    let mut rel_persisted = 0usize;
+                    for r in lineage_relations.iter().chain(derived.iter()) {
+                        match store.upsert_relation(r) {
+                            Ok(()) => rel_persisted += 1,
+                            Err(e) => warn!(scan_id = %scan.id, relation = %r.id, error = %e, "relation persist failed"),
+                        }
+                    }
+                    info!(
+                        scan_id = %scan.id,
+                        lineage = lineage_relations.len(),
+                        derived = derived.len(),
+                        persisted = rel_persisted,
+                        "entity relations persisted"
+                    );
+                }
             }
-            self.emit(
+
+            // Authoritative finalise-time correlation pass. Runs the full rule
+            // set (entity + graph-aware relation rules) over the persisted scan,
+            // persists every firing, and emits `CorrelationFound` only for
+            // correlations not already streamed live during ingestion (deduped
+            // via `emitted_corr`). The `CorrelationsDone` count is the
+            // authoritative total for the scan.
+            match crate::core::correlator::Correlator::new(Arc::clone(&store)).run(&scan.id) {
+                Ok(firings) => {
+                    for c in &firings {
+                        if emitted_corr.insert(correlation_key(c)) {
+                            emitter.emit(
+                                &scan.id,
+                                EventKind::CorrelationFound {
+                                    correlation: c.clone(),
+                                },
+                            );
+                        }
+                    }
+                    emitter.emit(
+                        &scan.id,
+                        EventKind::CorrelationsDone {
+                            count: firings.len(),
+                        },
+                    );
+                }
+                Err(e) => warn!(scan_id = %scan.id, error = %e, "correlator failed"),
+            }
+
+            // Persist the key pool to disk after every scan. Keys discovered
+            // during this scan (from breach data, page bodies, entity values)
+            // are permanently stored with full provenance metadata.
+            let pool = crate::util::key_pool::global_pool();
+            if let Err(e) = crate::util::key_pool::save_pool(&pool) {
+                warn!("failed to save key pool after scan: {e}");
+            }
+
+            // Scan-boundary WAL checkpoint: fold the WAL into the main DB and
+            // truncate the -wal file back to zero. Bounds the on-disk/mmap WAL
+            // footprint between scans under a long-lived `serve`/`live` process
+            // (the 'everything bounded' invariant). Best-effort — a busy
+            // checkpoint just defers to the next scan boundary.
+            if let Err(e) = store.checkpoint_truncate() {
+                warn!(scan_id = %scan.id, error = %e, "WAL checkpoint deferred (busy)");
+            }
+
+            // Bound the events table during long-lived serve/live/radar processes
+            // (otherwise pruned only at startup). Best-effort + same retention
+            // policy as the startup prune — a busy prune just defers to the next
+            // scan boundary.
+            if let Err(e) = store.prune_events(
+                crate::core::port::EVENTS_RETENTION_SECS,
+                crate::core::port::EVENTS_MAX_ROWS,
+            ) {
+                warn!(scan_id = %scan.id, error = %e, "events prune deferred");
+            }
+
+            emitter.emit(
                 &scan.id,
                 EventKind::ScanComplete {
                     scan_id: scan.id.clone(),
-                    entity_count: 0,
+                    entity_count,
                 },
             );
-            return Ok(scan.clone());
-        }
 
-        scan.status = if ctx.cancel.is_cancelled() {
-            ScanStatus::Aborted
-        } else {
-            ScanStatus::Complete
-        };
-        scan.entity_count = entity_count;
-        if failed > 0 {
-            scan.error = Some(format!(
-                "{failed}/{total} entities failed to persist: {}",
-                first_err.as_deref().unwrap_or("unknown")
-            ));
-        }
-        scan.finished_at = Some(crate::core::entity::unix_now());
-        self.store.upsert_scan(scan)?;
-
-        // Derive + persist the typed entity-relation edges (attribution
-        // graph): the lineage edges captured during expansion plus the
-        // structural edges derived from the persisted entity set.
-        self.persist_relations(&scan.id, &entities, &lineage_relations);
-
-        self.run_correlator(&scan.id, &mut emitted_corr);
-
-        // Persist the key pool to disk after every scan. Keys discovered
-        // during this scan (from breach data, page bodies, entity values)
-        // are permanently stored with full provenance metadata.
-        let pool = crate::util::key_pool::global_pool();
-        if let Err(e) = crate::util::key_pool::save_pool(&pool) {
-            warn!("failed to save key pool after scan: {e}");
-        }
-
-        // Scan-boundary WAL checkpoint: fold the WAL into the main DB and
-        // truncate the -wal file back to zero. Bounds the on-disk/mmap WAL
-        // footprint between scans under a long-lived `serve`/`live` process
-        // (the 'everything bounded' invariant). Best-effort — a busy
-        // checkpoint just defers to the next scan boundary.
-        if let Err(e) = self.store.checkpoint_truncate() {
-            warn!(scan_id = %scan.id, error = %e, "WAL checkpoint deferred (busy)");
-        }
-
-        // Bound the events table during long-lived serve/live/radar processes
-        // (otherwise pruned only at startup). Best-effort + same retention
-        // policy as the startup prune — a busy prune just defers to the next
-        // scan boundary.
-        if let Err(e) = self.store.prune_events(
-            crate::core::port::EVENTS_RETENTION_SECS,
-            crate::core::port::EVENTS_MAX_ROWS,
-        ) {
-            warn!(scan_id = %scan.id, error = %e, "events prune deferred");
-        }
-
-        self.emit(
-            &scan.id,
-            EventKind::ScanComplete {
-                scan_id: scan.id.clone(),
-                entity_count,
-            },
-        );
-
-        Ok(scan.clone())
-    }
-
-    /// Persist the scan's typed entity-relation edges: the `lineage` edges
-    /// captured during expansion (`DerivedFrom`) plus the deterministic
-    /// structural edges derived from the persisted entity set. Best-effort: a
-    /// relation that fails to persist is logged, never fatal to the scan.
-    /// Endpoints are entity UIDs already persisted above; upserts are
-    /// idempotent on the deterministic edge id.
-    fn persist_relations(&self, scan_id: &str, entities: &[Entity], lineage: &[Relation]) {
-        // The lineage-free structural set (structural/colocation/resolution/
-        // registration/name-lineage) is derived identically here and on the
-        // import paths via `derive_all`, so a live scan and an imported dossier
-        // can't drift on which edges a finished scan carries.
-        let derived = crate::core::relation::derive_all(entities, scan_id);
-        if lineage.is_empty() && derived.is_empty() {
-            return;
-        }
-        let mut persisted = 0usize;
-        for r in lineage.iter().chain(derived.iter()) {
-            match self.store.upsert_relation(r) {
-                Ok(()) => persisted += 1,
-                Err(e) => warn!(scan_id, relation = %r.id, error = %e, "relation persist failed"),
-            }
-        }
-        info!(
-            scan_id,
-            lineage = lineage.len(),
-            derived = derived.len(),
-            persisted,
-            "entity relations persisted"
-        );
-    }
-
-    /// Authoritative finalise-time correlation pass. Runs the full rule set
-    /// (entity + graph-aware relation rules) over the persisted scan, persists
-    /// every firing, and emits `CorrelationFound` only for correlations not
-    /// already streamed live during ingestion (deduped via `emitted`). The
-    /// `CorrelationsDone` count is the authoritative total for the scan.
-    fn run_correlator(&self, scan_id: &str, emitted: &mut HashSet<String>) {
-        match crate::core::correlator::Correlator::new(Arc::clone(&self.store)).run(scan_id) {
-            Ok(firings) => {
-                for c in &firings {
-                    if emitted.insert(correlation_key(c)) {
-                        self.emit(
-                            scan_id,
-                            EventKind::CorrelationFound {
-                                correlation: c.clone(),
-                            },
-                        );
-                    }
-                }
-                self.emit(
-                    scan_id,
-                    EventKind::CorrelationsDone {
-                        count: firings.len(),
-                    },
-                );
-            }
-            Err(e) => warn!(scan_id, error = %e, "correlator failed"),
-        }
+            Ok(scan)
+        })
+        .await
+        .map_err(|e| crate::core::error::Error::Other(e.to_string()))?
     }
 
     /// Live cross-correlation during ingestion. Evaluates the entity rules
