@@ -538,3 +538,12 @@ legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
   needs). The internal dispatch/correlation pass isn't `pub`, so it's deferred
   until a bench-visible entry exists. Gate green: clippy `--all-targets` + fmt
   clean, benches compile, 2,986 lib tests, 0 failures.
+- **2026-06-17** — **F.3 proptest — `util::html` (the most-exercised parser).**
+  `strip_html` + `decode_entities` run on *every* scraped page, so a panic there
+  is the highest-frequency robustness risk. Four properties pin totality over
+  arbitrary input — including `&` adjacent to multibyte chars (the precise
+  codepoint-split hazard the inline comment claims is impossible), `&#x`+junk,
+  trailing `&`, dense ampersand/semicolon storms, and unclosed/overlapping tags
+  — plus the no-`&` fast-path byte-identity contract. No bug found (the parser
+  was already sound); the no-panic contract is now machine-checked rather than
+  asserted. Gate green: clippy/fmt clean, 2,990 lib tests (+4), 0 failures.
