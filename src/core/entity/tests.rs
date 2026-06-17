@@ -1138,7 +1138,16 @@ fn absorb_dedups_identically_on_both_branches() {
 mod prop {
     use proptest::prelude::*;
 
-    use super::super::{EntityKind, derive_uid, normalise};
+    use super::super::{Entity, EntityKind, derive_uid, normalise};
+
+    /// Build a Username entity with a chosen raw spelling, confidence, and
+    /// corroboration. Username normalises to lowercase, so case variants share a
+    /// UID — the setup for the merge-determinism laws.
+    fn mk(raw: &str, conf: f64, corr: u32) -> Entity {
+        let mut e = Entity::new(EntityKind::Username, raw, conf, "scan");
+        e.corroboration = corr;
+        e
+    }
 
     /// A representative spread of kinds covering every non-trivial `normalise`
     /// arm (case-fold, `@`/`www.` stripping, phone digit-keep, coord canonical
@@ -1182,6 +1191,52 @@ mod prop {
         fn derive_uid_is_deterministic(kind in any_kind(), v in ".{0,48}") {
             let n = normalise(&kind, &v);
             prop_assert_eq!(derive_uid(&kind, &n), derive_uid(&kind, &n));
+        }
+
+        /// `merge`'s GREATEST-semantics on the corroborating signal (PROBLEM_TREE
+        /// determinism invariant): confidence folds to the **clamped max** (never
+        /// decreases, stays in [0,1]); corroboration folds to the **saturating
+        /// sum floored at 1** (never decreases). A regression that let a merge
+        /// *lower* confidence or drop corroboration would silently erode a
+        /// cross-correlated finding.
+        #[test]
+        fn merge_signal_is_greatest_semantics(
+            v in "[a-z]{1,12}",
+            ca in 0.0f64..=1.0, cb in 0.0f64..=1.0,
+            cra in 1u32..100_000, crb in 1u32..100_000,
+        ) {
+            let a = mk(&v, ca, cra);
+            let b = mk(&v, cb, crb);
+            prop_assert_eq!(&a.uid, &b.uid); // same normalised value ⇒ same UID
+            let mut merged = a.clone();
+            merged.merge(b);
+            prop_assert!((0.0..=1.0).contains(&merged.confidence));
+            prop_assert!((merged.confidence - ca.max(cb)).abs() < 1e-12);
+            prop_assert!(merged.confidence >= a.confidence);
+            prop_assert_eq!(merged.corroboration, cra.saturating_add(crb).max(1));
+            prop_assert!(merged.corroboration >= a.corroboration);
+        }
+
+        /// `merge` is **order-independent** on the persisted signal — the property
+        /// that makes concurrent dispatch deterministic. Two raw spellings that
+        /// share a UID (case variants), merged in either order, yield the same
+        /// canonical `raw_value` (lexicographic min), confidence, and corroboration,
+        /// so the dossier never leaks task-completion order.
+        #[test]
+        fn merge_is_order_independent(
+            v in "[a-z]{1,8}", upper in any::<bool>(),
+            ca in 0.0f64..=1.0, cb in 0.0f64..=1.0,
+            cra in 1u32..100_000, crb in 1u32..100_000,
+        ) {
+            let raw_b = if upper { v.to_uppercase() } else { v.clone() };
+            let mut ab = mk(&v, ca, cra);
+            ab.merge(mk(&raw_b, cb, crb));
+            let mut ba = mk(&raw_b, cb, crb);
+            ba.merge(mk(&v, ca, cra));
+            prop_assert_eq!(&ab.uid, &ba.uid);
+            prop_assert_eq!(&ab.raw_value, &ba.raw_value);
+            prop_assert!((ab.confidence - ba.confidence).abs() < 1e-12);
+            prop_assert_eq!(ab.corroboration, ba.corroboration);
         }
     }
 }

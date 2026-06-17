@@ -547,3 +547,21 @@ legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
   — plus the no-`&` fast-path byte-identity contract. No bug found (the parser
   was already sound); the no-panic contract is now machine-checked rather than
   asserted. Gate green: clippy/fmt clean, 2,990 lib tests (+4), 0 failures.
+- **2026-06-17** — **Logged (analysis-only, per operator) two deferred Cloudflare
+  enhancements** beyond the shipped IPv6 gate: (a) *edge-IP view suppression* —
+  tag CDN-edge IPs `cdn-infra` and hide them from the default result/graph view
+  (kept in the DB; today they are demoted-not-dropped, which preserves the
+  "fronted by Cloudflare" signal but still shows clutter); (b) *origin-unmasking*
+  — recorded under §4 C4. Neither implemented yet by request; the IPv6 accuracy
+  bug (the only genuine defect) is fixed.
+- **2026-06-17** — **F.3 proptest — `Entity::merge` GREATEST-semantics laws** (the
+  explicit F.3 "`Entity::absorb`: commutative + clamped" item; the determinism
+  core every dossier depends on). Two properties: (1) the corroborating signal
+  folds as **clamped max confidence** (in [0,1], never decreasing) + **saturating
+  corroboration sum floored at 1** (never decreasing); (2) merge is
+  **order-independent** on the persisted signal — two raw spellings sharing a UID,
+  merged in either order, yield the same canonical `raw_value` (lexicographic min),
+  confidence, and corroboration, so concurrent-dispatch completion order can't leak
+  into output. No bug; the GREATEST-merge invariant is now machine-checked over
+  thousands of (confidence, corroboration, spelling) combinations. Gate green:
+  clippy/fmt clean, 2,992 lib tests (+2), 0 failures.
