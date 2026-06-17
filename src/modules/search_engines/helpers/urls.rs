@@ -551,3 +551,59 @@ fn is_tracking_param(key: &str) -> bool {
 pub(in crate::modules::search_engines) fn extract_registrable(host: &str) -> String {
     crate::util::domains::registrable_domain(host).unwrap_or_else(|| host.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── is_web_stopword ──────────────────────────────────────────────────────
+
+    #[test]
+    fn is_web_stopword_matches_structural_url_tokens() {
+        for w in [
+            "http", "https", "www", "com", "org", "net", "edu", "gov", "html", "htm", "php",
+            "aspx", "asp", "jsp", "ssl", "tls",
+        ] {
+            assert!(is_web_stopword(w), "expected `{w}` to be a web stopword");
+        }
+    }
+
+    #[test]
+    fn is_web_stopword_allows_real_terms() {
+        assert!(!is_web_stopword("alice"));
+        assert!(!is_web_stopword("bamford"));
+        assert!(!is_web_stopword("profile"));
+    }
+
+    // ── is_tracking_param ────────────────────────────────────────────────────
+
+    #[test]
+    fn is_tracking_param_matches_utm_and_click_ids() {
+        // Any `utm_*` campaign param.
+        assert!(is_tracking_param("utm_source"));
+        assert!(is_tracking_param("utm_medium"));
+        // Known click-tracking / analytics ids.
+        for k in [
+            "fbclid", "gclid", "gclsrc", "dclid", "msclkid", "yclid", "mc_cid", "mc_eid", "igshid",
+            "_ga", "_gl",
+        ] {
+            assert!(
+                is_tracking_param(k),
+                "expected `{k}` to be a tracking param"
+            );
+        }
+        // Case-insensitive (the key is lowercased first).
+        assert!(is_tracking_param("UTM_SOURCE"));
+        assert!(is_tracking_param("GCLID"));
+    }
+
+    #[test]
+    fn is_tracking_param_allows_content_params() {
+        for k in ["id", "q", "v", "page", "query"] {
+            assert!(
+                !is_tracking_param(k),
+                "expected `{k}` to be a content param, not tracking"
+            );
+        }
+    }
+}

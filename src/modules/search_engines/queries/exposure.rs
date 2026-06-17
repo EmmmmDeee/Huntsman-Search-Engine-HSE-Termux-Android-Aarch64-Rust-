@@ -125,3 +125,139 @@ fn ip_exposure(v: &str) -> Vec<String> {
         format!("\"{v}\" CVE OR vulnerability site:vulners.com OR site:exploit-db.com"),
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::scan::{Target, TargetKind};
+
+    // ── build_queries_exposure dispatcher ────────────────────────────────────
+
+    #[test]
+    fn build_queries_exposure_domain_targets_env_files() {
+        let q = build_queries_exposure(&Target::new(TargetKind::Domain, "example.com"));
+        assert!(!q.is_empty());
+        assert!(q.iter().any(|s| s.contains("filename:.env")));
+    }
+
+    #[test]
+    fn build_queries_exposure_email_targets_repos() {
+        let q = build_queries_exposure(&Target::new(TargetKind::Email, "alice@acme.com"));
+        assert!(!q.is_empty());
+        assert!(q.iter().any(|s| s == "site:github.com \"alice@acme.com\""));
+    }
+
+    #[test]
+    fn build_queries_exposure_username_targets_personal_tokens() {
+        let q = build_queries_exposure(&Target::new(TargetKind::Username, "jdoe"));
+        assert!(!q.is_empty());
+        assert!(q.iter().any(|s| s.contains("\"ghp_\" OR \"github_pat_\"")));
+    }
+
+    #[test]
+    fn build_queries_exposure_org_targets_cloud_storage() {
+        let q = build_queries_exposure(&Target::new(TargetKind::Organisation, "Acme Corp"));
+        assert!(!q.is_empty());
+        assert!(
+            q.iter()
+                .any(|s| s == "site:blob.core.windows.net \"Acme Corp\"")
+        );
+    }
+
+    #[test]
+    fn build_queries_exposure_ip_targets_recon_engines() {
+        let q = build_queries_exposure(&Target::new(TargetKind::IpAddress, "8.8.8.8"));
+        assert!(!q.is_empty());
+        assert!(q.iter().any(|s| s == "\"8.8.8.8\" site:shodan.io"));
+    }
+
+    #[test]
+    fn build_queries_exposure_unhandled_kind_is_empty() {
+        // Coordinates is one of the explicitly-unsupported kinds (per the doc
+        // comment) and hits the `_ => Vec::new()` arm.
+        assert!(
+            build_queries_exposure(&Target::new(TargetKind::Coordinates, "1.0,2.0")).is_empty()
+        );
+    }
+
+    // ── per-kind helpers (deterministic dork shapes) ─────────────────────────
+
+    #[test]
+    fn domain_exposure_shape() {
+        let q = domain_exposure("example.com");
+        assert!(
+            q.iter()
+                .any(|s| s == "site:s3.amazonaws.com \"example.com\"")
+        );
+        assert!(
+            q.iter()
+                .any(|s| s == "inurl:\"/.git/config\" site:example.com")
+        );
+        assert!(q.iter().any(|s| s.contains("filename:docker-compose.yml")));
+    }
+
+    #[test]
+    fn username_exposure_shape() {
+        let q = username_exposure("jdoe");
+        assert_eq!(q.len(), 5);
+        assert!(
+            q.iter()
+                .any(|s| s == "site:github.com/\"jdoe\" OR site:gitlab.com/\"jdoe\"")
+        );
+        assert!(
+            q.iter()
+                .any(|s| s == "\"jdoe\" site:pastebin.com credentials OR email OR password")
+        );
+    }
+
+    #[test]
+    fn org_exposure_shape() {
+        let q = org_exposure("Acme Corp");
+        assert_eq!(q.len(), 6);
+        assert!(
+            q.iter()
+                .any(|s| s == "site:blob.core.windows.net \"Acme Corp\"")
+        );
+        assert!(
+            q.iter()
+                .any(|s| s == "\"Acme Corp\" filetype:pdf confidential OR internal OR proprietary")
+        );
+    }
+
+    #[test]
+    fn ip_exposure_shape() {
+        let q = ip_exposure("8.8.8.8");
+        assert_eq!(q.len(), 6);
+        assert!(q.iter().any(|s| s == "\"8.8.8.8\" site:shodan.io"));
+        assert!(q.iter().any(|s| s == "\"8.8.8.8\" site:censys.io"));
+    }
+
+    // ── email_exposure: local.len() >= 3 branch ──────────────────────────────
+
+    #[test]
+    fn email_exposure_long_local_adds_extra_dorks() {
+        // local = "john" (len 4 ≥ 3) → the two extra local-part dorks appear.
+        let q = email_exposure("john@x.com");
+        assert!(
+            q.iter()
+                .any(|s| s == "site:github.com \"john\" email OR contact")
+        );
+        assert!(
+            q.iter()
+                .any(|s| s == "\"john\" site:gist.github.com password OR key")
+        );
+    }
+
+    #[test]
+    fn email_exposure_short_local_omits_extra_dorks() {
+        // local = "ab" (len 2 < 3) → the local-part dorks are NOT added.
+        let q = email_exposure("ab@x.com");
+        assert!(
+            !q.iter()
+                .any(|s| s.contains("site:gist.github.com password OR key"))
+        );
+        assert!(!q.iter().any(|s| s.contains("\"ab\" email OR contact")));
+        // The base 6 dorks (independent of local length) are still present.
+        assert_eq!(q.len(), 6);
+    }
+}

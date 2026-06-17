@@ -1,4 +1,7 @@
-use super::entity::{locality_address, name_matches_query, records_to_entities};
+use super::entity::{
+    abn_digits, charity_evidence, locality_address, name_matches_query, other_names,
+    record_is_exact, records_to_entities,
+};
 use super::*;
 use crate::core::entity::EntityKind;
 use crate::core::module::{ModuleCategory, ModuleCost};
@@ -205,6 +208,84 @@ fn ckan_success_false_is_captured() {
         serde_json::from_str(r#"{"success":true,"result":{"total":0,"records":[]}}"#).unwrap();
     assert_eq!(ok.success, Some(true));
     assert_eq!(ok.result.unwrap().records.len(), 0);
+}
+
+#[test]
+fn abn_digits_validates_eleven_digit_length() {
+    let mut rec = Map::new();
+    rec.insert("ABN".into(), Value::String("28 000 030 179".into()));
+    assert_eq!(abn_digits(&rec).as_deref(), Some("28000030179"));
+    let mut numrec = Map::new();
+    numrec.insert("ABN".into(), Value::from(28_000_030_179u64));
+    assert_eq!(abn_digits(&numrec).as_deref(), Some("28000030179"));
+}
+
+#[test]
+fn abn_digits_rejects_wrong_length_and_missing() {
+    let mut short = Map::new();
+    short.insert("ABN".into(), Value::String("12345".into()));
+    assert!(abn_digits(&short).is_none());
+    let mut long = Map::new();
+    long.insert("ABN".into(), Value::String("123456789012".into()));
+    assert!(abn_digits(&long).is_none());
+    assert!(abn_digits(&Map::new()).is_none());
+}
+
+#[test]
+fn other_names_splits_trims_and_drops_empties() {
+    let mut rec = Map::new();
+    rec.insert(
+        "Other_Organisation_Names".into(),
+        Value::String("SUBS, Sydney University Business Society , ,".into()),
+    );
+    assert_eq!(
+        other_names(&rec),
+        vec![
+            "SUBS".to_string(),
+            "Sydney University Business Society".to_string()
+        ]
+    );
+    assert!(other_names(&Map::new()).is_empty());
+}
+
+#[test]
+fn record_is_exact_matches_legal_name_or_alias() {
+    let mut rec = Map::new();
+    rec.insert(
+        "Charity_Legal_Name".into(),
+        Value::String("The Smith Family".into()),
+    );
+    rec.insert(
+        "Other_Organisation_Names".into(),
+        Value::String("TSF, Smith Family Trust".into()),
+    );
+    assert!(record_is_exact(&rec, "smith family"));
+    assert!(record_is_exact(&rec, "smith family trust"));
+    assert!(!record_is_exact(&rec, "jones foundation"));
+}
+
+#[test]
+fn charity_evidence_gates_attrs_on_presence() {
+    let mut rec = Map::new();
+    rec.insert(
+        "Charity_Legal_Name".into(),
+        Value::String("The Smith Family".into()),
+    );
+    rec.insert("ABN".into(), Value::String("28000030179".into()));
+    rec.insert("State".into(), Value::String("NSW".into()));
+    let ev = charity_evidence(&rec, 3);
+    assert_eq!(
+        ev.attributes.get("abn").map(String::as_str),
+        Some("28000030179")
+    );
+    assert_eq!(ev.attributes.get("state").map(String::as_str), Some("NSW"));
+    assert_eq!(
+        ev.attributes.get("total_matches").map(String::as_str),
+        Some("3")
+    );
+    assert!(!ev.attributes.contains_key("postcode"));
+    assert!(!ev.attributes.contains_key("website"));
+    assert!(ev.summary.contains("The Smith Family"));
 }
 
 #[test]

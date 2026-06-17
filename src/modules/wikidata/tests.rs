@@ -9,7 +9,8 @@ use crate::core::{
 use super::{
     HANDLE_PROPS, MAX_HANDLES, PERSON_PRIMARY, Wikidata,
     builder::{candidate_entity, primary_entities},
-    classify::{classify, name_matches_query},
+    claims::{claim_entity_ids, claim_p625, claim_strings, en_text},
+    classify::{classify, name_matches_query, seed_kind},
     types::SearchHit,
     urls::{entities_url, search_url},
 };
@@ -196,4 +197,112 @@ fn handle_cap_is_respected() {
         .filter(|e| e.kind == EntityKind::Username)
         .count();
     assert!(n <= MAX_HANDLES, "emitted {n} usernames, cap {MAX_HANDLES}");
+}
+
+#[test]
+fn claim_p625_extracts_valid_lat_lon_in_order() {
+    // Brisbane — a real, in-range, non-Null-Island fix. Tuple order is (lat, lon).
+    let entity = serde_json::json!({
+        "claims": {
+            "P625": [{"mainsnak": {"datavalue": {"value": {
+                "latitude": -27.4766,
+                "longitude": 153.0166
+            }}}}]
+        }
+    });
+    assert_eq!(claim_p625(&entity), Some((-27.4766, 153.0166)));
+}
+
+#[test]
+fn claim_p625_none_when_property_absent() {
+    let entity = serde_json::json!({"claims": {}});
+    assert_eq!(claim_p625(&entity), None);
+}
+
+#[test]
+fn claim_p625_none_when_value_malformed() {
+    // Missing the `longitude` member → walk fails, None.
+    let entity = serde_json::json!({
+        "claims": {
+            "P625": [{"mainsnak": {"datavalue": {"value": {"latitude": -27.4766}}}}]
+        }
+    });
+    assert_eq!(claim_p625(&entity), None);
+    // Null-Island (0,0) is rejected by is_valid_coords even though well-formed.
+    let null_island = serde_json::json!({
+        "claims": {
+            "P625": [{"mainsnak": {"datavalue": {"value": {"latitude": 0.0, "longitude": 0.0}}}}]
+        }
+    });
+    assert_eq!(claim_p625(&null_island), None);
+}
+
+#[test]
+fn claim_strings_collects_in_order_and_empty_when_missing() {
+    let entity = serde_json::json!({
+        "claims": {
+            "P856": [
+                {"mainsnak": {"datavalue": {"value": "https://a.example"}}},
+                {"mainsnak": {"datavalue": {"value": "https://b.example"}}}
+            ]
+        }
+    });
+    assert_eq!(
+        claim_strings(&entity, "P856"),
+        vec![
+            "https://a.example".to_string(),
+            "https://b.example".to_string()
+        ]
+    );
+    // Property not present → empty Vec.
+    assert!(claim_strings(&entity, "P2037").is_empty());
+}
+
+#[test]
+fn claim_entity_ids_collects_ids_and_empty_when_missing() {
+    let entity = serde_json::json!({
+        "claims": {
+            "P31": [
+                {"mainsnak": {"datavalue": {"value": {"entity-type": "item", "id": "Q5"}}}},
+                {"mainsnak": {"datavalue": {"value": {"entity-type": "item", "id": "Q42"}}}}
+            ]
+        }
+    });
+    assert_eq!(
+        claim_entity_ids(&entity, "P31"),
+        vec!["Q5".to_string(), "Q42".to_string()]
+    );
+    assert!(claim_entity_ids(&entity, "P279").is_empty());
+}
+
+#[test]
+fn en_text_reads_section_en_value() {
+    let entity = serde_json::json!({
+        "labels": {"en": {"value": "Linus Torvalds"}},
+        "descriptions": {"en": {"value": "Finnish software engineer"}}
+    });
+    assert_eq!(
+        en_text(&entity, "labels").as_deref(),
+        Some("Linus Torvalds")
+    );
+    assert_eq!(
+        en_text(&entity, "descriptions").as_deref(),
+        Some("Finnish software engineer")
+    );
+    // Missing section → None.
+    assert_eq!(en_text(&entity, "aliases"), None);
+}
+
+#[test]
+fn seed_kind_maps_every_target_kind() {
+    // Organisation is the only seed that maps to Organisation; all else → Person.
+    assert_eq!(
+        seed_kind(TargetKind::Organisation),
+        EntityKind::Organisation
+    );
+    assert_eq!(seed_kind(TargetKind::FullName), EntityKind::Person);
+    assert_eq!(seed_kind(TargetKind::Email), EntityKind::Person);
+    assert_eq!(seed_kind(TargetKind::Domain), EntityKind::Person);
+    assert_eq!(seed_kind(TargetKind::Username), EntityKind::Person);
+    assert_eq!(seed_kind(TargetKind::IpAddress), EntityKind::Person);
 }

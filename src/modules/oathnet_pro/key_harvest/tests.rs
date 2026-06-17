@@ -1624,3 +1624,132 @@ fn every_catalogued_service_classifies_and_high_value_set_is_populated() {
         "expected many high-value services in the catalogue, got {high_value}"
     );
 }
+
+// ─── identify_vendor_api_key: direct vendor-prefix coverage ───
+
+#[test]
+fn vendor_key_matches_real_prefixes_and_returns_full_trimmed_value() {
+    // Each input matches a real `KEY_PATTERNS` arm and clears the FP gate
+    // (no excluded substring, not a UUID, entropy >= 3.5). The second tuple
+    // element is the trimmed value EXACTLY (the whole token, not a capture).
+    let cases = [
+        // sk-ant- (anthropic, min_len 40)
+        (
+            "sk-ant-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0",
+            "anthropic",
+        ),
+        // AKIA (aws, min_len 16) — avoid the literal "EXAMPLE" (excluded).
+        ("AKIA1B2C3D4E5F6G7H8I", "aws"),
+        // ghp_ (github, min_len 36)
+        ("ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "github"),
+        // AIzaSy (google, min_len 30)
+        ("AIzaSyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q", "google"),
+    ];
+    for (value, want_service) in cases {
+        let (svc, captured) = identify_vendor_api_key(value)
+            .unwrap_or_else(|| panic!("vendor key not detected: {value}"));
+        assert_eq!(svc, want_service, "wrong service for {value}");
+        assert_eq!(captured, value, "captured value must be the full token");
+    }
+}
+
+#[test]
+fn vendor_key_trims_surrounding_whitespace_before_matching() {
+    // `value.trim()` runs first, so leading/trailing whitespace is stripped and
+    // the returned slice is the trimmed token, not the raw input.
+    let (svc, captured) =
+        identify_vendor_api_key("  AKIA1B2C3D4E5F6G7H8I  ").expect("trimmed AWS key detected");
+    assert_eq!(svc, "aws");
+    assert_eq!(captured, "AKIA1B2C3D4E5F6G7H8I");
+}
+
+#[test]
+fn vendor_key_rejects_non_key_and_too_short() {
+    // No vendor prefix, no PEM, no crypto address -> None.
+    assert!(identify_vendor_api_key("just a plain sentence with words").is_none());
+    // Below the 16-char hard floor short-circuits before any prefix check.
+    assert!(identify_vendor_api_key("AKIA123").is_none());
+    // Right prefix but the FP gate fails (placeholder substring "example").
+    assert!(identify_vendor_api_key("AKIAIOSFODNN7EXAMPLE").is_none());
+}
+
+// ─── is_likely_real_key: each FP gate in isolation ───
+
+#[test]
+fn likely_real_key_accepts_high_entropy_credential() {
+    // entropy ~5.0 (>= 3.5), not 36 chars so not a UUID, no excluded substring.
+    assert!(is_likely_real_key(
+        "sk-ant-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0"
+    ));
+}
+
+#[test]
+fn likely_real_key_rejects_low_entropy_string() {
+    // All-same-char -> Shannon entropy 0.0, well below the 3.5 floor.
+    assert!(!is_likely_real_key("aaaaaaaaaaaaaaaaaaaaaaaa"));
+}
+
+#[test]
+fn likely_real_key_rejects_excluded_context_substring() {
+    // Contains the "your_" documentation-placeholder exclusion (case-insensitive),
+    // so it is rejected even though it is otherwise key-shaped.
+    assert!(!is_likely_real_key("this_is_YOUR_api_key_token_value"));
+}
+
+#[test]
+fn likely_real_key_rejects_canonical_uuid() {
+    // Valid 8-4-4-4-12 hex UUID (entropy ~3.96, no excluded substring), so ONLY
+    // the `is_uuid` gate causes the rejection — UUIDs collide with vendor key
+    // formats but are not real credentials.
+    assert!(!is_likely_real_key("12345678-9abc-4def-8123-456789abcdef"));
+}
+
+// ─── is_password_field: exact, case-sensitive matches ───
+
+#[test]
+fn password_field_matches_known_credential_fields() {
+    for f in ["password", "password_hash", "pass", "pwd", "passwd", "hash"] {
+        assert!(is_password_field(f), "{f} should be a password field");
+    }
+}
+
+#[test]
+fn password_field_rejects_non_credential_and_is_case_sensitive() {
+    // Non-credential field names.
+    assert!(!is_password_field("username"));
+    assert!(!is_password_field("email"));
+    assert!(!is_password_field("api_key"));
+    // `is_password_field` uses an exact `matches!` with no lowercasing, so any
+    // case variation is NOT treated as a password field.
+    assert!(!is_password_field("Password"));
+    assert!(!is_password_field("PASSWORD"));
+}
+
+// ─── decode_through_inner: direct depth-bound coverage ───
+
+#[test]
+fn decode_through_inner_returns_decoded_key_with_incremented_depth() {
+    // Called directly at depth 0: a base64-wrapped vendor key decodes and is
+    // identified, reported at depth 0 + 1 = 1.
+    let plain = "sk-ant-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0";
+    let wrapped = b64(plain);
+    let (svc, decoded, depth) = decode_through_inner(&wrapped, 0).expect("wrapped key decodes");
+    assert_eq!(svc, "anthropic");
+    assert_eq!(decoded, plain);
+    assert_eq!(depth, 1);
+}
+
+#[test]
+fn decode_through_inner_honours_depth_bound() {
+    // At/over BASE64_DECODE_MAX_DEPTH the recursion is refused immediately, even
+    // for input that would otherwise decode to a real key.
+    let plain = "sk-ant-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0";
+    let wrapped = b64(plain);
+    assert!(decode_through_inner(&wrapped, BASE64_DECODE_MAX_DEPTH).is_none());
+}
+
+#[test]
+fn decode_through_inner_rejects_plain_non_encoded_non_key() {
+    // A plain, non-base64-decodable, non-key sentence yields nothing.
+    assert!(decode_through_inner("this is not base64 at all", 0).is_none());
+}

@@ -66,3 +66,36 @@ fn bitsquat_only_yields_valid_chars() {
         }
     }
 }
+
+#[test]
+fn keyboard_neighbors_maps_qwerty_adjacency() {
+    assert_eq!(keyboard_neighbors('a'), "qwsz");
+    assert_eq!(keyboard_neighbors('s'), "awedxz");
+    assert_eq!(keyboard_neighbors('q'), "wa");
+    assert_eq!(keyboard_neighbors('p'), "ol");
+    assert_eq!(keyboard_neighbors('z'), "asx");
+}
+
+#[test]
+fn keyboard_neighbors_unknown_char_is_empty() {
+    // Anything outside the lowercase QWERTY table falls through to "".
+    assert_eq!(keyboard_neighbors('1'), "");
+    assert_eq!(keyboard_neighbors('.'), "");
+    assert_eq!(keyboard_neighbors('A'), "");
+}
+
+#[test]
+fn homoglyphs_maps_ascii_lookalikes() {
+    assert_eq!(homoglyphs('o'), ['0'].as_slice());
+    assert_eq!(homoglyphs('0'), ['o'].as_slice());
+    assert_eq!(homoglyphs('l'), ['1', 'i'].as_slice());
+    assert_eq!(homoglyphs('i'), ['1', 'l'].as_slice());
+    assert_eq!(homoglyphs('e'), ['3'].as_slice());
+}
+
+#[test]
+fn homoglyphs_unknown_char_is_empty_slice() {
+    let empty: &[char] = &[];
+    assert_eq!(homoglyphs('x'), empty);
+    assert_eq!(homoglyphs('.'), empty);
+}

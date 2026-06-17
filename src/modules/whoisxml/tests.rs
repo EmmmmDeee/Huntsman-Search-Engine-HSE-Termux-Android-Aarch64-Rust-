@@ -117,3 +117,51 @@ use super::*;
         let es = build_entities(&rec, "acme.com", "t");
         assert!(es.is_empty());
     }
+
+    #[test]
+    fn nonempty_trims_and_drops_blank() {
+        assert_eq!(nonempty(&Some("x".to_string())).as_deref(), Some("x"));
+        // Surrounding whitespace is trimmed off.
+        assert_eq!(
+            nonempty(&Some("  hi  ".to_string())).as_deref(),
+            Some("hi")
+        );
+        // Empty / whitespace-only → None.
+        assert_eq!(nonempty(&Some(String::new())), None);
+        assert_eq!(nonempty(&Some("   ".to_string())), None);
+        // None → None.
+        assert_eq!(nonempty(&None), None);
+    }
+
+    #[test]
+    fn contact_location_composes_state_and_country() {
+        // State + country → "State, Country".
+        let both = Contact {
+            state: Some("Queensland".to_string()),
+            country: Some("Australia".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            contact_location(&both).as_deref(),
+            Some("Queensland, Australia")
+        );
+        // Country only → "Country".
+        let country_only = Contact {
+            country: Some("Australia".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(contact_location(&country_only).as_deref(), Some("Australia"));
+        // State only → "State".
+        let state_only = Contact {
+            state: Some("Queensland".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(contact_location(&state_only).as_deref(), Some("Queensland"));
+        // Neither (and blanks are dropped by nonempty) → None.
+        let neither = Contact {
+            state: Some("  ".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(contact_location(&neither), None);
+        assert_eq!(contact_location(&Contact::default()), None);
+    }

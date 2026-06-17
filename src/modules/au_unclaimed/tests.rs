@@ -51,6 +51,25 @@ fn record_to_entities_missing_postcode_returns_empty() {
 }
 
 #[test]
+fn postcode_centroid_covers_six_states_else_none() {
+    for (state, lat, lon) in [
+        ("NSW", -33.8688, 151.2093),
+        ("VIC", -37.8136, 144.9631),
+        ("WA", -31.9505, 115.8605),
+        ("SA", -34.9285, 138.6007),
+        ("TAS", -42.8821, 147.3272),
+        ("ACT", -35.2809, 149.1300),
+    ] {
+        let (got_lat, got_lon) = postcode_centroid("0000", state).unwrap();
+        assert!((got_lat - lat).abs() < 1e-9, "{state} lat");
+        assert!((got_lon - lon).abs() < 1e-9, "{state} lon");
+    }
+    assert!(postcode_centroid("4000", "QLD").is_none());
+    assert!(postcode_centroid("0800", "NT").is_none());
+    assert!(postcode_centroid("2000", "ZZ").is_none());
+}
+
+#[test]
 fn module_metadata() {
     let m = AuUnclaimed;
     assert_eq!(m.name(), "au_unclaimed");

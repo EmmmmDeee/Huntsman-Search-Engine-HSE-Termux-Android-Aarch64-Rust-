@@ -466,3 +466,19 @@ fn emit_bssid_entities_emits_nothing_for_empty_results() {
     let r = emit_bssid_entities("anything", NetworkKind::Wifi, &[], "test");
     assert!(r.entities.is_empty());
 }
+
+#[test]
+fn is_generic_ssid_matches_known_substrings_case_insensitively() {
+    assert!(is_generic_ssid("linksys"));
+    assert!(is_generic_ssid("xfinitywifi"));
+    assert!(is_generic_ssid("NETGEAR-Guest"));
+    assert!(is_generic_ssid("Telstra-Home-123"));
+    assert!(is_generic_ssid("Free Public WiFi"));
+}
+
+#[test]
+fn is_generic_ssid_rejects_custom_names() {
+    assert!(!is_generic_ssid("Smith-Family"));
+    assert!(!is_generic_ssid("Bamford-Residence"));
+    assert!(!is_generic_ssid(""));
+}

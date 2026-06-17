@@ -227,3 +227,57 @@ fn host_label_match(haystack: &str, domain: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matches_exact_host() {
+        assert!(host_label_match("example.com", "example.com"));
+    }
+
+    #[test]
+    fn matches_subdomain_on_dot_boundary() {
+        // `.` is not a label-continuation char, so the left boundary holds.
+        assert!(host_label_match("api.example.com", "example.com"));
+        assert!(host_label_match("dashboard.api.example.com", "example.com"));
+    }
+
+    #[test]
+    fn rejects_left_substring_without_boundary() {
+        // Preceding `t` is `[A-Za-z0-9-]`, so this is a fragment inside a longer
+        // label, not a host-label match.
+        assert!(!host_label_match("notexample.com", "example.com"));
+        // A hyphen also continues a label on the left.
+        assert!(!host_label_match("my-example.com", "example.com"));
+    }
+
+    #[test]
+    fn rejects_right_extension_without_boundary() {
+        // Trailing char after the match continues the host: alnum (`munity`)
+        // or `.` (`.com.au`) both void the right boundary.
+        assert!(!host_label_match("example.community", "example.com"));
+        assert!(!host_label_match("example.com.au", "example.com"));
+    }
+
+    #[test]
+    fn allows_trailing_port_path_or_separator() {
+        // Right boundary is satisfied by any char that can't continue a host
+        // (not `[A-Za-z0-9-.]`): `:`, `/`, whitespace.
+        assert!(host_label_match("example.com:8080", "example.com"));
+        assert!(host_label_match("example.com/path?key=v", "example.com"));
+        assert!(host_label_match("https://example.com", "example.com"));
+    }
+
+    #[test]
+    fn match_is_byte_exact_and_case_sensitive() {
+        // `host_label_match` does no case folding (the public entry point
+        // lowercases the haystack before calling it), so a mismatched case
+        // simply fails the substring `find`.
+        assert!(!host_label_match("EXAMPLE.COM", "example.com"));
+        assert!(host_label_match("example.com", "example.com"));
+        // A domain absent from the haystack never matches.
+        assert!(!host_label_match("other.org", "example.com"));
+    }
+}

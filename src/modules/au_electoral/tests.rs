@@ -145,6 +145,28 @@ fn split_name_handles_edge_cases() {
 }
 
 #[test]
+fn infer_state_from_division_maps_name_fragments() {
+    use super::division_map::infer_state_from_division;
+    assert_eq!(infer_state_from_division("North Sydney"), Some("NSW"));
+    assert_eq!(infer_state_from_division("parramatta"), Some("NSW"));
+    assert_eq!(infer_state_from_division("Hunter"), Some("NSW"));
+    assert_eq!(infer_state_from_division("Newcastle"), Some("NSW"));
+    assert_eq!(infer_state_from_division("MELBOURNE"), Some("VIC"));
+    assert_eq!(infer_state_from_division("Geelong"), Some("VIC"));
+    assert_eq!(infer_state_from_division("Ballarat"), Some("VIC"));
+    assert_eq!(infer_state_from_division("Brisbane"), Some("QLD"));
+    assert_eq!(infer_state_from_division("Gold Coast"), Some("QLD"));
+    assert_eq!(infer_state_from_division("Perth"), Some("WA"));
+    assert_eq!(infer_state_from_division("Fremantle"), Some("WA"));
+    assert_eq!(infer_state_from_division("Adelaide"), Some("SA"));
+    assert_eq!(infer_state_from_division("Hobart"), Some("TAS"));
+    assert_eq!(infer_state_from_division("Launceston"), Some("TAS"));
+    assert_eq!(infer_state_from_division("Canberra"), Some("ACT"));
+    assert_eq!(infer_state_from_division("Darwin"), Some("ACT"));
+    assert_eq!(infer_state_from_division("Wentworth"), None);
+}
+
+#[test]
 fn module_metadata_is_valid() {
     let m = AuElectoral;
     assert_eq!(m.name(), "au_electoral");

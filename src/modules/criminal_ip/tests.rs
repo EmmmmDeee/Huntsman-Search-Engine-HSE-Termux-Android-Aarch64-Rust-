@@ -139,3 +139,12 @@ fn outbound_high_risk_tagged_independently_of_inbound() {
     assert!(subject.has_tag("high-risk-outbound"));
     assert!(!subject.has_tag("high-risk-inbound"));
 }
+
+#[test]
+fn nonblank_filters_empty_and_whitespace_only() {
+    assert_eq!(nonblank(Some("  AS13335 ")), Some("AS13335"));
+    assert_eq!(nonblank(Some("x")), Some("x"));
+    assert_eq!(nonblank(Some("")), None);
+    assert_eq!(nonblank(Some("   ")), None);
+    assert_eq!(nonblank(None), None);
+}

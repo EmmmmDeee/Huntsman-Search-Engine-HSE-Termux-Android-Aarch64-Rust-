@@ -106,3 +106,31 @@ fn extract_suburb_hint(window: &str) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod suburb_hint_tests {
+    use super::extract_suburb_hint;
+
+    #[test]
+    fn anchors_suburb_on_in_range_postcode() {
+        assert_eq!(
+            extract_suburb_hint("Bondi Beach 2026 NSW"),
+            Some("Bondi Beach".to_string())
+        );
+    }
+
+    #[test]
+    fn out_of_range_postcode_yields_none() {
+        assert_eq!(extract_suburb_hint("Suburbia 1234"), None);
+    }
+
+    #[test]
+    fn no_postcode_yields_none() {
+        assert_eq!(extract_suburb_hint("Division of Sydney NSW"), None);
+    }
+
+    #[test]
+    fn postcode_with_no_preceding_alpha_yields_none() {
+        assert_eq!(extract_suburb_hint("2000 only"), None);
+    }
+}

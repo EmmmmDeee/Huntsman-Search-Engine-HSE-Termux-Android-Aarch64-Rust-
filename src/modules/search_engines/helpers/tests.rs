@@ -618,3 +618,99 @@ fn extract_key_phrase_returns_empty_when_no_terms_match() {
     let result = extract_key_phrase(snippet, "alice smith");
     assert!(result.is_empty(), "expected no match, got: {result}");
 }
+
+// ── dedup_results ────────────────────────────────────────────────────────────
+
+#[test]
+fn dedup_results_collapses_urls_that_canonicalize_equal() {
+    // Build three results: the first two canonicalize to the SAME key
+    // (tracking param stripped / fragment dropped) and the third is distinct.
+    let mk = |url: &str| SearchResult {
+        url: url.into(),
+        title: "T".into(),
+        snippet: "s".into(),
+        engine: "test",
+        query: "q".into(),
+    };
+    let results = vec![
+        mk("https://example.com/page?utm_source=google"), // → example.com/page
+        mk("https://example.com/page#section"),           // → example.com/page (dup)
+        mk("https://other.com/profile"),                  // distinct
+    ];
+    let deduped = dedup_results(results);
+    // Two survive; the first occurrence of the duplicate key is kept, order preserved.
+    assert_eq!(deduped.len(), 2);
+    assert_eq!(deduped[0].url, "https://example.com/page?utm_source=google");
+    assert_eq!(deduped[1].url, "https://other.com/profile");
+}
+
+#[test]
+fn dedup_results_keeps_distinct_content_params() {
+    // Content params (`v`, `id`) are KEPT by canonicalize_url, so these
+    // distinct pages must not collapse.
+    let mk = |url: &str| SearchResult {
+        url: url.into(),
+        title: "T".into(),
+        snippet: "s".into(),
+        engine: "test",
+        query: "q".into(),
+    };
+    let results = vec![
+        mk("https://youtube.com/watch?v=A"),
+        mk("https://youtube.com/watch?v=B"),
+    ];
+    assert_eq!(dedup_results(results).len(), 2);
+}
+
+// ── extract_surrounding_text ─────────────────────────────────────────────────
+
+#[test]
+fn extract_surrounding_text_returns_window_around_anchor() {
+    // Anchor present: tags stripped, whitespace collapsed, full window kept.
+    assert_eq!(
+        extract_surrounding_text("<p>hello ANCHOR world</p>", "ANCHOR", 200),
+        "hello ANCHOR world",
+    );
+}
+
+#[test]
+fn extract_surrounding_text_bounds_by_max_len() {
+    // max_len caps the returned text (ASCII → one byte per kept char).
+    let out = extract_surrounding_text("<p>hello ANCHOR world</p>", "ANCHOR", 5);
+    assert!(out.len() <= 5, "expected ≤5 chars, got {out:?}");
+    assert_eq!(out, "hello");
+}
+
+#[test]
+fn extract_surrounding_text_returns_empty_when_anchor_absent() {
+    assert_eq!(
+        extract_surrounding_text("<p>no marker here</p>", "ANCHOR", 200),
+        "",
+    );
+}
+
+// ── extract_snippet_near ─────────────────────────────────────────────────────
+
+#[test]
+fn extract_snippet_near_returns_text_after_anchor() {
+    // Returns the cleaned text FOLLOWING the anchor (not the preceding text).
+    assert_eq!(
+        extract_snippet_near("<p>before ANCHOR tail content</p>", "ANCHOR", 200),
+        "tail content",
+    );
+}
+
+#[test]
+fn extract_snippet_near_bounds_by_max_len() {
+    let out = extract_snippet_near("<p>before ANCHOR tail content</p>", "ANCHOR", 4);
+    assert!(out.len() <= 4, "expected ≤4 chars, got {out:?}");
+    assert_eq!(out, "tail");
+}
+
+#[test]
+fn extract_snippet_near_returns_empty_when_anchor_absent() {
+    assert_eq!(
+        extract_snippet_near("<p>no marker here</p>", "ANCHOR", 200),
+        "",
+    );
+}

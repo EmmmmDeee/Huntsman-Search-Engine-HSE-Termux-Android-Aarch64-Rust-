@@ -46,3 +46,11 @@ fn description_mentions_free_and_paid() {
     assert!(desc.contains("free") || desc.contains("Free") || desc.contains("InternetDB"));
     assert!(desc.contains("paid") || desc.contains("Paid") || desc.contains("keyed"));
 }
+
+#[test]
+fn target_entity_builds_ip_entity() {
+    let e = target_entity("8.8.8.8", "scan-1");
+    assert_eq!(e.kind, EntityKind::IpAddress);
+    assert_eq!(e.value, "8.8.8.8");
+    assert!((e.confidence - 0.90).abs() < 1e-9);
+}

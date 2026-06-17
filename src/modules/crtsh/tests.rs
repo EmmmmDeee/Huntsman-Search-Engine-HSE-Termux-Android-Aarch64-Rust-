@@ -160,3 +160,46 @@ fn absent_serial_omits_the_attribute() {
     let dom = out.iter().find(|x| x.kind == EntityKind::Domain).unwrap();
     assert!(!dom.evidence[0].attributes.contains_key("cert_serial"));
 }
+
+#[test]
+fn cert_evidence_always_stamps_issuer_and_validity() {
+    let entries: Vec<CrtEntry> = serde_json::from_str(
+        r#"[{"issuer_name":"Let's Encrypt","not_before":"2024-01-01","not_after":"2024-04-01","serial_number":"abc123"}]"#,
+    )
+    .unwrap();
+    let ev = cert_evidence(&entries[0], "summary text");
+    assert_eq!(ev.source, SRC);
+    assert_eq!(ev.summary, "summary text");
+    assert_eq!(
+        ev.attributes.get("issuer").map(String::as_str),
+        Some("Let's Encrypt")
+    );
+    assert_eq!(
+        ev.attributes.get("not_before").map(String::as_str),
+        Some("2024-01-01")
+    );
+    assert_eq!(
+        ev.attributes.get("not_after").map(String::as_str),
+        Some("2024-04-01")
+    );
+    assert_eq!(
+        ev.attributes.get("cert_serial").map(String::as_str),
+        Some("abc123")
+    );
+}
+
+#[test]
+fn cert_evidence_stamps_empty_strings_when_fields_absent_and_omits_blank_serial() {
+    let entries: Vec<CrtEntry> = serde_json::from_str(r#"[{}]"#).unwrap();
+    let ev = cert_evidence(&entries[0], "s");
+    assert_eq!(ev.attributes.get("issuer").map(String::as_str), Some(""));
+    assert_eq!(ev.attributes.get("not_before").map(String::as_str), Some(""));
+    assert_eq!(ev.attributes.get("not_after").map(String::as_str), Some(""));
+    assert!(
+        !ev.attributes.contains_key("cert_serial"),
+        "blank serial omitted"
+    );
+    let empty_serial: Vec<CrtEntry> = serde_json::from_str(r#"[{"serial_number":""}]"#).unwrap();
+    let ev2 = cert_evidence(&empty_serial[0], "s");
+    assert!(!ev2.attributes.contains_key("cert_serial"));
+}

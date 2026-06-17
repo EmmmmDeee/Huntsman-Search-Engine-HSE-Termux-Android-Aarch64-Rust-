@@ -1,7 +1,8 @@
 use super::AuProperty;
 use super::parse::{
     PropertyRecord, dedup_entities, extract_postcode, extract_state, name_matches,
-    parse_nsw_response, record_to_entities, strip_html,
+    parse_nsw_response, parse_qld_response, parse_vic_response, record_to_entities,
+    state_capital_coords, strip_html,
 };
 use crate::core::entity::{Entity, EntityKind};
 use crate::core::module::Module;
@@ -100,6 +101,69 @@ fn parse_nsw_response_ignores_non_matching_rows() {
     let html = "<tr><td>SMITH JOHN</td><td>SYDNEY</td><td>NSW</td><td>2000</td></tr>";
     let recs = parse_nsw_response(html, "Haigen Bamford");
     assert!(recs.is_empty(), "non-matching rows must be ignored");
+}
+
+#[test]
+fn parse_vic_response_extracts_vic_record() {
+    // Mirror of the NSW test: a VIC line yields a VIC-stated record.
+    let html = "<tr><td>BAMFORD HAIGEN</td><td>FITZROY</td><td>VIC</td><td>3065</td></tr>";
+    let recs = parse_vic_response(html, "Haigen Bamford");
+    assert!(!recs.is_empty(), "must extract a record when name matches");
+    assert_eq!(recs[0].state, "VIC");
+    assert_eq!(recs[0].postcode.as_deref(), Some("3065"));
+}
+
+#[test]
+fn parse_vic_response_default_state_needs_no_state_token_yields_nothing() {
+    // The VIC default only labels the record's state; the suburb extractor still
+    // requires the state token in the line, so a token-less line is dropped.
+    let html = "<tr><td>BAMFORD HAIGEN</td><td>FITZROY</td><td>3065</td></tr>";
+    assert!(parse_vic_response(html, "Haigen Bamford").is_empty());
+}
+
+#[test]
+fn parse_vic_response_ignores_non_matching_rows() {
+    let html = "<tr><td>SMITH JOHN</td><td>FITZROY</td><td>VIC</td><td>3065</td></tr>";
+    let recs = parse_vic_response(html, "Haigen Bamford");
+    assert!(recs.is_empty(), "non-matching rows must be ignored");
+}
+
+#[test]
+fn parse_qld_response_extracts_qld_record() {
+    let html = "<tr><td>BAMFORD HAIGEN</td><td>TOOWONG</td><td>QLD</td><td>4066</td></tr>";
+    let recs = parse_qld_response(html, "Haigen Bamford");
+    assert!(!recs.is_empty(), "must extract a record when name matches");
+    assert_eq!(recs[0].state, "QLD");
+    assert_eq!(recs[0].postcode.as_deref(), Some("4066"));
+}
+
+#[test]
+fn parse_qld_response_explicit_state_overrides_default() {
+    // An explicit NSW token in a QLD-portal line wins over the QLD default.
+    let html = "<tr><td>BAMFORD HAIGEN</td><td>SURRY HILLS</td><td>NSW</td><td>2010</td></tr>";
+    let recs = parse_qld_response(html, "Haigen Bamford");
+    assert!(!recs.is_empty());
+    assert_eq!(recs[0].state, "NSW");
+}
+
+#[test]
+fn state_capital_coords_covers_eight_states_and_rejects_others() {
+    for (code, lat, lon) in [
+        ("NSW", -33.8688, 151.2093),
+        ("VIC", -37.8136, 144.9631),
+        ("QLD", -27.4698, 153.0251),
+        ("SA", -34.9285, 138.6007),
+        ("WA", -31.9505, 115.8605),
+        ("TAS", -42.8821, 147.3272),
+        ("ACT", -35.2809, 149.1300),
+        ("NT", -12.4634, 130.8456),
+    ] {
+        let (got_lat, got_lon) = state_capital_coords(code).unwrap();
+        assert!((got_lat - lat).abs() < 1e-9, "{code} lat");
+        assert!((got_lon - lon).abs() < 1e-9, "{code} lon");
+    }
+    assert!(state_capital_coords("XYZ").is_none());
+    assert!(state_capital_coords("").is_none());
 }
 
 #[test]

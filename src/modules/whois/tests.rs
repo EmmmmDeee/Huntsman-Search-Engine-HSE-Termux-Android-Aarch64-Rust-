@@ -2,7 +2,7 @@ use crate::core::scan::{Target, TargetKind};
 
 use super::Whois;
 use super::client::find_referral;
-use super::parse::{all_fields, field, parse_whois};
+use super::parse::{all_fields, field, parse_whois, starts_with_ascii_ci};
 use crate::core::module::Module;
 
 #[test]
@@ -81,4 +81,17 @@ fn parse_whois_filters_non_at_email_placeholders() {
     let f = parse_whois("Registrant Email: REDACTED FOR PRIVACY\nRegistrar: X");
     assert!(f.registrant_email.is_none());
     assert_eq!(f.registrar.as_deref(), Some("X"));
+}
+
+#[test]
+fn starts_with_ascii_ci_matches_prefix_ignoring_case() {
+    assert!(starts_with_ascii_ci("Registrar: X", "registrar:"));
+    // Case-insensitive in both directions.
+    assert!(starts_with_ascii_ci("registrar: x", "REGISTRAR:"));
+    // A different prefix does not match.
+    assert!(!starts_with_ascii_ci("Registrar: X", "creation"));
+    // Key longer than the line can never match (the length guard).
+    assert!(!starts_with_ascii_ci("Reg", "registrar:"));
+    // The empty key is a prefix of everything.
+    assert!(starts_with_ascii_ci("anything", ""));
 }

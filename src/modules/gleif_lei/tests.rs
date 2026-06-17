@@ -1,8 +1,8 @@
 use super::{
     GleifLei, ORG_EXACT,
-    helpers::{locality, query_url},
+    helpers::{au_abn_acn, locality, non_empty, query_url, record_evidence},
     transform::records_to_entities,
-    types::{GleifAddress, GleifResp},
+    types::{GleifAddress, GleifEntity, GleifResp},
 };
 use crate::core::{
     entity::EntityKind,
@@ -168,6 +168,89 @@ fn query_url_encodes_brackets_and_value() {
     let u = query_url("BHP Group");
     assert!(u.contains("filter%5Bentity.legalName%5D=BHP+Group"), "{u}");
     assert!(u.contains("page%5Bsize%5D=10"), "{u}");
+}
+
+#[test]
+fn non_empty_trims_and_filters_blank() {
+    assert_eq!(non_empty(Some("  hi ".to_string())), Some("hi".to_string()));
+    assert_eq!(non_empty(Some("".to_string())), None);
+    assert_eq!(non_empty(Some("   ".to_string())), None);
+    assert_eq!(non_empty(None), None);
+}
+
+fn entity_from_json(json: &str) -> GleifEntity {
+    serde_json::from_str(json).unwrap()
+}
+
+#[test]
+fn au_abn_acn_accepts_au_nine_and_eleven_digits() {
+    let acn = entity_from_json(r#"{"jurisdiction":"AU","registeredAs":"004 028 077"}"#);
+    assert_eq!(au_abn_acn(&acn).as_deref(), Some("004028077"));
+    let abn = entity_from_json(r#"{"jurisdiction":"AU","registeredAs":"28 000 030 179"}"#);
+    assert_eq!(au_abn_acn(&abn).as_deref(), Some("28000030179"));
+}
+
+#[test]
+fn au_abn_acn_rejects_foreign_jurisdiction_and_wrong_length() {
+    let gb = entity_from_json(r#"{"jurisdiction":"GB","registeredAs":"03298904"}"#);
+    assert!(au_abn_acn(&gb).is_none());
+    let bad = entity_from_json(r#"{"jurisdiction":"AU","registeredAs":"12345"}"#);
+    assert!(au_abn_acn(&bad).is_none());
+    let none = entity_from_json(r#"{"jurisdiction":"AU"}"#);
+    assert!(au_abn_acn(&none).is_none());
+}
+
+#[test]
+fn record_evidence_stamps_core_attrs_and_gates_optional_ones() {
+    let entity = entity_from_json(
+        r#"{"jurisdiction":"AU","status":"ACTIVE","registeredAs":"004 028 077",
+            "legalAddress":{"addressLines":["171 Collins Street"],"city":"Melbourne","region":"AU-VIC","postalCode":"3000","country":"AU"}}"#,
+    );
+    let ev = record_evidence("WZE1WSENV6JSZFK0JC28", &entity, "BHP GROUP LIMITED", 2);
+    assert_eq!(
+        ev.attributes.get("lei").map(String::as_str),
+        Some("WZE1WSENV6JSZFK0JC28")
+    );
+    assert_eq!(
+        ev.attributes.get("total_matches").map(String::as_str),
+        Some("2")
+    );
+    assert!(ev.attributes.contains_key("register"));
+    assert_eq!(
+        ev.attributes.get("jurisdiction").map(String::as_str),
+        Some("AU")
+    );
+    assert_eq!(
+        ev.attributes.get("entity_status").map(String::as_str),
+        Some("ACTIVE")
+    );
+    assert_eq!(
+        ev.attributes.get("registered_as").map(String::as_str),
+        Some("004 028 077")
+    );
+    assert_eq!(
+        ev.attributes
+            .get("legal_address_street")
+            .map(String::as_str),
+        Some("171 Collins Street")
+    );
+    assert_eq!(
+        ev.attributes.get("legal_address").map(String::as_str),
+        Some("Melbourne, VIC 3000, AU")
+    );
+    assert!(ev.summary.contains("BHP GROUP LIMITED"));
+}
+
+#[test]
+fn record_evidence_omits_absent_optional_attrs() {
+    let entity = entity_from_json(r#"{}"#);
+    let ev = record_evidence("LEI123", &entity, "Some Co", 1);
+    assert!(ev.attributes.contains_key("lei"));
+    assert!(!ev.attributes.contains_key("jurisdiction"));
+    assert!(!ev.attributes.contains_key("entity_status"));
+    assert!(!ev.attributes.contains_key("registered_as"));
+    assert!(!ev.attributes.contains_key("legal_address"));
+    assert!(!ev.attributes.contains_key("hq_address"));
 }
 
 #[test]

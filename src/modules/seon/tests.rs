@@ -1,7 +1,9 @@
 use super::{
     Seon,
-    entity_builders::{build_email_entities, build_phone_entities},
-    types::{SeonEmailResp, SeonPhoneResp},
+    entity_builders::{
+        build_email_entities, build_phone_entities, profile_url_entity, registered_accounts,
+    },
+    types::{AccountPresence, SeonEmailResp, SeonPhoneResp},
 };
 use crate::core::{
     entity::EntityKind,
@@ -170,4 +172,62 @@ fn phone_enriches_and_emits_messaging_profile_urls() {
     assert_eq!(urls.len(), 1);
     assert_eq!(urls[0].value, "https://wa.me/61400");
     assert!(urls[0].has_tag("platform:whatsapp"));
+}
+
+// ── Pure entity-builder helpers (direct unit tests) ──────────────────
+fn presence(registered: Option<bool>, name: Option<&str>, url: Option<&str>) -> AccountPresence {
+    AccountPresence {
+        registered,
+        name: name.map(String::from),
+        url: url.map(String::from),
+    }
+}
+
+#[test]
+fn registered_accounts_keeps_only_registered_in_declared_order() {
+    // Build a few presences; only those with `registered == Some(true)` survive,
+    // and the result preserves the order the pairs were declared in.
+    let fb = Some(presence(
+        Some(true),
+        Some("Jordan Avery"),
+        Some("https://fb/ja"),
+    ));
+    let tw = Some(presence(Some(false), None, None)); // not registered → dropped
+    let li = Some(presence(Some(true), None, None));
+    let gh: Option<AccountPresence> = None; // absent → dropped
+    let got = registered_accounts(&[
+        ("facebook", &fb),
+        ("twitter", &tw),
+        ("linkedin", &li),
+        ("github", &gh),
+    ]);
+    let names: Vec<&str> = got.iter().map(|(n, _)| *n).collect();
+    assert_eq!(names, ["facebook", "linkedin"]);
+    // The borrowed AccountPresence is the same data we passed in.
+    assert_eq!(got[0].1.name.as_deref(), Some("Jordan Avery"));
+}
+
+#[test]
+fn registered_accounts_empty_when_none_registered() {
+    let a = Some(presence(Some(false), None, None));
+    let b = Some(presence(None, Some("x"), None)); // registered is None, not true
+    let got = registered_accounts(&[("facebook", &a), ("twitter", &b)]);
+    assert!(got.is_empty());
+}
+
+#[test]
+fn profile_url_entity_shape() {
+    let e = profile_url_entity("whatsapp", "https://wa.me/61400", "+61400", "scan-1");
+    assert_eq!(e.kind, EntityKind::Url);
+    assert_eq!(e.value, "https://wa.me/61400");
+    assert!((e.confidence - 0.70).abs() < 1e-9);
+    assert!(e.has_tag("seon"));
+    assert!(e.has_tag("social-profile"));
+    assert!(e.has_tag("platform:whatsapp"));
+    assert_eq!(e.evidence.len(), 1);
+    assert_eq!(e.evidence[0].source, "seon");
+    assert_eq!(
+        e.evidence[0].summary,
+        "whatsapp profile via SEON for +61400"
+    );
 }

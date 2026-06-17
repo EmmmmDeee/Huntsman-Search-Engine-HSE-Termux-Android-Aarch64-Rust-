@@ -66,3 +66,56 @@ use super::*;
         assert!(!m.attack_techniques().is_empty());
         assert!(m.produces().contains(&EntityKind::Domain));
     }
+
+    #[test]
+    fn detect_sucuri_via_id_header_and_server() {
+        let mut by_id = HeaderMap::new();
+        by_id.insert("x-sucuri-id", HeaderValue::from_static("12345"));
+        assert!(has_sucuri(&by_id));
+
+        let mut by_server = HeaderMap::new();
+        by_server.insert("server", HeaderValue::from_static("Sucuri/Cloudproxy"));
+        assert!(has_sucuri(&by_server));
+    }
+
+    #[test]
+    fn sucuri_not_detected_on_unrelated_headers() {
+        assert!(!has_sucuri(&HeaderMap::new()));
+        let mut h = HeaderMap::new();
+        h.insert("server", HeaderValue::from_static("nginx"));
+        assert!(!has_sucuri(&h));
+    }
+
+    #[test]
+    fn detect_incapsula_via_iinfo_header_and_cdn() {
+        let mut by_iinfo = HeaderMap::new();
+        by_iinfo.insert("x-iinfo", HeaderValue::from_static("1-2-3"));
+        assert!(has_incapsula(&by_iinfo));
+
+        let mut by_cdn = HeaderMap::new();
+        by_cdn.insert("x-cdn", HeaderValue::from_static("Incapsula"));
+        assert!(has_incapsula(&by_cdn));
+    }
+
+    #[test]
+    fn incapsula_not_detected_on_unrelated_headers() {
+        assert!(!has_incapsula(&HeaderMap::new()));
+        let mut h = HeaderMap::new();
+        h.insert("x-cdn", HeaderValue::from_static("cloudfront"));
+        assert!(!has_incapsula(&h));
+    }
+
+    #[test]
+    fn detect_ddos_guard_via_server_header() {
+        let mut h = HeaderMap::new();
+        h.insert("server", HeaderValue::from_static("ddos-guard"));
+        assert!(has_ddos_guard(&h));
+    }
+
+    #[test]
+    fn ddos_guard_not_detected_on_unrelated_headers() {
+        assert!(!has_ddos_guard(&HeaderMap::new()));
+        let mut h = HeaderMap::new();
+        h.insert("server", HeaderValue::from_static("cloudflare"));
+        assert!(!has_ddos_guard(&h));
+    }

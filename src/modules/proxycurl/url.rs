@@ -37,3 +37,18 @@ fn linkedin_lookup_url(linkedin_url: &str) -> String {
         urlencode(linkedin_url),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn linkedin_lookup_url_embeds_encoded_profile_url() {
+        let url = linkedin_lookup_url("https://www.linkedin.com/in/jane-doe");
+        // The v2 endpoint base and the `url=` query parameter key.
+        assert!(url.starts_with("https://nubela.co/proxycurl/api/v2/linkedin?url="));
+        // The profile URL is form-urlencoded into the query value: ':' → %3A,
+        // '/' → %2F.
+        assert!(url.contains("https%3A%2F%2Fwww.linkedin.com%2Fin%2Fjane-doe"));
+    }
+}

@@ -109,6 +109,39 @@ fn jsonp_strip() {
 }
 
 #[test]
+fn parse_jsonp_body_strips_wrapper_and_deserializes() {
+    use super::fetch::parse_jsonp_body;
+    let v = parse_jsonp_body(r#"cb({"Abn":"123","EntityName":"ACME"})"#).unwrap();
+    assert_eq!(v.get("Abn").and_then(|x| x.as_str()), Some("123"));
+    assert_eq!(v.get("EntityName").and_then(|x| x.as_str()), Some("ACME"));
+}
+
+#[test]
+fn parse_jsonp_body_returns_none_without_wrapper() {
+    use super::fetch::parse_jsonp_body;
+    assert!(parse_jsonp_body(r#"{"Abn":"123"}"#).is_none());
+    assert!(parse_jsonp_body(r#"cb({"Abn":"123"}"#).is_none());
+}
+
+#[test]
+fn parse_jsonp_body_returns_none_for_malformed_inner_json() {
+    use super::fetch::parse_jsonp_body;
+    assert!(parse_jsonp_body("cb(not json)").is_none());
+    assert!(parse_jsonp_body(r#"cb({"Abn":})"#).is_none());
+}
+
+#[test]
+fn str_field_returns_nonempty_string_else_none() {
+    use super::parse::str_field;
+    let v = serde_json::json!({"Abn": "123", "Empty": "", "Num": 7, "Null": null});
+    assert_eq!(str_field(&v, "Abn"), Some("123".to_string()));
+    assert_eq!(str_field(&v, "Empty"), None);
+    assert_eq!(str_field(&v, "Num"), None);
+    assert_eq!(str_field(&v, "Null"), None);
+    assert_eq!(str_field(&v, "Absent"), None);
+}
+
+#[test]
 fn max_timeout_covers_worst_case_retry_path() {
     // Regression guard: fetch_jsonp's worst case is curl(12s tokio
     // timeout) + sleep(5s on 429) + curl(12s) ≈ 29s. If a future edit

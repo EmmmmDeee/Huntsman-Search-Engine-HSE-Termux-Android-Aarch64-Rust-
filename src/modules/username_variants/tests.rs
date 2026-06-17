@@ -123,3 +123,22 @@ use super::*;
         assert!(!m.attack_techniques().is_empty());
         assert!(m.produces().contains(&EntityKind::Username));
     }
+
+    #[test]
+    fn add_variant_guards_length_and_seed() {
+        let seed = "jdoe";
+        let mut out: BTreeSet<String> = BTreeSet::new();
+        // Too short (< MIN_HANDLE_LEN = 4) → not inserted.
+        add_variant(&mut out, seed, "abc".to_string());
+        // Exactly the seed → not inserted.
+        add_variant(&mut out, seed, "jdoe".to_string());
+        // Long enough and distinct → inserted.
+        add_variant(&mut out, seed, "janedoe".to_string());
+        // 4 chars is the boundary (>= MIN_HANDLE_LEN) → inserted.
+        add_variant(&mut out, seed, "jane".to_string());
+        assert_eq!(out.len(), 2);
+        assert!(out.contains("janedoe"));
+        assert!(out.contains("jane"));
+        assert!(!out.contains("abc"));
+        assert!(!out.contains("jdoe"));
+    }

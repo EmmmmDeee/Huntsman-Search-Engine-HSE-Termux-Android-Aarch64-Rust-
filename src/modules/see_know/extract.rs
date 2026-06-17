@@ -819,3 +819,42 @@ fn push_breach_entity(
     e.add_evidence(ev.clone());
     result.push(e);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_coord_reads_json_number() {
+        let item = json!({"lat": 12.5});
+        assert_eq!(parse_coord(&item, &["lat"]), Some(12.5));
+    }
+
+    #[test]
+    fn parse_coord_parses_numeric_string() {
+        let item = json!({"lat": "12.5"});
+        assert_eq!(parse_coord(&item, &["lat"]), Some(12.5));
+    }
+
+    #[test]
+    fn parse_coord_tries_keys_in_order_first_present_wins() {
+        // First key absent, second present → second is used.
+        let item = json!({"lon": -77.25});
+        assert_eq!(parse_coord(&item, &["longitude", "lon"]), Some(-77.25));
+    }
+
+    #[test]
+    fn parse_coord_none_when_no_key_present() {
+        let item = json!({"other": 1.0});
+        assert_eq!(parse_coord(&item, &["lat", "latitude"]), None);
+    }
+
+    #[test]
+    fn parse_coord_none_for_non_numeric_string() {
+        // Present key, but the string isn't a number → None (the first-present
+        // key is consumed even when it fails to parse).
+        let item = json!({"lat": "north"});
+        assert_eq!(parse_coord(&item, &["lat"]), None);
+    }
+}

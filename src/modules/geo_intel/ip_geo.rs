@@ -212,3 +212,45 @@ pub(super) fn build_freeipapi_entity(
     e.add_evidence(ev);
     Some(e)
 }
+
+#[cfg(test)]
+mod tag_country_tests {
+    use super::tag_country;
+    use crate::core::entity::{Entity, EntityKind};
+
+    fn coord_entity() -> Entity {
+        Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.6, "s")
+    }
+
+    #[test]
+    fn tags_geoint_always() {
+        let mut e = coord_entity();
+        tag_country(&mut e, None, 0.0, 0.0);
+        assert!(e.has_tag("geoint"));
+        assert!(!e.tags.iter().any(|t| t.starts_with("country:")));
+    }
+
+    #[test]
+    fn tags_uppercased_country_for_non_au() {
+        let mut e = coord_entity();
+        tag_country(&mut e, Some("de"), 52.0, 13.0);
+        assert!(e.has_tag("country:DE"));
+        assert!(!e.tags.iter().any(|t| t.starts_with("au-state:")));
+    }
+
+    #[test]
+    fn tags_au_state_from_coords_for_au() {
+        let mut e = coord_entity();
+        tag_country(&mut e, Some("AU"), -33.8688, 151.2093);
+        assert!(e.has_tag("country:AU"));
+        assert!(e.has_tag("au-state:NSW"));
+    }
+
+    #[test]
+    fn au_country_outside_box_skips_state_tag() {
+        let mut e = coord_entity();
+        tag_country(&mut e, Some("au"), 0.0, 0.0);
+        assert!(e.has_tag("country:AU"));
+        assert!(!e.tags.iter().any(|t| t.starts_with("au-state:")));
+    }
+}

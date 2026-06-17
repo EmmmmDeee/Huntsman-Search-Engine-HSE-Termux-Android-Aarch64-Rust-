@@ -127,3 +127,40 @@ fn reverse_without_country_code_falls_back_to_the_bounding_box() {
     assert!(!foreign.has_tag("au-relevant"));
     assert!(!foreign.has_tag("candidate"));
 }
+
+fn addr(json: serde_json::Value) -> NominatimAddr {
+    serde_json::from_value(json).unwrap()
+}
+
+#[test]
+fn au_relevance_country_code_au_is_in_australia_regardless_of_coords() {
+    let a = addr(serde_json::json!({ "country_code": "AU" }));
+    assert_eq!(au_relevance(0.0, 0.0, Some(&a)), AuRelevance::InAustralia);
+}
+
+#[test]
+fn au_relevance_other_country_code_is_off_region() {
+    let a = addr(serde_json::json!({ "country_code": "us" }));
+    assert_eq!(
+        au_relevance(-27.47, 153.02, Some(&a)),
+        AuRelevance::OffRegion
+    );
+}
+
+#[test]
+fn au_relevance_no_country_code_falls_back_to_bounding_box() {
+    assert_eq!(
+        au_relevance(-27.4766, 153.0166, None),
+        AuRelevance::InAustralia
+    );
+    let a = addr(serde_json::json!({ "city": "Nowhere" }));
+    assert_eq!(
+        au_relevance(-27.4766, 153.0166, Some(&a)),
+        AuRelevance::InAustralia
+    );
+}
+
+#[test]
+fn au_relevance_no_country_code_outside_box_is_unknown() {
+    assert_eq!(au_relevance(48.8566, 2.3522, None), AuRelevance::Unknown);
+}

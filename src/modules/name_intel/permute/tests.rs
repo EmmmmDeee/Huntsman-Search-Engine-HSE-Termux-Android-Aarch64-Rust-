@@ -292,3 +292,121 @@ use super::*;
         assert!(d.contains(&"gmail.com".to_string()));
         assert!(d.iter().all(|x| x.contains('.')));
     }
+
+    #[test]
+    fn provider_weight_ranks_consumer_mailboxes() {
+        // Each arm maps to an exact f64 literal (see `provider_weight`); compare
+        // with exact equality since no arithmetic is performed on these values.
+        assert_eq!(provider_weight("gmail.com"), 1.0);
+        assert_eq!(provider_weight("googlemail.com"), 1.0);
+        for d in ["outlook.com", "hotmail.com", "live.com", "msn.com"] {
+            assert_eq!(provider_weight(d), 0.6, "{d}");
+        }
+        for d in ["yahoo.com", "ymail.com"] {
+            assert_eq!(provider_weight(d), 0.5, "{d}");
+        }
+        for d in ["icloud.com", "me.com", "mac.com"] {
+            assert_eq!(provider_weight(d), 0.45, "{d}");
+        }
+        assert_eq!(provider_weight("aol.com"), 0.4);
+        for d in ["gmx.com", "gmx.net", "mail.com"] {
+            assert_eq!(provider_weight(d), 0.35, "{d}");
+        }
+        for d in ["proton.me", "protonmail.com", "pm.me", "tutanota.com"] {
+            assert_eq!(provider_weight(d), 0.3, "{d}");
+        }
+        // Unrecognised custom provider falls to the neutral mid weight.
+        assert_eq!(provider_weight("example.org"), 0.4);
+        assert_eq!(provider_weight("corp.internal"), 0.4);
+    }
+
+    #[test]
+    fn extract_number_direct_prefers_four_digit_run() {
+        // A 4-digit run wins over an earlier 2-digit run regardless of position.
+        assert_eq!(extract_number("a12b1987c").as_deref(), Some("1987"));
+    }
+
+    #[test]
+    fn extract_number_direct_takes_first_short_run_without_year() {
+        // No 4-digit run present -> first 2–4 digit run is taken.
+        assert_eq!(extract_number("x71y").as_deref(), Some("71"));
+    }
+
+    #[test]
+    fn extract_number_direct_ignores_overlong_and_single_runs() {
+        // A 5-digit run never satisfies `(2..=4).contains(&run.len())`, so it is
+        // never pushed as a run -> no number captured.
+        assert_eq!(extract_number("123456"), None);
+        // A lone 1-digit run is below the 2-digit floor and is ignored.
+        assert_eq!(extract_number("a1b"), None);
+        // No digits at all.
+        assert_eq!(extract_number("abc"), None);
+    }
+
+    #[test]
+    fn clean_display_token_keeps_letters_and_internal_punct() {
+        // Internal apostrophe/hyphen kept; only the FIRST char is uppercased.
+        assert_eq!(clean_display_token("o'brien").as_deref(), Some("O'brien"));
+        assert_eq!(clean_display_token("jean-paul").as_deref(), Some("Jean-paul"));
+        // Outer hyphen/apostrophe trimmed before titlecasing.
+        assert_eq!(clean_display_token("-mary-").as_deref(), Some("Mary"));
+        // Digits are filtered out; the surviving letters still titlecase.
+        assert_eq!(clean_display_token("ab3").as_deref(), Some("Ab"));
+        // No surviving letter -> None.
+        assert_eq!(clean_display_token("123"), None);
+        assert_eq!(clean_display_token(""), None);
+    }
+
+    #[test]
+    fn titlecase_uppercases_only_the_first_char() {
+        assert_eq!(titlecase("mcdonald"), "Mcdonald");
+        // An already-mixed-case remainder is preserved verbatim.
+        assert_eq!(titlecase("McDonald"), "McDonald");
+        assert_eq!(titlecase("a"), "A");
+        // Empty input hits the `None` branch and returns an empty String.
+        assert_eq!(titlecase(""), "");
+    }
+
+    #[test]
+    fn dedup_top_keeps_max_weight_drops_empty_and_orders() {
+        // `raw` is consumed by `dedup_top`, so a Vec literal here is correct
+        // (not a useless_vec — the fn takes `Vec<(String, f64)>` by value).
+        let raw = vec![
+            ("b".to_string(), 0.5),
+            ("a".to_string(), 0.9),
+            ("b".to_string(), 0.8),
+            (String::new(), 1.0),
+        ];
+        let out = dedup_top(raw, 10);
+        // Empty handle dropped; "b" keeps its MAX weight (0.8, not 0.5);
+        // ordered by weight desc -> ["a"(0.9), "b"(0.8)].
+        let pairs: Vec<(String, f64)> = out.iter().map(|s| (s.handle.clone(), s.weight)).collect();
+        assert_eq!(
+            pairs,
+            vec![("a".to_string(), 0.9), ("b".to_string(), 0.8)]
+        );
+    }
+
+    #[test]
+    fn dedup_top_truncates_to_cap() {
+        let raw = vec![
+            ("b".to_string(), 0.5),
+            ("a".to_string(), 0.9),
+            ("b".to_string(), 0.8),
+            (String::new(), 1.0),
+        ];
+        let out = dedup_top(raw, 1);
+        assert_eq!(out.len(), 1);
+        // The single retained handle is the highest-weighted ("a").
+        assert_eq!(out[0].handle, "a");
+        assert_eq!(out[0].weight, 0.9);
+    }
+
+    #[test]
+    fn dedup_top_sorts_equal_weights_by_handle_asc() {
+        // Tie-break on equal weight is handle ascending.
+        let raw = vec![("zoe".to_string(), 0.5), ("amy".to_string(), 0.5)];
+        let out = dedup_top(raw, 10);
+        let handles: Vec<&str> = out.iter().map(|s| s.handle.as_str()).collect();
+        assert_eq!(handles, ["amy", "zoe"]);
+    }

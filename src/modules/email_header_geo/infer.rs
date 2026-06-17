@@ -57,3 +57,35 @@ fn domain_has_label_prefix(domain: &str, pattern: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod label_prefix_tests {
+    use super::domain_has_label_prefix;
+
+    #[test]
+    fn matches_at_start_of_domain() {
+        assert!(domain_has_label_prefix("bigpond.com.au", "bigpond"));
+        assert!(domain_has_label_prefix("tpg.com.au", "tpg.com"));
+    }
+
+    #[test]
+    fn matches_after_label_separator_as_subdomain() {
+        assert!(domain_has_label_prefix("mail.bigpond.com", "bigpond"));
+    }
+
+    #[test]
+    fn rejects_mid_label_false_positives() {
+        assert!(!domain_has_label_prefix("campbell.net", "bell.net"));
+        assert!(!domain_has_label_prefix("platt.net", "att.net"));
+    }
+
+    #[test]
+    fn rejects_when_pattern_absent() {
+        assert!(!domain_has_label_prefix("example.com", "bigpond"));
+    }
+
+    #[test]
+    fn rejects_when_preceding_char_is_hyphen() {
+        assert!(!domain_has_label_prefix("my-att.net", "att.net"));
+    }
+}

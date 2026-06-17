@@ -78,3 +78,78 @@ fn state_tag_from_text_recognises_au_states() {
     );
     assert!(state_tag_from_text("London UK").is_none());
 }
+
+#[test]
+fn whitepages_phone_converts_local_mobile_to_e164() {
+    // A local AU mobile 04XX XXX XXX → E.164 +61 with the leading 0 dropped.
+    let html = "<div>Contact: 0412 345 678</div>";
+    let ents = parse_whitepages_html(html, "Haigen Bamford", "s");
+    let phone = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Phone)
+        .expect("a mobile number should be parsed");
+    assert_eq!(phone.value, "+61412345678");
+    assert!(phone.has_tag("whitepages"));
+    assert!(phone.has_tag("country:AU"));
+    assert_eq!(
+        phone.evidence[0].attributes.get("raw").map(String::as_str),
+        Some("0412345678")
+    );
+}
+
+#[test]
+fn whitepages_dedups_repeated_phone() {
+    let html = "<p>0412 345 678</p><p>0412 345 678</p>";
+    let ents = parse_whitepages_html(html, "Haigen Bamford", "s");
+    assert_eq!(
+        ents.iter().filter(|e| e.kind == EntityKind::Phone).count(),
+        1,
+        "the same number must be emitted once"
+    );
+}
+
+#[test]
+fn whitepages_address_confidence_boosted_when_name_present() {
+    // The seed name appears in the window around the postcode → 0.55, else 0.42.
+    let html = "<p>Haigen Bamford lives at Bondi Beach NSW 2026</p>";
+    let ents = parse_whitepages_html(html, "Haigen Bamford", "s");
+    let addr = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("an address should be built around the postcode");
+    assert!((addr.confidence - 0.55).abs() < 1e-9, "name-matched → 0.55");
+    assert!(addr.has_tag("whitepages"));
+    assert!(addr.has_tag("au-state:NSW"));
+
+    // A page that does not name the subject near the postcode → demoted 0.42.
+    let other = "<p>Someone Else at Bondi Beach NSW 2026</p>";
+    let ents2 = parse_whitepages_html(other, "Haigen Bamford", "s");
+    let addr2 = ents2
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("address still built without the name");
+    assert!((addr2.confidence - 0.42).abs() < 1e-9, "name absent → 0.42");
+}
+
+#[test]
+fn whitepages_ignores_out_of_range_postcode() {
+    // 1234 < 2000 and 8500 > 7999 are out of the accepted AU range.
+    let html = "<p>Nowhere Town XX 1234</p><p>Elsewhere YY 8500</p>";
+    let ents = parse_whitepages_html(html, "Haigen Bamford", "s");
+    assert!(
+        ents.iter().all(|e| e.kind != EntityKind::Address),
+        "out-of-range postcodes build no address"
+    );
+}
+
+#[test]
+fn whitepages_mines_contact_emails() {
+    let html = "<p>Email: haigen@example.com.au for enquiries</p>";
+    let ents = parse_whitepages_html(html, "Haigen Bamford", "s");
+    let email = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("a visible email should be mined");
+    assert_eq!(email.value, "haigen@example.com.au");
+    assert!(email.has_tag("whitepages"));
+}

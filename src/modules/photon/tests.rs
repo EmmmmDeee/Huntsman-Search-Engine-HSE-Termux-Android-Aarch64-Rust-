@@ -1,5 +1,5 @@
 use super::Photon;
-use super::build::{build_forward, build_reverse};
+use super::build::{build_forward, build_reverse, join_unique};
 use super::types::{Feature, PhotonResp, Props};
 use crate::core::{
     entity::EntityKind,
@@ -127,4 +127,38 @@ fn build_reverse_uses_name_and_dedupes_against_city() {
 fn build_reverse_too_few_parts_is_none() {
     assert!(build_reverse(0.0, 0.0, &props(r#"{"country":"Australia"}"#), "s").is_none());
     assert!(build_reverse(0.0, 0.0, &props("{}"), "s").is_none());
+}
+
+#[test]
+fn join_unique_drops_case_insensitive_dupes_keeping_order() {
+    // `name` == `city` ("Sydney") collapses to one; None parts skipped; first
+    // spelling/casing wins for a case-insensitive duplicate.
+    let parts = [
+        Some("Sydney"),
+        None,
+        Some("sydney"), // dup of "Sydney" (case-insensitive) → dropped
+        Some("NSW"),
+        Some("Australia"),
+    ];
+    assert_eq!(
+        join_unique(&parts),
+        vec![
+            "Sydney".to_string(),
+            "NSW".to_string(),
+            "Australia".to_string()
+        ]
+    );
+}
+
+#[test]
+fn join_unique_all_none_is_empty() {
+    let parts: [Option<&str>; 3] = [None, None, None];
+    assert!(join_unique(&parts).is_empty());
+}
+
+#[test]
+fn join_unique_preserves_first_casing() {
+    // The earlier-seen casing is the one retained.
+    let parts = [Some("PARIS"), Some("paris")];
+    assert_eq!(join_unique(&parts), vec!["PARIS".to_string()]);
 }

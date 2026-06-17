@@ -111,3 +111,89 @@ use super::*;
             Some(Region::Au)
         );
     }
+
+    // ── build_queries_base ───────────────────────────────────────────────────
+
+    #[test]
+    fn build_queries_base_domain_emits_site_and_link_dorks() {
+        use crate::core::scan::Target;
+        let q = build_queries_base(&Target::new(TargetKind::Domain, "example.com"));
+        assert!(!q.is_empty());
+        // The bare `site:` dork and the backlink `link:` dork are both present.
+        assert!(q.iter().any(|s| s == "site:example.com"));
+        assert!(q.iter().any(|s| s == "link:example.com"));
+        // Subdomain-discovery dork (negative site).
+        assert!(
+            q.iter()
+                .any(|s| s.contains("site:example.com -site:www.example.com"))
+        );
+    }
+
+    #[test]
+    fn build_queries_base_email_freemail_omits_pivot_custom_domain_includes_it() {
+        use crate::core::scan::Target;
+        // The social-pivot dork is gated on the domain NOT being a freemail
+        // provider (gmail/yahoo/hotmail/outlook).
+        let pivot = "site:linkedin.com OR site:github.com OR site:facebook.com";
+
+        // gmail.com (freemail) → the per-`{v}` social-pivot dork is absent.
+        let gmail = build_queries_base(&Target::new(TargetKind::Email, "alice@gmail.com"));
+        assert!(!gmail.is_empty());
+        assert!(
+            !gmail
+                .iter()
+                .any(|s| s == &format!("\"alice@gmail.com\" {pivot}")),
+            "freemail email must not emit the social-pivot dork: {gmail:?}"
+        );
+
+        // Custom domain → the social-pivot dork IS emitted.
+        let custom = build_queries_base(&Target::new(TargetKind::Email, "alice@acme.com"));
+        assert!(
+            custom
+                .iter()
+                .any(|s| s == &format!("\"alice@acme.com\" {pivot}")),
+            "custom-domain email must emit the social-pivot dork: {custom:?}"
+        );
+    }
+
+    #[test]
+    fn build_queries_base_username_emits_bare_handle_and_intitle() {
+        use crate::core::scan::Target;
+        // Username is normalised to lowercase.
+        let q = build_queries_base(&Target::new(TargetKind::Username, "jdoe"));
+        assert!(!q.is_empty());
+        // Tier-1 bare handle (no operators) is the very first query.
+        assert!(q.iter().any(|s| s == "jdoe"));
+        // Tier-3 page-title / URL operator dork.
+        assert!(q.iter().any(|s| s == "intitle:\"jdoe\" OR inurl:jdoe"));
+    }
+
+    #[test]
+    fn build_queries_base_ip_emits_recon_engine_dork() {
+        use crate::core::scan::Target;
+        let q = build_queries_base(&Target::new(TargetKind::IpAddress, "8.8.8.8"));
+        assert!(!q.is_empty());
+        assert!(
+            q.iter()
+                .any(|s| s.contains("site:shodan.io OR site:censys.io OR site:zoomeye.org"))
+        );
+    }
+
+    #[test]
+    fn build_queries_base_organisation_emits_registry_dork() {
+        use crate::core::scan::Target;
+        // Organisation value keeps its original case (trim-only normalisation).
+        let q = build_queries_base(&Target::new(TargetKind::Organisation, "Acme Corp"));
+        assert!(!q.is_empty());
+        assert!(
+            q.iter()
+                .any(|s| s.contains("site:abr.business.gov.au OR site:asic.gov.au"))
+        );
+    }
+
+    #[test]
+    fn build_queries_base_returns_empty_for_unhandled_kind() {
+        use crate::core::scan::Target;
+        // Cidr falls through the `_` arm → no base dorks.
+        assert!(build_queries_base(&Target::new(TargetKind::Cidr, "10.0.0.0/8")).is_empty());
+    }

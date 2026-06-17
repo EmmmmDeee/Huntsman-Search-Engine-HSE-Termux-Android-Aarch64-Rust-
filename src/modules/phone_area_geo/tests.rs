@@ -116,6 +116,22 @@ async fn module_metadata() {
     assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
 }
 
+#[test]
+fn country_name_maps_known_iso_codes() {
+    assert_eq!(country_name("US"), "United States");
+    assert_eq!(country_name("AU"), "Australia");
+    assert_eq!(country_name("GB"), "United Kingdom");
+    assert_eq!(country_name("JP"), "Japan");
+    assert_eq!(country_name("DE"), "Germany");
+}
+
+#[test]
+fn country_name_unknown_iso_falls_back() {
+    assert_eq!(country_name("ZZ"), "Unknown");
+    // The table is keyed on uppercase ISO codes, so lowercase misses.
+    assert_eq!(country_name("us"), "Unknown");
+}
+
 #[tokio::test]
 async fn module_produces_address() {
     let m = PhoneAreaGeo;

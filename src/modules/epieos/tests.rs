@@ -154,3 +154,14 @@ fn empty_response_yields_only_the_anchor() {
     assert_eq!(es.len(), 1);
     assert_eq!(es[0].kind, EntityKind::Email);
 }
+
+#[test]
+fn is_person_name_requires_min_len_and_a_space() {
+    assert!(is_person_name("Jane Doe"));
+    assert!(is_person_name("a b"));
+    assert!(is_person_name("  Jane Doe  "));
+    assert!(!is_person_name("ab"));
+    assert!(!is_person_name("janedoe"));
+    assert!(!is_person_name("  "));
+    assert!(!is_person_name(""));
+}

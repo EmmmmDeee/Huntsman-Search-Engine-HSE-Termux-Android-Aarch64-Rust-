@@ -249,3 +249,34 @@ pub(super) fn dedup_entities(entities: &mut Vec<Entity>) {
     });
     entities.dedup_by(|a, b| a.kind == b.kind && a.value == b.value);
 }
+
+#[cfg(test)]
+mod suburb_line_tests {
+    use super::extract_suburb_from_line;
+
+    #[test]
+    fn walks_back_alpha_tokens_until_a_digit() {
+        assert_eq!(
+            extract_suburb_from_line("25 SURRY HILLS NSW", "NSW"),
+            "SURRY HILLS"
+        );
+    }
+
+    #[test]
+    fn returns_empty_when_state_token_absent() {
+        assert_eq!(extract_suburb_from_line("just some words", "NSW"), "");
+    }
+
+    #[test]
+    fn returns_empty_when_suburb_exceeds_thirty_chars() {
+        assert_eq!(
+            extract_suburb_from_line("Supercalifragilisticexpialidocious Township NSW", "NSW"),
+            ""
+        );
+    }
+
+    #[test]
+    fn returns_empty_when_nothing_precedes_state() {
+        assert_eq!(extract_suburb_from_line("NSW 2000", "NSW"), "");
+    }
+}

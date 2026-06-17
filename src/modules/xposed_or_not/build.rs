@@ -190,3 +190,113 @@ pub(super) async fn fetch_analytics(http: &reqwest::Client, email: &str) -> Opti
         .ok()
         .flatten()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn detail(
+        breach: Option<&str>,
+        date: Option<&str>,
+        records: Option<u64>,
+        data: Option<&str>,
+        desc: Option<&str>,
+    ) -> BreachDetail {
+        BreachDetail {
+            breach: breach.map(String::from),
+            xposed_date: date.map(String::from),
+            xposed_records: records,
+            xposed_data: data.map(String::from),
+            xposure_desc: desc.map(String::from),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn full_detail_composes_summary_and_description() {
+        let ev = Evidence::new(SRC, "x");
+        let d = detail(
+            Some("LinkedIn"),
+            Some("2012-05-05"),
+            Some(117_000_000),
+            Some("Emails;Passwords"),
+            Some("  Big breach  "), // trimmed before use
+        );
+        let ev = attach_breach_detail_attrs(ev, std::slice::from_ref(&d));
+        // year (first 4 chars, all-digit) + millions-records + data section.
+        assert_eq!(
+            ev.attributes.get("breach_summaries").map(String::as_str),
+            Some("LinkedIn (2012, 117M records):Emails;Passwords")
+        );
+        assert_eq!(
+            ev.attributes.get("breach_descriptions").map(String::as_str),
+            Some("LinkedIn: Big breach")
+        );
+    }
+
+    #[test]
+    fn record_count_thresholds_and_join() {
+        let ev = Evidence::new(SRC, "x");
+        let details = [
+            // Thousands bucket, no data → "(year, K records)".
+            detail(Some("Acme"), Some("2019-01-01"), Some(12_500), None, None),
+            // Sub-thousand records, no date → "(N records)".
+            detail(Some("Beta"), None, Some(42), None, None),
+        ];
+        let ev = attach_breach_detail_attrs(ev, &details);
+        // Multiple summaries are joined with " | " in declared order.
+        assert_eq!(
+            ev.attributes.get("breach_summaries").map(String::as_str),
+            Some("Acme (2019, 12K records) | Beta (42 records)")
+        );
+        // No xposure_desc on either → no descriptions attribute at all.
+        assert!(!ev.attributes.contains_key("breach_descriptions"));
+    }
+
+    #[test]
+    fn data_only_and_bare_name_summaries() {
+        let ev = Evidence::new(SRC, "x");
+        let details = [
+            // No year (non-digit date) and no records, but data present → "name: data".
+            detail(
+                Some("Gamma"),
+                Some("n/a-date"),
+                None,
+                Some("Usernames"),
+                None,
+            ),
+            // Nothing but the name → bare name.
+            detail(Some("Delta"), None, None, None, None),
+        ];
+        let ev = attach_breach_detail_attrs(ev, &details);
+        assert_eq!(
+            ev.attributes.get("breach_summaries").map(String::as_str),
+            Some("Gamma: Usernames | Delta")
+        );
+    }
+
+    #[test]
+    fn unnamed_and_empty_breaches_are_skipped() {
+        let ev = Evidence::new(SRC, "x");
+        let details = [
+            detail(None, None, Some(5), Some("X"), Some("d")), // no breach name
+            detail(Some(""), None, Some(5), None, None),       // empty breach name
+        ];
+        let ev = attach_breach_detail_attrs(ev, &details);
+        // Every detail was skipped → no attributes added.
+        assert!(!ev.attributes.contains_key("breach_summaries"));
+        assert!(!ev.attributes.contains_key("breach_descriptions"));
+    }
+
+    #[test]
+    fn blank_description_is_dropped_but_summary_kept() {
+        let ev = Evidence::new(SRC, "x");
+        let d = detail(Some("Epsilon"), None, None, Some("Emails"), Some("   "));
+        let ev = attach_breach_detail_attrs(ev, std::slice::from_ref(&d));
+        assert_eq!(
+            ev.attributes.get("breach_summaries").map(String::as_str),
+            Some("Epsilon: Emails")
+        );
+        assert!(!ev.attributes.contains_key("breach_descriptions"));
+    }
+}

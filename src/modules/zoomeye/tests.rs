@@ -114,3 +114,29 @@ fn port_label_combines_port_and_service() {
     assert_eq!(port_label(&str_port).as_deref(), Some("8080/http-proxy"));
     assert_eq!(port_label(&serde_json::json!({"portinfo":{}})), None);
 }
+
+#[test]
+fn pstr_reads_nested_string_at_pointer_path() {
+    let v = serde_json::json!({"a": {"b": "hi"}});
+    assert_eq!(pstr(&v, "/a/b").as_deref(), Some("hi"));
+    // Trimmed.
+    let padded = serde_json::json!({"a": {"b": "  hi  "}});
+    assert_eq!(pstr(&padded, "/a/b").as_deref(), Some("hi"));
+    // Missing path → None.
+    assert_eq!(pstr(&v, "/a/missing"), None);
+    // Path resolves to a non-string (number) → None (not stringified).
+    let num = serde_json::json!({"a": {"b": 42}});
+    assert_eq!(pstr(&num, "/a/b"), None);
+    // Present but blank after trim → None.
+    let blank = serde_json::json!({"a": {"b": "   "}});
+    assert_eq!(pstr(&blank, "/a/b"), None);
+}
+
+#[test]
+fn geo_country_code_reads_geoinfo_country_code() {
+    assert_eq!(geo_country_code(&sample_match()).as_deref(), Some("US"));
+    let de = serde_json::json!({"geoinfo": {"country": {"code": "DE"}}});
+    assert_eq!(geo_country_code(&de).as_deref(), Some("DE"));
+    // Absent → None.
+    assert_eq!(geo_country_code(&serde_json::json!({"geoinfo": {}})), None);
+}

@@ -1,5 +1,7 @@
 use super::CellIntel;
-use super::helpers::{accuracy_to_confidence, json_to_str, mcc_to_centroid, parse_cells_survey};
+use super::helpers::{
+    accuracy_to_confidence, build_tower_device, json_to_str, mcc_to_centroid, parse_cells_survey,
+};
 use crate::core::entity::EntityKind;
 use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
@@ -193,4 +195,109 @@ fn mcc_au_maps_to_au_centroid() {
 #[test]
 fn unknown_mcc_returns_none() {
     assert!(mcc_to_centroid("999").is_none());
+}
+
+// ---- TowerKey / build_tower_device tests ----
+
+use super::types::{Cell, TowerKey};
+
+fn cell_from_json(json: &str) -> Cell {
+    serde_json::from_str(json).unwrap()
+}
+
+#[test]
+fn from_cell_returns_none_without_mcc() {
+    let cell = cell_from_json(r#"{"type":"lte","cid":12345,"mnc":"01","lac":42}"#);
+    assert!(TowerKey::from_cell(&cell).is_none(), "no MCC -> skip");
+}
+
+#[test]
+fn from_cell_returns_none_for_zero_or_missing_cid() {
+    let zero = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":0,"lac":42}"#);
+    assert!(TowerKey::from_cell(&zero).is_none(), "cid==0 -> skip");
+    let missing = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","lac":42}"#);
+    assert!(TowerKey::from_cell(&missing).is_none(), "no cid -> skip");
+}
+
+#[test]
+fn from_cell_lac_falls_back_to_tac() {
+    let cell = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":12345,"tac":54321}"#);
+    let key = TowerKey::from_cell(&cell).unwrap();
+    assert_eq!(key.lac, 54321);
+    assert_eq!(key.tower_id, "505-01-54321-12345");
+}
+
+#[test]
+fn from_cell_prefers_lac_over_tac_and_defaults_missing_type() {
+    let cell = cell_from_json(r#"{"mcc":"505","mnc":"01","cid":99,"lac":42,"tac":54321}"#);
+    let key = TowerKey::from_cell(&cell).unwrap();
+    assert_eq!(key.lac, 42, "lac wins over tac");
+    assert_eq!(key.ctype, "unknown", "missing type defaults to unknown");
+}
+
+#[test]
+fn is_geolocatable_requires_mnc_and_nonzero_lac() {
+    let ok = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":1,"lac":42}"#);
+    assert!(TowerKey::from_cell(&ok).unwrap().is_geolocatable());
+    let no_mnc = cell_from_json(r#"{"type":"lte","mcc":"505","cid":1,"lac":42}"#);
+    assert!(!TowerKey::from_cell(&no_mnc).unwrap().is_geolocatable());
+    let no_lac = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":1}"#);
+    assert!(!TowerKey::from_cell(&no_lac).unwrap().is_geolocatable());
+}
+
+#[test]
+fn radio_code_maps_air_interfaces_with_gsm_default() {
+    let cases = [
+        ("lte", "LTE"),
+        ("gsm", "GSM"),
+        ("umts", "UMTS"),
+        ("wcdma", "UMTS"),
+        ("nr", "NR"),
+        ("5g", "NR"),
+        ("cdma", "CDMA"),
+        ("LTE", "LTE"),
+        ("wifi", "GSM"),
+    ];
+    for (ctype, expected) in cases {
+        let json = format!(r#"{{"type":"{ctype}","mcc":"505","mnc":"01","cid":1,"lac":42}}"#);
+        let cell = cell_from_json(&json);
+        let key = TowerKey::from_cell(&cell).unwrap();
+        assert_eq!(key.radio_code(), expected, "radio_code for {ctype}");
+    }
+}
+
+#[test]
+fn build_tower_device_carries_radio_tags_and_evidence_attrs() {
+    let cell = cell_from_json(
+        r#"{"type":"lte","registered":true,"cid":12345,"tac":54321,
+            "mcc":"505","mnc":"01","dbm":-75,"asu":30,"level":4,"pci":100}"#,
+    );
+    let key = TowerKey::from_cell(&cell).unwrap();
+    let e = build_tower_device(&cell, &key, "scan-1");
+    assert_eq!(e.kind, EntityKind::DeviceId);
+    assert_eq!(e.value, "505-01-54321-12345");
+    assert!(e.has_tag("cell-tower"));
+    assert!(e.has_tag("radio:lte"));
+    let attrs = &e.evidence[0].attributes;
+    assert_eq!(attrs.get("type").map(String::as_str), Some("lte"));
+    assert_eq!(attrs.get("mcc").map(String::as_str), Some("505"));
+    assert_eq!(attrs.get("mnc").map(String::as_str), Some("01"));
+    assert_eq!(attrs.get("lac_tac").map(String::as_str), Some("54321"));
+    assert_eq!(attrs.get("cid").map(String::as_str), Some("12345"));
+    assert_eq!(attrs.get("pci").map(String::as_str), Some("100"));
+    assert_eq!(attrs.get("dbm").map(String::as_str), Some("-75"));
+    assert_eq!(attrs.get("registered").map(String::as_str), Some("true"));
+}
+
+#[test]
+fn build_tower_device_defaults_absent_signal_fields_to_zero() {
+    let cell = cell_from_json(r#"{"type":"gsm","mcc":"505","mnc":"1","cid":99,"lac":42}"#);
+    let key = TowerKey::from_cell(&cell).unwrap();
+    let e = build_tower_device(&cell, &key, "s");
+    let attrs = &e.evidence[0].attributes;
+    assert_eq!(attrs.get("pci").map(String::as_str), Some("0"));
+    assert_eq!(attrs.get("dbm").map(String::as_str), Some("0"));
+    assert_eq!(attrs.get("asu").map(String::as_str), Some("0"));
+    assert_eq!(attrs.get("level").map(String::as_str), Some("0"));
+    assert_eq!(attrs.get("registered").map(String::as_str), Some("false"));
 }
