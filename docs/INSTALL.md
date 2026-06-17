@@ -30,16 +30,29 @@ Everything is logged to `$HOME/.cache/hse-install.log` for post-mortem.
 
 ### No-build fast path (no toolchain, no compile)
 
-The installer skips the Rust toolchain and the on-device build entirely when a
-precompiled aarch64 `hse` is available: drop a binary named `hse` or
-`hse-aarch64-linux-android` into your **Downloads** folder and the installer
-validates it (ELF magic + optional `.sha256` sidecar + a run-test) and installs
-it directly. After a *source* build it **caches the freshly-built binary back to
-Downloads**, so the next install — this device after a wipe, or another aarch64
-phone — takes the instant path automatically. Point at a specific file with
-`HSE_PREBUILT=/abs/path/to/hse`, or force a source build with
-`HSE_PREFER_BUILD=1`. (The cached binary is one you built from this repo — there
-is no separate release download to go stale.)
+The installer tries three strategies in order, stopping as soon as one works:
+
+1. **Local scan** — looks for `hse-aarch64-linux-android` (or `hse`) already in
+   your Downloads folder (including `/sdcard/Download`,
+   `/storage/emulated/0/Download`, and `$HOME/storage/downloads`). Validates ELF
+   magic + SHA-256 sidecar + a `--version` run-test before installing.
+
+2. **GitHub Releases auto-download** *(new)* — if nothing is found locally, the
+   installer fetches the prebuilt binary + `.sha256` directly from the latest
+   GitHub Release and saves it to your Downloads folder. The SHA-256 is verified
+   before the binary runs. On a phone with a reasonable connection this takes
+   about 30-60 seconds and skips the 4-6 minute on-device compile entirely.
+
+3. **Source build fallback** — if the download fails (no release yet, no network,
+   wrong arch), the installer falls back to a full `cargo build`. ~4-6 min on a
+   mid-range aarch64 device with the `fast` profile.
+
+After a source build, the resulting binary is **cached back to Downloads**
+automatically, so the next install — this device after a wipe, or another aarch64
+phone — takes path 1 or 2 and skips the compile.
+
+Point at a specific file with `HSE_PREBUILT=/abs/path/to/hse`, or force a source
+build with `HSE_PREFER_BUILD=1`.
 
 ### Tuning knobs (environment variables)
 

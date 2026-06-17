@@ -256,11 +256,101 @@ maybe_use_prebuilt() {
             fi
         done
     done < <(_prebuilt_dirs)
-    hint "No usable prebuilt in Downloads — building from source instead"
+    hint "No usable prebuilt found locally — trying GitHub Releases auto-download next"
     return 1
 }
 
-maybe_use_prebuilt || true
+# ─── GitHub Releases auto-download ───────────────────────────────────────────
+# Called automatically when maybe_use_prebuilt() finds nothing in Downloads.
+# Downloads the prebuilt aarch64 binary + .sha256 sidecar from the latest
+# GitHub Release to the first writable Downloads dir (or $HOME/.cache/hse-release
+# as fallback so shared storage not being wired up is not a blocker).
+# Any failure — no release yet, no network, wrong arch — falls through silently
+# to the source build. Respects HSE_PREFER_BUILD=1.
+try_download_release() {
+    [[ $IS_TERMUX -eq 1 && "$ARCH" == "aarch64" ]] || return 1
+    [[ "${HSE_PREFER_BUILD:-0}" == "1" ]] && return 1
+    command -v curl >/dev/null 2>&1 \
+        || { log_warn "curl not available — skipping release download"; return 1; }
+
+    step "Downloading prebuilt from GitHub Releases (skips the ~4-6 min build)"
+
+    # Derive the release URL slug from HSE_REPO_URL — so forks automatically
+    # point at the right release without hardcoding the owner/repo here.
+    local slug
+    slug="$(printf '%s' "$HSE_REPO_URL" \
+        | sed 's|https://github.com/||; s|\.git$||; s|/$||')"
+    local bin="hse-aarch64-linux-android"
+    local base="https://github.com/${slug}/releases/latest/download"
+
+    # Best writable Downloads directory. Saves the binary there so a future
+    # reinstall (or another device) picks it up on the local-scan fast path.
+    # Falls back to $HOME/.cache/hse-release if shared storage isn't available
+    # (e.g. termux-setup-storage hasn't been run yet) — that path is always
+    # executable (not noexec like sdcard).
+    local dl_dir="" d
+    for d in \
+        "$HOME/storage/downloads" \
+        "/sdcard/Download" \
+        "/storage/emulated/0/Download" \
+        "/sdcard/Downloads" \
+        "/storage/emulated/0/Downloads" \
+        "$HOME/Downloads" \
+        "$HOME/Download"
+    do
+        if [[ -d "$d" && -w "$d" ]]; then
+            dl_dir="$d"
+            break
+        fi
+    done
+    if [[ -z "$dl_dir" ]]; then
+        dl_dir="$HOME/.cache/hse-release"
+        mkdir -p "$dl_dir"
+        log_warn "Downloads folder not accessible — saving to $dl_dir"
+        hint "Run termux-setup-storage once to enable the Downloads folder for future installs"
+    fi
+
+    local dest="$dl_dir/$bin"
+    local dest_sha="$dest.sha256"
+    hint "Saving to: $dest"
+
+    # Fetch .sha256 first — it's tiny, confirms the release exists, and gives
+    # us fast-fail on network problems before we try the larger binary.
+    hint "Fetching checksum…"
+    if ! curl -fsSL --connect-timeout 15 --max-time 60 \
+            -o "$dest_sha" "$base/$bin.sha256" 2>/dev/null; then
+        log_warn "No release available on GitHub yet (or network error) — building from source"
+        rm -f "$dest_sha"
+        return 1
+    fi
+
+    # Download the binary (~10-15 MB). Five minutes is generous for slow mobile.
+    hint "Downloading binary (~10-15 MB — may take a minute on mobile)…"
+    if ! curl -fL --connect-timeout 30 --max-time 300 \
+            --progress-bar \
+            -o "$dest" "$base/$bin" 2>&1; then
+        log_warn "Binary download failed or timed out — building from source"
+        rm -f "$dest" "$dest_sha"
+        return 1
+    fi
+    printf '\n'
+
+    # Validate: sha256 (sidecar we just downloaded) + ELF magic + exec run-test.
+    # _validate_prebuilt copies to $HOME/.cache/hse-prebuilt (exec-safe, not noexec)
+    # and sets STAGED on success.
+    if _validate_prebuilt "$dest" 1; then
+        BUILT="$STAGED"
+        PREBUILT=1
+        ok "Release binary validated — no build required"
+        return 0
+    fi
+
+    log_warn "Release binary failed validation (wrong arch or corrupt) — building from source"
+    rm -f "$dest" "$dest_sha"
+    return 1
+}
+
+maybe_use_prebuilt || try_download_release || true
 
 # Everything from the toolchain install through the source build is skipped
 # when a validated prebuilt was found above (closed with `fi` before install).
