@@ -201,8 +201,18 @@ _validate_prebuilt() {
     # ELF magic (\x7fELF) — cheap pre-filter before we bother exec-testing.
     magic=$(od -An -tx1 -N4 "$cand" 2>/dev/null | tr -d ' \n')
     [[ "$magic" == "7f454c46" ]] || { log_warn "skip $base (not an ELF binary)"; return 1; }
-    # Optional integrity check against a sidecar `<file>.sha256`.
-    if [[ -f "$cand.sha256" ]] && command -v sha256sum >/dev/null 2>&1; then
+    # Integrity: required for auto-discovered binaries from world-writable paths (§7 S5);
+    # optional when the caller passes 0 for an explicitly-set HSE_PREBUILT.
+    local require_sha="${2:-1}"
+    if [[ "$require_sha" == "1" ]]; then
+        command -v sha256sum >/dev/null 2>&1 || { log_warn "skip $base (sha256sum unavailable — cannot verify integrity)"; return 1; }
+        [[ -f "$cand.sha256" ]] || { log_warn "skip $base (no .sha256 sidecar — place <binary>.sha256 alongside it, or set HSE_PREBUILT=/abs/path)"; return 1; }
+        want=$(awk 'NR==1{print $1}' "$cand.sha256" 2>/dev/null)
+        [[ -n "$want" ]] || { log_warn "skip $base (empty .sha256 sidecar)"; return 1; }
+        got=$(sha256sum "$cand" 2>/dev/null | awk '{print $1}')
+        [[ "$want" == "$got" ]] || { log_warn "skip $base (sha256 mismatch — corrupt/tampered)"; return 1; }
+        ok "sha256 verified ($base)"
+    elif [[ -f "$cand.sha256" ]] && command -v sha256sum >/dev/null 2>&1; then
         want=$(awk 'NR==1{print $1}' "$cand.sha256" 2>/dev/null)
         got=$(sha256sum "$cand" 2>/dev/null | awk '{print $1}')
         [[ -n "$want" && "$want" != "$got" ]] && { log_warn "skip $base (sha256 mismatch — corrupt/tampered)"; return 1; }
@@ -228,15 +238,17 @@ _validate_prebuilt() {
 maybe_use_prebuilt() {
     [[ "${HSE_PREFER_BUILD:-0}" == "1" ]] && { hint "HSE_PREFER_BUILD=1 — skipping prebuilt scan, building from source"; return 1; }
     step "Looking for a prebuilt aarch64 binary (Downloads / shared storage)"
-    local d n cand names
+    local d n cand names require_sha
     names=(hse-aarch64-linux-android hse-aarch64 hse hse.bin)
     [[ -n "${HSE_PREBUILT:-}" ]] && names=("$(basename -- "$HSE_PREBUILT")" "${names[@]}")
+    # sha256 optional when user nominated HSE_PREBUILT (lower risk, trusted choice); required otherwise.
+    [[ -n "${HSE_PREBUILT:-}" ]] && require_sha=0 || require_sha=1
     while IFS= read -r d; do
         [[ -n "$d" && -d "$d" ]] || continue
         for n in "${names[@]}"; do
             cand="$d/$n"
             [[ -f "$cand" ]] || continue
-            if _validate_prebuilt "$cand"; then
+            if _validate_prebuilt "$cand" "$require_sha"; then
                 BUILT="$STAGED"
                 PREBUILT=1
                 ok "Using prebuilt binary — skipping toolchain + source build"

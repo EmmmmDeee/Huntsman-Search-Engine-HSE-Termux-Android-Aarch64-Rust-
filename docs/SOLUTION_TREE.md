@@ -192,6 +192,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (CancellationToken is not `'static` and cannot cross the closure's `'static` bound).
   `persist_relations` and `run_correlator` inlined into the closure (both had single
   call-sites; removed as methods). *Closes:* **T1.5** (`[ ]`→`[x]`). ✅ cycle 14.
+- **`[x]` SOL-SCHEMA-VERSION · DB schema version stamp** — `const SCHEMA_VERSION: i32
+  = 1` in `src/storage/mod.rs`; `Store::open` reads `PRAGMA user_version` after the
+  DDL batch: `ver < SCHEMA_VERSION` → stamp (fresh or pre-versioned DB); `ver >
+  SCHEMA_VERSION` → `tracing::warn!` (forward-compat signal — a newer binary wrote
+  this DB). Provides a migration ladder for future non-additive schema changes without
+  requiring an explicit migration table. *Closes:* **T2.10** (`[ ]`→`[x]`). ✅ cycle 16.
 - **`[~]` SOL-BUDGET · Atomic quota reservation** — `QuotaBudget::try_increment`
   (CAS, saturating session rollback) replaces every racy `remaining()`-then-
   `increment()`. *Closes:* **T2.11** (oathnet — done; mirrors see_know). *Gap:* the
@@ -247,6 +253,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `HUNTSMAN_*` passes) on error bodies/URLs; only `key_tail` (last-4) is ever logged.
   *Closes:* the key-in-URL **log** exposure (S4 mostly mitigated). *Gap:* the archived
   **success body** isn't run through `redact_literal_secrets` — **§7 S4** residual. ◑
+- **`[x]` SOL-INSTALL-INTEGRITY · sha256 sidecar required for auto-discovered prebuilt** —
+  `_validate_prebuilt` in `install.sh` accepts a second arg `require_sha` (default 1 for
+  auto-discovered binaries, 0 for explicitly-set `HSE_PREBUILT`). When `require_sha=1`:
+  `sha256sum` absence or missing/empty/mismatched sidecar → `log_warn` + skip (no
+  silent trust of an unverified binary). `maybe_use_prebuilt` passes `require_sha=0`
+  when `HSE_PREBUILT` is set (user explicitly nominated the path — lower risk), `1`
+  otherwise. Closes the gap where another app could plant an unsigned binary in
+  `Downloads`/`/sdcard` and have it run at install time.
+  *Closes:* **§7 S5** (`[ ]`→`[x]`). ✅ cycle 16.
 - **`[-]` SOL-EMBED · Zero-config embedded keys (accepted by design)** — embedded
   defaults via `ensure_hardcoded_keys`, single-sourced in `constants.rs`, with the
   `SEEKNOW_SUPERSEDED_KEY*` rotate-in-place mechanism so the set **self-heals to
@@ -351,6 +366,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-OUTPUT-ESCAPE | §7 SPA XSS | `[x]` |
 | SOL-BLOCKING | T2.2 · T1.2 (all write paths) | `[x]` |
 | SOL-FINALISE-BLOCKING | T1.5 | `[x]` |
+| SOL-SCHEMA-VERSION | T2.10 | `[x]` |
+| SOL-INSTALL-INTEGRITY | §7 S5 | `[x]` |
 | SOL-BUDGET | T2.11 oathnet | `[~]` |
 | SOL-CAP | T2.1 · T2.8 (all sub-items) | `[x]` |
 | SOL-ISOLATE | T2.11 found_keys | `[x]` |
@@ -373,17 +390,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **T2.10** schema versioning — *no* solution node exists beyond the advisory; the
-  cleanest is a `SOL-SCHEMA-VERSION` (set `PRAGMA user_version` at create + an
-  idempotent upgrade ladder). **Latent, no current bug** → deliberately unbuilt; add
-  the node only if a non-additive migration is ever needed.
 - **T2.7** scraper-health signal — covered *in principle* by SOL-F1 (parser rewrites)
   but the per-source health surface (last-success/parse-rate in `doctor`+SPA) has no
   solution node. Gap.
-- **§7 S4 / S5** — solution nodes exist (SOL-REDACT residual, the install checksum)
-  but are **unstarted** — both LOW. Contained; awaiting the operator's prioritisation.
-  *(S2/SOL-SSRF-WHOIS and S3/SOL-SECRETS-EXTEND — the previous top contained items —
-  delivered 2026-06-17, so they're off this queue.)*
+- **§7 S4** — SOL-REDACT residual: archived success body not run through
+  `redact_literal_secrets` (LOW). Contained.
+  *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
+  this queue. S2/SOL-SSRF-WHOIS + S3/SOL-SECRETS-EXTEND delivered 2026-06-17.)*
 - **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
 - **C1–C7** — capability nodes; solutions sketched, none started (gated on the §3.F
   enablers landing first, by design).
@@ -420,13 +433,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **§3.F (foundations):** all three `[~]` — the largest unrealised leverage block.
   `memchr` now a direct dep (cycle 12); remaining: `bstr` + `fst` large tables + `cargo-fuzz`.
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
-  **T2.12 fully closed** ✅ (7 items fixed: 2 MED + 2 LOW-MED + diff exit-code +
-  audit exit-code + `resolve_scan_id` status-check); T2.7/T2.10 open; T2.11 mostly done
-  (oathnet + found_keys/SOL-ISOLATE delivered; LOW over-dispatch + budget-reset-zeroing
-  remain).
-- **§7 (security):** XSS + S2 (whois SSRF) + S3 (file perms) solved; S1 accepted;
-  S4–S5 open (both LOW) with
-  solutions named.
+  **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
+  T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE; LOW over-dispatch +
+  budget-reset-zeroing remain).
+- **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
+  (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
 - **§4 (capability C1–C8):** C8 delivered ✅ (`streaming_probe`, 30-site webcam/fan/adult prober); C1–C7 open by design, gated on §3.F.
 
 ---
@@ -689,6 +700,35 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (13.5s needed vs 30s; no change to the 30s constant). SOL-STREAMING description and
   C8 problem node updated to reflect 42-site scope. Gate green: fmt/clippy/doc clean,
   3,027 lib + 67 arch tests, 0 failures.
+- **2026-06-17** — **Cycle 16 (P→S): SOL-SCHEMA-VERSION `[x]` + SOL-INSTALL-INTEGRITY
+  `[x]` — T2.10 and §7 S5 both closed.** Two remaining §4a items from cycle 15's
+  gap analysis. **(1) SOL-SCHEMA-VERSION:** `const SCHEMA_VERSION: i32 = 1` added to
+  `src/storage/mod.rs`; `Store::open` reads `PRAGMA user_version` after the DDL batch
+  — stamps when `ver < 1` (fresh / pre-versioned DB); `tracing::warn!` when `ver > 1`
+  (future binary wrote this DB). Provides the forward-compat signal + migration ladder
+  for any future non-additive change at zero on-disk cost. **(2) SOL-INSTALL-INTEGRITY:**
+  `_validate_prebuilt` in `install.sh` now requires a `<binary>.sha256` sidecar for
+  auto-discovered binaries (missing `sha256sum` / absent / empty / mismatched →
+  `log_warn` + skip); optional for `HSE_PREBUILT` (`$2=0`). `maybe_use_prebuilt`
+  wires the flag (`require_sha=1` auto-discovered, `0` when `HSE_PREBUILT` set).
+  **Gap refresh:** §4a loses T2.10 and §7 S5 (both closed); only T2.7 (scraper health
+  — large effort), §7 S4 (LOW residual), and C1–C7 (gated on §3.F) remain open. All
+  remaining items accepted-deferred or gated. §4d T2 row gains T2.10 `[x]`; §7 row
+  gains S5 `[x]`. Gate green: fmt/clippy/doc clean, 3,229 tests, 0 failures. Paired:
+  `PROBLEM_TREE` T2.10 `[ ]`→`[x]` + §7 S5 `[ ]`→`[x]` + §8 cycle 16 log — same commit.
+- **2026-06-17** — **Cycle 15 (S→P): gap analysis after cycle 14 — T1 tier confirmed
+  fully closed; T2.10 + §7 S5 identified as next achievable items.** S→P pass on
+  cycle 14's two deliveries. **(1) `strip_html` dedup:** no new problems — canonical
+  `crate::util::html::strip_html` now covers all sites; no drift vector remains.
+  **(2) SOL-FINALISE-BLOCKING:** `spawn_blocking` closure captures the `bool` snapshot
+  correctly; CancellationToken lifetime resolved; reactor fully unblocked at
+  scan boundaries. **§4 refresh:** scanned §4a for achievable items: T2.10 (schema
+  version — no dep, small change) and §7 S5 (install sha256 — shell-only change) are
+  the two remaining P→S-actionable items without large external blockers. T2.7 needs
+  golden fixtures + health surface (large effort); C1–C7 gated on §3.F; §3.F itself
+  needs nightly CI / large effort for remaining items (bstr + fst + cargo-fuzz).
+  **Decision:** cycle 16 will implement T2.10 + §7 S5. No code change this cycle.
+  Paired: `PROBLEM_TREE` §8 cycle 15 note — same commit.
 - **2026-06-17** — **Cycle 14 (P→S): SOL-FINALISE-BLOCKING `[ ]`→`[x]` + local
   `strip_html` dedup — T1.5 fully closed.** Two gap items from cycle 13's S→P pass
   resolved together. **(1) `strip_html` dedup (LOW, contained):** `au_property/parse.rs`

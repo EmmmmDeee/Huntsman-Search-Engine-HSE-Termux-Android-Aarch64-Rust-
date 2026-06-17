@@ -447,7 +447,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
   `, e.kind ASC`, `scan_ids_for_entity` → `, scan_id DESC`; regression test
   `latest_completed_scan_is_deterministic_on_same_second_ties`. Non-tie behaviour
   is byte-identical, so nothing is degraded.
-- **`[ ]` T2.10 · No schema version stamp (latent migration risk)** —
+- **`[x]` T2.10 · No schema version stamp (latent migration risk)** —
   `storage/mod.rs` evolves the SQLite schema **additively only** (`CREATE TABLE`/
   `INDEX IF NOT EXISTS`; no `ALTER TABLE`, no `PRAGMA user_version`, no version
   table). Fine today and a deliberate design, but there is **no path for a
@@ -456,6 +456,11 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
   a future structural change would silently mismatch existing databases. → set
   `PRAGMA user_version` at create and gate any future structural change on an
   idempotent upgrade ladder. **P3 (latent — no current bug; advisory).**
+  ✅ **Delivered (cycle 16, 2026-06-17): SOL-SCHEMA-VERSION.** `const SCHEMA_VERSION:
+  i32 = 1` added; `Store::open` reads `PRAGMA user_version` after the DDL batch:
+  stamps to `SCHEMA_VERSION` when 0 (fresh or pre-versioned DB); `tracing::warn!`
+  when `>SCHEMA_VERSION` (forward-compat signal — a newer binary wrote this DB).
+  **Paired:** `SOLUTION_TREE` SOL-SCHEMA-VERSION `[x]` + §3/§4/§5 — same commit.
 - **`[~]` T2.11 · Concurrency — process-global state not isolated across the 8
   concurrent `serve` scans** — `hse serve` runs up to `MAX_CONCURRENT_SCANS = 8`
   scans at once, but several **process-global `static`s** are shared without
@@ -819,13 +824,19 @@ security stays a deliberately separate track, and S1 needs *operator* action):
   `raw/*.json` (0600, but pulled into the non-0600 DB/dossiers via S3). → prefer
   header auth where supported; optionally `redact_literal_secrets(body,
   own_api_keys())` the archived body.
-- **S5 · `[ ]` P3 (LOW) — install.sh prebuilt auto-trust.** The installer
+- **S5 · `[x]` P3 (LOW) — install.sh prebuilt auto-trust.** The installer
   auto-discovers and runs an `hse` from world-writable `Downloads`/`/sdcard`; the
   SHA-256 check fires only *if a sidecar `.sha256` exists* — without one it runs an
   unverified binary another app could plant. Plus `curl|bash` of unpinned
   `HSE_REF=main`. → require the sidecar checksum (or only auto-trust installer-cached
   binaries); README note to pin `HSE_REF=<tag>`. Otherwise `install.sh`/`build.rs`
   are defensively sound (atomic swap, quoting, `set -euo pipefail`, ELF/size filters).
+  ✅ **Fixed (cycle 16, 2026-06-17): SOL-INSTALL-INTEGRITY.** `_validate_prebuilt`
+  now requires a `<binary>.sha256` sidecar for auto-discovered binaries (missing
+  `sha256sum` / absent / empty / mismatched sidecar → `log_warn` + skip). Optional for
+  explicitly-set `HSE_PREBUILT` (`$2=0` passed by `maybe_use_prebuilt` when
+  `HSE_PREBUILT` is set — user nominated the path, lower risk).
+  **Paired:** `SOLUTION_TREE` SOL-INSTALL-INTEGRITY `[x]` + §3/§4/§5 — same commit.
 - **Verified clean (no finding):** argv-only command construction (no shell);
   `KeyPool` rotation is `Mutex`-guarded (no TOCTOU/overspend on the pool itself); no
   key value logged at info/debug (only `key_tail` last-4); `settings.json` is toggles
@@ -1541,6 +1552,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   trimmed to `bstr` only. **Paired:** `SOLUTION_TREE` SOL-F1 node + §4b + §4d + §5
   refreshed — same commit; gate green, 3,032 lib + 24 arch + 67 api + 54 smoke +
   3 halting + 6 cli-seed + 2 audit-regression tests, 0 failures.
+- **2026-06-17** — **Cycle 15 (S→P): gap analysis — T1 fully closed; identifies T2.10
+  + §7 S5 as next achievable items.** S→P pass on cycle 14 deliveries. `strip_html`
+  dedup exposes no new problems; SOL-FINALISE-BLOCKING bool-snapshot design confirmed
+  correct. §4a scanned: T2.10 (schema versioning, no dep) and §7 S5 (install sha256,
+  shell-only) are achievable. T2.7 (scraper health) and C1–C7 (gated on §3.F) deferred.
+  No code change; planned cycle 16. **Paired:** `SOLUTION_TREE` §4/§5 — same commit.
+- **2026-06-17** — **Cycle 16 (P→S): T2.10 schema versioning + §7 S5 install integrity
+  — both closed.** Gap-analysis (cycle 15) directed two remaining achievable §4a items.
+  **(1) T2.10 SOL-SCHEMA-VERSION:** `const SCHEMA_VERSION: i32 = 1` added to
+  `src/storage/mod.rs`; `Store::open` reads `PRAGMA user_version` after the DDL batch
+  — stamps to `SCHEMA_VERSION` when `ver < 1` (fresh or pre-versioned DB), emits
+  `tracing::warn!` when `ver > SCHEMA_VERSION` (forward-compat signal for a newer
+  binary). Provides the migration ladder for any future non-additive schema change.
+  **(2) §7 S5 SOL-INSTALL-INTEGRITY:** `_validate_prebuilt` in `install.sh` now
+  requires a `<binary>.sha256` sidecar for auto-discovered binaries: missing
+  `sha256sum` / absent / empty / mismatched sidecar → `log_warn` + skip. Optional for
+  explicitly-set `HSE_PREBUILT` (`$2=0`). `maybe_use_prebuilt` passes `require_sha=1`
+  for all auto-discovered binaries, `0` when `HSE_PREBUILT` is set. **Gap result:**
+  T2.10 and §7 S5 both `[ ]`→`[x]`; §4a now holds only T2.7 (scraper health, large),
+  §7 S4 (LOW residual), and C1–C7 (gated on §3.F). All remaining items accepted-deferred
+  or gated. Gate green: fmt/clippy/doc clean, 3,229 tests, 0 failures. **Paired:**
+  `SOLUTION_TREE` SOL-SCHEMA-VERSION + SOL-INSTALL-INTEGRITY + §3/§4/§5 — same commit.
 - **2026-06-17** — **Cycle 14 (P→S): SOL-FINALISE-BLOCKING + local `strip_html`
   dedup — T1.5 `[ ]`→`[x]`.** Two gap items from the cycle 13 S→P pass resolved
   together. **(1) `strip_html` dedup (LOW):** `au_property/parse.rs` local `strip_html`

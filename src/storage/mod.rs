@@ -15,6 +15,11 @@ pub struct Store {
     conn: Mutex<Connection>,
 }
 
+/// Logical schema version stamped into `PRAGMA user_version` on first open.
+/// Increment this when a future non-additive migration is introduced so older
+/// binaries can warn rather than silently misread a newer schema.
+const SCHEMA_VERSION: i32 = 1;
+
 /// Static schema (tables + indexes), `CREATE … IF NOT EXISTS` so it's safe to
 /// run on every open. Kept as a constant so [`Store::open`] reads as a short
 /// orchestrator and the schema lives in one greppable place. Executed in the
@@ -157,6 +162,23 @@ impl Store {
             PRAGMA mmap_size={mmap};
             {SCHEMA_DDL}"
         ))?;
+
+        // Schema versioning: stamp on first open; warn on forward-compatibility break.
+        {
+            let ver: i32 = conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap_or(0);
+            if ver > SCHEMA_VERSION {
+                tracing::warn!(
+                    db_version = ver,
+                    binary_version = SCHEMA_VERSION,
+                    "DB schema version is newer than this binary — open with a newer `hse` or use a fresh database"
+                );
+            }
+            if ver < SCHEMA_VERSION {
+                conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+            }
+        }
 
         // Idempotent backfill: populate entity_observations for stores created
         // before that table existed (and for any rows missing an observation).
