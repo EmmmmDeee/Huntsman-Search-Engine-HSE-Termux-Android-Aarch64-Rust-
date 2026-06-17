@@ -97,9 +97,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   callers skip past a marker without knowing its length); `DIVISION_MARKER` +
   `ENROLLED_MARKERS` statics in `au_electoral/parse.rs` replace three `find_ascii_ci`
   calls; two-pattern enrolled scan is one aho-corasick pass; five tests added.
-  *Gap (§4b):* HTML marker parsers (au_property only); `memchr`/`bstr` adoption.
-  Each a contained increment — `memchr`/`bstr` promoted only when first directly used
-  (else `cargo machete` trips).
+  **+ `memchr` direct dep + `decode_entities` SIMD byte scan (2026-06-17, cycle 12):**
+  `memchr = "2"` promoted to a direct dep (was transitive via `aho-corasick`/`regex`);
+  `decode_entities` in `util/html/mod.rs` — the hot entity decoder called on *every*
+  scraped response body — replaces `s.contains('&')`, `rest.find('&')`, and
+  `inner.find(';')` with `memchr(b'&', …)` / `memchr(b';', …)` SIMD byte searches.
+  `&` and `;` are single-byte ASCII so byte offsets equal char offsets in UTF-8 —
+  the substitution is correct and boundary-safe. Gate green: 3,032 lib tests, 0 failures.
+  *Gap (§4b):* `bstr` (no direct consumer yet → promote with first use).
+  Contained — `bstr` promoted only when first directly used (else `cargo machete` trips).
 - **`[~]` SOL-F2 · `fst`-backed datasets** ⚑ — `build.rs` compiles `data/*.txt` into
   memory-mapped `fst::Set`/`Map`, one canonical `util::dataset` API.
   *Closes / powers:* **F.2** (self), the **B5.3 table-drift** class, and Levenshtein
@@ -383,12 +389,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   enablers landing first, by design).
 
 ### 4b · Solutions begun but unfinished (the finish queue)
-- **SOL-F1** — substrate + **six** consumers landed (`is_captcha_page`,
+- **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
   key-harvest `contains_excluded_context`, wigle `is_generic_ssid`, the
   **prefix-table `PrefixMatcher`** — 170 prefixes, `LeftmostFirst`, group map for
   same-prefix duplicates, proptest-backed — `au_electoral` HTML markers via
-  `MatchSet::find_range`, and `address_au::state_code` step-2 via `MatchSet::find_id`).
-  *Remaining:* `memchr`/`bstr` (no direct consumer yet → promote with first use).
+  `MatchSet::find_range`, `address_au::state_code` step-2 via `MatchSet::find_id`,
+  and **`decode_entities`** — `memchr` direct dep promoted; `memchr(b'&', …)` /
+  `memchr(b';', …)` replace `str::find`/`contains` on the hot page-body decode path).
+  *Remaining:* `bstr` (no direct consumer yet → promote with first use).
   Each contained (unblocks T2.7 + sharpens C6).
 - **SOL-F2** — de-dup done; `fst` for the large tables outstanding.
 - **SOL-F3** — proptest (str/entity/geo/html/cert/dns + import parsers) + criterion
@@ -410,6 +418,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   T1.5 `[ ]` LOW-MED open — `finalise_scan` bulk transactions still block one worker
   at scan-end (server mode only; solution shape known, no node built yet).
 - **§3.F (foundations):** all three `[~]` — the largest unrealised leverage block.
+  `memchr` now a direct dep (cycle 12); remaining: `bstr` + `fst` large tables + `cargo-fuzz`.
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.12 fully closed** ✅ (7 items fixed: 2 MED + 2 LOW-MED + diff exit-code +
   audit exit-code + `resolve_scan_id` status-check); T2.7/T2.10 open; T2.11 mostly done
@@ -680,6 +689,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (13.5s needed vs 30s; no change to the 30s constant). SOL-STREAMING description and
   C8 problem node updated to reflect 42-site scope. Gate green: fmt/clippy/doc clean,
   3,027 lib + 67 arch tests, 0 failures.
+- **2026-06-17** — **Cycle 12 (P→S): SOL-F1 seventh consumer — `memchr` direct dep +
+  `decode_entities` SIMD byte-scan acceleration.** P→S gap pass: §4b named `memchr`
+  promotion as the remaining SOL-F1 item (`bstr` held back until a direct consumer
+  exists). Promoted `memchr = "2"` to a direct dep in `Cargo.toml` (already in the
+  tree transitively via `aho-corasick`/`regex` — no new package download; `cargo
+  fetch` updates lock file metadata only). In `src/util/html/mod.rs`: added `use
+  memchr::memchr;`; replaced `s.contains('&')` → `memchr(b'&', s.as_bytes()).is_none()`
+  (early-exit check); `rest.find('&')` → `memchr(b'&', rest.as_bytes())` (hot loop
+  across every `&` in a page body); `inner.find(';')` → `memchr(b';', inner.as_bytes())`
+  (inner entity-close scan). `decode_entities` is the hot path for all scraped HTML —
+  called from `strip_html` on every response — so the SIMD replacement has broad
+  reach across all 119 modules that scrape. `&` and `;` are single-byte ASCII
+  (0x26/0x3B) so their byte offsets are always valid char boundaries in UTF-8; the
+  substitution is correct and no-panic (confirmed by the existing proptest suite on
+  arbitrary Unicode strings). **S→P gap-refresh:** §2 SOL-F1 node updated (seventh
+  consumer + gap trimmed to `bstr` only); §4b SOL-F1 "seven consumers, remaining =
+  bstr"; §4d §3.F row notes `memchr` now direct. §3.F enabler block (SOL-F1 `bstr` +
+  SOL-F2 fst + SOL-F3 cargo-fuzz) remains the sole unrealised high-leverage tier.
+  Paired: `PROBLEM_TREE` F.1 node + baseline deps + §8 — same commit; gate green,
+  3,032 lib + 24 arch + 67 api + 54 smoke + 3 halting + 6 cli-seed + 2
+  audit-regression tests, 0 failures.
 - **2026-06-17** — **Cycle 11 (S→P): SOL-BLOCKING delivery exposes T1.5 —
   `finalise_scan` reactor-blocking residual.** S→P pass on cycle 10's actor delivery:
   with the `insert_event` hot path (N per-entity `block_in_place` calls) now fully

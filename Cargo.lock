@@ -891,6 +891,7 @@ dependencies = [
  "http",
  "kamadak-exif",
  "md-5",
+ "memchr",
  "parking_lot",
  "proptest",
  "regex",

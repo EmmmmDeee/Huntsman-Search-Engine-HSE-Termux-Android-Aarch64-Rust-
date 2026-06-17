@@ -78,9 +78,9 @@ categories (Infrastructure 20, Geo 19, People 15, DnsRecon 13, Breach 11, Social
 11, Email 6, Corporate 6, Web 5, Sensor 4, Threat 3, Search/Phone/Other 2 each);
 59 native correlation rules (AU-001…AU-059); 0 `unsafe`; deterministic entity
 merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
-`criterion` 0.8 direct (dev-only, zero shipped cost — F.3); `aho-corasick` now a
-direct dep (F.1, `util::scan`); `memchr`, `bstr`, `fst`, `arbitrary` still NOT
-direct.**
+`criterion` 0.8 direct (dev-only, zero shipped cost — F.3); `aho-corasick` +
+`memchr` now direct deps (F.1, `util::scan` + `util::html`); `bstr`, `fst`,
+`arbitrary` still NOT direct.**
 
 ---
 
@@ -229,8 +229,20 @@ direct.**
   Intentional behavior change: specific-prefix min_len failure no longer cascades
   to a shorter generic prefix (quality improvement — prevents misclassification);
   proptest-backed + deterministic cascade-prevention test.
-  *Remaining:* the HTML marker parsers (au_electoral/au_property); `memchr`/`bstr`
-  adoption. Each its own contained increment.
+  **+ `au_electoral` HTML markers (2026-06-17, cycle 5):** `MatchSet::find_range`
+  added to `util::scan`; `DIVISION_MARKER` + `ENROLLED_MARKERS` statics in
+  `au_electoral/parse.rs`; two-pattern enrolled scan is one aho-corasick pass.
+  **+ `address_au::state_code` state-name scan (2026-06-17, cycle 6):**
+  `MatchSet::find_id` API added; `STATE_NAMES_MATCHER` static in `util/address_au`;
+  replaces `to_lowercase()` + 8-way contains loop with one SIMD pass. The
+  `au_property` path was examined and ruled out (single dynamic state string already
+  known from `extract_state` — not a MatchSet target).
+  **+ `memchr` direct dep + `decode_entities` SIMD byte scan (2026-06-17, cycle 12):**
+  `memchr = "2"` promoted to a direct dep; `decode_entities` in `util/html/mod.rs` (the
+  hot entity decoder on *every* scraped response body) replaces `s.contains('&')`,
+  `rest.find('&')`, and `inner.find(';')` with `memchr(b'&', …)` / `memchr(b';', …)`
+  SIMD byte searches. `&` and `;` are ASCII so byte offsets are valid char boundaries.
+  *Remaining:* `bstr` adoption (no direct consumer yet — promote with first direct use).
 - **`[~]` F.2 · `fst`-backed datasets (phone-first + de-duplication)** — many
   static tables are hand-coded `&[&str]`/`match` arms, several **duplicated**
   (freemail in `util/oathnet_batch` vs `util/domains`; `country_name` in
@@ -1491,3 +1503,21 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   SOL-F3 fuzz) remains the sole unrealised high-leverage tier; SOL-BUDGET
   reset_scan-zeroing remains LOW in the finish queue. No code change this cycle.
   **Paired:** `SOLUTION_TREE` §4a + §4d + §5 refreshed — same commit.
+- **2026-06-17** — **Cycle 12 (P→S): F.1 seventh consumer — `memchr` direct dep +
+  `decode_entities` SIMD byte-scan.** P→S gap pass: §4b named `memchr` promotion as
+  the remaining SOL-F1 item (`bstr` held back until a direct consumer exists, else
+  `cargo machete` trips). Added `memchr = "2"` to `[dependencies]` in `Cargo.toml`
+  (already in the tree transitively; `cargo fetch` updates lock file metadata only —
+  no new package download). In `src/util/html/mod.rs`: `use memchr::memchr;` added;
+  three `str` single-char searches in `decode_entities` replaced with SIMD equivalents:
+  `s.contains('&')` → `memchr(b'&', s.as_bytes()).is_none()` (fast-path empty check);
+  `rest.find('&')` → `memchr(b'&', rest.as_bytes())` (hot loop per `&` in page body);
+  `inner.find(';')` → `memchr(b';', inner.as_bytes())` (entity-close scan). The
+  function is called from `strip_html` on every scraped response across all 119 modules.
+  `&` (0x26) and `;` (0x3B) are single-byte ASCII so byte offsets are always valid
+  UTF-8 char boundaries — no correctness risk. Existing proptest suite on arbitrary
+  Unicode strings re-confirms no-panic. Baseline deps updated (§2): `memchr` now
+  direct. F.1 node body updated (§3.F): cycles 5/6/12 delivery notes + *Remaining*
+  trimmed to `bstr` only. **Paired:** `SOLUTION_TREE` SOL-F1 node + §4b + §4d + §5
+  refreshed — same commit; gate green, 3,032 lib + 24 arch + 67 api + 54 smoke +
+  3 halting + 6 cli-seed + 2 audit-regression tests, 0 failures.

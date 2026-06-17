@@ -79,6 +79,10 @@ regex              = "1"
 # via `regex`; promoted to a direct dep so `util::scan` can own the cached
 # automata for untrusted-text "contains any" / leftmost-find matching (F.1).
 aho-corasick       = "1"
+# Single-byte SIMD search. Already in the tree transitively via `aho-corasick`
+# and `regex`; promoted here so `util::html::decode_entities` can use
+# `memchr` directly on the hot entity-decode path (runs on every scraped body).
+memchr             = "2"
 thiserror          = "2"
 async-trait        = "0.1"
 tracing            = "0.1"
