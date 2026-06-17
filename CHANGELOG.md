@@ -12,7 +12,7 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
-- **Test-coverage & proof-infrastructure expansion (~2,992 lib tests passing).**
+- **Test-coverage & proof-infrastructure expansion (~2,995 lib tests passing).**
   Added direct unit tests for previously-untested pure functions across the tree
   — `signal_radar/gps`, search-engine/email/fullcontact helpers, the `util`
   (`oathnet`, `key_pool`, `key_roi`, `oathnet_batch`), `storage`, `cli`
@@ -28,6 +28,23 @@ versions can include breaking changes; patch versions are bug-fix-only.
   capability program to surpass SpiderFoot/Maltego without heavy graphing.
 
 ### Fixed
+
+- **Security & concurrency hardening (PROBLEM_TREE §7 / T2.8 / T2.9 / T2.11).**
+  Fixed a **one-click stored XSS in the Web UI** — two correlation-pivot handlers
+  interpolated an attacker-controllable entity value into an inline `onclick`
+  JS-string literal (where HTML-entity escaping is the *wrong* escaping, so a
+  crafted value broke out and executed same-origin on click); both now pass the
+  value through a `data-` attribute read via `this.dataset`, and a full-SPA sweep
+  confirms no remaining inline-handler interpolations. Closed a **paid-quota
+  overspend race** — `oathnet` used a non-atomic check-then-increment that two
+  concurrent `serve` scans could both pass; it now reserves atomically (CAS),
+  matching `see_know`. Made four SQL read-backs **deterministic** with a unique
+  tie-break — `hse export/diff/audit latest` could otherwise resolve to a
+  different scan when two completed in the same one-second window. Capped two
+  **unbounded response reads** that a hostile host could use to OOM the device
+  (`exif_geo` now streams and bails at its size cap instead of buffering the whole
+  body; `smtp_vrfy` caps a reply line at 8 KiB). Every fix preserves behaviour on
+  legitimate input and ships with a regression test.
 
 - **Correctness & robustness hardening (PROBLEM_TREE T0–T2).** Closed the
   `to_lowercase()` byte-offset slice **panic class** (T0.1/T0.2) —

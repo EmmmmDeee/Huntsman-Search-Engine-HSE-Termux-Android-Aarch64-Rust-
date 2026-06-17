@@ -16,7 +16,7 @@ place · ⚒ shipped this cycle · ⚠ open/recommended).
 > `"abort"`) with a `catch_unwind` guard at the dispatch boundary, so a module
 > panic is **contained, not process-fatal** — which re-frames **E3.1 / SPOF #2**
 > below; `audit.yml` is triple-gated (`cargo audit` + `cargo deny` + `cargo
-> machete`); the suite is ~2,992 lib tests. The `to_lowercase()` byte-offset slice
+> machete`); the suite is ~2,995 lib tests. The `to_lowercase()` byte-offset slice
 > panic class flagged below at **E3.1 / SPOF #2 / Open-item #1** is now **fully
 > closed** (T0.1/T0.2 done — boundary-safe `find_ascii_ci` + `proptest`); those
 > rows are corrected inline. The live, prioritised view of open engineering issues
