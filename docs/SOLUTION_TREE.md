@@ -331,6 +331,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-REDACT | §7 S4 | ◑ |
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
+| SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-CORR…SOL-FORENSIC | C1–C7 | `[ ]` |
 
@@ -376,8 +377,6 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   network reads + hibp cast + CLI-import file cap). Removed from finish queue.
 - **SOL-BUDGET** — oathnet done; the per-scan budget statics' `reset_scan`-zeroing
   still folds into the SOL-ISOLATE task-local (LOW — the session ceiling bounds it).
-- **T1.3 meta-guard** — the 12 firing assertions shipped; the dispatch-table
-  firing meta-guard (a `SOL-RULE-METAGUARD` leaf) is unbuilt.
 
 ### 4c · Solutions with no problem (over-build — prune candidates)
 - **None found.** Every solution node traces to ≥1 `PROBLEM_TREE` node or the shared
@@ -387,9 +386,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### 4d · Coverage snapshot (problem tier × solution status)
 - **T0 (crashes):** fully solved (SOL-BOUNDARY + SOL-F3 guard). ✔
-- **T1 (core guarantees):** T1.1/T1.4 solved; T1.2 further advanced — `scan_import`
-  + `stats` (`spawn_blocking`) + engine `insert_event` (`block_in_place`) all done
-  (SOL-BLOCKING); only the DB-writer actor remains; T1.3 partial.
+- **T1 (core guarantees):** T1.1/T1.3/T1.4 solved; T1.2 further advanced —
+  `scan_import` + `stats` (`spawn_blocking`) + engine `insert_event`
+  (`block_in_place`) all done (SOL-BLOCKING); only the DB-writer actor remains.
 - **§3.F (foundations):** all three `[~]` — the largest unrealised leverage block.
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.12 fully closed** ✅ (7 items fixed: 2 MED + 2 LOW-MED + diff exit-code +
@@ -616,6 +615,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   enabler block remains the sole unrealised high-leverage tier. Paired:
   `PROBLEM_TREE` C8 + §8 — same commit; gate green, 3,031 lib + 67 arch + 54 smoke
   + 3 halting + 23 cli + 6 cli-seed + 2 audit-regression tests, 0 failures.
+- **2026-06-17** — **Cycle 8 (P→S): SOL-RULE-METAGUARD `[ ]`→`[x]` — T1.3 fully closed.**
+  Gap-analysis pick: §4b T1.3 meta-guard was the last open T1 sub-item. **(1) Direct
+  firing tests for AU-021 and AU-030** added to `src/core/correlator/tests.rs`:
+  `au021_fires_for_api_key_entity` (one `ApiKey` entity → `len(), 1`, `Critical`) and
+  `au030_fires_for_three_source_geo_cluster` (two Coordinates entities with 3 distinct
+  corroborating sources across them → `len(), 1`, `Medium`). These were the only two
+  of the 56 dispatched rules with no direct function-level firing assertion.
+  **(2) `every_dispatched_correlation_rule_has_a_firing_test`** added to
+  `tests/architecture.rs`: enumerates every `rule_au_*` entry in `RULES` +
+  `RELATION_RULES` from `correlator/mod.rs`; for each, accepts (a) direct — function
+  name in the test corpus within ±15 lines of a `len(), N` (N > 0) assertion, or
+  (b) indirect — quoted `"AU-NNN"` on a line with `assert`/`.unwrap()`/`.expect()`/
+  `contains(`. All 56 dispatched rules pass. Supporting helpers added:
+  `correlator_tests_source()` (concatenates `tests.rs` + `rules/tests.rs`) and
+  `has_nonzero_len_assert()`. **S→P gap-refresh:** SOL-RULE-METAGUARD added to
+  leverage map `[x]`; §4b T1.3 item removed; §4d T1 row updated ("T1.3 solved").
+  Paired: `PROBLEM_TREE` T1.3 `[~]`→`[x]` — same commit; gate green, 3,033 lib +
+  24 arch + 54 smoke + 3 halting + 23 cli + 6 cli-seed + 2 audit-regression tests,
+  0 failures.
 - **2026-06-17** — **SOL-STREAMING expansion: +12 international sites (30→42).**
   Operator request: "find these in difficult to find overseas countries where people
   hide their true behaviour." Extended `streaming_probe` site table with the non-English

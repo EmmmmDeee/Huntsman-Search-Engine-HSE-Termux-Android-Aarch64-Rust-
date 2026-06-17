@@ -155,22 +155,14 @@ direct.**
   `multi_thread, 2` flavor to match production and avoid a panic. Remaining: the
   DB-writer actor (batched inserts behind a bounded `mpsc` — the planned long-term
   home for the write path).
-- **`[~]` T1.3 · Verified correctness — 12 unasserted rules** — AU-019, 020, 022,
-  023, 024, 025, 026, 028, 029, 040, 041, 042 are dispatched but **no test
-  asserts they fire** (only id-presence is checked). A silently-dead rule passes
-  CI.
-  → **Solution:** a table-driven suite `[(id, build_fixture_entities, expect:
-  {fires, severity, uid_set})]`; one assertion per rule. Add a **meta-guard**:
-  every `AU-NNN` in the dispatch `RULES` table must have ≥1 firing fixture (so no
-  future rule ships un-pinned). **P1** ◑ **Per-rule half done; meta-guard
-  outstanding** (reopened from `[x]` in the 2026-06-17 doc audit): the 12 firing
-  assertions shipped (`core/correlator/tests.rs`, each asserting `rule_id` +
-  `severity`), so the named rules are pinned — but the meta-guard that forces a
-  *future* `AU-NNN` to ship with a firing fixture was never built. The existing
-  guards (`every_defined_correlation_rule_is_dispatched`,
-  `correlation_rule_ids_match_their_function_number`) check wiring + id-correctness,
-  not firing, so a new un-pinned `AU-060` would still pass CI. Stays `[~]` until the
-  dispatch-table-enumerating firing meta-guard lands.
+- **`[x]` T1.3 · Verified correctness — all dispatched rules have firing fixtures** —
+  AU-019, 020, 022, 023, 024, 025, 026, 028, 029, 040, 041, 042 had per-rule firing
+  assertions added (2026-06-17). AU-021 and AU-030 lacked direct firing tests
+  entirely. The dispatch-table **meta-guard**
+  (`every_dispatched_correlation_rule_has_a_firing_test` in `tests/architecture.rs`)
+  now enumerates every entry in `RULES` + `RELATION_RULES` and verifies ≥1 positive
+  firing assertion exists — a future `AU-060` without a firing fixture fails CI. All
+  56 dispatched rules pass. `[x]` — fully closed.
 - **`[x]` T1.4 · Architecture — `core` imports `crate::modules`** —
   `core/engine/mod.rs` (8 sites) + `enrich.rs:240`, violating the CLAUDE.md
   invariant; `tests/architecture.rs:140` *allowlists* the `modules::*` paths
@@ -1372,6 +1364,22 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   fmt/clippy/doc clean, 3,016 lib + 67 api + 23 arch + 54 smoke + 3 halting
   + 6 cli-seed + 2 audit-regression tests, 0 failures. **Paired:** `SOLUTION_TREE`
   SOL-F1 + SOL-CLI-CONTRACT + §4b + §5 refreshed — same commit.
+- **2026-06-17** — **Cycle 8 (P→S): T1.3 firing meta-guard (SOL-RULE-METAGUARD) — fully
+  closed.** Gap-analysis pick from the paired-tree §4b: T1.3 was the last open T1
+  sub-item. **(1)** Added direct firing tests for the two rules with no function-level
+  firing assertion: `au021_fires_for_api_key_entity` (`ApiKey` entity →
+  `rule_au_021_api_key_exposure`, `len(), 1`, `Critical`) and
+  `au030_fires_for_three_source_geo_cluster` (two `Coordinates` entities with 3
+  distinct corroborating sources → `rule_au_030_geo_convergence_score`, `len(), 1`,
+  `Medium`). **(2)** Added `every_dispatched_correlation_rule_has_a_firing_test` to
+  `tests/architecture.rs`: reads `RULES` + `RELATION_RULES` from `correlator/mod.rs`,
+  then checks the test corpus (`tests.rs` + `rules/tests.rs`) for either a direct
+  firing assertion (function name within ±15 lines of `len(), N`, N > 0) or an
+  indirect one (`"AU-NNN"` on a line with assert/unwrap/expect/contains). All 56
+  dispatched rules pass. A future `AU-060` without a firing test now fails CI.
+  T1.3 `[~]`→`[x]`. Gate green: fmt/clippy/doc clean, 3,033 lib + 24 arch tests,
+  0 failures. **Paired:** `SOLUTION_TREE` SOL-RULE-METAGUARD `[x]` + §4 + §5 — same
+  commit.
 - **2026-06-17** — **Cycle 7 expansion: `streaming_probe` +12 international platforms.**
   Operator request: "ensure expanded capabilities to find these in difficult to find
   overseas countries where people hide their true behaviour." Extended `streaming_probe`

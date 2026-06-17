@@ -972,6 +972,25 @@ fn every_declared_module_is_registered() {
     );
 }
 
+/// Concatenated source of the correlator unit-test files used by the
+/// meta-guard (`every_dispatched_correlation_rule_has_a_firing_test`).
+fn correlator_tests_source() -> String {
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core/correlator");
+    let a = fs::read_to_string(base.join("tests.rs")).unwrap_or_default();
+    let b = fs::read_to_string(base.join("rules/tests.rs")).unwrap_or_default();
+    format!("{a}\n{b}")
+}
+
+/// True iff `line` contains `len(), N` where N is a positive decimal integer.
+fn has_nonzero_len_assert(line: &str) -> bool {
+    let Some(pos) = line.find("len(), ") else {
+        return false;
+    };
+    let after = line[pos + "len(), ".len()..].trim_start();
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse::<usize>().unwrap_or(0) > 0
+}
+
 /// Concatenated source of every correlation-rule file. The rules live in a
 /// `rules/` module split into thematic families (breach/identity/infra/geo/org/
 /// crypto) plus `mod.rs`; the rule-wiring and rule-id guards scan the union, so
@@ -1405,5 +1424,93 @@ fn no_inline_module_bodies_outside_allowed_exceptions() {
         "inline module bodies outside the allow-list (CONVENTIONS.md §2 — \
          move the body to its own file, or allow-list a trivial wrapper \
          with a justification): {offenders:#?}"
+    );
+}
+
+/// Every rule wired into RULES or RELATION_RULES must have at least one
+/// positive firing test in the correlator test suite. A dispatched rule with
+/// no firing test compiles, is called on every scan, but silently produces no
+/// correlation even when its trigger condition is met — indistinguishable from
+/// a correctly-absent result. Two detection modes are accepted:
+///
+/// - **Direct**: the rule function name appears in the corpus, AND within ±15
+///   lines there is a `len(), N` assertion where N > 0 (the canonical
+///   positive-result form used throughout the correlator test suite).
+/// - **Indirect**: the quoted `"AU-NNN"` rule-id appears on a line that also
+///   contains `assert`/`.unwrap()`/`.expect()`/`contains(` (covers rules
+///   verified through `correlate_entities()` or `Correlator::run()` rather
+///   than a direct function call).
+#[test]
+fn every_dispatched_correlation_rule_has_a_firing_test() {
+    let mod_src = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/core/correlator/mod.rs"
+    ))
+    .expect("correlator/mod.rs must exist");
+
+    let corpus = correlator_tests_source();
+    let corpus_lines: Vec<&str> = corpus.lines().collect();
+
+    // Extract dispatched rule function names from the RULES / RELATION_RULES
+    // arrays: each element is a bare identifier on its own indented line.
+    let dispatched: Vec<String> = mod_src
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("rule_au_"))
+        .map(|l| {
+            l.chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect()
+        })
+        .collect();
+
+    assert!(
+        !dispatched.is_empty(),
+        "parse failure: no dispatched rules found"
+    );
+
+    let missing: Vec<&str> = dispatched
+        .iter()
+        .filter(|rule| {
+            // (a) Direct: function name in corpus, positive len assertion nearby.
+            let direct = corpus_lines.iter().enumerate().any(|(i, line)| {
+                if !line.contains(rule.as_str()) {
+                    return false;
+                }
+                let start = i.saturating_sub(15);
+                let end = (i + 15).min(corpus_lines.len());
+                corpus_lines[start..end]
+                    .iter()
+                    .any(|ctx| has_nonzero_len_assert(ctx))
+            });
+            if direct {
+                return false;
+            }
+            // (b) Indirect: quoted "AU-NNN" id on a line with an assertion form.
+            let id_str = rule
+                .strip_prefix("rule_au_")
+                .and_then(|r| r.split('_').next())
+                .and_then(|n| n.parse::<u32>().ok())
+                .map(|n| format!("\"AU-{n:03}\""));
+            let indirect = id_str.as_deref().is_some_and(|id| {
+                corpus_lines.iter().any(|l| {
+                    l.contains(id)
+                        && (l.contains("assert")
+                            || l.contains(".unwrap()")
+                            || l.contains(".expect(")
+                            || l.contains("contains("))
+                })
+            });
+            !indirect
+        })
+        .map(String::as_str)
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "dispatched correlation rule(s) with no positive firing fixture in the \
+         test suite — add a test that calls the rule function directly (or \
+         exercises it via correlate_entities/Correlator::run) and asserts at \
+         least one correlation is produced: {missing:?}"
     );
 }
