@@ -78,8 +78,9 @@ categories (Infrastructure 20, Geo 19, People 15, DnsRecon 13, Breach 11, Social
 10, Email 6, Corporate 6, Web 5, Sensor 4, Threat 3, Search/Phone/Other 2 each);
 59 native correlation rules (AU-001…AU-059); 0 `unsafe`; deterministic entity
 merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
-`criterion` 0.8 now direct (dev-only, zero shipped cost — F.3); `aho-corasick`,
-`memchr`, `bstr`, `fst`, `arbitrary` still NOT direct.**
+`criterion` 0.8 direct (dev-only, zero shipped cost — F.3); `aho-corasick` now a
+direct dep (F.1, `util::scan`); `memchr`, `bstr`, `fst`, `arbitrary` still NOT
+direct.**
 
 ---
 
@@ -168,7 +169,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
 
 ### 3.F — Tier F · Foundations (build the primitives once; everything after is cheap)
 
-- **`[ ]` F.1 · Adopt the matching/automata toolkit** — parsers and the universal
+- **`[~]` F.1 · Adopt the matching/automata toolkit** — parsers and the universal
   key/secret scanner currently hand-roll `.find()`/`.contains()`/`chars()` scans
   (slow, and the source of the T0 panic class).
   → **Solution:** promote **`memchr`** + **`aho-corasick`** to direct deps (free —
@@ -176,7 +177,17 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
   `util::scan` module that owns cached `aho-corasick` automata for: the universal
   API-key scanner, HTML marker extraction, placeholder/denylist matching. All
   untrusted-byte scanning routes through it. Benchmark scan MB/s with `criterion`.
-  **P1-enabler**
+  **P1-enabler** ◑ **Substrate landed + first consumer (2026-06-17, SOL-F1).**
+  Promoted **`aho-corasick`** to a direct dep (`memchr` deferred until a direct
+  `memmem` consumer exists — promoting it unused would trip `cargo machete`); built
+  **`util::scan::MatchSet`** (cached automaton: `is_match` "contains any" +
+  leftmost-`find`, ASCII-CI variant, boundary-safe offsets) with unit tests + a
+  `criterion` bench; routed the **first consumer** — the search-engine anti-bot
+  `is_captcha_page` vendor-signature scan — through it, **byte-for-byte equivalent**
+  (the 5 existing captcha tests, incl. the false-positive guard, pass unchanged).
+  *Remaining:* route the universal key scanner (`key_harvest` ~170 prefixes), the
+  HTML marker parsers (au_electoral/au_property), and the other denylists through
+  `MatchSet`/`memchr`; add `bstr`. Each is its own contained increment.
 - **`[~]` F.2 · `fst`-backed datasets (phone-first + de-duplication)** — many
   static tables are hand-coded `&[&str]`/`match` arms, several **duplicated**
   (freemail in `util/oathnet_batch` vs `util/domains`; `country_name` in
@@ -1110,3 +1121,22 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   scope, timeline epoch — remain). Gate green: clippy/fmt/doc clean, 2,999 lib tests
   (+2), 0 failures. **Paired:** `SOLUTION_TREE` SOL-DIFF-DEDUP/SOL-CACHE-REFRESH
   `[ ]`→`[x]`, SOL-CLI-CONTRACT `[ ]`→`[~]`, §4 refreshed — same commit.
+- **2026-06-17** — **Paired-tree cycle: F.1 substrate + first consumer (SOL-F1),
+  the dedicated high-leverage push.** Promoted **`aho-corasick`** to a direct dep
+  (`memchr`/`bstr` held back until first directly used, else `cargo machete` trips)
+  and built **`util::scan::MatchSet`** — a cached aho-corasick automaton (`is_match`
+  "contains any" + leftmost-`find`, ASCII-CI, boundary-safe `&str` offsets so the T0
+  panic class can't recur) with 5 unit tests + a `criterion` bench (`MatchSet` vs the
+  linear `.any(.contains)` it replaces). Routed the **first consumer** — the
+  search-engine anti-bot `is_captcha_page` vendor-signature scan, which runs on every
+  scraped SERP — through it: **byte-for-byte equivalent** (matching the same
+  lowercased body against the same lowercase signatures), proven by the 5 existing
+  captcha tests passing unchanged (incl. the false-positive guard). F.1 `[ ]`→`[~]`.
+  **Measured (criterion, debug-host):** the cached `MatchSet` scans the worst-case
+  14 KB no-match body in **~2.2 µs vs ~26 µs** for the linear `.any(.contains)` it
+  replaces — **~12× faster** (919k vs 76k iters / 2 s) — the leverage F.1 promised.
+  *Remaining (each a contained increment):* the universal key scanner (~170
+  prefixes), the HTML marker parsers, the other denylists; `memchr`/`bstr`. Gate
+  green: clippy `--all-targets`/fmt/doc clean, benches compile, 3,004 lib tests (+5),
+  0 failures, AI-independence guard still passes (aho-corasick is pure matching).
+  **Paired:** `SOLUTION_TREE` SOL-F1 substrate delivered + §4b refreshed — same commit.

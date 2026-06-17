@@ -75,6 +75,10 @@ reqwest            = { version = "0.12", default-features = false, features = ["
 rusqlite           = { version = "0.39", features = ["bundled"] }
 clap               = { version = "4",    features = ["derive", "env"] }
 regex              = "1"
+# Multi-pattern literal scanning (Teddy/SIMD). Already in the tree transitively
+# via `regex`; promoted to a direct dep so `util::scan` can own the cached
+# automata for untrusted-text "contains any" / leftmost-find matching (F.1).
+aho-corasick       = "1"
 thiserror          = "2"
 async-trait        = "0.1"
 tracing            = "0.1"

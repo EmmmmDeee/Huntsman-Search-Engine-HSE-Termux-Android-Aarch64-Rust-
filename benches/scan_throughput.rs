@@ -55,11 +55,53 @@ fn bench_geohash(c: &mut Criterion) {
     });
 }
 
+/// `util::scan::MatchSet` (SOL-F1) vs the hand-rolled N-way `.any(|p| hay.contains(p))`
+/// it replaces — the anti-bot / challenge detector runs on every scraped SERP, so
+/// this is the leverage the cached aho-corasick automaton buys: one Teddy/SIMD pass
+/// instead of ~16 separate substring scans over the body.
+fn bench_match_set_vs_linear(c: &mut Criterion) {
+    use huntsman_search_engine::util::scan::MatchSet;
+    // Representative of BLOCK_VENDOR_SIGNATURES (all lowercase literals).
+    let pats: &[&str] = &[
+        "challenges.cloudflare.com",
+        "/cdn-cgi/challenge-platform",
+        "cf-chl-",
+        "/recaptcha/api",
+        "g-recaptcha",
+        "/sorry/index",
+        "hcaptcha.com",
+        "captcha-delivery.com",
+        "datadome",
+        "perimeterx",
+        "px-captcha",
+        "funcaptcha",
+        "arkoselabs",
+        "smartcaptcha",
+        "anomaly-modal",
+        "httpservice/retry",
+    ];
+    // ~14 KB of realistic page text with NO signature (worst case: full scan).
+    let body = "Lorem ipsum dolor sit amet, café résumé. <div class='result'>… </div> "
+        .repeat(200)
+        .to_lowercase();
+    let set = MatchSet::new(pats);
+
+    let mut group = c.benchmark_group("captcha_signature_scan_14kb");
+    group.bench_function("match_set", |b| {
+        b.iter(|| set.is_match(black_box(&body)));
+    });
+    group.bench_function("linear_any_contains", |b| {
+        b.iter(|| pats.iter().any(|p| black_box(&body).contains(p)));
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_find_ascii_ci,
     bench_fold_ascii_lower,
     bench_slugify,
-    bench_geohash
+    bench_geohash,
+    bench_match_set_vs_linear
 );
 criterion_main!(benches);

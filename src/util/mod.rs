@@ -33,6 +33,7 @@ pub mod preflight;
 pub mod proxy;
 pub mod raw_archive;
 pub mod response_cache;
+pub mod scan;
 pub mod see_know;
 pub mod service_defs;
 pub mod settings;

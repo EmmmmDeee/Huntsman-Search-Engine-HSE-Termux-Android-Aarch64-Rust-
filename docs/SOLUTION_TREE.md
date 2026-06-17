@@ -79,8 +79,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the root (not just patched — made structurally impossible), **T2.7** scraper
   rewrites, **T2.8** the capped scanners, **C6** key-harvest precision.
   *Delivered:* the boundary-safe shims (`find_ascii_ci`/`char_window`/`truncate_safe`)
-  that the T0 fixes used. *Gap:* the deps aren't promoted and there's no `util::scan`
-  module yet — the automata leverage is unrealised. **(§4b)**
+  the T0 fixes used; **+ the substrate (2026-06-17):** `aho-corasick` promoted to a
+  direct dep, `util::scan::MatchSet` (cached automaton — `is_match` "contains any" +
+  leftmost-`find`, ASCII-CI, boundary-safe offsets) built with tests + a `criterion`
+  bench, and the **first consumer** (the SERP anti-bot `is_captcha_page` signature
+  scan) routed through it **byte-for-byte equivalent** (5 captcha tests pass).
+  *Gap (§4b):* route the universal key scanner (~170 prefixes), the HTML marker
+  parsers, and the remaining denylists through `MatchSet`/`memchr`; add `bstr`. Each
+  a contained increment — `memchr`/`bstr` promoted only when first directly used
+  (else `cargo machete` trips).
 - **`[~]` SOL-F2 · `fst`-backed datasets** ⚑ — `build.rs` compiles `data/*.txt` into
   memory-mapped `fst::Set`/`Map`, one canonical `util::dataset` API.
   *Closes / powers:* **F.2** (self), the **B5.3 table-drift** class, and Levenshtein
@@ -292,8 +299,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   enablers landing first, by design).
 
 ### 4b · Solutions begun but unfinished (the finish queue)
-- **SOL-F1** — boundary shims shipped; deps not promoted, no `util::scan`. *Biggest
-  remaining leverage* (unblocks T2.7 + sharpens C6).
+- **SOL-F1** — substrate + first consumer landed (`aho-corasick` direct,
+  `util::scan::MatchSet`, `is_captcha_page` converted). *Remaining (still the biggest
+  leverage):* route the universal key scanner (~170 prefixes, every body), the HTML
+  marker parsers, and the other denylists through `MatchSet`/`memchr` — each its own
+  contained increment (unblocks T2.7 + sharpens C6).
 - **SOL-F2** — de-dup done; `fst` for the large tables outstanding.
 - **SOL-F3** — proptest + criterion landed; `cargo-fuzz` + import-parser proptest left.
 - **SOL-BLOCKING** — API reads done; `scan_import`/`stats` handlers + the engine
@@ -371,3 +381,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   sole high-leverage tier and is explicitly flagged as needing a *dedicated* cycle,
   not a rushed one — that's the honest next target. Paired: `PROBLEM_TREE` T2.12 + §8
   same commit; gate green, 2,999 lib tests.
+- **2026-06-17** — **The dedicated SOL-F1 cycle: substrate + first consumer.** Took
+  the flagged high-leverage item as its own cycle (not a rushed corner): `aho-corasick`
+  → direct dep; `util::scan::MatchSet` cached automaton (tests + `criterion` bench);
+  first consumer = the SERP anti-bot `is_captcha_page` scan, converted **byte-for-byte
+  equivalent** (5 captcha tests unchanged). Scoped exactly as promised last cycle.
+  `memchr`/`bstr` deliberately *not* promoted yet (no direct consumer → `cargo
+  machete` would fail) — they land with their first use. SOL-F1 stays `[~]`: the
+  *substrate* is the leverage unlock; the remaining consumers (universal key scanner,
+  HTML markers, denylists) are now cheap, contained increments to route through it.
+  **Gap refresh:** §4b SOL-F1 line updated from "no substrate" to "substrate landed,
+  consumers remaining"; F.1/SOL-F1 is now the *only* partially-delivered enabler with
+  a clear incremental path. Paired: `PROBLEM_TREE` F.1 `[ ]`→`[~]` + baseline deps +
+  §8 — same commit; gate green, 3,004 lib tests, benches compile.

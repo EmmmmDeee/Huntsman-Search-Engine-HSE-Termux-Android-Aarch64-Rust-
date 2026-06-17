@@ -166,10 +166,15 @@ pub(super) const BLOCK_PHRASE_SETS: &[&[&str]] = &[
 /// detector's coverage while cutting its false-positive surface.
 pub(super) fn is_captcha_page(body: &str) -> bool {
     let lower = body.to_lowercase();
-    if BLOCK_VENDOR_SIGNATURES
-        .iter()
-        .any(|sig| lower.contains(sig))
-    {
+    // First tier: any single high-confidence vendor signature. One cached
+    // aho-corasick pass over the lowercased body (the first `util::scan`/SOL-F1
+    // consumer) — byte-for-byte equivalent to the old
+    // `BLOCK_VENDOR_SIGNATURES.iter().any(|s| lower.contains(s))` (the signatures
+    // are already lowercase, so we match against `lower`), but a single
+    // Teddy/SIMD pass instead of N substring scans.
+    static VENDOR_AC: std::sync::LazyLock<crate::util::scan::MatchSet> =
+        std::sync::LazyLock::new(|| crate::util::scan::MatchSet::new(BLOCK_VENDOR_SIGNATURES));
+    if VENDOR_AC.is_match(&lower) {
         return true;
     }
     BLOCK_PHRASE_SETS
