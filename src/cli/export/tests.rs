@@ -1,3 +1,4 @@
+use super::dossier::join_or_dash;
 use super::renderers::{
     render_csv, render_debug_bundle, render_full, render_gexf, render_json, render_report,
 };
@@ -240,4 +241,24 @@ fn explicit_scan_id_is_existence_checked_no_silent_empty_export() {
         crate::cli::resolve_scan_id(&store, "scan-present").unwrap(),
         "scan-present"
     );
+}
+
+// ── join_or_dash ──────────────────────────────────────────────────────────────
+
+#[test]
+fn join_or_dash_comma_joins_multiple_values() {
+    let v = ["a".to_string(), "b".to_string(), "c".to_string()];
+    assert_eq!(join_or_dash(v.iter()), "a, b, c");
+}
+
+#[test]
+fn join_or_dash_single_value_has_no_separator() {
+    let v = ["solo".to_string()];
+    assert_eq!(join_or_dash(v.iter()), "solo");
+}
+
+#[test]
+fn join_or_dash_empty_iterator_is_explicit_none() {
+    let v: Vec<String> = Vec::new();
+    assert_eq!(join_or_dash(v.iter()), "(none)");
 }

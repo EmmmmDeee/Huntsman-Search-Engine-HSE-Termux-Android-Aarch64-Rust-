@@ -3,7 +3,9 @@
 //! Split out of the module file; reaches private parsers/helpers via
 //! `use super::*` (each parser is re-exported into the parent's scope).
 
-use super::{deduplicate_by_uid, entities_from_upload, looks_like_dossier, parse_dossier};
+use super::{
+    deduplicate_by_uid, entities_from_upload, looks_like_dossier, parse_dossier, parse_oathnet_html,
+};
 
 /// The upload dispatcher parses UNTRUSTED text from the web endpoint, so it
 /// must never panic — not on truncation, not on a multibyte codepoint landing
@@ -412,4 +414,69 @@ fn reused_hash_across_entries_is_preserved_for_cross_account_linking() {
         emails.contains("a@proton.me") && emails.contains("b@gmail.com"),
         "the reused-hash credential must retain BOTH accounts' emails, got {emails:?}"
     );
+}
+
+// ── parse_oathnet_html ────────────────────────────────────────────────────────
+
+#[test]
+fn parse_oathnet_html_extracts_domains_ips_and_emails() {
+    use crate::core::entity::EntityKind;
+    let body = "<html><body>\
+        Host: example.com and sub.dept.example.com<br>\
+        IP: 203.0.113.7<br>\
+        Contact: Alice@Example.com\
+        </body></html>";
+    let es = parse_oathnet_html(body, "sid");
+    let has = |k: EntityKind, v: &str| es.iter().any(|e| e.kind == k && e.value == v);
+    assert!(has(EntityKind::Domain, "example.com"));
+    assert!(has(EntityKind::Domain, "sub.dept.example.com"));
+    assert!(has(EntityKind::IpAddress, "203.0.113.7"));
+    // Emails are lower-cased.
+    assert!(has(EntityKind::Email, "alice@example.com"));
+    // Every imported entity carries the `import` tag.
+    assert!(es.iter().all(|e| e.has_tag("import")));
+}
+
+#[test]
+fn parse_oathnet_html_flags_subdomains_with_lower_confidence() {
+    use crate::core::entity::EntityKind;
+    let es = parse_oathnet_html("a.b.example.com plain.com", "sid");
+    let sub = es
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain && e.value == "a.b.example.com")
+        .expect("subdomain present");
+    let apex = es
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain && e.value == "plain.com")
+        .expect("apex present");
+    assert!(sub.has_tag("subdomain"));
+    assert!(!apex.has_tag("subdomain"));
+    // Subdomains are scored below apex domains (0.45 < 0.50).
+    assert!(sub.confidence < apex.confidence);
+}
+
+#[test]
+fn parse_oathnet_html_skips_bogus_ips_and_dedups() {
+    use crate::core::entity::EntityKind;
+    // 0./127./255.-prefixed IPs are dropped; a repeated domain appears once.
+    let es = parse_oathnet_html(
+        "127.0.0.1 0.0.0.0 255.255.255.255 example.com example.com",
+        "sid",
+    );
+    assert!(
+        !es.iter().any(|e| e.kind == EntityKind::IpAddress),
+        "loopback/unspecified/broadcast IPs must be skipped"
+    );
+    assert_eq!(
+        es.iter()
+            .filter(|e| e.kind == EntityKind::Domain && e.value == "example.com")
+            .count(),
+        1,
+        "a repeated domain must be de-duplicated"
+    );
+}
+
+#[test]
+fn parse_oathnet_html_empty_body_yields_nothing() {
+    assert!(parse_oathnet_html("", "sid").is_empty());
 }

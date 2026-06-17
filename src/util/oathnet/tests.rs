@@ -153,3 +153,61 @@ use super::*;
             assert!(stealer_indexable(f));
         }
     }
+
+    // ── cache_key ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn cache_key_lays_out_path_field_value() {
+        assert_eq!(
+            cache_key("search", "email", "user@example.com"),
+            "search:email:user@example.com"
+        );
+    }
+
+    #[test]
+    fn cache_key_lowercases_only_the_value() {
+        // The value is folded to lowercase so case-variant lookups hit one entry;
+        // path and field are passed through verbatim.
+        assert_eq!(
+            cache_key("Search", "Email", "USER@Example.COM"),
+            "Search:Email:user@example.com"
+        );
+    }
+
+    #[test]
+    fn cache_key_collapses_case_variant_values_to_one_key() {
+        assert_eq!(
+            cache_key("p", "f", "AzBy"),
+            cache_key("p", "f", "azby"),
+            "values differing only in case must share a cache key"
+        );
+    }
+
+    // ── key_fingerprint ───────────────────────────────────────────────────────
+
+    #[test]
+    fn key_fingerprint_empty_key_is_labelled_no_key() {
+        assert_eq!(key_fingerprint(""), "oathnet.org:(no key)");
+        assert_eq!(key_fingerprint("   "), "oathnet.org:(no key)");
+    }
+
+    #[test]
+    fn key_fingerprint_short_key_shown_in_full() {
+        // ≤12 chars: no elision, the (already short) key is shown verbatim.
+        assert_eq!(key_fingerprint("abc123"), "oathnet.org:abc123");
+        assert_eq!(key_fingerprint("twelvechars0"), "oathnet.org:twelvechars0");
+    }
+
+    #[test]
+    fn key_fingerprint_long_key_elides_middle() {
+        // >12 chars: head8…tail4 with a real ellipsis codepoint.
+        assert_eq!(
+            key_fingerprint("0123456789abcdef"),
+            "oathnet.org:01234567\u{2026}cdef"
+        );
+    }
+
+    #[test]
+    fn key_fingerprint_trims_surrounding_whitespace() {
+        assert_eq!(key_fingerprint("  abc123  "), "oathnet.org:abc123");
+    }

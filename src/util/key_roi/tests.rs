@@ -46,3 +46,19 @@ use super::*;
         assert!(KeyRoi::Multiplier > KeyRoi::Expansion);
         assert!(KeyRoi::Expansion > KeyRoi::Terminal);
     }
+
+    #[test]
+    fn label_maps_each_tier_to_its_tag_string() {
+        // The `roi:{label}` entity tags downstream consumers match on depend on
+        // these exact strings — lock them.
+        assert_eq!(KeyRoi::Terminal.label(), "terminal");
+        assert_eq!(KeyRoi::Expansion.label(), "expansion");
+        assert_eq!(KeyRoi::Multiplier.label(), "multiplier");
+    }
+
+    #[test]
+    fn label_round_trips_through_classify() {
+        assert_eq!(classify("shodan").label(), "multiplier");
+        assert_eq!(classify("abuseipdb").label(), "terminal");
+        assert_eq!(classify("some_unknown_service").label(), "expansion");
+    }

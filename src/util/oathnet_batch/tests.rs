@@ -371,3 +371,15 @@ fn leading_and_trailing_whitespace_is_trimmed() {
     assert!(has(&qs, Surface::Breach, "email", "jane@example.com"));
     assert!(qs.iter().all(|q| q.value == q.value.trim()));
 }
+
+#[test]
+fn origin_label_maps_each_variant_to_its_plan_string() {
+    // These labels appear in the emitted batch plan (JSON/human), so lock the
+    // exact string for every variant.
+    assert_eq!(Origin::Seed.label(), "seed");
+    assert_eq!(Origin::EmailLocalPart.label(), "email-local-part");
+    assert_eq!(Origin::EmailDomain.label(), "email-domain");
+    assert_eq!(Origin::Handle.label(), "handle-permutation");
+    assert_eq!(Origin::PhoneFormat.label(), "phone-format");
+    assert_eq!(Origin::EmailCandidate.label(), "email-candidate");
+}

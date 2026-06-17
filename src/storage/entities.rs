@@ -362,3 +362,64 @@ fn is_incidental_infra(e: &Entity) -> bool {
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::entity::EntityKind;
+    use crate::storage::Store;
+
+    // ── fts_prefix_query ──────────────────────────────────────────────────────
+
+    #[test]
+    fn fts_prefix_query_single_token_is_quoted_prefix() {
+        assert_eq!(Store::fts_prefix_query("alice"), "\"alice\"*");
+    }
+
+    #[test]
+    fn fts_prefix_query_multiple_tokens_are_and_joined() {
+        assert_eq!(Store::fts_prefix_query("john doe"), "\"john\"* \"doe\"*");
+    }
+
+    #[test]
+    fn fts_prefix_query_splits_on_non_alphanumerics() {
+        // Dots, dashes and `@` are all token separators — an email/handle becomes
+        // a sequence of prefix terms.
+        assert_eq!(
+            Store::fts_prefix_query("a.b-c@d"),
+            "\"a\"* \"b\"* \"c\"* \"d\"*"
+        );
+    }
+
+    #[test]
+    fn fts_prefix_query_empty_when_no_usable_tokens() {
+        // Empty / punctuation-only input yields "" so the caller falls back to LIKE.
+        assert_eq!(Store::fts_prefix_query(""), "");
+        assert_eq!(Store::fts_prefix_query("  .-@  "), "");
+    }
+
+    // ── is_incidental_infra ───────────────────────────────────────────────────
+
+    #[test]
+    fn is_incidental_infra_flags_cdn_edge_ip() {
+        // A Cloudflare anycast edge IP — high-confidence but shared infrastructure.
+        let e = Entity::new(EntityKind::IpAddress, "104.20.37.187", 0.95, "s");
+        assert!(is_incidental_infra(&e));
+    }
+
+    #[test]
+    fn is_incidental_infra_flags_mega_domain() {
+        let e = Entity::new(EntityKind::Domain, "facebook.com", 0.50, "s");
+        assert!(is_incidental_infra(&e));
+    }
+
+    #[test]
+    fn is_incidental_infra_ignores_non_infra_kinds() {
+        // The default arm: a person/username is never "shared infrastructure",
+        // regardless of value.
+        let person = Entity::new(EntityKind::Person, "104.20.37.187", 0.50, "s");
+        let user = Entity::new(EntityKind::Username, "facebook.com", 0.50, "s");
+        assert!(!is_incidental_infra(&person));
+        assert!(!is_incidental_infra(&user));
+    }
+}

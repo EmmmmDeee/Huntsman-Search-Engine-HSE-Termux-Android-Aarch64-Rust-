@@ -392,3 +392,38 @@ fn prune_degraded_still_drops_unused_low_value_keys_only_when_degraded() {
     assert_eq!(pruned, 0);
     assert!(pool.entry_status("shodan", "fresh").is_some());
 }
+
+#[test]
+fn key_status_as_str_matches_snake_case_serde_wire_form() {
+    // as_str() must agree with the `#[serde(rename_all = "snake_case")]` form so
+    // the API/UI status string and the persisted JSON never drift. RateLimited →
+    // rate_limited is the multi-word case most prone to skew.
+    let cases = [
+        (KeyStatus::Untested, "untested"),
+        (KeyStatus::Active, "active"),
+        (KeyStatus::Exhausted, "exhausted"),
+        (KeyStatus::Invalid, "invalid"),
+        (KeyStatus::RateLimited, "rate_limited"),
+        (KeyStatus::Revoked, "revoked"),
+    ];
+    for (status, want) in cases {
+        assert_eq!(status.as_str(), want);
+        let wire = serde_json::to_value(status).unwrap();
+        assert_eq!(wire, serde_json::Value::String(want.to_string()));
+    }
+}
+
+#[test]
+fn key_tier_as_str_matches_snake_case_serde_wire_form() {
+    let cases = [
+        (KeyTier::Trial, "trial"),
+        (KeyTier::Basic, "basic"),
+        (KeyTier::Standard, "standard"),
+        (KeyTier::Premium, "premium"),
+    ];
+    for (tier, want) in cases {
+        assert_eq!(tier.as_str(), want);
+        let wire = serde_json::to_value(tier).unwrap();
+        assert_eq!(wire, serde_json::Value::String(want.to_string()));
+    }
+}
