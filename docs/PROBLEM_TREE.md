@@ -522,7 +522,11 @@ direct.**
     `Err("both sides resolve to the same scan")` (non-zero exit) after the
     footgun `eprintln!` — previously fell through to `Ok(())`. Integration test
     `diff_wiring_self_compare_is_rejected_with_diagnostic` guards the new
-    behaviour.
+    behaviour. **`audit` exit-code fixed (2026-06-17, cycle 5):** `cmd_audit`
+    now returns `Err` after printing the report when any finding carries
+    `Severity::Critical` or `Severity::High`, so `hse audit` exits non-zero
+    on a problematic result. Test `empty_scan_triggers_high_severity_exit_path`
+    guards it. *Residual:* `resolve_scan_id` accepting an incomplete scan.
     **P3.** *(All contained; none crash or corrupt persisted scan data.)*
 
 ---
@@ -1296,3 +1300,27 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy/doc clean, 3,009 lib + 67 api + 23 arch + 54 smoke + 3 halting
   + 6 cli-seed + 2 audit-regression tests, 0 failures. **Paired:** `SOLUTION_TREE`
   SOL-F1 + §4b + §5 refreshed — same commit.
+- **2026-06-17** — **Paired-tree cycle 5 (S→P): SOL-F1 `au_electoral` HTML markers
+  + SOL-CLI-CONTRACT `audit` exit-code.** S→P pass after cycle 4 examined what the
+  PrefixMatcher delivery exposed: the §4b finish queue still held two contained items.
+  **(1) SOL-F1 `au_electoral` HTML markers (`src/modules/au_electoral/parse.rs`):**
+  Added `MatchSet::find_range(&str) -> Option<(usize, usize)>` to `util::scan` —
+  returns both `start` and `end` of the leftmost match so callers skip past a matched
+  marker without knowing its length. Replaced the three `find_ascii_ci` calls in
+  `extract_division` with two `LazyLock<MatchSet>` statics: `DIVISION_MARKER`
+  (`new_ascii_ci(["division of "])`) and `ENROLLED_MARKERS`
+  (`new_ascii_ci(["enrolled in ", "enrolled for "])`) — the two-pattern enrolled scan
+  is now one aho-corasick pass instead of two sequential linear scans; AEC-before-stateEC
+  priority preserved (two separate matchers, in sequence). Five tests added in
+  `extract_division_tests`. **(2) SOL-CLI-CONTRACT `audit` exit-code (T2.12 LOW residual,
+  `src/cli/audit/mod.rs`):** `cmd_audit` now returns
+  `Err(Error::Other("audit: HIGH/CRITICAL findings detected…"))` after printing the report
+  when `report.findings` contains any `Severity::Critical | Severity::High` entry —
+  `hse audit` exits non-zero on a problematic result (was always `Ok(())`). Test
+  `empty_scan_triggers_high_severity_exit_path` (an empty entity list → HIGH
+  "empty-result" finding) guards the new path. **Gap result:** F.1 `[~]` — 5 consumers
+  done; remaining = HTML markers (au_property only) + memchr/bstr. T2.12 residual
+  narrowed to `resolve_scan_id` accepting incomplete scans. Gate green:
+  fmt/clippy/doc clean, 3,016 lib + 67 api + 23 arch + 54 smoke + 3 halting
+  + 6 cli-seed + 2 audit-regression tests, 0 failures. **Paired:** `SOLUTION_TREE`
+  SOL-F1 + SOL-CLI-CONTRACT + §4b + §5 refreshed — same commit.

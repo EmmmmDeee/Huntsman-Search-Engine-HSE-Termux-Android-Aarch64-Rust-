@@ -70,6 +70,16 @@ impl MatchSet {
     pub fn find(&self, haystack: &str) -> Option<usize> {
         self.ac.find(haystack).map(|m| m.start())
     }
+
+    /// Byte range `[start, end)` of the leftmost(-longest) match, or `None`.
+    /// Both offsets are valid `&str` boundaries (patterns match original bytes).
+    /// `&haystack[start..]` covers the match and everything that follows;
+    /// `&haystack[end..]` is the text immediately after the match — use `end`
+    /// to skip past a matched marker without knowing its length in advance.
+    #[must_use]
+    pub fn find_range(&self, haystack: &str) -> Option<(usize, usize)> {
+        self.ac.find(haystack).map(|m| (m.start(), m.end()))
+    }
 }
 
 /// A compiled set of literal prefix patterns for fast "which prefix does this
@@ -157,5 +167,15 @@ mod tests {
         assert!(m.is_match("café résumé 日本語 \u{0}\u{7f} secret here"));
         let _ = m.find("ключ \u{1} key 🔑");
         let _ = m.is_match("");
+    }
+
+    #[test]
+    fn find_range_returns_boundary_safe_start_and_end() {
+        let m = MatchSet::new_ascii_ci(["enrolled in ", "enrolled for "]);
+        let hay = "You are enrolled for Sydney NSW";
+        let (start, end) = m.find_range(hay).expect("match");
+        assert_eq!(&hay[start..end], "enrolled for ");
+        assert_eq!(&hay[end..], "Sydney NSW");
+        assert_eq!(m.find_range("no match here"), None);
     }
 }

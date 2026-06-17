@@ -1,5 +1,13 @@
 //! HTML parsing helpers for electoral commission response pages.
 
+static DIVISION_MARKER: std::sync::LazyLock<crate::util::scan::MatchSet> =
+    std::sync::LazyLock::new(|| crate::util::scan::MatchSet::new_ascii_ci(["division of "]));
+
+static ENROLLED_MARKERS: std::sync::LazyLock<crate::util::scan::MatchSet> =
+    std::sync::LazyLock::new(|| {
+        crate::util::scan::MatchSet::new_ascii_ci(["enrolled in ", "enrolled for "])
+    });
+
 /// Parse a confirmed division name from an AEC or state EC HTML response.
 /// Returns `(division_name, suburb_hint)` when a match is found. Pure.
 ///
@@ -7,38 +15,39 @@
 /// `"You are enrolled for the Division of Sydney"` or
 /// `"enrolled for Sydney (NSW)"`. State commissions use similar phrasing.
 pub(crate) fn extract_division(html: &str) -> Option<(String, Option<String>)> {
-    use crate::util::str_util::find_ascii_ci;
     let text = strip_electoral_html(html);
 
-    // AEC pattern: "division of <name>". Search the ORIGINAL `text`
-    // case-insensitively so the byte offset is char-boundary-safe — an offset
-    // taken from `text.to_lowercase()` can land mid-codepoint and panic on a
-    // multibyte uppercase char before the marker.
-    if let Some(pos) = find_ascii_ci(&text, "division of ") {
-        let rest = &text[pos + "division of ".len()..];
+    // AEC pattern: "division of <name>". `find_range` returns boundary-safe
+    // `[start, end)` from original bytes — no offset-on-a-copy panic risk.
+    if let Some((pos, end)) = DIVISION_MARKER.find_range(&text) {
+        let rest = &text[end..];
         let name: String = rest
             .chars()
             .take_while(|c| c.is_alphabetic() || *c == '-' || *c == ' ')
             .collect();
         let name = name.trim().to_string();
         if !name.is_empty() && name.len() < 40 {
-            // Try to extract a suburb hint from the same context window.
             let suburb = extract_suburb_hint(&text[pos..]);
             return Some((name, suburb));
         }
     }
 
     // State EC pattern: "enrolled in <Division>" or "enrolled for <Division>".
-    ["enrolled in ", "enrolled for "].iter().find_map(|marker| {
-        let pos = find_ascii_ci(&text, marker)?;
-        let rest = &text[pos + marker.len()..];
+    // One aho-corasick pass covers both markers; `end` skips past whichever
+    // matched without needing to know its length.
+    if let Some((pos, end)) = ENROLLED_MARKERS.find_range(&text) {
+        let rest = &text[end..];
         let name: String = rest
             .chars()
             .take_while(|c| c.is_alphabetic() || *c == '-' || *c == ' ')
             .collect();
         let name = name.trim().to_string();
-        (!name.is_empty() && name.len() < 40).then(|| (name, extract_suburb_hint(&text[pos..])))
-    })
+        if !name.is_empty() && name.len() < 40 {
+            return Some((name, extract_suburb_hint(&text[pos..])));
+        }
+    }
+
+    None
 }
 
 /// Strip HTML tags from an electoral response, inserting spaces at each tag
@@ -108,6 +117,45 @@ fn extract_suburb_hint(window: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod extract_division_tests {
+    use super::extract_division;
+
+    #[test]
+    fn aec_division_of_pattern() {
+        // Typical AEC format: "Division of Sydney" followed by punctuation/digits.
+        let html = "<div>You are enrolled for the Division of Sydney (2026)</div>";
+        let (name, _) = extract_division(html).unwrap();
+        assert_eq!(name, "Sydney");
+    }
+
+    #[test]
+    fn state_ec_enrolled_for_pattern() {
+        let html = "<p>You are enrolled for Bondi Beach 2026</p>";
+        let (name, _) = extract_division(html).unwrap();
+        assert_eq!(name, "Bondi Beach");
+    }
+
+    #[test]
+    fn state_ec_enrolled_in_pattern() {
+        let html = "<p>You are enrolled in Parramatta</p>";
+        let (name, _) = extract_division(html).unwrap();
+        assert_eq!(name, "Parramatta");
+    }
+
+    #[test]
+    fn no_marker_returns_none() {
+        assert_eq!(extract_division("<p>Nothing electoral here</p>"), None);
+    }
+
+    #[test]
+    fn case_insensitive_match() {
+        let html = "<p>DIVISION OF Melbourne</p>";
+        let (name, _) = extract_division(html).unwrap();
+        assert_eq!(name, "Melbourne");
+    }
 }
 
 #[cfg(test)]

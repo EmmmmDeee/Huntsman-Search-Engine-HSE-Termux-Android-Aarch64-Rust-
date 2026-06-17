@@ -92,10 +92,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   O(N=170) `starts_with` loop replaced with O(1) dispatch + O(K≤2) group iteration;
   intentional quality improvement (specific-prefix min_len failure no longer cascades
   to a shorter generic prefix); proptest (no-panic + synthesised-token sanity) +
-  deterministic cascade-prevention test.
-  *Gap (§4b):* the HTML marker parsers (au_electoral, au_property); `memchr`/`bstr`
-  adoption. Each a contained increment — `memchr`/`bstr` promoted only when first
-  directly used (else `cargo machete` trips).
+  deterministic cascade-prevention test. **+ `au_electoral` HTML markers (2026-06-17,
+  cycle 5):** `MatchSet::find_range` added to `util::scan` (returns `[start, end)` so
+  callers skip past a marker without knowing its length); `DIVISION_MARKER` +
+  `ENROLLED_MARKERS` statics in `au_electoral/parse.rs` replace three `find_ascii_ci`
+  calls; two-pattern enrolled scan is one aho-corasick pass; five tests added.
+  *Gap (§4b):* HTML marker parsers (au_property only); `memchr`/`bstr` adoption.
+  Each a contained increment — `memchr`/`bstr` promoted only when first directly used
+  (else `cargo machete` trips).
 - **`[~]` SOL-F2 · `fst`-backed datasets** ⚑ — `build.rs` compiles `data/*.txt` into
   memory-mapped `fst::Set`/`Map`, one canonical `util::dataset` API.
   *Closes / powers:* **F.2** (self), the **B5.3 table-drift** class, and Levenshtein
@@ -256,9 +260,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   failed smoke/missing-key sub-test ✅. *+SOL-CLI-CONTRACT-DIFF (2026-06-17):*
   `cmd_diff` returns `Err("both sides resolve to the same scan")` (non-zero exit)
   in the same-scan footgun block — previously fell through to `Ok(())`. Integration
-  test `diff_wiring_self_compare_is_rejected_with_diagnostic` guards it ✅. *Residual:*
-  `audit` always-`Ok` + `resolve_scan_id` accepting incomplete scans. *Closes:*
-  **T2.12** (two MED CLI bugs + diff exit-code).
+  test `diff_wiring_self_compare_is_rejected_with_diagnostic` guards it ✅.
+  *+SOL-CLI-CONTRACT-AUDIT (2026-06-17, cycle 5):* `cmd_audit` returns `Err` after
+  printing the report when any finding carries `Severity::Critical | Severity::High`
+  — `hse audit` was previously always `Ok(())` regardless of scan quality ✅. Test
+  `empty_scan_triggers_high_severity_exit_path` guards it. *Residual:*
+  `resolve_scan_id` accepting incomplete scans. *Closes:* **T2.12** (two MED CLI
+  bugs + diff exit-code + audit exit-code).
 - **`[x]` SOL-DIFF-DEDUP · uid-deduped diff** — `diff_entities` iterates the deduped
   `HashMap` values, so dup-uid CLI snapshots don't over-count; unique-uid input is
   byte-identical. *Closes:* **T2.12** diff over-count. ✅ test
@@ -330,12 +338,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   enablers landing first, by design).
 
 ### 4b · Solutions begun but unfinished (the finish queue)
-- **SOL-F1** — substrate + **four** consumers landed (`is_captcha_page`,
-  key-harvest `contains_excluded_context`, wigle `is_generic_ssid`, and the
+- **SOL-F1** — substrate + **five** consumers landed (`is_captcha_page`,
+  key-harvest `contains_excluded_context`, wigle `is_generic_ssid`, the
   **prefix-table `PrefixMatcher`** — 170 prefixes, `LeftmostFirst`, group map for
-  same-prefix duplicates, proptest-backed). *Remaining:* the HTML marker parsers
-  (au_electoral/au_property); `memchr`/`bstr`. Each contained (unblocks T2.7 +
-  sharpens C6).
+  same-prefix duplicates, proptest-backed — and `au_electoral` HTML markers via
+  `MatchSet::find_range`). *Remaining:* au_property HTML markers; `memchr`/`bstr`.
+  Each contained (unblocks T2.7 + sharpens C6).
 - **SOL-F2** — de-dup done; `fst` for the large tables outstanding.
 - **SOL-F3** — proptest + criterion landed; `cargo-fuzz` + import-parser proptest left.
 - **SOL-BLOCKING** — API reads + `scan_import` + `stats` + engine `insert_event` all
@@ -361,8 +369,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-BLOCKING); only the DB-writer actor remains; T1.3 partial.
 - **§3.F (foundations):** all three `[~]` — the largest unrealised leverage block.
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅; T2.12
-  further advanced (5 items fixed: 2 MED + 2 LOW-MED + diff exit-code; `audit`
-  always-`Ok` + incomplete-scan-resolve remain); T2.7/T2.10 open; T2.11 mostly done
+  further advanced (6 items fixed: 2 MED + 2 LOW-MED + diff exit-code + audit
+  exit-code; `resolve_scan_id` incomplete-scan-resolve is the sole residual);
+  T2.7/T2.10 open; T2.11 mostly done
   (oathnet + found_keys/SOL-ISOLATE delivered; LOW over-dispatch + budget-reset-zeroing
   remain).
 - **§7 (security):** XSS + S2 (whois SSRF) + S3 (file perms) solved; S1 accepted;
@@ -526,4 +535,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   §4b SOL-F1 updated (4 consumers; remaining = HTML markers + memchr/bstr); §4d §3.F
   unchanged (all `[~]` — HTML markers next). Paired: `PROBLEM_TREE` F.1 cycle-4 note
   + §8 — same commit; gate green, 3,009 lib + 67 api + 23 arch + 54 smoke + 3 halting
+  + 6 cli-seed + 2 audit-regression tests, 0 failures.
+- **2026-06-17** — **Cycle 5 (S→P): SOL-F1 `au_electoral` HTML markers +
+  SOL-CLI-CONTRACT `audit` exit-code.** S→P pass on cycle 4 deliverables: §4b held
+  two contained finish-queue items. **(1) SOL-F1 `au_electoral`:** extended
+  `util::scan::MatchSet` with `find_range(&str) -> Option<(usize, usize)>` (leftmost
+  match `[start, end)` — eliminates "what length was the marker?" arithmetic);
+  `au_electoral/parse.rs` `extract_division` converted — `DIVISION_MARKER` +
+  `ENROLLED_MARKERS` `LazyLock<MatchSet>` statics replace three `find_ascii_ci`
+  calls; the two enrolled-marker patterns are now one aho-corasick pass (was two
+  sequential linear scans); AEC-before-state-EC priority preserved (two matchers,
+  in sequence). Five tests added (`extract_division_tests`). **(2)
+  SOL-CLI-CONTRACT `audit`:** `cmd_audit` emits `Err` after printing when any finding
+  is `Critical | High` (previously `Ok(())` regardless of score); test
+  `empty_scan_triggers_high_severity_exit_path` guards the non-zero-exit path. **Gap
+  refresh:** §4b SOL-F1 "5 consumers, remaining = au_property + memchr/bstr";
+  SOL-CLI-CONTRACT residual = `resolve_scan_id` incomplete-scan only; §4d T2 row
+  updated (audit exit-code now in the fixed column). §3.F enabler block remains the
+  sole high-leverage unrealised tier. Paired: `PROBLEM_TREE` T2.12 + F.1 + §8 —
+  same commit; gate green, 3,016 lib + 67 api + 23 arch + 54 smoke + 3 halting
   + 6 cli-seed + 2 audit-regression tests, 0 failures.
