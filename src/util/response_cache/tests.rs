@@ -115,3 +115,19 @@ use super::*;
         c.put("search:alice".into(), payload.clone());
         assert_eq!(c.get("search:alice"), Some(payload));
     }
+
+    #[test]
+    fn full_cache_still_refreshes_an_existing_key() {
+        // T2.12: at cap, a NEW key is rejected (the ceiling holds), but an in-place
+        // refresh of a key already present must still apply — a full cache must
+        // never get stuck serving a stale value for a key it already holds.
+        let c: ResponseCache<u32> = ResponseCache::new(2);
+        c.put("a".into(), 1);
+        c.put("b".into(), 2); // now at cap
+        c.put("c".into(), 3); // new key: rejected (ceiling holds)
+        assert_eq!(c.get("c"), None, "new key must be rejected at cap");
+        assert_eq!(c.len(), 2);
+        c.put("a".into(), 99); // existing key: must refresh despite being full
+        assert_eq!(c.get("a"), Some(99), "existing key must refresh when full");
+        assert_eq!(c.len(), 2, "refresh must not grow the map past cap");
+    }

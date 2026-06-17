@@ -418,7 +418,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
   sized for a single in-process scan; `serve`'s concurrency (8) makes them shared
   mutable state. The clean fix is per-`scan_id` keying (or threading the state
   through `ModuleContext`), which also subsumes the budget-reset race. **P2**
-- **`[ ]` T2.12 · Periphery correctness bugs (CLI / diff / cache / pool)** — the
+- **`[~]` T2.12 · Periphery correctness bugs (CLI / diff / cache / pool)** — the
   2026-06-17 internals audit of the least-covered subsystems found a cluster of
   real but contained defects (the cores — key_pool rotation, crypto, proxy SSRF,
   budget, roi, timeline — verified clean, see §6):
@@ -428,24 +428,32 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
     and prints the **false** "Key already exists in '{service}' pool" — the key is
     **silently dropped** and the command exits 0, contradicting its own output. →
     gate early (`find_service(..).is_none()` → `Err`), or return
-    `{Added,Duplicate,NotPoolable}` and message/exit accordingly. **P2**
+    `{Added,Duplicate,NotPoolable}` and message/exit accordingly. **P2** ✅ **Fixed:**
+    the CLI now checks `is_poolable_service` up front and returns a clear `Err`
+    (non-zero exit, pointing at `set-key` for one-off keys) for a non-poolable
+    service — no more silent drop + false "already exists".
   - **MED** `cli/provision/mod.rs:283-285,328` — `provision --verify` prints a `!`
     on a failed smoke scan / missing-key sub-test but returns `Ok(())` → **exit 0
     on failure**, so a CI/install gate treats a broken build as healthy. → track a
     `verify_ok` flag and `return Err` (or document it as informational and drop the
-    pass/fail `✓`/`!` markers). **P2**
+    pass/fail `✓`/`!` markers). **P2** ✅ **Fixed:** a `verify_ok` flag now tracks the
+    smoke-scan completion + the missing-key assertion, and `provision --verify`
+    returns `Err` (non-zero exit) on failure — a CI/install gate can rely on it.
   - **MED** `core/diff/mod.rs:94-121` — `diff_entities` iterates the raw input
     slices, not the deduped uid maps, so a side with two same-uid entities
     over-counts `common`/`added`/`removed`/`confidence_shifts`. DB-to-DB diffs are
     safe (uid is PK-unique), but the CLI JSON-snapshot path (`cli/diff/mod.rs:33`,
     `serde_json::from_str` with no dedup) makes a hand-edited/concatenated
     `before.json` trigger it → corrupted diff output. → iterate the deduped
-    `HashMap` values (or dedup inputs by uid up front). **P2**
+    `HashMap` values (or dedup inputs by uid up front). **P2** ✅ **Fixed:**
+    `diff_entities` now iterates the deduped uid maps; unique-uid input is
+    byte-identical, dup-uid input counts once. Test `duplicate_uid_input_is_not_over_counted`.
   - **LOW-MED** `util/response_cache/mod.rs:70` — the `c.len() < cap` guard runs
     *before* `insert`, and re-inserting an existing key doesn't grow `len`, so once
     the cache is full an in-place **value refresh is rejected** → stale paid-API
     payload served for the rest of the process. → `if c.len() < cap ||
-    c.contains_key(&key) { insert }`. **P3**
+    c.contains_key(&key) { insert }`. **P3** ✅ **Fixed** (exactly so; test
+    `full_cache_still_refreshes_an_existing_key`).
   - **LOW** misc: `key_pool/validation.rs:33-41` (a successful re-validation of an
     already-pooled `Untested` key doesn't promote the stored entry to `Active` —
     wastes a probe); `util/proxy/mod.rs:89` (`is_public_proxy` mis-parses
@@ -1088,3 +1096,17 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   clean, 2,997 lib tests (+1), 0 failures. **Paired:** `SOLUTION_TREE` SOL-SSRF-WHOIS
   `[ ]`→`[x]` + §4 gap analysis refreshed in the same commit (§7 S2 now off the
   build queue; the §3.F enabler block is the sole remaining high-leverage tier).
+- **2026-06-17** — **Paired-tree cycle: cleared the four T2.12 MED/LOW-MED periphery
+  bugs (SOL-DIFF-DEDUP, SOL-CACHE-REFRESH, SOL-CLI-CONTRACT).** This cycle took the
+  highest-value *contained* items rather than the larger §3.F enablers (kept staged
+  for a dedicated push). Fixed: `keys add <non-poolable>` now errors honestly
+  (`is_poolable_service` pre-check) instead of the silent drop + false "already
+  exists"; `provision --verify` returns non-zero on a failed smoke/missing-key
+  sub-test (a CI gate can trust it); `diff_entities` iterates the deduped uid maps
+  (no over-count on dup-uid CLI snapshots); `response_cache::put` allows an in-place
+  refresh when full (no stale-forever). Two regression tests added; unique-uid /
+  legitimate input is byte-identical, so nothing degraded. T2.12 `[ ]`→`[~]` (the
+  LOW-misc residuals — pool re-validation, proxy v6 parse, env fsync, import-tsv
+  scope, timeline epoch — remain). Gate green: clippy/fmt/doc clean, 2,999 lib tests
+  (+2), 0 failures. **Paired:** `SOLUTION_TREE` SOL-DIFF-DEDUP/SOL-CACHE-REFRESH
+  `[ ]`→`[x]`, SOL-CLI-CONTRACT `[ ]`→`[~]`, §4 refreshed — same commit.

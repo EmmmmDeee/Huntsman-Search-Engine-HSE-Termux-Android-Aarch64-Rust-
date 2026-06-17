@@ -232,6 +232,10 @@ pub async fn cmd_provision_verify() -> Result<()> {
 
     println!("==> Phase: verify");
 
+    // Track pass/fail across the sub-tests below so a failed verify exits non-zero
+    // — a post-install / CI gate must not treat a broken build as healthy (T2.12).
+    let mut verify_ok = true;
+
     // ── 1. Doctor-like snapshot ─────────────────────────────────────────
     let mods = registry();
     println!(
@@ -286,6 +290,9 @@ pub async fn cmd_provision_verify() -> Result<()> {
         if entity_count == 1 { "y" } else { "ies" },
         if correlation_count == 1 { "" } else { "s" },
     );
+    if !completed {
+        verify_ok = false;
+    }
 
     // ── 3. Missing-key micro-test ───────────────────────────────────────
     // Pin a scan to `oathnet_pro` to force the missing-key path. Skip
@@ -316,6 +323,7 @@ pub async fn cmd_provision_verify() -> Result<()> {
                 "    missing-key:    ! oathnet_pro ran without reporting a missing key — \
                 expected error not observed"
             );
+            verify_ok = false;
         }
         // Also report any other missing keys the scan encountered.
         for k in &missing_keys {
@@ -325,7 +333,15 @@ pub async fn cmd_provision_verify() -> Result<()> {
         }
     }
 
-    Ok(())
+    if verify_ok {
+        Ok(())
+    } else {
+        Err(Error::Other(
+            "verify failed — see the `!` line(s) above (the smoke scan did not complete, \
+             or the missing-key assertion did not fire)"
+                .into(),
+        ))
+    }
 }
 
 struct SmokeResult {

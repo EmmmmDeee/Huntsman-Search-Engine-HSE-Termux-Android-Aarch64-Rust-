@@ -63,11 +63,13 @@ impl<T: Clone + Send + 'static> ResponseCache<T> {
         self.lock().lock().ok().and_then(|c| c.get(key).cloned())
     }
 
-    /// Insert a value. No-ops if the map has reached `cap` or the
-    /// lock is poisoned.
+    /// Insert a value. No-ops if the lock is poisoned, or if the map is at `cap`
+    /// **and** the key is new — an in-place refresh of an existing key is always
+    /// allowed (it can't grow the map), so a full cache never gets stuck serving a
+    /// stale value for a key it already holds (PROBLEM_TREE T2.12).
     pub fn put(&self, key: String, value: T) {
         if let Ok(mut c) = self.lock().lock()
-            && c.len() < self.cap
+            && (c.len() < self.cap || c.contains_key(&key))
         {
             c.insert(key, value);
         }

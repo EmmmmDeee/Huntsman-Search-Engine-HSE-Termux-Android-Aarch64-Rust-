@@ -215,14 +215,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### S.QUALITY — Periphery correctness (paired with `PROBLEM_TREE` T2.12)
 
-- **`[ ]` SOL-CLI-CONTRACT · Honest CLI result/exit semantics** — make `keys add`
-  return `{Added,Duplicate,NotPoolable}` (no false "already exists" + silent drop);
-  `provision --verify` return non-zero on a failed smoke scan; define an exit-code
-  contract for `audit`/`diff`. *Closes:* **T2.12** (the two MED CLI bugs).
-- **`[ ]` SOL-DIFF-DEDUP · uid-deduped diff** — iterate the deduped `HashMap` values
-  (or dedup inputs) in `diff_entities`. *Closes:* **T2.12** diff over-count.
-- **`[ ]` SOL-CACHE-REFRESH · Allow in-place refresh when full** — `len < cap ||
-  contains_key`. *Closes:* **T2.12** stale-cache.
+- **`[~]` SOL-CLI-CONTRACT · Honest CLI result/exit semantics** — `keys add` now
+  pre-checks `is_poolable_service` and `Err`s for a non-poolable service (no false
+  "already exists" + silent drop) ✅; `provision --verify` returns non-zero on a
+  failed smoke/missing-key sub-test ✅. *Residual:* the explicit exit-code contract
+  for `audit`/`diff` (always-`Ok`) is still open. *Closes:* **T2.12** (the two MED
+  CLI bugs).
+- **`[x]` SOL-DIFF-DEDUP · uid-deduped diff** — `diff_entities` iterates the deduped
+  `HashMap` values, so dup-uid CLI snapshots don't over-count; unique-uid input is
+  byte-identical. *Closes:* **T2.12** diff over-count. ✅ test
+  `duplicate_uid_input_is_not_over_counted`.
+- **`[x]` SOL-CACHE-REFRESH · Allow in-place refresh when full** — `put` is now
+  `len < cap || contains_key`, so a full cache still refreshes a key it holds.
+  *Closes:* **T2.12** stale-cache. ✅ test `full_cache_still_refreshes_an_existing_key`.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -259,7 +264,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-SECRETS / -EXTEND | env/pool/archive · §7 S3 | `[x]`/`[ ]` |
 | SOL-REDACT | §7 S4 | ◑ |
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
-| SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[ ]` |
+| SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[~]`/`[x]`/`[x]` |
 | SOL-CORR…SOL-FORENSIC | C1–C7 | `[ ]` |
 
 ---
@@ -310,7 +315,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **T0 (crashes):** fully solved (SOL-BOUNDARY + SOL-F3 guard). ✔
 - **T1 (core guarantees):** T1.1/T1.4 solved; T1.2 partial (SOL-BLOCKING); T1.3 partial.
 - **§3.F (foundations):** all three `[~]` — the largest unrealised leverage block.
-- **T2 (robustness):** T2.1–T2.6 + T2.9 solved; T2.8 partial; T2.7/T2.10/T2.12 open;
+- **T2 (robustness):** T2.1–T2.6 + T2.9 solved; T2.8 partial; T2.12 mostly done
+  (4 MED/LOW-MED fixed, LOW-misc residual); T2.7/T2.10 open;
   T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE delivered; only the LOW
   over-dispatch + budget-reset-zeroing remain).
 - **§7 (security):** XSS + S2 (whois SSRF) solved; S1 accepted; S3–S5 open with
@@ -353,3 +359,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   block (SOL-F1 automata / SOL-F2 fst / SOL-F3 cargo-fuzz)** is the sole remaining
   high-leverage tier and the unambiguous next target. Paired: `PROBLEM_TREE` §7 S2 +
   §8 updated in the same commit; gate green, 2,997 lib tests.
+- **2026-06-17** — **Cycle: cleared the contained S.QUALITY queue — SOL-DIFF-DEDUP
+  `[ ]`→`[x]`, SOL-CACHE-REFRESH `[ ]`→`[x]`, SOL-CLI-CONTRACT `[ ]`→`[~]`.**
+  **Deliberate gap-analysis choice:** SOL-F1 (top *leverage*) is a genuine
+  large-scale refactor, so this cycle took the highest-value *contained* items
+  instead (the methodology balances leverage against the "no large refactor rushed"
+  rule), closing the four T2.12 MED/LOW-MED periphery bugs — `keys add` honest error,
+  `provision --verify` non-zero exit, uid-deduped `diff`, full-cache refresh. Each
+  behaviour-preserving on legitimate input + regression-tested. **Gap refresh:** §4d
+  T2 row now "T2.12 mostly done"; the §3.F enabler block (SOL-F1/F2/F3) remains the
+  sole high-leverage tier and is explicitly flagged as needing a *dedicated* cycle,
+  not a rushed one — that's the honest next target. Paired: `PROBLEM_TREE` T2.12 + §8
+  same commit; gate green, 2,999 lib tests.

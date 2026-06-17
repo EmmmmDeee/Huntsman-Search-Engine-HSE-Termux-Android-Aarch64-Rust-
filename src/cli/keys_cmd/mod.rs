@@ -126,10 +126,19 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             notes,
             env,
         } => {
-            if key_pool::find_service(&service).is_none() {
+            // The rotation pool only holds reusable keyed-provider keys
+            // (`pool.add` rejects everything else via `is_poolable_service`).
+            // Check poolability up front so a non-poolable service gets an honest
+            // error + non-zero exit, instead of the old "Adding anyway" promise
+            // followed by a silent drop and a false "already exists" (T2.12).
+            if !crate::util::service_defs::is_poolable_service(&service) {
                 let names: Vec<&str> = key_pool::service_defs().iter().map(|s| s.name).collect();
-                println!("Unknown service '{service}'. Known: {}", names.join(", "));
-                println!("Adding anyway — key will be stored but not auto-validated.");
+                return Err(Error::Other(format!(
+                    "'{service}' is not a poolable service — its key can't be added to the \
+                     rotation pool. Poolable services: {}. For a one-off key, use \
+                     `hse set-key <HUNTSMAN_*_KEY> <value>`.",
+                    names.join(", ")
+                )));
             }
             let mut entry = KeyEntry::new(&key);
             entry.notes = notes;
@@ -141,6 +150,8 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
                     pool.service_count(&service)
                 );
             } else {
+                // Poolability is verified above, so a `false` here is a genuine
+                // duplicate value, not a non-poolable rejection.
                 println!("Key already exists in '{service}' pool.");
             }
         }

@@ -69,3 +69,20 @@ use super::*;
         assert_eq!(uids, sorted);
         assert_eq!(d.added.len(), 2);
     }
+
+    #[test]
+    fn duplicate_uid_input_is_not_over_counted() {
+        // T2.12: the CLI JSON-snapshot path (`serde_json::from_str`, no dedup) can
+        // carry the same uid twice. diff_entities must count by UNIQUE uid (the
+        // deduped map), not by raw slice length.
+        let e = email("dup@x.com", 0.6);
+        // `later` holds the same entity twice.
+        let d = diff_entities(&[], &[e.clone(), e.clone()]);
+        assert_eq!(d.added.len(), 1, "one unique uid added, not two: {:?}", d.added);
+        // Same uid present (twice) on both sides → one common, nothing added/removed.
+        let d2 = diff_entities(&[e.clone(), e.clone()], &[e.clone(), e.clone()]);
+        assert_eq!(d2.added.len(), 0);
+        assert_eq!(d2.removed.len(), 0);
+        assert_eq!(d2.common, 1, "duplicate uids must count as one common");
+        assert!(d2.confidence_shifts.is_empty());
+    }

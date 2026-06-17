@@ -91,20 +91,28 @@ pub fn diff_entities(baseline: &[Entity], later: &[Entity]) -> ScanDiff {
     let a: HashMap<&str, &Entity> = baseline.iter().map(|e| (e.uid.as_str(), e)).collect();
     let b: HashMap<&str, &Entity> = later.iter().map(|e| (e.uid.as_str(), e)).collect();
 
-    let mut added: Vec<EntityRef> = later
-        .iter()
+    // Iterate the deduped maps, NOT the raw slices: a persisted DB scan holds one
+    // entity per uid, but the CLI JSON-snapshot path (`serde_json::from_str` with no
+    // dedup) can carry duplicate uids, which iterating the slices would over-count
+    // in `common`/`added`/`removed`/`confidence_shifts` (PROBLEM_TREE T2.12). For
+    // unique-uid input the result is byte-identical (the map mirrors the slice); the
+    // `.sort_by(uid)` below keeps the output deterministic despite map order.
+    let mut added: Vec<EntityRef> = b
+        .values()
+        .copied()
         .filter(|e| !a.contains_key(e.uid.as_str()))
         .map(EntityRef::of)
         .collect();
-    let mut removed: Vec<EntityRef> = baseline
-        .iter()
+    let mut removed: Vec<EntityRef> = a
+        .values()
+        .copied()
         .filter(|e| !b.contains_key(e.uid.as_str()))
         .map(EntityRef::of)
         .collect();
 
     let mut common = 0usize;
     let mut confidence_shifts = Vec::new();
-    for e in later {
+    for e in b.values().copied() {
         if let Some(prev) = a.get(e.uid.as_str()) {
             common += 1;
             let (before, after) = (prev.c_effective(), e.c_effective());
