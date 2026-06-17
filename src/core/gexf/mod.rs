@@ -143,7 +143,8 @@ fn write_shared_evidence_edges(xml: &mut String, entities: &[Entity], edge_id: &
         let src_sources = src.evidence_sources();
         for tgt in entities.iter().skip(i + 1) {
             let tgt_sources = tgt.evidence_sources();
-            let shared: Vec<&str> = src_sources.intersection(&tgt_sources).copied().collect();
+            let mut shared: Vec<&str> = src_sources.intersection(&tgt_sources).copied().collect();
+            shared.sort_unstable(); // deterministic edge label (HashSet order is not stable)
             if !shared.is_empty() {
                 let _ = writeln!(
                     xml,

@@ -43,7 +43,15 @@ struct MylnikovData {
 /// is trusted more than a city-block-wide one. A missing range is treated as the
 /// wide 5000 m default. **Pure**.
 fn confidence_for_range(range: Option<f64>) -> f64 {
-    match range.unwrap_or(5000.0) as u64 {
+    // Untrusted JSON: a negative / NaN / absurd range is not a tight fix.
+    // `f64 as u64` saturates (negative & NaN → 0), which would otherwise score
+    // such a value the *highest* (0.75); clamp to the wide default first so a
+    // malformed range degrades to low confidence, not high.
+    let metres = match range {
+        Some(r) if r.is_finite() && r >= 0.0 => r,
+        _ => 5000.0,
+    };
+    match metres as u64 {
         0..=200 => 0.75,
         201..=1000 => 0.65,
         1001..=5000 => 0.50,

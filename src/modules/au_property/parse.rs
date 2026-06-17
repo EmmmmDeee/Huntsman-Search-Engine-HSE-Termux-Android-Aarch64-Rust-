@@ -113,10 +113,12 @@ pub(crate) fn extract_postcode(text: &str) -> Option<String> {
 /// Extract a suburb name from a line, stopping before the state abbreviation
 /// token. Returns an empty string when no suburb can be identified. Pure.
 fn extract_suburb_from_line(line: &str, state: &str) -> String {
-    // Walk backwards from the state code to collect the suburb name.
-    let lc = line.to_lowercase();
-    let state_lc = state.to_lowercase();
-    if let Some(pos) = lc.find(&state_lc) {
+    // Walk backwards from the state code to collect the suburb name. The state
+    // token is ASCII, so an ASCII-case-insensitive search over the original
+    // `line` yields a char-boundary-safe offset — unlike `to_lowercase().find()`,
+    // whose offset can land mid-codepoint in `line` and panic on a multibyte
+    // uppercase char before the state token.
+    if let Some(pos) = crate::util::str_util::find_ascii_ci(line, state) {
         // Suburb is the sequence of alpha tokens immediately before the state.
         let before = line[..pos].trim_end();
         let suburb: String = before
@@ -278,5 +280,14 @@ mod suburb_line_tests {
     #[test]
     fn returns_empty_when_nothing_precedes_state() {
         assert_eq!(extract_suburb_from_line("NSW 2000", "NSW"), "");
+    }
+
+    #[test]
+    fn does_not_panic_on_multibyte_uppercase_before_state() {
+        // Regression (PROBLEM_TREE T0.2): a multibyte uppercase char before the
+        // state token shifted a `to_lowercase()` offset onto a non-char-boundary
+        // in the original line → `str` slice panic. `find_ascii_ci` is safe.
+        let s = extract_suburb_from_line("İstanbul Heights NSW", "NSW");
+        assert!(s.contains("Heights") && s.contains("İstanbul"), "got {s:?}");
     }
 }

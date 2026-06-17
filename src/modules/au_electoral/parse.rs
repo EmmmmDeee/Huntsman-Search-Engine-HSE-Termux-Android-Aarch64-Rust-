@@ -7,11 +7,14 @@
 /// `"You are enrolled for the Division of Sydney"` or
 /// `"enrolled for Sydney (NSW)"`. State commissions use similar phrasing.
 pub(crate) fn extract_division(html: &str) -> Option<(String, Option<String>)> {
+    use crate::util::str_util::find_ascii_ci;
     let text = strip_electoral_html(html);
-    let lc = text.to_lowercase();
 
-    // AEC pattern: "division of <name>"
-    if let Some(pos) = lc.find("division of ") {
+    // AEC pattern: "division of <name>". Search the ORIGINAL `text`
+    // case-insensitively so the byte offset is char-boundary-safe — an offset
+    // taken from `text.to_lowercase()` can land mid-codepoint and panic on a
+    // multibyte uppercase char before the marker.
+    if let Some(pos) = find_ascii_ci(&text, "division of ") {
         let rest = &text[pos + "division of ".len()..];
         let name: String = rest
             .chars()
@@ -27,7 +30,7 @@ pub(crate) fn extract_division(html: &str) -> Option<(String, Option<String>)> {
 
     // State EC pattern: "enrolled in <Division>" or "enrolled for <Division>".
     ["enrolled in ", "enrolled for "].iter().find_map(|marker| {
-        let pos = lc.find(marker)?;
+        let pos = find_ascii_ci(&text, marker)?;
         let rest = &text[pos + marker.len()..];
         let name: String = rest
             .chars()

@@ -81,7 +81,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
 
 ### 3.0 — Tier 0 · P0 correctness (crashes) — FIX FIRST
 
-- **`[ ]` T0.1 · `src/modules/au_electoral/parse.rs:14-15,30-37`** — `find()` on
+- **`[x]` T0.1 · `src/modules/au_electoral/parse.rs:14-15,30-37`** — `find()` on
   the lowercased copy `lc`, offset used to slice the **original** `text`.
   `to_lowercase()` is not byte-length-preserving (`İ`→3 bytes, …) → non-char-
   boundary `str` index **panic → scan abort** on multibyte-uppercase response
@@ -93,11 +93,11 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
   `char_indices` (boundary-safe). Add a `proptest` `fn(s in ".*") { let _ =
   extract_division(&s); }` (no panic for any input) **and** a `cargo-fuzz` target
   seeded with real AEC/ECQ HTML. **P0**
-- **`[ ]` T0.2 · `src/modules/au_property/parse.rs:117-121`** — same class:
+- **`[x]` T0.2 · `src/modules/au_property/parse.rs:117-121`** — same class:
   `line.to_lowercase().find(&state_lc)` offset slices the original `line[..pos]`.
   → **Solution:** identical — `memchr::memmem`/`aho-corasick` over the original
   bytes + boundary-safe walk; shared proptest+fuzz harness with T0.1. **P0**
-- **`[ ]` T0.3 · untrusted numeric casts** — `mylnikov/mod.rs:46`
+- **`[x]` T0.3 · untrusted numeric casts** — `mylnikov/mod.rs:46`
   (`range.unwrap_or(5000.0) as u64` on un-validated `f64`; negative → huge u64 →
   misclassification), `reddit_user/mod.rs:164`, `dns_axfr/mod.rs:261`.
   → **Solution:** validate/clamp before cast (`f64::clamp` to a sane range,
@@ -106,7 +106,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
 
 ### 3.1 — Tier 1 · P1 core guarantees
 
-- **`[ ]` T1.1 · Determinism** — `core/gexf/mod.rs:146` joins a `HashSet`-derived
+- **`[x]` T1.1 · Determinism** — `core/gexf/mod.rs:146` joins a `HashSet`-derived
   shared-source label **unsorted** into exported XML; `core/live/mod.rs:299`
   returns `HashMap::values()` **unsorted** to `GET /api/v1/live`.
   → **Solution:** `sort()` before emit in both. Then make it a *guarantee*: a
@@ -321,3 +321,11 @@ legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
   tree; added the Gallant doctrine (§1), the Foundations tier (§3.F: toolkit /
   `fst` / proof-infra), and the capability program (§4) grounded in the gap
   register. Confirmed both T0 panics firsthand. Nothing executed yet — plan only.
+- **2026-06-17** — **Executed T0.1, T0.2, T0.3, T1.1.** Added a shared
+  boundary-safe `util::str_util::find_ascii_ci` (ASCII-case-insensitive find that
+  returns an offset valid in the original string) and routed the `au_electoral` /
+  `au_property` parsers through it — fixing the two `to_lowercase()`-offset slice
+  panics — with regression tests (multibyte-uppercase inputs) + helper unit
+  tests. Guarded the `mylnikov` confidence cast against negative/NaN ranges.
+  Made GEXF shared-source edge labels and the live-session list deterministic
+  (sort before emit). Gate green: fmt/clippy/doc clean, 2,950 lib tests, 0 fail.

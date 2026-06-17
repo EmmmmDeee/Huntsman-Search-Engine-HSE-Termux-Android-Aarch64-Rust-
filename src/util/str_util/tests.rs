@@ -1,5 +1,8 @@
 
-use super::{ascii_digits, char_window, fold_ascii_lower, nonempty, slugify, truncate_display, truncate_safe};
+use super::{
+    ascii_digits, char_window, find_ascii_ci, fold_ascii_lower, nonempty, slugify,
+    truncate_display, truncate_safe,
+};
 
     #[test]
     fn nonempty_trims_and_treats_blank_as_absent() {
@@ -160,4 +163,36 @@ use super::{ascii_digits, char_window, fold_ascii_lower, nonempty, slugify, trun
         let t = truncate_display(&long, 200);
         assert!(t.ends_with('…'));
         assert_eq!(t.chars().count(), 201);
+    }
+
+    // ── find_ascii_ci ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn find_ascii_ci_matches_case_insensitively() {
+        assert_eq!(find_ascii_ci("abcDEF", "def"), Some(3));
+        assert_eq!(find_ascii_ci("Hello World", "WORLD"), Some(6));
+        assert_eq!(find_ascii_ci("xx", "xx"), Some(0));
+    }
+
+    #[test]
+    fn find_ascii_ci_offset_is_valid_in_the_original_after_multibyte() {
+        // `İ` is 2 bytes; an offset from `to_lowercase()` would be wrong here.
+        // The returned offset must index the ORIGINAL string on a char boundary.
+        let s = "İ division of x";
+        let off = find_ascii_ci(s, "DIVISION OF ").unwrap();
+        assert_eq!(off, 3); // İ(2 bytes) + ' '(1)
+        assert!(s[off..].starts_with("division of ")); // slice must not panic
+    }
+
+    #[test]
+    fn find_ascii_ci_none_empty_and_too_long() {
+        assert_eq!(find_ascii_ci("abc", "xyz"), None);
+        assert_eq!(find_ascii_ci("abc", ""), Some(0)); // empty needle
+        assert_eq!(find_ascii_ci("ab", "abc"), None); // needle longer than haystack
+    }
+
+    #[test]
+    fn find_ascii_ci_non_ascii_never_matches_ascii_needle() {
+        // A multibyte char's bytes never ASCII-fold-equal an ASCII needle byte.
+        assert_eq!(find_ascii_ci("İ", "i"), None);
     }

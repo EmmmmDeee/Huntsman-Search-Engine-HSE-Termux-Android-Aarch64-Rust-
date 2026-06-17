@@ -296,7 +296,15 @@ impl LiveScanner {
     }
 
     pub fn list(&self) -> Vec<LiveSession> {
-        self.inner.sessions.read().values().cloned().collect()
+        let mut sessions: Vec<LiveSession> = self.inner.sessions.read().values().cloned().collect();
+        // Deterministic order (HashMap iteration is randomised): oldest-first,
+        // ties broken by session id — mirrors the eviction comparator in `start`.
+        sessions.sort_by(|a, b| {
+            a.started_at
+                .cmp(&b.started_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        sessions
     }
 
     /// True if the given `scan_id` was spawned by `live_id`. Used by the

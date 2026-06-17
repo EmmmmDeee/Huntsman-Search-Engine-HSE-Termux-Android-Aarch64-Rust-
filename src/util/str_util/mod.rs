@@ -272,6 +272,27 @@ pub fn truncate_display(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// Byte offset of the first ASCII-case-insensitive occurrence of `needle` in
+/// `haystack`, or `None`. The offset indexes the **original** `haystack`, so
+/// `haystack[off..]` and `haystack[..off]` are always on a `char` boundary (a
+/// match can only land on ASCII bytes). Use this instead of
+/// `haystack.to_lowercase().find(needle)` followed by slicing the original:
+/// `to_lowercase` is not byte-length-preserving (`İ` → `i̇`, `ẞ` → `ß`), so an
+/// offset taken from the lowercased copy can land mid-codepoint in the original
+/// and panic. `needle` is matched ASCII-case-insensitively; a non-ASCII byte
+/// never matches an ASCII needle byte.
+#[must_use]
+pub fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let (hb, nb) = (haystack.as_bytes(), needle.as_bytes());
+    if nb.is_empty() {
+        return Some(0);
+    }
+    if hb.len() < nb.len() {
+        return None;
+    }
+    (0..=hb.len() - nb.len()).find(|&i| hb[i..i + nb.len()].eq_ignore_ascii_case(nb))
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

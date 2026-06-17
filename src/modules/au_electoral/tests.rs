@@ -175,3 +175,13 @@ fn module_metadata_is_valid() {
     assert!(m.attack_techniques().contains(&"T1591.001"));
     assert!(m.attack_techniques().contains(&"T1589.003"));
 }
+
+#[test]
+fn extract_division_no_panic_on_multibyte_before_marker() {
+    // Regression (PROBLEM_TREE T0.1): a multibyte uppercase char before the
+    // marker shifted a `to_lowercase()`-derived offset onto a non-char-boundary
+    // in the original text → `str` slice panic. `find_ascii_ci` is boundary-safe.
+    let html = "<p>İstanbul — Division of Sydney.</p>";
+    let (div, _) = extract_division(html).expect("division parses without panic");
+    assert!(div.starts_with("Sydney"), "got {div:?}");
+}
