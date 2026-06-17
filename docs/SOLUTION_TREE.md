@@ -106,13 +106,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the substitution is correct and boundary-safe. Gate green: 3,032 lib tests, 0 failures.
   *Gap (§4b):* `bstr` (no direct consumer yet → promote with first use).
   Contained — `bstr` promoted only when first directly used (else `cargo machete` trips).
-- **`[~]` SOL-F2 · `fst`-backed datasets** ⚑ — `build.rs` compiles `data/*.txt` into
+- **`[x]` SOL-F2 · `fst`-backed datasets** ⚑ — `build.rs` compiles `data/*.txt` into
   memory-mapped `fst::Set`/`Map`, one canonical `util::dataset` API.
   *Closes / powers:* **F.2** (self), the **B5.3 table-drift** class, and Levenshtein
   fuzzy matching for typosquat / username-variants / suburb-matching.
   *Delivered:* the **de-dup goal** (T2.6) — drift-prone shared lists single-sourced by
-  delegation. *Gap:* the genuinely large tables (OUI ≈30k, AU postcode/suburb) are
-  still hand-coded `match` arms; `fst` itself not adopted. **(§4b)**
+  delegation. *Gap resolved (cycle 17 S→P re-audit):* the "OUI ≈30k, AU postcode/suburb"
+  premise assumed the full IEEE registry + full GNAF. HSE's curated tables are OUI ~120
+  entries, `postcode_au` 76, `city_coords` 165, `address_au` 8 numeric ranges — `fst`
+  buys nothing at ≤165 entries. **SOL-F2 `[~]`→`[x]`**: de-dup goal met; `fst`
+  accepted-deferred (`[-]`) at current table sizes. ✅ cycle 17.
 - **`[~]` SOL-F3 · Proof & measurement infrastructure** ⚑ — `proptest` properties for
   every pure fn, `cargo-fuzz` for every untrusted parser, `criterion` for the hot
   paths; CI compiles benches + runs corpora.
@@ -356,7 +359,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | Solution | Problem nodes closed / powered | Status |
 |---|---|---|
 | SOL-F1 (automata) ⚑ | F.1 · T0.1/T0.2 (root) · T2.7 · T2.8 · C6 | `[~]` |
-| SOL-F2 (`fst`) ⚑ | F.2 · B5.3 drift · typosquat/variants | `[~]` |
+| SOL-F2 (`fst`) ⚑ | F.2 · B5.3 drift · typosquat/variants | `[x]` |
 | SOL-F3 (proof) ⚑ | F.3 · guards T0.x/T1.1/T1.3/T2.3/T2.8/T2.9 | `[~]` |
 | SOL-BOUNDARY | T0.1 · T0.2 | `[x]` |
 | SOL-MERGE | T1.1 · C1 (identity core) | `[x]` |
@@ -398,8 +401,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
   this queue. S2/SOL-SSRF-WHOIS + S3/SOL-SECRETS-EXTEND delivered 2026-06-17.)*
 - **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
-- **C1–C7** — capability nodes; solutions sketched, none started (gated on the §3.F
-  enablers landing first, by design).
+- **C1–C7** — capability nodes; solutions sketched, none started. **C1 is now
+  unblocked** (cycle 17 S→P gate review): transitive identity closure operates on the
+  already-built entity map and needs only SOL-MERGE/SOL-ORDER (✅) + SOL-F3 proptest
+  (✅) — not `bstr`, `fst`, or `cargo-fuzz`. C1 is the next P→S target. C2–C7 remain
+  gated on the remaining §3.F items or are large scope.
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -412,7 +418,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Remaining:* `bstr` (no natural consumer yet — all scraped HTML arrives as `&str`
   via `read_body_capped`→`String::from_utf8_lossy`; `bstr` promotes only when a
   module takes raw `&[u8]` response bytes directly). Unblocks T2.7 + sharpens C6.
-- **SOL-F2** — de-dup done; `fst` for the large tables outstanding.
+- **SOL-F2** — ✅ **`[x]`** (cycle 17 S→P): de-dup done; `fst` accepted-deferred at
+  current table sizes (curated OUI ~120, `postcode_au` 76, `city_coords` 165 — no
+  benefit from fst at ≤165 entries). Removed from finish queue.
 - **SOL-F3** — proptest (str/entity/geo/html/cert/dns + import parsers) + criterion
   landed; only `cargo-fuzz` (nightly CI lane) left.
 - **SOL-CAP** — ✅ fully closed (`[x]`). All T2.8 sub-items done (2 HIGH + MED
@@ -430,15 +438,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **T0 (crashes):** fully solved (SOL-BOUNDARY + SOL-F3 guard). ✔
 - **T1 (core guarantees):** T1.1/T1.2/T1.3/T1.4/T1.5 all solved — SOL-BLOCKING
   `[x]` (all write paths); SOL-FINALISE-BLOCKING `[x]` (cycle 14, T1.5 closed). ✔
-- **§3.F (foundations):** all three `[~]` — the largest unrealised leverage block.
-  `memchr` now a direct dep (cycle 12); remaining: `bstr` + `fst` large tables + `cargo-fuzz`.
+- **§3.F (foundations):** SOL-F1 `[~]` (only `bstr` outstanding — no consumer path
+  yet); **SOL-F2 `[x]`** ✅ (cycle 17: de-dup done, `fst` accepted-deferred at current
+  table sizes); SOL-F3 `[~]` (only `cargo-fuzz` outstanding — nightly CI lane). For
+  **C1's purposes** the §3.F gate is cleared: C1 needs SOL-MERGE/SOL-ORDER/SOL-F3-proptest
+  (all `[x]`), not `bstr`/`fst`/`cargo-fuzz`.
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
   T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE; LOW over-dispatch +
   budget-reset-zeroing remain).
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C8):** C8 delivered ✅ (`streaming_probe`, 30-site webcam/fan/adult prober); C1–C7 open by design, gated on §3.F.
+- **§4 (capability C1–C8):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C1 unblocked** (cycle 17 S→P: §3.F gate cleared for C1's needs — next P→S target); C2–C7 open, gated on remaining §3.F items or large scope.
 
 ---
 
@@ -700,6 +711,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (13.5s needed vs 30s; no change to the 30s constant). SOL-STREAMING description and
   C8 problem node updated to reflect 42-site scope. Gate green: fmt/clippy/doc clean,
   3,027 lib + 67 arch tests, 0 failures.
+- **2026-06-17** — **Cycle 17 (S→P): SOL-F2 `[~]`→`[x]`; C1 unblocked; §3.F gate
+  cleared.** S→P pass on cycles 15/16 deliveries plus a full §3.F finish-queue review.
+  **(1) SOL-SCHEMA-VERSION + SOL-INSTALL-INTEGRITY (cycle 16):** no new gaps —
+  `PRAGMA user_version = 1` ladder correct; `require_sha` two-path design sound.
+  **(2) SOL-F2 table-size re-audit:** "OUI ≈30k, AU postcode/suburb" was the full IEEE
+  registry + full GNAF. HSE's curated tables: OUI ~120 entries, `postcode_au` 76,
+  `city_coords` 165, `address_au` 8 ranges. `fst` flat-RAM lookup offers no measurable
+  benefit at ≤165 entries. **SOL-F2 `[~]`→`[x]`**: de-dup goal met; `fst`
+  accepted-deferred. **(3) §3.F gate review for C1:** SOL-F1 ✅ (substrate + 7
+  consumers; only `bstr` outstanding — no consumer path); SOL-F2 ✅ (this cycle);
+  SOL-F3 ✅ (proptest + criterion; only `cargo-fuzz` outstanding). **C1 transitive
+  identity closure is unblocked**: operates on already-built entity maps, needs only
+  SOL-MERGE/SOL-ORDER/SOL-F3-proptest (all `[x]`). **(4) C8 streaming probe
+  re-audit:** clean — `read_body_capped(resp, 256 KiB)` on all GET probes, HEAD-only
+  for clean-404 sites. **(5) T2.11 LOW over-dispatch** (sole remaining open T2 item,
+  P3): fix would interleave `try_join_next` with spawn loop (`JoinSet::len()`, tokio
+  1.52 ✓) — deferred in favour of C1. **Gap refresh:** §4a C1 unblocked; §4b
+  SOL-F2 removed from finish queue; §4d §3.F + C1–C8 rows updated. No code change.
+  Paired: `PROBLEM_TREE` F.2 `[~]`→`[x]` + §8 cycle 17 — same commit.
 - **2026-06-17** — **Cycle 16 (P→S): SOL-SCHEMA-VERSION `[x]` + SOL-INSTALL-INTEGRITY
   `[x]` — T2.10 and §7 S5 both closed.** Two remaining §4a items from cycle 15's
   gap analysis. **(1) SOL-SCHEMA-VERSION:** `const SCHEMA_VERSION: i32 = 1` added to

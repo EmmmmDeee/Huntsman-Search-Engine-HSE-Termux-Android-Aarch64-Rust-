@@ -249,7 +249,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
   `rest.find('&')`, and `inner.find(';')` with `memchr(b'&', …)` / `memchr(b';', …)`
   SIMD byte searches. `&` and `;` are ASCII so byte offsets are valid char boundaries.
   *Remaining:* `bstr` adoption (no direct consumer yet — promote with first direct use).
-- **`[~]` F.2 · `fst`-backed datasets (phone-first + de-duplication)** — many
+- **`[x]` F.2 · `fst`-backed datasets (phone-first + de-duplication)** — many
   static tables are hand-coded `&[&str]`/`match` arms, several **duplicated**
   (freemail in `util/oathnet_batch` vs `util/domains`; `country_name` in
   `phone_area_geo` vs `util/geohash`; OUI; AU postcode/suburb; division→state;
@@ -263,8 +263,14 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
   **P1-enabler** ◑ **De-dup goal met** (see T2.6): the drift-prone *shared* lists
   (freemail, country_name) are now single-sourced via delegation — `fst` is not
   needed for these (≈30–250 entries; memory-mapping buys nothing at that size).
-  *Remaining (pure optimisation, not correctness):* the genuinely **large** tables
-  (OUI ≈30k, AU postcode/suburb) → `fst` for flat-RAM + Levenshtein fuzzy matching.
+  ✅ **Cycle 17 (S→P re-audit, 2026-06-17): fst accepted-deferred.** Table-size
+  re-audit: the "OUI ≈30k" premise assumed the full IEEE registry; HSE deliberately
+  uses a curated ~120-entry OUI subset. `postcode_au/mod.rs` has 76 entries;
+  `city_coords/mod.rs` 165 entries; `address_au` uses 8 numeric ranges (not
+  individual postcodes). At ≤165 entries, a linear scan is ≤200 ns — `fst`
+  flat-RAM lookup buys nothing measurable. **F.2 `[~]`→`[x]`**: de-dup goal is
+  met; `fst` is `[-]` accepted-deferred at current table sizes.
+  **Paired:** `SOLUTION_TREE` SOL-F2 `[~]`→`[x]` + §4b/§4d — same commit.
 - **`[~]` F.3 · Proof & measurement infrastructure** — was: no property testing,
   no fuzzing, only `#[ignore]` perf baselines.
   → **Solution:** add (dev-only, zero runtime cost): **`proptest`** suites for
@@ -1552,6 +1558,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   trimmed to `bstr` only. **Paired:** `SOLUTION_TREE` SOL-F1 node + §4b + §4d + §5
   refreshed — same commit; gate green, 3,032 lib + 24 arch + 67 api + 54 smoke +
   3 halting + 6 cli-seed + 2 audit-regression tests, 0 failures.
+- **2026-06-17** — **Cycle 17 (S→P): table-size re-audit + §3.F gate review — F.2
+  `[~]`→`[x]`; C1 unblocked.** S→P pass on cycles 15/16 deliveries and §3.F finish
+  queue. (1) **SOL-SCHEMA-VERSION + SOL-INSTALL-INTEGRITY (cycle 16):** no new gaps
+  exposed — schema ladder clean, `require_sha` handles both cases correctly. (2)
+  **F.2 / SOL-F2 table-size re-audit:** the "OUI ≈30k, AU postcode/suburb" premise was
+  the full IEEE registry + a full GNAF catalogue. HSE uses curated subsets: OUI ~120
+  entries, `postcode_au` 76, `city_coords` 165, `address_au` 8 numeric ranges. `fst`
+  flat-RAM lookup offers no practical benefit at ≤165 entries (linear scan ≤200 ns).
+  **F.2 `[~]`→`[x]`** — de-dup goal met; fst accepted-deferred. (3) **§3.F gate
+  review for C1:** SOL-F1 substrate ✅ (only `bstr` outstanding, not needed for C1);
+  SOL-F2 ✅ (de-dup done, fst deferred); SOL-F3 proptest ✅ (only `cargo-fuzz`
+  outstanding, not needed for C1); SOL-MERGE/SOL-ORDER ✅. C1 transitive identity
+  closure is **now unblocked** — operates on already-built entity maps, needs no
+  `bstr`/`fst`/`cargo-fuzz`. C1 is the next P→S target. (4) **Streaming probe
+  (C8) re-audit:** clean — `read_body_capped(resp, 256 KiB)` on all GET probes,
+  HEAD-only for clean-404 sites, 16-concurrent semaphore, 30 s timeout. No new issues.
+  (5) **T2.11 LOW over-dispatch:** sole remaining open T2 item (P3); the fix
+  (interleave `try_join_next` + cap re-check in spawn loop) is `JoinSet::len()`-based
+  (tokio 1.52 ✓) but non-trivial — deferred in favour of C1. No code change this cycle.
+  **Paired:** `SOLUTION_TREE` SOL-F2 `[~]`→`[x]` + §4a/§4b/§4d/§5 — same commit.
 - **2026-06-17** — **Cycle 15 (S→P): gap analysis — T1 fully closed; identifies T2.10
   + §7 S5 as next achievable items.** S→P pass on cycle 14 deliveries. `strip_html`
   dedup exposes no new problems; SOL-FINALISE-BLOCKING bool-snapshot design confirmed
