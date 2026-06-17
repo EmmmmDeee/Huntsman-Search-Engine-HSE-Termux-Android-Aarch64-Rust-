@@ -410,10 +410,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
   this queue. S2/SOL-SSRF-WHOIS + S3/SOL-SECRETS-EXTEND delivered 2026-06-17.)*
 - **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
-- **C1** — **`[~]` in progress** (cycle 18 P→S): sub-goal (a) transitive identity
-  closure delivered (`rule_au_060_transitive_identity_closure`, AU-060, 2-4 hop BFS,
-  Medium/Low severity, 10 tests). Sub-goals (b) Connections dossier, (c) first-class
-  timeline, (d) AU-0xx rule-gap fill remain open.
+- **C1** — **`[~]` in progress** (cycle 18 P→S → cycle 19 S→P examined):
+  sub-goal (a) transitive identity closure `[x]` (AU-060). **Cycle 19 S→P audit:** AU-060
+  delivery is structurally sound — BFS bounded at 4 hops, O(k×(V+E)) with early bail-out
+  (< 2 identity entities → empty), dedup complete; the `Correlation.description` string
+  already renders the full human-readable path, so C1(b) dossier Connections section is
+  a pure UX/formatting change (data exists). **Next P→S target: C1(d)** — the graph-aware
+  `RELATION_RULES` layer has only 3 entries (AU-031 / AU-032 / AU-060); a systematic gap
+  audit against the full AU-0xx register + MITRE TA0043 subtechniques identifies AU-061+
+  candidates. C1(b)/(c) are lower urgency.
 - **C2–C7** — solutions sketched, not yet started; gated on remaining §3.F items or
   large scope.
 
@@ -459,7 +464,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   budget-reset-zeroing remain).
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C8):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C1 unblocked** (cycle 17 S→P: §3.F gate cleared for C1's needs — next P→S target); C2–C7 open, gated on remaining §3.F items or large scope.
+- **§4 (capability C1–C8):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C1 `[~]`** — (a) AU-060 delivered (cycle 18 P→S); (b)/(c)/(d) open; cycle 19 S→P examination found no new problems from AU-060; **C1(d) relation-rule gap audit (AU-061+) is the next P→S target**; C2–C7 open, gated on remaining §3.F items or large scope.
 
 ---
 
@@ -721,6 +726,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (13.5s needed vs 30s; no change to the 30s constant). SOL-STREAMING description and
   C8 problem node updated to reflect 42-site scope. Gate green: fmt/clippy/doc clean,
   3,027 lib + 67 arch tests, 0 failures.
+- **2026-06-17** — **Cycle 19 (S→P): AU-060 examination — no new problems; C1(d)
+  AU-061+ gap audit identified as next P→S target.** S→P pass on cycle 18's AU-060
+  delivery. **(1) Structural soundness:** BFS capped at 4 hops + early bail-out (< 2
+  identity entities → empty); sorted-pair `emitted` dedup prevents O(N²) blowup —
+  correct and bounded for scan-typical entity counts. **(2) Dossier coverage:** every
+  `Correlation` record produced by AU-060 carries a human-readable description ("X (kind)
+  linked to Y (kind) via N intermediate nodes — transitive identity path (M hops)") and
+  the full `entity_uids` path; the dossier export already receives this — C1(b)
+  Connections section is a UX formatting change only, not a data gap. **(3) Relation-rule
+  gap exposed:** `RELATION_RULES` has only 3 entries (AU-031 malicious adjacency, AU-032
+  colocation cluster, AU-060 transitive closure); many TA0043 subtechniques could support
+  additional graph-aware rules (AU-061+). **Gap refresh:** §4a C1 updated from "sub-goals
+  open" to "C1(d) next"; §4d updated from "C1 unblocked" to "C1 `[~]` in progress". No
+  code change. **Paired:** `PROBLEM_TREE` §8 cycle 19 log — same commit.
 - **2026-06-17** — **Cycle 18 (P→S): SOL-CORR `[ ]`→`[~]` — AU-060 transitive identity
   closure delivered.** P→S pass implemented `rule_au_060_transitive_identity_closure`
   (`src/core/correlator/rules/transitive.rs`): BFS over the undirected relation-graph

@@ -1560,6 +1560,15 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   trimmed to `bstr` only. **Paired:** `SOLUTION_TREE` SOL-F1 node + §4b + §4d + §5
   refreshed — same commit; gate green, 3,032 lib + 24 arch + 67 api + 54 smoke +
   3 halting + 6 cli-seed + 2 audit-regression tests, 0 failures.
+- **2026-06-17** — **Cycle 19 (S→P): AU-060 examination — no new problems; C1(d) next.**
+  S→P pass on AU-060 (cycle 18). BFS is structurally bounded (4-hop cap, early bail-out,
+  sorted-pair dedup); no O(N²) concern at scan-typical entity counts. The `entity_uids`
+  path and description string in each `Correlation` already cover the dossier data need —
+  C1(b) Connections section is a formatting-only gap (no data gap). The graph-aware
+  `RELATION_RULES` layer has only 3 entries (AU-031 / AU-032 / AU-060); **C1(d) — a
+  systematic AU-061+ gap audit against MITRE TA0043 subtechniques** — is the next natural
+  P→S target. C1(b)/(c) are lower urgency (data exists; UX changes only). **Paired:**
+  `SOLUTION_TREE` §4a/§4d/§5 cycle 19 — same commit; no code change.
 - **2026-06-17** — **Cycle 18 (P→S): AU-060 transitive identity closure — C1(a) delivered.**
   P→S pass on C1 (the Maltego-without-graphs play), sub-goal (a). Implemented
   `rule_au_060_transitive_identity_closure` in `src/core/correlator/rules/transitive.rs`:
