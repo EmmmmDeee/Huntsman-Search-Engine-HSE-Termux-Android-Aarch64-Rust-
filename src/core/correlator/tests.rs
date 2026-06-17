@@ -2317,7 +2317,7 @@ fn au046_resolves_an_alias_to_platform_exposed_identifiers() {
 
 #[test]
 fn au047_links_identities_by_a_reused_unique_secret_only() {
-    // The unmasking rule, and its precision gate. A salted hash carried against
+    // The account-linking rule, and its precision gate. A salted hash carried against
     // two emails links them (same controller); an UNSALTED digest must NOT —
     // md5("123456") is shared by millions and would manufacture false identities.
     let cred = |hash: &str, emails: &[&str]| {

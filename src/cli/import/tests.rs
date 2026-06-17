@@ -393,10 +393,10 @@ fn dossier_entry_address_field_becomes_a_first_class_entity() {
 #[test]
 fn reused_hash_across_entries_is_preserved_for_cross_account_linking() {
     use crate::core::entity::EntityKind;
-    // The unmasking signal: two DIFFERENT accounts sharing one salted hash. The
+    // The account-linking signal: two DIFFERENT accounts sharing one salted hash. The
     // parser must not value-dedup the credential away; after dedup-merge the one
     // credential entity must carry BOTH entries' emails in its evidence, so the
-    // correlator (AU-047) can link the compartmentalised identities.
+    // correlator (AU-047) can link the separate accounts.
     let dossier = "Entry #1:\n   \u{2022} email: a@proton.me\n   \u{2022} hash: $2a$10$SAMEHASHvalueAAAAAAAAAAAAAA\nEntry #2:\n   \u{2022} email: b@gmail.com\n   \u{2022} hash: $2a$10$SAMEHASHvalueAAAAAAAAAAAAAA\n";
     let (mut ents, _) = super::parse_dossier(dossier, "sid");
     super::deduplicate_by_uid(&mut ents);

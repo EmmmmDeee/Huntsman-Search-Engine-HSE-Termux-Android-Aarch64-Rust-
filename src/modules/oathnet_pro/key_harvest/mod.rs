@@ -238,7 +238,7 @@ pub fn key_value_tier(service: &str) -> KeyValue {
 /// universal response scanner (`util::found_keys`) runs key identification on
 /// EVERY response body across every module: profiling showed the full
 /// [`identify_api_key`] at ~2.8 MB/s, dominated by `is_likely_real_key`
-/// (entropy + context exclusion) firing on every 32/64-char hex token — and
+/// (entropy + context exclusion) triggering on every 32/64-char hex token — and
 /// breach corpora are *full* of hex password hashes. Those hashes are already
 /// captured as `Password` entities by the breach modules, so re-deriving them
 /// here as "generic-hex API keys" was both slow and noisy. This function keeps

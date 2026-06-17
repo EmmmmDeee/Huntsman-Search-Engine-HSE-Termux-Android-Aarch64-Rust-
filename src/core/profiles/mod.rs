@@ -12,7 +12,7 @@ use crate::core::scan::ScanOptions;
 /// accounts, corporate/asset records, open-web search, and breach corpora —
 /// everything that helps fix *where a person is and how to reach/recover from
 /// them*. Deliberately excludes the categories that are pure noise for locating
-/// a human: DNS/cert recon, network infrastructure, threat intel, and the
+/// a human: DNS/cert lookups, network infrastructure, threat intel, and the
 /// operator's own local sensors. Shared with the focus guard test.
 pub const SKIPTRACE_CATEGORIES: &[ModuleCategory] = &[
     ModuleCategory::People,

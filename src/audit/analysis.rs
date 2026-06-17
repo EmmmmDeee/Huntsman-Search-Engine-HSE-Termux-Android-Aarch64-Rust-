@@ -22,7 +22,7 @@ pub(super) fn examples(mut vals: Vec<String>) -> Vec<String> {
 }
 
 /// True if a value looks truncated or fragmentary rather than a complete,
-/// verifiable datum — the manifesto's explicit "@gmail" / partial-reference case.
+/// verifiable datum — the documented "@gmail" / partial-reference case.
 pub(super) fn is_fragment(kind: &str, value: &str) -> bool {
     let v = value.trim();
     if v.is_empty() {

@@ -4,9 +4,9 @@
 //! scan-event stream — into a **quality scorecard**: noise ratio, infrastructure
 //! pollution, false-positive flags, truncated/fragment values, missed-PII
 //! signals, and source health, each with concrete examples and an actionable
-//! recommendation. It is the manifesto's "the platform should constantly evaluate
-//! itself, identify weaknesses, expose blind spots … and generate actionable
-//! recommendations" as a first-class, reusable capability.
+//! recommendation. It makes the project's goal — the platform should constantly
+//! evaluate itself, identify weaknesses, expose blind spots, and generate
+//! actionable recommendations — a first-class, reusable capability.
 //!
 //! The analysis is **pure** (no IO) and reuses the *same* authoritative
 //! classifiers the engine uses to make its filtering decisions

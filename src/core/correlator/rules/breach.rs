@@ -301,7 +301,7 @@ fn distinct_sources(secret: &Entity) -> BTreeSet<String> {
 
 /// AU-047 — Reused-secret identity link.
 ///
-/// The unmasking rule for compartmentalised targets. When one linkable secret
+/// Links separate accounts that share one reused secret. When one linkable secret
 /// (see [`Secret::classify`]) is observed against **≥2 distinct identities**
 /// (the email/username the breach record carries in its evidence), those
 /// identities are tied to a single controller: someone reused a secret across

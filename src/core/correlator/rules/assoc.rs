@@ -2,13 +2,13 @@
 //! (rules/mod.rs) for the shared helpers; every rule reaches them through
 //! `use super::*`.
 //!
-//! This family implements the professional move against a target who has gone
-//! dark: you do not find *them*, you find the people around them who are not
-//! hiding. A shared residence is the strongest such seam — co-residents,
-//! relatives, and associates leak the footprint the individual has scrubbed.
-//! It works on a true ghost (the network leaks what the person doesn't) and it
-//! works on the average person (almost everyone shares an address with someone),
-//! which is exactly the intersection this rule set targets.
+//! This family links a subject to the people connected to them — co-residents,
+//! relatives, and associates — through records they have in common, chiefly a
+//! shared residential address or phone number. When a subject has little direct
+//! footprint of their own, these shared records still surface the relationships
+//! that place them in context. It applies to the average subject too, since most
+//! people share an address with someone, which is the overlap this rule set
+//! looks for.
 
 use super::*;
 
@@ -201,8 +201,8 @@ fn residence_groups(entities: &[Entity]) -> std::collections::BTreeMap<String, G
 ///
 /// Groups identity-bearing entities by the specific residence address recorded
 /// in their evidence and fires when **two or more distinct persons** share one
-/// address. That is the associate seam: the named co-residents are the pivot to
-/// reach a subject who has otherwise scrubbed their own footprint. Any emails /
+/// address. That is the associate link: the named co-residents are the
+/// connection to a subject who has little direct footprint of their own. Any emails /
 /// phones recorded at the same address ride along in the firing as the directly
 /// reachable handles for those co-residents.
 ///

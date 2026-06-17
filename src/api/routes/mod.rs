@@ -256,7 +256,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // ── favicon — browsers (esp. Chrome-on-Android) request /favicon.ico
         //    unconditionally; without this route it would hit the SPA fallback
         //    and return the whole HTML document as an "image". Serve the same
-        //    inline crosshair the SPA links, with the correct content type.
+        //    inline locator-mark favicon the SPA links, with the correct content type.
         .route("/favicon.ico", get(favicon_handler))
         // ── web-app manifest — lets Chrome-on-Android install the UI as a
         //    standalone fullscreen app (Add to Home Screen). Progressive
@@ -352,7 +352,7 @@ async fn spa_handler() -> Response {
         .into_response()
 }
 
-/// SVG favicon — a hunting-crosshair in the brand cyan on the navbar's dark.
+/// SVG favicon — a concentric locator mark in the brand cyan on the navbar's dark.
 /// Matches the inline `<link rel="icon">` in the SPA head; this route covers
 /// clients that request `/favicon.ico` directly regardless of that link.
 const FAVICON_SVG: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='#222222'/><circle cx='16' cy='16' r='8' fill='none' stroke='#07aef1' stroke-width='2'/><circle cx='16' cy='16' r='2.4' fill='#07aef1'/><path d='M16 2v6M16 24v6M2 16h6M24 16h6' stroke='#07aef1' stroke-width='2'/></svg>";
@@ -379,8 +379,8 @@ async fn favicon_handler() -> Response {
 /// Chrome-for-Android** (Add to Home Screen → launches fullscreen with no browser
 /// address bar, reclaiming ~10% of a phone's vertical space for scan results).
 /// `display: standalone` + the matching `theme_color`/`background_color` give an
-/// app-like launch on the primary target. The icon reuses the same inline
-/// crosshair SVG the favicon serves (`sizes:"any"` satisfies Chrome's
+/// app-like launch on the device. The icon reuses the same inline
+/// locator-mark SVG the favicon serves (`sizes:"any"` satisfies Chrome's
 /// installability check for a scalable icon) — zero extra binary asset. Served
 /// same-origin, so CSP `default-src 'self'` (which `manifest-src` falls back to)
 /// permits it.

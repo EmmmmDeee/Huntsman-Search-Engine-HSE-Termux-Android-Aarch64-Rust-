@@ -210,8 +210,8 @@ pub enum Command {
     /// pollution, fragment values, missed PII, and source health, with
     /// actionable recommendations. Ingests a CSV export (`--csv`), a stored scan
     /// (`--scan-id`, `latest` allowed), and/or a debug log (`--log`, JSONL or
-    /// tracing text). The self-audit the manifesto asks for: every scan becomes
-    /// an opportunity to expose and eliminate weaknesses.
+    /// tracing text). A self-audit of every scan: it surfaces weaknesses so they
+    /// can be addressed.
     #[command(visible_alias = "score")]
     Audit {
         /// CSV export to audit (`hse export --format csv`).

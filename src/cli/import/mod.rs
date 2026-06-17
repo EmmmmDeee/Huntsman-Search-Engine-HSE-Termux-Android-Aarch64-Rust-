@@ -196,8 +196,8 @@ pub(crate) fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>
     // semantics), don't drop the later ones. A record that recurs across breach
     // entries — most importantly one reused password hash appearing under several
     // different emails — must retain EVERY record it appeared in, or the
-    // cross-account reuse signal (the link that unmasks a compartmentalised
-    // target, AU-047) is silently discarded. First-seen order is preserved.
+    // cross-account reuse signal (the link that connects separate accounts,
+    // AU-047) is silently discarded. First-seen order is preserved.
     let mut order: Vec<String> = Vec::new();
     let mut by_uid: std::collections::HashMap<String, crate::core::entity::Entity> =
         std::collections::HashMap::new();

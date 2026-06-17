@@ -52,8 +52,8 @@ pub(crate) struct EngineHealth {
     pub(crate) latency_ms: u64,
     pub(crate) results: usize,
     /// Actionable, human-readable reason naming the likely failing layer
-    /// (network / anti-bot / parser). The manifesto's "no black-box": every
-    /// failure explains itself so the operator knows where to look.
+    /// (network / anti-bot / parser). The "no black-box" goal: every failure
+    /// explains itself so the operator knows where to look.
     pub(crate) detail: String,
 }
 
