@@ -133,8 +133,8 @@ use crate::core::module::Module;
 /// `core/engine` can drive it without importing `util` directly — the same
 /// architecture-rule shim used for the per-module budget resets (the
 /// dependency direction is `core → modules → util`, never `core → util`).
-pub fn reset_found_keys() {
-    crate::util::found_keys::reset();
+pub fn reset_found_keys(scan_id: &str) {
+    crate::util::found_keys::reset(scan_id);
 }
 
 /// Drain the foreign-API-key sink into first-class `ApiKey` entities for
@@ -143,7 +143,7 @@ pub fn reset_found_keys() {
 /// import. Every entry is a recognised vendor key (the sink uses the
 /// vendor-only identifier), so all are high-confidence.
 pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
-    crate::util::found_keys::drain()
+    crate::util::found_keys::drain(scan_id)
         .into_iter()
         .map(|fk| {
             // A crypto wallet address is identified alongside keys (both are
@@ -208,11 +208,11 @@ pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
 /// `modules → core` hook edge is wired; `core` never imports `modules`.
 fn install_core_hooks() {
     crate::core::hooks::install(crate::core::hooks::ModuleHooks {
-        reset_per_scan: || {
+        reset_per_scan: |scan_id| {
             oathnet_pro::reset_budget();
             see_know::reset_budget();
             wigle::reset_budget();
-            reset_found_keys();
+            reset_found_keys(scan_id);
         },
         set_regional: search_engines::set_regional,
         refresh_round_budget: see_know::refresh_round_budget,

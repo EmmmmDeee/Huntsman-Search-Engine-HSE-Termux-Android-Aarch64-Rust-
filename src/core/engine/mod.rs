@@ -248,7 +248,27 @@ impl ScanEngine {
     /// later sweep, so the APIs are never re-hit on already-covered seeds.
     /// Free modules still re-run each sweep (they corroborate with fresh
     /// evidence and cost nothing), so the radar keeps surfacing new leads.
+    ///
+    /// Wraps the work in the foreign-key scan-scope ambient
+    /// ([`crate::util::found_keys::with_scan`]) so the per-response key scanner
+    /// attributes discoveries to THIS `scan_id` even under concurrent `serve`
+    /// scans (PROBLEM_TREE T2.11); the logic lives in `run_with_ledger_inner`.
     pub async fn run_with_ledger(
+        &self,
+        scan: Scan,
+        target: Target,
+        ctx: ModuleContext,
+        dispatched: &mut DispatchLog,
+    ) -> Result<Scan> {
+        let sid = scan.id.clone();
+        crate::util::found_keys::with_scan(
+            sid,
+            self.run_with_ledger_inner(scan, target, ctx, dispatched),
+        )
+        .await
+    }
+
+    async fn run_with_ledger_inner(
         &self,
         mut scan: Scan,
         target: Target,
@@ -263,7 +283,7 @@ impl ScanEngine {
         // budget per scan, and this scan reports only the keys IT retrieves.
         // Driven through the module-hook registry so core stays module-agnostic
         // (see `core::hooks`).
-        crate::core::hooks::reset_per_scan();
+        crate::core::hooks::reset_per_scan(&scan.id);
         // Apply the regional-search toggle for this scan. Regional augmentation
         // is on when EITHER the per-scan flag (`--regional`) is set OR the
         // persistent default `feature.regional` is on (universal toggleability;

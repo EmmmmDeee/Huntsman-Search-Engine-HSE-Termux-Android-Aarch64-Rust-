@@ -6,7 +6,7 @@ use super::*;
     #[test]
     fn identifies_foreign_keys_with_provenance_and_dedups() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        reset();
+        reset(""); // unscoped tests use the default bucket
         // A Stripe-style live key embedded in a record body, twice. Built from
         // fragments so the synthetic test key isn't a contiguous `sk_live_…`
         // literal in source (which trips repository secret-scanning / push
@@ -14,7 +14,7 @@ use super::*;
         let synthetic = format!("sk_{}_{}", "live", "4eC39HqLyjWDarjtT1zdp7dc");
         let body = format!(r#"{{"note":"prod key {synthetic}", "dup":"{synthetic}"}}"#);
         scan_body("see-know", "victim@example.com", &body);
-        let snap = snapshot();
+        let snap = snapshot("");
         let stripe: Vec<_> = snap.iter().filter(|f| f.key == synthetic).collect();
         assert_eq!(stripe.len(), 1, "deduped by value; got {snap:?}");
         assert_eq!(stripe[0].count, 2, "both occurrences counted");
@@ -26,14 +26,14 @@ use super::*;
             stripe[0].service
         );
         // drain empties the sink.
-        assert!(!drain().is_empty());
-        assert!(snapshot().is_empty());
+        assert!(!drain("").is_empty());
+        assert!(snapshot("").is_empty());
     }
 
     #[test]
     fn generic_hex_hash_is_not_reported_as_a_key() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        reset();
+        reset(""); // unscoped tests use the default bucket
         // Breach data is full of 32-char MD5 hashes. The universal scan uses the
         // vendor-only identifier, so a bare hex hash is NOT misreported as a
         // retrieved API key (it's already captured as a Password entity by the
@@ -41,9 +41,9 @@ use super::*;
         let hash = "5e3706b9c16282351af9c3aac7107b54";
         scan_body("oathnet", "victim@example.com", &format!("hash={hash}"));
         assert!(
-            snapshot().is_empty(),
+            snapshot("").is_empty(),
             "a bare hex hash must not become a foreign-key finding: {:?}",
-            snapshot()
+            snapshot("")
         );
     }
 
@@ -71,7 +71,7 @@ use super::*;
     #[test]
     fn excludes_our_own_auth_keys() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        reset();
+        reset(""); // unscoped tests use the default bucket
         // An operator's OWN configured key that happens to be vendor-shaped must
         // never be reported as a foreign finding. Build it from fragments so the
         // synthetic literal isn't a contiguous secret in source.
@@ -79,7 +79,7 @@ use super::*;
         insert_own_for_test(&own);
         scan_body("see-know", "q", &format!("leaked here: {own}"));
         assert!(
-            snapshot().iter().all(|f| f.key != own),
+            snapshot("").iter().all(|f| f.key != own),
             "our own auth key must be excluded from findings"
         );
     }
@@ -89,7 +89,7 @@ use super::*;
     #[test]
     fn scan_body_survives_multibyte_and_adversarial_input() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        reset();
+        reset(""); // unscoped tests use the default bucket
         let key = format!("sk_{}_{}", "live", "4eC39HqLyjWDarjtT1zdp7dc");
         // Multibyte UTF-8 tokens, NUL/control bytes, and a 200 KB delimiter-free
         // blob (a DoS attempt) all surround two delimited copies of a real key.
@@ -98,7 +98,7 @@ use super::*;
         let giant = "A".repeat(200_000);
         let body = format!("café résumé 日本語 \u{0}\u{1}\u{7f} {key} token={key} {giant}");
         scan_body("see-know", "café@example.com", &body); // must not panic
-        let snap = snapshot();
+        let snap = snapshot("");
         assert!(
             snap.iter().any(|f| f.key == key),
             "real key must survive amid adversarial/multibyte noise"
@@ -113,7 +113,7 @@ use super::*;
     #[test]
     fn scan_body_enforces_token_length_bounds() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        reset();
+        reset(""); // unscoped tests use the default bucket
         // A vendor-prefixed token longer than MAX_TOKEN is the DoS shape: it must
         // be rejected by the cheap length gate, never handed to the identifier.
         let oversized = format!("sk_{}_{}", "live", "x".repeat(MAX_TOKEN));
@@ -121,7 +121,7 @@ use super::*;
         let undersized = "sk_live_x"; // 9 < 16
         scan_body("p", "q", &format!("{oversized} {undersized}"));
         assert!(
-            snapshot().is_empty(),
+            snapshot("").is_empty(),
             "out-of-bounds tokens must yield no findings"
         );
     }
@@ -160,10 +160,45 @@ use super::*;
     #[test]
     fn scan_body_is_quiet_on_empty_and_whitespace_bodies() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        reset();
+        reset(""); // unscoped tests use the default bucket
         scan_body("p", "q", "");
         scan_body("p", "q", "   \n\t  \r\n ");
-        assert!(snapshot().is_empty());
+        assert!(snapshot("").is_empty());
+    }
+
+    #[test]
+    fn concurrent_scans_do_not_contaminate_each_others_found_keys() {
+        // PROBLEM_TREE T2.11: with the process-global sink keyed by `scan_id` (via
+        // the `SCAN` ambient the engine sets per scan + per spawned dispatch task),
+        // two scans running at once each drain ONLY the keys IT found. Before the
+        // fix the sink was unkeyed, so scan B's `reset` wiped A's in-progress keys
+        // or B's `drain` harvested them (silent loss / mis-attribution). Two real
+        // scopes, distinct keys, asserted no crossover.
+        let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset("scan-a");
+        reset("scan-b");
+        // High-entropy values (the identifier has a 3.5 bits/char Shannon gate that
+        // rejects low-diversity tokens); built from fragments so no contiguous
+        // `sk_live_…` literal trips repository secret-scanning.
+        let key_a = format!("sk_{}_{}", "live", "4eC39HqLyjWDarjtT1zdp7dc");
+        let key_b = format!("sk_{}_{}", "live", "8fK2mPqR7nX3wZ9bV5cT1yJ6");
+        with_scan_sync("scan-a", || {
+            scan_body("provider-a", "victim-a", &format!("leak {key_a}"));
+        });
+        with_scan_sync("scan-b", || {
+            scan_body("provider-b", "victim-b", &format!("leak {key_b}"));
+        });
+        let a = drain("scan-a");
+        let b = drain("scan-b");
+        assert_eq!(a.len(), 1, "scan-a must drain exactly its own key: {a:?}");
+        assert_eq!(b.len(), 1, "scan-b must drain exactly its own key: {b:?}");
+        assert_eq!(a[0].key, key_a, "scan-a got the wrong key");
+        assert_eq!(a[0].provider, "provider-a");
+        assert_eq!(b[0].key, key_b, "scan-b got the wrong key");
+        assert_eq!(b[0].provider, "provider-b");
+        // Buckets are independent: each was emptied by its own drain, no crossover.
+        assert!(drain("scan-a").is_empty());
+        assert!(drain("scan-b").is_empty());
     }
 
     /// Throughput baseline for the hot path (`scan_body` runs on EVERY response
@@ -181,7 +216,7 @@ use super::*;
     #[ignore = "throughput baseline; run with --ignored --nocapture"]
     fn bench_scan_body_throughput() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        reset();
+        reset(""); // unscoped tests use the default bucket
         let key = format!("sk_{}_{}", "live", "4eC39HqLyjWDarjtT1zdp7dc");
         let unit = format!(
             r#"{{"email":"victim@example.com","hash":"5e3706b9c16282351af9c3aac7107b54","ua":"Mozilla/5.0 (X11)","note":"{key}"}}"#

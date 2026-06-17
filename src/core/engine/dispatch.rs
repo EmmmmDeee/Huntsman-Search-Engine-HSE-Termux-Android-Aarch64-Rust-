@@ -727,7 +727,13 @@ impl super::ScanEngine {
             let throttle_ms = cx.opts.throttle_ms;
             let module_timeout_ms = super::resolve_timeout(cx.opts, &*module_arc);
 
-            set.spawn(async move {
+            // Re-set the foreign-key scan-scope ambient INSIDE the spawned task:
+            // tokio task-locals do NOT propagate across `spawn`, so without this the
+            // concurrent path's `scan_body` calls would land in the unscoped bucket
+            // and be lost at drain (PROBLEM_TREE T2.11). `with_scan` is the
+            // allow-listed pure `core → util::found_keys` leaf.
+            let scope_sid = sid.to_string();
+            set.spawn(crate::util::found_keys::with_scan(scope_sid, async move {
                 let _permit = permit;
 
                 log_module_dispatch(name, &target);
@@ -758,7 +764,7 @@ impl super::ScanEngine {
                 }
 
                 DispatchOutcome { name, result }
-            });
+            }));
         }
 
         while let Some(joined) = set.join_next().await {

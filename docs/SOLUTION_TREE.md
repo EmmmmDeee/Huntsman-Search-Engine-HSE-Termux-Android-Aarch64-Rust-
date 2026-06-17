@@ -120,8 +120,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **`[x]` SOL-ARCH · Architecture guards + hook inversion** — `core::hooks` fn-pointer
   registry inverts the `core→modules` edge; `tests/architecture.rs` guards
   `core→util`, `core→storage`, `core→modules`, `modules→engine/storage`, the registry,
-  the README/MODULES counts, and AI-independence. *Closes:* **T1.4**; *constrains*
-  SOL-ISOLATE (a util task-local can't be scoped from core — see §4b). ✅
+  the README/MODULES counts, and AI-independence. *Closes:* **T1.4**. *Shaped*
+  SOL-ISOLATE: the guard's documented-leaf allowlist is exactly how the engine got
+  to scope the `util::found_keys` task-local (`with_scan`) without a layering breach. ✅
 - **`[x]` SOL-OUTPUT-ESCAPE · Context-correct output encoding** — `esc()`/`attr()`
   (HTML), `extLink()` (href + scheme gate), CSV formula-defang; the SPA renders
   attacker values via `data-` attributes read with `this.dataset`, never a JS-string
@@ -146,12 +147,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fill_buf`/`consume`. *Closes:* **T2.1** (timeouts), **T2.8** (the two HIGH reads —
   done). *Gap (tracked under SOL-CAP-EXTEND):* the MED `json_decode`/AU-scraper caps,
   the hibp cast, the CLI-import cap remain. **(§4b)**
-- **`[ ]` SOL-ISOLATE · Per-`scan_id` state isolation** — key the `found_keys` sink
-  and the per-scan budget statics by `scan_id` so 8 concurrent `serve` scans don't
-  contaminate each other. *Closes:* **T2.11** (found_keys — the headline open item).
-  *Design + blocker recorded in PROBLEM_TREE T2.11:* needs either a future-wrapping
-  `core::hooks` scope or `scan_id` threaded through the util HTTP layer (the
-  `core_does_not_import_util_directly` guard blocks a naive task-local). **(§4a/b)**
+- **`[x]` SOL-ISOLATE · Per-`scan_id` state isolation** — the `found_keys` sink is
+  keyed by `scan_id` via a `tokio::task_local` (`SCAN`) the engine sets around
+  `run_with_ledger` **and** each spawned dispatch task (task-locals don't cross
+  `spawn`); `scan_body` reads the ambient, `reset`/`drain` key on it. *Closes:*
+  **T2.11 found_keys** — the headline open item. ✅ The layering tension was resolved
+  by allow-listing the **pure, no-I/O** `with_scan` leaf in
+  `core_does_not_import_util_directly` (the established pattern — *not* by threading
+  `scan_id` through the util HTTP layer). Isolation regression test +
+  `key_chaining_{sequential,concurrent}_dispatch` integration tests green; no
+  single-scan regression. *Residual:* the per-scan **budget** statics'
+  `reset_scan`-zeroing folds into the same ambient later (LOW).
 
 ### S.SECURITY — Security controls (paired with `PROBLEM_TREE` §7)
 
@@ -245,7 +251,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-BLOCKING | T2.2 · T1.2 (partial) | `[~]` |
 | SOL-BUDGET | T2.11 oathnet | `[~]` |
 | SOL-CAP | T2.1 · T2.8 (2 HIGH) | `[x]`/`[~]` |
-| SOL-ISOLATE | T2.11 found_keys | `[ ]` |
+| SOL-ISOLATE | T2.11 found_keys | `[x]` |
 | SOL-SSRF / -WHOIS | §6 (HTTP) · §7 S2 | `[x]`/`[ ]` |
 | SOL-SECRETS / -EXTEND | env/pool/archive · §7 S3 | `[x]`/`[ ]` |
 | SOL-REDACT | §7 S4 | ◑ |
@@ -285,8 +291,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   DB-writer actor left (T1.2).
 - **SOL-CAP** — 2 HIGH reads done; MED `json_decode`/AU-scraper caps + hibp cast + CLI
   import cap left (T2.8 tail).
-- **SOL-ISOLATE** — designed, blocked on the layering decision (T2.11 found_keys).
-- **SOL-BUDGET** — oathnet done; the budget-reset-zeroing folds into SOL-ISOLATE.
+- **SOL-BUDGET** — oathnet done; the per-scan budget statics' `reset_scan`-zeroing
+  still folds into the SOL-ISOLATE task-local (LOW — the session ceiling bounds it).
 - **T1.3 meta-guard** — the 12 firing assertions shipped; the dispatch-table
   firing meta-guard (a `SOL-RULE-METAGUARD` leaf) is unbuilt.
 
@@ -301,7 +307,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **T1 (core guarantees):** T1.1/T1.4 solved; T1.2 partial (SOL-BLOCKING); T1.3 partial.
 - **§3.F (foundations):** all three `[~]` — the largest unrealised leverage block.
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; T2.8 partial; T2.7/T2.10/T2.12 open;
-  T2.11 partial (oathnet done, found_keys/SOL-ISOLATE pending).
+  T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE delivered; only the LOW
+  over-dispatch + budget-reset-zeroing remain).
 - **§7 (security):** XSS solved; S1 accepted; S2–S5 open with solutions named.
 - **§4 (capability C1–C7):** open by design, gated on §3.F.
 
@@ -318,3 +325,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (T2.11 found_keys), and the highest-value *contained* security solution is
   SOL-SSRF-WHOIS (§7 S2). No over-build found (§4c empty). `PROBLEM_TREE` updated in
   the same commit to reference this file and the protocol.
+- **2026-06-17** — **SOL-ISOLATE delivered `[ ]`→`[x]`** (the first solution-tree
+  node driven to done under the paired protocol). The `found_keys` sink is keyed by
+  `scan_id` via a `tokio::task_local` the engine scopes around `run_with_ledger` +
+  each spawned dispatch task; the `core_does_not_import_util_directly` allowlist —
+  i.e. SOL-ARCH — turned out to be the *enabler*, not the blocker (the pure
+  `with_scan` leaf is allow-listed, so no util-HTTP-layer threading was needed).
+  **S→P alternation result:** delivering SOL-ISOLATE closed T2.11's headline bullet
+  and left only the LOW over-dispatch + the budget-static reset-zeroing (the latter
+  now reuses this same ambient — a *new* small solution leaf, logged in §4b under
+  SOL-BUDGET). Gap analysis refreshed: §4a/§4b no longer list found_keys; the §3.F
+  enabler block (SOL-F1/F2/F3) is now the clear top of the finish queue. Paired:
+  `PROBLEM_TREE` T2.11 + §8 updated in the same commit.

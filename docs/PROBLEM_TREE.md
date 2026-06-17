@@ -391,21 +391,22 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
     must filter on the id the hook already threads. The see_know/wigle/oathnet
     `QuotaBudget` per-scan statics share the same `reset_scan`-zeroing
     contamination (collective per-scan overspend; the per-*session* ceiling still
-    holds). **P2** ⏳ **Deferred (deliberately, per the "no functionality degraded"
-    bar) — needs a dedicated layering-aware refactor.** The write path is the
-    blocker: `found_keys::scan_body` is fed only at the `raw_archive::record`
-    chokepoint (`util/http/fetch.rs`, `curl`, `oathnet`, `see_know`), which carries
-    the module *name* but **not** `scan_id`; `ModuleContext` has `scan_id` but
-    modules reach the archive via the shared `ctx.http` client. A `tokio::task_local`
-    in `util::found_keys` is the clean design, **but** the `core_does_not_import_util
-    _directly` guard blocks the engine from scoping it, and `core::hooks` are
-    fn-pointers (can't wrap a future). So the real fix is **either** (a) thread
-    `scan_id` through the whole util HTTP layer + every module call site, **or**
-    (b) add a future-wrapping scope hook to `core::hooks`. Both are invasive enough
-    to risk a regression (a mis-scoped task silently drops keys), so this is staged
-    for its own focused change rather than rushed alongside the contained fixes.
-    *(Single-scan `hse scan`/CLI is unaffected — contamination needs ≥2 concurrent
-    `serve` scans.)*
+    holds). **P2** ✅ **Fixed (the SOL-ISOLATE solution).** The sink is now keyed by
+    `scan_id` via a `tokio::task_local` (`SCAN`) in `util::found_keys`: the engine
+    wraps `run_with_ledger` **and** each spawned dispatch task (`dispatch.rs:736`,
+    since task-locals don't cross `spawn`) in `found_keys::with_scan(scan_id, …)`, so
+    `scan_body` — reached deep in the `raw_archive` chokepoint with no `scan_id` of
+    its own — reads the ambient and writes to that scan's bucket; `reset`/`drain` key
+    on the `scan_id` the hook already threads. The layering tension was resolved
+    *not* by threading scan_id through the util HTTP layer, but by adding the **pure,
+    no-I/O** `with_scan` as a documented `core → util` leaf in the
+    `core_does_not_import_util_directly` allowlist (the established pattern — it sits
+    beside `util::oathnet::reset_budget` etc.; reset/drain still go through the module
+    hook because they bridge to `core::entity`, the scope does not). Isolation
+    regression test `concurrent_scans_do_not_contaminate_each_others_found_keys` +
+    the existing `key_chaining_{sequential,concurrent}_dispatch` integration tests
+    (both green) prove per-scan attribution with no single-scan regression. The
+    budget-static `reset_scan`-zeroing remains (folds into the same task-local later).
   - **LOW — bounded over-dispatch.** `core/engine/dispatch.rs:684-762` (concurrent
     path) judges the `max_entities` budget + the cross-correlation gate against
     round-start `entity_map.len()`, but merges happen only in the post-spawn
@@ -1056,3 +1057,14 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   solution is SOL-ISOLATE (T2.11 found_keys); highest-value contained security
   solution is SOL-SSRF-WHOIS (§7 S2); **no over-build** found. Header updated to
   reference the pair.
+- **2026-06-17** — **Fixed T2.11 found_keys cross-scan contamination (SOL-ISOLATE).**
+  Keyed the process-global sink by `scan_id` via a `tokio::task_local` (`SCAN`) in
+  `util::found_keys`; the engine wraps `run_with_ledger` + each spawned dispatch task
+  in `found_keys::with_scan`, so the per-response key scanner attributes a discovery
+  to the right scan under concurrent `serve` scans without threading `scan_id`
+  through the util HTTP layer. Resolved the layering tension by allow-listing the
+  pure `with_scan` leaf in `core_does_not_import_util_directly` (reset/drain stay in
+  the module hook). Isolation test + the `key_chaining` integration tests green; gate
+  clean (clippy `await_holding_lock`-safe via `sync_scope` in the sync test), 2,996
+  lib tests (+1). **Paired update:** `SOLUTION_TREE` SOL-ISOLATE `[ ]`→`[x]` and §4
+  gap analysis refreshed in the same commit.

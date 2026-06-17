@@ -98,6 +98,13 @@ fn core_does_not_import_util_directly() {
                 && !line.contains("util::keys::signup_hint")
                 && !line.contains("util::oathnet::reset_budget")
                 && !line.contains("util::see_know::set_scan_cap_override")
+                // Pure task-local setter (no I/O): the foreign-key scan-scope
+                // ambient. The engine wraps each scan + each spawned dispatch task in
+                // `found_keys::with_scan` so the per-response key scanner attributes a
+                // discovered key to the right `scan_id` under concurrent `serve`
+                // scans (PROBLEM_TREE T2.11). reset/drain still go through the module
+                // hook (they bridge to `core::entity`); only the pure scope is here.
+                && !line.contains("util::found_keys::with_scan")
                 // Persistent capability toggles (universal toggleability): the
                 // engine's module gate reads `module.<name>` on/off.
                 && !line.contains("util::settings::get_bool")

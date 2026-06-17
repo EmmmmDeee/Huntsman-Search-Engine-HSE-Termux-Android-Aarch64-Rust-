@@ -29,6 +29,40 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
+tokio::task_local! {
+    /// The `scan_id` of the scan whose modules are executing on this task. Set by
+    /// the engine around each scan (`run_with_ledger`) **and** re-set inside each
+    /// spawned dispatch task, so [`scan_body`] — reached deep in the shared
+    /// `raw_archive` HTTP chokepoint, which carries no `scan_id` of its own — can
+    /// attribute a discovered key to the right scan under `hse serve`'s concurrent
+    /// scans, **without** threading `scan_id` through the whole util HTTP layer.
+    /// Unset outside a scan (e.g. unit tests) ⇒ the default `""` bucket.
+    static SCAN: String;
+}
+
+/// Run `f` with the current-scan ambient set to `scan_id`, so any [`scan_body`]
+/// reached inside `f` keys into that scan's bucket. The engine wraps each scan and
+/// each spawned dispatch task in this. Pure (sets a task-local, no I/O) — hence an
+/// allow-listed `core → util` leaf in `tests/architecture.rs`, the one exception to
+/// "found_keys is driven through the module hook": reset/drain bridge to
+/// `core::entity` (so they stay in the hook), but the scan-scope ambient does not.
+pub async fn with_scan<F: std::future::Future>(scan_id: String, f: F) -> F::Output {
+    SCAN.scope(scan_id, f).await
+}
+
+/// The scan currently executing on this task, or `""` when unscoped.
+fn current_scan() -> String {
+    SCAN.try_with(String::clone).unwrap_or_default()
+}
+
+/// Test-only synchronous scope: run `f` with the scan ambient set (mirrors
+/// [`with_scan`] for the sync test bodies, which can't `.await` while holding the
+/// `SINK`-serialising lock). The production path uses the async [`with_scan`].
+#[cfg(test)]
+fn with_scan_sync<R>(scan_id: &str, f: impl FnOnce() -> R) -> R {
+    SCAN.sync_scope(scan_id.to_string(), f)
+}
+
 /// A foreign API key found in response data, with provenance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FoundKey {
@@ -46,9 +80,14 @@ pub struct FoundKey {
 
 #[derive(Default)]
 struct Sink {
-    /// Deduped by key value.
-    found: HashMap<String, FoundKey>,
-    /// Our own auth credentials, to exclude. Populated at [`reset`].
+    /// Discovered foreign keys **per `scan_id`** (keyed by [`SCAN`]), each inner
+    /// map deduped by key value. Per-scan so concurrent `serve` scans can't wipe or
+    /// harvest each other's keys (PROBLEM_TREE T2.11). The `""` bucket is used by
+    /// unscoped callers (unit tests).
+    per_scan: HashMap<String, HashMap<String, FoundKey>>,
+    /// Our own auth credentials, to exclude. **Shared** across scans — the process
+    /// owns the same auth keys regardless of which scan is running. Refreshed at
+    /// [`reset`].
     own: HashSet<String>,
 }
 
@@ -89,12 +128,12 @@ pub(crate) fn key_tokens(body: &str, max_len: usize) -> impl Iterator<Item = &st
         .filter(move |t| t.len() >= MIN_TOKEN && t.len() <= max_len)
 }
 
-/// Clear the sink and refresh the own-key exclusion set. Called by the engine at
-/// the start of every scan so each scan reports only the keys IT retrieved, and
-/// a freshly-rotated auth key is excluded immediately.
-pub fn reset() {
+/// Clear `scan_id`'s bucket and refresh the (shared) own-key exclusion set. Called
+/// by the engine at the start of every scan so each scan reports only the keys IT
+/// retrieved, and a freshly-rotated auth key is excluded immediately.
+pub fn reset(scan_id: &str) {
     let mut g = lock();
-    g.found.clear();
+    g.per_scan.remove(scan_id);
     g.own = crate::util::keys::own_api_keys();
 }
 
@@ -135,13 +174,20 @@ pub fn scan_body(provider: &str, query: &str, body: &str) {
     if hits.is_empty() {
         return;
     }
+    // Attribute to the scan currently executing on this task (the `SCAN` ambient
+    // the engine set around this dispatch); `""` when unscoped.
+    let scan = current_scan();
     let mut g = lock();
+    // Split the borrow so the shared `own` set and the per-scan bucket can be
+    // touched at once.
+    let Sink { per_scan, own } = &mut *g;
+    let bucket = per_scan.entry(scan).or_default();
     for (service, key) in hits {
         // Exclude our own auth credentials — the operator already has those.
-        if g.own.contains(&key) {
+        if own.contains(&key) {
             continue;
         }
-        g.found
+        bucket
             .entry(key.clone())
             .and_modify(|f| f.count = f.count.saturating_add(1))
             .or_insert_with(|| FoundKey {
@@ -159,20 +205,30 @@ fn report_order(a: &FoundKey, b: &FoundKey) -> std::cmp::Ordering {
     a.service.cmp(&b.service).then_with(|| a.key.cmp(&b.key))
 }
 
-/// A stable snapshot of the keys found so far — non-destructive, for diagnostics.
+/// A stable snapshot of `scan_id`'s keys found so far — non-destructive, for
+/// diagnostics.
 #[must_use]
-pub fn snapshot() -> Vec<FoundKey> {
-    let mut v: Vec<FoundKey> = lock().found.values().cloned().collect();
+pub fn snapshot(scan_id: &str) -> Vec<FoundKey> {
+    let g = lock();
+    let mut v: Vec<FoundKey> = g
+        .per_scan
+        .get(scan_id)
+        .map(|m| m.values().cloned().collect())
+        .unwrap_or_default();
     v.sort_by(report_order);
     v
 }
 
-/// Take every found key, clearing the sink. Called by the engine at scan
-/// finalisation to mint `ApiKey` entities from the discoveries.
+/// Take every key found for `scan_id`, clearing that scan's bucket. Called by the
+/// engine at scan finalisation to mint `ApiKey` entities from the discoveries.
 #[must_use]
-pub fn drain() -> Vec<FoundKey> {
+pub fn drain(scan_id: &str) -> Vec<FoundKey> {
     let mut g = lock();
-    let mut v: Vec<FoundKey> = g.found.drain().map(|(_, f)| f).collect();
+    let mut v: Vec<FoundKey> = g
+        .per_scan
+        .remove(scan_id)
+        .map(|m| m.into_values().collect())
+        .unwrap_or_default();
     v.sort_by(report_order);
     v
 }

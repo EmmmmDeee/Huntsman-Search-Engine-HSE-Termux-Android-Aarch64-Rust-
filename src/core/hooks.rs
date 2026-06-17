@@ -19,8 +19,9 @@ use crate::core::entity::Entity;
 /// The cross-cutting per-scan effects the engine drives, implemented by the
 /// `modules` layer and installed via [`install`].
 pub struct ModuleHooks {
-    /// Reset every module's per-scan state — rate budgets + the found-key sink.
-    pub reset_per_scan: fn(),
+    /// Reset every module's per-scan state — rate budgets + `scan_id`'s found-key
+    /// bucket.
+    pub reset_per_scan: fn(scan_id: &str),
     /// Apply the regional-search augmentation flag for the current scan.
     pub set_regional: fn(bool),
     /// Refresh the per-round SeekNow budget between expansion rounds.
@@ -41,9 +42,9 @@ pub fn install(hooks: ModuleHooks) {
     let _ = HOOKS.set(hooks);
 }
 
-pub(crate) fn reset_per_scan() {
+pub(crate) fn reset_per_scan(scan_id: &str) {
     if let Some(h) = HOOKS.get() {
-        (h.reset_per_scan)();
+        (h.reset_per_scan)(scan_id);
     }
 }
 
