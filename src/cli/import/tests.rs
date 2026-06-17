@@ -480,3 +480,50 @@ fn parse_oathnet_html_skips_bogus_ips_and_dedups() {
 fn parse_oathnet_html_empty_body_yields_nothing() {
     assert!(parse_oathnet_html("", "sid").is_empty());
 }
+
+// ── Property tests (proptest) — no-panic contract for untrusted import ────────
+//
+// These parsers consume untrusted bytes supplied by the operator or uploaded via
+// the web endpoint; the CLI import path has no `catch_unwind`, so a panic kills
+// the process. The properties below pin the no-panic contract over thousands of
+// arbitrary Unicode strings (incl. multibyte sequences landing next to structural
+// bytes: `•`, `->`, `@`, `:`, section markers, truncated entry blocks) — the
+// class the hand-coded adversarial table in
+// `upload_dispatcher_never_panics_on_adversarial_input` can never exhaust.
+mod prop {
+    use proptest::prelude::*;
+
+    use super::super::{parse_dossier, parse_oathnet_html, parse_oathnet_txt};
+
+    proptest! {
+        /// `parse_dossier` must never panic on any input string and must only
+        /// emit non-empty entity values.
+        #[test]
+        fn parse_dossier_never_panics(s in ".{0,512}") {
+            let (ents, _) = parse_dossier(&s, "s");
+            for e in &ents {
+                prop_assert!(!e.value.is_empty(), "empty value in entity: {e:?}");
+            }
+        }
+
+        /// `parse_oathnet_txt` must never panic on any input string and must only
+        /// emit non-empty entity values.
+        #[test]
+        fn parse_oathnet_txt_never_panics(s in ".{0,512}") {
+            let (ents, _) = parse_oathnet_txt(&s, "s");
+            for e in &ents {
+                prop_assert!(!e.value.is_empty(), "empty value in entity: {e:?}");
+            }
+        }
+
+        /// `parse_oathnet_html` must never panic on any input string and must
+        /// only emit non-empty entity values.
+        #[test]
+        fn parse_oathnet_html_never_panics(s in ".{0,512}") {
+            let ents = parse_oathnet_html(&s, "s");
+            for e in &ents {
+                prop_assert!(!e.value.is_empty(), "empty value in entity: {e:?}");
+            }
+        }
+    }
+}

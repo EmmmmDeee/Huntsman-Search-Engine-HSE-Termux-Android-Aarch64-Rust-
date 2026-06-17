@@ -369,7 +369,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Remaining:* `memchr`/`bstr` (no direct consumer yet → promote with first use).
   Each contained (unblocks T2.7 + sharpens C6).
 - **SOL-F2** — de-dup done; `fst` for the large tables outstanding.
-- **SOL-F3** — proptest + criterion landed; `cargo-fuzz` + import-parser proptest left.
+- **SOL-F3** — proptest (str/entity/geo/html/cert/dns + import parsers) + criterion
+  landed; only `cargo-fuzz` (nightly CI lane) left.
 - **SOL-BLOCKING** — API reads + `scan_import` + `stats` + engine `insert_event` all
   done; only the full DB-writer actor (batched inserts, `mpsc`-fed `Connection` owner)
   remains as T1.2's final tail.
@@ -615,6 +616,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   enabler block remains the sole unrealised high-leverage tier. Paired:
   `PROBLEM_TREE` C8 + §8 — same commit; gate green, 3,031 lib + 67 arch + 54 smoke
   + 3 halting + 23 cli + 6 cli-seed + 2 audit-regression tests, 0 failures.
+- **2026-06-17** — **Cycle 9 (S→P): SOL-F3 import-parser proptest.** Gap analysis:
+  §4b named SOL-F3 as the next most actionable §3.F item — `cargo-fuzz` needs a
+  nightly CI lane (blocked), but the import-parser proptest was a clean contained
+  step. Added `mod prop` with 3 `proptest!` no-panic properties to
+  `src/cli/import/tests.rs`: `parse_dossier_never_panics`,
+  `parse_oathnet_txt_never_panics`, `parse_oathnet_html_never_panics` — each runs
+  over arbitrary Unicode strings (≤512 chars) and additionally asserts every
+  emitted entity value is non-empty. The three sync import parsers are the
+  untrusted-input parsers most exposed to operator-supplied or web-uploaded data;
+  the CLI path has no `catch_unwind`, so a panic kills the process. The existing
+  25-case adversarial table (`upload_dispatcher_never_panics_on_adversarial_input`)
+  can't exhaust arbitrary Unicode — proptest does. **S→P gap-refresh:** §4b
+  SOL-F3 updated (import-parser proptest done; only `cargo-fuzz` left); F.3
+  status unchanged (`[~]` — cargo-fuzz still outstanding). Paired: `PROBLEM_TREE`
+  F.3 note + §8 — same commit; gate green, 3,032 lib + 24 arch + 54 smoke + 3
+  halting tests, 0 failures.
 - **2026-06-17** — **Cycle 8 (P→S): SOL-RULE-METAGUARD `[ ]`→`[x]` — T1.3 fully closed.**
   Gap-analysis pick: §4b T1.3 meta-guard was the last open T1 sub-item. **(1) Direct
   firing tests for AU-021 and AU-030** added to `src/core/correlator/tests.rs`:

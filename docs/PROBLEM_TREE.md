@@ -242,9 +242,15 @@ direct.**
   too (dev-dep, lean — no plotters/rayon): `benches/scan_throughput.rs` measures
   the hottest pure parse-path scanners (`find_ascii_ci` hit/miss on a 14 KB body,
   `fold_ascii_lower`, `slugify`, `geohash`); CI compiles them (`--no-run`) so a
-  perf-path API change can't rot them. *Remaining:* `cargo-fuzz` (nightly/libfuzzer
-  — gate on a CI lane, not on-device aarch64); widen criterion to the correlation
-  pass once a bench-visible entry point exists.
+  perf-path API change can't rot them.
+  **+import-parser proptest (2026-06-17, SOL-F3):** `parse_dossier`,
+  `parse_oathnet_txt`, and `parse_oathnet_html` each get a `proptest!` no-panic
+  property (`mod prop` in `cli/import/tests.rs`) over arbitrary Unicode strings
+  (≤512 chars); also asserts every emitted entity value is non-empty. 3 new
+  properties, 3,032 lib tests, gate green.
+  *Remaining:* `cargo-fuzz` (nightly/libfuzzer — gate on a CI lane, not on-device
+  aarch64); widen criterion to the correlation pass once a bench-visible entry
+  point exists.
 
 ### 3.2 — Tier 2 · P2 robustness & quality
 
@@ -1364,6 +1370,17 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   fmt/clippy/doc clean, 3,016 lib + 67 api + 23 arch + 54 smoke + 3 halting
   + 6 cli-seed + 2 audit-regression tests, 0 failures. **Paired:** `SOLUTION_TREE`
   SOL-F1 + SOL-CLI-CONTRACT + §4b + §5 refreshed — same commit.
+- **2026-06-17** — **Cycle 9 (S→P): SOL-F3 import-parser proptest.** S→P gap pass:
+  §4b named SOL-F3 the next actionable §3.F item (`cargo-fuzz` blocked on nightly
+  CI). Added 3 `proptest!` no-panic properties (`mod prop`) to
+  `src/cli/import/tests.rs`: `parse_dossier_never_panics`,
+  `parse_oathnet_txt_never_panics`, `parse_oathnet_html_never_panics` — each
+  generates arbitrary Unicode strings (≤512 chars) and asserts the sync parser
+  neither panics nor emits an empty-value entity. The CLI import path has no
+  `catch_unwind`; a panic kills the process. The existing 25-case adversarial table
+  tests fixed scenarios; proptest tests the infinite space. Gate green: fmt/clippy/
+  doc clean, 3,032 lib tests (+3), 0 failures. **Paired:** `SOLUTION_TREE` SOL-F3
+  §4b + §5 refreshed — same commit.
 - **2026-06-17** — **Cycle 8 (P→S): T1.3 firing meta-guard (SOL-RULE-METAGUARD) — fully
   closed.** Gap-analysis pick from the paired-tree §4b: T1.3 was the last open T1
   sub-item. **(1)** Added direct firing tests for the two rules with no function-level
