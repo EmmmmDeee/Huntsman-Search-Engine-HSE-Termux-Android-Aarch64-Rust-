@@ -366,6 +366,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
+- **Local `strip_html` duplicates (LOW)** — cycle 13 S→P discovery: `au_property/parse.rs`
+  and `au_people/mod.rs` each define their own `strip_html`/`strip_html_tags` instead of
+  routing to `util::html::strip_html`. Both modules work; the risk is future divergence
+  from the canonical entity decoder (if `decode_entities` or tag-stripping logic changes,
+  these copies won't inherit it). Solution: route each to `crate::util::html::strip_html`
+  (a one-line change per module — the canonical function already covers their usage).
+  **LOW** (no current bug; contained SOL-F1 cleanup). To build: next available P→S slot,
+  or fold into a T2.7 scraper-health pass.
 - **T1.5** `finalise_scan` reactor blocking at scan-end — new node (cycle 11 S→P):
   the four bulk transactions (`upsert_entities_batch`, `upsert_scan`,
   `persist_relations` loop, `Correlator::run`) still run synchronously in the async
@@ -396,8 +404,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `MatchSet::find_range`, `address_au::state_code` step-2 via `MatchSet::find_id`,
   and **`decode_entities`** — `memchr` direct dep promoted; `memchr(b'&', …)` /
   `memchr(b';', …)` replace `str::find`/`contains` on the hot page-body decode path).
-  *Remaining:* `bstr` (no direct consumer yet → promote with first use).
-  Each contained (unblocks T2.7 + sharpens C6).
+  *Remaining:* `bstr` (no natural consumer yet — all scraped HTML arrives as `&str`
+  via `read_body_capped`→`String::from_utf8_lossy`; `bstr` promotes only when a
+  module takes raw `&[u8]` response bytes directly). Two local `strip_html` duplicates
+  (`au_property/parse.rs`, `au_people/mod.rs`) are a LOW cleanup item — route to
+  `util::html::strip_html` (see §4a). Unblocks T2.7 + sharpens C6.
 - **SOL-F2** — de-dup done; `fst` for the large tables outstanding.
 - **SOL-F3** — proptest (str/entity/geo/html/cert/dns + import parsers) + criterion
   landed; only `cargo-fuzz` (nightly CI lane) left.
@@ -689,6 +700,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (13.5s needed vs 30s; no change to the 30s constant). SOL-STREAMING description and
   C8 problem node updated to reflect 42-site scope. Gate green: fmt/clippy/doc clean,
   3,027 lib + 67 arch tests, 0 failures.
+- **2026-06-17** — **Cycle 13 (S→P): memchr delivery exposes `bstr` deferral rationale
+  + two local `strip_html` duplicates.** S→P pass on cycle 12's `decode_entities`
+  change: grepped all callers of `strip_html` / `decode_entities` across the codebase.
+  **Finding 1 (confirming):** `bstr` has no natural immediate consumer — every path that
+  reaches `strip_html`/`decode_entities` receives `&str` produced by
+  `read_body_capped` → `String::from_utf8_lossy`, which already handles invalid UTF-8
+  at the boundary. `bstr` promotes only when a module is built to accept raw `&[u8]`
+  response bytes directly (e.g. a future aho-corasick HTML extractor). The "promote with
+  first use" rule is justified — `cargo machete` would correctly reject an unused dep.
+  **Finding 2 (new gap):** `au_property/parse.rs:27` and `au_people/mod.rs:61` define
+  their own `strip_html`/`strip_html_tags` functions instead of routing to
+  `util::html::strip_html`. Both work correctly now, but any future change to the
+  canonical entity decoder won't propagate. LOW (no current bug). Added to §4a as a
+  named coverage gap (route-to-canonical = one-line change per module). **Gap refresh:**
+  §4a gains local-strip_html-duplicate gap; §4b SOL-F1 "remaining" note updated with
+  `bstr` rationale + the two module duplicates; no §4a removals. The §3.F enabler
+  block (SOL-F1 `bstr` + SOL-F2 fst + SOL-F3 cargo-fuzz) remains the sole unrealised
+  high-leverage tier. Next P→S candidate: **T1.5 / SOL-FINALISE-BLOCKING** (build the
+  solution node + wrap `finalise_scan` in `spawn_blocking` — the last open T1 item with
+  a known solution shape) OR the two local strip_html duplicates (LOW but trivial).
+  Paired: `PROBLEM_TREE` §8 — same commit; no code change this cycle.
 - **2026-06-17** — **Cycle 12 (P→S): SOL-F1 seventh consumer — `memchr` direct dep +
   `decode_entities` SIMD byte-scan acceleration.** P→S gap pass: §4b named `memchr`
   promotion as the remaining SOL-F1 item (`bstr` held back until a direct consumer

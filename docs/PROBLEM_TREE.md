@@ -1503,6 +1503,20 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   SOL-F3 fuzz) remains the sole unrealised high-leverage tier; SOL-BUDGET
   reset_scan-zeroing remains LOW in the finish queue. No code change this cycle.
   **Paired:** `SOLUTION_TREE` §4a + §4d + §5 refreshed — same commit.
+- **2026-06-17** — **Cycle 13 (S→P): `bstr` deferral confirmed + two local
+  `strip_html` duplicates surfaced.** S→P pass on cycle 12's memchr delivery.
+  Grepped all callers of `strip_html`/`decode_entities`/`util::html` across the tree.
+  **(1) `bstr` deferral rationale confirmed:** every production path reaching
+  `strip_html` or `decode_entities` passes `&str` from `read_body_capped` →
+  `String::from_utf8_lossy` — invalid UTF-8 is already handled at the reqwest boundary.
+  Promoting `bstr` without a raw-bytes consumer would trip `cargo machete`. Deferred
+  correctly per the "promote with first use" rule. **(2) New gap:** `au_property/parse.rs:27`
+  (`strip_html`) and `au_people/mod.rs:61` (`strip_html_tags`) are independent local
+  implementations — both bypass `crate::util::html::strip_html`. They work now but
+  won't inherit canonical entity decoder improvements. **LOW** (no current bug; route-to-
+  canonical is a one-line change per module — fold into the next SOL-F1 or T2.7 pass).
+  Added to `SOLUTION_TREE` §4a as a named gap; §4b SOL-F1 remaining note updated.
+  No code change this cycle. **Paired:** `SOLUTION_TREE` §4a + §4b + §5 — same commit.
 - **2026-06-17** — **Cycle 12 (P→S): F.1 seventh consumer — `memchr` direct dep +
   `decode_entities` SIMD byte-scan.** P→S gap pass: §4b named `memchr` promotion as
   the remaining SOL-F1 item (`bstr` held back until a direct consumer exists, else
