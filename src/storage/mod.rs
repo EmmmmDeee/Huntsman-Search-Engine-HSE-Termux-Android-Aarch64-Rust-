@@ -281,8 +281,12 @@ impl Store {
     pub fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
         let raw: Vec<String> = {
             let conn = self.conn.lock();
-            let mut stmt = conn
-                .prepare_cached("SELECT data_json FROM scans ORDER BY started_at DESC LIMIT ?1")?;
+            let mut stmt = conn.prepare_cached(
+                // `started_at` is 1-second resolution, so a unique secondary
+                // key (`id`, the PRIMARY KEY) is required for a deterministic
+                // order when scans tie on the same second.
+                "SELECT data_json FROM scans ORDER BY started_at DESC, id DESC LIMIT ?1",
+            )?;
             let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
             rows.filter_map(std::result::Result::ok).collect()
         };
@@ -302,9 +306,13 @@ impl Store {
         let raw: Option<String> = {
             let conn = self.conn.lock();
             let mut stmt = conn.prepare_cached(
+                // Deterministic tie-break on `id` (PRIMARY KEY): `started_at` is
+                // 1-second resolution, so without it two scans completing in the
+                // same second make `latest` non-deterministic — `export/diff/audit
+                // latest` could resolve to a different scan on identical state.
                 "SELECT data_json FROM scans
                  WHERE json_extract(data_json, '$.status') = 'complete'
-                 ORDER BY started_at DESC LIMIT 1",
+                 ORDER BY started_at DESC, id DESC LIMIT 1",
             )?;
             stmt.query_row(params![], |r| r.get::<_, String>(0)).ok()
         };

@@ -17,6 +17,25 @@ use super::*;
     }
 
     #[test]
+    fn budget_try_increment_enforces_a_finite_scan_cap() {
+        // PROBLEM_TREE T2.11: oathnet's quota gate must be the atomic reserve
+        // (`try_increment`/CAS), not the racy `remaining()`-then-`increment()` that
+        // two concurrent `serve` scans could both pass — overspending the
+        // operator's PAID cap. Pin that the gate enforces a finite per-scan cap and
+        // stays refused once reached (the CAS correctness itself is covered by the
+        // `util::budget` unit tests; this asserts oathnet routes through it).
+        reset_budget();
+        let mut ok = 0u32;
+        while budget_try_increment() {
+            ok += 1;
+            assert!(ok < 10_000, "gate never refuses — the per-scan cap is unenforced");
+        }
+        assert!(ok >= 1, "gate refused from the very first reserve");
+        assert!(!budget_try_increment(), "must stay refused once the cap is hit");
+        reset_budget();
+    }
+
+    #[test]
     fn val_str_extracts_string_field() {
         let v = json!({"name": "alice", "age": 30});
         assert_eq!(val_str(&v, "name"), Some("alice".to_string()));

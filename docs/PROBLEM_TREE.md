@@ -316,7 +316,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
     `upload_dispatcher_never_panics_on_adversarial_input` test) — only the read
     size is unbounded. **P2** *(robustness/DoS hardening; ties directly to the §1.5
     bounded-memory doctrine and F.1's single capped-read substrate.)*
-- **`[ ]` T2.9 · Non-deterministic SQL read-back orderings** — four read queries
+- **`[x]` T2.9 · Non-deterministic SQL read-back orderings** *(fixed 2026-06-17)* — four read queries
   lack a unique final tie-break, so equal-key rows can reorder between identical
   runs (violating the §1.7 determinism feature). The deep storage re-audit
   (2026-06-17) found two that matter **beyond cosmetics**:
@@ -336,6 +336,11 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
   is already totally ordered — re-verified clean. → add a unique final key to each
   (`, id ASC` / `, e.kind ASC` / `, scan_id ASC`); pair with a permutation test.
   **P2** (the `latest` case is wrong-scan selection; the other three P3.)
+  ✅ **Fixed:** all four queries now carry a unique final key — `scans` →
+  `, id DESC` (`latest_completed_scan` + `list_scans`), `entity_facets` →
+  `, e.kind ASC`, `scan_ids_for_entity` → `, scan_id DESC`; regression test
+  `latest_completed_scan_is_deterministic_on_same_second_ties`. Non-tie behaviour
+  is byte-identical, so nothing is degraded.
 - **`[ ]` T2.10 · No schema version stamp (latent migration risk)** —
   `storage/mod.rs` evolves the SQLite schema **additively only** (`CREATE TABLE`/
   `INDEX IF NOT EXISTS`; no `ALTER TABLE`, no `PRAGMA user_version`, no version
@@ -345,7 +350,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
   a future structural change would silently mismatch existing databases. → set
   `PRAGMA user_version` at create and gate any future structural change on an
   idempotent upgrade ladder. **P3 (latent — no current bug; advisory).**
-- **`[ ]` T2.11 · Concurrency — process-global state not isolated across the 8
+- **`[~]` T2.11 · Concurrency — process-global state not isolated across the 8
   concurrent `serve` scans** — `hse serve` runs up to `MAX_CONCURRENT_SCANS = 8`
   scans at once, but several **process-global `static`s** are shared without
   per-scan isolation. The deep engine audit (2026-06-17) found three defects here;
@@ -360,7 +365,9 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
     one site left on the racy path**, so two concurrent scans both pass the gate and
     both charge → **overspends the operator's *paid* OathNet daily cap**. → swap to
     `BUDGET.try_increment()` and drop the separate increment (one line, mirrors
-    see_know). **P2**
+    see_know). **P2** ✅ **Fixed:** oathnet now reserves via `budget_try_increment()`
+    (CAS); the racy `remaining()`/`increment()` pair is gone. Regression test
+    `budget_try_increment_enforces_a_finite_scan_cap`.
   - **MED — cross-scan credential contamination.** `util/found_keys/mod.rs` is a
     single process-global `Mutex<Sink>`; `drain()`/`reset()` are **unkeyed**, and
     the hook `modules::drain_found_key_entities(scan_id)` (`modules/mod.rs:145`)
@@ -517,8 +524,8 @@ the found_keys cross-scan contamination) and one security finding (the SPA XSS,
 
 ## 7. Deferred (out of scope here — separate pass)
 
-Indexed only: **Security** — ⚠ **NEW (2026-06-17, HIGH): one-click stored XSS in
-the SPA**, `web/spa.html:1967` — a correlation-member `onclick` interpolates the
+Indexed only: **Security** — ✅ **FIXED (2026-06-17, was HIGH): one-click stored XSS
+in the SPA**, `web/spa.html:1967` — a correlation-member `onclick` interpolated the
 attacker-controllable `e.value` into a **JS-string literal inside an inline
 handler**. `esc()`/`attr()` HTML-encode `'`→`&#39;`, but the HTML parser decodes it
 back to `'` *before* the JS engine runs the `onclick`, so `e.value = ');alert(1)//`
@@ -526,10 +533,14 @@ breaks out and executes **same-origin** when the analyst clicks the member to pi
 (verified end-to-end). `script-src 'unsafe-inline'` permits the inline handler;
 `connect-src 'self'` blocks *exfiltration* but not same-origin execution (reading
 sensitive findings, driving the loopback API). The same pattern at `:1910` is
-currently inert (its value is a SHA-256-hex `uid`). → render the value into a
-`data-` attribute read via `this.dataset` (HTML-attr context, where `esc()` *is*
-sufficient), not a JS-string literal; harden `:1910` too. *(The rest of the SPA's
-`esc()`/`extLink()` discipline was verified sound — this is the one dual-context
+currently inert (its value is a SHA-256-hex `uid`). ✅ **Fixed:** both sinks now
+render the value into a `data-pivot`/`data-uid` attribute (HTML-attr context, where
+`esc()`/`attr()` *is* sufficient) read via `this.dataset` in the handler — no
+attacker data enters the JS-string context. A full-SPA sweep confirms **zero**
+remaining `on*`-handler interpolations; the pivot click behaviour is unchanged
+(the `data-` value decodes to the same string), so nothing is degraded.
+*(The rest of the SPA's `esc()`/`extLink()` discipline was verified sound — this
+was the one dual-context
 sink.)* · also indexed: hardcoded default keys `util/keys/constants.rs:137`,
 whois-referral SSRF, key-in-URL leaks, cleartext-secret persistence, dossier
 perms, root `DOSSIER_*.md` real-looking secrets · **Privacy/Legal/Licensing** (PII fixture & root `DOSSIER_*.md`, source
@@ -814,3 +825,20 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   current across every subsystem; the remaining value is in *fixing* the backlog —
   fix order: SPA XSS (§7) → T2.11 oathnet/found_keys → T2.9 `latest` tie-break →
   T2.8 HIGH reads.
+- **2026-06-17** — **Fixes, batch 1 (operator: "all of the above, as long as no
+  functionality is degraded").** Landed the safe, contained fixes, each behaviour-
+  preserving on the non-pathological path: **(1) SPA stored XSS (§7) — FIXED:** the
+  two `pivotToEntity`/`entityPivot` sinks (`spa.html:1967`/`:1910`) now pass the
+  attacker value through a `data-` attribute read via `this.dataset`, not a JS-string
+  literal; a full-SPA grep confirms zero remaining `on*`-handler interpolations.
+  **(2) T2.11 oathnet paid-overspend — FIXED:** swapped the racy
+  `remaining()`+`increment()` for the atomic `budget_try_increment()` (CAS),
+  mirroring see_know. **(3) T2.9 SQL orderings — FIXED (closed `[x]`):** unique
+  final tie-break on all four read-backs (`scans` `, id DESC`; `entity_facets`
+  `, e.kind ASC`; `scan_ids_for_entity` `, scan_id DESC`) — `export/diff/audit
+  latest` is now deterministic on same-second ties. Regression tests added
+  (`latest_completed_scan_is_deterministic_on_same_second_ties`,
+  `budget_try_increment_enforces_a_finite_scan_cap`). Gate green: clippy/fmt/doc
+  clean, 2,994 lib tests (+2), 0 failures. *Remaining: T2.8 HIGH reads + the
+  T2.11 found_keys cross-scan isolation (the one fix needing the task-local refactor
+  — done next, carefully).*

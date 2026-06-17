@@ -64,6 +64,39 @@ fn entity_observed_by_two_scans_appears_in_both() {
 }
 
 #[test]
+fn latest_completed_scan_is_deterministic_on_same_second_ties() {
+    // `started_at` is 1-second resolution; two scans completing in the same second
+    // must resolve `latest` deterministically (PROBLEM_TREE T2.9). Without the
+    // `, id DESC` tie-break SQLite picks arbitrarily, so `hse export/diff/audit
+    // latest` could resolve to a different scan on identical state.
+    use crate::core::scan::ScanStatus;
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    let mk = |id: &str| {
+        let mut s = Scan::new(id, Target::new(TargetKind::Email, "x@y.com"));
+        s.status = ScanStatus::Complete;
+        s.started_at = 1_700_000_000; // identical second for both rows
+        store.upsert_scan(&s).unwrap();
+    };
+    mk("scan-aaa");
+    mk("scan-zzz");
+    // id DESC tie-break ⇒ the lexicographically larger id wins on every call.
+    let winner = store.latest_completed_scan().unwrap().unwrap().id;
+    assert_eq!(
+        winner, "scan-zzz",
+        "tie must break deterministically on id DESC"
+    );
+    for _ in 0..5 {
+        assert_eq!(
+            store.latest_completed_scan().unwrap().unwrap().id,
+            winner,
+            "latest must be stable across repeated calls on identical state"
+        );
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn entities_for_scan_orders_deterministically_on_confidence_ties() {
     // `ORDER BY confidence DESC` alone is non-deterministic when entities
     // share a confidence (the common case — e.g. every name permutation gets

@@ -182,7 +182,7 @@ impl super::Store {
         let mut stmt = conn.prepare_cached(
             "SELECT scan_id FROM entity_observations
              WHERE entity_uid = ?1
-             ORDER BY observed_at DESC",
+             ORDER BY observed_at DESC, scan_id DESC",
         )?;
         let rows = stmt.query_map(params![entity_uid], |r| r.get::<_, String>(0))?;
         Ok(rows.flatten().collect())
@@ -252,7 +252,7 @@ impl super::Store {
             "SELECT e.kind, COUNT(*) FROM entities e \
              JOIN entity_observations o ON o.entity_uid = e.uid \
              WHERE o.scan_id = ?1 \
-             GROUP BY e.kind ORDER BY COUNT(*) DESC",
+             GROUP BY e.kind ORDER BY COUNT(*) DESC, e.kind ASC",
         )?;
         let rows = stmt.query_map(params![scan_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))

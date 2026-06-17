@@ -59,12 +59,15 @@ fn cache_put(key: String, items: &[Value]) {
     RESPONSE_CACHE.put(key, items.to_vec());
 }
 
-fn budget_remaining() -> bool {
-    BUDGET.remaining()
-}
-
-fn budget_increment() {
-    BUDGET.increment();
+/// Atomically reserve one query against the OathNet budget (see
+/// [`crate::util::budget::QuotaBudget::try_increment`]). Replaces the racy
+/// `remaining()`-then-`increment()` gate: under `hse serve`'s concurrent scans
+/// (up to `MAX_CONCURRENT_SCANS`) two scans could both pass a plain
+/// `remaining()` check and then both charge, overspending the operator's *paid*
+/// daily OathNet cap. The CAS in `try_increment` makes the reserve atomic, so the
+/// cap holds regardless of interleaving (mirrors the `see_know` fix).
+fn budget_try_increment() -> bool {
+    BUDGET.try_increment()
 }
 
 pub fn is_quota_exhausted() -> bool {
@@ -172,10 +175,9 @@ pub async fn search(
     if let Some(cached) = cache_get(&ck) {
         return Ok(cached);
     }
-    if is_quota_exhausted() || !budget_remaining() {
+    if is_quota_exhausted() || !budget_try_increment() {
         return Ok(Vec::new());
     }
-    budget_increment();
     let encoded = crate::util::http::urlencode(value);
     // sort=indexed_at:desc gives the freshest records first within
     // the page_size cap, maximising data freshness per query.
