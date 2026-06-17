@@ -86,7 +86,9 @@ pub fn default_db_path() -> String {
         |_| "huntsman.db".to_string(),
         |home| {
             let dir = std::path::Path::new(&home).join(".huntsman");
-            let _ = std::fs::create_dir_all(&dir);
+            // 0700 so the store + dossiers + key pool under ~/.huntsman aren't
+            // world-listable on a shared host (PROBLEM_TREE §7 S3).
+            let _ = crate::util::atomic_file::create_dir_private(&dir);
             dir.join("huntsman.db").to_string_lossy().into_owned()
         },
     )

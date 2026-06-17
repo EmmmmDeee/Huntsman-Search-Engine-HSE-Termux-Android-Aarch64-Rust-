@@ -64,6 +64,41 @@ fn write_inner(tmp: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(tmp, path)
 }
 
+/// Create `path` (and any missing parents) as a **private** directory — mode
+/// `0700` on unix, so the sensitive trees under `~/.huntsman` (dossiers, key
+/// pool, DB) aren't world-listable. Idempotent; plain `create_dir_all` off unix.
+pub fn create_dir_private(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(path)
+    }
+}
+
+/// Best-effort restrict an **existing** file to owner-only (`0600` on unix). For
+/// files a third party creates for us — e.g. SQLite opens its own DB / `-wal` /
+/// `-shm`, so we can't pass `mode` at create time. No-op off unix; the caller
+/// decides whether a missing file is an error.
+pub fn set_private(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

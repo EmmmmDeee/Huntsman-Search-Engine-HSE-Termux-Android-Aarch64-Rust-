@@ -179,11 +179,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   referral dials the pinned address while IANA keeps the trusted constant.
   *Closes:* **§7 S2** (HIGH, contained). ✅ Behaviour-preserving (real referrals are
   public `:43`); hermetic regression test `blocks_ssrf_and_non_whois_referrals`.
-- **`[x]/[ ]` SOL-SECRETS · Secrets at rest** — `util::atomic_file::write` (0600 +
+- **`[x]` SOL-SECRETS · Secrets at rest** — `util::atomic_file::write` (0600 +
   unique-temp + `sync_all` + atomic rename) covers `.huntsman.env`, `key_pool.json`,
-  `raw/`. *Closes:* the env/pool/archive perms. *Gap (SOL-SECRETS-EXTEND):* the
-  dossier/export/DB writes use bare `std::fs::write`/`Connection::open` (0644) and
-  `~/.huntsman` isn't 0700 — **§7 S3** (MED). Planned. **(§4a)**
+  `raw/`; **+ SOL-SECRETS-EXTEND (2026-06-17):** new `atomic_file::{create_dir_private
+  (0700), set_private (0600)}`; the auto-dossier now writes 0600 in a 0700 dir,
+  `~/.huntsman` is 0700, and `Store::open` `set_permissions(0o600)`s the DB +
+  `-wal`/`-shm`. *Closes:* **§7 S3** + the env/pool/archive perms. ✅ tests
+  `create_dir_private_is_0700_and_set_private_is_0600`,
+  `open_restricts_the_db_file_to_owner_only`. *Deliberate boundary:* explicit
+  `hse export -o <path>` respects the user's umask (their chosen, often-shared
+  destination).
 - **`[x]` SOL-REDACT · Credential redaction** — `redact_credentials` (param + literal
   `HUNTSMAN_*` passes) on error bodies/URLs; only `key_tail` (last-4) is ever logged.
   *Closes:* the key-in-URL **log** exposure (S4 mostly mitigated). *Gap:* the archived
@@ -268,7 +273,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CAP | T2.1 · T2.8 (2 HIGH) | `[x]`/`[~]` |
 | SOL-ISOLATE | T2.11 found_keys | `[x]` |
 | SOL-SSRF / -WHOIS | §6 (HTTP) · §7 S2 | `[x]`/`[x]` |
-| SOL-SECRETS / -EXTEND | env/pool/archive · §7 S3 | `[x]`/`[ ]` |
+| SOL-SECRETS / -EXTEND | env/pool/archive · §7 S3 | `[x]`/`[x]` |
 | SOL-REDACT | §7 S4 | ◑ |
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[~]`/`[x]`/`[x]` |
@@ -291,10 +296,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **T2.7** scraper-health signal — covered *in principle* by SOL-F1 (parser rewrites)
   but the per-source health surface (last-success/parse-rate in `doctor`+SPA) has no
   solution node. Gap.
-- **§7 S3 / S4 / S5** — solution nodes exist (SOL-SECRETS-EXTEND, SOL-REDACT
-  residual, the install checksum) but are **unstarted**. Contained; awaiting the
-  operator's prioritisation. *(S2/SOL-SSRF-WHOIS — the previous top contained item —
-  delivered 2026-06-17, so it's off this queue.)*
+- **§7 S4 / S5** — solution nodes exist (SOL-REDACT residual, the install checksum)
+  but are **unstarted** — both LOW. Contained; awaiting the operator's prioritisation.
+  *(S2/SOL-SSRF-WHOIS and S3/SOL-SECRETS-EXTEND — the previous top contained items —
+  delivered 2026-06-17, so they're off this queue.)*
 - **C1–C7** — capability nodes; solutions sketched, none started (gated on the §3.F
   enablers landing first, by design).
 
@@ -329,7 +334,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (4 MED/LOW-MED fixed, LOW-misc residual); T2.7/T2.10 open;
   T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE delivered; only the LOW
   over-dispatch + budget-reset-zeroing remain).
-- **§7 (security):** XSS + S2 (whois SSRF) solved; S1 accepted; S3–S5 open with
+- **§7 (security):** XSS + S2 (whois SSRF) + S3 (file perms) solved; S1 accepted;
+  S4–S5 open (both LOW) with
   solutions named.
 - **§4 (capability C1–C7):** open by design, gated on §3.F.
 
@@ -394,3 +400,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   consumers remaining"; F.1/SOL-F1 is now the *only* partially-delivered enabler with
   a clear incremental path. Paired: `PROBLEM_TREE` F.1 `[ ]`→`[~]` + baseline deps +
   §8 — same commit; gate green, 3,004 lib tests, benches compile.
+- **2026-06-17** — **Cycle: SOL-SECRETS-EXTEND `[ ]`→`[x]` (§7 S3).** Gap-analysis
+  pick: the universal-key-scanner SOL-F1 conversion needs a proptest-backed effort
+  (its `min_len`/table-order/entropy semantics aren't a clean aho-corasick swap), so
+  it's staged like the substrate was; this cycle took the cleanest high-value
+  *contained* item. Added `atomic_file::{create_dir_private, set_private}`; the
+  auto-dossier (every scan; PII + harvested keys) and the SQLite DB are now 0600 in a
+  0700 `~/.huntsman` — consistent with the existing env/pool/raw 0600. Explicit
+  `export -o` left to the user's umask (deliberate boundary). Two perms tests.
+  **Gap refresh:** §4a §7 now lists only S4/S5 (both LOW); §4d §7 row "XSS + S2 + S3
+  solved". The only high-leverage tier left is §3.F (SOL-F1 consumers / SOL-F2 fst /
+  SOL-F3 fuzz); the contained security queue is down to two LOW items. Paired:
+  `PROBLEM_TREE` §7 S3 `[ ]`→`[x]` + §8 — same commit; gate green, 3,006 lib tests.

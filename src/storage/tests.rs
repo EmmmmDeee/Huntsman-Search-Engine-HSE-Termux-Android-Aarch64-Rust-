@@ -31,6 +31,23 @@ fn insert_scan(store: &Store, id: &str) {
 }
 
 #[test]
+#[cfg(unix)]
+fn open_restricts_the_db_file_to_owner_only() {
+    // §7 S3: the store holds PII + harvested keys, so it must not be left
+    // world-readable (SQLite creates it with the process umask, often 0644).
+    use std::os::unix::fs::PermissionsExt;
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    insert_scan(&store, "s-perm"); // a write so the -wal/-shm siblings exist too
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600, "the DB must be owner-only (§7 S3)");
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(format!("{path}-wal"));
+    let _ = std::fs::remove_file(format!("{path}-shm"));
+}
+
+#[test]
 fn integrity_check_reports_ok_on_healthy_db() {
     // A fresh, written-to database must report exactly `["ok"]` — the
     // signal `hse doctor` relies on to distinguish a clean store from a

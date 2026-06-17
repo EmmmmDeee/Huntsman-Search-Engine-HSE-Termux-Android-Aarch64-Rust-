@@ -676,15 +676,21 @@ security stays a deliberately separate track, and S1 needs *operator* action):
   the trusted constant. A malicious `refer: 127.0.0.1:6379` / `169.254.169.254:80`
   is refused and IANA's answer kept. Behaviour-preserving (real referrals are public
   `:43`). Hermetic regression test `blocks_ssrf_and_non_whois_referrals`.
-- **S3 · `[ ]` P2 (MED) — world-readable secrets at rest (Linux/macOS).** The dossier
-  (`cli/export/dossier.rs:42-44`, written on *every* `hse scan`), `hse export -o`
-  (`cli/export/mod.rs:49`), and the SQLite DB (`storage/mod.rs:143`) use
+- **S3 · `[x]` P2 (MED) — world-readable secrets at rest (Linux/macOS)** *(fixed
+  2026-06-17, SOL-SECRETS-EXTEND).** The dossier (`cli/export/dossier.rs`, written on
+  *every* `hse scan`) and the SQLite DB (`storage/mod.rs`) used
   `std::fs::write`/`Connection::open` with **no mode** → umask 0644; `~/.huntsman/`
-  is created with no 0700. They embed full PII + the raw API corpus (incl. harvested
-  third-party keys) — inconsistent with the 0600 on `.huntsman.env`/`key_pool.json`/
-  `raw/`. *Low on stock Termux* (Android sandbox), real on the Linux/macOS install
-  paths. → route dossier/export through `util::atomic_file::write` (0600),
-  `set_permissions(0o600)` the DB + `-wal`/`-shm`, `DirBuilder::mode(0o700)` the dir.
+  had no 0700. They embed full PII + the raw API corpus (incl. harvested third-party
+  keys). ✅ **Fixed:** added `util::atomic_file::{create_dir_private (0700),
+  set_private (0600)}`; the auto-dossier now writes via `atomic_file::write` (0600)
+  into a 0700 dir, `~/.huntsman` is created 0700 (`default_db_path`), and `Store::open`
+  `set_permissions(0o600)`s the DB + `-wal`/`-shm` (inline `std`, no `storage→util`
+  edge). Now consistent with the 0600 on `.huntsman.env`/`key_pool.json`/`raw/`.
+  Tests: `create_dir_private_is_0700_and_set_private_is_0600`,
+  `open_restricts_the_db_file_to_owner_only`. *Deliberate boundary:* an explicit
+  `hse export -o <path>` is left to the user's umask — they chose the destination
+  (often to share), so forcing 0600 there would surprise; the internal auto-written
+  files are the ones locked down.
 - **S4 · `[ ]` P3 (LOW) — key-in-URL (mostly mitigated, one residual).** ~7 modules
   put the key in the query string (`shodan`/`hunter_io`/`whoisxml`/`numverify`/
   `opencellid`/`opencorporates`/`mls`). Well-contained: no module logs the keyed URL,
@@ -1140,3 +1146,16 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   green: clippy `--all-targets`/fmt/doc clean, benches compile, 3,004 lib tests (+5),
   0 failures, AI-independence guard still passes (aho-corasick is pure matching).
   **Paired:** `SOLUTION_TREE` SOL-F1 substrate delivered + §4b refreshed — same commit.
+- **2026-06-17** — **Paired-tree cycle: fixed §7 S3 secrets-at-rest perms
+  (SOL-SECRETS-EXTEND).** Gap-analysis pick: the cleanest high-value *contained* item
+  (the universal-key-scanner SOL-F1 conversion needs a careful proptest-backed
+  effort — staged). The auto-dossier (every scan; PII + harvested keys) and the
+  SQLite DB were written with the umask (often 0644) — world-readable on a shared
+  Linux/macOS host. Added `util::atomic_file::{create_dir_private (0700), set_private
+  (0600)}`; routed the auto-dossier through `atomic_file::write` (0600) in a 0700
+  dir, created `~/.huntsman` 0700, and `set_permissions(0o600)`'d the DB + `-wal`/
+  `-shm` in `Store::open` (inline `std`, no `storage→util` edge). Now consistent with
+  the existing 0600 on env/key-pool/raw. Explicit `hse export -o <path>` deliberately
+  left to the user's umask (their chosen destination). Two perms tests. Gate green:
+  clippy/fmt/doc clean, 3,006 lib tests (+2), 0 failures. **Paired:** `SOLUTION_TREE`
+  SOL-SECRETS-EXTEND `[ ]`→`[x]` + §4a refreshed — same commit.

@@ -39,8 +39,13 @@ pub(crate) fn write_full_dossier(
 ) -> Result<std::path::PathBuf> {
     let body = super::renderers::render_full(store, sid)?;
     let dir = dossier_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| Error::Other(format!("create {dir:?}: {e}")))?;
+    // The auto-dossier embeds full PII + the raw API corpus (incl. any harvested
+    // third-party keys), so keep the tree owner-only: 0700 dir + 0600 atomic write
+    // (PROBLEM_TREE §7 S3), consistent with `.huntsman.env` / `key_pool.json`.
+    crate::util::atomic_file::create_dir_private(&dir)
+        .map_err(|e| Error::Other(format!("create {dir:?}: {e}")))?;
     let path = dir.join(format!("{sid}.txt"));
-    std::fs::write(&path, &body).map_err(|e| Error::Other(format!("write {path:?}: {e}")))?;
+    crate::util::atomic_file::write(&path, body.as_bytes())
+        .map_err(|e| Error::Other(format!("write {path:?}: {e}")))?;
     Ok(path)
 }

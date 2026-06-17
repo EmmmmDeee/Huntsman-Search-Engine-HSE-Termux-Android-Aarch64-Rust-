@@ -198,6 +198,24 @@ impl Store {
             tracing::debug!(error = %e, "PRAGMA optimize failed (non-fatal)");
         }
 
+        // Restrict the store to owner-only (0600): it holds PII + harvested
+        // third-party keys, but SQLite creates the db / `-wal` / `-shm` with the
+        // process umask (often 0644). Best-effort, unix-only — and inline `std`
+        // (no `storage → util` edge) (PROBLEM_TREE §7 S3). The `-wal`/`-shm` exist
+        // by now (WAL mode + the schema write above created them).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let owner_only = std::fs::Permissions::from_mode(0o600);
+            for p in [
+                path.to_string(),
+                format!("{path}-wal"),
+                format!("{path}-shm"),
+            ] {
+                let _ = std::fs::set_permissions(&p, owner_only.clone());
+            }
+        }
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
