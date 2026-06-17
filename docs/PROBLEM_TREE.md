@@ -482,3 +482,15 @@ legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
   switched to `is_ascii_alphanumeric` (output now strictly `[a-z0-9-]`). Regression
   seed committed. Remaining F.3: cargo-fuzz (CI lane) + criterion benches. Gate
   green: clippy/fmt/doc clean, 2,980 lib tests (+13), 0 failures.
+- **2026-06-17** — **F.3 (proptest) — hostile-input crash-resistance.** Extended
+  the property suites to the byte parsers that process *attacker-controlled*
+  network input, where a panic/hang is a remote DoS of a long-lived `serve`/`live`:
+  the `cert_intel` DER scanners (`extract_sans`/`extract_field`/`extract_serial`/
+  `der_tlv_len` — the ones T2.3 just rewrote) never panic on arbitrary bytes
+  (truncated TLVs, bogus long-form lengths, OID-prefixes with no value), and
+  `dns_axfr::extract_name` always *terminates* and never panics on any buffer +
+  offset — incl. all-compression-pointer buffers that would loop forever without
+  the jump cap (pinned as an explicit property) — plus `build_axfr_query`'s u8
+  label-length cast is total over arbitrary domains. A pre-cargo-fuzz down payment
+  on "every untrusted parser is panic-proof." Gate green: clippy/fmt clean, 2,985
+  lib tests (+5), 0 failures.

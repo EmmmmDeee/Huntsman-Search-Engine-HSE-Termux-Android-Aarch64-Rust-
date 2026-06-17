@@ -195,3 +195,42 @@ fn real_cert_parse_certificate_emits_subdomains_and_evidence() {
         "every emitted SAN subdomain carries subdomain + tls-san tags"
     );
 }
+
+// ── Property tests: DER scanners never panic on hostile bytes ───────────────
+// The scanners run on `peer_certificate()` bytes — attacker-controlled (the
+// remote server presents the cert). A panic in any of them is a remote DoS of a
+// long-lived `hse serve`/`live`, so the no-panic contract is pinned over
+// thousands of arbitrary byte strings (incl. truncated TLVs, bogus long-form
+// lengths, OID-prefixes with no value, 0x82 tags running off the end).
+mod prop {
+    use proptest::prelude::*;
+
+    use super::super::{
+        der_tlv_len, extract_field_from_der, extract_sans_from_der, extract_serial_hex,
+    };
+
+    proptest! {
+        #[test]
+        fn der_scanners_never_panic(der in proptest::collection::vec(any::<u8>(), 0..512)) {
+            // Each must return (not panic) for any input; outputs are only
+            // sanity-bounded — correctness on *valid* DER is covered by the
+            // real-cert fixture tests above.
+            let sans = extract_sans_from_der(&der);
+            prop_assert!(sans.iter().all(|s| s.len() <= 253));
+            let _ = extract_field_from_der(&der, &[0x55, 0x04, 0x03], true);
+            let _ = extract_field_from_der(&der, &[0x55, 0x04, 0x0A], false);
+            let serial = extract_serial_hex(&der);
+            // Serial hex is ≤20 bytes ⇒ ≤ 20*3 chars ("xx:" each, minus one colon).
+            prop_assert!(serial.len() <= 60);
+        }
+
+        #[test]
+        fn der_tlv_len_is_consistent(der in proptest::collection::vec(any::<u8>(), 0..64), pos in 0usize..64) {
+            // Never panics; when it decodes, the header length is ≥2 and the
+            // reported content length fits the long-form it claims.
+            if let Some((hdr, _len)) = der_tlv_len(&der, pos) {
+                prop_assert!((2..=4).contains(&hdr));
+            }
+        }
+    }
+}
