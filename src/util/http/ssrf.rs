@@ -148,6 +148,12 @@ pub(super) fn client_builder() -> reqwest::ClientBuilder {
             }
         }))
         .connect_timeout(CONNECT_TIMEOUT)
+        // Per-read inactivity backstop (NOT a total timeout — streaming bodies
+        // are deliberately unbounded): a server that connects then stalls
+        // mid-response can no longer hang an `await` forever. Generous (30 s) so
+        // it never cuts a slow-but-progressing stream; complements the explicit
+        // per-call `tokio::time::timeout`s on the budgeted fetch paths.
+        .read_timeout(Duration::from_secs(30))
         .pool_max_idle_per_host(5)
         .pool_idle_timeout(Duration::from_secs(90))
         .tcp_keepalive(Duration::from_secs(15))

@@ -258,7 +258,9 @@ fn build_axfr_query(domain: &str) -> Vec<u8> {
     pkt.extend_from_slice(&[0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
     // QNAME
     for label in domain.split('.') {
-        pkt.push(label.len() as u8);
+        // DNS labels are ≤63 bytes by spec (target is validated upstream); cap
+        // the length prefix so an over-long label can never wrap the `u8`.
+        pkt.push(label.len().min(255) as u8);
         pkt.extend_from_slice(label.as_bytes());
     }
     pkt.push(0); // root label

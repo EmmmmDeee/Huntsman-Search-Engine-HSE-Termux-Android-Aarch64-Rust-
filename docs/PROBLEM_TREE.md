@@ -180,7 +180,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
 
 ### 3.2 — Tier 2 · P2 robustness & quality
 
-- **`[ ]` T2.1 · HTTP timeouts** — `util/http/client.rs:11` sets no client-level
+- **`[x]` T2.1 · HTTP timeouts** — `util/http/client.rs:11` sets no client-level
   total timeout; ~8 of ~32 `send().await` sites are unwrapped (`web_crawler`
   `fetch_robots:251`, `resolve_seed:232`, …) → a post-connect stall hangs forever.
   → **Solution:** set a default `.timeout(...)` on the shared client (belt-and-
@@ -335,3 +335,10 @@ legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
   the rule and asserts it produces one correlation with the expected rule_id +
   severity. A silently-dead rule now fails CI. Gate green: 2,962 lib tests
   (+12), clippy/fmt clean, 0 failures.
+- **2026-06-17** — **Executed T2.1** (and finished T0.3's two remaining casts).
+  Added a global `read_timeout(30s)` to the shared reqwest client_builder — a
+  per-read *inactivity* backstop (not a total timeout, so streaming stays
+  unbounded) that stops a connect-then-stall server hanging any `await` forever,
+  covering all fetch sites at once. Hardened the reddit `created_utc` and
+  dns_axfr label-length casts against malformed input. Gate green: clippy/fmt
+  clean, 2,962 lib tests, 0 failures.

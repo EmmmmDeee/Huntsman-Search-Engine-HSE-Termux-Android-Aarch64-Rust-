@@ -161,7 +161,9 @@ pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
         ("comment_karma", data.comment_karma.map(|k| k.to_string())),
         (
             "created_unix",
-            data.created_utc.map(|c| (c as u64).to_string()),
+            // Display-only epoch from untrusted JSON: clamp negative/NaN to 0
+            // (an `f64 as u64` already saturates, but be explicit) before cast.
+            data.created_utc.map(|c| (c.max(0.0) as u64).to_string()),
         ),
         ("is_gold", data.is_gold.map(|g| g.to_string())),
         ("verified", data.verified.map(|v| v.to_string())),
