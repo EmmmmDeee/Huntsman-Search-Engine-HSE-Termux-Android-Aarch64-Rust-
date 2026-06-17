@@ -8,7 +8,8 @@ use crate::util::oathnet;
 use crate::util::oathnet::{FIELD_DOMAIN, FIELD_EMAIL, FIELD_USERNAME};
 
 use super::helpers::{
-    FREEMAIL, ROLE_LOCALPARTS, handle_permutations, is_freemail, name_tokens, phone_formats,
+    ROLE_LOCALPARTS, SYNTH_EMAIL_PROVIDERS, handle_permutations, is_freemail, name_tokens,
+    phone_formats,
 };
 use super::types::{BatchOptions, BatchQuery, Origin, Surface};
 
@@ -82,7 +83,7 @@ fn gen_username(out: &mut Vec<BatchQuery>, opts: &BatchOptions, native: &'static
         }
     }
     if opts.synthesize_emails {
-        for d in FREEMAIL {
+        for d in SYNTH_EMAIL_PROVIDERS {
             add(
                 out,
                 opts,
@@ -106,7 +107,7 @@ fn gen_name(out: &mut Vec<BatchQuery>, opts: &BatchOptions, native: &'static str
     }
     if opts.synthesize_emails {
         for h in &handles {
-            for d in FREEMAIL {
+            for d in SYNTH_EMAIL_PROVIDERS {
                 add(
                     out,
                     opts,

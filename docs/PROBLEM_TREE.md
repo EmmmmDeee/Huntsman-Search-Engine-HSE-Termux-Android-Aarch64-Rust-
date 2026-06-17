@@ -155,7 +155,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
   API-key scanner, HTML marker extraction, placeholder/denylist matching. All
   untrusted-byte scanning routes through it. Benchmark scan MB/s with `criterion`.
   **P1-enabler**
-- **`[ ]` F.2 · `fst`-backed datasets (phone-first + de-duplication)** — many
+- **`[~]` F.2 · `fst`-backed datasets (phone-first + de-duplication)** — many
   static tables are hand-coded `&[&str]`/`match` arms, several **duplicated**
   (freemail in `util/oathnet_batch` vs `util/domains`; `country_name` in
   `phone_area_geo` vs `util/geohash`; OUI; AU postcode/suburb; division→state;
@@ -165,7 +165,12 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
   one canonical `util::dataset` API. Result: **one** authoritative copy of each
   table (kills the B5.3 drift), **flat RAM** (memory-mapped FST — critical on a
   phone), O(key) lookups, and trivial fuzzy/prefix queries (Levenshtein automata)
-  for free → directly powers typosquat/username-variant/suburb-matching. **P1-enabler**
+  for free → directly powers typosquat/username-variant/suburb-matching.
+  **P1-enabler** ◑ **De-dup goal met** (see T2.6): the drift-prone *shared* lists
+  (freemail, country_name) are now single-sourced via delegation — `fst` is not
+  needed for these (≈30–250 entries; memory-mapping buys nothing at that size).
+  *Remaining (pure optimisation, not correctness):* the genuinely **large** tables
+  (OUI ≈30k, AU postcode/suburb) → `fst` for flat-RAM + Levenshtein fuzzy matching.
 - **`[~]` F.3 · Proof & measurement infrastructure** — was: no property testing,
   no fuzzing, only `#[ignore]` perf baselines.
   → **Solution:** add (dev-only, zero runtime cost): **`proptest`** suites for
@@ -229,11 +234,21 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
   (mutable `entity_map`/`stats`/`dispatched`) thread the 5 dispatch fns; the
   6th (`run_expansion`) takes an `ExpansionState` by value + destructures, so its
   400-line body is byte-identical. All 6 allows removed.
-- **`[~]` T2.6 · De-duplicate helpers** — `is_freemail`/`FREEMAIL`, `nonempty`,
+- **`[x]` T2.6 · De-duplicate helpers** — `is_freemail`/`FREEMAIL`, `nonempty`,
   `country_name`, dead `util::stats::mode`/`mode_or` (wigle reimplements it),
   inconsistent `KEY_ENV` (7 modules inline the literal).
   → **Solution:** route all callers to canonical `util` (datasets via F.2);
-  delete dead copies; standardise `KEY_ENV` as a per-module const. **P2/P3**
+  delete dead copies; standardise `KEY_ENV` as a per-module const. **P2/P3** ✅ All
+  genuine drift-prone duplicates resolved: dead `util::stats` deleted; `nonempty`
+  delegated; `country_name` already delegated (`phone_area_geo` → canonical ISO
+  table); and the last real one — `is_freemail` — now delegates to the
+  authoritative ~60-entry `util::domains` list. Crucially this was **not** a blind
+  merge: `oathnet_batch`'s 7-entry copy served a *second* purpose (the curated
+  set to synthesise `{handle}@{provider}` emails — 60 would 8× the query
+  fan-out), so the *predicate* was delegated while the *synthesis* set was kept
+  and renamed `SYNTH_EMAIL_PROVIDERS`. `KEY_ENV` left as-is: each literal is
+  module-local and cannot drift against another module, so it's a cosmetic style
+  nit, not a duplication/drift risk.
 - **`[ ]` T2.7 · Scraper resilience** — `au_people`, `au_electoral`, `au_property`,
   `search_engines` (17 SERPs), `username_search` (300+ sites) parse churning HTML;
   some endpoints speculative → high silent-breakage.
@@ -494,3 +509,17 @@ legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
   label-length cast is total over arbitrary domains. A pre-cargo-fuzz down payment
   on "every untrusted parser is panic-proof." Gate green: clippy/fmt clean, 2,985
   lib tests (+5), 0 failures.
+- **2026-06-17** — **Closed T2.6** (and F.2's de-dup goal). The last genuine
+  drift-prone duplicate, `oathnet_batch`'s 7-entry `FREEMAIL`, is resolved — but
+  *not* by a blind merge, which is why T2.6 had been parked. That copy served two
+  roles: the `is_freemail` **predicate** AND the iteration set used to synthesise
+  `{handle}@{provider}` candidate emails. Detection wants breadth (so the
+  predicate now delegates to the authoritative ~60-entry `util::domains` list —
+  AU ISPs / webmail like `bigpond.com`, `live.com` are now correctly skipped as
+  domain searches), while synthesis wants a tight head of the distribution (60
+  providers would 8× the per-handle breach-query fan-out), so that set is kept and
+  renamed `SYNTH_EMAIL_PROVIDERS` with a doc spelling out the split. `country_name`
+  was already delegated; `util::stats` already deleted; `nonempty` already
+  delegated. `KEY_ENV` left (module-local literals can't drift — cosmetic only).
+  F.2's `fst` layer remains as a pure optimisation for the *large* tables. Gate
+  green: clippy/fmt/doc clean, 2,986 lib tests (+1 regression guard), 0 failures.

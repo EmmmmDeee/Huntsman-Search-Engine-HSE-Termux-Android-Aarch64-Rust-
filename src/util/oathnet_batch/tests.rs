@@ -47,6 +47,22 @@ fn freemail_domain_is_not_searched_as_a_domain() {
 }
 
 #[test]
+fn freemail_detection_uses_the_broad_canonical_list() {
+    // Regression guard for the de-duplication: `is_freemail` now delegates to the
+    // ~60-entry `util::domains` list, so a provider that is NOT in the small
+    // synthesis set (live.com, an AU ISP like bigpond.com) is still recognised as
+    // freemail and therefore not searched as a company domain. Under the old
+    // 7-entry copy these leaked through as `domain` queries.
+    for seed in ["bob@live.com", "alice@bigpond.com", "x@googlemail.com"] {
+        let qs = generate(TargetKind::Email, seed, &BatchOptions::default());
+        assert!(
+            !qs.iter().any(|q| q.field == "domain"),
+            "{seed}: broad freemail list must keep the provider out of domain search"
+        );
+    }
+}
+
+#[test]
 fn name_seed_generates_q_plus_handles() {
     let qs = generate(TargetKind::FullName, "John Doe", &BatchOptions::default());
     // Free-text name search is breach-only.

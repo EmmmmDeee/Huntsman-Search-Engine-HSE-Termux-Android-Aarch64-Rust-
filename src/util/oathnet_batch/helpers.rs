@@ -5,10 +5,14 @@ use std::collections::HashSet;
 
 use super::types::Origin;
 
-/// Common free email providers — used both to synthesise candidate emails and
-/// to SKIP as `domain` searches (querying e.g. `gmail.com` as a domain returns
-/// the entire provider corpus, which is noise, not signal).
-pub(super) const FREEMAIL: &[&str] = &[
+/// The handful of providers to **synthesise candidate emails against** when
+/// `synthesize_emails` is set (`{handle}@{provider}`). Deliberately a SMALL
+/// curated set, NOT the full freemail list (`util::domains::FREEMAIL`, ~60): each
+/// provider multiplies the breach-query fan-out per handle, so this is the
+/// high-yield head of the distribution, kept tight to bound the query budget.
+/// Detection ("is this a freemail domain?") is a separate concern — see
+/// [`is_freemail`], which delegates to the comprehensive canonical list.
+pub(super) const SYNTH_EMAIL_PROVIDERS: &[&str] = &[
     "gmail.com",
     "yahoo.com",
     "hotmail.com",
@@ -21,9 +25,14 @@ pub(super) const FREEMAIL: &[&str] = &[
 /// Role local-parts crossed with a seed domain when `synthesize_emails` is set.
 pub(super) const ROLE_LOCALPARTS: &[&str] = &["admin", "info", "contact", "support", "sales"];
 
+/// True if `domain` is a consumer mailbox provider that must be SKIPPED as a
+/// `domain` search (querying e.g. `gmail.com` as a domain returns the whole
+/// provider corpus — noise, not signal). Delegates to the single authoritative
+/// list in [`crate::util::domains::is_freemail`] (≈60 providers, incl. AU ISPs
+/// and webmail) rather than re-curating a second copy here — detection wants
+/// breadth, so the narrow synthesis set above would silently miss most providers.
 pub(super) fn is_freemail(domain: &str) -> bool {
-    let d = domain.trim().to_ascii_lowercase();
-    FREEMAIL.contains(&d.as_str())
+    crate::util::domains::is_freemail(&domain.trim().to_ascii_lowercase())
 }
 
 /// First character of a non-empty token (used for initials).
