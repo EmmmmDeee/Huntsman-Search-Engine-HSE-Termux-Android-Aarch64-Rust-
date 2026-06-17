@@ -120,7 +120,7 @@ direct.**
   `proptest` that permuting input entity/session order yields **byte-identical**
   render. Extend to a general "renderers are permutation-invariant" property over
   CSV/JSON/GEXF/dossier. **P1**
-- **`[~]` T1.2 · Throughput (the on-device perf guarantee)** —
+- **`[x]` T1.2 · Throughput (the on-device perf guarantee)** —
   `core/engine/mod.rs:154` runs blocking rusqlite `insert_event` **per entity**
   from async + spawned dispatch tasks; `api/scan_handlers` (8 sites) +
   `api/scan_export` (4) call sync `Store` on async workers with no
@@ -152,9 +152,16 @@ direct.**
   blocking rusqlite call off the async reactor thread. Requires multi-thread
   runtime (production: 2-worker `new_multi_thread`); `tests/halting.rs` (3 tests)
   + `tests/smoke.rs` (42 async tests) upgraded from default `current_thread` to
-  `multi_thread, 2` flavor to match production and avoid a panic. Remaining: the
-  DB-writer actor (batched inserts behind a bounded `mpsc` — the planned long-term
-  home for the write path).
+  `multi_thread, 2` flavor to match production and avoid a panic.
+  ✅ **Cycle 10 (2026-06-17): DB-writer actor — T1.2 fully closed.**
+  `block_in_place` per entity replaced by a dedicated `DbWriter` actor
+  (`core/engine/writer.rs`): an unbounded-mpsc-backed tokio task that drains the
+  queue in `spawn_blocking` chunks (up to 64 events per call), so `EventEmitter::emit`
+  is fully non-blocking. `ScanEngine::new` spawns the actor; `run_with_ledger_inner`
+  calls `writer.flush().await` after the last `ScanComplete` emit so the caller
+  always sees a complete event log. The one sync test that created a `ScanEngine`
+  (`recall_resolves_a_fullname_seed_despite_reformatting`) is now
+  `#[tokio::test] async fn` (it already used Tokio broadcast). T1.2 `[~]`→`[x]`.
 - **`[x]` T1.3 · Verified correctness — all dispatched rules have firing fixtures** —
   AU-019, 020, 022, 023, 024, 025, 026, 028, 029, 040, 041, 042 had per-rule firing
   assertions added (2026-06-17). AU-021 and AU-030 lacked direct firing tests
@@ -1432,3 +1439,22 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy/doc clean, 3,031 lib + 67 arch + 54 smoke + 3 halting + 23 cli
   + 6 cli-seed + 2 audit-regression tests, 0 failures. **Paired:** `SOLUTION_TREE`
   SOL-STREAMING + C8 + §4 + §5 refreshed — same commit.
+- **2026-06-17** — **Cycle 10 (P→S): DB-writer actor — T1.2 fully closed
+  (SOL-BLOCKING `[~]`→`[x]`).** P→S gap-analysis pick: §4b named SOL-BLOCKING
+  (DB-writer actor) as T1.2's final tail — the only remaining P1 core guarantee not
+  fully closed. Implemented `core::engine::writer::DbWriter`: unbounded-mpsc actor
+  (`WriteCmd::Event(Box<Event>) | Flush(oneshot::Sender<()>)`); `writer_loop` tokio
+  task drains the queue in `spawn_blocking` batches (greedily pulls up to 64 events
+  per `spawn_blocking` call — fewer context switches than N separate `block_in_place`
+  calls); `flush().await` sends a `Flush` barrier and waits for the oneshot ack, so
+  all events submitted before the barrier are durably written when the future resolves.
+  `EventEmitter` replaces `Arc<StoragePort>` + `block_in_place` with `DbWriter`
+  (non-blocking `submit`). `ScanEngine::new` spawns the actor and keeps a clone for
+  `flush`; `run_with_ledger_inner` calls `writer.flush().await` after `finalise_scan`
+  returns — the barrier sits between the last `emit` and the caller seeing the
+  completed scan. One test upgraded `#[test] fn` → `#[tokio::test] async fn`
+  (`recall_resolves_a_fullname_seed_despite_reformatting`) since `ScanEngine::new`
+  now requires an active runtime. **Paired:** `SOLUTION_TREE` SOL-BLOCKING `[~]`→`[x]`
+  + §4b + §4d + §5 refreshed — same commit. Gate green: fmt/clippy/doc clean,
+  3,032 lib + 24 arch + 67 api + 54 smoke + 3 halting + 23 cli + 6 cli-seed +
+  2 audit-regression tests, 0 failures.

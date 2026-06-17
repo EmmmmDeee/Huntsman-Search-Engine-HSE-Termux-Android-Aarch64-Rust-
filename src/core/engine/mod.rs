@@ -35,8 +35,10 @@ mod expansion;
 mod ledger;
 mod passes;
 mod timeout;
+mod writer;
 pub use ledger::DispatchLog;
 use passes::{consolidate_address_localities, hot_inject_keys};
+use writer::DbWriter;
 // The per-target dispatch context (`DispatchCx`) and the mutable accumulator
 // bundle (`DispatchState`) are constructed here — at the seed-round and
 // expansion call sites — and threaded into the loops that live in `dispatch`.
@@ -78,6 +80,9 @@ pub struct ScanEngine {
     /// the O(M) `accepts()` scan and so the expansion ranker can pull
     /// the richness factor in constant time.
     graph: Arc<ModuleGraph>,
+    /// Handle to the DB-writer actor; used to flush pending events at scan
+    /// completion before returning the finished scan to the caller.
+    writer: DbWriter,
 }
 
 /// Reason an expansion round stopped before depth was exhausted.
@@ -136,33 +141,28 @@ impl StopReason {
     }
 }
 
-/// Cheaply-cloneable event emitter. Persist-first, then broadcast.
-/// Spawned tasks clone this instead of cloning store + bus separately.
+/// Cheaply-cloneable event emitter. Enqueues to the DB-writer actor, then
+/// broadcasts on the in-process SSE bus. Spawned tasks clone this instead of
+/// re-cloning store + bus separately.
 #[derive(Clone)]
 struct EventEmitter {
-    store: Arc<dyn StoragePort>,
+    writer: DbWriter,
     bus: EventBus,
 }
 
 impl EventEmitter {
-    fn new(store: Arc<dyn StoragePort>, bus: EventBus) -> Self {
-        Self { store, bus }
+    fn new(writer: DbWriter, bus: EventBus) -> Self {
+        Self { writer, bus }
     }
 
     fn emit(&self, scan_id: &str, kind: EventKind) {
         let event = Event::new(scan_id, kind);
-        let store = Arc::clone(&self.store);
-        if let Err(e) = tokio::task::block_in_place(|| store.insert_event(&event)) {
-            warn!(scan_id = %event.scan_id, error = %e, "failed to persist event to store");
-        }
+        // Non-blocking enqueue to the DB-writer actor; persisted asynchronously.
+        self.writer.submit(event.clone());
         // Best-effort live fan-out to SSE subscribers. `broadcast::send` errors
         // ONLY when there are zero active receivers — the normal case for a CLI
-        // scan with no `/events` client attached. The event is already durably
-        // persisted above (and the CLI/report reads from the store, not the
-        // bus), so a missing subscriber is a no-op, NOT a condition worth
-        // logging: at the default TRACE verbosity a per-event log here floods
-        // the terminal with one line per entity — hundreds on a breach-heavy
-        // scan — burying the real output. Drop silently.
+        // scan with no `/events` client attached. Drop silently (see previous
+        // rationale: per-event logging floods the terminal on breach-heavy scans).
         let _ = self.bus.send(event);
     }
 }
@@ -174,7 +174,8 @@ impl ScanEngine {
         bus: EventBus,
     ) -> Self {
         modules.sort_by_key(|m| std::cmp::Reverse(m.priority()));
-        let emitter = EventEmitter::new(Arc::clone(&store), bus.clone());
+        let writer = DbWriter::spawn(Arc::clone(&store));
+        let emitter = EventEmitter::new(writer.clone(), bus.clone());
         let graph = Arc::new(ModuleGraph::build(&modules));
         Self {
             modules,
@@ -182,6 +183,7 @@ impl ScanEngine {
             bus,
             emitter,
             graph,
+            writer,
         }
     }
 
@@ -463,7 +465,11 @@ impl ScanEngine {
             handle.abort();
         }
 
-        self.finalise_scan(&mut scan, entity_map, &ctx, stats, lineage, emitted_corr)
+        let outcome = self.finalise_scan(&mut scan, entity_map, &ctx, stats, lineage, emitted_corr);
+        // Drain the DB-writer actor so the ScanComplete event (and all events
+        // before it) are persisted before we hand the scan back to the caller.
+        self.writer.flush().await;
+        outcome
     }
 
     /// Persist entities, run the correlator, and mark the scan terminal.

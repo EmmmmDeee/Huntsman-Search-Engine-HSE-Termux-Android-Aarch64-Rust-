@@ -142,6 +142,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the README/MODULES counts, and AI-independence. *Closes:* **T1.4**. *Shaped*
   SOL-ISOLATE: the guard's documented-leaf allowlist is exactly how the engine got
   to scope the `util::found_keys` task-local (`with_scan`) without a layering breach. ✅
+- **`[x]` SOL-RULE-METAGUARD · Correlation rule firing coverage** — direct firing
+  tests for every dispatched correlation rule (`AU-021` one `ApiKey` entity → 1
+  `Critical` finding; `AU-030` two `Coordinates` entities with 3 distinct sources →
+  1 `Medium` finding — the only two of 56 rules without a prior direct assertion) +
+  `every_dispatched_correlation_rule_has_a_firing_test` in `tests/architecture.rs`
+  (enumerates all `rule_au_*` entries in `RULES` + `RELATION_RULES`; accepts either a
+  direct `fn`-name + non-zero `len()` assert within ±15 lines, or an indirect
+  `"AU-NNN"` reference on a line with `assert`/`unwrap`/`expect`/`contains(`).
+  *Closes:* **T1.3** (all 56 dispatched rules proven to fire on their nominal input;
+  guard rejects any future unmapped rule at CI time). ✅ delivered (cycle 8).
 - **`[x]` SOL-OUTPUT-ESCAPE · Context-correct output encoding** — `esc()`/`attr()`
   (HTML), `extLink()` (href + scheme gate), CSV formula-defang; the SPA renders
   attacker values via `data-` attributes read with `this.dataset`, never a JS-string
@@ -149,10 +159,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### S.RESOURCE — Concurrency, throughput & resource safety
 
-- **`[~]` SOL-BLOCKING · Keep the 2-worker reactor unblocked** — `spawn_blocking`
-  the heavy sync `Store`/render handlers; (planned) a single **DB-writer actor**
-  owning the `Connection` behind a bounded `mpsc`. *Closes:* **T2.2** (done, incl.
-  the debug-bundle `curl`), **T1.2** (API-read part done). *+SOL-BLOCKING-EXTEND
+- **`[x]` SOL-BLOCKING · Keep the 2-worker reactor unblocked** — `spawn_blocking`
+  the heavy sync `Store`/render handlers; a dedicated **DB-writer actor**
+  (`core/engine/writer::DbWriter`) owning the `insert_event` call path behind an
+  unbounded `mpsc`. *Closes:* **T2.2** (done, incl. the debug-bundle `curl`),
+  **T1.2** (fully closed — all write paths off the reactor). *+SOL-BLOCKING-EXTEND
   (2026-06-17):* `scan_import` now acquires `scan_semaphore` before parsing (mirrors
   `spawn_scan` throttle) and dispatches all sync DB work (`upsert_scan`,
   `upsert_entities_batch`, `derive_all`, `Correlator::run`) to `spawn_blocking`;
@@ -162,9 +173,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `tokio::task::block_in_place` — the per-entity blocking rusqlite write now leaves
   the async reactor. `tests/halting.rs` + `tests/smoke.rs` (45 async tests total)
   upgraded from `current_thread` to `(flavor = "multi_thread", worker_threads = 2)`
-  to match production and avoid the `block_in_place`-on-single-thread panic. *Gap:*
-  only the full DB-writer actor (batched inserts, `mpsc`-fed `Connection` owner)
-  remains. **(§4b)**
+  to match production and avoid the `block_in_place`-on-single-thread panic.
+  *+SOL-BLOCKING-ACTOR (2026-06-17, cycle 10):* `block_in_place` per entity replaced
+  by `core::engine::writer::DbWriter` — an unbounded-mpsc tokio task draining the
+  queue in `spawn_blocking` batches (≤64 events per call); `EventEmitter::emit`
+  becomes a non-blocking `submit`; `run_with_ledger_inner` calls
+  `writer.flush().await` after `finalise_scan` so all events (including ScanComplete)
+  are durably written before the scan is returned. T1.2 `[~]`→`[x]`. ✅ fully closed.
 - **`[~]` SOL-BUDGET · Atomic quota reservation** — `QuotaBudget::try_increment`
   (CAS, saturating session rollback) replaces every racy `remaining()`-then-
   `increment()`. *Closes:* **T2.11** (oathnet — done; mirrors see_know). *Gap:* the
@@ -322,7 +337,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-PANIC | E3.1 / SPOF #2 | `[x]` |
 | SOL-ARCH | T1.4 | `[x]` |
 | SOL-OUTPUT-ESCAPE | §7 SPA XSS | `[x]` |
-| SOL-BLOCKING | T2.2 · T1.2 (partial) | `[~]` |
+| SOL-BLOCKING | T2.2 · T1.2 (all write paths) | `[x]` |
 | SOL-BUDGET | T2.11 oathnet | `[~]` |
 | SOL-CAP | T2.1 · T2.8 (all sub-items) | `[x]` |
 | SOL-ISOLATE | T2.11 found_keys | `[x]` |
@@ -371,9 +386,6 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **SOL-F2** — de-dup done; `fst` for the large tables outstanding.
 - **SOL-F3** — proptest (str/entity/geo/html/cert/dns + import parsers) + criterion
   landed; only `cargo-fuzz` (nightly CI lane) left.
-- **SOL-BLOCKING** — API reads + `scan_import` + `stats` + engine `insert_event` all
-  done; only the full DB-writer actor (batched inserts, `mpsc`-fed `Connection` owner)
-  remains as T1.2's final tail.
 - **SOL-CAP** — ✅ fully closed (`[x]`). All T2.8 sub-items done (2 HIGH + MED
   network reads + hibp cast + CLI-import file cap). Removed from finish queue.
 - **SOL-BUDGET** — oathnet done; the per-scan budget statics' `reset_scan`-zeroing
@@ -387,9 +399,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### 4d · Coverage snapshot (problem tier × solution status)
 - **T0 (crashes):** fully solved (SOL-BOUNDARY + SOL-F3 guard). ✔
-- **T1 (core guarantees):** T1.1/T1.3/T1.4 solved; T1.2 further advanced —
-  `scan_import` + `stats` (`spawn_blocking`) + engine `insert_event`
-  (`block_in_place`) all done (SOL-BLOCKING); only the DB-writer actor remains.
+- **T1 (core guarantees):** T1.1/T1.2/T1.3/T1.4 all solved (SOL-BLOCKING `[~]`→`[x]`
+  — DB-writer actor closes the final reactor-blocking tail). ✔
 - **§3.F (foundations):** all three `[~]` — the largest unrealised leverage block.
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.12 fully closed** ✅ (7 items fixed: 2 MED + 2 LOW-MED + diff exit-code +
@@ -661,3 +672,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (13.5s needed vs 30s; no change to the 30s constant). SOL-STREAMING description and
   C8 problem node updated to reflect 42-site scope. Gate green: fmt/clippy/doc clean,
   3,027 lib + 67 arch tests, 0 failures.
+- **2026-06-17** — **Cycle 10 (P→S): SOL-BLOCKING DB-writer actor — T1.2 fully closed
+  (`[~]`→`[x]`).** `block_in_place` per entity in `EventEmitter::emit` replaced by
+  `core::engine::writer::DbWriter` — a new `tokio::spawn`'d actor owning the
+  `insert_event` call path behind an unbounded `mpsc`. Two command variants:
+  `WriteCmd::Event(Box<Event>)` (boxed to satisfy `clippy::large_enum_variant` —
+  `Event` is 224 B vs `Flush` 8 B) and `WriteCmd::Flush(oneshot::Sender<()>)`. The
+  actor drains the channel in `spawn_blocking` batches (greedily pulls ≤64 events per
+  call — one OS-thread transition per burst vs one per entity). `EventEmitter::emit`
+  becomes a non-blocking `submit`; `run_with_ledger_inner` calls
+  `writer.flush().await` after `finalise_scan` returns — FIFO channel guarantee ensures
+  all events emitted before the flush (including `ScanComplete`) are durably written
+  before the scan is returned. `finalise_scan` is `fn` (sync), so the barrier goes in
+  its `async fn` caller. `DbWriter` is `Clone` (unbounded-sender clones point to the
+  same actor task) so both `ScanEngine` and `EventEmitter` share the actor without an
+  extra `Arc`. `recall_resolves_a_fullname_seed_despite_reformatting` upgraded from
+  `#[test] fn` → `#[tokio::test] async fn` (body unchanged — sync — but `ScanEngine::
+  new` now calls `tokio::spawn` internally, requiring a live Tokio runtime). **S→P
+  gap-refresh:** §2 SOL-RULE-METAGUARD node added to S.CORE (was in leverage map only
+  since cycle 8 — doc gap); §3 SOL-BLOCKING row `[~]`→`[x]`, "T1.2 (all write paths)";
+  §4b SOL-BLOCKING removed from finish queue; §4d T1 row updated to "T1.1/T1.2/T1.3/
+  T1.4 all solved". Paired: `PROBLEM_TREE` T1.2 `[~]`→`[x]` + cycle 10 note + §8 —
+  same commit; gate green, 3,032 lib + 24 arch + 67 api + 54 smoke + 3 halting + 23
+  cli + 6 cli-seed + 2 audit-regression tests, 0 failures.

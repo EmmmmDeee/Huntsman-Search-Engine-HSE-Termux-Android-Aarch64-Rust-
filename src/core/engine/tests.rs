@@ -1182,8 +1182,8 @@ async fn recall_prior_entities_pulls_and_tags_prior_scan_findings() {
 /// has to rescue case, comma order, and a trailing year. Run against a REAL
 /// SQLite store because the fallback depends on FTS token matching, which the
 /// in-memory test double's substring search can't model.
-#[test]
-fn recall_resolves_a_fullname_seed_despite_reformatting() {
+#[tokio::test]
+async fn recall_resolves_a_fullname_seed_despite_reformatting() {
     use crate::core::entity::{Entity, EntityKind, Evidence};
     use crate::storage::Store;
 
