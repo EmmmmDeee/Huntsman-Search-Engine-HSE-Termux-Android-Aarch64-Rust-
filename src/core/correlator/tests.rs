@@ -3714,3 +3714,145 @@ mod all_eleven_classes {
         );
     }
 }
+
+// ── T1.3: firing assertions for the 12 previously-unasserted rules ────────────
+// (PROBLEM_TREE §3.1 T1.3 — these rules were dispatched but no test proved they
+// actually produce a correlation; a silently-dead rule would pass CI.)
+
+#[test]
+fn au019_fires_for_three_breach_dates_within_30_days() {
+    let mk = |v: &str, d: &str| {
+        let mut e = Entity::new(EntityKind::Email, v, 0.8, "s");
+        e.tag("breach");
+        e.add_evidence(Evidence::new("hibp", "b").with_attr("breach_date", d));
+        e
+    };
+    let ents = vec![
+        mk("a@x.com", "2024-01-01"),
+        mk("b@x.com", "2024-01-10"),
+        mk("c@x.com", "2024-01-20"),
+    ];
+    let r = rule_au_019_temporal_breach_cluster(&ents, "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-019");
+    assert_eq!(r[0].severity, Severity::High);
+    assert_eq!(r[0].entity_uids.len(), 3);
+}
+
+#[test]
+fn au020_fires_for_two_person_entities() {
+    let ents = vec![
+        Entity::new(EntityKind::Person, "Jane Doe", 0.6, "s"),
+        Entity::new(EntityKind::Person, "John Roe", 0.6, "s"),
+    ];
+    let r = rule_au_020_person_entity_cluster(&ents, "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-020");
+    assert_eq!(r[0].severity, Severity::Medium);
+}
+
+#[test]
+fn au022_fires_for_org_co_located_with_breach() {
+    let org = Entity::new(EntityKind::Organisation, "Acme Pty Ltd", 0.7, "s");
+    let mut breached = Entity::new(EntityKind::Email, "x@acme.com", 0.6, "s");
+    breached.tag("breach");
+    let r = rule_au_022_organisation_with_breach(&[org, breached], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-022");
+    assert_eq!(r[0].severity, Severity::High);
+}
+
+#[test]
+fn au023_fires_for_person_from_two_identity_sources() {
+    let mut p = Entity::new(EntityKind::Person, "Jane Doe", 0.7, "s");
+    p.add_evidence(Evidence::new("keybase", "x"));
+    p.add_evidence(Evidence::new("github_user", "x"));
+    let r = rule_au_023_cross_platform_identity(&[p], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-023");
+    assert_eq!(r[0].severity, Severity::High);
+}
+
+#[test]
+fn au024_fires_for_email_with_two_risk_signals() {
+    let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.6, "s");
+    e.tag("breach");
+    e.tag("disposable");
+    let r = rule_au_024_email_fraud_signal(&[e], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-024");
+    assert_eq!(r[0].severity, Severity::High);
+}
+
+#[test]
+fn au025_fires_for_opencorporates_org_with_person() {
+    let mut org = Entity::new(EntityKind::Organisation, "Acme Pty Ltd", 0.7, "s");
+    org.tag("opencorporates");
+    let person = Entity::new(EntityKind::Person, "Jane Doe", 0.7, "s");
+    let r = rule_au_025_corporate_identity_link(&[org, person], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-025");
+    assert_eq!(r[0].severity, Severity::Medium);
+}
+
+#[test]
+fn au026_fires_for_address_from_two_geo_sources() {
+    let mut a = Entity::new(EntityKind::Address, "1 Main St, Sydney NSW 2000", 0.6, "s");
+    a.add_evidence(Evidence::new("geocode", "x"));
+    a.add_evidence(Evidence::new("photon", "x"));
+    let r = rule_au_026_validated_address(&[a], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-026");
+    assert_eq!(r[0].severity, Severity::High);
+}
+
+#[test]
+fn au028_fires_for_subdomain_takeover_tag() {
+    let mut d = Entity::new(EntityKind::Domain, "ghost.example.com", 0.6, "s");
+    d.tag("subdomain-takeover");
+    let r = rule_au_028_subdomain_takeover_risk(&[d], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-028");
+    assert_eq!(r[0].severity, Severity::Critical);
+}
+
+#[test]
+fn au029_fires_for_cloud_storage_vulnerable_tags() {
+    let mut e = Entity::new(EntityKind::Url, "https://bucket.s3.amazonaws.com", 0.6, "s");
+    e.tag("cloud-storage");
+    e.tag("vulnerable");
+    let r = rule_au_029_cloud_storage_exposure(&[e], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-029");
+    assert_eq!(r[0].severity, Severity::Critical);
+}
+
+#[test]
+fn au040_fires_for_breach_exposed_wallet() {
+    let mut w = Entity::new(EntityKind::CryptoAddress, "0xdeadbeef", 0.6, "s");
+    w.add_evidence(Evidence::new("oathnet_pro", "leak"));
+    let r = rule_au_040_wallet_breach_exposure(&[w], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-040");
+    assert_eq!(r[0].severity, Severity::High);
+}
+
+#[test]
+fn au041_fires_for_ens_tagged_username() {
+    let mut u = Entity::new(EntityKind::Username, "vitalik.eth", 0.6, "s");
+    u.tag("ens");
+    let r = rule_au_041_ens_identity(&[u], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-041");
+    assert_eq!(r[0].severity, Severity::Medium);
+}
+
+#[test]
+fn au042_fires_for_pgp_linked_email() {
+    let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.6, "s");
+    e.tag("pgp-linked");
+    let r = rule_au_042_pgp_email_identity(&[e], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-042");
+    assert_eq!(r[0].severity, Severity::High);
+}

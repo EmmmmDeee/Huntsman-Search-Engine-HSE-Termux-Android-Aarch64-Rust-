@@ -125,7 +125,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
   **Measure it:** `criterion` bench of events/sec and p99 dispatch latency pinned
   to 2 worker threads, before/after; this becomes the published "fast on a phone"
   number. **P1**
-- **`[ ]` T1.3 · Verified correctness — 12 unasserted rules** — AU-019, 020, 022,
+- **`[x]` T1.3 · Verified correctness — 12 unasserted rules** — AU-019, 020, 022,
   023, 024, 025, 026, 028, 029, 040, 041, 042 are dispatched but **no test
   asserts they fire** (only id-presence is checked). A silently-dead rule passes
   CI.
@@ -329,3 +329,9 @@ legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
   tests. Guarded the `mylnikov` confidence cast against negative/NaN ranges.
   Made GEXF shared-source edge labels and the live-session list deterministic
   (sort before emit). Gate green: fmt/clippy/doc clean, 2,950 lib tests, 0 fail.
+- **2026-06-17** — **Executed T1.3.** Added direct firing assertions for the 12
+  previously-unasserted correlation rules (AU-019/020/022/023/024/025/026/028/
+  029/040/041/042): each test builds the minimal entity fixture that satisfies
+  the rule and asserts it produces one correlation with the expected rule_id +
+  severity. A silently-dead rule now fails CI. Gate green: 2,962 lib tests
+  (+12), clippy/fmt clean, 0 failures.
