@@ -137,15 +137,27 @@ fn core_does_not_import_util_directly() {
                 // (no I/O, no network). The engine's address_to_coords_pass uses
                 // it to convert Address entities into Coordinates for geo correlation.
                 && !line.contains("util::city_coords::city_coords")
-                && !line.contains("modules::wigle::reset_budget")
-                && !line.contains("modules::see_know::reset_budget")
-                && !line.contains("modules::oathnet_pro::key_harvest::identify_api_key")
         })
         .collect();
     assert!(
         allowed.is_empty(),
         "core/ must not import util/ (except proxy::ProxyPool on ModuleContext).\nViolations:\n{}",
         allowed.join("\n")
+    );
+}
+
+#[test]
+fn core_does_not_import_modules() {
+    // core is module-agnostic: the engine drives modules through the registry
+    // and the `core::hooks` function-pointer registry, never the reverse
+    // (PROBLEM_TREE T1.4). The one legal `modules → core` hook edge is the
+    // install in `modules::registry`; `core` itself names no `crate::modules`.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core");
+    let v = scan_for_violations(&dir, &["crate::modules"]);
+    assert!(
+        v.is_empty(),
+        "core/ must not import modules/ — invert via `core::hooks`.\nViolations:\n{}",
+        v.join("\n")
     );
 }
 

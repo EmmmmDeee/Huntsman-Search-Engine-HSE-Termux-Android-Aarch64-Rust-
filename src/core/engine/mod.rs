@@ -236,22 +236,19 @@ impl ScanEngine {
         scan.status = ScanStatus::Running;
         self.store.upsert_scan(&scan)?;
 
-        // Reset per-scan budget counters so long-lived processes
-        // (`hse serve` / `hse live`) get a fresh budget per scan.
-        crate::modules::oathnet_pro::reset_budget();
-        crate::modules::see_know::reset_budget();
-        crate::modules::wigle::reset_budget();
-        // Clear the foreign-API-key sink so this scan reports only the keys IT
-        // retrieves from endpoint responses (and refresh the own-key exclusion).
-        // Via the module-layer shim — core must not import util directly.
-        crate::modules::reset_found_keys();
+        // Reset every module's per-scan state — rate budgets + the foreign-API-key
+        // sink — so long-lived processes (`hse serve` / `hse live`) get a fresh
+        // budget per scan, and this scan reports only the keys IT retrieves.
+        // Driven through the module-hook registry so core stays module-agnostic
+        // (see `core::hooks`).
+        crate::core::hooks::reset_per_scan();
         // Apply the regional-search toggle for this scan. Regional augmentation
         // is on when EITHER the per-scan flag (`--regional`) is set OR the
         // persistent default `feature.regional` is on (universal toggleability;
         // default off ⇒ geolocation-neutral queries). The per-scan flag only
         // adds regional — set the standing baseline via `hse config
         // feature.regional <on|off>`. Mirrors the see_know per-scan global.
-        crate::modules::search_engines::set_regional(
+        crate::core::hooks::set_regional(
             scan.options.regional_search
                 || crate::util::settings::get_bool("feature.regional", false),
         );
@@ -458,7 +455,7 @@ impl ScanEngine {
         // tags/evidence is GREATEST-merged, never duplicated or blindly
         // overwritten.
         let mut entity_map = entity_map;
-        for e in crate::modules::drain_found_key_entities(&scan.id) {
+        for e in crate::core::hooks::drain_found_keys(&scan.id) {
             match entity_map.get_mut(&e.uid) {
                 Some(existing) => existing.merge(e),
                 None => {
@@ -905,7 +902,7 @@ impl ScanEngine {
             // Refresh SeekNow's per-round budget so it is utilised in EVERY
             // iteration (not just until a wide first round drains it). The
             // per-session ceiling still bounds total volume across all rounds.
-            crate::modules::see_know::refresh_round_budget();
+            crate::core::hooks::refresh_round_budget();
 
             if ctx.cancel.is_cancelled() {
                 let stop = StopReason::Cancelled;

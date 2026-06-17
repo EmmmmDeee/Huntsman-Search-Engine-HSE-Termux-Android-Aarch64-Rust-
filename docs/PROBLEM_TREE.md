@@ -133,7 +133,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
   {fires, severity, uid_set})]`; one assertion per rule. Add a **meta-guard**:
   every `AU-NNN` in the dispatch `RULES` table must have ≥1 firing fixture (so no
   future rule ships un-pinned). **P1**
-- **`[ ]` T1.4 · Architecture — `core` imports `crate::modules`** —
+- **`[x]` T1.4 · Architecture — `core` imports `crate::modules`** —
   `core/engine/mod.rs` (8 sites) + `enrich.rs:240`, violating the CLAUDE.md
   invariant; `tests/architecture.rs:140` *allowlists* the `modules::*` paths
   (laundering the breach); no guard scans `core`.
@@ -342,3 +342,14 @@ legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
   covering all fetch sites at once. Hardened the reddit `created_utc` and
   dns_axfr label-length casts against malformed input. Gate green: clippy/fmt
   clean, 2,962 lib tests, 0 failures.
+- **2026-06-17** — **Executed T1.4** (core → modules layering breach closed).
+  Added `core::hooks` — a 5-entry function-pointer registry (`reset_per_scan`,
+  `set_regional`, `refresh_round_budget`, `identify_api_key`, `drain_found_keys`)
+  with no-op-when-uninstalled wrappers. The `modules` layer installs it from
+  `modules::registry()` (idempotent; the engine is always built from
+  `registry()`, so hooks are set before any run). Replaced all 8 `crate::modules`
+  call sites in `core/engine/{mod,enrich}.rs` with `core::hooks` calls; removed
+  the 3 laundering allowlist entries in `tests/architecture.rs` and added a
+  dedicated `core_does_not_import_modules` guard. Gate green: clippy/fmt/doc
+  clean, new guard passes, 2,962 lib + integration tests, 0 failures, no
+  behaviour change.

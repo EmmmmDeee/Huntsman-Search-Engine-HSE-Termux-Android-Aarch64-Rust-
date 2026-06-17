@@ -237,7 +237,7 @@ pub(super) fn address_to_coords_pass(
 /// unlocks more modules). Best-effort and side-effecting only on the pool; the
 /// entity is read-only. Runs outside `catch_unwind`, so it uses panic-free slicing.
 pub(super) fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
-    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    use crate::core::hooks::identify_api_key;
     use crate::util::key_pool::{KeyEntry, KeyStatus, global_pool};
 
     let pool = global_pool();
