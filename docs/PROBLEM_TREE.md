@@ -76,7 +76,7 @@ Each node: **ID · statement · location · impact · → optimal solution · pr
 Current baseline (grounded in the codebase, 2026-06-17): 119 modules across 14
 categories (Infrastructure 20, Geo 19, People 15, DnsRecon 13, Breach 11, Social
 11, Email 6, Corporate 6, Web 5, Sensor 4, Threat 3, Search/Phone/Other 2 each);
-59 native correlation rules (AU-001…AU-059); 0 `unsafe`; deterministic entity
+60 native correlation rules (AU-001…AU-060); 0 `unsafe`; deterministic entity
 merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
 `criterion` 0.8 direct (dev-only, zero shipped cost — F.3); `aho-corasick` +
 `memchr` now direct deps (F.1, `util::scan` + `util::html`); `bstr`, `fst`,
@@ -594,19 +594,21 @@ Grounded in the existing modules and the BUILD set of `OSINT_MATRIX_GAP_ANALYSIS
 Each node: **current → target → solution**. Everything here is built on §3.F
 primitives. AU bias and an offensive (active-collection) posture throughout.
 
-- **`[ ]` C1 · Correlation & identity depth — *the Maltego-without-graphs play***.
-  *Current:* 59 native rules + deterministic GREATEST-merge identity. *Target:*
-  out-link-analyse Maltego by delivering the *conclusion*, not a canvas.
-  → **Solution:** (a) **transitive identity resolution** — if A↔B and B↔C share
-  selectors, emit A↔C with decayed confidence (closure over the merge graph,
-  property-tested for convergence & determinism); (b) a **"Connections" section**
-  in the dossier that renders the strongest entity links as text (shared
-  selectors, the path between two identities, the controller behind reused
-  secrets) — graph-free link analysis, reproducible and scriptable; (c) deepen
-  the **timeline** (already present) into a first-class output; (d) add the rule
-  gaps the AU-0xx register implies. GEXF stays as the *optional* escape hatch for
-  users who want a graph (covers Maltego's graph crowd without heavy in-app
-  graphing). **CAP-high**
+- **`[~]` C1 · Correlation & identity depth — *the Maltego-without-graphs play***.
+  *Current:* 60 native rules + deterministic GREATEST-merge identity + AU-060
+  transitive identity closure (cycle 18). *Target:* out-link-analyse Maltego by
+  delivering the *conclusion*, not a canvas.
+  → **Solution:** ✅ **(a) transitive identity resolution** (`rule_au_060_transitive_identity_closure`,
+  cycle 18): BFS over the relation graph; finds identity nodes (Person/Email/Phone/
+  Username) reachable in 2–4 hops with no direct single-edge shortcut; emits Medium
+  (≤3 hops) or Low (4 hops) correlation with full path in `entity_uids`; 10 tests,
+  architecture guard satisfied; **(b) open** — a **"Connections" section** in the dossier
+  rendering the strongest entity links as text (shared selectors, identity paths, reused
+  secrets); **(c) open** — deepen the **timeline** into a first-class output; **(d) open**
+  — add the rule gaps the AU-0xx register implies. GEXF stays as the *optional* escape
+  hatch for graph-oriented users. **CAP-high**
+  ✅ **Cycle 18 (P→S, 2026-06-17): (a) delivered.** Paired: `SOLUTION_TREE` SOL-CORR
+  `[ ]`→`[~]` + §4a/§4d/§5 — same commit.
 - **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
@@ -1558,6 +1560,18 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   trimmed to `bstr` only. **Paired:** `SOLUTION_TREE` SOL-F1 node + §4b + §4d + §5
   refreshed — same commit; gate green, 3,032 lib + 24 arch + 67 api + 54 smoke +
   3 halting + 6 cli-seed + 2 audit-regression tests, 0 failures.
+- **2026-06-17** — **Cycle 18 (P→S): AU-060 transitive identity closure — C1(a) delivered.**
+  P→S pass on C1 (the Maltego-without-graphs play), sub-goal (a). Implemented
+  `rule_au_060_transitive_identity_closure` in `src/core/correlator/rules/transitive.rs`:
+  BFS over an undirected relation-graph adjacency list, 2–4 hops, identity-entity (Person /
+  Email / Phone / Username) endpoints only; pairs with a direct single-edge shortcut excluded
+  (covered by other rules); severity decays Medium (≤3 hops) / Low (4 hops); all path nodes
+  included in `entity_uids` for SPA chain rendering. Registered as `RELATION_RULES[2]`
+  (alongside AU-031 / AU-032). 8 unit tests in `transitive.rs` + 2 direct firing tests in
+  `correlator/tests.rs` (satisfying the `every_dispatched_correlation_rule_has_a_firing_test`
+  guard). C1 sub-goals (b) Connections dossier, (c) first-class timeline, (d) additional
+  rule-register gaps remain open. **Paired:** `SOLUTION_TREE` SOL-CORR `[ ]`→`[~]` +
+  §4a/§4d/§5 — same commit; gate green, 3,041 lib tests, 0 failures.
 - **2026-06-17** — **Cycle 17 (S→P): table-size re-audit + §3.F gate review — F.2
   `[~]`→`[x]`; C1 unblocked.** S→P pass on cycles 15/16 deliveries and §3.F finish
   queue. (1) **SOL-SCHEMA-VERSION + SOL-INSTALL-INTEGRITY (cycle 16):** no new gaps

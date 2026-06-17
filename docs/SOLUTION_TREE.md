@@ -293,9 +293,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Unlockd (UK), SuicideGirls (global alt), Iwara (Japan/3D).
   *Closes / powers:* **C8** (webcam/fan/adult platform presence including non-English
   markets — the identity surface `username_search` left uncovered). ✅ delivered.
-- **`[ ]` SOL-CORR · Correlation & identity depth** → **C1** (Maltego-without-graphs):
+- **`[~]` SOL-CORR · Correlation & identity depth** → **C1** (Maltego-without-graphs):
   transitive identity closure (property-tested convergence), a text "Connections"
   dossier section, first-class timeline, AU-0xx rule-gap fill. Built on SOL-MERGE.
+  **(a) delivered (cycle 18 P→S):** `rule_au_060_transitive_identity_closure` — BFS over
+  the relation graph from every confirmed identity entity (Person/Email/Phone/Username),
+  finds every other identity reachable in 2–4 hops with no direct single-edge shortcut,
+  emits Medium (2–3 hops) or Low (4 hops) correlation with the full shortest path in
+  `entity_uids`. 8 unit tests in `transitive.rs`, 2 integration tests in
+  `correlator/tests.rs` (architecture guard satisfied). RELATION_RULES `[2]`→`[3]`.
+  *Remaining:* (b) "Connections" dossier section, (c) first-class timeline, (d) AU-0xx
+  rule-gap fill — open. ✅ cycle 18.
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -381,7 +389,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
-| SOL-CORR…SOL-FORENSIC | C1–C7 | `[ ]` |
+| SOL-CORR | C1 | `[~]` |
+| SOL-PERF-PUBLISH…SOL-FORENSIC | C2–C7 | `[ ]` |
 
 ---
 
@@ -401,11 +410,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
   this queue. S2/SOL-SSRF-WHOIS + S3/SOL-SECRETS-EXTEND delivered 2026-06-17.)*
 - **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
-- **C1–C7** — capability nodes; solutions sketched, none started. **C1 is now
-  unblocked** (cycle 17 S→P gate review): transitive identity closure operates on the
-  already-built entity map and needs only SOL-MERGE/SOL-ORDER (✅) + SOL-F3 proptest
-  (✅) — not `bstr`, `fst`, or `cargo-fuzz`. C1 is the next P→S target. C2–C7 remain
-  gated on the remaining §3.F items or are large scope.
+- **C1** — **`[~]` in progress** (cycle 18 P→S): sub-goal (a) transitive identity
+  closure delivered (`rule_au_060_transitive_identity_closure`, AU-060, 2-4 hop BFS,
+  Medium/Low severity, 10 tests). Sub-goals (b) Connections dossier, (c) first-class
+  timeline, (d) AU-0xx rule-gap fill remain open.
+- **C2–C7** — solutions sketched, not yet started; gated on remaining §3.F items or
+  large scope.
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -711,6 +721,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (13.5s needed vs 30s; no change to the 30s constant). SOL-STREAMING description and
   C8 problem node updated to reflect 42-site scope. Gate green: fmt/clippy/doc clean,
   3,027 lib + 67 arch tests, 0 failures.
+- **2026-06-17** — **Cycle 18 (P→S): SOL-CORR `[ ]`→`[~]` — AU-060 transitive identity
+  closure delivered.** P→S pass implemented `rule_au_060_transitive_identity_closure`
+  (`src/core/correlator/rules/transitive.rs`): BFS over the undirected relation-graph
+  adjacency (String-keyed to unify entity + relation lifetimes), 2–4 hops, identity-entity
+  (Person / Email / Phone / Username) endpoints; direct single-edge pairs excluded (existing
+  rules cover those); severity Medium (≤3 hops) / Low (4 hops); all path nodes included in
+  `entity_uids` for SPA chain rendering. `RELATION_RULES` [2]→[3]. 8 unit tests in
+  `transitive.rs` + 2 direct firing tests in `correlator/tests.rs` (satisfying the
+  meta-guard). C1 sub-goals (b)/(c)/(d) remain open. Gap refresh: §4a C1 updated to `[~]`
+  in progress; SOL-CORR leverage-map updated. **Paired:** `PROBLEM_TREE` C1 `[ ]`→`[~]` +
+  §8 cycle 18 log — same commit; gate green, 3,041 lib tests, 0 failures.
 - **2026-06-17** — **Cycle 17 (S→P): SOL-F2 `[~]`→`[x]`; C1 unblocked; §3.F gate
   cleared.** S→P pass on cycles 15/16 deliveries plus a full §3.F finish-queue review.
   **(1) SOL-SCHEMA-VERSION + SOL-INSTALL-INTEGRITY (cycle 16):** no new gaps —
