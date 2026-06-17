@@ -360,6 +360,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
+- **T1.5** `finalise_scan` reactor blocking at scan-end — new node (cycle 11 S→P):
+  the four bulk transactions (`upsert_entities_batch`, `upsert_scan`,
+  `persist_relations` loop, `Correlator::run`) still run synchronously in the async
+  context. Solution shape is known (wrap `finalise_scan` in `spawn_blocking`; emitter
+  is already non-blocking) but no solution node has been built. **LOW-MED** (server
+  mode only). To build: add `SOL-FINALISE-BLOCKING` node under S.RESOURCE when
+  prioritised.
 - **T2.10** schema versioning — *no* solution node exists beyond the advisory; the
   cleanest is a `SOL-SCHEMA-VERSION` (set `PRAGMA user_version` at create + an
   idempotent upgrade ladder). **Latent, no current bug** → deliberately unbuilt; add
@@ -399,8 +406,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### 4d · Coverage snapshot (problem tier × solution status)
 - **T0 (crashes):** fully solved (SOL-BOUNDARY + SOL-F3 guard). ✔
-- **T1 (core guarantees):** T1.1/T1.2/T1.3/T1.4 all solved (SOL-BLOCKING `[~]`→`[x]`
-  — DB-writer actor closes the final reactor-blocking tail). ✔
+- **T1 (core guarantees):** T1.1/T1.2/T1.3/T1.4 all solved (SOL-BLOCKING `[~]`→`[x]`);
+  T1.5 `[ ]` LOW-MED open — `finalise_scan` bulk transactions still block one worker
+  at scan-end (server mode only; solution shape known, no node built yet).
 - **§3.F (foundations):** all three `[~]` — the largest unrealised leverage block.
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.12 fully closed** ✅ (7 items fixed: 2 MED + 2 LOW-MED + diff exit-code +
@@ -672,6 +680,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (13.5s needed vs 30s; no change to the 30s constant). SOL-STREAMING description and
   C8 problem node updated to reflect 42-site scope. Gate green: fmt/clippy/doc clean,
   3,027 lib + 67 arch tests, 0 failures.
+- **2026-06-17** — **Cycle 11 (S→P): SOL-BLOCKING delivery exposes T1.5 —
+  `finalise_scan` reactor-blocking residual.** S→P pass on cycle 10's actor delivery:
+  with the `insert_event` hot path (N per-entity `block_in_place` calls) now fully
+  off the reactor, `finalise_scan` becomes the last identifiable sync-in-async site.
+  It makes four blocking rusqlite calls: `upsert_entities_batch` (one WAL batch),
+  `upsert_scan` (one row), `persist_relations` (one insert per edge), and
+  `Correlator::run` (full SQL pass, O(entities)). All O(1) bulk transactions — the
+  blast radius is bounded to the scan-end window and is invisible in CLI mode. In
+  `hse serve`/`hse live` (concurrent scans), one worker stalls for the finalisation
+  duration. **New node T1.5 (LOW-MED)** added to PROBLEM_TREE §3.1 (after T1.4) and
+  §4a here. Solution shape is clear (wrap `finalise_scan` in `spawn_blocking`; the
+  emitter is already non-blocking after cycle 10) but no solution node built yet.
+  **Gap refresh:** §4a now lists T1.5; §4d T1 row updated (T1.1–T1.4 `[x]`, T1.5
+  `[ ]` LOW-MED). §3.F enabler block (SOL-F1 memchr/bstr + SOL-F2 fst + SOL-F3
+  cargo-fuzz) remains the sole unrealised high-leverage tier; SOL-BUDGET
+  reset_scan-zeroing and SOL-F1/F2/F3 the remaining finish queue. No code change
+  this cycle. Paired: `PROBLEM_TREE` T1.5 node + §8 — same commit; gate green
+  (no code change).
 - **2026-06-17** — **Cycle 10 (P→S): SOL-BLOCKING DB-writer actor — T1.2 fully closed
   (`[~]`→`[x]`).** `block_in_place` per entity in `EventEmitter::emit` replaced by
   `core::engine::writer::DbWriter` — a new `tokio::spawn`'d actor owning the

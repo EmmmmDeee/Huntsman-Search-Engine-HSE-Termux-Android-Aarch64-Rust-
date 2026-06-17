@@ -180,6 +180,25 @@ direct.**
   `use crate::modules`. Remove the allowlist; add
   `tests/architecture.rs::core_does_not_import_modules` scanning `src/core/**`.
   **P1** (gates "highest-quality product": velocity & testability downstream.)
+- **`[ ]` T1.5 · `finalise_scan` still blocks one reactor worker at scan-end (LOW-MED)** —
+  `finalise_scan` is a sync `fn` called directly from the async
+  `run_with_ledger_inner`; it makes four blocking rusqlite calls in sequence:
+  `upsert_entities_batch` (entity bulk persist), `upsert_scan` (scan record update),
+  `persist_relations` (one SQL insert per edge in a loop), and `Correlator::run` (a
+  full SQL correlation pass over all 56 rules, O(entities)). In CLI single-scan mode
+  this is invisible (no concurrent work). In `hse serve`/`hse live` with multiple
+  scans running concurrently, this blocks one of the 2 Termux reactor workers for
+  O(entities) time during scan finalisation, delaying concurrent API requests (e.g.
+  SSE pushes, other scan dispatch). Unlike the now-fixed per-entity `insert_event`
+  hot path (T1.2: N separate `block_in_place` calls), these are O(1) bulk
+  transactions — the blast radius is bounded to the scan-end window.
+  → **Solution:** wrap `finalise_scan`'s body in `tokio::task::spawn_blocking`;
+  `EventEmitter::emit` is already a non-blocking `submit` to the DB-writer actor, so
+  the emitter clone passes safely into the `'static + Send` closure. The
+  `writer.flush().await` barrier in `run_with_ledger_inner` must follow the
+  `spawn_blocking` task's completion (guaranteed — `flush` is called after the
+  `spawn_blocking` join resolves). **LOW-MED** (server-mode impact only; single-scan
+  CLI-transparent). *Surfaced by cycle 11 S→P.*
 
 ### 3.F — Tier F · Foundations (build the primitives once; everything after is cheap)
 
@@ -1458,3 +1477,17 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   + §4b + §4d + §5 refreshed — same commit. Gate green: fmt/clippy/doc clean,
   3,032 lib + 24 arch + 67 api + 54 smoke + 3 halting + 23 cli + 6 cli-seed +
   2 audit-regression tests, 0 failures.
+- **2026-06-17** — **Cycle 11 (S→P): SOL-BLOCKING's completion exposes T1.5.**
+  S→P pass on cycle 10's DB-writer actor delivery: asked "what does the now-clean
+  event path expose?" Answer — `finalise_scan` (a sync `fn` called directly from the
+  async `run_with_ledger_inner`) still makes four blocking rusqlite calls:
+  `upsert_entities_batch`, `upsert_scan`, `persist_relations` loop, and
+  `Correlator::run` (the full SQL correlation pass). These are O(1) bulk transactions,
+  not the N per-entity hot path that T1.2 fixed, so the blast radius is bounded to
+  the scan-end window — invisible in CLI mode, a short reactor stall in `hse serve`
+  concurrent scans. New node **T1.5 (LOW-MED)** logged. **Gap refresh:** §4a gains
+  T1.5 (no solution node yet); §4d T1 row updated (T1.1/T1.2/T1.3/T1.4 `[x]`,
+  T1.5 `[ ]` LOW-MED open). §3.F enabler block (SOL-F1 memchr/bstr + SOL-F2 fst +
+  SOL-F3 fuzz) remains the sole unrealised high-leverage tier; SOL-BUDGET
+  reset_scan-zeroing remains LOW in the finish queue. No code change this cycle.
+  **Paired:** `SOLUTION_TREE` §4a + §4d + §5 refreshed — same commit.
