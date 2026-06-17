@@ -37,6 +37,10 @@ mod passes;
 mod timeout;
 pub use ledger::DispatchLog;
 use passes::{consolidate_address_localities, hot_inject_keys};
+// The per-target dispatch context (`DispatchCx`) and the mutable accumulator
+// bundle (`DispatchState`) are constructed here — at the seed-round and
+// expansion call sites — and threaded into the loops that live in `dispatch`.
+use dispatch::{DispatchCx, DispatchState};
 // The dispatch loops now live in `dispatch`; these items are referenced only by
 // the tests that stayed in this file, so the bridge is test-only.
 #[cfg(test)]
@@ -100,6 +104,24 @@ pub(crate) struct ModuleStats {
     /// out because a required API key is absent. Counted separately from
     /// `errored` so an unconfigured optional provider is never a failure.
     pub skipped: usize,
+}
+
+/// Mutable scan-wide accumulators threaded through the expansion loop: the
+/// working entity set, the visited-target set (the cycle guard), the run
+/// tallies, the paid-dedup ledger, the lineage (`DerivedFrom`) edges, and the
+/// set of already-emitted correlation ids. Bundled so [`ScanEngine::run_expansion`]
+/// takes one borrow instead of six always-together out-parameters; passed *by
+/// value* and destructured at the top of the loop, so the body keeps using the
+/// fields by their plain names and only the borrow lifetime is bundled. The
+/// `entity_map`/`stats`/`dispatched` trio is re-borrowed into a [`DispatchState`]
+/// for each `dispatch_target` call.
+struct ExpansionState<'a> {
+    entity_map: &'a mut HashMap<String, Entity>,
+    visited: &'a mut HashSet<(TargetKind, String)>,
+    stats: &'a mut ModuleStats,
+    dispatched: &'a mut DispatchLog,
+    relations: &'a mut Vec<Relation>,
+    emitted_corr: &'a mut HashSet<String>,
 }
 
 impl StopReason {
@@ -362,20 +384,21 @@ impl ScanEngine {
         // fired `cancel()` on the caller's context long after this scan was
         // gone — poisoning the shared token under a long-lived serve/radar.
         // Per-module failures are already surfaced as ModuleError events.
-        if let Err(e) = self
-            .dispatch_target(
-                &scan.id,
-                &target,
-                &mut ctx,
-                &opts,
-                &mut entity_map,
-                false,
-                &mut stats,
-                dispatched,
-            )
-            .await
         {
-            warn!(scan_id = %scan.id, error = %e, "seed dispatch failed (continuing to finalise)");
+            let cx = DispatchCx {
+                scan_id: &scan.id,
+                target: &target,
+                opts: &opts,
+                is_expansion: false,
+            };
+            let mut dstate = DispatchState {
+                entity_map: &mut entity_map,
+                stats: &mut stats,
+                dispatched: &mut *dispatched,
+            };
+            if let Err(e) = self.dispatch_target(&cx, &mut ctx, &mut dstate).await {
+                warn!(scan_id = %scan.id, error = %e, "seed dispatch failed (continuing to finalise)");
+            }
         }
 
         // Convert Address entities to Coordinates (offline city lookup) so they
@@ -399,20 +422,16 @@ impl ScanEngine {
         self.correlate_incremental(&scan.id, &seed_snapshot, &mut emitted_corr);
 
         if opts.depth > 0 {
+            let est = ExpansionState {
+                entity_map: &mut entity_map,
+                visited: &mut visited,
+                stats: &mut stats,
+                dispatched: &mut *dispatched,
+                relations: &mut lineage,
+                emitted_corr: &mut emitted_corr,
+            };
             let _ = self
-                .run_expansion(
-                    &scan.id,
-                    &target,
-                    &mut ctx,
-                    &opts,
-                    started,
-                    &mut entity_map,
-                    &mut visited,
-                    &mut stats,
-                    dispatched,
-                    &mut lineage,
-                    &mut emitted_corr,
-                )
+                .run_expansion(&scan.id, &target, &mut ctx, &opts, started, est)
                 .await;
         }
 
@@ -872,7 +891,13 @@ impl ScanEngine {
     }
 
     /// Drive the expansion loop. Returns the stop reason for diagnostics.
-    #[allow(clippy::too_many_arguments)]
+    ///
+    /// Takes the mutable scan-wide accumulators as one [`ExpansionState`] *by
+    /// value* and destructures it immediately, so the loop body below reads and
+    /// mutates `entity_map`/`visited`/`stats`/`dispatched`/`relations`/
+    /// `emitted_corr` by their plain names exactly as before — only the call
+    /// signature is bundled. The `&mut` borrows are released to the caller when
+    /// this returns.
     async fn run_expansion(
         &self,
         scan_id: &str,
@@ -880,13 +905,16 @@ impl ScanEngine {
         ctx: &mut ModuleContext,
         opts: &ScanOptions,
         started: Instant,
-        entity_map: &mut HashMap<String, Entity>,
-        visited: &mut HashSet<(TargetKind, String)>,
-        stats: &mut ModuleStats,
-        dispatched: &mut DispatchLog,
-        relations: &mut Vec<Relation>,
-        emitted_corr: &mut HashSet<String>,
+        state: ExpansionState<'_>,
     ) -> StopReason {
+        let ExpansionState {
+            entity_map,
+            visited,
+            stats,
+            dispatched,
+            relations,
+            emitted_corr,
+        } = state;
         // Reused across candidates to capture lineage: the set of entity UIDs
         // present *before* a candidate's dispatch, so new UIDs afterward are
         // children that candidate surfaced. Reusing the buffer avoids a
@@ -1191,13 +1219,27 @@ impl ScanEngine {
                 // entities this candidate surfaces back to its parent.
                 before.clear();
                 before.extend(entity_map.keys().cloned());
-                if let Err(e) = self
-                    .dispatch_target(scan_id, nt, ctx, opts, entity_map, true, stats, dispatched)
-                    .await
                 {
-                    // Per-target dispatch errors are already surfaced as
-                    // ModuleError events; we keep going through the round.
-                    warn!(scan_id, error = %e, "dispatch_target failed (continuing)");
+                    // Re-borrow the mutable accumulator trio into a
+                    // `DispatchState` for this candidate; the block scopes the
+                    // borrows so the lineage attribution below is free to read
+                    // `entity_map` again.
+                    let cx = DispatchCx {
+                        scan_id,
+                        target: nt,
+                        opts,
+                        is_expansion: true,
+                    };
+                    let mut dstate = DispatchState {
+                        entity_map: &mut *entity_map,
+                        stats: &mut *stats,
+                        dispatched: &mut *dispatched,
+                    };
+                    if let Err(e) = self.dispatch_target(&cx, ctx, &mut dstate).await {
+                        // Per-target dispatch errors are already surfaced as
+                        // ModuleError events; we keep going through the round.
+                        warn!(scan_id, error = %e, "dispatch_target failed (continuing)");
+                    }
                 }
                 // Record a DerivedFrom edge for every entity newly created by
                 // this candidate's dispatch (merges into existing entities are

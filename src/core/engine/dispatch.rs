@@ -256,34 +256,56 @@ pub(super) fn module_skip_reason(
 pub(super) type TimeoutResult =
     std::result::Result<Result<crate::core::module::ModuleResult>, tokio::time::error::Elapsed>;
 
+/// Immutable per-dispatch context: the scan identity, the target being
+/// dispatched, the governing options, and whether this is an expansion round
+/// (vs. the seed). These four always travel together through
+/// [`ScanEngine::dispatch_target`](super::ScanEngine::dispatch_target) and its
+/// sequential/concurrent inner loops, the gate, and the finaliser — so bundling
+/// them into one shared borrow keeps those signatures honest (and removes the
+/// `clippy::too_many_arguments` cause rather than muting the symptom). Borrowed,
+/// never owned: it carries no state, only references the caller already holds.
+pub(super) struct DispatchCx<'a> {
+    pub(super) scan_id: &'a str,
+    pub(super) target: &'a Target,
+    pub(super) opts: &'a ScanOptions,
+    pub(super) is_expansion: bool,
+}
+
+/// Mutable per-scan dispatch accumulators threaded through every module run: the
+/// working entity set (merged by uid), the run/skip/error/dedup tallies, and the
+/// paid-dedup ledger (each `module × normalised-target` fired at most once). One
+/// `&mut` borrow replaces three always-together out-parameters; the fields are
+/// borrowed separately at their use sites so the entity merge, the stat bump,
+/// and the ledger insert never contend.
+pub(super) struct DispatchState<'a> {
+    pub(super) entity_map: &'a mut HashMap<String, Entity>,
+    pub(super) stats: &'a mut ModuleStats,
+    pub(super) dispatched: &'a mut DispatchLog,
+}
+
 impl super::ScanEngine {
     /// Translate one module's `process()` result into engine events
     /// (`ModuleError` / `EntityFound` / `ModuleDone`) and merge any
     /// emitted entities into the per-scan `entity_map`. Shared by
     /// `dispatch_target_sequential` and `dispatch_target_concurrent`
     /// so the event payload shape is identical between the two paths.
-    #[allow(clippy::too_many_arguments)]
     fn finalise_module_result(
         &self,
-        scan_id: &str,
+        cx: &DispatchCx,
         name: &'static str,
-        target: &Target,
-        min_confidence: Option<f64>,
-        entity_map: &mut HashMap<String, Entity>,
         result: TimeoutResult,
-        stats: &mut ModuleStats,
-        dispatched: &mut DispatchLog,
+        state: &mut DispatchState,
     ) {
-        stats.run += 1;
+        state.stats.run += 1;
         match result {
             Err(_) => {
-                stats.timed_out += 1;
+                state.stats.timed_out += 1;
                 // A timeout carries no message to classify, so it's a soft
                 // failure: trips only after a streak (one slow round is transient).
                 super::circuit::record_soft_failure(name);
                 warn!(module = name, "timeout");
                 self.emit(
-                    scan_id,
+                    cx.scan_id,
                     EventKind::ModuleError {
                         module: name.into(),
                         error: "timeout".into(),
@@ -295,7 +317,7 @@ impl super::ScanEngine {
                 // as a clean "needs key" skip (with a free-signup hint where
                 // known) instead of a scary module error, and count it under
                 // `skipped` rather than `errored`.
-                stats.skipped += 1;
+                state.stats.skipped += 1;
                 // Release the dedup-ledger entry: the dedup contract is "each
                 // API key/service is utilised at most once per target", and a
                 // module that opted out for want of a key utilised NOTHING.
@@ -304,14 +326,14 @@ impl super::ScanEngine {
                 // hot-inject cascade could never be applied to this target —
                 // defeating the cascade's purpose. No-op for free modules,
                 // which never enter the ledger.
-                dispatched.remove(&dispatch_key(name, target));
+                state.dispatched.remove(&dispatch_key(name, cx.target));
                 let reason = match crate::util::keys::signup_hint(&key) {
                     Some(hint) => format!("needs API key {key} — {hint}"),
                     None => format!("needs API key {key}"),
                 };
                 debug!(module = name, %key, "skipped — needs key");
                 self.emit(
-                    scan_id,
+                    cx.scan_id,
                     EventKind::ModuleSkipped {
                         module: name.into(),
                         reason,
@@ -319,13 +341,13 @@ impl super::ScanEngine {
                 );
             }
             Ok(Err(e)) => {
-                stats.errored += 1;
+                state.stats.errored += 1;
                 // Feed the breaker: a rate-limit/quota message trips immediately;
                 // any other hard error counts toward the soft streak.
                 super::circuit::record_error(name, &e.to_string());
                 warn!(module = name, error = %e, "module error");
                 self.emit(
-                    scan_id,
+                    cx.scan_id,
                     EventKind::ModuleError {
                         module: name.into(),
                         error: e.to_string(),
@@ -339,12 +361,12 @@ impl super::ScanEngine {
                 super::circuit::record_success(name);
                 let mut found = 0usize;
                 for entity in mr.entities.drain(..) {
-                    if let Some(min) = min_confidence
+                    if let Some(min) = cx.opts.min_confidence
                         && entity.confidence < min
                     {
                         // Visible like every other admission drop ("never a
                         // black box") — this was the one silent rejection.
-                        self.emit_excluded(scan_id, &entity, "below_min_confidence");
+                        self.emit_excluded(cx.scan_id, &entity, "below_min_confidence");
                         continue;
                     }
                     // Drop guaranteed-bogus IPs (documentation / reserved /
@@ -356,7 +378,7 @@ impl super::ScanEngine {
                     if entity.kind == crate::core::entity::EntityKind::IpAddress
                         && crate::core::validation::is_bogus_ip(&entity.value)
                     {
-                        self.emit_excluded(scan_id, &entity, "bogus_ip");
+                        self.emit_excluded(cx.scan_id, &entity, "bogus_ip");
                         continue;
                     }
                     // Drop documentation / placeholder artifacts (example.com,
@@ -367,7 +389,7 @@ impl super::ScanEngine {
                     // API keys / credentials) are exempt — see
                     // `validation::is_placeholder_entity`.
                     if crate::core::validation::is_placeholder_entity(&entity.kind, &entity.value) {
-                        self.emit_excluded(scan_id, &entity, "placeholder_artifact");
+                        self.emit_excluded(cx.scan_id, &entity, "placeholder_artifact");
                         continue;
                     }
                     // Drop truncated / incomplete values (`@gmail`, a domain-less
@@ -376,7 +398,7 @@ impl super::ScanEngine {
                     // unverifiable fragment. The auditor independently flags any
                     // that somehow slip through (`fragment-values`).
                     if crate::core::validation::is_fragment_value(&entity.kind, &entity.value) {
-                        self.emit_excluded(scan_id, &entity, "fragment_value");
+                        self.emit_excluded(cx.scan_id, &entity, "fragment_value");
                         continue;
                     }
                     // Drop an implausible phone at admission. A value that CLAIMS
@@ -390,11 +412,11 @@ impl super::ScanEngine {
                         && entity.value.starts_with('+')
                         && !crate::core::validation::validate_phone_e164(&entity.value).valid
                     {
-                        self.emit_excluded(scan_id, &entity, "implausible_phone");
+                        self.emit_excluded(cx.scan_id, &entity, "implausible_phone");
                         continue;
                     }
                     self.emit(
-                        scan_id,
+                        cx.scan_id,
                         EventKind::EntityFound {
                             entity: entity.clone(),
                         },
@@ -402,15 +424,15 @@ impl super::ScanEngine {
                     super::scan_entity_for_keys(&entity);
                     let mut entity = entity;
                     super::enrich_geospatial(&mut entity);
-                    if let Some(existing) = entity_map.get_mut(&entity.uid) {
+                    if let Some(existing) = state.entity_map.get_mut(&entity.uid) {
                         existing.merge(entity);
                     } else {
-                        entity_map.insert(entity.uid.clone(), entity);
+                        state.entity_map.insert(entity.uid.clone(), entity);
                     }
                     found += 1;
                 }
                 self.emit(
-                    scan_id,
+                    cx.scan_id,
                     EventKind::ModuleDone {
                         module: name.into(),
                         found,
@@ -421,44 +443,18 @@ impl super::ScanEngine {
         }
     }
 
-    /// Dispatch every accepting module against `target`. Picks the
-    /// sequential or concurrent codepath based on `opts.max_concurrent`.
-    #[allow(clippy::too_many_arguments)]
+    /// Dispatch every accepting module against `cx.target`. Picks the
+    /// sequential or concurrent codepath based on `cx.opts.max_concurrent`.
     pub(super) async fn dispatch_target(
         &self,
-        scan_id: &str,
-        target: &Target,
+        cx: &DispatchCx<'_>,
         ctx: &mut ModuleContext,
-        opts: &ScanOptions,
-        entity_map: &mut HashMap<String, Entity>,
-        is_expansion: bool,
-        stats: &mut ModuleStats,
-        dispatched: &mut DispatchLog,
+        state: &mut DispatchState<'_>,
     ) -> Result<()> {
-        if opts.max_concurrent == 0 {
-            self.dispatch_target_sequential(
-                scan_id,
-                target,
-                ctx,
-                opts,
-                entity_map,
-                is_expansion,
-                stats,
-                dispatched,
-            )
-            .await
+        if cx.opts.max_concurrent == 0 {
+            self.dispatch_target_sequential(cx, ctx, state).await
         } else {
-            self.dispatch_target_concurrent(
-                scan_id,
-                target,
-                ctx,
-                opts,
-                entity_map,
-                is_expansion,
-                stats,
-                dispatched,
-            )
-            .await
+            self.dispatch_target_concurrent(cx, ctx, state).await
         }
     }
 
@@ -472,22 +468,18 @@ impl super::ScanEngine {
     /// three dispatch loops — toggling a module off is observable in the scan
     /// summary, not just the event stream, and the counting can't drift between
     /// the sequential and the two concurrent phases.
-    #[allow(clippy::too_many_arguments)]
     fn gate_skips(
         &self,
-        scan_id: &str,
+        cx: &DispatchCx<'_>,
         module: &dyn Module,
-        name: &'static str,
-        target: &Target,
-        opts: &ScanOptions,
-        is_expansion: bool,
         target_sources: usize,
         stats: &mut ModuleStats,
     ) -> bool {
-        if let Some(reason) = module_skip_reason(module, target, opts, is_expansion, target_sources)
+        if let Some(reason) =
+            module_skip_reason(module, cx.target, cx.opts, cx.is_expansion, target_sources)
         {
             stats.skipped += 1;
-            self.emit_skipped(scan_id, name, reason);
+            self.emit_skipped(cx.scan_id, module.name(), reason);
             true
         } else {
             false
@@ -495,17 +487,11 @@ impl super::ScanEngine {
     }
 
     /// Sequential dispatcher (max_concurrent == 0).
-    #[allow(clippy::too_many_arguments)]
     async fn dispatch_target_sequential(
         &self,
-        scan_id: &str,
-        target: &Target,
+        cx: &DispatchCx<'_>,
         ctx: &mut ModuleContext,
-        opts: &ScanOptions,
-        entity_map: &mut HashMap<String, Entity>,
-        is_expansion: bool,
-        stats: &mut ModuleStats,
-        dispatched: &mut DispatchLog,
+        state: &mut DispatchState<'_>,
     ) -> Result<()> {
         // O(1) dispatch-index lookup replaces the O(M) accepts() scan.
         // Modules are already priority-sorted within each bucket so we
@@ -516,15 +502,19 @@ impl super::ScanEngine {
         // on the hot path that runs once per expansion candidate.
         // Distinct-source count of the target entity (for the high-value-API
         // cross-correlation gate); computed once per target, not per module.
-        let target_sources = target_distinct_sources(entity_map, target);
-        for &idx in self.graph.modules_for(target.kind) {
+        let target_sources = target_distinct_sources(state.entity_map, cx.target);
+        for &idx in self.graph.modules_for(cx.target.kind) {
             let Some(module) = self.modules.get(idx) else {
                 continue;
             };
             if ctx.cancel.is_cancelled() {
                 return Ok(());
             }
-            if opts.max_entities.is_some_and(|cap| entity_map.len() >= cap) {
+            if cx
+                .opts
+                .max_entities
+                .is_some_and(|cap| state.entity_map.len() >= cap)
+            {
                 return Ok(());
             }
             let name = module.name();
@@ -532,32 +522,23 @@ impl super::ScanEngine {
             // Belt-and-braces: a module whose `consumes()` declaration
             // diverges from its runtime `accepts()` would otherwise
             // slip through. Cheap re-check on the hit path.
-            if !module.accepts(target) {
+            if !module.accepts(cx.target) {
                 continue;
             }
-            if self.gate_skips(
-                scan_id,
-                &**module,
-                name,
-                target,
-                opts,
-                is_expansion,
-                target_sources,
-                stats,
-            ) {
+            if self.gate_skips(cx, &**module, target_sources, state.stats) {
                 continue;
             }
             if !matches!(module.cost(), ModuleCost::Free)
-                && !dispatched.insert(dispatch_key(name, target))
+                && !state.dispatched.insert(dispatch_key(name, cx.target))
             {
-                stats.deduped += 1;
-                self.emit_skipped(scan_id, name, "already dispatched for this target");
+                state.stats.deduped += 1;
+                self.emit_skipped(cx.scan_id, name, "already dispatched for this target");
                 continue;
             }
 
-            log_module_dispatch(name, target);
+            log_module_dispatch(name, cx.target);
             self.emit(
-                scan_id,
+                cx.scan_id,
                 EventKind::ModuleStart {
                     module: name.into(),
                 },
@@ -569,28 +550,19 @@ impl super::ScanEngine {
             // the provider call that produced it, and the log line are followable
             // end-to-end. scan_id is the correlation id (unique per scan).
             let result = run_module_guarded(
-                super::resolve_timeout(opts, &**module),
+                super::resolve_timeout(cx.opts, &**module),
                 name,
-                module.process(target, ctx),
+                module.process(cx.target, ctx),
             )
             .instrument(tracing::info_span!(
                 "module",
                 module = name,
-                scan_id,
-                target = %target.value
+                scan_id = cx.scan_id,
+                target = %cx.target.value
             ))
             .await;
 
-            self.finalise_module_result(
-                scan_id,
-                name,
-                target,
-                opts.min_confidence,
-                entity_map,
-                result,
-                stats,
-                dispatched,
-            );
+            self.finalise_module_result(cx, name, result, state);
 
             super::hot_inject_keys(&mut ctx.keys);
 
@@ -603,8 +575,8 @@ impl super::ScanEngine {
             if ctx.cancel.is_cancelled() {
                 return Ok(());
             }
-            if opts.throttle_ms > 0 {
-                sleep(Duration::from_millis(opts.throttle_ms)).await;
+            if cx.opts.throttle_ms > 0 {
+                sleep(Duration::from_millis(cx.opts.throttle_ms)).await;
             }
         }
         Ok(())
@@ -617,17 +589,11 @@ impl super::ScanEngine {
     /// oathnet_pro, dehashed, intelx discover API keys that hot-inject into
     /// ctx before the remaining modules are spawned concurrently. Without this,
     /// all modules launch with a cloned ctx that lacks discovered keys.
-    #[allow(clippy::too_many_arguments)]
     async fn dispatch_target_concurrent(
         &self,
-        scan_id: &str,
-        target: &Target,
+        cx: &DispatchCx<'_>,
         ctx: &mut ModuleContext,
-        opts: &ScanOptions,
-        entity_map: &mut HashMap<String, Entity>,
-        is_expansion: bool,
-        stats: &mut ModuleStats,
-        dispatched: &mut DispatchLog,
+        state: &mut DispatchState<'_>,
     ) -> Result<()> {
         use tokio::sync::Semaphore;
         use tokio::task::JoinSet;
@@ -640,8 +606,8 @@ impl super::ScanEngine {
 
         // Phase 1: Run Paid modules synchronously so discovered keys are
         // available via hot-inject before the concurrent phase begins.
-        let target_sources = target_distinct_sources(entity_map, target);
-        for &idx in self.graph.modules_for(target.kind) {
+        let target_sources = target_distinct_sources(state.entity_map, cx.target);
+        for &idx in self.graph.modules_for(cx.target.kind) {
             let Some(module) = self.modules.get(idx) else {
                 continue;
             };
@@ -654,59 +620,45 @@ impl super::ScanEngine {
             // Same entity-budget short-circuit the sequential path and Phase 2
             // apply. Without it, a scan already AT max_entities kept burning
             // the most expensive dispatches there are — paid per-query APIs.
-            if opts.max_entities.is_some_and(|cap| entity_map.len() >= cap) {
+            if cx
+                .opts
+                .max_entities
+                .is_some_and(|cap| state.entity_map.len() >= cap)
+            {
                 break;
             }
             let name = module.name();
-            if !module.accepts(target) {
+            if !module.accepts(cx.target) {
                 continue;
             }
-            if self.gate_skips(
-                scan_id,
-                &**module,
-                name,
-                target,
-                opts,
-                is_expansion,
-                target_sources,
-                stats,
-            ) {
+            if self.gate_skips(cx, &**module, target_sources, state.stats) {
                 continue;
             }
-            if !dispatched.insert(dispatch_key(name, target)) {
-                stats.deduped += 1;
-                self.emit_skipped(scan_id, name, "already dispatched for this target");
+            if !state.dispatched.insert(dispatch_key(name, cx.target)) {
+                state.stats.deduped += 1;
+                self.emit_skipped(cx.scan_id, name, "already dispatched for this target");
                 continue;
             }
-            log_module_dispatch(name, target);
+            log_module_dispatch(name, cx.target);
             self.emit(
-                scan_id,
+                cx.scan_id,
                 EventKind::ModuleStart {
                     module: name.into(),
                 },
             );
             let result = run_module_guarded(
-                super::resolve_timeout(opts, &**module),
+                super::resolve_timeout(cx.opts, &**module),
                 name,
-                module.process(target, ctx),
+                module.process(cx.target, ctx),
             )
             .instrument(tracing::info_span!(
                 "module",
                 module = name,
-                scan_id,
-                target = %target.value
+                scan_id = cx.scan_id,
+                target = %cx.target.value
             ))
             .await;
-            self.finalise_module_result(
-                scan_id,
-                name,
-                target,
-                opts.min_confidence,
-                entity_map,
-                result,
-                stats,
-                dispatched,
-            );
+            self.finalise_module_result(cx, name, result, state);
             // Hot-inject discovered keys so Phase 2 modules can use them.
             // Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl etc.)
             // cascade — their outputs feed web_crawler/search_engines, which
@@ -719,9 +671,9 @@ impl super::ScanEngine {
         // index-iteration pattern as Phase 1 — Arc::clone moves to the
         // single spawn site below, instead of being paid for every
         // candidate during candidate-list construction.
-        let sem = Arc::new(Semaphore::new(opts.max_concurrent));
+        let sem = Arc::new(Semaphore::new(cx.opts.max_concurrent));
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
-        let scan_id_arc: Arc<str> = scan_id.into();
+        let scan_id_arc: Arc<str> = cx.scan_id.into();
         // Share one context across all spawned modules in this round instead of
         // deep-cloning the keys map + scan_id per dispatch. Modules take
         // `&ModuleContext` (read-only) and ctx is stable within a round, so an
@@ -729,8 +681,8 @@ impl super::ScanEngine {
         // low-RAM phone with ~80 modules/round.
         let ctx_shared: Arc<ModuleContext> = Arc::new(ctx.clone());
 
-        let target_sources = target_distinct_sources(entity_map, target);
-        for &idx in self.graph.modules_for(target.kind) {
+        let target_sources = target_distinct_sources(state.entity_map, cx.target);
+        for &idx in self.graph.modules_for(cx.target.kind) {
             let Some(module) = self.modules.get(idx) else {
                 continue;
             };
@@ -740,31 +692,26 @@ impl super::ScanEngine {
             if ctx.cancel.is_cancelled() {
                 break;
             }
-            if opts.max_entities.is_some_and(|cap| entity_map.len() >= cap) {
+            if cx
+                .opts
+                .max_entities
+                .is_some_and(|cap| state.entity_map.len() >= cap)
+            {
                 break;
             }
             let name = module.name();
 
-            if !module.accepts(target) {
+            if !module.accepts(cx.target) {
                 continue;
             }
-            if self.gate_skips(
-                scan_id,
-                &**module,
-                name,
-                target,
-                opts,
-                is_expansion,
-                target_sources,
-                stats,
-            ) {
+            if self.gate_skips(cx, &**module, target_sources, state.stats) {
                 continue;
             }
             if !matches!(module.cost(), ModuleCost::Free)
-                && !dispatched.insert(dispatch_key(name, target))
+                && !state.dispatched.insert(dispatch_key(name, cx.target))
             {
-                stats.deduped += 1;
-                self.emit_skipped(scan_id, name, "already dispatched for this target");
+                state.stats.deduped += 1;
+                self.emit_skipped(cx.scan_id, name, "already dispatched for this target");
                 continue;
             }
 
@@ -773,12 +720,12 @@ impl super::ScanEngine {
             };
 
             let module_arc: Arc<dyn Module> = Arc::clone(module);
-            let target = target.clone();
+            let target = cx.target.clone();
             let ctx = Arc::clone(&ctx_shared);
             let emitter = self.emitter.clone();
             let sid = Arc::clone(&scan_id_arc);
-            let throttle_ms = opts.throttle_ms;
-            let module_timeout_ms = super::resolve_timeout(opts, &*module_arc);
+            let throttle_ms = cx.opts.throttle_ms;
+            let module_timeout_ms = super::resolve_timeout(cx.opts, &*module_arc);
 
             set.spawn(async move {
                 let _permit = permit;
@@ -824,7 +771,7 @@ impl super::ScanEngine {
                 Err(e) => {
                     warn!(error = %e, "concurrent module task panicked");
                     self.emit(
-                        scan_id,
+                        cx.scan_id,
                         EventKind::ModuleError {
                             module: "unknown (panicked)".into(),
                             error: e.to_string(),
@@ -833,16 +780,7 @@ impl super::ScanEngine {
                     continue;
                 }
             };
-            self.finalise_module_result(
-                scan_id,
-                outcome.name,
-                target,
-                opts.min_confidence,
-                entity_map,
-                outcome.result,
-                stats,
-                dispatched,
-            );
+            self.finalise_module_result(cx, outcome.name, outcome.result, state);
         }
         Ok(())
     }

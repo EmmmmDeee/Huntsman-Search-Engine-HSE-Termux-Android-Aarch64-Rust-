@@ -198,10 +198,14 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
   → **Solution:** upgrade to assert entity **kind + value + key evidence**; reuse
   saved real-response fixtures (F.3 corpora) so they double as drift detectors.
   **P2**
-- **`[ ]` T2.5 · Engine arg-bloat** — 6× `#[allow(too_many_arguments)]`
-  (`run_expansion` = 12 args; `dispatch_target` 8-arg pass-through).
+- **`[x]` T2.5 · Engine arg-bloat** — 6× `#[allow(too_many_arguments)]`
+  (`run_expansion` = 11 args; `dispatch_target` 8-arg pass-through).
   → **Solution:** bundle per-scan mutable state into a `DispatchCtx`/`ScanState`
-  struct; the wrapper and the allowlist entries vanish. **P2**
+  struct; the wrapper and the allowlist entries vanish. **P2** ✅ Two bundles:
+  `DispatchCx` (immutable `scan_id`/`target`/`opts`/`is_expansion`) + `DispatchState`
+  (mutable `entity_map`/`stats`/`dispatched`) thread the 5 dispatch fns; the
+  6th (`run_expansion`) takes an `ExpansionState` by value + destructures, so its
+  400-line body is byte-identical. All 6 allows removed.
 - **`[~]` T2.6 · De-duplicate helpers** — `is_freemail`/`FREEMAIL`, `nonempty`,
   `country_name`, dead `util::stats::mode`/`mode_or` (wigle reimplements it),
   inconsistent `KEY_ENV` (7 modules inline the literal).
@@ -374,3 +378,16 @@ legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
   change SSE durability ordering for marginal gain; it needs the writer-task +
   flush-before-complete design if pursued. Gate green: clippy/fmt clean, 2,959
   lib + integration tests, 0 failures, no behaviour change.
+- **2026-06-17** — **Executed T2.5** (engine arg-bloat — all 6
+  `#[allow(too_many_arguments)]` removed). Introduced two borrow bundles in
+  `core::engine::dispatch`: `DispatchCx` (immutable `scan_id`/`target`/`opts`/
+  `is_expansion`) and `DispatchState` (mutable `entity_map`/`stats`/`dispatched`),
+  threaded through `dispatch_target`, both inner loops, `gate_skips`, and
+  `finalise_module_result` (now 3–4 params each). `ctx` stays a separate `&mut`
+  param (distinct lifecycle: passed to `process()`, `Arc`-cloned for the
+  concurrent spawn). The 6th, `run_expansion`, takes an `ExpansionState` (the six
+  scan-wide accumulators) **by value and destructures it at the top**, so its
+  ~400-line body is byte-identical apart from the one re-borrowed `dispatch_target`
+  call — zero behaviour risk, no field-prefixing churn. The mutable fields are
+  borrowed at disjoint use sites (no `&mut` aliasing on the hot path). Gate green:
+  clippy/fmt/doc clean, 2,959 lib + integration tests, 0 failures.
