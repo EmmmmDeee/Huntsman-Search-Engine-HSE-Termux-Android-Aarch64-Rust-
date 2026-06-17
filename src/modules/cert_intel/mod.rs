@@ -243,36 +243,79 @@ fn parse_certificate(
     }
 }
 
+/// Decode the length octet(s) of a DER TLV whose tag is at `der[pos]`.
+/// Returns `(header_len, content_len)` where `header_len` is the bytes consumed
+/// by the tag + length field (so the content starts at `pos + header_len`).
+/// Handles short form (`< 0x80`) and long form (`0x81`/`0x82` → 1- or 2-byte
+/// length); rejects indefinite/over-long forms (none occur in a DER cert).
+fn der_tlv_len(der: &[u8], pos: usize) -> Option<(usize, usize)> {
+    let l0 = *der.get(pos + 1)?;
+    if l0 < 0x80 {
+        return Some((2, l0 as usize));
+    }
+    let n = (l0 & 0x7f) as usize;
+    if n == 0 || n > 2 {
+        return None;
+    }
+    let mut len = 0usize;
+    for k in 0..n {
+        len = (len << 8) | *der.get(pos + 2 + k)? as usize;
+    }
+    Some((2 + n, len))
+}
+
 fn extract_sans_from_der(der: &[u8]) -> Vec<String> {
     let mut sans = Vec::new();
     let san_oid: &[u8] = &[0x55, 0x1D, 0x11];
 
     for i in 0..der.len().saturating_sub(san_oid.len()) {
-        if &der[i..i + san_oid.len()] == san_oid {
-            let search_start = i + san_oid.len();
-            let search_end = (search_start + 4096).min(der.len());
-            let region = &der[search_start..search_end];
-
-            let mut pos = 0;
-            while pos + 2 < region.len() {
-                let tag = region[pos];
-                let len = region[pos + 1] as usize;
-                if tag == 0x82 && len > 0 && pos + 2 + len <= region.len() {
-                    if let Ok(name) = std::str::from_utf8(&region[pos + 2..pos + 2 + len]) {
-                        let name = name.trim();
-                        if name.contains('.') && name.len() > 3 && name.len() <= 253 {
-                            sans.push(name.to_lowercase());
-                        }
-                    }
-                    pos += 2 + len;
-                } else if (tag == 0x82 || tag == 0x87) && len > 0 {
-                    pos += 2 + len;
-                } else {
-                    break;
+        if &der[i..i + san_oid.len()] != san_oid {
+            continue;
+        }
+        let mut pos = i + san_oid.len();
+        // In a real certificate the extension value wraps the GeneralNames in
+        // `OCTET STRING { SEQUENCE OF GeneralName }`; descend through each header
+        // (with proper DER length decoding) to reach the dNSName entries. The
+        // hand-built test fragments omit the wrappers and start straight at a
+        // `0x82` tag, so the skips are conditional — both shapes parse.
+        if der.get(pos) == Some(&0x04)
+            && let Some((hdr, _)) = der_tlv_len(der, pos)
+        {
+            pos += hdr;
+        }
+        if der.get(pos) == Some(&0x30)
+            && let Some((hdr, _)) = der_tlv_len(der, pos)
+        {
+            pos += hdr;
+        }
+        // Defensive bound on the GeneralNames scan (unchanged from the original).
+        let end = (pos + 4096).min(der.len());
+        while pos + 2 <= end {
+            let tag = der[pos];
+            // Only the two GeneralName tags the module cares about advance the
+            // cursor; anything else ends the sequence (we've left the SAN value).
+            if tag != 0x82 && tag != 0x87 {
+                break;
+            }
+            let Some((hdr, len)) = der_tlv_len(der, pos) else {
+                break;
+            };
+            let value_end = pos + hdr + len;
+            if len == 0 || value_end > end {
+                break;
+            }
+            // dNSName [2] (0x82) → a Domain SAN; iPAddress [7] (0x87) is skipped.
+            if tag == 0x82
+                && let Ok(name) = std::str::from_utf8(&der[pos + hdr..value_end])
+            {
+                let name = name.trim();
+                if name.contains('.') && name.len() > 3 && name.len() <= 253 {
+                    sans.push(name.to_lowercase());
                 }
             }
-            break;
+            pos = value_end;
         }
+        break;
     }
     sans.sort_unstable();
     sans.dedup();
@@ -315,19 +358,46 @@ fn extract_serial_hex(der: &[u8]) -> String {
     if der.len() < 15 {
         return String::new();
     }
-    for i in 0..der.len().saturating_sub(3) {
-        if der[i] == 0x02 {
-            let len = der[i + 1] as usize;
-            if len > 0 && len <= 20 && i + 2 + len <= der.len() {
-                return der[i + 2..i + 2 + len]
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<Vec<_>>()
-                    .join(":");
+    // The serial is the FIRST INTEGER of TBSCertificate, which in a v2/v3 cert is
+    // preceded by the `[0] EXPLICIT version` wrapper encoded as `A0 03 02 01 vv`
+    // (vv = 0..2). A naive "first 0x02" scan returns the version INTEGER (and its
+    // value byte is itself a stray 0x02), so locate the wrapper and take the
+    // INTEGER immediately after it. v1 certs (no wrapper) fall back to the first
+    // plausible INTEGER.
+    let mut start = None;
+    for i in 0..der.len().saturating_sub(5) {
+        if der[i] == 0xA0
+            && der[i + 1] == 0x03
+            && der[i + 2] == 0x02
+            && der[i + 3] == 0x01
+            && der[i + 4] <= 0x02
+        {
+            if der.get(i + 5) == Some(&0x02) {
+                start = Some(i + 5);
             }
+            break;
         }
     }
-    String::new()
+    let start = start.or_else(|| {
+        (0..der.len().saturating_sub(3)).find(|&i| {
+            der[i] == 0x02 && {
+                let len = der[i + 1] as usize;
+                len > 0 && len <= 20 && i + 2 + len <= der.len()
+            }
+        })
+    });
+    let Some(start) = start else {
+        return String::new();
+    };
+    let len = der[start + 1] as usize;
+    if len == 0 || len > 20 || start + 2 + len > der.len() {
+        return String::new();
+    }
+    der[start + 2..start + 2 + len]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 #[cfg(test)]

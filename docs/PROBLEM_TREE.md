@@ -189,10 +189,19 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
   blocks a request worker (no `--max-time`).
   → **Solution:** `tokio::process` + `--max-time` + `tokio::time::timeout`, or
   gate the env fingerprint to the sync CLI path. **P2**
-- **`[ ]` T2.3 · Fixture-test the binary parsers** — `exif_geo::read_str` and
-  `cert_intel::parse_certificate` are untested.
-  → **Solution:** check a minimal EXIF JPEG and a self-signed DER into `testdata/`
-  (also become fuzz seeds from F.3); assert field extraction. **P2**
+- **`[x]` T2.3 · Fixture-test the binary parsers** — `exif_geo::read_str` and
+  `cert_intel::parse_certificate` were untested against real binary input.
+  → **Solution:** done — a real OpenSSL self-signed DER in
+  `cert_intel/testdata/selfsigned.der` + a hand-built little-endian EXIF/TIFF
+  (constructed in-test, reviewable) drive the parsers end-to-end. **The fixtures
+  exposed two real bugs in `cert_intel`'s hand-rolled DER scanner — both fixed:**
+  (1) `extract_sans_from_der` broke on the SAN extension's `OCTET STRING →
+  SEQUENCE` wrappers, returning **zero** SANs on every real cert (its primary
+  feature — TLS-SAN subdomain discovery — was dead on real input); now descends
+  the wrappers with a proper DER length decoder. (2) `extract_serial_hex` returned
+  the **version** INTEGER, not the serial; now skips the `[0] EXPLICIT` version
+  wrapper. `extract_gps` (N/S/E/W sign handling) + `read_str` now covered via the
+  TIFF. **P2** ✅ fixtures double as future F.3 fuzz seeds.
 - **`[x]` T2.4 · Strengthen weak tests** — premise was an **over-count**: a grep of
   `assert!(!…is_empty())` returns 88 lines, but on inspection nearly all are a
   *guard* immediately paired with a content assertion (`assert_eq!(x[0], …)`,
@@ -408,3 +417,20 @@ legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
   non-empty region value + geoint/coarse tags + evidence). The PROBLEM_TREE
   estimate ("~88 …-only") corrected to reflect the real state. Gate green:
   clippy/fmt clean, 2,959 lib tests (assertions added, count unchanged), 0 fail.
+- **2026-06-17** — **Executed T2.3** (fixture-test the binary parsers — found +
+  fixed two real bugs). Added a real OpenSSL self-signed cert
+  (`cert_intel/testdata/selfsigned.der`: CN/O huntsman-test.example.com /
+  "Huntsman SE Test", serial 0102030405, three dNSName SANs) and a hand-built
+  little-endian EXIF/TIFF (Brisbane GPS + ImageDescription, assembled in-test so
+  it is reviewable, not an opaque blob). Driving the hand-rolled scanners against
+  *real* ASN.1 exposed that the synthetic-fragment tests had been masking two
+  breakages, now fixed: `extract_sans_from_der` ignored the SAN extension's
+  `OCTET STRING → SEQUENCE` wrappers and returned **no SANs on any real
+  certificate** (TLS-SAN subdomain discovery — the module's core output — was
+  dead); it now descends both wrappers via a new `der_tlv_len` length decoder.
+  `extract_serial_hex` returned the **version** INTEGER (and its 0x02 value byte)
+  instead of the serial; it now locates and steps over the `[0] EXPLICIT` version
+  wrapper. `exif_geo::extract_gps` (S/W ref sign handling) and `read_str` (ASCII
+  null-trim) are now covered end-to-end through the real `exif::Reader`. The older
+  synthetic fragment tests still pass (the wrapper-descent + version-skip are
+  conditional). Gate green: clippy/fmt/doc clean, 2,966 lib tests (+7), 0 failures.

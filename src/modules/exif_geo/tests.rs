@@ -6,7 +6,7 @@ use crate::core::scan::{Target, TargetKind};
 
 use super::ExifGeo;
 use super::extract::{clean_owner, device_fingerprint, looks_like_image_url};
-use super::parse::dms_to_decimal;
+use super::parse::{dms_to_decimal, extract_gps, read_str};
 
 // ── accepts() URL classifier ────────────────────────────────
 
@@ -203,4 +203,104 @@ fn shared_validator_rejects_exif_null_island() {
     assert!(!crate::util::geo::is_valid_coords(0.0, 0.0));
     // A real fix still passes.
     assert!(crate::util::geo::is_valid_coords(-27.4766, 153.0166));
+}
+
+// ── Real EXIF container: extract_gps + read_str end-to-end ──────────────────
+// `dms_to_decimal` is unit-tested above on raw `Value::Rational`s, but
+// `extract_gps` (N/S/E/W sign handling, GPS-IFD field access) and `read_str`
+// (ASCII field, null-trim) only run against a parsed `exif::Exif`. Build the
+// smallest container that yields one — a little-endian TIFF (EXIF *is* TIFF) with
+// an ImageDescription and a GPS sub-IFD — and drive both helpers through the real
+// `exif::Reader`, so a regression in our glue (not kamadak-exif's) fails here.
+
+/// Assemble a minimal little-endian TIFF carrying ImageDescription + a GPS IFD
+/// at Brisbane (S 27°28'35.76", E 153°0'59.76" → −27.4766, 153.0166). Offsets are
+/// fixed by the layout below; each value >4 bytes lives in the trailing data area.
+fn build_gps_tiff() -> Vec<u8> {
+    // Layout (byte offsets): header 0..8 · IFD0 8..38 · GPS IFD 38..92 ·
+    // data area 92.. (ImageDescription string, then the two 3-rational arrays).
+    const IFD0: u32 = 8;
+    const GPS_IFD: u32 = 38;
+    const DESC_OFF: u32 = 92; // "HSE GPS fixture\0" (16 bytes) → 92..108
+    const LAT_OFF: u32 = 108; // 3 rationals (24 bytes) → 108..132
+    const LON_OFF: u32 = 132; // 3 rationals (24 bytes) → 132..156
+
+    let mut b: Vec<u8> = Vec::new();
+    // TIFF header: "II", 42, offset of IFD0.
+    b.extend_from_slice(b"II");
+    b.extend_from_slice(&42u16.to_le_bytes());
+    b.extend_from_slice(&IFD0.to_le_bytes());
+
+    // One 12-byte IFD entry. `inline` is the raw 4-byte value-or-offset field.
+    let entry = |tag: u16, typ: u16, count: u32, inline: [u8; 4]| {
+        let mut e = Vec::with_capacity(12);
+        e.extend_from_slice(&tag.to_le_bytes());
+        e.extend_from_slice(&typ.to_le_bytes());
+        e.extend_from_slice(&count.to_le_bytes());
+        e.extend_from_slice(&inline);
+        e
+    };
+    let off = |o: u32| o.to_le_bytes();
+
+    // IFD0: ImageDescription (ASCII) + GPSInfoIFDPointer (LONG).
+    b.extend_from_slice(&2u16.to_le_bytes()); // entry count
+    b.extend_from_slice(&entry(0x010E, 2, 16, off(DESC_OFF))); // ImageDescription
+    b.extend_from_slice(&entry(0x8825, 4, 1, off(GPS_IFD))); // GPSInfoIFDPointer
+    b.extend_from_slice(&0u32.to_le_bytes()); // next-IFD = none
+    debug_assert_eq!(b.len() as u32, GPS_IFD);
+
+    // GPS IFD: refs are ASCII(2) and fit inline; lat/lon are RATIONAL(5) arrays.
+    b.extend_from_slice(&4u16.to_le_bytes()); // entry count
+    b.extend_from_slice(&entry(0x0001, 2, 2, *b"S\0\0\0")); // GPSLatitudeRef
+    b.extend_from_slice(&entry(0x0002, 5, 3, off(LAT_OFF))); // GPSLatitude
+    b.extend_from_slice(&entry(0x0003, 2, 2, *b"E\0\0\0")); // GPSLongitudeRef
+    b.extend_from_slice(&entry(0x0004, 5, 3, off(LON_OFF))); // GPSLongitude
+    b.extend_from_slice(&0u32.to_le_bytes()); // next-IFD = none
+    debug_assert_eq!(b.len() as u32, DESC_OFF);
+
+    // Data area. ImageDescription (16 bytes incl. trailing NUL).
+    b.extend_from_slice(b"HSE GPS fixture\0");
+    debug_assert_eq!(b.len() as u32, LAT_OFF);
+    // GPSLatitude  = 27/1, 28/1, 3576/100   (→ 27.4766)
+    for (num, den) in [(27u32, 1u32), (28, 1), (3576, 100)] {
+        b.extend_from_slice(&num.to_le_bytes());
+        b.extend_from_slice(&den.to_le_bytes());
+    }
+    debug_assert_eq!(b.len() as u32, LON_OFF);
+    // GPSLongitude = 153/1, 0/1, 5976/100   (→ 153.0166)
+    for (num, den) in [(153u32, 1u32), (0, 1), (5976, 100)] {
+        b.extend_from_slice(&num.to_le_bytes());
+        b.extend_from_slice(&den.to_le_bytes());
+    }
+    b
+}
+
+fn read_fixture_exif() -> exif::Exif {
+    let bytes = build_gps_tiff();
+    exif::Reader::new()
+        .read_from_container(&mut std::io::Cursor::new(&bytes))
+        .expect("hand-built TIFF must parse as an EXIF container")
+}
+
+#[test]
+fn extract_gps_decodes_southern_western_refs() {
+    let exif = read_fixture_exif();
+    let (lat, lon) = extract_gps(&exif).expect("GPS IFD must yield a coordinate");
+    // S ref negates latitude; E ref leaves longitude positive.
+    assert!((lat - -27.4766).abs() < 1e-3, "lat = {lat}");
+    assert!((lon - 153.0166).abs() < 1e-3, "lon = {lon}");
+    // Sanity: it passes the shared validator (real fix, not Null Island).
+    assert!(crate::util::geo::is_valid_coords(lat, lon));
+}
+
+#[test]
+fn read_str_reads_and_trims_ascii_field() {
+    let exif = read_fixture_exif();
+    assert_eq!(
+        read_str(&exif, exif::Tag::ImageDescription).as_deref(),
+        Some("HSE GPS fixture"),
+        "ImageDescription ASCII field, trailing NUL trimmed"
+    );
+    // A tag absent from the fixture yields None, not an empty string.
+    assert_eq!(read_str(&exif, exif::Tag::Make), None);
 }

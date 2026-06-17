@@ -83,3 +83,115 @@ fn extract_sans_output_is_lowercased() {
     assert_eq!(sans.len(), 1);
     assert_eq!(sans[0], "mail.example.com");
 }
+
+// ── Real self-signed X.509 (DER) fixture ───────────────────────────────────
+// `testdata/selfsigned.der` is an OpenSSL-generated self-signed certificate
+// (CN/O = huntsman-test.example.com / "Huntsman SE Test", serial 0102030405,
+// three dNSName SANs). The hand-built fragment tests above exercise the scanners
+// in isolation; this one drives them against *real* ASN.1 DER — the exact thing
+// the module receives from `peer_certificate()` — so a heuristic that only works
+// on synthetic input (e.g. ignores the SAN extension's OCTET-STRING/SEQUENCE
+// wrappers, or mistakes the version INTEGER for the serial) fails loudly here.
+const SELF_SIGNED_DER: &[u8] = include_bytes!("testdata/selfsigned.der");
+
+// X.500 AttributeType OIDs (value bytes only, as the scanners match).
+const OID_CN: &[u8] = &[0x55, 0x04, 0x03];
+const OID_O: &[u8] = &[0x55, 0x04, 0x0A];
+
+#[test]
+fn real_cert_extracts_common_name() {
+    // Self-signed ⇒ issuer CN == subject CN.
+    assert_eq!(
+        extract_field_from_der(SELF_SIGNED_DER, OID_CN, true).as_deref(),
+        Some("huntsman-test.example.com"),
+        "issuer CN from real DER"
+    );
+    assert_eq!(
+        extract_field_from_der(SELF_SIGNED_DER, OID_CN, false).as_deref(),
+        Some("huntsman-test.example.com"),
+        "subject CN from real DER"
+    );
+}
+
+#[test]
+fn real_cert_extracts_organisation() {
+    assert_eq!(
+        extract_field_from_der(SELF_SIGNED_DER, OID_O, true).as_deref(),
+        Some("Huntsman SE Test"),
+        "issuer O from real DER"
+    );
+}
+
+#[test]
+fn real_cert_extracts_serial_not_version() {
+    // The TBSCertificate begins `[0]{ INTEGER version } INTEGER serial`, so a
+    // naive "first INTEGER" scan returns the version (02). The serial set at
+    // generation is 0x01_02_03_04_05.
+    assert_eq!(
+        extract_serial_hex(SELF_SIGNED_DER),
+        "01:02:03:04:05",
+        "serial must skip the version INTEGER"
+    );
+}
+
+#[test]
+fn real_cert_extracts_all_three_sans() {
+    // The SAN extension wraps the GeneralNames in OCTET STRING → SEQUENCE; the
+    // scanner must descend through both to reach the dNSName (0x82) entries.
+    let sans = extract_sans_from_der(SELF_SIGNED_DER);
+    assert_eq!(
+        sans,
+        vec![
+            "huntsman-test.example.com".to_string(),
+            "sub1.huntsman-test.example.com".to_string(),
+            "sub2.huntsman-test.example.com".to_string(),
+        ],
+        "all three dNSName SANs, sorted + lowercased"
+    );
+}
+
+#[test]
+fn real_cert_parse_certificate_emits_subdomains_and_evidence() {
+    // End-to-end: parse_certificate on the real DER must surface the two SAN
+    // subdomains as Domain entities and stamp issuer/subject/org/serial/SAN
+    // evidence onto the certificate entity.
+    let target = "huntsman-test.example.com";
+    let mut entity = Entity::new(EntityKind::Domain, target, 0.9, "scan");
+    let mut ev = Evidence::new("cert_intel", "TLS certificate");
+    let mut result = ModuleResult::new();
+    let mut seen = HashSet::new();
+    parse_certificate(
+        SELF_SIGNED_DER,
+        target,
+        "scan",
+        &mut entity,
+        &mut ev,
+        &mut result,
+        &mut seen,
+    );
+
+    let subs: Vec<&str> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        subs.contains(&"sub1.huntsman-test.example.com")
+            && subs.contains(&"sub2.huntsman-test.example.com"),
+        "both SAN subdomains emitted as Domain entities, got {subs:?}"
+    );
+    // The apex (== target) is not a proper subdomain, so it is not re-emitted.
+    assert!(
+        !subs.contains(&"huntsman-test.example.com"),
+        "apex SAN must not be emitted as its own subdomain"
+    );
+    assert_eq!(ev.attributes.get("issuer").map(String::as_str), Some("huntsman-test.example.com"));
+    assert_eq!(ev.attributes.get("issuer_org").map(String::as_str), Some("Huntsman SE Test"));
+    assert_eq!(ev.attributes.get("serial").map(String::as_str), Some("01:02:03:04:05"));
+    assert_eq!(ev.attributes.get("san_count").map(String::as_str), Some("3"));
+    assert!(
+        result.entities.iter().all(|e| e.has_tag(tags::SUBDOMAIN) && e.has_tag("tls-san")),
+        "every emitted SAN subdomain carries subdomain + tls-san tags"
+    );
+}
