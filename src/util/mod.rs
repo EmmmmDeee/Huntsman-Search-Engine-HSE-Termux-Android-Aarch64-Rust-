@@ -37,7 +37,6 @@ pub mod see_know;
 pub mod service_defs;
 pub mod settings;
 pub mod spf;
-pub mod stats;
 pub mod str_util;
 pub mod termux;
 pub mod threat;

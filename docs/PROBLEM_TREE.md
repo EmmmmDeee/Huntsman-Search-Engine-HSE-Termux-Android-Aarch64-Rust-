@@ -202,7 +202,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
   (`run_expansion` = 12 args; `dispatch_target` 8-arg pass-through).
   → **Solution:** bundle per-scan mutable state into a `DispatchCtx`/`ScanState`
   struct; the wrapper and the allowlist entries vanish. **P2**
-- **`[ ]` T2.6 · De-duplicate helpers** — `is_freemail`/`FREEMAIL`, `nonempty`,
+- **`[~]` T2.6 · De-duplicate helpers** — `is_freemail`/`FREEMAIL`, `nonempty`,
   `country_name`, dead `util::stats::mode`/`mode_or` (wigle reimplements it),
   inconsistent `KEY_ENV` (7 modules inline the literal).
   → **Solution:** route all callers to canonical `util` (datasets via F.2);
@@ -353,3 +353,12 @@ legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
   dedicated `core_does_not_import_modules` guard. Gate green: clippy/fmt/doc
   clean, new guard passes, 2,962 lib + integration tests, 0 failures, no
   behaviour change.
+- **2026-06-17** — **T2.6 partial.** Deleted the dead `util::stats` module
+  (`mode`/`mode_or`, 0 prod callers; wigle keeps its own used+tested copy) and
+  routed `whoisxml::nonempty`'s logic through the canonical
+  `util::str_util::nonempty` via a thin owned adapter (zero call-site / behaviour
+  change). Left intentionally: `is_freemail` (oathnet_batch) and `country_name`
+  (phone_area_geo) are **distinct curated lists** — force-merging them would
+  change classification output, which "deterministically" forbids; they need a
+  domain decision on whether the scopes are meant to be identical, not a blind
+  merge. Gate green: 2,959 lib tests, clippy/fmt clean.

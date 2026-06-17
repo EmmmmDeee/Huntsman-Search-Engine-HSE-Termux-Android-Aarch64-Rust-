@@ -221,12 +221,11 @@ impl Module for WhoisXml {
     }
 }
 
-/// Trim a field and drop it if empty.
+/// Trim a field and drop it if empty — an owned-returning adapter over the
+/// canonical [`crate::util::str_util::nonempty`], so the trim/empty logic lives
+/// in exactly one place.
 fn nonempty(s: &Option<String>) -> Option<String> {
-    s.as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(str::to_string)
+    crate::util::str_util::nonempty(s).map(str::to_string)
 }
 
 /// Shared evidence stamped on every entity from one lookup: the queried domain
