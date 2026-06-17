@@ -151,7 +151,8 @@ impl EventEmitter {
 
     fn emit(&self, scan_id: &str, kind: EventKind) {
         let event = Event::new(scan_id, kind);
-        if let Err(e) = self.store.insert_event(&event) {
+        let store = Arc::clone(&self.store);
+        if let Err(e) = tokio::task::block_in_place(|| store.insert_event(&event)) {
             warn!(scan_id = %event.scan_id, error = %e, "failed to persist event to store");
         }
         // Best-effort live fan-out to SSE subscribers. `broadcast::send` errors

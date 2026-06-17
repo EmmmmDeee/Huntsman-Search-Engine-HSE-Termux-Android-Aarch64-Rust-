@@ -71,6 +71,7 @@ pub(super) fn cmd_diff(from: String, to: String, format: String) -> Result<()> {
             ida,
             ida,
         );
+        return Err(Error::Other("both sides resolve to the same scan".into()));
     }
 
     let d = diff_entities(&a.entities, &b.entities);

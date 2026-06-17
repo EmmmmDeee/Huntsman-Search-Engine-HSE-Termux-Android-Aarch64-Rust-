@@ -146,6 +146,15 @@ direct.**
   to `tokio::task::spawn_blocking`. `stats` wraps `list_scans(10_000)` in
   `spawn_blocking`. Remaining: the engine's per-entity `insert_event` + the full
   DB-writer actor (the planned long-term home for the write path).
+  ✅ **Cycle 3 (2026-06-17): engine `insert_event` fixed with `block_in_place`.**
+  `EventEmitter::emit` now clones the `Arc<StoragePort>` and wraps
+  `store.insert_event(&event)` in `tokio::task::block_in_place`, moving the
+  blocking rusqlite call off the async reactor thread. Requires multi-thread
+  runtime (production: 2-worker `new_multi_thread`); `tests/halting.rs` (3 tests)
+  + `tests/smoke.rs` (42 async tests) upgraded from default `current_thread` to
+  `multi_thread, 2` flavor to match production and avoid a panic. Remaining: the
+  DB-writer actor (batched inserts behind a bounded `mpsc` — the planned long-term
+  home for the write path).
 - **`[~]` T1.3 · Verified correctness — 12 unasserted rules** — AU-019, 020, 022,
   023, 024, 025, 026, 028, 029, 040, 041, 042 are dispatched but **no test
   asserts they fire** (only id-presence is checked). A silently-dead rule passes
@@ -504,7 +513,12 @@ direct.**
     scoping is broken → re-validates *every* tsv-imported key, spending budget);
     `core/timeline/mod.rs:185` (pure-digit epochs not exactly 4/10/13 digits are
     silently dropped — a real date omitted, no crash); CLI exit-code contracts
-    (`audit`/`diff` always `Ok`) + `resolve_scan_id` accepting an incomplete scan.
+    (`audit` always `Ok`) + `resolve_scan_id` accepting an incomplete scan. ✅
+    **`diff` same-scan fixed (2026-06-17, cycle 3):** `cmd_diff` now returns
+    `Err("both sides resolve to the same scan")` (non-zero exit) after the
+    footgun `eprintln!` — previously fell through to `Ok(())`. Integration test
+    `diff_wiring_self_compare_is_rejected_with_diagnostic` guards the new
+    behaviour.
     **P3.** *(All contained; none crash or corrupt persisted scan data.)*
 
 ---
@@ -1238,3 +1252,22 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   actor remain). Gate green: clippy/fmt/doc clean, 3,010 lib tests, 0 failures.
   **Paired:** `SOLUTION_TREE` SOL-CAP `[~]`→`[x]`, SOL-BLOCKING updated, §4
   refreshed — same commit.
+- **2026-06-17** — **Paired-tree cycle 3: SOL-BLOCKING engine tail (T1.2) +
+  SOL-CLI-CONTRACT diff exit-code (T2.12).** P→S/gap-analysis pass: §4b SOL-BLOCKING
+  had one remaining open sub-item (engine `insert_event`); §4a / T2.12 LOW-misc still
+  had `diff` always-`Ok`. Both contained; taken together. **(1) T1.2 engine tail:**
+  `EventEmitter::emit` (`core/engine/mod.rs:152-166`) now clones the `Arc<StoragePort>`
+  and wraps `store.insert_event` in `tokio::task::block_in_place`, moving the per-entity
+  blocking rusqlite write off the async reactor. `tests/halting.rs` (3 tests) +
+  `tests/smoke.rs` (42 async tests) upgraded from default `current_thread` to
+  `(flavor = "multi_thread", worker_threads = 2)` — `block_in_place` panics on a
+  single-thread runtime, and the tests should reflect production (also 2-worker
+  `new_multi_thread`). **(2) T2.12 `diff` exit-code:** `cmd_diff` returns
+  `Err(Error::Other("both sides resolve to the same scan"))` in the same-scan footgun
+  block (`cli/diff/mod.rs:74`) — previously fell through to `Ok(())` after the
+  `eprintln!`. Integration test `diff_wiring_self_compare_is_rejected_with_diagnostic`
+  (renamed + rewritten) guards the new non-zero-exit behaviour. **Gap result:**
+  T1.2 SOL-BLOCKING engine tail `[x]` (only DB-writer actor remains); T2.12 diff
+  exit-code fixed. Gate green: clippy/fmt/doc clean, 3,006 lib + 54 smoke + 3 halting
+  + 23 cli tests, 0 failures. **Paired:** `SOLUTION_TREE` SOL-BLOCKING +
+  SOL-CLI-CONTRACT + §4 refreshed — same commit.

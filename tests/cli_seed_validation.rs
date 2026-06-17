@@ -25,12 +25,13 @@ fn run(args: &[&str]) -> (bool, String) {
 }
 
 #[test]
-fn diff_wiring_self_compare_is_empty_and_json_clean() {
+fn diff_wiring_self_compare_is_rejected_with_diagnostic() {
     // The diff *logic* is unit-tested in core::diff; this guards the CLI WIRING a
-    // unit test can't reach: `latest` resolution, loading two scans from the store
-    // by id, and the `-f json` render. Comparing a scan to itself must yield zero
-    // added/removed (a non-empty self-diff would mean the load or the set math is
-    // broken), and stdout must be one clean JSON document.
+    // unit test can't reach: `latest` resolution, same-scan detection, and the
+    // footgun-rejection exit code. Comparing a scan to itself is a user mistake
+    // (scan ids are deterministic SHA-256, so re-scanning overwrites the row rather
+    // than creating a second one — the diff is always empty). The correct behaviour
+    // is to exit non-zero and print a diagnostic pointing at the snapshot workflow.
     let dir = common::tmp_dir("diff");
 
     // One offline scan so there's a `latest` to compare against itself.
@@ -59,26 +60,13 @@ fn diff_wiring_self_compare_is_empty_and_json_clean() {
         .output()
         .expect("spawn hse diff");
     assert!(
-        out.status.success(),
-        "diff of latest vs latest must succeed"
+        !out.status.success(),
+        "self-compare must exit non-zero — footgun rejected, not silently allowed"
     );
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let d: serde_json::Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|e| panic!("diff -f json stdout is not pure JSON ({e}):\n{stdout}"));
-    assert_eq!(
-        d["added"].as_array().map(std::vec::Vec::len),
-        Some(0),
-        "a scan compared to itself must add nothing: {d}"
-    );
-    assert_eq!(
-        d["removed"].as_array().map(std::vec::Vec::len),
-        Some(0),
-        "a scan compared to itself must remove nothing: {d}"
-    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        d["common"].as_u64().unwrap_or(0) > 0,
-        "self-compare common count must equal the scan's entity total: {d}"
+        stderr.contains("both sides resolve to the same scan"),
+        "expected same-scan diagnostic on stderr, got:\n{stderr}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

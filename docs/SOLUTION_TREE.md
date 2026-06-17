@@ -147,8 +147,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (2026-06-17):* `scan_import` now acquires `scan_semaphore` before parsing (mirrors
   `spawn_scan` throttle) and dispatches all sync DB work (`upsert_scan`,
   `upsert_entities_batch`, `derive_all`, `Correlator::run`) to `spawn_blocking`;
-  `stats` wraps `list_scans(10_000)` in `spawn_blocking`. *Gap:* the engine's
-  per-entity `insert_event` + the full DB-writer actor remain. **(§4b)**
+  `stats` wraps `list_scans(10_000)` in `spawn_blocking`. *+SOL-BLOCKING-ENGINE
+  (2026-06-17):* `EventEmitter::emit` (`core/engine/mod.rs:152`) clones the
+  `Arc<StoragePort>` and wraps `store.insert_event(&event)` in
+  `tokio::task::block_in_place` — the per-entity blocking rusqlite write now leaves
+  the async reactor. `tests/halting.rs` + `tests/smoke.rs` (45 async tests total)
+  upgraded from `current_thread` to `(flavor = "multi_thread", worker_threads = 2)`
+  to match production and avoid the `block_in_place`-on-single-thread panic. *Gap:*
+  only the full DB-writer actor (batched inserts, `mpsc`-fed `Connection` owner)
+  remains. **(§4b)**
 - **`[~]` SOL-BUDGET · Atomic quota reservation** — `QuotaBudget::try_increment`
   (CAS, saturating session rollback) replaces every racy `remaining()`-then-
   `increment()`. *Closes:* **T2.11** (oathnet — done; mirrors see_know). *Gap:* the
@@ -241,9 +248,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **`[~]` SOL-CLI-CONTRACT · Honest CLI result/exit semantics** — `keys add` now
   pre-checks `is_poolable_service` and `Err`s for a non-poolable service (no false
   "already exists" + silent drop) ✅; `provision --verify` returns non-zero on a
-  failed smoke/missing-key sub-test ✅. *Residual:* the explicit exit-code contract
-  for `audit`/`diff` (always-`Ok`) is still open. *Closes:* **T2.12** (the two MED
-  CLI bugs).
+  failed smoke/missing-key sub-test ✅. *+SOL-CLI-CONTRACT-DIFF (2026-06-17):*
+  `cmd_diff` returns `Err("both sides resolve to the same scan")` (non-zero exit)
+  in the same-scan footgun block — previously fell through to `Ok(())`. Integration
+  test `diff_wiring_self_compare_is_rejected_with_diagnostic` guards it ✅. *Residual:*
+  `audit` always-`Ok` + `resolve_scan_id` accepting incomplete scans. *Closes:*
+  **T2.12** (two MED CLI bugs + diff exit-code).
 - **`[x]` SOL-DIFF-DEDUP · uid-deduped diff** — `diff_entities` iterates the deduped
   `HashMap` values, so dup-uid CLI snapshots don't over-count; unique-uid input is
   byte-identical. *Closes:* **T2.12** diff over-count. ✅ test
@@ -323,8 +333,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `bstr`. Each its own contained increment (unblocks T2.7 + sharpens C6).
 - **SOL-F2** — de-dup done; `fst` for the large tables outstanding.
 - **SOL-F3** — proptest + criterion landed; `cargo-fuzz` + import-parser proptest left.
-- **SOL-BLOCKING** — API reads + `scan_import` + `stats` all done; only the engine's
-  per-entity `insert_event` + the DB-writer actor remain (T1.2 tail).
+- **SOL-BLOCKING** — API reads + `scan_import` + `stats` + engine `insert_event` all
+  done; only the full DB-writer actor (batched inserts, `mpsc`-fed `Connection` owner)
+  remains as T1.2's final tail.
 - **SOL-CAP** — ✅ fully closed (`[x]`). All T2.8 sub-items done (2 HIGH + MED
   network reads + hibp cast + CLI-import file cap). Removed from finish queue.
 - **SOL-BUDGET** — oathnet done; the per-scan budget statics' `reset_scan`-zeroing
@@ -341,13 +352,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 ### 4d · Coverage snapshot (problem tier × solution status)
 - **T0 (crashes):** fully solved (SOL-BOUNDARY + SOL-F3 guard). ✔
 - **T1 (core guarantees):** T1.1/T1.4 solved; T1.2 further advanced — `scan_import`
-  + `stats` now `spawn_blocking` + `scan_import` semaphore-gated (SOL-BLOCKING);
-  DB-writer actor remains; T1.3 partial.
+  + `stats` (`spawn_blocking`) + engine `insert_event` (`block_in_place`) all done
+  (SOL-BLOCKING); only the DB-writer actor remains; T1.3 partial.
 - **§3.F (foundations):** all three `[~]` — the largest unrealised leverage block.
-- **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅ (SOL-CAP
-  `[~]`→`[x]`); T2.12 mostly done (4 MED/LOW-MED fixed, LOW-misc residual);
-  T2.7/T2.10 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE delivered;
-  only LOW over-dispatch + budget-reset-zeroing remain).
+- **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅; T2.12
+  further advanced (5 items fixed: 2 MED + 2 LOW-MED + diff exit-code; `audit`
+  always-`Ok` + incomplete-scan-resolve remain); T2.7/T2.10 open; T2.11 mostly done
+  (oathnet + found_keys/SOL-ISOLATE delivered; LOW over-dispatch + budget-reset-zeroing
+  remain).
 - **§7 (security):** XSS + S2 (whois SSRF) + S3 (file perms) solved; S1 accepted;
   S4–S5 open (both LOW) with
   solutions named.
@@ -470,3 +482,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   SOL-BLOCKING updated; §4d T2 + T1 rows updated. The §3.F enabler block remains the
   sole remaining high-leverage tier. Paired: `PROBLEM_TREE` T2.8 `[~]`→`[x]`, T1.2
   cycle-2 note + §8 — same commit; gate green, 3,010 lib tests, 0 failures.
+- **2026-06-17** — **Cycle 3 (P→S): SOL-BLOCKING engine tail (T1.2) +
+  SOL-CLI-CONTRACT diff exit-code (T2.12).** P→S/gap-analysis identified two
+  remaining contained items in §4b and T2.12 LOW-misc: **(1) SOL-BLOCKING engine
+  tail** — `EventEmitter::emit` (`core/engine/mod.rs:152`) now clones the
+  `Arc<dyn StoragePort>` and wraps `store.insert_event(&event)` in
+  `tokio::task::block_in_place`: the per-entity blocking rusqlite write is no longer
+  bare on the async reactor. Cascading fix: `tests/halting.rs` (3 tests) + all 42
+  async tests in `tests/smoke.rs` upgraded from default `#[tokio::test]`
+  (`current_thread`) to `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]`
+  — `block_in_place` panics on a single-thread runtime, and tests should reflect the
+  2-worker `new_multi_thread` production runtime anyway. **(2) SOL-CLI-CONTRACT diff
+  exit-code** — `cmd_diff` now `return Err(Error::Other("both sides resolve to the
+  same scan"))` inside the footgun guard (`cli/diff/mod.rs:74`) instead of falling
+  through to `Ok(())`; integration test `diff_wiring_self_compare_is_rejected_with_diagnostic`
+  (renamed + rewritten) verifies the non-zero exit + stderr diagnostic. **P→S
+  gap-refresh:** SOL-BLOCKING §4b updated (DB-writer actor is the sole remaining
+  tail); SOL-CLI-CONTRACT residual narrowed (`audit` + incomplete-scan); §4d T1 +
+  T2 rows updated. §3.F enabler block remains the highest-leverage unrealised tier.
+  Paired: `PROBLEM_TREE` T1.2 cycle-3 note + T2.12 diff note + §8 — same commit;
+  gate green, 3,006 lib + 54 smoke + 3 halting + 23 cli tests, 0 failures.
