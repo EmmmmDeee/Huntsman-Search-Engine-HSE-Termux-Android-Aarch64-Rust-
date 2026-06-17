@@ -127,6 +127,13 @@ pub async fn scan_import(State(s): State<Arc<AppState>>, body: String) -> impl I
     if body.len() > MAX_UPLOAD_BYTES {
         return bad_request("upload too large (max 16 MB)");
     }
+    // Throttle concurrent imports via the shared scan semaphore — mirrors the
+    // gate in spawn_scan so an import flood can't crowd out live scans on a
+    // 2-core Termux device. Permit is held for the entire handler (parse + DB).
+    let sem = Arc::clone(&s.scan_semaphore);
+    let Ok(_permit) = sem.acquire().await else {
+        return internal_error(&"scan semaphore closed".to_string());
+    };
     // `scan_id` is collision-free per call, so the value just needs to be
     // descriptive — the upload size, not a redundant timestamp.
     let sid = scan_id("import-upload", &body.len().to_string());
@@ -147,47 +154,54 @@ pub async fn scan_import(State(s): State<Arc<AppState>>, body: String) -> impl I
         .or_else(|| entities.iter().find(|e| e.kind == EntityKind::Email))
         .map_or_else(|| "uploaded dossier".to_string(), |e| e.value.clone());
 
+    let entity_count = entities.len();
     let mut scan = Scan::new(sid.clone(), Target::new(TargetKind::FullName, label));
     scan.status = ScanStatus::Complete;
     scan.finished_at = Some(unix_now());
-    scan.entity_count = entities.len();
-    if let Err(e) = s.store.upsert_scan(&scan) {
-        return internal_error(&e);
-    }
-    if let Err(e) = s.store.upsert_entities_batch(&entities) {
-        return internal_error(&e);
-    }
-    // Derive and persist the deterministic entity relations (structural/geo/
-    // DNS/WHOIS/name-lineage) so the imported scan carries the same graph a live
-    // scan would — the dossier/graph/debug views and GEXF export all read these
-    // edges. Best-effort: an import whose entities persisted must not fail on a
-    // relation hiccup. Mirrors the engine's finalise-time `persist_relations`.
-    let mut relation_count = 0usize;
-    for r in &crate::core::relation::derive_all(&entities, &sid) {
-        if s.store.upsert_relation(r).is_ok() {
-            relation_count += 1;
-        }
-    }
-    // Run the correlator so cross-entry handle-reuse / breach clusters surface,
-    // exactly as they would for a live scan. Best-effort — a correlator hiccup
-    // must not fail an otherwise-successful import.
-    let mut correlation_count = 0usize;
-    let correlator = crate::core::correlator::Correlator::new(Arc::clone(&s.store));
-    if let Ok(hits) = correlator.run(&sid) {
-        for c in &hits {
-            if s.store.upsert_correlation(c).is_ok() {
-                correlation_count += 1;
-            }
-        }
-    }
+    scan.entity_count = entity_count;
 
-    info!(scan_id = %sid, format, entities = entities.len(), "file imported via web");
+    // Persist scan, entities, relations, and correlations on a blocking thread
+    // so SQLite commits don't stall the 2-worker async reactor.
+    let store = Arc::clone(&s.store);
+    let sid2 = sid.clone();
+    let (relation_count, correlation_count) =
+        match tokio::task::spawn_blocking(move || -> crate::core::error::Result<_> {
+            store.upsert_scan(&scan)?;
+            store.upsert_entities_batch(&entities)?;
+            let mut relations = 0usize;
+            for r in &crate::core::relation::derive_all(&entities, &sid2) {
+                if store.upsert_relation(r).is_ok() {
+                    relations += 1;
+                }
+            }
+            // Run the correlator so cross-entry handle-reuse / breach clusters
+            // surface exactly as they would for a live scan. Best-effort: a
+            // correlator hiccup must not fail an otherwise-successful import.
+            let correlator = crate::core::correlator::Correlator::new(Arc::clone(&store));
+            let mut correlations = 0usize;
+            if let Ok(hits) = correlator.run(&sid2) {
+                for c in &hits {
+                    if store.upsert_correlation(c).is_ok() {
+                        correlations += 1;
+                    }
+                }
+            }
+            Ok((relations, correlations))
+        })
+        .await
+        {
+            Ok(Ok(counts)) => counts,
+            Ok(Err(e)) => return internal_error(&e),
+            Err(e) => return internal_error(&format!("import task failed: {e}")),
+        };
+
+    info!(scan_id = %sid, format, entities = entity_count, "file imported via web");
     (
         StatusCode::OK,
         Json(json!({
             "scan_id": sid,
             "format": format,
-            "entity_count": entities.len(),
+            "entity_count": entity_count,
             "relation_count": relation_count,
             "correlation_count": correlation_count,
             "status": "complete",

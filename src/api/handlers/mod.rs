@@ -162,9 +162,11 @@ pub(crate) fn aggregate_scan_stats(scans: &[crate::core::scan::Scan]) -> ScanSta
 }
 
 pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    let scans = match s.store.list_scans(10_000) {
-        Ok(scans) => scans,
-        Err(e) => return internal_error(&e),
+    let store = Arc::clone(&s.store);
+    let scans = match tokio::task::spawn_blocking(move || store.list_scans(10_000)).await {
+        Ok(Ok(scans)) => scans,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("stats query failed: {e}")),
     };
     let ScanStatsAgg {
         by_status,

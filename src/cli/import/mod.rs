@@ -21,6 +21,17 @@ use json::{import_json_output, parse_oathnet_json};
 use txt::{cmd_import_txt, parse_oathnet_txt};
 
 pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
+    // File-size cap before read_to_string — mirrors MAX_UPLOAD_BYTES in the API
+    // upload handler (16 MB) so both paths enforce the same memory bound.
+    const MAX_IMPORT_BYTES: u64 = 16 * 1024 * 1024;
+    let meta =
+        std::fs::metadata(path).map_err(|e| Error::Other(format!("cannot stat {path}: {e}")))?;
+    if meta.len() > MAX_IMPORT_BYTES {
+        return Err(Error::Other(format!(
+            "file too large ({} bytes > 16 MB): {path}",
+            meta.len()
+        )));
+    }
     let body = std::fs::read_to_string(path)
         .map_err(|e| Error::Other(format!("cannot read {path}: {e}")))?;
 

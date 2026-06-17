@@ -140,6 +140,12 @@ direct.**
   `list_scans(10_000)` + full-JSON deserialise on the reactor. → wrap both in
   `spawn_blocking` (gate `scan_import` behind `scan_semaphore`; fold `stats` into a
   SQL `GROUP BY status` aggregate); roll into the DB-writer-actor pass.
+  ✅ **Cycle 2 (2026-06-17): `scan_import` + `stats` both fixed.** `scan_import`
+  now acquires `scan_semaphore` before parsing, then dispatches all sync store
+  work (`upsert_scan`, `upsert_entities_batch`, `derive_all`, `Correlator::run`)
+  to `tokio::task::spawn_blocking`. `stats` wraps `list_scans(10_000)` in
+  `spawn_blocking`. Remaining: the engine's per-entity `insert_event` + the full
+  DB-writer actor (the planned long-term home for the write path).
 - **`[~]` T1.3 · Verified correctness — 12 unasserted rules** — AU-019, 020, 022,
   023, 024, 025, 026, 028, 029, 040, 041, 042 are dispatched but **no test
   asserts they fire** (only id-presence is checked). A silently-dead rule passes
@@ -300,7 +306,7 @@ direct.**
   add a per-source **health signal** (last-success, parse-rate) surfaced in
   `hse doctor` + the SPA; auto-flag a source "drifted" when parse-rate drops.
   **P2** *(robustness only; source legality is parked in §7.)*
-- **`[~]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** — several
+- **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
   `JSON_BODY_CAP` / `read_body_capped` discipline (§1.5 "cap everything, stream
@@ -357,6 +363,10 @@ direct.**
     `upload_dispatcher_never_panics_on_adversarial_input` test) — only the read
     size is unbounded. **P2** *(robustness/DoS hardening; ties directly to the §1.5
     bounded-memory doctrine and F.1's single capped-read substrate.)*
+    ✅ **Fixed:** `cmd_import` now checks `std::fs::metadata(path).len()` against a
+    local `MAX_IMPORT_BYTES = 16 MiB` constant before calling `read_to_string`.
+    Returns a clean `Error::Other("file too large …")` for oversized files; the
+    realistic-size path is byte-identical.
 - **`[x]` T2.9 · Non-deterministic SQL read-back orderings** *(fixed 2026-06-17)* — four read queries
   lack a unique final tie-break, so equal-key rows can reorder between identical
   runs (violating the §1.7 determinism feature). The deep storage re-audit
@@ -1211,3 +1221,20 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   clippy/fmt/doc clean, 3,006 lib tests (count unchanged — all existing tests pass,
   including `json_decode_parses_ok_and_tags_decode_errors_with_module`), 0 failures.
   **Paired:** `SOLUTION_TREE` SOL-CAP + §4 refreshed — same commit.
+- **2026-06-17** — **Paired-tree cycle 2: SOL-BLOCKING tail (T1.2) + SOL-CAP LOW
+  tail (T2.8) — both closed in one pass.** S→P/gap-analysis pass: §4b had two open
+  finish-queue items: SOL-BLOCKING (`scan_import`/`stats` still blocking reactor)
+  and SOL-CAP (ONE LOW item: CLI-import cap). Both contained; taken together.
+  **(1) `scan_import`:** gated behind `Arc::clone(&s.scan_semaphore).acquire()`
+  (mirrors `spawn_scan` throttle; prevents import flood from crowding live scans);
+  all sync work — `upsert_scan`, `upsert_entities_batch`, `derive_all`, the full
+  `Correlator::run` loop — dispatched to `tokio::task::spawn_blocking`. Permit held
+  for the entire handler (parse phase + DB phase). **(2) `stats`:** `list_scans(10_000)`
+  + aggregation now run in `spawn_blocking`. **(3) `cli/import/mod.rs:24`:** added a
+  `std::fs::metadata` size check (local `MAX_IMPORT_BYTES = 16 MiB`) before
+  `read_to_string`; clean `Error::Other` on oversized files; realistic input
+  byte-identical. **P→S gap result:** T2.8 `[~]`→`[x]` (every sub-item closed);
+  T1.2 further advanced (the engine's per-entity `insert_event` + the DB-writer
+  actor remain). Gate green: clippy/fmt/doc clean, 3,010 lib tests, 0 failures.
+  **Paired:** `SOLUTION_TREE` SOL-CAP `[~]`→`[x]`, SOL-BLOCKING updated, §4
+  refreshed — same commit.

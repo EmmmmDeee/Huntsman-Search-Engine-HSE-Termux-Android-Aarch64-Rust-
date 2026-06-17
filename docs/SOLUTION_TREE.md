@@ -143,23 +143,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **`[~]` SOL-BLOCKING · Keep the 2-worker reactor unblocked** — `spawn_blocking`
   the heavy sync `Store`/render handlers; (planned) a single **DB-writer actor**
   owning the `Connection` behind a bounded `mpsc`. *Closes:* **T2.2** (done, incl.
-  the debug-bundle `curl`), **T1.2** (API-read part done). *Gap:* `scan_import` +
-  `stats` still run sync on the reactor, and the engine's per-entity `insert_event`
-  + the writer-actor remain. **(§4b)**
+  the debug-bundle `curl`), **T1.2** (API-read part done). *+SOL-BLOCKING-EXTEND
+  (2026-06-17):* `scan_import` now acquires `scan_semaphore` before parsing (mirrors
+  `spawn_scan` throttle) and dispatches all sync DB work (`upsert_scan`,
+  `upsert_entities_batch`, `derive_all`, `Correlator::run`) to `spawn_blocking`;
+  `stats` wraps `list_scans(10_000)` in `spawn_blocking`. *Gap:* the engine's
+  per-entity `insert_event` + the full DB-writer actor remain. **(§4b)**
 - **`[~]` SOL-BUDGET · Atomic quota reservation** — `QuotaBudget::try_increment`
   (CAS, saturating session rollback) replaces every racy `remaining()`-then-
   `increment()`. *Closes:* **T2.11** (oathnet — done; mirrors see_know). *Gap:* the
   per-scan `reset_scan`-zeroing across concurrent scans is the same root as
   SOL-ISOLATE. **(§4b)**
-- **`[~]` SOL-CAP · Bounded / streaming reads** — `read_body_capped` /
+- **`[x]` SOL-CAP · Bounded / streaming reads** — `read_body_capped` /
   `read_json_text` (`JSON_BODY_CAP`), reqwest read-timeout backstop, the `exif_geo`
   `bytes_stream()` accumulate-and-bail, the `smtp_vrfy` 8 KiB line cap via
-  `fill_buf`/`consume`. *Closes:* **T2.1** (timeouts), **T2.8** (the two HIGH reads ✅).
+  `fill_buf`/`consume`. *Closes:* **T2.1** (timeouts), **T2.8** (all sub-items ✅).
   **+SOL-CAP-EXTEND (2026-06-17):** `json_decode` routes through `read_json_text`
   (closes ~24 uncapped MED sites ✅); nine AU-gov scraper `resp.text()` sites →
   `read_body_capped(resp, 1_000_000)` ✅; hibp `count() as u32` casts →
-  `u32::try_from(…).unwrap_or(u32::MAX)` ✅. *Gap:* only the LOW
-  `cli/import/mod.rs` `read_to_string` cap remains. **(§4b)**
+  `u32::try_from(…).unwrap_or(u32::MAX)` ✅. **+SOL-CAP-CLOSE (2026-06-17):**
+  `cli/import/mod.rs:24` `read_to_string` now gated by `metadata().len()` check
+  against `MAX_IMPORT_BYTES = 16 MiB` before read — T2.8 LOW closed. ✅ All T2.8
+  sub-items done; **SOL-CAP is `[x]`** (T2.8 `[~]`→`[x]`).
 - **`[x]` SOL-ISOLATE · Per-`scan_id` state isolation** — the `found_keys` sink is
   keyed by `scan_id` via a `tokio::task_local` (`SCAN`) the engine sets around
   `run_with_ledger` **and** each spawned dispatch task (task-locals don't cross
@@ -276,7 +281,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-OUTPUT-ESCAPE | §7 SPA XSS | `[x]` |
 | SOL-BLOCKING | T2.2 · T1.2 (partial) | `[~]` |
 | SOL-BUDGET | T2.11 oathnet | `[~]` |
-| SOL-CAP | T2.1 · T2.8 (2 HIGH) | `[x]`/`[~]` |
+| SOL-CAP | T2.1 · T2.8 (all sub-items) | `[x]` |
 | SOL-ISOLATE | T2.11 found_keys | `[x]` |
 | SOL-SSRF / -WHOIS | §6 (HTTP) · §7 S2 | `[x]`/`[x]` |
 | SOL-SECRETS / -EXTEND | env/pool/archive · §7 S3 | `[x]`/`[x]` |
@@ -318,10 +323,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `bstr`. Each its own contained increment (unblocks T2.7 + sharpens C6).
 - **SOL-F2** — de-dup done; `fst` for the large tables outstanding.
 - **SOL-F3** — proptest + criterion landed; `cargo-fuzz` + import-parser proptest left.
-- **SOL-BLOCKING** — API reads done; `scan_import`/`stats` handlers + the engine
-  DB-writer actor left (T1.2).
-- **SOL-CAP** — 2 HIGH reads + all MED items done (`json_decode`, AU-gov scrapers,
-  hibp cast ✅); only the LOW `cli/import` `read_to_string` cap remains (T2.8 tail).
+- **SOL-BLOCKING** — API reads + `scan_import` + `stats` all done; only the engine's
+  per-entity `insert_event` + the DB-writer actor remain (T1.2 tail).
+- **SOL-CAP** — ✅ fully closed (`[x]`). All T2.8 sub-items done (2 HIGH + MED
+  network reads + hibp cast + CLI-import file cap). Removed from finish queue.
 - **SOL-BUDGET** — oathnet done; the per-scan budget statics' `reset_scan`-zeroing
   still folds into the SOL-ISOLATE task-local (LOW — the session ceiling bounds it).
 - **T1.3 meta-guard** — the 12 firing assertions shipped; the dispatch-table
@@ -335,12 +340,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### 4d · Coverage snapshot (problem tier × solution status)
 - **T0 (crashes):** fully solved (SOL-BOUNDARY + SOL-F3 guard). ✔
-- **T1 (core guarantees):** T1.1/T1.4 solved; T1.2 partial (SOL-BLOCKING); T1.3 partial.
+- **T1 (core guarantees):** T1.1/T1.4 solved; T1.2 further advanced — `scan_import`
+  + `stats` now `spawn_blocking` + `scan_import` semaphore-gated (SOL-BLOCKING);
+  DB-writer actor remains; T1.3 partial.
 - **§3.F (foundations):** all three `[~]` — the largest unrealised leverage block.
-- **T2 (robustness):** T2.1–T2.6 + T2.9 solved; T2.8 nearly closed (all HIGH + MED
-  done; only LOW CLI-import cap remains); T2.12 mostly done (4 MED/LOW-MED fixed,
-  LOW-misc residual); T2.7/T2.10 open; T2.11 mostly done (oathnet + found_keys/
-  SOL-ISOLATE delivered; only LOW over-dispatch + budget-reset-zeroing remain).
+- **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅ (SOL-CAP
+  `[~]`→`[x]`); T2.12 mostly done (4 MED/LOW-MED fixed, LOW-misc residual);
+  T2.7/T2.10 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE delivered;
+  only LOW over-dispatch + budget-reset-zeroing remain).
 - **§7 (security):** XSS + S2 (whois SSRF) + S3 (file perms) solved; S1 accepted;
   S4–S5 open (both LOW) with
   solutions named.
@@ -447,3 +454,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   updated. The §3.F enabler block (SOL-F1 key-scanner / SOL-F2 fst / SOL-F3 fuzz)
   is confirmed the sole remaining high-leverage tier. Paired: `PROBLEM_TREE` T2.8 +
   §8 same commit; gate green, 3,006 lib tests, 0 failures.
+- **2026-06-17** — **Cycle 2 (S→P): SOL-BLOCKING tail + SOL-CAP LOW tail — both
+  closed.** §4b's two open finish items taken together (both contained, complementary):
+  **(1) SOL-BLOCKING** — `scan_import` now acquires `s.scan_semaphore` before parsing
+  (mirrors the `spawn_scan` throttle: import floods can no longer crowd out live scans
+  on the 2-worker reactor); all sync DB work (`upsert_scan`, `upsert_entities_batch`,
+  `crate::core::relation::derive_all` + loop, `Correlator::run` + loop) dispatched to
+  `tokio::task::spawn_blocking` with the typed closure `move || -> core::error::Result<_>`.
+  `stats` wraps `list_scans(10_000)` in `spawn_blocking`. **(2) SOL-CAP** — the final LOW
+  item: `cli/import/mod.rs:24` `std::fs::read_to_string` now prefixed with a
+  `std::fs::metadata().len()` guard (local `MAX_IMPORT_BYTES = 16 MiB`); realistic
+  imports byte-identical. **SOL-CAP: `[~]`→`[x]`.** **S→P gap-refresh:** T2.8 fully
+  closed; T1.2 further advanced (reactor clear of import/stats blocking; engine
+  `insert_event` + DB-writer actor remain); §4b SOL-CAP removed from finish queue,
+  SOL-BLOCKING updated; §4d T2 + T1 rows updated. The §3.F enabler block remains the
+  sole remaining high-leverage tier. Paired: `PROBLEM_TREE` T2.8 `[~]`→`[x]`, T1.2
+  cycle-2 note + §8 — same commit; gate green, 3,010 lib tests, 0 failures.
