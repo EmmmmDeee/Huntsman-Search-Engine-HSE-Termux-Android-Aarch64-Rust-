@@ -1,201 +1,323 @@
-# HSE — Problem Tree (engineering scope)
+# Huntsman — Unified Problem & Capability Tree (living document)
 
-Scope: **functionality, features, bugs, errors, accuracy, performance, Rust code
-quality, Termux/aarch64/no-root compatibility only.** Safety, privacy, legal,
-licensing, terminology, and doc-prose findings are deliberately **excluded** here
-(indexed under "Deferred" at the bottom for a later pass).
+> **One mission.** Make Huntsman the fastest, most correct, most *reproducible*
+> offensive OSINT / GEOINT / NETINT engine that runs **on-device** (Termux,
+> aarch64, no root), with a deliberate **Australian** bias, and **surpass
+> SpiderFoot** (breadth, speed, correlation) and **Maltego** (entity linking)
+> **without heavy in-app graphing** — by delivering the *analytic conclusion*
+> deterministically instead of making an analyst pivot a graph by hand.
+>
+> Scope of this tree: **functionality & features only** — bugs, errors, accuracy,
+> performance, code quality, capability gaps, Termux/aarch64 compatibility.
+> Safety / privacy / legal / licensing / terminology / doc-prose are **out of
+> scope here** (indexed under §7 *Deferred*, to be handled in a separate pass).
 
-Every leaf is a *defined* problem: location, mechanism, impact, fix direction,
-priority. Priorities: **P0** crash/data-corruption → fix first · **P1** breaks a
-core guarantee (throughput, reproducibility, verified correctness) · **P2**
-quality/robustness · **P3** minor.
-
----
-
-## Root problem
-
-> HSE is a feature-rich, unusually disciplined prototype, but its **runtime
-> robustness, throughput, output-reproducibility, and verified correctness** have
-> bounded gaps that cap reliability and performance. The gaps concentrate in five
-> places: (B1) two untrusted-input panics, (B2) two non-deterministic outputs,
-> (B3) blocking SQLite I/O on the async runtime, (B4) unverified core behaviour,
-> and (B5/B6) maintainability debt and fragile scraper features.
+This is a **running document**: it is the single source of truth for what is
+wrong, what is missing, and exactly how each is to be solved. Update it in the
+same commit as the work (status flips + a line in §8 *Maintained log*).
+**Every change lands on `main`.**
 
 ---
 
-## B1 — Bugs / crashes (correctness)
+## 1. Engineering doctrine — how every node below is solved
 
-- **B1.1 [P0] `src/modules/au_electoral/parse.rs:14-15` (also `:30-37`)** — `find()`
-  offset taken from the lowercased copy `lc` (line 11) is used to slice the
-  *original* `text` (`&text[pos + …]`). `str::to_lowercase()` is **not**
-  byte-length-preserving (`İ` U+0130 → 3 bytes, `ẞ`→`ß`, etc.), so a multibyte
-  uppercase char before `"division of "`/`"enrolled in/for "` in the AEC/state-EC
-  response shifts `pos` onto a non-char-boundary → **`str` index panic → module/
-  scan abort**. Fix: search and slice the *same* string (operate on `lc`, re-case
-  after), or use a boundary-safe case-insensitive find; `util::str_util::
-  floor_char_boundary`/`truncate_safe` already exist for this.
-- **B1.2 [P0] `src/modules/au_property/parse.rs:117-121`** — same class:
-  `line.to_lowercase().find(&state_lc)` offset used to slice the original
-  `line[..pos]` → panic on multibyte-uppercase property-portal HTML. Same fix.
-- **B1.3 [P3] `src/modules/mylnikov/mod.rs:46`** — `range.unwrap_or(5000.0) as u64`
-  on an untrusted, **un-range-validated** `f64` from Mylnikov JSON; a negative
-  value wraps to a huge `u64` → accuracy misclassification (lands in the
-  lowest-confidence bucket — conservative, no crash). Fix: validate/clamp before
-  cast.
-- **B1.4 [P3] `src/modules/reddit_user/mod.rs:164`** — `created_utc as u64`
-  (`f64` epoch) drops the sub-second fraction and saturates negatives to 0;
-  display-only `created_unix` attribute → cosmetic. Fix: `round`/document.
-- **B1.5 [P3] `src/modules/dns_axfr/mod.rs:261`** — `label.len() as u8` truncates
-  a label > 255 bytes. Unreachable on spec-valid input (labels ≤63, validated
-  upstream); harden with an assert/guard for defence-in-depth.
+Planned and executed in the style of **Andrew Gallant (burntsushi)** — author of
+`ripgrep`, `regex`, `aho-corasick`, `memchr`, `bstr`, `fst`, `csv`, `walkdir`,
+`quickcheck`. The doctrine is not decoration; it dictates the *solution* on every
+leaf:
 
-## B2 — Determinism / reproducibility (a stated core invariant)
+1. **Measure, never guess.** Every performance claim is backed by a `criterion`
+   benchmark and a profile. Hot paths are found, not assumed.
+2. **Prove correctness by exhaustion.** Pure functions get unit tests *and*
+   `proptest` properties ("for all inputs: no panic; output invariant under
+   permutation; round-trips"). Every parser that eats untrusted bytes gets a
+   `cargo-fuzz` target. A bug fixed without a test that would have caught it is
+   not fixed.
+3. **Finite automata for matching.** Multi-pattern scanning is `aho-corasick`
+   (Teddy/SIMD), substring search is `memchr::memmem`, big static lookup tables
+   are `fst` (memory-mapped finite-state transducers). No hand-rolled `.find()`
+   offset arithmetic on transformed copies (that is exactly the T0 panic class).
+4. **Bytes, not `String`, for input you don't control.** Untrusted HTML/JSON is
+   handled with `bstr`/`&[u8]` so invalid UTF-8 and multibyte boundaries can
+   never panic.
+5. **Allocation-conscious, streaming, bounded memory.** This is a phone. Prefer
+   zero-copy slices, reuse buffers, cap everything, stream don't slurp. `fst`
+   keeps lookup tables flat in RAM.
+6. **Minimal, pure-Rust dependencies.** No C, no native-TLS — Termux-safe.
+   `aho-corasick`/`memchr` are *already in the tree via `regex`* (promoting them
+   to direct deps is free); `bstr`/`fst` are tiny and pure-Rust;
+   `proptest`/`criterion`/`arbitrary` are dev-only (zero runtime/binary cost).
+   `#![forbid(unsafe_code)]` governs **our** crate only — vetted deps may use
+   `unsafe`/SIMD internally.
+7. **Determinism is a feature.** Same input → byte-identical output, always. It
+   is what lets Huntsman beat Maltego without a graph and beat SpiderFoot on
+   reproducibility. Guard it with property tests, not vigilance.
+8. **Simple data structures over clever abstractions. Document everything.**
 
-- **B2.1 [P1] `src/core/gexf/mod.rs:146`** — the shared-evidence edge label is
-  `HashSet::intersection(...).collect::<Vec>()` joined **unsorted** into the GEXF
-  `<edge label="…">` (emitted by `hse export --format gexf` and
-  `GET /api/v1/scans/{id}/entities.gexf`). The label string varies run-to-run →
-  breaks byte-stable/reproducible export. Fix: `sort()` the shared vec before
-  `join(", ")`.
-- **B2.2 [P2] `src/core/live/mod.rs:299`** — `LiveSessions::list()` collects
-  `HashMap::values()` **unsorted** → `GET /api/v1/live` array order is
-  non-deterministic. Inconsistent with the same file's `start()` eviction
-  (`:220-228`), which already `min_by`+id-tiebreaks. Fix: sort by `id`/`started_at`.
+**Sequencing rationale (significance × severity):** stop the crashes (§3.0) →
+restore the guarantees the product's identity rests on (§3.1) → lay the
+primitives that make all later work fast *and* safe (§3.F) → pay down quality
+debt (§3.2) → expand capability to surpass the competition (§4). Foundations
+come before features on purpose: with the right primitives, the capability
+program is cheap; without them, it is slow and fragile.
 
-## B3 — Performance / throughput (Termux ~2-worker reactor)
+## 2. Legend & node schema
 
-- **B3.1 [P1] `src/core/engine/mod.rs:132`** — `EventEmitter::emit` runs a
-  **blocking** rusqlite `insert_event` (locks `Mutex<Connection>`) and is called
-  from async `run`/`run_expansion` and from inside concurrently-spawned dispatch
-  tasks (`dispatch.rs:787`), **once per entity** (hundreds per breach-heavy scan).
-  → every event blocks a tokio worker on disk I/O + mutex, serializing the
-  "concurrent" dispatch and stalling the reactor. Fix: feed events to a single
-  async writer task over a channel (batch inserts), or `spawn_blocking`.
-- **B3.2 [P1] `src/api/scan_handlers/mod.rs` (57,157-178,223,230,274,300,304,395)
-  + `src/api/scan_export/mod.rs` (278,285,303,439)** — async axum handlers call
-  synchronous rusqlite `Store` methods directly with **no `spawn_blocking`**. A
-  slow query / WAL checkpoint / large `entities_for_scan` blocks a request worker
-  and (via the shared Connection mutex) stalls all concurrent HTTP requests. Fix:
-  `spawn_blocking` around Store calls, or a dedicated DB-actor task.
-- **B3.3 [P2] `src/cli/export/environment.rs:41`** — blocking
-  `std::process::Command::new("curl").output()` with **no `--max-time`**,
-  reachable from the async debug-bundle export (`render_debug_bundle` →
-  `render_environment`). A hung curl blocks the request worker indefinitely. Fix:
-  `tokio::process` + timeout, or restrict to the sync CLI path.
-- **B3.4 [P2] `src/util/http/client.rs:11` + ~8 `send().await` sites** — there is
-  **no client-level total timeout** (only `connect_timeout`); 24 of ~32 fetch
-  sites wrap in `tokio::time::timeout`, but ~8 do not — e.g.
-  `web_crawler/crawl_util/mod.rs:251` (`fetch_robots`), `:232` (`resolve_seed`).
-  A server that connects then stalls mid-body hangs the await forever. Fix: set a
-  default `.timeout(...)` on the shared client, or wrap the stragglers.
-- **B3.5 [P3] `src/util/diagnostics/{ledger.rs:21,analyse.rs:21}`** — blocking
-  `std::fs::read_to_string`; confirm async reachability and move to `tokio::fs`
-  if so.
+Status: `[ ]` open · `[~]` in progress · `[x]` done · `[-]` deferred.
+Priority: **P0** crash/corruption · **P1** breaks a core guarantee · **P2**
+quality/robustness · **P3** minor · **CAP** capability/feature.
+Each node: **ID · statement · location · impact · → optimal solution · prio · status**.
 
-## B4 — Test / correctness verification
-
-- **B4.1 [P1] `src/core/correlator/rules/*`** — **12 AU correlation rules have no
-  firing assertion** (tested only by id-presence-in-output, never that they
-  actually produce a correlation): **AU-019, 020, 022, 023, 024, 025, 026, 028,
-  029, 040, 041, 042**. A rule that silently stops firing passes CI; these are
-  user-visible features. Fix: per-rule fixture tests asserting it fires with the
-  expected severity + entity-uid set.
-- **B4.2 [P2] `src/modules/exif_geo/parse.rs:8` `read_str`** — untested (needs a
-  small EXIF fixture). Identity-bearing field extraction (Make/Model/Serial/
-  Owner/Artist/Software) is unverified → a parse regression ships silently.
-- **B4.3 [P2] `src/modules/cert_intel/mod.rs:186` `parse_certificate`** — untested
-  (needs a DER fixture). SAN/issuer/org extraction unverified.
-- **B4.4 [P2] ~50 module test files (88 assertions) assert only
-  `assert!(!…is_empty())`** (hunter_io, gravatar, seon, numverify, fullcontact,
-  psbdmp, onyphe, …) → confirm "something emitted" but not entity kind, value, or
-  evidence correctness; structural regressions pass. Fix: strengthen to assert
-  kind + value + key evidence attributes.
-
-## B5 — Code quality / architecture / maintainability
-
-- **B5.1 [P2] Layering breach: `core` imports `crate::modules` in production** —
-  `src/core/engine/mod.rs` (8 sites incl. 241-243,247,254,461,908) +
-  `src/core/engine/enrich.rs:240` — violates the CLAUDE.md invariant "core must
-  NOT import modules". Worse, `tests/architecture.rs:140` *allowlists* those
-  `modules::*` paths in the `core→util` guard (encoding the breach as expected),
-  and no guard scans `core` for `crate::modules`. Fix: invert the dependency
-  (register the needed hooks — `reset_budget`, `identify_api_key` — as
-  trait objects/fn-pointers from the module registry into core), drop the
-  allowlist entries, add a `core_does_not_import_modules` guard.
-- **B5.2 [P2] `src/core/engine/dispatch.rs` (265,426,475,498,620) +
-  `engine/mod.rs:878`** — 6× `#[allow(clippy::too_many_arguments)]`
-  (`run_expansion` = 12 args; `dispatch_target` is an 8-arg pass-through). Fix:
-  collect the per-scan mutable state (`scan_id, target, ctx, opts, entity_map,
-  stats, dispatched`) into a `DispatchCtx`/`ScanState` struct; the 8-arg
-  signatures and the wrapper collapse.
-- **B5.3 [P2] Duplicated logic that can drift** — `is_freemail`/`FREEMAIL`
-  (`util/oathnet_batch/helpers.rs:24` vs canonical `util/domains/mod.rs:142`);
-  `nonempty` (`whoisxml/mod.rs:225` vs `util/str_util/mod.rs:14`); `country_name`
-  (`phone_area_geo` vs `util/geohash/country.rs`). Two lists/tables that can
-  disagree → inconsistent classification. Fix: route all callers through the
-  canonical util.
-- **B5.4 [P3] Dead/duplicated helper** — `util::stats::mode`/`mode_or` have **0
-  non-test callers**; `wigle/mod.rs:556,570` reimplements them byte-for-byte. Fix:
-  delete one copy; route wigle through `util::stats` (or remove the unused util).
-- **B5.5 [P3] `KEY_ENV` convention inconsistency** — 26 key-gated modules define a
-  `KEY_ENV` const (mixed `const`/`pub(crate)`/`pub(super)`); 7 skip it and
-  hardcode the env literal inline (`virustotal, abuseipdb, api_key_probe,
-  cell_intel, wifi_intel, contact_enrich, wigle`). An env-var rename can desync
-  silently. Fix: standardize on a per-module const.
-
-## B6 — Functionality reliability (features that may silently not work)
-
-- **B6.1 [P2] Scraper-class modules are fragile** — `au_people` (whitepages/
-  truepeoplesearch), `au_electoral`, `au_property`, `search_engines` (17 SERPs),
-  `username_search` (300+ sites) all depend on spoofed-UA HTML parsing of
-  frequently-changing third-party pages; `au_property` endpoints are noted as
-  possibly speculative (may not work at all). High silent-breakage rate, and most
-  have only `!is_empty()` or no fixture-backed parse tests. Fix: golden-fixture
-  parser tests + per-source health/last-success telemetry so breakage is visible.
-  *(Robustness only here; the legality of these sources is parked.)*
-- **B6.2 [P3] `src/modules/mls/mod.rs:28` `DEFAULT_KEY = "test"`** — if `"test"`
-  is not a live key, the module is effectively inert without `HUNTSMAN_MLS_KEY`
-  (silent no-op feature). Fix: gate the module on a real key / surface a
-  "needs key" status instead of a dummy default.
-- **B6.3 [P3] `src/modules/gleif_lei/mod.rs:82`** — the ABN→LEI filter is
-  acknowledged in-code as "unreliable" (falls back to feeding off Organisation
-  entities) → known-degraded accuracy path. Fix: revisit the match key or
-  down-rank its output.
+Current baseline (grounded in the codebase, 2026-06-17): 118 modules across 14
+categories (Infrastructure 20, Geo 19, People 15, DnsRecon 13, Breach 11, Social
+10, Email 6, Corporate 6, Web 5, Sensor 4, Threat 3, Search/Phone/Other 2 each);
+59 native correlation rules (AU-001…AU-059); 0 `unsafe`; deterministic entity
+merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
+`memchr`, `bstr`, `fst`, `proptest`, `criterion`, `arbitrary` NOT yet direct.**
 
 ---
 
-## Verified sound (checked and cleared — do not re-investigate)
+## 3. The tree — defects & foundations (do these first, in order)
 
-- **Injection:** `termux_cmd`, `util::curl`, `api_key_probe`, `curl_client` pass
-  values as **argv** (no shell, no interpolation).
-- **HTTP SSRF:** shared client uses an `SsrfResolver` (drops private IPs at
-  resolve, TOCTOU-safe) + private-IP-refusing redirect policy; curl fallback pins
-  a vetted public IP; literals gated by `url_host_is_private`.
-- **TLS:** reqwest 0.12 rustls + webpki-roots; no `danger_accept_invalid_certs`.
-- **Regex:** all 20 `Regex::new` sites are cached (`OnceLock`/`Lazy`) — no
-  per-call recompilation.
-- **Panics:** all other handed leads guarded — `abn:209` (`!is_empty()`),
-  `util/html` decode (ASCII-boundary find), geometry median/footprint/circle
-  (empty/zero/NaN-guarded), `address_au` (length-checked slices).
-- **Concurrency:** every fan-out is semaphore-capped; no unbounded `JoinSet`.
-- **Numeric:** confidence `clamp(0,1)`, corroboration `saturating_add`, divisions
-  zero-guarded; `mode()` tie-breaks deterministically.
-- **Portability:** **0 `unsafe`**, 0 arch-specific intrinsics, pure Rust; Termux
-  sensor modules no-op cleanly off-device; `/proc/net/arp` read via async
-  `tokio::fs`.
-- **Registry:** all 118 modules registered & reconcile to dirs (no orphans);
-  every module has test code, `produces()`, and a non-empty `attack_techniques()`.
+### 3.0 — Tier 0 · P0 correctness (crashes) — FIX FIRST
 
-## Deferred (out of current scope — revisit later)
+- **`[ ]` T0.1 · `src/modules/au_electoral/parse.rs:14-15,30-37`** — `find()` on
+  the lowercased copy `lc`, offset used to slice the **original** `text`.
+  `to_lowercase()` is not byte-length-preserving (`İ`→3 bytes, …) → non-char-
+  boundary `str` index **panic → scan abort** on multibyte-uppercase response
+  HTML.
+  → **Solution:** delete the offset-on-a-copy pattern. The markers are ASCII, so
+  build a cached **`aho-corasick`** automaton (ASCII-case-insensitive) over
+  `["division of ", "enrolled in ", "enrolled for "]` and search the original
+  `&[u8]`; the returned offset is valid in the original. Walk the name with
+  `char_indices` (boundary-safe). Add a `proptest` `fn(s in ".*") { let _ =
+  extract_division(&s); }` (no panic for any input) **and** a `cargo-fuzz` target
+  seeded with real AEC/ECQ HTML. **P0**
+- **`[ ]` T0.2 · `src/modules/au_property/parse.rs:117-121`** — same class:
+  `line.to_lowercase().find(&state_lc)` offset slices the original `line[..pos]`.
+  → **Solution:** identical — `memchr::memmem`/`aho-corasick` over the original
+  bytes + boundary-safe walk; shared proptest+fuzz harness with T0.1. **P0**
+- **`[ ]` T0.3 · untrusted numeric casts** — `mylnikov/mod.rs:46`
+  (`range.unwrap_or(5000.0) as u64` on un-validated `f64`; negative → huge u64 →
+  misclassification), `reddit_user/mod.rs:164`, `dns_axfr/mod.rs:261`.
+  → **Solution:** validate/clamp before cast (`f64::clamp` to a sane range,
+  reject non-finite); a `proptest` over the JSON deserialiser asserting bounded
+  output. **P3** (rolled here as the same "trust no input number" fix.)
 
-Indexed so nothing is lost; **not** to be actioned in this pass.
-- **Security:** hardcoded live default keys (`util/keys/constants.rs:137-158`),
-  whois-referral raw-TCP SSRF, key-in-URL error/log leaks, cleartext-secret
-  persistence/exposure, auto-dossier `0644` perms.
-- **Privacy/Legal/Licensing:** real-PII test fixture & root `DOSSIER_*.md`,
-  electoral-roll/whitepages/title scraping legality, GPL-3.0 `alertify` +
-  missing `NOTICE`/attribution, unencrypted-at-rest, no authorised-use notice.
-- **Terminology:** "operator" (282×) → user/analyst; `key_harvest` /
-  `API_KEY_HUNTING_GUIDE.md` naming.
-- **Docs:** module-count drift across README / `docs/MODULES.md` / CHANGELOG /
-  `FAULT_TREE_ANALYSIS.md`.
+### 3.1 — Tier 1 · P1 core guarantees
+
+- **`[ ]` T1.1 · Determinism** — `core/gexf/mod.rs:146` joins a `HashSet`-derived
+  shared-source label **unsorted** into exported XML; `core/live/mod.rs:299`
+  returns `HashMap::values()` **unsorted** to `GET /api/v1/live`.
+  → **Solution:** `sort()` before emit in both. Then make it a *guarantee*: a
+  `proptest` that permuting input entity/session order yields **byte-identical**
+  render. Extend to a general "renderers are permutation-invariant" property over
+  CSV/JSON/GEXF/dossier. **P1**
+- **`[ ]` T1.2 · Throughput (the on-device perf guarantee)** —
+  `core/engine/mod.rs:132` runs blocking rusqlite `insert_event` **per entity**
+  from async + spawned dispatch tasks; `api/scan_handlers` (8 sites) +
+  `api/scan_export` (4) call sync `Store` on async workers with no
+  `spawn_blocking`. On a ~2-worker Termux reactor this serialises "concurrent"
+  work and stalls the loop.
+  → **Solution:** a single **DB-writer actor** owning the `Connection`, fed by a
+  bounded `mpsc`; producers `send` non-blocking; the actor batches inserts in one
+  transaction. API reads go through `spawn_blocking` (or the actor + `oneshot`).
+  **Measure it:** `criterion` bench of events/sec and p99 dispatch latency pinned
+  to 2 worker threads, before/after; this becomes the published "fast on a phone"
+  number. **P1**
+- **`[ ]` T1.3 · Verified correctness — 12 unasserted rules** — AU-019, 020, 022,
+  023, 024, 025, 026, 028, 029, 040, 041, 042 are dispatched but **no test
+  asserts they fire** (only id-presence is checked). A silently-dead rule passes
+  CI.
+  → **Solution:** a table-driven suite `[(id, build_fixture_entities, expect:
+  {fires, severity, uid_set})]`; one assertion per rule. Add a **meta-guard**:
+  every `AU-NNN` in the dispatch `RULES` table must have ≥1 firing fixture (so no
+  future rule ships un-pinned). **P1**
+- **`[ ]` T1.4 · Architecture — `core` imports `crate::modules`** —
+  `core/engine/mod.rs` (8 sites) + `enrich.rs:240`, violating the CLAUDE.md
+  invariant; `tests/architecture.rs:140` *allowlists* the `modules::*` paths
+  (laundering the breach); no guard scans `core`.
+  → **Solution:** invert the edge — define a `core::registry::Hooks` struct of
+  fn-pointers/trait objects (`reset_budgets`, `identify_api_key`, …) that the
+  `modules` layer installs at startup; `core` calls through the hook, never
+  `use crate::modules`. Remove the allowlist; add
+  `tests/architecture.rs::core_does_not_import_modules` scanning `src/core/**`.
+  **P1** (gates "highest-quality product": velocity & testability downstream.)
+
+### 3.F — Tier F · Foundations (build the primitives once; everything after is cheap)
+
+- **`[ ]` F.1 · Adopt the matching/automata toolkit** — parsers and the universal
+  key/secret scanner currently hand-roll `.find()`/`.contains()`/`chars()` scans
+  (slow, and the source of the T0 panic class).
+  → **Solution:** promote **`memchr`** + **`aho-corasick`** to direct deps (free —
+  already transitive via `regex`); add **`bstr`** for untrusted HTML. Create one
+  `util::scan` module that owns cached `aho-corasick` automata for: the universal
+  API-key scanner, HTML marker extraction, placeholder/denylist matching. All
+  untrusted-byte scanning routes through it. Benchmark scan MB/s with `criterion`.
+  **P1-enabler**
+- **`[ ]` F.2 · `fst`-backed datasets (phone-first + de-duplication)** — many
+  static tables are hand-coded `&[&str]`/`match` arms, several **duplicated**
+  (freemail in `util/oathnet_batch` vs `util/domains`; `country_name` in
+  `phone_area_geo` vs `util/geohash`; OUI; AU postcode/suburb; division→state;
+  provider weights; domain denylists).
+  → **Solution:** a `build.rs` step compiles `data/*.txt` source lists into
+  `*.fst` (`fst::Set`/`Map`), embedded via `include_bytes!` and queried through
+  one canonical `util::dataset` API. Result: **one** authoritative copy of each
+  table (kills the B5.3 drift), **flat RAM** (memory-mapped FST — critical on a
+  phone), O(key) lookups, and trivial fuzzy/prefix queries (Levenshtein automata)
+  for free → directly powers typosquat/username-variant/suburb-matching. **P1-enabler**
+- **`[ ]` F.3 · Proof & measurement infrastructure** — there is no property
+  testing, no fuzzing, and only `#[ignore]` perf baselines.
+  → **Solution:** add (dev-only, zero runtime cost): **`proptest`** suites for
+  every pure function (parsers: no-panic; `Entity::absorb`: commutative +
+  idempotent + clamped; geo: `parse_coords`↔`format` round-trip; `normalise_*`:
+  idempotent); **`cargo-fuzz`** + **`arbitrary`** targets for *every* untrusted
+  parser (html strip, all response parsers, dossier/txt/html import, `dns_axfr`
+  wire, DER), seeded from `raw_archive` samples; **`criterion`** benches for
+  dispatch throughput, the correlation pass (formalise the existing O(n²) guard),
+  `aho-corasick` scan, and `fst` lookup. CI compiles benches (`--no-run`) and
+  runs the fuzz corpora as regression tests. **P1-enabler**
+
+### 3.2 — Tier 2 · P2 robustness & quality
+
+- **`[ ]` T2.1 · HTTP timeouts** — `util/http/client.rs:11` sets no client-level
+  total timeout; ~8 of ~32 `send().await` sites are unwrapped (`web_crawler`
+  `fetch_robots:251`, `resolve_seed:232`, …) → a post-connect stall hangs forever.
+  → **Solution:** set a default `.timeout(...)` on the shared client (belt-and-
+  braces with the 24 explicit wraps) and wrap the stragglers. **P2**
+- **`[ ]` T2.2 · Blocking `curl` in async export** — `cli/export/environment.rs:41`
+  blocks a request worker (no `--max-time`).
+  → **Solution:** `tokio::process` + `--max-time` + `tokio::time::timeout`, or
+  gate the env fingerprint to the sync CLI path. **P2**
+- **`[ ]` T2.3 · Fixture-test the binary parsers** — `exif_geo::read_str` and
+  `cert_intel::parse_certificate` are untested.
+  → **Solution:** check a minimal EXIF JPEG and a self-signed DER into `testdata/`
+  (also become fuzz seeds from F.3); assert field extraction. **P2**
+- **`[ ]` T2.4 · Strengthen weak tests** — ~88 assertions across ~50 module tests
+  are `assert!(!…is_empty())`-only.
+  → **Solution:** upgrade to assert entity **kind + value + key evidence**; reuse
+  saved real-response fixtures (F.3 corpora) so they double as drift detectors.
+  **P2**
+- **`[ ]` T2.5 · Engine arg-bloat** — 6× `#[allow(too_many_arguments)]`
+  (`run_expansion` = 12 args; `dispatch_target` 8-arg pass-through).
+  → **Solution:** bundle per-scan mutable state into a `DispatchCtx`/`ScanState`
+  struct; the wrapper and the allowlist entries vanish. **P2**
+- **`[ ]` T2.6 · De-duplicate helpers** — `is_freemail`/`FREEMAIL`, `nonempty`,
+  `country_name`, dead `util::stats::mode`/`mode_or` (wigle reimplements it),
+  inconsistent `KEY_ENV` (7 modules inline the literal).
+  → **Solution:** route all callers to canonical `util` (datasets via F.2);
+  delete dead copies; standardise `KEY_ENV` as a per-module const. **P2/P3**
+- **`[ ]` T2.7 · Scraper resilience** — `au_people`, `au_electoral`, `au_property`,
+  `search_engines` (17 SERPs), `username_search` (300+ sites) parse churning HTML;
+  some endpoints speculative → high silent-breakage.
+  → **Solution:** rewrite parsers on `bstr`/`aho-corasick` (F.1), back each with a
+  **golden fixture** (saved real response) so a layout change fails a test, and
+  add a per-source **health signal** (last-success, parse-rate) surfaced in
+  `hse doctor` + the SPA; auto-flag a source "drifted" when parse-rate drops.
+  **P2** *(robustness only; source legality is parked in §7.)*
+
+---
+
+## 4. Capability program — surpass SpiderFoot & Maltego (CAP)
+
+Grounded in the existing modules and the BUILD set of `OSINT_MATRIX_GAP_ANALYSIS`.
+Each node: **current → target → solution**. Everything here is built on §3.F
+primitives. AU bias and an offensive (active-collection) posture throughout.
+
+- **`[ ]` C1 · Correlation & identity depth — *the Maltego-without-graphs play***.
+  *Current:* 59 native rules + deterministic GREATEST-merge identity. *Target:*
+  out-link-analyse Maltego by delivering the *conclusion*, not a canvas.
+  → **Solution:** (a) **transitive identity resolution** — if A↔B and B↔C share
+  selectors, emit A↔C with decayed confidence (closure over the merge graph,
+  property-tested for convergence & determinism); (b) a **"Connections" section**
+  in the dossier that renders the strongest entity links as text (shared
+  selectors, the path between two identities, the controller behind reused
+  secrets) — graph-free link analysis, reproducible and scriptable; (c) deepen
+  the **timeline** (already present) into a first-class output; (d) add the rule
+  gaps the AU-0xx register implies. GEXF stays as the *optional* escape hatch for
+  users who want a graph (covers Maltego's graph crowd without heavy in-app
+  graphing). **CAP-high**
+- **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
+  Rust dispatch, no published numbers. *Target:* demonstrably faster than a
+  Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
+  F.2 flat-RAM datasets, publish a reproducible "N selectors, on-device, in T
+  seconds, M MB RAM" benchmark; enforce streaming/bounded memory everywhere
+  (cap+chunk, never slurp). SpiderFoot (CPython) structurally cannot match
+  on-device aarch64 throughput. **CAP-high**
+- **`[ ]` C3 · Australian moat (BUILD, AU-biased)** — *Current:* `asic_director`,
+  `abn_lookup`, `acnc`, `au_electoral`, `au_property`, `qld_unclaimed`,
+  `au_people`, `gleif_lei`, AU phone/carrier/postcode geo. → **Solution
+  (roadmap):** G5 harden `smtp_vrfy` (MX/SPF/catch-all → lift free email-verify
+  confidence); G9 BYO-key **HLR/CNAM** phone module; **GNAF/AusPost** address
+  validation → sharper geo; **AHPRA** health-practitioner register; **ACMA**
+  radiocomms/spectrum licences (AU NETINT); fuller **ASIC/ABR** company graph;
+  complete state **cadastre/property**; deeper **courts/AustLII**. All free or
+  BYO-key, all AU-first. **CAP-high (AU bias)**
+- **`[ ]` C4 · NETINT depth** — *Current:* `dns_intel`, `cert_intel`, `crtsh`,
+  `shodan` (free InternetDB), `censys`, `zoomeye`, `subdomain_takeover`,
+  `waf_detect`, `portscan`, `bgpview`, `ripestat`. → **Solution:** union
+  subdomain discovery (brute ∪ CT ∪ passive); ASN/BGP → org/prefix pivots feeding
+  correlation; passive-DNS/WHOIS history via `securitytrails` BYO-key (G7);
+  faceted asset depth via `shodan`/`censys` keys (G6); broaden takeover
+  fingerprints. **CAP-med**
+- **`[ ]` C5 · GEOINT convergence — *already ahead; widen the lead*** — *Current:*
+  multi-source fusion (WiGLE + EXIF + cell + IP + address→coords) with AU-state
+  attribution and convergence rules (AU-052/056/057/059). Neither competitor
+  does this. → **Solution:** feed more sources into the confidence-weighted
+  centroid; tighten the AU bounding-box/state precision; add movement/timeline
+  geo; output a single best-estimate **with provenance + a confidence radius**.
+  **CAP-med (differentiator)**
+- **`[ ]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
+  `subdomain_takeover`, `key_harvest`, breach/stealer presence + AU-047 reuse
+  link. → **Solution:** broaden exposure-dork coverage; mature the
+  **credential-reuse graph** (link accounts by shared salted hash / session token
+  across sources); sharpen key-harvest precision via the F.1 `aho-corasick`
+  scanner + entropy gate; richer stealer-log cross-referencing
+  (`oathnet_pro`/`see_know` presence → pivot). Active, authorised collection.
+  **CAP-med**
+- **`[ ]` C7 · Output & forensics superiority** — *Current:* deterministic
+  exports, evidence chains, auto-dossier, GEXF. → **Solution:** lock byte-stable
+  determinism (T1.1 + proptest), make per-entity evidence chains and the dossier
+  the auditable intelligence product, keep GEXF as the optional graph. This is a
+  capability **neither** SpiderFoot nor Maltego offers (reproducible,
+  machine-diffable intelligence). **CAP-med**
+
+---
+
+## 5. Execution order (the queue)
+
+1. **T0.1, T0.2** — kill the panics (small, self-contained). *(unblocks T2.7)*
+2. **F.1, F.3** — land `aho-corasick`/`memchr`/`bstr` + `proptest`/`cargo-fuzz`/
+   `criterion`. *(the substrate; makes 1 permanent and 3+ cheap)*
+3. **T1.1, T1.2, T1.3, T1.4** — restore determinism, throughput, verification,
+   layering.
+4. **F.2** — `fst` datasets *(folds in T2.6 de-duplication)*.
+5. **T2.1–T2.7** — robustness/quality.
+6. **C1 → C7** — capability program, AU-first, each gated on its §3.F primitive.
+
+## 6. Verified sound (checked — do not re-investigate)
+
+Injection (argv-only); HTTP SSRF (SsrfResolver + redirect policy + curl IP-pin);
+TLS (rustls/webpki, no invalid-cert acceptance); all 20 `Regex::new` cached;
+the other panic leads guarded (`abn:209`, html decode, geometry, `address_au`);
+every fan-out semaphore-capped; confidence `clamp` + saturating corroboration;
+deterministic merge; **0 `unsafe`**, 0 arch-specific code, Termux sensors no-op
+cleanly off-device; all 118 modules registered with tests + `produces()` +
+non-empty `attack_techniques()`.
+
+## 7. Deferred (out of scope here — separate pass)
+
+Indexed only: **Security** (hardcoded default keys `util/keys/constants.rs:137`,
+whois-referral SSRF, key-in-URL leaks, cleartext-secret persistence, dossier
+perms) · **Privacy/Legal/Licensing** (PII fixture & root `DOSSIER_*.md`, source
+legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
+· **Terminology** ("operator"→user/analyst; `key_harvest`/`API_KEY_HUNTING_GUIDE`)
+· **Docs** (module-count drift across README/MODULES.md/CHANGELOG/FAULT_TREE).
+
+## 8. Maintained log
+
+- **2026-06-17** — Unified the four audit streams (security/correctness/
+  architecture/privacy) + direct metrics into this single functionality-scoped
+  tree; added the Gallant doctrine (§1), the Foundations tier (§3.F: toolkit /
+  `fst` / proof-infra), and the capability program (§4) grounded in the gap
+  register. Confirmed both T0 panics firsthand. Nothing executed yet — plan only.
