@@ -83,10 +83,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   direct dep, `util::scan::MatchSet` (cached automaton — `is_match` "contains any" +
   leftmost-`find`, ASCII-CI, boundary-safe offsets) built with tests + a `criterion`
   bench, and the **first consumer** (the SERP anti-bot `is_captcha_page` signature
-  scan) routed through it **byte-for-byte equivalent** (5 captcha tests pass).
-  *Gap (§4b):* route the universal key scanner (~170 prefixes), the HTML marker
-  parsers, and the remaining denylists through `MatchSet`/`memchr`; add `bstr`. Each
-  a contained increment — `memchr`/`bstr` promoted only when first directly used
+  scan) routed through it **byte-for-byte equivalent** (5 captcha tests pass); **+2
+  more (2026-06-17):** key-harvest `contains_excluded_context` (`new_ascii_ci`,
+  drops a hot-path alloc) and wigle `is_generic_ssid`, both proven by existing tests.
+  *Gap (§4b):* the universal key scanner *prefix table* (~170 prefixes, every body)
+  needs a **proptest-backed** conversion (min_len + table-order semantics); the HTML
+  marker parsers; `memchr`/`bstr` adoption. Each a contained increment —
+  `memchr`/`bstr` promoted only when first directly used
   (else `cargo machete` trips).
 - **`[~]` SOL-F2 · `fst`-backed datasets** ⚑ — `build.rs` compiles `data/*.txt` into
   memory-mapped `fst::Set`/`Map`, one canonical `util::dataset` API.
@@ -304,11 +307,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   enablers landing first, by design).
 
 ### 4b · Solutions begun but unfinished (the finish queue)
-- **SOL-F1** — substrate + first consumer landed (`aho-corasick` direct,
-  `util::scan::MatchSet`, `is_captcha_page` converted). *Remaining (still the biggest
-  leverage):* route the universal key scanner (~170 prefixes, every body), the HTML
-  marker parsers, and the other denylists through `MatchSet`/`memchr` — each its own
-  contained increment (unblocks T2.7 + sharpens C6).
+- **SOL-F1** — substrate + **three** consumers landed (`is_captcha_page`,
+  key-harvest `contains_excluded_context`, wigle `is_generic_ssid`), all
+  byte-for-byte equivalent. *Remaining (still the biggest leverage):* the universal
+  key scanner **prefix table** (~170 prefixes, every body) — needs a proptest-backed
+  conversion (min_len/table-order semantics); the HTML marker parsers; `memchr`/
+  `bstr`. Each its own contained increment (unblocks T2.7 + sharpens C6).
 - **SOL-F2** — de-dup done; `fst` for the large tables outstanding.
 - **SOL-F3** — proptest + criterion landed; `cargo-fuzz` + import-parser proptest left.
 - **SOL-BLOCKING** — API reads done; `scan_import`/`stats` handlers + the engine
@@ -412,3 +416,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   solved". The only high-leverage tier left is §3.F (SOL-F1 consumers / SOL-F2 fst /
   SOL-F3 fuzz); the contained security queue is down to two LOW items. Paired:
   `PROBLEM_TREE` §7 S3 `[ ]`→`[x]` + §8 — same commit; gate green, 3,006 lib tests.
+- **2026-06-17** — **Cycle: +2 SOL-F1 consumers (substrate reuse).** First ruled out
+  two candidates by analysis: the **T1.3 firing meta-guard** isn't a clean source-scan
+  (firing assertions are too heterogeneous to enumerate, and rule-source `"AU-NNN"`
+  emissions confound a presence scan — it needs a fixture-table refactor), and the
+  **key-scanner prefix table** needs a proptest-backed conversion (min_len/table-order).
+  So took two clean, zero-risk denylist conversions onto `util::scan`:
+  `contains_excluded_context` (hot key-gate; `new_ascii_ci` also drops an alloc) and
+  `is_generic_ssid` — both proven by existing tests. **Gap refresh:** §4b SOL-F1 now
+  "three consumers landed"; the remaining big item (key-scanner table) is explicitly
+  tagged proptest-backed. SOL-F1 stays `[~]` — the substrate keeps paying off one
+  contained, equivalence-proven consumer at a time. Paired: `PROBLEM_TREE` F.1 +§8 —
+  same commit; gate green, 3,006 lib tests.

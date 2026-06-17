@@ -381,8 +381,7 @@ impl Module for Wigle {
                 if ssid.is_empty() || ssid.len() < 4 || ssid.starts_with("DIRECT-") {
                     return None;
                 }
-                let lower = ssid.to_lowercase();
-                if GENERIC_SSIDS.iter().any(|g| lower.contains(g)) {
+                if is_generic_ssid(ssid) {
                     return None;
                 }
                 let parts: Vec<&str> = ssid.split(['-', '_', ' ']).collect();
@@ -510,8 +509,13 @@ impl NetworkKind {
 }
 
 pub(super) fn is_generic_ssid(s: &str) -> bool {
-    let lower = s.to_lowercase();
-    GENERIC_SSIDS.iter().any(|g| lower.contains(g))
+    // One cached `aho-corasick` pass via `util::scan` (SOL-F1) — equivalent to the
+    // old `GENERIC_SSIDS.iter().any(|g| lower.contains(g))`. Case-sensitive over the
+    // Unicode-lowercased string (the patterns are lowercase), so it preserves the
+    // exact `to_lowercase()` fold (non-ASCII included), unlike an ASCII-CI matcher.
+    static GENERIC: std::sync::LazyLock<crate::util::scan::MatchSet> =
+        std::sync::LazyLock::new(|| crate::util::scan::MatchSet::new(GENERIC_SSIDS));
+    GENERIC.is_match(&s.to_lowercase())
 }
 
 pub(super) const GENERIC_SSIDS: &[&str] = &[

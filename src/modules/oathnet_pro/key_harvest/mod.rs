@@ -654,11 +654,16 @@ fn is_likely_real_key(value: &str) -> bool {
 }
 
 /// True if `value` contains any [`CONTEXT_EXCLUSIONS`] substring
-/// (case-insensitive). The lowercased comparison string is built
-/// once per call to keep the inner loop hot.
+/// (ASCII-case-insensitive). One cached `aho-corasick` pass via `util::scan`
+/// (SOL-F1) — byte-for-byte equivalent to the old
+/// `value.to_ascii_lowercase().contains(pat)` loop (the patterns are lowercase
+/// and `ascii_case_insensitive` ASCII-folds both sides exactly as
+/// `to_ascii_lowercase` did), but it scans the *original* `value` so it also drops
+/// the per-call lowercase allocation on this hot key-gate path.
 fn contains_excluded_context(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    CONTEXT_EXCLUSIONS.iter().any(|pat| lower.contains(pat))
+    static EXCLUDED: std::sync::LazyLock<crate::util::scan::MatchSet> =
+        std::sync::LazyLock::new(|| crate::util::scan::MatchSet::new_ascii_ci(CONTEXT_EXCLUSIONS));
+    EXCLUDED.is_match(value)
 }
 
 /// True if `value` matches the canonical UUID v1-v5 layout

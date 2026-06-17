@@ -185,9 +185,15 @@ direct.**
   `criterion` bench; routed the **first consumer** — the search-engine anti-bot
   `is_captcha_page` vendor-signature scan — through it, **byte-for-byte equivalent**
   (the 5 existing captcha tests, incl. the false-positive guard, pass unchanged).
-  *Remaining:* route the universal key scanner (`key_harvest` ~170 prefixes), the
-  HTML marker parsers (au_electoral/au_property), and the other denylists through
-  `MatchSet`/`memchr`; add `bstr`. Each is its own contained increment.
+  **+2 more consumers (2026-06-17):** the key-harvest `contains_excluded_context`
+  gate (`new_ascii_ci` against the original — equivalent *and* drops a per-call
+  `to_ascii_lowercase` alloc on a hot path) and wigle `is_generic_ssid`, both proven
+  equivalent by their existing case-insensitivity tests. *Remaining:* the universal
+  key scanner *prefix table* (`key_harvest` ~170 prefixes) — the big one, needs a
+  **proptest-backed** conversion (its `min_len` + table-order first-match semantics
+  aren't a clean leftmost swap; a token can match an earlier prefix that fails
+  `min_len` while a later one passes); the HTML marker parsers (au_electoral/
+  au_property); `memchr`/`bstr` adoption. Each its own contained increment.
 - **`[~]` F.2 · `fst`-backed datasets (phone-first + de-duplication)** — many
   static tables are hand-coded `&[&str]`/`match` arms, several **duplicated**
   (freemail in `util/oathnet_batch` vs `util/domains`; `country_name` in
@@ -1159,3 +1165,19 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   left to the user's umask (their chosen destination). Two perms tests. Gate green:
   clippy/fmt/doc clean, 3,006 lib tests (+2), 0 failures. **Paired:** `SOLUTION_TREE`
   SOL-SECRETS-EXTEND `[ ]`→`[x]` + §4a refreshed — same commit.
+- **2026-06-17** — **Paired-tree cycle: +2 SOL-F1 consumers (F.1).** Two clean,
+  provably-equivalent denylist conversions onto the `util::scan` substrate: key-harvest
+  `contains_excluded_context` (the key-scanner false-positive gate, every prefix
+  match) now uses `MatchSet::new_ascii_ci` against the *original* value — equivalent
+  to `to_ascii_lowercase().contains()` (both ASCII-fold) *and* drops the per-call
+  lowercase allocation on a hot path; wigle `is_generic_ssid` uses a case-sensitive
+  `MatchSet` over the `to_lowercase()` string (preserves the Unicode fold). Both
+  proven equivalent by their **existing** case-insensitivity tests (no new tests
+  needed). *Decision:* the T1.3 firing meta-guard was investigated and is **not** a
+  clean source-scan (only 6 of 59 rules use the `rule_id == "AU-NNN"` pattern; the
+  rest assert firing via heterogeneous forms, and rule-source `"AU-NNN"` emissions
+  confound a presence scan) — it needs a firing-fixture *table* refactor, staged. The
+  universal key-scanner prefix table likewise needs a proptest-backed conversion
+  (min_len/table-order). F.1 stays `[~]` (3 consumers done). Gate green: clippy/fmt/doc
+  clean, 3,006 lib tests, 0 failures. **Paired:** `SOLUTION_TREE` SOL-F1 +§4b refreshed
+  — same commit.
