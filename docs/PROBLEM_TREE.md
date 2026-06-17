@@ -345,6 +345,46 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
   a future structural change would silently mismatch existing databases. → set
   `PRAGMA user_version` at create and gate any future structural change on an
   idempotent upgrade ladder. **P3 (latent — no current bug; advisory).**
+- **`[ ]` T2.11 · Concurrency — process-global state not isolated across the 8
+  concurrent `serve` scans** — `hse serve` runs up to `MAX_CONCURRENT_SCANS = 8`
+  scans at once, but several **process-global `static`s** are shared without
+  per-scan isolation. The deep engine audit (2026-06-17) found three defects here;
+  the `QuotaBudget` CAS primitive, the expansion/ROI/convex math, the circuit
+  breaker, cancel-RAII, and key hot-injection were all re-verified **correct** —
+  these are the sharing/call-site gaps, not the primitives:
+  - **MED — paid overspend.** `util/oathnet/mod.rs:175-178` gates with
+    `is_quota_exhausted() || !budget_remaining()` then unconditionally
+    `budget_increment()` — the exact non-atomic check-then-increment that
+    `QuotaBudget::try_increment` (CAS) was written to kill. `see_know` was migrated
+    (`see_know/endpoints.rs:48,142` use `budget_try_increment`); **oathnet is the
+    one site left on the racy path**, so two concurrent scans both pass the gate and
+    both charge → **overspends the operator's *paid* OathNet daily cap**. → swap to
+    `BUDGET.try_increment()` and drop the separate increment (one line, mirrors
+    see_know). **P2**
+  - **MED — cross-scan credential contamination.** `util/found_keys/mod.rs` is a
+    single process-global `Mutex<Sink>`; `drain()`/`reset()` are **unkeyed**, and
+    the hook `modules::drain_found_key_entities(scan_id)` (`modules/mod.rs:145`)
+    **accepts a `scan_id` but ignores it**. Under concurrent scans, scan B's start
+    `reset_per_scan()` wipes scan A's in-progress keys (A reports zero), or B's
+    `drain()` harvests A's keys into **B's** dossier (mis-attribution). Silent,
+    non-deterministic loss/mis-attribution of a headline deliverable (leaked
+    third-party keys); breaks per-scan provenance. → key the sink by `scan_id`
+    (`HashMap<String, Sink>`) or scope it through `ModuleContext`; `drain`/`reset`
+    must filter on the id the hook already threads. The see_know/wigle/oathnet
+    `QuotaBudget` per-scan statics share the same `reset_scan`-zeroing
+    contamination (collective per-scan overspend; the per-*session* ceiling still
+    holds). **P2**
+  - **LOW — bounded over-dispatch.** `core/engine/dispatch.rs:684-762` (concurrent
+    path) judges the `max_entities` budget + the cross-correlation gate against
+    round-start `entity_map.len()`, but merges happen only in the post-spawn
+    consumer loop, so the count never advances mid-round → over-dispatches by up to
+    one target's module set (the *sequential* path re-checks fresh, so the modes
+    diverge). → re-check the live count in the consumer loop, or interleave
+    `join_next` with spawning. **P3**
+  **Root cause:** per-scan/per-session budgets and the key sink live in `static`s
+  sized for a single in-process scan; `serve`'s concurrency (8) makes them shared
+  mutable state. The clean fix is per-`scan_id` keying (or threading the state
+  through `ModuleContext`), which also subsumes the budget-reset race. **P2**
 
 ---
 
@@ -429,8 +469,9 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
 3. **T1.1, T1.2, T1.3, T1.4** — restore determinism, throughput, verification,
    layering.
 4. **F.2** — `fst` datasets *(folds in T2.6 de-duplication)*.
-5. **T2.1–T2.9** — robustness/quality (T2.8 unbounded reads + T2.9 SQL tie-breaks
-   added by the 2026-06-17 re-audit; T2.8 rides on F.1's capped-read substrate).
+5. **T2.1–T2.11** — robustness/quality (T2.8 unbounded reads, T2.9 SQL tie-breaks,
+   T2.10 schema versioning, T2.11 concurrent-`serve` global-state isolation — added
+   across the 2026-06-17 re-audits; T2.8 rides on F.1's capped-read substrate).
 6. **C1 → C7** — capability program, AU-first, each gated on its §3.F primitive.
 
 ## 6. Verified sound (checked — do not re-investigate)
@@ -463,12 +504,35 @@ logged above: T2.8 unbounded reads (network + the CLI-import read size), T2.9
 read-back tie-breaks (the `latest` one is wrong-scan selection), T1.2's two missed
 reactor-blocking handlers (`scan_import`/`stats`), and T2.10 schema versioning
 (latent).
+A third pass (2026-06-17) deep-audited the **engine internals** and the **59
+correlator rules**: the rule logic + the geo-math primitives (haversine,
+monotone-chain hull, shoelace centroid, weighted Weiszfeld median, Welzl MEC) are
+**correct**; expansion depth/rounds (no off-by-one / `MAX_DEPTH` overflow), the
+ROI/convex math (total, no div-by-zero, NaN sorts last deterministically), the
+circuit breaker, semaphore/cancel-RAII (no permit leak), and Phase-1→2 key
+hot-injection (post-Phase-1 snapshot, no TOCTOU) all check out. The only defects it
+found are **concurrency-isolation gaps** (T2.11: the oathnet paid-overspend race +
+the found_keys cross-scan contamination) and one security finding (the SPA XSS,
+§7) — not the algorithms.
 
 ## 7. Deferred (out of scope here — separate pass)
 
-Indexed only: **Security** (hardcoded default keys `util/keys/constants.rs:137`,
+Indexed only: **Security** — ⚠ **NEW (2026-06-17, HIGH): one-click stored XSS in
+the SPA**, `web/spa.html:1967` — a correlation-member `onclick` interpolates the
+attacker-controllable `e.value` into a **JS-string literal inside an inline
+handler**. `esc()`/`attr()` HTML-encode `'`→`&#39;`, but the HTML parser decodes it
+back to `'` *before* the JS engine runs the `onclick`, so `e.value = ');alert(1)//`
+breaks out and executes **same-origin** when the analyst clicks the member to pivot
+(verified end-to-end). `script-src 'unsafe-inline'` permits the inline handler;
+`connect-src 'self'` blocks *exfiltration* but not same-origin execution (reading
+sensitive findings, driving the loopback API). The same pattern at `:1910` is
+currently inert (its value is a SHA-256-hex `uid`). → render the value into a
+`data-` attribute read via `this.dataset` (HTML-attr context, where `esc()` *is*
+sufficient), not a JS-string literal; harden `:1910` too. *(The rest of the SPA's
+`esc()`/`extLink()` discipline was verified sound — this is the one dual-context
+sink.)* · also indexed: hardcoded default keys `util/keys/constants.rs:137`,
 whois-referral SSRF, key-in-URL leaks, cleartext-secret persistence, dossier
-perms) · **Privacy/Legal/Licensing** (PII fixture & root `DOSSIER_*.md`, source
+perms, root `DOSSIER_*.md` real-looking secrets · **Privacy/Legal/Licensing** (PII fixture & root `DOSSIER_*.md`, source
 legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
 · **Terminology** ("operator"→user/analyst; `key_harvest`/`API_KEY_HUNTING_GUIDE`)
 · **Docs** (module-count drift across README/MODULES.md/CHANGELOG/FAULT_TREE —
@@ -727,3 +791,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   panics on input. Storage/API audit also flagged a **secrets-hygiene** concern
   (the root `DOSSIER_*.md` prints real-looking key/secret values) — already indexed
   under §7 *Deferred*; left for an explicit decision, not silently edited.
+- **2026-06-17** — **Third (deepest) audit pass — engine internals, the 59
+  correlator rules, and the embedded SPA (no code change).** This pass reached the
+  least-audited heart of the system and found the **most significant issues of all
+  three passes**, vindicating the deeper look. **(1) Stored XSS in the SPA (HIGH,
+  one-click)** — `web/spa.html:1967` interpolates the attacker-controllable
+  `e.value` into a JS-string literal inside an inline `onclick`; `esc()` HTML-encodes
+  the quote but the HTML parser decodes it back before the JS engine runs, so
+  `');alert(1)//` executes same-origin when the analyst clicks a correlation member
+  to pivot (verified end-to-end with a spec-compliant parser; `connect-src 'self'`
+  blocks exfil but not same-origin exec). Logged under §7 Security with the exact
+  `data-`-attribute fix; the rest of the SPA's `esc()`/`extLink()` discipline is
+  sound. **(2) T2.11 concurrency** — under `serve`'s 8 concurrent scans: oathnet
+  left on the racy check-then-increment (overspends the *paid* quota; `see_know`
+  was migrated, oathnet wasn't), and the `found_keys` sink ignores the `scan_id`
+  the hook threads → cross-scan credential loss/mis-attribution. **(3) Verified
+  sound (§6):** the 59 rules' logic, all geo-math primitives, the
+  expansion/ROI/convex math, circuit breaker, cancel-RAII, and key hot-injection are
+  **correct** — the defects are isolation/escaping-context gaps, not algorithms.
+  Self-audit of the prior two passes re-confirmed (cost partition, citations, figure
+  sweep all clean). **Recommendation recorded:** documentation is now exhaustively
+  current across every subsystem; the remaining value is in *fixing* the backlog —
+  fix order: SPA XSS (§7) → T2.11 oathnet/found_keys → T2.9 `latest` tie-break →
+  T2.8 HIGH reads.
