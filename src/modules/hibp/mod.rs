@@ -322,7 +322,7 @@ impl Hibp {
         if verified_count >= 3 {
             email_ent.tag(tags::HIGH_EXPOSURE);
         }
-        email_ent.corroboration = verified_count.max(1) as u32;
+        email_ent.corroboration = u32::try_from(verified_count.max(1)).unwrap_or(u32::MAX);
         email_ent.add_evidence(
             Evidence::new(
                 SRC,
@@ -425,7 +425,7 @@ impl Hibp {
         if total_pwns > 1_000_000 {
             domain_ent.tag(tags::HIGH_EXPOSURE);
         }
-        domain_ent.corroboration = verified.max(1) as u32;
+        domain_ent.corroboration = u32::try_from(verified.max(1)).unwrap_or(u32::MAX);
         domain_ent.add_evidence(
             Evidence::new(
                 SRC,

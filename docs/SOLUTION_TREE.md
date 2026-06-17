@@ -151,12 +151,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `increment()`. *Closes:* **T2.11** (oathnet — done; mirrors see_know). *Gap:* the
   per-scan `reset_scan`-zeroing across concurrent scans is the same root as
   SOL-ISOLATE. **(§4b)**
-- **`[x]` SOL-CAP · Bounded / streaming reads** — `read_body_capped` /
+- **`[~]` SOL-CAP · Bounded / streaming reads** — `read_body_capped` /
   `read_json_text` (`JSON_BODY_CAP`), reqwest read-timeout backstop, the `exif_geo`
   `bytes_stream()` accumulate-and-bail, the `smtp_vrfy` 8 KiB line cap via
-  `fill_buf`/`consume`. *Closes:* **T2.1** (timeouts), **T2.8** (the two HIGH reads —
-  done). *Gap (tracked under SOL-CAP-EXTEND):* the MED `json_decode`/AU-scraper caps,
-  the hibp cast, the CLI-import cap remain. **(§4b)**
+  `fill_buf`/`consume`. *Closes:* **T2.1** (timeouts), **T2.8** (the two HIGH reads ✅).
+  **+SOL-CAP-EXTEND (2026-06-17):** `json_decode` routes through `read_json_text`
+  (closes ~24 uncapped MED sites ✅); nine AU-gov scraper `resp.text()` sites →
+  `read_body_capped(resp, 1_000_000)` ✅; hibp `count() as u32` casts →
+  `u32::try_from(…).unwrap_or(u32::MAX)` ✅. *Gap:* only the LOW
+  `cli/import/mod.rs` `read_to_string` cap remains. **(§4b)**
 - **`[x]` SOL-ISOLATE · Per-`scan_id` state isolation** — the `found_keys` sink is
   keyed by `scan_id` via a `tokio::task_local` (`SCAN`) the engine sets around
   `run_with_ledger` **and** each spawned dispatch task (task-locals don't cross
@@ -317,8 +320,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **SOL-F3** — proptest + criterion landed; `cargo-fuzz` + import-parser proptest left.
 - **SOL-BLOCKING** — API reads done; `scan_import`/`stats` handlers + the engine
   DB-writer actor left (T1.2).
-- **SOL-CAP** — 2 HIGH reads done; MED `json_decode`/AU-scraper caps + hibp cast + CLI
-  import cap left (T2.8 tail).
+- **SOL-CAP** — 2 HIGH reads + all MED items done (`json_decode`, AU-gov scrapers,
+  hibp cast ✅); only the LOW `cli/import` `read_to_string` cap remains (T2.8 tail).
 - **SOL-BUDGET** — oathnet done; the per-scan budget statics' `reset_scan`-zeroing
   still folds into the SOL-ISOLATE task-local (LOW — the session ceiling bounds it).
 - **T1.3 meta-guard** — the 12 firing assertions shipped; the dispatch-table
@@ -334,10 +337,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **T0 (crashes):** fully solved (SOL-BOUNDARY + SOL-F3 guard). ✔
 - **T1 (core guarantees):** T1.1/T1.4 solved; T1.2 partial (SOL-BLOCKING); T1.3 partial.
 - **§3.F (foundations):** all three `[~]` — the largest unrealised leverage block.
-- **T2 (robustness):** T2.1–T2.6 + T2.9 solved; T2.8 partial; T2.12 mostly done
-  (4 MED/LOW-MED fixed, LOW-misc residual); T2.7/T2.10 open;
-  T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE delivered; only the LOW
-  over-dispatch + budget-reset-zeroing remain).
+- **T2 (robustness):** T2.1–T2.6 + T2.9 solved; T2.8 nearly closed (all HIGH + MED
+  done; only LOW CLI-import cap remains); T2.12 mostly done (4 MED/LOW-MED fixed,
+  LOW-misc residual); T2.7/T2.10 open; T2.11 mostly done (oathnet + found_keys/
+  SOL-ISOLATE delivered; only LOW over-dispatch + budget-reset-zeroing remain).
 - **§7 (security):** XSS + S2 (whois SSRF) + S3 (file perms) solved; S1 accepted;
   S4–S5 open (both LOW) with
   solutions named.
@@ -428,3 +431,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   tagged proptest-backed. SOL-F1 stays `[~]` — the substrate keeps paying off one
   contained, equivalence-proven consumer at a time. Paired: `PROBLEM_TREE` F.1 +§8 —
   same commit; gate green, 3,006 lib tests.
+- **2026-06-17** — **Cycle: T2.8 MED tail — SOL-CAP-EXTEND.** Gap-analysis pick
+  (P→S pass): §4b named SOL-CAP the highest-value *contained* finish-queue item —
+  §3.F enablers need their own dedicated staged push. Closed all remaining MED
+  network-read gaps in one pass: **`json_decode`** now routes through `read_json_text`
+  (32 MiB cap + raw-archive retention; a 4-line change closing ~24 uncapped sites —
+  every `json_decode` caller, including shodan, censys, dehashed, zoomeye, onyphe,
+  leakix — behaviour-preserving, existing test unchanged); **three direct callers**
+  (`doh_resolver:310/322`, `wigle/account:95`) route through `json_decode`; **nine
+  AU-gov scraper** `resp.text()` sites routed through `read_body_capped(resp,
+  1_000_000)` (`asic_director`, `au_electoral` ×4, `au_people` ×2, `au_property` ×3)
+  — the `web_crawler` pattern, now uniform; both **hibp cast** sites →
+  `u32::try_from(…).unwrap_or(u32::MAX)` (P3, saturating). **S→P gap-refresh:**
+  SOL-CAP gap narrows to one LOW item (CLI-import cap); §4b SOL-CAP + §4d T2 row
+  updated. The §3.F enabler block (SOL-F1 key-scanner / SOL-F2 fst / SOL-F3 fuzz)
+  is confirmed the sole remaining high-leverage tier. Paired: `PROBLEM_TREE` T2.8 +
+  §8 same commit; gate green, 3,006 lib tests, 0 failures.

@@ -41,7 +41,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
+use crate::util::http::{RequestBuilderExt, read_body_capped};
 
 use parse::{
     SRC, dedup_entities, parse_nsw_response, parse_qld_response, parse_vic_response,
@@ -122,7 +122,7 @@ impl Module for AuProperty {
             .send_tagged(SRC)
             .await
             && resp.status().is_success()
-            && let Ok(body) = resp.text().await
+            && let Some(body) = read_body_capped(resp, 1_000_000).await
         {
             all_entities.extend(
                 parse_nsw_response(&body, full_name)
@@ -146,7 +146,7 @@ impl Module for AuProperty {
                 .send_tagged(SRC)
                 .await
                 && resp.status().is_success()
-                && let Ok(body) = resp.text().await
+                && let Some(body) = read_body_capped(resp, 1_000_000).await
             {
                 all_entities.extend(
                     parse_vic_response(&body, full_name)
@@ -169,7 +169,7 @@ impl Module for AuProperty {
                 .send_tagged(SRC)
                 .await
                 && resp.status().is_success()
-                && let Ok(body) = resp.text().await
+                && let Some(body) = read_body_capped(resp, 1_000_000).await
             {
                 all_entities.extend(
                     parse_qld_response(&body, full_name)

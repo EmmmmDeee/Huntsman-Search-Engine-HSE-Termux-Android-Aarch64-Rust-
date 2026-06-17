@@ -284,9 +284,9 @@ impl Module for AsicDirector {
             return Ok(ModuleResult::new());
         }
 
-        let html = match resp.text().await {
-            Ok(h) => h,
-            Err(_) => return Ok(ModuleResult::new()),
+        let html = match crate::util::http::read_body_capped(resp, 1_000_000).await {
+            Some(h) => h,
+            None => return Ok(ModuleResult::new()),
         };
 
         let mut result = ModuleResult::new();

@@ -40,7 +40,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
+use crate::util::http::{RequestBuilderExt, read_body_capped};
 
 pub(crate) use entity::build_electoral_entities;
 pub(crate) use parse::extract_division;
@@ -111,7 +111,7 @@ impl Module for AuElectoral {
                 .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                 .send_tagged(SRC)
                 .await
-                && let Ok(body) = resp.text().await
+                && let Some(body) = read_body_capped(resp, 1_000_000).await
                 && let Some((div, suburb)) = extract_division(&body)
             {
                 all_entities.extend(build_electoral_entities(
@@ -133,7 +133,7 @@ impl Module for AuElectoral {
                 .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                 .send_tagged(SRC)
                 .await
-                && let Ok(body) = resp.text().await
+                && let Some(body) = read_body_capped(resp, 1_000_000).await
                 && let Some((div, suburb)) = extract_division(&body)
             {
                 all_entities.extend(build_electoral_entities(
@@ -155,7 +155,7 @@ impl Module for AuElectoral {
                 .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                 .send_tagged(SRC)
                 .await
-                && let Ok(body) = resp.text().await
+                && let Some(body) = read_body_capped(resp, 1_000_000).await
                 && let Some((div, suburb)) = extract_division(&body)
             {
                 all_entities.extend(build_electoral_entities(
@@ -177,7 +177,7 @@ impl Module for AuElectoral {
                 .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                 .send_tagged(SRC)
                 .await
-                && let Ok(body) = resp.text().await
+                && let Some(body) = read_body_capped(resp, 1_000_000).await
                 && let Some((div, suburb)) = extract_division(&body)
             {
                 all_entities.extend(build_electoral_entities(

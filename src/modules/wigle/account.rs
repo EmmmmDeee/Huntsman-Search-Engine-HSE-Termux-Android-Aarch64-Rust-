@@ -92,7 +92,7 @@ pub async fn refresh_account_status(
         .send()
         .await
         && resp.status().is_success()
-        && let Ok(body) = resp.json::<ProfileUserResp>().await
+        && let Ok(body) = crate::util::http::json_decode::<ProfileUserResp>(super::SRC, resp).await
     {
         status = status_from_profile(body, now);
     }

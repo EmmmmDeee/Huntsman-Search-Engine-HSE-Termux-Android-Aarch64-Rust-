@@ -46,15 +46,15 @@ pub async fn json_scanned<T: DeserializeOwned>(
 
 /// Decode a response body as JSON, tagging any decode failure with `module`.
 ///
-/// The raw-decode counterpart to [`json_scanned`]: where that helper retains
-/// the body in the raw archive and scans it for leaked keys, this is the plain
-/// `resp.json().await` path used by endpoints whose body is not retained. It
-/// folds the `.map_err(|e| Error::module(module, e.to_string()))` that the
-/// keyed modules repeated verbatim into one named, module-tagged decode.
+/// Routes through [`read_json_text`] so the body is capped at
+/// [`super::fetch::JSON_BODY_CAP`] (32 MiB) and retained in the
+/// raw-response archive — the same bounds as [`json_scanned`]. The
+/// difference: this helper does **not** scan the body for leaked API keys,
+/// so it suits endpoints whose responses don't warrant key-hunting (budget
+/// telemetry, geo lookups, DNS-over-HTTPS, etc.).
 pub async fn json_decode<T: DeserializeOwned>(module: &str, resp: reqwest::Response) -> Result<T> {
-    resp.json::<T>()
-        .await
-        .map_err(|e| Error::module(module, e.to_string()))
+    let text = read_json_text(resp, module).await?;
+    serde_json::from_str(&text).map_err(|e| Error::module(module, e.to_string()))
 }
 
 /// Extension on [`reqwest::RequestBuilder`] that sends the request and maps any

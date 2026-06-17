@@ -35,7 +35,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::extract::page_emails;
-use crate::util::http::RequestBuilderExt;
+use crate::util::http::{RequestBuilderExt, read_body_capped};
 
 pub(crate) const SRC: &str = "au_people";
 
@@ -365,7 +365,7 @@ impl Module for AuPeople {
             .send_tagged(SRC)
             .await
             && resp.status().is_success()
-            && let Ok(html) = resp.text().await
+            && let Some(html) = read_body_capped(resp, 1_000_000).await
         {
             result.extend(parse_whitepages_html(&html, full_name, &ctx.scan_id));
         }
@@ -386,7 +386,7 @@ impl Module for AuPeople {
             .send_tagged(SRC)
             .await
             && resp.status().is_success()
-            && let Ok(html) = resp.text().await
+            && let Some(html) = read_body_capped(resp, 1_000_000).await
         {
             result.extend(parse_tps_html(&html, full_name, &ctx.scan_id));
         }

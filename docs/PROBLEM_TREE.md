@@ -326,12 +326,25 @@ direct.**
     censys, dehashed, zoomeye, onyphe, leakix, …) plus direct `resp.json()` in
     `doh_resolver:310,322` and `wigle/account:95`. → route `json_decode` through
     `read_json_text` (one fix closes ~20 sites); patch the three direct callers.
+    ✅ **Fixed:** `json_decode` now routes through `read_json_text` (32 MiB cap +
+    raw-archive retention — same as `json_scanned`, minus key scanning); the two
+    `doh_resolver` and one `wigle/account` direct callers now go through
+    `json_decode`. All call-sites behaviour-preserving.
   - **MED** AU-gov HTML scrapers (`asic_director:287`, `au_electoral:114/136/158/180`,
     `au_people:368/389`, `au_property:125/149/172`) — `resp.text()` uncapped. → route
     through `http::read_body_capped(resp, ~1 MB)` (the pattern `web_crawler` uses).
+    ✅ **Fixed:** all nine `resp.text().await` sites in the four AU-gov scrapers now
+    route through `read_body_capped(resp, 1_000_000)`; let-chain `Ok(body)` arms
+    changed to `Some(body)` (semantically identical — both short-circuit on
+    transport error). Behaviour-preserving on any response ≤ 1 MB (all real
+    AEC/ECQ/ASIC/whitepages responses are well under 500 KB).
   - **P3** `modules/hibp/mod.rs:325,428` — `count() as u32` on an untrusted-JSON
     breach vector; clamp before the cast (folds into the T0.3 "trust no input
     number" rule).
+    ✅ **Fixed:** both `verified_count.max(1) as u32` sites replaced with
+    `u32::try_from(verified_count.max(1)).unwrap_or(u32::MAX)` — saturates at
+    `u32::MAX` instead of wrapping; the realistic range (< 1000 breaches) is
+    entirely unaffected.
   - **LOW (local)** `cli/import/mod.rs:24` — `std::fs::read_to_string(path)` is
     **uncapped** on the CLI import path (`html.rs` then clones the whole file via
     `to_lowercase`), while the *web* upload path caps at `MAX_UPLOAD_BYTES` (16 MB,
@@ -1181,3 +1194,20 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   (min_len/table-order). F.1 stays `[~]` (3 consumers done). Gate green: clippy/fmt/doc
   clean, 3,006 lib tests, 0 failures. **Paired:** `SOLUTION_TREE` SOL-F1 +§4b refreshed
   — same commit.
+- **2026-06-17** — **Paired-tree cycle: T2.8 MED tail — SOL-CAP-EXTEND.**
+  Gap-analysis pick: §4b named SOL-CAP the highest-value contained item in the
+  finish queue; the §3.F enabler items (SOL-F1 key-scanner, SOL-F3 fuzz) require
+  their own dedicated staged effort. Closed all MED network-path items in one pass:
+  **(1)** `json_decode` now routes through `read_json_text` (32 MiB cap + raw-archive;
+  a single 4-line change that closes ~24 uncapped sites — shodan, censys, dehashed,
+  zoomeye, onyphe, leakix, and every other `json_decode` caller — with zero behaviour
+  change below the cap); **(2)** the two `doh_resolver` and one `wigle/account` direct
+  `resp.json()` calls go through `json_decode`; **(3)** nine `resp.text().await` sites
+  in the four AU-gov scrapers (`asic_director`, `au_electoral`, `au_people`,
+  `au_property`) routed through `read_body_capped(resp, 1_000_000)` — the pattern
+  `web_crawler` already used, now uniform; **(4)** both hibp `count() as u32` cast
+  sites replaced with `u32::try_from(…).unwrap_or(u32::MAX)` (P3). Remaining open:
+  the LOW `cli/import/mod.rs` `read_to_string` cap. T2.8 stays `[~]`. Gate green:
+  clippy/fmt/doc clean, 3,006 lib tests (count unchanged — all existing tests pass,
+  including `json_decode_parses_ok_and_tags_decode_errors_with_module`), 0 failures.
+  **Paired:** `SOLUTION_TREE` SOL-CAP + §4 refreshed — same commit.

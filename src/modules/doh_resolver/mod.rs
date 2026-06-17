@@ -307,7 +307,7 @@ async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> Vec<Doh
         .send()
         .await;
     if let Ok(r) = resp
-        && let Ok(data) = r.json::<DohResp>().await
+        && let Ok(data) = crate::util::http::json_decode::<DohResp>(SRC, r).await
         && data.status == 0
     {
         return data.answer;
@@ -319,7 +319,7 @@ async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> Vec<Doh
         .send()
         .await;
     if let Ok(r) = resp
-        && let Ok(data) = r.json::<DohResp>().await
+        && let Ok(data) = crate::util::http::json_decode::<DohResp>(SRC, r).await
         && data.status == 0
     {
         return data.answer;
