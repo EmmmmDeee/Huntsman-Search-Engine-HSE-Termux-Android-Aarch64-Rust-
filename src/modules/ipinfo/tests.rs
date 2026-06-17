@@ -96,8 +96,21 @@ use super::*;
             ents.is_empty(),
             "CDN-edge IP must yield no entities, got {ents:?}"
         );
-        // Sanity: the same record on a non-CDN IP DOES produce entities.
-        assert!(!build_entities("8.8.8.8", &d, "s").is_empty());
+        // Sanity: the same record on a non-CDN IP DOES produce the geo entities
+        // the CDN gate suppressed — a Coordinates (from `loc`) and an Address
+        // (from city/region). Asserting the kinds, not just non-emptiness, makes
+        // this a real counter-case: if the trust gate ever over-fired and
+        // dropped a legitimate IP's geo, this fails instead of passing silently.
+        let ok = build_entities("8.8.8.8", &d, "s");
+        assert!(
+            ok.iter().any(|e| e.kind == EntityKind::Coordinates),
+            "non-CDN IP must yield Coordinates from loc, got {ok:?}"
+        );
+        assert!(
+            ok.iter()
+                .any(|e| e.kind == EntityKind::Address && e.value.contains("San Francisco")),
+            "non-CDN IP must yield the city Address, got {ok:?}"
+        );
     }
 
     #[test]

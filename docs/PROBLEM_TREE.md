@@ -193,11 +193,16 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
   `cert_intel::parse_certificate` are untested.
   → **Solution:** check a minimal EXIF JPEG and a self-signed DER into `testdata/`
   (also become fuzz seeds from F.3); assert field extraction. **P2**
-- **`[ ]` T2.4 · Strengthen weak tests** — ~88 assertions across ~50 module tests
-  are `assert!(!…is_empty())`-only.
-  → **Solution:** upgrade to assert entity **kind + value + key evidence**; reuse
-  saved real-response fixtures (F.3 corpora) so they double as drift detectors.
-  **P2**
+- **`[x]` T2.4 · Strengthen weak tests** — premise was an **over-count**: a grep of
+  `assert!(!…is_empty())` returns 88 lines, but on inspection nearly all are a
+  *guard* immediately paired with a content assertion (`assert_eq!(x[0], …)`,
+  `.iter().any(|s| s == "<specific dork>")`, per-element kind/confidence loops,
+  table-soundness invariants). They already assert **kind + value + key evidence**.
+  → **Solution (done):** audited all 88; only **two** were genuinely
+  sole-assertion-on-output — `ipinfo` non-CDN sanity counter-check and
+  `email_header_geo`'s "two entities" test (count/kind unverified). Both upgraded
+  to assert entity kind + value + tags/evidence. The fixture-corpus drift-detector
+  idea folds into F.3. **P2** ✅ measured-not-assumed; 2 real gaps closed.
 - **`[x]` T2.5 · Engine arg-bloat** — 6× `#[allow(too_many_arguments)]`
   (`run_expansion` = 11 args; `dispatch_target` 8-arg pass-through).
   → **Solution:** bundle per-scan mutable state into a `DispatchCtx`/`ScanState`
@@ -391,3 +396,15 @@ legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
   call — zero behaviour risk, no field-prefixing churn. The mutable fields are
   borrowed at disjoint use sites (no `&mut` aliasing on the hot path). Gate green:
   clippy/fmt/doc clean, 2,959 lib + integration tests, 0 failures.
+- **2026-06-17** — **Executed T2.4** (strengthen weak tests — measured, not assumed).
+  Audited all 88 `assert!(!…is_empty())` sites the node flagged: ~86 are a guard
+  paired with a real content assertion on the next line (specific dork via
+  `.iter().any(|s| s == …)`, `assert_eq!(recs[0].state, …)`, per-element kind +
+  confidence loops, or whole-table soundness invariants) — already drift-detecting.
+  Only two were genuinely sole-assertion: `ipinfo`'s non-CDN sanity counter-check
+  (now asserts it yields `Coordinates` + the San-Francisco `Address`, so an
+  over-firing trust gate fails loudly) and `email_header_geo::bigpond…two_entities`
+  (now asserts all emissions are `Address`, the provider-inferred one has a
+  non-empty region value + geoint/coarse tags + evidence). The PROBLEM_TREE
+  estimate ("~88 …-only") corrected to reflect the real state. Gate green:
+  clippy/fmt clean, 2,959 lib tests (assertions added, count unchanged), 0 fail.

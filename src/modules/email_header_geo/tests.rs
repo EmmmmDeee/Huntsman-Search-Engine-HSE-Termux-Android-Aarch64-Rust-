@@ -140,11 +140,29 @@ async fn bigpond_email_produces_two_entities() {
         proxy_pool: Default::default(),
     };
     let r = m.process(&target, &ctx).await.unwrap();
-    assert!(!r.is_empty());
+    assert!(!r.is_empty(), "bigpond.com (AU ISP) must geolocate");
+    // Every emission is an Address per `produces()` — never some other kind.
     assert!(
-        r.entities
-            .iter()
-            .any(|e| e.has_tag("email-provider-inferred"))
+        r.entities.iter().all(|e| e.kind == EntityKind::Address),
+        "email_header_geo only emits Address entities, got {:?}",
+        r.entities.iter().map(|e| &e.kind).collect::<Vec<_>>()
+    );
+    // The provider-inferred coarse-geo Address must be present, carry a non-empty
+    // region value, and the geoint/coarse tags that downstream geo-fusion keys on.
+    let provider = r
+        .entities
+        .iter()
+        .find(|e| e.has_tag("email-provider-inferred"))
+        .expect("bigpond.com must yield a provider-inferred Address");
+    assert!(!provider.value.is_empty(), "region value must not be blank");
+    assert!(
+        provider.has_tag("geoint") && provider.has_tag("coarse"),
+        "provider-inferred Address must carry geoint+coarse tags, got {:?}",
+        provider.tags
+    );
+    assert!(
+        !provider.evidence.is_empty(),
+        "provider-inferred Address must carry its inference evidence"
     );
 }
 
