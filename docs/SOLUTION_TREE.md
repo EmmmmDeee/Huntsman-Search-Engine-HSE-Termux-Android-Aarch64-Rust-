@@ -233,6 +233,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### S.CAPABILITY — Surpass-the-competition program (paired with `PROBLEM_TREE` §4)
 
+- **`[x]` SOL-STREAMING · Streaming/cam/fan/adult platform identity prober** — 30-site
+  parallel HEAD/GET username prober across three category buckets (`cam` 14, `fans` 11,
+  `adult` 6); `StatusEq(200)` HEAD for platforms with clean 404s; `StatusAndNotBody(200,
+  needle)` GET for JS-rendered 200-for-all platforms (OnlyFans, Chaturbate); per-profile
+  `Url` entities tagged `cam-profile`/`fans-profile`/`adult-profile` + `platform:<name>`;
+  summary `Username` entity with `cam-identity-exposed`, `subscription-platform-found`,
+  `adult-profile-found`, `high-streaming-exposure` (≥3 platforms) tags; `ModuleCategory::
+  Social` (MITRE T1593.001 + T1589.003); priority 108; 16-concurrent semaphore; 30 s
+  timeout envelope; `BROWSER_UA` to avoid Cloudflare scoring; 8 unit tests.
+  *Closes / powers:* **C8** (webcam/fan/adult platform presence — the identity surface
+  `username_search` left uncovered). ✅ delivered.
 - **`[ ]` SOL-CORR · Correlation & identity depth** → **C1** (Maltego-without-graphs):
   transitive identity closure (property-tested convergence), a text "Connections"
   dossier section, first-class timeline, AU-0xx rule-gap fill. Built on SOL-MERGE.
@@ -316,6 +327,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-REDACT | §7 S4 | ◑ |
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
+| SOL-STREAMING | C8 | `[x]` |
 | SOL-CORR…SOL-FORENSIC | C1–C7 | `[ ]` |
 
 ---
@@ -339,6 +351,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   but are **unstarted** — both LOW. Contained; awaiting the operator's prioritisation.
   *(S2/SOL-SSRF-WHOIS and S3/SOL-SECRETS-EXTEND — the previous top contained items —
   delivered 2026-06-17, so they're off this queue.)*
+- **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
 - **C1–C7** — capability nodes; solutions sketched, none started (gated on the §3.F
   enablers landing first, by design).
 
@@ -382,7 +395,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **§7 (security):** XSS + S2 (whois SSRF) + S3 (file perms) solved; S1 accepted;
   S4–S5 open (both LOW) with
   solutions named.
-- **§4 (capability C1–C7):** open by design, gated on §3.F.
+- **§4 (capability C1–C8):** C8 delivered ✅ (`streaming_probe`, 30-site webcam/fan/adult prober); C1–C7 open by design, gated on §3.F.
 
 ---
 
@@ -583,3 +596,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   sole high-leverage unrealised tier. Paired: `PROBLEM_TREE` T2.12 + F.1 + §8 —
   same commit; gate green, 3,016 lib + 67 api + 23 arch + 54 smoke + 3 halting
   + 6 cli-seed + 2 audit-regression tests, 0 failures.
+- **2026-06-17** — **Cycle 7 (CAP): SOL-STREAMING `[ ]`→`[x]` — streaming/cam/fan/adult
+  platform identity prober.** Operator-directed capability request: "incorporate all forms
+  of webcam or similar site identities as a comprehensive OSINT inclusion." Built and
+  delivered `streaming_probe` in one pass — 30-site parallel HEAD/GET prober across
+  `cam`/`fans`/`adult` categories; `StatusEq` HEAD for clean-404 platforms;
+  `StatusAndNotBody` GET for JS-rendered 200-for-all platforms (OnlyFans, Chaturbate);
+  summary `Username` entity with `cam-identity-exposed`/`subscription-platform-found`/
+  `high-streaming-exposure` tags; `ModuleCategory::Social`, priority 108; 8 tests.
+  **CAP→delivered on first pass.** **S→P gap-refresh:** C8 logged + immediately closed
+  `[x]`; baseline updated to 119 modules / Social-11; `docs/MODULES.md` + README synced
+  — the `modules_md_lists_every_registered_module` + `readme_module_overview_count_matches_registry`
+  architecture guards pass clean. SOL-STREAMING added to leverage map; §4a C8 off the
+  open queue; §4d capability row updated (C8 delivered ✅; C1–C7 open by design). §3.F
+  enabler block remains the sole unrealised high-leverage tier. Paired:
+  `PROBLEM_TREE` C8 + §8 — same commit; gate green, 3,031 lib + 67 arch + 54 smoke
+  + 3 halting + 23 cli + 6 cli-seed + 2 audit-regression tests, 0 failures.

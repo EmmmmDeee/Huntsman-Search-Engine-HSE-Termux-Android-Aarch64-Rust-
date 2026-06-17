@@ -5,7 +5,7 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
 
-Pure-Rust OSINT / GEOINT platform with **118 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **119 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 SpiderFoot-style Web UI, zero native dependencies.
 
@@ -94,7 +94,7 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 118 modules
+hse modules                                                 # list all 119 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
@@ -142,7 +142,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ---
 
-## Module Overview (118 modules — 89 free, 29 key-gated/paid)
+## Module Overview (119 modules — 90 free, 29 key-gated/paid)
 
 > Grouped highlights below (all 118). The **complete** catalogue with target
 > kinds and output entities — kept exhaustive by the
@@ -150,9 +150,9 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 > [`docs/MODULES.md`](docs/MODULES.md). The headline count is swept against
 > `registry()` in CI; run `hse modules` for the live list.
 
-**API-Free (no keys required) — 89:**
+**API-Free (no keys required) — 90:**
 - **Breach/identity**: `psbdmp`, `pwned_passwords`, `xposed_or_not`
-- **Social**: `crates_io`, `github_code_search`, `github_user`, `hacker_news`, `keybase`, `npm_author`, `reddit_user`, `social_probe`, `username_search`, `username_variants`
+- **Social**: `crates_io`, `github_code_search`, `github_user`, `hacker_news`, `keybase`, `npm_author`, `reddit_user`, `social_probe`, `streaming_probe`, `username_search`, `username_variants`
 - **People**: `au_electoral`, `au_people`, `au_property`, `contact_enrich`, `employer_pivot`, `gravatar`, `name_intel`, `pgp`, `wikidata`
 - **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `rdap_domain`, `subdomain_takeover`, `typosquat`, `whois`
 - **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipapi`, `ipinfo`, `ipquery`, `netblock`, `portscan`, `ripestat`, `shodan`, `urlscan`

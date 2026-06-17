@@ -73,9 +73,9 @@ Priority: **P0** crash/corruption · **P1** breaks a core guarantee · **P2**
 quality/robustness · **P3** minor · **CAP** capability/feature.
 Each node: **ID · statement · location · impact · → optimal solution · prio · status**.
 
-Current baseline (grounded in the codebase, 2026-06-17): 118 modules across 14
+Current baseline (grounded in the codebase, 2026-06-17): 119 modules across 14
 categories (Infrastructure 20, Geo 19, People 15, DnsRecon 13, Breach 11, Social
-10, Email 6, Corporate 6, Web 5, Sensor 4, Threat 3, Search/Phone/Other 2 each);
+11, Email 6, Corporate 6, Web 5, Sensor 4, Threat 3, Search/Phone/Other 2 each);
 59 native correlation rules (AU-001…AU-059); 0 `unsafe`; deterministic entity
 merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
 `criterion` 0.8 direct (dev-only, zero shipped cost — F.3); `aho-corasick` now a
@@ -605,6 +605,21 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   the auditable intelligence product, keep GEXF as the optional graph. This is a
   capability **neither** SpiderFoot nor Maltego offers (reproducible,
   machine-diffable intelligence). **CAP-med**
+- **`[x]` C8 · Webcam, fan-subscription & adult-video platform identity (DELIVERED)**
+  — *Problem:* `username_search` covers mainstream social/dev/gaming/music platforms
+  only; webcam performers, fan-content creators, and adult-video contributors are an
+  increasingly significant OSINT surface that the engine left entirely blind. A
+  subject's streaming identity may be the only corroborating hit not already indexed
+  by general-purpose social probers. *Target:* enumerate username presence across the
+  specialist cam/fans/adult platform set so a streaming identity is surfaced
+  alongside mainstream social profiles in the same scan pass. → **Solution:**
+  `streaming_probe` — 30-site parallel HEAD/GET prober across three category buckets
+  (`cam` 14, `fans` 11, `adult` 6); `StatusEq` HEAD for platforms with clean 404s;
+  `StatusAndNotBody` GET for JS-rendered 200-for-all platforms (OnlyFans, Chaturbate);
+  summary `Username` entity with `cam-identity-exposed`, `subscription-platform-found`,
+  `adult-profile-found`, and `high-streaming-exposure` (≥3 platforms) tags;
+  `ModuleCategory::Social` (MITRE T1593.001 + T1589.003); priority 108; 8 unit tests.
+  **CAP-high (identity breadth)** ✅
 
 ---
 
@@ -1350,3 +1365,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   fmt/clippy/doc clean, 3,016 lib + 67 api + 23 arch + 54 smoke + 3 halting
   + 6 cli-seed + 2 audit-regression tests, 0 failures. **Paired:** `SOLUTION_TREE`
   SOL-F1 + SOL-CLI-CONTRACT + §4b + §5 refreshed — same commit.
+- **2026-06-17** — **Paired-tree cycle 7 (CAP): `streaming_probe` — webcam, fan-subscription
+  & adult-video platform identity discovery.** Operator-directed capability request:
+  "incorporate all forms of webcam or similar site identities as a comprehensive OSINT
+  inclusion." New module `src/modules/streaming_probe/`: 30-site parallel HEAD/GET
+  username prober across three category buckets — `cam` (14: Chaturbate, Stripchat,
+  BongaCams, Cam4, CamSoda, MyFreeCams, Streamate, LiveJasmin, ImLive, Flirt4Free,
+  Amateur.tv, Cams.com, JerkMate, SexLikeReal), `fans` (11: OnlyFans, Fansly, ManyVids,
+  FanCentro, Fanvue, Loyalfans, AVN Stars, PocketStars, Passes, SextPanther, AdmireMe),
+  `adult` (6: Pornhub, xHamster, xVideos, SpankBang, Erome, RedTube). Detection:
+  `StatusEq(200)` HEAD for platforms with clean 404s; `StatusAndNotBody(200, needle)` GET
+  for JS-rendered 200-for-all platforms. Per-profile `Url` entities tagged
+  `cam-profile`/`fans-profile`/`adult-profile` + `platform:<name>`. Summary `Username`
+  entity with `cam-identity-exposed`, `subscription-platform-found`, `adult-profile-found`,
+  `high-streaming-exposure` (≥3 platforms) tags. `ModuleCategory::Social`
+  (MITRE T1593.001 + T1589.003); priority 108; accepts `Username`; produces
+  `Url`/`Username`; 16-concurrent semaphore; 30 s timeout envelope; 8 unit tests.
+  New capability node C8 logged and immediately closed `[x]` (delivered on first pass).
+  Baseline updated to 119 modules / Social-11; `docs/MODULES.md` + README updated
+  (119 modules, 90 free); the `modules_md_lists_every_registered_module` and
+  `readme_module_overview_count_matches_registry` architecture guards passed clean.
+  Gate green: fmt/clippy/doc clean, 3,031 lib + 67 arch + 54 smoke + 3 halting + 23 cli
+  + 6 cli-seed + 2 audit-regression tests, 0 failures. **Paired:** `SOLUTION_TREE`
+  SOL-STREAMING + C8 + §4 + §5 refreshed — same commit.
