@@ -113,7 +113,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
   `proptest` that permuting input entity/session order yields **byte-identical**
   render. Extend to a general "renderers are permutation-invariant" property over
   CSV/JSON/GEXF/dossier. **P1**
-- **`[ ]` T1.2 · Throughput (the on-device perf guarantee)** —
+- **`[~]` T1.2 · Throughput (the on-device perf guarantee)** —
   `core/engine/mod.rs:132` runs blocking rusqlite `insert_event` **per entity**
   from async + spawned dispatch tasks; `api/scan_handlers` (8 sites) +
   `api/scan_export` (4) call sync `Store` on async workers with no
@@ -185,7 +185,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`aho-corasick`,
   `fetch_robots:251`, `resolve_seed:232`, …) → a post-connect stall hangs forever.
   → **Solution:** set a default `.timeout(...)` on the shared client (belt-and-
   braces with the 24 explicit wraps) and wrap the stragglers. **P2**
-- **`[ ]` T2.2 · Blocking `curl` in async export** — `cli/export/environment.rs:41`
+- **`[x]` T2.2 · Blocking `curl` in async export** — `cli/export/environment.rs:41`
   blocks a request worker (no `--max-time`).
   → **Solution:** `tokio::process` + `--max-time` + `tokio::time::timeout`, or
   gate the env fingerprint to the sync CLI path. **P2**
@@ -362,3 +362,15 @@ legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
   change classification output, which "deterministically" forbids; they need a
   domain decision on whether the scopes are meant to be identical, not a blind
   merge. Gate green: 2,959 lib tests, clippy/fmt clean.
+- **2026-06-17** — **Executed T2.2 (done) + T1.2 (API part, the primary impact).**
+  Wrapped the 11 heavy async API handlers in `tokio::task::spawn_blocking` — the
+  5 export renderers in `scan_export` (debug-bundle, attack-navigator, csv, gexf,
+  attack-coverage) and the 6 multi-row reads in `scan_handlers` (entities, diff,
+  filter, facets, correlations, audit) — so a slow query / WAL checkpoint / heavy
+  render no longer blocks the ~2-worker reactor and every concurrent request.
+  Wrapping `render_debug_bundle` also moves its blocking `curl` spawn off the
+  async worker, **closing T2.2**. Deliberately left (engine-side, risky): the
+  per-event `EventEmitter::emit` insert — a tiny WAL write whose batching would
+  change SSE durability ordering for marginal gain; it needs the writer-task +
+  flush-before-complete design if pursued. Gate green: clippy/fmt clean, 2,959
+  lib + integration tests, 0 failures, no behaviour change.

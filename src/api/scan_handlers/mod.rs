@@ -271,14 +271,17 @@ pub async fn scan_entities(
     if let Some(resp) = scan_missing(&s, &id) {
         return resp;
     }
-    match s.store.entities_for_scan(&id) {
-        Ok(mut entities) => {
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    match tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await {
+        Ok(Ok(mut entities)) => {
             if !wants_candidates(&params) {
                 entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
             }
             ok_list("entities", entities)
         }
-        Err(e) => internal_error(&e),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
     }
 }
 
@@ -297,13 +300,19 @@ pub async fn scan_diff(
     if let Some(resp) = scan_missing(&s, &b) {
         return resp;
     }
-    let baseline = match s.store.entities_for_scan(&a) {
-        Ok(e) => e,
-        Err(e) => return internal_error(&e),
-    };
-    let later = match s.store.entities_for_scan(&b) {
-        Ok(e) => e,
-        Err(e) => return internal_error(&e),
+    let store = std::sync::Arc::clone(&s.store);
+    let (a2, b2) = (a.clone(), b.clone());
+    let (baseline, later) = match tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&a2)?,
+            store.entities_for_scan(&b2)?,
+        ))
+    })
+    .await
+    {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
     let diff = crate::core::diff::diff_entities(&baseline, &later);
     (StatusCode::OK, Json(diff)).into_response()
@@ -323,15 +332,22 @@ pub async fn scan_entities_filter(
     if params.get("q").is_some_and(|v| v.len() > 256) {
         return bad_request("query too long (max 256 chars)");
     }
-    let kind = params.get("kind").map(String::as_str);
+    let kind = params.get("kind").cloned();
     let min_conf = params
         .get("min_confidence")
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|&c| (0.0..=1.0).contains(&c));
-    let q = params.get("q").map(String::as_str);
-    match s.store.entities_filtered(&id, kind, min_conf, q) {
-        Ok(entities) => ok_list("entities", entities),
-        Err(e) => internal_error(&e),
+    let q = params.get("q").cloned();
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    match tokio::task::spawn_blocking(move || {
+        store.entities_filtered(&id2, kind.as_deref(), min_conf, q.as_deref())
+    })
+    .await
+    {
+        Ok(Ok(entities)) => ok_list("entities", entities),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
     }
 }
 
@@ -342,15 +358,18 @@ pub async fn scan_entities_facets(
     if let Some(resp) = scan_missing(&s, &id) {
         return resp;
     }
-    match s.store.entity_facets(&id) {
-        Ok(facets) => {
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    match tokio::task::spawn_blocking(move || store.entity_facets(&id2)).await {
+        Ok(Ok(facets)) => {
             let items: Vec<serde_json::Value> = facets
                 .iter()
                 .map(|(kind, count)| json!({ "kind": kind, "count": count }))
                 .collect();
             Json(json!({ "facets": items, "count": items.len() })).into_response()
         }
-        Err(e) => internal_error(&e),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
     }
 }
 
@@ -361,9 +380,12 @@ pub async fn scan_correlations(
     if let Some(resp) = scan_missing(&s, &id) {
         return resp;
     }
-    match s.store.correlations_for_scan(&id) {
-        Ok(corr) => ok_list("correlations", corr),
-        Err(e) => internal_error(&e),
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    match tokio::task::spawn_blocking(move || store.correlations_for_scan(&id2)).await {
+        Ok(Ok(corr)) => ok_list("correlations", corr),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
     }
 }
 
@@ -379,9 +401,12 @@ pub async fn scan_audit(
     if let Some(resp) = scan_missing(&s, &id) {
         return resp;
     }
-    let entities = match s.store.entities_for_scan(&id) {
-        Ok(e) => e,
-        Err(e) => return internal_error(&e),
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let entities = match tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await {
+        Ok(Ok(e)) => e,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
     let normalised: Vec<crate::audit::AuditEntity> = entities
         .iter()

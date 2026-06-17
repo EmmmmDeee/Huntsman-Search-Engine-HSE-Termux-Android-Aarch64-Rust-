@@ -24,9 +24,12 @@ pub async fn scan_entities_csv(
     if let Some(resp) = scan_missing(&s, &id) {
         return resp;
     }
-    let entities = match s.store.entities_for_scan(&id) {
-        Ok(es) => es,
-        Err(e) => return internal_error(&e),
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let entities = match tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await {
+        Ok(Ok(es)) => es,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
     download_response(
         entities_to_csv(&entities),
@@ -258,13 +261,19 @@ pub async fn scan_export_gexf(
     if let Some(resp) = scan_missing(&s, &id) {
         return resp;
     }
-    let entities = match s.store.entities_for_scan(&id) {
-        Ok(entities) => entities,
-        Err(e) => return internal_error(&e),
-    };
-    let relations = match s.store.relations_for_scan(&id) {
-        Ok(relations) => relations,
-        Err(e) => return internal_error(&e),
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let (entities, relations) = match tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await
+    {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
     let body = crate::core::gexf::entities_to_gexf(&entities, &relations, &id);
     download_response(body, "application/xml; charset=utf-8", &id, "gexf")
@@ -282,15 +291,22 @@ pub async fn scan_export_attack_navigator(
     if let Some(resp) = scan_missing(&s, &id) {
         return resp;
     }
-    match crate::cli::export::render_attack_layer(s.store.as_ref(), &id) {
-        Ok(body) => download_named(
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::cli::export::render_attack_layer(store.as_ref(), &id2)
+    })
+    .await
+    {
+        Ok(Ok(body)) => download_named(
             body,
             "application/json; charset=utf-8",
             &id,
             "attack-navigator",
             "json",
         ),
-        Err(e) => internal_error(&e),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("attack-layer render task failed: {e}")),
     }
 }
 
@@ -307,9 +323,12 @@ pub async fn scan_attack_coverage(
     if let Some(resp) = scan_missing(&s, &id) {
         return resp;
     }
-    let entities = match s.store.entities_for_scan(&id) {
-        Ok(entities) => entities,
-        Err(e) => return internal_error(&e),
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let entities = match tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await {
+        Ok(Ok(entities)) => entities,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
     let module_sources = crate::core::entity::evidence_sources(&entities);
     let covered = crate::modules::reconnaissance_coverage(module_sources.iter().copied());
@@ -443,9 +462,20 @@ pub async fn scan_debug_bundle(
     if let Some(resp) = scan_missing(&s, &id) {
         return resp;
     }
-    match crate::cli::export::render_debug_bundle(s.store.as_ref(), &id) {
-        Ok(body) => download_response(body, "text/plain; charset=utf-8", &id, "debug.txt"),
-        Err(e) => internal_error(&e),
+    // Render off the async runtime: the debug bundle runs many queries, reads
+    // the raw archive, and spawns `curl` — all blocking — so on the ~2-worker
+    // reactor it would otherwise stall every concurrent request (this also moves
+    // the blocking `curl` spawn off the async worker — PROBLEM_TREE T2.2).
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::cli::export::render_debug_bundle(store.as_ref(), &id2)
+    })
+    .await
+    {
+        Ok(Ok(body)) => download_response(body, "text/plain; charset=utf-8", &id, "debug.txt"),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("debug-bundle render task failed: {e}")),
     }
 }
 
