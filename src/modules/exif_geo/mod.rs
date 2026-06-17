@@ -149,21 +149,28 @@ impl Module for ExifGeo {
             return Ok(result);
         }
 
-        // bytes_stream + manual byte-accumulation would let us bail
-        // earlier on oversize; reqwest's `.bytes()` already caps at
-        // the response's content-length, and the Range header above
-        // bounded the server response. Trade clarity for control
-        // here — a deliberately misbehaving server can still send
-        // 8 MB; that's the worst case.
-        let bytes = match resp.bytes().await {
-            Ok(b) => b,
-            Err(_) => return Ok(result),
-        };
-        if bytes.len() > MAX_BYTES as usize {
-            return Ok(result);
+        // Stream the body and bail the moment the running total exceeds
+        // MAX_BYTES. The `Range` header above is only a *request*: the image URL
+        // is scraper-discovered (attacker-influenced), and a hostile host can
+        // ignore Range and stream an unbounded body — `.bytes()` would buffer the
+        // whole thing and OOM the device before the size check ever ran. Capping
+        // the in-memory buffer mid-stream is the fix (T2.8). A valid image under
+        // the cap is read in full and parses exactly as before.
+        use futures::StreamExt as _;
+        let mut stream = resp.bytes_stream();
+        let mut body: Vec<u8> = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = match chunk {
+                Ok(c) => c,
+                Err(_) => return Ok(result),
+            };
+            if body.len() + chunk.len() > MAX_BYTES as usize {
+                return Ok(result);
+            }
+            body.extend_from_slice(&chunk);
         }
 
-        let mut cursor = std::io::Cursor::new(bytes.as_ref());
+        let mut cursor = std::io::Cursor::new(body.as_slice());
         let exif = match Reader::new().read_from_container(&mut cursor) {
             Ok(e) => e,
             Err(_) => return Ok(result),

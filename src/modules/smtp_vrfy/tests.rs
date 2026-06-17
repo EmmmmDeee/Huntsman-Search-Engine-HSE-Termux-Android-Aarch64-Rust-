@@ -116,3 +116,35 @@ fn deliverability_ladder_is_ordered() {
     let unreachable = mk(SmtpVerdict::Unreachable("x".into()));
     assert!(valid > catchall && catchall > invalid && invalid > unreachable);
 }
+
+#[tokio::test]
+async fn read_line_timeout_caps_a_giant_newline_less_line() {
+    // T2.8: a single newline-less line from a hostile MX must not grow `buf`
+    // unbounded (OOM on the device) — the 5 s timeout bounds time, not bytes.
+    // Send 100 KiB with no newline; the capped reader must stop at the 8 KiB
+    // ceiling rather than buffer the whole blob.
+    use tokio::io::{AsyncWriteExt, BufReader};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        if let Ok((mut sock, _)) = listener.accept().await {
+            let blob = vec![b'A'; 100 * 1024]; // no newline anywhere
+            let _ = sock.write_all(&blob).await;
+            let _ = sock.flush().await;
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    });
+    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let (rd, _wr) = stream.into_split();
+    let mut reader = BufReader::new(rd);
+    let mut buf = String::new();
+    super::read_line_timeout(&mut reader, &mut buf)
+        .await
+        .unwrap();
+    assert!(
+        buf.len() <= 8 * 1024,
+        "capped line read must not exceed the 8 KiB ceiling, got {}",
+        buf.len()
+    );
+    assert!(!buf.is_empty(), "should have read the capped prefix");
+}

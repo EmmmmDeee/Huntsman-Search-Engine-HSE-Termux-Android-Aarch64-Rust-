@@ -278,7 +278,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
   add a per-source **health signal** (last-success, parse-rate) surfaced in
   `hse doctor` + the SPA; auto-flag a source "drifted" when parse-rate drops.
   **P2** *(robustness only; source legality is parked in §7.)*
-- **`[ ]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** — several
+- **`[~]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
   `JSON_BODY_CAP` / `read_body_capped` discipline (§1.5 "cap everything, stream
@@ -289,9 +289,15 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
     polite request a hostile image host can ignore). `target.value` is a
     scraper-discovered URL → attacker-controlled. → stream via
     `bytes_stream()` / `read_body_capped` and abort mid-stream past `MAX_BYTES`.
+    ✅ **Fixed:** now streams via `bytes_stream()` and bails the moment the running
+    total exceeds `MAX_BYTES`; a valid image under the cap parses exactly as before.
   - **HIGH** `modules/smtp_vrfy/mod.rs:280` — `BufReader::read_line` has no byte
     ceiling (only a 5 s timeout); a single newline-less line from a hostile MX
     buffers unbounded into a `String`. → cap with `(&mut reader).take(N).read_line`.
+    ✅ **Fixed:** `read_line_timeout` now reads via `fill_buf`/`consume` on the
+    original `BufReader` (no read-ahead loss) and stops at an 8 KiB ceiling or the
+    newline; legitimate < 1 KiB replies are unchanged. Regression test
+    `read_line_timeout_caps_a_giant_newline_less_line` (loopback, 100 KiB no-newline).
   - **MED** `util/http/url.rs:54` (`json_decode`) — `resp.json::<T>()` reads the full
     body uncapped, unlike its sibling `json_scanned` (which routes through
     `read_json_text` / `JSON_BODY_CAP`). ~24 call-sites inherit the gap (shodan,
@@ -842,3 +848,17 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   clean, 2,994 lib tests (+2), 0 failures. *Remaining: T2.8 HIGH reads + the
   T2.11 found_keys cross-scan isolation (the one fix needing the task-local refactor
   — done next, carefully).*
+- **2026-06-17** — **Fixes, batch 2 — T2.8 the two HIGH unbounded reads.**
+  **`exif_geo`:** replaced `resp.bytes().await` (buffer-then-check) with a
+  `bytes_stream()` accumulate-and-bail capped at `MAX_BYTES`, so a hostile image
+  host that ignores the `Range` header can no longer OOM the device; a valid image
+  under the cap parses byte-identically. **`smtp_vrfy`:** `read_line_timeout` now
+  caps a single line at 8 KiB via `fill_buf`/`consume` on the original `BufReader`
+  (chosen over a wrapping `Take`, which would lose read-ahead and corrupt the next
+  line), so a hostile MX streaming a newline-less line can't grow the buffer
+  unbounded; real < 1 KiB replies are unchanged. Loopback regression test added
+  (`read_line_timeout_caps_a_giant_newline_less_line`). Gate green: clippy/fmt/doc
+  clean, 2,995 lib tests (+1), 0 failures. T2.8 now `[~]` — the MED `json_decode`
+  cap, the AU-gov scraper `resp.text()` caps, the hibp cast, and the LOW CLI-import
+  cap remain (lower-risk; batched later). *Remaining headline item: T2.11
+  found_keys.*

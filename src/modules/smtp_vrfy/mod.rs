@@ -15,7 +15,7 @@
 mod tests;
 
 use async_trait::async_trait;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 use crate::core::{
@@ -277,10 +277,34 @@ async fn read_line_timeout(
     buf: &mut String,
 ) -> std::io::Result<()> {
     buf.clear();
-    tokio::time::timeout(std::time::Duration::from_secs(5), reader.read_line(buf))
+    // Cap a single line so a hostile MX can't stream an unbounded newline-less
+    // line into `buf` and OOM the device (the 5 s timeout alone bounds *time*,
+    // not bytes — T2.8). Real SMTP reply lines are < 1 KiB; 8 KiB is generous.
+    // We read via `fill_buf`/`consume` on the original `BufReader` (not a wrapping
+    // `Take`, which would discard its read-ahead and corrupt the next line) and
+    // stop at the newline or the cap — a misbehaving server then degrades to an
+    // inconclusive verdict, never an OOM. Legitimate responses are unchanged.
+    const MAX_LINE_BYTES: usize = 8 * 1024;
+    let read = async {
+        loop {
+            let chunk = reader.fill_buf().await?;
+            if chunk.is_empty() {
+                break; // EOF
+            }
+            let newline = chunk.iter().position(|&b| b == b'\n');
+            let want = newline.map_or(chunk.len(), |p| p + 1);
+            let take = want.min(MAX_LINE_BYTES.saturating_sub(buf.len()));
+            buf.push_str(&String::from_utf8_lossy(&chunk[..take]));
+            std::pin::Pin::new(&mut *reader).consume(take);
+            if newline.is_some() || buf.len() >= MAX_LINE_BYTES {
+                break;
+            }
+        }
+        Ok::<(), std::io::Error>(())
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), read)
         .await
         .map_err(|_| std::io::Error::other("timeout"))?
-        .map(|_| ())
 }
 
 async fn read_multiline(
