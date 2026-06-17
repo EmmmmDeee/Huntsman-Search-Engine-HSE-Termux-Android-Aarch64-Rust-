@@ -83,3 +83,58 @@ use super::*;
             .collect();
         assert_eq!(au_state_majority(&parsed), Some("NSW"));
     }
+
+    // ── is_australian_coord ───────────────────────────────────────────────────
+
+    #[test]
+    fn is_australian_coord_accepts_via_tag_or_bounding_box() {
+        // country:AU tag → AU regardless of the passed lat/lon.
+        let mut tagged = Entity::new(EntityKind::Coordinates, "0,0", 0.6, "s");
+        tagged.tag("country:AU");
+        assert!(is_australian_coord(&tagged, (51.5, -0.12)));
+
+        // au-state: tag → AU.
+        let mut state = Entity::new(EntityKind::Coordinates, "0,0", 0.6, "s");
+        state.tag("au-state:NSW");
+        assert!(is_australian_coord(&state, (51.5, -0.12)));
+
+        // No tag, but the coordinate lands inside Australia (Sydney).
+        let untagged = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.6, "s");
+        assert!(is_australian_coord(&untagged, (-33.8688, 151.2093)));
+    }
+
+    #[test]
+    fn is_australian_coord_rejects_untagged_offshore_fix() {
+        // No AU tag and the coordinate is in London → not Australian.
+        let e = Entity::new(EntityKind::Coordinates, "51.5074,-0.1278", 0.6, "s");
+        assert!(!is_australian_coord(&e, (51.5074, -0.1278)));
+    }
+
+    // ── is_infrastructure_geo ─────────────────────────────────────────────────
+
+    #[test]
+    fn is_infrastructure_geo_flags_hosting_and_poi_and_unanchored() {
+        // hosting-tagged CDN/cloud edge.
+        let mut hosting = Entity::new(EntityKind::Coordinates, "0,0", 0.6, "s");
+        hosting.add_evidence(Evidence::new("wigle", "x")); // anchored, but…
+        hosting.tag("hosting"); // …the hosting tag still vetoes it
+        assert!(is_infrastructure_geo(&hosting));
+
+        // infra: map-feature tag (Overpass POI).
+        let mut poi = Entity::new(EntityKind::Coordinates, "0,0", 0.6, "s");
+        poi.tag("infra:camera");
+        assert!(is_infrastructure_geo(&poi));
+
+        // No person-anchoring corroborating source → infrastructure geo.
+        let mut ipgeo = Entity::new(EntityKind::Coordinates, "0,0", 0.6, "s");
+        ipgeo.add_evidence(Evidence::new("ipinfo", "ip-geo")); // not in the anchor list
+        assert!(is_infrastructure_geo(&ipgeo));
+    }
+
+    #[test]
+    fn is_infrastructure_geo_false_for_person_anchored_fix() {
+        // A WiGLE sighting is person-anchoring, and there's no hosting/infra tag.
+        let mut e = Entity::new(EntityKind::Coordinates, "-33.87,151.21", 0.6, "s");
+        e.add_evidence(Evidence::new("wigle", "wifi sighting"));
+        assert!(!is_infrastructure_geo(&e));
+    }

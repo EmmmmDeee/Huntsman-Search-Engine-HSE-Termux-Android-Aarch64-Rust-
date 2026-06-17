@@ -278,3 +278,69 @@ pub(super) fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::scan::{Target, TargetKind};
+
+    // ── enrich_geospatial ─────────────────────────────────────────────────────
+
+    fn geo_attr(e: &Entity, key: &str) -> Option<String> {
+        e.evidence
+            .iter()
+            .find(|ev| ev.source == "geo_normalize")
+            .and_then(|ev| ev.attributes.get(key).cloned())
+    }
+
+    #[test]
+    fn enrich_geospatial_tags_coordinates_with_geohash_and_hemisphere() {
+        // Southern-hemisphere coordinate (Brisbane).
+        let mut e = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.6, "s");
+        enrich_geospatial(&mut e);
+        assert!(e.tags.iter().any(|t| t.starts_with("geohash:")));
+        assert!(e.tags.iter().any(|t| t.starts_with("tz:")));
+        assert_eq!(geo_attr(&e, "hemisphere").as_deref(), Some("southern"));
+
+        // Northern-hemisphere coordinate (London).
+        let mut n = Entity::new(EntityKind::Coordinates, "51.5074,-0.1278", 0.6, "s");
+        enrich_geospatial(&mut n);
+        assert_eq!(geo_attr(&n, "hemisphere").as_deref(), Some("northern"));
+    }
+
+    #[test]
+    fn enrich_geospatial_leaves_other_kinds_untouched() {
+        let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.6, "s");
+        enrich_geospatial(&mut e);
+        assert!(
+            e.evidence.iter().all(|ev| ev.source != "geo_normalize"),
+            "a non-geo entity must not gain geo_normalize evidence"
+        );
+    }
+
+    // ── seed_anchor_entity ────────────────────────────────────────────────────
+
+    #[test]
+    fn seed_anchor_entity_builds_subject_hub_for_ordinary_seed() {
+        let t = Target::new(TargetKind::Email, "subject@corp.io");
+        let e = seed_anchor_entity(&t, "s").expect("email seed anchors");
+        assert_eq!(e.kind, EntityKind::Email);
+        assert!((e.confidence - 0.90).abs() < 1e-9);
+        assert!(e.has_tag("seed") && e.has_tag("subject"));
+        assert!(e.has_evidence_from("seed"));
+    }
+
+    #[test]
+    fn seed_anchor_entity_skips_fullname_seed() {
+        // name_intel owns the Person anchor for a name seed.
+        let t = Target::new(TargetKind::FullName, "Haigen Bamford");
+        assert!(seed_anchor_entity(&t, "s").is_none());
+    }
+
+    #[test]
+    fn seed_anchor_entity_skips_blank_value() {
+        let t = Target::new(TargetKind::Username, "   ");
+        assert!(seed_anchor_entity(&t, "s").is_none());
+    }
+}

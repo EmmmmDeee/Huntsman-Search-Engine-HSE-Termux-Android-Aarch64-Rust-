@@ -97,3 +97,38 @@ pub(super) fn budget_check(
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::correlator::{Correlation, Severity};
+
+    fn corr(rule: &str, uids: &[&str]) -> Correlation {
+        Correlation::new(
+            rule,
+            "title",
+            Severity::Medium,
+            "desc".to_string(),
+            uids.iter().map(|s| (*s).to_string()).collect(),
+            "scan",
+            0,
+        )
+    }
+
+    #[test]
+    fn correlation_key_is_order_independent_over_uids() {
+        // Same rule + same uid SET in different orders → identical key.
+        let a = correlation_key(&corr("AU-001", &["u3", "u1", "u2"]));
+        let b = correlation_key(&corr("AU-001", &["u1", "u2", "u3"]));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn correlation_key_differs_on_rule_or_uid_set() {
+        let base = correlation_key(&corr("AU-001", &["u1", "u2"]));
+        // Different rule id → different finding.
+        assert_ne!(base, correlation_key(&corr("AU-002", &["u1", "u2"])));
+        // Different uid set → different finding.
+        assert_ne!(base, correlation_key(&corr("AU-001", &["u1", "u3"])));
+    }
+}

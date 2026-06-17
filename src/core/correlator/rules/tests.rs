@@ -1,5 +1,9 @@
 
-use super::{date_diff_days, source_family, text_mentions_ip};
+use super::{
+    Entity, EntityKind, canonical_handle, date_diff_days, is_generic_handle, source_family,
+    tagged_matching_sources, text_mentions_ip,
+};
+use crate::core::entity::Evidence;
 
     #[test]
     fn text_mentions_ip_is_whole_address_for_v4() {
@@ -79,4 +83,38 @@ use super::{date_diff_days, source_family, text_mentions_ip};
         assert_eq!(date_diff_days("not-a-date", "2024-06-15"), u64::MAX);
         assert_eq!(date_diff_days("2024-06-15", ""), u64::MAX);
         assert_eq!(date_diff_days("2024-06", "2024-06-15"), u64::MAX);
+    }
+
+    // ── canonical_handle ──────────────────────────────────────────────────────
+
+    #[test]
+    fn canonical_handle_collapses_separators_and_case() {
+        // Same handle written with different punctuation collapses to one token.
+        assert_eq!(canonical_handle("Jordan.Meyers"), "jordanmeyers");
+        assert_eq!(canonical_handle("jordan_meyers"), "jordanmeyers");
+        assert_eq!(canonical_handle("jordan-meyers"), "jordanmeyers");
+    }
+
+    // ── is_generic_handle ─────────────────────────────────────────────────────
+
+    #[test]
+    fn is_generic_handle_flags_role_mailboxes_not_personal_handles() {
+        assert!(is_generic_handle("info"));
+        assert!(is_generic_handle("support"));
+        assert!(!is_generic_handle("jordanmeyers"));
+    }
+
+    // ── tagged_matching_sources ───────────────────────────────────────────────
+
+    #[test]
+    fn tagged_matching_sources_intersects_evidence_with_allowlist() {
+        let mut e = Entity::new(EntityKind::Username, "jdoe", 0.6, "s");
+        e.add_evidence(Evidence::new("github_user", "found"));
+        e.add_evidence(Evidence::new("keybase", "found"));
+        e.add_evidence(Evidence::new("name_intel", "derived"));
+        let allowed = ["github_user", "keybase"];
+        let got = tagged_matching_sources(&e, &allowed);
+        assert_eq!(got.len(), 2);
+        assert!(got.contains("github_user") && got.contains("keybase"));
+        assert!(!got.contains("name_intel"), "outside the allowlist");
     }

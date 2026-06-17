@@ -160,3 +160,16 @@ use super::*;
 "#;
         assert_eq!(xml, expected);
     }
+
+    // ── short_uid ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn short_uid_truncates_to_twelve_chars() {
+        // A long uid is cut to its first 12 chars (matching the node-id form).
+        assert_eq!(short_uid("0123456789abcdef0000"), "0123456789ab");
+        // Exactly 12 is unchanged.
+        assert_eq!(short_uid("0123456789ab"), "0123456789ab");
+        // Shorter than 12 passes through (the `min` guards the slice).
+        assert_eq!(short_uid("abc"), "abc");
+        assert_eq!(short_uid(""), "");
+    }

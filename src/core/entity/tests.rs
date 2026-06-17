@@ -1042,3 +1042,94 @@ fn evidence_sources_dedups_sorts_and_spans_entities() {
     let empty: &[Entity] = &[];
     assert!(evidence_sources(empty).is_empty());
 }
+
+// ── is_enrichment_source ──────────────────────────────────────────────────────
+
+#[test]
+fn is_enrichment_source_only_for_deterministic_passes() {
+    assert!(is_enrichment_source("geo_normalize"));
+    assert!(!is_enrichment_source("hibp"));
+    assert!(!is_enrichment_source(""));
+}
+
+// ── has_evidence_from ─────────────────────────────────────────────────────────
+
+#[test]
+fn has_evidence_from_is_exact_source_match() {
+    let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.5, "s");
+    e.add_evidence(Evidence::new("hibp", "breach"));
+    assert!(e.has_evidence_from("hibp"));
+    assert!(!e.has_evidence_from("dehashed"));
+    // Exact, not substring.
+    assert!(!e.has_evidence_from("hib"));
+}
+
+// ── absorb ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn absorb_folds_signal_and_preserves_identity() {
+    let mut a = Entity::new(EntityKind::Address, "X, NSW", 0.40, "s");
+    a.corroboration = 2;
+    a.observed_at = 100;
+    a.add_evidence(Evidence::new("wigle", "geo"));
+    a.tag("alpha");
+    let original_uid = a.uid.clone();
+
+    let mut b = Entity::new(EntityKind::Address, "X, NSW 2582", 0.70, "s");
+    b.corroboration = 3;
+    b.observed_at = 250;
+    b.add_evidence(Evidence::new("exif", "geo"));
+    b.add_evidence(Evidence::new("wigle", "geo")); // duplicate (source,summary) — dropped
+    b.tag("beta");
+
+    a.absorb(b);
+
+    // Confidence = max, corroboration = saturating sum, recency = max.
+    assert!((a.confidence - 0.70).abs() < 1e-9);
+    assert_eq!(a.corroboration, 5);
+    assert_eq!(a.observed_at, 250);
+    // Evidence deduped by (source, summary): wigle/exif only, no duplicate wigle.
+    assert_eq!(a.evidence.len(), 2);
+    assert!(a.has_evidence_from("exif"));
+    // Tags unioned; identity (uid + value) untouched.
+    assert!(a.has_tag("alpha") && a.has_tag("beta"));
+    assert_eq!(a.uid, original_uid);
+    assert_eq!(a.value, "X, NSW");
+}
+
+#[test]
+fn absorb_dedups_identically_on_both_branches() {
+    // The evidence dedup has two implementations chosen by `len*len <= 256`.
+    // Build entities large enough to cross into the HashSet branch (17×17 = 289)
+    // and assert the result matches the small-input linear-branch fold of the same
+    // logical data: each side contributes its own unique rows, the one shared row
+    // (`shared`/`s`) is folded once.
+    let build = |n: usize, src: &str| {
+        let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.5, "x");
+        e.add_evidence(Evidence::new("shared", "s"));
+        for i in 0..n {
+            e.add_evidence(Evidence::new(src, format!("row{i}")));
+        }
+        e
+    };
+    // Small inputs → linear branch (1+2)*(1+2) = 9 ≤ 256.
+    let mut small_a = build(2, "a");
+    small_a.absorb(build(2, "b"));
+    // 1 shared + 2 a-rows + 2 b-rows = 5.
+    assert_eq!(small_a.evidence.len(), 5);
+
+    // Large inputs → HashSet branch (1+16)*(1+16) = 289 > 256.
+    let mut big_a = build(16, "a");
+    big_a.absorb(build(16, "b"));
+    // 1 shared + 16 a-rows + 16 b-rows = 33; the shared row folded once.
+    assert_eq!(big_a.evidence.len(), 33);
+    assert_eq!(
+        big_a
+            .evidence
+            .iter()
+            .filter(|e| e.source == "shared")
+            .count(),
+        1,
+        "the shared (source,summary) row must be folded to one on the HashSet branch"
+    );
+}

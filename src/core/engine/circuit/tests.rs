@@ -73,3 +73,28 @@ use super::*;
         record_error(m, "error sending request for url (https://crt.sh/...)");
         assert!(!is_open(m));
     }
+
+    // ── is_rate_limited ───────────────────────────────────────────────────────
+
+    #[test]
+    fn is_rate_limited_matches_status_codes_and_prose_case_insensitively() {
+        for msg in [
+            "HTTP 429 Too Many Requests",
+            "rate limit exceeded",
+            "Rate-Limit hit",
+            "ratelimit",
+            "monthly QUOTA reached",
+            "API count exceeded",
+            "out of credit",
+            "402 Payment Required",
+        ] {
+            assert!(is_rate_limited(msg), "should be rate-limit: {msg}");
+        }
+    }
+
+    #[test]
+    fn is_rate_limited_false_for_benign_errors() {
+        assert!(!is_rate_limited("connection reset by peer"));
+        assert!(!is_rate_limited("404 not found"));
+        assert!(!is_rate_limited(""));
+    }

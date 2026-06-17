@@ -837,3 +837,70 @@ fn extract_ratemyagent_suburb(url: &str) -> Option<String> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── coord_state ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn coord_state_prefers_the_au_state_tag() {
+        let mut e = Entity::new(EntityKind::Coordinates, "-27.47,153.02", 0.6, "s");
+        e.tag("au-state:QLD");
+        assert_eq!(coord_state(&e), Some("QLD"));
+    }
+
+    #[test]
+    fn coord_state_falls_back_to_lat_lon_when_untagged() {
+        // Brisbane, no tag → derived from the coordinate.
+        let e = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.6, "s");
+        assert_eq!(coord_state(&e), Some("QLD"));
+    }
+
+    #[test]
+    fn coord_state_none_below_threshold_or_wrong_kind() {
+        let weak = Entity::new(EntityKind::Coordinates, "-27.47,153.02", 0.49, "s");
+        assert_eq!(coord_state(&weak), None);
+        let email = Entity::new(EntityKind::Email, "a@b.com", 0.9, "s");
+        assert_eq!(coord_state(&email), None);
+    }
+
+    // ── extract_ratemyagent_suburb ────────────────────────────────────────────
+
+    #[test]
+    fn extract_ratemyagent_suburb_reads_slug_and_strips_query() {
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/john-smith-brisbane-abc12/"
+            ),
+            Some("brisbane".to_string())
+        );
+        // A trailing query string is stripped before parsing.
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/jane-doe-geelong-x9z?ref=1"
+            ),
+            Some("geelong".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_ratemyagent_suburb_rejects_malformed_slugs() {
+        // No agent path at all.
+        assert_eq!(
+            extract_ratemyagent_suburb("https://example.com/agent/x"),
+            None
+        );
+        // Fewer than 4 hyphen parts.
+        assert_eq!(
+            extract_ratemyagent_suburb("https://x/real-estate-agent/a-b-c/"),
+            None
+        );
+        // Suburb token carries a digit → rejected.
+        assert_eq!(
+            extract_ratemyagent_suburb("https://x/real-estate-agent/john-smith-bris2-abc12/"),
+            None
+        );
+    }
+}
