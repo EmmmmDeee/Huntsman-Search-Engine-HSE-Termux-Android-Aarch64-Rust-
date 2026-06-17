@@ -412,6 +412,46 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
   sized for a single in-process scan; `serve`'s concurrency (8) makes them shared
   mutable state. The clean fix is per-`scan_id` keying (or threading the state
   through `ModuleContext`), which also subsumes the budget-reset race. **P2**
+- **`[ ]` T2.12 · Periphery correctness bugs (CLI / diff / cache / pool)** — the
+  2026-06-17 internals audit of the least-covered subsystems found a cluster of
+  real but contained defects (the cores — key_pool rotation, crypto, proxy SSRF,
+  budget, roi, timeline — verified clean, see §6):
+  - **MED** `cli/keys_cmd/mod.rs:143-144` — `hse keys add <svc> KEY` for a
+    *non-poolable* service prints "Adding anyway — key will be stored", but
+    `pool.add` returns `false` (same non-poolable gate), so it falls to the `else`
+    and prints the **false** "Key already exists in '{service}' pool" — the key is
+    **silently dropped** and the command exits 0, contradicting its own output. →
+    gate early (`find_service(..).is_none()` → `Err`), or return
+    `{Added,Duplicate,NotPoolable}` and message/exit accordingly. **P2**
+  - **MED** `cli/provision/mod.rs:283-285,328` — `provision --verify` prints a `!`
+    on a failed smoke scan / missing-key sub-test but returns `Ok(())` → **exit 0
+    on failure**, so a CI/install gate treats a broken build as healthy. → track a
+    `verify_ok` flag and `return Err` (or document it as informational and drop the
+    pass/fail `✓`/`!` markers). **P2**
+  - **MED** `core/diff/mod.rs:94-121` — `diff_entities` iterates the raw input
+    slices, not the deduped uid maps, so a side with two same-uid entities
+    over-counts `common`/`added`/`removed`/`confidence_shifts`. DB-to-DB diffs are
+    safe (uid is PK-unique), but the CLI JSON-snapshot path (`cli/diff/mod.rs:33`,
+    `serde_json::from_str` with no dedup) makes a hand-edited/concatenated
+    `before.json` trigger it → corrupted diff output. → iterate the deduped
+    `HashMap` values (or dedup inputs by uid up front). **P2**
+  - **LOW-MED** `util/response_cache/mod.rs:70` — the `c.len() < cap` guard runs
+    *before* `insert`, and re-inserting an existing key doesn't grow `len`, so once
+    the cache is full an in-place **value refresh is rejected** → stale paid-API
+    payload served for the rest of the process. → `if c.len() < cap ||
+    c.contains_key(&key) { insert }`. **P3**
+  - **LOW** misc: `key_pool/validation.rs:33-41` (a successful re-validation of an
+    already-pooled `Untested` key doesn't promote the stored entry to `Active` —
+    wastes a probe); `util/proxy/mod.rs:89` (`is_public_proxy` mis-parses
+    *bracketless* IPv6 `host:port` — **SSRF stays closed**, just the wrong endpoint
+    is used/dropped); `cli/provision/mod.rs:158` (`write_env_file` renames without
+    `sync_all()` — crash could leave a zero-length `.env`; route through
+    `util::atomic_file::write`); `cli/keys_cmd/mod.rs:473` (`import-tsv --validate`
+    scoping is broken → re-validates *every* tsv-imported key, spending budget);
+    `core/timeline/mod.rs:185` (pure-digit epochs not exactly 4/10/13 digits are
+    silently dropped — a real date omitted, no crash); CLI exit-code contracts
+    (`audit`/`diff` always `Ok`) + `resolve_scan_id` accepting an incomplete scan.
+    **P3.** *(All contained; none crash or corrupt persisted scan data.)*
 
 ---
 
@@ -496,9 +536,10 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
 3. **T1.1, T1.2, T1.3, T1.4** — restore determinism, throughput, verification,
    layering.
 4. **F.2** — `fst` datasets *(folds in T2.6 de-duplication)*.
-5. **T2.1–T2.11** — robustness/quality (T2.8 unbounded reads, T2.9 SQL tie-breaks,
-   T2.10 schema versioning, T2.11 concurrent-`serve` global-state isolation — added
-   across the 2026-06-17 re-audits; T2.8 rides on F.1's capped-read substrate).
+5. **T2.1–T2.12** — robustness/quality (T2.8 unbounded reads, T2.9 SQL tie-breaks,
+   T2.10 schema versioning, T2.11 concurrent-`serve` global-state isolation, T2.12
+   periphery CLI/diff/cache bugs — added across the 2026-06-17 re-audits; T2.8 rides
+   on F.1's capped-read substrate. T2.9 + the two T2.8 HIGH reads now fixed).
 6. **C1 → C7** — capability program, AU-first, each gated on its §3.F primitive.
 
 ## 6. Verified sound (checked — do not re-investigate)
@@ -541,6 +582,17 @@ hot-injection (post-Phase-1 snapshot, no TOCTOU) all check out. The only defects
 found are **concurrency-isolation gaps** (T2.11: the oathnet paid-overspend race +
 the found_keys cross-scan contamination) and one security finding (the SPA XSS,
 §7) — not the algorithms.
+A fifth pass (2026-06-17) audited the least-covered periphery and re-confirmed the
+**cores are sound**: the `key_pool` rotation/round-robin + atomic 0600 persistence
+(unique-temp + `sync_all` + `rename`), `core::crypto` (a total, panic-free
+crypto-address shape classifier — hex blobs never misclassified as wallets),
+`proxy`/`netrotate` (empty-pool guarded, round-robin correct, **SSRF stays closed**
+— every proxy passes `is_private_addr`), the `QuotaBudget` CAS, and the
+`data_broker`/`dependency`/`relation`/`roi`/`timeline` pure logic all check out. The
+defects it found (T2.12) are all in the **periphery** — CLI command UX/exit codes,
+the JSON-snapshot `diff` path, and the response cache — none crash or corrupt
+persisted scan data. It also independently re-verified the T2.9 `latest` fix
+(`ORDER BY started_at DESC, id DESC` is a true timestamp+PK sort, not lexical).
 
 ## 7. Deferred (out of scope here — separate pass)
 
@@ -567,20 +619,18 @@ The **2026-06-17 security hardening pass** worked the rest of the §7 Security l
 into concrete, verified findings (the SPA XSS above is fixed; these remain open —
 security stays a deliberately separate track, and S1 needs *operator* action):
 
-- **S1 · `[ ]` P0 — LIVE paid credentials hardcoded in the public binary.**
-  `util/keys/constants.rs:137-168` embeds five **real, in-use** keys — OathNet,
-  **HIBP (paid)**, WiGLE user+token, and **SeekNow enterprise** (the doc comment
-  itself reads *"Enterprise plan, 5,000 daily credits. Live-verified"*) — committed
-  to the public repo and `strings`-extractable from the shipped binary. Anyone who
-  clones the repo or greps the binary gets working paid keys: drain the quota, get
-  the keys revoked (DoS for every HSE user), or abuse them under the owner's
-  identity. The `SEEKNOW_SUPERSEDED_KEY*` slots also leak the rotation history.
-  → **(a) rotate all five at the providers now** — they are already public, and
-  de-embedding alone does NOT un-leak them (git history + every released binary
-  retain them). **(b)** move the embedded defaults to a build-time injection
-  (`option_env!` from a CI secret / git-ignored `.env`), falling back to "module
-  skipped + `signup_hint`" when absent (that machinery exists). If zero-config is
-  mandatory, embed only a *free-tier* key, never the paid HIBP / enterprise SeekNow.
+- **S1 · `[-]` ACCEPTED BY DESIGN (operator directive, 2026-06-17) — keys remain
+  hardcoded while functional.** `util/keys/constants.rs:137-168` embeds five live
+  keys (OathNet, HIBP, WiGLE user+token, enterprise SeekNow) so a fresh install
+  works **zero-config, no signup** — a deliberate product feature. The operator has
+  directed that **all functional keys stay embedded**; the exposure (public repo +
+  `strings`-extractable binary ⇒ a shared quota) is an accepted trade-off on the
+  owner's *own* credentials. **Not a defect — no de-embedding.** Recorded honestly
+  for posterity, and the *"if functional"* clause is already mechanised: a key
+  verified dead (HTTP 401) is swapped in place and demoted to a
+  `SEEKNOW_SUPERSEDED_KEY*` slot (single source of truth in `constants.rs`), so the
+  embedded set self-heals to whatever is currently live. Any free-tier-vs-paid split
+  is likewise the operator's prerogative, not a tracked action.
 - **S2 · `[ ]` P1 (HIGH) — whois-referral SSRF (raw TCP/43 bypasses SsrfResolver).**
   `modules/whois/{mod.rs:97-104, client.rs:38-53}` follows the referral server taken
   **verbatim** from the (attacker-influenceable) WHOIS response —
@@ -970,3 +1020,23 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Mutex (no TOCTOU), no key logged, keys-API returns no values. The S2/S3 fixes are
   contained and behaviour-preserving (offered); S1 is an operator decision (rotate +
   UX trade-off) so it is flagged, not silently changed.
+- **2026-06-17** — **Operator directive: "all keys must remain hardcoded if
+  functional."** S1 reclassified `[ ]`→`[-]` **accepted by design**: the embedded
+  zero-config keys stay (no de-embedding). The exposure is an accepted trade-off on
+  the owner's own credentials; the *"if functional"* clause is already mechanised by
+  the `SEEKNOW_SUPERSEDED_KEY*` rotate-in-place pattern (a key verified dead is
+  swapped, so the embedded set self-heals to whatever is live). No code change.
+- **2026-06-17** — **Internals audit of the least-covered subsystems (analysis
+  only) → new node T2.12.** Swept `util` (key_pool, crypto, proxy/netrotate,
+  response_cache, budget), the non-engine `core` (diff, timeline, data_broker,
+  dependency, relation, roi), and every CLI command group + selftest. **Cores
+  verified sound** (recorded in §6): key_pool rotation + atomic persistence, the
+  crypto-address classifier, proxy/netrotate (SSRF stays closed), the budget CAS,
+  roi/relation/timeline logic. **Real but contained defects logged as T2.12** —
+  MED: `keys add` for a non-poolable service silently drops the key while printing a
+  false "already exists" (exit 0); `provision --verify` returns exit 0 even when the
+  smoke scan fails (a broken-build-passes-CI gap); `diff_entities` over-counts on
+  duplicate-uid CLI JSON snapshots. LOW-MED: `response_cache` can't refresh a value
+  once full (stale served). Plus LOW pool/proxy/timeline/exit-code edges. None
+  crash or corrupt persisted data. The agent also independently re-verified the
+  shipped T2.9 `latest` tie-break fix is correct.
