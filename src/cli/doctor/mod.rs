@@ -118,6 +118,59 @@ pub(super) async fn cmd_doctor() -> Result<()> {
         }
     }
 
+    // ── Module health (T2.7 / SOL-HEALTH-SIGNAL) ─────────────────────
+    // Query the per-module health ledger. Modules with ≥3 consecutive failures
+    // are flagged degraded — they may have lost connectivity, had their API key
+    // revoked, or drifted from their provider's schema. Populated once modules
+    // have actually run (empty database or fresh install shows "no history").
+    println!("\nModule health:");
+    match Store::open(&db_path) {
+        Ok(store) => match store.module_health_summary() {
+            Ok(rows) if rows.is_empty() => {
+                println!("  no module run history (run a scan first)");
+            }
+            Ok(rows) => {
+                let degraded: Vec<_> = rows
+                    .iter()
+                    .filter(|r| r.consecutive_failures >= 3)
+                    .collect();
+                let total_runs: u64 = rows.iter().map(|r| r.total_runs).sum();
+                let total_ok: u64 = rows.iter().map(|r| r.total_successes).sum();
+                let pct = if total_runs > 0 {
+                    total_ok * 100 / total_runs
+                } else {
+                    100
+                };
+                println!(
+                    "  {total_ok}/{total_runs} runs succeeded ({pct}%) across {} module(s)",
+                    rows.len()
+                );
+                if degraded.is_empty() {
+                    println!("  no degraded modules (none with ≥3 consecutive failures)");
+                } else {
+                    println!(
+                        "  {} DEGRADED module(s) (≥3 consecutive failures):",
+                        degraded.len()
+                    );
+                    for r in &degraded {
+                        let since = r.last_success_at.map_or_else(
+                            || "never succeeded".to_string(),
+                            |t| format!("last ok {}", age_str(t)),
+                        );
+                        let err = r.last_error.as_deref().unwrap_or("unknown");
+                        println!(
+                            "  [DEGRADED] {} — {} consecutive failures, {since}",
+                            r.module_name, r.consecutive_failures
+                        );
+                        println!("             last error: {err}");
+                    }
+                }
+            }
+            Err(e) => println!("  could not query: {e}"),
+        },
+        Err(e) => println!("  FAIL — {e}"),
+    }
+
     // ── WiGLE account health (network call, best-effort) ──────────────
     // Poll /api/v2/profile/user. Surfaces the "email unverified →
     // throttled" warning that the WiGLE account page calls out but which
@@ -147,6 +200,22 @@ pub(super) async fn cmd_doctor() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Format a unix timestamp as a human-readable age relative to now
+/// ("just now", "5 min ago", "2 h ago", "3 d ago").
+fn age_str(ts: u64) -> String {
+    let now = crate::core::entity::unix_now();
+    let secs = now.saturating_sub(ts);
+    if secs < 120 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        format!("{} min ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{} h ago", secs / 3600)
+    } else {
+        format!("{} d ago", secs / 86_400)
+    }
 }
 
 /// Rank every unset `KNOWN_KEYS` env var by acquisition ROI, highest first.

@@ -69,6 +69,24 @@ versions can include breaking changes; patch versions are bug-fix-only.
   "lat/lon binding swap" was investigated and **rejected as a false positive**
   (the bindings are correct; the round-trip test proves it). +2 regression tests.
 
+- **Per-module scraper health ledger — `hse doctor` + SPA dashboard + REST API
+  (PROBLEM_TREE cycle 27 / T2.7 / SOL-HEALTH-SIGNAL).** Added a persistent
+  `module_health` table (schema v2) that records each module's lifetime run
+  counters (`total_runs`, `total_successes`) and a `consecutive_failures` streak
+  reset to 0 on any success. The engine dispatch layer (`finalise_module_result`)
+  writes a health record after every timeout, error, and success — missing-key
+  skips are excluded (not failures). `hse doctor` gained a "Module health" section
+  that prints an overall success rate and flags every module with ≥3 consecutive
+  failures as DEGRADED (with last-error text and a human-readable "last ok N d ago"
+  timestamp). `GET /api/v1/modules/health` (v1.6+) exposes the ledger as JSON.
+  The SPA Dashboard gained a "Module Health" panel (green / amber) that surfaces
+  degraded scrapers immediately on first open. Additive schema migration: the DDL
+  uses `CREATE TABLE IF NOT EXISTS` so existing v1 databases gain the table on the
+  next open without any explicit migration step; `SCHEMA_VERSION` bumped 1→2 so
+  forward-compatibility warning still fires if an older binary opens a newer DB.
+  5 new unit tests (`storage::health::tests`); schema-snapshot test updated.
+  Gate: fmt clean, clippy -D warnings clean, 3 102 tests pass.
+
 - **Correlation rule AU-060 — cell-tower cross-validation (PROBLEM_TREE cycle 26).**
   Added `rule_au_060_cell_tower_cross_validation` to the correlator's RULES dispatch
   array (position 60). Fires `Severity::Medium` when a `cell-tower`-tagged `DeviceId`

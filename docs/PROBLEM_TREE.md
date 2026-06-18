@@ -1893,3 +1893,50 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy/doc clean, 3,101 total lib tests (+4), 3,097 passing +
   4 ignored, 0 failures. **Paired:** `SOLUTION_TREE` AU-060 + §4/§5 cycle 26
   — same commit.
+
+---
+
+### §8 · Maintained log — cycle 27 (P→S direction)
+
+**Gap closed: T2.7 — SOL-HEALTH-SIGNAL (per-source scraper health signal)**
+
+*Problem:* The engine tracks module success/failure in-memory per-scan only.
+There is no persistent health ledger — a module that silently fails on every
+scan is indistinguishable from a healthy one until the operator manually digs
+through event logs. With 130+ modules and scrapers added across cycles 17–20
+(`ahpra`, `acma_rrl`, `trove_au`, `cell_local`), a drifted scraper can starve
+scans of data indefinitely with no observable signal.
+
+*Solution delivered:*
+- **`module_health` table (schema v2):** one row per module with
+  `consecutive_failures` (reset to 0 on success), `last_success_at`,
+  `last_failure_at`, `total_runs`, `total_successes`, `last_error`,
+  `updated_at`. Additive DDL (`CREATE TABLE IF NOT EXISTS`); existing v1
+  databases gain the table on next open; `SCHEMA_VERSION` bumped 1→2.
+- **Dispatch integration:** `finalise_module_result` in
+  `src/core/engine/dispatch.rs` calls `store.record_module_run(name, outcome)`
+  for every timeout, error, and success. MissingKey skips are excluded (not
+  failures). Best-effort (`let _ = …`) — a health write never aborts a scan.
+- **`StoragePort` trait:** two new default-no-op methods (`record_module_run`,
+  `module_health_summary`) in `src/core/port/mod.rs`; `ModuleRunOutcome` enum
+  and `ModuleHealthRow` struct defined at the port boundary. Test doubles
+  compile unchanged.
+- **`hse doctor`** gained a "Module health" section: overall success rate
+  `{ok}/{total} ({pct}%)` and DEGRADED listing for every module with
+  `consecutive_failures ≥ 3` — shows last-error text + human-readable "last ok N
+  d ago" / "never succeeded".
+- **`GET /api/v1/modules/health`** (v1.6+): returns the ledger as JSON with
+  `{health:[…], count, degraded}`.
+- **SPA Dashboard:** "Module Health" panel (green `panel-success` / amber
+  `panel-warning`) shows up automatically when health history exists; degraded
+  modules appear in a table with streak count, last error, and last-success age.
+- **Schema snapshot test** updated to include `module_health` + its auto-index.
+- **5 new unit tests** in `storage::health::tests`:
+  `success_clears_failure_streak`, `failure_increments_streak`,
+  `timeout_records_as_timeout_string`,
+  `summary_ordered_by_consecutive_failures_desc`,
+  `empty_summary_when_no_runs_recorded`.
+
+Gate green: fmt/clippy/doc clean, 3,102 total lib tests (+5), 3,098 passing +
+4 ignored, 0 failures. **Paired:** `SOLUTION_TREE` T2.7 + §4/§5 cycle 27
+— same commit.

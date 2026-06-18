@@ -469,7 +469,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-GEOINT | C5 | `[~]` |
 | SOL-OFFENSIVE | C6 | `[ ]` |
 | SOL-FORENSIC | C7 | `[ ]` |
-| SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[ ]` |
+| SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[x]` cycle 27 |
 | SOL-UPDATE | UX self-upgrade + CLI consolidation | `[x]` |
 
 ---
@@ -1214,3 +1214,40 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   row now shows AU-060 `[ ]`→`[x]`. Gate green: fmt/clippy/doc clean,
   3,101 total lib tests (+4), 0 failures. Paired: `PROBLEM_TREE` §8 cycle
   26 — same commit.
+
+---
+
+### §5 · Maintained log — cycle 27 (S→P direction)
+
+**T2.7 / SOL-HEALTH-SIGNAL — per-source scraper health ledger**
+
+*Delivered:* Persistent `module_health` table (schema v2) + dispatch integration
++ `hse doctor` section + `GET /api/v1/modules/health` + SPA Dashboard panel.
+Consecutive-failure streak tracked per module; `hse doctor` flags degraded
+scrapers (≥3 consecutive failures) with last-error text and human-readable
+last-success age. Default no-op on `StoragePort` keeps test doubles compatible.
+
+*§4a update:* T2.7 is now closed `[x]`. Remaining open §4a items:
+- cell_local auto-sync (no auto-scheduled re-sync; manual `hse cells import` only)
+- hse update --check changelog (shows commit count but not subject lines)
+- C3 remaining (GNAF/AusPost address validation; state cadastre/property)
+- C4 remaining (passive-DNS subdomain union + CDN cert-hash origin-unmasking)
+- C5 remaining (Weiszfeld/Welzl centroid; provenance radius)
+- §7 S4 LOW residual (archived success body not run through `redact_literal_secrets`)
+- SOL-F1 remaining (`bstr` — no natural consumer yet)
+- SOL-F3 remaining (`cargo-fuzz` nightly CI lane)
+
+*S→P gap:* The health signal records outcomes per module but does not yet
+surface **per-target-kind breakdowns** (e.g. "email_intel fails on `Email` but
+succeeds on `Domain`"), **parse-success rates** (a module returns 0 entities
+consistently = drifted schema but not an error), or **SPA trend sparklines**
+(historical failure rate over time). These are natural next-level refinements
+but not blocking — the core "is this scraper broken?" signal is now in place.
+
+**§4d update (status table excerpt):**
+| ID       | Description                    | Status |
+|----------|-------------------------------|--------|
+| T2.7     | SOL-HEALTH-SIGNAL              | `[x]`  |
+
+Gate green: fmt/clippy/doc clean, 3,102 total lib tests (+5), 0 failures.
+Paired: `PROBLEM_TREE` §8 cycle 27 — same commit.

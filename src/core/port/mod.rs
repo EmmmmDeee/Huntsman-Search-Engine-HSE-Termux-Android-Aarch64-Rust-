@@ -33,6 +33,35 @@ use crate::core::{
 pub const EVENTS_RETENTION_SECS: u64 = 7 * 86_400; // 7 days
 pub const EVENTS_MAX_ROWS: usize = 100_000;
 
+// ── Module health types (T2.7 / SOL-HEALTH-SIGNAL) ────────────────────────
+
+/// Outcome of one module dispatch run passed to
+/// [`StoragePort::record_module_run`].
+#[derive(Debug)]
+pub enum ModuleRunOutcome {
+    Success { result_count: usize },
+    Error { message: String },
+    Timeout,
+}
+
+/// One row from [`StoragePort::module_health_summary`]: the lifetime health
+/// counters for a single module, ordered by descending `consecutive_failures`.
+#[derive(Debug)]
+pub struct ModuleHealthRow {
+    pub module_name: String,
+    /// Unix timestamp of the last successful run, or `None` if the module has
+    /// never succeeded since health tracking started.
+    pub last_success_at: Option<u64>,
+    pub last_failure_at: Option<u64>,
+    /// Current unbroken failure streak (reset to 0 on any success).
+    pub consecutive_failures: u64,
+    pub total_runs: u64,
+    pub total_successes: u64,
+    /// Error message / `"timeout"` from the most recent non-success run.
+    pub last_error: Option<String>,
+    pub updated_at: u64,
+}
+
 pub trait StoragePort: Send + Sync {
     // ── Scans ──────────────────────────────────────────────────────────────
     fn upsert_scan(&self, scan: &Scan) -> Result<()>;
@@ -96,6 +125,30 @@ pub trait StoragePort: Send + Sync {
     /// Default no-op returns `None` for test doubles.
     fn lookup_module_result_fresh(&self, _key: &str) -> Result<Option<Vec<Entity>>> {
         Ok(None)
+    }
+
+    // ── Module health (T2.7 / SOL-HEALTH-SIGNAL) ──────────────────────────
+
+    /// Record the outcome of one module dispatch run in the per-module health
+    /// ledger. Called by the engine after every `process()` invocation (except
+    /// `MissingKey` skips, which are not failures). Best-effort — a write
+    /// failure must never abort the scan; callers use `let _ = …`.
+    ///
+    /// Default no-op so test doubles and non-SQLite backends need not
+    /// implement it.
+    fn record_module_run(&self, _module_name: &str, _outcome: &ModuleRunOutcome) -> Result<()> {
+        Ok(())
+    }
+
+    /// Return a health summary for every module that has been run, ordered by
+    /// descending `consecutive_failures` then ascending `module_name`. Modules
+    /// with a `consecutive_failures` streak ≥ 3 are flagged as degraded by
+    /// `hse doctor` and the SPA dashboard.
+    ///
+    /// Default empty vec so test doubles and non-SQLite backends compile
+    /// without implementing it.
+    fn module_health_summary(&self) -> Result<Vec<ModuleHealthRow>> {
+        Ok(vec![])
     }
 
     // ── Maintenance ─────────────────────────────────────────────────────────

@@ -536,6 +536,7 @@ const API = {
   health:    ()=>API._req('/api/v1/health'),
   modules:   ()=>API._req('/api/v1/modules'),
   engines:   ()=>API._req('/api/v1/engines/health'),
+  moduleHealth: ()=>API._req('/api/v1/modules/health'),
   scans:     ()=>API._req('/api/v1/scans'),
   scan:      id=>API._req('/api/v1/scans/'+encodeURIComponent(id)),
   entities:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/entities'),
@@ -647,7 +648,7 @@ async function render(){
 
 /* ═══════════ Page: DASHBOARD (#/dash) ═══════════ */
 async function renderDash(v){
-  const [stats, mods, scansData] = await Promise.all([API.stats(), API.modules(), API.scans()]);
+  const [stats, mods, scansData, healthData] = await Promise.all([API.stats(), API.modules(), API.scans(), API.moduleHealth().catch(()=>null)]);
   const s = stats;
   const recent = (scansData.scans || []).slice(0, 8);
   const byStatus = s.scans_by_status || {};
@@ -718,6 +719,8 @@ async function renderDash(v){
         </div>
       </div>
     </div>
+
+    ${moduleHealthPanel(healthData)}
 
     ${apiBudgetsPanel(s)}
 
@@ -824,6 +827,57 @@ function budgetBar(b){
     <span class="text-muted" style="font-size:11px;min-width:64px;text-align:right">${esc(lab)}${b.quota_exhausted?' <b style="color:#a94442">FULL</b>':''}</span>
   </div>`;
 }
+/* Module Health panel — shows degraded scrapers (≥3 consecutive failures).
+   Collapsed by default when all modules are healthy; expanded when degraded
+   modules exist so the operator sees the problem immediately. */
+function moduleHealthPanel(h){
+  if(!h || !h.count) return ''; // no history yet — silent omission
+  const rows = h.health || [];
+  const degraded = rows.filter(r=>r.consecutive_failures>=3);
+  const total = h.count;
+  const ok = total - degraded.length;
+  const pct = total>0 ? Math.round(ok*100/total) : 100;
+  const statusCls = degraded.length>0 ? 'panel-warning' : 'panel-success';
+  const icon = degraded.length>0 ? 'glyphicon-warning-sign' : 'glyphicon-ok-sign';
+  const label = degraded.length>0
+    ? `<span class="label label-warning">${degraded.length} degraded</span>`
+    : `<span class="label label-success">all healthy</span>`;
+  const ageStr = ts=>{
+    if(!ts) return 'never';
+    const s = Math.floor(Date.now()/1000)-ts;
+    if(s<120)   return 'just now';
+    if(s<3600)  return `${Math.floor(s/60)} min ago`;
+    if(s<86400) return `${Math.floor(s/3600)} h ago`;
+    return `${Math.floor(s/86400)} d ago`;
+  };
+  const tableRows = degraded.length===0 ? ''
+    : degraded.map(r=>`
+      <tr>
+        <td><code>${esc(r.module_name)}</code></td>
+        <td class="text-center text-danger"><b>${r.consecutive_failures}</b></td>
+        <td class="text-muted" style="font-size:11px">${esc(r.last_error||'unknown')}</td>
+        <td class="text-muted" style="font-size:11px">${ageStr(r.last_success_at)}</td>
+      </tr>`).join('');
+  return `
+    <div class="panel ${statusCls}" style="margin-top:12px">
+      <div class="panel-heading">
+        <b><i class="glyphicon ${icon}"></i>&nbsp;Module Health</b>
+        <span class="text-muted" style="font-weight:400;margin-left:6px">
+          — ${ok}/${total} healthy (${pct}%) &nbsp;${label}
+        </span>
+      </div>
+      ${degraded.length===0
+        ? '<div class="panel-body text-muted" style="padding:8px 12px">No modules with ≥3 consecutive failures. Run more scans to populate history.</div>'
+        : `<div class="table-responsive"><table class="table table-condensed" style="margin-bottom:0">
+            <thead><tr>
+              <th>Module</th><th class="text-center">Streak</th>
+              <th>Last error</th><th>Last success</th>
+            </tr></thead>
+            <tbody>${tableRows}</tbody>
+           </table></div>`}
+    </div>`;
+}
+
 function apiBudgetsPanel(s){
   const w = s.wigle||{}, acct = w.account||{};
   // verified === false is the silent-failure case; null = not yet polled.

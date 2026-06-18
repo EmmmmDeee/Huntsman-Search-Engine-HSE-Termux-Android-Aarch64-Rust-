@@ -387,6 +387,47 @@ pub async fn modules_graph(State(s): State<Arc<AppState>>) -> Json<Value> {
     }))
 }
 
+/// `GET /api/v1/modules/health` — per-module health summary (v1.6+).
+///
+/// Returns the `module_health` ledger: one entry per module that has been
+/// dispatched since tracking started (schema v2). Each entry carries the
+/// `consecutive_failures` streak, timestamps of last success/failure, and
+/// the most recent error message. Ordered by descending
+/// `consecutive_failures` so the most-degraded modules appear first.
+pub async fn modules_health(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    match s.store.module_health_summary() {
+        Err(e) => internal_error(&e),
+        Ok(rows) => {
+            let health: Vec<Value> = rows
+                .iter()
+                .map(|r| {
+                    json!({
+                        "module_name":          r.module_name,
+                        "last_success_at":      r.last_success_at,
+                        "last_failure_at":      r.last_failure_at,
+                        "consecutive_failures": r.consecutive_failures,
+                        "total_runs":           r.total_runs,
+                        "total_successes":      r.total_successes,
+                        "last_error":           r.last_error,
+                        "updated_at":           r.updated_at,
+                    })
+                })
+                .collect();
+            let count = health.len();
+            let degraded = rows.iter().filter(|r| r.consecutive_failures >= 3).count();
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "health":   health,
+                    "count":    count,
+                    "degraded": degraded,
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
 pub async fn entity_get(
     State(s): State<Arc<AppState>>,
     Path(uid): Path<String>,

@@ -5,12 +5,18 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, params};
 
 use crate::core::{
-    correlator::Correlation, entity::Entity, error::Result, event::Event, relation::Relation,
+    correlator::Correlation,
+    entity::Entity,
+    error::Result,
+    event::Event,
+    port::{ModuleHealthRow, ModuleRunOutcome},
+    relation::Relation,
     scan::Scan,
 };
 
 mod archive; // `impl Store`: inter-scan entity cache (`raw_archive`)
 mod entities; // `impl Store`: entity persistence + FTS query
+mod health; // `impl Store`: per-module health ledger (`module_health`)
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -19,7 +25,12 @@ pub struct Store {
 /// Logical schema version stamped into `PRAGMA user_version` on first open.
 /// Increment this when a future non-additive migration is introduced so older
 /// binaries can warn rather than silently misread a newer schema.
-const SCHEMA_VERSION: i32 = 1;
+///
+/// Version history:
+/// * 1 — initial schema (scans, entities, correlations, entity_observations,
+///   events, relations, raw_archive, entities_fts)
+/// * 2 — add `module_health` table (T2.7 / SOL-HEALTH-SIGNAL)
+const SCHEMA_VERSION: i32 = 2;
 
 /// Static schema (tables + indexes), `CREATE … IF NOT EXISTS` so it's safe to
 /// run on every open. Kept as a constant so [`Store::open`] reads as a short
@@ -123,6 +134,24 @@ const SCHEMA_DDL: &str = "
                 content_rowid='rowid',
                 prefix='2 3',
                 tokenize='unicode61'
+            );
+
+            -- Per-module health ledger (schema v2, T2.7 / SOL-HEALTH-SIGNAL).
+            -- One row per module, upserted after every dispatch run. Tracks
+            -- `consecutive_failures` so `hse doctor` and the SPA dashboard can
+            -- flag degraded scrapers before they silently starve scans of data.
+            -- `CREATE TABLE IF NOT EXISTS` makes this additive: re-running the
+            -- DDL on a v1 DB (no table yet) creates it; subsequent opens
+            -- are no-ops. The schema migration (v1 → v2) is therefore implicit.
+            CREATE TABLE IF NOT EXISTS module_health (
+                module_name          TEXT    PRIMARY KEY,
+                last_success_at      INTEGER,
+                last_failure_at      INTEGER,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                total_runs           INTEGER NOT NULL DEFAULT 0,
+                total_successes      INTEGER NOT NULL DEFAULT 0,
+                last_error           TEXT,
+                updated_at           INTEGER NOT NULL
             );
             ";
 
@@ -752,6 +781,14 @@ impl crate::core::port::StoragePort for Store {
 
     fn lookup_module_result_fresh(&self, key: &str) -> Result<Option<Vec<Entity>>> {
         Store::lookup_module_result_fresh(self, key)
+    }
+
+    fn record_module_run(&self, module_name: &str, outcome: &ModuleRunOutcome) -> Result<()> {
+        Store::record_module_run(self, module_name, outcome)
+    }
+
+    fn module_health_summary(&self) -> Result<Vec<ModuleHealthRow>> {
+        Store::module_health_summary(self)
     }
 }
 

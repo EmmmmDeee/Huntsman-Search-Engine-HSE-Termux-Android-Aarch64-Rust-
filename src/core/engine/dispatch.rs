@@ -19,6 +19,7 @@ use crate::core::entity::{Entity, normalise};
 use crate::core::error::{Error, Result};
 use crate::core::event::EventKind;
 use crate::core::module::{Module, ModuleContext, ModuleCost, ModuleResult};
+use crate::core::port::ModuleRunOutcome;
 use crate::core::scan::{ScanOptions, Target, TargetKind};
 
 /// Dispatch-dedup key: a module is invoked at most once per `(module, normalised
@@ -328,6 +329,9 @@ impl super::ScanEngine {
                         error: "timeout".into(),
                     },
                 );
+                let _ = self
+                    .store
+                    .record_module_run(name, &ModuleRunOutcome::Timeout);
             }
             Ok(Err(Error::MissingKey(key))) => {
                 // An unconfigured optional provider is NOT a failure. Surface it
@@ -363,13 +367,17 @@ impl super::ScanEngine {
                 // any other hard error counts toward the soft streak.
                 super::circuit::record_error(name, &e.to_string());
                 warn!(module = name, error = %e, "module error");
+                let err_str = e.to_string();
                 self.emit(
                     cx.scan_id,
                     EventKind::ModuleError {
                         module: name.into(),
-                        error: e.to_string(),
+                        error: err_str.clone(),
                     },
                 );
+                let _ = self
+                    .store
+                    .record_module_run(name, &ModuleRunOutcome::Error { message: err_str });
             }
             Ok(Ok(mut mr)) => {
                 // A completed dispatch (even an empty one) proves the provider is
@@ -456,6 +464,12 @@ impl super::ScanEngine {
                     },
                 );
                 info!(module = name, found, "done");
+                let _ = self.store.record_module_run(
+                    name,
+                    &ModuleRunOutcome::Success {
+                        result_count: found,
+                    },
+                );
             }
         }
     }
