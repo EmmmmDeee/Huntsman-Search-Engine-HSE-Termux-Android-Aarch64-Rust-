@@ -5,11 +5,16 @@
 # any Linux / macOS with rustc 1.88+ and git. Idempotent: re-running upgrades
 # in place.
 #
-# Usage (Termux or any Unix) — paste this one line:
-#   curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/claude/vigilant-galileo-vmjk3e/install.sh | bash
+# Usage (Termux or any Unix):
 #
-# Or, if you've already cloned the repo (~/hse, ~/hse-src, or any HSE dir):
-#   bash ~/hse/install.sh
+#   Public repo — paste one line:
+#     curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/claude/vigilant-galileo-vmjk3e/install.sh | bash
+#
+#   Private repo — token prompt (never echoed, not in shell history):
+#     read -rsp $'GitHub token: ' GITHUB_TOKEN && export GITHUB_TOKEN && curl -fsSL -H "Authorization: token $GITHUB_TOKEN" https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/claude/vigilant-galileo-vmjk3e/install.sh | bash
+#
+#   Or, if you've already cloned the repo (~/hse, ~/hse-src, or any HSE dir):
+#     bash ~/hse/install.sh    # set GITHUB_TOKEN first if repo is private
 #
 # Environment knobs (all optional):
 #   HSE_INSTALL_DIR   Where to clone the source (default: auto-detects ~/hse;
@@ -72,6 +77,10 @@ trap on_exit EXIT
 # ─── Defaults ────────────────────────────────────────────────────────────────
 HSE_REPO_URL="${HSE_REPO_URL:-https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git}"
 HSE_REF="${HSE_REF:-claude/vigilant-galileo-vmjk3e}"
+# Private-repo auth: set GITHUB_TOKEN (or HSE_GITHUB_TOKEN) to a PAT with
+# at least `repo` (or `contents:read`) scope. Used for curl API calls and
+# injected into the HTTPS clone/fetch URL so git doesn't prompt.
+GITHUB_TOKEN="${GITHUB_TOKEN:-${HSE_GITHUB_TOKEN:-}}"
 # Resolve HSE_INSTALL_DIR in priority order:
 #   1. Explicit env override (HSE_INSTALL_DIR already set)
 #   2. Running from inside an existing HSE clone (./install.sh from ~/hse)
@@ -324,11 +333,41 @@ try_download_release() {
     local dest_sha="$dest.sha256"
     hint "Saving to: $dest"
 
+    # Build shared curl auth args for GitHub — empty when no token.
+    local auth_hdr=()
+    [[ -n "${GITHUB_TOKEN:-}" ]] && auth_hdr=(-H "Authorization: token $GITHUB_TOKEN")
+
+    # For private repos, resolve the asset URL via the GitHub API first.
+    # For public repos, fall through to the direct releases/latest/download URL.
+    local bin_url="" sha_url=""
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        hint "Resolving release asset via GitHub API (private repo)…"
+        local api_json
+        api_json=$(curl -fsSL --connect-timeout 15 \
+            "${auth_hdr[@]}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$slug/releases/latest" 2>/dev/null || true)
+        bin_url=$(printf '%s' "$api_json" \
+            | grep -o '"browser_download_url":"[^"]*hse-aarch64-linux-android"' \
+            | sed 's/.*:"//; s/"$//')
+        sha_url=$(printf '%s' "$api_json" \
+            | grep -o '"browser_download_url":"[^"]*hse-aarch64-linux-android\.sha256"' \
+            | sed 's/.*:"//; s/"$//')
+        if [[ -z "$bin_url" ]]; then
+            log_warn "No release asset found via GitHub API (no tag pushed yet?) — building from source"
+            return 1
+        fi
+    else
+        bin_url="$base/$bin"
+        sha_url="$base/$bin.sha256"
+    fi
+
     # Fetch .sha256 first — it's tiny, confirms the release exists, and gives
     # us fast-fail on network problems before we try the larger binary.
     hint "Fetching checksum…"
     if ! curl -fsSL --connect-timeout 15 --max-time 60 \
-            -o "$dest_sha" "$base/$bin.sha256" 2>/dev/null; then
+            "${auth_hdr[@]}" \
+            -o "$dest_sha" "$sha_url" 2>/dev/null; then
         log_warn "No release available on GitHub yet (or network error) — building from source"
         rm -f "$dest_sha"
         return 1
@@ -338,7 +377,8 @@ try_download_release() {
     hint "Downloading binary (~10-15 MB — may take a minute on mobile)…"
     if ! curl -fL --connect-timeout 30 --max-time 300 \
             --progress-bar \
-            -o "$dest" "$base/$bin" 2>&1; then
+            "${auth_hdr[@]}" \
+            -o "$dest" "$bin_url" 2>&1; then
         log_warn "Binary download failed or timed out — building from source"
         rm -f "$dest" "$dest_sha"
         return 1
@@ -461,19 +501,27 @@ clone_help() {
     hint "      HSE_REPO_URL=$token_url ./install.sh"
 }
 
+# When GITHUB_TOKEN is set, embed it in the HTTPS URL so git authenticates
+# without prompting. This is the standard `x-access-token` approach supported
+# by GitHub (any Fine-Grained PAT or Classic PAT with `repo` scope).
+# SSH URLs and non-GitHub URLs are left untouched.
+_GIT_REMOTE="$HSE_REPO_URL"
+if [[ -n "${GITHUB_TOKEN:-}" && "$HSE_REPO_URL" == https://github.com/* ]]; then
+    _GIT_REMOTE="https://x-access-token:${GITHUB_TOKEN}@${HSE_REPO_URL#https://}"
+fi
+
 if [[ -d "$HSE_INSTALL_DIR/.git" ]]; then
-    # Re-point origin at $HSE_REPO_URL first, so an SSH/token override
-    # (HSE_REPO_URL=git@... ./install.sh) actually takes effect on a re-install
-    # whose existing origin is the private HTTPS URL — otherwise the fetch
-    # below would keep using the old, credential-gated remote.
-    git -C "$HSE_INSTALL_DIR" remote set-url origin "$HSE_REPO_URL" 2>/dev/null || true
+    # Re-point origin at the (possibly token-injected) URL so an SSH/token
+    # override actually takes effect on a re-install without relying on the
+    # existing credential store.
+    git -C "$HSE_INSTALL_DIR" remote set-url origin "$_GIT_REMOTE" 2>/dev/null || true
     git -C "$HSE_INSTALL_DIR" fetch --depth 1 origin "$HSE_REF" \
         || { clone_help; die "git fetch failed"; }
     git -C "$HSE_INSTALL_DIR" checkout -B "$HSE_REF" "origin/$HSE_REF" \
         || die "git checkout failed"
     ok "Updated existing clone"
 else
-    git clone --depth 1 --branch "$HSE_REF" "$HSE_REPO_URL" "$HSE_INSTALL_DIR" \
+    git clone --depth 1 --branch "$HSE_REF" "$_GIT_REMOTE" "$HSE_INSTALL_DIR" \
         || { clone_help; die "git clone failed"; }
     ok "Cloned fresh"
 fi
