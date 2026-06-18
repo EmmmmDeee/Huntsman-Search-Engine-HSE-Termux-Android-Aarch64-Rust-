@@ -251,6 +251,14 @@ pub trait Module: Send + Sync {
         &[]
     }
 
+    /// How long (seconds) the inter-scan entity cache may serve a previous
+    /// result for this module instead of re-querying the provider. Zero (the
+    /// default) disables caching. Override for paid / key-gated modules whose
+    /// data is stable within a known window (IP intel: 24 h, HLR: 24 h).
+    fn cache_ttl_secs(&self) -> u64 {
+        0
+    }
+
     /// The MITRE ATT&CK® Reconnaissance (TA0043) technique IDs this module's
     /// collection implements.
     ///

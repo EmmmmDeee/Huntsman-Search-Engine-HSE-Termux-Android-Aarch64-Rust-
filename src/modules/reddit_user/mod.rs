@@ -110,7 +110,12 @@ impl Module for RedditUser {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Username, EntityKind::Email, EntityKind::Url, EntityKind::Organisation];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Username,
+            EntityKind::Email,
+            EntityKind::Url,
+            EntityKind::Organisation,
+        ];
         KINDS
     }
 
@@ -218,28 +223,34 @@ pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
     result.entities
 }
 
-async fn fetch_submitted(
-    http: &reqwest::Client,
-    username: &str,
-    scan_id: &str,
-) -> Vec<Entity> {
+async fn fetch_submitted(http: &reqwest::Client, username: &str, scan_id: &str) -> Vec<Entity> {
     let url = format!(
         "https://www.reddit.com/user/{}/submitted.json?limit=25",
         crate::util::http::urlencode(username)
     );
-    let Ok(resp) = http.get(&url)
+    let Ok(resp) = http
+        .get(&url)
         .header("User-Agent", "HSE/1.0 OSINT research tool")
         .send()
-        .await else { return Vec::new() };
-    if !resp.status().is_success() { return Vec::new(); }
-    let Ok(body) = resp.text().await else { return Vec::new() };
+        .await
+    else {
+        return Vec::new();
+    };
+    if !resp.status().is_success() {
+        return Vec::new();
+    }
+    let Ok(body) = resp.text().await else {
+        return Vec::new();
+    };
 
     let mut subreddits: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Parse subreddit names from JSON without a full Deserialize struct
     let mut remaining = body.as_str();
     while let Some(pos) = remaining.find("\"subreddit\":\"") {
         remaining = &remaining[pos + 13..];
-        let Some(end) = remaining.find('"') else { break };
+        let Some(end) = remaining.find('"') else {
+            break;
+        };
         let sub = &remaining[..end];
         if !sub.is_empty() && sub.len() <= 50 {
             subreddits.insert(sub.to_string());
@@ -247,15 +258,19 @@ async fn fetch_submitted(
         remaining = &remaining[end..];
     }
 
-    subreddits.into_iter().take(10).map(|sub| {
-        let mut org = Entity::new(EntityKind::Organisation, &sub, 0.40, scan_id);
-        org.tag("subreddit");
-        org.add_evidence(
-            Evidence::new("reddit_user", format!("u/{username} posts in r/{sub}"))
-                .with_attr("subreddit", &sub),
-        );
-        org
-    }).collect()
+    subreddits
+        .into_iter()
+        .take(10)
+        .map(|sub| {
+            let mut org = Entity::new(EntityKind::Organisation, &sub, 0.40, scan_id);
+            org.tag("subreddit");
+            org.add_evidence(
+                Evidence::new("reddit_user", format!("u/{username} posts in r/{sub}"))
+                    .with_attr("subreddit", &sub),
+            );
+            org
+        })
+        .collect()
 }
 
 #[cfg(test)]

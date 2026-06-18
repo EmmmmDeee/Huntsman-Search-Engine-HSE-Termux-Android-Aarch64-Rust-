@@ -1,8 +1,8 @@
+use super::Netlas;
 use crate::core::{
     module::{Module, ModuleCost},
     scan::{Target, TargetKind},
 };
-use super::Netlas;
 
 #[test]
 fn metadata() {
@@ -21,8 +21,8 @@ fn metadata() {
 
 #[test]
 fn netlas_query_by_kind() {
-    use crate::core::scan::Target;
     use super::netlas_query;
+    use crate::core::scan::Target;
     let ip_q = netlas_query(&Target::new(TargetKind::IpAddress, "1.2.3.4"));
     assert!(ip_q.starts_with("ip:"));
     let domain_q = netlas_query(&Target::new(TargetKind::Domain, "example.com"));

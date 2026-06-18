@@ -1,8 +1,8 @@
+use super::TroveAu;
 use crate::core::{
     module::{Module, ModuleCost},
     scan::{Target, TargetKind},
 };
-use super::TroveAu;
 
 #[test]
 fn metadata() {

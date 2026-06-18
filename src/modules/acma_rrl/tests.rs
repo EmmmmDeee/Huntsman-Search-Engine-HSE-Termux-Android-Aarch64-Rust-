@@ -1,8 +1,8 @@
+use super::{AcmaRrl, extract_abn_from_html, parse_acma_html};
 use crate::core::{
     module::{Module, ModuleCost},
     scan::{Target, TargetKind},
 };
-use super::{AcmaRrl, parse_acma_html, extract_abn_from_html};
 
 #[test]
 fn metadata() {

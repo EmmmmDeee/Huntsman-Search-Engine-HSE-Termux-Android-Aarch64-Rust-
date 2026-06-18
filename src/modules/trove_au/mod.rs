@@ -1,7 +1,7 @@
 //! National Library of Australia — Trove newspaper archive search.
 //! Key-gated; requires HUNTSMAN_TROVE_KEY.
 //!
-//! Endpoint: GET https://api.trove.nla.gov.au/v3/result?q={query}&zone=newspaper&encoding=json
+//! Endpoint: `GET https://api.trove.nla.gov.au/v3/result?q={query}&zone=newspaper&encoding=json`
 //! Auth: X-API-KEY header.
 
 #[cfg(test)]
@@ -62,28 +62,38 @@ struct TroveArticle {
 
 #[async_trait]
 impl Module for TroveAu {
-    fn name(&self) -> &'static str { "trove_au" }
+    fn name(&self) -> &'static str {
+        "trove_au"
+    }
 
     fn description(&self) -> &'static str {
         "National Library of Australia Trove: newspaper archive mentions for organisations and ABNs"
     }
 
-    fn priority(&self) -> u8 { 57 }
+    fn priority(&self) -> u8 {
+        57
+    }
 
-    fn cost(&self) -> ModuleCost { ModuleCost::KeyGated }
+    fn cost(&self) -> ModuleCost {
+        ModuleCost::KeyGated
+    }
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Organisation | TargetKind::AbnAcn)
     }
 
-    fn category(&self) -> ModuleCategory { ModuleCategory::Corporate }
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Corporate
+    }
 
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Organisation];
         KINDS
     }
 
-    fn max_timeout_ms(&self) -> u64 { 8_000 }
+    fn max_timeout_ms(&self) -> u64 {
+        8_000
+    }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = match ctx.key_opt(KEY_ENV) {
@@ -123,7 +133,9 @@ impl Module for TroveAu {
 
         for zone in zones {
             if let Some(records) = zone.records {
-                if let Some(t) = records.total { total_hits += t; }
+                if let Some(t) = records.total {
+                    total_hits += t;
+                }
                 if let Some(arts) = records.article {
                     articles.extend(arts);
                 }
@@ -134,15 +146,28 @@ impl Module for TroveAu {
             return Ok(result);
         }
 
-        let mut org = Entity::new(EntityKind::Organisation, target.value.trim(), 0.65, &ctx.scan_id);
+        let mut org = Entity::new(
+            EntityKind::Organisation,
+            target.value.trim(),
+            0.65,
+            &ctx.scan_id,
+        );
         org.tag("trove");
         org.tag("newspaper-archive");
 
-        let mut ev = Evidence::new(SRC, format!("Trove newspaper archive: {total_hits} mentions of '{}'", target.value.trim()))
-            .with_attr("total_hits", total_hits.to_string());
+        let mut ev = Evidence::new(
+            SRC,
+            format!(
+                "Trove newspaper archive: {total_hits} mentions of '{}'",
+                target.value.trim()
+            ),
+        )
+        .with_attr("total_hits", total_hits.to_string());
 
         for article in articles.iter().take(5) {
-            if let Some(title) = &article.title && let Some(date) = &article.date {
+            if let Some(title) = &article.title
+                && let Some(date) = &article.date
+            {
                 ev = ev.with_attr("article", format!("{date}: {title}"));
             }
         }

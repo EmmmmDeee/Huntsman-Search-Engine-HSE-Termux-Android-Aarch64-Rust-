@@ -9,6 +9,7 @@ use crate::core::{
     scan::Scan,
 };
 
+mod archive; // `impl Store`: inter-scan entity cache (`raw_archive`)
 mod entities; // `impl Store`: entity persistence + FTS query
 
 pub struct Store {
@@ -95,6 +96,20 @@ const SCHEMA_DDL: &str = "
             CREATE INDEX IF NOT EXISTS idx_obs_entity    ON entity_observations(entity_uid);
             CREATE INDEX IF NOT EXISTS idx_events_scan   ON events(scan_id, id);
             CREATE INDEX IF NOT EXISTS idx_relations_scan ON relations(scan_id);
+
+            -- Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN). Keyed by
+            -- `module:target_kind:normalised_target` so a repeat scan of the
+            -- same target by the same module can replay archived entities
+            -- without re-querying the provider. `archived_at + ttl_secs` is
+            -- the expiry wall-clock; expired rows are ignored on lookup and
+            -- overwritten on the next successful query.
+            CREATE TABLE IF NOT EXISTS raw_archive (
+                id          TEXT PRIMARY KEY,
+                archived_at INTEGER NOT NULL,
+                ttl_secs    INTEGER NOT NULL,
+                result_json TEXT NOT NULL
+            );
+
             -- Full-text index over entity values. Contentless-external FTS5
             -- table keyed by the entities.rowid; kept synchronized inside the
             -- same transaction as every entity write (see
@@ -729,6 +744,14 @@ impl crate::core::port::StoragePort for Store {
 
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {
         Store::events_for_scan(self, scan_id)
+    }
+
+    fn archive_module_result(&self, key: &str, ttl_secs: u64, entities: &[Entity]) -> Result<()> {
+        Store::archive_module_result(self, key, ttl_secs, entities)
+    }
+
+    fn lookup_module_result_fresh(&self, key: &str) -> Result<Option<Vec<Entity>>> {
+        Store::lookup_module_result_fresh(self, key)
     }
 }
 

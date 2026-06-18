@@ -1,7 +1,7 @@
 //! AHPRA (Australian Health Practitioner Regulation Agency) register scrape.
 //! Free HTML scrape; no key required.
 //!
-//! Endpoint: GET https://www.ahpra.gov.au/Registration/Registers-of-Practitioners.aspx
+//! Endpoint: `GET https://www.ahpra.gov.au/Registration/Registers-of-Practitioners.aspx`
 //! Query params: Spousesurname={name} or Organisation={org}
 
 #[cfg(test)]
@@ -28,7 +28,9 @@ pub(super) fn parse_ahpra_html(html: &str) -> Vec<(String, String, String)> {
     let mut remaining = html;
     while let Some(row_start) = remaining.find("<tr") {
         remaining = &remaining[row_start + 3..];
-        let Some(row_end) = remaining.find("</tr>") else { break };
+        let Some(row_end) = remaining.find("</tr>") else {
+            break;
+        };
         let row = &remaining[..row_end];
         remaining = &remaining[row_end + 5..];
 
@@ -38,7 +40,9 @@ pub(super) fn parse_ahpra_html(html: &str) -> Vec<(String, String, String)> {
             let mut r = row;
             while let Some(td_start) = r.find("<td") {
                 r = &r[td_start..];
-                let Some(td_content_start) = r.find('>') else { break };
+                let Some(td_content_start) = r.find('>') else {
+                    break;
+                };
                 r = &r[td_content_start + 1..];
                 let Some(td_end) = r.find("</td>") else { break };
                 let cell = &r[..td_end];
@@ -67,9 +71,15 @@ fn strip_tags(html: &str) -> String {
     let mut in_tag = false;
     for c in html.chars() {
         match c {
-            '<' => { in_tag = true; }
-            '>' => { in_tag = false; }
-            _ if !in_tag => { out.push(c); }
+            '<' => {
+                in_tag = true;
+            }
+            '>' => {
+                in_tag = false;
+            }
+            _ if !in_tag => {
+                out.push(c);
+            }
             _ => {}
         }
     }
@@ -78,33 +88,45 @@ fn strip_tags(html: &str) -> String {
 
 #[async_trait]
 impl Module for Ahpra {
-    fn name(&self) -> &'static str { "ahpra" }
+    fn name(&self) -> &'static str {
+        "ahpra"
+    }
 
     fn description(&self) -> &'static str {
         "AHPRA practitioner register: registered health practitioners by name or organisation"
     }
 
-    fn priority(&self) -> u8 { 86 }
+    fn priority(&self) -> u8 {
+        86
+    }
 
-    fn cost(&self) -> ModuleCost { ModuleCost::Free }
+    fn cost(&self) -> ModuleCost {
+        ModuleCost::Free
+    }
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::FullName | TargetKind::Organisation)
     }
 
-    fn category(&self) -> ModuleCategory { ModuleCategory::People }
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::People
+    }
 
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Person, EntityKind::Organisation];
         KINDS
     }
 
-    fn max_timeout_ms(&self) -> u64 { 12_000 }
+    fn max_timeout_ms(&self) -> u64 {
+        12_000
+    }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let value = target.value.trim();
         let param = match target.kind {
-            TargetKind::Organisation => format!("Organisation={}", crate::util::http::urlencode(value)),
+            TargetKind::Organisation => {
+                format!("Organisation={}", crate::util::http::urlencode(value))
+            }
             _ => format!("Spousesurname={}", crate::util::http::urlencode(value)),
         };
         let url = format!(
@@ -128,7 +150,10 @@ impl Module for Ahpra {
             person.tag("ahpra");
             person.tag("health-practitioner");
             if !profession.is_empty() {
-                person.tag(format!("profession:{}", profession.to_lowercase().replace(' ', "-")));
+                person.tag(format!(
+                    "profession:{}",
+                    profession.to_lowercase().replace(' ', "-")
+                ));
             }
             person.add_evidence(
                 Evidence::new(SRC, format!("AHPRA registered practitioner: {name}"))

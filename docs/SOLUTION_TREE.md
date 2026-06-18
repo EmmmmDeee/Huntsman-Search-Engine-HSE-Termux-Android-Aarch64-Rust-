@@ -111,8 +111,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Closes / powers:* **F.2** (self), the **B5.3 table-drift** class, and Levenshtein
   fuzzy matching for typosquat / username-variants / suburb-matching.
   *Delivered:* the **de-dup goal** (T2.6) — drift-prone shared lists single-sourced by
-  delegation. *Gap:* the genuinely large tables (OUI ≈30k, AU postcode/suburb) are
-  still hand-coded `match` arms; `fst` itself not adopted. **(§4b)**
+  delegation. *Gap (premise corrected, cycle 18):* the "large table" assumption was
+  wrong — Huntsman uses curated subsets (OUI ≈111 entries, AU postcode ≈72 entries,
+  phone area codes ≈65 entries), not registry-scale tables; `fst` is overkill at these
+  sizes and adds a heavy compile dep for no on-device benefit. `fst` adoption `[-]`
+  (accepted-won't-build). Levenshtein fuzzy matching (suburb/username-variant) remains
+  a future capability goal but can be pursued via a lighter mechanism.
 - **`[~]` SOL-F3 · Proof & measurement infrastructure** ⚑ — `proptest` properties for
   every pure fn, `cargo-fuzz` for every untrusted parser, `criterion` for the hot
   paths; CI compiles benches + runs corpora.
@@ -198,11 +202,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   SCHEMA_VERSION` → `tracing::warn!` (forward-compat signal — a newer binary wrote
   this DB). Provides a migration ladder for future non-additive schema changes without
   requiring an explicit migration table. *Closes:* **T2.10** (`[ ]`→`[x]`). ✅ cycle 16.
-- **`[~]` SOL-BUDGET · Atomic quota reservation** — `QuotaBudget::try_increment`
-  (CAS, saturating session rollback) replaces every racy `remaining()`-then-
-  `increment()`. *Closes:* **T2.11** (oathnet — done; mirrors see_know). *Gap:* the
-  per-scan `reset_scan`-zeroing across concurrent scans is the same root as
-  SOL-ISOLATE. **(§4b)**
+- **`[-]` SOL-BUDGET · Atomic quota reservation (accepted-as-is)** —
+  `QuotaBudget::try_increment` (CAS, saturating session rollback) replaces every
+  racy `remaining()`-then-`increment()`. *Closes:* **T2.11** (oathnet — done;
+  mirrors see_know). *Gap re-assessed (cycle 18 S→P):* the cited residual —
+  per-scan `reset_scan`-zeroing across concurrent scans — was based on a faulty
+  premise: `reset_per_scan` is already called at `run_with_ledger_inner:289` on
+  every scan start (verified cycle 18). The session ceiling bounds concurrent
+  increments. Accepted `[-]`; no further action on the budget-statics path.
 - **`[x]` SOL-CAP · Bounded / streaming reads** — `read_body_capped` /
   `read_json_text` (`JSON_BODY_CAP`), reqwest read-timeout backstop, the `exif_geo`
   `bytes_stream()` accumulate-and-bail, the `smtp_vrfy` 8 KiB line cap via
@@ -314,14 +321,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   priority 35→78. *Remaining:* union subdomain discovery (brute ∪ CT ∪ passive);
   ASN/BGP org/prefix pivots; passive-DNS/cert-hash origin-unmasking;
   `securitytrails` BYO-key.
-- **`[ ]` SOL-CACHE-INTERSCAN · Inter-scan entity cache** → **C9**: extend
-  `StoragePort` with `lookup_entity_fresh(kind, value, max_age_secs) →
-  Option<ModuleResult>` backed by `raw_archive`; per-module-class TTLs (IP intel
-  24 h, WHOIS 72 h, breach 7 d, phone HLR 24 h); dispatch-layer pre-gate
-  short-circuits paid/key-gated modules; modules with `max_age_secs = 0` always go
-  live. SOL-ISOLATE task-local isolation is preserved (cache is read-only at
-  dispatch). Enables operator cost control, revenue model (scan credits), and
-  offline enrichment from previously collected data. **build not started**
+- **`[x]` SOL-CACHE-INTERSCAN · Inter-scan entity cache** → **C9**: `raw_archive`
+  SQLite table (`id TEXT PRIMARY KEY, archived_at INTEGER NOT NULL, ttl_secs INTEGER
+  NOT NULL, result_json TEXT NOT NULL`), keyed by `archive_key =
+  "module:target_kind:normalised_value"`; `StoragePort::{archive_module_result(key,
+  ttl_secs, &[Entity]), lookup_module_result_fresh(key) → Option<Vec<Entity>>}`
+  default-no-op trait methods; `Store` SQL implementation in `src/storage/archive.rs`
+  (4 unit tests: round-trip, miss, overwrite, TTL=0 immediate-expire); `Module::
+  cache_ttl_secs() → u64` (default 0 = always live); `hlr_cnam` + `netlas` override
+  to 86400 (24 h); dispatch-layer pre-gate wired in both sequential (before
+  `run_module_guarded`) and Phase 2 concurrent (before `acquire_owned`) paths —
+  cache hit increments `ModuleStats::cached`, replays archived entities, skips the
+  live API call; post-call cache-store when `ttl > 0 && result non-empty`; `Scan::
+  modules_cached` counter persisted to scan record. Policy: opt-in per module; zero
+  default preserves all current live-query semantics; SOL-ISOLATE task-local
+  isolation preserved (cache is a read-only pre-dispatch gate, not a write-path
+  bypass). Schema snapshot test updated. ✅ delivered cycle 18.
+  *Closes:* **C9** (`[ ]`→`[x]`). Enables operator cost control + revenue model.
 - **`[ ]` SOL-GEOINT · Confidence-weighted geo convergence** → **C5**: the Weiszfeld/
   Welzl fusion stack (verified correct, §6) widened with more sources + provenance +
   a confidence radius.
@@ -389,7 +405,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-FINALISE-BLOCKING | T1.5 | `[x]` |
 | SOL-SCHEMA-VERSION | T2.10 | `[x]` |
 | SOL-INSTALL-INTEGRITY | §7 S5 | `[x]` |
-| SOL-BUDGET | T2.11 oathnet | `[~]` |
+| SOL-BUDGET | T2.11 oathnet (accepted-as-is) | `[-]` |
 | SOL-CAP | T2.1 · T2.8 (all sub-items) | `[x]` |
 | SOL-ISOLATE | T2.11 found_keys | `[x]` |
 | SOL-SSRF / -WHOIS | §6 (HTTP) · §7 S2 | `[x]`/`[x]` |
@@ -401,7 +417,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
 | SOL-NETINT | C4 | `[~]` |
-| SOL-CACHE-INTERSCAN | C9 | `[ ]` |
+| SOL-CACHE-INTERSCAN | C9 | `[x]` |
 | SOL-CORR | C1 | `[ ]` |
 | SOL-PERF-PUBLISH | C2 | `[ ]` |
 | SOL-GEOINT | C5 | `[ ]` |
@@ -427,8 +443,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
   this queue. S2/SOL-SSRF-WHOIS + S3/SOL-SECRETS-EXTEND delivered 2026-06-17.)*
 - **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
-- **C9** — **new (cycle 17):** inter-scan entity cache / API cost governance.
-  SOL-CACHE-INTERSCAN sketched; build not started.
+- **C9** — **delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18). Off the open queue.
 - **C3/C4** — now `[~]` (partial, SOL-AU-MOAT + SOL-NETINT both started cycle 17).
 - **C1/C2/C5/C6/C7** — capability nodes; solutions sketched, none started (gated on
   the §3.F enablers landing first, by design).
@@ -444,13 +459,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Remaining:* `bstr` (no natural consumer yet — all scraped HTML arrives as `&str`
   via `read_body_capped`→`String::from_utf8_lossy`; `bstr` promotes only when a
   module takes raw `&[u8]` response bytes directly). Unblocks T2.7 + sharpens C6.
-- **SOL-F2** — de-dup done; `fst` for the large tables outstanding.
+- **SOL-F2** — de-dup done; large-table premise corrected (cycle 18): OUI ≈111
+  entries, AU postcode ≈72 entries, phone area codes ≈65 entries — `fst` is overkill
+  at these sizes. `fst` adoption `[-]` (accepted-won't-build); Levenshtein fuzzy
+  matching deferred to a lighter mechanism when needed.
 - **SOL-F3** — proptest (str/entity/geo/html/cert/dns + import parsers) + criterion
   landed; only `cargo-fuzz` (nightly CI lane) left.
 - **SOL-CAP** — ✅ fully closed (`[x]`). All T2.8 sub-items done (2 HIGH + MED
   network reads + hibp cast + CLI-import file cap). Removed from finish queue.
-- **SOL-BUDGET** — oathnet done; the per-scan budget statics' `reset_scan`-zeroing
-  still folds into the SOL-ISOLATE task-local (LOW — the session ceiling bounds it).
+- **SOL-BUDGET** — ✅ accepted `[-]` (cycle 18 S→P): `reset_per_scan` already
+  called at `run_with_ledger_inner:289`; cited residual was a faulty premise.
+  Off the finish queue.
 
 ### 4c · Solutions with no problem (over-build — prune candidates)
 - **None found.** Every solution node traces to ≥1 `PROBLEM_TREE` node or the shared
@@ -463,14 +482,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **T1 (core guarantees):** T1.1/T1.2/T1.3/T1.4/T1.5 all solved — SOL-BLOCKING
   `[x]` (all write paths); SOL-FINALISE-BLOCKING `[x]` (cycle 14, T1.5 closed). ✔
 - **§3.F (foundations):** all three `[~]` — the largest unrealised leverage block.
-  `memchr` now a direct dep (cycle 12); remaining: `bstr` + `fst` large tables + `cargo-fuzz`.
+  `memchr` now a direct dep (cycle 12); remaining: `bstr` + `cargo-fuzz` (note:
+  `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
   T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE; LOW over-dispatch +
   budget-reset-zeroing remain).
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); C3 `[~]` (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy shipped, GNAF/ASIC/cadastre/courts remaining); C4 `[~]` (SOL-NETINT: netlas + censys priority shipped, subdomain/ASN/CDN-origin remaining); C9 new `[ ]` (SOL-CACHE-INTERSCAN, cost-governance cache, design sketched); C1/C2/C5/C6/C7 open by design, gated on §3.F.
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); C3 `[~]` (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy shipped, GNAF/ASIC/cadastre/courts remaining); C4 `[~]` (SOL-NETINT: netlas + censys priority shipped, subdomain/ASN/CDN-origin remaining); C1/C2/C5/C6/C7 open by design, gated on §3.F.
 
 ---
 
@@ -891,3 +911,35 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   C3/C4 now `[~]`; §4a gains C9 + elevates T2.7; §4d capability row updated; leverage
   map split (SOL-CORR…SOL-FORENSIC row replaced by per-solution rows). Paired:
   `PROBLEM_TREE` C3/C4 `[ ]`→`[~]`, new C9, §8 cycle 17 note — same commit.
+- **2026-06-18** — **Cycle 18 (P→S + S→P): SOL-CACHE-INTERSCAN `[ ]`→`[x]` — C9
+  inter-scan entity cache delivered.** **P→S direction:** gap §4a named C9/
+  SOL-CACHE-INTERSCAN as the highest-value build-ready open node (design sketched
+  cycle 17, no blockers). Delivered the full stack in one pass: `raw_archive` SQLite
+  table DDL; `StoragePort::{archive_module_result, lookup_module_result_fresh}`
+  default-no-op trait methods (zero-cost for all existing non-caching modules);
+  `Store` SQL implementation in `src/storage/archive.rs` (`INSERT OR REPLACE` on
+  write, `WHERE archived_at + ttl_secs > unixepoch()` fresh-check on read; 4 tests:
+  round-trip, miss on unknown key, overwrite replaces previous, TTL=0 immediate-
+  expire); `Module::cache_ttl_secs() -> u64` trait method (default 0 = always live);
+  `hlr_cnam` + `netlas` override to 86400 (24 h); `archive_key("module:kind:
+  normalised")` helper using the same normalisation as `dispatch_key`; dispatch
+  pre-gate wired in both sequential (before `run_module_guarded`) and Phase 2
+  concurrent (before `acquire_owned`) paths — cache hit increments
+  `ModuleStats::cached`, replays archived `Vec<Entity>`, skips the live API call;
+  post-call cache-store when `ttl > 0 && result non-empty`; `Scan::modules_cached`
+  counter persisted. Schema snapshot test updated for `raw_archive` + its
+  `sqlite_autoindex`. Also: 4 pre-existing rustdoc bare-URL errors fixed in the
+  cycle 17 modules (`acma_rrl`, `ahpra`, `netlas`, `trove_au`).
+  **S→P pass:** (1) verified `reset_per_scan` is already called at
+  `run_with_ledger_inner:289` on every scan start — the cited SOL-BUDGET residual
+  (`reset_scan`-zeroing across concurrent scans) was a faulty premise; SOL-BUDGET
+  `[~]`→`[-]` (accepted-as-is; session ceiling bounds concurrent increments; no
+  further action). (2) Grepped actual table sizes in the codebase: OUI ~111 entries
+  (a curated subset, not the full IEEE registry ~30k), AU postcode ~72 entries,
+  phone area codes ~65 entries — the "large tables need fst" premise was wrong at
+  every cited table; `fst` adoption `[-]`; SOL-F2 and F.2 gap notes corrected.
+  **Gap refresh:** §4a C9 off the open queue; §4b SOL-BUDGET off the finish queue
+  (`[-]`), SOL-F2 premise corrected; §4d capability row gains C9; §3.F row
+  removes "fst large tables" from remaining. Gate green: fmt/clippy/doc clean,
+  3,044 lib tests, 0 failures. Paired: `PROBLEM_TREE` C9 `[ ]`→`[x]`, F.2
+  premise corrected, §8 cycle 18 — same commit.

@@ -1,8 +1,8 @@
+use super::{Ahpra, parse_ahpra_html};
 use crate::core::{
     module::{Module, ModuleCost},
     scan::{Target, TargetKind},
 };
-use super::{Ahpra, parse_ahpra_html};
 
 #[test]
 fn metadata() {

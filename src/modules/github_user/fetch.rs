@@ -92,24 +92,38 @@ pub(super) async fn fetch_orgs(
     username: &str,
     token: Option<&str>,
 ) -> Vec<String> {
-    let url = format!("https://api.github.com/users/{}/orgs", crate::util::http::urlencode(username));
-    let mut req = http.get(&url)
+    let url = format!(
+        "https://api.github.com/users/{}/orgs",
+        crate::util::http::urlencode(username)
+    );
+    let mut req = http
+        .get(&url)
         .header("User-Agent", "HSE/1.0 OSINT research tool")
         .header("Accept", "application/vnd.github+json");
     if let Some(t) = token {
         req = req.header("Authorization", format!("Bearer {t}"));
     }
-    let Ok(resp) = req.send().await else { return Vec::new() };
-    if !resp.status().is_success() { return Vec::new() }
-    let Ok(body) = resp.text().await else { return Vec::new() };
+    let Ok(resp) = req.send().await else {
+        return Vec::new();
+    };
+    if !resp.status().is_success() {
+        return Vec::new();
+    }
+    let Ok(body) = resp.text().await else {
+        return Vec::new();
+    };
     // Extract org login names
     let mut orgs = Vec::new();
     let mut remaining = body.as_str();
     while let Some(pos) = remaining.find("\"login\":\"") {
         remaining = &remaining[pos + 9..];
-        let Some(end) = remaining.find('"') else { break };
+        let Some(end) = remaining.find('"') else {
+            break;
+        };
         let login = &remaining[..end];
-        if !login.is_empty() { orgs.push(login.to_string()); }
+        if !login.is_empty() {
+            orgs.push(login.to_string());
+        }
         remaining = &remaining[end..];
     }
     orgs
@@ -120,24 +134,37 @@ pub(super) async fn fetch_gists(
     username: &str,
     token: Option<&str>,
 ) -> Vec<String> {
-    let url = format!("https://api.github.com/users/{}/gists?per_page=30", crate::util::http::urlencode(username));
-    let mut req = http.get(&url)
+    let url = format!(
+        "https://api.github.com/users/{}/gists?per_page=30",
+        crate::util::http::urlencode(username)
+    );
+    let mut req = http
+        .get(&url)
         .header("User-Agent", "HSE/1.0 OSINT research tool")
         .header("Accept", "application/vnd.github+json");
     if let Some(t) = token {
         req = req.header("Authorization", format!("Bearer {t}"));
     }
-    let Ok(resp) = req.send().await else { return Vec::new() };
-    if !resp.status().is_success() { return Vec::new() }
-    let Ok(body) = resp.text().await else { return Vec::new() };
+    let Ok(resp) = req.send().await else {
+        return Vec::new();
+    };
+    if !resp.status().is_success() {
+        return Vec::new();
+    }
+    let Ok(body) = resp.text().await else {
+        return Vec::new();
+    };
     // Extract gist IDs from "id":"..." fields in gist objects
     let mut gist_ids = Vec::new();
     let mut remaining = body.as_str();
     while let Some(pos) = remaining.find("\"id\":\"") {
         remaining = &remaining[pos + 6..];
-        let Some(end) = remaining.find('"') else { break };
+        let Some(end) = remaining.find('"') else {
+            break;
+        };
         let id = &remaining[..end];
-        if !id.is_empty() && id.len() == 32 {  // gist IDs are 32 hex chars
+        if !id.is_empty() && id.len() == 32 {
+            // gist IDs are 32 hex chars
             gist_ids.push(id.to_string());
         }
         remaining = &remaining[end..];

@@ -1,6 +1,6 @@
 //! Netlas host intelligence. Key-gated; requires HUNTSMAN_NETLAS_KEY.
 //!
-//! Endpoint: GET https://app.netlas.io/api/responses/?q=ip:{t}&fields=*
+//! Endpoint: `GET https://app.netlas.io/api/responses/?q=ip:{t}&fields=*`
 //! Auth: X-API-Key header.
 //!
 //! Key differentiator: extracts emails from SSL certs and HTTP bodies →
@@ -125,21 +125,32 @@ pub(super) fn netlas_query(target: &Target) -> String {
 
 #[async_trait]
 impl Module for Netlas {
-    fn name(&self) -> &'static str { "netlas" }
+    fn name(&self) -> &'static str {
+        "netlas"
+    }
 
     fn description(&self) -> &'static str {
         "Netlas host intelligence: open ports, JARM, SSL-cert email extraction, CVEs, ISP"
     }
 
-    fn priority(&self) -> u8 { 79 }
-
-    fn cost(&self) -> ModuleCost { ModuleCost::KeyGated }
-
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::IpAddress | TargetKind::Domain | TargetKind::Email)
+    fn priority(&self) -> u8 {
+        79
     }
 
-    fn category(&self) -> ModuleCategory { ModuleCategory::Infrastructure }
+    fn cost(&self) -> ModuleCost {
+        ModuleCost::KeyGated
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(
+            t.kind,
+            TargetKind::IpAddress | TargetKind::Domain | TargetKind::Email
+        )
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Infrastructure
+    }
 
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
@@ -153,7 +164,13 @@ impl Module for Netlas {
         KINDS
     }
 
-    fn max_timeout_ms(&self) -> u64 { 8_000 }
+    fn max_timeout_ms(&self) -> u64 {
+        8_000
+    }
+
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = match ctx.key_opt(KEY_ENV) {
@@ -194,7 +211,9 @@ impl Module for Netlas {
         for item in &body.items {
             let Some(data) = &item.data else { continue };
 
-            if let Some(ip) = &data.ip && ip_val.is_none() {
+            if let Some(ip) = &data.ip
+                && ip_val.is_none()
+            {
                 ip_val = Some(ip.clone());
             }
             if let Some(p) = data.port {
@@ -204,7 +223,9 @@ impl Module for Netlas {
             if let Some(j) = data.jarm.as_deref().filter(|s| !s.is_empty()) {
                 jarm_seen.insert(j.to_string());
             }
-            if let Some(isp) = data.isp.as_deref().filter(|s| !s.is_empty()) && isp_val.is_none() {
+            if let Some(isp) = data.isp.as_deref().filter(|s| !s.is_empty())
+                && isp_val.is_none()
+            {
                 isp_val = Some(isp.to_string());
             }
             if let Some(geo) = &data.geo
@@ -213,14 +234,17 @@ impl Module for Netlas {
                 && (lat.abs() > 0.001 || lon.abs() > 0.001)
             {
                 geo_val = Some((
-                    lat, lon,
+                    lat,
+                    lon,
                     geo.country.clone().unwrap_or_default(),
                     geo.city.clone().unwrap_or_default(),
                 ));
             }
             if let Some(cert) = &data.certificate {
                 if let Some(subj) = &cert.subject {
-                    if let Some(cn) = subj.common_name.as_deref().filter(|s| !s.is_empty()) && ssl_cn.is_none() {
+                    if let Some(cn) = subj.common_name.as_deref().filter(|s| !s.is_empty())
+                        && ssl_cn.is_none()
+                    {
                         ssl_cn = Some(cn.to_string());
                     }
                     if let Some(emails) = &subj.email {
@@ -231,15 +255,22 @@ impl Module for Netlas {
                     all_emails.extend(emails.iter().cloned());
                 }
             }
-            if let Some(http_data) = &data.http && let Some(emails) = &http_data.emails {
+            if let Some(http_data) = &data.http
+                && let Some(emails) = &http_data.emails
+            {
                 all_emails.extend(emails.iter().cloned());
             }
-            if let Some(whois) = &data.whois && let Some(net) = &whois.net && let Some(emails) = &net.emails {
+            if let Some(whois) = &data.whois
+                && let Some(net) = &whois.net
+                && let Some(emails) = &net.emails
+            {
                 all_emails.extend(emails.iter().cloned());
             }
             if let Some(cves) = &data.cve {
                 for cve in cves.iter().take(5) {
-                    if let Some(n) = &cve.name { cve_list.push(n.clone()); }
+                    if let Some(n) = &cve.name {
+                        cve_list.push(n.clone());
+                    }
                 }
             }
             if let Some(techs) = &data.technologies {
@@ -260,7 +291,15 @@ impl Module for Netlas {
         let mut ev = Evidence::new(SRC, format!("Netlas intelligence for {ip_str}"))
             .with_attr("port_count", port_list.len().to_string());
         if !port_list.is_empty() {
-            ev = ev.with_attr("open_ports", port_list.iter().take(20).cloned().collect::<Vec<_>>().join(","));
+            ev = ev.with_attr(
+                "open_ports",
+                port_list
+                    .iter()
+                    .take(20)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
         }
         if let Some(j) = jarm_seen.iter().next() {
             ev = ev.with_attr("jarm_fingerprint", j);
@@ -269,12 +308,28 @@ impl Module for Netlas {
             ev = ev.with_attr("ssl_cn", cn);
         }
         if !cve_list.is_empty() {
-            ev = ev.with_attr("cves", cve_list.iter().take(5).cloned().collect::<Vec<_>>().join(","));
+            ev = ev.with_attr(
+                "cves",
+                cve_list
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
         }
         if !tech_list.is_empty() {
             tech_list.sort();
             tech_list.dedup();
-            ev = ev.with_attr("technologies", tech_list.iter().take(10).cloned().collect::<Vec<_>>().join(","));
+            ev = ev.with_attr(
+                "technologies",
+                tech_list
+                    .iter()
+                    .take(10)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
         }
         if let Some(isp) = &isp_val {
             ev = ev.with_attr("isp", isp);
@@ -287,7 +342,10 @@ impl Module for Netlas {
             let mut org = Entity::new(EntityKind::Organisation, isp, 0.60, &ctx.scan_id);
             org.tag("netlas");
             org.tag("isp");
-            org.add_evidence(Evidence::new(SRC, format!("ISP for {ip_str}: {isp}")).with_attr("source", "netlas"));
+            org.add_evidence(
+                Evidence::new(SRC, format!("ISP for {ip_str}: {isp}"))
+                    .with_attr("source", "netlas"),
+            );
             result.push(org);
         }
 
@@ -298,13 +356,18 @@ impl Module for Netlas {
             geo_e.tag("netlas");
             geo_e.tag("geoint");
             if !country.is_empty() {
-                geo_e.tag(format!("country:{}", country.to_uppercase().replace(' ', "")));
+                geo_e.tag(format!(
+                    "country:{}",
+                    country.to_uppercase().replace(' ', "")
+                ));
             }
-            geo_e.add_evidence(Evidence::new(SRC, format!("Netlas geolocation for {ip_str}"))
-                .with_attr("latitude", lat.to_string())
-                .with_attr("longitude", lon.to_string())
-                .with_attr("country", &country)
-                .with_attr("city", &city));
+            geo_e.add_evidence(
+                Evidence::new(SRC, format!("Netlas geolocation for {ip_str}"))
+                    .with_attr("latitude", lat.to_string())
+                    .with_attr("longitude", lon.to_string())
+                    .with_attr("country", &country)
+                    .with_attr("city", &city),
+            );
             result.push(geo_e);
 
             if !city.is_empty() && !country.is_empty() {
@@ -326,8 +389,11 @@ impl Module for Netlas {
                 e.tag("netlas");
                 e.tag("ssl-extracted");
                 e.add_evidence(
-                    Evidence::new(SRC, format!("Email extracted from SSL/HTTP data for {ip_str}"))
-                        .with_attr("emails_extracted", &email),
+                    Evidence::new(
+                        SRC,
+                        format!("Email extracted from SSL/HTTP data for {ip_str}"),
+                    )
+                    .with_attr("emails_extracted", &email),
                 );
                 result.push(e);
             }

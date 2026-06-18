@@ -85,6 +85,23 @@ pub(super) async fn run_module_guarded(
 pub(super) struct DispatchOutcome {
     pub(super) name: &'static str,
     pub(super) result: TimeoutResult,
+    /// Mirrors `module.cache_ttl_secs()` captured before spawning. Zero
+    /// means no caching; the join loop skips the archive write.
+    pub(super) ttl_secs: u64,
+    /// Pre-computed `archive_key(name, target)` captured before spawning
+    /// (the module and target are no longer available at join time). Empty
+    /// when `ttl_secs == 0`.
+    pub(super) cache_key: String,
+}
+
+/// Stable archive key for the inter-scan entity cache: `module:kind:value`
+/// where `value` is normalised identically to the dispatch dedup key so a
+/// repeat scan of the same target always hits the same entry.
+#[inline]
+fn archive_key(name: &str, target: &Target) -> String {
+    let entity_kind = target.kind.to_entity_kind();
+    let normalised = normalise(&entity_kind, &target.value);
+    format!("{}:{}:{}", name, target.kind.canonical_str(), normalised)
 }
 
 /// Distinct *corroborating* evidence-source count for the entity a `target`
@@ -536,6 +553,26 @@ impl super::ScanEngine {
                 continue;
             }
 
+            // Inter-scan entity cache (C9): check before dispatching.
+            let ttl = module.cache_ttl_secs();
+            let cache_key = (ttl > 0).then(|| archive_key(name, cx.target));
+            if let Some(ref key) = cache_key
+                && let Ok(Some(cached)) = self.store.lookup_module_result_fresh(key)
+            {
+                state.stats.cached += 1;
+                debug!(module = name, "cache hit — replaying archived entities");
+                let mr = ModuleResult { entities: cached };
+                self.finalise_module_result(cx, name, Ok(Ok(mr)), state);
+                super::hot_inject_keys(&mut ctx.keys);
+                if ctx.cancel.is_cancelled() {
+                    return Ok(());
+                }
+                if cx.opts.throttle_ms > 0 {
+                    sleep(Duration::from_millis(cx.opts.throttle_ms)).await;
+                }
+                continue;
+            }
+
             log_module_dispatch(name, cx.target);
             self.emit(
                 cx.scan_id,
@@ -561,6 +598,14 @@ impl super::ScanEngine {
                 target = %cx.target.value
             ))
             .await;
+
+            // Inter-scan entity cache (C9): archive a successful result.
+            if let Some(ref key) = cache_key
+                && let Ok(Ok(ref mr)) = result
+                && !mr.entities.is_empty()
+            {
+                let _ = self.store.archive_module_result(key, ttl, &mr.entities);
+            }
 
             self.finalise_module_result(cx, name, result, state);
 
@@ -639,6 +684,20 @@ impl super::ScanEngine {
                 self.emit_skipped(cx.scan_id, name, "already dispatched for this target");
                 continue;
             }
+            // Inter-scan entity cache (C9): check before dispatching.
+            let ttl = module.cache_ttl_secs();
+            let cache_key = (ttl > 0).then(|| archive_key(name, cx.target));
+            if let Some(ref key) = cache_key
+                && let Ok(Some(cached)) = self.store.lookup_module_result_fresh(key)
+            {
+                state.stats.cached += 1;
+                debug!(module = name, "cache hit — replaying archived entities");
+                let mr = ModuleResult { entities: cached };
+                self.finalise_module_result(cx, name, Ok(Ok(mr)), state);
+                super::hot_inject_keys(&mut ctx.keys);
+                continue;
+            }
+
             log_module_dispatch(name, cx.target);
             self.emit(
                 cx.scan_id,
@@ -658,6 +717,13 @@ impl super::ScanEngine {
                 target = %cx.target.value
             ))
             .await;
+            // Inter-scan entity cache (C9): archive a successful result.
+            if let Some(ref key) = cache_key
+                && let Ok(Ok(ref mr)) = result
+                && !mr.entities.is_empty()
+            {
+                let _ = self.store.archive_module_result(key, ttl, &mr.entities);
+            }
             self.finalise_module_result(cx, name, result, state);
             // Hot-inject discovered keys so Phase 2 modules can use them.
             // Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl etc.)
@@ -715,6 +781,26 @@ impl super::ScanEngine {
                 continue;
             }
 
+            // Inter-scan entity cache (C9): capture TTL + key before spawning
+            // (module and target are moved into the task and unavailable at join).
+            let ttl_secs = module.cache_ttl_secs();
+            let cache_key = if ttl_secs > 0 {
+                archive_key(name, cx.target)
+            } else {
+                String::new()
+            };
+
+            // Cache hit: feed result directly without spawning a task.
+            if ttl_secs > 0
+                && let Ok(Some(cached)) = self.store.lookup_module_result_fresh(&cache_key)
+            {
+                state.stats.cached += 1;
+                debug!(module = name, "cache hit — replaying archived entities");
+                let mr = ModuleResult { entities: cached };
+                self.finalise_module_result(cx, name, Ok(Ok(mr)), state);
+                continue;
+            }
+
             let Ok(permit) = Arc::clone(&sem).acquire_owned().await else {
                 break;
             };
@@ -763,7 +849,12 @@ impl super::ScanEngine {
                     sleep(Duration::from_millis(throttle_ms)).await;
                 }
 
-                DispatchOutcome { name, result }
+                DispatchOutcome {
+                    name,
+                    result,
+                    ttl_secs,
+                    cache_key,
+                }
             }));
         }
 
@@ -786,6 +877,17 @@ impl super::ScanEngine {
                     continue;
                 }
             };
+            // Inter-scan entity cache (C9): archive before finalise consumes the result.
+            if outcome.ttl_secs > 0
+                && let Ok(Ok(ref mr)) = outcome.result
+                && !mr.entities.is_empty()
+            {
+                let _ = self.store.archive_module_result(
+                    &outcome.cache_key,
+                    outcome.ttl_secs,
+                    &mr.entities,
+                );
+            }
             self.finalise_module_result(cx, outcome.name, outcome.result, state);
         }
         Ok(())

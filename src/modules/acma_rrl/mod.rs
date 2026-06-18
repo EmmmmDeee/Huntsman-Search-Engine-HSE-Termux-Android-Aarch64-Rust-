@@ -1,7 +1,7 @@
 //! ACMA Radiocommunications Register lookup.
 //! Free; no key required.
 //!
-//! Endpoint: GET https://web.acma.gov.au/rrl/licence_search.do?submit=Search&clientName={name}
+//! Endpoint: `GET https://web.acma.gov.au/rrl/licence_search.do?submit=Search&clientName={name}`
 //! Also supports: clientAbn={abn}, latitude={lat}&longitude={lon}&radius={km}
 
 #[cfg(test)]
@@ -27,7 +27,9 @@ pub(super) fn parse_acma_html(html: &str) -> Vec<(String, String, String)> {
     let mut remaining = html;
     while let Some(row_start) = remaining.find("<tr") {
         remaining = &remaining[row_start + 3..];
-        let Some(row_end) = remaining.find("</tr>") else { break };
+        let Some(row_end) = remaining.find("</tr>") else {
+            break;
+        };
         let row = &remaining[..row_end];
         remaining = &remaining[row_end + 5..];
 
@@ -36,7 +38,9 @@ pub(super) fn parse_acma_html(html: &str) -> Vec<(String, String, String)> {
             let mut r = row;
             while let Some(td_start) = r.find("<td") {
                 r = &r[td_start..];
-                let Some(td_content_start) = r.find('>') else { break };
+                let Some(td_content_start) = r.find('>') else {
+                    break;
+                };
                 r = &r[td_content_start + 1..];
                 let Some(td_end) = r.find("</td>") else { break };
                 let cell = &r[..td_end];
@@ -73,9 +77,15 @@ fn strip_html_tags(html: &str) -> String {
     let mut in_tag = false;
     for c in html.chars() {
         match c {
-            '<' => { in_tag = true; }
-            '>' => { in_tag = false; }
-            _ if !in_tag => { out.push(c); }
+            '<' => {
+                in_tag = true;
+            }
+            '>' => {
+                in_tag = false;
+            }
+            _ if !in_tag => {
+                out.push(c);
+            }
             _ => {}
         }
     }
@@ -84,21 +94,32 @@ fn strip_html_tags(html: &str) -> String {
 
 #[async_trait]
 impl Module for AcmaRrl {
-    fn name(&self) -> &'static str { "acma_rrl" }
+    fn name(&self) -> &'static str {
+        "acma_rrl"
+    }
 
     fn description(&self) -> &'static str {
         "ACMA Radiocommunications Register: licence holders by organisation name, ABN, or coordinates"
     }
 
-    fn priority(&self) -> u8 { 48 }
-
-    fn cost(&self) -> ModuleCost { ModuleCost::Free }
-
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Organisation | TargetKind::AbnAcn | TargetKind::Coordinates)
+    fn priority(&self) -> u8 {
+        48
     }
 
-    fn category(&self) -> ModuleCategory { ModuleCategory::Corporate }
+    fn cost(&self) -> ModuleCost {
+        ModuleCost::Free
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(
+            t.kind,
+            TargetKind::Organisation | TargetKind::AbnAcn | TargetKind::Coordinates
+        )
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Corporate
+    }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
         &["T1591.001", "T1591.002"]
@@ -109,7 +130,9 @@ impl Module for AcmaRrl {
         KINDS
     }
 
-    fn max_timeout_ms(&self) -> u64 { 10_000 }
+    fn max_timeout_ms(&self) -> u64 {
+        10_000
+    }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let value = target.value.trim();
@@ -118,18 +141,20 @@ impl Module for AcmaRrl {
             TargetKind::Coordinates => {
                 // Expect "lat,lon" format
                 let parts: Vec<&str> = value.splitn(2, ',').collect();
-                if parts.len() != 2 { return Ok(ModuleResult::new()); }
+                if parts.len() != 2 {
+                    return Ok(ModuleResult::new());
+                }
                 let lat = parts[0].trim();
                 let lon = parts[1].trim();
                 format!("latitude={lat}&longitude={lon}&radius=10&submit=Search")
             }
             _ => format!("clientName={}", crate::util::http::urlencode(value)),
         };
-        let url = format!(
-            "https://web.acma.gov.au/rrl/licence_search.do?submit=Search&{param}"
-        );
+        let url = format!("https://web.acma.gov.au/rrl/licence_search.do?submit=Search&{param}");
 
-        let resp = ctx.http.get(&url)
+        let resp = ctx
+            .http
+            .get(&url)
             .header("Accept", "text/html,application/xhtml+xml")
             .send_tagged(SRC)
             .await?;
@@ -150,7 +175,10 @@ impl Module for AcmaRrl {
             org.tag("acma");
             org.tag("radiocommunications-licensee");
             if !service.is_empty() {
-                org.tag(format!("service:{}", service.to_lowercase().replace(' ', "-")));
+                org.tag(format!(
+                    "service:{}",
+                    service.to_lowercase().replace(' ', "-")
+                ));
             }
             org.add_evidence(
                 Evidence::new(SRC, format!("ACMA RRL licence {lic_no} held by {name}"))
@@ -163,7 +191,8 @@ impl Module for AcmaRrl {
             if let Some(abn) = extract_abn_from_html(&html) {
                 let mut abn_entity = Entity::new(EntityKind::AbnAcn, &abn, 0.70, &ctx.scan_id);
                 abn_entity.tag("acma");
-                abn_entity.add_evidence(Evidence::new(SRC, format!("ABN for {name} from ACMA RRL")));
+                abn_entity
+                    .add_evidence(Evidence::new(SRC, format!("ABN for {name} from ACMA RRL")));
                 result.push(abn_entity);
             }
 

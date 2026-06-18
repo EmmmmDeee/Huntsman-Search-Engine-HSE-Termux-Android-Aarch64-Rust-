@@ -99,7 +99,9 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         "HUNTSMAN_NUMVERIFY_KEY" => "numverify — free tier at https://numverify.com/product",
         "HUNTSMAN_HLR_KEY" => "HLR Lookups — free trial at https://hlrlookups.com",
         "HUNTSMAN_OPENCNAM_KEY" => "OpenCNAM — free tier at https://www.opencnam.com/register",
-        "HUNTSMAN_TROVE_KEY" => "National Library of Australia Trove — free key at https://trove.nla.gov.au/about/create-something/using-our-apis/api-technical-guide",
+        "HUNTSMAN_TROVE_KEY" => {
+            "National Library of Australia Trove — free key at https://trove.nla.gov.au/about/create-something/using-our-apis/api-technical-guide"
+        }
         "HUNTSMAN_OPENCELLID_KEY" => "OpenCelliD — free key at https://opencellid.org/register.php",
         "HUNTSMAN_EXA_KEY" => "Exa AI — free tier at https://dashboard.exa.ai/api-keys",
         "HUNTSMAN_WIGLE_TOKEN" | "HUNTSMAN_WIGLE_USER" => {

@@ -558,6 +558,11 @@ pub struct Scan {
     /// (optional) API key is not configured. Distinct from `modules_errored`.
     #[serde(default)]
     pub modules_skipped: usize,
+    /// Modules whose result was served from the inter-scan entity cache
+    /// instead of re-querying the provider. Counts as a run avoided, not
+    /// as a skip: the data is fresh within the TTL.
+    #[serde(default)]
+    pub modules_cached: usize,
     #[serde(default)]
     pub options: ScanOptions,
 }
@@ -577,6 +582,7 @@ impl Scan {
             modules_timed_out: 0,
             modules_deduped: 0,
             modules_skipped: 0,
+            modules_cached: 0,
             options: ScanOptions::default(),
         }
     }

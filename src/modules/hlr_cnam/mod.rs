@@ -48,28 +48,42 @@ struct CnamResp {
 
 #[async_trait]
 impl Module for HlrCnam {
-    fn name(&self) -> &'static str { "hlr_cnam" }
+    fn name(&self) -> &'static str {
+        "hlr_cnam"
+    }
 
     fn description(&self) -> &'static str {
         "HLR live phone status (ported/roaming/MCC-MNC) + CNAM subscriber name lookup"
     }
 
-    fn priority(&self) -> u8 { 138 }
+    fn priority(&self) -> u8 {
+        138
+    }
 
-    fn cost(&self) -> ModuleCost { ModuleCost::KeyGated }
+    fn cost(&self) -> ModuleCost {
+        ModuleCost::KeyGated
+    }
 
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Phone)
     }
 
-    fn category(&self) -> ModuleCategory { ModuleCategory::Phone }
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Phone
+    }
 
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Person, EntityKind::Phone];
         KINDS
     }
 
-    fn max_timeout_ms(&self) -> u64 { 10_000 }
+    fn max_timeout_ms(&self) -> u64 {
+        10_000
+    }
+
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let hlr_key = match ctx.key_opt(HLR_KEY_ENV) {
@@ -109,12 +123,24 @@ impl Module for HlrCnam {
             phone.tag("roaming");
         }
         let mut ev = Evidence::new(SRC, format!("HLR lookup for {number}"));
-        if let Some(s) = &hlr.status { ev = ev.with_attr("hlr_status", s); }
-        if let Some(mcc) = &hlr.mcc { ev = ev.with_attr("mcc", mcc); }
-        if let Some(mnc) = &hlr.mnc { ev = ev.with_attr("mnc", mnc); }
-        if let Some(net) = &hlr.current_network_name { ev = ev.with_attr("network", net); }
-        if let Some(orig) = &hlr.original_network_name { ev = ev.with_attr("ported_from_carrier", orig); }
-        if let Some(rc) = &hlr.roaming_country_code { ev = ev.with_attr("roaming_country", rc); }
+        if let Some(s) = &hlr.status {
+            ev = ev.with_attr("hlr_status", s);
+        }
+        if let Some(mcc) = &hlr.mcc {
+            ev = ev.with_attr("mcc", mcc);
+        }
+        if let Some(mnc) = &hlr.mnc {
+            ev = ev.with_attr("mnc", mnc);
+        }
+        if let Some(net) = &hlr.current_network_name {
+            ev = ev.with_attr("network", net);
+        }
+        if let Some(orig) = &hlr.original_network_name {
+            ev = ev.with_attr("ported_from_carrier", orig);
+        }
+        if let Some(rc) = &hlr.roaming_country_code {
+            ev = ev.with_attr("roaming_country", rc);
+        }
         phone.add_evidence(ev);
         result.push(phone);
 

@@ -263,8 +263,12 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   **P1-enabler** ◑ **De-dup goal met** (see T2.6): the drift-prone *shared* lists
   (freemail, country_name) are now single-sourced via delegation — `fst` is not
   needed for these (≈30–250 entries; memory-mapping buys nothing at that size).
-  *Remaining (pure optimisation, not correctness):* the genuinely **large** tables
-  (OUI ≈30k, AU postcode/suburb) → `fst` for flat-RAM + Levenshtein fuzzy matching.
+  *Remaining (premise corrected, cycle 18):* the "large table" assumption was wrong —
+  Huntsman uses curated subsets: OUI ≈111 entries (not the full IEEE registry ≈30k),
+  AU postcode ≈72 entries, phone area codes ≈65 entries. At these sizes `fst` adds a
+  heavy compile dep for zero on-device benefit; `fst` adoption is `[-]` (accepted-
+  won't-build). Levenshtein fuzzy matching (suburb/username-variant) remains a future
+  capability goal but can be pursued via a lighter mechanism.
 - **`[~]` F.3 · Proof & measurement infrastructure** — was: no property testing,
   no fuzzing, only `#[ignore]` perf baselines.
   → **Solution:** add (dev-only, zero runtime cost): **`proptest`** suites for
@@ -691,7 +695,7 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   Europe), Mym (France/Francophone), MyDirtyHobby (Germany), JustForFans (LGBTQ+ intl),
   OhMyFans (Spanish LATAM), Cam.tv (Italy/Europe), Unlockd (UK), SuicideGirls (global
   alt), Iwara (Japan/3D). **CAP-high (identity breadth)** ✅
-- **`[ ]` C9 · Inter-scan entity cache / API cost governance** — *Problem:* every
+- **`[x]` C9 · Inter-scan entity cache / API cost governance** — *Problem:* every
   scan re-queries every applicable module unconditionally. For key-gated and paid
   modules (`netlas`, `censys`, `hlr_cnam`, `trove_au`, `shodan`, etc.) this
   consumes finite query allowances or real money on repeated scans of the same
@@ -708,6 +712,20 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   gate, not a write-path bypass. Policy: caching is opt-in per module; modules
   that produce time-sensitive data (live port scans, real-time CNAM) can set
   `max_age_secs = 0` to always go live. **CAP-high (cost + AU revenue model)**
+  ✅ **Delivered (cycle 18, 2026-06-18): SOL-CACHE-INTERSCAN.** `raw_archive` SQLite
+  table (`id TEXT PRIMARY KEY, archived_at INTEGER NOT NULL, ttl_secs INTEGER NOT
+  NULL, result_json TEXT NOT NULL`); `StoragePort::{archive_module_result,
+  lookup_module_result_fresh}` default-no-op trait methods; `Store` SQL
+  implementation in `src/storage/archive.rs` (4 unit tests: round-trip, miss,
+  overwrite, TTL=0 immediate-expire); `Module::cache_ttl_secs() → u64` trait method
+  (default 0 = always live); `hlr_cnam` + `netlas` override to 86400 (24 h);
+  `archive_key("module:target_kind:normalised_value")` helper; dispatch-layer
+  pre-gate wired in both sequential (before `run_module_guarded`) and Phase 2
+  concurrent (before `acquire_owned`) paths — cache hit increments `ModuleStats::
+  cached`, replays archived entities, skips the live API call; post-call cache-store
+  when `ttl > 0 && result non-empty`; `Scan::modules_cached` counter persisted.
+  Schema snapshot test updated. **Paired:** `SOLUTION_TREE` SOL-CACHE-INTERSCAN
+  `[ ]`→`[x]` + §3/§4/§5 — same commit.
 
 ---
 
@@ -1650,3 +1668,23 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   node C9 logged. **Gap refresh:** C3 and C4 now `[~]`; §4a gains C9; T2.7 elevated.
   **Paired:** `SOLUTION_TREE` SOL-AU-MOAT + SOL-NETINT `[ ]`→`[~]`, new
   SOL-CACHE-INTERSCAN, §4/§5 refreshed — same commit.
+- **2026-06-18** — **Cycle 18 (P→S + S→P): C9 inter-scan entity cache —
+  SOL-CACHE-INTERSCAN delivered `[ ]`→`[x]`.** P→S direction: gap §4a named
+  C9/SOL-CACHE-INTERSCAN as the highest-value build-ready open node (design sketched
+  cycle 17). Delivered: `raw_archive` SQLite table; `StoragePort::
+  {archive_module_result, lookup_module_result_fresh}` default-no-op trait methods;
+  `Store` implementation (`src/storage/archive.rs`, 4 tests); `Module::cache_ttl_secs()`
+  (default 0 = always live); `hlr_cnam` + `netlas` override to 86400s; `archive_key`
+  helper; dispatch cache-check / cache-store wired in both sequential and Phase 2
+  concurrent paths; `ModuleStats::cached` counter; `Scan::modules_cached` field.
+  Schema snapshot test updated. Also: 4 pre-existing rustdoc bare-URL errors fixed
+  (`acma_rrl`, `ahpra`, `netlas`, `trove_au`). **S→P pass:** (1) confirmed
+  `reset_per_scan` is already called at `run_with_ledger_inner:289` on every scan
+  start — SOL-BUDGET cited residual was a faulty premise; SOL-BUDGET `[~]`→`[-]`
+  (accepted-as-is). (2) Grepped actual table sizes: OUI ≈111 entries (not ≈30k
+  IEEE registry), AU postcode ≈72 entries, phone area codes ≈65 entries — the
+  "large tables need fst" premise was wrong; F.2 `*Remaining*` note corrected;
+  `fst` adoption `[-]`. Gate green: fmt/clippy/doc clean, 3,044 lib tests, 0
+  failures. **Paired:** `SOLUTION_TREE` SOL-CACHE-INTERSCAN `[ ]`→`[x]`,
+  SOL-BUDGET `[~]`→`[-]`, SOL-F2 premise corrected, §3/§4/§5 refreshed — same
+  commit.

@@ -87,16 +87,21 @@ impl Module for SmtpVrfy {
         let mut entity = build_entity(&email, domain, mx_host.as_deref(), &verdict, &ctx.scan_id);
 
         if mx_host.is_some() {
-            entity.add_evidence(Evidence::new(SRC, format!("MX record present for {domain}"))
-                .with_attr("mx_present", domain));
+            entity.add_evidence(
+                Evidence::new(SRC, format!("MX record present for {domain}"))
+                    .with_attr("mx_present", domain),
+            );
         }
         if let Some(spf) = spf_result {
-            entity.add_evidence(Evidence::new(SRC, format!("SPF policy for {domain}"))
-                .with_attr("spf_policy", &spf));
+            entity.add_evidence(
+                Evidence::new(SRC, format!("SPF policy for {domain}"))
+                    .with_attr("spf_policy", &spf),
+            );
         }
         if let Some(dmarc) = dmarc_result {
-            entity.add_evidence(Evidence::new(SRC, format!("DMARC policy for {domain}"))
-                .with_attr("dmarc", &dmarc));
+            entity.add_evidence(
+                Evidence::new(SRC, format!("DMARC policy for {domain}")).with_attr("dmarc", &dmarc),
+            );
         }
 
         result.push(entity);
@@ -184,12 +189,18 @@ async fn resolve_spf(domain: &str) -> Option<String> {
     use hickory_resolver::proto::rr::RData;
     let resolver = crate::util::dns::shared_resolver();
     let lookup = resolver.txt_lookup(domain).await.ok()?;
-    lookup.answers().iter()
+    lookup
+        .answers()
+        .iter()
         .filter_map(|r| match &r.data {
             RData::TXT(txt) => {
                 let s = txt.to_string();
                 let s = s.trim_matches('"');
-                if s.starts_with("v=spf1") { Some(s.to_string()) } else { None }
+                if s.starts_with("v=spf1") {
+                    Some(s.to_string())
+                } else {
+                    None
+                }
             }
             _ => None,
         })
@@ -201,12 +212,18 @@ async fn resolve_dmarc(domain: &str) -> Option<String> {
     let dmarc_domain = format!("_dmarc.{domain}");
     let resolver = crate::util::dns::shared_resolver();
     let lookup = resolver.txt_lookup(dmarc_domain.as_str()).await.ok()?;
-    lookup.answers().iter()
+    lookup
+        .answers()
+        .iter()
         .filter_map(|r| match &r.data {
             RData::TXT(txt) => {
                 let s = txt.to_string();
                 let s = s.trim_matches('"');
-                if s.starts_with("v=DMARC1") { Some(s.to_string()) } else { None }
+                if s.starts_with("v=DMARC1") {
+                    Some(s.to_string())
+                } else {
+                    None
+                }
             }
             _ => None,
         })

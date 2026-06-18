@@ -1,8 +1,8 @@
+use super::HlrCnam;
 use crate::core::{
     module::{Module, ModuleCost},
     scan::{Target, TargetKind},
 };
-use super::HlrCnam;
 
 #[test]
 fn metadata() {

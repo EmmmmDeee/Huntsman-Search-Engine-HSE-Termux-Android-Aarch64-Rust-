@@ -90,7 +90,12 @@ impl Module for HackerNews {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Username, EntityKind::Email, EntityKind::Url, EntityKind::Domain];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Username,
+            EntityKind::Email,
+            EntityKind::Url,
+            EntityKind::Domain,
+        ];
         KINDS
     }
 
@@ -194,19 +199,29 @@ async fn fetch_algolia_submissions(
         "https://hn.algolia.com/api/v1/search?tags=author_{}&hitsPerPage=50",
         crate::util::http::urlencode(username)
     );
-    let Ok(resp) = http.get(&url)
+    let Ok(resp) = http
+        .get(&url)
         .header("User-Agent", "HSE/1.0 OSINT research tool")
         .send()
-        .await else { return Vec::new() };
-    if !resp.status().is_success() { return Vec::new(); }
-    let Ok(body) = resp.text().await else { return Vec::new() };
+        .await
+    else {
+        return Vec::new();
+    };
+    if !resp.status().is_success() {
+        return Vec::new();
+    }
+    let Ok(body) = resp.text().await else {
+        return Vec::new();
+    };
 
     let mut domains: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut remaining = body.as_str();
     // Extract URLs from "url":"..." fields
     while let Some(pos) = remaining.find("\"url\":\"") {
         remaining = &remaining[pos + 7..];
-        let Some(end) = remaining.find('"') else { break };
+        let Some(end) = remaining.find('"') else {
+            break;
+        };
         let url_str = &remaining[..end];
         if let Some(domain) = extract_domain_from_url(url_str) {
             domains.insert(domain);
@@ -214,19 +229,27 @@ async fn fetch_algolia_submissions(
         remaining = &remaining[end..];
     }
 
-    domains.into_iter().take(15).map(|dom| {
-        let mut d = Entity::new(EntityKind::Domain, &dom, 0.50, scan_id);
-        d.tag("hn-submission");
-        d.add_evidence(
-            Evidence::new("hacker_news", format!("HN submissions by {username} link to {dom}"))
+    domains
+        .into_iter()
+        .take(15)
+        .map(|dom| {
+            let mut d = Entity::new(EntityKind::Domain, &dom, 0.50, scan_id);
+            d.tag("hn-submission");
+            d.add_evidence(
+                Evidence::new(
+                    "hacker_news",
+                    format!("HN submissions by {username} link to {dom}"),
+                )
                 .with_attr("domain", &dom),
-        );
-        d
-    }).collect()
+            );
+            d
+        })
+        .collect()
 }
 
 fn extract_domain_from_url(url: &str) -> Option<String> {
-    let without_scheme = url.strip_prefix("https://")
+    let without_scheme = url
+        .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))?;
     let domain = without_scheme.split('/').next()?;
     let domain = domain.split('?').next()?;
