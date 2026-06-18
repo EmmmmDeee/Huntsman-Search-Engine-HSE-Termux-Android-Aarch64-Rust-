@@ -787,7 +787,13 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             for c in trimmed.chars() {
                 s.extend(c.to_lowercase());
             }
-            let len = s.trim_end_matches('.').len();
+            // Trim trailing dots and any whitespace exposed by dot-stripping
+            // together so the operation is idempotent: a value like "\x00\t."
+            // would lose its trailing `.` here, leaving `\t` at the end, and a
+            // second pass would then trim that `\t` — breaking the fixed-point.
+            let len = s
+                .trim_end_matches(|c: char| c == '.' || c.is_whitespace())
+                .len();
             s.truncate(len);
             // Strip leading `www.` label(s) so `www.foo.com` and `foo.com` dedup
             // to one host. Consume *all* consecutive leading `www.` labels in a
