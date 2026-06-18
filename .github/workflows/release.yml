@@ -36,6 +36,13 @@ on:
 permissions:
   contents: write # create the tag + create/upload to the GitHub Release
 
+# Serialise per ref so two quick pushes (or a push landing mid-build) can't race
+# to create the same tag/release. Don't cancel an in-flight publish — let it
+# finish; a queued follow-up no-ops once the version's tag exists.
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # Decide the target tag and whether there's anything to publish. Splitting this
   # out keeps the (slow) cross-build from even starting on a routine main push

@@ -35,13 +35,20 @@ keys on first run, swaps the binary **atomically** (safe even while a server is
 live), and **restarts a running `hse-bg` onto the new build** so the upgrade
 takes effect immediately. Idempotent — re-run any time to upgrade.
 
-**No-build fast path:** if a precompiled aarch64 `hse` (named `hse` or
-`hse-aarch64-linux-android`) is sitting in your **Downloads** folder, the
-installer validates it (ELF + optional `.sha256` + a run-test) and installs it
-directly — no Rust toolchain, no compile. And after a *source* build it caches
-the binary back to Downloads, so your next install (or another aarch64 phone)
-takes that instant path automatically. Point at a specific file with
-`HSE_PREBUILT=/path/to/hse`, or force a source build with `HSE_PREFER_BUILD=1`.
+**No-build fast path:** the installer prefers a prebuilt aarch64 binary over a
+source compile, trying in order: (1) a precompiled `hse` /
+`hse-aarch64-linux-android` in your **Downloads** folder, then (2) the binary
+published on this repo's [GitHub Releases](https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/latest)
+— **downloaded and verified automatically** (size + ELF + `.sha256` + a
+run-test). Either way: no Rust toolchain, no compile. This is also the
+**fallback when the on-device build can't proceed** — e.g. a broken Termux
+`rust` package that ships no static std — so the install still succeeds. After
+a *source* build it caches the binary back to Downloads, so your next install
+(or another aarch64 phone) takes the instant path automatically. Knobs: point
+at a file with `HSE_PREBUILT=/path/to/hse`, pin a release with
+`HSE_PREBUILT_TAG=vX.Y.Z`, skip the download with `HSE_NO_DOWNLOAD=1`, force a
+source build with `HSE_PREFER_BUILD=1`, or keep your own Termux mirror with
+`HSE_KEEP_MIRROR=1`.
 
 Also works on Debian/Ubuntu and macOS. Full log at `~/.cache/hse-install.log`.
 See [`docs/INSTALL.md`](docs/INSTALL.md) for every install path, knobs
