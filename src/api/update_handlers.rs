@@ -52,6 +52,28 @@ pub(crate) async fn get_status(State(state): State<Arc<AppState>>) -> impl IntoR
     })
 }
 
+/// Authorization gate for the update-trigger endpoint.
+///
+/// Triggering an update replaces the running binary in place, so it carries the
+/// same loopback-only policy as key writes: only a client connecting from a
+/// loopback address may invoke it. Returns the `403` response to send for a
+/// non-loopback peer, or `None` when the call is allowed.
+///
+/// NB: this trusts the socket peer address. Behind a loopback-bound reverse
+/// proxy every forwarded client appears as loopback — the same limitation the
+/// settings-write handlers carry — so it is a localhost-architecture guard, not
+/// an authenticated-caller check.
+fn reject_non_loopback(peer: &SocketAddr) -> Option<(StatusCode, Json<serde_json::Value>)> {
+    if peer.ip().is_loopback() {
+        None
+    } else {
+        Some((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "update trigger is loopback-only" })),
+        ))
+    }
+}
+
 /// `POST /api/v1/update/trigger` — manually kick off an update.
 ///
 /// Returns 202 immediately and drives the update in a detached task.
@@ -61,12 +83,8 @@ pub(crate) async fn post_trigger(
     State(state): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
-    if !peer.ip().is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "update trigger is loopback-only" })),
-        )
-            .into_response();
+    if let Some(rejection) = reject_non_loopback(&peer) {
+        return rejection.into_response();
     }
     // Reject if already applying or restarting.
     {
@@ -104,4 +122,36 @@ pub(crate) async fn post_trigger(
     });
 
     StatusCode::ACCEPTED.into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reject_non_loopback;
+    use axum::http::StatusCode;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    #[test]
+    fn trigger_rejects_non_loopback_peers() {
+        for ip in [
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7)),
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED), // 0.0.0.0
+        ] {
+            let peer = SocketAddr::new(ip, 8080);
+            let rejection = reject_non_loopback(&peer);
+            assert!(rejection.is_some(), "{ip} must be rejected");
+            assert_eq!(rejection.unwrap().0, StatusCode::FORBIDDEN);
+        }
+    }
+
+    #[test]
+    fn trigger_allows_loopback_peers() {
+        for ip in [
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ] {
+            let peer = SocketAddr::new(ip, 8080);
+            assert!(reject_non_loopback(&peer).is_none(), "{ip} must be allowed");
+        }
+    }
 }

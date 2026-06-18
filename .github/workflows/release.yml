@@ -90,6 +90,15 @@ jobs:
               exit 1
               ;;
           esac
+          # Validate the resolved tag against the git refname charset BEFORE
+          # writing it to GITHUB_OUTPUT. This closes output injection: a value
+          # containing a newline could otherwise smuggle extra step-output keys
+          # (e.g. a forged `publish=true`). A legitimate version tag only ever
+          # contains [A-Za-z0-9._/-], so anything else is rejected outright.
+          if [[ -z "$tag" || ! "$tag" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "Refusing unsafe or empty tag value: '${tag}'" >&2
+            exit 1
+          fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "publish=${publish}" >> "$GITHUB_OUTPUT"
           echo "Resolved tag=${tag} publish=${publish}"

@@ -298,9 +298,14 @@ maybe_download_prebuilt() {
         return 1
     fi
     printf " done\n"
-    # sha256 is REQUIRED for a network-fetched binary — accepting without it
-    # would silently allow an MITM to substitute any ELF that outputs
-    # "hse <anything>" on --version. Bail if the sidecar download fails.
+    # Require the sha256 sidecar for a network-fetched binary. It is fetched
+    # over the SAME TLS channel as the binary, so it is NOT an authenticity
+    # control against a hostile origin (an attacker who can swap the binary can
+    # swap its checksum too) — curl's certificate validation is what
+    # authenticates the source. What requiring it DOES buy: integrity against a
+    # corrupt/truncated download or a partial CDN object, and parity with the
+    # local-Downloads path (where a trusted local process places the sidecar).
+    # Bail rather than fall back to run-test-only validation if it's missing.
     printf "  Downloading %s.sha256…" "$asset"
     sha_dl_ok=1
     curl -fsSL -m 30 -o "$tmp/$asset.sha256" "$url_sha" >> "$LOG_FILE" 2>&1 || sha_dl_ok=0
