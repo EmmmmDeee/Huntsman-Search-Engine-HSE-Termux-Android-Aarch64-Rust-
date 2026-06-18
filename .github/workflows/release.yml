@@ -17,8 +17,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to (re)build and attach the binary to"
+        description: "Release tag to create/attach the binary to (e.g. v1.4.0)"
         required: true
+        default: "v1.4.0"
 
 permissions:
   contents: write # create/upload to the GitHub Release
@@ -30,11 +31,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # On a tag push, github.ref_name is the tag; on manual dispatch, use
-          # the input tag. Without this, a manual rebuild would check out the
-          # default branch and upload a binary that doesn't match the tag's
-          # commit.
-          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          # Tag push → check out the tag. Manual dispatch → check out the commit
+          # the run was launched from (github.sha); the tag named by inputs.tag
+          # may not exist yet — the publish step below creates it from this same
+          # commit. (Checking out a not-yet-existent tag would fail the run.)
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.ref_name }}
 
       - name: Install Rust + aarch64 Android target
         uses: dtolnay/rust-toolchain@stable
