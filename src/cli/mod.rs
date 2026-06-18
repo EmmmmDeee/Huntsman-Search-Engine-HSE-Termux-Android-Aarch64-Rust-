@@ -6,6 +6,7 @@
 //! `docs/USAGE.md` for the full reference.
 
 mod audit;
+mod cells;
 mod config;
 mod diagnostics;
 mod diff;
@@ -292,6 +293,7 @@ pub async fn run() -> Result<()> {
             })
             .await
         }
+        Command::Cells { action } => cells::cmd_cells(action).await,
     }
 }
 

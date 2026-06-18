@@ -353,8 +353,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `Coordinates` target via the OpenCelliD `getInArea` BBOX endpoint. Emits
   `DeviceId` + `Coordinates` per tower; confidence from accuracy radius;
   `cache_ttl_secs=86400`; ATT&CK T1591.001+T1596. Previously OpenCelliD was an
-  internal helper only. *Remaining:* Weiszfeld/Welzl centroid fusion; AU bounding
-  precision; movement/timeline layer; provenance radius output.
+  internal helper only.
+  *Partial (cycle 21, 2026-06-18):* `cell_local` + `hse cells import` delivered —
+  free offline peer to `opencellid`. `src/util/cell_db.rs` WAL-mode SQLite
+  abstraction; `hse cells` CLI (status/import --file|--country/clear, 50k-batch
+  CSV import with GZ decompression via `flate2`); `cell_local` module (free, Geo,
+  priority 66, `spawn_blocking` DB query, silent no-op when DB absent). 126→127
+  modules, 93→94 free, Geo 20→21.
+  *Remaining:* Weiszfeld/Welzl centroid fusion; AU bounding precision;
+  movement/timeline layer; provenance radius output; auto-scheduled re-sync of
+  the local cell DB (currently requires manual `hse cells import` trigger).
 - **`[ ]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
   credential-reuse graph, `aho-corasick` (SOL-F1) key-harvest + entropy gate.
 - **`[ ]` SOL-FORENSIC · Reproducible intelligence product** → **C7**: byte-stable
@@ -475,14 +483,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **C4** — `[~]` (SOL-NETINT). S→P audit cycle 20: `securitytrails`, `bgpview`, and
   `ripestat` were stale "remaining" notes — all three modules already registered.
   *Remaining:* passive-DNS history; CDN cert-hash origin pivot.
-- **C5** — now `[~]` (`opencellid` standalone module delivered, cycle 19; full
-  Weiszfeld/Welzl centroid + provenance radius still open).
+- **C5** — `[~]` (`opencellid` cycle 19 + `cell_local` + `hse cells import` cycle 21
+  delivered; free offline DB leg now available; Weiszfeld/Welzl centroid + provenance
+  radius + auto-sync still open).
 - **C1/C2/C6/C7** — capability nodes; solutions sketched, none started (gated on
   the §3.F enablers landing first, by design).
 - **AU-060 (new, cycle 20 S→P gap):** `opencellid` emits `DeviceId` (tower MCC/MNC/
   LAC/CID) and `cell_intel` also emits `DeviceId` for the same tower type — no
   correlation rule cross-validates them. Candidate rule AU-060: medium-confidence
   corroboration signal when both modules fire for the same tower. No solution node yet.
+- **cell_local auto-sync (new, cycle 21 S→P gap):** `hse cells import` requires a
+  manual trigger and a BYO OpenCelliD key; no auto-scheduled re-sync exists. A
+  recurring `hse cells import --country world` cron/daemon path would keep the local
+  DB fresh without user intervention. No solution node yet.
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -526,7 +539,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   budget-reset-zeroing remain).
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` first-class module delivered cycle 19, Weiszfeld/centroid fusion remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); C1/C2/C6/C7 open by design, gated on §3.F.
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); C1/C2/C6/C7 open by design, gated on §3.F.
 
 ---
 
@@ -1020,3 +1033,34 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Gate green: fmt/clippy/doc clean, 3,061 lib tests, 0 failures. Paired:
   `PROBLEM_TREE` SOL-AU-MOAT/SOL-NETINT corrections + `austlii` baseline + §8 cycle 20
   — same commit.
+- **2026-06-18** — **Cycle 21 (P→S): SOL-GEOINT progress — `cell_local` + `hse cells
+  import` delivered; free offline DB leg added to C5.**
+  **P→S build:** `src/util/cell_db.rs` — shared WAL-mode SQLite DB helper at
+  `~/.huntsman/cell_towers.db`; `CellRow` / `ImportRecord` structs; `open_rw()` /
+  `open_ro()` connection helpers; `init_schema()` (WAL + NORMAL sync, `cells` +
+  `cell_imports` tables, composite PK, geo + mcc indexes); `insert_batch()` (50k-row
+  batched `INSERT OR REPLACE` in `unchecked_transaction`); `query_bbox()` (BETWEEN
+  lat/lon, ORDER BY lat/lon, configurable LIMIT); `total_count()`, `count_by_mcc()`,
+  `record_import()`, `last_import()`; 8 unit tests (round-trip, upsert, count,
+  MCC group, import history, bbox limit).
+  `src/cli/cells/mod.rs` — `hse cells` subcommand: `status` (total count, top-10 MCC
+  breakdown, last import age); `import --file PATH` (direct CSV/CSV.GZ import with
+  `flate2` GZ decompression, 50k-row batched with progress output) + `import --country
+  CODE` (reqwest download via OpenCelliD API, falls back to manual-download message on
+  failure); `clear [--yes]` (truncate cells + cell_imports with confirmation prompt).
+  `parse_csv_line` handles 14-col OpenCelliD CSV; `mcc_for_country` maps ISO-3166-1
+  alpha-2 codes and raw integers; 10 unit tests.
+  `src/modules/cell_local.rs` — `CellLocal`; free (`ModuleCost::Free`); Geo category;
+  priority 66; `max_timeout_ms()` 5000; accepts `Coordinates`; queries local DB in
+  `tokio::task::spawn_blocking`; DELTA=0.005° BBOX (~556 m); emits `DeviceId`
+  (tagged `cell-tower`, `cell-local`, `radio:<type>`) + `Coordinates` (confidence
+  from `accuracy_to_confidence`); silent no-op when DB absent; 7 unit tests.
+  New direct dep: `flate2 = "1"` (GZ decompression; `adler2`, `crc32fast`,
+  `miniz_oxide`, `simd-adler32` pulled transitively). rusqlite pinned at 0.39
+  (0.40 uses unstable `cfg_select!` on stable Rust — pre-existing branch constraint).
+  **New S→P gap:** `hse cells import` requires a manual trigger + BYO OpenCelliD key;
+  no auto-scheduled re-sync. Logged in §4a.
+  126→127 modules, 93→94 free, Geo 20→21. Gate green: fmt/clippy clean, all tests pass.
+  **Gap refresh:** §4a gains `cell_local auto-sync` gap; C5 remaining updated;
+  §4d C5 row updated. Paired: `PROBLEM_TREE` C5 cycle 21 note + §8 cycle 21 — same
+  commit.

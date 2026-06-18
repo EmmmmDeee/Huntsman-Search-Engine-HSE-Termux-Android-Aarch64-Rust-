@@ -672,8 +672,16 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   within ~1 km; `cache_ttl_secs=86400`; ATT&CK T1591.001+T1596. Previously
   OpenCelliD was only an internal helper inside `cell_intel` (not queryable as a
   standalone first-class module). 124→125 modules, Geo 19→20, 27→28 key-gated.
-  Remaining:* Weiszfeld/Welzl confidence-weighted centroid; tighter AU bounding;
-  movement/timeline geo; provenance radius output.
+  Delivered (cycle 21, 2026-06-18): `cell_local` + `hse cells import` — free,
+  offline peer to `opencellid`; imports a BYO OpenCelliD CSV/CSV.GZ dataset into
+  `~/.huntsman/cell_towers.db` (WAL SQLite, 50k-row batched inserts); `cell_local`
+  module accepts `Coordinates`, queries the local DB in `spawn_blocking`, emits
+  `DeviceId` + `Coordinates` per tower; priority 66; silent no-op when DB absent
+  so it never blocks scans on an unpopulated device. `hse cells` CLI: `status`,
+  `import --file/--country/--key`, `clear`. 126→127 modules, 93→94 free, Geo 20→21.
+  New S→P gap:* full AU dataset download requires OpenCelliD BYO key + manual
+  trigger (no auto-scheduled re-sync yet). Weiszfeld/Welzl centroid fusion;
+  tighter AU bounding; movement/timeline geo; provenance radius output remain open.
 - **`[ ]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
   `subdomain_takeover`, `key_harvest`, breach/stealer presence + AU-047 reuse
   link. → **Solution:** broaden exposure-dork coverage; mature the
@@ -1738,3 +1746,21 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   failures. **Paired:** `SOLUTION_TREE` SOL-CACHE-INTERSCAN `[ ]`→`[x]`,
   SOL-BUDGET `[~]`→`[-]`, SOL-F2 premise corrected, §3/§4/§5 refreshed — same
   commit.
+- **2026-06-18** — **Cycle 21 (P→S): C5 GEOINT second source — `cell_local` module
+  + `hse cells import` command delivered.** P→S direction: C5 (SOL-GEOINT) had
+  `opencellid` as its only live source (key-gated, API-dependent); the free,
+  offline leg was missing. Delivered: `src/util/cell_db.rs` — shared WAL-mode
+  SQLite abstraction at `~/.huntsman/cell_towers.db` (`cells` + `cell_imports`
+  tables; `insert_batch`, `query_bbox`, `record_import`, `last_import`; 8 unit
+  tests); `src/cli/cells/mod.rs` — `hse cells status/import/clear` subcommand
+  (`parse_csv_line` 14-col OpenCelliD CSV parser, `mcc_for_country` mapper,
+  50k-row batched import with GZ decompression via `flate2`, reqwest download
+  path for `--country`, 10 unit tests); `src/modules/cell_local.rs` — free
+  (`ModuleCost::Free`) geo module, priority 66, accepts `Coordinates`, reads
+  local DB in `spawn_blocking`, emits `DeviceId` + `Coordinates` per tower,
+  silent no-op when DB absent (7 unit tests). New direct dep: `flate2 = "1"`.
+  Gate green: fmt/clippy clean, all tests pass.
+  **New S→P gap:** full AU dataset download requires OpenCelliD BYO key + manual
+  trigger — no auto-scheduled re-sync yet. 126→127 modules, 93→94 free, Geo
+  20→21. **Paired:** `SOLUTION_TREE` SOL-GEOINT *Remaining* updated + §4/§5
+  cycle 21 — same commit.

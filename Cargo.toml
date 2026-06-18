@@ -110,6 +110,9 @@ kamadak-exif       = "0.6"
 # the tree transitively via reqwest; declared directly so the
 # decode-through path doesn't break if reqwest drops it.
 base64             = "0.22"
+# Already in the lock file transitively via tower-http compression-gzip;
+# promoted here so `hse cells import` can stream-decompress CSV.GZ files.
+flate2             = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

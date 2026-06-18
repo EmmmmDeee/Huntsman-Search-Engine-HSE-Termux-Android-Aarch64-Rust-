@@ -885,6 +885,7 @@ dependencies = [
  "clap",
  "criterion",
  "dotenvy",
+ "flate2",
  "futures",
  "hex",
  "hickory-resolver",

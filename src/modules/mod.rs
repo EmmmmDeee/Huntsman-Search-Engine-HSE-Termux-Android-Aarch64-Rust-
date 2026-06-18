@@ -20,6 +20,7 @@ pub mod austlii;
 pub mod bgpview;
 pub mod breach_timezone;
 pub mod cell_intel;
+pub mod cell_local;
 pub mod censys;
 pub mod cert_intel;
 pub mod chain_intel;
@@ -304,6 +305,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(wayback::Wayback),
         Arc::new(device_sensors::DeviceSensors),
         Arc::new(cell_intel::CellIntel),
+        Arc::new(cell_local::CellLocal),
         Arc::new(opencellid::OpenCellId),
         Arc::new(wifi_intel::WifiIntel),
         Arc::new(local_net::LocalNet),

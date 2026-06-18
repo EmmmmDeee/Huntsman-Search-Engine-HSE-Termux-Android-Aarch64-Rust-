@@ -457,4 +457,15 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+
+    /// Manage the local OpenCelliD cell-tower database.
+    ///
+    /// `hse cells status` — show tower count, MCC breakdown, last import time.
+    /// `hse cells import --file PATH` — import a local CSV or CSV.GZ file.
+    /// `hse cells import --country AU` — download from OpenCelliD and import.
+    /// `hse cells clear [--yes]` — truncate the cells table.
+    Cells {
+        #[command(subcommand)]
+        action: super::cells::CellsAction,
+    },
 }

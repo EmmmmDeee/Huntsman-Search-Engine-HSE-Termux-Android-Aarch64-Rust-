@@ -5,7 +5,7 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
 
-Pure-Rust OSINT / GEOINT platform with **126 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **127 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 SpiderFoot-style Web UI, zero native dependencies.
 
@@ -98,7 +98,7 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 126 modules
+hse modules                                                 # list all 127 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
@@ -146,9 +146,9 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ---
 
-## Module Overview (126 modules — 93 free, 33 key-gated/paid)
+## Module Overview (127 modules — 94 free, 33 key-gated/paid)
 
-> Grouped highlights below (all 126). The **complete** catalogue with target
+> Grouped highlights below (all 127). The **complete** catalogue with target
 > kinds and output entities — kept exhaustive by the
 > `modules_md_lists_every_registered_module` CI guard — lives in
 > [`docs/MODULES.md`](docs/MODULES.md). The headline count is swept against
@@ -160,7 +160,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 - **People**: `ahpra`, `au_electoral`, `au_people`, `au_property`, `contact_enrich`, `employer_pivot`, `gravatar`, `name_intel`, `pgp`, `wikidata`
 - **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `rdap_domain`, `subdomain_takeover`, `typosquat`, `whois`
 - **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipapi`, `ipinfo`, `ipquery`, `netblock`, `portscan`, `ripestat`, `shodan`, `urlscan`
-- **Geolocation**: `breach_timezone`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `overpass`, `phone_area_geo`, `phone_carrier_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
+- **Geolocation**: `breach_timezone`, `cell_local`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `overpass`, `phone_area_geo`, `phone_carrier_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
 - **Threat intel**: `urlhaus`
 - **Email**: `disposable_check`, `email_canonical`, `email_parse`, `smtp_vrfy`
 - **Phone**: `phone_intl`
