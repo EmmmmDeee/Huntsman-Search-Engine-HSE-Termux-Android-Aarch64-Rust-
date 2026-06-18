@@ -11,82 +11,40 @@ SpiderFoot-style Web UI, zero native dependencies.
 
 ---
 
-## Install (Termux Android aarch64, no root)
+## Install (Termux, Android aarch64, no root)
 
-### ⭐ The installer — one line, all-in-one
+### From the zip — no internet needed after download
 
-This **single command is the installation** — does **absolutely everything**,
-and is **safe to re-run** (re-running upgrades an existing install in place to
-the newest version):
+**Step 1** — Grant Termux storage access (one-time; skip if already done):
+```bash
+termux-setup-storage   # tap Allow in the Android dialog
+```
+Then in Android: **Settings → Apps → Termux → Permissions → Files and media → Allow management of all files**
+
+**Step 2** — Copy, extract, and install:
+```bash
+cp ~/storage/downloads/HSE.zip ~/ && unzip -q ~/HSE.zip && bash ~/Huntsman*/install.sh
+```
+
+The installer detects it’s running inside the extracted source tree and builds
+automatically — no cloning, no GitHub token needed. Build takes ~4-6 min on
+aarch64. After the build, the binary is cached to your Downloads folder so
+the next install skips the compile entirely.
+
+### One-liner install (internet required)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/claude/vigilant-galileo-vmjk3e/install.sh | bash
 ```
 
-It installs the toolchain (`rust`, `clang`, `binutils`, `git`, …), clones **or
-updates** the source, builds the release binary (retrying on flaky mobile
-networks), installs `hse` to `$PREFIX/bin`, sets up the `hse-bg` background
-wrapper + optional Termux:Boot autostart, writes the keys template, and runs
-`hse doctor` to verify. **Existing installs are fully handled**: it fetches +
-rebuilds, **preserves your `~/.huntsman.env` keys**, auto-rotates the embedded
-keys on first run, swaps the binary **atomically** (safe even while a server is
-live), and **restarts a running `hse-bg` onto the new build** so the upgrade
-takes effect immediately. Idempotent — re-run any time to upgrade.
-
-**No-build fast path:** if a precompiled aarch64 `hse` (named `hse` or
-`hse-aarch64-linux-android`) is sitting in your **Downloads** folder, the
-installer validates it (ELF + optional `.sha256` + a run-test) and installs it
-directly — no Rust toolchain, no compile. And after a *source* build it caches
-the binary back to Downloads, so your next install (or another aarch64 phone)
-takes that instant path automatically. Point at a specific file with
-`HSE_PREBUILT=/path/to/hse`, or force a source build with `HSE_PREFER_BUILD=1`.
-
-Also works on Debian/Ubuntu and macOS. Full log at `~/.cache/hse-install.log`.
-See [`docs/INSTALL.md`](docs/INSTALL.md) for every install path, knobs
-(`HSE_REF`, `HSE_INSTALL_DIR`, …) and Termux quirks.
-
-Then launch the Web UI:
+### After install
 
 ```bash
-hse serve   # binds 127.0.0.1:8080 (loopback only)
+hse-bg start          # runs hse serve with Android wake-lock (screen-off safe)
+# Open Chrome on the device → http://127.0.0.1:8080
 ```
 
-Open **Chrome** (or Firefox) on the phone and go to `http://127.0.0.1:8080`.
-You'll get a SpiderFoot-style dark-navbar UI — **Dashboard · New Scan · Scans ·
-Live · Engines · Settings** — where **New Scan** drives the engine and each
-scan's results page tabs through a sortable entity browser, a D3 force graph,
-severity-tagged correlations, and a real-time (SSE) event log. The **Settings
-page lets you paste & save API keys** straight from the browser (loopback-only,
-so keys never leave the device).
-
-> That's the whole install: **one command, then `hse serve`, then open
-> `http://127.0.0.1:8080` in Chrome.** Everything below is reference detail.
-
-### Manual build (advanced — the installer already does this)
-
-The one-line installer above **is** the supported installation — it always
-pulls and builds the latest `main`, and its built-in no-build fast path
-(Downloads cache, above) covers the prebuilt-binary case. If you'd rather drive
-the build by hand:
-
-```bash
-pkg install -y git rust binutils clang && git clone --depth 1 https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git ~/hse && cd ~/hse && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
-```
-
-To upgrade a manual clone, either re-run the all-in-one installer above (it
-detects and updates an in-place clone), or:
-
-```bash
-cd ~/hse && git pull origin main && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
-```
-
-> **Seeing a `Username for 'https://github.com':` prompt?** A public repo
-> never asks for credentials — that prompt means the repository is currently
-> **private**. No password is required once it's public; until then, clone
-> over SSH with a key already on your GitHub account (no typed password):
-> ```bash
-> pkg install -y git rust binutils clang openssh && git clone --depth 1 git@github.com:EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git ~/hse && cd ~/hse && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
-> ```
+See [`docs/INSTALL.md`](docs/INSTALL.md) for all options, environment knobs, manual build steps, and troubleshooting.
 
 ---
 
@@ -122,7 +80,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 ## Seed Types (16 supported)
 
 | Seed | Flag | Example | Modules |
-|------|------|---------|---------|
+|------|------|---------|--------|
 | Email | `--kind email` | `user@example.com` | 35 |
 | Username | `--kind username` | `johndoe` | 14 |
 | Phone | `--kind phone` | `+61400000000` | 8 |
@@ -235,7 +193,7 @@ Round 1: High-confidence entities (C_eff ≥ 0.75) become new targets.
 Round 2: Discovered IPs → geo modules → coordinates → address.
 
 | Knob | Default | Purpose |
-|------|---------|---------|
+|------|---------|--------|
 | `--depth N` | `2` | Max expansion rounds (0 = single seed round) |
 | `--min-expand-confidence F` | `0.50` | Min C_eff to expand (0.75 = Verified-only) |
 | `--max-entities N` | none | Stop at N total entities |
