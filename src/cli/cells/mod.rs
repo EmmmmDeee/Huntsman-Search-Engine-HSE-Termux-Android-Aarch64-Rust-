@@ -149,13 +149,12 @@ async fn cmd_import(
             let filename = if country.eq_ignore_ascii_case("world") {
                 "cell_towers.csv.gz".to_string()
             } else {
-                let m = mcc.map_or_else(|| country.to_string(), |m| m.to_string());
+                let m = mcc.map_or_else(|| country.clone(), |m| m.to_string());
                 format!("OCID_cells_mcc{m}.csv.gz")
             };
 
             let url = format!(
-                "https://opencellid.org/downloads/?token={}&sourceFilter=ocid&type=full&file={}",
-                api_key, filename
+                "https://opencellid.org/downloads/?token={api_key}&sourceFilter=ocid&type=full&file={filename}"
             );
 
             println!("Attempting to download: {filename}");
@@ -268,10 +267,7 @@ fn import_from_file(path: &str, mcc_hint: Option<i64>) -> Result<()> {
         0
     };
 
-    println!(
-        "Done: {total_rows} rows imported in {:.1}s ({rate} rows/sec)",
-        secs
-    );
+    println!("Done: {total_rows} rows imported in {secs:.1}s ({rate} rows/sec)");
 
     let filename = p.file_name().and_then(|n| n.to_str()).unwrap_or(path);
 
@@ -314,7 +310,7 @@ fn import_reader<R: std::io::Read>(
                 let inserted =
                     cell_db::insert_batch(conn, &batch).map_err(|e| Error::Other(e.to_string()))?;
                 total += inserted;
-                println!("=> Importing: {} rows...", total);
+                println!("=> Importing: {total} rows...");
                 batch.clear();
             }
         }
