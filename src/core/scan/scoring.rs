@@ -50,6 +50,9 @@ pub(super) fn seed_marginal_yield(kind: TargetKind, has_paid_keys: bool) -> f64 
         // A wallet address enriches to on-chain activity then stops — terminal,
         // a single reliable hop with no identity fan-out.
         TargetKind::CryptoAddress => (1.1, 1.05),
+        // A cell tower ID resolves to a coordinate via OpenCelliD — terminal,
+        // single-hop: tower → location.
+        TargetKind::DeviceId => (1.2, 1.2),
     };
     if has_paid_keys { paid } else { free }
 }
@@ -71,7 +74,10 @@ fn round_retention(kind: TargetKind) -> f64 {
         }
         TargetKind::Phone | TargetKind::Url => 0.50,
         TargetKind::AbnAcn => 0.45,
-        TargetKind::Coordinates | TargetKind::ApiKey | TargetKind::CryptoAddress => 0.40,
+        TargetKind::Coordinates
+        | TargetKind::ApiKey
+        | TargetKind::CryptoAddress
+        | TargetKind::DeviceId => 0.40,
     }
 }
 
@@ -185,6 +191,8 @@ pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
         TargetKind::ApiKey => 3.8,
         // A wallet address carries no geolocation signal of its own.
         TargetKind::CryptoAddress => 2.0,
+        // A cell tower ID resolves directly to a coordinate — single-hop, terminal.
+        TargetKind::DeviceId => 8.5,
     }
 }
 
@@ -285,6 +293,8 @@ fn geo_proximity_boost(kind: TargetKind) -> f64 {
         // ASN → bgpview → prefixes → IPs → Coords. Three hops, but each
         // ASN often resolves to a fixed datacenter location.
         TargetKind::Asn => 1.2,
+        // DeviceId → OpenCelliD cell/get → Coordinates. Single hop, like IP→geo.
+        TargetKind::DeviceId => 1.8,
         _ => 1.0,
     }
 }

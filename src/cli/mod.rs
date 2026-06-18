@@ -24,7 +24,7 @@ mod radar;
 mod scan;
 mod selftest;
 mod serve;
-mod update;
+pub(crate) mod update;
 
 use std::io::IsTerminal;
 use std::sync::Arc;
@@ -371,8 +371,9 @@ pub(super) fn parse_target_kind(s: &str) -> Result<TargetKind> {
         "apikey" | "api_key" | "key" => Ok(TargetKind::ApiKey),
         "mac" | "bssid" | "mac_address" => Ok(TargetKind::MacAddress),
         "crypto" | "crypto_address" | "wallet" | "btc" | "eth" => Ok(TargetKind::CryptoAddress),
+        "device_id" | "deviceid" | "tower" | "cell" => Ok(TargetKind::DeviceId),
         other => Err(Error::InvalidTarget(format!(
-            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, cidr, domain, url, asn, coords, address, org, abn, apikey, mac, crypto"
+            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, cidr, domain, url, asn, coords, address, org, abn, apikey, mac, crypto, tower"
         ))),
     }
 }

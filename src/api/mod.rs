@@ -13,6 +13,7 @@ pub mod routes;
 pub mod scan_export;
 pub mod scan_handlers;
 pub mod settings_handlers;
+pub mod update_handlers;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -59,6 +60,39 @@ impl Drop for CancelRegistryGuard {
     }
 }
 
+/// Live update status — written by the background auto-update task, read by the API
+/// handler. Shared via `Arc<std::sync::Mutex<UpdateInfo>>` so the background
+/// task and handler can access it independently of the `parking_lot` locks used
+/// elsewhere in AppState.
+#[derive(Clone, Debug)]
+pub struct UpdateInfo {
+    /// `None` = not yet checked or offline.
+    pub commits_behind: Option<u64>,
+    /// Unix seconds of last successful check, or 0 if never checked.
+    pub last_checked: u64,
+    pub phase: UpdatePhase,
+}
+
+/// Current phase of the autonomous update lifecycle.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UpdatePhase {
+    Idle,
+    Checking,
+    Applying,
+    Restarting,
+    Error(String),
+}
+
+impl Default for UpdateInfo {
+    fn default() -> Self {
+        Self {
+            commits_behind: None,
+            last_checked: 0,
+            phase: UpdatePhase::Idle,
+        }
+    }
+}
+
 /// Maximum number of scans that can run concurrently via the HTTP API.
 pub const MAX_CONCURRENT_SCANS: usize = 8;
 
@@ -76,6 +110,11 @@ pub struct AppState {
     /// Bounds the number of scans running concurrently via the API.
     /// Prevents resource exhaustion from rapid `POST /scans` calls.
     pub scan_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Shared update status written by the background auto-update task and
+    /// read by `GET /api/v1/update/status`. Uses `std::sync::Mutex` (not
+    /// `parking_lot`) so it can be held across `.await` points in the
+    /// background task without requiring `parking_lot`'s `async`-aware lock.
+    pub update_info: Arc<std::sync::Mutex<UpdateInfo>>,
 }
 
 #[cfg(test)]

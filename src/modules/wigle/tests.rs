@@ -201,6 +201,71 @@ fn extract_cell_intel_passes_non_generic_carrier_through() {
 }
 
 #[test]
+fn extract_cell_intel_emits_coordinates_for_towers_with_position() {
+    let resp = Resp {
+        success: Some(true),
+        result_count: Some(3),
+        total_results: Some(3),
+        results: vec![
+            Network {
+                ssid: None,
+                netid: None,
+                encryption: None,
+                lastupdt: None,
+                trilat: Some(-27.4766),
+                trilong: Some(153.0166),
+                city: None,
+                region: None,
+                country: None,
+                postalcode: None,
+            },
+            Network {
+                ssid: None,
+                netid: None,
+                encryption: None,
+                lastupdt: None,
+                trilat: Some(-27.5000),
+                trilong: Some(153.0200),
+                city: None,
+                region: None,
+                country: None,
+                postalcode: None,
+            },
+            Network {
+                ssid: None,
+                netid: None,
+                encryption: None,
+                lastupdt: None,
+                trilat: Some(-27.4800),
+                trilong: Some(153.0100),
+                city: None,
+                region: None,
+                country: None,
+                postalcode: None,
+            },
+        ],
+    };
+    let mut r = ModuleResult::new();
+    extract_cell_intel(&resp, "-27.4766,153.0166", "test-scan", &mut r);
+    let coords: Vec<_> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .collect();
+    assert_eq!(coords.len(), 3);
+    for c in &coords {
+        assert!(c.has_tag("cell-tower"), "should carry cell-tower tag");
+        assert!(c.has_tag("cell-observed"), "should carry cell-observed tag");
+        assert!(c.has_tag("wigle"), "should carry wigle tag");
+    }
+    // Closest tower (exact match on target) must come first
+    assert!(
+        coords[0].value.starts_with("-27.4766"),
+        "proximity sort: closest tower first"
+    );
+}
+
+#[test]
 fn extract_bluetooth_intel_emits_at_most_three_mac_entities() {
     let mut results = Vec::new();
     for i in 0..5 {

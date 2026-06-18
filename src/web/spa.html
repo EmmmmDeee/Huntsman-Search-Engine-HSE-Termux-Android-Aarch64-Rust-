@@ -283,7 +283,7 @@
         <li id="nav-scans"  ><a href="#/scans"  ><i class="glyphicon glyphicon-list"></i>&nbsp;Scans</a></li>
         <li id="nav-live"   ><a href="#/live"   ><i class="glyphicon glyphicon-record"></i>&nbsp;Live</a></li>
         <li id="nav-engines"><a href="#/engines"><i class="glyphicon glyphicon-search"></i>&nbsp;Engines</a></li>
-        <li id="nav-opts"   ><a href="#/opts"   ><i class="glyphicon glyphicon-wrench"></i>&nbsp;Settings</a></li>
+        <li id="nav-opts"   ><a href="#/opts"   ><i class="glyphicon glyphicon-wrench"></i>&nbsp;Settings&nbsp;<span id="update-badge" style="display:none;background:#e74c3c;color:#fff;border-radius:8px;font-size:9px;padding:1px 5px;vertical-align:middle"></span></a></li>
       </ul>
       <form class="navbar-form navbar-left" style="margin-left:10px" onsubmit="globalSearch(event)">
         <div class="input-group input-group-sm" style="width:220px">
@@ -570,8 +570,10 @@ const API = {
   liveList:   ()=>API._req('/api/v1/live'),
   liveCreate: body=>API._req('/api/v1/live',{method:'POST',body}),
   liveStop:   id=>API._req('/api/v1/live/'+encodeURIComponent(id),{method:'DELETE'}),
-  selftest:   ()=>API._req('/api/v1/selftest'),
-  logsUrl:    ()=>'/api/v1/logs',
+  selftest:     ()=>API._req('/api/v1/selftest'),
+  logsUrl:      ()=>'/api/v1/logs',
+  updateStatus: ()=>API._req('/api/v1/update/status'),
+  updateTrigger:()=>API._req('/api/v1/update/trigger',{method:'POST'}),
   // Batch: queue many scans in one request (array of ScanRequest). Returns
   // {scans:[{scan_id,status}|{error}], count}.
   batch:      reqs=>API._req('/api/v1/scans/batch',{method:'POST',body:reqs}),
@@ -2436,6 +2438,25 @@ async function renderOpts(v){
     </div>
 
     <div class="panel panel-default">
+      <div class="panel-heading">
+        <b>Software Update</b>
+        <span id="upd-phase-label" style="float:right;font-size:12px"></span>
+      </div>
+      <div class="panel-body">
+        <p class="text-muted" style="font-size:12px">
+          Huntsman checks for upstream commits every 6&nbsp;h and applies them
+          automatically when <code>feature.auto_update</code> is ON (the default).
+          The binary restarts in-place — no data is lost. Manual trigger below.
+        </p>
+        <div id="upd-info" style="margin-bottom:10px;font-size:13px">
+          <span class="text-muted">Loading update status…</span>
+        </div>
+        <button id="upd-trigger-btn" class="btn btn-primary btn-sm">Update Now</button>
+        <span id="upd-trigger-msg" class="text-muted" style="margin-left:10px;font-size:12px"></span>
+      </div>
+    </div>
+
+    <div class="panel panel-default">
       <div class="panel-heading"><b>Server</b></div>
       <table class="table table-striped table-condensed" style="margin-bottom:0">
         <tbody>
@@ -2471,6 +2492,7 @@ async function renderOpts(v){
   wireToggleFilter();
   updateGroupCounts();
   wireDiagnostics();
+  wireUpdate();
 }
 
 /* ─── Capability toggles (universal toggleability) ─── */
@@ -2564,6 +2586,122 @@ function wireDiagnostics(){
     }
   });
 }
+/* ─── Update panel wiring (#/opts → Software Update section) ─── */
+function wireUpdate(){
+  const infoEl     = $('#upd-info');
+  const phaseEl    = $('#upd-phase-label');
+  const btn        = $('#upd-trigger-btn');
+  const msgEl      = $('#upd-trigger-msg');
+  if (!btn) return;
+
+  const PHASE_LABEL = {idle:'', checking:'checking…', applying:'applying…',
+                       restarting:'restarting…', error:'error'};
+  const PHASE_CLS   = {idle:'', checking:'label-info', applying:'label-warning',
+                       restarting:'label-warning', error:'label-danger'};
+
+  async function refreshStatus(){
+    try {
+      const s = await API.updateStatus();
+      const p = s.phase || 'idle';
+      phaseEl.innerHTML = p !== 'idle'
+        ? `<span class="label ${PHASE_CLS[p]||'label-default'}">${esc(PHASE_LABEL[p]||p)}</span>`
+        : '';
+
+      let html = '';
+      if (s.commits_behind == null){
+        html = '<span class="text-muted">Not yet checked — next automatic check within 6&nbsp;h.</span>';
+      } else if (s.commits_behind === 0){
+        html = '<span class="text-success"><i class="glyphicon glyphicon-ok"></i>&nbsp;Up to date.</span>';
+        const b = $('#update-badge'); if(b) b.style.display='none';
+      } else {
+        html = `<span class="text-warning"><b>${s.commits_behind}</b> update(s) available.</span>`;
+        const b = $('#update-badge');
+        if(b){ b.textContent = s.commits_behind; b.style.display=''; }
+      }
+      if (s.last_checked){
+        html += ` <span class="text-muted" style="font-size:11px">Last checked: ${esc(fmtDate(s.last_checked))}</span>`;
+      }
+      if (!s.auto_update){
+        html += ' <span class="label label-default" style="font-size:10px;margin-left:4px">auto-update OFF</span>';
+      }
+      if (p === 'error'){
+        html += ' <span class="text-danger" style="font-size:11px">(last attempt failed — retry below)</span>';
+      }
+      infoEl.innerHTML = html;
+      btn.disabled = ['checking','applying','restarting'].includes(p);
+      if (p === 'restarting') showRestartOverlay();
+      return s;
+    } catch(e){
+      infoEl.innerHTML = `<span class="text-danger">Could not fetch update status: ${esc(e.message)}</span>`;
+      return null;
+    }
+  }
+
+  let poller = null;
+  function startPoll(){
+    if (poller) return;
+    poller = setInterval(async()=>{
+      const s = await refreshStatus();
+      if (!s || ['idle','error'].includes(s.phase||'idle')){
+        clearInterval(poller); poller = null;
+      }
+    }, 2500);
+  }
+
+  refreshStatus().then(s=>{
+    if (s && ['checking','applying','restarting'].includes(s.phase||'idle')) startPoll();
+  });
+
+  btn.addEventListener('click', async()=>{
+    btn.disabled = true;
+    msgEl.textContent = 'Triggering update…';
+    try {
+      await API.updateTrigger();
+      msgEl.textContent = 'Update in progress — tracking status…';
+      startPoll();
+    } catch(e){
+      alertify.error('Update trigger failed: '+e.message);
+      btn.disabled = false;
+      msgEl.textContent = '';
+    }
+  });
+}
+
+/* Fullscreen overlay shown while Huntsman restarts after an update.
+   Polls the health endpoint and reloads when the server responds. */
+function showRestartOverlay(){
+  if ($('#restart-overlay')) return;
+  const overlay = document.createElement('div');
+  overlay.id = 'restart-overlay';
+  overlay.style.cssText =
+    'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.75);'+
+    'z-index:9999;display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML =
+    '<div style="background:#fff;border-radius:6px;padding:32px 44px;text-align:center;max-width:400px">'+
+    '<h3 style="margin:0 0 10px">Update Applied!</h3>'+
+    '<p style="color:#555;font-size:13px">Huntsman is restarting in the background.<br>'+
+    'This page will reload automatically.</p>'+
+    '<div class="progress" style="height:6px;margin:14px 0 0">'+
+    '<div class="progress-bar progress-bar-striped active" style="width:100%"></div></div></div>';
+  document.body.appendChild(overlay);
+  const poll = setInterval(async()=>{
+    try { await API.health(); clearInterval(poll); location.reload(); } catch {}
+  }, 2500);
+}
+
+/* Lightweight navbar badge update — called at boot and not on every render. */
+async function pollUpdateBadge(){
+  try {
+    const s = await API.updateStatus();
+    const b = $('#update-badge');
+    if (!b) return;
+    if (s.commits_behind > 0){
+      b.textContent = s.commits_behind;
+      b.style.display = '';
+    }
+  } catch {}
+}
+
 function keyRow(k, writeEnabled){
   return `<div class="keyrow" data-key="${attr(k.name)}">
     <div>
@@ -2933,6 +3071,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
   } catch {
     $('#ver').textContent = 'offline';
   }
+  // Populate the update badge in the background — never blocks first render.
+  pollUpdateBadge();
   await render();
 })();
 </script>

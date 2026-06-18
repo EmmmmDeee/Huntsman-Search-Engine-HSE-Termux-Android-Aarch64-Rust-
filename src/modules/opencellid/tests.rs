@@ -5,16 +5,17 @@ use crate::core::scan::{Target, TargetKind};
 #[test]
 fn module_metadata() {
     assert_eq!(OpenCellId.name(), "opencellid");
-    assert_eq!(OpenCellId.priority(), 65);
+    assert_eq!(OpenCellId.priority(), 70);
     assert_eq!(OpenCellId.max_timeout_ms(), 10_000);
     assert_eq!(OpenCellId.cache_ttl_secs(), 86_400);
     assert!(matches!(OpenCellId.cost(), ModuleCost::KeyGated));
 }
 
 #[test]
-fn accepts_coordinates_only() {
+fn accepts_coordinates_and_device_id() {
     let m = OpenCellId;
     assert!(m.accepts(&Target::new(TargetKind::Coordinates, "-27.47,153.02")));
+    assert!(m.accepts(&Target::new(TargetKind::DeviceId, "505-1-12345-67890")));
     assert!(!m.accepts(&Target::new(TargetKind::IpAddress, "1.1.1.1")));
     assert!(!m.accepts(&Target::new(TargetKind::MacAddress, "aa:bb:cc:dd:ee:ff")));
     assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
@@ -29,6 +30,7 @@ fn attack_techniques_include_geo_and_open_db() {
         t.contains(&"T1596"),
         "must include open technical databases"
     );
+    assert!(t.contains(&"T1596.001"), "must include OSINT sub-technique");
 }
 
 #[test]

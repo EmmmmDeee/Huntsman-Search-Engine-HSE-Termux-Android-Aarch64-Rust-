@@ -29,7 +29,8 @@ use super::build_runtime;
 pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()> {
     use std::net::SocketAddr;
 
-    use crate::api::{AppState, routes::router};
+    use crate::api::{AppState, UpdateInfo, UpdatePhase, routes::router};
+    use crate::cli::update::{apply_update, check_updates, self_restart};
     use crate::core::live::LiveScanner;
 
     // Pin `localhost` to the v4 loopback for reliable Chrome-on-device access.
@@ -43,6 +44,7 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
         http.clone(),
         crate::util::keys::populate_and_load().await,
     );
+    let update_info = Arc::new(std::sync::Mutex::new(UpdateInfo::default()));
     let state = Arc::new(AppState {
         store,
         engine,
@@ -55,6 +57,7 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
         scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
             crate::api::MAX_CONCURRENT_SCANS,
         )),
+        update_info: Arc::clone(&update_info),
     });
 
     let app = router(state, &bind);
@@ -82,6 +85,66 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
             let _ = crate::modules::search_engines::health::refresh_cache().await;
         }
     });
+
+    // Autonomous self-update: check for upstream commits on a schedule and apply
+    // them automatically when feature.auto_update is ON (the default). The first
+    // check is intentionally deferred 2 min so the server is fully up and the
+    // engine health sweep is done before we touch git. The update interval is
+    // configurable via HUNTSMAN_AUTO_UPDATE_INTERVAL_SECS (default 6 h; min 30
+    // min). Detached background task — never blocks serving.
+    {
+        let update_info = Arc::clone(&update_info);
+        let interval_secs = std::env::var("HUNTSMAN_AUTO_UPDATE_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&n| n >= 1800) // min 30 min
+            .unwrap_or(21_600); // default 6 h
+        tokio::spawn(async move {
+            // Stagger first check by 2 min.
+            tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            loop {
+                tick.tick().await;
+                if let Ok(mut info) = update_info.lock() {
+                    info.phase = UpdatePhase::Checking;
+                }
+                let behind = tokio::task::spawn_blocking(check_updates)
+                    .await
+                    .unwrap_or(None);
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                if let Ok(mut info) = update_info.lock() {
+                    info.commits_behind = behind;
+                    info.last_checked = now_secs;
+                    info.phase = UpdatePhase::Idle;
+                }
+                if behind.unwrap_or(0) > 0
+                    && crate::util::settings::get_bool("feature.auto_update", true)
+                {
+                    if let Ok(mut info) = update_info.lock() {
+                        info.phase = UpdatePhase::Applying;
+                    }
+                    let result = apply_update(None).await;
+                    match result {
+                        Ok(()) => {
+                            if let Ok(mut info) = update_info.lock() {
+                                info.phase = UpdatePhase::Restarting;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            self_restart();
+                        }
+                        Err(e) => {
+                            if let Ok(mut info) = update_info.lock() {
+                                info.phase = UpdatePhase::Error(e.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     tracing::info!("hse v{} — listening on http://{}", crate::VERSION, bind);
     tracing::info!("  open in Chrome / Firefox on this device");

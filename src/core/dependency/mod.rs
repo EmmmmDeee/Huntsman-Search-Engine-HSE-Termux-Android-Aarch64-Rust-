@@ -55,6 +55,7 @@ pub const ALL_TARGET_KINDS: &[TargetKind] = &[
     TargetKind::MacAddress,
     TargetKind::ApiKey,
     TargetKind::CryptoAddress,
+    TargetKind::DeviceId,
 ];
 
 /// Probe seed value used when introspecting a module's `accepts()` via
