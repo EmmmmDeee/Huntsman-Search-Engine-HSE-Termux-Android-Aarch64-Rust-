@@ -3117,8 +3117,10 @@ fn au_056_silent_without_both_signal_classes() {
 fn au_057_two_brisbane_coords_produce_synthesised_fix() {
     use super::rules::rule_au_057_synthesised_location_fix;
 
-    // Two Brisbane coordinates both at confidence 0.70 → AU-057 fires with
-    // a synthesised point between them; severity is Medium (2 inputs).
+    // Two Brisbane coordinates (geocode + ip_geo) at confidence 0.70 →
+    // AU-057 fires with a provenance-weighted median; severity is Medium
+    // (2 inputs). With only 2 points the footprint is undefined so the rule
+    // falls back to the weighted median path and embeds "2 source(s)".
     let ents = vec![
         {
             let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.70, "scan");
@@ -3135,8 +3137,9 @@ fn au_057_two_brisbane_coords_produce_synthesised_fix() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-057");
     assert_eq!(out[0].severity, super::Severity::Medium);
-    assert!(out[0].description.contains("2 confirmed"));
-    assert!(out[0].entity_uids.len() == 2);
+    assert!(out[0].description.contains("2 source(s)"));
+    assert!(out[0].description.contains("T1591.001"));
+    assert_eq!(out[0].entity_uids.len(), 2);
 }
 
 #[test]
@@ -3172,9 +3175,11 @@ fn au_057_low_confidence_coords_do_not_fire() {
 }
 
 #[test]
-fn au_057_three_coords_produce_high_severity() {
+fn au_057_three_coords_produce_high_severity_and_full_fix() {
     use super::rules::rule_au_057_synthesised_location_fix;
 
+    // Three non-collinear Brisbane coords → footprint forms, location_fix()
+    // fires, description contains location_summary() text and "3 source(s)".
     let ents: Vec<Entity> = [
         ("-27.4698,153.0251", "geocode"),
         ("-27.4766,153.0166", "ip_geo"),
@@ -3190,6 +3195,49 @@ fn au_057_three_coords_produce_high_severity() {
     let out = rule_au_057_synthesised_location_fix(&ents, "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].severity, super::Severity::High);
+    assert!(out[0].description.contains("3 source(s)"));
+    assert!(out[0].description.contains("geometric median"));
+    assert!(out[0].description.contains("T1591.001"));
+}
+
+#[test]
+fn au_057_provenance_weights_gps_higher_than_ip_geo() {
+    use super::rules::rule_au_057_synthesised_location_fix;
+
+    // GPS fix at Sydney CBD vs IP-geo fix at a distant suburb. Both at the
+    // same raw confidence. The GPS provenance weight (1.0) is much higher than
+    // IP-geo (0.40), so the median should sit much closer to Sydney CBD than
+    // a plain confidence-weighted average would place it.
+    let sydney_cbd = (-33.8688_f64, 151.2093_f64);
+    let distant = (-33.9200_f64, 151.1500_f64); // ~8 km SW
+    let ents = vec![
+        {
+            let mut e = Entity::new(
+                EntityKind::Coordinates,
+                format!("{},{}", sydney_cbd.0, sydney_cbd.1),
+                0.70,
+                "scan",
+            );
+            e.add_evidence(Evidence::new("signal_radar", "GPS sensor".to_string()));
+            e
+        },
+        {
+            let mut e = Entity::new(
+                EntityKind::Coordinates,
+                format!("{},{}", distant.0, distant.1),
+                0.70,
+                "scan",
+            );
+            e.add_evidence(Evidence::new("ip_geo", "IP block".to_string()));
+            e
+        },
+    ];
+    let out = rule_au_057_synthesised_location_fix(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    // The result is the 2-point fallback path (provenance-weighted median).
+    // With GPS weight 0.70 and IP weight 0.70*0.40=0.28 the median sits with
+    // the GPS point (for weighted_geometric_median the high-weight point wins).
+    assert!(out[0].description.contains("T1591.001"));
 }
 
 // ─── AU-058 tests ─────────────────────────────────────────────────────────────

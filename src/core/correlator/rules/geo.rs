@@ -700,14 +700,54 @@ pub(in crate::core::correlator) fn rule_au_032_colocation_cluster(
     out
 }
 
-/// AU-057 — Synthesised location fix (weighted geometric median).
+/// Return the provenance quality multiplier for a `Coordinates` entity's best
+/// evidence source. Multiplied with `entity.confidence` to give the effective
+/// weight used in [`rule_au_057_synthesised_location_fix`].
 ///
-/// Collects all confirmed (`confidence ≥ 0.60`) `Coordinates` entities, weights
-/// each by its confidence, and computes the
-/// [`crate::util::geometry::weighted_geometric_median`] — the point that
-/// minimises the confidence-weighted sum of great-circle distances to all
-/// inputs. This converts the qualitative "sources agree" assertion from
-/// AU-017/AU-030 into a single computable best-estimate lat/lon.
+/// The ordering reflects signal quality for physical-location attribution:
+/// an on-device GPS fix is ground truth; coarse IP geolocation is at best a
+/// city-level hint. The multiplier allows a high-confidence GPS fix to
+/// outweigh several low-quality IP-geo guesses even when they share the same
+/// raw confidence score.
+fn provenance_weight(e: &Entity) -> f64 {
+    e.evidence_sources()
+        .iter()
+        .map(|&src| match src {
+            "signal_radar" | "gps" => 1.00,
+            "exif_geo" => 0.95,
+            "qld_cadastre" => 0.85,
+            "geocode" | "photon" | "mls" => 0.80,
+            "qld_unclaimed" | "au_unclaimed" | "overpass" => 0.75,
+            "wigle" | "mylnikov" => 0.75,
+            "opencellid" | "cell_local" | "cell_intel" => 0.65,
+            "proxycurl" => 0.55,
+            "netlas" => 0.45,
+            "ip_geo" | "geo_intel" => 0.40,
+            _ => 0.60,
+        })
+        .fold(0.0_f64, f64::max)
+}
+
+/// AU-057 — Synthesised location fix (provenance-weighted, full `LocationFix`).
+///
+/// Collects all confirmed (`confidence ≥ 0.60`) `Coordinates` entities,
+/// derives an **effective weight** `= entity.confidence × provenance_weight`
+/// (where `provenance_weight` reflects the inherent accuracy of the source:
+/// GPS-exact → 1.0, address geocoder → 0.80, cell tower → 0.65, IP geo →
+/// 0.40), and feeds all weighted points into the full
+/// [`crate::util::geometry::location_fix`] pipeline:
+///
+/// - **convex hull footprint** (diameter)
+/// - **confidence-weighted geometric median** — the headline fix (L1-robust,
+///   confidence-aware, minimises `Σ wᵢ·‖x−pᵢ‖`)
+/// - **robust uncertainty radius** (median great-circle distance to all
+///   sightings, matching the median's breakdown point)
+/// - **minimum enclosing circle** (Chebyshev centre + worst-case radius)
+///
+/// When ≥3 non-collinear points are available all four estimators fire and the
+/// description uses [`crate::util::geometry::LocationFix::location_summary`].
+/// With exactly 2 points (footprint undefined) the rule falls back to the
+/// provenance-weighted geometric median with a geohash tag.
 ///
 /// Requires ≥ 2 valid inputs; `High` at ≥ 3 inputs, `Medium` at 2.
 pub(in crate::core::correlator) fn rule_au_057_synthesised_location_fix(
@@ -728,30 +768,40 @@ pub(in crate::core::correlator) fn rule_au_057_synthesised_location_fix(
 
     let weighted: Vec<((f64, f64), f64)> = candidates
         .iter()
-        .map(|(e, ll)| (*ll, e.confidence))
+        .map(|(e, ll)| (*ll, e.confidence * provenance_weight(e)))
         .collect();
 
-    let Some((lat, lon)) = crate::util::geometry::weighted_geometric_median(&weighted) else {
-        return Vec::new();
-    };
-
-    let gh = geohash(lat, lon, 5);
     let severity = if candidates.len() >= 3 {
         Severity::High
     } else {
         Severity::Medium
     };
     let uids: Vec<String> = candidates.iter().map(|(e, _)| e.uid.clone()).collect();
+    let n = candidates.len();
+
+    let description = if let Some(fix) = crate::util::geometry::location_fix(&weighted) {
+        format!(
+            "{} [provenance-weighted, {} source(s), footprint {:.0} km] — MITRE T1591.001",
+            fix.location_summary(),
+            n,
+            fix.footprint.diameter_km,
+        )
+    } else {
+        let Some((lat, lon)) = crate::util::geometry::weighted_geometric_median(&weighted) else {
+            return Vec::new();
+        };
+        let gh = geohash(lat, lon, 5);
+        format!(
+            "Synthesised location fix (provenance-weighted median) from {n} source(s): \
+             ({lat:.4}, {lon:.4}) geohash={gh} — MITRE T1591.001"
+        )
+    };
 
     vec![Correlation::new(
         "AU-057",
-        "Synthesised location fix (weighted median)",
+        "Synthesised location fix (provenance-weighted)",
         severity,
-        format!(
-            "Weighted geometric median of {} confirmed coordinate(s): ({lat:.4}, {lon:.4}) \
-             geohash={gh} — MITRE T1591.001",
-            candidates.len()
-        ),
+        description,
         uids,
         scan_id,
         ts,
@@ -934,7 +984,7 @@ pub(in crate::core::correlator) fn rule_au_061_address_locality_corroboration(
     }
 
     let mut out = Vec::new();
-    for (_, (sources, uids, display)) in &locality_map {
+    for (sources, uids, display) in locality_map.values() {
         if sources.len() < 3 {
             continue;
         }
