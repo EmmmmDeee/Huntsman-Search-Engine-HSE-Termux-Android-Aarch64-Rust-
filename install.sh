@@ -271,19 +271,52 @@ if [[ "${HSE_NO_PKG:-0}" != "1" ]]; then
     if [[ $IS_TERMUX -eq 1 ]]; then
         step "Installing Termux packages (rust, binutils, git, clang, make, pkg-config, openssl-tool, curl)"
 
-        # Termux package list refresh — retry, pkg can fail on flaky mobile networks.
+        # ── Mirror pre-configuration ─────────────────────────────────────────
+        # A fresh Termux install has a @MIRROR@ placeholder in sources.list,
+        # which causes `pkg update` to invoke `termux-change-repo` and speed-test
+        # all 50+ mirrors — verbose, slow, and unnecessary.  We short-circuit it
+        # by pre-writing the Cloudflare CDN mirror (global, anycast, HTTPS).
+        # If the user has already selected a mirror, this is a no-op.
+        _SLIST="$PREFIX/etc/apt/sources.list"
+        if ! grep -qsE 'deb[[:space:]]+https?://' "$_SLIST" 2>/dev/null; then
+            log_warn "No APT mirror configured — pre-selecting Cloudflare CDN mirror"
+            hint "Change later with: termux-change-repo"
+            mkdir -p "$(dirname "$_SLIST")"
+            printf '# The main termux repository:\ndeb https://packages-cf.termux.dev/apt/termux-main stable main\n' \
+                > "$_SLIST"
+            ok "Mirror → packages-cf.termux.dev"
+        fi
+
+        # ── Package index refresh ────────────────────────────────────────────
+        # Verbose apt/dpkg output goes only to $LOG_FILE (>> redirects past the
+        # exec tee); a compact one-liner is shown instead.  Retry on flaky
+        # mobile networks.
+        _pkg_update_quiet() {
+            printf "  Refreshing package index…"
+            local _rc=0
+            DEBIAN_FRONTEND=noninteractive pkg update -y >> "$LOG_FILE" 2>&1 || _rc=$?
+            if [[ $_rc -eq 0 ]]; then printf " done\n"; else printf " failed\n"; fi
+            return $_rc
+        }
         attempts=0
-        until pkg update -y; do
+        until _pkg_update_quiet; do
             attempts=$((attempts + 1))
-            [[ $attempts -ge 4 ]] && die "pkg update failed after 4 attempts. If the mirror is broken, try: termux-change-repo (then re-run installer)"
+            [[ $attempts -ge 4 ]] && \
+                die "pkg update failed after 4 attempts — mirror broken? Run: termux-change-repo (then re-run installer)"
             log_warn "pkg update failed (attempt $attempts); retrying in $((attempts * 2))s"
-            hint "Mirror issues? Run: termux-change-repo  (switches to a working mirror)"
+            hint "Mirror issues? Run: termux-change-repo"
             sleep $((attempts * 2))
         done
 
         # Install build chain. clang covers all C dep build.rs cases on Termux.
-        pkg install -y rust binutils git clang make pkg-config openssl-tool curl || \
-            die "pkg install failed — check $LOG_FILE for missing packages"
+        printf "  Installing packages…"
+        DEBIAN_FRONTEND=noninteractive \
+            pkg install -y rust binutils git clang make pkg-config openssl-tool curl \
+                >> "$LOG_FILE" 2>&1 \
+            || { printf " failed\n"
+                 die "pkg install failed — check $LOG_FILE for missing packages"; }
+        printf " done\n"
+        ok "Packages installed: rust, binutils, git, clang, make, pkg-config, openssl-tool, curl"
 
         # Optional: termux-api is needed for sensor modules (v0.6+).
         if ! pkg show termux-api >/dev/null 2>&1; then
