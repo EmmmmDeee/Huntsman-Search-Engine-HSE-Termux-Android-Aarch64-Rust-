@@ -260,7 +260,62 @@ maybe_use_prebuilt() {
     return 1
 }
 
-maybe_use_prebuilt || true
+# Fetch the published aarch64 Termux binary from GitHub Releases (the artifact
+# built + signed by .github/workflows/release.yml). This is the robust fallback
+# when the local Rust toolchain cannot build — e.g. a broken Termux `rust`
+# package that ships no static std — and a hands-off fast path in general. The
+# asset is an Android/bionic ELF, so this is gated to aarch64 Termux; the
+# --version run-test in _validate_prebuilt is the final arbiter and rejects a
+# binary that wouldn't run here. Best effort: any failure (no release yet,
+# network blocked, bad asset) falls through to the source build. Opt out with
+# HSE_NO_DOWNLOAD=1; pin a specific release with HSE_PREBUILT_TAG=vX.Y.Z.
+maybe_download_prebuilt() {
+    [[ "${HSE_PREFER_BUILD:-0}" == "1" ]] && return 1
+    [[ "${HSE_NO_DOWNLOAD:-0}" == "1" ]] && { hint "HSE_NO_DOWNLOAD=1 — skipping release download"; return 1; }
+    [[ $IS_TERMUX -eq 1 ]] || return 1
+    case "$ARCH" in aarch64 | arm64) : ;; *) return 1 ;; esac
+    command -v curl >/dev/null 2>&1 || return 1
+
+    local base asset url_bin url_sha tmp tag rs
+    base="${HSE_REPO_URL%.git}"
+    asset="hse-aarch64-linux-android"
+    tag="${HSE_PREBUILT_TAG:-latest}"
+    if [[ "$tag" == "latest" ]]; then
+        url_bin="$base/releases/latest/download/$asset"
+        url_sha="$base/releases/latest/download/$asset.sha256"
+    else
+        url_bin="$base/releases/download/$tag/$asset"
+        url_sha="$base/releases/download/$tag/$asset.sha256"
+    fi
+
+    step "Fetching prebuilt aarch64 binary from GitHub Releases ($tag)"
+    tmp="$HOME/.cache/hse-dl"
+    mkdir -p "$tmp"
+    printf "  Downloading %s…" "$asset"
+    if ! curl -fsSL -m 180 -o "$tmp/$asset" "$url_bin" >> "$LOG_FILE" 2>&1; then
+        printf " unavailable\n"
+        hint "No published release binary yet (or network blocked) — building from source"
+        return 1
+    fi
+    printf " done\n"
+    # sha256 sidecar must sit next to the binary for _validate_prebuilt to find
+    # it. Best effort: if it's absent we drop to run-test-only validation.
+    curl -fsSL -m 30 -o "$tmp/$asset.sha256" "$url_sha" >> "$LOG_FILE" 2>&1 || true
+    rs=0
+    [[ -s "$tmp/$asset.sha256" ]] && rs=1
+    if _validate_prebuilt "$tmp/$asset" "$rs"; then
+        BUILT="$STAGED"
+        PREBUILT=1
+        ok "Using downloaded prebuilt — skipping toolchain + source build"
+        return 0
+    fi
+    log_warn "Downloaded binary failed validation — building from source instead"
+    return 1
+}
+
+# Prebuilt resolution order: local Downloads scan → GitHub Releases download →
+# (both miss) fall through to the from-source build below.
+maybe_use_prebuilt || maybe_download_prebuilt || true
 
 # Everything from the toolchain install through the source build is skipped
 # when a validated prebuilt was found above (closed with `fi` before install).
@@ -388,9 +443,12 @@ if [[ $IS_TERMUX -eq 1 ]]; then
                 ok "rust std repaired (reinstalled)"
             else
                 die "Termux 'rust' package is broken: no static std in $RLIB_DIR
-  This is an upstream Termux packaging issue, not an HSE bug. Options:
-    • pkg upgrade rust    (then re-run this installer once Termux ships a fix)
-    • use a prebuilt:     HSE_PREBUILT=/path/to/hse bash install.sh
+  Upstream Termux packaging issue, not an HSE bug — and the prebuilt download
+  above didn't resolve it either. Options:
+    • check network + re-run (the installer auto-fetches a prebuilt aarch64 binary)
+    • pin a release:      HSE_PREBUILT_TAG=vX.Y.Z bash install.sh
+    • use a local file:   HSE_PREBUILT=/path/to/hse bash install.sh
+    • wait for Termux:    pkg upgrade rust   (then re-run)
     • report it:          https://github.com/termux/termux-packages/issues"
             fi
         fi
@@ -527,9 +585,11 @@ until cargo build --profile "$PROFILE" --locked; do
     # burning retries (and a confusing "slow network?" message) on it.
     if grep -q "required to be available in rlib format" "$LOG_FILE" 2>/dev/null; then
         die "build failed: the Termux 'rust' package has no static std (rlib).
-  This is an upstream Termux packaging bug, not an HSE bug. Options:
-    • pkg upgrade rust    (then re-run this installer once Termux ships a fix)
-    • use a prebuilt:     HSE_PREBUILT=/path/to/hse bash install.sh
+  Upstream Termux packaging bug, not an HSE bug. The installer tries to download
+  a prebuilt binary first; if you're here it wasn't available. Options:
+    • check network + re-run (auto-fetches the prebuilt aarch64 binary)
+    • pin a release:      HSE_PREBUILT_TAG=vX.Y.Z bash install.sh
+    • use a local file:   HSE_PREBUILT=/path/to/hse bash install.sh
     • report it:          https://github.com/termux/termux-packages/issues"
     fi
     [[ $attempts -ge 3 ]] && die "cargo build failed after 3 attempts — check $LOG_FILE"
