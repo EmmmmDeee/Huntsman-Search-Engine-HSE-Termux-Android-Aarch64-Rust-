@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (125 modules: 92 free · 28 key-gated · 5 paid)
+## Catalogue (126 modules: 93 free · 28 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -97,7 +97,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `threatfox` | ip_address, domain | key_gated | no | 109 | domain, ip_address, url |
 | `virustotal` | ip_address, domain | key_gated | no | 55 | — |
 
-### corporate (8)
+### corporate (9)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -109,6 +109,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `gleif_lei` | organisation | free | no | 111 | organisation, abn_acn, address |
 | `trove_au` | organisation, abn_acn | key_gated | no | 57 | organisation |
 | `acma_rrl` | organisation, abn_acn, coordinates | free | no | 48 | organisation, abn_acn |
+| `austlii` | full_name, organisation | free | no | 55 | url, organisation |
 
 ### dns_recon (13)
 

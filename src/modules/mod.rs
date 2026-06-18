@@ -16,6 +16,7 @@ pub mod au_electoral;
 pub mod au_people;
 pub mod au_property;
 pub mod au_unclaimed;
+pub mod austlii;
 pub mod bgpview;
 pub mod breach_timezone;
 pub mod cell_intel;
@@ -361,6 +362,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(hlr_cnam::HlrCnam),
         Arc::new(netlas::Netlas),
         Arc::new(trove_au::TroveAu),
+        Arc::new(austlii::AustLii),
     ]
 }
 

@@ -73,9 +73,9 @@ Priority: **P0** crash/corruption · **P1** breaks a core guarantee · **P2**
 quality/robustness · **P3** minor · **CAP** capability/feature.
 Each node: **ID · statement · location · impact · → optimal solution · prio · status**.
 
-Current baseline (grounded in the codebase, 2026-06-18): **125 modules** (92 free
+Current baseline (grounded in the codebase, 2026-06-18): **126 modules** (93 free
 · 28 key-gated · 5 paid) across 14 categories (Infrastructure 21, Geo 20, People
-16, DnsRecon 13, Breach 11, Social 11, Email 6, Corporate 8, Phone 3, Web 5,
+16, DnsRecon 13, Breach 11, Social 11, Email 6, Corporate 9, Phone 3, Web 5,
 Sensor 4, Threat 3, Search/Other 2 each); 59 native correlation rules
 (AU-001…AU-059); 0 `unsafe`; deterministic entity merge; SQLite store; SSE live;
 axum SPA. Deps: `regex` in; **`proptest` 1.11 + `criterion` 0.8 direct (dev-only,
@@ -631,8 +631,12 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   BYO `HUNTSMAN_TROVE_KEY`, priority 57, Corporate). Also: `reddit_user` →
   Organisation entities for subreddits; `hacker_news` → Domain entities from
   Algolia submissions; `github_user` → `fetch_orgs` + `fetch_gists`. Module count
-  119→124 (92 free · 27 key-gated · 5 paid). *Remaining:* GNAF/AusPost address
-  validation; fuller ASIC/ABR graph; state cadastre/property; courts/AustLII.
+  119→124 (92 free · 27 key-gated · 5 paid).
+  *Delivered (cycle 20, 2026-06-18): `austlii` — free AustLII court/legislation
+  scraper; `FullName`/`Organisation` → `Url` + `Organisation`; Corporate-9; 125→126
+  modules, 92→93 free.*
+  *Remaining:* GNAF/AusPost address validation; fuller ASIC/ABR graph; state
+  cadastre/property.
 - **`[~]` C4 · NETINT depth** — *Current:* `dns_intel`, `cert_intel`, `crtsh`,
   `shodan` (free InternetDB), `censys`, `zoomeye`, `subdomain_takeover`,
   `waf_detect`, `portscan`, `bgpview`, `ripestat`. CDN/Cloudflare noise is already
@@ -649,9 +653,12 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   emit a tagged `origin-candidate` IP for the fronted domain. **CAP-med**
   *Delivered (2026-06-18, cycle 17):* `netlas` (Netlas.io host intel — ports,
   JARM, SSL cert emails, CVEs, ISP, geo, BYO `HUNTSMAN_NETLAS_KEY`, priority 79,
-  Infrastructure); `censys` priority 35→78. *Remaining:* union subdomain
-  discovery; ASN/BGP org/prefix pivots; passive-DNS/cert-hash origin-unmasking;
-  `securitytrails` BYO-key (G7).
+  Infrastructure); `censys` priority 35→78.
+  *Delivered (confirmed cycle 20 S→P audit):* `securitytrails`
+  (`HUNTSMAN_SECTRAILS_KEY`, Domain+IpAddress→Domain, subdomain enum + reverse-IP
+  hostnames); ASN/BGP org/prefix pivots (`bgpview` + `ripestat` both present).
+  *Remaining:* passive-DNS leg of subdomain union (brute ∪ CT already ship);
+  Cloudflare/CDN cert-hash origin-unmasking.
 - **`[~]` C5 · GEOINT convergence — *already ahead; widen the lead*** — *Current:*
   multi-source fusion (WiGLE + EXIF + cell + IP + address→coords) with AU-state
   attribution and convergence rules (AU-052/056/057/059). Neither competitor
@@ -1676,6 +1683,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   node C9 logged. **Gap refresh:** C3 and C4 now `[~]`; §4a gains C9; T2.7 elevated.
   **Paired:** `SOLUTION_TREE` SOL-AU-MOAT + SOL-NETINT `[ ]`→`[~]`, new
   SOL-CACHE-INTERSCAN, §4/§5 refreshed — same commit.
+- **2026-06-18** — **Cycle 20 (S→P + P→S): C4 stale notes corrected; C3 courts/AustLII
+  `austlii` module delivered; SOL-HEALTH-SIGNAL solution node added; new S→P gap
+  logged (opencellid × cell_intel cross-validation).**
+  **S→P corrections:** verified `securitytrails` module exists (`HUNTSMAN_SECTRAILS_KEY`,
+  Domain+IpAddress → Domain, subdomain enum + reverse-IP hostnames) and `bgpview` +
+  `ripestat` both registered — these were listed as C4 "remaining" in error. C4 and
+  SOL-NETINT remaining notes corrected to: passive-DNS subdomain union + CDN cert-hash
+  origin-unmasking.
+  **P→S build:** `austlii` — free AustLII court/legislation scraper; accepts
+  `FullName`/`Organisation`; queries `austlii.edu.au/cgi-bin/sinosrch.cgi`;
+  `extract_case_links` parser extracts `/au/cases/`, `/au/legis/`, `/au/journals/` paths;
+  emits `Url` (tagged `court-judgment`) × ≤10 + `Organisation` (legal-footprint signal,
+  ≥2 hits, Organisation-target only); Corporate category; priority 55; 9 unit tests.
+  Closes C3 courts/AustLII. 125→126 modules, 92→93 free, Corporate 8→9.
+  **New P→S gap:** T2.7 per-source health signal has no solution node → `SOL-HEALTH-SIGNAL`
+  sketched in SOLUTION_TREE §2 S.QUALITY.
+  **New S→P gap:** `opencellid` emits `DeviceId` (mcc-mnc-lac-cid) and `cell_intel` also
+  emits `DeviceId` for the same tower type — no correlation rule links them for
+  cross-validation. Logged as new gap AU-060-candidate in SOLUTION_TREE §4a.
+  Gate green: fmt/clippy/doc clean, 3,061 lib tests, 0 failures. **Paired:**
+  `SOLUTION_TREE` SOL-AU-MOAT/SOL-NETINT corrections + SOL-HEALTH-SIGNAL + §4/§5 cycle 20
+  — same commit.
 - **2026-06-18** — **Cycle 19 (P→S): C5 GEOINT first source — `opencellid`
   standalone module delivered.** P→S direction: gap §4d named C5 (SOL-GEOINT)
   as the next open capability node; OpenCelliD was already an internal dep inside

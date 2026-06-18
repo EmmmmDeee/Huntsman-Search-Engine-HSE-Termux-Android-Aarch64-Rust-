@@ -310,17 +310,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   priority 86, People); `acma_rrl` (ACMA radiocommunications register, free,
   priority 48, Corporate, T1591.001/T1591.002 override); `trove_au` (NLA Trove
   newspaper archive, BYO `HUNTSMAN_TROVE_KEY`, priority 57, Corporate); `smtp_vrfy`
-  hardened (parallel SPF+DMARC, CatchAll 0.50→0.30). *Remaining:* GNAF/AusPost;
-  fuller ASIC/ABR graph; state cadastre/property; courts/AustLII.
+  hardened (parallel SPF+DMARC, CatchAll 0.50→0.30).
+  *Delivered (cycle 20, 2026-06-18):* `austlii` — free AustLII court/legislation
+  scraper; `FullName`/`Organisation` → `Url` (court-judgment) + `Organisation`
+  (legal-footprint signal); Corporate-9; 125→126 modules, 93 free.
+  *Remaining:* GNAF/AusPost; fuller ASIC/ABR graph; state cadastre/property.
 - **`[~]` SOL-NETINT · CDN-origin unmasking + asset depth** → **C4**: union subdomain
   discovery, ASN/BGP pivots, passive-DNS/cert-hash origin candidates; v4+**v6**
   `is_cdn_edge_ip` already demotes the noise.
   *Delivered (2026-06-18, cycle 17):* `netlas` (Netlas.io host intel — ports, JARM,
   SSL cert emails, CVEs, ISP, geo; BYO `HUNTSMAN_NETLAS_KEY`; priority 79;
   Infrastructure; `netlas_query` helper + collapsible-if let-chains); `censys`
-  priority 35→78. *Remaining:* union subdomain discovery (brute ∪ CT ∪ passive);
-  ASN/BGP org/prefix pivots; passive-DNS/cert-hash origin-unmasking;
-  `securitytrails` BYO-key.
+  priority 35→78.
+  *Delivered (confirmed cycle 20 S→P audit):* `securitytrails`
+  (`HUNTSMAN_SECTRAILS_KEY`, Domain+IpAddress → Domain, subdomain enum + reverse-IP
+  hostnames — was listed as remaining in error); ASN/BGP org/prefix pivots (`bgpview`
+  + `ripestat` both present — also listed in error).
+  *Remaining:* passive-DNS leg of subdomain union (brute ∪ CT already ship);
+  Cloudflare/CDN cert-hash origin-unmasking.
 - **`[x]` SOL-CACHE-INTERSCAN · Inter-scan entity cache** → **C9**: `raw_archive`
   SQLite table (`id TEXT PRIMARY KEY, archived_at INTEGER NOT NULL, ttl_secs INTEGER
   NOT NULL, result_json TEXT NOT NULL`), keyed by `archive_key =
@@ -380,6 +387,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **`[x]` SOL-CACHE-REFRESH · Allow in-place refresh when full** — `put` is now
   `len < cap || contains_key`, so a full cache still refreshes a key it holds.
   *Closes:* **T2.12** stale-cache. ✅ test `full_cache_still_refreshes_an_existing_key`.
+- **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
+  `last_success_at` + `consecutive_failures` tracking column (or an in-process
+  `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
+  auto-flag a source "drifted" when `consecutive_failures ≥ N` or `parse_rate
+  < threshold`. SOL-F1's `bstr`/aho-corasick rewrites underpin the parsers being
+  stable enough to measure; each golden-fixture test (T2.7) becomes the
+  acceptance criterion.
+  *Closes / powers:* **T2.7** per-source health signal gap (currently no solution
+  node). *Gap:* not yet started — implementation deferred until the golden-fixture
+  golden-fixture corpus (T2.7 parser rewrites) is in place. **(§4a)**
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -430,6 +447,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-GEOINT | C5 | `[~]` |
 | SOL-OFFENSIVE | C6 | `[ ]` |
 | SOL-FORENSIC | C7 | `[ ]` |
+| SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[ ]` |
 
 ---
 
@@ -441,21 +459,30 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **T2.7** scraper-health signal — covered *in principle* by SOL-F1 (parser rewrites)
-  but the per-source health surface (last-success/parse-rate in `doctor`+SPA) has no
-  solution node. Gap. **Elevated (cycle 17):** three new HTML scrapers (ahpra,
-  acma_rrl, trove_au) widen the surface; priority raised.
+- **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
+  node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
+  surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
+  ahpra/acma_rrl/trove_au/`austlii` widen the scraper surface; priority remains raised.
 - **§7 S4** — SOL-REDACT residual: archived success body not run through
   `redact_literal_secrets` (LOW). Contained.
   *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
   this queue. S2/SOL-SSRF-WHOIS + S3/SOL-SECRETS-EXTEND delivered 2026-06-17.)*
 - **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
 - **C9** — **delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18). Off the open queue.
-- **C3/C4** — now `[~]` (partial, SOL-AU-MOAT + SOL-NETINT both started cycle 17).
+- **C3** — `[~]` (SOL-AU-MOAT). `austlii` delivered cycle 20 (courts/AustLII closed).
+  *Remaining:* GNAF/AusPost address validation; fuller ASIC/ABR graph; state
+  cadastre/property.
+- **C4** — `[~]` (SOL-NETINT). S→P audit cycle 20: `securitytrails`, `bgpview`, and
+  `ripestat` were stale "remaining" notes — all three modules already registered.
+  *Remaining:* passive-DNS history; CDN cert-hash origin pivot.
 - **C5** — now `[~]` (`opencellid` standalone module delivered, cycle 19; full
   Weiszfeld/Welzl centroid + provenance radius still open).
 - **C1/C2/C6/C7** — capability nodes; solutions sketched, none started (gated on
   the §3.F enablers landing first, by design).
+- **AU-060 (new, cycle 20 S→P gap):** `opencellid` emits `DeviceId` (tower MCC/MNC/
+  LAC/CID) and `cell_intel` also emits `DeviceId` for the same tower type — no
+  correlation rule cross-validates them. Candidate rule AU-060: medium-confidence
+  corroboration signal when both modules fire for the same tower. No solution node yet.
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -499,7 +526,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   budget-reset-zeroing remain).
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` first-class module delivered cycle 19, Weiszfeld/centroid fusion remaining); C3 `[~]` (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy shipped, GNAF/ASIC/cadastre/courts remaining); C4 `[~]` (SOL-NETINT: netlas + censys priority shipped, subdomain/ASN/CDN-origin remaining); C1/C2/C6/C7 open by design, gated on §3.F.
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` first-class module delivered cycle 19, Weiszfeld/centroid fusion remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); C1/C2/C6/C7 open by design, gated on §3.F.
 
 ---
 
@@ -967,3 +994,29 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   removes "fst large tables" from remaining. Gate green: fmt/clippy/doc clean,
   3,044 lib tests, 0 failures. Paired: `PROBLEM_TREE` C9 `[ ]`→`[x]`, F.2
   premise corrected, §8 cycle 18 — same commit.
+- **2026-06-18** — **Cycle 20 (S→P + P→S): C4 stale notes corrected; C3 courts/AustLII
+  `austlii` module delivered; SOL-HEALTH-SIGNAL solution node sketched; new S→P gap
+  logged (opencellid × cell_intel cross-validation AU-060).**
+  **S→P corrections (audit):** grepped `src/modules/mod.rs` — `securitytrails`,
+  `bgpview`, and `ripestat` all present in the registry; were listed as C4 "remaining"
+  in error. SOL-NETINT remaining note corrected to: passive-DNS history + CDN cert-hash
+  origin-unmasking. §4d C4 row updated accordingly.
+  **P→S build — `austlii`:** free AustLII court/legislation scraper; accepts
+  `FullName`/`Organisation`; queries `https://www.austlii.edu.au/cgi-bin/sinosrch.cgi`;
+  `extract_case_links` parser filters `/au/cases/`, `/au/legis/`, `/au/journals/` paths;
+  normalises relative hrefs to full URL; emits `Url` (tagged `court-judgment`, conf
+  0.70) × ≤10 + `Organisation` (legal-footprint signal, ≥2 hits, conf 0.55); Corporate
+  category; priority 55; `ModuleCost::Free`; no key required; 9 unit tests. Closes C3
+  courts/AustLII remaining item. 125→126 modules, 92→93 free, Corporate 8→9.
+  SOL-AU-MOAT remaining updated; §4a C3 + §4d C3 updated.
+  **New S→P gap — T2.7:** per-source health signal has no solution node →
+  SOL-HEALTH-SIGNAL sketched in §2 S.QUALITY (`last_success_at` +
+  `consecutive_failures` tracking; `hse doctor` surface + SPA panel; auto-flag
+  drifted source when consecutive_failures ≥ N or parse_rate < threshold). §4a T2.7
+  note updated (partial coverage). Leverage map row added.
+  **New S→P gap — AU-060:** `opencellid` and `cell_intel` both emit `DeviceId` for
+  the same tower type with no correlation rule cross-validating them. Logged as §4a
+  AU-060-candidate gap; no solution node yet.
+  Gate green: fmt/clippy/doc clean, 3,061 lib tests, 0 failures. Paired:
+  `PROBLEM_TREE` SOL-AU-MOAT/SOL-NETINT corrections + `austlii` baseline + §8 cycle 20
+  — same commit.
