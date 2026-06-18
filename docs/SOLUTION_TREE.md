@@ -1098,3 +1098,30 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   **Gap refresh:** §4a gains `cell_local auto-sync` gap; C5 remaining updated;
   §4d C5 row updated. Paired: `PROBLEM_TREE` C5 cycle 21 note + §8 cycle 21 — same
   commit.
+- **2026-06-18** — **Cycle 23 (S→P): SOL-SECRETS reinforced + new SOL-SUPPLY
+  (supply-chain integrity) leaf — six fixes from adversarial self-review.**
+  **Solutions delivered:** **SOL-SUPPLY** (new) — CI workflows must pass
+  user-controlled inputs through `env:` vars (never interpolate `${{ }}` into a
+  `run:` body) and validate any value written to `GITHUB_OUTPUT` against a strict
+  charset; release binaries fetched over the network must require their `.sha256`
+  sidecar (integrity, not authenticity — TLS authenticates the origin) rather
+  than silently degrading to a run-test-only check. **SOL-SECRETS** reinforced —
+  the env-file reader strips the same surrounding quotes `write_keys_at` emits
+  (so the read path agrees with `dotenvy`/`load` and SUPERSEDED rotation fires),
+  and the writer `fsync`s before the atomic rename so a power-cut can't truncate
+  `~/.huntsman.env`. **Loopback baseline** extended — `POST /update/trigger` now
+  carries the same loopback-only gate as key writes, via a named, **tested**
+  `reject_non_loopback()` helper (2 regression tests over LAN / `0.0.0.0` reject
+  and v4/v6 loopback allow). **`install.sh` robustness** — `CARGO_TARGET_DIR` is
+  initialised before the prebuilt guard so the summary never trips `set -u`, and
+  the `HUNTSMAN_INSTALL_DIR` record is written with `grep`+`printf`+`chmod 0600`
+  instead of `sed` (no metacharacter injection from the install path).
+  **Process note:** this cycle's value came as much from *rejecting* a confident
+  false positive (`query_bbox` "binding swap") by reading the source as from the
+  six real fixes — the decompose-and-stress-test step is now part of the review
+  doctrine. **Gap analysis (§4):** SOL-SUPPLY opens with two known residuals — a
+  same-TLS-channel checksum is not authenticity (out-of-band signature would
+  close it), and the per-handler loopback guard wants generalising into one
+  route-layer middleware; both logged, neither blocking. Gate green:
+  fmt/clippy/doc clean, 3,088 lib tests (+2), 0 failures; `bash -n` + shellcheck
+  clean. Paired: `PROBLEM_TREE` §8 cycle 23 — same commit.

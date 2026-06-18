@@ -46,6 +46,29 @@ versions can include breaking changes; patch versions are bug-fix-only.
   body; `smtp_vrfy` caps a reply line at 8 KiB). Every fix preserves behaviour on
   legitimate input and ships with a regression test.
 
+- **Update / installer / release-CI hardening (PROBLEM_TREE cycle 23 — six
+  defects from an adversarial self-review of the v1.4.0 surface).** Closed a
+  **CI script-injection** path — `release.yml` interpolated the
+  `workflow_dispatch` tag input directly into a `run:` block; inputs now flow
+  through `env:` vars, the resolved tag is validated against the git-refname
+  charset before it reaches `GITHUB_OUTPUT` (blocking newline output-injection),
+  and the event `case` gained a fail-closed default. Added the **loopback-only
+  guard** to `POST /api/v1/update/trigger` (it was missing while every
+  settings-write handler has it, so a client reaching a `--bind 0.0.0.0` server
+  could force an in-place binary swap) via a named, tested `reject_non_loopback`
+  helper. Fixed three `install.sh` bugs: `CARGO_TARGET_DIR` was set only inside
+  the source-build branch but read in the summary, so **every successful prebuilt
+  install aborted** under `set -u`; a failed `.sha256` sidecar download silently
+  fell back to run-test-only validation (the network path now **requires** the
+  checksum); and the `HUNTSMAN_INSTALL_DIR` record used `sed`, which a path
+  containing `&`/`|`/`\` could corrupt (now `grep`+`printf`+`chmod 0600`). In the
+  key store, `load_from_file_only` now strips the surrounding double-quotes the
+  writer emits (SUPERSEDED embedded-key rotation silently never matched), and
+  `write_keys_at` `fsync`s before the atomic rename so a power-cut can't leave a
+  zero-length `~/.huntsman.env`. A reviewer-flagged `cell_db::query_bbox`
+  "lat/lon binding swap" was investigated and **rejected as a false positive**
+  (the bindings are correct; the round-trip test proves it). +2 regression tests.
+
 - **Correctness & robustness hardening (PROBLEM_TREE T0–T2).** Closed the
   `to_lowercase()` byte-offset slice **panic class** (T0.1/T0.2) —
   `au_electoral`/`au_property`/`search_engines` now route through a boundary-safe

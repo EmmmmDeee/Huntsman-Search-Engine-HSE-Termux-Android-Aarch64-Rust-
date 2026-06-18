@@ -1779,3 +1779,34 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   trigger — no auto-scheduled re-sync yet. 126→127 modules, 93→94 free, Geo
   20→21. **Paired:** `SOLUTION_TREE` SOL-GEOINT *Remaining* updated + §4/§5
   cycle 21 — same commit.
+- **2026-06-18** — **Cycle 23 (S→P): adversarial self-review of the v1.4.0
+  update / installer / release-CI surface — 6 confirmed defects fixed, 1 false
+  positive rejected.** Direction: from "critically analyse and repair all", ran a
+  max-recall review over the new code, then *decomposed the review's own claims*
+  and stress-tested each against the source before acting. Confirmed defects:
+  **(1)** CI script injection — `release.yml` interpolated
+  `${{ github.event.inputs.tag }}` straight into a `run:` block (and the `case`
+  had no default), so a dispatch tag could execute on the runner; **(2)** missing
+  loopback guard — `POST /api/v1/update/trigger` had none while every
+  settings-write handler does, so a LAN client on `--bind 0.0.0.0` could force an
+  in-place binary swap; **(3)** `install.sh` set `CARGO_TARGET_DIR` *inside* the
+  `PREBUILT!=1` block but read it in the summary after the `fi`, so every
+  successful prebuilt install (the v1.4.0 fast path) aborted under `set -u` with
+  `unbound variable`; **(4)** the network-download path accepted a binary with
+  **no** checksum when the `.sha256` sidecar fetch failed silently; **(5)**
+  `load_from_file_only` returned values with their surrounding double-quotes, so
+  SUPERSEDED embedded-key rotation never matched (`"v"` ≠ `v`); **(6)**
+  `write_keys_at` didn't `fsync` before rename → a power-cut could leave a
+  zero-length `~/.huntsman.env`. **False positive rejected (gap analysis):** a
+  reviewer flagged `cell_db::query_bbox` as having swapped lat/lon param bindings
+  ("every bbox query wrong") — reading the source showed `params!` binds by named
+  variable in the correct semantic order and the round-trip test passes; the
+  finding confused parameter-*declaration* order with *binding* order. Not
+  actioned. **Residuals deliberately left (logged for focused passes):** the now-7
+  per-handler loopback checks are a shallow socket-peer guard (a route-layer
+  middleware is the deep fix); a network `.sha256` fetched over the same TLS
+  channel is an integrity check, not authenticity (TLS cert validation is). Maps
+  to the §7 security baseline (SOL-SECRETS, loopback) + a new supply-chain leaf.
+  Gate green: fmt/clippy/doc clean, 3,088 lib tests (+2 trigger-guard regression
+  tests), 0 failures; `bash -n` + shellcheck clean. **Paired:** `SOLUTION_TREE`
+  SOL-SECRETS / SOL-SUPPLY cycle 23 + §4/§5 — same commit.
