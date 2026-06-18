@@ -13,23 +13,21 @@ SpiderFoot-style Web UI, zero native dependencies.
 
 ## Install (Termux, Android aarch64, no root)
 
-### From the zip — no internet needed after download
+Download **HSE.zip** from the GitHub Releases page in Chrome, then paste this
+single command into Termux:
 
-**Step 1** — Grant Termux storage access (one-time; skip if already done):
 ```bash
-termux-setup-storage   # tap Allow in the Android dialog
-```
-Then in Android: **Settings → Apps → Termux → Permissions → Files and media → Allow management of all files**
-
-**Step 2** — Copy, extract, and install:
-```bash
-cp ~/storage/downloads/HSE.zip ~/ && unzip -q ~/HSE.zip && bash ~/Huntsman*/install.sh
+rm -rf ~/HSE && cp ~/storage/downloads/HSE.zip ~/ && unzip -q ~/HSE.zip -d ~/HSE && bash ~/HSE/*/install.sh
 ```
 
-The installer detects it’s running inside the extracted source tree and builds
-automatically — no cloning, no GitHub token needed. Build takes ~4-6 min on
-aarch64. After the build, the binary is cached to your Downloads folder so
-the next install skips the compile entirely.
+That's it. The installer detects it is running inside the extracted source tree
+and handles everything automatically — no internet, no GitHub token, no cloning.
+Build takes ~4-6 min on aarch64. After the first build the binary is cached to
+your Downloads folder so re-installing skips the compile entirely.
+
+**Storage permission (one-time, if not already done):**
+Android Settings → Apps → Termux → Permissions → Files and media →
+**Allow management of all files** (not just media).
 
 ### One-liner install (internet required)
 

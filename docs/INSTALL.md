@@ -7,24 +7,14 @@ HSE targets **Termux on Android aarch64** (no root required). The same
 
 ## Install from zip (recommended — works offline)
 
-Download **HSE.zip** from the GitHub Releases page in Chrome on your phone,
-then run these three commands in Termux:
+Download **HSE.zip** from the GitHub Releases page in Chrome, then paste this
+one command into Termux:
 
 ```bash
-# Step 1 — grant storage access (one-time setup)
-termux-setup-storage
-# Tap Allow in the Android dialog, then:
-# Settings → Apps → Termux → Permissions → Files and media
-#   → Allow management of all files
-
-# Step 2 — copy and extract
-cp ~/storage/downloads/HSE.zip ~/ && unzip -q ~/HSE.zip
-
-# Step 3 — install
-bash ~/Huntsman*/install.sh
+rm -rf ~/HSE && cp ~/storage/downloads/HSE.zip ~/ && unzip -q ~/HSE.zip -d ~/HSE && bash ~/HSE/*/install.sh
 ```
 
-The installer detects it’s running inside the extracted source tree and
+The installer detects it's running inside the extracted source tree and
 handles everything automatically:
 1. Checks for a prebuilt `hse-aarch64-linux-android` binary inside the zip
    (instant install, no compile).
@@ -35,6 +25,9 @@ handles everything automatically:
 
 After the first source build the binary is cached to your Downloads folder, so
 re-installing (after a wipe, or on another aarch64 phone) skips the compile.
+
+**Storage permission (one-time):** Android Settings → Apps → Termux →
+Permissions → Files and media → **Allow management of all files**.
 
 ---
 
@@ -127,10 +120,9 @@ rm -f ~/.huntsman.env   # caution: back up your API keys first
 ## Troubleshooting
 
 **"Permission denied" when copying HSE.zip**
-The zip is in Android’s scoped storage. Fix:
-- Run `termux-setup-storage` and tap Allow
+The zip is in Android's scoped storage. Fix:
 - Android Settings → Apps → Termux → Permissions → Files and media → Allow management of all files
-- Then retry `cp ~/storage/downloads/HSE.zip ~/`
+- Then retry the install command
 
 **Build hangs / appears frozen**
 The final link step (`Compiling huntsman-search-engine`) emits no output for
