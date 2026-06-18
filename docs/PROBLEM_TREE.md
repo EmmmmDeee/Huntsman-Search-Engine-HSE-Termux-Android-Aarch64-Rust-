@@ -1746,6 +1746,21 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   failures. **Paired:** `SOLUTION_TREE` SOL-CACHE-INTERSCAN `[ ]`→`[x]`,
   SOL-BUDGET `[~]`→`[-]`, SOL-F2 premise corrected, §3/§4/§5 refreshed — same
   commit.
+- **2026-06-18** — **Cycle 22 (S→P): CLI usability — `hse update`, command consolidation, `hse keys set`.**
+  S→P direction: gap §4a had no UX node for self-upgrade; the command surface was
+  sprawling (19 visible commands). Delivered: `src/cli/update.rs` — `hse update`
+  (`--check` reports commits behind via `git rev-list`; default re-runs `install.sh`
+  with inherited stdio; locates source via `HUNTSMAN_INSTALL_DIR` env → common
+  `~/hse` / `~/.local/share/hse` paths → binary-parent traversal; falls back to
+  curl one-liner); `install.sh` now writes `HUNTSMAN_INSTALL_DIR` into
+  `~/.huntsman.env` after every run; `hse keys set <NAME> <VALUE>` added to
+  `KeysAction` (visible_alias `set-key`, `write`); 6 commands hidden from `--help`
+  (`doctor`, `selftest`, `provision`, `set-key`, `engines`, `oathnet-batch`) —
+  still callable for scripting compat; visible surface 19→13. `hse upgrade` alias
+  added. **New S→P gap:** `hse update --check` cannot yet propose a diff summary
+  (just commit count); SOL-UPDATE *Remaining* noted below.
+  Gate green: fmt/clippy/doc clean, 3,084 lib tests, 0 failures. **Paired:**
+  `SOLUTION_TREE` SOL-UPDATE `[ ]`→`[x]`, §4/§5 cycle 22 — same commit.
 - **2026-06-18** — **Cycle 21 (P→S): C5 GEOINT second source — `cell_local` module
   + `hse cells import` command delivered.** P→S direction: C5 (SOL-GEOINT) had
   `opencellid` as its only live source (key-gated, API-dependent); the free,

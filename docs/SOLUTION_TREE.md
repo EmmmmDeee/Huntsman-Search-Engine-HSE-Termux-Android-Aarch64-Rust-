@@ -406,6 +406,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   node). *Gap:* not yet started — implementation deferred until the golden-fixture
   golden-fixture corpus (T2.7 parser rewrites) is in place. **(§4a)**
 
+- **`[x]` SOL-UPDATE · Self-upgrade + CLI consolidation** — `hse update` locates
+  `install.sh` via `HUNTSMAN_INSTALL_DIR` env (written by `install.sh` on every run),
+  then `~/hse` / `~/.local/share/hse`, then binary-parent traversal; re-runs the
+  installer with inherited stdio so progress is visible in Termux; `--check` reports
+  commits behind (`git fetch` + `rev-list --count HEAD..@{u}`) without installing;
+  falls back to printing the curl one-liner when no source found. `install.sh` now
+  writes `HUNTSMAN_INSTALL_DIR` after every run. `hse upgrade` added as alias.
+  `hse keys set <NAME> <VALUE>` absorbs the former top-level `set-key`.
+  6 commands hidden from `--help` (`doctor`, `selftest`, `provision`, `set-key`,
+  `engines`, `oathnet-batch`) — still callable for scripting compat; visible surface
+  19→13. *Closes / powers:* UX self-sufficiency; no separate upgrade ceremony needed.
+  *Remaining:* `--check` shows commit count only — no diff summary yet.
+  **(cycle 22)**
+
 ### S.PROCESS — The methodology itself ⚑
 
 - **`[x]` SOL-PAIRED-TREES · The problem/solution pair + gap analysis** ⚑ — *this
@@ -456,6 +470,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-OFFENSIVE | C6 | `[ ]` |
 | SOL-FORENSIC | C7 | `[ ]` |
 | SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[ ]` |
+| SOL-UPDATE | UX self-upgrade + CLI consolidation | `[x]` |
 
 ---
 
@@ -496,6 +511,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   manual trigger and a BYO OpenCelliD key; no auto-scheduled re-sync exists. A
   recurring `hse cells import --country world` cron/daemon path would keep the local
   DB fresh without user intervention. No solution node yet.
+- **hse update --check changelog (new, cycle 22 S→P gap):** `--check` reports only
+  the number of commits available — no commit subject lines or diff summary. A future
+  pass could run `git log --oneline HEAD..@{u}` and surface the messages so the user
+  can decide whether to update without manually `git log`-ing. No solution node yet.
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -539,7 +558,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   budget-reset-zeroing remain).
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); C1/C2/C6/C7 open by design, gated on §3.F.
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); C1/C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
 
@@ -1033,6 +1052,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Gate green: fmt/clippy/doc clean, 3,061 lib tests, 0 failures. Paired:
   `PROBLEM_TREE` SOL-AU-MOAT/SOL-NETINT corrections + `austlii` baseline + §8 cycle 20
   — same commit.
+- **2026-06-18** — **Cycle 22 (S→P): SOL-UPDATE `[ ]`→`[x]` — `hse update` +
+  CLI consolidation delivered.**
+  **S→P build:** `src/cli/update.rs` — `find_install_dir()` tries `HUNTSMAN_INSTALL_DIR`
+  env → `~/.local/share/hse` / `~/hse` / `~/.hse` → 5-level binary-parent walk;
+  `commits_behind()` runs `git fetch --quiet` then `rev-list --count HEAD..@{u}`;
+  `cmd_update(check=true)` prints commits available without installing;
+  `cmd_update(check=false)` runs `install.sh` via `tokio::task::spawn_blocking` with
+  inherited stdio; `HSE_REF` env passed for `--ref` overrides. `install.sh` gains a
+  `HUNTSMAN_INSTALL_DIR=...` upsert into `~/.huntsman.env`. `KeysAction::Set` added
+  (`visible_alias = "set-key"` + `"write"`). 6 commands hidden: `doctor`, `selftest`,
+  `provision`, `set-key`, `engines`, `oathnet-batch`; `hse upgrade` alias for
+  `update`; visible surface 19→13. **SOL-UPDATE `[ ]`→`[x]`**; leverage map updated.
+  **New S→P gap:** `--check` reports commit count only — no changelog summary. Logged
+  in §4 for a future cycle. Gate green: fmt/clippy/doc clean, 3,084 lib tests,
+  0 failures. Paired: `PROBLEM_TREE` cycle 22 entry + §4/§5 — same commit.
 - **2026-06-18** — **Cycle 21 (P→S): SOL-GEOINT progress — `cell_local` + `hse cells
   import` delivered; free offline DB leg added to C5.**
   **P→S build:** `src/util/cell_db.rs` — shared WAL-mode SQLite DB helper at
