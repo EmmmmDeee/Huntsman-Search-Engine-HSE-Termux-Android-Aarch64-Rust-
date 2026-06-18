@@ -69,6 +69,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   "lat/lon binding swap" was investigated and **rejected as a false positive**
   (the bindings are correct; the round-trip test proves it). +2 regression tests.
 
+- **Correlation rule AU-060 — cell-tower cross-validation (PROBLEM_TREE cycle 26).**
+  Added `rule_au_060_cell_tower_cross_validation` to the correlator's RULES dispatch
+  array (position 60). Fires `Severity::Medium` when a `cell-tower`-tagged `DeviceId`
+  entity carries evidence from both a live RF sensor (`cell_intel` — direct on-device
+  measurement) AND a crowdsourced database (`opencellid` or `cell_local` — pre-existing
+  catalogue). The two sources are fully independent channels; their agreement is the
+  strongest non-GPS, non-warrant cell-based location fix. 4 unit tests. Architecture
+  guard `every_dispatched_correlation_rule_has_a_firing_test` automatically validates
+  AU-060 in CI.
+
 - **`hudsonrock` URL-encoding fix and `employer_pivot` role-email guard
   (PROBLEM_TREE cycle 25 / SOL-QUERY-PIPE).** Two code bugs found from a real-scan
   debug bundle (`full_name = Zac Allen`, hse_version 1.4.0). **(A) `hudsonrock`

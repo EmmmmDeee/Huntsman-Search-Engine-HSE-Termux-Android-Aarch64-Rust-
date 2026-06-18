@@ -503,10 +503,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   radius + auto-sync still open).
 - **C1/C2/C6/C7** — capability nodes; solutions sketched, none started (gated on
   the §3.F enablers landing first, by design).
-- **AU-060 (new, cycle 20 S→P gap):** `opencellid` emits `DeviceId` (tower MCC/MNC/
-  LAC/CID) and `cell_intel` also emits `DeviceId` for the same tower type — no
-  correlation rule cross-validates them. Candidate rule AU-060: medium-confidence
-  corroboration signal when both modules fire for the same tower. No solution node yet.
+- **~~AU-060~~** — delivered cycle 26 `[x]`: `rule_au_060_cell_tower_cross_validation`
+  fires Medium when a `cell-tower` DeviceId has evidence from `cell_intel` (live sensor)
+  AND `opencellid`/`cell_local` (DB). Off the open queue.
 - **cell_local auto-sync (new, cycle 21 S→P gap):** `hse cells import` requires a
   manual trigger and a BYO OpenCelliD key; no auto-scheduled re-sync exists. A
   recurring `hse cells import --country world` cron/daemon path would keep the local
@@ -1191,3 +1190,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   **§4 gap analysis:** SOL-QUERY-PIPE row added to §4d. Gate green:
   fmt/clippy/doc clean, 3,097 lib tests (+5 new), 0 failures; `bash -n` +
   shellcheck clean. Paired: `PROBLEM_TREE` §8 cycle 25 — same commit.
+- **2026-06-18** — **Cycle 26 (P→S): AU-060 — `cell_intel` × `opencellid`/
+  `cell_local` DeviceId cross-validation correlation rule delivered.**
+  **Gap closed from §4a:** `opencellid` and `cell_intel` both emit `DeviceId`
+  for the same `mcc-mnc-lac-cid` tower format; no rule previously linked them.
+  `rule_au_060_cell_tower_cross_validation` added to
+  `src/core/correlator/rules/geo.rs` and the `RULES` dispatch array.
+  **Semantics:** fires `Severity::Medium` when a `cell-tower`-tagged `DeviceId`
+  entity carries evidence from BOTH `cell_intel` (live RF sensor — direct
+  on-device measurement) AND `opencellid`/`cell_local` (crowdsourced DB —
+  pre-existing catalogue). The two channels are fully independent; their
+  agreement is the strongest non-GPS, non-warrant cell-based location fix
+  available. **Tests:** 4 — firing with opencellid, firing with cell_local,
+  no-fire for DB-only tower, no-fire for non-cell-tower DeviceId.
+  Architecture guard `every_dispatched_correlation_rule_has_a_firing_test`
+  (cycle 8) automatically validates AU-060 in CI.
+  **S→P gap:** the next highest-value §4a items are T2.7 (SOL-HEALTH-SIGNAL
+  — per-source scraper health, the largest open quality gap) and §7 S4 (LOW
+  residual: archived success body not run through `redact_literal_secrets`).
+  T2.7 is the priority given scraper count growth (ahpra/acma_rrl/trove_au
+  added in cycles 17–20, raising the total scraped HTML surface).
+  **§4a update:** AU-060 off the open queue. **§4d update:** correlation
+  row now shows AU-060 `[ ]`→`[x]`. Gate green: fmt/clippy/doc clean,
+  3,101 total lib tests (+4), 0 failures. Paired: `PROBLEM_TREE` §8 cycle
+  26 — same commit.

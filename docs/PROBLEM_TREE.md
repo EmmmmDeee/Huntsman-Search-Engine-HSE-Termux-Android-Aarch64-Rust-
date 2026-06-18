@@ -1870,3 +1870,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy/doc clean, 3,097 lib tests, 0 failures; `bash -n` +
   shellcheck clean. **Paired:** `SOLUTION_TREE` SOL-QUERY-PIPE cycle 25 +
   §4/§5 — same commit.
+- **2026-06-18** — **Cycle 26 (P→S): AU-060 correlation rule — `cell_intel` ×
+  `opencellid`/`cell_local` DeviceId cross-validation.**
+  **Gap closed:** §4a held AU-060 as an open candidate since cycle 20's S→P
+  pass identified that `opencellid` and `cell_intel` both emit `DeviceId`
+  entities in the same `mcc-mnc-lac-cid` format with no correlation rule
+  linking them. **Rule design:** `rule_au_060_cell_tower_cross_validation` in
+  `src/core/correlator/rules/geo.rs` — fires Medium when a `DeviceId` entity
+  tagged `cell-tower` carries evidence from BOTH a live RF sensor (`cell_intel`
+  — direct on-device measurement) AND a crowdsourced database
+  (`opencellid` or `cell_local`). The two sources are fully independent
+  channels: `cell_intel` observes the tower's broadcast over the air; the
+  database places the same tower at a known lat/lon via a pre-existing global
+  catalogue. Agreement across them is the strongest available non-GPS,
+  non-warrant cell-based location fix: the device was physically within radio
+  range of a tower whose position is independently confirmed.
+  **Architecture:** added to `RULES` dispatch array (position 60); 4 unit
+  tests cover fire case (sensor + opencellid), fire case (sensor + cell_local),
+  no-fire when DB-only, and no-fire when `cell-tower` tag absent.
+  Architecture guard `every_dispatched_correlation_rule_has_a_firing_test`
+  (cycle 8) now automatically validates AU-060's test coverage in CI.
+  Gate green: fmt/clippy/doc clean, 3,101 total lib tests (+4), 3,097 passing +
+  4 ignored, 0 failures. **Paired:** `SOLUTION_TREE` AU-060 + §4/§5 cycle 26
+  — same commit.

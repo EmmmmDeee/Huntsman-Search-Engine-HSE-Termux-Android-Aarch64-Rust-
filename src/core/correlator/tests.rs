@@ -3467,6 +3467,80 @@ mod geo_synergy_sim {
     }
 }
 
+// ─── AU-060: cell-tower cross-validation ─────────────────────────────────────
+
+#[test]
+fn au060_fires_when_tower_seen_by_sensor_and_opencellid() {
+    use super::rules::rule_au_060_cell_tower_cross_validation;
+
+    let mut e = Entity::new(EntityKind::DeviceId, "505-1-12345-67890", 0.78, "scan");
+    e.tag("cell-tower");
+    e.add_evidence(Evidence::new(
+        "cell_intel",
+        "Live tower 505-1-12345-67890 (LTE)".to_string(),
+    ));
+    e.add_evidence(Evidence::new(
+        "opencellid",
+        "OpenCelliD tower 505-1-12345-67890 (LTE)".to_string(),
+    ));
+
+    let out = rule_au_060_cell_tower_cross_validation(&[e], "scan", 0);
+    assert_eq!(out.len(), 1, "sensor + opencellid must fire AU-060");
+    assert_eq!(out[0].rule_id, "AU-060");
+    assert_eq!(out[0].severity, Severity::Medium);
+    assert!(out[0].description.contains("505-1-12345-67890"));
+}
+
+#[test]
+fn au060_fires_with_cell_local_as_db_source() {
+    use super::rules::rule_au_060_cell_tower_cross_validation;
+
+    let mut e = Entity::new(EntityKind::DeviceId, "505-3-9876-54321", 0.78, "scan");
+    e.tag("cell-tower");
+    e.add_evidence(Evidence::new("cell_intel", "Live tower (UMTS)".to_string()));
+    e.add_evidence(Evidence::new(
+        "cell_local",
+        "Local DB tower 505-3-9876-54321".to_string(),
+    ));
+
+    let out = rule_au_060_cell_tower_cross_validation(&[e], "scan", 0);
+    assert_eq!(out.len(), 1, "cell_intel + cell_local must fire AU-060");
+    assert_eq!(out[0].rule_id, "AU-060");
+}
+
+#[test]
+fn au060_does_not_fire_for_database_only_tower() {
+    use super::rules::rule_au_060_cell_tower_cross_validation;
+
+    // Tower seen only in OpenCelliD — no live sensor measurement.
+    let mut e = Entity::new(EntityKind::DeviceId, "505-1-12345-67890", 0.78, "scan");
+    e.tag("cell-tower");
+    e.add_evidence(Evidence::new(
+        "opencellid",
+        "OpenCelliD tower 505-1-12345-67890".to_string(),
+    ));
+
+    assert!(
+        rule_au_060_cell_tower_cross_validation(&[e], "scan", 0).is_empty(),
+        "database-only tower must not fire AU-060 without a live sensor"
+    );
+}
+
+#[test]
+fn au060_does_not_fire_for_non_cell_tower_device_id() {
+    use super::rules::rule_au_060_cell_tower_cross_validation;
+
+    // DeviceId without the cell-tower tag (e.g. a MAC address DeviceId).
+    let mut e = Entity::new(EntityKind::DeviceId, "aa:bb:cc:dd:ee:ff", 0.78, "scan");
+    e.add_evidence(Evidence::new("cell_intel", "some evidence".to_string()));
+    e.add_evidence(Evidence::new("opencellid", "some evidence".to_string()));
+
+    assert!(
+        rule_au_060_cell_tower_cross_validation(&[e], "scan", 0).is_empty(),
+        "non-cell-tower DeviceId must not fire AU-060 even with matching sources"
+    );
+}
+
 // ── All-eleven-class integration proof ───────────────────────────────────
 //
 // Drives all 11 orthogonal AU geo source classes (PhotoGps, WifiSensor,

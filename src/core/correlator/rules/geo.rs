@@ -838,6 +838,53 @@ fn extract_ratemyagent_suburb(url: &str) -> Option<String> {
     }
 }
 
+/// AU-060 — Cell-tower cross-validated (live sensor × crowdsourced database).
+///
+/// Fires when a `DeviceId` entity for a cell tower carries evidence from a
+/// live on-device cellular sensor (`cell_intel`) *and* from at least one
+/// crowdsourced database source (`opencellid` or `cell_local`).
+///
+/// The cross-validation matters because the two sources are fully independent:
+/// `cell_intel` is a passive RF measurement — the device physically received
+/// the tower's broadcast — while `opencellid`/`cell_local` is a pre-existing
+/// crowdsourced catalogue that independently places the same tower at a known
+/// lat/lon.  Agreement across those two channels is the strongest available
+/// non-GPS, non-warrant cell-based location fix: the device was within radio
+/// range of a tower whose position the database independently confirms.
+pub(in crate::core::correlator) fn rule_au_060_cell_tower_cross_validation(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    const LIVE_SENSOR: &[&str] = &["cell_intel"];
+    const DB_SOURCE: &[&str] = &["opencellid", "cell_local"];
+
+    entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::DeviceId && e.has_tag("cell-tower"))
+        .filter(|e| {
+            let srcs = e.evidence_sources();
+            LIVE_SENSOR.iter().any(|s| srcs.contains(s))
+                && DB_SOURCE.iter().any(|s| srcs.contains(s))
+        })
+        .map(|e| {
+            Correlation::new(
+                "AU-060",
+                "Cell tower cross-validated (sensor × database)",
+                Severity::Medium,
+                format!(
+                    "Cell tower {} confirmed by live RF sensor (cell_intel) and crowdsourced \
+                     database (opencellid/cell_local) — location fix cross-validated at tower grain",
+                    e.value
+                ),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
