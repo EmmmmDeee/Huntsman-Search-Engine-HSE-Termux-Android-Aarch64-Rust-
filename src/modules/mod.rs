@@ -81,6 +81,7 @@ pub mod npm_author;
 pub mod numverify;
 pub mod oathnet_pro;
 pub mod onyphe;
+pub mod opencellid;
 pub mod opencorporates;
 pub mod osintcat;
 pub mod overpass;
@@ -302,6 +303,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(wayback::Wayback),
         Arc::new(device_sensors::DeviceSensors),
         Arc::new(cell_intel::CellIntel),
+        Arc::new(opencellid::OpenCellId),
         Arc::new(wifi_intel::WifiIntel),
         Arc::new(local_net::LocalNet),
         Arc::new(signal_radar::SignalRadar),

@@ -73,8 +73,8 @@ Priority: **P0** crash/corruption · **P1** breaks a core guarantee · **P2**
 quality/robustness · **P3** minor · **CAP** capability/feature.
 Each node: **ID · statement · location · impact · → optimal solution · prio · status**.
 
-Current baseline (grounded in the codebase, 2026-06-18): **124 modules** (92 free
-· 27 key-gated · 5 paid) across 14 categories (Infrastructure 21, Geo 19, People
+Current baseline (grounded in the codebase, 2026-06-18): **125 modules** (92 free
+· 28 key-gated · 5 paid) across 14 categories (Infrastructure 21, Geo 20, People
 16, DnsRecon 13, Breach 11, Social 11, Email 6, Corporate 8, Phone 3, Web 5,
 Sensor 4, Threat 3, Search/Other 2 each); 59 native correlation rules
 (AU-001…AU-059); 0 `unsafe`; deterministic entity merge; SQLite store; SSE live;
@@ -652,13 +652,21 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   Infrastructure); `censys` priority 35→78. *Remaining:* union subdomain
   discovery; ASN/BGP org/prefix pivots; passive-DNS/cert-hash origin-unmasking;
   `securitytrails` BYO-key (G7).
-- **`[ ]` C5 · GEOINT convergence — *already ahead; widen the lead*** — *Current:*
+- **`[~]` C5 · GEOINT convergence — *already ahead; widen the lead*** — *Current:*
   multi-source fusion (WiGLE + EXIF + cell + IP + address→coords) with AU-state
   attribution and convergence rules (AU-052/056/057/059). Neither competitor
   does this. → **Solution:** feed more sources into the confidence-weighted
   centroid; tighten the AU bounding-box/state precision; add movement/timeline
   geo; output a single best-estimate **with provenance + a confidence radius**.
   **CAP-med (differentiator)**
+  *Delivered (cycle 19, 2026-06-18): `opencellid` — first-class key-gated module
+  (`HUNTSMAN_OPENCELLID_KEY`); accepts `Coordinates`; queries OpenCelliD
+  `getInArea` BBOX endpoint; emits `DeviceId` + `Coordinates` for every tower
+  within ~1 km; `cache_ttl_secs=86400`; ATT&CK T1591.001+T1596. Previously
+  OpenCelliD was only an internal helper inside `cell_intel` (not queryable as a
+  standalone first-class module). 124→125 modules, Geo 19→20, 27→28 key-gated.
+  Remaining:* Weiszfeld/Welzl confidence-weighted centroid; tighter AU bounding;
+  movement/timeline geo; provenance radius output.
 - **`[ ]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
   `subdomain_takeover`, `key_harvest`, breach/stealer presence + AU-047 reuse
   link. → **Solution:** broaden exposure-dork coverage; mature the
@@ -1668,6 +1676,19 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   node C9 logged. **Gap refresh:** C3 and C4 now `[~]`; §4a gains C9; T2.7 elevated.
   **Paired:** `SOLUTION_TREE` SOL-AU-MOAT + SOL-NETINT `[ ]`→`[~]`, new
   SOL-CACHE-INTERSCAN, §4/§5 refreshed — same commit.
+- **2026-06-18** — **Cycle 19 (P→S): C5 GEOINT first source — `opencellid`
+  standalone module delivered.** P→S direction: gap §4d named C5 (SOL-GEOINT)
+  as the next open capability node; OpenCelliD was already an internal dep inside
+  `cell_intel` but had no standalone first-class module. Delivered: new
+  `src/modules/opencellid/{mod,tests}.rs`; key-gated (`HUNTSMAN_OPENCELLID_KEY`);
+  accepts `Coordinates`; queries `opencellid.org/cell/getInArea` with a ±0.005°
+  BBOX (~1 km radius); emits `DeviceId` (tower id, radio, mcc/mnc/lac/cid,
+  range, samples, avg signal) + `Coordinates` (tower geofix, confidence from
+  accuracy radius) per tower; `cache_ttl_secs=86400`; ATT&CK override
+  T1591.001+T1596; `geo(20)` section; README/MODULES.md counts updated.
+  9 new unit tests. Gate green: fmt/clippy/doc clean, 3,052 lib tests, 0
+  failures. C5 `[ ]`→`[~]`. **Paired:** `SOLUTION_TREE` SOL-GEOINT `[ ]`→`[~]`,
+  §4d C5 row updated, leverage map updated, §5 cycle 19 — same commit.
 - **2026-06-18** — **Cycle 18 (P→S + S→P): C9 inter-scan entity cache —
   SOL-CACHE-INTERSCAN delivered `[ ]`→`[x]`.** P→S direction: gap §4a named
   C9/SOL-CACHE-INTERSCAN as the highest-value build-ready open node (design sketched

@@ -338,9 +338,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   isolation preserved (cache is a read-only pre-dispatch gate, not a write-path
   bypass). Schema snapshot test updated. ✅ delivered cycle 18.
   *Closes:* **C9** (`[ ]`→`[x]`). Enables operator cost control + revenue model.
-- **`[ ]` SOL-GEOINT · Confidence-weighted geo convergence** → **C5**: the Weiszfeld/
+- **`[~]` SOL-GEOINT · Confidence-weighted geo convergence** → **C5**: the Weiszfeld/
   Welzl fusion stack (verified correct, §6) widened with more sources + provenance +
   a confidence radius.
+  *Partial (cycle 19, 2026-06-18):* `opencellid` standalone first-class module
+  delivered — key-gated geo source that enumerates nearby cell towers from a
+  `Coordinates` target via the OpenCelliD `getInArea` BBOX endpoint. Emits
+  `DeviceId` + `Coordinates` per tower; confidence from accuracy radius;
+  `cache_ttl_secs=86400`; ATT&CK T1591.001+T1596. Previously OpenCelliD was an
+  internal helper only. *Remaining:* Weiszfeld/Welzl centroid fusion; AU bounding
+  precision; movement/timeline layer; provenance radius output.
 - **`[ ]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
   credential-reuse graph, `aho-corasick` (SOL-F1) key-harvest + entropy gate.
 - **`[ ]` SOL-FORENSIC · Reproducible intelligence product** → **C7**: byte-stable
@@ -420,7 +427,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CACHE-INTERSCAN | C9 | `[x]` |
 | SOL-CORR | C1 | `[ ]` |
 | SOL-PERF-PUBLISH | C2 | `[ ]` |
-| SOL-GEOINT | C5 | `[ ]` |
+| SOL-GEOINT | C5 | `[~]` |
 | SOL-OFFENSIVE | C6 | `[ ]` |
 | SOL-FORENSIC | C7 | `[ ]` |
 
@@ -445,7 +452,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
 - **C9** — **delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18). Off the open queue.
 - **C3/C4** — now `[~]` (partial, SOL-AU-MOAT + SOL-NETINT both started cycle 17).
-- **C1/C2/C5/C6/C7** — capability nodes; solutions sketched, none started (gated on
+- **C5** — now `[~]` (`opencellid` standalone module delivered, cycle 19; full
+  Weiszfeld/Welzl centroid + provenance radius still open).
+- **C1/C2/C6/C7** — capability nodes; solutions sketched, none started (gated on
   the §3.F enablers landing first, by design).
 
 ### 4b · Solutions begun but unfinished (the finish queue)
@@ -490,7 +499,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   budget-reset-zeroing remain).
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); C3 `[~]` (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy shipped, GNAF/ASIC/cadastre/courts remaining); C4 `[~]` (SOL-NETINT: netlas + censys priority shipped, subdomain/ASN/CDN-origin remaining); C1/C2/C5/C6/C7 open by design, gated on §3.F.
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` first-class module delivered cycle 19, Weiszfeld/centroid fusion remaining); C3 `[~]` (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy shipped, GNAF/ASIC/cadastre/courts remaining); C4 `[~]` (SOL-NETINT: netlas + censys priority shipped, subdomain/ASN/CDN-origin remaining); C1/C2/C6/C7 open by design, gated on §3.F.
 
 ---
 
@@ -911,6 +920,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   C3/C4 now `[~]`; §4a gains C9 + elevates T2.7; §4d capability row updated; leverage
   map split (SOL-CORR…SOL-FORENSIC row replaced by per-solution rows). Paired:
   `PROBLEM_TREE` C3/C4 `[ ]`→`[~]`, new C9, §8 cycle 17 note — same commit.
+- **2026-06-18** — **Cycle 19 (P→S): SOL-GEOINT `[ ]`→`[~]` — `opencellid`
+  first-class module delivered.** P→S direction: C5 (SOL-GEOINT) named as the
+  next open capability node. Delivered: `src/modules/opencellid/{mod,tests}.rs`
+  — key-gated (`HUNTSMAN_OPENCELLID_KEY`); accepts `Coordinates`; queries
+  `opencellid.org/cell/getInArea` with ±0.005° BBOX (~1 km radius); emits
+  `DeviceId` (tower id, radio type, mcc/mnc/lac/cid, range_m, samples,
+  avg_signal_dbm) + `Coordinates` (tower geofix, confidence from accuracy radius)
+  for every tower in the area; `cache_ttl_secs=86400`; ATT&CK override
+  T1591.001+T1596 (geo + open technical database). Previously OpenCelliD was an
+  internal non-queryable helper inside `cell_intel`; now a standalone BFS node.
+  9 new unit tests. README/MODULES.md counts updated: 124→125 modules, Geo
+  19→20, 27→28 key-gated. Gate green: fmt/clippy/doc clean, 3,052 lib tests, 0
+  failures. **Gap refresh:** SOL-GEOINT `[ ]`→`[~]`; leverage map updated;
+  §4a C5 now `[~]`; §4d capability row updated. Paired: `PROBLEM_TREE` C5
+  `[ ]`→`[~]`, baseline counts updated, §8 cycle 19 — same commit.
 - **2026-06-18** — **Cycle 18 (P→S + S→P): SOL-CACHE-INTERSCAN `[ ]`→`[x]` — C9
   inter-scan entity cache delivered.** **P→S direction:** gap §4a named C9/
   SOL-CACHE-INTERSCAN as the highest-value build-ready open node (design sketched

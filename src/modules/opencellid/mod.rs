@@ -1,0 +1,231 @@
+//! OpenCelliD — crowdsourced cell-tower database query.
+//!
+//! Given a `Coordinates` target, queries OpenCelliD's `getInArea` endpoint
+//! to enumerate all known cell towers within a ~1 km bounding box. For each
+//! tower the module emits:
+//!
+//!   * A `DeviceId` entity (tower ID: `<mcc>-<mnc>-<lac>-<cid>`) carrying
+//!     radio type, range, and signal statistics.
+//!   * A `Coordinates` entity for the tower's reported position, confidence-
+//!     weighted by the reported accuracy radius.
+//!
+//! Key-gated (`HUNTSMAN_OPENCELLID_KEY`). Free tier: 1,000 requests/day.
+//! Results cached for 24 h — tower placements are stable over intra-day timescales.
+
+#[cfg(test)]
+mod tests;
+
+use async_trait::async_trait;
+use serde::Deserialize;
+
+use crate::core::{
+    entity::{Entity, EntityKind, Evidence},
+    error::Result,
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
+    scan::{Target, TargetKind},
+};
+use crate::util::geo::{au_state_for_coords, is_valid_coords, parse_coords};
+use crate::util::http::urlencode;
+
+const SRC: &str = "opencellid";
+const KEY_ENV: &str = "HUNTSMAN_OPENCELLID_KEY";
+/// Bounding-box half-width in degrees (~556 m at mid-latitudes).
+const BBOX_DELTA: f64 = 0.005;
+
+// ── API response types ──────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub(super) struct AreaResp {
+    #[serde(default)]
+    pub(super) cells: Vec<CellEntry>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct CellEntry {
+    #[serde(default)]
+    pub(super) radio: Option<String>,
+    #[serde(default)]
+    pub(super) mcc: Option<i64>,
+    /// MNC — OpenCelliD names this field `net`.
+    #[serde(rename = "net", default)]
+    pub(super) mnc: Option<i64>,
+    /// LAC/TAC — OpenCelliD names this field `area`.
+    #[serde(rename = "area", default)]
+    pub(super) lac: Option<i64>,
+    /// Cell ID — OpenCelliD names this field `cell`.
+    #[serde(rename = "cell", default)]
+    pub(super) cid: Option<i64>,
+    #[serde(default)]
+    pub(super) lat: Option<f64>,
+    #[serde(default)]
+    pub(super) lon: Option<f64>,
+    #[serde(default)]
+    pub(super) range: Option<u64>,
+    #[serde(rename = "averageSignal", default)]
+    pub(super) average_signal: Option<i64>,
+    #[serde(default)]
+    pub(super) samples: Option<u64>,
+}
+
+// ── Module ──────────────────────────────────────────────────────────────────
+
+pub struct OpenCellId;
+
+#[async_trait]
+impl Module for OpenCellId {
+    fn name(&self) -> &'static str {
+        "opencellid"
+    }
+
+    fn description(&self) -> &'static str {
+        "OpenCelliD crowdsourced cell-tower database: enumerate towers near a coordinate"
+    }
+
+    fn priority(&self) -> u8 {
+        65
+    }
+
+    fn cost(&self) -> ModuleCost {
+        ModuleCost::KeyGated
+    }
+
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Coordinates)
+    }
+
+    fn category(&self) -> ModuleCategory {
+        ModuleCategory::Geo
+    }
+
+    fn produces(&self) -> &'static [EntityKind] {
+        const KINDS: &[EntityKind] = &[EntityKind::DeviceId, EntityKind::Coordinates];
+        KINDS
+    }
+
+    fn max_timeout_ms(&self) -> u64 {
+        10_000
+    }
+
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        &["T1591.001", "T1596"]
+    }
+
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let api_key = match ctx.key_opt(KEY_ENV) {
+            Some(k) => k,
+            None => return Ok(ModuleResult::new()),
+        };
+
+        let (lat, lon) = parse_coords(&target.value)?;
+
+        let bbox = format!(
+            "{},{},{},{}",
+            lat - BBOX_DELTA,
+            lon - BBOX_DELTA,
+            lat + BBOX_DELTA,
+            lon + BBOX_DELTA,
+        );
+        let url = format!(
+            "https://opencellid.org/cell/getInArea?key={}&BBOX={}&format=json",
+            urlencode(api_key),
+            urlencode(&bbox),
+        );
+
+        let resp = ctx
+            .http
+            .get(&url)
+            .header("Accept", "application/json")
+            .send()
+            .await;
+
+        let Ok(resp) = resp else {
+            return Ok(ModuleResult::new());
+        };
+        if !resp.status().is_success() {
+            return Ok(ModuleResult::new());
+        }
+
+        let data: AreaResp = match crate::util::http::json_scanned(resp, SRC).await {
+            Ok(d) => d,
+            Err(_) => return Ok(ModuleResult::new()),
+        };
+
+        let mut result = ModuleResult::new();
+
+        for cell in &data.cells {
+            let Some(mcc) = cell.mcc else { continue };
+            let Some(mnc) = cell.mnc else { continue };
+            let Some(lac) = cell.lac else { continue };
+            let Some(cid) = cell.cid else { continue };
+
+            let radio = cell.radio.as_deref().unwrap_or("unknown");
+            let tower_id = format!("{mcc}-{mnc}-{lac}-{cid}");
+
+            // ── DeviceId entity ──────────────────────────────────────────
+            let mut device = Entity::new(EntityKind::DeviceId, &tower_id, 0.78, &ctx.scan_id);
+            device.tag("cell-tower");
+            device.tag(format!("radio:{}", radio.to_lowercase()));
+            let mut ev = Evidence::new(SRC, format!("OpenCelliD tower {tower_id} ({radio})"))
+                .with_attr("tower_id", &tower_id)
+                .with_attr("radio", radio)
+                .with_attr("mcc", mcc.to_string())
+                .with_attr("mnc", mnc.to_string())
+                .with_attr("lac", lac.to_string())
+                .with_attr("cid", cid.to_string());
+            if let Some(r) = cell.range {
+                ev = ev.with_attr("range_m", r.to_string());
+            }
+            if let Some(s) = cell.samples {
+                ev = ev.with_attr("samples", s.to_string());
+            }
+            if let Some(sig) = cell.average_signal {
+                ev = ev.with_attr("avg_signal_dbm", sig.to_string());
+            }
+            device.add_evidence(ev);
+            result.push(device);
+
+            // ── Coordinates entity ───────────────────────────────────────
+            let Some(t_lat) = cell.lat else { continue };
+            let Some(t_lon) = cell.lon else { continue };
+            if !is_valid_coords(t_lat, t_lon) {
+                continue;
+            }
+            let coords = format!("{t_lat:.6},{t_lon:.6}");
+            let confidence = accuracy_to_confidence(cell.range.unwrap_or(5000));
+            let mut geo = Entity::new(EntityKind::Coordinates, &coords, confidence, &ctx.scan_id);
+            geo.tag("geoint");
+            geo.tag("cell-tower");
+            geo.tag(format!("radio:{}", radio.to_lowercase()));
+            if let Some(state) = au_state_for_coords(t_lat, t_lon) {
+                geo.tag(format!("au-state:{state}"));
+                geo.tag("country:AU");
+            }
+            geo.add_evidence(
+                Evidence::new(SRC, format!("OpenCelliD tower {tower_id} at {coords}"))
+                    .with_attr("tower_id", &tower_id)
+                    .with_attr("radio", radio)
+                    .with_attr("range_m", cell.range.unwrap_or(5000).to_string())
+                    .with_attr("source", "OpenCelliD"),
+            );
+            result.push(geo);
+        }
+
+        Ok(result)
+    }
+}
+
+/// Map the reported accuracy radius (metres) to an entity confidence level.
+/// Tighter coverage → higher confidence. Identical scale to `cell_intel`.
+pub(super) fn accuracy_to_confidence(range_m: u64) -> f64 {
+    match range_m {
+        0..=100 => 0.85,
+        101..=500 => 0.75,
+        501..=2000 => 0.65,
+        2001..=10000 => 0.50,
+        _ => 0.35,
+    }
+}
