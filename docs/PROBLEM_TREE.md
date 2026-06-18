@@ -1940,3 +1940,56 @@ scans of data indefinitely with no observable signal.
 Gate green: fmt/clippy/doc clean, 3,102 total lib tests (+5), 3,098 passing +
 4 ignored, 0 failures. **Paired:** `SOLUTION_TREE` T2.7 + §4/§5 cycle 27
 — same commit.
+
+---
+
+### §8 · Maintained log — cycle 28 (P→S direction)
+
+**Gap closed: C3 sub-item — Australian address structural validation (`au_address` + `normalise` + AU-061 / AU-062)**
+
+*Problem:* Australian addresses entered as seeds were treated as opaque strings.
+Two representations of the same property (e.g. "36 Mary St, Brisbane QLD 4000" vs
+"36 Mary Street Brisbane 4000") produced different entity UIDs and were never
+merged. The `locality_key()` function embedded the full street address (number +
+name + suburb), so three addresses in the same suburb from three independent
+sources yielded three distinct keys — AU-061 (locality corroboration, cycle 26
+candidate) could never fire. No passive offline module existed to validate
+state/postcode consistency before `geocode` ran.
+
+*Solution delivered:*
+- **`au_address` module (128th module):** Passive, zero-network, geo category,
+  priority 40. Accepts `TargetKind::Address`; calls `address_au::extract_first()`
+  to parse and validate suburb/state/postcode consistency; emits a structured
+  `Address` entity with evidence attributes (`street_number`, `street`, `suburb`,
+  `state`, `postcode`, optional `level`/`unit`) and tags (`au:address`,
+  `validated`, `au-state:XX`). Extracts embedded phone numbers alongside (e.g.
+  database dumps that append "Ph: 07 3200 0000"). ATT&CK T1591.001. No API key,
+  no network.
+- **`normalise(EntityKind::Address)` canonical form:** Uses `extract_first()` to
+  reconstruct a deterministic canonical string; trailing street-type abbreviations
+  are expanded via the new `expand_au_street_abbr()` private helper ("Mary St" →
+  "Mary Street", "Oak Ave" → "Oak Avenue", 16 mappings). Variants that parse to
+  the same components share a single UID; non-parseable strings fall through to
+  the trimmed original.
+- **AU-061 — Address locality corroboration (Severity::High):** Groups `Address`
+  entities by suburb+state using `extract_first()` — deliberately NOT
+  `locality_key()` which embeds the street number and name, making different
+  street addresses in the same suburb appear unrelated. Fires when ≥3 distinct
+  evidence sources corroborate the same suburb+state combination, indicating
+  convergent intelligence on a specific locality.
+- **AU-062 — Postcode↔state mismatch (Severity::Medium):** Detects internal
+  address inconsistency using `state_for_postcode()` — fires at confidence ≥0.40
+  when the trailing 4-digit postcode maps to a different state than the stated
+  one (e.g. "Melbourne NSW 3000" — postcode 3000 is VIC, not NSW).
+- Architecture guard allowlist updated for `util::address_au::extract_first` and
+  `state_for_postcode` used directly in `core/correlator/rules/geo.rs` (the
+  existing exceptions cover pure, OnceLock-compiled regex parsers that bring no
+  I/O or network dependency into the core layer).
+- 6 new correlation unit tests (3 AU-061: fires/no-fire-two-sources/no-fire-low-conf;
+  3 AU-062: fires/no-fire-consistent/no-fire-below-threshold).
+- `docs/MODULES.md`: count 127→128, geo section (21)→(22), `au_address` row added.
+- `README.md`: module count 127→128 updated in 3 places.
+
+Gate green: fmt/clippy/doc clean, 3,108 total lib tests (+6), 3,104 passing +
+4 ignored, 0 failures. **Paired:** `SOLUTION_TREE` C3 + §4/§5 cycle 28
+— same commit.

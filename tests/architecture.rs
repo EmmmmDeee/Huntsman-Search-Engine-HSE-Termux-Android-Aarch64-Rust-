@@ -124,6 +124,15 @@ fn core_does_not_import_util_directly() {
                 // jurisdiction an Address asserts, to cross-check it against the
                 // `au-state:` tag a Coordinates entity carries.
                 && !line.contains("util::address_au::state_code")
+                // Pure, OnceLock-compiled regex address parser (no I/O, no
+                // network). Used by `entity::normalise(Address)` to reconstruct
+                // a canonical form (expanded street types) so abbreviated and
+                // spelled-out variants share a single dedup UID.
+                && !line.contains("util::address_au::extract_first")
+                // Pure, dependency-free postcode→state range checker (no I/O).
+                // Same leaf category as `locality_key`: AU-062 uses it to
+                // detect postcode/state mismatches inside a single address.
+                && !line.contains("util::address_au::state_for_postcode")
                 // Pure, dependency-free coordinate -> AU state/territory
                 // bounding-box classifier (no I/O). AU-056 uses it to derive a
                 // coordinate's jurisdiction when the `au-state:` tag is absent

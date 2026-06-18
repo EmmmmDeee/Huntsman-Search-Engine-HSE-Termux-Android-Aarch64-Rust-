@@ -12,6 +12,40 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Cycle 28 (P→S) — Australian address structural validation: `au_address` module,
+  `normalise(EntityKind::Address)`, AU-061 locality corroboration, AU-062
+  postcode↔state mismatch.**
+  **`au_address`** (128th module) is a passive, zero-network, key-free geo module
+  (priority 40) that accepts `TargetKind::Address` seeds, calls
+  `util::address_au::extract_first()` to parse and validate suburb/state/postcode
+  consistency, and emits a structured `Address` entity tagged `au:address`,
+  `validated`, and `au-state:XX` with evidence attributes
+  (`street_number`, `street`, `suburb`, `state`, `postcode`, optional `level`/`unit`).
+  Phone numbers embedded in the address string (e.g. appended "Ph: 07 3200 0000"
+  in database dump rows) are extracted as separate `Phone` entities at 0.70
+  confidence. ATT&CK T1591.001.
+  **`normalise(EntityKind::Address)`** reconstructs a deterministic canonical form
+  from parsed fields; the new private helper `expand_au_street_abbr()` expands
+  trailing street-type abbreviations (16 mappings: St→Street, Rd→Road, Ave→Avenue,
+  etc.) so address variants that differ only in abbreviation share a single UID
+  and are merged rather than duplicated. Non-parseable strings fall through to the
+  trimmed original.
+  **AU-061** (address locality corroboration, Severity::High) groups `Address`
+  entities by suburb+state using `extract_first()` — not `locality_key()` which
+  embeds the street number, making different addresses in the same suburb appear
+  distinct — and fires when ≥3 independent evidence sources agree on the same
+  suburb+state combination.
+  **AU-062** (postcode↔state mismatch, Severity::Medium) detects internal address
+  inconsistency via `state_for_postcode()`: fires at confidence ≥0.40 when the
+  trailing 4-digit postcode maps to a state that differs from the stated one
+  (e.g. "Melbourne NSW 3000" — 3000 is VIC, not NSW).
+  Architecture guard allowlist updated for `util::address_au::extract_first` and
+  `state_for_postcode` called from `core/correlator/rules/geo.rs`. 6 new
+  correlation unit tests. `docs/MODULES.md` count 127→128, geo (21)→(22);
+  `README.md` count 127→128 in 3 places.
+  Gate green: fmt/clippy/doc clean, 3,108 total lib tests (+6), 3,104 passing +
+  4 ignored, 0 failures.
+
 - **Test-coverage & proof-infrastructure expansion (~2,995 lib tests passing).**
   Added direct unit tests for previously-untested pure functions across the tree
   — `signal_radar/gps`, search-engine/email/fullcontact helpers, the `util`

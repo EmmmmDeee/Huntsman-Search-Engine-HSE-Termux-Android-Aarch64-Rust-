@@ -262,6 +262,8 @@ const RULES: &[RuleFn] = &[
     rule_au_058_professional_profile_geo,
     rule_au_059_cross_seed_geo_synergy,
     rule_au_060_cell_tower_cross_validation,
+    rule_au_061_address_locality_corroboration,
+    rule_au_062_postcode_state_mismatch,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

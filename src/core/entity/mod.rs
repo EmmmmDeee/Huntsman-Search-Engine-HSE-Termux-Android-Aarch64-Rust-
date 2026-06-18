@@ -833,6 +833,40 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             }
             out
         }
+        EntityKind::Address => {
+            // Attempt to parse as a structured AU address and reconstruct a
+            // canonical form so "133 Mary St, …" and "133 Mary Street, …"
+            // share a single UID. Falls back to plain trim if the parser does
+            // not recognise the value (international addresses, bare suburbs,
+            // free-text location strings).
+            let trimmed = value.trim();
+            match crate::util::address_au::extract_first(trimmed) {
+                Some(a) => {
+                    // Expand trailing street-type abbreviation to canonical form.
+                    let street = expand_au_street_abbr(&a.street);
+                    let mut out = String::with_capacity(80);
+                    if let Some(lvl) = &a.level {
+                        out.push_str(lvl);
+                        out.push_str(", ");
+                    }
+                    if let Some(unit) = &a.unit {
+                        out.push_str(unit);
+                        out.push('/');
+                    }
+                    out.push_str(&a.street_number);
+                    out.push(' ');
+                    out.push_str(&street);
+                    out.push_str(", ");
+                    out.push_str(&a.suburb);
+                    out.push(' ');
+                    out.push_str(&a.state);
+                    out.push(' ');
+                    out.push_str(&a.postcode);
+                    out
+                }
+                None => trimmed.to_string(),
+            }
+        }
         EntityKind::IpAddress => {
             let trimmed = value.trim();
             // Parse and re-format to canonical form (handles IPv6 compression, mapped addresses)
@@ -928,6 +962,44 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
         }
         _ => value.trim().to_string(),
     }
+}
+
+/// Expand the trailing street-type abbreviation in an AU street name to its
+/// full canonical form ("Mary St" → "Mary Street", "Nth Tce" → "Nth Terrace").
+/// Only the last whitespace-separated token is considered so "St Georges Tce"
+/// correctly expands "Tce" rather than "St". Case-insensitive. Returns an
+/// owned copy when expanded; returns a clone of the input if no known
+/// abbreviation is found.
+fn expand_au_street_abbr(street: &str) -> String {
+    const EXPANSIONS: &[(&str, &str)] = &[
+        ("St", "Street"),
+        ("Rd", "Road"),
+        ("Ave", "Avenue"),
+        ("Dr", "Drive"),
+        ("Ct", "Court"),
+        ("Ln", "Lane"),
+        ("Pl", "Place"),
+        ("Cres", "Crescent"),
+        ("Hwy", "Highway"),
+        ("Blvd", "Boulevard"),
+        ("Pde", "Parade"),
+        ("Tce", "Terrace"),
+        ("Sq", "Square"),
+        ("Cct", "Circuit"),
+        ("Cl", "Close"),
+        ("Esp", "Esplanade"),
+    ];
+    if let Some(last_ws) = street.rfind(' ') {
+        let prefix = &street[..last_ws];
+        let token = street[last_ws + 1..].trim_end();
+        if let Some(full) = EXPANSIONS
+            .iter()
+            .find_map(|(abbr, full)| token.eq_ignore_ascii_case(abbr).then_some(*full))
+        {
+            return format!("{prefix} {full}");
+        }
+    }
+    street.to_string()
 }
 
 /// The distinct evidence-source names across a set of entities — the modules /

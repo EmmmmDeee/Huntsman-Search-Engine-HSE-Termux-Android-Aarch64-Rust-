@@ -3952,3 +3952,156 @@ fn au030_fires_for_three_source_geo_cluster() {
     assert_eq!(r[0].rule_id, "AU-030");
     assert_eq!(r[0].severity, Severity::Medium);
 }
+
+// ─── AU-061: address locality corroboration ───────────────────────────────────
+
+#[test]
+fn au061_fires_when_same_locality_seen_by_three_sources() {
+    use super::rules::rule_au_061_address_locality_corroboration;
+
+    // Three different sources all place the subject in "Newstead QLD 4006".
+    let mut a1 = Entity::new(
+        EntityKind::Address,
+        "1 Main St, Newstead QLD 4006",
+        0.70,
+        "s",
+    );
+    a1.add_evidence(Evidence::new("au_people", "found in AU people directory"));
+    let mut a2 = Entity::new(
+        EntityKind::Address,
+        "2 River Rd, Newstead QLD 4006",
+        0.65,
+        "s",
+    );
+    a2.add_evidence(Evidence::new("search_engines", "SERP result"));
+    let mut a3 = Entity::new(
+        EntityKind::Address,
+        "3 Park Pl, Newstead QLD 4006",
+        0.70,
+        "s",
+    );
+    a3.add_evidence(Evidence::new("au_address", "AU address validated"));
+
+    let out = rule_au_061_address_locality_corroboration(&[a1, a2, a3], "scan", 0);
+    assert_eq!(out.len(), 1, "three independent sources must fire AU-061");
+    assert_eq!(out[0].rule_id, "AU-061");
+    assert_eq!(out[0].severity, Severity::High);
+    assert!(out[0].description.contains("3 independent source"));
+}
+
+#[test]
+fn au061_does_not_fire_for_two_sources() {
+    use super::rules::rule_au_061_address_locality_corroboration;
+
+    let mut a1 = Entity::new(
+        EntityKind::Address,
+        "1 Main St, Brisbane QLD 4000",
+        0.70,
+        "s",
+    );
+    a1.add_evidence(Evidence::new("au_people", "x"));
+    let mut a2 = Entity::new(
+        EntityKind::Address,
+        "2 River Rd, Brisbane QLD 4000",
+        0.65,
+        "s",
+    );
+    a2.add_evidence(Evidence::new("search_engines", "x"));
+
+    assert!(
+        rule_au_061_address_locality_corroboration(&[a1, a2], "scan", 0).is_empty(),
+        "two sources must not fire AU-061"
+    );
+}
+
+#[test]
+fn au061_does_not_fire_for_low_confidence_addresses() {
+    use super::rules::rule_au_061_address_locality_corroboration;
+
+    // All below 0.40 confidence threshold.
+    let mut a1 = Entity::new(
+        EntityKind::Address,
+        "1 Main St, Newstead QLD 4006",
+        0.35,
+        "s",
+    );
+    a1.add_evidence(Evidence::new("src_a", "x"));
+    let mut a2 = Entity::new(
+        EntityKind::Address,
+        "2 River Rd, Newstead QLD 4006",
+        0.30,
+        "s",
+    );
+    a2.add_evidence(Evidence::new("src_b", "x"));
+    let mut a3 = Entity::new(
+        EntityKind::Address,
+        "3 Park Pl, Newstead QLD 4006",
+        0.39,
+        "s",
+    );
+    a3.add_evidence(Evidence::new("src_c", "x"));
+
+    assert!(
+        rule_au_061_address_locality_corroboration(&[a1, a2, a3], "scan", 0).is_empty(),
+        "low-confidence addresses must not fire AU-061"
+    );
+}
+
+// ─── AU-062: postcode–state mismatch ──────────────────────────────────────────
+
+#[test]
+fn au062_fires_for_postcode_state_mismatch() {
+    use super::rules::rule_au_062_postcode_state_mismatch;
+
+    // A VIC postcode (3000) used in an address claiming NSW — should fire.
+    let e = Entity::new(
+        EntityKind::Address,
+        "50 Collins St, Melbourne NSW 3000",
+        0.70,
+        "s",
+    );
+    let out = rule_au_062_postcode_state_mismatch(&[e], "scan", 0);
+    assert_eq!(
+        out.len(),
+        1,
+        "postcode 3000 in NSW address must fire AU-062"
+    );
+    assert_eq!(out[0].rule_id, "AU-062");
+    assert_eq!(out[0].severity, Severity::Medium);
+    assert!(out[0].description.contains("3000"));
+    assert!(out[0].description.contains("VIC"));
+}
+
+#[test]
+fn au062_does_not_fire_for_consistent_address() {
+    use super::rules::rule_au_062_postcode_state_mismatch;
+
+    // Correct: Brisbane QLD 4000 is a valid QLD postcode.
+    let e = Entity::new(
+        EntityKind::Address,
+        "1 Queen St, Brisbane QLD 4000",
+        0.70,
+        "s",
+    );
+    assert!(
+        rule_au_062_postcode_state_mismatch(&[e], "scan", 0).is_empty(),
+        "consistent postcode/state must not fire AU-062"
+    );
+}
+
+#[test]
+fn au062_does_not_fire_below_confidence_threshold() {
+    use super::rules::rule_au_062_postcode_state_mismatch;
+
+    // Mismatched but below 0.40 confidence.
+    let e = Entity::new(
+        EntityKind::Address,
+        "50 Collins St, Melbourne NSW 3000",
+        0.30,
+        "s",
+    );
+    assert!(
+        rule_au_062_postcode_state_mismatch(&[e], "scan", 0).is_empty(),
+        "low-confidence mismatch must not fire AU-062"
+    );
+}

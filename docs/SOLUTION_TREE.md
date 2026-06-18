@@ -493,8 +493,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
 - **C9** — **delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18). Off the open queue.
 - **C3** — `[~]` (SOL-AU-MOAT). `austlii` delivered cycle 20 (courts/AustLII closed).
-  *Remaining:* GNAF/AusPost address validation; fuller ASIC/ABR graph; state
-  cadastre/property.
+  `au_address` offline structural validation + `normalise(EntityKind::Address)` +
+  AU-061/AU-062 delivered cycle 28 (address format + locality corroboration now online).
+  *Remaining:* GNAF database integration; fuller ASIC/ABR graph; state cadastre/property.
 - **C4** — `[~]` (SOL-NETINT). S→P audit cycle 20: `securitytrails`, `bgpview`, and
   `ripestat` were stale "remaining" notes — all three modules already registered.
   *Remaining:* passive-DNS history; CDN cert-hash origin pivot.
@@ -561,7 +562,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   data.
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); C1/C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii`/`au_address` shipped, courts/AustLII + address structural validation closed cycle 28; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); C1/C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
 
@@ -1230,7 +1231,7 @@ last-success age. Default no-op on `StoragePort` keeps test doubles compatible.
 *§4a update:* T2.7 is now closed `[x]`. Remaining open §4a items:
 - cell_local auto-sync (no auto-scheduled re-sync; manual `hse cells import` only)
 - hse update --check changelog (shows commit count but not subject lines)
-- C3 remaining (GNAF/AusPost address validation; state cadastre/property)
+- C3 remaining (GNAF database integration; fuller ASIC/ABR graph; state cadastre/property)
 - C4 remaining (passive-DNS subdomain union + CDN cert-hash origin-unmasking)
 - C5 remaining (Weiszfeld/Welzl centroid; provenance radius)
 - §7 S4 LOW residual (archived success body not run through `redact_literal_secrets`)
@@ -1251,3 +1252,42 @@ but not blocking — the core "is this scraper broken?" signal is now in place.
 
 Gate green: fmt/clippy/doc clean, 3,102 total lib tests (+5), 0 failures.
 Paired: `PROBLEM_TREE` §8 cycle 27 — same commit.
+
+---
+
+### §5 · Maintained log — cycle 28 (S→P direction)
+
+**C3 / SOL-AU-MOAT — Australian address structural validation**
+
+*Delivered:* `au_address` passive module (128th total); `normalise(EntityKind::Address)`
+canonical reconstruction with `expand_au_street_abbr()` (16 street-type expansions);
+AU-061 locality corroboration rule (fires High when ≥3 distinct evidence sources agree on
+suburb+state); AU-062 postcode↔state mismatch rule (fires Medium when postcode range
+contradicts stated state, confidence ≥0.40). Architecture guard allowlist updated.
+6 new correlation tests; MODULES.md + README module count 127→128.
+
+*§4a update:* "GNAF/AusPost address validation" sub-item of C3 is now closed.
+Remaining open §4a items:
+- C3 remaining (GNAF database integration; fuller ASIC/ABR graph; state cadastre/property)
+- cell_local auto-sync (no auto-scheduled re-sync; manual `hse cells import` only)
+- hse update --check changelog (shows commit count but not subject lines)
+- C4 remaining (passive-DNS subdomain union + CDN cert-hash origin-unmasking)
+- C5 remaining (Weiszfeld/Welzl centroid; provenance radius)
+- §7 S4 LOW residual (archived success body not run through `redact_literal_secrets`)
+- SOL-F1 remaining (`bstr` — no natural consumer yet)
+- SOL-F3 remaining (`cargo-fuzz` nightly CI lane)
+
+*S→P gap:* `au_address` validates structural consistency (suburb/state/postcode ranges)
+but does not confirm street name existence — that requires GNAF database integration, the
+next C3 sub-item. `normalise(EntityKind::Address)` handles AU addresses only; international
+address variants (UK postcodes, US ZIP+4) are not normalised. AU-061 groups by suburb+state;
+a pair like "Spring Hill QLD" and "Spring Hill NSW" are correctly kept separate because state
+is part of the key. These gaps are tracked as C3 remaining sub-items and are not blocking.
+
+**§4d update (status table excerpt):**
+| ID          | Description                               | Status       |
+|-------------|------------------------------------------|--------------|
+| SOL-AU-MOAT | C3 (address validation sub-item)         | `[~]` cycle 28 |
+
+Gate green: fmt/clippy/doc clean, 3,108 total lib tests (+6), 0 failures.
+Paired: `PROBLEM_TREE` §8 cycle 28 — same commit.

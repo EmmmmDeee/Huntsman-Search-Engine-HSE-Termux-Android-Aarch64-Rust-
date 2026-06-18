@@ -885,6 +885,139 @@ pub(in crate::core::correlator) fn rule_au_060_cell_tower_cross_validation(
         .collect()
 }
 
+/// AU-061 — Address locality corroborated by 3+ independent sources.
+///
+/// When the same AU suburb+state is asserted by three or more *distinct*
+/// evidence sources — across any street addresses in that area — the
+/// physical location is strongly corroborated.  Uses
+/// [`crate::util::address_au::extract_first`] to parse the suburb and state
+/// from each address entity, then groups by `"suburb state"` (lowercase).
+///
+/// The three-source threshold means at least three different collectors
+/// (e.g. `au_people`, `search_engines`, `au_address`) independently placed
+/// the subject in the same suburb — not merely one module emitting the
+/// same address twice.
+///
+/// Severity High: independent corroboration of physical location is
+/// actionable intelligence across skip-trace, asset recovery, and
+/// welfare-check use cases.
+pub(in crate::core::correlator) fn rule_au_061_address_locality_corroboration(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let addresses = entities_of_kind(entities, EntityKind::Address);
+
+    // "suburb state" (lowercase) → (distinct_sources, contributing_uids, display_label)
+    let mut locality_map: BTreeMap<String, (BTreeSet<String>, Vec<String>, String)> =
+        BTreeMap::new();
+    for e in &addresses {
+        if e.confidence < 0.40 {
+            continue;
+        }
+        let Some(parsed) = crate::util::address_au::extract_first(&e.value) else {
+            continue;
+        };
+        let key = format!("{} {}", parsed.suburb.to_lowercase(), parsed.state);
+        let entry = locality_map.entry(key).or_insert_with(|| {
+            let display = format!("{}, {}", parsed.suburb, parsed.state);
+            (BTreeSet::new(), Vec::new(), display)
+        });
+        for ev in &e.evidence {
+            entry.0.insert(ev.source.clone());
+        }
+        if !entry.1.contains(&e.uid) {
+            entry.1.push(e.uid.clone());
+        }
+    }
+
+    let mut out = Vec::new();
+    for (_, (sources, uids, display)) in &locality_map {
+        if sources.len() < 3 {
+            continue;
+        }
+        let mut src_list: Vec<&str> = sources.iter().map(String::as_str).collect();
+        src_list.sort_unstable();
+        out.push(Correlation::new(
+            "AU-061",
+            "Address locality corroborated by 3+ independent sources",
+            Severity::High,
+            format!(
+                "Locality '{}' confirmed by {} independent source(s): {}",
+                display,
+                sources.len(),
+                src_list.join(", ")
+            ),
+            uids.iter().take(5).cloned().collect(),
+            scan_id,
+            ts,
+        ));
+    }
+    out
+}
+
+/// AU-062 — Address postcode↔state mismatch (anomaly signal).
+///
+/// Fires when an `Address` entity's four-digit postcode falls outside the
+/// known range for the state it names.  The check uses
+/// [`crate::util::address_au::state_for_postcode`] — the same function the
+/// AU address parser uses — so the boundary conditions are consistent.
+///
+/// * **Planted/stale data**: a historical or synthetic address may carry a
+///   correct suburb/state but a wrong postcode, or vice versa.
+/// * **AU-062 × AU-056 synergy**: AU-056 cross-checks coordinates vs address
+///   state; AU-062 cross-checks the address's own internal consistency.
+///   Both firing together elevates confidence that something is off.
+///
+/// Only fires when the postcode positively maps to a *different* state; an
+/// unrecognised postcode (e.g. an international format) is silently skipped.
+pub(in crate::core::correlator) fn rule_au_062_postcode_state_mismatch(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let mut out = Vec::new();
+    for e in entities_of_kind(entities, EntityKind::Address) {
+        if e.confidence < 0.40 {
+            continue;
+        }
+        // Extract the stated state code from the address text.
+        let Some(stated_state) = crate::util::address_au::state_code(&e.value) else {
+            continue;
+        };
+        // Find a trailing 4-digit token that plausibly is the postcode.
+        let Some(postcode) = e
+            .value
+            .split_whitespace()
+            .rev()
+            .find(|t| t.len() == 4 && t.chars().all(|c| c.is_ascii_digit()))
+        else {
+            continue;
+        };
+        // Check whether the postcode maps to a different state.
+        if let Some(expected) = crate::util::address_au::state_for_postcode(postcode)
+            && expected != stated_state
+        {
+            out.push(Correlation::new(
+                "AU-062",
+                "Address postcode–state mismatch",
+                Severity::Medium,
+                format!(
+                    "Address '{}' states {} but postcode {} maps to {} — \
+                     possible stale, planted, or OCR-corrupted data",
+                    e.value, stated_state, postcode, expected
+                ),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            ));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -12,6 +12,7 @@ pub mod acnc_charities;
 pub mod ahpra;
 pub mod api_key_probe;
 pub mod asic_director;
+pub mod au_address;
 pub mod au_electoral;
 pub mod au_people;
 pub mod au_property;
@@ -349,6 +350,8 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(name_intel::NameIntel),
         Arc::new(social_location::SocialLocation),
         Arc::new(wikidata::Wikidata),
+        // Australian address validation (passive, offline)
+        Arc::new(au_address::AuAddress),
         // Australian + global public-records / corporate registries
         Arc::new(opencorporates::OpenCorporates),
         Arc::new(qld_unclaimed::QldUnclaimed),
