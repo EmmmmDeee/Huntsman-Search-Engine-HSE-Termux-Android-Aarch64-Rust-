@@ -271,51 +271,51 @@ if [[ "${HSE_NO_PKG:-0}" != "1" ]]; then
     if [[ $IS_TERMUX -eq 1 ]]; then
         step "Installing Termux packages (rust, binutils, git, clang, make, pkg-config, openssl-tool, curl)"
 
-        # ── Mirror pre-configuration ─────────────────────────────────────────
-        # A fresh Termux install has a @MIRROR@ placeholder in sources.list,
-        # which causes `pkg update` to invoke `termux-change-repo` and speed-test
-        # all 50+ mirrors — verbose, slow, and unnecessary.  We short-circuit it
-        # by pre-writing the Cloudflare CDN mirror (global, anycast, HTTPS).
-        # If the user has already selected a mirror, this is a no-op.
+        # ── Mirror: pin Cloudflare CDN, bypass pkg's 50-mirror speed test ─────
+        # On a fresh repo, pkg(1) runs an interactive mirror selector on the
+        # first `pkg update`/`install` — printing "No mirror or mirror group
+        # selected" and speed-testing 50+ mirrors (slow and noisy over a curl
+        # pipe). We sidestep it two ways: (1) pin the Cloudflare anycast CDN
+        # mirror (global, consistently fast), and (2) drive `apt-get` directly,
+        # since only the `pkg` wrapper runs the selector — `apt-get` just reads
+        # sources.list. Keep your own termux-change-repo choice with
+        # HSE_KEEP_MIRROR=1.
         _SLIST="$PREFIX/etc/apt/sources.list"
-        if ! grep -qsE 'deb[[:space:]]+https?://' "$_SLIST" 2>/dev/null; then
-            log_warn "No APT mirror configured — pre-selecting Cloudflare CDN mirror"
-            hint "Change later with: termux-change-repo"
+        if [[ "${HSE_KEEP_MIRROR:-0}" != "1" ]]; then
             mkdir -p "$(dirname "$_SLIST")"
-            printf '# The main termux repository:\ndeb https://packages-cf.termux.dev/apt/termux-main stable main\n' \
+            printf '%s\n%s\n%s\n' \
+                '# Pinned by the hse installer (set HSE_KEEP_MIRROR=1 to keep your own).' \
+                '# Change manually any time with: termux-change-repo' \
+                'deb https://packages-cf.termux.dev/apt/termux-main stable main' \
                 > "$_SLIST"
-            ok "Mirror → packages-cf.termux.dev"
+            ok "Mirror pinned → packages-cf.termux.dev (Cloudflare CDN)"
         fi
 
-        # ── Package index refresh ────────────────────────────────────────────
-        # Verbose apt/dpkg output goes only to $LOG_FILE (>> redirects past the
-        # exec tee); a compact one-liner is shown instead.  Retry on flaky
-        # mobile networks.
-        _pkg_update_quiet() {
-            printf "  Refreshing package index…"
+        # ── Package install ──────────────────────────────────────────────────
+        # Verbose apt/dpkg output goes to $LOG_FILE only (>> bypasses the exec
+        # tee); a compact one-liner shows here. apt-get (not pkg) avoids the
+        # mirror selector. Retry the index refresh on flaky mobile networks.
+        _apt() {
+            local label="$1"; shift
+            printf "  %s…" "$label"
             local _rc=0
-            DEBIAN_FRONTEND=noninteractive pkg update -y >> "$LOG_FILE" 2>&1 || _rc=$?
+            DEBIAN_FRONTEND=noninteractive apt-get "$@" >> "$LOG_FILE" 2>&1 || _rc=$?
             if [[ $_rc -eq 0 ]]; then printf " done\n"; else printf " failed\n"; fi
             return $_rc
         }
         attempts=0
-        until _pkg_update_quiet; do
+        until _apt "Refreshing package index" update -y; do
             attempts=$((attempts + 1))
             [[ $attempts -ge 4 ]] && \
-                die "pkg update failed after 4 attempts — mirror broken? Run: termux-change-repo (then re-run installer)"
-            log_warn "pkg update failed (attempt $attempts); retrying in $((attempts * 2))s"
-            hint "Mirror issues? Run: termux-change-repo"
+                die "package index refresh failed after 4 attempts — mirror down? Run: termux-change-repo (then re-run installer)"
+            log_warn "index refresh failed (attempt $attempts); retrying in $((attempts * 2))s"
+            hint "Persistent mirror trouble? Run: termux-change-repo"
             sleep $((attempts * 2))
         done
 
         # Install build chain. clang covers all C dep build.rs cases on Termux.
-        printf "  Installing packages…"
-        DEBIAN_FRONTEND=noninteractive \
-            pkg install -y rust binutils git clang make pkg-config openssl-tool curl \
-                >> "$LOG_FILE" 2>&1 \
-            || { printf " failed\n"
-                 die "pkg install failed — check $LOG_FILE for missing packages"; }
-        printf " done\n"
+        _apt "Installing packages" install -y rust binutils git clang make pkg-config openssl-tool curl \
+            || die "package install failed — check $LOG_FILE for missing packages"
         ok "Packages installed: rust, binutils, git, clang, make, pkg-config, openssl-tool, curl"
 
         # Optional: termux-api is needed for sensor modules (v0.6+).
@@ -362,6 +362,42 @@ if ! ver_ge "$RUST_MAJ_MIN" "$RUST_MIN_VERSION"; then
     die "rustc $RUST_FULL < required $RUST_MIN_VERSION. On Termux: pkg upgrade rust"
 fi
 ok "rustc $RUST_FULL (>= $RUST_MIN_VERSION required)"
+
+# ─── Rust standard library integrity (Termux) ────────────────────────────────
+# A broken / partially-installed Termux `rust` package can ship libstd as only a
+# shared object (.so) and omit the static archive (.rlib). Every build-script
+# and proc-macro then fails to *link* with:
+#   error: crate `std` required to be available in rlib format, but was not found
+# (library crates still compile — they emit metadata and never link std — so the
+# failure looks baffling: "only the build scripts break"). Detect it up front
+# and self-heal with a reinstall, turning a 3×-retry mystery into a repair or a
+# clear diagnosis BEFORE the long source build.
+if [[ $IS_TERMUX -eq 1 ]]; then
+    SYSROOT="$(rustc --print sysroot 2>/dev/null || true)"
+    HOST_TRIPLE="$(rustc -vV 2>/dev/null | awk '/^host:/ {print $2}')"
+    RLIB_DIR="$SYSROOT/lib/rustlib/$HOST_TRIPLE/lib"
+    if [[ -n "$SYSROOT" && -n "$HOST_TRIPLE" && -d "$RLIB_DIR" ]]; then
+        if ls "$RLIB_DIR"/libstd-*.rlib >/dev/null 2>&1; then
+            ok "rust std OK (static libstd present for $HOST_TRIPLE)"
+        elif ls "$RLIB_DIR"/libstd-*.so >/dev/null 2>&1; then
+            # High-confidence broken signal: dynamic libstd present, static absent.
+            log_warn "rust sysroot has no static std (libstd-*.rlib) — builds would fail to link"
+            hint "Repairing the Termux 'rust' package (apt reinstall)…"
+            if DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall rust >> "$LOG_FILE" 2>&1 \
+                && ls "$RLIB_DIR"/libstd-*.rlib >/dev/null 2>&1; then
+                ok "rust std repaired (reinstalled)"
+            else
+                die "Termux 'rust' package is broken: no static std in $RLIB_DIR
+  This is an upstream Termux packaging issue, not an HSE bug. Options:
+    • pkg upgrade rust    (then re-run this installer once Termux ships a fix)
+    • use a prebuilt:     HSE_PREBUILT=/path/to/hse bash install.sh
+    • report it:          https://github.com/termux/termux-packages/issues"
+            fi
+        fi
+        # Any other layout (neither .rlib nor .so matched) → unexpected; skip the
+        # check rather than risk a false positive.
+    fi
+fi
 
 # ─── Clone or update ─────────────────────────────────────────────────────────
 step "Fetching source ($HSE_REF) → $HSE_INSTALL_DIR"
@@ -448,6 +484,19 @@ hint "Slow? Re-run with HSE_BUILD_PROFILE=fast for a quicker build, or HSE_FULL_
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/hse-build}"
 mkdir -p "$CARGO_TARGET_DIR"
 
+# Stale-artifact guard: a `pkg upgrade rust` between installs (Termux upgrades
+# the toolchain often) leaves this cache built against the OLD rustc. Mixing
+# toolchain outputs can surface as obscure metadata/format errors, so clear the
+# profile outputs when the compiler version changed since the cache was last
+# written. Cheap — a first install builds clean anyway; this only fires on a
+# real version delta.
+RUSTC_STAMP="$CARGO_TARGET_DIR/.hse-rustc-version"
+RUSTC_NOW="$(rustc --version 2>/dev/null || echo unknown)"
+if [[ -f "$RUSTC_STAMP" ]] && [[ "$(cat "$RUSTC_STAMP" 2>/dev/null)" != "$RUSTC_NOW" ]]; then
+    log_warn "rustc changed since last build ($(cat "$RUSTC_STAMP") → $RUSTC_NOW) — clearing stale build cache"
+    rm -rf "${CARGO_TARGET_DIR:?}/release" "${CARGO_TARGET_DIR:?}/fast" "${CARGO_TARGET_DIR:?}/debug" 2>/dev/null || true
+fi
+
 # Termux quirk: $TMPDIR sometimes too small. Override to $HOME/tmp if not big enough.
 if [[ $IS_TERMUX -eq 1 ]]; then
     export TMPDIR="${TMPDIR:-$HOME/tmp}"
@@ -473,6 +522,16 @@ HB_PID=$!
 attempts=0
 until cargo build --profile "$PROFILE" --locked; do
     attempts=$((attempts + 1))
+    # Reactive net for the broken-sysroot case the pre-flight check missed: the
+    # rlib-format error never recovers, so bail on first sight rather than
+    # burning retries (and a confusing "slow network?" message) on it.
+    if grep -q "required to be available in rlib format" "$LOG_FILE" 2>/dev/null; then
+        die "build failed: the Termux 'rust' package has no static std (rlib).
+  This is an upstream Termux packaging bug, not an HSE bug. Options:
+    • pkg upgrade rust    (then re-run this installer once Termux ships a fix)
+    • use a prebuilt:     HSE_PREBUILT=/path/to/hse bash install.sh
+    • report it:          https://github.com/termux/termux-packages/issues"
+    fi
     [[ $attempts -ge 3 ]] && die "cargo build failed after 3 attempts — check $LOG_FILE"
     log_warn "Build attempt $attempts failed; retrying (slow mobile network?)"
     sleep $((attempts * 3))
@@ -480,6 +539,10 @@ done
 
 # Stop the heartbeat — build finished.
 kill "$HB_PID" 2>/dev/null; HB_PID=""
+
+# Record the toolchain that produced this cache, so the next run can detect a
+# `pkg upgrade rust` and clear stale artifacts (see the stale-artifact guard).
+printf '%s\n' "$RUSTC_NOW" > "$RUSTC_STAMP" 2>/dev/null || true
 
 # `--profile release` outputs to target/release; `--profile fast` to target/fast.
 BUILT="$CARGO_TARGET_DIR/$PROFILE/hse"
