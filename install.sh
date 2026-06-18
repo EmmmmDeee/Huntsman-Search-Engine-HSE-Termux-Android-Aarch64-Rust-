@@ -276,7 +276,7 @@ maybe_download_prebuilt() {
     case "$ARCH" in aarch64 | arm64) : ;; *) return 1 ;; esac
     command -v curl >/dev/null 2>&1 || return 1
 
-    local base asset url_bin url_sha tmp tag rs
+    local base asset url_bin url_sha tmp tag sha_dl_ok
     base="${HSE_REPO_URL%.git}"
     asset="hse-aarch64-linux-android"
     tag="${HSE_PREBUILT_TAG:-latest}"
@@ -298,12 +298,21 @@ maybe_download_prebuilt() {
         return 1
     fi
     printf " done\n"
-    # sha256 sidecar must sit next to the binary for _validate_prebuilt to find
-    # it. Best effort: if it's absent we drop to run-test-only validation.
-    curl -fsSL -m 30 -o "$tmp/$asset.sha256" "$url_sha" >> "$LOG_FILE" 2>&1 || true
-    rs=0
-    [[ -s "$tmp/$asset.sha256" ]] && rs=1
-    if _validate_prebuilt "$tmp/$asset" "$rs"; then
+    # sha256 is REQUIRED for a network-fetched binary — accepting without it
+    # would silently allow an MITM to substitute any ELF that outputs
+    # "hse <anything>" on --version. Bail if the sidecar download fails.
+    printf "  Downloading %s.sha256…" "$asset"
+    sha_dl_ok=1
+    curl -fsSL -m 30 -o "$tmp/$asset.sha256" "$url_sha" >> "$LOG_FILE" 2>&1 || sha_dl_ok=0
+    [[ -s "$tmp/$asset.sha256" ]] || sha_dl_ok=0
+    if [[ $sha_dl_ok -eq 0 ]]; then
+        printf " unavailable\n"
+        log_warn "sha256 sidecar download failed — skipping release binary (cannot verify integrity)"
+        hint "Re-run with HSE_NO_DOWNLOAD=1 to skip the release download entirely."
+        return 1
+    fi
+    printf " done\n"
+    if _validate_prebuilt "$tmp/$asset" 1; then
         BUILT="$STAGED"
         PREBUILT=1
         ok "Using downloaded prebuilt — skipping toolchain + source build"
@@ -316,6 +325,11 @@ maybe_download_prebuilt() {
 # Prebuilt resolution order: local Downloads scan → GitHub Releases download →
 # (both miss) fall through to the from-source build below.
 maybe_use_prebuilt || maybe_download_prebuilt || true
+
+# Establish CARGO_TARGET_DIR now so the final summary block (below the fi) can
+# always reference it, regardless of whether a prebuilt was used. The export
+# inside the build block below re-uses this value via `:-` so it's idempotent.
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/hse-build}"
 
 # Everything from the toolchain install through the source build is skipped
 # when a validated prebuilt was found above (closed with `fi` before install).
@@ -874,12 +888,16 @@ fi
 
 # ─── Record install location for `hse update` ────────────────────────────────
 # hse update reads HUNTSMAN_INSTALL_DIR from ~/.huntsman.env to find install.sh.
-if grep -q "^HUNTSMAN_INSTALL_DIR=" "$KEYS_PATH" 2>/dev/null; then
-    sed -i "s|^HUNTSMAN_INSTALL_DIR=.*|HUNTSMAN_INSTALL_DIR=$HSE_INSTALL_DIR|" "$KEYS_PATH"
-else
+# Use grep+printf instead of sed so that special characters in HSE_INSTALL_DIR
+# (e.g. & | \ in the path) are never interpreted as sed metacharacters.
+# chmod 0600 before mv preserves the key-file mode that Rust sets on creation.
+{
+    grep -v '^HUNTSMAN_INSTALL_DIR=' "$KEYS_PATH" 2>/dev/null || true
     printf '\n# Written by install.sh — used by `hse update`\nHUNTSMAN_INSTALL_DIR=%s\n' \
-        "$HSE_INSTALL_DIR" >> "$KEYS_PATH"
-fi
+        "$HSE_INSTALL_DIR"
+} > "$KEYS_PATH.tmp" \
+    && chmod 0600 "$KEYS_PATH.tmp" \
+    && mv -f "$KEYS_PATH.tmp" "$KEYS_PATH"
 
 # ─── Verify ──────────────────────────────────────────────────────────────────
 step "Verifying installation"

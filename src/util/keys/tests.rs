@@ -232,6 +232,21 @@ fn load_from_file_handles_missing_file() {
 }
 
 #[test]
+fn load_from_file_strips_double_quotes_from_written_values() {
+    // write_keys_at stores values as KEY="value"; load_from_file_only must
+    // return the bare value so SUPERSEDED rotation comparisons work correctly.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(".huntsman.env");
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "mykey123")]), &[]).unwrap();
+    let m = load_from_file_only(&path);
+    assert_eq!(
+        m.get("HUNTSMAN_OATHNET_KEY").map(String::as_str),
+        Some("mykey123"),
+        "value must not include surrounding double-quotes"
+    );
+}
+
+#[test]
 fn put_then_get_round_trips_through_file() {
     let dir = tempdir().unwrap();
     let path = dir.path().join(".huntsman.env");

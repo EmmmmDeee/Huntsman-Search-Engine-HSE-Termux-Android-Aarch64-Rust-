@@ -56,16 +56,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: t
+        env:
+          # Pull user-controlled inputs through env vars so they are never
+          # interpolated directly into the shell script (prevents injection
+          # via tag names containing $(...), backticks, or shell metacharacters).
+          GH_INPUT_TAG: ${{ github.event.inputs.tag }}
+          GH_REF_NAME: ${{ github.ref_name }}
+          GH_REF_TYPE: ${{ github.ref_type }}
+          GH_EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           publish=true
-          case "${{ github.event_name }}" in
+          case "$GH_EVENT_NAME" in
             workflow_dispatch)
-              tag="${{ github.event.inputs.tag }}"
+              tag="$GH_INPUT_TAG"
               ;;
             push)
-              if [[ "${{ github.ref_type }}" == "tag" ]]; then
-                tag="${{ github.ref_name }}"
+              if [[ "$GH_REF_TYPE" == "tag" ]]; then
+                tag="$GH_REF_NAME"
               else
                 # main push: derive v<version> from Cargo.toml and publish only
                 # if that tag doesn't already exist (idempotent per version).
@@ -76,6 +84,10 @@ jobs:
                   publish=false
                 fi
               fi
+              ;;
+            *)
+              echo "Unexpected event '${GH_EVENT_NAME}' — refusing to publish to an empty tag." >&2
+              exit 1
               ;;
           esac
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"

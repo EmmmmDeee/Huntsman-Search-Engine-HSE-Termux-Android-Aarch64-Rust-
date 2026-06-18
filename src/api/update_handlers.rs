@@ -5,10 +5,17 @@
 //! * `POST /api/v1/update/trigger` — kick off an immediate install (202
 //!   Accepted; background task drives it, SPA polls status).
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use axum::{
+    Json,
+    extract::{ConnectInfo, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
 use serde::Serialize;
+use serde_json::json;
 
 use crate::api::{AppState, UpdatePhase};
 
@@ -48,8 +55,19 @@ pub(crate) async fn get_status(State(state): State<Arc<AppState>>) -> impl IntoR
 /// `POST /api/v1/update/trigger` — manually kick off an update.
 ///
 /// Returns 202 immediately and drives the update in a detached task.
+/// Returns 403 for non-loopback callers (same policy as key writes).
 /// Returns 409 if an update is already in progress.
-pub(crate) async fn post_trigger(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub(crate) async fn post_trigger(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "update trigger is loopback-only" })),
+        )
+            .into_response();
+    }
     // Reject if already applying or restarting.
     {
         let info = state
