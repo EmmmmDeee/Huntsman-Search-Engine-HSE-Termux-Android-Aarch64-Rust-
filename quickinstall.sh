@@ -7,7 +7,7 @@
 #
 # ── PRIVATE repo: paste this block (token prompt, never echoed to screen) ───
 #
-#   read -rsp $'GitHub token (Settings → Developer settings → Personal access tokens): ' GITHUB_TOKEN && export GITHUB_TOKEN && curl -fsSL -H "Authorization: token $GITHUB_TOKEN" "https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/claude/vigilant-galileo-vmjk3e/quickinstall.sh" | bash
+#   read -rsp $'GitHub token: ' GITHUB_TOKEN && export GITHUB_TOKEN && curl -fsSL -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/contents/quickinstall.sh?ref=claude/vigilant-galileo-vmjk3e" | bash
 #
 # Or, if you already cloned the repo to ~/hse or ~/hse-src:
 #   bash ~/hse/quickinstall.sh          # (set GITHUB_TOKEN first if private)
@@ -22,6 +22,8 @@
 # Token: set GITHUB_TOKEN (or HSE_GITHUB_TOKEN) in your environment before
 #        running if the repository is private. The read -rsp block above does
 #        this for you without the token appearing in shell history.
+#        Note: raw.githubusercontent.com does not support Authorization headers
+#        for private repos — this script uses api.github.com instead.
 #
 # No root required. Termux F-Droid only. Android API 24+, aarch64.
 
@@ -35,13 +37,6 @@ _STAGE="$HOME/.cache/.hse-qs-$$"
 GITHUB_TOKEN="${GITHUB_TOKEN:-${HSE_GITHUB_TOKEN:-}}"
 
 trap 'rm -f "$_STAGE"' EXIT
-
-# Build curl auth args — empty array when no token is set.
-_gh_auth() {
-    if [[ -n "$GITHUB_TOKEN" ]]; then
-        printf -- '-H\0Authorization: token %s\0' "$GITHUB_TOKEN"
-    fi
-}
 
 # sdcard is mounted noexec, so copy the candidate to $HOME/.cache before
 # the run-test — that path is always executable in Termux.
@@ -137,9 +132,13 @@ for _C in "$HOME/hse" "$HOME/hse-src" "$HOME/.local/share/hse"; do
     fi
 done
 printf '  fetching install.sh from GitHub...\n'
-_RAW_URL="https://raw.githubusercontent.com/$REPO/$BRANCH/install.sh"
 if [[ -n "$GITHUB_TOKEN" ]]; then
-    curl -fsSL -H "Authorization: token $GITHUB_TOKEN" "$_RAW_URL" | bash
+    # raw.githubusercontent.com doesn't support Authorization headers for private
+    # repos — use the GitHub Contents API with Accept: application/vnd.github.raw
+    curl -fsSL \
+        -H "Authorization: token $GITHUB_TOKEN" \
+        -H "Accept: application/vnd.github.raw" \
+        "https://api.github.com/repos/$REPO/contents/install.sh?ref=$BRANCH" | bash
 else
-    curl -fsSL "$_RAW_URL" | bash
+    curl -fsSL "https://raw.githubusercontent.com/$REPO/$BRANCH/install.sh" | bash
 fi
