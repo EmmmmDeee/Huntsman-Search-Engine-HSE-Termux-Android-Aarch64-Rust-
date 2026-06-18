@@ -73,14 +73,14 @@ Priority: **P0** crash/corruption · **P1** breaks a core guarantee · **P2**
 quality/robustness · **P3** minor · **CAP** capability/feature.
 Each node: **ID · statement · location · impact · → optimal solution · prio · status**.
 
-Current baseline (grounded in the codebase, 2026-06-17): 119 modules across 14
-categories (Infrastructure 20, Geo 19, People 15, DnsRecon 13, Breach 11, Social
-11, Email 6, Corporate 6, Web 5, Sensor 4, Threat 3, Search/Phone/Other 2 each);
-59 native correlation rules (AU-001…AU-059); 0 `unsafe`; deterministic entity
-merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
-`criterion` 0.8 direct (dev-only, zero shipped cost — F.3); `aho-corasick` +
-`memchr` now direct deps (F.1, `util::scan` + `util::html`); `bstr`, `fst`,
-`arbitrary` still NOT direct.**
+Current baseline (grounded in the codebase, 2026-06-18): **124 modules** (92 free
+· 27 key-gated · 5 paid) across 14 categories (Infrastructure 21, Geo 19, People
+16, DnsRecon 13, Breach 11, Social 11, Email 6, Corporate 8, Phone 3, Web 5,
+Sensor 4, Threat 3, Search/Other 2 each); 59 native correlation rules
+(AU-001…AU-059); 0 `unsafe`; deterministic entity merge; SQLite store; SSE live;
+axum SPA. Deps: `regex` in; **`proptest` 1.11 + `criterion` 0.8 direct (dev-only,
+zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
+`util::scan` + `util::html`); `bstr`, `fst`, `arbitrary` still NOT direct.**
 
 ---
 
@@ -608,7 +608,7 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   seconds, M MB RAM" benchmark; enforce streaming/bounded memory everywhere
   (cap+chunk, never slurp). SpiderFoot (CPython) structurally cannot match
   on-device aarch64 throughput. **CAP-high**
-- **`[ ]` C3 · Australian moat (BUILD, AU-biased)** — *Current:* `asic_director`,
+- **`[~]` C3 · Australian moat (BUILD, AU-biased)** — *Current:* `asic_director`,
   `abn_lookup`, `acnc`, `au_electoral`, `au_property`, `qld_unclaimed`,
   `au_people`, `gleif_lei`, AU phone/carrier/postcode geo. → **Solution
   (roadmap):** G5 harden `smtp_vrfy` (MX/SPF/catch-all → lift free email-verify
@@ -617,7 +617,19 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   radiocomms/spectrum licences (AU NETINT); fuller **ASIC/ABR** company graph;
   complete state **cadastre/property**; deeper **courts/AustLII**. All free or
   BYO-key, all AU-first. **CAP-high (AU bias)**
-- **`[ ]` C4 · NETINT depth** — *Current:* `dns_intel`, `cert_intel`, `crtsh`,
+  *Delivered (2026-06-18, cycle 17):* G5 `smtp_vrfy` hardened — parallel
+  `tokio::join!(resolve_mx, resolve_spf, resolve_dmarc)`, CatchAll confidence
+  0.50→0.30; G9 `hlr_cnam` (HLR phone status + CNAM subscriber name, BYO
+  `HUNTSMAN_HLR_KEY` + `HUNTSMAN_OPENCNAM_KEY`, priority 138, Phone); `ahpra`
+  (AHPRA health-practitioner register HTML scrape, free, priority 86, People);
+  `acma_rrl` (ACMA radiocommunications register, free, priority 48, Corporate,
+  ATT&CK override T1591.001/T1591.002); `trove_au` (NLA Trove newspaper archive,
+  BYO `HUNTSMAN_TROVE_KEY`, priority 57, Corporate). Also: `reddit_user` →
+  Organisation entities for subreddits; `hacker_news` → Domain entities from
+  Algolia submissions; `github_user` → `fetch_orgs` + `fetch_gists`. Module count
+  119→124 (92 free · 27 key-gated · 5 paid). *Remaining:* GNAF/AusPost address
+  validation; fuller ASIC/ABR graph; state cadastre/property; courts/AustLII.
+- **`[~]` C4 · NETINT depth** — *Current:* `dns_intel`, `cert_intel`, `crtsh`,
   `shodan` (free InternetDB), `censys`, `zoomeye`, `subdomain_takeover`,
   `waf_detect`, `portscan`, `bgpview`, `ripestat`. CDN/Cloudflare noise is already
   suppressed at 5 layers (range-based `is_cdn_edge_ip` v4+**v6**, the shared
@@ -631,6 +643,11 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   pre-onboarding passive-DNS history, SSL-cert-hash pivot on Censys/Shodan, and
   direct-connect subdomains (`cpanel.`/`ftp.`/`mail.`/`dev.` often non-proxied) →
   emit a tagged `origin-candidate` IP for the fronted domain. **CAP-med**
+  *Delivered (2026-06-18, cycle 17):* `netlas` (Netlas.io host intel — ports,
+  JARM, SSL cert emails, CVEs, ISP, geo, BYO `HUNTSMAN_NETLAS_KEY`, priority 79,
+  Infrastructure); `censys` priority 35→78. *Remaining:* union subdomain
+  discovery; ASN/BGP org/prefix pivots; passive-DNS/cert-hash origin-unmasking;
+  `securitytrails` BYO-key (G7).
 - **`[ ]` C5 · GEOINT convergence — *already ahead; widen the lead*** — *Current:*
   multi-source fusion (WiGLE + EXIF + cell + IP + address→coords) with AU-state
   attribution and convergence rules (AU-052/056/057/059). Neither competitor
@@ -674,6 +691,23 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   Europe), Mym (France/Francophone), MyDirtyHobby (Germany), JustForFans (LGBTQ+ intl),
   OhMyFans (Spanish LATAM), Cam.tv (Italy/Europe), Unlockd (UK), SuicideGirls (global
   alt), Iwara (Japan/3D). **CAP-high (identity breadth)** ✅
+- **`[ ]` C9 · Inter-scan entity cache / API cost governance** — *Problem:* every
+  scan re-queries every applicable module unconditionally. For key-gated and paid
+  modules (`netlas`, `censys`, `hlr_cnam`, `trove_au`, `shodan`, etc.) this
+  consumes finite query allowances or real money on repeated scans of the same
+  target. A subject scanned twice within 24 h pays Censys / Netlas twice for
+  identical host data; a phone number queried twice in a week consumes two HLR
+  credits for the same MSISDN. At scale (automated enrichment pipelines, recurring
+  investigations) the cost is real and the waste is structural. → **Solution
+  (sketch):** extend `StoragePort` with
+  `lookup_entity_fresh(kind, value, max_age_secs) → Option<ModuleResult>` backed
+  by the existing `raw_archive` table; modules self-register a per-class TTL (IP
+  intel 24 h, WHOIS 72 h, breach data 7 d, phone HLR 24 h); the dispatch layer
+  short-circuits with the cached result before calling the module. Per-scan
+  isolation (SOL-ISOLATE) is preserved — the cache is a read-only pre-dispatch
+  gate, not a write-path bypass. Policy: caching is opt-in per module; modules
+  that produce time-sensitive data (live port scans, real-time CNAM) can set
+  `max_age_secs = 0` to always go live. **CAP-high (cost + AU revenue model)**
 
 ---
 
@@ -1590,3 +1624,29 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `[ ]`→`[x]`. Gate green: fmt/clippy/doc clean, 3,229 tests (prev 3,230 — the
   removed `strip_html_tags` test), 0 failures. **Paired:** `SOLUTION_TREE`
   SOL-FINALISE-BLOCKING `[ ]`→`[x]` + §2/§3/§4/§5 updated — same commit.
+- **2026-06-18** — **Cycle 17 (P→S + S→P): AU moat batch + NETINT depth partial +
+  social enrichment — C3 `[ ]`→`[~]`, C4 `[ ]`→`[~]`, new C9 logged.**
+  **P→S direction:** gap §4a named C3/C4 as the highest-value open capability
+  nodes with no started solutions. Five new modules shipped: `hlr_cnam` (HLR phone
+  status + CNAM subscriber name; BYO `HUNTSMAN_HLR_KEY` + `HUNTSMAN_OPENCNAM_KEY`;
+  priority 138; Phone; Person+Phone entities; let-chain Edition 2024 CNAM stage);
+  `ahpra` (AHPRA health-practitioner register HTML scrape; free; priority 86;
+  People; `parse_ahpra_html` pure extractor); `acma_rrl` (ACMA radiocommunications
+  register; free; priority 48; Corporate; ATT&CK override T1591.001/T1591.002;
+  `filter(char::is_ascii_digit)` pattern); `trove_au` (NLA Trove newspaper archive;
+  BYO `HUNTSMAN_TROVE_KEY`; priority 57; Corporate; let-chain title+date gate);
+  `netlas` (Netlas.io host intel — ports, JARM, SSL cert emails, CVEs, ISP, geo;
+  BYO `HUNTSMAN_NETLAS_KEY`; priority 79; Infrastructure; `netlas_query` helper).
+  `smtp_vrfy` hardened: `tokio::join!(resolve_mx, resolve_spf, resolve_dmarc)`;
+  correct hickory `lookup.answers().iter()` TXT pattern; CatchAll confidence
+  0.50→0.30. `censys` priority 35→78. `reddit_user` → Organisation entities for
+  subreddits (conf 0.40); `hacker_news` → Domain entities from Algolia submissions;
+  `github_user` → `fetch_orgs` + `fetch_gists` in `fetch.rs`. Module count 119→124.
+  All clippy/fmt/doc clean; 3,040+ lib tests, 0 failures.
+  **S→P direction:** (1) three new HTML scrapers (ahpra/acma_rrl/trove_au) elevate
+  T2.7 scraper-resilience risk — the per-source health-signal gap is now wider;
+  (2) the new key-gated/paid modules (hlr_cnam, netlas, trove_au, censys-at-priority)
+  make C9 (inter-scan API caching / cost governance) acutely felt — new capability
+  node C9 logged. **Gap refresh:** C3 and C4 now `[~]`; §4a gains C9; T2.7 elevated.
+  **Paired:** `SOLUTION_TREE` SOL-AU-MOAT + SOL-NETINT `[ ]`→`[~]`, new
+  SOL-CACHE-INTERSCAN, §4/§5 refreshed — same commit.

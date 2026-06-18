@@ -296,11 +296,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
-- **`[ ]` SOL-AU-MOAT · Australian collection breadth** → **C3** (AHPRA/ACMA/GNAF/
+- **`[~]` SOL-AU-MOAT · Australian collection breadth** → **C3** (AHPRA/ACMA/GNAF/
   fuller ASIC, BYO-key HLR/CNAM). All free or BYO-key, AU-first.
-- **`[ ]` SOL-NETINT · CDN-origin unmasking + asset depth** → **C4**: union subdomain
+  *Delivered (2026-06-18, cycle 17):* `hlr_cnam` (HLR + CNAM, BYO keys, priority
+  138, Phone, Person+Phone entities); `ahpra` (AHPRA register HTML scrape, free,
+  priority 86, People); `acma_rrl` (ACMA radiocommunications register, free,
+  priority 48, Corporate, T1591.001/T1591.002 override); `trove_au` (NLA Trove
+  newspaper archive, BYO `HUNTSMAN_TROVE_KEY`, priority 57, Corporate); `smtp_vrfy`
+  hardened (parallel SPF+DMARC, CatchAll 0.50→0.30). *Remaining:* GNAF/AusPost;
+  fuller ASIC/ABR graph; state cadastre/property; courts/AustLII.
+- **`[~]` SOL-NETINT · CDN-origin unmasking + asset depth** → **C4**: union subdomain
   discovery, ASN/BGP pivots, passive-DNS/cert-hash origin candidates; v4+**v6**
   `is_cdn_edge_ip` already demotes the noise.
+  *Delivered (2026-06-18, cycle 17):* `netlas` (Netlas.io host intel — ports, JARM,
+  SSL cert emails, CVEs, ISP, geo; BYO `HUNTSMAN_NETLAS_KEY`; priority 79;
+  Infrastructure; `netlas_query` helper + collapsible-if let-chains); `censys`
+  priority 35→78. *Remaining:* union subdomain discovery (brute ∪ CT ∪ passive);
+  ASN/BGP org/prefix pivots; passive-DNS/cert-hash origin-unmasking;
+  `securitytrails` BYO-key.
+- **`[ ]` SOL-CACHE-INTERSCAN · Inter-scan entity cache** → **C9**: extend
+  `StoragePort` with `lookup_entity_fresh(kind, value, max_age_secs) →
+  Option<ModuleResult>` backed by `raw_archive`; per-module-class TTLs (IP intel
+  24 h, WHOIS 72 h, breach 7 d, phone HLR 24 h); dispatch-layer pre-gate
+  short-circuits paid/key-gated modules; modules with `max_age_secs = 0` always go
+  live. SOL-ISOLATE task-local isolation is preserved (cache is read-only at
+  dispatch). Enables operator cost control, revenue model (scan credits), and
+  offline enrichment from previously collected data. **build not started**
 - **`[ ]` SOL-GEOINT · Confidence-weighted geo convergence** → **C5**: the Weiszfeld/
   Welzl fusion stack (verified correct, §6) widened with more sources + provenance +
   a confidence radius.
@@ -378,7 +399,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
-| SOL-CORR…SOL-FORENSIC | C1–C7 | `[ ]` |
+| SOL-AU-MOAT | C3 | `[~]` |
+| SOL-NETINT | C4 | `[~]` |
+| SOL-CACHE-INTERSCAN | C9 | `[ ]` |
+| SOL-CORR | C1 | `[ ]` |
+| SOL-PERF-PUBLISH | C2 | `[ ]` |
+| SOL-GEOINT | C5 | `[ ]` |
+| SOL-OFFENSIVE | C6 | `[ ]` |
+| SOL-FORENSIC | C7 | `[ ]` |
 
 ---
 
@@ -392,14 +420,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
 - **T2.7** scraper-health signal — covered *in principle* by SOL-F1 (parser rewrites)
   but the per-source health surface (last-success/parse-rate in `doctor`+SPA) has no
-  solution node. Gap.
+  solution node. Gap. **Elevated (cycle 17):** three new HTML scrapers (ahpra,
+  acma_rrl, trove_au) widen the surface; priority raised.
 - **§7 S4** — SOL-REDACT residual: archived success body not run through
   `redact_literal_secrets` (LOW). Contained.
   *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
   this queue. S2/SOL-SSRF-WHOIS + S3/SOL-SECRETS-EXTEND delivered 2026-06-17.)*
 - **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
-- **C1–C7** — capability nodes; solutions sketched, none started (gated on the §3.F
-  enablers landing first, by design).
+- **C9** — **new (cycle 17):** inter-scan entity cache / API cost governance.
+  SOL-CACHE-INTERSCAN sketched; build not started.
+- **C3/C4** — now `[~]` (partial, SOL-AU-MOAT + SOL-NETINT both started cycle 17).
+- **C1/C2/C5/C6/C7** — capability nodes; solutions sketched, none started (gated on
+  the §3.F enablers landing first, by design).
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -438,7 +470,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   budget-reset-zeroing remain).
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C8):** C8 delivered ✅ (`streaming_probe`, 30-site webcam/fan/adult prober); C1–C7 open by design, gated on §3.F.
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); C3 `[~]` (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy shipped, GNAF/ASIC/cadastre/courts remaining); C4 `[~]` (SOL-NETINT: netlas + censys priority shipped, subdomain/ASN/CDN-origin remaining); C9 new `[ ]` (SOL-CACHE-INTERSCAN, cost-governance cache, design sketched); C1/C2/C5/C6/C7 open by design, gated on §3.F.
 
 ---
 
@@ -830,3 +862,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   T1.4 all solved". Paired: `PROBLEM_TREE` T1.2 `[~]`→`[x]` + cycle 10 note + §8 —
   same commit; gate green, 3,032 lib + 24 arch + 67 api + 54 smoke + 3 halting + 23
   cli + 6 cli-seed + 2 audit-regression tests, 0 failures.
+- **2026-06-18** — **Cycle 17 (P→S + S→P): AU moat batch + NETINT depth partial —
+  SOL-AU-MOAT + SOL-NETINT `[ ]`→`[~]`, new SOL-CACHE-INTERSCAN node logged.**
+  **P→S direction:** gap §4a named C3 (Australian moat) and C4 (NETINT depth) as
+  the highest-value open capability nodes. Delivered: `hlr_cnam` (HLR phone status
+  + CNAM subscriber name; BYO `HUNTSMAN_HLR_KEY` + `HUNTSMAN_OPENCNAM_KEY`; priority
+  138; Phone; Person + Phone entities; Edition 2024 let-chain CNAM stage — two
+  independent HTTP legs without nested `if-let`); `ahpra` (AHPRA health-practitioner
+  register HTML scrape; free; priority 86; People; `parse_ahpra_html` pure extractor
+  + 8 unit tests); `acma_rrl` (ACMA radiocommunications register; free; priority 48;
+  Corporate; ATT&CK override `["T1591.001","T1591.002"]`; `filter(char::is_ascii_digit)`
+  idiomatic form); `trove_au` (NLA Trove newspaper archive; BYO `HUNTSMAN_TROVE_KEY`;
+  priority 57; Corporate; let-chain `title && date` gate); `netlas` (Netlas.io host
+  intel — ports, JARM, SSL cert emails, CVEs, ISP, geo; BYO `HUNTSMAN_NETLAS_KEY`;
+  priority 79; Infrastructure; `netlas_query` helper; collapsible-if let-chains for
+  geo + HTTP-email merges). Also: `smtp_vrfy` hardened (`tokio::join!` parallel
+  SPF+DMARC, correct hickory `lookup.answers().iter()` TXT pattern, CatchAll
+  0.50→0.30); `censys` priority 35→78; `reddit_user` → Organisation entities for
+  subreddits (conf 0.40); `hacker_news` → Domain entities from Algolia submissions;
+  `github_user` → `fetch_orgs` + `fetch_gists`. Module count 119→124 (92 free ·
+  27 key-gated · 5 paid). All clippy/fmt/doc clean; 3,040+ lib tests, 0 failures.
+  **S→P direction:** (1) three new HTML scrapers elevate T2.7 (scraper-health signal)
+  — the per-source health surface is now wider and the gap is more acute; (2) the
+  new key-gated/paid modules make C9 (inter-scan API caching / cost governance)
+  structurally necessary — new problem node C9 logged in PROBLEM_TREE, new solution
+  node SOL-CACHE-INTERSCAN sketched here (design: `lookup_entity_fresh` + `raw_archive`
+  TTL gate + per-module-class TTLs, SOL-ISOLATE isolation preserved). **Gap refresh:**
+  C3/C4 now `[~]`; §4a gains C9 + elevates T2.7; §4d capability row updated; leverage
+  map split (SOL-CORR…SOL-FORENSIC row replaced by per-solution rows). Paired:
+  `PROBLEM_TREE` C3/C4 `[ ]`→`[~]`, new C9, §8 cycle 17 note — same commit.
