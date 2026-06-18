@@ -275,8 +275,9 @@ if [[ "${HSE_NO_PKG:-0}" != "1" ]]; then
         attempts=0
         until pkg update -y; do
             attempts=$((attempts + 1))
-            [[ $attempts -ge 4 ]] && die "pkg update failed after 4 attempts — check network"
+            [[ $attempts -ge 4 ]] && die "pkg update failed after 4 attempts. If the mirror is broken, try: termux-change-repo (then re-run installer)"
             log_warn "pkg update failed (attempt $attempts); retrying in $((attempts * 2))s"
+            hint "Mirror issues? Run: termux-change-repo  (switches to a working mirror)"
             sleep $((attempts * 2))
         done
 
@@ -641,56 +642,71 @@ KEYS_PATH="$HOME/.huntsman.env"
 if [[ ! -f "$KEYS_PATH" ]]; then
     step "Creating keys template at $KEYS_PATH"
     cat > "$KEYS_PATH" <<'TEMPLATE'
-# Huntsman Search Engine API keys.
+# Huntsman Search Engine — API keys & configuration
 #
 # Uncomment and paste a value to enable the corresponding key-gated module.
-# All HSE keys MUST be prefixed HUNTSMAN_. File mode is 0600 — never commit.
+# File is chmod 0600 — never commit this file.
 #
-# v0.2 free modules need no keys at all. Keys below are for key-gated modules.
-# Several are embedded in the build (OathNet, HIBP, WiGLE, SeekNow) and are
-# auto-written/auto-rotated on first `hse scan`/`serve` — listed here only so
-# you can override them. The Settings page (hse serve → Settings) shows the
-# full key list and lets you paste/save any of them from the browser.
+# Free modules (93 of 126) need no keys at all.
+# The Settings page (hse serve → http://127.0.0.1:8080/settings) lets you
+# paste and save any key directly from Chrome on the device.
 #
-# Identity / breach
+# ── Identity / breach ─────────────────────────────────────────────────────────
 #HUNTSMAN_HIBP_KEY=
 #HUNTSMAN_OATHNET_KEY=
 #HUNTSMAN_SEEKNOW_KEY=
-# DeHashed v2 is key-only (needs an active search subscription + credits):
+#HUNTSMAN_FULLCONTACT_KEY=
+#HUNTSMAN_NIAMONX_KEY=
+# DeHashed — active search subscription + credits required:
 #HUNTSMAN_DEHASHED_KEY=
-#HUNTSMAN_HUNTER_KEY=
 #HUNTSMAN_INTELX_KEY=
-# Infrastructure / threat intel
+#HUNTSMAN_HUNTER_KEY=
+# ── Infrastructure / threat intel ─────────────────────────────────────────────
 #HUNTSMAN_SHODAN_KEY=
 #HUNTSMAN_SECTRAILS_KEY=
+#HUNTSMAN_CENSYS_ID=
+#HUNTSMAN_CENSYS_SECRET=
+#HUNTSMAN_NETLAS_KEY=
+#HUNTSMAN_ONYPHE_KEY=
 #HUNTSMAN_LEAKIX_KEY=
+#HUNTSMAN_ABUSEIPDB_KEY=
+#HUNTSMAN_THREATFOX_KEY=
 #HUNTSMAN_CRIMINALIP_KEY=
 #HUNTSMAN_IPQS_KEY=
 #HUNTSMAN_VIRUSTOTAL_KEY=
-# Search
+#HUNTSMAN_ZOOMEYE_KEY=
+#HUNTSMAN_OSINTCAT_KEY=
+# ── Search ────────────────────────────────────────────────────────────────────
 #HUNTSMAN_EXA_KEY=
-# Validation / enrichment
+# ── Phone / HLR ───────────────────────────────────────────────────────────────
+#HUNTSMAN_HLR_KEY=
+#HUNTSMAN_OPENCNAM_KEY=
+# ── Geolocation / cell towers ─────────────────────────────────────────────────
+#HUNTSMAN_OPENCELLID_KEY=
+# ── Validation / enrichment ───────────────────────────────────────────────────
 #HUNTSMAN_NUMVERIFY_KEY=
+#HUNTSMAN_WHOISXML_KEY=
 #HUNTSMAN_WIGLE_USER=
 #HUNTSMAN_WIGLE_TOKEN=
+#HUNTSMAN_TROVE_KEY=
 #HUNTSMAN_ABR_GUID=
-# OSINT orchestration / identity
+# ── OSINT orchestration / identity ────────────────────────────────────────────
 #HUNTSMAN_SEON_KEY=
 #HUNTSMAN_EMAILREP_KEY=
 #HUNTSMAN_EPIEOS_KEY=
 #HUNTSMAN_PROXYCURL_KEY=
 #HUNTSMAN_OPENCORP_KEY=
 #
-# Optional operator-local default seed. Set this to YOUR OWN default scan
-# target so `hse scan` / `hse live` can run without retyping --value. Read only
-# from this file (or your shell) — never embedded in the binary or installer,
-# so it stays on this device. An explicit --value always overrides it.
+# ── Operator defaults ─────────────────────────────────────────────────────────
+# Set your own default scan target to avoid retyping --value every run.
+# An explicit --value always overrides this.
 #HUNTSMAN_DEFAULT_SEED=
 #
-# Optional egress rotation (avoids per-source rate limits). Hosts listed here
-# are routed THROUGH and are auto-excluded from being scanned as targets.
-#   HUNTSMAN_SEARCH_PROXY=socks5://127.0.0.1:9050,http://host:3128   # comma list, rotated
-#   HUNTSMAN_DNS_RESOLVERS=cloudflare,google,quad9                   # rotate public resolvers
+# ── Egress rotation (optional) ────────────────────────────────────────────────
+# Route scans through a proxy / rotate DNS resolvers to avoid per-source limits.
+# Hosts listed here are auto-excluded from being scanned as targets.
+#   HUNTSMAN_SEARCH_PROXY=socks5://127.0.0.1:9050,http://host:3128
+#   HUNTSMAN_DNS_RESOLVERS=cloudflare,google,quad9
 #HUNTSMAN_SEARCH_PROXY=
 #HUNTSMAN_DNS_RESOLVERS=
 TEMPLATE
