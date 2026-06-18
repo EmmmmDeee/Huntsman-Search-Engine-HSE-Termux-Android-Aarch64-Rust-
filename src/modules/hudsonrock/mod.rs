@@ -126,10 +126,22 @@ impl Module for HudsonRock {
             // Domain, but a direct `process()` call (tests, future callers) with
             // any other kind falls through to an empty result rather than firing
             // the doomed request.
-            TargetKind::Email => format!(
-                "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-login?username={}",
-                urlencode(&target.value)
-            ),
+            TargetKind::Email => {
+                // Defensive guard: skip values that lack `@` (should be
+                // unreachable via the engine, but blocks the 400 if any entity
+                // mislabelled as Email reaches process() directly).
+                if !target.value.contains('@') {
+                    return Ok(ModuleResult::new());
+                }
+                // HudsonRock's search-by-login validates `@` presence in the
+                // raw query string BEFORE URL-decoding, so `dns%40cloudflare.com`
+                // fails its check with "Email is required". Preserve the literal
+                // `@` by reversing form-urlencoding's `%40` substitution.
+                let encoded = urlencode(&target.value).replace("%40", "@");
+                format!(
+                    "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-login?username={encoded}"
+                )
+            }
             TargetKind::Domain => format!(
                 "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-domain?domain={}",
                 urlencode(&target.value)

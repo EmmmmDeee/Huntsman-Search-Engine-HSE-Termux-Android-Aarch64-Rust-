@@ -1154,3 +1154,40 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   S.CORE sensor-gate row added. Gate green: fmt/clippy/doc clean, 3,092 lib
   tests, 0 failures; `bash -n` + shellcheck clean. Paired: `PROBLEM_TREE` §8
   cycle 24 — same commit.
+- **2026-06-18** — **Cycle 25 (P→S): SOL-QUERY-PIPE — two query-pipeline defects
+  from live-scan debug bundle corrected; `hudsonrock` URL encoding fixed and
+  `employer_pivot` role-email false attribution eliminated.**
+  **P→S build:** debug bundle from `full_name = Zac Allen` (hse_version 1.4.0)
+  exposed two code bugs that produced `module_error` events and one false-positive
+  entity. **Fix A — `hudsonrock` `@` preservation
+  (`src/modules/hudsonrock/mod.rs`):** the Email arm of `process()` now (1) exits
+  early with an empty `ModuleResult` when `target.value` contains no `@` (blocks
+  the 400 on any mislabelled entity reaching `process()` directly); (2) calls
+  `urlencode(&target.value).replace("%40", "@")` so the literal `@` is preserved
+  in the raw query string — matching HudsonRock Cavalier's pre-decode validation
+  requirement. Two new unit tests: `at_sign_preserved_in_encoded_url` (asserts the
+  replacement fires and the result contains `@` not `%40`) and
+  `email_without_at_sign_yields_empty_result` (asserts the guard exits without an
+  HTTP request). **Fix B — `employer_pivot` role-email guard
+  (`src/modules/employer_pivot/mod.rs`):** added `is_role_email_local(local: &str)
+  -> bool` (an exhaustive `matches!` over 21 RFC 2142 / conventional system
+  local-parts: `abuse`, `admin`, `administrator`, `billing`, `dns`, `hostmaster`,
+  `info`, `legal`, `marketing`, `noc`, `noreply`, `no-reply`, `postmaster`,
+  `privacy`, `sales`, `security`, `support`, `sysadmin`, `tech`, `webmaster`). In
+  `process()`, immediately after the freemail / social-platform guard, a collapsed
+  `let`-chain (`target.kind == TargetKind::Email && let Some((local, _)) =
+  target.value.rsplit_once('@') && is_role_email_local(local)`) returns an empty
+  result without fetching any URL. Three new unit tests:
+  `role_email_local_parts_are_blocked` (all 21 entries), `real_user_local_parts_not_blocked`
+  (real names pass through), `role_email_check_is_case_sensitive` (only lowercase
+  is matched; callers must normalise). The `let`-chain form is required by the
+  local `collapsible_if` lint (Edition 2024 feature, caught by `-D warnings`).
+  **S→P gap from this cycle:** `dns_intel` emits SOA RNAME at confidence 0.70
+  with a `dns-admin` tag, but the `Target` struct has no tags field — the tag is
+  silently dropped at entity→target conversion. The employer_pivot guard (Fix B)
+  is the correct defensive point (consumer-side), but a deeper fix would lower the
+  SOA RNAME confidence below the expansion threshold or add a `role_email` flag to
+  the entity kind rather than relying on tag preservation. Logged; not blocking.
+  **§4 gap analysis:** SOL-QUERY-PIPE row added to §4d. Gate green:
+  fmt/clippy/doc clean, 3,097 lib tests (+5 new), 0 failures; `bash -n` +
+  shellcheck clean. Paired: `PROBLEM_TREE` §8 cycle 25 — same commit.

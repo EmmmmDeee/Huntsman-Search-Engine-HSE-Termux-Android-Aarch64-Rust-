@@ -1840,3 +1840,33 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy/doc clean, 3,092 lib tests, 0 failures; `bash -n` +
   shellcheck clean. **Paired:** `SOLUTION_TREE` SOL-SENSOR-GATE cycle 24 +
   §4/§5 — same commit.
+- **2026-06-18** — **Cycle 25 (P→S): two query-pipeline defects found in real-scan
+  debug bundle — `hudsonrock` URL-encoding fault and `employer_pivot` role-email
+  false attribution.**
+  **Source:** debug bundle from a live Huntsman scan (`full_name = Zac Allen`,
+  hse_version 1.4.0). The bundle recorded 19 `module_error` events across 381
+  module runs. Two were caused by code bugs, not external/network conditions.
+  **Problem A — `hudsonrock` HTTP 400 "Email is required" (observed at
+  ts=1781813191 for target `dns@cloudflare.com`):** `urlencode()` uses
+  `url::form_urlencoded::byte_serialize`, which encodes `@` as `%40`. The
+  HudsonRock Cavalier `/api/json/v2/osint-tools/search-by-login` endpoint
+  validates the presence of `@` in the *raw* (pre-decode) query string before it
+  URL-decodes the parameter — so `username=dns%40cloudflare.com` contains no
+  literal `@` at the point of the check, triggering HTTP 400 "Email is required".
+  The engine had no guard for email values that lack `@` in the first place
+  (mislabelled entities or direct test calls), leaving a second latent 400 path.
+  **Problem B — `employer_pivot` false employer attribution from SOA RNAME
+  emails:** `dns_intel` emits SOA RNAME field values as `Email` entities
+  (confidence=0.70, tagged `dns-admin`). When `dns@cloudflare.com` entered the
+  expansion queue, the `Target` struct (only `kind` + `value`, no tags field)
+  dropped the `dns-admin` tag. `employer_pivot` has guards for freemail domains
+  and social platforms but no guard for RFC 2142 / conventional role/system
+  email local-parts. It therefore scraped cloudflare.com's contact pages,
+  extracted a Sydney commercial address, and attributed Cloudflare HQ to the
+  scan subject `Zac Allen` — a severe false positive. **Root cause chain:**
+  `dns_intel` emits SOA RNAME → entity tagged `dns-admin`, confidence 0.70
+  (above expansion threshold) → expansion strips tag → `employer_pivot` accepts
+  without filtering local-part → corporate address attributed to subject.
+  Gate green: fmt/clippy/doc clean, 3,097 lib tests, 0 failures; `bash -n` +
+  shellcheck clean. **Paired:** `SOLUTION_TREE` SOL-QUERY-PIPE cycle 25 +
+  §4/§5 — same commit.

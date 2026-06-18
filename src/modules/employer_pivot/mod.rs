@@ -96,6 +96,18 @@ impl Module for EmployerPivot {
         if is_freemail(&domain) || is_social_platform(&domain) {
             return Ok(result);
         }
+        // RFC 2142 / conventional role/system email local-parts must not
+        // trigger an employer pivot: dns@cloudflare.com, hostmaster@, noc@,
+        // etc. are zone/abuse contacts, not real employees. Without this guard,
+        // SOA RNAME addresses (emitted by dns_intel) scrape the registrar's
+        // corporate contact pages and attribute infra-provider addresses to the
+        // scan subject (observed: dns@cloudflare.com → Cloudflare Sydney HQ).
+        if target.kind == TargetKind::Email
+            && let Some((local, _)) = target.value.rsplit_once('@')
+            && is_role_email_local(local)
+        {
+            return Ok(result);
+        }
 
         let paths = [
             "/",
@@ -286,6 +298,32 @@ fn extract_profile_urls(text: &str) -> Vec<String> {
     re.find_iter(text)
         .map(|m| m.as_str().trim_end_matches(['/', '.', ',']).to_string())
         .collect()
+}
+
+fn is_role_email_local(local: &str) -> bool {
+    matches!(
+        local,
+        "abuse"
+            | "admin"
+            | "administrator"
+            | "billing"
+            | "dns"
+            | "hostmaster"
+            | "info"
+            | "legal"
+            | "marketing"
+            | "noc"
+            | "noreply"
+            | "no-reply"
+            | "postmaster"
+            | "privacy"
+            | "sales"
+            | "security"
+            | "support"
+            | "sysadmin"
+            | "tech"
+            | "webmaster"
+    )
 }
 
 fn canonical_address(a: &address_au::AuAddress) -> String {

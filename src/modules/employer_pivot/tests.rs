@@ -186,6 +186,60 @@ fn accepts_email_and_domain_only() {
     assert!(!m.accepts(&Target::new(TargetKind::FullName, "Alice Smith")));
 }
 
+// ── is_role_email_local ──────────────────────────────────────────────────────
+
+#[test]
+fn role_email_local_parts_are_blocked() {
+    let blocked = [
+        "abuse",
+        "admin",
+        "administrator",
+        "billing",
+        "dns",
+        "hostmaster",
+        "info",
+        "legal",
+        "marketing",
+        "noc",
+        "noreply",
+        "no-reply",
+        "postmaster",
+        "privacy",
+        "sales",
+        "security",
+        "support",
+        "sysadmin",
+        "tech",
+        "webmaster",
+    ];
+    for local in blocked {
+        assert!(
+            is_role_email_local(local),
+            "'{local}' must be classified as a role email local-part"
+        );
+    }
+}
+
+#[test]
+fn real_user_local_parts_not_blocked() {
+    for local in ["alice", "bob.smith", "haigen", "jdoe", "h.bamford"] {
+        assert!(
+            !is_role_email_local(local),
+            "'{local}' must NOT be classified as a role email local-part"
+        );
+    }
+}
+
+#[test]
+fn role_email_check_is_case_sensitive() {
+    // The guard receives the raw local-part from target.value; callers that
+    // lowercase must do so before invoking. We do NOT lowercase inside the
+    // helper so RFC 5321 case-sensitive locals (rare but valid) are unaffected.
+    assert!(!is_role_email_local("Admin"));
+    assert!(!is_role_email_local("DNS"));
+    assert!(!is_role_email_local("Hostmaster"));
+}
+
 // ── module metadata ──────────────────────────────────────────────────────────
 
 #[test]

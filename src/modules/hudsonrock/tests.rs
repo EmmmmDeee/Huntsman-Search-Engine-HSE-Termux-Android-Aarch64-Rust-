@@ -120,3 +120,45 @@ use super::*;
     fn compute_confidence_empty_yields_base() {
         assert!((compute_confidence(&[]) - BASE_CONFIDENCE).abs() < 1e-9);
     }
+
+    // ── URL-encoding / @ preservation ────────────────────────────────────────
+
+    #[test]
+    fn at_sign_preserved_in_encoded_url() {
+        // urlencode() uses form_urlencoded which encodes '@' as '%40'.
+        // HudsonRock's search-by-login validates '@' presence in the raw query
+        // string BEFORE URL-decoding, so '%40' triggers "Email is required".
+        // The fix reverses the substitution: replace("%40", "@").
+        let encoded = crate::util::http::urlencode("dns@cloudflare.com").replace("%40", "@");
+        assert!(
+            encoded.contains('@'),
+            "encoded URL must preserve the literal '@': {encoded}"
+        );
+        assert!(
+            !encoded.contains("%40"),
+            "encoded URL must not contain '%40': {encoded}"
+        );
+    }
+
+    #[tokio::test]
+    async fn email_without_at_sign_yields_empty_result() {
+        // The defensive guard added to the Email arm exits early for any value
+        // that lacks '@', preventing the doomed HTTP 400.
+        let (bus, _rx) = tokio::sync::broadcast::channel(8);
+        let ctx = ModuleContext {
+            scan_id: "t".into(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+        };
+        let r = HudsonRock
+            .process(&Target::new(TargetKind::Email, "notanemail"), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            r.is_empty(),
+            "email without '@' must not fire the HTTP request"
+        );
+    }

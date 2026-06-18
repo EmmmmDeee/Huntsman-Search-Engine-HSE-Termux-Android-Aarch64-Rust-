@@ -69,6 +69,22 @@ versions can include breaking changes; patch versions are bug-fix-only.
   "lat/lon binding swap" was investigated and **rejected as a false positive**
   (the bindings are correct; the round-trip test proves it). +2 regression tests.
 
+- **`hudsonrock` URL-encoding fix and `employer_pivot` role-email guard
+  (PROBLEM_TREE cycle 25 / SOL-QUERY-PIPE).** Two code bugs found from a real-scan
+  debug bundle (`full_name = Zac Allen`, hse_version 1.4.0). **(A) `hudsonrock`
+  HTTP 400:** `urlencode()` encoded `@` as `%40`; HudsonRock Cavalier's
+  `search-by-login` validates `@` presence in the raw (pre-decode) query string, so
+  `dns%40cloudflare.com` triggered "Email is required". Fixed by
+  `.replace("%40", "@")` after encoding + an early-exit guard for any email value
+  lacking `@`. **(B) `employer_pivot` false attribution:** `dns@cloudflare.com`
+  (a SOA RNAME address emitted by `dns_intel` at confidence 0.70) had its
+  `dns-admin` tag stripped at entity→target conversion (the `Target` struct has no
+  tags field). With no role-email guard, `employer_pivot` scraped cloudflare.com's
+  contact pages and attributed the Cloudflare Sydney HQ address to scan subject Zac
+  Allen — a severe false positive. Fixed by `is_role_email_local()` (21 RFC 2142 /
+  conventional system local-parts) with a `let`-chain guard at the top of
+  `process()`. +5 unit tests covering both fixes. 3,097 lib tests, 0 failures.
+
 - **Sensor contamination fix — `signal_radar` no longer fires on non-geo target
   seeds (PROBLEM_TREE cycle 24 / SOL-SENSOR-GATE).** `signal_radar` ran WiFi,
   Bluetooth, cell, GPS, and LAN-ARP sensors for *every* scan target regardless of
