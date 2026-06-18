@@ -716,6 +716,15 @@ else
     ok "Keys file already present at $KEYS_PATH"
 fi
 
+# ─── Record install location for `hse update` ────────────────────────────────
+# hse update reads HUNTSMAN_INSTALL_DIR from ~/.huntsman.env to find install.sh.
+if grep -q "^HUNTSMAN_INSTALL_DIR=" "$KEYS_PATH" 2>/dev/null; then
+    sed -i "s|^HUNTSMAN_INSTALL_DIR=.*|HUNTSMAN_INSTALL_DIR=$HSE_INSTALL_DIR|" "$KEYS_PATH"
+else
+    printf '\n# Written by install.sh — used by `hse update`\nHUNTSMAN_INSTALL_DIR=%s\n' \
+        "$HSE_INSTALL_DIR" >> "$KEYS_PATH"
+fi
+
 # ─── Verify ──────────────────────────────────────────────────────────────────
 step "Verifying installation"
 "$HSE_BIN_DIR/hse" --version

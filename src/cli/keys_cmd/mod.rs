@@ -11,6 +11,16 @@ use crate::core::error::{Error, Result};
 
 #[derive(Subcommand)]
 pub enum KeysAction {
+    /// Write a `HUNTSMAN_*` variable directly to `~/.huntsman.env`
+    /// (the same operation as the legacy `hse set-key` shorthand).
+    /// Use this for env-file keys; use `add` for the rotation pool.
+    #[command(visible_alias = "set-key", visible_alias = "write")]
+    Set {
+        /// Variable name, e.g. `HUNTSMAN_SHODAN_KEY`. Must start with `HUNTSMAN_`.
+        name: String,
+        /// Raw value to store.
+        value: String,
+    },
     /// Add a key to the pool for a service.
     Add {
         /// Service name (shodan, intelx, dehashed, wigle, etc.)
@@ -120,6 +130,14 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
     let pool = key_pool::global_pool();
 
     match action {
+        KeysAction::Set { name, value } => {
+            use std::collections::BTreeMap;
+            let mut updates = BTreeMap::new();
+            updates.insert(name.clone(), value);
+            crate::util::keys::write_keys(&updates, &[])
+                .map_err(|e| Error::Other(e.to_string()))?;
+            println!("✓ {name} set in {}", crate::util::keys::env_path());
+        }
         KeysAction::Add {
             service,
             key,

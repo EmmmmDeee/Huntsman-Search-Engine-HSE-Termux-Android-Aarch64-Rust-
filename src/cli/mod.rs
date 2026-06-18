@@ -1,9 +1,11 @@
-//! CLI: scan / modules / doctor / serve / live / provision / set-key / keys.
+//! CLI entry point: scan / serve / live / modules / keys / config /
+//! diagnostics / update / export / import / diff / audit / radar.
 //!
 //! Surfaces every `ScanOptions` field as a flag so each scan is fully
 //! customisable before launch. `serve` boots the HTTP server + SPA;
-//! `live` re-runs the same scan on a fixed interval (v0.5+). See
-//! `docs/USAGE.md` for the full reference.
+//! `live` re-runs the same scan on a fixed interval. `update` upgrades
+//! the binary in place via `install.sh`. See `docs/USAGE.md` for the
+//! full reference.
 
 mod audit;
 mod cells;
@@ -22,6 +24,7 @@ mod radar;
 mod scan;
 mod selftest;
 mod serve;
+mod update;
 
 use std::io::IsTerminal;
 use std::sync::Arc;
@@ -269,6 +272,7 @@ pub async fn run() -> Result<()> {
             out,
         } => export::cmd_export(scan_id, format, out).await,
         Command::Diff { from, to, format } => diff::cmd_diff(from, to, format),
+        Command::Update { check, r#ref } => update::cmd_update(check, r#ref).await,
         Command::OathnetBatch {
             value,
             kind,
