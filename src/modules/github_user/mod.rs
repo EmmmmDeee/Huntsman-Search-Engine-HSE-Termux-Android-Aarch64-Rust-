@@ -302,6 +302,26 @@ impl Module for GithubUser {
         // Public events → extract active working hours.
         fetch::fetch_events(login, ctx, &mut result).await;
 
+        // GitHub organisations this user belongs to → Organisation entities.
+        let token = ctx.key_opt("HUNTSMAN_GITHUB_TOKEN");
+        let org_logins = fetch::fetch_orgs(&ctx.http, login, token).await;
+        for org_login in org_logins {
+            let mut org = Entity::new(EntityKind::Organisation, &org_login, 0.70, &ctx.scan_id);
+            org.tag("github-org");
+            org.add_evidence(
+                Evidence::new(SRC, format!("@{login} is a member of GitHub org {org_login}"))
+                    .with_attr("github_login", login)
+                    .with_attr("org_login", &org_login),
+            );
+            result.push(org);
+        }
+
+        // Public gists → tag profile entity with "has-gists" if any found.
+        let gist_ids = fetch::fetch_gists(&ctx.http, login, token).await;
+        if !gist_ids.is_empty() && let Some(first) = result.entities.first_mut() {
+            first.tag("has-gists");
+        }
+
         Ok(result)
     }
 

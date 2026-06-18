@@ -23,7 +23,7 @@ fn cost_is_key_gated() {
 fn module_metadata() {
     let m = Censys;
     assert_eq!(m.name(), "censys");
-    assert_eq!(m.priority(), 35);
+    assert_eq!(m.priority(), 78);
     assert_eq!(m.max_timeout_ms(), 10_000);
     let desc = m.description();
     assert!(desc.contains("Censys"));

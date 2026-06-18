@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (119 modules: 90 free · 24 key-gated · 5 paid)
+## Catalogue (124 modules: 92 free · 27 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -33,7 +33,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `keybase` | username | free | no | 100 | person, username, email, domain, address |
 | `username_variants` | username | free | **yes** | 98 | username |
 
-### people (15)
+### people (16)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -52,6 +52,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `au_electoral` | full_name | free | no | 85 | address, coordinates |
 | `au_property` | full_name | free | no | 84 | address, coordinates |
 | `qld_unclaimed` | full_name, organisation | free | no | 58 | address, coordinates, organisation |
+| `ahpra` | full_name, organisation | free | no | 86 | person, organisation |
 
 ### email (6)
 
@@ -64,10 +65,11 @@ records. The engine knows nothing else — every module is a one-file change.
 | `smtp_vrfy` | email | free | no | 85 | email |
 | `hunter_io` | domain | key_gated | no | 62 | email, person, organisation |
 
-### phone (2)
+### phone (3)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
+| `hlr_cnam` | phone | key_gated | no | 138 | person, phone |
 | `numverify` | phone | key_gated | no | 139 | address |
 | `phone_intl` | phone | free | **yes** | 140 | phone |
 
@@ -95,7 +97,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `threatfox` | ip_address, domain | key_gated | no | 109 | domain, ip_address, url |
 | `virustotal` | ip_address, domain | key_gated | no | 55 | — |
 
-### corporate (6)
+### corporate (8)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -105,6 +107,8 @@ records. The engine knows nothing else — every module is a one-file change.
 | `opencorporates` | full_name, organisation, abn_acn | free | no | 116 | organisation, abn_acn, address |
 | `acnc_charities` | organisation | free | no | 112 | organisation, abn_acn, address, domain |
 | `gleif_lei` | organisation | free | no | 111 | organisation, abn_acn, address |
+| `trove_au` | organisation, abn_acn | key_gated | no | 57 | organisation |
+| `acma_rrl` | organisation, abn_acn, coordinates | free | no | 48 | organisation, abn_acn |
 
 ### dns_recon (13)
 
@@ -124,7 +128,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `hackertarget` | ip_address, domain, url | free | no | 24 | domain, ip_address |
 | `domainsdb` | full_name, domain, organisation | free | no | 19 | domain |
 
-### infrastructure (20)
+### infrastructure (21)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -139,7 +143,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `bgpview` | ip_address, asn | free | no | 35 | ip_address, domain, asn |
 | `netblock` | cidr | free | **yes** | 60 | ip_address |
 | `portscan` | ip_address | free | no | 22 | ip_address, url |
-| `censys` | ip_address | key_gated | no | 35 | ip_address, coordinates, address |
+| `censys` | ip_address | key_gated | no | 78 | ip_address, coordinates, address |
 | `greynoise` | ip_address | free | no | 30 | ip_address |
 | `ip_whois_geo` | ip_address | free | no | 27 | coordinates, address, asn, organisation |
 | `ipquery` | ip_address | free | no | 27 | coordinates, address, asn, organisation |
@@ -148,6 +152,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `ipinfo` | ip_address | free | no | 25 | coordinates, address, asn, organisation, domain |
 | `ip_registry` | ip_address, asn | free | no | 23 | ip_address, asn, email, url |
 | `urlscan` | ip_address, domain, url | free | no | 15 | ip_address |
+| `netlas` | ip_address, domain, email | key_gated | no | 79 | ip_address, email, domain, organisation, coordinates, address |
 
 ### web (5)
 

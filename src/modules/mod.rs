@@ -7,7 +7,9 @@
 
 pub mod abn_lookup;
 pub mod abuseipdb;
+pub mod acma_rrl;
 pub mod acnc_charities;
+pub mod ahpra;
 pub mod api_key_probe;
 pub mod asic_director;
 pub mod au_electoral;
@@ -52,6 +54,7 @@ pub mod gravatar;
 pub mod greynoise;
 pub mod hacker_news;
 pub mod hackertarget;
+pub mod hlr_cnam;
 pub mod hibp;
 pub mod hudsonrock;
 pub mod hunter_io;
@@ -72,6 +75,7 @@ pub mod mls;
 pub mod mylnikov;
 pub mod name_intel;
 pub mod netblock;
+pub mod netlas;
 pub mod niamonx;
 pub mod npm_author;
 pub mod numverify;
@@ -107,6 +111,7 @@ pub mod streaming_probe;
 pub mod subdomain_takeover;
 pub mod sunrise_sunset;
 pub mod threatfox;
+pub mod trove_au;
 pub mod typosquat;
 pub mod urlhaus;
 pub mod urlscan;
@@ -349,6 +354,11 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(au_property::AuProperty),
         Arc::new(acnc_charities::AcncCharities),
         Arc::new(gleif_lei::GleifLei),
+        Arc::new(acma_rrl::AcmaRrl),
+        Arc::new(ahpra::Ahpra),
+        Arc::new(hlr_cnam::HlrCnam),
+        Arc::new(netlas::Netlas),
+        Arc::new(trove_au::TroveAu),
     ]
 }
 
