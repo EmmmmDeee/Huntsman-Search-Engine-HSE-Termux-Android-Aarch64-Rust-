@@ -1373,8 +1373,13 @@ impl ScanEngine {
 /// set on every sweep — single source of truth, so adding a new
 /// sensor module here both bypasses preflight AND joins the radar
 /// loop in one edit.
-pub(crate) const LOCAL_PASSIVE_MODULES: &[&str] =
-    &["device_sensors", "wifi_intel", "cell_intel", "local_net"];
+pub(crate) const LOCAL_PASSIVE_MODULES: &[&str] = &[
+    "device_sensors",
+    "wifi_intel",
+    "cell_intel",
+    "local_net",
+    "signal_radar",
+];
 
 #[cfg(test)]
 mod tests;

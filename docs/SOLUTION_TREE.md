@@ -556,6 +556,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
   T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE; LOW over-dispatch +
   budget-reset-zeroing remain).
+- **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
+  live-sensor modules now consistently gate on `Coordinates | MacAddress` and
+  appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
+  data.
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
 - **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); C1/C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
@@ -1125,3 +1129,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   route-layer middleware; both logged, neither blocking. Gate green:
   fmt/clippy/doc clean, 3,088 lib tests (+2), 0 failures; `bash -n` + shellcheck
   clean. Paired: `PROBLEM_TREE` §8 cycle 23 — same commit.
+- **2026-06-18** — **Cycle 24 (P→S): SOL-SENSOR-GATE `[ ]`→`[x]` — `signal_radar`
+  sensor isolation corrected; live phone sensors no longer fire on non-geo seeds.**
+  **P→S build:** identified `signal_radar` as the sole `LOCAL_PASSIVE_MODULES`
+  outlier — all peer sensor modules (`device_sensors`, `wifi_intel`, `cell_intel`,
+  `local_net`) gate on `Coordinates | MacAddress` **and** appear in the isolation
+  array; `signal_radar` did neither. **Two-part fix (S.CORE correctness):**
+  (1) `src/modules/signal_radar/mod.rs` — `accepts()` changed from `true` (all
+  targets) to `matches!(t.kind, TargetKind::Coordinates | TargetKind::MacAddress)`,
+  with the MCS-A rationale documented in-place; `TargetKind` added to imports;
+  (2) `src/core/engine/mod.rs` — `"signal_radar"` appended to
+  `LOCAL_PASSIVE_MODULES`, enabling the existing dispatch gate to suppress
+  expansion-round re-firing. **Zero additional test code:** the architecture test
+  `local_passive_sensor_modules_reject_remote_subject_seeds` (iterates
+  `LOCAL_PASSIVE_MODULES`, asserts refusal of all non-geo seed kinds + acceptance
+  of `Coordinates`) now automatically covers `signal_radar`. **Contamination chain
+  fully broken:** for any non-geo seed (email, name, username, phone, domain,
+  IP) `signal_radar.accepts()` is `false` on the seed round; on expansion rounds
+  where a legitimate `Coordinates` entity appears, the `LOCAL_PASSIVE_MODULES`
+  gate suppresses re-firing. `cell_local` and `opencellid` now see only
+  coordinates from legitimate external OSINT, never from phone sensors.
+  **S→P gap from this cycle:** none — the fix is complete; the pattern is now
+  consistently applied across all six live-sensor modules. **§4d update:**
+  S.CORE sensor-gate row added. Gate green: fmt/clippy/doc clean, 3,092 lib
+  tests, 0 failures; `bash -n` + shellcheck clean. Paired: `PROBLEM_TREE` §8
+  cycle 24 — same commit.

@@ -69,6 +69,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
   "lat/lon binding swap" was investigated and **rejected as a false positive**
   (the bindings are correct; the round-trip test proves it). +2 regression tests.
 
+- **Sensor contamination fix — `signal_radar` no longer fires on non-geo target
+  seeds (PROBLEM_TREE cycle 24 / SOL-SENSOR-GATE).** `signal_radar` ran WiFi,
+  Bluetooth, cell, GPS, and LAN-ARP sensors for *every* scan target regardless of
+  kind (email, name, phone, domain, IP, …), injecting the operator's physical
+  RF environment into unrelated scans and attributing the phone's GPS fix, visible
+  APs, and nearby cell towers to the remote subject. Downstream geo modules
+  (`cell_local`, `opencellid`) then fired on those injected coordinates, compounding
+  the contamination. Two-part fix: `signal_radar::accepts()` narrowed to
+  `Coordinates | MacAddress` only (matching the established pattern of all five peer
+  live-sensor modules); `"signal_radar"` added to `LOCAL_PASSIVE_MODULES` in
+  `core::engine` to suppress expansion-round re-firing. No new test code required:
+  the existing `local_passive_sensor_modules_reject_remote_subject_seeds`
+  architecture test now automatically covers `signal_radar`.
+
 - **Correctness & robustness hardening (PROBLEM_TREE T0–T2).** Closed the
   `to_lowercase()` byte-offset slice **panic class** (T0.1/T0.2) —
   `au_electoral`/`au_property`/`search_engines` now route through a boundary-safe

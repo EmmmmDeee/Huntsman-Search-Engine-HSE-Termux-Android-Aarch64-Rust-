@@ -1810,3 +1810,33 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy/doc clean, 3,088 lib tests (+2 trigger-guard regression
   tests), 0 failures; `bash -n` + shellcheck clean. **Paired:** `SOLUTION_TREE`
   SOL-SECRETS / SOL-SUPPLY cycle 23 + §4/§5 — same commit.
+- **2026-06-18** — **Cycle 24 (P→S): `signal_radar` sensor-contamination defect —
+  live phone sensors fired on all target kinds, polluting non-geo scans.**
+  **Problem (fault-tree MCS-A violation):** `signal_radar` ran WiFi AP scan,
+  Bluetooth scan, cell tower survey, GPS fix, and LAN ARP discovery for *every*
+  scan target regardless of kind. A scan seeded on a `FullName`, `Email`,
+  `Username`, `Phone`, `Domain`, or `IpAddress` caused the engine to inject the
+  phone's live GPS coordinates, visible WiFi BSSIDs, nearby cell towers, and ARP
+  table into the entity graph — attributing the operator's physical location and
+  RF environment to the remote subject. Downstream modules `cell_local` and
+  `opencellid` then fired on those injected coordinates, compounding the
+  contamination with tower-lookup results that belong to the phone, not the
+  target. **Root cause:** `accepts()` returned `true` for all `TargetKind`
+  variants (the early implementation pre-dates the `LOCAL_PASSIVE_MODULES`
+  isolation pattern and carried a rationale — "RF survey is always relevant" —
+  that the user explicitly rejected). All other live-sensor modules
+  (`device_sensors`, `wifi_intel`, `cell_intel`, `local_net`) correctly gate on
+  `Coordinates | MacAddress` *and* appear in `LOCAL_PASSIVE_MODULES`. `signal_radar`
+  was the sole exception. **Fix (two-part):** (1) `accepts()` narrowed to
+  `Coordinates | MacAddress` only — phone sensors now silently skip every
+  non-geo seed (no data injected, contamination chain broken at the source);
+  (2) `"signal_radar"` added to `LOCAL_PASSIVE_MODULES` — expansion-round
+  re-firing suppressed when a legitimate `Coordinates` entity appears during a
+  geo seed's expansion (same guard that already protects the four peer modules).
+  No new test code needed: the existing architecture test
+  `local_passive_sensor_modules_reject_remote_subject_seeds` enumerates every
+  name in `LOCAL_PASSIVE_MODULES` and asserts it refuses all non-geo seed kinds
+  — adding `signal_radar` to the array makes it automatically covered.
+  Gate green: fmt/clippy/doc clean, 3,092 lib tests, 0 failures; `bash -n` +
+  shellcheck clean. **Paired:** `SOLUTION_TREE` SOL-SENSOR-GATE cycle 24 +
+  §4/§5 — same commit.
