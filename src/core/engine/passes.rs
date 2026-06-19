@@ -128,6 +128,47 @@ pub(super) fn promote_geo_corroborated_family(entities: &mut [Entity]) -> usize 
     promoted
 }
 
+/// Flag geo-discordant namesakes (free, offline, per scan).
+///
+/// The negative complement of [`promote_geo_corroborated_family`]: when the scan
+/// has a confirmed subject location, a `family-candidate` whose locality resolves
+/// BEYOND [`crate::core::geo_family::NAMESAKE_GEO_KM`] from the subject shares only
+/// the surname, not the region — more likely a coincidental namesake than a
+/// household relative. It earns a `geo-discordant` tag so the Leads ranking
+/// de-prioritises it (with a plain "different region — possible namesake" reason)
+/// and the analyst can tell the real local family from interstate look-alikes.
+///
+/// Crucially this adds ONLY a tag — never an evidence record and never a
+/// confidence change. A discord is a *negative* signal; attaching it as evidence
+/// would (like any new source) inflate [`Entity::source_count`] and PROMOTE the
+/// very namesake it means to demote, and a far relative could still be genuine, so
+/// the entity is re-ordered, never down-graded or deleted. Free, offline,
+/// idempotent. The shared detector lives in [`crate::core::geo_family`]. Returns
+/// the number flagged.
+pub(super) fn flag_geo_discordant_namesakes(entities: &mut [Entity]) -> usize {
+    use crate::core::geo_family::{is_geo_discordant_namesake, subject_locations};
+
+    let subject = subject_locations(entities);
+    if subject.is_empty() {
+        return 0;
+    }
+    let mut flagged = 0usize;
+    for e in entities.iter_mut() {
+        if e.has_tag("geo-discordant") || !is_geo_discordant_namesake(e, &subject) {
+            continue;
+        }
+        e.tag("geo-discordant");
+        flagged += 1;
+    }
+    if flagged > 0 {
+        info!(
+            flagged,
+            "geo-discordant namesakes flagged (free, offline — sharpens family precision)"
+        );
+    }
+    flagged
+}
+
 /// Pull any newly-available pooled API key into `keys` for every service that
 /// doesn't already have one. This is the key-cascade that makes recursion pay
 /// off: a key a module just discovered (oathnet breach data, api_key_probe

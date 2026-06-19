@@ -111,6 +111,61 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
     assert_eq!(promote_geo_corroborated_family(&mut lone), 0);
 }
 
+/// The precision complement: a same-surname candidate a whole region from the
+/// subject is tagged `geo-discordant` (a likely namesake) WITHOUT any confidence
+/// change — tag-only, so it is demoted in the leads, never promoted or deleted. An
+/// in-area relative is left for the positive pass, and the flag is idempotent.
+#[test]
+fn flag_geo_discordant_namesakes_tags_far_namesakes_without_inflating() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    // Subject's confirmed GPS near Woodford, QLD (Brisbane catchment).
+    let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
+    gps.tag("geoint");
+    // Same-surname candidate in Perth, WA (~3600 km) — a likely namesake.
+    let mut perth = Entity::new(EntityKind::Person, "Curt Moreau", 0.32, "s");
+    perth.tag("family-candidate");
+    perth.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "6000"));
+    let conf_before = perth.c_effective();
+    let sources_before = perth.source_count();
+    // In-area relative (Beerwah) — the positive pass's job, not this one.
+    let mut near = Entity::new(EntityKind::Address, "QLD 4519, Australia", 0.32, "s");
+    near.tag("family-candidate");
+
+    let mut ents = vec![gps, perth, near];
+    assert_eq!(
+        flag_geo_discordant_namesakes(&mut ents),
+        1,
+        "only the far namesake is flagged"
+    );
+
+    let perth = ents.iter().find(|e| e.value == "Curt Moreau").unwrap();
+    assert!(perth.has_tag("geo-discordant"));
+    // Tag-only: confidence and the corroboration count are untouched, so a
+    // negative signal can never PROMOTE the namesake it means to demote.
+    assert!((perth.c_effective() - conf_before).abs() < 1e-9);
+    assert_eq!(perth.source_count(), sources_before);
+    assert!(
+        !perth.evidence.iter().any(|ev| ev.source == "geo_discord"),
+        "discord adds no evidence record"
+    );
+
+    let near = ents.iter().find(|e| e.value.contains("4519")).unwrap();
+    assert!(
+        !near.has_tag("geo-discordant"),
+        "an in-area relative is never a namesake"
+    );
+
+    // Idempotent, and nothing to judge without a confirmed subject fix.
+    assert_eq!(flag_geo_discordant_namesakes(&mut ents), 0);
+    let mut lone = vec![{
+        let mut e = Entity::new(EntityKind::Address, "WA 6000, Australia", 0.32, "s");
+        e.tag("family-candidate");
+        e
+    }];
+    assert_eq!(flag_geo_discordant_namesakes(&mut lone), 0);
+}
+
 /// FTA invariant (cuts MCS-A): the local/environmental sensor modules read
 /// the OPERATOR's own device/network, so they must never engage on a
 /// remote-subject seed — otherwise the operator's GPS/Wi-Fi/cell/LAN data is

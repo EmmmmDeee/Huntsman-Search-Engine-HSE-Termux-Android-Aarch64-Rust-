@@ -115,6 +115,49 @@ fn recommend_ranks_geo_corroborated_family_top() {
     );
 }
 
+/// The precision complement: a geo-discordant namesake (shared surname, a region
+/// away) is demoted below an otherwise-identical in-region candidate, its reason
+/// names the namesake doubt, and it is flagged `discordant` (not `confirmed`) for
+/// the UI — so interstate look-alikes never crowd out the genuine local family.
+#[test]
+fn recommend_demotes_geo_discordant_namesakes() {
+    let mut subject = ent(EntityKind::Person, "Kyle Diegmann", 0.85);
+    subject.tag("subject");
+
+    // Two same-surname candidates, identical but for location: one local, one a
+    // region away and flagged a likely namesake by the finalize pass.
+    let mut local = ent(EntityKind::Person, "Aaron Diegmann", 0.32);
+    local.tag("family-candidate");
+    let mut namesake = ent(EntityKind::Person, "Zane Diegmann", 0.32);
+    namesake.tag("family-candidate");
+    namesake.tag("geo-discordant");
+
+    let relations = vec![
+        rel(&subject, &local, RelationKind::AssociatedWith, 0.5),
+        rel(&subject, &namesake, RelationKind::AssociatedWith, 0.5),
+    ];
+    let entities = vec![subject, local.clone(), namesake.clone()];
+
+    let leads = recommend(&entities, &relations, 0.50);
+    let local_lead = leads.iter().find(|l| l.value == "Aaron Diegmann").unwrap();
+    let namesake_lead = leads.iter().find(|l| l.value == "Zane Diegmann").unwrap();
+    assert!(
+        local_lead.score > namesake_lead.score,
+        "the local candidate ({}) outranks the namesake ({})",
+        local_lead.score,
+        namesake_lead.score
+    );
+    assert!(namesake_lead.discordant && !namesake_lead.confirmed);
+    assert!(!local_lead.discordant);
+    assert!(
+        namesake_lead.reason.contains("possible namesake"),
+        "reason: {}",
+        namesake_lead.reason
+    );
+    // The local candidate is the top lead overall.
+    assert_eq!(leads[0].value, "Aaron Diegmann");
+}
+
 /// Reliability lifts a lead, but only for a *new* person/persona — never for a
 /// value the subject already owns. A geo-corroborated relative beats a same-tier
 /// plain relative, and a VERIFIED owned identifier still trails an untapped
