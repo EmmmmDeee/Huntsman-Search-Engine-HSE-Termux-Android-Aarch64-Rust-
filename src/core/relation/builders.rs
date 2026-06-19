@@ -375,6 +375,32 @@ const CO_MENTION_MAX_PERSONS_PER_SOURCE: usize = 5;
 /// `source_url` / `page` are module variants.
 const CO_MENTION_SOURCE_ATTRS: &[&str] = &["url", "source_url", "page"];
 
+/// Distinctive owner / infrastructure SELECTOR attributes the modules actually emit
+/// and that genuinely individuate an affiliation — a registrant identity, a crypto
+/// fingerprint, an email's gravatar. Deliberately EXCLUDES generic fields shared by
+/// the masses (registrar, country, provider, ASN), which would mint false ties. This
+/// curated allowlist is the precision floor for [`derive_shared_selector`]; every
+/// entry is a real key emitted somewhere in the module layer (no speculative
+/// selectors), keeping the pivot grounded in data the engine actually produces.
+const AFFILIATION_SELECTOR_ATTRS: &[&str] = &[
+    "registrant_email",
+    "registrant_org",
+    "admin_org",
+    "cert_serial",
+    "key_fingerprint",
+    "gravatar_hash",
+];
+
+/// Score damp for a shared-selector affiliation edge. An individuating selector is a
+/// strong tie but still circumstantial (a registrant can be a shared agent), so it is
+/// damped like co-mention — a lead for the analyst to confirm, not an assertion.
+const AFFILIATION_DAMP: f64 = 0.45;
+
+/// A selector value shared by MORE than this many distinct entities is not
+/// individuating — a privacy-proxy registrant, a default TLS fingerprint, a shared
+/// host — so it links nothing. A genuine owner selector is shared by a few affiliates.
+const AFFILIATION_CROWD_CAP: usize = 6;
+
 /// Evidence attribute keys whose value names a real person — the owner /
 /// registrant / account holder a module recorded alongside an identifier or a
 /// place. Matched case-insensitively against present Person entities, so an
@@ -829,24 +855,81 @@ pub fn derive_co_residence(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
     out
 }
 
-/// The distinct SOURCE-document identifiers an entity's evidence cites — the values
-/// of its [`CO_MENTION_SOURCE_ATTRS`], trimmed, lowercased, non-empty. The join key
-/// for [`derive_co_mention`].
-fn cited_sources(e: &Entity) -> std::collections::HashSet<String> {
-    let mut out = std::collections::HashSet::new();
-    for ev in &e.evidence {
-        for (k, v) in &ev.attributes {
-            if CO_MENTION_SOURCE_ATTRS
-                .iter()
-                .any(|a| k.eq_ignore_ascii_case(a))
-            {
-                let s = v.trim();
-                if !s.is_empty() {
-                    out.insert(s.to_lowercase());
+/// Universal shared-selector affiliation engine — the general "pivot on a shared
+/// selector" OSINT primitive that powers BOTH co-mention and infrastructure
+/// affiliation. Links distinct entities (of `kind`, or any kind if `None`) whose
+/// evidence carries the SAME value for one of the DISTINCTIVE `attrs` selectors.
+///
+/// A value shared by MORE than `crowd_cap` distinct entities is not individuating —
+/// a privacy-proxy registrant, a default fingerprint, a directory page shared by a
+/// crowd — so it mints NO edges (it would otherwise produce O(n²) noise). A value
+/// shared by a handful is the genuine tie this exists to surface. Emits one
+/// `damp`-scaled, canonically-directed `AssociatedWith` edge per affiliated pair;
+/// symmetric, deduped, bounded, and deterministic (sorted values and members). The
+/// abstraction is deliberate: a future selector pivot is a one-line config, not a new
+/// loop.
+fn link_by_shared_attribute(
+    entities: &[Entity],
+    scan_id: &str,
+    attrs: &[&str],
+    kind: Option<EntityKind>,
+    damp: f64,
+    crowd_cap: usize,
+) -> Vec<Relation> {
+    use std::collections::{HashMap, HashSet};
+
+    // selector value -> the distinct entities whose evidence carries it.
+    let mut by_value: HashMap<String, Vec<&Entity>> = HashMap::new();
+    for e in entities
+        .iter()
+        .filter(|e| kind.as_ref().is_none_or(|k| k == &e.kind))
+    {
+        let mut seen_vals: HashSet<String> = HashSet::new();
+        for ev in &e.evidence {
+            for (key, val) in &ev.attributes {
+                if !attrs.iter().any(|a| key.eq_ignore_ascii_case(a)) {
+                    continue;
+                }
+                let v = val.trim().to_lowercase();
+                if !v.is_empty() && seen_vals.insert(v.clone()) {
+                    by_value.entry(v).or_default().push(e);
                 }
             }
         }
     }
+    if by_value.is_empty() {
+        return Vec::new();
+    }
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    // Deterministic value order so the emitted edge set never depends on map order.
+    let mut groups: Vec<(&String, &Vec<&Entity>)> = by_value.iter().collect();
+    groups.sort_by(|a, b| a.0.cmp(b.0));
+    for (_value, members) in groups {
+        // A handful share an individuating selector; a crowd shares a generic one.
+        if members.len() < 2 || members.len() > crowd_cap {
+            continue;
+        }
+        let mut g = members.clone();
+        g.sort_by(|a, b| a.uid.cmp(&b.uid));
+        for i in 0..g.len() {
+            for j in (i + 1)..g.len() {
+                let (a, b) = (g[i], g[j]);
+                let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
+                if from.uid != to.uid && seen.insert((from.uid.clone(), to.uid.clone())) {
+                    out.push(Relation::new(
+                        from.uid.as_str(),
+                        to.uid.as_str(),
+                        RelationKind::AssociatedWith,
+                        from.confidence.min(to.confidence) * damp,
+                        scan_id,
+                    ));
+                }
+            }
+        }
+    }
+    sort_edges(&mut out);
     out
 }
 
@@ -856,61 +939,51 @@ fn cited_sources(e: &Entity) -> std::collections::HashSet<String> {
 /// Reverse-engineered from how real relatives are actually linked: a single public
 /// source (an obituary, a family notice, a property title, one search result) names
 /// both, but the engine extracts each as a SEPARATE Person and discards the "same
-/// source" tie. This recovers it — group Persons by the source their evidence cites
-/// and link those that co-occur in one document — the free, offline angle for
-/// relatives and associates a shared surname or address can't reach.
-///
-/// Precision-gated: a source naming a CROWD ([`CO_MENTION_MAX_PERSONS_PER_SOURCE`])
-/// is a directory / news round-up, skipped (it would mint O(n²) noise); a source
-/// naming a handful is the relationship document this exists to mine. Damped
-/// ([`CO_MENTION_DAMP`]) below co-residence and a declared link, so a same-surname
-/// co-mentioned pair keeps its stronger kinship edge — two independent angles
-/// agreeing, not double-counted. Symmetric, canonically directed (smaller-uid →
-/// larger), deduped, bounded, and deterministic.
+/// source" tie. This recovers it via the universal [`link_by_shared_attribute`]
+/// engine over the source selectors — the free, offline angle for relatives and
+/// associates a shared surname or address can't reach. Precision-gated
+/// ([`CO_MENTION_MAX_PERSONS_PER_SOURCE`]: a crowded source is a directory, skipped)
+/// and damped ([`CO_MENTION_DAMP`]) below co-residence and a declared link, so a
+/// same-surname co-mentioned pair keeps its stronger kinship edge.
 pub fn derive_co_mention(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
-    use std::collections::{HashMap, HashSet};
+    link_by_shared_attribute(
+        entities,
+        scan_id,
+        CO_MENTION_SOURCE_ATTRS,
+        Some(EntityKind::Person),
+        CO_MENTION_DAMP,
+        CO_MENTION_MAX_PERSONS_PER_SOURCE,
+    )
+}
 
-    // source-document -> the distinct Persons it names.
-    let mut by_source: HashMap<String, Vec<&Entity>> = HashMap::new();
-    for e in entities.iter().filter(|e| e.kind == EntityKind::Person) {
-        for src in cited_sources(e) {
-            by_source.entry(src).or_default().push(e);
-        }
-    }
-    if by_source.is_empty() {
-        return Vec::new();
-    }
-
-    let mut seen: HashSet<(String, String)> = HashSet::new();
-    let mut out = Vec::new();
-    // Deterministic source order so the emitted edge set never depends on map order.
-    let mut sources: Vec<(&String, &Vec<&Entity>)> = by_source.iter().collect();
-    sources.sort_by(|a, b| a.0.cmp(b.0));
-    for (_src, persons) in sources {
-        // A relationship document names a handful; a crowd is a list page — skip it.
-        if persons.len() < 2 || persons.len() > CO_MENTION_MAX_PERSONS_PER_SOURCE {
-            continue;
-        }
-        let mut named = persons.clone();
-        named.sort_by(|a, b| a.uid.cmp(&b.uid));
-        for i in 0..named.len() {
-            for j in (i + 1)..named.len() {
-                let (a, b) = (named[i], named[j]);
-                let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
-                if seen.insert((from.uid.clone(), to.uid.clone())) {
-                    out.push(Relation::new(
-                        from.uid.as_str(),
-                        to.uid.as_str(),
-                        RelationKind::AssociatedWith,
-                        from.confidence.min(to.confidence) * CO_MENTION_DAMP,
-                        scan_id,
-                    ));
-                }
-            }
-        }
-    }
-    sort_edges(&mut out);
-    out
+/// Derive `AssociatedWith` AFFILIATION edges between entities that share a DISTINCTIVE
+/// owner / infrastructure SELECTOR — the universal reverse-WHOIS / fingerprint pivot,
+/// domain-agnostic and forward-operating on any scan.
+///
+/// Real-world archetype it generalises: a corporate seed and its hidden subsidiary are
+/// linked because their domains share a registrant; two servers are one operator's
+/// because they share a TLS certificate or SSH key; two profiles are one person's
+/// because they share a gravatar. The engine extracts each as a separate entity but
+/// the SHARED SELECTOR — already in their evidence ([`AFFILIATION_SELECTOR_ATTRS`]) —
+/// is the tie. This materialises it as a direct affiliation edge via
+/// [`link_by_shared_attribute`], so a single seed reaches the affiliate it was never
+/// explicitly named with.
+///
+/// Precision is the curated, individuating selector set (registrant identity, crypto
+/// fingerprint, gravatar — never a generic registrar / country / provider) plus the
+/// [`AFFILIATION_CROWD_CAP`]: a value shared by a crowd is a privacy proxy or a default
+/// fingerprint, not an owner, and is skipped. Damped ([`AFFILIATION_DAMP`]), symmetric,
+/// deduped, bounded, deterministic. Any kind qualifies (domains, hosts, orgs, emails),
+/// so it improves every scan that surfaces these selectors, regardless of subject.
+pub fn derive_shared_selector(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    link_by_shared_attribute(
+        entities,
+        scan_id,
+        AFFILIATION_SELECTOR_ATTRS,
+        None,
+        AFFILIATION_DAMP,
+        AFFILIATION_CROWD_CAP,
+    )
 }
 
 /// Derive every deterministic, evidence-grounded relation the engine knows how
@@ -944,6 +1017,10 @@ pub fn derive_all(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     // Damped below co-residence; a same-surname co-mentioned pair keeps its stronger
     // kinship edge, so independent angles corroborate rather than double-count.
     out.extend(derive_co_mention(entities, scan_id));
+    // Shared-selector affiliation: entities sharing a DISTINCTIVE owner / infra
+    // selector (registrant, TLS/SSH fingerprint, gravatar) — the universal
+    // reverse-WHOIS / fingerprint pivot, domain-agnostic across every scan.
+    out.extend(derive_shared_selector(entities, scan_id));
     // Declared associations LAST so a `(from, kind, to)` edge a surname guess or a
     // co-residence inference already emitted is re-emitted here at full (declared)
     // confidence — the later, higher-trust edge wins on idempotent upsert.

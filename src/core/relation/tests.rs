@@ -202,6 +202,118 @@ fn co_mention_pairs_a_small_group_deterministically() {
     assert_eq!(ids1, ids2, "edge set is independent of input order");
 }
 
+/// An entity carrying one distinctive selector attribute, the join key for affiliation.
+fn entity_with_attr(
+    kind: EntityKind,
+    value: &str,
+    conf: f64,
+    attr: &str,
+    attr_val: &str,
+) -> Entity {
+    use crate::core::entity::Evidence;
+    let mut e = ent(kind, value, conf);
+    e.add_evidence(Evidence::new("whois", "rec").with_attr(attr, attr_val));
+    e
+}
+
+#[test]
+fn shared_selector_links_domains_by_shared_registrant() {
+    // The synthetic corporate → hidden-subsidiary archetype: two domains the engine
+    // found separately, tied by one registrant email already sitting in their evidence.
+    let a = entity_with_attr(
+        EntityKind::Domain,
+        "company-a.com",
+        0.7,
+        "registrant_email",
+        "admin@holdco.com",
+    );
+    let b = entity_with_attr(
+        EntityKind::Domain,
+        "company-b.com",
+        0.6,
+        "registrant_email",
+        "admin@holdco.com",
+    );
+    let edges = derive_shared_selector(&[a, b], "s");
+    assert_eq!(edges.len(), 1, "shared registrant ⇒ one affiliation edge");
+    assert_eq!(edges[0].kind, RelationKind::AssociatedWith);
+    // Damped: min(0.7, 0.6) × AFFILIATION_DAMP (0.45).
+    assert!((edges[0].confidence - 0.6 * 0.45).abs() < 1e-9);
+}
+
+#[test]
+fn shared_selector_links_any_kind_by_fingerprint() {
+    // A shared TLS cert serial ⇒ same operator, regardless of entity kind — the
+    // capability is domain-agnostic, not bound to one subject type.
+    let h1 = entity_with_attr(
+        EntityKind::Domain,
+        "h1.example",
+        0.6,
+        "cert_serial",
+        "0af3:21:bc",
+    );
+    let h2 = entity_with_attr(
+        EntityKind::IpAddress,
+        "203.0.113.9",
+        0.6,
+        "cert_serial",
+        "0af3:21:bc",
+    );
+    assert_eq!(derive_shared_selector(&[h1, h2], "s").len(), 1);
+}
+
+#[test]
+fn shared_selector_ignores_generic_non_allowlisted_attributes() {
+    // A shared REGISTRAR (GoDaddy) is not individuating and is not in the curated
+    // selector set — so it links nothing. This is the anti-overfitting guard.
+    let a = entity_with_attr(EntityKind::Domain, "x.com", 0.7, "registrar", "GoDaddy");
+    let b = entity_with_attr(EntityKind::Domain, "y.com", 0.6, "registrar", "GoDaddy");
+    assert!(
+        derive_shared_selector(&[a, b], "s").is_empty(),
+        "a shared registrar is not affiliation"
+    );
+}
+
+#[test]
+fn shared_selector_skips_crowded_privacy_proxy_values() {
+    // A registrant org shared by a crowd (a privacy proxy) is not an owner.
+    let org = "Privacy Protect LLC";
+    let ents: Vec<Entity> = (0..7)
+        .map(|i| {
+            entity_with_attr(
+                EntityKind::Domain,
+                &format!("d{i:02}.example"),
+                0.6,
+                "registrant_org",
+                org,
+            )
+        })
+        .collect();
+    assert!(
+        derive_shared_selector(&ents, "s").is_empty(),
+        "a crowd-shared registrant proxy mints no edges"
+    );
+}
+
+#[test]
+fn shared_selector_no_edge_for_distinct_values() {
+    let a = entity_with_attr(
+        EntityKind::Domain,
+        "a.com",
+        0.7,
+        "registrant_email",
+        "a@a.com",
+    );
+    let b = entity_with_attr(
+        EntityKind::Domain,
+        "b.com",
+        0.6,
+        "registrant_email",
+        "b@b.com",
+    );
+    assert!(derive_shared_selector(&[a, b], "s").is_empty());
+}
+
 #[test]
 fn derive_all_aggregates_every_structural_derivation() {
     use crate::core::entity::Evidence;
@@ -231,6 +343,7 @@ fn derive_all_aggregates_every_structural_derivation() {
         + derive_kinship(&ents, "s").len()
         + derive_co_residence(&ents, "s").len()
         + derive_co_mention(&ents, "s").len()
+        + derive_shared_selector(&ents, "s").len()
         + derive_declared_associations(&ents, "s").len();
     assert_eq!(all.len(), expected, "derive_all is the union of every pass");
     assert!(all.iter().any(|r| r.kind == RelationKind::SubdomainOf));
