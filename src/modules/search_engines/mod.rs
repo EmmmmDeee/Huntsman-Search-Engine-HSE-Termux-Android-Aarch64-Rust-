@@ -57,6 +57,7 @@ use helpers::*;
 use queries::{build_queries, detect_region, generate_username_variants};
 
 use async_trait::async_trait;
+use futures::StreamExt;
 
 use crate::core::{
     error::Result,
@@ -69,6 +70,13 @@ const MAX_RESULTS_PER_ENGINE: usize = 20;
 const INTER_ENGINE_MS: u64 = 400;
 const MAX_PAGES: usize = 2;
 const MAX_ACCUMULATED_RESULTS: usize = 2000;
+/// How many engine fetches run at once in the primary pass. Bounded concurrency so
+/// a scan reaches ALL engines within budget (a 17-deep serial sweep timed out
+/// partway, leaving most engines untried), while staying gentle on a low-power
+/// Termux radio — and strictly gentler than the health prober, which already
+/// fetches every engine at once via `join_all`. Each request still self-clamps to
+/// the deadline, so concurrency can never push the pass past the hard kill.
+const ENGINE_CONCURRENCY: usize = 6;
 
 const SOCIAL_HOSTS: &[&str] = &[
     "facebook.com",
@@ -88,6 +96,39 @@ const SOCIAL_HOSTS: &[&str] = &[
     "linktr.ee",
     "medium.com",
 ];
+
+/// Fetch one engine's full contribution for a query — page 0 plus its own
+/// pagination (first query only) — as a single future with a FIXED, owned-param
+/// signature. Free function (not an inline async closure) so `buffer_unordered`
+/// sees one concrete future type; the closure-per-lifetime form trips a
+/// higher-ranked-lifetime bound. Each request self-clamps to `deadline`.
+async fn fetch_engine(
+    engine: &'static EngineSpec,
+    url: String,
+    post_body: Option<String>,
+    query: String,
+    qi: usize,
+    deadline: std::time::Instant,
+) -> (&'static str, Option<Vec<SearchResult>>) {
+    let Some(mut acc) = fetch_and_parse(&url, engine, &query, post_body.as_deref(), deadline).await
+    else {
+        return (engine.name, None);
+    };
+    if qi == 0
+        && let Some(pf) = engine.paginate
+    {
+        for page in 1..MAX_PAGES {
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            match fetch_and_parse(&pf(&query, page), engine, &query, None, deadline).await {
+                Some(mut pr) => acc.append(&mut pr),
+                None => break,
+            }
+        }
+    }
+    (engine.name, Some(acc))
+}
 
 fn is_social_host(host: &str) -> bool {
     // Accept only the canonical profile-serving hosts: a social root domain or
@@ -245,71 +286,60 @@ impl Module for SearchEngines {
         // budget on engines that are down/blocked for this session.
         let mut dead_engines: HashSet<&str> = HashSet::new();
 
-        // ── Primary pass: run all queries against live engines ─────
+        // ── Primary pass: query every live engine, fetched with BOUNDED
+        //    CONCURRENCY so a scan reaches ALL engines within budget instead of
+        //    timing out partway through a 17-deep serial sweep. Each request
+        //    self-clamps to the deadline (see `fetch_and_parse`), so the pass can
+        //    never overrun the hard kill regardless of concurrency. ──
         for (qi, query) in queries.iter().enumerate() {
-            if ctx.cancel.is_cancelled() || std::time::Instant::now() >= primary_deadline {
+            if ctx.cancel.is_cancelled()
+                || std::time::Instant::now() >= primary_deadline
+                || all_results.len() >= MAX_ACCUMULATED_RESULTS
+            {
                 break;
             }
 
-            for engine in ENGINES {
-                if !engine_enabled(engine.name) {
-                    continue;
-                }
-                // Budget enforced per ENGINE, not just per query: one slow query
-                // across 17 serial engines must never overrun into the hard kill.
-                if ctx.cancel.is_cancelled() || std::time::Instant::now() >= primary_deadline {
-                    break;
-                }
-                if qi > 0 && dead_engines.contains(engine.name) {
-                    continue;
-                }
-                let url = (engine.build_url)(query);
-                let post_body = engine.build_post.map(|f| f(query));
-                if all_results.len() >= MAX_ACCUMULATED_RESULTS {
-                    break;
-                }
-                let before = all_results.len();
-                if let Some(mut results) =
-                    fetch_and_parse(&url, engine, query, post_body.as_deref(), primary_deadline)
-                        .await
-                {
-                    let got_results = !results.is_empty();
-                    all_results.append(&mut results);
-                    if all_results.len() >= MAX_ACCUMULATED_RESULTS {
-                        all_results.truncate(MAX_ACCUMULATED_RESULTS);
+            let engines: Vec<&'static EngineSpec> = ENGINES
+                .iter()
+                .filter(|e| engine_enabled(e.name) && !(qi > 0 && dead_engines.contains(e.name)))
+                .collect();
+
+            // Each engine's WHOLE fetch (page 0 + its own pagination) is one
+            // future; ENGINE_CONCURRENCY of them run at once. Pagination stays
+            // sequential *within* an engine, concurrent *across* engines. The
+            // futures are built eagerly into a Vec (each owns its inputs), then
+            // streamed — so no borrow of the loop-local `query` outlives the batch.
+            let futs: Vec<_> = engines
+                .into_iter()
+                .map(|engine| {
+                    let url = (engine.build_url)(query);
+                    let post_body = engine.build_post.map(|f| f(query));
+                    fetch_engine(engine, url, post_body, query.clone(), qi, primary_deadline)
+                })
+                .collect();
+            let mut batch: Vec<(&'static str, Option<Vec<SearchResult>>)> =
+                futures::stream::iter(futs)
+                    .buffer_unordered(ENGINE_CONCURRENCY)
+                    .collect()
+                    .await;
+
+            // Completion order is racy, so order the batch by engine name before
+            // appending — the persisted result must not depend on which engine
+            // happened to answer first (Determinism Requirement).
+            batch.sort_by(|a, b| a.0.cmp(b.0));
+            for (name, res) in batch {
+                match res {
+                    Some(mut results) => all_results.append(&mut results),
+                    // Nothing on the FIRST query → down/blocked for this session;
+                    // skip it on subsequent queries to save the budget.
+                    None if qi == 0 => {
+                        dead_engines.insert(name);
                     }
-                    if got_results
-                        && qi == 0
-                        && let Some(paginate_fn) = engine.paginate
-                    {
-                        for page in 1..MAX_PAGES {
-                            if ctx.cancel.is_cancelled()
-                                || std::time::Instant::now() >= primary_deadline
-                            {
-                                break;
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(INTER_ENGINE_MS))
-                                .await;
-                            let page_url = paginate_fn(query, page);
-                            if let Some(mut pr) =
-                                fetch_and_parse(&page_url, engine, query, None, primary_deadline)
-                                    .await
-                            {
-                                if pr.is_empty() {
-                                    break;
-                                }
-                                all_results.append(&mut pr);
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                } else if qi == 0 {
-                    dead_engines.insert(engine.name);
+                    None => {}
                 }
-                if all_results.len() > before {
-                    tokio::time::sleep(std::time::Duration::from_millis(INTER_ENGINE_MS)).await;
-                }
+            }
+            if all_results.len() >= MAX_ACCUMULATED_RESULTS {
+                all_results.truncate(MAX_ACCUMULATED_RESULTS);
             }
         }
 
