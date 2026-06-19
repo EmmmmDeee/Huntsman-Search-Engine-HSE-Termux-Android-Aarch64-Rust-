@@ -820,20 +820,20 @@ fn detects_eth_address() {
 
 #[test]
 fn detects_ltc_legacy_and_bech32() {
-    // Litecoin Foundation cold storage (L-prefix).
-    let legacy = "LbXkRGUgcRk2xWJpgyaufxNS3GdvLh6ETh";
+    // Litecoin L-prefix legacy address (valid base58check).
+    let legacy = "LP9u4drz8SsEdB1SmVz5oD1Qi2fGqRTqrQ";
     let (svc, _) = identify_api_key(legacy).unwrap();
     assert_eq!(svc, "crypto_ltc");
-    // Bech32 form
-    let bech = "ltc1qd9mq4uxfqr3zdkugxg5p2hpzx5d3v6e4t9k0w7";
+    // Bech32 form (valid `ltc1` checksum).
+    let bech = "ltc1qw508d6qejxtdg4y5r3zarvary0c5xw7kgmn4n9";
     let (svc, _) = identify_api_key(bech).unwrap();
     assert_eq!(svc, "crypto_ltc");
 }
 
 #[test]
 fn detects_doge_address() {
-    // Dogecoin Foundation address — D-prefix, 34 chars.
-    let addr = "D8oXmDe2KEYxJPxhAcEfqGdxF2P7yctL5h";
+    // Dogecoin D-prefix, 34 chars (valid base58check).
+    let addr = "D953LgVoMCXTuNVtKwzM4x7FNx2J2TikE3";
     let (svc, _) = identify_api_key(addr).unwrap();
     assert_eq!(svc, "crypto_doge");
 }

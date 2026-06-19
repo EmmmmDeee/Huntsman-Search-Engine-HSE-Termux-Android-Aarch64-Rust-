@@ -20,6 +20,70 @@ use super::*;
     }
 
     #[test]
+    fn classifies_checksum_verified_chains() {
+        // Real, checksum-valid addresses across every verified branch.
+        for (addr, chain) in [
+            ("3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy", "crypto_btc"), // P2SH base58check
+            ("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", "crypto_btc"), // bech32 v0
+            (
+                "bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3297",
+                "crypto_btc",
+            ), // bech32m / Taproot
+            ("LP9u4drz8SsEdB1SmVz5oD1Qi2fGqRTqrQ", "crypto_ltc"), // LTC legacy
+            ("ltc1qw508d6qejxtdg4y5r3zarvary0c5xw7kgmn4n9", "crypto_ltc"), // LTC bech32
+            ("D953LgVoMCXTuNVtKwzM4x7FNx2J2TikE3", "crypto_doge"), // DOGE
+        ] {
+            assert_eq!(classify_crypto_address(addr), Some(chain), "{addr}");
+        }
+    }
+
+    #[test]
+    fn checksum_rejects_shape_valid_typos() {
+        // Same shape, one flipped character → broken check digit. Previously these
+        // were misread as wallets; the checksum now rejects them at the source so
+        // the universal found_keys scan stops minting false-positive wallets.
+        assert_eq!(
+            classify_crypto_address("1A1zP1eP5QGefi2DMPTfTL5SLmv7Divfna"), // genesis, N→n
+            None
+        );
+        assert_eq!(
+            classify_crypto_address("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5"), // 4→5
+            None
+        );
+    }
+
+    #[test]
+    fn shape_only_chains_remain_classified() {
+        // ETH / SOL carry no checksum we can verify here, so a well-shaped one
+        // still classifies — a false positive stays a low-cost OSINT lead.
+        assert_eq!(
+            classify_crypto_address("0x742d35Cc6634C0532925a3b844Bc454e4438f44e"),
+            Some("crypto_eth")
+        );
+        assert_eq!(
+            classify_crypto_address("9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"),
+            Some("crypto_sol")
+        );
+    }
+
+    #[test]
+    fn checksum_helpers_are_correct() {
+        assert!(base58check_valid("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"));
+        assert!(!base58check_valid("1A1zP1eP5QGefi2DMPTfTL5SLmv7Divfna"));
+        assert!(base58_decode("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa").is_some());
+        assert!(base58_decode("0OIl").is_none()); // ambiguous chars aren't base58
+        assert!(bech32_checksum_valid(
+            "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+        ));
+        assert!(bech32_checksum_valid(
+            "bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3297"
+        )); // bech32m
+        assert!(!bech32_checksum_valid(
+            "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5"
+        ));
+    }
+
+    #[test]
     fn bech32_payload_excludes_the_full_b_i_o_1_set() {
         // BIP-173's data charset is qpzry9x8gf2tvdw0s3jn54khce6mua7l — it
         // contains no b/i/o and no digit 1. Every excluded symbol must be

@@ -1,15 +1,24 @@
-//! Cryptocurrency-address classification — a pure, dependency-free domain
-//! classifier shared by the target auto-detector ([`crate::core::scan`]) and the
-//! key-harvest pipeline. It lives in `core` (not a module) for exactly that
-//! reason: `core` may not depend on `modules`, so the recogniser used by
-//! `detect_kind` has to sit at this layer.
+//! Cryptocurrency-address classification — a domain classifier (depending only
+//! on `sha2`, no `modules`) shared by the target auto-detector
+//! ([`crate::core::scan`]) and the key-harvest pipeline. It lives in `core` (not
+//! a module) for exactly that reason: `core` may not depend on `modules`, so the
+//! recogniser used by `detect_kind` has to sit at this layer.
 //!
 //! [`classify_crypto_address`] returns a `crypto_<chain>` tag on a confident
 //! match. Thresholds are deliberately strict to avoid colliding with the
 //! generic-hex / API-key heuristics (a 32/64-char hex blob must stay a key, not
-//! be mistaken for a wallet). Detection is by shape only — no checksum
-//! verification — which is the right trade-off for OSINT triage: cheap, and a
-//! false positive is a low-cost lead, not a security decision.
+//! be mistaken for a wallet). Beyond shape, the checksummable chains are
+//! **verified**: base58 forms (BTC/LTC/DOGE `1`/`3`/`L`/`M`/`D…`) by their
+//! base58check double-SHA256 check digits, and SegWit `bc1…`/`ltc1…` by their
+//! bech32 / bech32m polynomial checksum. A shape match whose check digits don't
+//! hold — a typo, or random base58 in a breach blob — is rejected at the source,
+//! so the universal [`crate::util::found_keys`] scan no longer mints those
+//! false-positive wallets across every module. ETH (`0x…` — EIP-55 needs keccak,
+//! and a lowercase address carries no checksum), Solana (raw base58, no checksum)
+//! and Monero (keccak-based checksum) remain shape-only; for those a false
+//! positive stays a low-cost OSINT lead.
+
+use sha2::{Digest, Sha256};
 
 /// Base58 alphabet (Bitcoin variant): excludes `0`, `O`, `I`, `l` to avoid
 /// visual ambiguity.
@@ -45,17 +54,123 @@ fn is_all_ascii_hex(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+// ── Checksum verification (no new dependency: bech32 is pure arithmetic; ───────
+//    base58check reuses the workspace `sha2`) ───────────────────────────────────
+
+/// Decode a Base58 (Bitcoin alphabet) string to its raw bytes, big-endian, with
+/// leading `1`s restored as leading zero bytes. `None` on a non-Base58 char.
+/// Byte-array accumulator — no bignum crate, never panics.
+fn base58_decode(s: &str) -> Option<Vec<u8>> {
+    const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let mut result: Vec<u8> = Vec::with_capacity(s.len());
+    for c in s.bytes() {
+        let mut carry = ALPHABET.iter().position(|&a| a == c)? as u32;
+        for byte in &mut result {
+            carry += u32::from(*byte) * 58;
+            *byte = (carry & 0xff) as u8;
+            carry >>= 8;
+        }
+        while carry > 0 {
+            result.push((carry & 0xff) as u8);
+            carry >>= 8;
+        }
+    }
+    // Each leading '1' in Base58 is a leading 0x00 byte.
+    for c in s.bytes() {
+        if c == b'1' {
+            result.push(0);
+        } else {
+            break;
+        }
+    }
+    result.reverse();
+    Some(result)
+}
+
+/// True if `s` is a valid base58check string: its trailing 4 bytes equal the
+/// first 4 bytes of the double-SHA256 of the preceding version+payload. Confirms
+/// BTC/LTC/DOGE legacy (`1`/`3`/`L`/`M`/`D`) addresses — version-agnostic, so it
+/// validates any coin's base58check without enumerating version bytes.
+fn base58check_valid(s: &str) -> bool {
+    let Some(decoded) = base58_decode(s) else {
+        return false;
+    };
+    // At least one version byte, a payload, and the 4-byte checksum.
+    if decoded.len() < 5 {
+        return false;
+    }
+    let (payload, checksum) = decoded.split_at(decoded.len() - 4);
+    let digest = Sha256::digest(Sha256::digest(payload));
+    digest[..4] == *checksum
+}
+
+/// BIP-173 bech32 polynomial checksum over 5-bit groups.
+fn bech32_polymod(values: &[u8]) -> u32 {
+    const GEN: [u32; 5] = [
+        0x3b6a_57b2,
+        0x2650_8e6d,
+        0x1ea1_19fa,
+        0x3d42_33dd,
+        0x2a14_62b3,
+    ];
+    let mut chk: u32 = 1;
+    for &v in values {
+        let top = chk >> 25;
+        chk = ((chk & 0x1ff_ffff) << 5) ^ u32::from(v);
+        for (i, g) in GEN.iter().enumerate() {
+            if (top >> i) & 1 == 1 {
+                chk ^= g;
+            }
+        }
+    }
+    chk
+}
+
+/// True if `s` carries a valid bech32 (SegWit v0) or bech32m (v1+/Taproot)
+/// checksum: split on the final `1` separator, expand the human-readable prefix,
+/// map the data part through the bech32 charset, and confirm the polymod equals
+/// the bech32 (`1`) or bech32m (`0x2bc830a3`) constant. Case-folded first (a real
+/// address is single-case; a typo fails the math regardless).
+fn bech32_checksum_valid(s: &str) -> bool {
+    const CHARSET: &[u8; 32] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+    let lower = s.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let Some(sep) = lower.rfind('1') else {
+        return false;
+    };
+    // Non-empty HRP, and a data part holding at least the 6-char checksum.
+    if sep == 0 || bytes.len() < sep + 7 {
+        return false;
+    }
+    let (hrp, data) = (&bytes[..sep], &bytes[sep + 1..]);
+    let mut values: Vec<u8> = Vec::with_capacity(hrp.len() * 2 + 1 + data.len());
+    values.extend(hrp.iter().map(|&c| c >> 5));
+    values.push(0);
+    values.extend(hrp.iter().map(|&c| c & 31));
+    for &c in data {
+        let Some(v) = CHARSET.iter().position(|&x| x == c) else {
+            return false;
+        };
+        values.push(v as u8);
+    }
+    let pm = bech32_polymod(&values);
+    pm == 1 || pm == 0x2bc8_30a3
+}
+
 /// Classify `s` as a cryptocurrency wallet address, returning a `crypto_<chain>`
 /// tag (`crypto_btc`, `crypto_eth`, `crypto_ltc`, `crypto_doge`, `crypto_sol`,
 /// `crypto_xmr`) on a confident match, else `None`.
 ///
 /// # Guarantees
-/// - **Shape only** (no checksum): a match means `s` *looks like* an address of
-///   that chain, which is the right trade-off for OSINT triage.
+/// - **Checksum-verified where possible:** BTC/LTC/DOGE base58 forms and
+///   `bc1`/`ltc1` SegWit forms must pass their base58check / bech32(m) checksum,
+///   so a typo or random base58 blob is rejected. ETH/SOL/XMR remain shape-only
+///   (no checksum primitive is available without adding a keccak dependency).
 /// - **Hex blobs stay keys:** a bare hash/key (all ASCII hex digits) is never
 ///   classified, so the generic-hex / API-key heuristics keep it.
-/// - **Total:** never panics, on any input (all checks are char/prefix based,
-///   never byte-indexed), and returns `None` for the empty string.
+/// - **Total:** never panics on any input — the checksum helpers use safe
+///   iteration (no panicking byte-indexing) — and returns `None` for the empty
+///   string.
 ///
 /// ```
 /// use huntsman_search_engine::core::crypto::classify_crypto_address;
@@ -76,18 +191,20 @@ fn is_all_ascii_hex(s: &str) -> bool {
 pub fn classify_crypto_address(s: &str) -> Option<&'static str> {
     let len = s.len();
 
-    // Bitcoin Bech32 (BIP-173): `bc1` + 39-59 char payload.
+    // Bitcoin Bech32/Bech32m (BIP-173/350): `bc1` + payload, checksum-verified.
     if (39..=62).contains(&len)
         && (s.starts_with("bc1") || s.starts_with("BC1"))
         && s.chars().skip(3).all(is_bech32_payload)
+        && bech32_checksum_valid(s)
     {
         return Some("crypto_btc");
     }
 
-    // Litecoin Bech32: `ltc1` + payload.
+    // Litecoin Bech32: `ltc1` + payload, checksum-verified.
     if (40..=62).contains(&len)
         && (s.starts_with("ltc1") || s.starts_with("LTC1"))
         && s.chars().skip(4).all(is_bech32_payload)
+        && bech32_checksum_valid(s)
     {
         return Some("crypto_ltc");
     }
@@ -109,21 +226,28 @@ pub fn classify_crypto_address(s: &str) -> Option<&'static str> {
         && (s.starts_with('1') || s.starts_with('3'))
         && s.chars().all(is_base58)
         && !is_all_ascii_hex(s)
+        && base58check_valid(s)
     {
         return Some("crypto_btc");
     }
 
-    // Litecoin legacy: starts `L` or `M`, 26-35 base58.
+    // Litecoin legacy: starts `L` or `M`, 26-35 base58, checksum-verified.
     if (26..=35).contains(&len)
         && (s.starts_with('L') || s.starts_with('M'))
         && s.chars().all(is_base58)
         && !is_all_ascii_hex(s)
+        && base58check_valid(s)
     {
         return Some("crypto_ltc");
     }
 
-    // Dogecoin: starts `D`, 34 base58.
-    if len == 34 && s.starts_with('D') && s.chars().all(is_base58) && !is_all_ascii_hex(s) {
+    // Dogecoin: starts `D`, 34 base58, checksum-verified.
+    if len == 34
+        && s.starts_with('D')
+        && s.chars().all(is_base58)
+        && !is_all_ascii_hex(s)
+        && base58check_valid(s)
+    {
         return Some("crypto_doge");
     }
 
