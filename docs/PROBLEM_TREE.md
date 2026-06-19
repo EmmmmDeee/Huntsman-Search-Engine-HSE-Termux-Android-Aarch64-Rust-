@@ -1993,3 +1993,47 @@ state/postcode consistency before `geocode` ran.
 Gate green: fmt/clippy/doc clean, 3,108 total lib tests (+6), 3,104 passing +
 4 ignored, 0 failures. **Paired:** `SOLUTION_TREE` C3 + §4/§5 cycle 28
 — same commit.
+
+### §8 · Maintained log — cycle 29 (P→S direction)
+
+**Gap closed: `exif_geo` module — world-class GPS intelligence extraction**
+
+*Problem:* `exif_geo` extracted GPS coordinates but discarded a rich set of
+co-located signals present in every GPS-tagged image: DOP (GPS fix quality),
+altitude, camera bearing, motion speed, UTC timestamp. The confidence was
+hardcoded at 0.80 regardless of fix quality — a DOP=1 survey-grade fix and a
+DOP=15 junk reading were indistinguishable. The UTC timestamp in the GPS IFD,
+combined with the camera-local `DateTimeOriginal`, uniquely identifies the
+photographer's timezone — a high-value OSINT signal that was entirely ignored.
+
+*Solution delivered:*
+- **`parse.rs` — new extraction primitives:** `read_rational_gps` (generic
+  single-rational reader), `read_byte_val` (byte tag reader), `extract_gps_altitude`
+  (signed metres: GPSAltitude + GPSAltitudeRef byte 0/1), `extract_gps_bearing`
+  (degrees 0–360 + True/Magnetic flag), `extract_gps_speed_kmh` (unit-converts
+  K/M/N), `extract_dop`, `extract_gps_utc_secs` (seconds since midnight, range
+  validated).
+- **`extract.rs` — analysis helpers:** `dop_confidence` (piecewise-linear over
+  DOP quality ladder: ≤1→0.95, 2→0.90, 4→0.82, 8→0.74, ≥15→0.65);
+  `altitude_classification` (ground-level/low-elevated/elevated/airborne);
+  `speed_motion_tag` (stationary/walking-pace/vehicle-slow/vehicle-fast/airborne-speed);
+  `bearing_compass_label` (8-point N/NE/E/SE/S/SW/W/NW); `derive_utc_offset`
+  (GPS UTC vs DateTimeOriginal → ±15-min-rounded offset, midnight wrap-around
+  handled, range check ±14 h); `utc_offset_label` (formats "UTC+10:00 (AEST)" with
+  26 well-known timezone abbreviations).
+- **`mod.rs` — process() upgraded:** GPS confidence is DOP-derived instead of
+  hardcoded 0.80. All new GPS intelligence flows into evidence attributes
+  (`gps_dop`, `gps_altitude_m`, `altitude_class`, `gps_bearing_deg`, `bearing_ref`,
+  `bearing_compass`, `gps_speed_kmh`, `motion_state`, `photographer_timezone`).
+  `elevated-shot` tag added to Coordinates entities from aerial shots; motion-state
+  tag added for kinetic shots. `photographer_timezone` derived when GPS UTC and
+  DateTimeOriginal are both present.
+- **`tests.rs` — 28 new tests:** All pure functions tested with boundary values
+  (DOP knots, altitude tier edges, speed bucket edges, compass sector boundaries,
+  midnight wrap-around). Hand-built extended TIFF fixture (corrected layout with
+  10 GPS IFD entries) exercises altitude, DOP, bearing, and UTC timestamp parsing
+  end-to-end through the real `exif::Reader`. Timezone derivation tested from
+  fixture timestamp.
+
+Gate green: fmt/clippy/doc clean, 3,130 total lib tests (+22 new), 0 failures.
+**Paired:** `SOLUTION_TREE` §5 cycle 29 — same commit.

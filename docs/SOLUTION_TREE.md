@@ -1291,3 +1291,46 @@ is part of the key. These gaps are tracked as C3 remaining sub-items and are not
 
 Gate green: fmt/clippy/doc clean, 3,108 total lib tests (+6), 0 failures.
 Paired: `PROBLEM_TREE` §8 cycle 28 — same commit.
+
+### §5 · Maintained log — cycle 29 (S→P direction)
+
+**`exif_geo` module — world-class GPS intelligence upgrade**
+
+*Delivered:* Seven new parse primitives (altitude, bearing, speed unit conversion,
+DOP, GPS UTC timestamp, generic rational/byte readers); six analysis helpers
+(DOP→confidence piecewise-linear, altitude classification, speed motion tag,
+8-point compass label, UTC offset derivation, timezone label formatter). `mod.rs`
+process() now uses DOP-derived confidence (0.65–0.95) instead of hardcoded 0.80;
+all GPS signals flow into evidence attributes; elevated-shot and motion-state tags
+emitted on Coordinates entities; photographer timezone derived when GPS UTC +
+DateTimeOriginal are both present. 28 new tests including a hand-built extended
+TIFF fixture; 3,130 total tests, 0 failures.
+
+*§4a update:* `exif_geo` GPS intelligence gap closed. Remaining open §4a items:
+- C3 remaining (GNAF database integration; fuller ASIC/ABR graph; state cadastre/property)
+- cell_local auto-sync (no auto-scheduled re-sync)
+- hse update --check changelog (shows commit count but not subject lines)
+- C4 remaining (passive-DNS subdomain union + CDN cert-hash origin-unmasking)
+- C5 remaining (provenance radius — algorithms done but no auto-scheduled emission)
+- §7 S4 LOW residual (archived success body not run through `redact_literal_secrets`)
+- SOL-F1 remaining (`bstr` — no natural consumer yet)
+- SOL-F3 remaining (`cargo-fuzz` nightly CI lane)
+
+*S→P gap:* `derive_utc_offset` operates on the H:M:S portion of DateTimeOriginal
+only — it is unaware of the date, so a cross-midnight shot (UTC 23:55, local 00:05
+next day) where the delta is computed purely from time-of-day components still
+resolves correctly via the ±12 h wrap-around logic, but a shot taken exactly at
+local midnight with GPS UTC near midnight may round to the wrong 15-min slot in
+pathological cases. The `photographer_timezone` attribute is explicitly a soft
+OSINT signal, not an authoritative clock source. The bearing compass label uses
+45° sectors centred on each point — shots at a sector boundary (e.g. exactly 22.5°)
+are assigned NE rather than N; this is deterministic but arbitrary. Both are noted
+as known limitations, not bugs.
+
+**§4d update (status table excerpt):**
+| ID              | Description                               | Status          |
+|-----------------|------------------------------------------|-----------------|
+| SOL-EXIF-INTEL  | exif_geo GPS intelligence (DOP+alt+tz)   | `[x]` cycle 29 |
+
+Gate green: fmt/clippy/doc clean, 3,130 total lib tests (+22), 0 failures.
+Paired: `PROBLEM_TREE` §8 cycle 29 — same commit.

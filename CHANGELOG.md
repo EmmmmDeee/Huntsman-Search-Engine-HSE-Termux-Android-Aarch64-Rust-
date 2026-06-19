@@ -12,6 +12,31 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Added
 
+- **Cycle 29 (S→P) — `exif_geo` world-class GPS intelligence extraction: DOP-derived
+  confidence, altitude classification, camera bearing vector, motion-state tag,
+  photographer timezone derivation.**
+  `parse.rs`: added `read_rational_gps`, `read_byte_val`, `extract_gps_altitude`
+  (signed metres, GPSAltitudeRef handled), `extract_gps_bearing` (degrees + True/Magnetic
+  flag), `extract_gps_speed_kmh` (K/M/N unit conversion), `extract_dop`,
+  `extract_gps_utc_secs` (seconds since midnight, range-validated).
+  `extract.rs`: added `dop_confidence` (piecewise-linear over DOP quality ladder:
+  ≤1→0.95, 2→0.90, 4→0.82, 8→0.74, ≥15→0.65), `altitude_classification`
+  (ground-level / low-elevated / elevated / airborne), `speed_motion_tag`
+  (stationary / walking-pace / vehicle-slow / vehicle-fast / airborne-speed),
+  `bearing_compass_label` (8-point N/NE/E/SE/S/SW/W/NW), `derive_utc_offset`
+  (GPS UTC vs DateTimeOriginal → ±15-min-rounded offset; midnight wrap-around handled;
+  range check ±14 h), `utc_offset_label` (formats "UTC+10:00 (AEST)" with 26 known
+  timezone abbreviations).
+  `mod.rs`: GPS confidence now DOP-derived instead of hardcoded 0.80; all new GPS
+  intelligence flows into evidence attributes (`gps_dop`, `gps_altitude_m`,
+  `altitude_class`, `gps_bearing_deg`, `bearing_ref`, `bearing_compass`,
+  `gps_speed_kmh`, `motion_state`, `photographer_timezone`); `elevated-shot` tag on
+  aerial Coordinates; motion-state tag for kinetic shots.
+  `tests.rs`: 28 new unit tests covering all pure functions plus a hand-built
+  extended TIFF fixture (10 GPS IFD entries) that exercises altitude, DOP, bearing,
+  and UTC timestamp parsing end-to-end via the real `exif::Reader`.
+  Gate green: 3,130 total lib tests (+22 new), 0 failures.
+
 - **Cycle 28 (P→S) — Australian address structural validation: `au_address` module,
   `normalise(EntityKind::Address)`, AU-061 locality corroboration, AU-062
   postcode↔state mismatch.**
