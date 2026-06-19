@@ -166,6 +166,9 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         expansion_strategy,
         seeknow_scan_cap: cmd.seeknow_scan_cap,
         expand_all_identities: cmd.expand_all_identities,
+        // `hse scan` is a manual scan: the live device sensors stay off (they are
+        // `hse radar`-only). No CLI flag enables them here by design.
+        allow_live_sensors: false,
     }
     .clamp_depth();
 

@@ -521,6 +521,45 @@ fn skip_reason_in_allowlist_passes() {
 }
 
 #[test]
+fn skip_reason_gates_live_sensors_to_radar_only() {
+    // A live device-sensor module (name in LOCAL_PASSIVE_MODULES) reads the
+    // OPERATOR's own environment, so it must NEVER run on a manual scan — only
+    // under `hse radar`'s `allow_live_sensors` activation.
+    let sensor = StubModule {
+        name: "signal_radar",
+        cost: ModuleCost::Free,
+        passive: true,
+    };
+    // Default manual scan → skipped.
+    assert_eq!(
+        module_skip_reason(&sensor, &pub_target(), &ScanOptions::default(), false, 0),
+        Some("live sensor — radar-only activation"),
+    );
+    // Even an explicit `hse scan --modules signal_radar` keeps it off: the
+    // activation is `hse radar`, not an allowlist on an ordinary scan.
+    let allowlisted = ScanOptions {
+        modules: Some(vec!["signal_radar".into()]),
+        ..Default::default()
+    };
+    assert_eq!(
+        module_skip_reason(&sensor, &pub_target(), &allowlisted, false, 0),
+        Some("live sensor — radar-only activation"),
+    );
+    // Radar activation → the sensor passes the gate.
+    let radar = ScanOptions {
+        modules: Some(vec!["signal_radar".into()]),
+        allow_live_sensors: true,
+        ..Default::default()
+    };
+    assert!(module_skip_reason(&sensor, &pub_target(), &radar, false, 0).is_none());
+    // A non-sensor module is unaffected by the gate.
+    assert!(
+        module_skip_reason(&free_active(), &pub_target(), &ScanOptions::default(), false, 0)
+            .is_none()
+    );
+}
+
+#[test]
 fn skip_reason_excluded() {
     let m = free_active();
     let opts = ScanOptions {
@@ -809,7 +848,12 @@ fn skip_reason_lets_local_passive_module_see_private_ip() {
         passive: true,
     };
     let private = Target::new(TargetKind::IpAddress, "192.168.1.1");
-    let opts = ScanOptions::default();
+    // The private-IP preflight bypass only matters when the sensor is actually
+    // active (`hse radar`); on a manual scan the radar-only gate skips it first.
+    let opts = ScanOptions {
+        allow_live_sensors: true,
+        ..Default::default()
+    };
     assert!(module_skip_reason(&m, &private, &opts, false, 0).is_none());
 }
 
@@ -1145,7 +1189,7 @@ async fn recall_prior_entities_pulls_and_tags_prior_scan_findings() {
     let target = Target::new(TargetKind::Username, "recallsubject");
 
     // Recall for a NEW scan id surfaces the prior email, re-stamped + tagged.
-    let recalled = engine.recall_prior_entities(&target, "current-scan");
+    let recalled = engine.recall_prior_entities(&target, "current-scan", true);
     let got = recalled
         .iter()
         .find(|e| e.value == "plantedlead@gmail.com")
@@ -1170,7 +1214,7 @@ async fn recall_prior_entities_pulls_and_tags_prior_scan_findings() {
     // that observed the seed) excludes itself ⇒ nothing to recall.
     assert!(
         engine
-            .recall_prior_entities(&target, "prior-scan")
+            .recall_prior_entities(&target, "prior-scan", true)
             .is_empty(),
         "the sole prior scan is the requesting scan ⇒ empty recall"
     );
@@ -1222,7 +1266,7 @@ async fn recall_resolves_a_fullname_seed_despite_reformatting() {
     // on the token-set fallback: lower-case, "Last, First" order, trailing year.
     for input in ["jordan meyers", "Meyers, Jordan", "Jordan Meyers 1987"] {
         let target = Target::new(TargetKind::FullName, input);
-        let recalled = engine.recall_prior_entities(&target, "current");
+        let recalled = engine.recall_prior_entities(&target, "current", true);
         assert!(
             recalled
                 .iter()

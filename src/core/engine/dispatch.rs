@@ -151,6 +151,15 @@ pub(super) fn module_skip_reason(
     if opts.exclude_modules.iter().any(|n| n == name) {
         return Some("excluded");
     }
+    // Live device-sensor modules read the OPERATOR's own real-time RF/network
+    // environment (GPS fix, visible Wi-Fi APs, serving cell towers, LAN ARP) — so
+    // attributing them to a scanned subject is contamination, and pure noise on a
+    // remote target. They are an ENTIRELY SEPARATE activation: they run ONLY when
+    // `hse radar` opts in via `allow_live_sensors`, never on an ordinary
+    // `hse scan` / API / `hse live` run, on any round (seed or expansion).
+    if super::LOCAL_PASSIVE_MODULES.contains(&name) && !opts.allow_live_sensors {
+        return Some("live sensor — radar-only activation");
+    }
     // Category focus: when a profile restricts the scan to a set of functional
     // categories (e.g. `skiptrace` → person-locating: People/Phone/Geo/Email/
     // Social/Corporate/Search), a module outside that set is skipped on every
