@@ -38,6 +38,50 @@ fn owner_person_names_splits_joint_and_excludes_companies() {
     assert!(owner_person_names("MADONNA").is_empty());
 }
 
+/// Parsed against the REAL Fletcher Moreau register strings (the data the user
+/// provided): the joint-household, title, `+`, `<associated>`, and reversal
+/// notations that previously dropped most of the named relatives.
+#[test]
+fn owner_person_names_parses_real_register_notations() {
+    // A whole household in one record: a couple (titled, `+`-joined) plus an
+    // associated child in angle brackets. Previously Marianne and Alexandre were
+    // silently lost and Herve kept his "Mr" title.
+    assert_eq!(
+        owner_person_names("MR HERVE MOREAU + MRS MARIANNE MOREAU <ALEXANDRE MOREAU>"),
+        vec![
+            "Herve Moreau".to_string(),
+            "Marianne Moreau".to_string(),
+            "Alexandre Moreau".to_string(),
+        ]
+    );
+    // Honorific stripped, a middle initial kept.
+    assert_eq!(
+        owner_person_names("MR STEPHEN R MOREAU"),
+        vec!["Stephen R Moreau".to_string()]
+    );
+    // "SURNAME, GIVENS" is ONE person reversed, not two co-owners.
+    assert_eq!(
+        owner_person_names("MOREAU, VALERIE D"),
+        vec!["Valerie D Moreau".to_string()]
+    );
+    // Three relatives named at one postcode.
+    assert_eq!(
+        owner_person_names("NAHUM MOREAU & IRENE MOREAU & HELENE MOREAU"),
+        vec![
+            "Nahum Moreau".to_string(),
+            "Irene Moreau".to_string(),
+            "Helene Moreau".to_string(),
+        ]
+    );
+    // A four-token full name is kept; a medical-centre / parenthesised note is not.
+    assert_eq!(
+        owner_person_names("ORLAHN JAI MOREAU QUITERIO"),
+        vec!["Orlahn Jai Moreau Quiterio".to_string()]
+    );
+    assert!(owner_person_names("DR R S B KABLE ANZAC SQUARE MEDICAL CTR").is_empty());
+    assert!(owner_person_names("(unknown owner)").is_empty());
+}
+
 fn sample() -> CkanResp {
     let raw = r#"{
         "result": {
@@ -434,13 +478,18 @@ fn common_polysemous_surname_produces_no_false_exact_matches() {
         !exact(saddrs[0]),
         "KAREEM AYALA must stay a family candidate for seed 'Silva Kareem'"
     );
-    // The exact owner is also surfaced as a Person; KAREEM AYALA's owner is not.
+    // The exact owner is also surfaced as a Person, with the "MS" honorific
+    // stripped so it converges on the seed (not the title-polluted "Ms Silva
+    // Kareem"); KAREEM AYALA's owner is a family candidate.
     let person = |v: &str| {
         silva
             .iter()
             .find(|e| e.kind == EntityKind::Person && e.value == v)
     };
-    assert!(person("Ms Silva Kareem").is_some_and(exact));
+    assert!(
+        person("Silva Kareem").is_some_and(exact),
+        "the honorific is stripped so the owner Person matches the seed exactly"
+    );
     assert!(person("Kareem Ayala").is_some_and(|e| !exact(e)));
 }
 
