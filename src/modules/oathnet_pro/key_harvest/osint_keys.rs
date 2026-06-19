@@ -175,9 +175,12 @@ pub(super) const OSINT_PROVIDERS: &[OsintProvider] = &[
 ];
 
 /// Attribute a prefix-less key `value` to an OSINT/threat-intel provider when
-/// `context` (an env-var name, object key, or URL) names the provider and the
-/// value matches one of that provider's accepted [`Shape`]s. Returns the
-/// provider's service tag, or `None` when no provider both is named and fits.
+/// `context` (an env-var name, object key, or URL host) names **exactly one**
+/// provider and the value matches one of that provider's accepted [`Shape`]s.
+/// Returns the provider's service tag, or `None` when no provider fits — or when
+/// **more than one** does (an ambiguous context like `shodan_or_censys_key`):
+/// guessing the table-first provider would be a coin-flip, so an objective
+/// attribution declines rather than mis-label.
 ///
 /// **Pure** — it does not apply the false-positive gate; the caller
 /// ([`super::identify_with_context`]) layers [`super::is_likely_real_key`] on top
@@ -191,10 +194,14 @@ pub(super) fn match_osint_provider(context: &str, value: &str) -> Option<&'stati
         return None;
     }
     let ctx = context.to_ascii_lowercase();
-    OSINT_PROVIDERS
-        .iter()
-        .find(|p| {
-            p.contexts.iter().any(|c| ctx.contains(c)) && p.shapes.iter().any(|s| s.matches(v))
-        })
-        .map(|p| p.service)
+    let mut hit: Option<&'static str> = None;
+    for p in OSINT_PROVIDERS {
+        if p.contexts.iter().any(|c| ctx.contains(c)) && p.shapes.iter().any(|s| s.matches(v)) {
+            if hit.is_some() {
+                return None; // two providers fit the same context → ambiguous
+            }
+            hit = Some(p.service);
+        }
+    }
+    hit
 }

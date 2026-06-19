@@ -2006,6 +2006,76 @@ fn detection_tag_stamped_on_emitted_keys() {
     assert!(aws.has_tag("detection:probable"), "tags: {:?}", aws.tags);
 }
 
+// ─── Attribution precision: host-scoping + ambiguity ─────────────────────────
+
+#[test]
+fn context_host_extracts_authoritative_host() {
+    assert_eq!(
+        context_host("https://api.shodan.io/shodan/host?key=x"),
+        "api.shodan.io"
+    );
+    assert_eq!(context_host("http://censys.io/page#frag"), "censys.io");
+    // No scheme ⇒ an identifier context, returned untouched (no-op for env/object
+    // key callers).
+    assert_eq!(context_host("SHODAN_API_KEY"), "SHODAN_API_KEY");
+    assert_eq!(context_host("api.shodan.io"), "api.shodan.io");
+}
+
+#[test]
+fn osint_url_path_or_query_cannot_spoof_attribution() {
+    let key = &SUFFIX[..32];
+    // A provider name in the query of an unrelated host must NOT attribute once
+    // the context is host-scoped.
+    let spoof = context_host("https://evil.example/?ref=shodan&key=IGNORED");
+    assert_eq!(spoof, "evil.example");
+    assert_eq!(match_osint_provider(spoof, key), None);
+    // The genuine host still does.
+    let real = context_host("https://api.shodan.io/shodan/host/1.1.1.1?key=IGNORED");
+    assert_eq!(match_osint_provider(real, key), Some("shodan"));
+}
+
+#[test]
+fn osint_url_spoof_blocked_end_to_end() {
+    let key = &SUFFIX[..32];
+    // Spoof: provider named only in the query of an unrelated host.
+    let item = serde_json::json!({
+        "url": format!("https://evil.example/?ref=shodan&key={key}"),
+    });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    assert!(
+        !result.entities.iter().any(|e| e.has_tag("service:shodan")),
+        "a query-string provider name must not spoof attribution: {:?}",
+        result.entities
+    );
+    // Genuine host: attribution proceeds.
+    let item = serde_json::json!({
+        "url": format!("https://api.shodan.io/shodan/host/1.1.1.1?key={key}"),
+    });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    assert!(
+        result.entities.iter().any(|e| e.has_tag("service:shodan")),
+        "a genuine OSINT host should attribute: {:?}",
+        result.entities
+    );
+}
+
+#[test]
+fn osint_ambiguous_context_attributes_nothing() {
+    let key = &SUFFIX[..32];
+    // Two different providers named, both shapes fit (ALNUM32) ⇒ ambiguous ⇒ None,
+    // rather than a table-order coin-flip.
+    assert_eq!(match_osint_provider("shodan_or_censys_key", key), None);
+    // A single named provider still resolves.
+    assert_eq!(match_osint_provider("shodan_key", key), Some("shodan"));
+    // Two context tokens for the SAME provider (hibp) are not ambiguous.
+    assert_eq!(
+        match_osint_provider("haveibeenpwned_hibp_key", key),
+        Some("hibp")
+    );
+}
+
 // ─── PrefixMatcher property tests ────────────────────────────────────────────
 mod prop {
     use super::super::{identify_vendor_api_key, pattern_catalogue};

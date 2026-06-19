@@ -507,6 +507,24 @@ fn identify_with_context<'a>(
     }
 }
 
+/// The authoritative host of a URL-shaped context, else the context unchanged.
+///
+/// Provider attribution from a URL must key off the **host** (`api.shodan.io`),
+/// not text anywhere in the URL: otherwise a provider name dropped into a path or
+/// query — `https://evil.example/?ref=shodan&key=…` — would spoof a `Proven`
+/// attribution to a key served by an unrelated host. Identifier contexts (env-var
+/// and object-key names carry no `://`) pass through untouched, so this is a
+/// no-op for every non-URL caller.
+fn context_host(context: &str) -> &str {
+    match context.split_once("://") {
+        Some((_, rest)) => {
+            let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+            &rest[..end]
+        }
+        None => context,
+    }
+}
+
 /// Scan a JSON record for API key patterns in password / URL-param / extra
 /// fields. Public so peer modules like `see_know` can use the same harvest
 /// pipeline against their own response schemas.
@@ -667,13 +685,15 @@ pub fn extract_api_keys_from_item(
             && let Some(qmark) = url.find('?')
         {
             for param in url[qmark + 1..].split('&') {
-                // The whole URL is provider context (host + param name): a bare
-                // `?key=<32 alnum>` on `api.shodan.io` is attributed to Shodan
-                // rather than missed, and a 64-hex key on an OSINT host is
-                // upgraded from `generic_hex` to the named provider.
+                // The URL *host* is the provider context: a bare `?key=<32 alnum>`
+                // on `api.shodan.io` is attributed to Shodan rather than missed,
+                // and a 64-hex key on an OSINT host is upgraded from `generic_hex`
+                // to the named provider. Only the host counts (`context_host`), so
+                // a provider name in the path/query cannot spoof the attribution.
                 if let Some((_, pval)) = param.split_once('=')
                     && pval.len() >= 16
-                    && let Some((service, key_val, detection)) = identify_with_context(&url, pval)
+                    && let Some((service, key_val, detection)) =
+                        identify_with_context(context_host(&url), pval)
                 {
                     emit_key_with(
                         service,
