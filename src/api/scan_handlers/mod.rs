@@ -582,6 +582,37 @@ pub async fn scan_relations(
     ok_list("relations", resolved)
 }
 
+/// `GET /api/v1/scans/{id}/network` — the subject-centric relationship synthesis
+/// ([`crate::core::network`]) that powers the web UI's Network view: the seed hub
+/// plus its connections grouped into people / identifiers / aliases / locations /
+/// infrastructure, ranked by link strength and bounded for a phone. The synthesis
+/// is pure Rust over the persisted entities + relations; 404 if the scan is
+/// unknown, matching the other `/scans/{id}/...` sub-resources.
+pub async fn scan_network(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (entities, relations) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let network = crate::core::network::synthesize(&entities, &relations);
+    (StatusCode::OK, Json(network)).into_response()
+}
+
 pub async fn scan_delete(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,

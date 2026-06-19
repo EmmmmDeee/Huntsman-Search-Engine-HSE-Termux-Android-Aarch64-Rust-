@@ -511,6 +511,39 @@ async fn radar_sweep_queues_a_live_sensor_scan() {
     );
 }
 
+// ── 5c. Subject network synthesis ─────────────────────────────────────────
+
+#[tokio::test]
+async fn scan_network_synthesises_subject_graph() {
+    // Unknown scan → 404, matching the other `/scans/{id}/...` sub-resources.
+    let app = test_app("network_nf");
+    let resp = app
+        .oneshot(get("/api/v1/scans/nope/network"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    // A known scan → 200 with the synthesis envelope. The async engine may not
+    // have produced entities yet, but the shape is always present and well-formed.
+    let (app, sid) = create_scan("network_ok").await;
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}/network")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let net = body_json(resp).await;
+    assert!(
+        net.get("groups").is_some_and(serde_json::Value::is_array),
+        "network carries a groups array"
+    );
+    for k in ["direct_count", "reachable_count", "edge_count"] {
+        assert!(
+            net.get(k).is_some_and(serde_json::Value::is_u64),
+            "network carries a {k} count"
+        );
+    }
+}
+
 // ── 6. Scan list ──────────────────────────────────────────────────────────
 
 #[tokio::test]

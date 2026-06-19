@@ -19,6 +19,7 @@ pub mod gexf;
 pub mod hooks;
 pub mod live;
 pub mod module;
+pub mod network;
 pub mod port;
 pub mod profiles;
 pub mod relation;

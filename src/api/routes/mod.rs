@@ -216,6 +216,8 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             get(scan_handlers::scan_correlations),
         )
         .route("/scans/{id}/relations", get(scan_handlers::scan_relations))
+        // Subject-centric relationship synthesis — powers the web UI Network view.
+        .route("/scans/{id}/network", get(scan_handlers::scan_network))
         .route("/scans/{id}/audit", get(scan_handlers::scan_audit))
         .route("/scans/{a}/diff/{b}", get(scan_handlers::scan_diff))
         .route("/scans/{id}/events", get(handlers::scan_events_sse))

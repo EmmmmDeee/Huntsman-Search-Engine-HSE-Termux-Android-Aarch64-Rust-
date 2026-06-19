@@ -177,6 +177,35 @@
     .empty-state{padding:32px 20px;text-align:center;color:#888}
     .empty-state h3{color:#555;font-weight:500;font-size:16px;margin-bottom:6px}
     .empty-state p{font-size:13px;max-width:480px;margin:0 auto 12px;line-height:1.5}
+    /* Network tab — subject hub + grouped, ranked connection cards (mobile-first) */
+    .net-hero{display:flex;flex-wrap:wrap;align-items:center;gap:12px;justify-content:space-between;
+      background:linear-gradient(135deg,#eaf7fd,#f7f7f7);border:1px solid #cfe8f5;border-radius:6px;
+      padding:12px 16px;margin-bottom:12px}
+    .net-hero-name{font-size:20px;font-weight:600;color:#222;word-break:break-word}
+    .net-hero-meta{margin-top:3px}
+    .net-hero-stats{display:flex;gap:14px}
+    .net-stat{text-align:center;min-width:54px}
+    .net-stat .v{font-size:20px;font-weight:600;color:#07aef1;line-height:1.1}
+    .net-stat .l{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:.04em}
+    .net-group{border:1px solid #e3e3e3;border-radius:5px;margin-bottom:10px;overflow:hidden}
+    .net-group-head{background:#f7f7f7;border-bottom:1px solid #e3e3e3;padding:7px 12px;font-weight:600;color:#333;font-size:13px}
+    .net-conn{display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid #f0f0f0;flex-wrap:wrap}
+    .net-conn:last-child{border-bottom:none}
+    .net-conn:hover{background:#f5fbff}
+    .net-rel{flex-shrink:0;min-width:76px;font-size:10px;text-transform:uppercase;letter-spacing:.03em;
+      color:#31708f;background:#e7f3fb;border-radius:8px;padding:2px 8px;text-align:center;font-weight:600}
+    .net-conn-val{flex:1;min-width:120px;font-family:monospace;font-size:12.5px;color:#222;word-break:break-all}
+    .net-conf{flex-shrink:0;width:54px;height:6px;background:#eee;border-radius:3px;overflow:hidden}
+    .net-conf-bar{display:block;height:100%;background:#07aef1}
+    body.dark-theme .net-hero{background:linear-gradient(135deg,#16222c,#1f1f1f);border-color:#2d4a5a}
+    body.dark-theme .net-hero-name{color:#eee}
+    body.dark-theme .net-group{border-color:#333}
+    body.dark-theme .net-group-head{background:#2a2a2a;border-color:#333;color:#ddd}
+    body.dark-theme .net-conn{border-bottom-color:#2a2a2a}
+    body.dark-theme .net-conn:hover{background:#243240}
+    body.dark-theme .net-conn-val{color:#ddd}
+    body.dark-theme .net-rel{background:#1e2a30;color:#5aa0cf}
+    body.dark-theme .net-conf{background:#333}
     /* Dark mode (Spiderfoot-compatible — toggled via #theme-toggler) */
     body.dark-theme{background:#1a1a1a;color:#ddd}
     body.dark-theme .navbar-inverse{background:#111;border-color:#000}
@@ -541,6 +570,9 @@ const API = {
   entities:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/entities'),
   correlations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/correlations'),
   relations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/relations'),
+  // Subject network: the seed hub + its connections grouped/ranked server-side
+  // (people, identifiers, aliases, locations, infrastructure) — the analyst view.
+  network:   id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/network'),
   auditScan: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/audit'),
   create:    body=>API._req('/api/v1/scans',{method:'POST',body}),
   // Raw-text upload (not JSON): POST a dossier file's contents to be parsed and
@@ -615,7 +647,7 @@ function parseHash(){
   if (segs[0]==='live')                     return {name:'live', params:{}, query};
   if (segs[0]==='engines')                  return {name:'engines', params:{}, query};
   if (segs[0]==='diff')                     return {name:'diff', params:{a:query.a||'', b:query.b||''}, query};
-  if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'status'}, query};
+  if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'network'}, query};
   return {name:'dash', params:{}, query};
 }
 function nav(href){ location.hash = href; }
@@ -1535,6 +1567,7 @@ async function renderScanInfo(v){
     <div id="attack-cov" style="margin:2px 0 12px 0"></div>
 
     <ul class="nav nav-tabs">
+      ${subTab('network', 'Network',      null,                tab)}
       ${subTab('status',  'Status',       null,                tab)}
       ${subTab('browse',  'Browse',       S.entities.length,   tab)}
       ${subTab('graph',   'Graph',        null,                tab)}
@@ -1605,7 +1638,8 @@ async function renderScanInfo(v){
   })();
 
   const body = $('#scan-body');
-  if (tab==='status')      renderStatus(body, scan);
+  if (tab==='network')     renderNetwork(body, id);
+  else if (tab==='status') renderStatus(body, scan);
   else if (tab==='browse') renderBrowse(body);
   else if (tab==='graph')  renderGraph(body);
   else if (tab==='rels')   renderRelations(body);
@@ -1628,6 +1662,62 @@ function subTab(name, label, count, active){
   return `<li class="${active===name?'active':''}"><a href="#" data-sub="${attr(name)}">
     ${esc(label)}${count!=null?` <span class="badge">${count}</span>`:''}
   </a></li>`;
+}
+
+/* ── Network tab — the subject-centric relationship synthesis (the analyst's
+   "so what": who/what the seed connects to, grouped + ranked server-side). ── */
+const NET_GROUP_ICON = {people:'glyphicon-user', identifiers:'glyphicon-envelope',
+  aliases:'glyphicon-random', locations:'glyphicon-map-marker', infrastructure:'glyphicon-cloud'};
+async function renderNetwork(host, id){
+  host.innerHTML = '<div class="empty-state"><h3>Building the subject network…</h3></div>';
+  let net;
+  try { net = await API.network(id); }
+  catch(e){ host.innerHTML = `<div class="alert alert-danger"><b>Error.</b> ${esc(e.message)}</div>`; return; }
+  const browseLink = `#/scaninfo?id=${attr(id)}&tab=browse`;
+  if (!net || !net.subject){
+    host.innerHTML = `<div class="empty-state"><h3>No subject network yet</h3>
+      <p>Connections appear once the scan derives relations — people, accounts, aliases and locations
+      bound to the subject. Run a deeper scan (<code>--depth ≥ 1</code>) or open
+      <a href="${browseLink}">Browse</a> for the raw entities.</p></div>`;
+    return;
+  }
+  const s = net.subject;
+  let html = `<div class="net-hero">
+    <div class="net-hero-main">
+      <div class="net-hero-name">${esc(s.value)}</div>
+      <div class="net-hero-meta">${kindPill(s.kind)}
+        <span class="cls c-${attr(s.classification)}">${esc(s.classification)}</span>
+        <span class="text-muted" style="font-size:11px">C_eff ${(s.confidence||0).toFixed(2)}</span></div>
+    </div>
+    <div class="net-hero-stats">
+      <div class="net-stat"><div class="v">${net.direct_count}</div><div class="l">direct</div></div>
+      <div class="net-stat"><div class="v">${net.reachable_count}</div><div class="l">reachable</div></div>
+      <div class="net-stat"><div class="v">${net.edge_count}</div><div class="l">edges</div></div>
+    </div>
+  </div>`;
+  if (!net.groups || !net.groups.length){
+    html += `<div class="empty-state"><p>The subject has no derived connections yet —
+      <a href="${browseLink}">Browse</a> the raw entities, or run a deeper scan to map the network.</p></div>`;
+  }
+  for (const g of (net.groups||[])){
+    const icon = NET_GROUP_ICON[g.key] || 'glyphicon-link';
+    const more = g.total > g.items.length
+      ? ` <span class="text-muted" style="font-weight:400;font-size:11px">top ${g.items.length} of ${g.total}</span>` : '';
+    html += `<div class="net-group">
+      <div class="net-group-head"><i class="glyphicon ${icon}"></i>&nbsp;${esc(g.label)}
+        <span class="badge">${g.total}</span>${more}</div>`;
+    for (const c of g.items){
+      const conf = Math.max(0, Math.min(100, Math.round((c.edge_confidence||0)*100)));
+      html += `<div class="net-conn">
+        <span class="net-rel">${esc(c.label)}</span>
+        <span class="net-conn-val">${extLink(c.value, 72)}</span>
+        ${kindPill(c.kind)}
+        <span class="net-conf" title="link confidence ${conf}%"><span class="net-conf-bar" style="width:${conf}%"></span></span>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+  host.innerHTML = html;
 }
 
 /* ── Relations tab — typed edges from the recursive crawl (provenance) ── */
