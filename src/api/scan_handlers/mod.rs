@@ -670,6 +670,68 @@ pub async fn scan_timeline(
     ok_list("events", events)
 }
 
+/// `GET /api/v1/scans/{id}/communities` — relationship-graph community detection
+/// ([`crate::core::community`]): the scan's graph partitioned into sub-clusters by
+/// deterministic label propagation (e.g. the family cluster vs the infrastructure
+/// estate), each community carrying its member UIDs, size, and a derived label.
+/// Pure synthesis over the persisted entities + relations; 404 if the scan is
+/// unknown, matching the other `/scans/{id}/...` sub-resources.
+pub async fn scan_communities(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (entities, relations) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let communities = crate::core::community::detect(&entities, &relations);
+    ok_list("communities", communities)
+}
+
+/// `GET /api/v1/scans/{id}/trust` — relationship-graph trust propagation
+/// ([`crate::core::trust`]): every entity ranked by how strongly the graph
+/// corroborates it, via damped personalized-PageRank-style propagation from
+/// high-confidence anchors, attenuating with graph distance. Read-only — never
+/// mutates stored confidence. Pure synthesis over the persisted entities +
+/// relations; 404 if the scan is unknown, matching the other sub-resources.
+pub async fn scan_trust(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (entities, relations) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let scores = crate::core::trust::propagate(&entities, &relations);
+    ok_list("trust", scores)
+}
+
 pub async fn scan_delete(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,

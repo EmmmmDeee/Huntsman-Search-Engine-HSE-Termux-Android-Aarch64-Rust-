@@ -617,6 +617,10 @@ const API = {
   leads:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/leads'),
   // Footprint timeline: every dated event the evidence implies, oldest-first.
   timeline:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/timeline'),
+  // Graph communities: relationship sub-clusters via label propagation.
+  communities: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/communities'),
+  // Network trust: entities ranked by graph-corroborated trust propagation.
+  trust:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/trust'),
   auditScan: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/audit'),
   create:    body=>API._req('/api/v1/scans',{method:'POST',body}),
   // Raw-text upload (not JSON): POST a dossier file's contents to be parsed and
@@ -1708,6 +1712,8 @@ async function renderReport(host, id, scan){
     <div id="rpt-network"></div>
     <div id="rpt-leads"    style="margin-top:18px"></div>
     <div id="rpt-timeline" style="margin-top:18px"></div>
+    <div id="rpt-communities" style="margin-top:18px"></div>
+    <div id="rpt-trust"    style="margin-top:18px"></div>
     <div id="rpt-corr"     style="margin-top:18px"></div>
     <div id="rpt-audit"    style="margin-top:18px"></div>`;
   // Each renderer owns its sub-section (and its own async fetch); composing them
@@ -1715,6 +1721,8 @@ async function renderReport(host, id, scan){
   renderNetwork($('#rpt-network'), id);
   renderLeads($('#rpt-leads'), id);
   renderTimeline($('#rpt-timeline'), id);
+  renderCommunities($('#rpt-communities'), id);
+  renderTrust($('#rpt-trust'), id);
   renderCorrelations($('#rpt-corr'));
   renderAudit($('#rpt-audit'), id);
 }
@@ -1875,6 +1883,77 @@ async function renderTimeline(host, id){
     </div>`;
   }
   host.innerHTML = html + '</div>';
+}
+
+/* ── Communities section — the relationship graph partitioned into sub-clusters by
+   label propagation (the family cluster vs the infrastructure estate, …), each
+   with its members and a derived label. GET /scans/{id}/communities. ── */
+async function renderCommunities(host, id){
+  host.innerHTML = '<div class="empty-state"><h3>Detecting communities…</h3></div>';
+  let data;
+  try { data = await API.communities(id); }
+  catch(e){ host.innerHTML = `<div class="alert alert-danger"><b>Error.</b> ${esc(e.message)}</div>`; return; }
+  const comms = (data && data.communities) || [];
+  if (!comms.length){
+    host.innerHTML = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-th-large"></i>&nbsp;Communities</h4>
+      <div class="empty-state"><h3>No communities yet</h3>
+      <p>Sub-clusters appear once the scan derives a connected relationship graph —
+      run a deeper scan (<code>--depth ≥ 1</code>) so people, accounts and infrastructure link up.</p></div>`;
+    return;
+  }
+  const byUid = {};
+  (S.entities||[]).forEach(e=>{ byUid[e.uid] = e; });
+  const val = uid => { const e = byUid[uid]; return e ? esc(e.raw_value||e.value) : esc(String(uid).slice(0,12))+'…'; };
+  let html = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-th-large"></i>&nbsp;Communities</h4>
+    <p class="text-muted" style="font-size:12px;margin-bottom:10px"><b>${comms.length}</b> sub-cluster${comms.length===1?'':'s'} in the relationship graph, largest first.</p>`;
+  for (const c of comms){
+    const n = c.size || (c.uids||[]).length;
+    const members = (c.uids||[]).slice(0,8).map(u=>`<code>${val(u)}</code>`).join(' ');
+    const more = n > 8 ? ` <span class="text-muted">+${n-8} more</span>` : '';
+    html += `<div style="margin-bottom:8px;padding:8px 10px;border-left:3px solid #5bc0de;background:rgba(91,192,222,0.07)">
+      <div><span class="tag">${esc(c.label||('community '+c.id))}</span> <span class="text-muted">· ${n} member${n===1?'':'s'}</span></div>
+      <div style="margin-top:4px;line-height:1.9">${members}${more}</div>
+    </div>`;
+  }
+  host.innerHTML = html;
+}
+
+/* ── Trust section — entities ranked by how strongly the relationship graph
+   corroborates them (damped trust propagation from high-confidence anchors,
+   attenuating with distance). GET /scans/{id}/trust. Read-only; never alters
+   stored confidence — it is the network's vote, not raw per-entity confidence. ── */
+async function renderTrust(host, id){
+  host.innerHTML = '<div class="empty-state"><h3>Propagating network trust…</h3></div>';
+  let data;
+  try { data = await API.trust(id); }
+  catch(e){ host.innerHTML = `<div class="alert alert-danger"><b>Error.</b> ${esc(e.message)}</div>`; return; }
+  const scores = (data && data.trust) || [];
+  if (!scores.length){
+    host.innerHTML = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-stats"></i>&nbsp;Network trust</h4>
+      <div class="empty-state"><h3>No trust ranking yet</h3>
+      <p>Trust radiates across the relationship graph from high-confidence anchors.
+      It appears once the scan derives relations — run a deeper scan to populate it.</p></div>`;
+    return;
+  }
+  const byUid = {};
+  (S.entities||[]).forEach(e=>{ byUid[e.uid] = e; });
+  const top = scores.slice(0,12);
+  let html = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-stats"></i>&nbsp;Network trust</h4>
+    <p class="text-muted" style="font-size:12px;margin-bottom:10px">Top ${top.length} entit${top.length===1?'y':'ies'} by graph-corroborated trust — how strongly the network supports each, not raw confidence.</p>`;
+  for (const t of top){
+    const e = byUid[t.uid];
+    const label = e ? `${kindPill(e.kind)} <code>${esc(e.raw_value||e.value)}</code>`
+                    : `<code class="text-muted" style="font-size:10px">${esc(String(t.uid).slice(0,16))}…</code>`;
+    const score = Number(t.score) || 0;
+    const pct = Math.max(0, Math.min(100, Math.round(score*100)));
+    html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+      <div style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${label}</div>
+      <div style="flex:0 0 120px;background:rgba(127,127,127,0.2);border-radius:3px;height:10px;overflow:hidden">
+        <div style="width:${pct}%;height:100%;background:#5cb85c"></div></div>
+      <div style="flex:0 0 38px;text-align:right"><code>${score.toFixed(2)}</code></div>
+    </div>`;
+  }
+  host.innerHTML = html;
 }
 
 /* ── Relations tab — typed edges from the recursive crawl (provenance) ── */

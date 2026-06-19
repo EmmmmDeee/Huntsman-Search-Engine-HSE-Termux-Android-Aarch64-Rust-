@@ -222,6 +222,13 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/scans/{id}/leads", get(scan_handlers::scan_leads))
         // Chronological footprint reconstruction — powers the web UI Timeline view.
         .route("/scans/{id}/timeline", get(scan_handlers::scan_timeline))
+        // Graph community detection — powers the web UI Communities view.
+        .route(
+            "/scans/{id}/communities",
+            get(scan_handlers::scan_communities),
+        )
+        // Network trust propagation — powers the web UI Trust ranking view.
+        .route("/scans/{id}/trust", get(scan_handlers::scan_trust))
         .route("/scans/{id}/audit", get(scan_handlers::scan_audit))
         .route("/scans/{a}/diff/{b}", get(scan_handlers::scan_diff))
         .route("/scans/{id}/events", get(handlers::scan_events_sse))
