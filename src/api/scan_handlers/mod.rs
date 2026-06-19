@@ -646,6 +646,30 @@ pub async fn scan_leads(
     ok_list("leads", leads)
 }
 
+/// `GET /api/v1/scans/{id}/timeline` — the subject's footprint reconstructed as a
+/// single chronology ([`crate::core::timeline`]): every dated event the evidence
+/// implies (a breach exposure, a domain registration, an account creation, …),
+/// ordered oldest-first. Pure synthesis over the persisted entities; 404 if the
+/// scan is unknown, matching the other `/scans/{id}/...` sub-resources.
+pub async fn scan_timeline(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await;
+    let entities = match loaded {
+        Ok(Ok(e)) => e,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let events = crate::core::timeline::reconstruct(&entities);
+    ok_list("events", events)
+}
+
 pub async fn scan_delete(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,

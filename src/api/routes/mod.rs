@@ -220,6 +220,8 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/scans/{id}/network", get(scan_handlers::scan_network))
         // Proactive next-best-action leads — powers the web UI Leads view.
         .route("/scans/{id}/leads", get(scan_handlers::scan_leads))
+        // Chronological footprint reconstruction — powers the web UI Timeline view.
+        .route("/scans/{id}/timeline", get(scan_handlers::scan_timeline))
         .route("/scans/{id}/audit", get(scan_handlers::scan_audit))
         .route("/scans/{a}/diff/{b}", get(scan_handlers::scan_diff))
         .route("/scans/{id}/events", get(handlers::scan_events_sse))
