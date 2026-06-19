@@ -570,6 +570,33 @@ fn context_corroborates(context: &str, service: &str) -> bool {
     stem.len() >= 3 && contains_word(&context.to_ascii_lowercase(), stem)
 }
 
+/// Structurally validate a JWS/JWT compact token **offline** and return its
+/// `alg`, or `None` if it is not a real JWT.
+///
+/// Practical, objective validation with no network and no secret: the first
+/// dot-separated segment must base64url-decode to a JSON object carrying a string
+/// `alg`. It separates a genuine token from an `eyJ`-shaped high-entropy blob, and
+/// surfaces the algorithm — notably `alg: "none"`, an unsigned token that is the
+/// classic JWT authentication-bypass. The signature is **not** verified (that
+/// needs the issuer's secret); this is structure + header inspection only.
+fn validate_jwt_alg(token: &str) -> Option<String> {
+    use base64::Engine as _;
+    let header_b64 = token.split('.').next()?;
+    // A real JWT header (`{"alg":…}`) is at least a handful of base64url chars;
+    // the gate keeps a stray short segment from reaching the JSON parser.
+    if header_b64.len() < 8 {
+        return None;
+    }
+    // JWT segments are base64url; tokens in the wild appear with and without
+    // padding, so try the unpadded alphabet first, then the padded one.
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(header_b64)
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(header_b64))
+        .ok()?;
+    let header: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    header.get("alg")?.as_str().map(str::to_string)
+}
+
 /// Scan a JSON record for API key patterns in password / URL-param / extra
 /// fields. Public so peer modules like `see_know` can use the same harvest
 /// pipeline against their own response schemas.
@@ -1186,6 +1213,18 @@ fn emit_key_with(
     if !seen.insert(dedup) {
         return;
     }
+    // Practical, offline JWT validation — synergy with the provenance tier. For a
+    // `jwt_token`, decode the header and confirm it really is a JWT. A confirmed
+    // structure keeps the schema-level baseline; an `eyJ`-shaped blob that does
+    // NOT decode to a JWT header is just high-entropy text → drop to Potential.
+    let jwt_alg = (service == "jwt_token")
+        .then(|| validate_jwt_alg(key_val))
+        .flatten();
+    let detection = if service == "jwt_token" && jwt_alg.is_none() {
+        DetectionConfidence::Potential
+    } else {
+        detection
+    };
     let mut entity = Entity::new(EntityKind::ApiKey, key_val, 0.80, scan_id);
     entity.tag("api-key");
     entity.tag(format!("service:{service}"));
@@ -1193,6 +1232,16 @@ fn emit_key_with(
     entity.tag("auto-discovered");
     // Detection provenance (orthogonal to ROI/value): proven > probable > potential.
     entity.tag(format!("detection:{}", detection.as_str()));
+    if let Some(alg) = &jwt_alg {
+        entity.tag("jwt:structure-valid");
+        entity.tag(format!("jwt:alg:{}", alg.to_ascii_lowercase()));
+        // `alg: none` is an unsigned token — anyone can forge its claims (the
+        // classic JWT authentication-bypass). Surface it as a vulnerability.
+        if alg.eq_ignore_ascii_case("none") {
+            entity.tag("jwt:alg-none");
+            entity.tag("vulnerable");
+        }
+    }
     // Tag with ROI tier so operators can prioritise multiplier keys.
     // Multiplier-tier keys discover infrastructure/identities that
     // cascade into MORE keys via web_crawler and search_engines.

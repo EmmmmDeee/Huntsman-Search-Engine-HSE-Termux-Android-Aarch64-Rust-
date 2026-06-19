@@ -2122,6 +2122,74 @@ fn prefix_and_context_agreement_is_proven() {
     );
 }
 
+// ─── Practical offline JWT validation ────────────────────────────────────────
+
+#[test]
+fn validate_jwt_alg_confirms_structure() {
+    // Canonical jwt.io header {"alg":"HS256","typ":"JWT"}.
+    let valid = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ4In0.c2ln";
+    assert_eq!(validate_jwt_alg(valid).as_deref(), Some("HS256"));
+    // {"alg":"none"} — an unsigned token.
+    let none = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.c2ln";
+    assert_eq!(validate_jwt_alg(none).as_deref(), Some("none"));
+    // eyJ-shaped but the header does not decode to JSON → not a JWT.
+    assert_eq!(
+        validate_jwt_alg("eyJabcdefghijklmnopqrstuvwxyz0123456789.payload.signature"),
+        None
+    );
+    // No JWT structure at all.
+    assert_eq!(validate_jwt_alg("not.a.jwt"), None);
+}
+
+#[test]
+fn jwt_validation_refines_tier_and_flags_alg_none() {
+    // Structurally valid JWT: confirmed structure keeps the Probable baseline and
+    // surfaces the algorithm.
+    let item = serde_json::json!({
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ4In0.c2ln",
+    });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    let e = result
+        .entities
+        .iter()
+        .find(|e| e.has_tag("service:jwt_token"))
+        .expect("jwt entity");
+    assert!(e.has_tag("jwt:structure-valid"), "tags: {:?}", e.tags);
+    assert!(e.has_tag("jwt:alg:hs256"));
+    assert!(e.has_tag("detection:probable"));
+    assert!(!e.has_tag("jwt:alg-none"));
+
+    // alg:none ⇒ surfaced as a vulnerability (unsigned token).
+    let item = serde_json::json!({
+        "token": "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.c2ln",
+    });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    let e = result
+        .entities
+        .iter()
+        .find(|e| e.has_tag("service:jwt_token"))
+        .expect("jwt entity");
+    assert!(e.has_tag("jwt:alg-none"), "tags: {:?}", e.tags);
+    assert!(e.has_tag("vulnerable"));
+
+    // An eyJ-shaped blob that is NOT a valid JWT: still catalogued, but the
+    // unconfirmed structure drops it to Potential with no jwt: enrichment.
+    let item = serde_json::json!({
+        "token": "eyJabcdefghijklmnopqrstuvwxyz0123456789.payload.signature",
+    });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    let e = result
+        .entities
+        .iter()
+        .find(|e| e.has_tag("service:jwt_token"))
+        .expect("jwt entity");
+    assert!(e.has_tag("detection:potential"), "tags: {:?}", e.tags);
+    assert!(!e.has_tag("jwt:structure-valid"));
+}
+
 // ─── PrefixMatcher property tests ────────────────────────────────────────────
 mod prop {
     use super::super::{identify_vendor_api_key, pattern_catalogue};
