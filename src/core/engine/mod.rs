@@ -559,6 +559,11 @@ impl ScanEngine {
             // (seed-centric) never makes. Runs before persist so a hit is genuinely
             // prior; provenance only, so it never inflates confidence.
             history::link_cross_scan_history(store.as_ref(), &mut entities, &scan.id);
+            // Co-occurrence flywheel: when two specific identifiers that appeared TOGETHER
+            // in an earlier scan both reappear now, tag the recurring association — a
+            // stronger, data-driven historical link than single-value recurrence. Same
+            // contract: before persist, provenance-only, never inflates confidence.
+            history::link_cross_scan_cooccurrence(store.as_ref(), &mut entities, &scan.id);
             // Determinism: normalise each entity's evidence/tags ordering before
             // persist, so concurrent dispatch's completion-order merging can't leak
             // into the stored/exported result (see `Entity::canonicalize_order`).
