@@ -352,6 +352,29 @@ const COARSE_ADDRESS_TAGS: &[&str] = &["coarse", "postcode-only", "candidate-sub
 /// pairing on a pathological owner list (Determinism + low-RAM Termux).
 const CO_RESIDENCE_MAX_PER_PLACE: usize = 8;
 
+/// Score damp for a CO-MENTION association — two distinct Persons NAMED IN THE SAME
+/// SOURCE document (one result page, record, or article). The document-level analog
+/// of co-residence: where co-residence links people a shared ADDRESS names together,
+/// this links people a shared SOURCE names together — relatives and associates a
+/// single page lists side by side (an obituary, a family notice, co-owners on a
+/// title) that neither a surname nor an address would connect. A shared source is
+/// real but more circumstantial than a shared dwelling, so it is damped below
+/// co-residence ([`CO_RESIDENCE_DAMP`]) and a declared link; a same-surname
+/// co-mentioned pair keeps its stronger kinship edge on the same pair, so the two
+/// angles corroborate rather than double-count.
+const CO_MENTION_DAMP: f64 = 0.45;
+
+/// A source naming MORE than this many distinct Persons is a directory / news
+/// round-up / list page, not a relationship document — co-mention would mint O(n²)
+/// spurious edges from it, so such a source is skipped entirely. A source naming a
+/// handful (2–5) is exactly the obituary / family-notice document this exists to mine.
+const CO_MENTION_MAX_PERSONS_PER_SOURCE: usize = 5;
+
+/// Evidence attribute keys that identify the SOURCE document a finding came from —
+/// the join key for co-mention. `url` is canonical (search results, scraped pages);
+/// `source_url` / `page` are module variants.
+const CO_MENTION_SOURCE_ATTRS: &[&str] = &["url", "source_url", "page"];
+
 /// Evidence attribute keys whose value names a real person — the owner /
 /// registrant / account holder a module recorded alongside an identifier or a
 /// place. Matched case-insensitively against present Person entities, so an
@@ -806,6 +829,90 @@ pub fn derive_co_residence(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
     out
 }
 
+/// The distinct SOURCE-document identifiers an entity's evidence cites — the values
+/// of its [`CO_MENTION_SOURCE_ATTRS`], trimmed, lowercased, non-empty. The join key
+/// for [`derive_co_mention`].
+fn cited_sources(e: &Entity) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for ev in &e.evidence {
+        for (k, v) in &ev.attributes {
+            if CO_MENTION_SOURCE_ATTRS
+                .iter()
+                .any(|a| k.eq_ignore_ascii_case(a))
+            {
+                let s = v.trim();
+                if !s.is_empty() {
+                    out.insert(s.to_lowercase());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Derive `AssociatedWith` CO-MENTION edges between distinct Persons NAMED IN THE
+/// SAME SOURCE document — the document-level complement of [`derive_co_residence`].
+///
+/// Reverse-engineered from how real relatives are actually linked: a single public
+/// source (an obituary, a family notice, a property title, one search result) names
+/// both, but the engine extracts each as a SEPARATE Person and discards the "same
+/// source" tie. This recovers it — group Persons by the source their evidence cites
+/// and link those that co-occur in one document — the free, offline angle for
+/// relatives and associates a shared surname or address can't reach.
+///
+/// Precision-gated: a source naming a CROWD ([`CO_MENTION_MAX_PERSONS_PER_SOURCE`])
+/// is a directory / news round-up, skipped (it would mint O(n²) noise); a source
+/// naming a handful is the relationship document this exists to mine. Damped
+/// ([`CO_MENTION_DAMP`]) below co-residence and a declared link, so a same-surname
+/// co-mentioned pair keeps its stronger kinship edge — two independent angles
+/// agreeing, not double-counted. Symmetric, canonically directed (smaller-uid →
+/// larger), deduped, bounded, and deterministic.
+pub fn derive_co_mention(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::{HashMap, HashSet};
+
+    // source-document -> the distinct Persons it names.
+    let mut by_source: HashMap<String, Vec<&Entity>> = HashMap::new();
+    for e in entities.iter().filter(|e| e.kind == EntityKind::Person) {
+        for src in cited_sources(e) {
+            by_source.entry(src).or_default().push(e);
+        }
+    }
+    if by_source.is_empty() {
+        return Vec::new();
+    }
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    // Deterministic source order so the emitted edge set never depends on map order.
+    let mut sources: Vec<(&String, &Vec<&Entity>)> = by_source.iter().collect();
+    sources.sort_by(|a, b| a.0.cmp(b.0));
+    for (_src, persons) in sources {
+        // A relationship document names a handful; a crowd is a list page — skip it.
+        if persons.len() < 2 || persons.len() > CO_MENTION_MAX_PERSONS_PER_SOURCE {
+            continue;
+        }
+        let mut named = persons.clone();
+        named.sort_by(|a, b| a.uid.cmp(&b.uid));
+        for i in 0..named.len() {
+            for j in (i + 1)..named.len() {
+                let (a, b) = (named[i], named[j]);
+                let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
+                if seen.insert((from.uid.clone(), to.uid.clone())) {
+                    out.push(Relation::new(
+                        from.uid.as_str(),
+                        to.uid.as_str(),
+                        RelationKind::AssociatedWith,
+                        from.confidence.min(to.confidence) * CO_MENTION_DAMP,
+                        scan_id,
+                    ));
+                }
+            }
+        }
+    }
+    sort_edges(&mut out);
+    out
+}
+
 /// Derive every deterministic, evidence-grounded relation the engine knows how
 /// to reconstruct from a persisted entity set alone — the infrastructure layer
 /// (structural ownership, geo co-location, DNS resolution, WHOIS registration,
@@ -832,6 +939,11 @@ pub fn derive_all(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     // outranks a surname guess (×0.5) on the same pair, and links the
     // DIFFERENT-surname household members kinship can't reach.
     out.extend(derive_co_residence(entities, scan_id));
+    // Co-mention after co-residence: the document-level association analog — people a
+    // single SOURCE names together (an obituary, a family notice, one result page).
+    // Damped below co-residence; a same-surname co-mentioned pair keeps its stronger
+    // kinship edge, so independent angles corroborate rather than double-count.
+    out.extend(derive_co_mention(entities, scan_id));
     // Declared associations LAST so a `(from, kind, to)` edge a surname guess or a
     // co-residence inference already emitted is re-emitted here at full (declared)
     // confidence — the later, higher-trust edge wins on idempotent upsert.

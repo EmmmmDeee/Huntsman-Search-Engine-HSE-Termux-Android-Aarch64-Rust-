@@ -132,6 +132,76 @@ fn co_residence_links_different_surname_household_at_a_specific_address() {
     );
 }
 
+/// A Person carrying a `url` source attribute, the join key for co-mention.
+fn person_in_source(name: &str, conf: f64, url: &str) -> Entity {
+    use crate::core::entity::Evidence;
+    let mut e = ent(EntityKind::Person, name, conf);
+    e.add_evidence(Evidence::new("search_engines", "result").with_attr("url", url));
+    e
+}
+
+#[test]
+fn co_mention_links_two_people_named_in_the_same_source() {
+    // The reverse-engineered Kyle/Erik case: a single source names both, and the
+    // engine extracted each separately — co-mention recovers the shared-source tie.
+    let kyle = person_in_source("Kyle Diegmann", 0.6, "https://example.com/obituary");
+    let erik = person_in_source("Erik Diegmann", 0.5, "https://example.com/obituary");
+    let edges = derive_co_mention(&[kyle.clone(), erik.clone()], "s");
+    assert_eq!(edges.len(), 1, "one co-mention edge between the two");
+    let e = &edges[0];
+    assert_eq!(e.kind, RelationKind::AssociatedWith);
+    let mut got = [e.from_uid.clone(), e.to_uid.clone()];
+    got.sort();
+    let mut want = [kyle.uid.clone(), erik.uid.clone()];
+    want.sort();
+    assert_eq!(got, want, "endpoints are the two co-mentioned persons");
+    // Damped: min(0.6, 0.5) × CO_MENTION_DAMP (0.45).
+    assert!((e.confidence - 0.5 * 0.45).abs() < 1e-9);
+}
+
+#[test]
+fn co_mention_ignores_people_in_different_sources() {
+    let kyle = person_in_source("Kyle Diegmann", 0.6, "https://a.example/x");
+    let erik = person_in_source("Erik Diegmann", 0.5, "https://b.example/y");
+    assert!(
+        derive_co_mention(&[kyle, erik], "s").is_empty(),
+        "no shared source ⇒ no co-mention"
+    );
+}
+
+#[test]
+fn co_mention_skips_crowded_list_sources() {
+    // Six people (one more than the cap of 5) ⇒ a directory / round-up, not a
+    // relationship document.
+    let url = "https://example.com/directory";
+    let ents: Vec<Entity> = (0..6)
+        .map(|i| person_in_source(&format!("Person Number{i:02}"), 0.6, url))
+        .collect();
+    assert!(
+        derive_co_mention(&ents, "s").is_empty(),
+        "a crowded source mints no edges"
+    );
+}
+
+#[test]
+fn co_mention_pairs_a_small_group_deterministically() {
+    let url = "https://example.com/family-notice";
+    let ents = vec![
+        person_in_source("Aaron Diegmann", 0.6, url),
+        person_in_source("Beth Diegmann", 0.6, url),
+        person_in_source("Carl Diegmann", 0.6, url),
+    ];
+    let e1 = derive_co_mention(&ents, "s");
+    assert_eq!(e1.len(), 3, "three people in one source → C(3,2) = 3 edges");
+    // Deterministic under input reordering.
+    let mut shuffled = ents.clone();
+    shuffled.reverse();
+    let e2 = derive_co_mention(&shuffled, "s");
+    let ids1: Vec<&str> = e1.iter().map(|r| r.id.as_str()).collect();
+    let ids2: Vec<&str> = e2.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(ids1, ids2, "edge set is independent of input order");
+}
+
 #[test]
 fn derive_all_aggregates_every_structural_derivation() {
     use crate::core::entity::Evidence;
@@ -160,6 +230,7 @@ fn derive_all_aggregates_every_structural_derivation() {
         + derive_residency(&ents, "s").len()
         + derive_kinship(&ents, "s").len()
         + derive_co_residence(&ents, "s").len()
+        + derive_co_mention(&ents, "s").len()
         + derive_declared_associations(&ents, "s").len();
     assert_eq!(all.len(), expected, "derive_all is the union of every pass");
     assert!(all.iter().any(|r| r.kind == RelationKind::SubdomainOf));

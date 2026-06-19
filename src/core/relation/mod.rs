@@ -43,7 +43,7 @@ pub(crate) mod types;
 mod tests;
 
 pub use builders::{
-    CO_LOCATION_KM, derive_all, derive_co_residence, derive_colocation,
+    CO_LOCATION_KM, derive_all, derive_co_mention, derive_co_residence, derive_colocation,
     derive_declared_associations, derive_handles, derive_identity_ownership, derive_kinship,
     derive_name_lineage, derive_registration, derive_residency, derive_resolution,
     derive_structural,
