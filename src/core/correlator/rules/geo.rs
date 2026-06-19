@@ -838,52 +838,25 @@ fn extract_ratemyagent_suburb(url: &str) -> Option<String> {
     }
 }
 
-/// The AU postcode (4 digits, 0800–7999) a family-candidate entity names — from a
-/// standalone token in its value (`"QLD 4518, Australia"`) or a `postcode`
-/// evidence attribute (the `qld_unclaimed` owner Persons carry it). `None` when no
-/// plausible AU postcode is present.
-fn family_postcode(e: &Entity) -> Option<String> {
-    let valid = |t: &str| -> Option<String> {
-        let t = t.trim();
-        (t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()))
-            .then(|| t.parse::<u32>().ok())
-            .flatten()
-            .filter(|n| (800..=7999).contains(n))
-            .map(|_| t.to_string())
-    };
-    for tok in e.value.split(|c: char| !c.is_ascii_digit()) {
-        if let Some(pc) = valid(tok) {
-            return Some(pc);
-        }
-    }
-    e.evidence
-        .iter()
-        .find_map(|ev| ev.attributes.get("postcode").and_then(|v| valid(v)))
-}
-
-/// Distance within which a family-candidate's locality counts as the subject's
-/// area. Generous (postcode/region grain, not street) — it answers "same part of
-/// the state as the subject", which for a shared-surname person is a strong
-/// independent second signal.
-const FAMILY_GEO_KM: f64 = 150.0;
-
 /// AU-061 — Family geo-corroboration (surname kin in the subject's confirmed area).
 ///
-/// The free, offline SECOND ANGLE on family. A name scan surfaces
-/// `family-candidate` people/addresses (shared surname, from the AU registers and
-/// residential directories) at postcode grain, while `signal_radar` / geo give the
-/// SUBJECT a confirmed coordinate fix. This resolves each family-candidate's
-/// postcode to a centroid offline ([`crate::util::city_coords`] — exact suburb,
-/// else region) and keeps those within [`FAMILY_GEO_KM`] of the subject's fix, so
-/// "shared surname" and "same area as the subject" independently agree — turning a
-/// lone candidate into a RELIABLE relative. Pure + offline; nothing fires without
-/// both a confirmed subject coordinate and ≥1 in-area family-candidate.
+/// The free, offline SECOND ANGLE on family — the *finding* counterpart to the
+/// engine's promotion pass, both built on the one shared detector
+/// [`crate::core::geo_family`]. A name scan surfaces `family-candidate`
+/// people/addresses (shared surname) at postcode grain, while `signal_radar` /
+/// geo give the SUBJECT a confirmed coordinate fix; this keeps the
+/// family-candidates within [`crate::core::geo_family::FAMILY_GEO_KM`] of that
+/// fix, so "shared surname" and "same area as the subject" independently agree —
+/// turning a lone candidate into a reliable relative. Nothing fires without both
+/// a confirmed subject coordinate and ≥1 in-area family-candidate.
 pub(in crate::core::correlator) fn rule_au_061_family_geo_corroboration(
     entities: &[Entity],
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    // The subject's confirmed location(s): high-confidence Coordinates.
+    use crate::core::geo_family::{FAMILY_GEO_KM, distance_to_subject};
+
+    // The subject's confirmed location(s): uid (for the correlation) + lat/lon.
     let subject: Vec<(String, (f64, f64))> = entities
         .iter()
         .filter(|e| e.kind == EntityKind::Coordinates && e.confidence >= 0.60)
@@ -892,20 +865,17 @@ pub(in crate::core::correlator) fn rule_au_061_family_geo_corroboration(
     if subject.is_empty() {
         return Vec::new();
     }
+    let coords: Vec<(f64, f64)> = subject.iter().map(|(_, ll)| *ll).collect();
 
-    // Family-candidates whose postcode resolves within FAMILY_GEO_KM of the
-    // subject — nearest first for a deterministic, readable description.
+    // Family-candidates within FAMILY_GEO_KM of the subject — nearest first for a
+    // deterministic, readable description.
     let mut in_area: Vec<(&Entity, f64)> = entities
         .iter()
         .filter(|e| e.has_tag("family-candidate"))
         .filter_map(|e| {
-            let pc = family_postcode(e)?;
-            let (la, lo) = crate::util::city_coords::city_coords(&pc)?;
-            let km = subject
-                .iter()
-                .map(|(_, (sla, slo))| crate::util::geohash::haversine_km(la, lo, *sla, *slo))
-                .fold(f64::INFINITY, f64::min);
-            (km <= FAMILY_GEO_KM).then_some((e, km))
+            distance_to_subject(e, &coords)
+                .filter(|&km| km <= FAMILY_GEO_KM)
+                .map(|km| (e, km))
         })
         .collect();
     if in_area.is_empty() {
