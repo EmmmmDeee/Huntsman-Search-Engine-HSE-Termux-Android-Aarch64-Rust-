@@ -854,18 +854,16 @@ pub(in crate::core::correlator) fn rule_au_061_family_geo_corroboration(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    use crate::core::geo_family::{FAMILY_GEO_KM, distance_to_subject};
+    use crate::core::geo_family::{FAMILY_GEO_KM, distance_to_subject, subject_fixes};
 
-    // The subject's confirmed location(s): uid (for the correlation) + lat/lon.
-    let subject: Vec<(String, (f64, f64))> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Coordinates && e.confidence >= 0.60)
-        .filter_map(|e| crate::util::geohash::parse_coords(&e.value).map(|ll| (e.uid.clone(), ll)))
-        .collect();
+    // The subject's confirmed location(s) — the one shared anchor (a GPS fix OR
+    // the subject's own name-matched address), so the correlator and the engine
+    // passes agree on where the subject is. Keeps each fix's uid for the edge.
+    let subject = subject_fixes(entities);
     if subject.is_empty() {
         return Vec::new();
     }
-    let coords: Vec<(f64, f64)> = subject.iter().map(|(_, ll)| *ll).collect();
+    let coords: Vec<(f64, f64)> = subject.iter().map(|f| f.coord).collect();
 
     // Family-candidates within FAMILY_GEO_KM of the subject — nearest first for a
     // deterministic, readable description.
@@ -893,7 +891,7 @@ pub(in crate::core::correlator) fn rule_au_061_family_geo_corroboration(
         .map(|(e, km)| format!("{} (~{km:.0} km)", e.value))
         .collect();
     let extra = in_area.len().saturating_sub(shown.len());
-    let mut uids: Vec<String> = subject.iter().map(|(u, _)| u.clone()).collect();
+    let mut uids: Vec<String> = subject.iter().map(|f| f.uid.clone()).collect();
     uids.extend(in_area.iter().map(|(e, _)| e.uid.clone()));
 
     let severity = if in_area.len() >= 3 {

@@ -11,24 +11,24 @@ fn fam(value: &str, postcode: Option<&str>) -> Entity {
 }
 
 #[test]
-fn family_postcode_reads_value_token_then_evidence() {
+fn au_postcode_reads_value_token_then_evidence() {
     // From the value ("QLD 4518, Australia").
     let addr = {
         let mut e = Entity::new(EntityKind::Address, "QLD 4518, Australia", 0.3, "s");
         e.tag("family-candidate");
         e
     };
-    assert_eq!(family_postcode(&addr).as_deref(), Some("4518"));
+    assert_eq!(au_postcode(&addr).as_deref(), Some("4518"));
     // From a `postcode` evidence attribute on an owner Person.
     assert_eq!(
-        family_postcode(&fam("Stephen Moreau", Some("4169"))).as_deref(),
+        au_postcode(&fam("Stephen Moreau", Some("4169"))).as_deref(),
         Some("4169")
     );
     // None when there's no AU postcode anywhere.
-    assert!(family_postcode(&fam("Stephen Moreau", None)).is_none());
+    assert!(au_postcode(&fam("Stephen Moreau", None)).is_none());
     // A 4-digit token out of the AU range is rejected.
     let bad = Entity::new(EntityKind::Address, "Apt 9999 Nowhere", 0.3, "s");
-    assert!(family_postcode(&bad).is_none());
+    assert!(au_postcode(&bad).is_none());
 }
 
 #[test]
@@ -103,4 +103,36 @@ fn discordant_namesake_is_the_far_complement_of_corroboration() {
     assert!(!is_geo_discordant_namesake(&other, &subject));
     // No confirmed subject fix → nothing is judged discordant.
     assert!(!is_geo_discordant_namesake(&perth, &[]));
+}
+
+#[test]
+fn subject_anchors_on_own_address_when_no_gps() {
+    // The common scan: no GPS, but the subject's own suburb is known from a
+    // register hit whose owner name exactly matched them (`exact-name-match`).
+    let mut own = Entity::new(EntityKind::Address, "QLD 4519, Australia", 0.38, "s");
+    own.tag("exact-name-match"); // the subject's own residence (Beerwah)
+    // A coarse postcode-centroid coordinate (below the GPS gate) must NOT anchor…
+    let weak = Entity::new(EntityKind::Coordinates, "-26.85,152.96", 0.30, "s");
+    // …and a relative's own address never anchors (family-candidate, not the subject).
+    let kin_addr = {
+        let mut e = Entity::new(EntityKind::Address, "QLD 4518, Australia", 0.32, "s");
+        e.tag("family-candidate");
+        e
+    };
+
+    let fixes = subject_fixes(&[own.clone(), weak, kin_addr.clone()]);
+    assert_eq!(fixes.len(), 1, "only the subject's own address anchors");
+    assert_eq!(fixes[0].uid, own.uid);
+
+    // With that address anchor alone, the geo angle still works: a nearby kin is
+    // corroborated and a far namesake flagged — no GPS required.
+    let subject = subject_locations(&[own]);
+    assert!(is_geo_corroborated_family(&kin_addr, &subject));
+    let perth = {
+        let mut e = Entity::new(EntityKind::Person, "Curt Moreau", 0.32, "s");
+        e.tag("family-candidate");
+        e.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "6000"));
+        e
+    };
+    assert!(is_geo_discordant_namesake(&perth, &subject));
 }
