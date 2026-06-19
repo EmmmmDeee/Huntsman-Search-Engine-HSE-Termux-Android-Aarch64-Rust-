@@ -2076,6 +2076,52 @@ fn osint_ambiguous_context_attributes_nothing() {
     );
 }
 
+// ─── Corroborated provenance (independent-signal agreement) ──────────────────
+
+#[test]
+fn contains_word_respects_boundaries() {
+    assert!(contains_word("aws_secret_key", "aws"));
+    assert!(contains_word("api.github.com", "github"));
+    assert!(contains_word("github", "github"));
+    assert!(!contains_word("lawsuit_files", "aws")); // 'aws' inside a longer run
+    assert!(!contains_word("mygithub", "github")); // preceded by alnum
+    assert!(!contains_word("githubbed", "github")); // followed by alnum
+}
+
+#[test]
+fn context_corroboration_upgrades_prefix_match_to_proven() {
+    // A vendor-prefix AWS key whose field NAMES aws → format + context agree →
+    // Proven. The same key under a neutral field stays at the Probable baseline.
+    let aws = "AKIAJK28SLQQV61MNG9X";
+    assert_eq!(identify_api_key(aws).map(|(s, _)| s), Some("aws"));
+    assert_eq!(
+        identify_with_context("AWS_SECRET_KEY", aws).map(|(s, _, d)| (s, d)),
+        Some(("aws", DetectionConfidence::Proven))
+    );
+    assert_eq!(
+        identify_with_context("credential", aws).map(|(s, _, d)| (s, d)),
+        Some(("aws", DetectionConfidence::Probable))
+    );
+    // Word-boundary precision: 'aws' embedded in 'lawsuit' must NOT corroborate.
+    assert_eq!(
+        identify_with_context("lawsuit_evidence", aws).map(|(s, _, d)| (s, d)),
+        Some(("aws", DetectionConfidence::Probable))
+    );
+}
+
+#[test]
+fn prefix_and_context_agreement_is_proven() {
+    // A Shodan key matched by its PREFIX, found under a Shodan-named field: the
+    // format and the identifier agree → Proven. The corroborated counterpart of
+    // `prefix_matched_osint_key_is_probable_not_proven` (neutral field → Probable).
+    let prefixed = synthesise_for("d0a2df", 32);
+    assert_eq!(identify_api_key(&prefixed).map(|(s, _)| s), Some("shodan"));
+    assert_eq!(
+        identify_with_context("SHODAN_API_KEY", &prefixed).map(|(s, _, d)| (s, d)),
+        Some(("shodan", DetectionConfidence::Proven))
+    );
+}
+
 // ─── PrefixMatcher property tests ────────────────────────────────────────────
 mod prop {
     use super::super::{identify_vendor_api_key, pattern_catalogue};

@@ -494,10 +494,22 @@ fn identify_with_context<'a>(
             Some(svc) => (svc, hit, DetectionConfidence::Proven),
             None => ("generic_hex", hit, DetectionConfidence::Potential),
         }),
-        // A concrete prefix/shape match — schema alone, no context needed. This
-        // is also where a Shodan/Censys key matched by its *prefix* lands, so it
-        // is `Probable`, never over-claimed as `Proven`.
-        Some((svc, hit)) => Some((svc, hit, DetectionConfidence::for_service(svc))),
+        // A concrete prefix/shape match (`Probable` baseline). When the context
+        // ALSO names this provider, two independent objective signals — the key's
+        // format and its surrounding identifier/host — agree, so the detection is
+        // corroborated → `Proven`. An *uncorroborated* prefix match (incl. a
+        // Shodan/Censys key matched by its prefix under a neutral field) stays
+        // `Probable`, never over-claimed.
+        Some((svc, hit)) => {
+            let base = DetectionConfidence::for_service(svc);
+            let conf =
+                if base == DetectionConfidence::Probable && context_corroborates(context, svc) {
+                    DetectionConfidence::Proven
+                } else {
+                    base
+                };
+            Some((svc, hit, conf))
+        }
         // Prefix-less, non-hex OSINT keys are invisible to the shape table;
         // context is the only signal, so re-apply the FP gate before trusting it.
         // A hit here is necessarily context-attributed → `Proven`.
@@ -523,6 +535,39 @@ fn context_host(context: &str) -> &str {
         }
         None => context,
     }
+}
+
+/// True if `word` occurs in `haystack` as a whole word — bounded on both sides by
+/// a non-alphanumeric character or a string edge. Precision over recall: a missed
+/// boundary (e.g. camelCase `awsKey`) merely leaves a finding at its baseline
+/// provenance, whereas a loose substring (`aws` inside `lawsuit`) would
+/// over-claim. `haystack` is assumed already lowercased.
+fn contains_word(haystack: &str, word: &str) -> bool {
+    if word.is_empty() {
+        return false;
+    }
+    haystack.match_indices(word).any(|(i, m)| {
+        let before_ok = haystack[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_ascii_alphanumeric());
+        let after_ok = haystack[i + m.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphanumeric());
+        before_ok && after_ok
+    })
+}
+
+/// True if `context` independently names the provider behind `service` — the
+/// service tag's provider stem (`github_app` → `github`, `shodan` → `shodan`)
+/// occurs in the lowercased context as a whole word. Corroborates a prefix/schema
+/// match: when the key's format AND its surrounding identifier/host agree on the
+/// provider, the detection rests on two independent objective signals. The stem
+/// must be ≥ 3 chars so a tiny token can't corroborate on noise.
+fn context_corroborates(context: &str, service: &str) -> bool {
+    let stem = service.split('_').next().unwrap_or(service);
+    stem.len() >= 3 && contains_word(&context.to_ascii_lowercase(), stem)
 }
 
 /// Scan a JSON record for API key patterns in password / URL-param / extra
