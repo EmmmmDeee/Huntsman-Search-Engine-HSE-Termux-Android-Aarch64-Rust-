@@ -904,6 +904,12 @@ fi
     && chmod 0600 "$KEYS_PATH.tmp" \
     && mv -f "$KEYS_PATH.tmp" "$KEYS_PATH"
 
+# Seed the auto-update throttle stamp so the freshly-installed binary (which is,
+# by definition, current with main right now) doesn't immediately re-check on its
+# first CLI invocation. The CLI gate reads this file (~/.cache/hse-autoupdate.stamp).
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+date +%s > "$LOG_DIR/hse-autoupdate.stamp" 2>/dev/null || true
+
 # ─── Verify ──────────────────────────────────────────────────────────────────
 step "Verifying installation"
 "$HSE_BIN_DIR/hse" --version
