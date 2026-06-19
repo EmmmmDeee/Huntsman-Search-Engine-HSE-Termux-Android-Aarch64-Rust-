@@ -37,7 +37,10 @@ mod passes;
 mod timeout;
 mod writer;
 pub use ledger::DispatchLog;
-use passes::{consolidate_address_localities, hot_inject_keys, promote_geo_corroborated_family};
+use passes::{
+    consolidate_address_localities, flag_geo_discordant_namesakes, hot_inject_keys,
+    promote_geo_corroborated_family,
+};
 use writer::DbWriter;
 // The per-target dispatch context (`DispatchCx`) and the mutable accumulator
 // bundle (`DispatchState`) are constructed here — at the seed-round and
@@ -542,6 +545,13 @@ impl ScanEngine {
             // relative — so every scan's geo-confirmed family reads as reliable,
             // not 0.3 noise. Runs after consolidation so it sees the final set.
             promote_geo_corroborated_family(&mut entities);
+            // Precision complement (free, offline): a same-surname family-candidate
+            // a whole region away from the subject's confirmed fix shares only the
+            // name, so it is tagged `geo-discordant` to demote it in the leads —
+            // telling the real local family from interstate look-alikes. Tag-only,
+            // so it never inflates confidence; runs after promotion (the two bands
+            // are disjoint, but a corroborated relative is then never re-examined).
+            flag_geo_discordant_namesakes(&mut entities);
             // Determinism: normalise each entity's evidence/tags ordering before
             // persist, so concurrent dispatch's completion-order merging can't leak
             // into the stored/exported result (see `Entity::canonicalize_order`).

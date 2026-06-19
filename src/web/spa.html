@@ -206,16 +206,22 @@
     .lead-reason{font-size:11.5px;color:#777;margin-top:2px}
     .lead-scan{flex-shrink:0}
     /* Confirmed leads (an independent second signal corroborates them) get a
-       green accent + badge so the reliable pivots stand out from speculative ones. */
+       green accent + badge so the reliable pivots stand out; geo-discordant
+       namesakes are dimmed with an amber caution badge so they're easy to skip. */
     .lead-card.confirmed{border-left-color:#2bbf6a}
+    .lead-card.discordant{border-left-color:#c9a23a;opacity:.72}
+    .lead-card.discordant:hover{opacity:1}
     .lead-badge{display:inline-block;font-size:10px;font-weight:700;color:#1a8f4e;background:#e6f7ee;
       border:1px solid #bfe8d0;border-radius:3px;padding:0 5px;margin-left:6px;vertical-align:middle;letter-spacing:.3px}
+    .lead-badge.namesake{color:#8a6d1a;background:#fdf6e3;border-color:#ecd9a0}
     body.dark-theme .lead-card{background:#1f1f1f;border-color:#333;border-left-color:#07aef1}
     body.dark-theme .lead-card.confirmed{border-left-color:#2bbf6a}
+    body.dark-theme .lead-card.discordant{border-left-color:#c9a23a}
     body.dark-theme .lead-card:hover{background:#243240}
     body.dark-theme .lead-val{color:#eee}
     body.dark-theme .lead-reason{color:#999}
     body.dark-theme .lead-badge{color:#7fe0a8;background:#173726;border-color:#2c5d40}
+    body.dark-theme .lead-badge.namesake{color:#e6c878;background:#332a12;border-color:#5d4f2c}
     body.dark-theme .net-hero{background:linear-gradient(135deg,#16222c,#1f1f1f);border-color:#2d4a5a}
     body.dark-theme .net-hero-name{color:#eee}
     body.dark-theme .net-group{border-color:#333}
@@ -1776,8 +1782,13 @@ async function renderLeads(host, id){
     Click <b>Scan</b> to launch a focused follow-up.</p>`;
   for (const l of leads){
     const icon = NET_GROUP_ICON[l.group] || 'glyphicon-flag';
-    const badge = l.confirmed ? '<span class="lead-badge" title="An independent second signal corroborates this lead">✓ CONFIRMED</span>' : '';
-    html += `<div class="lead-card${l.confirmed?' confirmed':''}">
+    const badge = l.confirmed
+      ? '<span class="lead-badge" title="An independent second signal corroborates this lead">✓ CONFIRMED</span>'
+      : l.discordant
+      ? '<span class="lead-badge namesake" title="Shares the surname but a whole region from the subject — likely a different person">⚠ NAMESAKE?</span>'
+      : '';
+    const cls = l.confirmed ? ' confirmed' : l.discordant ? ' discordant' : '';
+    html += `<div class="lead-card${cls}">
       <div class="lead-main">
         <div class="lead-val"><i class="glyphicon ${icon}"></i>&nbsp;${esc(l.value)} ${kindPill(l.kind)}${badge}</div>
         <div class="lead-reason">${esc(l.reason)}</div>

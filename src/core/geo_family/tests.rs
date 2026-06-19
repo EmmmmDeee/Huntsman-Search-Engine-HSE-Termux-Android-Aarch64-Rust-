@@ -70,3 +70,37 @@ fn corroboration_needs_a_confirmed_subject_fix_and_proximity() {
     // No confirmed subject fix → nothing corroborates.
     assert!(!is_geo_corroborated_family(&near_addr, &[]));
 }
+
+#[test]
+fn discordant_namesake_is_the_far_complement_of_corroboration() {
+    // Subject's confirmed GPS near Woodford, QLD (Brisbane catchment).
+    let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
+    gps.tag("geoint");
+    let subject = subject_locations(&[gps]);
+
+    // A same-surname candidate in Perth, WA (~3600 km) — shares the name, but a
+    // whole continent away: flagged as a likely namesake.
+    let perth = {
+        let mut e = Entity::new(EntityKind::Address, "WA 6000, Australia", 0.32, "s");
+        e.tag("family-candidate");
+        e
+    };
+    assert!(is_geo_discordant_namesake(&perth, &subject));
+    assert!(!is_geo_corroborated_family(&perth, &subject));
+
+    // The bands don't overlap: an in-area relative (Beerwah 4519) is corroborated
+    // and NEVER discordant — the near band and the far band are disjoint.
+    let near = {
+        let mut e = Entity::new(EntityKind::Address, "QLD 4519, Australia", 0.32, "s");
+        e.tag("family-candidate");
+        e
+    };
+    assert!(is_geo_corroborated_family(&near, &subject));
+    assert!(!is_geo_discordant_namesake(&near, &subject));
+
+    // A non-family-candidate is never flagged (the surname angle never applied).
+    let other = Entity::new(EntityKind::Address, "WA 6000, Australia", 0.32, "s");
+    assert!(!is_geo_discordant_namesake(&other, &subject));
+    // No confirmed subject fix → nothing is judged discordant.
+    assert!(!is_geo_discordant_namesake(&perth, &[]));
+}

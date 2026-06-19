@@ -23,6 +23,15 @@ use crate::core::entity::{Entity, EntityKind};
 /// still excluding interstate / far-region namesakes.
 pub const FAMILY_GEO_KM: f64 = 150.0;
 
+/// Distance BEYOND which a shared-surname family-candidate is more likely a
+/// coincidental NAMESAKE than a household relative — a different capital-city
+/// catchment from the subject's confirmed area (Brisbane→Melbourne/Adelaide/Perth/
+/// Tasmania all exceed this; Brisbane→Sydney does not). Deliberately generous:
+/// families do spread interstate, so this only flags the clearly-distant, and the
+/// resulting signal de-prioritises / annotates a lead — it never deletes one.
+/// The neutral middle band ([`FAMILY_GEO_KM`]..=`NAMESAKE_GEO_KM`) is left untouched.
+pub const NAMESAKE_GEO_KM: f64 = 800.0;
+
 /// Minimum confidence for a `Coordinates` entity to anchor the subject's
 /// location — a confirmed fix (e.g. a GPS sensor reading), not a coarse guess.
 const SUBJECT_FIX_MIN: f64 = 0.60;
@@ -84,6 +93,19 @@ pub fn distance_to_subject(e: &Entity, subject: &[(f64, f64)]) -> Option<f64> {
 pub fn is_geo_corroborated_family(e: &Entity, subject: &[(f64, f64)]) -> bool {
     e.has_tag("family-candidate")
         && distance_to_subject(e, subject).is_some_and(|km| km <= FAMILY_GEO_KM)
+}
+
+/// True if `e` is a `family-candidate` whose locality resolves but lies BEYOND
+/// [`NAMESAKE_GEO_KM`] from every subject location — shared surname, but a
+/// different region, so more likely a coincidental namesake than a household
+/// relative. The negative complement of [`is_geo_corroborated_family`]: both need a
+/// confirmed subject fix, and a candidate can never be both (corroborated within
+/// [`FAMILY_GEO_KM`], discordant beyond the far larger [`NAMESAKE_GEO_KM`]). A
+/// candidate whose postcode doesn't resolve offline is neither (unknown, not far).
+#[must_use]
+pub fn is_geo_discordant_namesake(e: &Entity, subject: &[(f64, f64)]) -> bool {
+    e.has_tag("family-candidate")
+        && distance_to_subject(e, subject).is_some_and(|km| km > NAMESAKE_GEO_KM)
 }
 
 #[cfg(test)]

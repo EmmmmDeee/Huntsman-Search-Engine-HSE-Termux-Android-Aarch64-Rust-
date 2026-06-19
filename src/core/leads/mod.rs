@@ -24,6 +24,12 @@ use crate::core::relation::Relation;
 /// dump. Ranked, so the cap keeps the highest-value pivots.
 const LEAD_CAP: usize = 25;
 
+/// Score multiplier applied to a `geo-discordant` lead — a shared-surname person a
+/// whole region from the subject ([`crate::core::geo_family::NAMESAKE_GEO_KM`]), so
+/// a likely namesake. Halved (not dropped): a far relative can still be genuine, so
+/// it sinks below the local family yet stays on the list for the analyst to judge.
+const NAMESAKE_PENALTY: f64 = 0.5;
+
 /// A recommended next investigation step: an entity worth pivoting on, why, and
 /// the scan that would pursue it.
 #[derive(Debug, Clone, Serialize)]
@@ -47,6 +53,10 @@ pub struct Lead {
     /// relative (shared surname AND the subject's confirmed area) or a high-tier
     /// new person. The reliable pivots, so the UI badges them and they rank first.
     pub confirmed: bool,
+    /// A likely NAMESAKE — a shared-surname person a whole region from the subject
+    /// (`geo-discordant`). Demoted in the ranking and flagged for the UI so the
+    /// analyst can tell the genuine local family from interstate look-alikes.
+    pub discordant: bool,
     /// The network group this lead came from (`people` / `identifiers` / …).
     pub group: &'static str,
 }
@@ -91,7 +101,9 @@ fn group_weight(group: &str) -> f64 {
 /// not zero. A geo-corroborated relative earns BOTH bonuses (novel *and*
 /// confirmed), so every scan's reliably-linked family surfaces as its top one-tap
 /// pivots — the previous binary "untapped ⇒ ×1.6" instead penalised exactly those
-/// relatives the moment geo-corroboration lifted them over the floor.
+/// relatives the moment geo-corroboration lifted them over the floor. A
+/// `discordant` lead (a likely namesake a region away) is finally scaled by
+/// [`NAMESAKE_PENALTY`] so it sinks below the genuine local family.
 fn score(
     kind_value: f64,
     group_weight: f64,
@@ -99,10 +111,16 @@ fn score(
     edge_conf: f64,
     untapped: bool,
     confirmation: f64,
+    discordant: bool,
 ) -> f64 {
     let base = kind_value * group_weight * (0.4 + 0.6 * entity_conf) * (0.5 + 0.5 * edge_conf);
     let novelty = if untapped { 0.6 } else { 0.0 };
-    base * (1.0 + novelty + confirmation)
+    let raw = base * (1.0 + novelty + confirmation);
+    if discordant {
+        raw * NAMESAKE_PENALTY
+    } else {
+        raw
+    }
 }
 
 /// Reliability bonus for a lead, layered on top of novelty: how strongly an
@@ -151,6 +169,8 @@ fn reason(group: &str, label: &str, tags: &[String], untapped: bool) -> String {
     }
     if tags.iter().any(|t| t == "geo-corroborated") {
         r.push_str(" · confirmed in the subject's area");
+    } else if tags.iter().any(|t| t == "geo-discordant") {
+        r.push_str(" · different region — possible namesake");
     }
     if untapped {
         r.push_str(" · not yet investigated");
@@ -181,7 +201,15 @@ pub fn recommend(entities: &[Entity], relations: &[Relation], expansion_floor: f
                 // it was still never auto-expanded — so it stays a one-tap lead.
                 let untapped = conn.entity_confidence < expansion_floor
                     || conn.tags.iter().any(|t| t == "family-candidate");
-                let confirmation = confirmation_boost(group.key, &conn.classification, &conn.tags);
+                // A flagged namesake is the opposite of confirmed, so it earns no
+                // reliability bonus (even if its tier alone would have) and takes
+                // the ranking penalty instead.
+                let discordant = conn.tags.iter().any(|t| t == "geo-discordant");
+                let confirmation = if discordant {
+                    0.0
+                } else {
+                    confirmation_boost(group.key, &conn.classification, &conn.tags)
+                };
                 Some(Lead {
                     uid: conn.uid.clone(),
                     value: conn.value.clone(),
@@ -196,9 +224,11 @@ pub fn recommend(entities: &[Entity], relations: &[Relation], expansion_floor: f
                         conn.edge_confidence,
                         untapped,
                         confirmation,
+                        discordant,
                     ),
                     classification: conn.classification.clone(),
                     confirmed: confirmation > 0.0,
+                    discordant,
                     group: group.key,
                 })
             })
