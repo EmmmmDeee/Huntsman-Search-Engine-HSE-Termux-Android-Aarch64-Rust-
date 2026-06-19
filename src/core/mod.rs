@@ -25,6 +25,7 @@ pub mod network;
 pub mod port;
 pub mod profiles;
 pub mod relation;
+pub mod resolve;
 pub mod roi;
 pub mod scan;
 pub mod tags;
