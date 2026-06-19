@@ -18,6 +18,69 @@ fn module_metadata() {
 }
 
 #[test]
+fn parse_relatives_extracts_same_surname_family_and_binds_to_subject() {
+    // A True-People-Search-AU-style relatives section (Title- and UPPER-case,
+    // middle initials, page chrome interleaved). Only same-surname family is
+    // kept, each bound to the subject via `related_to`.
+    let html = r#"
+      <h2>Possible Relatives</h2>
+      <ul>
+        <li><a href="/x">Stephen R Moreau</a> — View Profile</li>
+        <li><a href="/y">HELENE MOREAU</a> Background Check</li>
+        <li>Marianne Moreau, Sunshine Coast QLD</li>
+        <li>Fletcher Moreau (this person)</li>
+      </ul>
+      <h2>Possible Associates</h2>
+      <p>Jane Smith and Bob Jones also appear.</p>
+    "#;
+    let rel = parse_relatives(html, "Fletcher Moreau", "s");
+    let names: std::collections::BTreeSet<&str> = rel.iter().map(|e| e.value.as_str()).collect();
+
+    assert!(
+        names.contains("Stephen R Moreau"),
+        "title-case + middle initial"
+    );
+    assert!(names.contains("Helene Moreau"), "UPPER-case normalised");
+    assert!(names.contains("Marianne Moreau"));
+    assert!(
+        !names.contains("Fletcher Moreau"),
+        "the subject is never their own relative"
+    );
+    // Different-surname associates are NOT emitted here (precision over recall —
+    // those come from the breach/people-search APIs, not the surname filter).
+    assert!(
+        !names
+            .iter()
+            .any(|n| n.contains("Smith") || n.contains("Jones"))
+    );
+
+    for e in &rel {
+        assert_eq!(e.kind, EntityKind::Person);
+        assert!(e.has_tag("family-candidate") && e.has_tag("relatives"));
+        assert!(
+            e.confidence < 0.50,
+            "below the expansion floor (recorded, not auto-pivoted)"
+        );
+        let related = e
+            .evidence
+            .iter()
+            .find_map(|ev| ev.attributes.get("related_to"))
+            .map(String::as_str);
+        assert_eq!(related, Some("Fletcher Moreau"), "bound to the subject");
+    }
+
+    // No relationship section → nothing (no false positives from a plain page).
+    assert!(
+        parse_relatives(
+            "<p>No results found for that name.</p>",
+            "Fletcher Moreau",
+            "s"
+        )
+        .is_empty()
+    );
+}
+
+#[test]
 fn split_name_standard() {
     assert_eq!(split_name("Haigen Bamford"), ("Haigen", "Bamford"));
     assert_eq!(split_name("Mary Jane Watson"), ("Mary", "Jane Watson"));
