@@ -135,6 +135,13 @@ fn core_does_not_import_util_directly() {
                 // restrict the cross-seed geo-synergy fix to Australian
                 // coordinates when the `au-state:`/`country:AU` tag is absent.
                 && !line.contains("util::geo::is_in_australia")
+                // Pure, dependency-free offline coordinate parser (no I/O, no
+                // network), same leaf category as `geohash`/`geometry`. The
+                // target auto-detector (`core::scan`) uses it to recognise
+                // self-evident coordinate notations (DMS, geo: URI, Plus Code),
+                // and entity normalisation (`core::entity`) to canonicalise them
+                // to the one decimal "lat,lon" shape the geo pipeline speaks.
+                && !line.contains("util::geo::coords::parse")
                 // Pure, dependency-free digit-only normaliser — the same leaf
                 // category as the ABN checksums above; `core::scan` uses it in
                 // the target auto-detector to strip separators from a candidate

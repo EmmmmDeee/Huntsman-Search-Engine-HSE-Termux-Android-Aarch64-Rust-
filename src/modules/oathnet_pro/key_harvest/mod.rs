@@ -9,8 +9,10 @@ use crate::util::oathnet::val_str;
 
 use super::SRC;
 
+mod osint_keys;
 mod patterns;
 mod service_domains;
+use osint_keys::match_osint_provider;
 use patterns::KEY_PATTERNS;
 use service_domains::identify_service_from_url;
 
@@ -206,7 +208,10 @@ pub fn key_value_tier(service: &str) -> KeyValue {
         | "railway"
         | "flyio"
         | "databricks"
-        | "aptible" => KeyValue::High,
+        | "aptible"
+        | "tailscale"
+        | "digitalocean_oauth"
+        | "google_oauth_secret" => KeyValue::High,
 
         // ── Low: public/publishable identifiers, webhook URLs, geocoding. ──
         "discord_webhook_url"
@@ -226,6 +231,62 @@ pub fn key_value_tier(service: &str) -> KeyValue {
         // ── Everything else (test/restricted/scoped, monitoring, SaaS data, and
         //    any unlisted vendor key) → Medium. ──
         _ => KeyValue::Medium,
+    }
+}
+
+/// How *certain* the detector is that a harvested string is the key it was
+/// labelled — a provenance axis **orthogonal** to [`KeyValue`]'s blast-radius.
+/// One asks "how sure are we this is real and is what we said", the other "how
+/// bad if it is". Surfaced as a `detection:` tag and evidence attribute so triage
+/// can separate "we saw the provider's name beside this key" from "this merely
+/// has a high-entropy shape". (A JWT is `Probable` detection yet `Low` impact;
+/// a context-attributed Shodan key is `Proven` detection yet `Medium` impact —
+/// the two axes genuinely differ.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum DetectionConfidence {
+    /// An objective vendor schema **corroborated by context**: a prefix-less
+    /// OSINT/threat-intel key whose surrounding identifier or URL named its
+    /// provider (a `<32 alnum>` blob under `shodan_api_key=`). Assigned only by
+    /// the context-attribution path ([`identify_with_context`]); the strongest
+    /// signal, since the value matched a known shape *and* the provider was named.
+    Proven,
+    /// An objective vendor schema **alone**: a distinctive prefix (`AKIA…`,
+    /// `sk-ant-…`), a JWT's `eyJ` structure, a PEM private-key block, or a crypto
+    /// address. The format itself is provider-specific, so no surrounding context
+    /// is needed to trust it.
+    Probable,
+    /// A structural/entropy match with **no** vendor identity — a `generic_hex`
+    /// blob or a bare URL-parameter value. Plausibly a real key of an unknown
+    /// vendor (or a stray hash the gates let through); the weakest signal.
+    Potential,
+}
+
+impl DetectionConfidence {
+    /// Stable lower-case label (entity tag / evidence attr / API).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Proven => "proven",
+            Self::Probable => "probable",
+            Self::Potential => "potential",
+        }
+    }
+
+    /// The **baseline** provenance for a key identified *without* context
+    /// corroboration — i.e. straight off [`identify_api_key`]'s prefix/shape
+    /// result. **Pure**, mirroring how [`key_value_tier`] reads everything from
+    /// the service tag. Identity-less results (`generic_hex`, `url_param_key`) are
+    /// [`Self::Potential`]; every concrete vendor/PEM/crypto schema is
+    /// [`Self::Probable`]. It never returns [`Self::Proven`] — that requires the
+    /// extra context signal that only [`identify_with_context`] holds, so a key
+    /// matched by a *prefix* (even a Shodan/Censys one, which also has a prefix
+    /// entry) is correctly `Probable`, not over-claimed as `Proven`.
+    #[must_use]
+    pub fn for_service(service: &str) -> Self {
+        match service {
+            "generic_hex" | "url_param_key" => Self::Potential,
+            _ => Self::Probable,
+        }
     }
 }
 
@@ -398,6 +459,144 @@ pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
 /// well under 4 KiB).
 const EXTRACTED_VALUE_MAX: usize = 4096;
 
+/// Identify a key `value` given the `context` it was found under (an env-var
+/// name, a JSON object key, or the URL it was passed to). Layers
+/// context-attribution on top of the prefix/shape detector:
+///
+/// * a vendor-prefixed key (`sk-…`, `AKIA…`) is returned as-is — context is not
+///   needed and never overrides a concrete prefix match;
+/// * a bare hex blob the shape detector can only call `generic_hex` is **upgraded**
+///   to the specific OSINT/threat-intel provider when `context` names one
+///   (`api.virustotal.com/?apikey=<64 hex>` ⇒ `virustotal`, not `generic_hex`);
+/// * a prefix-less, non-hex key the shape detector cannot see at all (Shodan's
+///   32-char alphanumeric key) is **rescued** purely from context — and since this
+///   path never went through the `generic_hex` gate, the shared
+///   [`is_likely_real_key`] false-positive filter is re-applied here so a
+///   placeholder / UUID / low-entropy value under a provider-named field is
+///   dropped.
+///
+/// Returns the resolved service tag, the (trimmed) key slice, and the
+/// [`DetectionConfidence`]: [`DetectionConfidence::Proven`] whenever the result
+/// came from context attribution (the two `match_osint_provider` arms), otherwise
+/// the schema/shape baseline from [`DetectionConfidence::for_service`].
+fn identify_with_context<'a>(
+    context: &str,
+    value: &'a str,
+) -> Option<(&'static str, &'a str, DetectionConfidence)> {
+    let v = value.trim();
+    match identify_api_key(v) {
+        // A bare hex blob the context names as a specific provider is that
+        // provider's key, not an anonymous `generic_hex` finding. The value
+        // already cleared the FP gate inside `identify_api_key`'s hex path.
+        // Attribution is `Proven` (shape + named provider); the plain fallback
+        // keeps the `generic_hex` baseline (`Potential`).
+        Some(("generic_hex", hit)) => Some(match match_osint_provider(context, v) {
+            Some(svc) => (svc, hit, DetectionConfidence::Proven),
+            None => ("generic_hex", hit, DetectionConfidence::Potential),
+        }),
+        // A concrete prefix/shape match (`Probable` baseline). When the context
+        // ALSO names this provider, two independent objective signals — the key's
+        // format and its surrounding identifier/host — agree, so the detection is
+        // corroborated → `Proven`. An *uncorroborated* prefix match (incl. a
+        // Shodan/Censys key matched by its prefix under a neutral field) stays
+        // `Probable`, never over-claimed.
+        Some((svc, hit)) => {
+            let base = DetectionConfidence::for_service(svc);
+            let conf =
+                if base == DetectionConfidence::Probable && context_corroborates(context, svc) {
+                    DetectionConfidence::Proven
+                } else {
+                    base
+                };
+            Some((svc, hit, conf))
+        }
+        // Prefix-less, non-hex OSINT keys are invisible to the shape table;
+        // context is the only signal, so re-apply the FP gate before trusting it.
+        // A hit here is necessarily context-attributed → `Proven`.
+        None => match_osint_provider(context, v)
+            .filter(|_| is_likely_real_key(v))
+            .map(|svc| (svc, v, DetectionConfidence::Proven)),
+    }
+}
+
+/// The authoritative host of a URL-shaped context, else the context unchanged.
+///
+/// Provider attribution from a URL must key off the **host** (`api.shodan.io`),
+/// not text anywhere in the URL: otherwise a provider name dropped into a path or
+/// query — `https://evil.example/?ref=shodan&key=…` — would spoof a `Proven`
+/// attribution to a key served by an unrelated host. Identifier contexts (env-var
+/// and object-key names carry no `://`) pass through untouched, so this is a
+/// no-op for every non-URL caller.
+fn context_host(context: &str) -> &str {
+    match context.split_once("://") {
+        Some((_, rest)) => {
+            let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+            &rest[..end]
+        }
+        None => context,
+    }
+}
+
+/// True if `word` occurs in `haystack` as a whole word — bounded on both sides by
+/// a non-alphanumeric character or a string edge. Precision over recall: a missed
+/// boundary (e.g. camelCase `awsKey`) merely leaves a finding at its baseline
+/// provenance, whereas a loose substring (`aws` inside `lawsuit`) would
+/// over-claim. `haystack` is assumed already lowercased.
+fn contains_word(haystack: &str, word: &str) -> bool {
+    if word.is_empty() {
+        return false;
+    }
+    haystack.match_indices(word).any(|(i, m)| {
+        let before_ok = haystack[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_ascii_alphanumeric());
+        let after_ok = haystack[i + m.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphanumeric());
+        before_ok && after_ok
+    })
+}
+
+/// True if `context` independently names the provider behind `service` — the
+/// service tag's provider stem (`github_app` → `github`, `shodan` → `shodan`)
+/// occurs in the lowercased context as a whole word. Corroborates a prefix/schema
+/// match: when the key's format AND its surrounding identifier/host agree on the
+/// provider, the detection rests on two independent objective signals. The stem
+/// must be ≥ 3 chars so a tiny token can't corroborate on noise.
+fn context_corroborates(context: &str, service: &str) -> bool {
+    let stem = service.split('_').next().unwrap_or(service);
+    stem.len() >= 3 && contains_word(&context.to_ascii_lowercase(), stem)
+}
+
+/// Structurally validate a JWS/JWT compact token **offline** and return its
+/// `alg`, or `None` if it is not a real JWT.
+///
+/// Practical, objective validation with no network and no secret: the first
+/// dot-separated segment must base64url-decode to a JSON object carrying a string
+/// `alg`. It separates a genuine token from an `eyJ`-shaped high-entropy blob, and
+/// surfaces the algorithm — notably `alg: "none"`, an unsigned token that is the
+/// classic JWT authentication-bypass. The signature is **not** verified (that
+/// needs the issuer's secret); this is structure + header inspection only.
+fn validate_jwt_alg(token: &str) -> Option<String> {
+    use base64::Engine as _;
+    let header_b64 = token.split('.').next()?;
+    // A real JWT header (`{"alg":…}`) is at least a handful of base64url chars;
+    // the gate keeps a stray short segment from reaching the JSON parser.
+    if header_b64.len() < 8 {
+        return None;
+    }
+    // JWT segments are base64url; tokens in the wild appear with and without
+    // padding, so try the unpadded alphabet first, then the padded one.
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(header_b64)
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(header_b64))
+        .ok()?;
+    let header: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    header.get("alg")?.as_str().map(str::to_string)
+}
+
 /// Scan a JSON record for API key patterns in password / URL-param / extra
 /// fields. Public so peer modules like `see_know` can use the same harvest
 /// pipeline against their own response schemas.
@@ -516,16 +715,28 @@ pub fn extract_api_keys_from_item(
         {
             for line in blob.lines() {
                 let trimmed = line.trim().trim_start_matches("export ");
-                if let Some((_, raw_val)) = trimmed.split_once('=') {
+                if let Some((raw_key, raw_val)) = trimmed.split_once('=') {
                     let val = raw_val
                         .trim()
                         .trim_matches('"')
                         .trim_matches('\'')
                         .trim_matches('`');
+                    // The `KEY` half is provider context: `SHODAN_API_KEY=<32
+                    // alnum>` is a prefix-less Shodan key the shape detector alone
+                    // would miss, attributed via `identify_with_context`.
                     if val.len() >= 16
-                        && let Some((service, key_val)) = identify_api_key(val)
+                        && let Some((service, key_val, detection)) =
+                            identify_with_context(raw_key, val)
                     {
-                        emit_key(service, key_val, "dotenv line", scan_id, seen, result);
+                        emit_key_with(
+                            service,
+                            key_val,
+                            "dotenv line",
+                            detection,
+                            scan_id,
+                            seen,
+                            result,
+                        );
                     }
                 }
             }
@@ -546,14 +757,21 @@ pub fn extract_api_keys_from_item(
             && let Some(qmark) = url.find('?')
         {
             for param in url[qmark + 1..].split('&') {
+                // The URL *host* is the provider context: a bare `?key=<32 alnum>`
+                // on `api.shodan.io` is attributed to Shodan rather than missed,
+                // and a 64-hex key on an OSINT host is upgraded from `generic_hex`
+                // to the named provider. Only the host counts (`context_host`), so
+                // a provider name in the path/query cannot spoof the attribution.
                 if let Some((_, pval)) = param.split_once('=')
                     && pval.len() >= 16
-                    && let Some((service, key_val)) = identify_api_key(pval)
+                    && let Some((service, key_val, detection)) =
+                        identify_with_context(context_host(&url), pval)
                 {
-                    emit_key(
+                    emit_key_with(
                         service,
                         key_val,
                         "URL query parameter",
+                        detection,
                         scan_id,
                         seen,
                         result,
@@ -564,12 +782,22 @@ pub fn extract_api_keys_from_item(
     }
 
     if let Some(extra) = item.get("extra").and_then(|v| v.as_object()) {
-        for (_, eval) in extra {
+        for (ekey, eval) in extra {
+            // The object key names the secret (`{"securitytrails_key": "<32
+            // alnum>"}`), so it is provider context for `identify_with_context`.
             if let Some(s) = eval.as_str()
                 && s.len() >= 16
-                && let Some((service, key_val)) = identify_api_key(s)
+                && let Some((service, key_val, detection)) = identify_with_context(ekey, s)
             {
-                emit_key(service, key_val, "extra field", scan_id, seen, result);
+                emit_key_with(
+                    service,
+                    key_val,
+                    "extra field",
+                    detection,
+                    scan_id,
+                    seen,
+                    result,
+                );
             }
         }
     }
@@ -933,10 +1161,30 @@ fn shannon_entropy(value: &str) -> f64 {
     h
 }
 
+/// Emit a key whose provenance is the schema/shape baseline (the direct
+/// [`identify_api_key`] paths, which carry no corroborating context). Delegates
+/// to [`emit_key_with`] after deriving [`DetectionConfidence::for_service`].
 fn emit_key(
     service: &'static str,
     key_val: &str,
     source: &str,
+    scan_id: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    let detection = DetectionConfidence::for_service(service);
+    emit_key_with(service, key_val, source, detection, scan_id, seen, result);
+}
+
+/// Emit a key with an explicit [`DetectionConfidence`] — used by the
+/// context-attribution sites, which can assign [`DetectionConfidence::Proven`]
+/// that the service tag alone cannot prove (Shodan/Censys also have prefix
+/// entries). Stamps a `detection:` tag and `detection_confidence` evidence attr.
+fn emit_key_with(
+    service: &'static str,
+    key_val: &str,
+    source: &str,
+    detection: DetectionConfidence,
     scan_id: &str,
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
@@ -965,11 +1213,35 @@ fn emit_key(
     if !seen.insert(dedup) {
         return;
     }
+    // Practical, offline JWT validation — synergy with the provenance tier. For a
+    // `jwt_token`, decode the header and confirm it really is a JWT. A confirmed
+    // structure keeps the schema-level baseline; an `eyJ`-shaped blob that does
+    // NOT decode to a JWT header is just high-entropy text → drop to Potential.
+    let jwt_alg = (service == "jwt_token")
+        .then(|| validate_jwt_alg(key_val))
+        .flatten();
+    let detection = if service == "jwt_token" && jwt_alg.is_none() {
+        DetectionConfidence::Potential
+    } else {
+        detection
+    };
     let mut entity = Entity::new(EntityKind::ApiKey, key_val, 0.80, scan_id);
     entity.tag("api-key");
     entity.tag(format!("service:{service}"));
     entity.tag("oathnet-pro");
     entity.tag("auto-discovered");
+    // Detection provenance (orthogonal to ROI/value): proven > probable > potential.
+    entity.tag(format!("detection:{}", detection.as_str()));
+    if let Some(alg) = &jwt_alg {
+        entity.tag("jwt:structure-valid");
+        entity.tag(format!("jwt:alg:{}", alg.to_ascii_lowercase()));
+        // `alg: none` is an unsigned token — anyone can forge its claims (the
+        // classic JWT authentication-bypass). Surface it as a vulnerability.
+        if alg.eq_ignore_ascii_case("none") {
+            entity.tag("jwt:alg-none");
+            entity.tag("vulnerable");
+        }
+    }
     // Tag with ROI tier so operators can prioritise multiplier keys.
     // Multiplier-tier keys discover infrastructure/identities that
     // cascade into MORE keys via web_crawler and search_engines.
@@ -981,6 +1253,7 @@ fn emit_key(
     entity.add_evidence(
         Evidence::new(SRC, format!("API key ({service}) from {source}"))
             .with_attr("service", service)
+            .with_attr("detection_confidence", detection.as_str())
             .with_attr("roi_tier", roi.label())
             .with_attr(
                 "key_prefix",

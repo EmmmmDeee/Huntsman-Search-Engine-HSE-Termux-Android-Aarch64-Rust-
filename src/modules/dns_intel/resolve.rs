@@ -157,6 +157,32 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                 let b = t.as_bytes();
                 if crate::util::spf::is_spf(t) {
                     dom.tag("spf");
+                    // Static SPF security analysis: tag the catch-all posture and
+                    // every misconfiguration (open `+all`, >10 DNS lookups,
+                    // deprecated `ptr`, macros, unreachable mechanisms, …) so a
+                    // weak or broken sender policy surfaces as a queryable signal.
+                    if let Some(spf) = crate::util::spf::parse(t) {
+                        dom.tag(spf.all_policy().tag());
+                        let issues = spf.issues();
+                        for issue in &issues {
+                            dom.tag(issue.tag());
+                        }
+                        if !issues.is_empty() {
+                            let flags = issues
+                                .iter()
+                                .map(crate::util::spf::SpfIssue::tag)
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            dom.add_evidence(Evidence::new(
+                                SRC,
+                                format!(
+                                    "SPF posture {} — {} DNS-lookup term(s); flags: {flags}",
+                                    spf.all_policy().tag(),
+                                    spf.dns_lookup_count(),
+                                ),
+                            ));
+                        }
+                    }
                     for member in crate::util::spf::members(t) {
                         match member {
                             crate::util::spf::Member::Ip(ip) => {

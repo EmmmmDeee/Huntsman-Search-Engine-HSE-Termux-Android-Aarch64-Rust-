@@ -893,6 +893,17 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
                 let lon = (lon * 1e6).round() / 1e6 + 0.0;
                 return format!("{lat:.6},{lon:.6}");
             }
+            // Richer notations the bare decimal fast-path above doesn't catch —
+            // DMS/DDM, `geo:` URIs, Plus Codes, Maidenhead locators, space-
+            // separated decimals — canonicalise to the same 6-dp "lat,lon" so
+            // every downstream consumer (geocoders, the geo correlator) sees one
+            // decimal shape. Non-finite / unparseable input still falls through
+            // untouched.
+            if let Some(p) = crate::util::geo::coords::parse(trimmed) {
+                let lat = (p.lat * 1e6).round() / 1e6 + 0.0;
+                let lon = (p.lon * 1e6).round() / 1e6 + 0.0;
+                return format!("{lat:.6},{lon:.6}");
+            }
             trimmed.to_string()
         }
         EntityKind::Url => {

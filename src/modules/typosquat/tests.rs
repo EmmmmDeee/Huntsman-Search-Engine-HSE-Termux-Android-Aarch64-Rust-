@@ -26,9 +26,14 @@ fn never_returns_the_original_and_all_valid() {
     let perms = permutations("example.com", 1000);
     for (d, _) in &perms {
         assert_ne!(d, "example.com", "must not emit the original");
-        // Every candidate is a dotted hostname with valid labels.
+        // Every candidate's first label is a valid LDH label, or an `xn--` ACE
+        // label (validated by the punycode layer, whose internal `--` the
+        // stricter `is_valid_label` rejects).
         let (label, _) = d.split_once('.').unwrap();
-        assert!(is_valid_label(label), "invalid label in {d}");
+        assert!(
+            is_valid_label(label) || label.starts_with("xn--"),
+            "invalid label in {d}"
+        );
     }
     // Deduplicated.
     let set: HashSet<_> = perms.iter().map(|(d, _)| d).collect();
@@ -98,4 +103,94 @@ fn homoglyphs_unknown_char_is_empty_slice() {
     let empty: &[char] = &[];
     assert_eq!(homoglyphs('x'), empty);
     assert_eq!(homoglyphs('.'), empty);
+}
+
+#[test]
+fn covers_the_full_dnstwist_grade_fuzzer_set() {
+    let techniques: HashSet<&'static str> = permutations("example.com", 5000)
+        .into_iter()
+        .map(|(_, t)| t)
+        .collect();
+    for t in [
+        "homoglyph-idn",
+        "homoglyph",
+        "omission",
+        "transposition",
+        "repetition",
+        "vowel-swap",
+        "keyboard",
+        "insertion",
+        "bitsquat",
+        "hyphenation",
+        "addition",
+        "tld-swap",
+    ] {
+        assert!(techniques.contains(t), "missing fuzzer: {t}");
+    }
+}
+
+#[test]
+fn idn_homoglyph_is_emitted_as_punycode() {
+    // The Cyrillic-'е' (U+0435) lookalike of "example" encodes to xn--xample-2of
+    // (proven against the canonical Punycode vectors in punycode::tests).
+    let c = cands("example.com");
+    assert!(
+        c.contains("xn--xample-2of.com"),
+        "Cyrillic-е homoglyph must be emitted in its registrable xn-- form"
+    );
+    // Every homoglyph-idn candidate is an `xn--` ACE label on the original suffix
+    // — never a raw Unicode hostname no resolver would accept.
+    for (d, tech) in permutations("example.com", 5000) {
+        if tech == "homoglyph-idn" {
+            let (label, suffix) = d.split_once('.').unwrap();
+            assert!(label.starts_with("xn--"), "ACE label expected, got {d}");
+            assert!(label.is_ascii(), "ACE label must be ASCII, got {d}");
+            assert_eq!(suffix, "com");
+        }
+    }
+}
+
+#[test]
+fn new_typo_classes_are_generated() {
+    let c = cands("example.com");
+    assert!(c.contains("exomple.com"), "vowel-swap a→o");
+    assert!(c.contains("examples.com"), "addition (append s)");
+    assert!(c.contains("example1.com"), "addition (append digit)");
+    assert!(c.contains("wexample.com"), "insertion (keyboard-adjacent w before e)");
+}
+
+#[test]
+fn candidates_are_ranked_most_similar_first() {
+    let perms = permutations("example.com", 1000);
+    let pos = |needle: &str| perms.iter().position(|(d, _)| d == needle);
+    // A one-edit omission must rank ahead of a far-off TLD swap.
+    let close = pos("exmple.com").expect("omission present"); // distance 1
+    let far = pos("example.online").expect("tld-swap present"); // com→online, far
+    assert!(
+        close < far,
+        "distance-1 omission ({close:?}) must rank before a distant TLD swap ({far:?})"
+    );
+}
+
+#[test]
+fn confusables_are_non_ascii_and_curated() {
+    // Each confusable is a genuine non-ASCII lookalike (so it forces punycode),
+    // and the table carries no duplicates within a key.
+    for ascii in 'a'..='z' {
+        let set = confusables(ascii);
+        for &g in set {
+            assert!(!g.is_ascii(), "{ascii}: confusable {g:?} must be non-ASCII");
+        }
+        let unique: HashSet<char> = set.iter().copied().collect();
+        assert_eq!(unique.len(), set.len(), "{ascii}: duplicate confusable");
+    }
+}
+
+#[test]
+fn levenshtein_matches_known_distances() {
+    assert_eq!(levenshtein("example", "example"), 0);
+    assert_eq!(levenshtein("example", "exmple"), 1); // omission
+    assert_eq!(levenshtein("example", "exapmle"), 2); // transposition = 2 subs
+    // A single Cyrillic-for-Latin swap is distance 1 (scalar, not byte, compare).
+    assert_eq!(levenshtein("example", "\u{0435}xample"), 1);
 }

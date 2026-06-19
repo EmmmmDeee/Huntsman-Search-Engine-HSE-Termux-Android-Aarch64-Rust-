@@ -169,6 +169,14 @@ impl Module for OathnetPro {
         let names = oathnet::distinct_field(&items, "full_name");
         let genders = oathnet::distinct_field(&items, "gender");
         let dobs = oathnet::distinct_field(&items, "date_birth");
+        // Dossier-level credential-exposure signal: how many of these records
+        // leaked a fast, GPU-trivial hash (≈ plaintext once cracked). A single
+        // pass over the page already in hand — no extra query.
+        let fast_hashes = items
+            .iter()
+            .filter_map(|i| val_str(i, "password_hash"))
+            .filter(|h| identify_password_hash(h).is_some_and(|(_, fast)| fast))
+            .count();
 
         let mut ev = Evidence::new(
             SRC,
@@ -187,6 +195,9 @@ impl Module for OathnetPro {
         }
         if !dobs.is_empty() {
             ev = ev.with_attr("dates_of_birth", dobs.join(", "));
+        }
+        if fast_hashes > 0 {
+            ev = ev.with_attr("fast_crackable_hashes", fast_hashes.to_string());
         }
         parent.add_evidence(ev);
         result.push(parent);
@@ -333,6 +344,14 @@ fn breach_evidence(item: &Value) -> Evidence {
     let db = val_str(item, "dbname").unwrap_or_else(|| "unknown".to_string());
     let mut ev = Evidence::new(SRC, format!("Breach on {db}")).with_attr("dbname", &db);
     for (field, attr) in [
+        // Account join-keys — the email/username this record belongs to. The
+        // reused-secret correlator (AU-047) reads these off a leaked secret's
+        // evidence to tie the accounts that share it to one controller, and the
+        // dossier uses them as provenance ("which account leaked this"); the
+        // breach evidence previously omitted them, starving the correlator of the
+        // primary source's join-keys.
+        ("email", "email"),
+        ("username", "username"),
         ("country", "country"),
         ("gender", "gender"),
         ("date_birth", "date_of_birth"),
@@ -515,7 +534,7 @@ fn extract_breach_entities_with(
 
     if let Some(email) = val_str(item, "email") {
         let lower = email.to_lowercase();
-        if lower.contains('@') && seen.insert(lower) {
+        if looks_like_email(&lower) && seen.insert(lower) {
             push_oathnet_entity(
                 result,
                 Entity::new(EntityKind::Email, &email, 0.70, scan_id),
@@ -540,7 +559,7 @@ fn extract_breach_entities_with(
     }
 
     if let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
-        && ph.len() >= 7
+        && has_min_digits(&ph, 7)
         && seen.insert(ph.to_lowercase())
     {
         push_oathnet_entity(
@@ -566,7 +585,7 @@ fn extract_breach_entities_with(
     }
 
     if let Some(ip) = val_str(item, "ip")
-        && ip.len() >= 7
+        && is_public_ip(&ip)
         && seen.insert(ip.clone())
     {
         push_oathnet_entity(
@@ -703,13 +722,149 @@ fn extract_breach_entities_with(
             crate::util::str_util::truncate_safe(&ph, 16)
         ))
     {
+        // Hash intelligence: classify the algorithm + crackability so the dossier
+        // ranks credential exposure. A present, non-empty `salt` field defeats
+        // rainbow tables even for an otherwise-fast hash.
+        let hash_id = identify_password_hash(&ph);
+        let algo_tag = hash_id.map(|(a, _)| format!("hash:{a}"));
+        let mut extra: Vec<&str> = vec!["password-hash"];
+        if let Some(a) = &algo_tag {
+            extra.push(a);
+        }
+        if let Some((_, fast)) = hash_id {
+            extra.push(if fast {
+                "crackable:fast"
+            } else {
+                "crackable:slow"
+            });
+        }
+        if val_str(item, "salt").is_some_and(|s| !s.trim().is_empty()) {
+            extra.push("salted");
+        }
         push_oathnet_entity(
             result,
             Entity::new(EntityKind::Password, &ph, 0.50, scan_id),
             &ev,
-            &["password-hash"],
+            &extra,
             is_target_row,
         );
+    }
+
+    // Plaintext password → first-class Password entity: the canonical secret the
+    // reused-secret correlator (AU-047) and credential-exposure rule (AU-037)
+    // operate on, which the breach extractor never emitted (only the hash). The
+    // per-account dedup key lets the same password under two accounts survive as
+    // two same-value entities that merge by UID into one carrying both accounts'
+    // evidence — exactly the ≥2-account signal AU-047 fires on. Redacted
+    // sentinels and trivial (single-character / too-short) values are skipped.
+    if let Some(pw) = val_str(item, "password") {
+        let p = pw.trim();
+        let len = p.chars().count();
+        let first = p.chars().next();
+        let varied = p.chars().any(|c| Some(c) != first);
+        let acct = val_str(item, "email")
+            .or_else(|| val_str(item, "username"))
+            .unwrap_or_default()
+            .to_lowercase();
+        if (6..=128).contains(&len)
+            && varied
+            && !is_redacted_sentinel(p)
+            && seen.insert(format!("@pw:{}:{acct}", p.to_lowercase()))
+        {
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::Password, p, 0.55, scan_id),
+                &ev,
+                &["plaintext-password"],
+                is_target_row,
+            );
+        }
+    }
+
+    // IBAN — a leaked bank-account number. Emit ONLY when the ISO 7064 mod-97
+    // check digit validates, so a redacted sentinel or a transcription error in
+    // the `iban` field never mints a bogus financial artifact. There is no
+    // dedicated financial EntityKind, so it lands as `Other("iban")`, tagged
+    // `financial` for the dossier/export.
+    if let Some(iban) = val_str(item, "iban")
+        && iban_is_valid(&iban)
+        && seen.insert(format!(
+            "@iban:{}",
+            iban.replace(|c: char| c.is_whitespace(), "").to_uppercase()
+        ))
+    {
+        push_oathnet_entity(
+            result,
+            Entity::new(
+                EntityKind::Other("iban".to_string()),
+                iban.trim(),
+                0.70,
+                scan_id,
+            ),
+            &ev,
+            &["iban", "financial"],
+            is_target_row,
+        );
+    }
+
+    // Additional social handles → Username pivots (mirroring the instagram
+    // handler above). Each unlocks username_search / search_engines for free, so
+    // extracting them squeezes more reach from a breach query already paid for.
+    // Redacted sentinels and out-of-range junk are filtered.
+    for (field, platform) in [
+        ("telegram", "telegram"),
+        ("twitter", "twitter"),
+        ("snapchat", "snapchat"),
+        ("facebook", "facebook"),
+        ("github", "github"),
+        ("tiktok", "tiktok"),
+        ("reddit", "reddit"),
+    ] {
+        if let Some(handle) = val_str(item, field) {
+            let h = handle.trim().trim_start_matches('@');
+            if (2..=64).contains(&h.len())
+                && !is_redacted_sentinel(h)
+                && seen.insert(format!("@{platform}:{}", h.to_lowercase()))
+            {
+                push_oathnet_entity(
+                    result,
+                    Entity::new(EntityKind::Username, h, 0.55, scan_id),
+                    &ev,
+                    &[platform],
+                    is_target_row,
+                );
+            }
+        }
+    }
+
+    // Free-text `bio` mining — a profile bio routinely carries an alternate
+    // contact email or phone the structured columns miss. Reuse the canonical
+    // scanner-grade extractors (one definition of "what an email/phone looks like
+    // in free text") so this never drifts from the rest of the engine. Lower
+    // confidence than a structured field: these are inferred from prose.
+    if let Some(bio) = val_str(item, "bio") {
+        for email in crate::util::extract::emails(&bio) {
+            if seen.insert(email.clone()) {
+                push_oathnet_entity(
+                    result,
+                    Entity::new(EntityKind::Email, &email, 0.55, scan_id),
+                    &ev,
+                    &["bio-mined"],
+                    is_target_row,
+                );
+            }
+        }
+        for phone in crate::util::extract::phones(&bio) {
+            if seen.insert(format!("@bio-phone:{phone}")) {
+                push_oathnet_entity(
+                    result,
+                    Entity::new(EntityKind::Phone, &phone, 0.50, scan_id),
+                    &ev,
+                    &["bio-mined"],
+                    is_target_row,
+                );
+            }
+        }
     }
 }
 
@@ -766,11 +921,43 @@ fn extract_stealer_entities(
         ev = ev.with_attr("username", &uname);
     }
 
+    // The login URL is where the victim's credentials were captured — the most
+    // actionable pivot in a stealer record (it confirms a service the subject
+    // uses). It was only ever an evidence attribute; emit it as a first-class
+    // Url, plus its host as a Domain, so wayback / dns_intel / cert_intel expand
+    // it for free. The host shares the domain-array dedup key, so a host already
+    // listed in the `domain` field is not duplicated.
+    if let Some(url) = val_str(item, "url").or_else(|| val_str(item, "url_str")) {
+        let u = url.trim();
+        if u.starts_with("http")
+            && u.contains('.')
+            && seen.insert(format!("@stealer-url:{}", u.to_lowercase()))
+        {
+            push_stealer_entity(
+                result,
+                Entity::new(EntityKind::Url, u, 0.55, scan_id),
+                &ev,
+                &["credential-url"],
+            );
+            if let Some(host) = crate::util::url_util::host_from_url(u) {
+                let hl = host.to_lowercase();
+                if hl.contains('.') && seen.insert(hl.clone()) {
+                    push_stealer_entity(
+                        result,
+                        Entity::new(EntityKind::Domain, &hl, 0.50, scan_id),
+                        &ev,
+                        &["credential-url"],
+                    );
+                }
+            }
+        }
+    }
+
     if let Some(emails) = item.get("email").and_then(|v| v.as_array()) {
         for email_val in emails {
             if let Some(email) = email_val.as_str() {
                 let lower = email.to_lowercase();
-                if lower.contains('@') && seen.insert(lower) {
+                if looks_like_email(&lower) && seen.insert(lower) {
                     push_oathnet_entity(
                         result,
                         Entity::new(EntityKind::Email, email, 0.65, scan_id),
@@ -790,10 +977,7 @@ fn extract_stealer_entities(
     // pipeline — HIBP, emailrep, epieos, etc. can then cross-reference.
     if let Some(uname) = val_str(item, "username") {
         let lower = uname.to_lowercase();
-        if lower.contains('@')
-            && lower.contains('.')
-            && seen.insert(format!("@stealer-user:{lower}"))
-        {
+        if looks_like_email(&lower) && seen.insert(format!("@stealer-user:{lower}")) {
             push_stealer_entity(
                 result,
                 Entity::new(EntityKind::Email, &uname, 0.60, scan_id),
@@ -836,7 +1020,144 @@ fn extract_stealer_entities(
     }
 }
 
-// ─── API key pattern recognition ─────────────────────────────────────────────
+// ─── Field validation (objective, static — no network) ──────────────────────
+//
+// OathNet rows carry redacted sentinels (`UPGRADE_TO_SEE…`) and the occasional
+// malformed value; emitting them verbatim mints junk entities (a `"1234567"` IP,
+// an `"UPGRADE_TO_SEE"` phone). Each extractor gates on an objective check so
+// only a well-formed identifier reaches the graph — the same
+// validate-before-trust discipline the key-harvest detector applies to keys.
+
+/// A syntactically valid, routable **public** IP: parses as v4/v6 and is not a
+/// private/reserved/loopback range. A leaked private IP can't geolocate and is
+/// noise for the `geolocation-lead` pivot, so it is dropped along with junk.
+fn is_public_ip(s: &str) -> bool {
+    s.parse::<std::net::IpAddr>().is_ok() && !is_private_ip(s)
+}
+
+/// At least `n` ASCII digits — separates a real phone/number from a placeholder
+/// sentinel that merely clears a raw character-length gate.
+fn has_min_digits(s: &str, n: usize) -> bool {
+    s.chars().filter(char::is_ascii_digit).count() >= n
+}
+
+/// Loose structural email check: a non-empty local part, an `@`, and a dotted
+/// host with no surrounding spaces — enough to reject `UPGRADE_TO_SEE@x` and a
+/// bare `@` without a full RFC 5322 parser (the breach `email` field is clean).
+fn looks_like_email(s: &str) -> bool {
+    match s.split_once('@') {
+        Some((local, host)) => {
+            !local.is_empty()
+                && host.contains('.')
+                && !host.starts_with('.')
+                && !host.ends_with('.')
+                && !s.contains(' ')
+        }
+        None => false,
+    }
+}
+
+/// True for OathNet's redacted-data sentinels — a free-text field whose "value"
+/// is really a paywall marker, not the datum itself.
+fn is_redacted_sentinel(s: &str) -> bool {
+    let u = s.to_ascii_uppercase();
+    u.contains("UPGRADE_TO_SEE") || u.contains("REDACTED")
+}
+
+/// ISO 7064 mod-97-10 IBAN validation. Strip whitespace, confirm the `CCkk……`
+/// layout, move the first four characters to the end, map letters `A–Z → 10–35`,
+/// and check the running remainder mod 97 equals 1. Objective, offline
+/// validation of a leaked bank-account number: a wrong check digit — or a
+/// redacted sentinel in the `iban` field — fails, so only a genuine account is
+/// emitted.
+fn iban_is_valid(raw: &str) -> bool {
+    let s: String = raw
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_uppercase();
+    if !(15..=34).contains(&s.len()) {
+        return false;
+    }
+    let b = s.as_bytes();
+    if !(b[0].is_ascii_uppercase()
+        && b[1].is_ascii_uppercase()
+        && b[2].is_ascii_digit()
+        && b[3].is_ascii_digit())
+    {
+        return false;
+    }
+    // Rearranged string = s[4..] followed by s[..4]; fold its digit value mod 97.
+    let mut remainder: u32 = 0;
+    for c in s[4..].chars().chain(s[..4].chars()) {
+        let val = if c.is_ascii_digit() {
+            u32::from(c) - u32::from('0')
+        } else if c.is_ascii_uppercase() {
+            u32::from(c) - u32::from('A') + 10
+        } else {
+            return false;
+        };
+        remainder = if val >= 10 {
+            (remainder * 100 + val) % 97
+        } else {
+            (remainder * 10 + val) % 97
+        };
+    }
+    remainder == 1
+}
+
+/// Identify a leaked password hash's algorithm and whether it is a **fast**
+/// (unsalted, GPU-trivial) digest versus a **slow** adaptive KDF — the single
+/// strongest signal for how exposed the leaked credential really is (a fast
+/// MD5/SHA-1 is effectively plaintext; a bcrypt/argon2 digest is not). Pure,
+/// shape-anchored classification, the same discipline the key detector applies:
+/// prefixed `crypt(3)`/KDF formats by their `$id$` marker, bare digests by hex
+/// length. Returns `(algorithm, fast)`, or `None` for an unrecognised shape.
+fn identify_password_hash(s: &str) -> Option<(&'static str, bool)> {
+    let h = s.trim();
+    // Adaptive / salted KDF + crypt(3) formats — slow to crack by design.
+    for (prefix, algo) in [
+        ("$2a$", "bcrypt"),
+        ("$2b$", "bcrypt"),
+        ("$2y$", "bcrypt"),
+        ("$2x$", "bcrypt"),
+        ("$argon2", "argon2"),
+        ("$6$", "sha512crypt"),
+        ("$5$", "sha256crypt"),
+        ("$1$", "md5crypt"),
+        ("$P$", "phpass"),
+        ("$H$", "phpass"),
+        ("$7$", "scrypt"),
+        ("$scrypt$", "scrypt"),
+        ("$pbkdf2", "pbkdf2"),
+        ("pbkdf2_", "pbkdf2"),
+    ] {
+        if h.starts_with(prefix) {
+            return Some((algo, false));
+        }
+    }
+    // MySQL 4.1+: `*` followed by 40 hex — a fast SHA1(SHA1(pw)).
+    if let Some(rest) = h.strip_prefix('*')
+        && rest.len() == 40
+        && rest.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Some(("mysql", true));
+    }
+    // Bare hex digests — fast, unsalted, rainbow-table-friendly. 32 hex is MD5
+    // (also NTLM / LM at this length); the rest are the SHA-2 family by width.
+    if !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return match h.len() {
+            32 => Some(("md5", true)),
+            40 => Some(("sha1", true)),
+            56 => Some(("sha224", true)),
+            64 => Some(("sha256", true)),
+            96 => Some(("sha384", true)),
+            128 => Some(("sha512", true)),
+            _ => None,
+        };
+    }
+    None
+}
 
 #[cfg(test)]
 mod tests {

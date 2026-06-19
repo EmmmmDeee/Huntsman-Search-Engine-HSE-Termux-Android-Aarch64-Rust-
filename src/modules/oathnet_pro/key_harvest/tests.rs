@@ -267,6 +267,34 @@ fn pattern_table_specific_prefixes_resolve_to_their_service() {
 }
 
 #[test]
+fn extended_high_value_providers_resolve_to_their_service() {
+    // The precise providers appended to the table (Fly.io's modern `fm2_`
+    // macaroon, Grafana, Tailscale, Google OAuth client secret, Sourcegraph,
+    // DigitalOcean OAuth). Asserting the EXACT service — not merely "some
+    // service" — proves none is shadowed by a generic earlier stem. min_len is
+    // read from the table so the synthesised candidate always clears the gate.
+    let cases = [
+        ("fm2_", "flyio"),
+        ("glsa_", "grafana"),
+        ("tskey-", "tailscale"),
+        ("GOCSPX-", "google_oauth_secret"),
+        ("sgp_", "sourcegraph"),
+        ("doo_v1_", "digitalocean_oauth"),
+    ];
+    for (prefix, expected) in cases {
+        let min_len = KEY_PATTERNS
+            .iter()
+            .find(|p| p.prefix == prefix)
+            .unwrap_or_else(|| panic!("{prefix} missing from KEY_PATTERNS"))
+            .min_len;
+        let cand = synthesise_for(prefix, min_len);
+        let (svc, _) = identify_api_key(&cand)
+            .unwrap_or_else(|| panic!("expected {expected} for {cand}, got None"));
+        assert_eq!(svc, expected, "wrong service for {cand}");
+    }
+}
+
+#[test]
 fn pattern_table_is_structurally_sound() {
     // 1. Every entry is well-formed: a non-empty prefix + service, and a
     //    min_len long enough to leave at least one character past the prefix
@@ -1555,6 +1583,9 @@ fn key_value_tier_ranks_high_services() {
         "vercel_project",
         "netlify",
         "railway",
+        "tailscale",
+        "digitalocean_oauth",
+        "google_oauth_secret",
     ] {
         assert_eq!(key_value_tier(svc), KeyValue::High, "service {svc}");
         assert!(key_value_tier(svc).is_high_value());
@@ -1752,6 +1783,411 @@ fn decode_through_inner_honours_depth_bound() {
 fn decode_through_inner_rejects_plain_non_encoded_non_key() {
     // A plain, non-base64-decodable, non-key sentence yields nothing.
     assert!(decode_through_inner("this is not base64 at all", 0).is_none());
+}
+
+// ─── Context-attributed OSINT / threat-intel key detection ───────────────────
+
+#[test]
+fn osint_context_attributes_prefixless_alnum_key() {
+    // A Shodan key is a 32-char alphanumeric blob with no prefix: invisible to
+    // the shape detector, attributable only from the identifier it sits under.
+    let key = &SUFFIX[..32];
+    assert_eq!(key.len(), 32);
+    assert!(
+        identify_api_key(key).is_none(),
+        "a prefix-less 32-char alnum key must be invisible to the shape detector"
+    );
+    assert_eq!(match_osint_provider("SHODAN_API_KEY", key), Some("shodan"));
+    // Context-attributed ⇒ Proven (shape matched AND the provider was named).
+    assert_eq!(
+        identify_with_context("SHODAN_API_KEY", key),
+        Some(("shodan", key, DetectionConfidence::Proven))
+    );
+}
+
+#[test]
+fn osint_context_upgrades_generic_hex_to_named_provider() {
+    // A 64-hex blob is `generic_hex` on its own; under a VirusTotal context it is
+    // that provider's key. With no provider context it stays `generic_hex`.
+    let hex64 = "3f9a1c7e2b8d4506af13e9c2d7b04185fa6c39e1d8b25704ce9f1a3b6d8025f7";
+    assert_eq!(hex64.len(), 64);
+    assert_eq!(identify_api_key(hex64).map(|(s, _)| s), Some("generic_hex"));
+    // Upgraded under context ⇒ named provider, Proven.
+    assert_eq!(
+        identify_with_context("VIRUSTOTAL_API_KEY", hex64).map(|(s, _, d)| (s, d)),
+        Some(("virustotal", DetectionConfidence::Proven))
+    );
+    // No provider context ⇒ stays generic_hex, the Potential baseline.
+    assert_eq!(
+        identify_with_context("unrelated_field", hex64).map(|(s, _, d)| (s, d)),
+        Some(("generic_hex", DetectionConfidence::Potential))
+    );
+}
+
+#[test]
+fn osint_hex_only_provider_rejects_non_hex_value() {
+    // Hunter.io is strictly 40-hex. A 40-hex value attributes; a 40-char alnum
+    // value (letters past `f`) under the same context does not (wrong charset).
+    let hex40 = "3f9a1c7e2b8d4506af13e9c2d7b04185fa6c39e1";
+    assert_eq!(hex40.len(), 40);
+    assert_eq!(
+        match_osint_provider("HUNTER_API_KEY", hex40),
+        Some("hunter")
+    );
+    let alnum40 = &SUFFIX[..40];
+    assert_eq!(alnum40.len(), 40);
+    assert_eq!(match_osint_provider("HUNTER_API_KEY", alnum40), None);
+}
+
+#[test]
+fn osint_attribution_requires_both_context_and_shape() {
+    let key = &SUFFIX[..32];
+    // Provider named but the shape is wrong (31 chars).
+    assert_eq!(match_osint_provider("SHODAN_API_KEY", &SUFFIX[..31]), None);
+    // Shape fits but no provider is named.
+    assert_eq!(match_osint_provider("generic_api_key", key), None);
+}
+
+#[test]
+fn osint_context_still_honours_false_positive_gate() {
+    // A 32-char but low-entropy value under a provider context is dropped by the
+    // shared FP gate, so context never rescues a non-secret. `match_osint_provider`
+    // is pure (shape+context only) — the gate lives in `identify_with_context`.
+    let low = "a".repeat(32);
+    assert_eq!(match_osint_provider("shodan_key", &low), Some("shodan"));
+    assert!(
+        identify_with_context("shodan_key", &low).is_none(),
+        "low-entropy value must be filtered even under a provider context"
+    );
+}
+
+#[test]
+fn osint_context_resolves_from_api_url_host() {
+    // The URL a key is passed to is provider context too.
+    let key = &SUFFIX[..32];
+    let url = "https://api.shodan.io/shodan/host/1.1.1.1?key=IGNORED";
+    assert_eq!(match_osint_provider(url, key), Some("shodan"));
+}
+
+#[test]
+fn osint_key_attributed_end_to_end_through_env_blob() {
+    // Full pipeline: a `.env` blob in a stealer record yields a Shodan ApiKey
+    // entity tagged with the canonical `service:shodan`.
+    let key = &SUFFIX[..32];
+    let blob = format!("DB_HOST=localhost\nSHODAN_API_KEY={key}\n");
+    let item = serde_json::json!({ "env_content": blob });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    assert!(
+        result.entities.iter().any(|e| e.has_tag("service:shodan")),
+        "expected a service:shodan ApiKey entity, got {:?}",
+        result.entities
+    );
+}
+
+#[test]
+fn osint_provider_table_is_well_formed() {
+    use super::osint_keys::OSINT_PROVIDERS;
+    assert!(!OSINT_PROVIDERS.is_empty());
+    for p in OSINT_PROVIDERS {
+        assert!(!p.service.is_empty(), "empty service tag");
+        assert!(!p.contexts.is_empty(), "{} has no contexts", p.service);
+        for c in p.contexts {
+            assert!(
+                !c.is_empty()
+                    && c.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+                "{} context {c:?} must be a non-empty lowercase identifier",
+                p.service
+            );
+        }
+        assert!(!p.shapes.is_empty(), "{} has no shapes", p.service);
+        for s in p.shapes {
+            assert!(
+                (32..=80).contains(&s.len),
+                "{} shape length {} is outside the 32..=80 OSINT range",
+                p.service,
+                s.len
+            );
+        }
+    }
+}
+
+#[test]
+fn osint_services_reuse_service_domain_vocabulary() {
+    // Every context-attributed service tag must also exist in the domain table so
+    // the engine emits one consistent `service:` tag per provider, whether the
+    // attribution came from a URL host or a surrounding identifier.
+    use super::osint_keys::OSINT_PROVIDERS;
+    use super::service_domains::API_SERVICE_DOMAINS;
+    for p in OSINT_PROVIDERS {
+        assert!(
+            API_SERVICE_DOMAINS.iter().any(|(_, svc)| *svc == p.service),
+            "OSINT service {:?} absent from API_SERVICE_DOMAINS — vocabulary drift",
+            p.service
+        );
+    }
+}
+
+// ─── Detection-confidence (provenance) tier ──────────────────────────────────
+
+#[test]
+fn detection_confidence_labels_are_stable() {
+    assert_eq!(DetectionConfidence::Proven.as_str(), "proven");
+    assert_eq!(DetectionConfidence::Probable.as_str(), "probable");
+    assert_eq!(DetectionConfidence::Potential.as_str(), "potential");
+}
+
+#[test]
+fn detection_confidence_for_service_is_baseline_only() {
+    // Identity-less results are Potential; every concrete vendor/PEM schema is
+    // Probable. `for_service` NEVER returns Proven — that needs the context signal
+    // only `identify_with_context` holds.
+    for svc in ["generic_hex", "url_param_key"] {
+        assert_eq!(
+            DetectionConfidence::for_service(svc),
+            DetectionConfidence::Potential,
+            "{svc} should be Potential"
+        );
+    }
+    for svc in ["aws", "anthropic", "jwt_token", "pem_rsa_private", "shodan"] {
+        assert_eq!(
+            DetectionConfidence::for_service(svc),
+            DetectionConfidence::Probable,
+            "{svc} should be Probable from the service tag alone"
+        );
+    }
+}
+
+#[test]
+fn prefix_matched_osint_key_is_probable_not_proven() {
+    // Shodan also has a *prefix* entry (`d0a2df…`). A key matched by that prefix —
+    // schema alone, no naming context — must be Probable, never over-claimed as
+    // Proven. Regression guard for the service-tag collision (a context-only
+    // derivation would wrongly call this Proven).
+    let prefixed = synthesise_for("d0a2df", 32);
+    let (svc, _) = identify_api_key(&prefixed).expect("prefix should match");
+    assert_eq!(svc, "shodan");
+    assert_eq!(
+        identify_with_context("api_key", &prefixed).map(|(s, _, d)| (s, d)),
+        Some(("shodan", DetectionConfidence::Probable))
+    );
+}
+
+#[test]
+fn detection_tag_stamped_on_emitted_keys() {
+    // A context-attributed Shodan key carries detection:proven.
+    let key = &SUFFIX[..32];
+    let blob = format!("SHODAN_API_KEY={key}\n");
+    let item = serde_json::json!({ "env_content": blob });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    let shodan = result
+        .entities
+        .iter()
+        .find(|e| e.has_tag("service:shodan"))
+        .expect("shodan entity");
+    assert!(
+        shodan.has_tag("detection:proven"),
+        "tags: {:?}",
+        shodan.tags
+    );
+
+    // A vendor-prefix AWS key (schema alone, password field) carries
+    // detection:probable.
+    let item = serde_json::json!({ "password": "AKIAJK28SLQQV61MNG9X" });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    let aws = result
+        .entities
+        .iter()
+        .find(|e| e.has_tag("service:aws"))
+        .expect("aws entity");
+    assert!(aws.has_tag("detection:probable"), "tags: {:?}", aws.tags);
+}
+
+// ─── Attribution precision: host-scoping + ambiguity ─────────────────────────
+
+#[test]
+fn context_host_extracts_authoritative_host() {
+    assert_eq!(
+        context_host("https://api.shodan.io/shodan/host?key=x"),
+        "api.shodan.io"
+    );
+    assert_eq!(context_host("http://censys.io/page#frag"), "censys.io");
+    // No scheme ⇒ an identifier context, returned untouched (no-op for env/object
+    // key callers).
+    assert_eq!(context_host("SHODAN_API_KEY"), "SHODAN_API_KEY");
+    assert_eq!(context_host("api.shodan.io"), "api.shodan.io");
+}
+
+#[test]
+fn osint_url_path_or_query_cannot_spoof_attribution() {
+    let key = &SUFFIX[..32];
+    // A provider name in the query of an unrelated host must NOT attribute once
+    // the context is host-scoped.
+    let spoof = context_host("https://evil.example/?ref=shodan&key=IGNORED");
+    assert_eq!(spoof, "evil.example");
+    assert_eq!(match_osint_provider(spoof, key), None);
+    // The genuine host still does.
+    let real = context_host("https://api.shodan.io/shodan/host/1.1.1.1?key=IGNORED");
+    assert_eq!(match_osint_provider(real, key), Some("shodan"));
+}
+
+#[test]
+fn osint_url_spoof_blocked_end_to_end() {
+    let key = &SUFFIX[..32];
+    // Spoof: provider named only in the query of an unrelated host.
+    let item = serde_json::json!({
+        "url": format!("https://evil.example/?ref=shodan&key={key}"),
+    });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    assert!(
+        !result.entities.iter().any(|e| e.has_tag("service:shodan")),
+        "a query-string provider name must not spoof attribution: {:?}",
+        result.entities
+    );
+    // Genuine host: attribution proceeds.
+    let item = serde_json::json!({
+        "url": format!("https://api.shodan.io/shodan/host/1.1.1.1?key={key}"),
+    });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    assert!(
+        result.entities.iter().any(|e| e.has_tag("service:shodan")),
+        "a genuine OSINT host should attribute: {:?}",
+        result.entities
+    );
+}
+
+#[test]
+fn osint_ambiguous_context_attributes_nothing() {
+    let key = &SUFFIX[..32];
+    // Two different providers named, both shapes fit (ALNUM32) ⇒ ambiguous ⇒ None,
+    // rather than a table-order coin-flip.
+    assert_eq!(match_osint_provider("shodan_or_censys_key", key), None);
+    // A single named provider still resolves.
+    assert_eq!(match_osint_provider("shodan_key", key), Some("shodan"));
+    // Two context tokens for the SAME provider (hibp) are not ambiguous.
+    assert_eq!(
+        match_osint_provider("haveibeenpwned_hibp_key", key),
+        Some("hibp")
+    );
+}
+
+// ─── Corroborated provenance (independent-signal agreement) ──────────────────
+
+#[test]
+fn contains_word_respects_boundaries() {
+    assert!(contains_word("aws_secret_key", "aws"));
+    assert!(contains_word("api.github.com", "github"));
+    assert!(contains_word("github", "github"));
+    assert!(!contains_word("lawsuit_files", "aws")); // 'aws' inside a longer run
+    assert!(!contains_word("mygithub", "github")); // preceded by alnum
+    assert!(!contains_word("githubbed", "github")); // followed by alnum
+}
+
+#[test]
+fn context_corroboration_upgrades_prefix_match_to_proven() {
+    // A vendor-prefix AWS key whose field NAMES aws → format + context agree →
+    // Proven. The same key under a neutral field stays at the Probable baseline.
+    let aws = "AKIAJK28SLQQV61MNG9X";
+    assert_eq!(identify_api_key(aws).map(|(s, _)| s), Some("aws"));
+    assert_eq!(
+        identify_with_context("AWS_SECRET_KEY", aws).map(|(s, _, d)| (s, d)),
+        Some(("aws", DetectionConfidence::Proven))
+    );
+    assert_eq!(
+        identify_with_context("credential", aws).map(|(s, _, d)| (s, d)),
+        Some(("aws", DetectionConfidence::Probable))
+    );
+    // Word-boundary precision: 'aws' embedded in 'lawsuit' must NOT corroborate.
+    assert_eq!(
+        identify_with_context("lawsuit_evidence", aws).map(|(s, _, d)| (s, d)),
+        Some(("aws", DetectionConfidence::Probable))
+    );
+}
+
+#[test]
+fn prefix_and_context_agreement_is_proven() {
+    // A Shodan key matched by its PREFIX, found under a Shodan-named field: the
+    // format and the identifier agree → Proven. The corroborated counterpart of
+    // `prefix_matched_osint_key_is_probable_not_proven` (neutral field → Probable).
+    let prefixed = synthesise_for("d0a2df", 32);
+    assert_eq!(identify_api_key(&prefixed).map(|(s, _)| s), Some("shodan"));
+    assert_eq!(
+        identify_with_context("SHODAN_API_KEY", &prefixed).map(|(s, _, d)| (s, d)),
+        Some(("shodan", DetectionConfidence::Proven))
+    );
+}
+
+// ─── Practical offline JWT validation ────────────────────────────────────────
+
+#[test]
+fn validate_jwt_alg_confirms_structure() {
+    // Canonical jwt.io header {"alg":"HS256","typ":"JWT"}.
+    let valid = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ4In0.c2ln";
+    assert_eq!(validate_jwt_alg(valid).as_deref(), Some("HS256"));
+    // {"alg":"none"} — an unsigned token.
+    let none = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.c2ln";
+    assert_eq!(validate_jwt_alg(none).as_deref(), Some("none"));
+    // eyJ-shaped but the header does not decode to JSON → not a JWT.
+    assert_eq!(
+        validate_jwt_alg("eyJabcdefghijklmnopqrstuvwxyz0123456789.payload.signature"),
+        None
+    );
+    // No JWT structure at all.
+    assert_eq!(validate_jwt_alg("not.a.jwt"), None);
+}
+
+#[test]
+fn jwt_validation_refines_tier_and_flags_alg_none() {
+    // Structurally valid JWT: confirmed structure keeps the Probable baseline and
+    // surfaces the algorithm.
+    let item = serde_json::json!({
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ4In0.c2ln",
+    });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    let e = result
+        .entities
+        .iter()
+        .find(|e| e.has_tag("service:jwt_token"))
+        .expect("jwt entity");
+    assert!(e.has_tag("jwt:structure-valid"), "tags: {:?}", e.tags);
+    assert!(e.has_tag("jwt:alg:hs256"));
+    assert!(e.has_tag("detection:probable"));
+    assert!(!e.has_tag("jwt:alg-none"));
+
+    // alg:none ⇒ surfaced as a vulnerability (unsigned token).
+    let item = serde_json::json!({
+        "token": "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.c2ln",
+    });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    let e = result
+        .entities
+        .iter()
+        .find(|e| e.has_tag("service:jwt_token"))
+        .expect("jwt entity");
+    assert!(e.has_tag("jwt:alg-none"), "tags: {:?}", e.tags);
+    assert!(e.has_tag("vulnerable"));
+
+    // An eyJ-shaped blob that is NOT a valid JWT: still catalogued, but the
+    // unconfirmed structure drops it to Potential with no jwt: enrichment.
+    let item = serde_json::json!({
+        "token": "eyJabcdefghijklmnopqrstuvwxyz0123456789.payload.signature",
+    });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    let e = result
+        .entities
+        .iter()
+        .find(|e| e.has_tag("service:jwt_token"))
+        .expect("jwt entity");
+    assert!(e.has_tag("detection:potential"), "tags: {:?}", e.tags);
+    assert!(!e.has_tag("jwt:structure-valid"));
 }
 
 // ─── PrefixMatcher property tests ────────────────────────────────────────────

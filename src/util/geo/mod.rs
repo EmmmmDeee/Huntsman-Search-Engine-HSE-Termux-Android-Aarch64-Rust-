@@ -1,5 +1,7 @@
 use crate::core::error::{Error, Result};
 
+pub mod coords;
+
 /// Parse a `"lat,lon"` seed into a finite, in-range coordinate pair.
 ///
 /// Every forward-geo module (`geocode`/`photon`/`overpass`/`wigle`/

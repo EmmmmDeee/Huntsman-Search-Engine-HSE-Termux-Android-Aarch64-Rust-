@@ -62,7 +62,13 @@ use super::*;
         );
         assert_eq!(
             tags_of(EntityKind::Password, "0123456789"),
-            ["breach", "oathnet-pro", "password-hash"]
+            [
+                "breach",
+                "oathnet-pro",
+                "password-hash",
+                "hash:md5",
+                "crackable:fast"
+            ]
         );
     }
 
@@ -396,4 +402,300 @@ use super::*;
         assert!(!should_skip_preflight(TargetKind::FullName, "John Doe"));
         assert!(!should_skip_preflight(TargetKind::IpAddress, "8.8.8.8"));
         assert!(!should_skip_preflight(TargetKind::Domain, "acme.io"));
+    }
+
+    #[test]
+    fn field_validators_are_objective() {
+        // IBAN mod-97 (ISO 7064): canonical valid accounts pass; a flipped check
+        // digit and a redacted sentinel fail.
+        assert!(iban_is_valid("GB82 WEST 1234 5698 7654 32"));
+        assert!(iban_is_valid("DE89370400440532013000"));
+        assert!(iban_is_valid("FR1420041010050500013M02606"));
+        assert!(!iban_is_valid("GB82WEST12345698765431")); // flipped last digit
+        assert!(!iban_is_valid("UPGRADE_TO_SEE"));
+        assert!(!iban_is_valid("1234567890123456"));
+
+        // Public-IP gate: routable IPs pass; private / non-IP junk are rejected.
+        assert!(is_public_ip("8.8.8.8"));
+        assert!(is_public_ip("2606:4700::1111"));
+        assert!(!is_public_ip("192.168.1.1")); // private
+        assert!(!is_public_ip("1234567")); // not an IP at all
+        assert!(!is_public_ip("UPGRADE_TO_SEE"));
+
+        // Digit gate, email structure, redaction sentinel.
+        assert!(has_min_digits("15551234567", 7));
+        assert!(!has_min_digits("UPGRADE_TO_SEE", 7));
+        assert!(looks_like_email("jane.doe@example.com"));
+        assert!(!looks_like_email("UPGRADE_TO_SEE@x"));
+        assert!(!looks_like_email("nobody"));
+        assert!(is_redacted_sentinel("UPGRADE_TO_SEE_FULL"));
+        assert!(!is_redacted_sentinel("realhandle"));
+    }
+
+    #[test]
+    fn breach_extraction_validates_and_enriches() {
+        use serde_json::json;
+        let item = json!({
+            "email": "subject@example.com",
+            "ip": "1234567",                  // junk — not a real IP
+            "phone_number": "UPGRADE_TO_SEE", // redacted sentinel
+            "iban": "GB82 WEST 1234 5698 7654 32",
+            "telegram": "@subject_tg",
+            "github": "subjectdev",
+            "snapchat": "UPGRADE_TO_SEE",     // redacted — must be skipped
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "subject@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+
+        let has = |k: EntityKind, needle: &str| {
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == k && e.value.contains(needle))
+        };
+
+        // Objective gates drop the junk IP and the redacted phone.
+        assert!(
+            !has(EntityKind::IpAddress, "1234567"),
+            "junk IP must be dropped"
+        );
+        assert!(
+            !result.entities.iter().any(|e| e.kind == EntityKind::Phone),
+            "redacted phone must be dropped"
+        );
+
+        // A mod-97-valid IBAN is emitted as an Other(\"iban\") financial entity.
+        let iban = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Other("iban".to_string()))
+            .expect("validated IBAN entity");
+        assert!(iban.has_tag("financial") && iban.has_tag("iban"));
+
+        // New social handles become Username pivots (the `@` is stripped);
+        // redacted ones are skipped.
+        assert!(has(EntityKind::Username, "subject_tg"), "telegram handle");
+        assert!(has(EntityKind::Username, "subjectdev"), "github handle");
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username && e.has_tag("snapchat")),
+            "redacted snapchat handle must be skipped"
+        );
+    }
+
+    #[test]
+    fn breach_bio_is_mined_for_contact_identifiers() {
+        use serde_json::json;
+        let item = json!({
+            "email": "subject@example.com",
+            "bio": "Reach me at alt.contact@proton.me or +14155550123 — DMs open",
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "subject@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        // Alternate contact email mined from the free-text bio, tagged bio-mined.
+        let mined = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email && e.value.contains("alt.contact@proton.me"))
+            .expect("bio-mined email");
+        assert!(mined.has_tag("bio-mined"));
+        // Phone mined from the bio (E.164 normalised by the shared extractor).
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Phone && e.has_tag("bio-mined")),
+            "bio-mined phone"
+        );
+    }
+
+    #[test]
+    fn stealer_url_becomes_url_and_domain_pivots() {
+        use serde_json::json;
+        let item = json!({
+            "username": "victim@example.com",
+            "url": "https://portal.acmebank.com/login",
+            "password": "secret"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_stealer_entities(&item, "scan", "oathnet.org:test", &mut seen, &mut result);
+
+        // The login URL is now a first-class Url pivot (was evidence-only).
+        let url = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Url && e.value.contains("portal.acmebank.com/login"))
+            .expect("stealer Url entity");
+        assert!(url.has_tag("credential-url"));
+        // Its host is emitted as a Domain pivot.
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "portal.acmebank.com"),
+            "stealer url host Domain"
+        );
+    }
+
+    #[test]
+    fn identify_password_hash_classifies_common_formats() {
+        // Fast, unsalted digests by hex width.
+        assert_eq!(identify_password_hash(&"a".repeat(32)), Some(("md5", true)));
+        assert_eq!(identify_password_hash(&"a".repeat(40)), Some(("sha1", true)));
+        assert_eq!(
+            identify_password_hash(&"a".repeat(64)),
+            Some(("sha256", true))
+        );
+        assert_eq!(
+            identify_password_hash(&"a".repeat(128)),
+            Some(("sha512", true))
+        );
+        assert_eq!(
+            identify_password_hash(&format!("*{}", "A".repeat(40))),
+            Some(("mysql", true))
+        );
+        // Slow, adaptive / salted KDFs by prefix.
+        assert_eq!(
+            identify_password_hash("$2b$12$R9h/cIPz0gi.URNNX3kh2OPST9PgBkqquzi.Ss7KIUgO2t0jWMUW"),
+            Some(("bcrypt", false))
+        );
+        assert_eq!(
+            identify_password_hash("$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHQ$aGFzaGhhc2g"),
+            Some(("argon2", false))
+        );
+        assert_eq!(
+            identify_password_hash("$6$rounds=5000$salt$hashhashhashhashhash"),
+            Some(("sha512crypt", false))
+        );
+        // Non-hashes.
+        assert_eq!(identify_password_hash("not-a-hash"), None);
+        assert_eq!(identify_password_hash(&"a".repeat(33)), None); // odd width
+    }
+
+    #[test]
+    fn password_hash_entity_carries_hash_intel() {
+        use serde_json::json;
+        // A bcrypt digest with a salt → classified slow + salted.
+        let item = json!({
+            "email": "subject@example.com",
+            "password_hash": "$2b$12$R9h/cIPz0gi.URNNX3kh2OPST9PgBkqquzi.Ss7KIUgO2t0jWMUW",
+            "salt": "abc123",
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "subject@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let pw = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Password)
+            .expect("password entity");
+        assert!(pw.has_tag("hash:bcrypt"), "tags: {:?}", pw.tags);
+        assert!(pw.has_tag("crackable:slow"));
+        assert!(pw.has_tag("salted"));
+    }
+
+    #[test]
+    fn breach_evidence_carries_account_join_keys() {
+        use serde_json::json;
+        // AU-047 (reused-secret identity link) reads `email`/`username` off a
+        // leaked secret's evidence; the breach extractor must stamp them so the
+        // correlator can tie the accounts that share a secret to one controller.
+        let item = json!({
+            "email": "subject@example.com",
+            "username": "subj99",
+            "password_hash": "$2b$12$R9h/cIPz0gi.URNNX3kh2OPST9PgBkqquzi.Ss7KIUgO2t0jWMUW",
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "subject@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let pw = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Password)
+            .expect("password entity");
+        let ev = pw.evidence.first().expect("evidence");
+        assert_eq!(
+            ev.attributes.get("email").map(String::as_str),
+            Some("subject@example.com")
+        );
+        assert_eq!(
+            ev.attributes.get("username").map(String::as_str),
+            Some("subj99")
+        );
+    }
+
+    #[test]
+    fn plaintext_password_emitted_as_entity() {
+        use serde_json::json;
+        // A real plaintext password becomes the canonical Password secret that
+        // AU-037 / AU-047 operate on.
+        let item = json!({
+            "email": "subject@example.com",
+            "password": "Xy7$kq2Lm9wz",
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "subject@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let pw = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Password && e.value == "Xy7$kq2Lm9wz")
+            .expect("plaintext password entity");
+        assert!(pw.has_tag("plaintext-password"));
+
+        // Redacted sentinels and trivial values are skipped.
+        for junk in ["UPGRADE_TO_SEE_FULL", "aaaaaa", "ab"] {
+            let item = json!({ "email": "x@example.com", "password": junk, "source": "T" });
+            let (mut s, mut r) = (HashSet::new(), ModuleResult::new());
+            extract_breach_entities(&item, "x@example.com", "scan", "k", &mut s, &mut r);
+            assert!(
+                !r.entities.iter().any(|e| e.kind == EntityKind::Password),
+                "junk password '{junk}' must not be emitted"
+            );
+        }
     }
