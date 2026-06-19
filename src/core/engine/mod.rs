@@ -383,7 +383,8 @@ impl ScanEngine {
         // (default on); `hse config feature.recall off` for a leave-no-memory
         // session. Skipped on a pre-cancelled scan (clean no-op invariant).
         if !ctx.cancel.is_cancelled() && crate::util::settings::get_bool("feature.recall", true) {
-            let recalled = self.recall_prior_entities(&target, &scan.id);
+            let recalled =
+                self.recall_prior_entities(&target, &scan.id, scan.options.allow_live_sensors);
             let n = recalled.len();
             for entity in recalled {
                 if let Some(existing) = entity_map.get_mut(&entity.uid) {
@@ -796,7 +797,12 @@ impl ScanEngine {
     /// so the caps drop the weakest leads first) to keep the working set sane on
     /// a 4 GB device. Best-effort: storage errors log and yield nothing rather
     /// than failing the scan.
-    fn recall_prior_entities(&self, target: &Target, scan_id: &str) -> Vec<Entity> {
+    fn recall_prior_entities(
+        &self,
+        target: &Target,
+        scan_id: &str,
+        allow_live_sensors: bool,
+    ) -> Vec<Entity> {
         use crate::core::entity::{EntityKind, Evidence, derive_uid, normalise};
         const MAX_PRIOR_SCANS: usize = 8;
         const MAX_ENTITIES: usize = 300;
@@ -891,6 +897,25 @@ impl ScanEngine {
                 }
             };
             for mut e in ents {
+                // Noise gate: a purely live-sensor-derived entity (the operator's
+                // own RF/network environment — Wi-Fi APs, ARP hosts, the device
+                // GPS fix) must not be recalled into a scan that hasn't activated
+                // the sensors. That would re-inject, from cache, exactly the
+                // contamination the dispatch gate keeps out of fresh runs. A prior
+                // recall may have stamped its own `recall` source onto the stored
+                // node, so that pseudo-source is ignored: the entity is dropped
+                // when EVERY remaining (real) source is a live-sensor module.
+                if !allow_live_sensors {
+                    let mut real = e
+                        .evidence
+                        .iter()
+                        .map(|ev| ev.source.as_str())
+                        .filter(|s| *s != "recall")
+                        .peekable();
+                    if real.peek().is_some() && real.all(|s| LOCAL_PASSIVE_MODULES.contains(&s)) {
+                        continue;
+                    }
+                }
                 e.scan_id = scan_id.to_string();
                 e.tag(crate::core::tags::RECALLED);
                 e.add_evidence(Evidence::new(

@@ -165,6 +165,21 @@ pub struct ScanOptions {
     /// either way.
     #[serde(default)]
     pub expand_all_identities: bool,
+
+    // ── Live-sensor activation (radar-only) ────────────────────────────────
+    /// Permit the live device-sensor modules (`signal_radar`, `device_sensors`,
+    /// `wifi_intel`, `cell_intel`, `local_net`) to run.
+    ///
+    /// These read the **operator's own** real-time RF/network environment — the
+    /// GPS fix, visible Wi-Fi APs, serving cell towers, the LAN ARP table — so on
+    /// an ordinary scan they would attribute the operator's location and
+    /// surroundings to the scanned *subject* (contamination, and pure noise on a
+    /// remote target). They are therefore an **entirely separate activation**:
+    /// this stays `false` on every `hse scan` / API / `hse live` run, and is set
+    /// `true` ONLY by `hse radar`, the dedicated continuous-sensor command. The
+    /// gate is enforced in `engine::dispatch::module_skip_reason` on every round.
+    #[serde(default)]
+    pub allow_live_sensors: bool,
 }
 
 /// How the engine orders expansion candidates within a round.
@@ -308,6 +323,8 @@ impl Default for ScanOptions {
             expansion_strategy: ExpansionStrategy::default(),
             seeknow_scan_cap: None,
             expand_all_identities: false,
+            // Live device sensors are radar-only: never on a default/manual scan.
+            allow_live_sensors: false,
         }
     }
 }
