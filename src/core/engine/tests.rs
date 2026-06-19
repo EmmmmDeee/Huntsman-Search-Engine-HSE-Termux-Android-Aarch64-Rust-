@@ -43,6 +43,74 @@ fn consolidate_address_localities_folds_postcode_variants_codebase_wide() {
     assert!(entities.iter().any(|e| e.kind == EntityKind::Email));
 }
 
+/// Free, offline cross-angle confirmation: a lone single-source family-candidate
+/// near the subject's confirmed location is promoted (tagged + corroborated) into
+/// a reliable relative, while a far namesake is left alone — and the pass is
+/// idempotent across re-runs.
+#[test]
+fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
+    use crate::core::entity::{Classification, Entity, EntityKind, Evidence};
+
+    // Subject's confirmed GPS near Woodford, QLD.
+    let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
+    gps.tag("geoint");
+    // A single-source (QLD register) family-candidate near the subject.
+    let mut erik = Entity::new(EntityKind::Person, "Erik Moreau", 0.32, "s");
+    erik.tag("family-candidate");
+    erik.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "4518"));
+    assert_eq!(
+        erik.classify(),
+        Classification::Candidate,
+        "starts as a lone candidate"
+    );
+    // A far relative (Cairns) — same surname, but not the subject's area.
+    let mut far = Entity::new(EntityKind::Address, "QLD 4870, Australia", 0.32, "s");
+    far.tag("family-candidate");
+    far.add_evidence(Evidence::new("qld_unclaimed", "owner"));
+
+    let mut ents = vec![gps, erik, far];
+    assert_eq!(
+        promote_geo_corroborated_family(&mut ents),
+        1,
+        "only the in-area relative is promoted"
+    );
+
+    let erik = ents.iter().find(|e| e.value == "Erik Moreau").unwrap();
+    assert!(erik.has_tag("geo-corroborated"));
+    assert!(
+        erik.evidence
+            .iter()
+            .any(|ev| ev.source == "geo_corroboration")
+    );
+    assert_eq!(
+        erik.source_count(),
+        2,
+        "qld register + geo confirmation = two independent signals"
+    );
+    assert!(
+        erik.c_effective() > 0.50,
+        "lifted above candidate → reliable"
+    );
+    assert_eq!(erik.classify(), Classification::Probable);
+
+    let far = ents.iter().find(|e| e.value.contains("4870")).unwrap();
+    assert!(
+        !far.has_tag("geo-corroborated"),
+        "a far namesake stays a candidate"
+    );
+
+    // Idempotent: a second pass (or a recall on a re-scan) promotes nothing new.
+    assert_eq!(promote_geo_corroborated_family(&mut ents), 0);
+
+    // No confirmed subject fix → nothing is promoted.
+    let mut lone = vec![{
+        let mut e = Entity::new(EntityKind::Address, "QLD 4518, Australia", 0.32, "s");
+        e.tag("family-candidate");
+        e
+    }];
+    assert_eq!(promote_geo_corroborated_family(&mut lone), 0);
+}
+
 /// FTA invariant (cuts MCS-A): the local/environmental sensor modules read
 /// the OPERATOR's own device/network, so they must never engage on a
 /// remote-subject seed — otherwise the operator's GPS/Wi-Fi/cell/LAN data is

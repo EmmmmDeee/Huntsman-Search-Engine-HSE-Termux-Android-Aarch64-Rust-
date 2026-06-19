@@ -80,6 +80,54 @@ pub(super) fn consolidate_address_localities(entities: &mut Vec<Entity>) {
     });
 }
 
+/// Promote geo-corroborated family (free, offline, per scan).
+///
+/// When the scan has a confirmed subject location, a `family-candidate` (shared
+/// surname, from the AU registers / residential directories) whose postcode
+/// resolves into the subject's area is confirmed by a SECOND, INDEPENDENT free
+/// signal — the subject's own GPS fix. It earns a `geo_corroboration` evidence
+/// record and a `geo-corroborated` tag, lifting it from a lone register candidate
+/// to a reliable relative: the agreement of two independent signals is genuine
+/// corroboration (unlike the `recall` / `geo_normalize` self-passes that are
+/// explicitly excluded from the count). Free, offline, idempotent — re-running, or
+/// a recall on a later scan, never double-stamps. The shared detector lives in
+/// [`crate::core::geo_family`] (the correlator's AU-061 surfaces the same finding).
+/// Returns the number promoted.
+pub(super) fn promote_geo_corroborated_family(entities: &mut [Entity]) -> usize {
+    use crate::core::entity::Evidence;
+    use crate::core::geo_family::{
+        distance_to_subject, is_geo_corroborated_family, subject_locations,
+    };
+
+    let subject = subject_locations(entities);
+    if subject.is_empty() {
+        return 0;
+    }
+    let mut promoted = 0usize;
+    for e in entities.iter_mut() {
+        if e.has_tag("geo-corroborated") || !is_geo_corroborated_family(e, &subject) {
+            continue;
+        }
+        let km = distance_to_subject(e, &subject).unwrap_or_default();
+        e.tag("geo-corroborated");
+        e.add_evidence(Evidence::new(
+            "geo_corroboration",
+            format!(
+                "Shared-surname relative ~{km:.0} km from the subject's confirmed location — \
+                 geo and surname independently corroborate the relationship"
+            ),
+        ));
+        promoted += 1;
+    }
+    if promoted > 0 {
+        info!(
+            promoted,
+            "geo-corroborated family promoted to reliable (free, offline, cross-angle)"
+        );
+    }
+    promoted
+}
+
 /// Pull any newly-available pooled API key into `keys` for every service that
 /// doesn't already have one. This is the key-cascade that makes recursion pay
 /// off: a key a module just discovered (oathnet breach data, api_key_probe

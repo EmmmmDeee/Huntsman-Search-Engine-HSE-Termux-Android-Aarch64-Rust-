@@ -37,7 +37,7 @@ mod passes;
 mod timeout;
 mod writer;
 pub use ledger::DispatchLog;
-use passes::{consolidate_address_localities, hot_inject_keys};
+use passes::{consolidate_address_localities, hot_inject_keys, promote_geo_corroborated_family};
 use writer::DbWriter;
 // The per-target dispatch context (`DispatchCx`) and the mutable accumulator
 // bundle (`DispatchState`) are constructed here — at the seed-round and
@@ -535,6 +535,13 @@ impl ScanEngine {
             // contributed, folding such variants into the most-specific one. It is
             // the engine-level backstop to the per-module dedup in `search_engines`.
             consolidate_address_localities(&mut entities);
+            // Free, offline cross-angle confirmation: a shared-surname
+            // family-candidate whose postcode resolves into the subject's confirmed
+            // area is corroborated by a SECOND independent signal (the subject's
+            // own GPS fix) and promoted from a lone candidate to a reliable
+            // relative — so every scan's geo-confirmed family reads as reliable,
+            // not 0.3 noise. Runs after consolidation so it sees the final set.
+            promote_geo_corroborated_family(&mut entities);
             // Determinism: normalise each entity's evidence/tags ordering before
             // persist, so concurrent dispatch's completion-order merging can't leak
             // into the stored/exported result (see `Entity::canonicalize_order`).
