@@ -554,8 +554,14 @@ fn skip_reason_gates_live_sensors_to_radar_only() {
     assert!(module_skip_reason(&sensor, &pub_target(), &radar, false, 0).is_none());
     // A non-sensor module is unaffected by the gate.
     assert!(
-        module_skip_reason(&free_active(), &pub_target(), &ScanOptions::default(), false, 0)
-            .is_none()
+        module_skip_reason(
+            &free_active(),
+            &pub_target(),
+            &ScanOptions::default(),
+            false,
+            0
+        )
+        .is_none()
     );
 }
 
@@ -1276,4 +1282,66 @@ async fn recall_resolves_a_fullname_seed_despite_reformatting() {
     }
 
     cleanup(&path);
+}
+
+/// The seed-aware incidental-infrastructure admission gate
+/// ([`dispatch::is_incidental_infra_entity`]): on an identity-seeded scan, shared
+/// provider/CDN/registrar/DNS estate and role mailboxes are dropped as noise,
+/// while the subject's own findings (freemail address, own domain, residential
+/// IP) survive — and an infrastructure-seeded scan keeps everything, because
+/// there the infrastructure IS the subject.
+#[test]
+fn incidental_infra_is_dropped_only_on_identity_seeds() {
+    use crate::core::entity::{Entity, EntityKind};
+    use dispatch::is_incidental_infra_entity;
+
+    let ip_cdn = Entity::new(EntityKind::IpAddress, "104.20.37.187", 0.6, "dns"); // Cloudflare edge
+    let ip_home = Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.6, "dns"); // routable, not edge
+    let dom_infra = Entity::new(EntityKind::Domain, "ns1.jomax.net", 0.6, "dns");
+    let dom_mega = Entity::new(EntityKind::Domain, "facebook.com", 0.6, "se");
+    let dom_subject = Entity::new(EntityKind::Domain, "goatlegal.com.au", 0.6, "whois");
+    let mail_role = Entity::new(EntityKind::Email, "abuse@cloudflare.com", 0.6, "whois");
+    let mail_infra = Entity::new(EntityKind::Email, "bounce@jomax.net", 0.6, "soa");
+    let mail_subject = Entity::new(EntityKind::Email, "haigen@gmail.com", 0.6, "hibp");
+
+    // ── Identity seed (Username): provider estate + role mailboxes are noise. ──
+    let seed = TargetKind::Username;
+    for noise in [&ip_cdn, &dom_infra, &dom_mega, &mail_role, &mail_infra] {
+        assert!(
+            is_incidental_infra_entity(seed, noise),
+            "{} should be dropped as incidental infra on an identity seed",
+            noise.value
+        );
+    }
+    // The subject's own findings must SURVIVE — they are the point of the scan.
+    for keep in [&ip_home, &dom_subject, &mail_subject] {
+        assert!(
+            !is_incidental_infra_entity(seed, keep),
+            "{} is a subject finding and must NOT be dropped",
+            keep.value
+        );
+    }
+    // Freemail vs role-mailbox asymmetry holds for other identity seeds too.
+    assert!(!is_incidental_infra_entity(
+        TargetKind::Email,
+        &mail_subject
+    ));
+    assert!(is_incidental_infra_entity(TargetKind::Phone, &mail_role));
+
+    // ── Infrastructure seed: the estate IS the subject ⇒ nothing is incidental. ─
+    for seed in [
+        TargetKind::Domain,
+        TargetKind::IpAddress,
+        TargetKind::Cidr,
+        TargetKind::Asn,
+        TargetKind::Url,
+    ] {
+        for e in [&ip_cdn, &dom_infra, &dom_mega, &mail_role, &mail_infra] {
+            assert!(
+                !is_incidental_infra_entity(seed, e),
+                "{} must be kept on an infrastructure ({seed:?}) seed",
+                e.value
+            );
+        }
+    }
 }

@@ -570,6 +570,11 @@ const API = {
   liveList:   ()=>API._req('/api/v1/live'),
   liveCreate: body=>API._req('/api/v1/live',{method:'POST',body}),
   liveStop:   id=>API._req('/api/v1/live/'+encodeURIComponent(id),{method:'DELETE'}),
+  // Live Signal Radar: ONE autonomous on-device sensor sweep, NO target. This is
+  // the sole activation path for the live sensors (signal_radar, device_sensors,
+  // wifi_intel, cell_intel, local_net) — an ordinary scan never runs them. The
+  // only input is an optional seed *type* (coordinates|mac_address).
+  radarSweep: seed=>API._req('/api/v1/radar'+(seed?('?seed='+encodeURIComponent(seed)):''),{method:'POST'}),
   selftest:     ()=>API._req('/api/v1/selftest'),
   logsUrl:      ()=>'/api/v1/logs',
   updateStatus: ()=>API._req('/api/v1/update/status'),
@@ -2991,6 +2996,27 @@ async function renderLive(v){
       <div class="pull-right"><button class="btn btn-default btn-sm" onclick="render()" title="Refresh"><i class="glyphicon glyphicon-refresh"></i></button></div>
     </h2>
     <hr style="margin:8px 0 14px 0">
+    <div class="panel panel-default" style="border-color:#07aef1">
+      <div class="panel-heading" style="background:#eaf7fd"><b><i class="glyphicon glyphicon-record" style="color:#07aef1"></i>&nbsp;Live Signal Radar</b>
+        <span class="text-muted" style="font-weight:400">— autonomous ambient-signal sweep of <i>this device</i></span></div>
+      <div class="panel-body">
+        <p class="text-muted" style="margin:0 0 10px 0;font-size:12px">
+          Surveys the signals <b>around the device</b> — Wi-Fi access points, Bluetooth, cell towers, a GPS fix and the local network —
+          using only the on-device live sensors (<code>signal_radar</code>, <code>device_sensors</code>, <code>wifi_intel</code>,
+          <code>cell_intel</code>, <code>local_net</code>). It takes <b>no target</b> and is entirely separate from target seed scanning:
+          these sensors run on <i>no other scan</i>, so this button is their only activation.
+        </p>
+        <div class="form-inline">
+          <label class="text-muted" style="font-weight:normal;margin-right:6px" title="The sensors survey the device regardless of value; the seed type only chooses the survey anchor.">Seed type</label>
+          <select id="radar-kind" class="form-control input-sm" style="margin-right:8px">
+            <option value="coordinates" selected>GPS / RF survey (ambient)</option>
+            <option value="mac_address">BSSID-anchored (local network)</option>
+          </select>
+          <button id="radar-go" class="btn btn-info"><i class="glyphicon glyphicon-record"></i>&nbsp;Activate Radar Sweep</button>
+          <span id="radar-status" class="text-muted" style="margin-left:10px"></span>
+        </div>
+      </div>
+    </div>
     <div class="panel panel-default">
       <div class="panel-heading"><b>Start a live session</b></div>
       <div class="panel-body">
@@ -3030,6 +3056,24 @@ async function renderLive(v){
       if (typeof alertify !== 'undefined') alertify.success('Live session started');
       render();
     } catch(e){ if (typeof alertify !== 'undefined') alertify.error('Start failed: '+e.message); }
+  });
+  // Live Signal Radar — the single, deliberate button that activates the on-device
+  // sensors. No target value; the only input is the seed *type*. Navigates to the
+  // resulting sweep's live log so the operator watches the ambient signals stream.
+  $('#radar-go').addEventListener('click', async ()=>{
+    const btn = $('#radar-go'), st = $('#radar-status');
+    const seed = (($('#radar-kind')||{}).value) || 'coordinates';
+    btn.disabled = true; btn.innerHTML = '<i class="glyphicon glyphicon-refresh glyphicon-spin"></i>&nbsp;Sweeping…';
+    if (st) st.textContent = 'Activating live sensors…';
+    try {
+      const r = await API.radarSweep(seed);
+      toast('Radar sweep queued');
+      nav(`#/scaninfo?id=${encodeURIComponent(r.scan_id)}&tab=log`);
+    } catch(e){
+      btn.disabled = false; btn.innerHTML = '<i class="glyphicon glyphicon-record"></i>&nbsp;Activate Radar Sweep';
+      if (st) st.textContent = '';
+      if (typeof alertify !== 'undefined') alertify.error('Radar failed: '+e.message);
+    }
   });
   wireLiveStops();
   // Poll the session list while this page is open so iteration counts climb live.

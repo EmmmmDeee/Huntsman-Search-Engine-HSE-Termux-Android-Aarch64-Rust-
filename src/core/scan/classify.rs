@@ -156,6 +156,11 @@ const INFRA_DOMAINS: &[&str] = &[
     "secureserver.net",
     "domaincontrol.com",
     "registrar-servers.com",
+    "jomax.net", // GoDaddy registrar/abuse mail domain (dns@jomax.net)
+    "epik.com",  // Epik registrar / nameserver provider
+    "name.com",
+    "namecheap.com",
+    "gandi.net",
     // CDN apex roots (edge IPs are gated by validation::is_cdn_edge_ip)
     "cloudfront.net",
     "fastly.net",

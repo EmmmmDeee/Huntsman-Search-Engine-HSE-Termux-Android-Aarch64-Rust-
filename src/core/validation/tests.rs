@@ -183,6 +183,42 @@ fn email_syntax_rejects_invalid() {
 }
 
 #[test]
+fn role_mailbox_flags_infrastructure_desks() {
+    // Generic registrar / DNS / CDN desks — on an identity scan these are never
+    // the subject, so the engine drops them at admission.
+    for e in [
+        "abuse@cloudflare.com",
+        "dns@jomax.net",
+        "hostmaster@example.com",
+        "postmaster@example.org",
+        "noreply@sendgrid.net",
+        "registry@verisign.com",
+        "soa@example.net",
+    ] {
+        assert!(is_role_mailbox(e), "{e} should be a role mailbox");
+    }
+    // Separator and plus-tag variants normalise to the same base.
+    assert!(is_role_mailbox("no-reply@x.com"));
+    assert!(is_role_mailbox("no_reply@x.com"));
+    assert!(is_role_mailbox("abuse+spam@x.com"));
+}
+
+#[test]
+fn role_mailbox_keeps_personal_addresses() {
+    // A person's address — including freemail — must NOT be flagged: it is the
+    // prime finding of an identity scan, never noise.
+    for e in [
+        "haigen@gmail.com",
+        "haigen.bamford@goatlegal.com.au",
+        "jsmith2000@outlook.com",
+        "becky@example.com",
+        "not-an-email",
+    ] {
+        assert!(!is_role_mailbox(e), "{e} must not be a role mailbox");
+    }
+}
+
+#[test]
 fn coordinates_accept_valid() {
     assert!(validate_coordinates(-27.4712679, 153.0283242).valid); // Brisbane CBD
     assert!(validate_coordinates(90.0, 180.0).valid); // edge ok

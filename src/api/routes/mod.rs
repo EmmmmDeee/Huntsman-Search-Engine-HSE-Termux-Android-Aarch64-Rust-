@@ -162,6 +162,8 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             post(scan_handlers::scan_create).get(scan_handlers::scan_list),
         )
         .route("/scans/batch", post(scan_handlers::scan_batch))
+        // Live-radar button: ONE autonomous device-sensor sweep, no target seed.
+        .route("/radar", post(scan_handlers::radar_sweep))
         .route(
             "/scans/import",
             // Raise this route's body cap from axum's 2 MB default to the import

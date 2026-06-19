@@ -417,6 +417,7 @@ impl ScanEngine {
                 target: &target,
                 opts: &opts,
                 is_expansion: false,
+                seed_kind: target.kind,
             };
             let mut dstate = DispatchState {
                 entity_map: &mut entity_map,
@@ -1289,6 +1290,7 @@ impl ScanEngine {
                         target: nt,
                         opts,
                         is_expansion: true,
+                        seed_kind: seed.kind,
                     };
                     let mut dstate = DispatchState {
                         entity_map: &mut *entity_map,

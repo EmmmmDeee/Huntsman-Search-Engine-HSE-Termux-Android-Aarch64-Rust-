@@ -175,9 +175,11 @@ pub struct ScanOptions {
     /// an ordinary scan they would attribute the operator's location and
     /// surroundings to the scanned *subject* (contamination, and pure noise on a
     /// remote target). They are therefore an **entirely separate activation**:
-    /// this stays `false` on every `hse scan` / API / `hse live` run, and is set
-    /// `true` ONLY by `hse radar`, the dedicated continuous-sensor command. The
-    /// gate is enforced in `engine::dispatch::module_skip_reason` on every round.
+    /// this stays `false` on every `hse scan` / API scan / `hse live` run, and is
+    /// set `true` ONLY by the dedicated radar entry points — the `hse radar` CLI
+    /// command and the web UI's Live Signal Radar button (`POST /api/v1/radar`) —
+    /// each of which sweeps the device's own sensors with no target seed. The gate
+    /// is enforced in `engine::dispatch::module_skip_reason` on every round.
     #[serde(default)]
     pub allow_live_sensors: bool,
 }
