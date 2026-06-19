@@ -5,6 +5,7 @@
 
 pub mod attack;
 pub mod cancel;
+pub mod community;
 pub mod convex;
 pub mod correlator;
 pub mod crypto;
