@@ -15,6 +15,60 @@ pub struct PoolData {
     pub services: HashMap<String, Vec<KeyEntry>>,
 }
 
+/// Per-status key counts for one service — the breakdown surfaced inside a
+/// [`ServiceHealth`]. Each field counts keys in that [`KeyStatus`]; the fields
+/// sum to [`ServiceHealth::total`]. Value-free (no key plaintext) and
+/// `serde::Serialize` so it can feed an API/UI directly.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusBreakdown {
+    pub untested: usize,
+    pub active: usize,
+    pub exhausted: usize,
+    pub invalid: usize,
+    pub rate_limited: usize,
+    pub revoked: usize,
+}
+
+impl StatusBreakdown {
+    /// Tally one key's status into the matching bucket. Exhaustive over
+    /// [`KeyStatus`] so a new variant forces an update here at compile time.
+    fn record(&mut self, status: KeyStatus) {
+        match status {
+            KeyStatus::Untested => self.untested += 1,
+            KeyStatus::Active => self.active += 1,
+            KeyStatus::Exhausted => self.exhausted += 1,
+            KeyStatus::Invalid => self.invalid += 1,
+            KeyStatus::RateLimited => self.rate_limited += 1,
+            KeyStatus::Revoked => self.revoked += 1,
+        }
+    }
+}
+
+/// Operator-facing health roll-up for ONE service's slice of the pool, produced
+/// by [`KeyPool::health_report`]. Quantifies the service's key-pool health from
+/// the live per-key [`KeyEntry::health_score`]:
+///
+/// * `total` / `usable` — capacity headlines (how many keys, how many servable
+///   right now per [`KeyEntry::is_usable`]);
+/// * `breakdown` — the per-status census (so a UI can show *why* keys are or
+///   aren't usable);
+/// * `avg_health` / `min_health` — the quantified health: the mean health across
+///   ALL keys (the at-a-glance number) and the worst single key (the floor that
+///   flags a lurking dead/throttled credential the average would mask). Both are
+///   `0.0` for a service with no keys.
+///
+/// Value-free by construction (no key plaintext) and `serde::Serialize`, so it is
+/// safe to hand straight to the localhost dashboard / API.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ServiceHealth {
+    pub service: String,
+    pub total: usize,
+    pub usable: usize,
+    pub breakdown: StatusBreakdown,
+    pub avg_health: f64,
+    pub min_health: f64,
+}
+
 pub struct KeyPool {
     pub(super) data: Mutex<PoolData>,
     pub(super) indices: Mutex<HashMap<String, usize>>,
@@ -348,5 +402,59 @@ impl KeyPool {
             .flat_map(|v| v.iter())
             .filter(|e| e.is_usable())
             .count()
+    }
+
+    /// Per-service operational health roll-up for the operator dashboard / API —
+    /// the pool-level companion to the per-key [`KeyEntry::health_score`]. For
+    /// each service it reports total keys, how many are usable right now, the
+    /// per-status [`StatusBreakdown`], and the aggregate health: the AVERAGE
+    /// `health_score` (the at-a-glance number) plus the MINIMUM (the floor that
+    /// exposes a single dead/throttled credential the average would otherwise
+    /// mask). See [`ServiceHealth`] for field semantics.
+    ///
+    /// All keys share one `now` (`crate::core::entity::unix_now()` sampled once)
+    /// so every score in the report is consistent. The result is sorted by
+    /// service name for a deterministic, stable ordering (the underlying
+    /// `HashMap` iteration order is not). Value-free: no key plaintext is copied,
+    /// so the output is safe to serialise to the dashboard.
+    #[must_use]
+    pub fn health_report(&self) -> Vec<ServiceHealth> {
+        let now = crate::core::entity::unix_now();
+        let data = self.data.lock();
+        let mut out: Vec<ServiceHealth> = data
+            .services
+            .iter()
+            .map(|(service, entries)| {
+                let total = entries.len();
+                let mut usable = 0usize;
+                let mut breakdown = StatusBreakdown::default();
+                let mut sum = 0.0f64;
+                // Track the worst score; left at 0.0 when the service has no keys.
+                let mut min = if total == 0 { 0.0 } else { f64::INFINITY };
+                for e in entries {
+                    if e.is_usable() {
+                        usable += 1;
+                    }
+                    breakdown.record(e.status);
+                    let score = e.health_score(now);
+                    sum += score;
+                    if score < min {
+                        min = score;
+                    }
+                }
+                // Mean over all keys; 0.0 for an empty service (avoids 0/0).
+                let avg_health = if total == 0 { 0.0 } else { sum / total as f64 };
+                ServiceHealth {
+                    service: service.clone(),
+                    total,
+                    usable,
+                    breakdown,
+                    avg_health,
+                    min_health: min,
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.service.cmp(&b.service));
+        out
     }
 }
