@@ -193,6 +193,37 @@ fn classifies_exact_person_vs_surname_only_family() {
     );
 }
 
+/// Real-data fix (from the Fletcher Moreau scan): the register lists the OWNER's
+/// last-known postcode, which spans every state — a Brisbane family who moved to
+/// Sydney carries a NSW 2xxx postcode on QLD-held money. The Address must reflect
+/// the owner's TRUE (postcode-derived) state, not the register's QLD jurisdiction,
+/// so the geography and the AU-056 jurisdiction cross-check are correct.
+#[test]
+fn owner_address_state_follows_the_postcode_not_the_register() {
+    let raw = r#"{"result":{"total":2,"records":[
+        {"_id":1,"Owner":"HERVE MOREAU","Amount":"50.00","PCode":"2076"},
+        {"_id":2,"Owner":"STACEY MOREAU","Amount":"50.00","PCode":"4551"}
+    ]}}"#;
+    let resp: CkanResp = serde_json::from_str(raw).unwrap();
+    let recs = resp.result.unwrap().records;
+    let ents = records_to_entities(&recs, 2, "Moreau", false, "s");
+    let addr = |pc: &str| {
+        ents.iter()
+            .find(|e| e.kind == EntityKind::Address && e.value.contains(pc))
+            .unwrap_or_else(|| panic!("address for {pc}"))
+    };
+
+    // NSW postcode (the Sydney relative) → NSW, not the register's QLD.
+    let nsw = addr("2076");
+    assert_eq!(nsw.value, "NSW 2076, Australia");
+    assert!(nsw.tags.iter().any(|t| t == "au-state:NSW"));
+    assert!(!nsw.tags.iter().any(|t| t == "au-state:QLD"));
+    // A genuine QLD postcode still resolves to QLD.
+    let qld = addr("4551");
+    assert_eq!(qld.value, "QLD 4551, Australia");
+    assert!(qld.tags.iter().any(|t| t == "au-state:QLD"));
+}
+
 #[test]
 fn company_owner_emits_organisation_for_abn_pivot() {
     let raw = r#"{"result":{"total":1,"records":[
