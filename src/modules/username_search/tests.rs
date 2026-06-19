@@ -109,6 +109,52 @@ use super::*;
     }
 
     #[test]
+    fn detection_strength_tiers_body_markers_above_status_only() {
+        // Body-marker rules actually inspect the page → full confidence + verified.
+        let (c_body, v_body) = detection_strength(&Detect::StatusAndBody(200, "x"));
+        let (c_notbody, v_notbody) = detection_strength(&Detect::StatusAndNotBody(200, "x"));
+        assert_eq!((c_body, v_body), (0.92, true));
+        assert_eq!((c_notbody, v_notbody), (0.92, true));
+
+        // Bare status-200 is plausible-but-unverified (SPA shells / soft-404s
+        // fake it) → lower confidence, not verified.
+        let (c_status, v_status) = detection_strength(&Detect::StatusEq(200));
+        assert!(!v_status, "status-only detection must not be marked verified");
+        assert!(
+            c_status < c_body,
+            "status-only confidence {c_status} must rank below body-marker {c_body}"
+        );
+        // …but still above the engine's 0.50 expand floor so it remains pivotable.
+        assert!(
+            c_status > 0.50,
+            "status-only hit {c_status} must stay above the 0.50 expand floor"
+        );
+    }
+
+    #[test]
+    fn every_site_gets_a_bounded_confidence() {
+        // Whatever detection rule a site uses, the stamped confidence must be a
+        // valid probability and the verified flag must agree with the rule kind.
+        for site in SITES {
+            let (conf, verified) = detection_strength(&site.detect);
+            assert!(
+                (0.0..=1.0).contains(&conf),
+                "{} confidence {conf} out of range",
+                site.name
+            );
+            let is_body = matches!(
+                site.detect,
+                Detect::StatusAndBody(..) | Detect::StatusAndNotBody(..)
+            );
+            assert_eq!(
+                verified, is_body,
+                "{} verified flag must match its detection kind",
+                site.name
+            );
+        }
+    }
+
+    #[test]
     fn browser_ua_is_chrome_shaped() {
         // Regression guard: if a contributor reverts to the tool UA
         // (`huntsman-search-engine/...`), Cloudflare-fronted sites
