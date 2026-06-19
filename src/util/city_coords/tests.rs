@@ -43,6 +43,33 @@ use super::*;
     }
 
     #[test]
+    fn region_geocoder_covers_the_whole_au_postcode_space() {
+        use crate::util::geohash::haversine_km;
+        // The QLD family postcodes that aren't in the exact table still resolve to
+        // their region — and to the RIGHT region relative to the subject's fix
+        // near Woodford QLD (-26.82, 152.81).
+        let (subj_lat, subj_lon) = (-26.815_f64, 152.814_f64);
+        let near = |pc: &str| {
+            let (la, lo) = au_postcode_region(pc).expect("AU postcode resolves to a region");
+            haversine_km(la, lo, subj_lat, subj_lon)
+        };
+        // Sunshine Coast / Brisbane / Ipswich family → within ~150 km of subject.
+        assert!(near("4518") < 150.0, "Beerwah (45xx) is in the subject's area");
+        assert!(near("4169") < 150.0, "East Brisbane (41xx) is in the subject's area");
+        assert!(near("4311") < 150.0, "Lower Lockyer (43xx) is in the subject's area");
+        // Far North QLD and interstate are correctly far.
+        assert!(near("4870") > 800.0, "Cairns (48xx) is far from the subject");
+        assert!(near("2076") > 700.0, "Sydney (20xx) is interstate / far");
+
+        // Every state prefix resolves; malformed input does not.
+        for pc in ["2000", "3000", "5000", "6000", "7000", "0800"] {
+            assert!(au_postcode_region(pc).is_some(), "{pc} resolves");
+        }
+        assert!(au_postcode_region("12").is_none());
+        assert!(au_postcode_region("abcd").is_none());
+    }
+
+    #[test]
     fn postcode_in_address_string_also_resolves() {
         // When city_coords is called with "Brisbane, QLD 4000" the city name
         // matches before postcode fallback even fires.

@@ -1457,16 +1457,19 @@ fn ground_truth_erik_avery_scan_yields_only_real_correlations() {
         .map(|c| (c.rule_id.as_str(), c.description.as_str()))
         .collect();
 
-    // Exactly six real correlations — nothing fabricated. AU-045: "Erik
+    // Exactly seven real correlations — nothing fabricated. AU-045: "Erik
     // Avery" is corroborated by oathnet_pro (breach) AND social_probe
     // (social) — two independent service families. AU-054: the subject's own
     // listing at peekyou.com/erik-avery is a genuine data-location finding —
     // the subject's PII is brokered there (not a fabrication: the URL is the
-    // subject's page).
+    // subject's page). AU-061: the two family-candidate Avery addresses (QLD
+    // 4555/4557) resolve to within ~150 km of the subject's confirmed Brisbane
+    // fix — shared surname AND same region independently corroborate them as
+    // relatives (the free geo angle), a real finding, not noise.
     assert_eq!(
         firings.len(),
-        6,
-        "expected 6 real correlations, got: {summary:#?}"
+        7,
+        "expected 7 real correlations, got: {summary:#?}"
     );
 
     let fired: HashSet<&str> = firings.iter().map(|c| c.rule_id.as_str()).collect();
@@ -1479,6 +1482,20 @@ fn ground_truth_erik_avery_scan_yields_only_real_correlations() {
     assert!(
         fired.contains("AU-045"),
         "Erik Avery confirmed across breach + social families"
+    );
+    // The free family geo-corroboration: surname kin in the subject's area.
+    assert!(
+        fired.contains("AU-061"),
+        "family-candidates geo-corroborated near the subject's fix"
+    );
+    let au061 = firings
+        .iter()
+        .find(|c| c.rule_id == "AU-061")
+        .expect("family-candidates near the subject's fix → AU-061");
+    assert!(
+        au061.description.contains("family-candidate") && au061.description.contains("4555"),
+        "AU-061 names the geo-corroborated relatives: {}",
+        au061.description
     );
     // The location finding: subject's PII brokered on a people-search site.
     let au054 = firings
