@@ -613,6 +613,39 @@ pub async fn scan_network(
     (StatusCode::OK, Json(network)).into_response()
 }
 
+/// `GET /api/v1/scans/{id}/leads` — proactive next-best-action recommendations
+/// ([`crate::core::leads`]): the untapped identities this scan surfaced but did
+/// not pivot (family/associate connections held below the expansion floor most of
+/// all), ranked by pivot value — each a one-click follow-up scan from the web UI.
+/// 404 if the scan is unknown, matching the other sub-resources.
+pub async fn scan_leads(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let scan = match s.store.get_scan(&id) {
+        Ok(Some(scan)) => scan,
+        Ok(None) => return not_found(),
+        Err(e) => return internal_error(&e),
+    };
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (entities, relations) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let leads =
+        crate::core::leads::recommend(&entities, &relations, scan.options.min_expand_confidence);
+    ok_list("leads", leads)
+}
+
 pub async fn scan_delete(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,

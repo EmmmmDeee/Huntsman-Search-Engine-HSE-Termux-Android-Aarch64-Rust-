@@ -544,6 +544,30 @@ async fn scan_network_synthesises_subject_graph() {
     }
 }
 
+// ── 5d. Proactive leads ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn scan_leads_returns_ranked_actions() {
+    // Unknown scan → 404, matching the other `/scans/{id}/...` sub-resources.
+    let app = test_app("leads_nf");
+    let resp = app.oneshot(get("/api/v1/scans/nope/leads")).await.unwrap();
+    assert_eq!(resp.status(), 404);
+
+    // A known scan → 200 with a `leads` array (possibly empty until the engine
+    // has produced connected, untapped entities).
+    let (app, sid) = create_scan("leads_ok").await;
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}/leads")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = body_json(resp).await;
+    assert!(
+        body.get("leads").is_some_and(serde_json::Value::is_array),
+        "leads response carries a leads array"
+    );
+}
+
 // ── 6. Scan list ──────────────────────────────────────────────────────────
 
 #[tokio::test]
