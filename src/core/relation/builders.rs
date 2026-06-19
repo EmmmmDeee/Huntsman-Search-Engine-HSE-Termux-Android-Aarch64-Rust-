@@ -311,20 +311,427 @@ pub fn derive_name_lineage(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
     out
 }
 
+// ── Identity relations ───────────────────────────────────────────────────────
+//
+// The builders above reconstruct the *infrastructure* graph (subdomains, hosting,
+// DNS, WHOIS). For a person-centric scan that is mostly empty — the high-value
+// edges bind the SUBJECT to their identifiers, accounts, places and associates.
+// Without them a 500-entity person scan persists zero relations (nodes, no edges)
+// and the dossier/force-graph shows an unconnected pile. These builders add that
+// identity layer, holding to the same rigor as the infra builders: deterministic
+// (stable, deduped, canonically-directed), evidence- or structure-grounded so no
+// false edge fires, and confidence carried from the endpoints — *damped* for the
+// two candidate signals (fingerprint ownership, surname kinship) so a lead never
+// masquerades as a certainty.
+
+/// Confidence damp for a fingerprint-based [`RelationKind::IdentifiedBy`] edge:
+/// the endpoints are real, but binding a handle to the subject purely by an
+/// identity-fingerprint overlap is a lead, not a structural certainty.
+const IDENTITY_CANDIDATE_DAMP: f64 = 0.6;
+
+/// Confidence damp for a surname-based [`RelationKind::AssociatedWith`] kinship
+/// edge — a candidate association (people can share a surname by coincidence),
+/// surfaced for the operator to confirm.
+const KINSHIP_DAMP: f64 = 0.5;
+
+/// Evidence attribute keys whose value names a real person — the owner /
+/// registrant / account holder a module recorded alongside an identifier or a
+/// place. Matched case-insensitively against present Person entities, so an
+/// owner-named address (`qld_unclaimed`'s `owner`) or a profile's `full_name`
+/// becomes a graph edge rather than a buried attribute.
+const PERSON_NAME_ATTRS: &[&str] = &[
+    "owner",
+    "full_name",
+    "name",
+    "person",
+    "account_name",
+    "source_name",
+    "registrant_name",
+    "holder",
+    "resident",
+    "contact_name",
+    "display_name",
+];
+
+/// The normalised identity fingerprint of an Email/Username, for detecting a
+/// shared persona across platforms. Emails key on the local-part (handled by
+/// [`crate::core::scan::identity_norm`], which splits on `@`); usernames on the
+/// whole value. `None` for a handle too short or all-digits to be a reliable
+/// persona key, so generic noise can't fan out into a false alias clique.
+fn persona_key(e: &Entity) -> Option<String> {
+    if !matches!(e.kind, EntityKind::Email | EntityKind::Username) {
+        return None;
+    }
+    let key = crate::core::scan::identity_norm(&e.value);
+    // 4 = IDENTITY_OVERLAP_MIN: shorter handles alias too readily.
+    (key.len() >= 4 && !key.bytes().all(|b| b.is_ascii_digit())).then_some(key)
+}
+
+/// The folded last whitespace token of a Person value — a family key. `None` when
+/// it's < 4 chars (initials / very short surnames alias too readily).
+fn surname_key(value: &str) -> Option<String> {
+    let last = value.split_whitespace().next_back()?;
+    let key = crate::core::scan::identity_norm(last);
+    (key.len() >= 4).then_some(key)
+}
+
+/// Index present Person entities by their folded full name, resolving collisions
+/// deterministically (higher confidence, then smaller uid) so the chosen target
+/// never depends on the caller's entity order — the determinism invariant the
+/// whole module holds to.
+fn persons_by_name(entities: &[Entity]) -> std::collections::HashMap<String, &Entity> {
+    let mut persons = std::collections::HashMap::new();
+    for p in entities.iter().filter(|e| e.kind == EntityKind::Person) {
+        persons
+            .entry(p.value.trim().to_lowercase())
+            .and_modify(|cur: &mut &Entity| {
+                if p.confidence > cur.confidence
+                    || (p.confidence == cur.confidence && p.uid < cur.uid)
+                {
+                    *cur = p;
+                }
+            })
+            .or_insert(p);
+    }
+    persons
+}
+
+/// The subject Person(s): those carrying the engine's seed-anchor tag (`subject`
+/// or `seed`). The fingerprint/`exact-name-match` paths bind only to these, so an
+/// incidental Person never accretes the subject's handles or places.
+fn subject_persons(entities: &[Entity]) -> Vec<&Entity> {
+    entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person && (e.has_tag("subject") || e.has_tag("seed")))
+        .collect()
+}
+
+/// Stable output order (by endpoints) so a builder whose internal grouping uses a
+/// `HashMap` still returns a deterministic `Vec` — matching the module contract.
+fn sort_edges(edges: &mut [Relation]) {
+    edges.sort_by(|a, b| {
+        (a.from_uid.as_str(), a.to_uid.as_str()).cmp(&(b.from_uid.as_str(), b.to_uid.as_str()))
+    });
+}
+
+/// Derive `AliasOf` edges between Email/Username entities that share one
+/// normalised persona key — the cross-platform "same handle" pivot
+/// (`jsmith@gmail.com` ↔ `jsmith@outlook.com` ↔ username `jsmith`). Purely
+/// structural (exact normalised-handle match), so precision is high; generic /
+/// numeric handles are excluded by [`persona_key`]. Symmetric edges are emitted
+/// once in canonical direction (smaller UID → larger) and deduped, then sorted —
+/// deterministic regardless of entity order.
+pub fn derive_handles(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut by_key: HashMap<String, Vec<&Entity>> = HashMap::new();
+    for e in entities {
+        if let Some(k) = persona_key(e) {
+            by_key.entry(k).or_default().push(e);
+        }
+    }
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for group in by_key.values() {
+        for i in 0..group.len() {
+            for j in (i + 1)..group.len() {
+                let (a, b) = (group[i], group[j]);
+                // Same entity, or two spellings that normalise identically — not
+                // an alias between *distinct* identifiers.
+                if a.uid == b.uid || a.value == b.value {
+                    continue;
+                }
+                let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
+                if seen.insert((from.uid.clone(), to.uid.clone())) {
+                    out.push(Relation::new(
+                        from.uid.as_str(),
+                        to.uid.as_str(),
+                        RelationKind::AliasOf,
+                        from.confidence.min(to.confidence),
+                        scan_id,
+                    ));
+                }
+            }
+        }
+    }
+    sort_edges(&mut out);
+    out
+}
+
+/// Derive `IdentifiedBy` edges (Person → Email/Username/Phone) binding the subject
+/// to their identifiers. Two grounded paths, evidence preferred:
+///   * **evidence** — the identifier's evidence carries an owner/name attribute
+///     ([`PERSON_NAME_ATTRS`]) matching a present Person (any Person; the module
+///     itself attributed it). High confidence (min of endpoints).
+///   * **fingerprint** — an Email-local/Username whose identity fingerprint
+///     overlaps the *subject*'s name ([`crate::core::scan::identity_overlaps`],
+///     the same primitive the engine uses to gate wrong-identity pivots). A
+///     candidate, so damped by [`IDENTITY_CANDIDATE_DAMP`]; bound only to the
+///     subject so it can't mis-attach to an incidental Person. Phones have no
+///     fingerprint, so they link by evidence only.
+///
+/// Deduped per (person, identifier); deterministic output order.
+pub fn derive_identity_ownership(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::HashSet;
+
+    let person_by_name = persons_by_name(entities);
+    if person_by_name.is_empty() {
+        return Vec::new();
+    }
+    let subjects = subject_persons(entities);
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for h in entities.iter().filter(|e| {
+        matches!(
+            e.kind,
+            EntityKind::Email | EntityKind::Username | EntityKind::Phone
+        )
+    }) {
+        // Evidence-grounded ownership (any attributed Person).
+        let mut linked = false;
+        for ev in &h.evidence {
+            for (k, v) in &ev.attributes {
+                if !PERSON_NAME_ATTRS.iter().any(|a| k.eq_ignore_ascii_case(a)) {
+                    continue;
+                }
+                if let Some(&p) = person_by_name.get(v.trim().to_lowercase().as_str())
+                    && p.uid != h.uid
+                    && seen.insert((p.uid.clone(), h.uid.clone()))
+                {
+                    out.push(Relation::new(
+                        p.uid.as_str(),
+                        h.uid.as_str(),
+                        RelationKind::IdentifiedBy,
+                        p.confidence.min(h.confidence),
+                        scan_id,
+                    ));
+                    linked = true;
+                }
+            }
+        }
+        if linked || !matches!(h.kind, EntityKind::Email | EntityKind::Username) {
+            continue;
+        }
+        // Fingerprint-grounded ownership, subject-only and damped.
+        for s in &subjects {
+            if s.uid != h.uid
+                && crate::core::scan::identity_overlaps(&s.value, &h.value)
+                && seen.insert((s.uid.clone(), h.uid.clone()))
+            {
+                out.push(Relation::new(
+                    s.uid.as_str(),
+                    h.uid.as_str(),
+                    RelationKind::IdentifiedBy,
+                    s.confidence.min(h.confidence) * IDENTITY_CANDIDATE_DAMP,
+                    scan_id,
+                ));
+            }
+        }
+    }
+    sort_edges(&mut out);
+    out
+}
+
+/// Derive `LocatedAt` edges (Person → Address/Coordinates). Evidence-grounded: a
+/// place whose evidence carries an owner/resident attribute ([`PERSON_NAME_ATTRS`])
+/// matching a present Person (`qld_unclaimed`'s `owner = ERIK DIEGMANN`). Failing
+/// that, a place the scan already flagged as the subject's via the geo
+/// correlator's `exact-name-match` tag binds to the subject(s) — reusing that
+/// vetted decision rather than re-deriving it. Deduped per (person, place);
+/// deterministic output order.
+pub fn derive_residency(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::HashSet;
+
+    let person_by_name = persons_by_name(entities);
+    if person_by_name.is_empty() {
+        return Vec::new();
+    }
+    let subjects = subject_persons(entities);
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for place in entities
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::Address | EntityKind::Coordinates))
+    {
+        let mut linked = false;
+        for ev in &place.evidence {
+            for (k, v) in &ev.attributes {
+                if !PERSON_NAME_ATTRS.iter().any(|a| k.eq_ignore_ascii_case(a)) {
+                    continue;
+                }
+                if let Some(&p) = person_by_name.get(v.trim().to_lowercase().as_str())
+                    && seen.insert((p.uid.clone(), place.uid.clone()))
+                {
+                    out.push(Relation::new(
+                        p.uid.as_str(),
+                        place.uid.as_str(),
+                        RelationKind::LocatedAt,
+                        p.confidence.min(place.confidence),
+                        scan_id,
+                    ));
+                    linked = true;
+                }
+            }
+        }
+        if linked || !place.has_tag("exact-name-match") {
+            continue;
+        }
+        for s in &subjects {
+            if seen.insert((s.uid.clone(), place.uid.clone())) {
+                out.push(Relation::new(
+                    s.uid.as_str(),
+                    place.uid.as_str(),
+                    RelationKind::LocatedAt,
+                    s.confidence.min(place.confidence),
+                    scan_id,
+                ));
+            }
+        }
+    }
+    sort_edges(&mut out);
+    out
+}
+
+/// Derive `AssociatedWith` kinship-candidate edges between Person entities that
+/// share a surname ([`surname_key`]) but are distinct people. People surface in a
+/// scan because they're relevant to the subject, so a shared surname is a strong
+/// associate lead — but coincidental, so the edge is damped by [`KINSHIP_DAMP`]
+/// and clearly typed as a candidate. Symmetric, canonically directed, deduped,
+/// deterministic.
+pub fn derive_kinship(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut by_surname: HashMap<String, Vec<&Entity>> = HashMap::new();
+    for p in entities.iter().filter(|e| e.kind == EntityKind::Person) {
+        if let Some(k) = surname_key(&p.value) {
+            by_surname.entry(k).or_default().push(p);
+        }
+    }
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for group in by_surname.values() {
+        for i in 0..group.len() {
+            for j in (i + 1)..group.len() {
+                let (a, b) = (group[i], group[j]);
+                // Distinct people only — not the same Person surfaced twice, and
+                // not two spellings of one full name.
+                if a.uid == b.uid
+                    || crate::core::scan::identity_norm(&a.value)
+                        == crate::core::scan::identity_norm(&b.value)
+                {
+                    continue;
+                }
+                let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
+                if seen.insert((from.uid.clone(), to.uid.clone())) {
+                    out.push(Relation::new(
+                        from.uid.as_str(),
+                        to.uid.as_str(),
+                        RelationKind::AssociatedWith,
+                        from.confidence.min(to.confidence) * KINSHIP_DAMP,
+                        scan_id,
+                    ));
+                }
+            }
+        }
+    }
+    sort_edges(&mut out);
+    out
+}
+
+/// Evidence attribute keys whose value names another person this entity is
+/// explicitly related/associated to — a people-search relative (`related_to`), a
+/// joint register owner (`co_owner` / `joint_owner`), etc. A DECLARED link, so
+/// the resulting edge is evidence-grounded (full endpoint trust), unlike the
+/// surname kinship heuristic.
+const ASSOCIATION_ATTRS: &[&str] = &[
+    "related_to",
+    "relative_of",
+    "associate_of",
+    "associated_with",
+    "related_person",
+    "relation_to",
+    "co_owner",
+    "joint_owner",
+];
+
+/// Derive `AssociatedWith` edges from a DECLARED relationship: a Person whose
+/// evidence names another present Person via an association attribute
+/// ([`ASSOCIATION_ATTRS`]) — a SeekNow relative carrying `related_to = <subject>`,
+/// or a joint unclaimed-money record's `co_owner`. Evidence-grounded, so it
+/// carries full endpoint trust (a declared link, not a surname guess) — the
+/// high-precision complement to [`derive_kinship`]. The two can emit the same
+/// `(from, kind, to)` edge; that is deliberate (one upserts over the other by id)
+/// and is how a surname guess gets *upgraded* to a declared certainty when both
+/// fire. Symmetric, canonically directed, deduped, deterministic.
+pub fn derive_declared_associations(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::HashSet;
+
+    let person_by_name = persons_by_name(entities);
+    if person_by_name.is_empty() {
+        return Vec::new();
+    }
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for e in entities.iter().filter(|e| e.kind == EntityKind::Person) {
+        for ev in &e.evidence {
+            for (k, v) in &ev.attributes {
+                if !ASSOCIATION_ATTRS.iter().any(|a| k.eq_ignore_ascii_case(a)) {
+                    continue;
+                }
+                if let Some(&other) = person_by_name.get(v.trim().to_lowercase().as_str())
+                    && other.uid != e.uid
+                {
+                    let (from, to) = if e.uid <= other.uid {
+                        (e, other)
+                    } else {
+                        (other, e)
+                    };
+                    if seen.insert((from.uid.clone(), to.uid.clone())) {
+                        out.push(Relation::new(
+                            from.uid.as_str(),
+                            to.uid.as_str(),
+                            RelationKind::AssociatedWith,
+                            e.confidence.min(other.confidence),
+                            scan_id,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    sort_edges(&mut out);
+    out
+}
+
 /// Derive every deterministic, evidence-grounded relation the engine knows how
-/// to reconstruct from a persisted entity set alone — structural ownership, geo
-/// co-location, DNS resolution, WHOIS registration and name lineage — in a
-/// single stable order. This is the lineage-free counterpart to the live scan's
-/// relation pass: the import paths (CLI `hse import` and the web `scan_import`
-/// upload) have no in-flight expansion edges, but every edge derivable from the
-/// entities + their evidence still applies, so an imported dossier gets the same
-/// graph a live scan would. One definition so the live and import paths can't
-/// drift on which relations a finished scan carries.
+/// to reconstruct from a persisted entity set alone — the infrastructure layer
+/// (structural ownership, geo co-location, DNS resolution, WHOIS registration,
+/// name lineage) and the identity layer (handle aliases, identifier ownership,
+/// residency, kinship) — in a single stable order. This is the lineage-free
+/// counterpart to the live scan's relation pass: the import paths (CLI `hse
+/// import` and the web `scan_import` upload) have no in-flight expansion edges,
+/// but every edge derivable from the entities + their evidence still applies, so
+/// an imported dossier gets the same graph a live scan would. One definition so
+/// the live and import paths can't drift on which relations a finished scan
+/// carries.
 pub fn derive_all(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     let mut out = derive_structural(entities, scan_id);
     out.extend(derive_colocation(entities, scan_id));
     out.extend(derive_resolution(entities, scan_id));
     out.extend(derive_registration(entities, scan_id));
     out.extend(derive_name_lineage(entities, scan_id));
+    out.extend(derive_handles(entities, scan_id));
+    out.extend(derive_identity_ownership(entities, scan_id));
+    out.extend(derive_residency(entities, scan_id));
+    out.extend(derive_kinship(entities, scan_id));
+    // Declared associations LAST so a `(from, kind, to)` edge a surname guess
+    // already emitted is re-emitted here at full (declared) confidence — the
+    // later, higher-trust edge wins on idempotent upsert.
+    out.extend(derive_declared_associations(entities, scan_id));
     out
 }

@@ -11,9 +11,32 @@ use crate::util::postcode_au::Locality;
 use super::QldUnclaimed;
 use super::SRC;
 use super::helpers::{
-    derive_query, exact_postcodes, merge_records, owner_matches_full_name, records_to_entities,
-    suburbs_to_entities,
+    derive_query, exact_postcodes, merge_records, owner_matches_full_name, owner_person_names,
+    records_to_entities, suburbs_to_entities,
 };
+
+#[test]
+fn owner_person_names_splits_joint_and_excludes_companies() {
+    // Joint individuals split on `&`/`and`/`,`, each title-cased.
+    assert_eq!(
+        owner_person_names("HAYLEY DIEGMANN & CURT DIEGMANN"),
+        vec!["Hayley Diegmann".to_string(), "Curt Diegmann".to_string()]
+    );
+    assert_eq!(
+        owner_person_names("peter john allen AND kym leanne allen"),
+        vec![
+            "Peter John Allen".to_string(),
+            "Kym Leanne Allen".to_string()
+        ]
+    );
+    // Companies are NOT individuals (handled by the Organisation pass).
+    assert!(owner_person_names("ACME WIDGETS PTY LTD").is_empty());
+    assert!(owner_person_names("DEV PTY LTD & GWAD PTY LTD").is_empty());
+    // The unknown-owner sentinel (parenthesised) is rejected by the name guard.
+    assert!(owner_person_names("(unknown owner)").is_empty());
+    // A lone single token isn't a person name.
+    assert!(owner_person_names("MADONNA").is_empty());
+}
 
 fn sample() -> CkanResp {
     let raw = r#"{
@@ -86,10 +109,44 @@ fn classifies_exact_person_vs_surname_only_family() {
     let result2 = resp2.result.unwrap();
     let curt = records_to_entities(&result2.records, 3, "Curt Avery", true, "s");
     let exact = |e: &Entity| e.tags.iter().any(|t| t.as_str() == "exact-name-match");
-    assert!(exact(&curt[0]), "HAYLEY & CURT row is an exact Curt match");
-    assert!(exact(&curt[1]), "CURT AVERY row is an exact Curt match");
-    assert!(!exact(&curt[2]), "ERIK row is only a surname match");
-    assert!(curt[1].confidence > curt[2].confidence);
+    // Per-RECORD classification lives on the Address entities (one per record);
+    // owner Persons are now interleaved, so filter by kind to index the records.
+    let addrs: Vec<&Entity> = curt
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address)
+        .collect();
+    assert!(exact(addrs[0]), "HAYLEY & CURT row is an exact Curt match");
+    assert!(exact(addrs[1]), "CURT AVERY row is an exact Curt match");
+    assert!(!exact(addrs[2]), "ERIK row is only a surname match");
+    assert!(addrs[1].confidence > addrs[2].confidence);
+
+    // The owner Person pass now mints the family as first-class people, judged
+    // per-person: Curt is the exact subject, Hayley/Erik surname family.
+    let person = |v: &str| {
+        curt.iter()
+            .find(|e| e.kind == EntityKind::Person && e.value == v)
+    };
+    assert!(
+        person("Curt Avery").is_some_and(exact),
+        "the seeded owner is an exact-match Person"
+    );
+    assert!(
+        person("Hayley Avery").is_some_and(|e| !exact(e)),
+        "a joint co-owner with a different given name is a family candidate, not exact"
+    );
+    assert!(
+        person("Erik Avery").is_some_and(|e| !exact(e) && e.confidence < 0.50),
+        "a surname-only relative is a sub-pivot-floor family candidate"
+    );
+    // A joint record declares the co-owner link the relation layer binds on.
+    let hayley = person("Hayley Avery").unwrap();
+    assert!(
+        hayley
+            .evidence
+            .iter()
+            .any(|ev| ev.attributes.keys().any(|k| k == "co_owner")),
+        "joint owners carry a declared co_owner association"
+    );
 }
 
 #[test]
@@ -118,8 +175,17 @@ fn company_owner_emits_organisation_for_abn_pivot() {
         .unwrap()
         .records;
     let ents2 = records_to_entities(&recs2, 1, "Jane Citizen", true, "s");
-    assert_eq!(ents2.len(), 1, "individual owner → no Organisation");
-    assert!(ents2.iter().all(|e| e.kind != EntityKind::Organisation));
+    assert!(
+        ents2.iter().all(|e| e.kind != EntityKind::Organisation),
+        "individual owner → no Organisation"
+    );
+    // The individual owner is now minted as a Person (Address + Person).
+    assert!(
+        ents2
+            .iter()
+            .any(|e| e.kind == EntityKind::Person && e.value == "Jane Citizen"),
+        "individual owner is surfaced as a first-class Person"
+    );
 
     let raw3 = r#"{"result":{"total":1,"records":[
         {"_id":9,"Owner":"DEV PTY LTD & GWAD PTY LTD & GWAD2 PTY LTD","Amount":"508.80","SenderName":"QLD URBAN UTILITIES","PCode":"4051"}
@@ -333,11 +399,17 @@ fn common_polysemous_surname_produces_no_false_exact_matches() {
     let resp: CkanResp = serde_json::from_str(raw).unwrap();
     let recs = resp.result.unwrap().records;
     let ents = records_to_entities(&recs, 17, "Ali Kareem", true, "s");
-    assert_eq!(ents.len(), 4);
+    let addrs: Vec<&Entity> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address)
+        .collect();
+    assert_eq!(addrs.len(), 4, "one address per record");
     assert!(
         ents.iter().all(|e| e.kind != EntityKind::Organisation),
         "individual owners must not manufacture company/ABN entities"
     );
+    // No KAREEM row is the seeded "Ali Kareem", so every entity (address +
+    // owner Person) stays a sub-pivot-floor family candidate, never an exact hit.
     for e in &ents {
         assert!(
             e.tags.iter().any(|t| t.as_str() == "family-candidate"),
@@ -349,20 +421,27 @@ fn common_polysemous_surname_produces_no_false_exact_matches() {
     assert!(ents.iter().any(|e| e.value.contains("2880")));
 
     let silva = records_to_entities(&recs, 17, "Silva Kareem", true, "s");
+    let exact = |e: &Entity| e.tags.iter().any(|t| t.as_str() == "exact-name-match");
+    let saddrs: Vec<&Entity> = silva
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address)
+        .collect();
     assert!(
-        silva[1]
-            .tags
-            .iter()
-            .any(|t| t.as_str() == "exact-name-match"),
+        exact(saddrs[1]),
         "MS SILVA KAREEM must be exact for seed 'Silva Kareem'"
     );
     assert!(
-        !silva[0]
-            .tags
-            .iter()
-            .any(|t| t.as_str() == "exact-name-match"),
+        !exact(saddrs[0]),
         "KAREEM AYALA must stay a family candidate for seed 'Silva Kareem'"
     );
+    // The exact owner is also surfaced as a Person; KAREEM AYALA's owner is not.
+    let person = |v: &str| {
+        silva
+            .iter()
+            .find(|e| e.kind == EntityKind::Person && e.value == v)
+    };
+    assert!(person("Ms Silva Kareem").is_some_and(exact));
+    assert!(person("Kareem Ayala").is_some_and(|e| !exact(e)));
 }
 
 #[test]
@@ -376,18 +455,21 @@ fn parses_records_into_geo_addresses() {
         true,
         "scan-1",
     );
-    assert_eq!(ents.len(), 3, "one entity per record");
+    let addrs: Vec<&Entity> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address)
+        .collect();
+    assert_eq!(addrs.len(), 3, "one address per record");
 
-    for e in &ents {
-        assert_eq!(e.kind, EntityKind::Address);
+    for e in &addrs {
         assert!(e.value.contains("QLD"));
         assert!(e.value.ends_with(", Australia"));
         assert!(e.tags.iter().any(|t| t.as_str() == "unclaimed-money"));
         assert!(e.tags.iter().any(|t| t.as_str() == "country:AU"));
     }
-    assert_eq!(ents[0].value, "QLD 4557, Australia");
+    assert_eq!(addrs[0].value, "QLD 4557, Australia");
 
-    let ev0 = &ents[0].evidence[0];
+    let ev0 = &addrs[0].evidence[0];
     let attr = |k: &str| {
         ev0.attributes
             .iter()
@@ -410,13 +492,12 @@ fn record_without_postcode_becomes_finding_not_dropped() {
     let resp: CkanResp = serde_json::from_str(raw).unwrap();
     let result = resp.result.unwrap();
     let ents = records_to_entities(&result.records, 1, "NO POSTCODE PERSON", true, "scan-1");
-    assert_eq!(ents.len(), 1, "no-postcode record must still surface");
-    assert_eq!(
-        ents[0].kind,
-        EntityKind::Other("unclaimed_money".to_string())
-    );
-    assert!(ents[0].value.contains("NO POSTCODE PERSON"));
-    assert!(ents[0].value.contains("42.00"));
+    let finding = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Other("unclaimed_money".to_string()))
+        .expect("no-postcode record must still surface as a finding");
+    assert!(finding.value.contains("NO POSTCODE PERSON"));
+    assert!(finding.value.contains("42.00"));
 }
 
 #[test]
@@ -427,10 +508,12 @@ fn numeric_ckan_fields_are_stringified_not_dropped() {
     let resp: CkanResp = serde_json::from_str(raw).unwrap();
     let result = resp.result.unwrap();
     let ents = records_to_entities(&result.records, 1, "NUMERIC FIELDS", true, "scan-1");
-    assert_eq!(ents.len(), 1);
-    assert_eq!(ents[0].kind, EntityKind::Address);
-    assert_eq!(ents[0].value, "QLD 4000, Australia");
-    let ev = &ents[0].evidence[0];
+    let addr = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("record parses into an address");
+    assert_eq!(addr.value, "QLD 4000, Australia");
+    let ev = &addr.evidence[0];
     let amt = ev
         .attributes
         .iter()

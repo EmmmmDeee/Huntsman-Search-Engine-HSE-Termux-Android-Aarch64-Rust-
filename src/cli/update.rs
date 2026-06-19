@@ -138,8 +138,7 @@ pub(crate) fn check_updates() -> Option<u64> {
 /// HSE's runtime cache directory (`~/.cache`, the same place `install.sh` logs
 /// to); falls back to the system temp dir when `$HOME` is unset.
 fn cache_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map_or_else(std::env::temp_dir, |h| PathBuf::from(h).join(".cache"))
+    std::env::var_os("HOME").map_or_else(std::env::temp_dir, |h| PathBuf::from(h).join(".cache"))
 }
 
 /// Stamp file holding the unix-seconds time of the last auto-update check, so the
