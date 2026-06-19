@@ -9,8 +9,10 @@ use crate::util::oathnet::val_str;
 
 use super::SRC;
 
+mod osint_keys;
 mod patterns;
 mod service_domains;
+use osint_keys::match_osint_provider;
 use patterns::KEY_PATTERNS;
 use service_domains::identify_service_from_url;
 
@@ -401,6 +403,42 @@ pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
 /// well under 4 KiB).
 const EXTRACTED_VALUE_MAX: usize = 4096;
 
+/// Identify a key `value` given the `context` it was found under (an env-var
+/// name, a JSON object key, or the URL it was passed to). Layers
+/// context-attribution on top of the prefix/shape detector:
+///
+/// * a vendor-prefixed key (`sk-…`, `AKIA…`) is returned as-is — context is not
+///   needed and never overrides a concrete prefix match;
+/// * a bare hex blob the shape detector can only call `generic_hex` is **upgraded**
+///   to the specific OSINT/threat-intel provider when `context` names one
+///   (`api.virustotal.com/?apikey=<64 hex>` ⇒ `virustotal`, not `generic_hex`);
+/// * a prefix-less, non-hex key the shape detector cannot see at all (Shodan's
+///   32-char alphanumeric key) is **rescued** purely from context — and since this
+///   path never went through the `generic_hex` gate, the shared
+///   [`is_likely_real_key`] false-positive filter is re-applied here so a
+///   placeholder / UUID / low-entropy value under a provider-named field is
+///   dropped.
+///
+/// Returns the resolved service tag and the (trimmed) key slice, or `None`.
+fn identify_with_context<'a>(context: &str, value: &'a str) -> Option<(&'static str, &'a str)> {
+    let v = value.trim();
+    match identify_api_key(v) {
+        // A bare hex blob the context names as a specific provider is that
+        // provider's key, not an anonymous `generic_hex` finding. The value
+        // already cleared the FP gate inside `identify_api_key`'s hex path.
+        Some(("generic_hex", hit)) => Some((
+            match_osint_provider(context, v).unwrap_or("generic_hex"),
+            hit,
+        )),
+        Some(hit) => Some(hit),
+        // Prefix-less, non-hex OSINT keys are invisible to the shape table;
+        // context is the only signal, so re-apply the FP gate before trusting it.
+        None => match_osint_provider(context, v)
+            .filter(|_| is_likely_real_key(v))
+            .map(|svc| (svc, v)),
+    }
+}
+
 /// Scan a JSON record for API key patterns in password / URL-param / extra
 /// fields. Public so peer modules like `see_know` can use the same harvest
 /// pipeline against their own response schemas.
@@ -519,14 +557,17 @@ pub fn extract_api_keys_from_item(
         {
             for line in blob.lines() {
                 let trimmed = line.trim().trim_start_matches("export ");
-                if let Some((_, raw_val)) = trimmed.split_once('=') {
+                if let Some((raw_key, raw_val)) = trimmed.split_once('=') {
                     let val = raw_val
                         .trim()
                         .trim_matches('"')
                         .trim_matches('\'')
                         .trim_matches('`');
+                    // The `KEY` half is provider context: `SHODAN_API_KEY=<32
+                    // alnum>` is a prefix-less Shodan key the shape detector alone
+                    // would miss, attributed via `identify_with_context`.
                     if val.len() >= 16
-                        && let Some((service, key_val)) = identify_api_key(val)
+                        && let Some((service, key_val)) = identify_with_context(raw_key, val)
                     {
                         emit_key(service, key_val, "dotenv line", scan_id, seen, result);
                     }
@@ -549,9 +590,13 @@ pub fn extract_api_keys_from_item(
             && let Some(qmark) = url.find('?')
         {
             for param in url[qmark + 1..].split('&') {
+                // The whole URL is provider context (host + param name): a bare
+                // `?key=<32 alnum>` on `api.shodan.io` is attributed to Shodan
+                // rather than missed, and a 64-hex key on an OSINT host is
+                // upgraded from `generic_hex` to the named provider.
                 if let Some((_, pval)) = param.split_once('=')
                     && pval.len() >= 16
-                    && let Some((service, key_val)) = identify_api_key(pval)
+                    && let Some((service, key_val)) = identify_with_context(&url, pval)
                 {
                     emit_key(
                         service,
@@ -567,10 +612,12 @@ pub fn extract_api_keys_from_item(
     }
 
     if let Some(extra) = item.get("extra").and_then(|v| v.as_object()) {
-        for (_, eval) in extra {
+        for (ekey, eval) in extra {
+            // The object key names the secret (`{"securitytrails_key": "<32
+            // alnum>"}`), so it is provider context for `identify_with_context`.
             if let Some(s) = eval.as_str()
                 && s.len() >= 16
-                && let Some((service, key_val)) = identify_api_key(s)
+                && let Some((service, key_val)) = identify_with_context(ekey, s)
             {
                 emit_key(service, key_val, "extra field", scan_id, seen, result);
             }

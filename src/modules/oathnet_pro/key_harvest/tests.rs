@@ -1785,6 +1785,147 @@ fn decode_through_inner_rejects_plain_non_encoded_non_key() {
     assert!(decode_through_inner("this is not base64 at all", 0).is_none());
 }
 
+// ─── Context-attributed OSINT / threat-intel key detection ───────────────────
+
+#[test]
+fn osint_context_attributes_prefixless_alnum_key() {
+    // A Shodan key is a 32-char alphanumeric blob with no prefix: invisible to
+    // the shape detector, attributable only from the identifier it sits under.
+    let key = &SUFFIX[..32];
+    assert_eq!(key.len(), 32);
+    assert!(
+        identify_api_key(key).is_none(),
+        "a prefix-less 32-char alnum key must be invisible to the shape detector"
+    );
+    assert_eq!(match_osint_provider("SHODAN_API_KEY", key), Some("shodan"));
+    assert_eq!(
+        identify_with_context("SHODAN_API_KEY", key),
+        Some(("shodan", key))
+    );
+}
+
+#[test]
+fn osint_context_upgrades_generic_hex_to_named_provider() {
+    // A 64-hex blob is `generic_hex` on its own; under a VirusTotal context it is
+    // that provider's key. With no provider context it stays `generic_hex`.
+    let hex64 = "3f9a1c7e2b8d4506af13e9c2d7b04185fa6c39e1d8b25704ce9f1a3b6d8025f7";
+    assert_eq!(hex64.len(), 64);
+    assert_eq!(identify_api_key(hex64).map(|(s, _)| s), Some("generic_hex"));
+    assert_eq!(
+        identify_with_context("VIRUSTOTAL_API_KEY", hex64).map(|(s, _)| s),
+        Some("virustotal")
+    );
+    assert_eq!(
+        identify_with_context("unrelated_field", hex64).map(|(s, _)| s),
+        Some("generic_hex")
+    );
+}
+
+#[test]
+fn osint_hex_only_provider_rejects_non_hex_value() {
+    // Hunter.io is strictly 40-hex. A 40-hex value attributes; a 40-char alnum
+    // value (letters past `f`) under the same context does not (wrong charset).
+    let hex40 = "3f9a1c7e2b8d4506af13e9c2d7b04185fa6c39e1";
+    assert_eq!(hex40.len(), 40);
+    assert_eq!(
+        match_osint_provider("HUNTER_API_KEY", hex40),
+        Some("hunter")
+    );
+    let alnum40 = &SUFFIX[..40];
+    assert_eq!(alnum40.len(), 40);
+    assert_eq!(match_osint_provider("HUNTER_API_KEY", alnum40), None);
+}
+
+#[test]
+fn osint_attribution_requires_both_context_and_shape() {
+    let key = &SUFFIX[..32];
+    // Provider named but the shape is wrong (31 chars).
+    assert_eq!(match_osint_provider("SHODAN_API_KEY", &SUFFIX[..31]), None);
+    // Shape fits but no provider is named.
+    assert_eq!(match_osint_provider("generic_api_key", key), None);
+}
+
+#[test]
+fn osint_context_still_honours_false_positive_gate() {
+    // A 32-char but low-entropy value under a provider context is dropped by the
+    // shared FP gate, so context never rescues a non-secret. `match_osint_provider`
+    // is pure (shape+context only) — the gate lives in `identify_with_context`.
+    let low = "a".repeat(32);
+    assert_eq!(match_osint_provider("shodan_key", &low), Some("shodan"));
+    assert!(
+        identify_with_context("shodan_key", &low).is_none(),
+        "low-entropy value must be filtered even under a provider context"
+    );
+}
+
+#[test]
+fn osint_context_resolves_from_api_url_host() {
+    // The URL a key is passed to is provider context too.
+    let key = &SUFFIX[..32];
+    let url = "https://api.shodan.io/shodan/host/1.1.1.1?key=IGNORED";
+    assert_eq!(match_osint_provider(url, key), Some("shodan"));
+}
+
+#[test]
+fn osint_key_attributed_end_to_end_through_env_blob() {
+    // Full pipeline: a `.env` blob in a stealer record yields a Shodan ApiKey
+    // entity tagged with the canonical `service:shodan`.
+    let key = &SUFFIX[..32];
+    let blob = format!("DB_HOST=localhost\nSHODAN_API_KEY={key}\n");
+    let item = serde_json::json!({ "env_content": blob });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    assert!(
+        result.entities.iter().any(|e| e.has_tag("service:shodan")),
+        "expected a service:shodan ApiKey entity, got {:?}",
+        result.entities
+    );
+}
+
+#[test]
+fn osint_provider_table_is_well_formed() {
+    use super::osint_keys::OSINT_PROVIDERS;
+    assert!(!OSINT_PROVIDERS.is_empty());
+    for p in OSINT_PROVIDERS {
+        assert!(!p.service.is_empty(), "empty service tag");
+        assert!(!p.contexts.is_empty(), "{} has no contexts", p.service);
+        for c in p.contexts {
+            assert!(
+                !c.is_empty()
+                    && c.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+                "{} context {c:?} must be a non-empty lowercase identifier",
+                p.service
+            );
+        }
+        assert!(!p.shapes.is_empty(), "{} has no shapes", p.service);
+        for s in p.shapes {
+            assert!(
+                (32..=80).contains(&s.len),
+                "{} shape length {} is outside the 32..=80 OSINT range",
+                p.service,
+                s.len
+            );
+        }
+    }
+}
+
+#[test]
+fn osint_services_reuse_service_domain_vocabulary() {
+    // Every context-attributed service tag must also exist in the domain table so
+    // the engine emits one consistent `service:` tag per provider, whether the
+    // attribution came from a URL host or a surrounding identifier.
+    use super::osint_keys::OSINT_PROVIDERS;
+    use super::service_domains::API_SERVICE_DOMAINS;
+    for p in OSINT_PROVIDERS {
+        assert!(
+            API_SERVICE_DOMAINS.iter().any(|(_, svc)| *svc == p.service),
+            "OSINT service {:?} absent from API_SERVICE_DOMAINS — vocabulary drift",
+            p.service
+        );
+    }
+}
+
 // ─── PrefixMatcher property tests ────────────────────────────────────────────
 mod prop {
     use super::super::{identify_vendor_api_key, pattern_catalogue};
