@@ -1,68 +1,46 @@
 //! Pure, network-free name → identity derivation.
 //!
-//! This is the engine behind the [`super::NameIntel`] module and a faithful,
-//! bounded port of the methodology in NAMINT (<https://seintpl.github.io/NAMINT/>):
-//!
-//!   * **Login permutations** — ~40 `first`/`middle`/`last`/`number` handle
-//!     shapes (`first.last`, `flast`, `firstl`, `last.first`, hyphen/underscore
-//!     joins, middle-initial blends, year suffixes).
-//!   * **Email permutations** — likely handle shapes crossed with a configurable
-//!     provider set (the mainstream consumer mailboxes ordinary people actually
-//!     hold — Gmail, the Microsoft outlook/hotmail/live family, Yahoo, iCloud,
-//!     AOL, Proton), ranked by `P(handle) × P(provider)` so the bounded budget
-//!     is spent on the addresses the *median* person is likeliest to hold, and
-//!     capped so a single name target never floods the entity graph.
-//!   * **Gravatar avatars** — the MD5-over-email primitive NAMINT uses, computed
-//!     with the crate's existing `md-5`/`hex` deps (no new dependency, no C).
-//!   * **Search-query pivots** — ready-to-click Google/Bing/DuckDuckGo/Yandex
-//!     dorks plus per-platform people-search URLs (LinkedIn, Facebook, X,
-//!     Instagram, TikTok, GitHub, WhatsMyName, Epieos).
-//!
-//! Every output is bounded by a `MAX_*` cap so the work a name target generates
-//! is constant-bounded — important on low-power Termux/aarch64 devices.
+//! Extended NAMINT port:
+//!   * **Login permutations** — ~60 handle shapes plus phonetic/nickname alias
+//!     variants (`michael` → `mike`/`mick`, `sean` → `shawn`/`shaun`, etc.)
+//!     and per-part shapes for hyphenated surnames (`Smith-Jones` → `smith`,
+//!     `jones`, `smithjones`).
+//!   * **Email permutations** — handle shapes × 38-provider set (global
+//!     mass-market, large regional RU/CN/JP, privacy-focused, European ISP)
+//!     ranked by `P(handle) × P(provider)`, capped so a name never floods the
+//!     graph.
+//!   * **Gravatar avatars** — MD5-over-email primitive.
+//!   * **Search-query pivots** — 30 platforms: Google dorks (web/face/email/
+//!     phone/docs/pastes/public-records), Bing, DuckDuckGo, Yandex, LinkedIn,
+//!     Facebook, X, TikTok, GitHub, Reddit, Pinterest, Webmii plus handle-gated
+//!     Instagram, WhatsMyName, Snapchat, Twitch, YouTube, Telegram, Reddit
+//!     profile, and email-gated Epieos.
+//!   * **Suffix / honorific stripping** — Dr., Prof., Mr., Mrs., Jr., Sr.,
+//!     III, PhD, MD, Esq. removed before handle derivation.
+//!   * **Hyphenated surname** — "Smith-Jones" yields merged and per-part shapes.
 
 use url::form_urlencoded::byte_serialize;
 
-// ── Output caps (keep a single name target constant-bounded) ────────────────
-pub(super) const MAX_USERNAMES: usize = 24;
-/// Emails are the widest fan-out (handle shapes × every provider) and the
-/// lowest-signal permutation — pure guesses across mailbox providers. Capped
-/// tighter than usernames so a name seed doesn't flood the Browse table with
-/// near-duplicate addresses.
-pub(super) const MAX_EMAILS: usize = 12;
-pub(super) const MAX_PIVOTS: usize = 18;
+// ── Output caps ──────────────────────────────────────────────────────────────
+pub(super) const MAX_USERNAMES: usize = 48;
+pub(super) const MAX_EMAILS: usize = 20;
+pub(super) const MAX_PIVOTS: usize = 30;
 
-// ── Confidence weights ──────────────────────────────────────────────────────
-/// Real-world-common handle shapes (`first.last`, `firstlast`, `flast`, …).
-///
-/// Kept strictly below the 0.40 Probable floor: a name-derived handle is an
-/// *unconfirmed guess*, so it stays a Candidate (matching this module's
-/// "low-confidence candidate entities" contract) until a discovery module
-/// observes it live — at which point the second source lifts its `c_effective`
-/// and AU-035 fires. (Previously 0.42 put the top shapes in the Probable tier,
-/// ranking guesses as if they were findings.)
+// ── Confidence weights ───────────────────────────────────────────────────────
 const W_PRIMARY: f64 = 0.38;
-/// Plausible but less common shapes (reversed, hyphen/underscore joins).
 const W_SECONDARY: f64 = 0.30;
-/// Middle-name blends.
 const W_MIDDLE: f64 = 0.28;
-/// Year/number-suffixed shapes.
 const W_YEAR: f64 = 0.30;
+/// Phonetic / nickname alias substitution — below all structural shapes.
+const W_ALIAS: f64 = 0.26;
 
-/// Speculative permuted email — deliberately below the default expansion floor
-/// (0.50) so a `--depth` scan does not auto-spend API budget on guesses.
 pub(super) const EMAIL_CONF: f64 = 0.30;
-/// Investigation pivot — a lead for the operator, not a finding.
 pub(super) const PIVOT_CONF: f64 = 0.20;
-/// The scan subject itself — the Person the operator named as the seed. Lands in
-/// the Probable tier (≥ 0.40): clearly the anchor, well above the speculative
-/// derivations (0.20–0.38), but below Verified (≥ 0.75) since HSE has not yet
-/// externally corroborated that this person exists.
 pub(super) const SUBJECT_CONF: f64 = 0.60;
 
-/// NAMINT's default provider set, modernised. Overridable at runtime via the
-/// `HUNTSMAN_EMAIL_DOMAINS` environment variable (comma-separated).
+// ── Provider set ─────────────────────────────────────────────────────────────
 const DEFAULT_DOMAINS: &[&str] = &[
+    // Tier 1 — global mass-market
     "gmail.com",
     "outlook.com",
     "hotmail.com",
@@ -71,18 +49,47 @@ const DEFAULT_DOMAINS: &[&str] = &[
     "live.com",
     "aol.com",
     "proton.me",
+    // Tier 2 — large regional
+    "gmx.com",
+    "gmx.net",
+    "mail.com",
+    "yandex.ru",
+    "mail.ru", // Russia / CIS
+    "qq.com",
+    "163.com",     // China
+    "yahoo.co.jp", // Japan
+    "yahoo.co.uk",
+    "yahoo.com.au",
+    "yahoo.ca",
+    "yahoo.fr",
+    "yahoo.de",
+    // Tier 3 — privacy / productivity
+    "fastmail.com",
+    "protonmail.com",
+    "pm.me",
+    "tutanota.com",
+    "mailfence.com",
+    "posteo.de",
+    "startmail.com",
+    "zoho.com",
+    "hey.com",
+    // Tier 4 — European ISP / legacy aliases
+    "web.de",
+    "gmx.de",
+    "libero.it",
+    "orange.fr",
+    "sfr.fr",
+    "msn.com",
+    "rocketmail.com",
+    "ymail.com",
+    "googlemail.com",
 ];
 
-/// Real-world consumer-mailbox share, used to rank `handle@provider` guesses so
-/// the budget (`MAX_EMAILS`) is spent on the addresses an *arbitrary* person is
-/// most likely to actually hold. Gmail dwarfs every other consumer provider;
-/// the Microsoft family (outlook/hotmail/live) and Yahoo form the next tier;
-/// Apple iCloud and the legacy AOL base trail; privacy-focused Proton is rare in
-/// the general population. Domains supplied via `HUNTSMAN_EMAIL_DOMAINS` that we
-/// don't recognise get a neutral mid weight so an operator's custom provider is
-/// still tried, just not ranked above Gmail.
+/// Consumer-mailbox share weights. Existing arms are preserved verbatim so
+/// that unit-test assertions on exact `f64` values remain stable.
 fn provider_weight(domain: &str) -> f64 {
     match domain {
+        // ── Existing arms (unchanged) ──────────────────────────────────────
         "gmail.com" | "googlemail.com" => 1.0,
         "outlook.com" | "hotmail.com" | "live.com" | "msn.com" => 0.6,
         "yahoo.com" | "ymail.com" => 0.5,
@@ -90,45 +97,194 @@ fn provider_weight(domain: &str) -> f64 {
         "aol.com" => 0.4,
         "gmx.com" | "gmx.net" | "mail.com" => 0.35,
         "proton.me" | "protonmail.com" | "pm.me" | "tutanota.com" => 0.3,
+        // ── Regional (new) ────────────────────────────────────────────────
+        "yandex.ru" | "yandex.com" => 0.35,
+        "rocketmail.com" => 0.35,
+        "mail.ru" => 0.32,
+        "yahoo.co.jp" | "yahoo.co.uk" | "yahoo.com.au" | "yahoo.ca" | "yahoo.fr" | "yahoo.de" => {
+            0.38
+        }
+        "qq.com" | "163.com" => 0.28,
+        // ── Privacy / productivity (new) ──────────────────────────────────
+        "fastmail.com" => 0.32,
+        "web.de" | "gmx.de" => 0.32,
+        "mailfence.com" | "posteo.de" | "startmail.com" => 0.22,
+        "zoho.com" => 0.28,
+        "libero.it" => 0.28,
+        "orange.fr" | "sfr.fr" | "free.fr" | "laposte.net" => 0.25,
+        "hey.com" => 0.20,
+        // ── Neutral fallback ──────────────────────────────────────────────
         _ => 0.4,
     }
 }
 
+// ── Honorific / suffix tables ─────────────────────────────────────────────────
+
+/// Leading honorifics stripped from the first token before handle derivation.
+/// Matched against the clean-token lowercased form (dots already removed by
+/// `clean_display_token`).
+const HONORIFICS: &[&str] = &[
+    "dr", "prof", "mr", "mrs", "ms", "miss", "rev", "sir", "lord", "lady", "capt", "sgt", "lt",
+    "det", "insp", "cpl",
+];
+
+/// Trailing generational / professional suffixes stripped from the last token.
+const GEN_SUFFIXES: &[&str] = &[
+    "jr", "sr", "ii", "iii", "iv", "v", "vi", "esq", "phd", "md", "dds", "jd", "mba", "rn", "np",
+    "do", "psyd",
+];
+
+// ── Phonetic / nickname alias table ──────────────────────────────────────────
+
+/// Maximum aliases used per first name to keep the handle budget bounded.
+const MAX_ALIAS_FIRST: usize = 3;
+
+/// Maps canonical (ASCII-folded lowercase) first names to common informal /
+/// phonetic alternates. Applied only to `first`; surnames are not aliased.
+static NICKNAME_MAP: &[(&str, &[&str])] = &[
+    ("alexander", &["alex", "xander", "sasha", "al"]),
+    ("alex", &["alexander", "xander"]),
+    ("alfred", &["alf", "fred", "alfie"]),
+    ("andrew", &["andy", "drew"]),
+    ("andy", &["andrew", "drew"]),
+    ("anthony", &["tony", "ant"]),
+    ("barbara", &["barb", "babs"]),
+    ("benjamin", &["ben", "benny", "benji"]),
+    ("ben", &["benjamin", "benny"]),
+    ("catherine", &["cathy", "cate", "kate", "kat"]),
+    ("katherine", &["kathy", "kate", "kat", "cathy"]),
+    ("cathy", &["catherine", "katherine"]),
+    ("kathy", &["kathleen", "katherine"]),
+    ("kate", &["katherine", "catherine", "katy"]),
+    ("charles", &["charlie", "chuck", "chas"]),
+    ("charlie", &["charles"]),
+    ("christopher", &["chris", "kit"]),
+    ("chris", &["christopher"]),
+    ("daniel", &["dan", "danny"]),
+    ("dan", &["daniel", "danny"]),
+    ("david", &["dave", "davey"]),
+    ("dave", &["david"]),
+    ("dorothy", &["dot", "dottie", "dora"]),
+    ("edward", &["ed", "eddie", "ned", "ted"]),
+    (
+        "elizabeth",
+        &["liz", "beth", "eliza", "betty", "ellie", "ella"],
+    ),
+    ("emily", &["em", "emmy"]),
+    ("eric", &["erik"]),
+    ("erik", &["eric"]),
+    ("frederick", &["fred", "freddy", "rick"]),
+    ("fred", &["frederick", "freddy"]),
+    ("george", &["georgie"]),
+    ("harold", &["harry", "hal"]),
+    ("harry", &["harold", "hal"]),
+    ("henry", &["harry", "hank"]),
+    ("james", &["jim", "jimmy", "jamie"]),
+    ("jim", &["james", "jimmy"]),
+    ("jennifer", &["jen", "jenny"]),
+    ("jen", &["jennifer", "jenny"]),
+    ("jessica", &["jess", "jessie"]),
+    ("jess", &["jessica"]),
+    ("john", &["johnny", "jon", "jack"]),
+    ("jon", &["john", "jonathan"]),
+    ("jonathan", &["jon", "john", "nate"]),
+    ("joseph", &["joe", "joey"]),
+    ("joe", &["joseph", "joey"]),
+    ("joshua", &["josh"]),
+    ("josh", &["joshua"]),
+    ("kathleen", &["kathy", "kath", "kate"]),
+    ("kevin", &["kev"]),
+    ("laura", &["laurie", "lori"]),
+    ("margaret", &["meg", "maggie", "marge", "peggy"]),
+    ("mark", &["marc"]),
+    ("marc", &["mark"]),
+    ("matthew", &["matt", "matty"]),
+    ("matt", &["matthew"]),
+    ("michael", &["mike", "mick", "mickey", "mikey"]),
+    ("mike", &["michael", "mick"]),
+    ("mick", &["michael", "mike"]),
+    ("nicholas", &["nick", "nico", "nicky"]),
+    ("nick", &["nicholas", "nico"]),
+    ("patricia", &["pat", "tricia", "trish", "patty"]),
+    ("paul", &["paulie"]),
+    ("peter", &["pete", "petey"]),
+    ("pete", &["peter"]),
+    ("phillip", &["phil"]),
+    ("philip", &["phil"]),
+    ("phil", &["phillip", "philip"]),
+    ("rachel", &["rach"]),
+    ("rebecca", &["bec", "becca", "becky"]),
+    ("richard", &["rick", "rich", "richie", "ricky"]),
+    ("rick", &["richard"]),
+    ("robert", &["rob", "bob", "robbie", "bert"]),
+    ("rob", &["robert"]),
+    ("bob", &["robert"]),
+    ("samuel", &["sam", "sammy"]),
+    ("sam", &["samuel"]),
+    ("sarah", &["sara", "sally"]),
+    ("sara", &["sarah"]),
+    ("sean", &["shawn", "shaun"]),
+    ("shawn", &["sean", "shaun"]),
+    ("shaun", &["sean", "shawn"]),
+    ("stephen", &["steve", "steven"]),
+    ("steven", &["steve", "stephen"]),
+    ("steve", &["stephen", "steven"]),
+    ("susan", &["sue", "susie", "suzy"]),
+    ("sue", &["susan"]),
+    ("thomas", &["tom", "tommy"]),
+    ("tom", &["thomas", "tommy"]),
+    ("timothy", &["tim", "timmy"]),
+    ("tim", &["timothy"]),
+    ("victoria", &["vicky", "vicki", "tori"]),
+    ("william", &["will", "bill", "billy", "liam"]),
+    ("will", &["william"]),
+    ("bill", &["william"]),
+    ("liam", &["william"]),
+    ("zachary", &["zach", "zack"]),
+    ("zach", &["zachary"]),
+];
+
+fn first_aliases(name: &str) -> &'static [&'static str] {
+    for &(canonical, aliases) in NICKNAME_MAP {
+        if canonical == name {
+            return aliases;
+        }
+    }
+    &[]
+}
+
+// ── ParsedName ───────────────────────────────────────────────────────────────
+
 /// A parsed personal name plus an optional trailing number (e.g. a birth year).
 ///
-/// `first`/`middle`/`last` are ASCII-folded, lowercased handle tokens safe for
-/// byte slicing. `display_words` preserves human-facing capitalisation for
+/// `first`/`middle`/`last` are ASCII-folded lowercased handle tokens. `last_parts`
+/// holds per-component tokens for hyphenated surnames (e.g. "Smith-Jones" →
+/// `["smith", "jones"]`). `display_words` preserves original capitalisation for
 /// search-query construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedName {
     pub first: String,
     pub middle: Option<String>,
     pub last: String,
+    /// Non-empty only when the display last name contained a hyphen.
+    pub last_parts: Option<Vec<String>>,
     pub number: Option<String>,
     pub display_words: Vec<String>,
 }
 
 impl ParsedName {
-    /// `"First Middle Last"` with display capitalisation, for quoted searches.
     pub fn display_full(&self) -> String {
         self.display_words.join(" ")
     }
     pub fn display_first(&self) -> &str {
-        // `parse()` guarantees ≥2 words, but the fields are `pub` — a
-        // directly-constructed `ParsedName` must degrade to "" rather than
-        // panic (under `panic="abort"` a panic in `hse serve` aborts the
-        // whole process).
         self.display_words.first().map_or("", String::as_str)
     }
     pub fn display_last(&self) -> &str {
         self.display_words.last().map_or("", String::as_str)
     }
-    /// `"First-Last"` form used for path-style people URLs (e.g. Facebook).
     fn display_hyphen(&self) -> String {
         self.display_words.join("-")
     }
-    /// A universally-valid alphanumeric handle (`firstlast`) for path-style
-    /// profile URLs (Instagram, WhatsMyName) where dots/underscores vary.
     fn plain_handle(&self) -> String {
         format!("{}{}", self.first, self.last)
     }
@@ -146,36 +302,63 @@ pub struct Pivot {
     pub url: String,
 }
 
+// ── parse() ──────────────────────────────────────────────────────────────────
+
 /// Parse a free-form name string into [`ParsedName`].
 ///
-/// Returns `None` when fewer than two alphabetic tokens survive cleaning (a
-/// single name cannot seed search pivots). The ASCII-folded `first`/`last`
-/// handle tokens may be empty for non-Latin scripts; the caller skips
-/// username/email permutation in that case but still emits search pivots. An
-/// optional 2–4 digit run anywhere in the input is captured as `number`
-/// (NAMINT's "year" field), e.g. `"Jordan Meyers 1987"`.
+/// Returns `None` when fewer than two alphabetic tokens survive cleaning. Leading
+/// honorifics (Dr., Prof., Mr., …) and trailing generational/professional suffixes
+/// (Jr., Sr., III, PhD, …) are stripped so they never appear in handle tokens.
+/// An optional 2–4 digit run is captured as `number`.
 pub fn parse(raw: &str) -> Option<ParsedName> {
     let number = extract_number(raw);
 
-    // Tokenise on whitespace and commas; clean each token to letters plus
-    // internal hyphen/apostrophe; keep tokens that retain a letter.
-    let display_words: Vec<String> = raw
+    let mut display_words: Vec<String> = raw
         .split(|c: char| c.is_whitespace() || c == ',')
         .filter_map(clean_display_token)
         .collect();
+
+    // Strip leading honorific when ≥ 3 words remain (so we keep ≥ 2 after).
+    if display_words.len() > 2 {
+        let tok = display_words[0].to_ascii_lowercase();
+        if HONORIFICS.contains(&tok.as_str()) {
+            display_words.remove(0);
+        }
+    }
+
+    // Strip trailing generational/professional suffix when ≥ 3 words remain.
+    if display_words.len() > 2 {
+        let tok = display_words
+            .last()
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        if GEN_SUFFIXES.contains(&tok.as_str()) {
+            display_words.pop();
+        }
+    }
 
     if display_words.len() < 2 {
         return None;
     }
 
-    // ASCII-folded handle tokens. These may be empty for non-Latin names
-    // (e.g. Cyrillic/CJK), in which case username/email permutation is skipped
-    // by the caller but the display-name search pivots still generate.
     let first = sanitize(display_words.first().map_or("", String::as_str));
-    let last = sanitize(display_words.last().map_or("", String::as_str));
+    let last_display = display_words.last().map_or("", String::as_str);
+    let last = sanitize(last_display);
     let middle = if display_words.len() >= 3 {
         let m = sanitize(display_words.get(1).map_or("", String::as_str));
         (!m.is_empty()).then_some(m)
+    } else {
+        None
+    };
+
+    // Hyphenated surname: "Smith-Jones" → last_parts = ["smith", "jones"].
+    let last_parts = if last_display.contains('-') {
+        let parts: Vec<String> = last_display
+            .split('-')
+            .map(sanitize)
+            .filter(|p| !p.is_empty())
+            .collect();
+        if parts.len() >= 2 { Some(parts) } else { None }
     } else {
         None
     };
@@ -184,13 +367,14 @@ pub fn parse(raw: &str) -> Option<ParsedName> {
         first,
         middle,
         last,
+        last_parts,
         number,
         display_words,
     })
 }
 
-/// Read the email provider list from the environment, falling back to
-/// [`DEFAULT_DOMAINS`]. Invalid entries (no dot) are dropped.
+// ── email_domains() ──────────────────────────────────────────────────────────
+
 pub fn email_domains() -> Vec<String> {
     match std::env::var("HUNTSMAN_EMAIL_DOMAINS") {
         Ok(v) if !v.trim().is_empty() => {
@@ -216,11 +400,11 @@ fn default_domains() -> Vec<String> {
         .collect()
 }
 
-/// Generate scored login/username permutations, deduplicated (keeping the
-/// highest weight) and capped at [`MAX_USERNAMES`], best-first.
+// ── usernames() ──────────────────────────────────────────────────────────────
+
+/// Generate scored username permutations, deduplicated and capped at
+/// [`MAX_USERNAMES`], ordered best-first.
 pub fn usernames(p: &ParsedName) -> Vec<ScoredHandle> {
-    // Non-Latin names ASCII-fold to empty handle tokens; there are no
-    // meaningful login/email permutations without a first+last handle.
     if p.first.is_empty() || p.last.is_empty() {
         return Vec::new();
     }
@@ -231,7 +415,7 @@ pub fn usernames(p: &ParsedName) -> Vec<ScoredHandle> {
 
     let mut raw: Vec<(String, f64)> = Vec::new();
 
-    // Primary — the shapes that dominate real-world account handles.
+    // Primary — shapes dominating real-world account handles.
     raw.extend(
         [
             format!("{f}.{l}"),
@@ -243,10 +427,7 @@ pub fn usernames(p: &ParsedName) -> Vec<ScoredHandle> {
         .map(|h| (h, W_PRIMARY)),
     );
 
-    // Secondary — reversed and punctuation-joined variants. Bare single-token
-    // handles (`first` or `last` alone) are deliberately excluded: a lone given
-    // or family name is not a distinguishing handle — it matches countless
-    // unrelated people and only padded the candidate list with noise.
+    // Secondary — reversed, alternate-joined, and initial-blend variants.
     raw.extend(
         [
             format!("{l}.{f}"),
@@ -260,6 +441,10 @@ pub fn usernames(p: &ParsedName) -> Vec<ScoredHandle> {
             format!("{l}.{fi}"),
             format!("{fi}_{l}"),
             format!("{fi}-{l}"),
+            // Additional real-world shapes not in the original set.
+            format!("{l}_{fi}"),  // meyers_j
+            format!("{f}_{li}"),  // jordan_m  (distinct from f+li = jordanm)
+            format!("{fi}.{li}"), // j.m        (dot-joined initials)
         ]
         .map(|h| (h, W_SECONDARY)),
     );
@@ -277,6 +462,8 @@ pub fn usernames(p: &ParsedName) -> Vec<ScoredHandle> {
                 format!("{m}{l}"),
                 format!("{l}{m}"),
                 m.to_string(),
+                format!("{f}.{mi}.{l}"), // first.M.last (formal/corporate)
+                format!("{f}_{mi}_{l}"), // first_M_last
             ]
             .map(|h| (h, W_MIDDLE)),
         );
@@ -297,23 +484,42 @@ pub fn usernames(p: &ParsedName) -> Vec<ScoredHandle> {
         raw.extend(suffixed.into_iter().map(|h| (h, W_YEAR)));
     }
 
+    // Hyphenated-surname per-part shapes: "Smith-Jones" → shapes with each part.
+    if let Some(ref parts) = p.last_parts {
+        for part in parts {
+            if !part.is_empty() && part != l {
+                raw.push((format!("{f}.{part}"), W_SECONDARY));
+                raw.push((format!("{f}{part}"), W_SECONDARY));
+                raw.push((format!("{fi}{part}"), W_SECONDARY));
+            }
+        }
+    }
+
+    // Phonetic/nickname alias variants for the first name.
+    for &alias in first_aliases(f).iter().take(MAX_ALIAS_FIRST) {
+        if alias.is_empty() {
+            continue;
+        }
+        let ai = initial(alias);
+        raw.extend(
+            [
+                format!("{alias}.{l}"),
+                format!("{alias}{l}"),
+                format!("{alias}_{l}"),
+                format!("{ai}{l}"),
+            ]
+            .map(|h| (h, W_ALIAS)),
+        );
+    }
+
     dedup_top(raw, MAX_USERNAMES)
 }
 
-/// Generate speculative emails: likely handle shapes crossed with `domains`,
-/// ranked by **P(handle) × P(provider)** and capped at [`MAX_EMAILS`].
-///
-/// The previous handle-major ordering sprayed the single shape `first.last`
-/// across *every* provider before trying any other shape — so a budget of 8
-/// over six providers spent five slots on `first.last@{icloud,yahoo,proton,…}`
-/// and never reached `firstlast@gmail.com`, even though, for an arbitrary
-/// person, the latter is far likelier to exist. Ranking the full cross-product
-/// by the product of handle commonality and provider market share puts the
-/// budget where the median person's real address actually lives (top shapes on
-/// Gmail and the Microsoft/Yahoo tier) before spending it on long-tail combos.
+// ── emails() ─────────────────────────────────────────────────────────────────
+
+/// Generate speculative emails: handle shapes × `domains`, ranked by
+/// P(handle) × P(provider), capped at [`MAX_EMAILS`].
 pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<String> {
-    // Non-Latin names ASCII-fold to empty handle tokens; there are no
-    // meaningful login/email permutations without a first+last handle.
     if p.first.is_empty() || p.last.is_empty() {
         return Vec::new();
     }
@@ -322,9 +528,6 @@ pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<String> {
     let fi = initial(f);
     let li = initial(l);
 
-    // (handle, commonality weight) — the shapes real mailboxes most often take,
-    // weighted by how common each is. `first.last`/`firstlast` dominate; the
-    // initial-blends and reversed/number forms trail.
     let mut logins: Vec<(String, f64)> = vec![
         (format!("{f}.{l}"), 1.00),
         (format!("{f}{l}"), 0.95),
@@ -341,9 +544,6 @@ pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<String> {
         logins.push((format!("{f}{l}{n}"), 0.42));
     }
 
-    // Full cross-product scored by P(handle) × P(provider), then taken best
-    // first. A stable sort keeps the (handle, provider) declaration order as the
-    // deterministic tie-break so identical scores resolve identically.
     let mut scored: Vec<(f64, String)> = Vec::with_capacity(logins.len() * domains.len());
     let mut seen = std::collections::HashSet::new();
     for (login, hw) in &logins {
@@ -362,9 +562,8 @@ pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Gravatar avatar URL for an email — `MD5(lowercased, trimmed email)`.
-/// `d=404` makes the URL resolve only when an avatar actually exists, which is
-/// itself a weak existence signal for the address.
+// ── gravatar_url() ────────────────────────────────────────────────────────────
+
 pub fn gravatar_url(email: &str) -> String {
     use md5::{Digest, Md5};
     let mut h = Md5::new();
@@ -375,9 +574,10 @@ pub fn gravatar_url(email: &str) -> String {
     )
 }
 
+// ── pivots() ─────────────────────────────────────────────────────────────────
+
 /// Build the ordered set of search-query / people-search pivots, capped at
-/// [`MAX_PIVOTS`]. `top_email`, when present, unlocks the email-resolution
-/// pivots (Epieos).
+/// [`MAX_PIVOTS`]. `top_email` unlocks the Epieos pivot.
 pub fn pivots(p: &ParsedName, top_email: Option<&str>) -> Vec<Pivot> {
     let name = p.display_full();
     let qn = q(&format!("\"{name}\""));
@@ -385,9 +585,8 @@ pub fn pivots(p: &ParsedName, top_email: Option<&str>) -> Vec<Pivot> {
     let last = q(p.display_last());
     let handle = p.plain_handle();
     let has_handle = !handle.is_empty();
-    // Percent-encode the hyphen-joined display name like every other pivot value,
-    // so a non-Latin name doesn't embed raw UTF-8 in the Facebook path.
     let fb = q(&p.display_hyphen());
+    let qname = q(&name);
 
     let mut out: Vec<Pivot> = vec![
         pv(
@@ -428,6 +627,15 @@ pub fn pivots(p: &ParsedName, top_email: Option<&str>) -> Vec<Pivot> {
                 q(&format!("\"{name}\" site:pastebin.com OR site:throwbin.io"))
             ),
         ),
+        pv(
+            "Google — public records",
+            format!(
+                "https://www.google.com/search?q={}",
+                q(&format!(
+                    "\"{name}\" (address OR \"date of birth\" OR court OR arrest OR obituary)"
+                ))
+            ),
+        ),
         pv("Bing — web", format!("https://www.bing.com/search?q={qn}")),
         pv(
             "DuckDuckGo — web",
@@ -451,11 +659,23 @@ pub fn pivots(p: &ParsedName, top_email: Option<&str>) -> Vec<Pivot> {
         ),
         pv(
             "TikTok — people",
-            format!("https://www.tiktok.com/search/user?q={}", q(&name)),
+            format!("https://www.tiktok.com/search/user?q={qname}"),
         ),
         pv(
             "GitHub — users",
             format!("https://github.com/search?q={}&type=users", q(&name)),
+        ),
+        pv(
+            "Reddit — user search",
+            format!("https://www.reddit.com/search/?q={qn}&type=user"),
+        ),
+        pv(
+            "Pinterest — people",
+            format!("https://www.pinterest.com/search/users/?q={qname}"),
+        ),
+        pv(
+            "Webmii — people",
+            format!("https://webmii.com/people?n={}", q(&name)),
         ),
     ];
 
@@ -468,6 +688,23 @@ pub fn pivots(p: &ParsedName, top_email: Option<&str>) -> Vec<Pivot> {
             "WhatsMyName — username",
             format!("https://whatsmyname.app/?q={handle}"),
         ));
+        out.push(pv(
+            "Reddit — profile",
+            format!("https://www.reddit.com/user/{handle}"),
+        ));
+        out.push(pv(
+            "Snapchat — profile",
+            format!("https://www.snapchat.com/add/{handle}"),
+        ));
+        out.push(pv(
+            "Twitch — channel",
+            format!("https://www.twitch.tv/{handle}"),
+        ));
+        out.push(pv(
+            "YouTube — handle",
+            format!("https://www.youtube.com/@{handle}"),
+        ));
+        out.push(pv("Telegram — username", format!("https://t.me/{handle}")));
     }
 
     if let Some(email) = top_email {
@@ -481,27 +718,21 @@ pub fn pivots(p: &ParsedName, top_email: Option<&str>) -> Vec<Pivot> {
     out
 }
 
-// ── Internal helpers ────────────────────────────────────────────────────────
+// ── Internal helpers ──────────────────────────────────────────────────────────
 
 fn pv(platform: &'static str, url: String) -> Pivot {
     Pivot { platform, url }
 }
 
-/// First character of an ASCII-folded token. Callers guarantee non-empty.
 fn initial(s: &str) -> char {
     s.chars().next().unwrap_or('x')
 }
 
-/// Percent-encode a query-string value (spaces become `+`).
 fn q(s: &str) -> String {
     byte_serialize(s.as_bytes()).collect()
 }
 
-/// First 2–4 digit run in the input, captured as the NAMINT "number"/year.
 fn extract_number(raw: &str) -> Option<String> {
-    // Collect every 2–4 digit run, then prefer a 4-digit run (a likely birth
-    // year) over shorter ones; fall back to the first run otherwise. This keeps
-    // `"Jordan 12 Meyers 1987"` → `1987` rather than the leading `12`.
     let mut runs: Vec<String> = Vec::new();
     let mut run = String::new();
     for c in raw.chars() {
@@ -523,16 +754,12 @@ fn extract_number(raw: &str) -> Option<String> {
         .cloned()
 }
 
-/// Clean a raw token to its display form: letters plus internal hyphen/
-/// apostrophe, outer punctuation trimmed. `None` if no letter survives.
 fn clean_display_token(tok: &str) -> Option<String> {
     let kept: String = tok
         .chars()
         .filter(|c| c.is_alphabetic() || *c == '-' || *c == '\'')
         .collect();
     let kept = kept.trim_matches(|c| c == '-' || c == '\'').to_string();
-    // After filtering to letters (+ internal hyphen/apostrophe) and trimming
-    // those, any non-empty remainder is guaranteed to contain a letter.
     if kept.is_empty() {
         None
     } else {
@@ -540,8 +767,6 @@ fn clean_display_token(tok: &str) -> Option<String> {
     }
 }
 
-/// Uppercase the first character, preserve the remainder as typed
-/// (so `mcdonald` → `Mcdonald` but `McDonald` is left intact).
 fn titlecase(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
@@ -550,17 +775,10 @@ fn titlecase(s: &str) -> String {
     }
 }
 
-/// Fold a display token to a lowercase ASCII handle token, safe for byte
-/// slicing. Delegates to the shared [`crate::util::str_util::fold_ascii_lower`] so Latin diacritics
-/// map to their base letter (`José` → `jose`, `Müller` → `muller`) and derived
-/// handles match what platforms actually use; non-Latin scripts have no ASCII
-/// fold and yield an empty token (handled by the caller).
 fn sanitize(s: &str) -> String {
     crate::util::str_util::fold_ascii_lower(s)
 }
 
-/// Deduplicate `(handle, weight)` pairs keeping the highest weight per handle,
-/// drop empties, then return the top `cap` ordered by weight desc, then handle.
 fn dedup_top(raw: Vec<(String, f64)>, cap: usize) -> Vec<ScoredHandle> {
     use std::collections::HashMap;
     let mut best: HashMap<String, f64> = HashMap::new();
