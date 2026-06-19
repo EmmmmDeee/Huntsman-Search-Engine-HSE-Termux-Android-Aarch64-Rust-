@@ -318,7 +318,12 @@ fn sanitise_target_input(raw: &str) -> String {
             break;
         }
     }
-    s.to_string()
+    // Drop invisible/format characters (zero-width, bidi controls, soft hyphen,
+    // word joiner) that have no place in a seed value: two seeds a human reads
+    // as identical but that differ only by such a character would otherwise
+    // never deduplicate. `strip_invisible` borrows (no allocation) for the
+    // common clean input, so this is free when there is nothing to strip.
+    crate::core::validation::strip_invisible(s).into_owned()
 }
 
 /// Detect a [`TargetKind`] from a **raw**, user-supplied value — sanitising
@@ -386,6 +391,13 @@ impl Target {
         }
         if v.chars().any(char::is_control) {
             return Err("value contains control characters");
+        }
+        // Reject only the clear homograph spoof: a value that mixes genuine
+        // ASCII letters with ASCII-lookalike foreign-script letters (e.g. a
+        // Cyrillic-`а` in `paypal.com`). A legitimate all-one-script non-ASCII
+        // value has no ASCII letters to mix, so it is not flagged.
+        if crate::core::validation::is_confusable_mixed_script(v) {
+            return Err("value contains a mixed-script homograph (possible spoof)");
         }
         match self.kind {
             TargetKind::Email => {

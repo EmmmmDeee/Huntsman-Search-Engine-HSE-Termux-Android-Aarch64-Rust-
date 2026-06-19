@@ -770,6 +770,32 @@ fn validate_rejects_control_chars() {
 }
 
 #[test]
+fn validate_rejects_mixed_script_homograph() {
+    // A Cyrillic-`а` `pаypal.com` reads as the ASCII brand but is a distinct
+    // entity — the classic homograph spoof — and must be rejected.
+    assert!(
+        Target::new(TargetKind::Domain, "p\u{0430}ypal.com")
+            .validate()
+            .is_err()
+    );
+    // The clean ASCII seed passes (no behavioural change for legitimate input).
+    assert!(
+        Target::new(TargetKind::Domain, "paypal.com")
+            .validate()
+            .is_ok()
+    );
+}
+
+#[test]
+fn sanitise_strips_invisible_unicode() {
+    // A zero-width joiner padded into a value is removed at the ingestion
+    // boundary so the two spellings finally normalise to one (fixes silent
+    // non-dedup); clean input is unchanged.
+    assert_eq!(sanitise_target_input("jo\u{200D}hn"), "john");
+    assert_eq!(sanitise_target_input("john"), "john");
+}
+
+#[test]
 fn validate_email() {
     assert!(Target::new(TargetKind::Email, "a@b.com").validate().is_ok());
     assert!(

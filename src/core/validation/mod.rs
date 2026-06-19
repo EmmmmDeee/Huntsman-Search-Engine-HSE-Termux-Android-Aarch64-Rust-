@@ -22,6 +22,7 @@
 //!    downstream modules.
 
 mod composite;
+mod confusable;
 mod coordinates;
 mod domain;
 mod email;
@@ -34,6 +35,7 @@ mod report;
 mod tests;
 
 pub use composite::validate_for_kind;
+pub use confusable::{confusable_report, is_confusable_mixed_script, skeleton, strip_invisible};
 pub use coordinates::validate_coordinates;
 pub use domain::validate_domain_shape;
 pub use email::{is_role_mailbox, validate_email_syntax};
