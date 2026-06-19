@@ -13,6 +13,7 @@ pub(super) fn build_entities(
     target: &Target,
     scan_id: &str,
     results: &[SearchResult],
+    url_engine_count: &std::collections::HashMap<String, u32>,
 ) -> ModuleResult {
     let mut result = ModuleResult::new();
     if results.is_empty() {
@@ -21,16 +22,17 @@ pub(super) fn build_entities(
 
     let terms = target_terms(target);
 
-    // Pre-scan: count how many independent engines confirmed each URL.
-    // Multi-engine corroboration boosts entity confidence because
-    // different engines have different indexes — an independent match
-    // is strong evidence of relevance.
-    let mut url_engine_count: std::collections::HashMap<String, HashSet<&str>> =
-        std::collections::HashMap::new();
-    for r in results {
-        let key = canonicalize_url(&r.url);
-        url_engine_count.entry(key).or_default().insert(r.engine);
-    }
+    // Multi-engine corroboration boosts entity confidence because different
+    // engines have different indexes — an independent match is strong evidence
+    // of relevance. The count of how many engines confirmed each URL is supplied
+    // by the caller, computed from the PRE-dedup results via `url_engine_counts`.
+    // It MUST NOT be recomputed from `results` here: by the time the module
+    // reaches entity construction `results` has been deduped to one
+    // `SearchResult` per canonical URL, so every URL would map to a single
+    // engine and the corroboration boost would silently collapse to 1. We still
+    // iterate the deduped `results` for entity EMISSION (one entity per URL, and
+    // so per-result snippet emails/phones are not double-counted) — only the
+    // corroboration count comes from the wider pre-dedup map.
 
     let mut seen_domains: HashSet<String> = HashSet::new();
     let mut seen_emails: HashSet<String> = HashSet::new();
@@ -79,7 +81,8 @@ pub(super) fn build_entities(
 
         let n_engines = url_engine_count
             .get(&canonicalize_url(&r.url))
-            .map_or(1, |s| s.len() as u32);
+            .copied()
+            .unwrap_or(1);
 
         if is_subdomain && seen_domains.insert(host.clone()) {
             let mut e = Entity::new(EntityKind::Domain, &host, 0.70, scan_id);

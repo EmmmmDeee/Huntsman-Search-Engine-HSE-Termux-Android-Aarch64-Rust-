@@ -801,7 +801,7 @@ fn username_seed_emits_profile_urls_not_bare_external_domains() {
         mk("https://spokeo.com/kylo4kylo"),
         mk("https://kylosrealsite.com/about"),
     ];
-    let res = build_entities(&target, "s", &results);
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
     let domains: Vec<&str> = res
         .entities
         .iter()
@@ -838,14 +838,11 @@ fn people_search_name_extraction_requires_on_target_relation() {
         engine: "yahoo",
         query: "Haigen Bamford".to_string(),
     };
-    let res = build_entities(
-        &target,
-        "s",
-        &[
-            mk("https://www.peekyou.com/_bochary"),
-            mk("https://www.peekyou.com/haigen_bamford"),
-        ],
-    );
+    let results = [
+        mk("https://www.peekyou.com/_bochary"),
+        mk("https://www.peekyou.com/haigen_bamford"),
+    ];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
     let persons: Vec<&str> = res
         .entities
         .iter()
@@ -1299,9 +1296,18 @@ fn score_username_promotes_seed_variant_over_cooccurrence() {
 
 #[test]
 fn confirmed_profile_corroborated_by_engines_reaches_verified() {
-    // A confirmed profile independently returned by N engines must now credit
-    // all N (cross-engine corroboration) and so cross into the Verified tier —
-    // previously the URL branch ignored engine agreement, capping it at base.
+    // A confirmed profile independently returned by N engines must credit all N
+    // (cross-engine corroboration) and so cross into the Verified tier.
+    //
+    // This test exercises the REAL `process()` ordering — count engines from the
+    // PRE-dedup results, THEN dedup, THEN build — so it genuinely guards the bug
+    // it covers. The masked-away regression was that `process()` deduped the
+    // results (one `SearchResult` per canonical URL) BEFORE entity construction,
+    // and `build_entities` recomputed the engine count from that already-deduped
+    // slice, so every URL credited exactly one engine in production. Feeding
+    // pre-deduped same-URL results straight into `build_entities` (as this test
+    // once did) hid that: it never ran the dedup step. See
+    // `corroboration_count_survives_dedup` for the focused dedup-ordering guard.
     let target = Target::new(TargetKind::Username, "kylo4kylo");
     let mk = |engine: &'static str| SearchResult {
         url: "https://x.com/kylo4kylo".to_string(),
@@ -1311,18 +1317,84 @@ fn confirmed_profile_corroborated_by_engines_reaches_verified() {
         query: "kylo4kylo".to_string(),
     };
     let results = vec![mk("duckduckgo"), mk("brave"), mk("mojeek")];
-    let res = build_entities(&target, "s", &results);
+    // Mirror process(): engine count from PRE-dedup results, then dedup.
+    let url_engine_count = url_engine_counts(&results);
+    let deduped = dedup_results(results);
+    assert_eq!(deduped.len(), 1, "the three same-URL results dedup to one");
+    let res = build_entities(&target, "s", &deduped, &url_engine_count);
     let prof = res
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Url && e.value == "https://x.com/kylo4kylo")
         .expect("confirmed profile url entity");
     assert!(prof.has_tag("confirmed-profile"));
-    assert_eq!(prof.corroboration, 3, "should credit all 3 engines");
+    assert_eq!(
+        prof.corroboration, 3,
+        "all 3 engines must be credited even though dedup kept one result"
+    );
     assert!(
         prof.c_effective() >= 0.75,
         "3-engine confirmed profile must be Verified, got c_eff={}",
         prof.c_effective()
+    );
+}
+
+#[test]
+fn corroboration_count_survives_dedup() {
+    // Focused regression for the dedup-then-build ordering bug. `process()`
+    // dedups results to one `SearchResult` per canonical URL before building
+    // entities; the cross-engine corroboration count must therefore be computed
+    // from the PRE-dedup results and threaded through, NOT recomputed from the
+    // deduped slice (which would always yield 1). This pins the exact data flow:
+    // a domain subdomain URL and a confirmed-profile URL each returned by three
+    // engines must both carry corroboration == 3 after the dedup pass.
+    let domain_seed = Target::new(TargetKind::Domain, "targetcorp.com.au");
+    let sub_mk = |engine: &'static str| SearchResult {
+        url: "https://mail.targetcorp.com.au/login".to_string(),
+        title: "login".to_string(),
+        snippet: "mail server".to_string(),
+        engine,
+        query: "targetcorp.com.au".to_string(),
+    };
+    let domain_results = vec![sub_mk("duckduckgo"), sub_mk("brave"), sub_mk("yahoo")];
+    let domain_counts = url_engine_counts(&domain_results);
+    let domain_deduped = dedup_results(domain_results);
+    assert_eq!(domain_deduped.len(), 1, "same-URL results dedup to one");
+    let domain_res = build_entities(&domain_seed, "s", &domain_deduped, &domain_counts);
+    let sub = domain_res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain && e.value == "mail.targetcorp.com.au")
+        .expect("subdomain entity");
+    assert_eq!(
+        sub.corroboration, 3,
+        "subdomain corroboration must survive dedup, got {}",
+        sub.corroboration
+    );
+
+    // Same data flow for a confirmed-profile Url entity.
+    let user_seed = Target::new(TargetKind::Username, "kylo4kylo");
+    let prof_mk = |engine: &'static str| SearchResult {
+        url: "https://x.com/kylo4kylo".to_string(),
+        title: "kylo4kylo".to_string(),
+        snippet: "kylo4kylo on X".to_string(),
+        engine,
+        query: "kylo4kylo".to_string(),
+    };
+    let prof_results = vec![prof_mk("duckduckgo"), prof_mk("brave"), prof_mk("mojeek")];
+    let prof_counts = url_engine_counts(&prof_results);
+    let prof_deduped = dedup_results(prof_results);
+    assert_eq!(prof_deduped.len(), 1, "same-URL results dedup to one");
+    let prof_res = build_entities(&user_seed, "s", &prof_deduped, &prof_counts);
+    let prof = prof_res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Url && e.value == "https://x.com/kylo4kylo")
+        .expect("confirmed profile url entity");
+    assert_eq!(
+        prof.corroboration, 3,
+        "profile corroboration must survive dedup, got {}",
+        prof.corroboration
     );
 }
 
@@ -1349,7 +1421,7 @@ fn email_seed_emits_no_bare_external_domains() {
         mk("https://snusbase.com/result"),
         mk("https://some-unrelated-blog.com/about"),
     ];
-    let res = build_entities(&target, "s", &results);
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
     let domains: Vec<&str> = res
         .entities
         .iter()
@@ -1380,12 +1452,17 @@ fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
     };
     // Same subdomain URL from two independent engines → corroboration 2.
     // One external-domain URL from a single engine → corroboration 1.
+    // Mirror process(): count engines from the PRE-dedup results, then dedup,
+    // so the two same-URL subdomain hits collapse to one entity that still
+    // credits both engines.
     let results = vec![
         mk("https://mail.targetcorp.com.au/login", "duckduckgo"),
         mk("https://mail.targetcorp.com.au/login", "brave"),
         mk("https://partnerfirm.com/about", "duckduckgo"),
     ];
-    let res = build_entities(&target, "s", &results);
+    let url_engine_count = url_engine_counts(&results);
+    let results = dedup_results(results);
+    let res = build_entities(&target, "s", &results, &url_engine_count);
 
     let sub = res
         .entities
@@ -1483,6 +1560,7 @@ fn url_from_a_location_seed_is_quarantined_as_generic_location() {
         &Target::new(TargetKind::Address, "Regents Park, QLD"),
         "s",
         &results,
+        &url_engine_counts(&results),
     );
     let u = loc
         .entities
