@@ -267,6 +267,33 @@ fn pattern_table_specific_prefixes_resolve_to_their_service() {
 }
 
 #[test]
+fn extended_high_value_providers_resolve_to_their_service() {
+    // The precise providers appended to the table (Fly.io's modern `fm2_`
+    // macaroon, Grafana, Tailscale, Google OAuth client secret, Sourcegraph,
+    // DigitalOcean OAuth). Asserting the EXACT service — not merely "some
+    // service" — proves none is shadowed by a generic earlier stem. min_len is
+    // read from the table so the synthesised candidate always clears the gate.
+    let cases = [
+        ("fm2_", "flyio"),
+        ("glsa_", "grafana"),
+        ("tskey-", "tailscale"),
+        ("GOCSPX-", "google_oauth_secret"),
+        ("sgp_", "sourcegraph"),
+        ("doo_v1_", "digitalocean_oauth"),
+    ];
+    for (prefix, expected) in cases {
+        let min_len = KEY_PATTERNS
+            .iter()
+            .find(|p| p.prefix == prefix)
+            .map_or_else(|| panic!("{prefix} missing from KEY_PATTERNS"), |p| p.min_len);
+        let cand = synthesise_for(prefix, min_len);
+        let (svc, _) = identify_api_key(&cand)
+            .unwrap_or_else(|| panic!("expected {expected} for {cand}, got None"));
+        assert_eq!(svc, expected, "wrong service for {cand}");
+    }
+}
+
+#[test]
 fn pattern_table_is_structurally_sound() {
     // 1. Every entry is well-formed: a non-empty prefix + service, and a
     //    min_len long enough to leave at least one character past the prefix
@@ -1555,6 +1582,9 @@ fn key_value_tier_ranks_high_services() {
         "vercel_project",
         "netlify",
         "railway",
+        "tailscale",
+        "digitalocean_oauth",
+        "google_oauth_secret",
     ] {
         assert_eq!(key_value_tier(svc), KeyValue::High, "service {svc}");
         assert!(key_value_tier(svc).is_high_value());

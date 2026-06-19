@@ -206,7 +206,10 @@ pub fn key_value_tier(service: &str) -> KeyValue {
         | "railway"
         | "flyio"
         | "databricks"
-        | "aptible" => KeyValue::High,
+        | "aptible"
+        | "tailscale"
+        | "digitalocean_oauth"
+        | "google_oauth_secret" => KeyValue::High,
 
         // ── Low: public/publishable identifiers, webhook URLs, geocoding. ──
         "discord_webhook_url"
