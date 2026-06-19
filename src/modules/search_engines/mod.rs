@@ -226,6 +226,18 @@ impl Module for SearchEngines {
         // recycler passes, scaling with the budget instead of a flat 30 s that
         // made the primary pass degenerate under the trimmed Termux budget.
         let primary_reserve_ms = (budget_ms / 4).max(8_000);
+        // Hard fetch deadlines (as `Instant`s) enforced before EVERY request, so
+        // the module always self-finalises with whatever it gathered instead of
+        // being killed at the engine's hard timeout — which drops the in-flight
+        // future and ALL accumulated results (the live "search_engines: timeout →
+        // 0 entities" failure on every run). The primary pass stops a reserve
+        // short to hand time to the pivot + recycler passes; every pass stops a
+        // safety margin short of the kill so dedup + entity build still run.
+        const FINALIZE_MARGIN_MS: u64 = 2_000;
+        let primary_deadline = process_start
+            + std::time::Duration::from_millis(budget_ms.saturating_sub(primary_reserve_ms));
+        let fetch_deadline = process_start
+            + std::time::Duration::from_millis(budget_ms.saturating_sub(FINALIZE_MARGIN_MS));
         let mut all_results: Vec<SearchResult> = Vec::new();
 
         // Track engines that failed on the first query so we skip them
@@ -235,11 +247,7 @@ impl Module for SearchEngines {
 
         // ── Primary pass: run all queries against live engines ─────
         for (qi, query) in queries.iter().enumerate() {
-            if ctx.cancel.is_cancelled() {
-                break;
-            }
-            let elapsed = process_start.elapsed().as_millis() as u64;
-            if elapsed > budget_ms.saturating_sub(primary_reserve_ms) {
+            if ctx.cancel.is_cancelled() || std::time::Instant::now() >= primary_deadline {
                 break;
             }
 
@@ -247,7 +255,9 @@ impl Module for SearchEngines {
                 if !engine_enabled(engine.name) {
                     continue;
                 }
-                if ctx.cancel.is_cancelled() {
+                // Budget enforced per ENGINE, not just per query: one slow query
+                // across 17 serial engines must never overrun into the hard kill.
+                if ctx.cancel.is_cancelled() || std::time::Instant::now() >= primary_deadline {
                     break;
                 }
                 if qi > 0 && dead_engines.contains(engine.name) {
@@ -272,7 +282,9 @@ impl Module for SearchEngines {
                         && let Some(paginate_fn) = engine.paginate
                     {
                         for page in 1..MAX_PAGES {
-                            if ctx.cancel.is_cancelled() {
+                            if ctx.cancel.is_cancelled()
+                                || std::time::Instant::now() >= primary_deadline
+                            {
                                 break;
                             }
                             tokio::time::sleep(std::time::Duration::from_millis(INTER_ENGINE_MS))
@@ -320,14 +332,17 @@ impl Module for SearchEngines {
             if !pivots.is_empty() {
                 let reliable = reliable_engines();
                 for pivot_query in pivots.iter().take(10) {
-                    if ctx.cancel.is_cancelled() {
+                    if ctx.cancel.is_cancelled() || std::time::Instant::now() >= fetch_deadline {
                         break;
                     }
                     for engine in &reliable {
                         if !engine_enabled(engine.name) {
                             continue;
                         }
-                        if ctx.cancel.is_cancelled() {
+                        // Same hard-deadline guard as the primary pass: never start
+                        // a request that would overrun the kill timeout.
+                        if ctx.cancel.is_cancelled() || std::time::Instant::now() >= fetch_deadline
+                        {
                             break;
                         }
                         if dead_engines.contains(engine.name) {
@@ -355,7 +370,14 @@ impl Module for SearchEngines {
         let elapsed_ms = process_start.elapsed().as_millis() as u64;
         let remaining_ms = budget_ms.saturating_sub(elapsed_ms);
         if !ctx.cancel.is_cancelled() && remaining_ms > 15_000 {
-            recycle_entities(ctx, &mut module_result, &dead_engines, &all_results).await;
+            recycle_entities(
+                ctx,
+                &mut module_result,
+                &dead_engines,
+                &all_results,
+                fetch_deadline,
+            )
+            .await;
         }
 
         Ok(module_result)
