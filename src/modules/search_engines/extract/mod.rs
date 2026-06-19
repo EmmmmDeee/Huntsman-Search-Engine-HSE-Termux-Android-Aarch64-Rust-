@@ -16,6 +16,7 @@ pub(super) async fn recycle_entities(
     result: &mut ModuleResult,
     dead_engines: &HashSet<&str>,
     _primary_results: &[SearchResult],
+    deadline: std::time::Instant,
 ) {
     let reliable = reliable_engines();
 
@@ -75,14 +76,17 @@ pub(super) async fn recycle_entities(
     let mut recycled_results: Vec<SearchResult> = Vec::new();
 
     for query in recycle_queries.iter().take(12) {
-        if ctx.cancel.is_cancelled() {
+        if ctx.cancel.is_cancelled() || std::time::Instant::now() >= deadline {
             break;
         }
         for engine in &reliable {
             if !engine_enabled(engine.name) {
                 continue;
             }
-            if ctx.cancel.is_cancelled() {
+            // Honour the module's hard fetch deadline so the recycler can never
+            // overrun into the engine's kill timeout (which would discard the
+            // whole result — primary findings included). Checked per request.
+            if ctx.cancel.is_cancelled() || std::time::Instant::now() >= deadline {
                 break;
             }
             if dead_engines.contains(engine.name) {
