@@ -6,10 +6,18 @@ use crate::core::{
     module::ModuleResult,
 };
 
-/// Extract Organisation entities (mobile carriers) from a cell-tower
-/// observation response. Each Network record's SSID-like field holds
-/// the operator/carrier name when WiGLE has it; we mode-rank to find
-/// the dominant carrier in the bbox.
+/// Extract Organisation + Coordinates entities from a WiGLE cell-tower
+/// observation response.
+///
+/// **Organisation** — mode-ranked carrier name from the SSID-like field.
+///
+/// **Coordinates** — each tower record that carries a `trilat`/`trilong`
+/// position is emitted as a `Coordinates` entity (capped at 3, sorted by
+/// proximity to the scan target).  These feed the OpenCelliD `getInArea`
+/// path automatically via the engine's entity→target routing, closing the
+/// WiGLE→cell-position→OpenCelliD corroboration loop without any manual
+/// pivot.  The cap prevents quota exhaustion when WiGLE returns a dense
+/// urban grid.
 pub(super) fn extract_cell_intel(
     resp: &Resp,
     target_value: &str,
@@ -19,33 +27,78 @@ pub(super) fn extract_cell_intel(
     if resp.success != Some(true) || resp.results.is_empty() {
         return;
     }
+
+    // ── Organisation: dominant carrier ──────────────────────────────────────
     let carriers: Vec<&str> = resp
         .results
         .iter()
         .filter_map(|n| n.ssid.as_deref())
         .filter(|s| !s.is_empty() && !is_generic_ssid(s))
         .collect();
-    if carriers.is_empty() {
-        return;
+    if !carriers.is_empty() {
+        let top = mode(&carriers);
+        if !top.is_empty() {
+            let total = resp.results.len();
+            let mut org = Entity::new(EntityKind::Organisation, top, 0.55, scan_id);
+            org.tag("wigle");
+            org.tag("cell-carrier");
+            org.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("Cell carrier presence inferred from WiGLE near {target_value}"),
+                )
+                .with_attr("cell_observations", total.to_string())
+                .with_attr("dominant_carrier", top)
+                .with_attr("source", "wigle_cell"),
+            );
+            result.push(org);
+        }
     }
-    let top = mode(&carriers);
-    if top.is_empty() {
-        return;
+
+    // ── Coordinates: top-3 tower positions (closest to target) ──────────────
+    // Parse the target coords for proximity ranking; skip if unparseable.
+    let target_coords = crate::util::geo::parse_coords(target_value).ok();
+    let mut towers: Vec<(f64, f64, f64)> = resp
+        .results
+        .iter()
+        .filter_map(|n| {
+            let lat = n.trilat?;
+            let lon = n.trilong?;
+            if !crate::util::geo::is_valid_coords(lat, lon) {
+                return None;
+            }
+            let dist = target_coords.map_or(0.0, |(t_lat, t_lon)| {
+                let dlat = lat - t_lat;
+                let dlon = lon - t_lon;
+                dlat * dlat + dlon * dlon
+            });
+            Some((lat, lon, dist))
+        })
+        .collect();
+    towers.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+    towers.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-5 && (a.1 - b.1).abs() < 1e-5);
+
+    for (lat, lon, _) in towers.into_iter().take(3) {
+        let coords = format!("{lat:.6},{lon:.6}");
+        let mut geo = Entity::new(EntityKind::Coordinates, &coords, 0.65, scan_id);
+        geo.tag("wigle");
+        geo.tag("cell-tower");
+        geo.tag("cell-observed");
+        if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
+            geo.tag(format!("au-state:{state}"));
+            geo.tag("country:AU");
+        }
+        geo.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("WiGLE cell tower position near {target_value}"),
+            )
+            .with_attr("source", "wigle_cell")
+            .with_attr("latitude", lat.to_string())
+            .with_attr("longitude", lon.to_string()),
+        );
+        result.push(geo);
     }
-    let total = resp.results.len();
-    let mut org = Entity::new(EntityKind::Organisation, top, 0.55, scan_id);
-    org.tag("wigle");
-    org.tag("cell-carrier");
-    org.add_evidence(
-        Evidence::new(
-            SRC,
-            format!("Cell carrier presence inferred from WiGLE near {target_value}"),
-        )
-        .with_attr("cell_observations", total.to_string())
-        .with_attr("dominant_carrier", top)
-        .with_attr("source", "wigle_cell"),
-    );
-    result.push(org);
 }
 
 /// Extract Bluetooth beacon MAC addresses near the target. Limited

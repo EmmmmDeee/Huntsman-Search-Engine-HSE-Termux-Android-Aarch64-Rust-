@@ -70,7 +70,13 @@ impl Module for SmtpVrfy {
 
         // The whole outcome space — no-MX, the four SMTP verdicts — flows
         // through `verdict` so the entity mapping is a single pure step.
-        let (mx_host, verdict) = match resolve_mx(domain).await {
+        let (mx_result, spf_result, dmarc_result) = tokio::join!(
+            resolve_mx(domain),
+            resolve_spf(domain),
+            resolve_dmarc(domain),
+        );
+
+        let (mx_host, verdict) = match mx_result {
             None => (None, SmtpVerdict::NoMx),
             Some(host) => {
                 let v = smtp_rcpt_check(&host, &email).await;
@@ -78,13 +84,27 @@ impl Module for SmtpVrfy {
             }
         };
 
-        result.push(build_entity(
-            &email,
-            domain,
-            mx_host.as_deref(),
-            &verdict,
-            &ctx.scan_id,
-        ));
+        let mut entity = build_entity(&email, domain, mx_host.as_deref(), &verdict, &ctx.scan_id);
+
+        if mx_host.is_some() {
+            entity.add_evidence(
+                Evidence::new(SRC, format!("MX record present for {domain}"))
+                    .with_attr("mx_present", domain),
+            );
+        }
+        if let Some(spf) = spf_result {
+            entity.add_evidence(
+                Evidence::new(SRC, format!("SPF policy for {domain}"))
+                    .with_attr("spf_policy", &spf),
+            );
+        }
+        if let Some(dmarc) = dmarc_result {
+            entity.add_evidence(
+                Evidence::new(SRC, format!("DMARC policy for {domain}")).with_attr("dmarc", &dmarc),
+            );
+        }
+
+        result.push(entity);
         Ok(result)
     }
 }
@@ -108,7 +128,7 @@ pub(super) enum SmtpVerdict {
 /// each verdict fixes the confidence and `smtp-*` tag, and attaches a `mx_host`
 /// evidence attribute whenever an MX was found (every case except `NoMx`).
 /// `domain` is used only for the no-MX message. Mirrors the deliverability
-/// ladder: valid 0.92 ≫ catch-all 0.50 > invalid 0.35 > unreachable/no-MX 0.30.
+/// ladder: valid 0.92 ≫ invalid 0.35 > catch-all 0.30 = unreachable/no-MX 0.30.
 pub(super) fn build_entity(
     email: &str,
     domain: &str,
@@ -136,7 +156,7 @@ pub(super) fn build_entity(
             Some(c.as_str()),
         ),
         SmtpVerdict::CatchAll => (
-            0.50,
+            0.30,
             "smtp-catchall",
             format!(
                 "{} appears to accept all recipients",
@@ -163,6 +183,51 @@ pub(super) fn build_entity(
     }
     e.add_evidence(ev);
     e
+}
+
+async fn resolve_spf(domain: &str) -> Option<String> {
+    use hickory_resolver::proto::rr::RData;
+    let resolver = crate::util::dns::shared_resolver();
+    let lookup = resolver.txt_lookup(domain).await.ok()?;
+    lookup
+        .answers()
+        .iter()
+        .filter_map(|r| match &r.data {
+            RData::TXT(txt) => {
+                let s = txt.to_string();
+                let s = s.trim_matches('"');
+                if s.starts_with("v=spf1") {
+                    Some(s.to_string())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .next()
+}
+
+async fn resolve_dmarc(domain: &str) -> Option<String> {
+    use hickory_resolver::proto::rr::RData;
+    let dmarc_domain = format!("_dmarc.{domain}");
+    let resolver = crate::util::dns::shared_resolver();
+    let lookup = resolver.txt_lookup(dmarc_domain.as_str()).await.ok()?;
+    lookup
+        .answers()
+        .iter()
+        .filter_map(|r| match &r.data {
+            RData::TXT(txt) => {
+                let s = txt.to_string();
+                let s = s.trim_matches('"');
+                if s.starts_with("v=DMARC1") {
+                    Some(s.to_string())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .next()
 }
 
 async fn resolve_mx(domain: &str) -> Option<String> {

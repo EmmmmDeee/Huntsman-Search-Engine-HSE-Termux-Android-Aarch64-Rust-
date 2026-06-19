@@ -1,9 +1,19 @@
 name: Release (prebuilt Termux aarch64 binary)
 
-# Publishes a prebuilt, stripped aarch64 Termux binary on every version tag,
-# so users can install WITHOUT a Rust toolchain or a 1–3 min on-device build:
+# Publishes a prebuilt, stripped aarch64 Termux binary so users can install
+# WITHOUT a Rust toolchain or an on-device build (and so install.sh's
+# auto-download fallback has an asset to fetch when the local toolchain is
+# broken):
 #   curl -fsSL .../releases/latest/download/hse-aarch64-linux-android -o $PREFIX/bin/hse
 #   chmod +x $PREFIX/bin/hse
+#
+# It fires three ways:
+#   • push a version tag `v*`            → publish to that tag
+#   • push to main                       → publish v<Cargo.toml version> ONCE
+#                                          (skipped if that tag already exists,
+#                                          so it cuts a release exactly on a
+#                                          version bump, not on every push)
+#   • manual workflow_dispatch(tag)      → (re)build + publish to that tag
 #
 # The build reuses ci.yml's verified NDK recipe (the only way to cross-compile
 # ring's aarch64 asm + bundled-SQLite C for Android). Target API 24 = Termux's
@@ -14,27 +24,98 @@ on:
   push:
     tags:
       - "v*"
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to (re)build and attach the binary to"
+        description: "Release tag to create/attach the binary to (e.g. v1.4.0)"
         required: true
+        default: "v1.4.0"
 
 permissions:
-  contents: write # create/upload to the GitHub Release
+  contents: write # create the tag + create/upload to the GitHub Release
+
+# Serialise per ref so two quick pushes (or a push landing mid-build) can't race
+# to create the same tag/release. Don't cancel an in-flight publish — let it
+# finish; a queued follow-up no-ops once the version's tag exists.
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  # Decide the target tag and whether there's anything to publish. Splitting this
+  # out keeps the (slow) cross-build from even starting on a routine main push
+  # whose version was already released.
+  resolve:
+    name: Resolve release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.t.outputs.tag }}
+      publish: ${{ steps.t.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: t
+        env:
+          # Pull user-controlled inputs through env vars so they are never
+          # interpolated directly into the shell script (prevents injection
+          # via tag names containing $(...), backticks, or shell metacharacters).
+          GH_INPUT_TAG: ${{ github.event.inputs.tag }}
+          GH_REF_NAME: ${{ github.ref_name }}
+          GH_REF_TYPE: ${{ github.ref_type }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          publish=true
+          case "$GH_EVENT_NAME" in
+            workflow_dispatch)
+              tag="$GH_INPUT_TAG"
+              ;;
+            push)
+              if [[ "$GH_REF_TYPE" == "tag" ]]; then
+                tag="$GH_REF_NAME"
+              else
+                # main push: derive v<version> from Cargo.toml and publish only
+                # if that tag doesn't already exist (idempotent per version).
+                ver="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n1)"
+                tag="v${ver}"
+                if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+                  echo "Tag ${tag} already exists — nothing to publish."
+                  publish=false
+                fi
+              fi
+              ;;
+            *)
+              echo "Unexpected event '${GH_EVENT_NAME}' — refusing to publish to an empty tag." >&2
+              exit 1
+              ;;
+          esac
+          # Validate the resolved tag against the git refname charset BEFORE
+          # writing it to GITHUB_OUTPUT. This closes output injection: a value
+          # containing a newline could otherwise smuggle extra step-output keys
+          # (e.g. a forged `publish=true`). A legitimate version tag only ever
+          # contains [A-Za-z0-9._/-], so anything else is rejected outright.
+          if [[ -z "$tag" || ! "$tag" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "Refusing unsafe or empty tag value: '${tag}'" >&2
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag=${tag} publish=${publish}"
+
   termux-binary:
     name: Build + publish aarch64 Termux binary
+    needs: resolve
+    if: needs.resolve.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          # On a tag push, github.ref_name is the tag; on manual dispatch, use
-          # the input tag. Without this, a manual rebuild would check out the
-          # default branch and upload a binary that doesn't match the tag's
-          # commit.
-          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          # Tag push → check out the tag. main push / manual dispatch → check out
+          # the launching commit (github.sha); the resolved tag may not exist yet
+          # — the publish step creates it from this same commit. (Checking out a
+          # not-yet-existent tag would fail the run.)
+          ref: ${{ (github.event_name == 'push' && github.ref_type == 'tag') && github.ref_name || github.sha }}
 
       - name: Install Rust + aarch64 Android target
         uses: dtolnay/rust-toolchain@stable
@@ -70,7 +151,7 @@ jobs:
       - name: Publish to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          tag_name: ${{ needs.resolve.outputs.tag }}
           files: |
             dist/hse-aarch64-linux-android
             dist/hse-aarch64-linux-android.sha256
@@ -78,7 +159,7 @@ jobs:
             Prebuilt **aarch64 Termux** binary (no Rust toolchain needed).
 
             ```bash
-            curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag || github.ref_name }}/hse-aarch64-linux-android -o "$PREFIX/bin/hse"
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ needs.resolve.outputs.tag }}/hse-aarch64-linux-android -o "$PREFIX/bin/hse"
             chmod +x "$PREFIX/bin/hse"
             hse serve   # then open http://127.0.0.1:8080
             ```

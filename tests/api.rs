@@ -90,6 +90,9 @@ fn test_app(suffix: &str) -> axum::Router {
         scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
             huntsman_search_engine::api::MAX_CONCURRENT_SCANS,
         )),
+        update_info: Arc::new(std::sync::Mutex::new(
+            huntsman_search_engine::api::UpdateInfo::default(),
+        )),
     });
     router(state, "127.0.0.1:8080")
 }
@@ -124,6 +127,9 @@ fn test_app_with_store(suffix: &str) -> (axum::Router, Arc<Store>) {
         proxy_pool: Default::default(),
         scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
             huntsman_search_engine::api::MAX_CONCURRENT_SCANS,
+        )),
+        update_info: Arc::new(std::sync::Mutex::new(
+            huntsman_search_engine::api::UpdateInfo::default(),
         )),
     });
     (router(state, "127.0.0.1:8080"), store)
@@ -1465,6 +1471,7 @@ async fn spa_references_only_registered_api_endpoints() {
             "selftest" => "/api/v1/selftest".to_string(),
             "logs" => "/api/v1/logs".to_string(),
             "live" => "/api/v1/live".to_string(),
+            "update" => "/api/v1/update/status".to_string(),
             other => panic!(
                 "SPA references /api/v1/{other} but this test has no probe for it — \
                  add one and confirm the route is registered in src/api/routes.rs"

@@ -213,7 +213,16 @@ pub fn load_from_file_only(path: &Path) -> HashMap<String, String> {
         if !key.starts_with("HUNTSMAN_") {
             continue;
         }
-        let value = trimmed[eq + 1..].trim().to_string();
+        // Strip surrounding double-quotes if present so the result matches
+        // what dotenvy returns in load() — e.g. KEY="val" → "val", not
+        // "\"val\"". SUPERSEDED rotation compares against unquoted constants,
+        // and the Settings UI should show the bare value.
+        let raw = trimmed[eq + 1..].trim();
+        let value = raw
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or(raw)
+            .to_string();
         out.insert(key.to_string(), value);
     }
     out
@@ -381,6 +390,11 @@ pub fn write_keys_at(
             .map_err(|e| Error::Other(format!("open {}: {e}", tmp.display())))?;
         f.write_all(body.as_bytes())
             .map_err(|e| Error::Other(format!("write {}: {e}", tmp.display())))?;
+        // Flush kernel buffers to storage before the atomic rename so a
+        // power-cut between rename and writeback cannot produce a
+        // zero-length or partial ~/.huntsman.env (which would delete all keys).
+        f.sync_all()
+            .map_err(|e| Error::Other(format!("sync {}: {e}", tmp.display())))?;
     }
     #[cfg(not(unix))]
     {

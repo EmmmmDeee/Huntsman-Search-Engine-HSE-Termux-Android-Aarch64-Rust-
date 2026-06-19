@@ -109,6 +109,9 @@ pub(crate) struct ModuleStats {
     /// out because a required API key is absent. Counted separately from
     /// `errored` so an unconfigured optional provider is never a failure.
     pub skipped: usize,
+    /// Modules whose result was replayed from the inter-scan entity cache
+    /// (C9 / SOL-CACHE-INTERSCAN). Not counted in `run`.
+    pub cached: usize,
 }
 
 /// Mutable scan-wide accumulators threaded through the expansion loop: the
@@ -567,6 +570,7 @@ impl ScanEngine {
             scan.modules_timed_out = stats.timed_out;
             scan.modules_deduped = stats.deduped;
             scan.modules_skipped = stats.skipped;
+            scan.modules_cached = stats.cached;
 
             if persisted == 0 && first_err.is_some() {
                 scan.status = ScanStatus::Failed;
@@ -1369,8 +1373,13 @@ impl ScanEngine {
 /// set on every sweep — single source of truth, so adding a new
 /// sensor module here both bypasses preflight AND joins the radar
 /// loop in one edit.
-pub(crate) const LOCAL_PASSIVE_MODULES: &[&str] =
-    &["device_sensors", "wifi_intel", "cell_intel", "local_net"];
+pub(crate) const LOCAL_PASSIVE_MODULES: &[&str] = &[
+    "device_sensors",
+    "wifi_intel",
+    "cell_intel",
+    "local_net",
+    "signal_radar",
+];
 
 #[cfg(test)]
 mod tests;

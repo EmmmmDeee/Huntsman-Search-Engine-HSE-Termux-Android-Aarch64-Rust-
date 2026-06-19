@@ -5,44 +5,99 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
 
-Pure-Rust OSINT / GEOINT platform with **119 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **127 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 SpiderFoot-style Web UI, zero native dependencies.
 
 ---
 
-## Install (Termux, Android aarch64, no root)
+## Install (Termux Android aarch64, no root)
 
-Download **HSE.zip** from the GitHub Releases page in Chrome, then paste this
-single command into Termux:
+### ⭐ The installer — one line, all-in-one
 
-```bash
-rm -rf ~/HSE && cp ~/storage/downloads/HSE.zip ~/ && unzip -q ~/HSE.zip -d ~/HSE && bash ~/HSE/*/install.sh
-```
+This **single command is the installation** — it always tracks the latest
+`main`, does **absolutely everything**, and is **safe to re-run** (re-running
+upgrades an existing install in place to the newest version):
 
-That's it. The installer detects it is running inside the extracted source tree
-and handles everything automatically — no internet, no GitHub token, no cloning.
-Build takes ~4-6 min on aarch64. After the first build the binary is cached to
-your Downloads folder so re-installing skips the compile entirely.
-
-**Storage permission (one-time, if not already done):**
-Android Settings → Apps → Termux → Permissions → Files and media →
-**Allow management of all files** (not just media).
-
-### One-liner install (internet required)
+> **Termux prerequisite:** Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/) or the [GitHub release](https://github.com/termux/termux-app/releases) — **not** the Play Store (abandoned 2020, broken packages). The installer detects and rejects the Play Store build automatically.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/claude/vigilant-galileo-vmjk3e/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh | bash
 ```
 
-### After install
+It installs the toolchain (`rust`, `clang`, `binutils`, `git`, …), clones **or
+updates** the source, builds the release binary (retrying on flaky mobile
+networks), installs `hse` to `$PREFIX/bin`, sets up the `hse-bg` background
+wrapper + optional Termux:Boot autostart, writes the keys template, and runs
+`hse doctor` to verify. **Existing installs are fully handled**: it fetches +
+rebuilds, **preserves your `~/.huntsman.env` keys**, auto-rotates the embedded
+keys on first run, swaps the binary **atomically** (safe even while a server is
+live), and **restarts a running `hse-bg` onto the new build** so the upgrade
+takes effect immediately. Idempotent — re-run any time to upgrade.
+
+**No-build fast path:** the installer prefers a prebuilt aarch64 binary over a
+source compile, trying in order: (1) a precompiled `hse` /
+`hse-aarch64-linux-android` in your **Downloads** folder, then (2) the binary
+published on this repo's [GitHub Releases](https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/latest)
+— **downloaded and verified automatically** (size + ELF + `.sha256` + a
+run-test). Either way: no Rust toolchain, no compile. This is also the
+**fallback when the on-device build can't proceed** — e.g. a broken Termux
+`rust` package that ships no static std — so the install still succeeds. After
+a *source* build it caches the binary back to Downloads, so your next install
+(or another aarch64 phone) takes the instant path automatically. Knobs: point
+at a file with `HSE_PREBUILT=/path/to/hse`, pin a release with
+`HSE_PREBUILT_TAG=vX.Y.Z`, skip the download with `HSE_NO_DOWNLOAD=1`, force a
+source build with `HSE_PREFER_BUILD=1`, or keep your own Termux mirror with
+`HSE_KEEP_MIRROR=1`.
+
+Also works on Debian/Ubuntu and macOS. Full log at `~/.cache/hse-install.log`.
+See [`docs/INSTALL.md`](docs/INSTALL.md) for every install path, knobs
+(`HSE_REF`, `HSE_INSTALL_DIR`, …) and Termux quirks.
+
+Then launch the Web UI:
 
 ```bash
-hse-bg start          # runs hse serve with Android wake-lock (screen-off safe)
-# Open Chrome on the device → http://127.0.0.1:8080
+hse serve   # binds 127.0.0.1:8080 (loopback only)
 ```
 
-See [`docs/INSTALL.md`](docs/INSTALL.md) for all options, environment knobs, manual build steps, and troubleshooting.
+Open **Chrome** (or Firefox) on the phone and go to `http://127.0.0.1:8080`.
+You'll get a SpiderFoot-style dark-navbar UI — **Dashboard · New Scan · Scans ·
+Live · Engines · Settings** — where **New Scan** drives the engine and each
+scan's results page tabs through a sortable entity browser, a D3 force graph,
+severity-tagged correlations, and a real-time (SSE) event log. The **Settings
+page lets you paste & save API keys** straight from the browser (loopback-only,
+so keys never leave the device).
+
+> That's the whole install: **one command, then `hse serve`, then open
+> `http://127.0.0.1:8080` in Chrome.** Everything below is reference detail.
+
+> **Termux battery & background (required for long scans):** Android → Settings → Apps → Termux → Battery → set to **Unrestricted** and enable "Allow background data". Without this Android kills Termux mid-scan.
+
+### Manual build (advanced — the installer already does this)
+
+The one-line installer above **is** the supported installation — it always
+pulls and builds the latest `main`, and its built-in no-build fast path
+(Downloads cache, above) covers the prebuilt-binary case. If you'd rather drive
+the build by hand:
+
+```bash
+pkg install -y git rust binutils clang && git clone --depth 1 https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git ~/hse && cd ~/hse && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
+```
+
+To upgrade a manual clone, either re-run the all-in-one installer above (it
+detects and updates an in-place clone), or:
+
+```bash
+cd ~/hse && git pull origin main && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
+```
+
+> **Seeing a `Username for 'https://github.com':` prompt?** A public repo
+> never asks for credentials — that prompt means the repository is currently
+> **private**. No password is required once it's public; until then, clone
+> over SSH with a key already on your GitHub account (no typed password):
+> ```bash
+> pkg install -y git rust binutils clang openssh && git clone --depth 1 git@github.com:EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git ~/hse && cd ~/hse && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
+> ```
 
 ---
 
@@ -50,7 +105,7 @@ See [`docs/INSTALL.md`](docs/INSTALL.md) for all options, environment knobs, man
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 119 modules
+hse modules                                                 # list all 127 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
@@ -78,7 +133,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 ## Seed Types (16 supported)
 
 | Seed | Flag | Example | Modules |
-|------|------|---------|--------|
+|------|------|---------|---------|
 | Email | `--kind email` | `user@example.com` | 35 |
 | Username | `--kind username` | `johndoe` | 14 |
 | Phone | `--kind phone` | `+61400000000` | 8 |
@@ -98,35 +153,35 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ---
 
-## Module Overview (119 modules — 90 free, 29 key-gated/paid)
+## Module Overview (127 modules — 94 free, 33 key-gated/paid)
 
-> Grouped highlights below (all 118). The **complete** catalogue with target
+> Grouped highlights below (all 127). The **complete** catalogue with target
 > kinds and output entities — kept exhaustive by the
 > `modules_md_lists_every_registered_module` CI guard — lives in
 > [`docs/MODULES.md`](docs/MODULES.md). The headline count is swept against
 > `registry()` in CI; run `hse modules` for the live list.
 
-**API-Free (no keys required) — 90:**
+**API-Free (no keys required) — 93:**
 - **Breach/identity**: `psbdmp`, `pwned_passwords`, `xposed_or_not`
 - **Social**: `crates_io`, `github_code_search`, `github_user`, `hacker_news`, `keybase`, `npm_author`, `reddit_user`, `social_probe`, `streaming_probe`, `username_search`, `username_variants`
-- **People**: `au_electoral`, `au_people`, `au_property`, `contact_enrich`, `employer_pivot`, `gravatar`, `name_intel`, `pgp`, `wikidata`
+- **People**: `ahpra`, `au_electoral`, `au_people`, `au_property`, `contact_enrich`, `employer_pivot`, `gravatar`, `name_intel`, `pgp`, `wikidata`
 - **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `rdap_domain`, `subdomain_takeover`, `typosquat`, `whois`
 - **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipapi`, `ipinfo`, `ipquery`, `netblock`, `portscan`, `ripestat`, `shodan`, `urlscan`
-- **Geolocation**: `breach_timezone`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `overpass`, `phone_area_geo`, `phone_carrier_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
+- **Geolocation**: `breach_timezone`, `cell_local`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `overpass`, `phone_area_geo`, `phone_carrier_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
 - **Threat intel**: `urlhaus`
 - **Email**: `disposable_check`, `email_canonical`, `email_parse`, `smtp_vrfy`
 - **Phone**: `phone_intl`
-- **Corporate**: `acnc_charities`, `asic_director`, `au_unclaimed`, `gleif_lei`, `opencorporates`
+- **Corporate**: `acma_rrl`, `acnc_charities`, `asic_director`, `au_unclaimed`, `austlii`, `gleif_lei`, `opencorporates`
 - **Search**: `search_engines`
 - **Web analysis**: `cloud_storage`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
 - **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`, `signal_radar`
 - **Other**: `api_key_probe`, `chain_intel`, `qld_unclaimed`
 
-**Key-gated / Paid — 29 (24 key-gated · 5 paid):**
+**Key-gated / Paid — 33 (28 key-gated · 5 paid):**
 - `abn_lookup`, `abuseipdb`, `censys`, `criminal_ip`, `dehashed`, `emailrep`
-- `epieos`, `exa_search`, `fullcontact`, `hibp`, `hunter_io`, `intelx`, `ipqs`
-- `leakix`, `niamonx`, `numverify`, `oathnet_pro`, `onyphe`, `osintcat`, `proxycurl`
-- `securitytrails`, `see_know`, `seon`, `threatfox`, `virustotal`, `whoisxml`
+- `epieos`, `exa_search`, `fullcontact`, `hibp`, `hlr_cnam`, `hunter_io`, `intelx`, `ipqs`
+- `leakix`, `netlas`, `niamonx`, `numverify`, `oathnet_pro`, `onyphe`, `opencellid`, `osintcat`, `proxycurl`
+- `securitytrails`, `see_know`, `seon`, `threatfox`, `trove_au`, `virustotal`, `whoisxml`
 - `wifi_intel`, `wigle`, `zoomeye`
 
 
@@ -191,7 +246,7 @@ Round 1: High-confidence entities (C_eff ≥ 0.75) become new targets.
 Round 2: Discovered IPs → geo modules → coordinates → address.
 
 | Knob | Default | Purpose |
-|------|---------|--------|
+|------|---------|---------|
 | `--depth N` | `2` | Max expansion rounds (0 = single seed round) |
 | `--min-expand-confidence F` | `0.50` | Min C_eff to expand (0.75 = Verified-only) |
 | `--max-entities N` | none | Stop at N total entities |
@@ -251,7 +306,7 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 - **Runtime AI-independence** — zero AI/ML/LLM/inference/vector/embedding deps; every result is deterministic Rust, identical on Termux aarch64 (no root), Linux and CI with no AI available (CI-enforced; charter: [`docs/RUNTIME_INDEPENDENCE.md`](docs/RUNTIME_INDEPENDENCE.md))
 - rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
-- 2900+ tests (unit + API integration + architecture boundary enforcement)
+- 3,100+ tests (unit + API integration + architecture boundary enforcement)
 - 59 correlator rules (AU-001 through AU-059), incl. graph-aware edge rules
 - 2 tokio worker threads (tuned for Termux low-power devices)
 - Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)

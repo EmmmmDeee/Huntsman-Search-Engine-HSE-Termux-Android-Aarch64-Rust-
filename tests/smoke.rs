@@ -1809,7 +1809,7 @@ fn every_declared_produced_pivot_has_a_consumer() {
     let mut orphans = Vec::new();
     for m in &modules {
         for ek in m.produces() {
-            // Kinds with no scan target (Credential/Password/DeviceId/Other) are
+            // Kinds with no scan target (Credential/Password/Other) are
             // intentionally terminal — they never expand, so they can't orphan.
             if let Some(tk) = TargetKind::from_entity_kind(ek)
                 && !consumed.contains(&tk)

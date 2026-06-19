@@ -60,7 +60,8 @@ fn dispatch_cost(kind: TargetKind) -> f64 {
         | TargetKind::MacAddress
         | TargetKind::AbnAcn
         | TargetKind::CryptoAddress
-        | TargetKind::ApiKey => 1.0,
+        | TargetKind::ApiKey
+        | TargetKind::DeviceId => 1.0,
         TargetKind::Organisation => 1.3,
         TargetKind::Url => 1.5,
         // Infrastructure: each dispatch fans into a large, mostly self-referential

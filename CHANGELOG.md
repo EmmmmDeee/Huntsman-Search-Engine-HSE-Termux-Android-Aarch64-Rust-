@@ -46,6 +46,59 @@ versions can include breaking changes; patch versions are bug-fix-only.
   body; `smtp_vrfy` caps a reply line at 8 KiB). Every fix preserves behaviour on
   legitimate input and ships with a regression test.
 
+- **Update / installer / release-CI hardening (PROBLEM_TREE cycle 23 — six
+  defects from an adversarial self-review of the v1.4.0 surface).** Closed a
+  **CI script-injection** path — `release.yml` interpolated the
+  `workflow_dispatch` tag input directly into a `run:` block; inputs now flow
+  through `env:` vars, the resolved tag is validated against the git-refname
+  charset before it reaches `GITHUB_OUTPUT` (blocking newline output-injection),
+  and the event `case` gained a fail-closed default. Added the **loopback-only
+  guard** to `POST /api/v1/update/trigger` (it was missing while every
+  settings-write handler has it, so a client reaching a `--bind 0.0.0.0` server
+  could force an in-place binary swap) via a named, tested `reject_non_loopback`
+  helper. Fixed three `install.sh` bugs: `CARGO_TARGET_DIR` was set only inside
+  the source-build branch but read in the summary, so **every successful prebuilt
+  install aborted** under `set -u`; a failed `.sha256` sidecar download silently
+  fell back to run-test-only validation (the network path now **requires** the
+  checksum); and the `HUNTSMAN_INSTALL_DIR` record used `sed`, which a path
+  containing `&`/`|`/`\` could corrupt (now `grep`+`printf`+`chmod 0600`). In the
+  key store, `load_from_file_only` now strips the surrounding double-quotes the
+  writer emits (SUPERSEDED embedded-key rotation silently never matched), and
+  `write_keys_at` `fsync`s before the atomic rename so a power-cut can't leave a
+  zero-length `~/.huntsman.env`. A reviewer-flagged `cell_db::query_bbox`
+  "lat/lon binding swap" was investigated and **rejected as a false positive**
+  (the bindings are correct; the round-trip test proves it). +2 regression tests.
+
+- **`hudsonrock` URL-encoding fix and `employer_pivot` role-email guard
+  (PROBLEM_TREE cycle 25 / SOL-QUERY-PIPE).** Two code bugs found from a real-scan
+  debug bundle (`full_name = Zac Allen`, hse_version 1.4.0). **(A) `hudsonrock`
+  HTTP 400:** `urlencode()` encoded `@` as `%40`; HudsonRock Cavalier's
+  `search-by-login` validates `@` presence in the raw (pre-decode) query string, so
+  `dns%40cloudflare.com` triggered "Email is required". Fixed by
+  `.replace("%40", "@")` after encoding + an early-exit guard for any email value
+  lacking `@`. **(B) `employer_pivot` false attribution:** `dns@cloudflare.com`
+  (a SOA RNAME address emitted by `dns_intel` at confidence 0.70) had its
+  `dns-admin` tag stripped at entity→target conversion (the `Target` struct has no
+  tags field). With no role-email guard, `employer_pivot` scraped cloudflare.com's
+  contact pages and attributed the Cloudflare Sydney HQ address to scan subject Zac
+  Allen — a severe false positive. Fixed by `is_role_email_local()` (21 RFC 2142 /
+  conventional system local-parts) with a `let`-chain guard at the top of
+  `process()`. +5 unit tests covering both fixes. 3,097 lib tests, 0 failures.
+
+- **Sensor contamination fix — `signal_radar` no longer fires on non-geo target
+  seeds (PROBLEM_TREE cycle 24 / SOL-SENSOR-GATE).** `signal_radar` ran WiFi,
+  Bluetooth, cell, GPS, and LAN-ARP sensors for *every* scan target regardless of
+  kind (email, name, phone, domain, IP, …), injecting the operator's physical
+  RF environment into unrelated scans and attributing the phone's GPS fix, visible
+  APs, and nearby cell towers to the remote subject. Downstream geo modules
+  (`cell_local`, `opencellid`) then fired on those injected coordinates, compounding
+  the contamination. Two-part fix: `signal_radar::accepts()` narrowed to
+  `Coordinates | MacAddress` only (matching the established pattern of all five peer
+  live-sensor modules); `"signal_radar"` added to `LOCAL_PASSIVE_MODULES` in
+  `core::engine` to suppress expansion-round re-firing. No new test code required:
+  the existing `local_passive_sensor_modules_reject_remote_subject_seeds`
+  architecture test now automatically covers `signal_radar`.
+
 - **Correctness & robustness hardening (PROBLEM_TREE T0–T2).** Closed the
   `to_lowercase()` byte-offset slice **panic class** (T0.1/T0.2) —
   `au_electoral`/`au_property`/`search_engines` now route through a boundary-safe

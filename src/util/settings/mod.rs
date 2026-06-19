@@ -97,6 +97,13 @@ pub const FEATURE_TOGGLES: &[(&str, bool)] = &[
     // (`hse config feature.recall off`) for a leave-no-memory session that must
     // ignore everything previously gathered.
     ("feature.recall", true),
+    // Autonomous self-update: background task checks for upstream commits every
+    // 6 h and applies them automatically when ON. The binary restarts in-place
+    // via exec(2). Turn off to manage updates manually (`hse update`).
+    ("feature.auto_update", true),
+    // Update-available notification: when ON the web UI shows a badge and
+    // notification when commits are available (even if auto_update is OFF).
+    ("feature.update_notify", true),
 ];
 
 /// The feature toggles with their current effective state (override else

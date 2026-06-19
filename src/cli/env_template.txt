@@ -30,6 +30,8 @@ HUNTSMAN_IPQS_KEY="insert_ipqs_key_here"
 # People & phone enrichment (free developer tiers):
 HUNTSMAN_FULLCONTACT_KEY="insert_fullcontact_key_here"
 HUNTSMAN_NUMVERIFY_KEY="insert_numverify_apilayer_key_here"
+HUNTSMAN_HLR_KEY="insert_hlrlookups_key_here"
+HUNTSMAN_OPENCNAM_KEY="insert_opencnam_key_here"
 # [RESERVED] not yet wired to a module:
 HUNTSMAN_ALIENVAULT_KEY="insert_alienvault_otx_key_here"
 HUNTSMAN_MALSHARE_KEY="insert_malshare_key_here"
@@ -55,6 +57,8 @@ HUNTSMAN_SEON_KEY="insert_seon_key_here"
 HUNTSMAN_EMAILREP_KEY="insert_emailrep_key_here"
 HUNTSMAN_PROXYCURL_KEY="insert_proxycurl_key_here"
 HUNTSMAN_OPENCORP_KEY="insert_opencorporates_key_here"
+# Australian archives:
+HUNTSMAN_TROVE_KEY="insert_nla_trove_key_here"
 HUNTSMAN_BREACHDIR_KEY="insert_breachdirectory_key_here"
 HUNTSMAN_HUNTER_KEY="insert_hunter_io_key_here"
 # [RESERVED] not yet wired to a module (xposed_or_not + hudsonrock modules run

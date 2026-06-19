@@ -73,14 +73,14 @@ Priority: **P0** crash/corruption · **P1** breaks a core guarantee · **P2**
 quality/robustness · **P3** minor · **CAP** capability/feature.
 Each node: **ID · statement · location · impact · → optimal solution · prio · status**.
 
-Current baseline (grounded in the codebase, 2026-06-17): 119 modules across 14
-categories (Infrastructure 20, Geo 19, People 15, DnsRecon 13, Breach 11, Social
-11, Email 6, Corporate 6, Web 5, Sensor 4, Threat 3, Search/Phone/Other 2 each);
-60 native correlation rules (AU-001…AU-060); 0 `unsafe`; deterministic entity
-merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
-`criterion` 0.8 direct (dev-only, zero shipped cost — F.3); `aho-corasick` +
-`memchr` now direct deps (F.1, `util::scan` + `util::html`); `bstr`, `fst`,
-`arbitrary` still NOT direct.**
+Current baseline (grounded in the codebase, 2026-06-18): **126 modules** (93 free
+· 28 key-gated · 5 paid) across 14 categories (Infrastructure 21, Geo 20, People
+16, DnsRecon 13, Breach 11, Social 11, Email 6, Corporate 9, Phone 3, Web 5,
+Sensor 4, Threat 3, Search/Other 2 each); 59 native correlation rules
+(AU-001…AU-059); 0 `unsafe`; deterministic entity merge; SQLite store; SSE live;
+axum SPA. Deps: `regex` in; **`proptest` 1.11 + `criterion` 0.8 direct (dev-only,
+zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
+`util::scan` + `util::html`); `bstr`, `fst`, `arbitrary` still NOT direct.**
 
 ---
 
@@ -249,7 +249,7 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
   `rest.find('&')`, and `inner.find(';')` with `memchr(b'&', …)` / `memchr(b';', …)`
   SIMD byte searches. `&` and `;` are ASCII so byte offsets are valid char boundaries.
   *Remaining:* `bstr` adoption (no direct consumer yet — promote with first direct use).
-- **`[x]` F.2 · `fst`-backed datasets (phone-first + de-duplication)** — many
+- **`[~]` F.2 · `fst`-backed datasets (phone-first + de-duplication)** — many
   static tables are hand-coded `&[&str]`/`match` arms, several **duplicated**
   (freemail in `util/oathnet_batch` vs `util/domains`; `country_name` in
   `phone_area_geo` vs `util/geohash`; OUI; AU postcode/suburb; division→state;
@@ -263,14 +263,12 @@ merge; SQLite store; SSE live; axum SPA. Deps: `regex` in; **`proptest` 1.11 +
   **P1-enabler** ◑ **De-dup goal met** (see T2.6): the drift-prone *shared* lists
   (freemail, country_name) are now single-sourced via delegation — `fst` is not
   needed for these (≈30–250 entries; memory-mapping buys nothing at that size).
-  ✅ **Cycle 17 (S→P re-audit, 2026-06-17): fst accepted-deferred.** Table-size
-  re-audit: the "OUI ≈30k" premise assumed the full IEEE registry; HSE deliberately
-  uses a curated ~120-entry OUI subset. `postcode_au/mod.rs` has 76 entries;
-  `city_coords/mod.rs` 165 entries; `address_au` uses 8 numeric ranges (not
-  individual postcodes). At ≤165 entries, a linear scan is ≤200 ns — `fst`
-  flat-RAM lookup buys nothing measurable. **F.2 `[~]`→`[x]`**: de-dup goal is
-  met; `fst` is `[-]` accepted-deferred at current table sizes.
-  **Paired:** `SOLUTION_TREE` SOL-F2 `[~]`→`[x]` + §4b/§4d — same commit.
+  *Remaining (premise corrected, cycle 18):* the "large table" assumption was wrong —
+  Huntsman uses curated subsets: OUI ≈111 entries (not the full IEEE registry ≈30k),
+  AU postcode ≈72 entries, phone area codes ≈65 entries. At these sizes `fst` adds a
+  heavy compile dep for zero on-device benefit; `fst` adoption is `[-]` (accepted-
+  won't-build). Levenshtein fuzzy matching (suburb/username-variant) remains a future
+  capability goal but can be pursued via a lighter mechanism.
 - **`[~]` F.3 · Proof & measurement infrastructure** — was: no property testing,
   no fuzzing, only `#[ignore]` perf baselines.
   → **Solution:** add (dev-only, zero runtime cost): **`proptest`** suites for
@@ -594,21 +592,19 @@ Grounded in the existing modules and the BUILD set of `OSINT_MATRIX_GAP_ANALYSIS
 Each node: **current → target → solution**. Everything here is built on §3.F
 primitives. AU bias and an offensive (active-collection) posture throughout.
 
-- **`[~]` C1 · Correlation & identity depth — *the Maltego-without-graphs play***.
-  *Current:* 60 native rules + deterministic GREATEST-merge identity + AU-060
-  transitive identity closure (cycle 18). *Target:* out-link-analyse Maltego by
-  delivering the *conclusion*, not a canvas.
-  → **Solution:** ✅ **(a) transitive identity resolution** (`rule_au_060_transitive_identity_closure`,
-  cycle 18): BFS over the relation graph; finds identity nodes (Person/Email/Phone/
-  Username) reachable in 2–4 hops with no direct single-edge shortcut; emits Medium
-  (≤3 hops) or Low (4 hops) correlation with full path in `entity_uids`; 10 tests,
-  architecture guard satisfied; **(b) open** — a **"Connections" section** in the dossier
-  rendering the strongest entity links as text (shared selectors, identity paths, reused
-  secrets); **(c) open** — deepen the **timeline** into a first-class output; **(d) open**
-  — add the rule gaps the AU-0xx register implies. GEXF stays as the *optional* escape
-  hatch for graph-oriented users. **CAP-high**
-  ✅ **Cycle 18 (P→S, 2026-06-17): (a) delivered.** Paired: `SOLUTION_TREE` SOL-CORR
-  `[ ]`→`[~]` + §4a/§4d/§5 — same commit.
+- **`[ ]` C1 · Correlation & identity depth — *the Maltego-without-graphs play***.
+  *Current:* 59 native rules + deterministic GREATEST-merge identity. *Target:*
+  out-link-analyse Maltego by delivering the *conclusion*, not a canvas.
+  → **Solution:** (a) **transitive identity resolution** — if A↔B and B↔C share
+  selectors, emit A↔C with decayed confidence (closure over the merge graph,
+  property-tested for convergence & determinism); (b) a **"Connections" section**
+  in the dossier that renders the strongest entity links as text (shared
+  selectors, the path between two identities, the controller behind reused
+  secrets) — graph-free link analysis, reproducible and scriptable; (c) deepen
+  the **timeline** (already present) into a first-class output; (d) add the rule
+  gaps the AU-0xx register implies. GEXF stays as the *optional* escape hatch for
+  users who want a graph (covers Maltego's graph crowd without heavy in-app
+  graphing). **CAP-high**
 - **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
@@ -616,7 +612,7 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   seconds, M MB RAM" benchmark; enforce streaming/bounded memory everywhere
   (cap+chunk, never slurp). SpiderFoot (CPython) structurally cannot match
   on-device aarch64 throughput. **CAP-high**
-- **`[ ]` C3 · Australian moat (BUILD, AU-biased)** — *Current:* `asic_director`,
+- **`[~]` C3 · Australian moat (BUILD, AU-biased)** — *Current:* `asic_director`,
   `abn_lookup`, `acnc`, `au_electoral`, `au_property`, `qld_unclaimed`,
   `au_people`, `gleif_lei`, AU phone/carrier/postcode geo. → **Solution
   (roadmap):** G5 harden `smtp_vrfy` (MX/SPF/catch-all → lift free email-verify
@@ -625,7 +621,23 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   radiocomms/spectrum licences (AU NETINT); fuller **ASIC/ABR** company graph;
   complete state **cadastre/property**; deeper **courts/AustLII**. All free or
   BYO-key, all AU-first. **CAP-high (AU bias)**
-- **`[ ]` C4 · NETINT depth** — *Current:* `dns_intel`, `cert_intel`, `crtsh`,
+  *Delivered (2026-06-18, cycle 17):* G5 `smtp_vrfy` hardened — parallel
+  `tokio::join!(resolve_mx, resolve_spf, resolve_dmarc)`, CatchAll confidence
+  0.50→0.30; G9 `hlr_cnam` (HLR phone status + CNAM subscriber name, BYO
+  `HUNTSMAN_HLR_KEY` + `HUNTSMAN_OPENCNAM_KEY`, priority 138, Phone); `ahpra`
+  (AHPRA health-practitioner register HTML scrape, free, priority 86, People);
+  `acma_rrl` (ACMA radiocommunications register, free, priority 48, Corporate,
+  ATT&CK override T1591.001/T1591.002); `trove_au` (NLA Trove newspaper archive,
+  BYO `HUNTSMAN_TROVE_KEY`, priority 57, Corporate). Also: `reddit_user` →
+  Organisation entities for subreddits; `hacker_news` → Domain entities from
+  Algolia submissions; `github_user` → `fetch_orgs` + `fetch_gists`. Module count
+  119→124 (92 free · 27 key-gated · 5 paid).
+  *Delivered (cycle 20, 2026-06-18): `austlii` — free AustLII court/legislation
+  scraper; `FullName`/`Organisation` → `Url` + `Organisation`; Corporate-9; 125→126
+  modules, 92→93 free.*
+  *Remaining:* GNAF/AusPost address validation; fuller ASIC/ABR graph; state
+  cadastre/property.
+- **`[~]` C4 · NETINT depth** — *Current:* `dns_intel`, `cert_intel`, `crtsh`,
   `shodan` (free InternetDB), `censys`, `zoomeye`, `subdomain_takeover`,
   `waf_detect`, `portscan`, `bgpview`, `ripestat`. CDN/Cloudflare noise is already
   suppressed at 5 layers (range-based `is_cdn_edge_ip` v4+**v6**, the shared
@@ -639,13 +651,37 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   pre-onboarding passive-DNS history, SSL-cert-hash pivot on Censys/Shodan, and
   direct-connect subdomains (`cpanel.`/`ftp.`/`mail.`/`dev.` often non-proxied) →
   emit a tagged `origin-candidate` IP for the fronted domain. **CAP-med**
-- **`[ ]` C5 · GEOINT convergence — *already ahead; widen the lead*** — *Current:*
+  *Delivered (2026-06-18, cycle 17):* `netlas` (Netlas.io host intel — ports,
+  JARM, SSL cert emails, CVEs, ISP, geo, BYO `HUNTSMAN_NETLAS_KEY`, priority 79,
+  Infrastructure); `censys` priority 35→78.
+  *Delivered (confirmed cycle 20 S→P audit):* `securitytrails`
+  (`HUNTSMAN_SECTRAILS_KEY`, Domain+IpAddress→Domain, subdomain enum + reverse-IP
+  hostnames); ASN/BGP org/prefix pivots (`bgpview` + `ripestat` both present).
+  *Remaining:* passive-DNS leg of subdomain union (brute ∪ CT already ship);
+  Cloudflare/CDN cert-hash origin-unmasking.
+- **`[~]` C5 · GEOINT convergence — *already ahead; widen the lead*** — *Current:*
   multi-source fusion (WiGLE + EXIF + cell + IP + address→coords) with AU-state
   attribution and convergence rules (AU-052/056/057/059). Neither competitor
   does this. → **Solution:** feed more sources into the confidence-weighted
   centroid; tighten the AU bounding-box/state precision; add movement/timeline
   geo; output a single best-estimate **with provenance + a confidence radius**.
   **CAP-med (differentiator)**
+  *Delivered (cycle 19, 2026-06-18): `opencellid` — first-class key-gated module
+  (`HUNTSMAN_OPENCELLID_KEY`); accepts `Coordinates`; queries OpenCelliD
+  `getInArea` BBOX endpoint; emits `DeviceId` + `Coordinates` for every tower
+  within ~1 km; `cache_ttl_secs=86400`; ATT&CK T1591.001+T1596. Previously
+  OpenCelliD was only an internal helper inside `cell_intel` (not queryable as a
+  standalone first-class module). 124→125 modules, Geo 19→20, 27→28 key-gated.
+  Delivered (cycle 21, 2026-06-18): `cell_local` + `hse cells import` — free,
+  offline peer to `opencellid`; imports a BYO OpenCelliD CSV/CSV.GZ dataset into
+  `~/.huntsman/cell_towers.db` (WAL SQLite, 50k-row batched inserts); `cell_local`
+  module accepts `Coordinates`, queries the local DB in `spawn_blocking`, emits
+  `DeviceId` + `Coordinates` per tower; priority 66; silent no-op when DB absent
+  so it never blocks scans on an unpopulated device. `hse cells` CLI: `status`,
+  `import --file/--country/--key`, `clear`. 126→127 modules, 93→94 free, Geo 20→21.
+  New S→P gap:* full AU dataset download requires OpenCelliD BYO key + manual
+  trigger (no auto-scheduled re-sync yet). Weiszfeld/Welzl centroid fusion;
+  tighter AU bounding; movement/timeline geo; provenance radius output remain open.
 - **`[ ]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
   `subdomain_takeover`, `key_harvest`, breach/stealer presence + AU-047 reuse
   link. → **Solution:** broaden exposure-dork coverage; mature the
@@ -682,6 +718,37 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   Europe), Mym (France/Francophone), MyDirtyHobby (Germany), JustForFans (LGBTQ+ intl),
   OhMyFans (Spanish LATAM), Cam.tv (Italy/Europe), Unlockd (UK), SuicideGirls (global
   alt), Iwara (Japan/3D). **CAP-high (identity breadth)** ✅
+- **`[x]` C9 · Inter-scan entity cache / API cost governance** — *Problem:* every
+  scan re-queries every applicable module unconditionally. For key-gated and paid
+  modules (`netlas`, `censys`, `hlr_cnam`, `trove_au`, `shodan`, etc.) this
+  consumes finite query allowances or real money on repeated scans of the same
+  target. A subject scanned twice within 24 h pays Censys / Netlas twice for
+  identical host data; a phone number queried twice in a week consumes two HLR
+  credits for the same MSISDN. At scale (automated enrichment pipelines, recurring
+  investigations) the cost is real and the waste is structural. → **Solution
+  (sketch):** extend `StoragePort` with
+  `lookup_entity_fresh(kind, value, max_age_secs) → Option<ModuleResult>` backed
+  by the existing `raw_archive` table; modules self-register a per-class TTL (IP
+  intel 24 h, WHOIS 72 h, breach data 7 d, phone HLR 24 h); the dispatch layer
+  short-circuits with the cached result before calling the module. Per-scan
+  isolation (SOL-ISOLATE) is preserved — the cache is a read-only pre-dispatch
+  gate, not a write-path bypass. Policy: caching is opt-in per module; modules
+  that produce time-sensitive data (live port scans, real-time CNAM) can set
+  `max_age_secs = 0` to always go live. **CAP-high (cost + AU revenue model)**
+  ✅ **Delivered (cycle 18, 2026-06-18): SOL-CACHE-INTERSCAN.** `raw_archive` SQLite
+  table (`id TEXT PRIMARY KEY, archived_at INTEGER NOT NULL, ttl_secs INTEGER NOT
+  NULL, result_json TEXT NOT NULL`); `StoragePort::{archive_module_result,
+  lookup_module_result_fresh}` default-no-op trait methods; `Store` SQL
+  implementation in `src/storage/archive.rs` (4 unit tests: round-trip, miss,
+  overwrite, TTL=0 immediate-expire); `Module::cache_ttl_secs() → u64` trait method
+  (default 0 = always live); `hlr_cnam` + `netlas` override to 86400 (24 h);
+  `archive_key("module:target_kind:normalised_value")` helper; dispatch-layer
+  pre-gate wired in both sequential (before `run_module_guarded`) and Phase 2
+  concurrent (before `acquire_owned`) paths — cache hit increments `ModuleStats::
+  cached`, replays archived entities, skips the live API call; post-call cache-store
+  when `ttl > 0 && result non-empty`; `Scan::modules_cached` counter persisted.
+  Schema snapshot test updated. **Paired:** `SOLUTION_TREE` SOL-CACHE-INTERSCAN
+  `[ ]`→`[x]` + §3/§4/§5 — same commit.
 
 ---
 
@@ -1560,47 +1627,6 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   trimmed to `bstr` only. **Paired:** `SOLUTION_TREE` SOL-F1 node + §4b + §4d + §5
   refreshed — same commit; gate green, 3,032 lib + 24 arch + 67 api + 54 smoke +
   3 halting + 6 cli-seed + 2 audit-regression tests, 0 failures.
-- **2026-06-17** — **Cycle 19 (S→P): AU-060 examination — no new problems; C1(d) next.**
-  S→P pass on AU-060 (cycle 18). BFS is structurally bounded (4-hop cap, early bail-out,
-  sorted-pair dedup); no O(N²) concern at scan-typical entity counts. The `entity_uids`
-  path and description string in each `Correlation` already cover the dossier data need —
-  C1(b) Connections section is a formatting-only gap (no data gap). The graph-aware
-  `RELATION_RULES` layer has only 3 entries (AU-031 / AU-032 / AU-060); **C1(d) — a
-  systematic AU-061+ gap audit against MITRE TA0043 subtechniques** — is the next natural
-  P→S target. C1(b)/(c) are lower urgency (data exists; UX changes only). **Paired:**
-  `SOLUTION_TREE` §4a/§4d/§5 cycle 19 — same commit; no code change.
-- **2026-06-17** — **Cycle 18 (P→S): AU-060 transitive identity closure — C1(a) delivered.**
-  P→S pass on C1 (the Maltego-without-graphs play), sub-goal (a). Implemented
-  `rule_au_060_transitive_identity_closure` in `src/core/correlator/rules/transitive.rs`:
-  BFS over an undirected relation-graph adjacency list, 2–4 hops, identity-entity (Person /
-  Email / Phone / Username) endpoints only; pairs with a direct single-edge shortcut excluded
-  (covered by other rules); severity decays Medium (≤3 hops) / Low (4 hops); all path nodes
-  included in `entity_uids` for SPA chain rendering. Registered as `RELATION_RULES[2]`
-  (alongside AU-031 / AU-032). 8 unit tests in `transitive.rs` + 2 direct firing tests in
-  `correlator/tests.rs` (satisfying the `every_dispatched_correlation_rule_has_a_firing_test`
-  guard). C1 sub-goals (b) Connections dossier, (c) first-class timeline, (d) additional
-  rule-register gaps remain open. **Paired:** `SOLUTION_TREE` SOL-CORR `[ ]`→`[~]` +
-  §4a/§4d/§5 — same commit; gate green, 3,041 lib tests, 0 failures.
-- **2026-06-17** — **Cycle 17 (S→P): table-size re-audit + §3.F gate review — F.2
-  `[~]`→`[x]`; C1 unblocked.** S→P pass on cycles 15/16 deliveries and §3.F finish
-  queue. (1) **SOL-SCHEMA-VERSION + SOL-INSTALL-INTEGRITY (cycle 16):** no new gaps
-  exposed — schema ladder clean, `require_sha` handles both cases correctly. (2)
-  **F.2 / SOL-F2 table-size re-audit:** the "OUI ≈30k, AU postcode/suburb" premise was
-  the full IEEE registry + a full GNAF catalogue. HSE uses curated subsets: OUI ~120
-  entries, `postcode_au` 76, `city_coords` 165, `address_au` 8 numeric ranges. `fst`
-  flat-RAM lookup offers no practical benefit at ≤165 entries (linear scan ≤200 ns).
-  **F.2 `[~]`→`[x]`** — de-dup goal met; fst accepted-deferred. (3) **§3.F gate
-  review for C1:** SOL-F1 substrate ✅ (only `bstr` outstanding, not needed for C1);
-  SOL-F2 ✅ (de-dup done, fst deferred); SOL-F3 proptest ✅ (only `cargo-fuzz`
-  outstanding, not needed for C1); SOL-MERGE/SOL-ORDER ✅. C1 transitive identity
-  closure is **now unblocked** — operates on already-built entity maps, needs no
-  `bstr`/`fst`/`cargo-fuzz`. C1 is the next P→S target. (4) **Streaming probe
-  (C8) re-audit:** clean — `read_body_capped(resp, 256 KiB)` on all GET probes,
-  HEAD-only for clean-404 sites, 16-concurrent semaphore, 30 s timeout. No new issues.
-  (5) **T2.11 LOW over-dispatch:** sole remaining open T2 item (P3); the fix
-  (interleave `try_join_next` + cap re-check in spawn loop) is `JoinSet::len()`-based
-  (tokio 1.52 ✓) but non-trivial — deferred in favour of C1. No code change this cycle.
-  **Paired:** `SOLUTION_TREE` SOL-F2 `[~]`→`[x]` + §4a/§4b/§4d/§5 — same commit.
 - **2026-06-17** — **Cycle 15 (S→P): gap analysis — T1 fully closed; identifies T2.10
   + §7 S5 as next achievable items.** S→P pass on cycle 14 deliveries. `strip_html`
   dedup exposes no new problems; SOL-FINALISE-BLOCKING bool-snapshot design confirmed
@@ -1639,3 +1665,208 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `[ ]`→`[x]`. Gate green: fmt/clippy/doc clean, 3,229 tests (prev 3,230 — the
   removed `strip_html_tags` test), 0 failures. **Paired:** `SOLUTION_TREE`
   SOL-FINALISE-BLOCKING `[ ]`→`[x]` + §2/§3/§4/§5 updated — same commit.
+- **2026-06-18** — **Cycle 17 (P→S + S→P): AU moat batch + NETINT depth partial +
+  social enrichment — C3 `[ ]`→`[~]`, C4 `[ ]`→`[~]`, new C9 logged.**
+  **P→S direction:** gap §4a named C3/C4 as the highest-value open capability
+  nodes with no started solutions. Five new modules shipped: `hlr_cnam` (HLR phone
+  status + CNAM subscriber name; BYO `HUNTSMAN_HLR_KEY` + `HUNTSMAN_OPENCNAM_KEY`;
+  priority 138; Phone; Person+Phone entities; let-chain Edition 2024 CNAM stage);
+  `ahpra` (AHPRA health-practitioner register HTML scrape; free; priority 86;
+  People; `parse_ahpra_html` pure extractor); `acma_rrl` (ACMA radiocommunications
+  register; free; priority 48; Corporate; ATT&CK override T1591.001/T1591.002;
+  `filter(char::is_ascii_digit)` pattern); `trove_au` (NLA Trove newspaper archive;
+  BYO `HUNTSMAN_TROVE_KEY`; priority 57; Corporate; let-chain title+date gate);
+  `netlas` (Netlas.io host intel — ports, JARM, SSL cert emails, CVEs, ISP, geo;
+  BYO `HUNTSMAN_NETLAS_KEY`; priority 79; Infrastructure; `netlas_query` helper).
+  `smtp_vrfy` hardened: `tokio::join!(resolve_mx, resolve_spf, resolve_dmarc)`;
+  correct hickory `lookup.answers().iter()` TXT pattern; CatchAll confidence
+  0.50→0.30. `censys` priority 35→78. `reddit_user` → Organisation entities for
+  subreddits (conf 0.40); `hacker_news` → Domain entities from Algolia submissions;
+  `github_user` → `fetch_orgs` + `fetch_gists` in `fetch.rs`. Module count 119→124.
+  All clippy/fmt/doc clean; 3,040+ lib tests, 0 failures.
+  **S→P direction:** (1) three new HTML scrapers (ahpra/acma_rrl/trove_au) elevate
+  T2.7 scraper-resilience risk — the per-source health-signal gap is now wider;
+  (2) the new key-gated/paid modules (hlr_cnam, netlas, trove_au, censys-at-priority)
+  make C9 (inter-scan API caching / cost governance) acutely felt — new capability
+  node C9 logged. **Gap refresh:** C3 and C4 now `[~]`; §4a gains C9; T2.7 elevated.
+  **Paired:** `SOLUTION_TREE` SOL-AU-MOAT + SOL-NETINT `[ ]`→`[~]`, new
+  SOL-CACHE-INTERSCAN, §4/§5 refreshed — same commit.
+- **2026-06-18** — **Cycle 20 (S→P + P→S): C4 stale notes corrected; C3 courts/AustLII
+  `austlii` module delivered; SOL-HEALTH-SIGNAL solution node added; new S→P gap
+  logged (opencellid × cell_intel cross-validation).**
+  **S→P corrections:** verified `securitytrails` module exists (`HUNTSMAN_SECTRAILS_KEY`,
+  Domain+IpAddress → Domain, subdomain enum + reverse-IP hostnames) and `bgpview` +
+  `ripestat` both registered — these were listed as C4 "remaining" in error. C4 and
+  SOL-NETINT remaining notes corrected to: passive-DNS subdomain union + CDN cert-hash
+  origin-unmasking.
+  **P→S build:** `austlii` — free AustLII court/legislation scraper; accepts
+  `FullName`/`Organisation`; queries `austlii.edu.au/cgi-bin/sinosrch.cgi`;
+  `extract_case_links` parser extracts `/au/cases/`, `/au/legis/`, `/au/journals/` paths;
+  emits `Url` (tagged `court-judgment`) × ≤10 + `Organisation` (legal-footprint signal,
+  ≥2 hits, Organisation-target only); Corporate category; priority 55; 9 unit tests.
+  Closes C3 courts/AustLII. 125→126 modules, 92→93 free, Corporate 8→9.
+  **New P→S gap:** T2.7 per-source health signal has no solution node → `SOL-HEALTH-SIGNAL`
+  sketched in SOLUTION_TREE §2 S.QUALITY.
+  **New S→P gap:** `opencellid` emits `DeviceId` (mcc-mnc-lac-cid) and `cell_intel` also
+  emits `DeviceId` for the same tower type — no correlation rule links them for
+  cross-validation. Logged as new gap AU-060-candidate in SOLUTION_TREE §4a.
+  Gate green: fmt/clippy/doc clean, 3,061 lib tests, 0 failures. **Paired:**
+  `SOLUTION_TREE` SOL-AU-MOAT/SOL-NETINT corrections + SOL-HEALTH-SIGNAL + §4/§5 cycle 20
+  — same commit.
+- **2026-06-18** — **Cycle 19 (P→S): C5 GEOINT first source — `opencellid`
+  standalone module delivered.** P→S direction: gap §4d named C5 (SOL-GEOINT)
+  as the next open capability node; OpenCelliD was already an internal dep inside
+  `cell_intel` but had no standalone first-class module. Delivered: new
+  `src/modules/opencellid/{mod,tests}.rs`; key-gated (`HUNTSMAN_OPENCELLID_KEY`);
+  accepts `Coordinates`; queries `opencellid.org/cell/getInArea` with a ±0.005°
+  BBOX (~1 km radius); emits `DeviceId` (tower id, radio, mcc/mnc/lac/cid,
+  range, samples, avg signal) + `Coordinates` (tower geofix, confidence from
+  accuracy radius) per tower; `cache_ttl_secs=86400`; ATT&CK override
+  T1591.001+T1596; `geo(20)` section; README/MODULES.md counts updated.
+  9 new unit tests. Gate green: fmt/clippy/doc clean, 3,052 lib tests, 0
+  failures. C5 `[ ]`→`[~]`. **Paired:** `SOLUTION_TREE` SOL-GEOINT `[ ]`→`[~]`,
+  §4d C5 row updated, leverage map updated, §5 cycle 19 — same commit.
+- **2026-06-18** — **Cycle 18 (P→S + S→P): C9 inter-scan entity cache —
+  SOL-CACHE-INTERSCAN delivered `[ ]`→`[x]`.** P→S direction: gap §4a named
+  C9/SOL-CACHE-INTERSCAN as the highest-value build-ready open node (design sketched
+  cycle 17). Delivered: `raw_archive` SQLite table; `StoragePort::
+  {archive_module_result, lookup_module_result_fresh}` default-no-op trait methods;
+  `Store` implementation (`src/storage/archive.rs`, 4 tests); `Module::cache_ttl_secs()`
+  (default 0 = always live); `hlr_cnam` + `netlas` override to 86400s; `archive_key`
+  helper; dispatch cache-check / cache-store wired in both sequential and Phase 2
+  concurrent paths; `ModuleStats::cached` counter; `Scan::modules_cached` field.
+  Schema snapshot test updated. Also: 4 pre-existing rustdoc bare-URL errors fixed
+  (`acma_rrl`, `ahpra`, `netlas`, `trove_au`). **S→P pass:** (1) confirmed
+  `reset_per_scan` is already called at `run_with_ledger_inner:289` on every scan
+  start — SOL-BUDGET cited residual was a faulty premise; SOL-BUDGET `[~]`→`[-]`
+  (accepted-as-is). (2) Grepped actual table sizes: OUI ≈111 entries (not ≈30k
+  IEEE registry), AU postcode ≈72 entries, phone area codes ≈65 entries — the
+  "large tables need fst" premise was wrong; F.2 `*Remaining*` note corrected;
+  `fst` adoption `[-]`. Gate green: fmt/clippy/doc clean, 3,044 lib tests, 0
+  failures. **Paired:** `SOLUTION_TREE` SOL-CACHE-INTERSCAN `[ ]`→`[x]`,
+  SOL-BUDGET `[~]`→`[-]`, SOL-F2 premise corrected, §3/§4/§5 refreshed — same
+  commit.
+- **2026-06-18** — **Cycle 22 (S→P): CLI usability — `hse update`, command consolidation, `hse keys set`.**
+  S→P direction: gap §4a had no UX node for self-upgrade; the command surface was
+  sprawling (19 visible commands). Delivered: `src/cli/update.rs` — `hse update`
+  (`--check` reports commits behind via `git rev-list`; default re-runs `install.sh`
+  with inherited stdio; locates source via `HUNTSMAN_INSTALL_DIR` env → common
+  `~/hse` / `~/.local/share/hse` paths → binary-parent traversal; falls back to
+  curl one-liner); `install.sh` now writes `HUNTSMAN_INSTALL_DIR` into
+  `~/.huntsman.env` after every run; `hse keys set <NAME> <VALUE>` added to
+  `KeysAction` (visible_alias `set-key`, `write`); 6 commands hidden from `--help`
+  (`doctor`, `selftest`, `provision`, `set-key`, `engines`, `oathnet-batch`) —
+  still callable for scripting compat; visible surface 19→13. `hse upgrade` alias
+  added. **New S→P gap:** `hse update --check` cannot yet propose a diff summary
+  (just commit count); SOL-UPDATE *Remaining* noted below.
+  Gate green: fmt/clippy/doc clean, 3,084 lib tests, 0 failures. **Paired:**
+  `SOLUTION_TREE` SOL-UPDATE `[ ]`→`[x]`, §4/§5 cycle 22 — same commit.
+- **2026-06-18** — **Cycle 21 (P→S): C5 GEOINT second source — `cell_local` module
+  + `hse cells import` command delivered.** P→S direction: C5 (SOL-GEOINT) had
+  `opencellid` as its only live source (key-gated, API-dependent); the free,
+  offline leg was missing. Delivered: `src/util/cell_db.rs` — shared WAL-mode
+  SQLite abstraction at `~/.huntsman/cell_towers.db` (`cells` + `cell_imports`
+  tables; `insert_batch`, `query_bbox`, `record_import`, `last_import`; 8 unit
+  tests); `src/cli/cells/mod.rs` — `hse cells status/import/clear` subcommand
+  (`parse_csv_line` 14-col OpenCelliD CSV parser, `mcc_for_country` mapper,
+  50k-row batched import with GZ decompression via `flate2`, reqwest download
+  path for `--country`, 10 unit tests); `src/modules/cell_local.rs` — free
+  (`ModuleCost::Free`) geo module, priority 66, accepts `Coordinates`, reads
+  local DB in `spawn_blocking`, emits `DeviceId` + `Coordinates` per tower,
+  silent no-op when DB absent (7 unit tests). New direct dep: `flate2 = "1"`.
+  Gate green: fmt/clippy clean, all tests pass.
+  **New S→P gap:** full AU dataset download requires OpenCelliD BYO key + manual
+  trigger — no auto-scheduled re-sync yet. 126→127 modules, 93→94 free, Geo
+  20→21. **Paired:** `SOLUTION_TREE` SOL-GEOINT *Remaining* updated + §4/§5
+  cycle 21 — same commit.
+- **2026-06-18** — **Cycle 23 (S→P): adversarial self-review of the v1.4.0
+  update / installer / release-CI surface — 6 confirmed defects fixed, 1 false
+  positive rejected.** Direction: from "critically analyse and repair all", ran a
+  max-recall review over the new code, then *decomposed the review's own claims*
+  and stress-tested each against the source before acting. Confirmed defects:
+  **(1)** CI script injection — `release.yml` interpolated
+  `${{ github.event.inputs.tag }}` straight into a `run:` block (and the `case`
+  had no default), so a dispatch tag could execute on the runner; **(2)** missing
+  loopback guard — `POST /api/v1/update/trigger` had none while every
+  settings-write handler does, so a LAN client on `--bind 0.0.0.0` could force an
+  in-place binary swap; **(3)** `install.sh` set `CARGO_TARGET_DIR` *inside* the
+  `PREBUILT!=1` block but read it in the summary after the `fi`, so every
+  successful prebuilt install (the v1.4.0 fast path) aborted under `set -u` with
+  `unbound variable`; **(4)** the network-download path accepted a binary with
+  **no** checksum when the `.sha256` sidecar fetch failed silently; **(5)**
+  `load_from_file_only` returned values with their surrounding double-quotes, so
+  SUPERSEDED embedded-key rotation never matched (`"v"` ≠ `v`); **(6)**
+  `write_keys_at` didn't `fsync` before rename → a power-cut could leave a
+  zero-length `~/.huntsman.env`. **False positive rejected (gap analysis):** a
+  reviewer flagged `cell_db::query_bbox` as having swapped lat/lon param bindings
+  ("every bbox query wrong") — reading the source showed `params!` binds by named
+  variable in the correct semantic order and the round-trip test passes; the
+  finding confused parameter-*declaration* order with *binding* order. Not
+  actioned. **Residuals deliberately left (logged for focused passes):** the now-7
+  per-handler loopback checks are a shallow socket-peer guard (a route-layer
+  middleware is the deep fix); a network `.sha256` fetched over the same TLS
+  channel is an integrity check, not authenticity (TLS cert validation is). Maps
+  to the §7 security baseline (SOL-SECRETS, loopback) + a new supply-chain leaf.
+  Gate green: fmt/clippy/doc clean, 3,088 lib tests (+2 trigger-guard regression
+  tests), 0 failures; `bash -n` + shellcheck clean. **Paired:** `SOLUTION_TREE`
+  SOL-SECRETS / SOL-SUPPLY cycle 23 + §4/§5 — same commit.
+- **2026-06-18** — **Cycle 24 (P→S): `signal_radar` sensor-contamination defect —
+  live phone sensors fired on all target kinds, polluting non-geo scans.**
+  **Problem (fault-tree MCS-A violation):** `signal_radar` ran WiFi AP scan,
+  Bluetooth scan, cell tower survey, GPS fix, and LAN ARP discovery for *every*
+  scan target regardless of kind. A scan seeded on a `FullName`, `Email`,
+  `Username`, `Phone`, `Domain`, or `IpAddress` caused the engine to inject the
+  phone's live GPS coordinates, visible WiFi BSSIDs, nearby cell towers, and ARP
+  table into the entity graph — attributing the operator's physical location and
+  RF environment to the remote subject. Downstream modules `cell_local` and
+  `opencellid` then fired on those injected coordinates, compounding the
+  contamination with tower-lookup results that belong to the phone, not the
+  target. **Root cause:** `accepts()` returned `true` for all `TargetKind`
+  variants (the early implementation pre-dates the `LOCAL_PASSIVE_MODULES`
+  isolation pattern and carried a rationale — "RF survey is always relevant" —
+  that the user explicitly rejected). All other live-sensor modules
+  (`device_sensors`, `wifi_intel`, `cell_intel`, `local_net`) correctly gate on
+  `Coordinates | MacAddress` *and* appear in `LOCAL_PASSIVE_MODULES`. `signal_radar`
+  was the sole exception. **Fix (two-part):** (1) `accepts()` narrowed to
+  `Coordinates | MacAddress` only — phone sensors now silently skip every
+  non-geo seed (no data injected, contamination chain broken at the source);
+  (2) `"signal_radar"` added to `LOCAL_PASSIVE_MODULES` — expansion-round
+  re-firing suppressed when a legitimate `Coordinates` entity appears during a
+  geo seed's expansion (same guard that already protects the four peer modules).
+  No new test code needed: the existing architecture test
+  `local_passive_sensor_modules_reject_remote_subject_seeds` enumerates every
+  name in `LOCAL_PASSIVE_MODULES` and asserts it refuses all non-geo seed kinds
+  — adding `signal_radar` to the array makes it automatically covered.
+  Gate green: fmt/clippy/doc clean, 3,092 lib tests, 0 failures; `bash -n` +
+  shellcheck clean. **Paired:** `SOLUTION_TREE` SOL-SENSOR-GATE cycle 24 +
+  §4/§5 — same commit.
+- **2026-06-18** — **Cycle 25 (P→S): two query-pipeline defects found in real-scan
+  debug bundle — `hudsonrock` URL-encoding fault and `employer_pivot` role-email
+  false attribution.**
+  **Source:** debug bundle from a live Huntsman scan (`full_name = Zac Allen`,
+  hse_version 1.4.0). The bundle recorded 19 `module_error` events across 381
+  module runs. Two were caused by code bugs, not external/network conditions.
+  **Problem A — `hudsonrock` HTTP 400 "Email is required" (observed at
+  ts=1781813191 for target `dns@cloudflare.com`):** `urlencode()` uses
+  `url::form_urlencoded::byte_serialize`, which encodes `@` as `%40`. The
+  HudsonRock Cavalier `/api/json/v2/osint-tools/search-by-login` endpoint
+  validates the presence of `@` in the *raw* (pre-decode) query string before it
+  URL-decodes the parameter — so `username=dns%40cloudflare.com` contains no
+  literal `@` at the point of the check, triggering HTTP 400 "Email is required".
+  The engine had no guard for email values that lack `@` in the first place
+  (mislabelled entities or direct test calls), leaving a second latent 400 path.
+  **Problem B — `employer_pivot` false employer attribution from SOA RNAME
+  emails:** `dns_intel` emits SOA RNAME field values as `Email` entities
+  (confidence=0.70, tagged `dns-admin`). When `dns@cloudflare.com` entered the
+  expansion queue, the `Target` struct (only `kind` + `value`, no tags field)
+  dropped the `dns-admin` tag. `employer_pivot` has guards for freemail domains
+  and social platforms but no guard for RFC 2142 / conventional role/system
+  email local-parts. It therefore scraped cloudflare.com's contact pages,
+  extracted a Sydney commercial address, and attributed Cloudflare HQ to the
+  scan subject `Zac Allen` — a severe false positive. **Root cause chain:**
+  `dns_intel` emits SOA RNAME → entity tagged `dns-admin`, confidence 0.70
+  (above expansion threshold) → expansion strips tag → `employer_pivot` accepts
+  without filtering local-part → corporate address attributed to subject.
+  Gate green: fmt/clippy/doc clean, 3,097 lib tests, 0 failures; `bash -n` +
+  shellcheck clean. **Paired:** `SOLUTION_TREE` SOL-QUERY-PIPE cycle 25 +
+  §4/§5 — same commit.

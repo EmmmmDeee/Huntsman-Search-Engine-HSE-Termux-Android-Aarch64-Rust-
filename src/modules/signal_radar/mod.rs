@@ -29,7 +29,7 @@ use crate::core::{
     entity::EntityKind,
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
-    scan::Target,
+    scan::{Target, TargetKind},
 };
 
 pub(super) const SRC: &str = "signal_radar";
@@ -54,10 +54,13 @@ impl Module for SignalRadar {
         true
     }
 
-    /// Accepts every target kind — this module surveys the operator's local
-    /// RF environment, which is relevant regardless of what the scan target is.
-    fn accepts(&self, _t: &Target) -> bool {
-        true
+    /// Surveys the operator's local RF environment — only relevant when the
+    /// scan target is the operator's own physical location (geo/device seed).
+    /// Running on a name/email/domain seed would attribute the phone's current
+    /// GPS fix, visible cell towers, and nearby Wi-Fi APs to the remote
+    /// subject, contaminating results (fault-tree cut set MCS-A).
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Coordinates | TargetKind::MacAddress)
     }
 
     fn cost(&self) -> ModuleCost {

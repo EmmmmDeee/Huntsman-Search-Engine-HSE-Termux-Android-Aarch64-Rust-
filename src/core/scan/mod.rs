@@ -54,6 +54,7 @@ pub enum TargetKind {
     MacAddress,
     ApiKey,
     CryptoAddress,
+    DeviceId,
 }
 
 impl TargetKind {
@@ -80,8 +81,8 @@ impl TargetKind {
             EntityKind::ApiKey => Some(Self::ApiKey),
             EntityKind::MacAddress => Some(Self::MacAddress),
             EntityKind::CryptoAddress => Some(Self::CryptoAddress),
+            EntityKind::DeviceId => Some(Self::DeviceId),
             EntityKind::Credential
-            | EntityKind::DeviceId
             | EntityKind::TrackingId
             | EntityKind::Password
             | EntityKind::Other(_) => None,
@@ -107,6 +108,7 @@ impl TargetKind {
             Self::ApiKey => EntityKind::ApiKey,
             Self::MacAddress => EntityKind::MacAddress,
             Self::CryptoAddress => EntityKind::CryptoAddress,
+            Self::DeviceId => EntityKind::DeviceId,
         }
     }
 
@@ -139,6 +141,7 @@ impl TargetKind {
             Self::ApiKey => "api_key",
             Self::MacAddress => "mac_address",
             Self::CryptoAddress => "crypto_address",
+            Self::DeviceId => "device_id",
         }
     }
 
@@ -232,6 +235,20 @@ impl TargetKind {
         // mis-bucketed as a Username.
         if crate::core::crypto::classify_crypto_address(v).is_some() {
             return Self::CryptoAddress;
+        }
+        // 9c. Cell tower ID: mcc-mnc-lac-cid (all-numeric, 4 segments, MCC in 200-999).
+        {
+            let parts: Vec<&str> = v.split('-').collect();
+            if parts.len() == 4
+                && parts
+                    .iter()
+                    .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+                && parts[0]
+                    .parse::<u32>()
+                    .is_ok_and(|mcc| (200..=999).contains(&mcc))
+            {
+                return Self::DeviceId;
+            }
         }
         // 10. Free text → Organisation / Address / FullName / Username.
         if has_company_suffix(&lower) {
@@ -466,6 +483,24 @@ impl Target {
                     return Err("not a recognised cryptocurrency address shape");
                 }
             }
+            TargetKind::DeviceId => {
+                let parts: Vec<&str> = v.split('-').collect();
+                if parts.len() != 4 {
+                    return Err("DeviceId must be mcc-mnc-lac-cid (4 numeric segments)");
+                }
+                if !parts
+                    .iter()
+                    .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+                {
+                    return Err("DeviceId segments must be numeric");
+                }
+                let mcc: u32 = parts[0]
+                    .parse()
+                    .map_err(|_| "DeviceId MCC is not a number")?;
+                if !(200..=999).contains(&mcc) {
+                    return Err("DeviceId MCC must be in 200–999");
+                }
+            }
             TargetKind::Username
             | TargetKind::FullName
             | TargetKind::Address
@@ -558,6 +593,11 @@ pub struct Scan {
     /// (optional) API key is not configured. Distinct from `modules_errored`.
     #[serde(default)]
     pub modules_skipped: usize,
+    /// Modules whose result was served from the inter-scan entity cache
+    /// instead of re-querying the provider. Counts as a run avoided, not
+    /// as a skip: the data is fresh within the TTL.
+    #[serde(default)]
+    pub modules_cached: usize,
     #[serde(default)]
     pub options: ScanOptions,
 }
@@ -577,6 +617,7 @@ impl Scan {
             modules_timed_out: 0,
             modules_deduped: 0,
             modules_skipped: 0,
+            modules_cached: 0,
             options: ScanOptions::default(),
         }
     }

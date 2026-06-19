@@ -39,10 +39,14 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_C99_KEY",
     // Validation / enrichment
     "HUNTSMAN_NUMVERIFY_KEY",
+    "HUNTSMAN_HLR_KEY",
+    "HUNTSMAN_OPENCNAM_KEY",
     "HUNTSMAN_WIGLE_USER",
     "HUNTSMAN_WIGLE_TOKEN",
     "HUNTSMAN_ABR_GUID",
     "HUNTSMAN_OPENCELLID_KEY",
+    // Australian archives
+    "HUNTSMAN_TROVE_KEY",
     // OSINT orchestration APIs
     "HUNTSMAN_SEON_KEY",
     "HUNTSMAN_EPIEOS_KEY",
@@ -93,6 +97,11 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         "HUNTSMAN_PULSEDIVE_KEY" => "Pulsedive — free key at https://pulsedive.com/about/api",
         "HUNTSMAN_OPENCORP_KEY" => "OpenCorporates — https://opencorporates.com/api_accounts/new",
         "HUNTSMAN_NUMVERIFY_KEY" => "numverify — free tier at https://numverify.com/product",
+        "HUNTSMAN_HLR_KEY" => "HLR Lookups — free trial at https://hlrlookups.com",
+        "HUNTSMAN_OPENCNAM_KEY" => "OpenCNAM — free tier at https://www.opencnam.com/register",
+        "HUNTSMAN_TROVE_KEY" => {
+            "National Library of Australia Trove — free key at https://trove.nla.gov.au/about/create-something/using-our-apis/api-technical-guide"
+        }
         "HUNTSMAN_OPENCELLID_KEY" => "OpenCelliD — free key at https://opencellid.org/register.php",
         "HUNTSMAN_EXA_KEY" => "Exa AI — free tier at https://dashboard.exa.ai/api-keys",
         "HUNTSMAN_WIGLE_TOKEN" | "HUNTSMAN_WIGLE_USER" => {

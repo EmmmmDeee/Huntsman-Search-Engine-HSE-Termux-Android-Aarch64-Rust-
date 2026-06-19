@@ -72,6 +72,32 @@ pub trait StoragePort: Send + Sync {
     fn insert_event(&self, event: &Event) -> Result<()>;
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>>;
 
+    // ── Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN) ────────────────
+    /// Persist a module result under `key` with a TTL. Called after a
+    /// successful `process()` when `module.cache_ttl_secs() > 0`. Best-effort:
+    /// a failure must not abort the scan; callers ignore the error.
+    ///
+    /// Default no-op for test doubles; the SQLite `Store` persists to
+    /// `raw_archive`.
+    fn archive_module_result(
+        &self,
+        _key: &str,
+        _ttl_secs: u64,
+        _entities: &[Entity],
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Return a previously-archived module result if it is still within its
+    /// TTL, or `None` if absent or expired. Called before `process()` when
+    /// `module.cache_ttl_secs() > 0`; a `Some` return short-circuits the
+    /// provider call entirely.
+    ///
+    /// Default no-op returns `None` for test doubles.
+    fn lookup_module_result_fresh(&self, _key: &str) -> Result<Option<Vec<Entity>>> {
+        Ok(None)
+    }
+
     // ── Maintenance ─────────────────────────────────────────────────────────
     /// Bound the backing store's write-ahead footprint at a safe boundary
     /// (e.g. a completed scan). Default is a no-op for backends without a

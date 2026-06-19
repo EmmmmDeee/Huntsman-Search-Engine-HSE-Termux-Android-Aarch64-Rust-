@@ -181,7 +181,8 @@ pub enum Command {
         json: bool,
     },
     /// Liveness panel: probe every free search engine and report up/blocked/down
-    /// + latency. Results also go to the unified debug log (structured events).
+    /// + latency. Subsumed by `hse diagnostics`; kept for scripting.
+    #[command(hide = true)]
     Engines {
         /// Output as JSON instead of the status table.
         #[arg(long)]
@@ -228,11 +229,12 @@ pub enum Command {
         json: bool,
     },
     /// Verify environment: DB path, key file, Termux detection, module counts.
-    /// (Subsumed by `hse diagnostics`; kept for focused use and the API/UI.)
+    /// (Subsumed by `hse diagnostics`; kept for scripting and the API/UI.)
+    #[command(hide = true)]
     Doctor,
     /// Validate every module and core feature, then exit (non-zero on any
-    /// failure). Runs the full suite automatically; the same report is served
-    /// on demand at `GET /api/v1/selftest` and from the Web UI's Settings page.
+    /// failure). (Subsumed by `hse diagnostics`; kept for scripting and the Web UI.)
+    #[command(hide = true)]
     Selftest {
         /// Emit the machine-readable JSON report instead of the text table.
         #[arg(long)]
@@ -249,7 +251,7 @@ pub enum Command {
     /// Idempotent: existing real key values are preserved across runs;
     /// the file is backed up to `<path>.env.bak.<epoch>` before any
     /// change.
-    #[command(visible_alias = "setup")]
+    #[command(hide = true, visible_alias = "setup")]
     Provision {
         /// Merge the env file but skip the diagnostic smoke test.
         #[arg(long, conflicts_with = "verify_only")]
@@ -263,13 +265,8 @@ pub enum Command {
     },
 
     /// Write a single `HUNTSMAN_*` key to `$HOME/.huntsman.env`.
-    ///
-    /// The file is created with mode 0600 if missing; existing entries
-    /// for the same name are replaced in place. Other `HUNTSMAN_*`
-    /// lines, comments, and unrelated entries are preserved verbatim.
-    /// Same validation as the Settings HTTP endpoint — key names must
-    /// start with `HUNTSMAN_` and values may not contain control
-    /// characters or double-quotes.
+    /// Prefer `hse keys set NAME VALUE` — this shorthand is kept for scripts.
+    #[command(hide = true)]
     SetKey {
         /// Variable name, e.g. `HUNTSMAN_SHODAN_KEY`. Must start with `HUNTSMAN_`.
         name: String,
@@ -424,7 +421,11 @@ pub enum Command {
     /// permutations (names/handles → the handle shapes real accounts use; phone
     /// numbers → their digit/E.164 formats). Prints the plan by default (free);
     /// `--execute` dispatches it, bounded by the per-session OathNet budget.
-    #[command(visible_alias = "oathnet-queries", visible_alias = "obatch")]
+    #[command(
+        hide = true,
+        visible_alias = "oathnet-queries",
+        visible_alias = "obatch"
+    )]
     OathnetBatch {
         /// Seed value (e.g. `john.doe@example.com`, `"John Doe"`, `+61412345678`).
         #[arg(short, long, allow_hyphen_values = true)]
@@ -456,5 +457,33 @@ pub enum Command {
         /// Emit JSON instead of the human-readable table.
         #[arg(long)]
         json: bool,
+    },
+
+    /// Manage the local OpenCelliD cell-tower database.
+    ///
+    /// `hse cells status` — show tower count, MCC breakdown, last import time.
+    /// `hse cells import --file PATH` — import a local CSV or CSV.GZ file.
+    /// `hse cells import --country AU` — download from OpenCelliD and import.
+    /// `hse cells clear [--yes]` — truncate the cells table.
+    Cells {
+        #[command(subcommand)]
+        action: super::cells::CellsAction,
+    },
+
+    /// Upgrade hse in place: `git pull` + rebuild + atomic binary swap.
+    ///
+    /// Finds the source directory (from `HUNTSMAN_INSTALL_DIR` written by
+    /// `install.sh`, then `~/hse`, `~/.local/share/hse`, or the binary's
+    /// parent tree) and re-runs `install.sh`. The running process is not
+    /// affected — Unix keeps the old inode in memory; new invocations pick
+    /// up the replacement binary immediately.
+    #[command(visible_alias = "upgrade")]
+    Update {
+        /// Check for available updates without installing.
+        #[arg(long)]
+        check: bool,
+        /// Install a specific branch/tag/SHA instead of the current ref.
+        #[arg(long, value_name = "REF")]
+        r#ref: Option<String>,
     },
 }

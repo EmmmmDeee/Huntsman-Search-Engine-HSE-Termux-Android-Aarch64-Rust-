@@ -7,16 +7,20 @@
 
 pub mod abn_lookup;
 pub mod abuseipdb;
+pub mod acma_rrl;
 pub mod acnc_charities;
+pub mod ahpra;
 pub mod api_key_probe;
 pub mod asic_director;
 pub mod au_electoral;
 pub mod au_people;
 pub mod au_property;
 pub mod au_unclaimed;
+pub mod austlii;
 pub mod bgpview;
 pub mod breach_timezone;
 pub mod cell_intel;
+pub mod cell_local;
 pub mod censys;
 pub mod cert_intel;
 pub mod chain_intel;
@@ -53,6 +57,7 @@ pub mod greynoise;
 pub mod hacker_news;
 pub mod hackertarget;
 pub mod hibp;
+pub mod hlr_cnam;
 pub mod hudsonrock;
 pub mod hunter_io;
 pub mod intelx;
@@ -72,11 +77,13 @@ pub mod mls;
 pub mod mylnikov;
 pub mod name_intel;
 pub mod netblock;
+pub mod netlas;
 pub mod niamonx;
 pub mod npm_author;
 pub mod numverify;
 pub mod oathnet_pro;
 pub mod onyphe;
+pub mod opencellid;
 pub mod opencorporates;
 pub mod osintcat;
 pub mod overpass;
@@ -107,6 +114,7 @@ pub mod streaming_probe;
 pub mod subdomain_takeover;
 pub mod sunrise_sunset;
 pub mod threatfox;
+pub mod trove_au;
 pub mod typosquat;
 pub mod urlhaus;
 pub mod urlscan;
@@ -297,6 +305,8 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(wayback::Wayback),
         Arc::new(device_sensors::DeviceSensors),
         Arc::new(cell_intel::CellIntel),
+        Arc::new(cell_local::CellLocal),
+        Arc::new(opencellid::OpenCellId),
         Arc::new(wifi_intel::WifiIntel),
         Arc::new(local_net::LocalNet),
         Arc::new(signal_radar::SignalRadar),
@@ -349,6 +359,12 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(au_property::AuProperty),
         Arc::new(acnc_charities::AcncCharities),
         Arc::new(gleif_lei::GleifLei),
+        Arc::new(acma_rrl::AcmaRrl),
+        Arc::new(ahpra::Ahpra),
+        Arc::new(hlr_cnam::HlrCnam),
+        Arc::new(netlas::Netlas),
+        Arc::new(trove_au::TroveAu),
+        Arc::new(austlii::AustLii),
     ]
 }
 

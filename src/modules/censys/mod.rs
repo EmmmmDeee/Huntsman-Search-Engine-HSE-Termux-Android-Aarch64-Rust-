@@ -40,7 +40,7 @@ impl Module for Censys {
         "Censys host search: open ports, services, and location data"
     }
     fn priority(&self) -> u8 {
-        35
+        78
     }
 
     fn cost(&self) -> ModuleCost {
