@@ -144,6 +144,10 @@ pub async fn run() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    // Opportunistic, throttled, non-blocking self-update: any routine CLI use
+    // keeps the binary current with GitHub main (the server has its own loop).
+    // Best-effort and time-boxed — never delays or fails the command below.
+    update::maybe_auto_update_cli(&cli.command).await;
     match cli.command {
         Command::Scan {
             kind,

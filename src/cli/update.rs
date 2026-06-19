@@ -120,6 +120,176 @@ pub(crate) fn check_updates() -> Option<u64> {
     find_install_dir().and_then(|d| commits_behind(&d))
 }
 
+// ── Opportunistic CLI self-update ────────────────────────────────────────────
+//
+// `hse serve` already self-updates on a timer, but a CLI-only operator (running
+// `hse scan …`, `hse import …`, etc. and never the server) would drift behind
+// `main`. This gate runs once near the start of every CLI command and keeps the
+// binary current — without ever delaying or interfering with the command:
+//   * skipped for the commands that own updates (`serve` loop, explicit
+//     `update`) and a no-op unless `feature.auto_update`/`update_notify` is on;
+//   * throttled by a stamp file so at most one upstream check happens per
+//     window — every other invocation returns at zero git/network cost;
+//   * the check is time-boxed (a dead network can't stall the command) and, when
+//     an update is found, it is applied by a DETACHED background `install.sh`:
+//     the current command finishes on the current binary (Unix keeps the old
+//     inode mapped) and the NEXT invocation runs the rebuilt one.
+
+/// HSE's runtime cache directory (`~/.cache`, the same place `install.sh` logs
+/// to); falls back to the system temp dir when `$HOME` is unset.
+fn cache_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map_or_else(std::env::temp_dir, |h| PathBuf::from(h).join(".cache"))
+}
+
+/// Stamp file holding the unix-seconds time of the last auto-update check, so the
+/// throttle window survives across CLI invocations (each is a fresh process).
+fn autoupdate_stamp_path() -> PathBuf {
+    cache_dir().join("hse-autoupdate.stamp")
+}
+
+/// Where a detached background `install.sh` writes its output, so an auto-update
+/// that happened between commands is auditable (`~/.cache/hse-autoupdate.log`).
+fn autoupdate_log_path() -> PathBuf {
+    cache_dir().join("hse-autoupdate.log")
+}
+
+/// Parse the throttle window (seconds) from the raw env value, applying a 30-min
+/// floor and the 6-hour default. Pure, so the policy is unit-testable. Shares the
+/// serve loop's `HUNTSMAN_AUTO_UPDATE_INTERVAL_SECS` knob for one consistent
+/// cadence control across both update paths.
+fn parse_throttle_secs(raw: Option<&str>) -> u64 {
+    raw.and_then(|v| v.parse::<u64>().ok())
+        .filter(|&n| n >= 1800)
+        .unwrap_or(21_600)
+}
+
+fn autoupdate_throttle_secs() -> u64 {
+    parse_throttle_secs(
+        std::env::var("HUNTSMAN_AUTO_UPDATE_INTERVAL_SECS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// Pure throttle decision: run a check now given the last-check time? `None`
+/// (never checked) ⇒ yes; otherwise only once `throttle` seconds have elapsed.
+/// Saturating, so a stamp written in the future (clock skew) can't wedge the gate
+/// shut — it simply yields `0` elapsed and waits out the window.
+fn should_check_now(last_checked: Option<u64>, now: u64, throttle: u64) -> bool {
+    match last_checked {
+        None => true,
+        Some(t) => now.saturating_sub(t) >= throttle,
+    }
+}
+
+/// True when `command` manages updates itself, so the opportunistic gate stands
+/// down: `serve` runs its own periodic loop and `update` is the explicit path.
+pub(crate) fn command_self_updates(command: &crate::cli::Command) -> bool {
+    use crate::cli::Command;
+    matches!(command, Command::Serve { .. } | Command::Update { .. })
+}
+
+fn read_stamp() -> Option<u64> {
+    std::fs::read_to_string(autoupdate_stamp_path())
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+}
+
+/// Record that an update check happened at `now` (unix seconds). Shared by the
+/// CLI gate and the serve loop so a recent server-side check throttles the CLI
+/// path too (and vice-versa) — one device, one cadence. Best-effort.
+pub(crate) fn record_check_stamp(now: u64) {
+    let path = autoupdate_stamp_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, now.to_string());
+}
+
+/// Lock-guarded, fully-detached `install.sh` so the rebuild outlives this
+/// short-lived CLI process. Paths are passed via the environment (no shell
+/// quoting); `mkdir` is the atomic lock (a stale lock >2 h is reclaimed) so two
+/// concurrent CLI processes can't launch overlapping updaters; `nohup` keeps the
+/// build alive after we exit (reparented to init). `forbid(unsafe)` rules out
+/// `pre_exec`, so the shell does the detaching. Best-effort — any failure to
+/// even spawn is swallowed (the command must never suffer for an update attempt).
+fn spawn_detached_update() {
+    let Some(dir) = find_install_dir() else {
+        return;
+    };
+    let script = dir.join("install.sh");
+    if !script.exists() {
+        return;
+    }
+    const DETACHED_UPDATE_SH: &str = "\
+        L=\"$HSE_AU_LOCK\"; \
+        [ -d \"$L\" ] && find \"$L\" -maxdepth 0 -mmin +120 -exec rmdir {} \\; 2>/dev/null; \
+        mkdir \"$L\" 2>/dev/null || exit 0; \
+        trap 'rmdir \"$L\" 2>/dev/null' EXIT; \
+        nohup bash \"$HSE_AU_SCRIPT\" >> \"$HSE_AU_LOG\" 2>&1";
+    let _ = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(DETACHED_UPDATE_SH)
+        .env("HSE_AU_SCRIPT", script)
+        .env("HSE_AU_LOG", autoupdate_log_path())
+        .env("HSE_AU_LOCK", cache_dir().join("hse-autoupdate.lock"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
+/// Opportunistic, throttled, non-blocking self-update gate — see the module-level
+/// section comment. Call once near the top of CLI dispatch. Best-effort: every
+/// failure path is silent so the user's command is never the casualty.
+pub async fn maybe_auto_update_cli(command: &crate::cli::Command) {
+    if command_self_updates(command) {
+        return;
+    }
+    let auto = crate::util::settings::get_bool("feature.auto_update", true);
+    let notify = crate::util::settings::get_bool("feature.update_notify", true);
+    if !auto && !notify {
+        return; // operator opted out of both — nothing to do.
+    }
+    let now = crate::core::entity::unix_now();
+    if !should_check_now(read_stamp(), now, autoupdate_throttle_secs()) {
+        return;
+    }
+    // Record the attempt up front so a slow/failed check still resets the window
+    // and a second concurrent CLI process won't also fire.
+    record_check_stamp(now);
+
+    // Time-box the git fetch so an unreachable remote never delays the command.
+    let behind = match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::task::spawn_blocking(check_updates),
+    )
+    .await
+    {
+        Ok(Ok(b)) => b,
+        _ => return, // timed out, offline, or join error → silently skip.
+    };
+    let Some(n) = behind.filter(|&n| n > 0) else {
+        return; // already current, or no local source to update from.
+    };
+
+    if auto {
+        spawn_detached_update();
+        eprintln!(
+            "hse: {n} commit(s) behind GitHub main — applying the update in the \
+             background (log: {log}). This run uses the current build; the next run \
+             picks up the rebuilt one. Disable with `hse config feature.auto_update off`.",
+            log = autoupdate_log_path().display()
+        );
+    } else {
+        eprintln!(
+            "hse: {n} commit(s) available on GitHub main — run `hse update` to install \
+             (auto-update is off; silence with `hse config feature.update_notify off`)."
+        );
+    }
+}
+
 /// Apply an update by running `install.sh` from the located source directory.
 /// Returns `Ok(())` on success, `Err` if the script is not found or exits
 /// non-zero. Does not print banners (designed for headless background use).
@@ -183,4 +353,101 @@ pub(crate) fn self_restart() -> ! {
 pub(crate) fn self_restart() -> ! {
     eprintln!("hse: self-restart not supported on this platform; please restart manually");
     std::process::exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::Command;
+
+    #[test]
+    fn should_check_now_respects_the_throttle_window() {
+        let throttle = 21_600; // 6 h
+        // Never checked → always check.
+        assert!(should_check_now(None, 1_000_000, throttle));
+        // Exactly the window elapsed → check (>=).
+        assert!(should_check_now(
+            Some(1_000_000 - throttle),
+            1_000_000,
+            throttle
+        ));
+        // One second short of the window → skip.
+        assert!(!should_check_now(
+            Some(1_000_000 - throttle + 1),
+            1_000_000,
+            throttle
+        ));
+        // Just checked → skip.
+        assert!(!should_check_now(Some(1_000_000), 1_000_000, throttle));
+        // Stamp in the FUTURE (clock skew) → saturating ⇒ 0 elapsed ⇒ skip, never
+        // wedged (a later `now` past the window re-opens it).
+        assert!(!should_check_now(Some(2_000_000), 1_000_000, throttle));
+    }
+
+    #[test]
+    fn parse_throttle_secs_applies_floor_and_default() {
+        assert_eq!(parse_throttle_secs(None), 21_600, "unset → 6 h default");
+        assert_eq!(
+            parse_throttle_secs(Some("garbage")),
+            21_600,
+            "invalid → default"
+        );
+        assert_eq!(
+            parse_throttle_secs(Some("0")),
+            21_600,
+            "below floor → default"
+        );
+        assert_eq!(
+            parse_throttle_secs(Some("60")),
+            21_600,
+            "below 30-min floor → default"
+        );
+        assert_eq!(
+            parse_throttle_secs(Some("1800")),
+            1_800,
+            "exactly the floor is honoured"
+        );
+        assert_eq!(
+            parse_throttle_secs(Some("43200")),
+            43_200,
+            "explicit 12 h honoured"
+        );
+    }
+
+    #[test]
+    fn command_self_updates_only_for_serve_and_update() {
+        // These own the update lifecycle, so the opportunistic gate must skip them.
+        assert!(command_self_updates(&Command::Serve {
+            bind: "127.0.0.1:8080".into(),
+            no_key_write: false,
+        }));
+        assert!(command_self_updates(&Command::Update {
+            check: false,
+            r#ref: None,
+        }));
+        // A routine command is eligible for the opportunistic check.
+        assert!(!command_self_updates(&Command::Doctor));
+    }
+
+    #[test]
+    fn autoupdate_paths_live_under_the_cache_dir() {
+        // Stamp, log, and lock are siblings in the cache dir, so install.sh (which
+        // seeds the stamp) and the CLI gate agree on the location.
+        let stamp = autoupdate_stamp_path();
+        let log = autoupdate_log_path();
+        assert_eq!(
+            stamp.parent(),
+            log.parent(),
+            "stamp + log share a directory"
+        );
+        assert_eq!(
+            stamp.file_name().and_then(|s| s.to_str()),
+            Some("hse-autoupdate.stamp")
+        );
+        assert!(
+            stamp.parent().is_some_and(|p| p.ends_with(".cache"))
+                || std::env::var_os("HOME").is_none(),
+            "cache files live under ~/.cache when HOME is set"
+        );
+    }
 }
