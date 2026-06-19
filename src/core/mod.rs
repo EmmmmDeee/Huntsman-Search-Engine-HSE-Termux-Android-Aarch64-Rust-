@@ -17,6 +17,7 @@ pub mod error;
 pub mod event;
 pub mod gexf;
 pub mod hooks;
+pub mod leads;
 pub mod live;
 pub mod module;
 pub mod network;

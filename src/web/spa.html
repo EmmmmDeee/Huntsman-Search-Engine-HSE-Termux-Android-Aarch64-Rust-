@@ -197,6 +197,18 @@
     .net-conn-val{flex:1;min-width:120px;font-family:monospace;font-size:12.5px;color:#222;word-break:break-all}
     .net-conf{flex-shrink:0;width:54px;height:6px;background:#eee;border-radius:3px;overflow:hidden}
     .net-conf-bar{display:block;height:100%;background:#07aef1}
+    /* Leads tab — ranked next-action cards with a one-click Scan button */
+    .lead-card{display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap;
+      border:1px solid #e3e3e3;border-left:3px solid #07aef1;border-radius:5px;padding:9px 13px;margin-bottom:8px;background:#fff}
+    .lead-card:hover{background:#f5fbff}
+    .lead-main{flex:1;min-width:180px}
+    .lead-val{font-size:14px;font-weight:600;color:#222;word-break:break-word}
+    .lead-reason{font-size:11.5px;color:#777;margin-top:2px}
+    .lead-scan{flex-shrink:0}
+    body.dark-theme .lead-card{background:#1f1f1f;border-color:#333;border-left-color:#07aef1}
+    body.dark-theme .lead-card:hover{background:#243240}
+    body.dark-theme .lead-val{color:#eee}
+    body.dark-theme .lead-reason{color:#999}
     body.dark-theme .net-hero{background:linear-gradient(135deg,#16222c,#1f1f1f);border-color:#2d4a5a}
     body.dark-theme .net-hero-name{color:#eee}
     body.dark-theme .net-group{border-color:#333}
@@ -573,6 +585,9 @@ const API = {
   // Subject network: the seed hub + its connections grouped/ranked server-side
   // (people, identifiers, aliases, locations, infrastructure) — the analyst view.
   network:   id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/network'),
+  // Proactive leads: ranked untapped pivots the scan surfaced but didn't pursue,
+  // each a one-click follow-up scan.
+  leads:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/leads'),
   auditScan: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/audit'),
   create:    body=>API._req('/api/v1/scans',{method:'POST',body}),
   // Raw-text upload (not JSON): POST a dossier file's contents to be parsed and
@@ -1568,6 +1583,7 @@ async function renderScanInfo(v){
 
     <ul class="nav nav-tabs">
       ${subTab('network', 'Network',      null,                tab)}
+      ${subTab('leads',   'Leads',        null,                tab)}
       ${subTab('status',  'Status',       null,                tab)}
       ${subTab('browse',  'Browse',       S.entities.length,   tab)}
       ${subTab('graph',   'Graph',        null,                tab)}
@@ -1639,6 +1655,7 @@ async function renderScanInfo(v){
 
   const body = $('#scan-body');
   if (tab==='network')     renderNetwork(body, id);
+  else if (tab==='leads')  renderLeads(body, id);
   else if (tab==='status') renderStatus(body, scan);
   else if (tab==='browse') renderBrowse(body);
   else if (tab==='graph')  renderGraph(body);
@@ -1718,6 +1735,52 @@ async function renderNetwork(host, id){
     html += `</div>`;
   }
   host.innerHTML = html;
+}
+
+/* ── Leads tab — proactive next-best-actions: ranked untapped pivots the scan
+   surfaced but didn't pursue (relatives/associates held below the auto-pivot
+   floor most of all), each a one-click follow-up scan. ── */
+async function renderLeads(host, id){
+  host.innerHTML = '<div class="empty-state"><h3>Finding leads…</h3></div>';
+  let data;
+  try { data = await API.leads(id); }
+  catch(e){ host.innerHTML = `<div class="alert alert-danger"><b>Error.</b> ${esc(e.message)}</div>`; return; }
+  const leads = (data && data.leads) || [];
+  if (!leads.length){
+    host.innerHTML = `<div class="empty-state"><h3>No open leads</h3>
+      <p>Leads appear when a scan surfaces people, aliases or identifiers it didn't pursue —
+      most often relatives and associates kept below the auto-pivot floor. Check the
+      <a href="#/scaninfo?id=${attr(id)}&tab=network">Network</a>, or run a deeper scan.</p></div>`;
+    return;
+  }
+  let html = `<p class="text-muted" style="font-size:12px;margin-bottom:10px">
+    <i class="glyphicon glyphicon-flag"></i>&nbsp;<b>${leads.length}</b> recommended next step${leads.length===1?'':'s'}
+    — untapped pivots ranked by value. Click <b>Scan</b> to launch a focused follow-up.</p>`;
+  for (const l of leads){
+    const icon = NET_GROUP_ICON[l.group] || 'glyphicon-flag';
+    html += `<div class="lead-card">
+      <div class="lead-main">
+        <div class="lead-val"><i class="glyphicon ${icon}"></i>&nbsp;${esc(l.value)} ${kindPill(l.kind)}</div>
+        <div class="lead-reason">${esc(l.reason)}</div>
+      </div>
+      <button class="btn btn-info btn-sm lead-scan" data-kind="${attr(l.target_kind)}" data-value="${attr(l.value)}"
+        title="Launch a focused scan seeded on this lead">
+        <i class="glyphicon glyphicon-search"></i>&nbsp;Scan</button>
+    </div>`;
+  }
+  host.innerHTML = html;
+  $$('.lead-scan').forEach(b=>b.addEventListener('click', async ()=>{
+    const kind = b.dataset.kind, value = b.dataset.value;
+    b.disabled = true; b.innerHTML = '<i class="glyphicon glyphicon-refresh glyphicon-spin"></i>';
+    try {
+      const r = await API.create({kind, value, options:{}});
+      toast('Lead scan queued');
+      nav(`#/scaninfo?id=${r.scan_id}&tab=log`);
+    } catch(e){
+      b.disabled = false; b.innerHTML = '<i class="glyphicon glyphicon-search"></i>&nbsp;Scan';
+      if (typeof alertify !== 'undefined') alertify.error('Scan failed: '+e.message);
+    }
+  }));
 }
 
 /* ── Relations tab — typed edges from the recursive crawl (provenance) ── */
