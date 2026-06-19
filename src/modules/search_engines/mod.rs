@@ -270,7 +270,8 @@ impl Module for SearchEngines {
                 }
                 let before = all_results.len();
                 if let Some(mut results) =
-                    fetch_and_parse(&url, engine, query, post_body.as_deref()).await
+                    fetch_and_parse(&url, engine, query, post_body.as_deref(), primary_deadline)
+                        .await
                 {
                     let got_results = !results.is_empty();
                     all_results.append(&mut results);
@@ -291,7 +292,8 @@ impl Module for SearchEngines {
                                 .await;
                             let page_url = paginate_fn(query, page);
                             if let Some(mut pr) =
-                                fetch_and_parse(&page_url, engine, query, None).await
+                                fetch_and_parse(&page_url, engine, query, None, primary_deadline)
+                                    .await
                             {
                                 if pr.is_empty() {
                                     break;
@@ -350,7 +352,7 @@ impl Module for SearchEngines {
                         }
                         let url = (engine.build_url)(pivot_query);
                         if let Some(mut results) =
-                            fetch_and_parse(&url, engine, pivot_query, None).await
+                            fetch_and_parse(&url, engine, pivot_query, None, fetch_deadline).await
                         {
                             all_results.append(&mut results);
                         }

@@ -1,20 +1,48 @@
+use std::time::Instant;
+
 use super::helpers::*;
 use super::{EngineSpec, MAX_RESULTS_PER_ENGINE, SearchResult};
 use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+
+/// Per-request fetch ceiling (ms): the most any single SERP request may take.
+pub(in crate::modules::search_engines) const MAX_FETCH_MS: u64 = 8_000;
+
+/// Floor below which there's no point starting a request — a sub-1.5 s SERP fetch
+/// almost always fails, and starting one risks overrunning the module deadline.
+const MIN_FETCH_MS: u64 = 1_500;
+
+/// The curl timeout for a request issued NOW under `deadline`: the budget that
+/// remains, capped at [`MAX_FETCH_MS`]; `None` when too little remains
+/// ([`MIN_FETCH_MS`]) to bother.
+///
+/// This is what keeps an in-flight request from overrunning the engine's hard kill
+/// — the gap the per-loop deadline check alone left: a request STARTED just under
+/// the deadline still ran its full FIXED 8 s timeout past it, and the kill then
+/// dropped the future and every gathered result. Clamping the timeout to the
+/// remaining budget guarantees the request finishes inside the deadline.
+fn fetch_timeout_ms(deadline: Instant) -> Option<u64> {
+    let remaining = deadline
+        .saturating_duration_since(Instant::now())
+        .as_millis() as u64;
+    (remaining >= MIN_FETCH_MS).then(|| remaining.min(MAX_FETCH_MS))
+}
 
 pub(super) async fn fetch_and_parse(
     url: &str,
     engine: &EngineSpec,
     query: &str,
     post_body: Option<&str>,
+    deadline: Instant,
 ) -> Option<Vec<SearchResult>> {
-    let started = std::time::Instant::now();
+    let started = Instant::now();
+    // No budget left to even start: skip rather than risk overrunning the kill.
+    let timeout_ms = fetch_timeout_ms(deadline)?;
     // `outcome` records exactly what happened to this one request so the unified
     // debug log explains every search interaction — no black-box. One of:
     // ok / empty (parsed 0 → likely parser/soft-block) / blocked (anti-bot) /
     // unreachable (network) / ok_retry (succeeded only after the alt-UA retry).
     let (results, outcome): (Option<Vec<SearchResult>>, &'static str) =
-        match try_fetch(url, engine.ua, post_body).await {
+        match try_fetch(url, engine.ua, post_body, timeout_ms).await {
             FetchOutcome::Body(body) => {
                 scan_body_for_keys(&body);
                 let results = parse_results(&body, engine.name, query);
@@ -28,24 +56,28 @@ pub(super) async fn fetch_and_parse(
             FetchOutcome::Blocked => (None, "blocked"),
         };
 
-    // Alt-UA retry only when the first attempt yielded no usable results and the
-    // engine actually has a distinct fallback UA.
-    let (results, outcome) =
-        if results.is_none() && outcome != "unreachable" && engine.ua != engine.ua_alt {
-            match try_fetch(url, engine.ua_alt, post_body).await {
-                FetchOutcome::Body(body) => {
-                    let r = parse_results(&body, engine.name, query);
-                    if r.is_empty() {
-                        (None, outcome)
-                    } else {
-                        (Some(r), "ok_retry")
-                    }
+    // Alt-UA retry only when the first attempt yielded no usable results, the
+    // engine has a distinct fallback UA, AND there's still budget for a second
+    // request (so the retry can never push past the deadline either).
+    let (results, outcome) = if results.is_none()
+        && outcome != "unreachable"
+        && engine.ua != engine.ua_alt
+        && let Some(retry_ms) = fetch_timeout_ms(deadline)
+    {
+        match try_fetch(url, engine.ua_alt, post_body, retry_ms).await {
+            FetchOutcome::Body(body) => {
+                let r = parse_results(&body, engine.name, query);
+                if r.is_empty() {
+                    (None, outcome)
+                } else {
+                    (Some(r), "ok_retry")
                 }
-                _ => (None, outcome),
             }
-        } else {
-            (results, outcome)
-        };
+            _ => (None, outcome),
+        }
+    } else {
+        (results, outcome)
+    };
 
     let n = results.as_ref().map_or(0, Vec::len);
     tracing::debug!(
@@ -60,11 +92,16 @@ pub(super) async fn fetch_and_parse(
     results
 }
 
-pub(super) async fn try_fetch(url: &str, ua: &str, post_body: Option<&str>) -> FetchOutcome {
+pub(super) async fn try_fetch(
+    url: &str,
+    ua: &str,
+    post_body: Option<&str>,
+    timeout_ms: u64,
+) -> FetchOutcome {
     let body = if let Some(data) = post_body {
-        crate::util::curl::fetch_post_with_ua(url, data, 8_000, ua).await
+        crate::util::curl::fetch_post_with_ua(url, data, timeout_ms, ua).await
     } else {
-        crate::util::curl::fetch_with_ua(url, 8_000, ua).await
+        crate::util::curl::fetch_with_ua(url, timeout_ms, ua).await
     };
 
     // If direct fetch failed, try through the HUNTSMAN_SEARCH_PROXY env
@@ -75,7 +112,7 @@ pub(super) async fn try_fetch(url: &str, ua: &str, post_body: Option<&str>) -> F
             if let Ok(proxy) = std::env::var("HUNTSMAN_SEARCH_PROXY")
                 && !proxy.is_empty()
             {
-                return match crate::util::curl::fetch_via_proxy(url, 8_000, ua, &proxy).await {
+                return match crate::util::curl::fetch_via_proxy(url, timeout_ms, ua, &proxy).await {
                     Some(b) if b.len() >= 500 && !is_captcha_page(&b) => FetchOutcome::Body(b),
                     Some(_) => FetchOutcome::Blocked,
                     None => FetchOutcome::Unreachable,
