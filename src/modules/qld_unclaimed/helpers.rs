@@ -275,9 +275,18 @@ pub(super) fn records_to_entities(
         // the postcode for its residency evidence.
         let mut entity = match &pc {
             Some(p) => {
+                // Derive the OWNER's state from THEIR postcode, not the register's
+                // jurisdiction. The QLD Public Trustee holds the money, but the
+                // record carries the owner's last-known postcode, which spans every
+                // state — the real data lists NSW 2xxx postcodes (a Brisbane family
+                // member who moved to Sydney). Hardcoding "QLD" mis-placed them
+                // geographically and tripped the AU-056 jurisdiction cross-check
+                // (postcode-derived NSW vs a "QLD" tag). Fall back to QLD only when
+                // the postcode resolves to no state.
+                let state = crate::util::address_au::state_for_postcode(p).unwrap_or("QLD");
                 let mut e = Entity::new(
                     EntityKind::Address,
-                    format!("QLD {p}, Australia"),
+                    format!("{state} {p}, Australia"),
                     addr_conf,
                     scan_id,
                 );
@@ -288,9 +297,9 @@ pub(super) fn records_to_entities(
                 // A postcode spans many localities — flag the coarseness so the
                 // UI and geo rules treat it as a region, not a pinned address.
                 e.tag("coarse");
-                // This register is Queensland-only; tag state explicitly so
-                // AU-056 jurisdiction cross-check can use it without re-parsing.
-                e.tag("au-state:QLD");
+                // Tag the owner's true state (postcode-derived) so the AU-056
+                // jurisdiction cross-check compares like with like.
+                e.tag(format!("au-state:{state}"));
                 e
             }
             None => {
@@ -396,12 +405,16 @@ pub(super) fn suburbs_to_entities(
 ) -> Vec<Entity> {
     let mut out = Vec::new();
     for (pc, locs) in pc_localities {
+        // The owner's true state from their postcode (these are the seed's OWN
+        // exact-match postcodes, normally QLD, but a NSW subject with QLD-held
+        // money would otherwise be mis-stated). Fall back to QLD.
+        let state = crate::util::address_au::state_for_postcode(pc).unwrap_or("QLD");
         if let Some(first) = locs.first() {
             let coords = format!("{:.5},{:.5}", first.lat, first.lon);
             let mut c = Entity::new(EntityKind::Coordinates, coords, 0.30, scan_id);
             c.tag(SRC);
             c.tag("country:AU");
-            c.tag("au-state:QLD");
+            c.tag(format!("au-state:{state}"));
             c.tag("geoint");
             c.tag("postcode-centroid");
             c.tag("coarse");
@@ -415,7 +428,7 @@ pub(super) fn suburbs_to_entities(
         for loc in locs.iter().take(SUBURB_CAP) {
             let mut a = Entity::new(
                 EntityKind::Address,
-                format!("{}, QLD {pc}, Australia", loc.suburb),
+                format!("{}, {state} {pc}, Australia", loc.suburb),
                 0.30,
                 scan_id,
             );
