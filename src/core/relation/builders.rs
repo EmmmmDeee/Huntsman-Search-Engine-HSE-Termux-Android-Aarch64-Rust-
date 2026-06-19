@@ -334,6 +334,24 @@ const IDENTITY_CANDIDATE_DAMP: f64 = 0.6;
 /// surfaced for the operator to confirm.
 const KINSHIP_DAMP: f64 = 0.5;
 
+/// Score damp for an inferred co-residence edge. Two distinct people NAMED at the
+/// SAME specific street address (a register's separate owner records, a household
+/// roll) are linked even when they share no surname — the household tie the surname
+/// kinship structurally can't see. Evidence-grounded (both names are on a record at
+/// that address), so it outranks a bare surname guess ([`KINSHIP_DAMP`]); damped
+/// below a DECLARED relationship because "same address" can occasionally be a shared
+/// building rather than one household.
+const CO_RESIDENCE_DAMP: f64 = 0.8;
+
+/// Tags that mark an `Address` as too COARSE to be a dwelling — a postcode / suburb
+/// centroid, not a specific home. Two people sharing a postcode are not
+/// co-residents, so these places never link a household.
+const COARSE_ADDRESS_TAGS: &[&str] = &["coarse", "postcode-only", "candidate-suburb"];
+
+/// Max residents paired per place — a household is small; this bounds the O(k²)
+/// pairing on a pathological owner list (Determinism + low-RAM Termux).
+const CO_RESIDENCE_MAX_PER_PLACE: usize = 8;
+
 /// Evidence attribute keys whose value names a real person — the owner /
 /// registrant / account holder a module recorded alongside an identifier or a
 /// place. Matched case-insensitively against present Person entities, so an
@@ -708,11 +726,92 @@ pub fn derive_declared_associations(entities: &[Entity], scan_id: &str) -> Vec<R
     out
 }
 
+/// Distinct Persons explicitly NAMED at a place via [`PERSON_NAME_ATTRS`] evidence,
+/// in stable (evidence, attribute) order, de-duplicated by uid. The shared
+/// person-at-place resolution behind both residency and co-residence.
+fn residents_of<'a>(
+    place: &Entity,
+    person_by_name: &std::collections::HashMap<String, &'a Entity>,
+) -> Vec<&'a Entity> {
+    use std::collections::HashSet;
+
+    let mut found: Vec<&Entity> = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+    for ev in &place.evidence {
+        for (k, v) in &ev.attributes {
+            if !PERSON_NAME_ATTRS.iter().any(|a| k.eq_ignore_ascii_case(a)) {
+                continue;
+            }
+            if let Some(&p) = person_by_name.get(v.trim().to_lowercase().as_str())
+                && seen.insert(p.uid.as_str())
+            {
+                found.push(p);
+            }
+        }
+    }
+    found
+}
+
+/// Derive `AssociatedWith` co-residence edges between distinct Persons NAMED at the
+/// SAME specific `Address` — household members (separate owner records, co-residents
+/// on a register / roll) the surname kinship can't link because they need share no
+/// name. This is the free, offline angle for DIFFERENT-surname family: a partner, an
+/// in-law, a married child, a flatmate — exactly the relatives a same-surname scan
+/// structurally misses.
+///
+/// Precision-gated to a real dwelling: a COARSE postcode/suburb centroid
+/// ([`COARSE_ADDRESS_TAGS`]) never links a household (thousands share a postcode),
+/// and both people must be evidence-named at the place — so the edge outranks a bare
+/// surname guess ([`KINSHIP_DAMP`]) yet is damped below a DECLARED relationship
+/// ([`CO_RESIDENCE_DAMP`], since one address can occasionally be a shared building).
+/// Bounded per place ([`CO_RESIDENCE_MAX_PER_PLACE`]), symmetric, canonically
+/// directed, deduped, deterministic. A co-resident who ALSO shares the surname gets
+/// this edge AND the kinship one (same `(from, to)`, this the stronger) — two
+/// independent angles agreeing.
+pub fn derive_co_residence(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::HashSet;
+
+    let person_by_name = persons_by_name(entities);
+    if person_by_name.is_empty() {
+        return Vec::new();
+    }
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for place in entities.iter().filter(|e| {
+        e.kind == EntityKind::Address && !COARSE_ADDRESS_TAGS.iter().any(|t| e.has_tag(t))
+    }) {
+        let mut residents = residents_of(place, &person_by_name);
+        if residents.len() < 2 {
+            continue;
+        }
+        residents.truncate(CO_RESIDENCE_MAX_PER_PLACE);
+        for i in 0..residents.len() {
+            for j in (i + 1)..residents.len() {
+                let (a, b) = (residents[i], residents[j]);
+                let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
+                if seen.insert((from.uid.clone(), to.uid.clone())) {
+                    out.push(Relation::new(
+                        from.uid.as_str(),
+                        to.uid.as_str(),
+                        RelationKind::AssociatedWith,
+                        from.confidence.min(to.confidence) * CO_RESIDENCE_DAMP,
+                        scan_id,
+                    ));
+                }
+            }
+        }
+    }
+    sort_edges(&mut out);
+    out
+}
+
 /// Derive every deterministic, evidence-grounded relation the engine knows how
 /// to reconstruct from a persisted entity set alone — the infrastructure layer
 /// (structural ownership, geo co-location, DNS resolution, WHOIS registration,
 /// name lineage) and the identity layer (handle aliases, identifier ownership,
-/// residency, kinship) — in a single stable order. This is the lineage-free
+/// residency, kinship, co-residence) — in a single stable order. This is the
+/// lineage-free
 /// counterpart to the live scan's relation pass: the import paths (CLI `hse
 /// import` and the web `scan_import` upload) have no in-flight expansion edges,
 /// but every edge derivable from the entities + their evidence still applies, so
@@ -729,9 +828,13 @@ pub fn derive_all(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     out.extend(derive_identity_ownership(entities, scan_id));
     out.extend(derive_residency(entities, scan_id));
     out.extend(derive_kinship(entities, scan_id));
-    // Declared associations LAST so a `(from, kind, to)` edge a surname guess
-    // already emitted is re-emitted here at full (declared) confidence — the
-    // later, higher-trust edge wins on idempotent upsert.
+    // Co-residence after kinship: an evidence-grounded household edge (×0.8)
+    // outranks a surname guess (×0.5) on the same pair, and links the
+    // DIFFERENT-surname household members kinship can't reach.
+    out.extend(derive_co_residence(entities, scan_id));
+    // Declared associations LAST so a `(from, kind, to)` edge a surname guess or a
+    // co-residence inference already emitted is re-emitted here at full (declared)
+    // confidence — the later, higher-trust edge wins on idempotent upsert.
     out.extend(derive_declared_associations(entities, scan_id));
     out
 }

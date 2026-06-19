@@ -25,9 +25,11 @@
 //!   - `IdentifiedBy`   — Person → their Email/Username/Phone (`derive_identity_ownership`)
 //!   - `LocatedAt`      — Person → Address/Coordinates (`derive_residency`)
 //!   - `AssociatedWith` — Person ↔ Person: a surname kinship candidate
-//!     (`derive_kinship`) or a DECLARED relative / co-owner
-//!     (`derive_declared_associations`, evidence-grounded). The two corroborate,
-//!     so the family graph forms from any seed angle and from either signal.
+//!     (`derive_kinship`), a household co-resident at one specific address
+//!     (`derive_co_residence` — the DIFFERENT-surname family the surname angle
+//!     can't reach), or a DECLARED relative / co-owner
+//!     (`derive_declared_associations`, evidence-grounded). They corroborate, so
+//!     the family graph forms from any seed angle and from any of the signals.
 //!
 //! `DerivedFrom` (child → the entity whose expansion surfaced it) is also
 //! **lineage** — recorded by the engine's `run_expansion` (not a post-scan
@@ -41,8 +43,9 @@ pub(crate) mod types;
 mod tests;
 
 pub use builders::{
-    CO_LOCATION_KM, derive_all, derive_colocation, derive_declared_associations, derive_handles,
-    derive_identity_ownership, derive_kinship, derive_name_lineage, derive_registration,
-    derive_residency, derive_resolution, derive_structural,
+    CO_LOCATION_KM, derive_all, derive_co_residence, derive_colocation,
+    derive_declared_associations, derive_handles, derive_identity_ownership, derive_kinship,
+    derive_name_lineage, derive_registration, derive_residency, derive_resolution,
+    derive_structural,
 };
 pub use types::{Relation, RelationKind};

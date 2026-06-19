@@ -70,6 +70,69 @@ fn name_lineage_links_derived_handles_to_the_subject_person() {
 }
 
 #[test]
+fn co_residence_links_different_surname_household_at_a_specific_address() {
+    use crate::core::entity::Evidence;
+
+    // Two separate register records at ONE specific address name two
+    // DIFFERENT-surname people — the household the surname kinship can't link.
+    let mut addr = ent(
+        EntityKind::Address,
+        "12 Rose Street, Brisbane QLD 4000",
+        0.6,
+    );
+    addr.add_evidence(Evidence::new("qld_unclaimed", "rec1").with_attr("owner", "Jane Citizen"));
+    addr.add_evidence(Evidence::new("qld_unclaimed", "rec2").with_attr("owner", "Mark Roe"));
+    let jane = ent(EntityKind::Person, "Jane Citizen", 0.7);
+    let mark = ent(EntityKind::Person, "Mark Roe", 0.6);
+
+    let ents = vec![addr, jane.clone(), mark.clone()];
+    let edges = derive_co_residence(&ents, "s");
+    assert_eq!(
+        edges.len(),
+        1,
+        "one household edge between the two co-residents"
+    );
+    let e = &edges[0];
+    assert_eq!(e.kind, RelationKind::AssociatedWith);
+    assert!(
+        (e.from_uid == jane.uid && e.to_uid == mark.uid)
+            || (e.from_uid == mark.uid && e.to_uid == jane.uid),
+        "links the two co-residents"
+    );
+    // Evidence-grounded co-residence sits between a surname guess (×0.5) and a
+    // declared link (×1.0); the surname kinship can't see it (different surnames).
+    let min_conf = 0.6; // min(jane 0.7, mark 0.6)
+    assert!(
+        e.confidence > min_conf * 0.5 && e.confidence < min_conf,
+        "confidence {} is evidence-grounded but damped",
+        e.confidence
+    );
+    assert!(derive_kinship(&ents, "s").is_empty());
+
+    // A COARSE postcode/suburb is never a household, even with two named owners.
+    let mut coarse = ent(EntityKind::Address, "QLD 4000, Australia", 0.4);
+    coarse.tag("postcode-only");
+    coarse.add_evidence(Evidence::new("qld_unclaimed", "a").with_attr("owner", "Jane Citizen"));
+    coarse.add_evidence(Evidence::new("qld_unclaimed", "b").with_attr("owner", "Mark Roe"));
+    assert!(
+        derive_co_residence(&[coarse, jane.clone(), mark.clone()], "s").is_empty(),
+        "a postcode centroid is not a dwelling"
+    );
+
+    // A single resident is no household, and a same-surname co-resident gets BOTH
+    // this edge and the kinship one (two angles agreeing on the same pair).
+    let solo = {
+        let mut a = ent(EntityKind::Address, "9 Lone Way, Cairns QLD 4870", 0.6);
+        a.add_evidence(Evidence::new("qld_unclaimed", "r").with_attr("owner", "Jane Citizen"));
+        a
+    };
+    assert!(
+        derive_co_residence(&[solo, jane], "s").is_empty(),
+        "one name is not a household"
+    );
+}
+
+#[test]
 fn derive_all_aggregates_every_structural_derivation() {
     use crate::core::entity::Evidence;
     // A mixed set exercising two independent derivations: a subdomain edge
@@ -96,6 +159,7 @@ fn derive_all_aggregates_every_structural_derivation() {
         + derive_identity_ownership(&ents, "s").len()
         + derive_residency(&ents, "s").len()
         + derive_kinship(&ents, "s").len()
+        + derive_co_residence(&ents, "s").len()
         + derive_declared_associations(&ents, "s").len();
     assert_eq!(all.len(), expected, "derive_all is the union of every pass");
     assert!(all.iter().any(|r| r.kind == RelationKind::SubdomainOf));
