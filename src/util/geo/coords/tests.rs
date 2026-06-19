@@ -60,9 +60,19 @@ fn geo_uri_basic_params_and_altitude() {
 
 #[test]
 fn geo_uri_rejects_malformed() {
-    for s in ["geo:", "geo:1", "geo:1,2,3,4", "geo:abc,def", "geo:200,0"] {
+    for s in [
+        "geo:",
+        "geo:1",
+        "geo:1,2,3,4",
+        "geo:abc,def",
+        "geo:200,0",
+        "geo:1,2,",             // empty altitude
+        "geo:1,2,not-a-number", // non-numeric altitude
+    ] {
         assert!(parse(s).is_none(), "should reject {s:?}");
     }
+    // A numeric altitude is accepted and ignored.
+    assert!(parse("geo:1,2,12.5").is_some());
 }
 
 // ───────────────────────────── DMS / DDM / DD+hemisphere ────────────────────
@@ -201,11 +211,12 @@ fn plus_code_reference_vector() {
 #[test]
 fn plus_code_rejects_short_padded_and_misplaced() {
     for s in [
-        "9G8F+6X",    // short code (separator not at position 8)
-        "8FVC0000+",  // padded with '0'
-        "8FVC9G8F",   // no separator
-        "8FVC9G8F+",  // nothing after the separator
-        "++++++++++", // junk
+        "9G8F+6X",      // short code (separator not at position 8)
+        "8FVC0000+",    // padded with '0'
+        "8FVC9G8F",     // no separator
+        "8FVC9G8F+",    // nothing after the separator
+        "8FVC9G8F+6X+", // a second, stray separator
+        "++++++++++",   // junk
     ] {
         assert!(parse(s).is_none(), "should reject {s:?}");
     }

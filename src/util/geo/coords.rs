@@ -143,8 +143,15 @@ fn parse_geo_uri(s: &str) -> Option<LatLon> {
     let mut it = coords.split(',');
     let lat: f64 = it.next()?.trim().parse().ok()?;
     let lon: f64 = it.next()?.trim().parse().ok()?;
-    // a third field (altitude) is allowed and ignored; more is malformed
-    if it.next().is_some() && it.next().is_some() {
+    // An optional third field is the altitude — per RFC 5870 it must be a finite
+    // number when present, so a non-numeric or empty alt (`geo:1,2,` /
+    // `geo:1,2,x`), or any further field, makes the URI malformed.
+    if let Some(alt) = it.next()
+        && alt.trim().parse::<f64>().is_err()
+    {
+        return None;
+    }
+    if it.next().is_some() {
         return None;
     }
     LatLon::checked(lat, lon, CoordFormat::GeoUri)
@@ -318,8 +325,9 @@ fn parse_side(s: &str) -> Option<Side> {
         }
     }
     let (magnitude, neg_sign, used_min, used_sec) = read_dms_numbers(&core)?;
-    // A hemisphere letter and an explicit minus must not *both* claim the sign;
-    // if a hemisphere is present it wins (a leading '-' with 'S' is degenerate).
+    // When both a hemisphere letter and a leading '-' are present (a degenerate
+    // input like "-33…S"), the hemisphere is the single source of truth for the
+    // sign and the explicit minus is ignored — we pick one, we do not reject.
     let value = if axis_is_lat.is_some() {
         if hemi_neg { -magnitude } else { magnitude }
     } else if neg_sign {
@@ -579,9 +587,11 @@ fn olc_index(c: char) -> Option<usize> {
 fn parse_plus_code(s: &str) -> Option<LatLon> {
     let t = s.trim();
     let sep = t.find(OLC_SEPARATOR)?;
-    // Separator must sit at position 8 for an absolute (full) code, and the code
-    // must not be padded with '0'.
-    if sep != 8 || t.contains('0') {
+    // Exactly one separator, sitting at position 8 for an absolute (full) code,
+    // and no `0` padding. The single-separator check matters because the digits
+    // are gathered by filtering `+` out, so a stray extra `+` (e.g.
+    // `8FVC9G8F+6X+`) would otherwise slip through.
+    if sep != 8 || t.matches(OLC_SEPARATOR).count() != 1 || t.contains('0') {
         return None;
     }
     let digits: Vec<char> = t.chars().filter(|&c| c != OLC_SEPARATOR).collect();
