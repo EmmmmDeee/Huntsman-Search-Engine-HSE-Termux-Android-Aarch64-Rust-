@@ -468,6 +468,49 @@ async fn scan_create_rejects_invalid_target() {
     assert!(json.get("error").is_some(), "response must contain error");
 }
 
+// ── 5b. Live Signal Radar (button activation) ─────────────────────────────
+
+#[tokio::test]
+async fn radar_sweep_queues_a_live_sensor_scan() {
+    // The radar button (`POST /api/v1/radar`) takes NO target and is the sole
+    // activation path for the live device sensors. The handler reads only query
+    // params, so an empty body is correct.
+    let app = test_app("radar");
+    let resp = app
+        .clone()
+        .oneshot(post_json("/api/v1/radar", ""))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::ACCEPTED);
+    let json = body_json(resp).await;
+    assert_eq!(
+        json["mode"].as_str(),
+        Some("radar"),
+        "radar response advertises its mode"
+    );
+    let sid = json["scan_id"]
+        .as_str()
+        .expect("radar returns a scan_id")
+        .to_string();
+    assert!(!sid.is_empty());
+
+    // The queued scan carries the live-sensor activation — `allow_live_sensors`
+    // set and a coordinate (non-target) seed — proving it is the radar, never an
+    // ordinary target scan.
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let scan = body_json(resp).await;
+    assert_eq!(scan["target"]["kind"].as_str(), Some("coordinates"));
+    assert_eq!(
+        scan["options"]["allow_live_sensors"].as_bool(),
+        Some(true),
+        "radar scan MUST opt into live sensors — the only activation path"
+    );
+}
+
 // ── 6. Scan list ──────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -1472,6 +1515,10 @@ async fn spa_references_only_registered_api_endpoints() {
             "logs" => "/api/v1/logs".to_string(),
             "live" => "/api/v1/live".to_string(),
             "update" => "/api/v1/update/status".to_string(),
+            // Live Signal Radar — POST-only, so a bare GET returns 405 (Method
+            // Not Allowed), not the fallback's 404; the assertion below only
+            // requires "not 404", which confirms the route is registered.
+            "radar" => "/api/v1/radar".to_string(),
             other => panic!(
                 "SPA references /api/v1/{other} but this test has no probe for it — \
                  add one and confirm the route is registered in src/api/routes.rs"

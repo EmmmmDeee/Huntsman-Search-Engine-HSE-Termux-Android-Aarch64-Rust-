@@ -33,6 +33,51 @@ pub(super) fn dispatch_key(
     (module_name, target.kind, normalised)
 }
 
+/// True if `entity` is *incidental infrastructure* noise on a scan with this
+/// `seed_kind` — a shared CDN edge IP, a provider / registrar / DNS / mega
+/// domain, or a role / provider mailbox (`abuse@`, `dns@`) that surfaces while
+/// hunting an identity but never belongs to the subject, so the engine drops it
+/// at admission (it never reaches the graph, correlator, or view). Exempt when
+/// the seed itself IS infrastructure (`Domain` / `IpAddress` / `Cidr` / `Asn` /
+/// `Url`): there the provider estate is the subject, so nothing is incidental.
+///
+/// Note the asymmetry between `Domain` and `Email`. A bare `Domain` node is gated
+/// on [`is_noncentral_domain`](crate::core::scan::is_noncentral_domain) (mega +
+/// infra) — `facebook.com` / `gmail.com` as a standalone node is noise on a
+/// person scan. An `Email` is gated only on shared mail *infrastructure*
+/// ([`is_infra_domain`](crate::core::scan::is_infra_domain), plus the role-local
+/// check), because a subject's personal freemail address (`…@gmail.com`) is a
+/// prime finding, never noise.
+///
+/// Kept pure (no engine state) so the seed-aware decision is unit-testable in
+/// isolation — mirroring [`is_wrong_identity_pivot`](crate::core::scan::is_wrong_identity_pivot).
+pub(super) fn is_incidental_infra_entity(seed_kind: TargetKind, entity: &Entity) -> bool {
+    use crate::core::entity::EntityKind;
+    if matches!(
+        seed_kind,
+        TargetKind::Domain
+            | TargetKind::IpAddress
+            | TargetKind::Cidr
+            | TargetKind::Asn
+            | TargetKind::Url
+    ) {
+        return false;
+    }
+    match &entity.kind {
+        EntityKind::IpAddress => crate::core::validation::is_cdn_edge_ip(&entity.value),
+        EntityKind::Domain => crate::core::scan::is_noncentral_domain(&entity.value),
+        EntityKind::Email => {
+            crate::core::validation::is_role_mailbox(&entity.value)
+                || entity
+                    .value
+                    .rsplit('@')
+                    .next()
+                    .is_some_and(crate::core::scan::is_infra_domain)
+        }
+        _ => false,
+    }
+}
+
 /// Emit the uniform per-module dispatch trace, paired with the `ModuleStart` bus
 /// event at every dispatch site (sequential + both concurrent phases). Without it
 /// the raw debug log showed a module's outcome (done/skipped/errored/timeout) but
@@ -295,6 +340,11 @@ pub(super) struct DispatchCx<'a> {
     pub(super) target: &'a Target,
     pub(super) opts: &'a ScanOptions,
     pub(super) is_expansion: bool,
+    /// The kind of the scan's ORIGINAL seed (not the current dispatch target).
+    /// Drives the incidental-infrastructure admission gate: a CDN/registrar/DNS
+    /// artifact is the legitimate subject only when the scan itself targets
+    /// infrastructure (Domain/IP/CIDR/ASN/URL), and is noise on an identity scan.
+    pub(super) seed_kind: TargetKind,
 }
 
 /// Mutable per-scan dispatch accumulators threaded through every module run: the
@@ -439,6 +489,18 @@ impl super::ScanEngine {
                         && !crate::core::validation::validate_phone_e164(&entity.value).valid
                     {
                         self.emit_excluded(cx.scan_id, &entity, "implausible_phone");
+                        continue;
+                    }
+                    // Incidental-infrastructure / role-mailbox noise gate: a
+                    // CDN-edge IP, shared provider / registrar / DNS / mega domain,
+                    // or role/provider mailbox surfacing on an identity-seeded scan
+                    // maps a provider's estate, not the subject. Dropped at
+                    // admission (never enters the graph, correlator, or view), like
+                    // the other admission filters. The seed-aware decision lives in
+                    // `is_incidental_infra_entity` (infrastructure-seeded scans are
+                    // exempt — there the infrastructure IS the subject).
+                    if is_incidental_infra_entity(cx.seed_kind, &entity) {
+                        self.emit_excluded(cx.scan_id, &entity, "incidental_infra");
                         continue;
                     }
                     self.emit(

@@ -36,7 +36,7 @@ mod tests;
 pub use composite::validate_for_kind;
 pub use coordinates::validate_coordinates;
 pub use domain::validate_domain_shape;
-pub use email::validate_email_syntax;
+pub use email::{is_role_mailbox, validate_email_syntax};
 pub use ip::{is_bogus_ip, is_cdn_edge_ip, is_non_routable_ip, untrusted_ip_geo_reason};
 pub use phone::validate_phone_e164;
 pub use placeholder::{

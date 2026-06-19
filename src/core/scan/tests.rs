@@ -349,6 +349,11 @@ fn is_infra_domain_matches_shared_providers() {
         "ns-664.awsdns-19.net",    // AWS Route 53 (varying shard root)
         "ns-1778.awsdns-30.co.uk", // …including the co.uk shard
         "MIMECAST.COM",
+        "jomax.net",     // GoDaddy registrar/abuse mail (dns@jomax.net)
+        "ns1.jomax.net", // …and its nameservers
+        "epik.com",      // registrar / nameserver provider
+        "ns3.epik.com",
+        "registrar-servers.com", // Namecheap control-plane
     ] {
         assert!(is_infra_domain(d), "{d} should be shared infra");
         assert!(is_noncentral_domain(d), "{d} should be non-central");

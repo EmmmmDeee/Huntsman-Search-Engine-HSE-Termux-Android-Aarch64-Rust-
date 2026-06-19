@@ -68,6 +68,70 @@ pub async fn scan_create(
         .into_response()
 }
 
+/// Build the `(target, options)` for a radar sweep from the optional seed
+/// **type**. Pure (no store / engine access) so the radar's invariants — *only*
+/// the live device sensors run, `allow_live_sensors` is set (the sole activation
+/// path), the sweep is passive and single-round, and it carries no real target —
+/// are unit-testable without an `AppState`. `Some("mac"|"mac_address"|"bssid")`
+/// anchors the sweep on the local network (a sentinel MAC); anything else (incl.
+/// `None`) is the default GPS/RF ambient survey (a sentinel coordinate). The
+/// sensors ignore the seed value, so it is always a sentinel, never a target.
+fn radar_scan_spec(seed: Option<&str>) -> (Target, crate::core::scan::ScanOptions) {
+    use crate::core::scan::TargetKind;
+    let (kind, value) = match seed {
+        Some("mac" | "mac_address" | "bssid") => (TargetKind::MacAddress, "00:00:00:00:00:00"),
+        _ => (TargetKind::Coordinates, "0,0"),
+    };
+    let opts = crate::core::scan::ScanOptions {
+        modules: Some(
+            crate::core::engine::LOCAL_PASSIVE_MODULES
+                .iter()
+                .map(|m| (*m).to_string())
+                .collect(),
+        ),
+        passive_only: true,
+        depth: 0,
+        allow_live_sensors: true,
+        ..Default::default()
+    };
+    (Target::new(kind, value), opts)
+}
+
+/// `POST /api/v1/radar` — run ONE autonomous live-sensor sweep (the radar button).
+///
+/// The dedicated, user-triggered activation for the live device sensors
+/// (`signal_radar`, `device_sensors`, `wifi_intel`, `cell_intel`, `local_net`).
+/// It takes **no target** — it surveys the device's own ambient RF / network
+/// environment (Wi-Fi APs, Bluetooth, cell towers, GPS fix, LAN ARP) — and is
+/// entirely separate from target seed scanning: an ordinary scan never runs these
+/// modules (the `allow_live_sensors` gate keeps them off); only this endpoint sets
+/// it. The sweep is seeded with a sentinel value purely so the sensors (which gate
+/// on `Coordinates`/`MacAddress` and ignore the value) dispatch.
+///
+/// The *only* input is an optional seed **type** via `?seed=` — `coordinates`
+/// (default; GPS/RF ambient survey) or `mac`/`mac_address`/`bssid` (a
+/// BSSID-anchored local-network survey). Every sensor accepts both kinds and
+/// ignores the value, so this just labels the sweep's anchor; it never carries a
+/// real target.
+pub async fn radar_sweep(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let (target, opts) = radar_scan_spec(params.get("seed").map(String::as_str));
+    let sid = scan_id("radar", target.kind.canonical_str());
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    if let Err(e) = s.store.upsert_scan(&scan) {
+        return internal_error(&e);
+    }
+    spawn_scan(&s, scan, target);
+    info!(scan_id = %sid, "radar sweep queued — live device sensors (button activation)");
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({ "scan_id": sid, "status": "queued", "mode": "radar" })),
+    )
+        .into_response()
+}
+
 pub async fn scan_batch(
     State(s): State<Arc<AppState>>,
     Json(requests): Json<Vec<ScanRequest>>,
