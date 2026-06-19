@@ -1798,9 +1798,10 @@ fn osint_context_attributes_prefixless_alnum_key() {
         "a prefix-less 32-char alnum key must be invisible to the shape detector"
     );
     assert_eq!(match_osint_provider("SHODAN_API_KEY", key), Some("shodan"));
+    // Context-attributed ⇒ Proven (shape matched AND the provider was named).
     assert_eq!(
         identify_with_context("SHODAN_API_KEY", key),
-        Some(("shodan", key))
+        Some(("shodan", key, DetectionConfidence::Proven))
     );
 }
 
@@ -1811,13 +1812,15 @@ fn osint_context_upgrades_generic_hex_to_named_provider() {
     let hex64 = "3f9a1c7e2b8d4506af13e9c2d7b04185fa6c39e1d8b25704ce9f1a3b6d8025f7";
     assert_eq!(hex64.len(), 64);
     assert_eq!(identify_api_key(hex64).map(|(s, _)| s), Some("generic_hex"));
+    // Upgraded under context ⇒ named provider, Proven.
     assert_eq!(
-        identify_with_context("VIRUSTOTAL_API_KEY", hex64).map(|(s, _)| s),
-        Some("virustotal")
+        identify_with_context("VIRUSTOTAL_API_KEY", hex64).map(|(s, _, d)| (s, d)),
+        Some(("virustotal", DetectionConfidence::Proven))
     );
+    // No provider context ⇒ stays generic_hex, the Potential baseline.
     assert_eq!(
-        identify_with_context("unrelated_field", hex64).map(|(s, _)| s),
-        Some("generic_hex")
+        identify_with_context("unrelated_field", hex64).map(|(s, _, d)| (s, d)),
+        Some(("generic_hex", DetectionConfidence::Potential))
     );
 }
 
@@ -1924,6 +1927,83 @@ fn osint_services_reuse_service_domain_vocabulary() {
             p.service
         );
     }
+}
+
+// ─── Detection-confidence (provenance) tier ──────────────────────────────────
+
+#[test]
+fn detection_confidence_labels_are_stable() {
+    assert_eq!(DetectionConfidence::Proven.as_str(), "proven");
+    assert_eq!(DetectionConfidence::Probable.as_str(), "probable");
+    assert_eq!(DetectionConfidence::Potential.as_str(), "potential");
+}
+
+#[test]
+fn detection_confidence_for_service_is_baseline_only() {
+    // Identity-less results are Potential; every concrete vendor/PEM schema is
+    // Probable. `for_service` NEVER returns Proven — that needs the context signal
+    // only `identify_with_context` holds.
+    for svc in ["generic_hex", "url_param_key"] {
+        assert_eq!(
+            DetectionConfidence::for_service(svc),
+            DetectionConfidence::Potential,
+            "{svc} should be Potential"
+        );
+    }
+    for svc in ["aws", "anthropic", "jwt_token", "pem_rsa_private", "shodan"] {
+        assert_eq!(
+            DetectionConfidence::for_service(svc),
+            DetectionConfidence::Probable,
+            "{svc} should be Probable from the service tag alone"
+        );
+    }
+}
+
+#[test]
+fn prefix_matched_osint_key_is_probable_not_proven() {
+    // Shodan also has a *prefix* entry (`d0a2df…`). A key matched by that prefix —
+    // schema alone, no naming context — must be Probable, never over-claimed as
+    // Proven. Regression guard for the service-tag collision (a context-only
+    // derivation would wrongly call this Proven).
+    let prefixed = synthesise_for("d0a2df", 32);
+    let (svc, _) = identify_api_key(&prefixed).expect("prefix should match");
+    assert_eq!(svc, "shodan");
+    assert_eq!(
+        identify_with_context("api_key", &prefixed).map(|(s, _, d)| (s, d)),
+        Some(("shodan", DetectionConfidence::Probable))
+    );
+}
+
+#[test]
+fn detection_tag_stamped_on_emitted_keys() {
+    // A context-attributed Shodan key carries detection:proven.
+    let key = &SUFFIX[..32];
+    let blob = format!("SHODAN_API_KEY={key}\n");
+    let item = serde_json::json!({ "env_content": blob });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    let shodan = result
+        .entities
+        .iter()
+        .find(|e| e.has_tag("service:shodan"))
+        .expect("shodan entity");
+    assert!(
+        shodan.has_tag("detection:proven"),
+        "tags: {:?}",
+        shodan.tags
+    );
+
+    // A vendor-prefix AWS key (schema alone, password field) carries
+    // detection:probable.
+    let item = serde_json::json!({ "password": "AKIAJK28SLQQV61MNG9X" });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    let aws = result
+        .entities
+        .iter()
+        .find(|e| e.has_tag("service:aws"))
+        .expect("aws entity");
+    assert!(aws.has_tag("detection:probable"), "tags: {:?}", aws.tags);
 }
 
 // ─── PrefixMatcher property tests ────────────────────────────────────────────

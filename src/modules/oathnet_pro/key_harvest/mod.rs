@@ -234,6 +234,62 @@ pub fn key_value_tier(service: &str) -> KeyValue {
     }
 }
 
+/// How *certain* the detector is that a harvested string is the key it was
+/// labelled — a provenance axis **orthogonal** to [`KeyValue`]'s blast-radius.
+/// One asks "how sure are we this is real and is what we said", the other "how
+/// bad if it is". Surfaced as a `detection:` tag and evidence attribute so triage
+/// can separate "we saw the provider's name beside this key" from "this merely
+/// has a high-entropy shape". (A JWT is `Probable` detection yet `Low` impact;
+/// a context-attributed Shodan key is `Proven` detection yet `Medium` impact —
+/// the two axes genuinely differ.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum DetectionConfidence {
+    /// An objective vendor schema **corroborated by context**: a prefix-less
+    /// OSINT/threat-intel key whose surrounding identifier or URL named its
+    /// provider (a `<32 alnum>` blob under `shodan_api_key=`). Assigned only by
+    /// the context-attribution path ([`identify_with_context`]); the strongest
+    /// signal, since the value matched a known shape *and* the provider was named.
+    Proven,
+    /// An objective vendor schema **alone**: a distinctive prefix (`AKIA…`,
+    /// `sk-ant-…`), a JWT's `eyJ` structure, a PEM private-key block, or a crypto
+    /// address. The format itself is provider-specific, so no surrounding context
+    /// is needed to trust it.
+    Probable,
+    /// A structural/entropy match with **no** vendor identity — a `generic_hex`
+    /// blob or a bare URL-parameter value. Plausibly a real key of an unknown
+    /// vendor (or a stray hash the gates let through); the weakest signal.
+    Potential,
+}
+
+impl DetectionConfidence {
+    /// Stable lower-case label (entity tag / evidence attr / API).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Proven => "proven",
+            Self::Probable => "probable",
+            Self::Potential => "potential",
+        }
+    }
+
+    /// The **baseline** provenance for a key identified *without* context
+    /// corroboration — i.e. straight off [`identify_api_key`]'s prefix/shape
+    /// result. **Pure**, mirroring how [`key_value_tier`] reads everything from
+    /// the service tag. Identity-less results (`generic_hex`, `url_param_key`) are
+    /// [`Self::Potential`]; every concrete vendor/PEM/crypto schema is
+    /// [`Self::Probable`]. It never returns [`Self::Proven`] — that requires the
+    /// extra context signal that only [`identify_with_context`] holds, so a key
+    /// matched by a *prefix* (even a Shodan/Censys one, which also has a prefix
+    /// entry) is correctly `Probable`, not over-claimed as `Proven`.
+    #[must_use]
+    pub fn for_service(service: &str) -> Self {
+        match service {
+            "generic_hex" | "url_param_key" => Self::Potential,
+            _ => Self::Probable,
+        }
+    }
+}
+
 /// High-confidence, CHEAP key identification: recognised **vendor prefixes**,
 /// **PEM** private-key blocks, and **crypto** addresses only. Deliberately
 /// excludes the generic-hex / URL-param / `user:pass` heuristics.
@@ -419,23 +475,35 @@ const EXTRACTED_VALUE_MAX: usize = 4096;
 ///   placeholder / UUID / low-entropy value under a provider-named field is
 ///   dropped.
 ///
-/// Returns the resolved service tag and the (trimmed) key slice, or `None`.
-fn identify_with_context<'a>(context: &str, value: &'a str) -> Option<(&'static str, &'a str)> {
+/// Returns the resolved service tag, the (trimmed) key slice, and the
+/// [`DetectionConfidence`]: [`DetectionConfidence::Proven`] whenever the result
+/// came from context attribution (the two `match_osint_provider` arms), otherwise
+/// the schema/shape baseline from [`DetectionConfidence::for_service`].
+fn identify_with_context<'a>(
+    context: &str,
+    value: &'a str,
+) -> Option<(&'static str, &'a str, DetectionConfidence)> {
     let v = value.trim();
     match identify_api_key(v) {
         // A bare hex blob the context names as a specific provider is that
         // provider's key, not an anonymous `generic_hex` finding. The value
         // already cleared the FP gate inside `identify_api_key`'s hex path.
-        Some(("generic_hex", hit)) => Some((
-            match_osint_provider(context, v).unwrap_or("generic_hex"),
-            hit,
-        )),
-        Some(hit) => Some(hit),
+        // Attribution is `Proven` (shape + named provider); the plain fallback
+        // keeps the `generic_hex` baseline (`Potential`).
+        Some(("generic_hex", hit)) => Some(match match_osint_provider(context, v) {
+            Some(svc) => (svc, hit, DetectionConfidence::Proven),
+            None => ("generic_hex", hit, DetectionConfidence::Potential),
+        }),
+        // A concrete prefix/shape match — schema alone, no context needed. This
+        // is also where a Shodan/Censys key matched by its *prefix* lands, so it
+        // is `Probable`, never over-claimed as `Proven`.
+        Some((svc, hit)) => Some((svc, hit, DetectionConfidence::for_service(svc))),
         // Prefix-less, non-hex OSINT keys are invisible to the shape table;
         // context is the only signal, so re-apply the FP gate before trusting it.
+        // A hit here is necessarily context-attributed → `Proven`.
         None => match_osint_provider(context, v)
             .filter(|_| is_likely_real_key(v))
-            .map(|svc| (svc, v)),
+            .map(|svc| (svc, v, DetectionConfidence::Proven)),
     }
 }
 
@@ -567,9 +635,18 @@ pub fn extract_api_keys_from_item(
                     // alnum>` is a prefix-less Shodan key the shape detector alone
                     // would miss, attributed via `identify_with_context`.
                     if val.len() >= 16
-                        && let Some((service, key_val)) = identify_with_context(raw_key, val)
+                        && let Some((service, key_val, detection)) =
+                            identify_with_context(raw_key, val)
                     {
-                        emit_key(service, key_val, "dotenv line", scan_id, seen, result);
+                        emit_key_with(
+                            service,
+                            key_val,
+                            "dotenv line",
+                            detection,
+                            scan_id,
+                            seen,
+                            result,
+                        );
                     }
                 }
             }
@@ -596,12 +673,13 @@ pub fn extract_api_keys_from_item(
                 // upgraded from `generic_hex` to the named provider.
                 if let Some((_, pval)) = param.split_once('=')
                     && pval.len() >= 16
-                    && let Some((service, key_val)) = identify_with_context(&url, pval)
+                    && let Some((service, key_val, detection)) = identify_with_context(&url, pval)
                 {
-                    emit_key(
+                    emit_key_with(
                         service,
                         key_val,
                         "URL query parameter",
+                        detection,
                         scan_id,
                         seen,
                         result,
@@ -617,9 +695,17 @@ pub fn extract_api_keys_from_item(
             // alnum>"}`), so it is provider context for `identify_with_context`.
             if let Some(s) = eval.as_str()
                 && s.len() >= 16
-                && let Some((service, key_val)) = identify_with_context(ekey, s)
+                && let Some((service, key_val, detection)) = identify_with_context(ekey, s)
             {
-                emit_key(service, key_val, "extra field", scan_id, seen, result);
+                emit_key_with(
+                    service,
+                    key_val,
+                    "extra field",
+                    detection,
+                    scan_id,
+                    seen,
+                    result,
+                );
             }
         }
     }
@@ -983,10 +1069,30 @@ fn shannon_entropy(value: &str) -> f64 {
     h
 }
 
+/// Emit a key whose provenance is the schema/shape baseline (the direct
+/// [`identify_api_key`] paths, which carry no corroborating context). Delegates
+/// to [`emit_key_with`] after deriving [`DetectionConfidence::for_service`].
 fn emit_key(
     service: &'static str,
     key_val: &str,
     source: &str,
+    scan_id: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    let detection = DetectionConfidence::for_service(service);
+    emit_key_with(service, key_val, source, detection, scan_id, seen, result);
+}
+
+/// Emit a key with an explicit [`DetectionConfidence`] — used by the
+/// context-attribution sites, which can assign [`DetectionConfidence::Proven`]
+/// that the service tag alone cannot prove (Shodan/Censys also have prefix
+/// entries). Stamps a `detection:` tag and `detection_confidence` evidence attr.
+fn emit_key_with(
+    service: &'static str,
+    key_val: &str,
+    source: &str,
+    detection: DetectionConfidence,
     scan_id: &str,
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
@@ -1020,6 +1126,8 @@ fn emit_key(
     entity.tag(format!("service:{service}"));
     entity.tag("oathnet-pro");
     entity.tag("auto-discovered");
+    // Detection provenance (orthogonal to ROI/value): proven > probable > potential.
+    entity.tag(format!("detection:{}", detection.as_str()));
     // Tag with ROI tier so operators can prioritise multiplier keys.
     // Multiplier-tier keys discover infrastructure/identities that
     // cascade into MORE keys via web_crawler and search_engines.
@@ -1031,6 +1139,7 @@ fn emit_key(
     entity.add_evidence(
         Evidence::new(SRC, format!("API key ({service}) from {source}"))
             .with_attr("service", service)
+            .with_attr("detection_confidence", detection.as_str())
             .with_attr("roi_tier", roi.label())
             .with_attr(
                 "key_prefix",
