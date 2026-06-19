@@ -1,5 +1,8 @@
 //! Pure helper functions: query derivation, record parsing, entity building.
 
+use std::sync::LazyLock;
+
+use regex::Regex;
 use serde_json::{Map, Value};
 
 use crate::core::{
@@ -59,35 +62,127 @@ pub(super) fn owner_matches_full_name(owner: &str, seed: &str) -> bool {
             .all(|tok| owner_words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
 }
 
-/// The individual person name(s) in an unclaimed-money `owner` field — joint
-/// owners split (`&` / `and` / `,`), companies excluded, each title-cased into a
-/// merge-stable `Person` value. `"HAYLEY DIEGMANN & CURT DIEGMANN"` →
-/// `["Hayley Diegmann", "Curt Diegmann"]`; `"ACME PTY LTD"` → `[]` (a company,
-/// handled by the Organisation pass); `"(unknown owner)"` → `[]` (the parens
-/// fail the alphabetic guard). Surfacing the human owner as its own node is what
-/// lets the relation layer connect the family — by surname from any seed, and by
-/// the co-owner link a joint record declares.
+/// Honorific tokens stripped from the FRONT of a parsed owner name, so the real
+/// register's `"MR HERVE MOREAU"` yields the person "Herve Moreau", not the
+/// title-polluted "Mr Herve Moreau" (which fragments his identity and breaks the
+/// surname link). Matched case- and dot-insensitively.
+const NAME_TITLES: &[&str] = &[
+    "MR", "MRS", "MS", "MISS", "MX", "DR", "PROF", "REV", "SIR", "DAME", "MASTER", "MSTR", "MDM",
+    "MADAME", "HON", "LADY", "LORD", "FR",
+];
+
+/// `<ALEXANDRE MOREAU>` — the register's notation for an ASSOCIATED person on a
+/// record (a beneficiary, a child), captured as an extra owner. Non-nested.
+static ANGLE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<([^<>]*)>").expect("valid"));
+
+/// `(unknown owner)` / `(deceased)` / `(c/- …)` — a parenthesised NOTE, not a
+/// person; dropped as noise so it can't masquerade as a name. Non-nested.
+static PAREN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\([^()]*\)").expect("valid"));
+
+/// The individual person name(s) in an unclaimed-money `owner` field — the richest
+/// free family source, parsed against the register's REAL notations: joint owners
+/// split on `&` / `and` / `+` / `;` / `,`; honorifics (`MR`/`MRS`/`DR`/…) stripped;
+/// an associated `<NAME>` captured; a `(note)` dropped; and a `"SURNAME, GIVENS"`
+/// reversal reordered. Companies are excluded (the Organisation pass owns them),
+/// and every result is title-cased into a merge-stable `Person` value.
+///
+/// `"MR HERVE MOREAU + MRS MARIANNE MOREAU <ALEXANDRE MOREAU>"` →
+/// `["Herve Moreau", "Marianne Moreau", "Alexandre Moreau"]` (a whole household);
+/// `"MOREAU, VALERIE D"` → `["Valerie D Moreau"]`; `"HAYLEY DIEGMANN & CURT DIEGMANN"`
+/// → `["Hayley Diegmann", "Curt Diegmann"]`; `"ACME PTY LTD"` / `"(unknown owner)"`
+/// → `[]`. Surfacing each human owner as its own node is what lets the relation
+/// layer connect the family — by surname from any seed, by the declared co-owner
+/// link, and by co-residence at a shared address.
 pub(super) fn owner_person_names(owner: &str) -> Vec<String> {
-    let normalised = owner.replace(" AND ", " & ").replace(" and ", " & ");
+    // Pull out `<associated>` persons first, then strip `(notes)`; what remains is
+    // the joint-owner body.
+    let bracket_names: Vec<String> = ANGLE_RE
+        .captures_iter(owner)
+        .map(|c| c[1].trim().to_string())
+        .collect();
+    let no_angle = ANGLE_RE.replace_all(owner, " ");
+    let body = PAREN_RE.replace_all(&no_angle, " ");
+
+    // Normalise every joint separator to `&`, then split.
+    let normalised = body
+        .replace(" AND ", " & ")
+        .replace(" and ", " & ")
+        .replace(['+', ';'], " & ");
+    let mut segments: Vec<String> = Vec::new();
+    for part in normalised.split('&') {
+        push_comma_segments(part.trim(), &mut segments);
+    }
+    segments.extend(bracket_names);
+
     let mut out: Vec<String> = Vec::new();
-    for part in normalised.split(['&', ',', ';']) {
-        let p = part.trim();
-        let tokens = p.split_whitespace().count();
-        let name_shaped = p
-            .chars()
-            .all(|c| c.is_alphabetic() || c.is_whitespace() || matches!(c, '-' | '\'' | '.'));
-        if (2..=4).contains(&tokens)
-            && p.len() >= 5
-            && name_shaped
-            && !crate::util::abn::looks_like_company(p)
+    for seg in &segments {
+        if let Some(name) = clean_person_name(seg)
+            && !out.contains(&name)
         {
-            let name = crate::util::str_util::title_case(p);
-            if !out.contains(&name) {
-                out.push(name);
-            }
+            out.push(name);
         }
     }
     out
+}
+
+/// Split one `&`-delimited part on commas, disambiguating the two meanings of a
+/// comma the register uses: a `"SURNAME, GIVENS"` REVERSAL (one token before a lone
+/// comma → reordered to "GIVENS SURNAME") vs a co-owner SEPARATOR (`"A SMITH, B JONES"`).
+fn push_comma_segments(part: &str, out: &mut Vec<String>) {
+    if part.is_empty() {
+        return;
+    }
+    if part.matches(',').count() == 1
+        && let Some((head, tail)) = part.split_once(',')
+        && head.split_whitespace().count() == 1
+        && !head.trim().is_empty()
+        && !tail.trim().is_empty()
+    {
+        out.push(format!("{} {}", tail.trim(), head.trim()));
+        return;
+    }
+    for sub in part.split(',') {
+        let s = sub.trim();
+        if !s.is_empty() {
+            out.push(s.to_string());
+        }
+    }
+}
+
+/// Validate and canonicalise one owner segment into a `Person` value, or `None` if
+/// it isn't a usable individual: strip leading honorifics, require 2–4 name-shaped
+/// tokens with at least one real (non-initial) word, exclude companies, title-case.
+fn clean_person_name(raw: &str) -> Option<String> {
+    let mut tokens: Vec<&str> = raw.split_whitespace().collect();
+    while let Some(first) = tokens.first() {
+        let bare = first.trim_end_matches('.').to_ascii_uppercase();
+        if NAME_TITLES.contains(&bare.as_str()) {
+            tokens.remove(0);
+        } else {
+            break;
+        }
+    }
+    if !(2..=4).contains(&tokens.len()) {
+        return None;
+    }
+    let joined = tokens.join(" ");
+    if joined.len() < 5 {
+        return None;
+    }
+    let name_shaped = joined
+        .chars()
+        .all(|c| c.is_alphabetic() || c.is_whitespace() || matches!(c, '-' | '\'' | '.'));
+    if !name_shaped || crate::util::abn::looks_like_company(&joined) {
+        return None;
+    }
+    // Reject an all-initials fragment ("L B"): a real name has a ≥2-letter word.
+    if !tokens
+        .iter()
+        .any(|t| t.chars().filter(char::is_ascii_alphabetic).count() >= 2)
+    {
+        return None;
+    }
+    Some(crate::util::str_util::title_case(&joined))
 }
 
 /// The datastore_search URL for one full-text query.
