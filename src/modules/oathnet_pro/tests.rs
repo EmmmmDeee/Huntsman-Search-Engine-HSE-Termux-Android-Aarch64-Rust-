@@ -397,3 +397,93 @@ use super::*;
         assert!(!should_skip_preflight(TargetKind::IpAddress, "8.8.8.8"));
         assert!(!should_skip_preflight(TargetKind::Domain, "acme.io"));
     }
+
+    #[test]
+    fn field_validators_are_objective() {
+        // IBAN mod-97 (ISO 7064): canonical valid accounts pass; a flipped check
+        // digit and a redacted sentinel fail.
+        assert!(iban_is_valid("GB82 WEST 1234 5698 7654 32"));
+        assert!(iban_is_valid("DE89370400440532013000"));
+        assert!(iban_is_valid("FR1420041010050500013M02606"));
+        assert!(!iban_is_valid("GB82WEST12345698765431")); // flipped last digit
+        assert!(!iban_is_valid("UPGRADE_TO_SEE"));
+        assert!(!iban_is_valid("1234567890123456"));
+
+        // Public-IP gate: routable IPs pass; private / non-IP junk are rejected.
+        assert!(is_public_ip("8.8.8.8"));
+        assert!(is_public_ip("2606:4700::1111"));
+        assert!(!is_public_ip("192.168.1.1")); // private
+        assert!(!is_public_ip("1234567")); // not an IP at all
+        assert!(!is_public_ip("UPGRADE_TO_SEE"));
+
+        // Digit gate, email structure, redaction sentinel.
+        assert!(has_min_digits("15551234567", 7));
+        assert!(!has_min_digits("UPGRADE_TO_SEE", 7));
+        assert!(looks_like_email("jane.doe@example.com"));
+        assert!(!looks_like_email("UPGRADE_TO_SEE@x"));
+        assert!(!looks_like_email("nobody"));
+        assert!(is_redacted_sentinel("UPGRADE_TO_SEE_FULL"));
+        assert!(!is_redacted_sentinel("realhandle"));
+    }
+
+    #[test]
+    fn breach_extraction_validates_and_enriches() {
+        use serde_json::json;
+        let item = json!({
+            "email": "subject@example.com",
+            "ip": "1234567",                  // junk — not a real IP
+            "phone_number": "UPGRADE_TO_SEE", // redacted sentinel
+            "iban": "GB82 WEST 1234 5698 7654 32",
+            "telegram": "@subject_tg",
+            "github": "subjectdev",
+            "snapchat": "UPGRADE_TO_SEE",     // redacted — must be skipped
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "subject@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+
+        let has = |k: EntityKind, needle: &str| {
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == k && e.value.contains(needle))
+        };
+
+        // Objective gates drop the junk IP and the redacted phone.
+        assert!(
+            !has(EntityKind::IpAddress, "1234567"),
+            "junk IP must be dropped"
+        );
+        assert!(
+            !result.entities.iter().any(|e| e.kind == EntityKind::Phone),
+            "redacted phone must be dropped"
+        );
+
+        // A mod-97-valid IBAN is emitted as an Other(\"iban\") financial entity.
+        let iban = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Other("iban".to_string()))
+            .expect("validated IBAN entity");
+        assert!(iban.has_tag("financial") && iban.has_tag("iban"));
+
+        // New social handles become Username pivots (the `@` is stripped);
+        // redacted ones are skipped.
+        assert!(has(EntityKind::Username, "subject_tg"), "telegram handle");
+        assert!(has(EntityKind::Username, "subjectdev"), "github handle");
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username && e.has_tag("snapchat")),
+            "redacted snapchat handle must be skipped"
+        );
+    }

@@ -515,7 +515,7 @@ fn extract_breach_entities_with(
 
     if let Some(email) = val_str(item, "email") {
         let lower = email.to_lowercase();
-        if lower.contains('@') && seen.insert(lower) {
+        if looks_like_email(&lower) && seen.insert(lower) {
             push_oathnet_entity(
                 result,
                 Entity::new(EntityKind::Email, &email, 0.70, scan_id),
@@ -540,7 +540,7 @@ fn extract_breach_entities_with(
     }
 
     if let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
-        && ph.len() >= 7
+        && has_min_digits(&ph, 7)
         && seen.insert(ph.to_lowercase())
     {
         push_oathnet_entity(
@@ -566,7 +566,7 @@ fn extract_breach_entities_with(
     }
 
     if let Some(ip) = val_str(item, "ip")
-        && ip.len() >= 7
+        && is_public_ip(&ip)
         && seen.insert(ip.clone())
     {
         push_oathnet_entity(
@@ -711,6 +711,62 @@ fn extract_breach_entities_with(
             is_target_row,
         );
     }
+
+    // IBAN — a leaked bank-account number. Emit ONLY when the ISO 7064 mod-97
+    // check digit validates, so a redacted sentinel or a transcription error in
+    // the `iban` field never mints a bogus financial artifact. There is no
+    // dedicated financial EntityKind, so it lands as `Other("iban")`, tagged
+    // `financial` for the dossier/export.
+    if let Some(iban) = val_str(item, "iban")
+        && iban_is_valid(&iban)
+        && seen.insert(format!(
+            "@iban:{}",
+            iban.replace(|c: char| c.is_whitespace(), "").to_uppercase()
+        ))
+    {
+        push_oathnet_entity(
+            result,
+            Entity::new(
+                EntityKind::Other("iban".to_string()),
+                iban.trim(),
+                0.70,
+                scan_id,
+            ),
+            &ev,
+            &["iban", "financial"],
+            is_target_row,
+        );
+    }
+
+    // Additional social handles → Username pivots (mirroring the instagram
+    // handler above). Each unlocks username_search / search_engines for free, so
+    // extracting them squeezes more reach from a breach query already paid for.
+    // Redacted sentinels and out-of-range junk are filtered.
+    for (field, platform) in [
+        ("telegram", "telegram"),
+        ("twitter", "twitter"),
+        ("snapchat", "snapchat"),
+        ("facebook", "facebook"),
+        ("github", "github"),
+        ("tiktok", "tiktok"),
+        ("reddit", "reddit"),
+    ] {
+        if let Some(handle) = val_str(item, field) {
+            let h = handle.trim().trim_start_matches('@');
+            if (2..=64).contains(&h.len())
+                && !is_redacted_sentinel(h)
+                && seen.insert(format!("@{platform}:{}", h.to_lowercase()))
+            {
+                push_oathnet_entity(
+                    result,
+                    Entity::new(EntityKind::Username, h, 0.55, scan_id),
+                    &ev,
+                    &[platform],
+                    is_target_row,
+                );
+            }
+        }
+    }
 }
 
 /// Apply the stealer-context tags (`oathnet-pro`, `stealer`, plus any
@@ -836,7 +892,91 @@ fn extract_stealer_entities(
     }
 }
 
-// ─── API key pattern recognition ─────────────────────────────────────────────
+// ─── Field validation (objective, static — no network) ──────────────────────
+//
+// OathNet rows carry redacted sentinels (`UPGRADE_TO_SEE…`) and the occasional
+// malformed value; emitting them verbatim mints junk entities (a `"1234567"` IP,
+// an `"UPGRADE_TO_SEE"` phone). Each extractor gates on an objective check so
+// only a well-formed identifier reaches the graph — the same
+// validate-before-trust discipline the key-harvest detector applies to keys.
+
+/// A syntactically valid, routable **public** IP: parses as v4/v6 and is not a
+/// private/reserved/loopback range. A leaked private IP can't geolocate and is
+/// noise for the `geolocation-lead` pivot, so it is dropped along with junk.
+fn is_public_ip(s: &str) -> bool {
+    s.parse::<std::net::IpAddr>().is_ok() && !is_private_ip(s)
+}
+
+/// At least `n` ASCII digits — separates a real phone/number from a placeholder
+/// sentinel that merely clears a raw character-length gate.
+fn has_min_digits(s: &str, n: usize) -> bool {
+    s.chars().filter(char::is_ascii_digit).count() >= n
+}
+
+/// Loose structural email check: a non-empty local part, an `@`, and a dotted
+/// host with no surrounding spaces — enough to reject `UPGRADE_TO_SEE@x` and a
+/// bare `@` without a full RFC 5322 parser (the breach `email` field is clean).
+fn looks_like_email(s: &str) -> bool {
+    match s.split_once('@') {
+        Some((local, host)) => {
+            !local.is_empty()
+                && host.contains('.')
+                && !host.starts_with('.')
+                && !host.ends_with('.')
+                && !s.contains(' ')
+        }
+        None => false,
+    }
+}
+
+/// True for OathNet's redacted-data sentinels — a free-text field whose "value"
+/// is really a paywall marker, not the datum itself.
+fn is_redacted_sentinel(s: &str) -> bool {
+    let u = s.to_ascii_uppercase();
+    u.contains("UPGRADE_TO_SEE") || u.contains("REDACTED")
+}
+
+/// ISO 7064 mod-97-10 IBAN validation. Strip whitespace, confirm the `CCkk……`
+/// layout, move the first four characters to the end, map letters `A–Z → 10–35`,
+/// and check the running remainder mod 97 equals 1. Objective, offline
+/// validation of a leaked bank-account number: a wrong check digit — or a
+/// redacted sentinel in the `iban` field — fails, so only a genuine account is
+/// emitted.
+fn iban_is_valid(raw: &str) -> bool {
+    let s: String = raw
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_uppercase();
+    if !(15..=34).contains(&s.len()) {
+        return false;
+    }
+    let b = s.as_bytes();
+    if !(b[0].is_ascii_uppercase()
+        && b[1].is_ascii_uppercase()
+        && b[2].is_ascii_digit()
+        && b[3].is_ascii_digit())
+    {
+        return false;
+    }
+    // Rearranged string = s[4..] followed by s[..4]; fold its digit value mod 97.
+    let mut remainder: u32 = 0;
+    for c in s[4..].chars().chain(s[..4].chars()) {
+        let val = if c.is_ascii_digit() {
+            u32::from(c) - u32::from('0')
+        } else if c.is_ascii_uppercase() {
+            u32::from(c) - u32::from('A') + 10
+        } else {
+            return false;
+        };
+        remainder = if val >= 10 {
+            (remainder * 100 + val) % 97
+        } else {
+            (remainder * 10 + val) % 97
+        };
+    }
+    remainder == 1
+}
 
 #[cfg(test)]
 mod tests {
