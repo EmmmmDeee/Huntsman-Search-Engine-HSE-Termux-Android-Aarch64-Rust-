@@ -344,6 +344,14 @@ fn breach_evidence(item: &Value) -> Evidence {
     let db = val_str(item, "dbname").unwrap_or_else(|| "unknown".to_string());
     let mut ev = Evidence::new(SRC, format!("Breach on {db}")).with_attr("dbname", &db);
     for (field, attr) in [
+        // Account join-keys — the email/username this record belongs to. The
+        // reused-secret correlator (AU-047) reads these off a leaked secret's
+        // evidence to tie the accounts that share it to one controller, and the
+        // dossier uses them as provenance ("which account leaked this"); the
+        // breach evidence previously omitted them, starving the correlator of the
+        // primary source's join-keys.
+        ("email", "email"),
+        ("username", "username"),
         ("country", "country"),
         ("gender", "gender"),
         ("date_birth", "date_of_birth"),
@@ -740,6 +748,37 @@ fn extract_breach_entities_with(
             &extra,
             is_target_row,
         );
+    }
+
+    // Plaintext password → first-class Password entity: the canonical secret the
+    // reused-secret correlator (AU-047) and credential-exposure rule (AU-037)
+    // operate on, which the breach extractor never emitted (only the hash). The
+    // per-account dedup key lets the same password under two accounts survive as
+    // two same-value entities that merge by UID into one carrying both accounts'
+    // evidence — exactly the ≥2-account signal AU-047 fires on. Redacted
+    // sentinels and trivial (single-character / too-short) values are skipped.
+    if let Some(pw) = val_str(item, "password") {
+        let p = pw.trim();
+        let len = p.chars().count();
+        let first = p.chars().next();
+        let varied = p.chars().any(|c| Some(c) != first);
+        let acct = val_str(item, "email")
+            .or_else(|| val_str(item, "username"))
+            .unwrap_or_default()
+            .to_lowercase();
+        if (6..=128).contains(&len)
+            && varied
+            && !is_redacted_sentinel(p)
+            && seen.insert(format!("@pw:{}:{acct}", p.to_lowercase()))
+        {
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::Password, p, 0.55, scan_id),
+                &ev,
+                &["plaintext-password"],
+                is_target_row,
+            );
+        }
     }
 
     // IBAN — a leaked bank-account number. Emit ONLY when the ISO 7064 mod-97

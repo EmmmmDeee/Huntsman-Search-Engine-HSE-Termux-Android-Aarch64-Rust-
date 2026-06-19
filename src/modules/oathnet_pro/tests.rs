@@ -622,3 +622,80 @@ use super::*;
         assert!(pw.has_tag("crackable:slow"));
         assert!(pw.has_tag("salted"));
     }
+
+    #[test]
+    fn breach_evidence_carries_account_join_keys() {
+        use serde_json::json;
+        // AU-047 (reused-secret identity link) reads `email`/`username` off a
+        // leaked secret's evidence; the breach extractor must stamp them so the
+        // correlator can tie the accounts that share a secret to one controller.
+        let item = json!({
+            "email": "subject@example.com",
+            "username": "subj99",
+            "password_hash": "$2b$12$R9h/cIPz0gi.URNNX3kh2OPST9PgBkqquzi.Ss7KIUgO2t0jWMUW",
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "subject@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let pw = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Password)
+            .expect("password entity");
+        let ev = pw.evidence.first().expect("evidence");
+        assert_eq!(
+            ev.attributes.get("email").map(String::as_str),
+            Some("subject@example.com")
+        );
+        assert_eq!(
+            ev.attributes.get("username").map(String::as_str),
+            Some("subj99")
+        );
+    }
+
+    #[test]
+    fn plaintext_password_emitted_as_entity() {
+        use serde_json::json;
+        // A real plaintext password becomes the canonical Password secret that
+        // AU-037 / AU-047 operate on.
+        let item = json!({
+            "email": "subject@example.com",
+            "password": "Xy7$kq2Lm9wz",
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "subject@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let pw = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Password && e.value == "Xy7$kq2Lm9wz")
+            .expect("plaintext password entity");
+        assert!(pw.has_tag("plaintext-password"));
+
+        // Redacted sentinels and trivial values are skipped.
+        for junk in ["UPGRADE_TO_SEE_FULL", "aaaaaa", "ab"] {
+            let item = json!({ "email": "x@example.com", "password": junk, "source": "T" });
+            let (mut s, mut r) = (HashSet::new(), ModuleResult::new());
+            extract_breach_entities(&item, "x@example.com", "scan", "k", &mut s, &mut r);
+            assert!(
+                !r.entities.iter().any(|e| e.kind == EntityKind::Password),
+                "junk password '{junk}' must not be emitted"
+            );
+        }
+    }
