@@ -54,8 +54,14 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 
-use extract::{clean_owner, device_fingerprint, looks_like_image_url};
-use parse::{extract_gps, read_str};
+use extract::{
+    altitude_classification, bearing_compass_label, clean_owner, derive_utc_offset,
+    device_fingerprint, dop_confidence, looks_like_image_url, speed_motion_tag, utc_offset_label,
+};
+use parse::{
+    extract_dop, extract_gps, extract_gps_altitude, extract_gps_bearing, extract_gps_speed_kmh,
+    extract_gps_utc_secs, read_str,
+};
 
 const SRC: &str = "exif_geo";
 
@@ -191,6 +197,11 @@ impl Module for ExifGeo {
             read_str(&exif, Tag::DateTimeOriginal).or_else(|| read_str(&exif, Tag::DateTime));
 
         let gps = extract_gps(&exif);
+        let dop = extract_dop(&exif);
+        let altitude = extract_gps_altitude(&exif);
+        let bearing = extract_gps_bearing(&exif);
+        let speed_kmh = extract_gps_speed_kmh(&exif);
+        let gps_utc_secs = extract_gps_utc_secs(&exif);
         let person_name = clean_owner(owner.as_deref());
         let fingerprint = device_fingerprint(make.as_deref(), model.as_deref(), serial.as_deref());
 
@@ -199,11 +210,23 @@ impl Module for ExifGeo {
             return Ok(result);
         }
 
+        // GPS confidence: DOP-derived when available, else empirical baseline.
+        // DOP ≤1 → 0.95 (RTK-quality), DOP 8 → 0.74, DOP ≥15 → 0.65.
+        let gps_confidence = dop.and_then(dop_confidence).unwrap_or(0.80);
+
+        // Photographer timezone: only derivable when both GPS UTC and camera
+        // local time are present in the same image.
+        let photographer_tz = gps_utc_secs
+            .zip(shot_time.as_deref())
+            .and_then(|(utc, local)| derive_utc_offset(utc, local))
+            .map(utc_offset_label);
+
         // Shared evidence: every emitted entity carries the same camera/owner
         // attribute set so the operator can correlate source, device and shot time.
         let evidence = |summary: String| {
-            // Fold the present camera/owner fields onto the shared evidence base.
-            [
+            let base = Evidence::new(SRC, summary).with_attr("url", url);
+            // Static camera / identity fields.
+            let base = [
                 ("camera_make", make.as_deref()),
                 ("camera_model", model.as_deref()),
                 ("camera_serial", serial.as_deref()),
@@ -214,23 +237,70 @@ impl Module for ExifGeo {
             ]
             .into_iter()
             .filter_map(|(k, v)| v.map(|val| (k, val)))
-            .fold(
-                Evidence::new(SRC, summary).with_attr("url", url),
-                |ev, (k, val)| ev.with_attr(k, val),
-            )
+            .fold(base, |ev, (k, val)| ev.with_attr(k, val));
+            // GPS intelligence fields (all optional — only present when the tag exists).
+            let base = if let Some(dop_v) = dop {
+                base.with_attr("gps_dop", format!("{dop_v:.2}"))
+            } else {
+                base
+            };
+            let base = if let Some(alt) = altitude {
+                let (cls, _) = altitude_classification(alt);
+                base.with_attr("gps_altitude_m", format!("{alt:.1}"))
+                    .with_attr("altitude_class", cls)
+            } else {
+                base
+            };
+            let base = if let Some((deg, is_true)) = bearing {
+                let compass = bearing_compass_label(deg);
+                base.with_attr("gps_bearing_deg", format!("{deg:.1}"))
+                    .with_attr(
+                        "bearing_ref",
+                        if is_true { "true-north" } else { "magnetic" },
+                    )
+                    .with_attr("bearing_compass", compass)
+            } else {
+                base
+            };
+            let base = if let Some(spd) = speed_kmh {
+                let motion = speed_motion_tag(spd);
+                base.with_attr("gps_speed_kmh", format!("{spd:.1}"))
+                    .with_attr("motion_state", motion)
+            } else {
+                base
+            };
+            if let Some(ref tz) = photographer_tz {
+                base.with_attr("photographer_timezone", tz.as_str())
+            } else {
+                base
+            }
         };
 
-        // 1. Coordinates — GPS IFD. Empirically reliable to ~10–50 m; base 0.80,
-        //    above single-source IP-geo (0.55–0.60), below WiGLE consensus (0.85).
+        // 1. Coordinates — GPS IFD. Confidence is DOP-derived (0.65–0.95) or
+        //    baseline 0.80. Above single-source IP-geo (0.55–0.60).
         if let Some((lat, lon)) = gps {
             let coord_str = format!("{lat:.6},{lon:.6}");
-            let mut e = Entity::new(EntityKind::Coordinates, &coord_str, 0.80, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Coordinates,
+                &coord_str,
+                gps_confidence,
+                &ctx.scan_id,
+            );
             e.tag("geoint");
             e.tag("exif");
             e.tag("photo-derived");
             if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
                 e.tag(format!("au-state:{state}"));
                 e.tag("country:AU");
+            }
+            if let Some(alt) = altitude {
+                let (_, elevated) = altitude_classification(alt);
+                if elevated {
+                    e.tag("elevated-shot");
+                }
+            }
+            if let Some(spd) = speed_kmh {
+                e.tag(speed_motion_tag(spd));
             }
             e.add_evidence(
                 evidence(format!("EXIF GPS extracted from {url}"))
