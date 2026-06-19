@@ -363,6 +363,7 @@ mod identity;
 mod infra;
 pub(crate) mod location;
 mod org;
+mod transitive;
 
 pub(super) use assoc::*;
 pub(super) use breach::*;
@@ -372,6 +373,7 @@ pub(super) use identity::*;
 pub(super) use infra::*;
 pub(super) use location::*;
 pub(super) use org::*;
+pub(super) use transitive::*;
 
 #[cfg(test)]
 mod tests {

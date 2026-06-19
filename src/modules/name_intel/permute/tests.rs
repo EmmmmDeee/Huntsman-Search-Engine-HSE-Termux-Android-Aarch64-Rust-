@@ -42,6 +42,7 @@ use super::*;
             first: String::new(),
             middle: None,
             last: String::new(),
+            last_parts: None,
             number: None,
             display_words: Vec::new(),
         };
@@ -409,4 +410,140 @@ use super::*;
         let out = dedup_top(raw, 10);
         let handles: Vec<&str> = out.iter().map(|s| s.handle.as_str()).collect();
         assert_eq!(handles, ["amy", "zoe"]);
+    }
+
+    // ── New feature tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn honorific_stripped_from_parse() {
+        // "Dr." before the first name must be dropped; remaining name parses normally.
+        let n = p("Dr Jane Smith");
+        assert_eq!(n.first, "jane");
+        assert_eq!(n.last, "smith");
+        assert_eq!(n.display_full(), "Jane Smith");
+    }
+
+    #[test]
+    fn generational_suffix_stripped_from_parse() {
+        // "Jr" / "III" at the end must be dropped when ≥ 3 words present.
+        let n = p("Robert Jones Jr");
+        assert_eq!(n.first, "robert");
+        assert_eq!(n.last, "jones");
+
+        let n2 = p("William Henry Harrison III");
+        assert_eq!(n2.first, "william");
+        assert_eq!(n2.last, "harrison");
+        assert_eq!(n2.middle.as_deref(), Some("henry"));
+    }
+
+    #[test]
+    fn suffix_not_stripped_from_two_word_name() {
+        // Safety guard: with only 2 words we never strip, even if the last
+        // word looks like a suffix.
+        let n = p("John Jr");
+        assert_eq!(n.last, "jr");
+    }
+
+    #[test]
+    fn hyphenated_surname_yields_last_parts() {
+        let n = p("Emily Smith-Jones");
+        assert_eq!(n.last, "smithjones");
+        let parts = n.last_parts.as_deref().unwrap();
+        assert_eq!(parts, ["smith", "jones"]);
+    }
+
+    #[test]
+    fn hyphenated_surname_generates_part_handles() {
+        let u: Vec<String> = usernames(&p("Emily Smith-Jones"))
+            .into_iter()
+            .map(|s| s.handle)
+            .collect();
+        // Must contain per-part shapes for each component.
+        assert!(u.contains(&"emily.smith".to_string()), "missing emily.smith: {u:?}");
+        assert!(u.contains(&"emily.jones".to_string()), "missing emily.jones: {u:?}");
+        assert!(u.contains(&"emilysmith".to_string()),  "missing emilysmith: {u:?}");
+        assert!(u.contains(&"emilyjones".to_string()),  "missing emilyjones: {u:?}");
+    }
+
+    #[test]
+    fn nickname_aliases_generate_handles() {
+        // "michael" → aliases include "mike", "mick", "mickey"
+        let u: Vec<String> = usernames(&p("Michael Smith"))
+            .into_iter()
+            .map(|s| s.handle)
+            .collect();
+        assert!(u.contains(&"mike.smith".to_string()),  "missing mike.smith: {u:?}");
+        assert!(u.contains(&"mick.smith".to_string()),  "missing mick.smith: {u:?}");
+        // Alias handles must still be below the Probable floor.
+        let handles = usernames(&p("Michael Smith"));
+        let max_w = handles.iter().map(|u| u.weight).fold(0.0_f64, f64::max);
+        assert!(max_w < 0.40, "alias handle weight {max_w} above Probable floor");
+    }
+
+    #[test]
+    fn phonetic_variant_sean_shawn() {
+        let u: Vec<String> = usernames(&p("Sean Murphy"))
+            .into_iter()
+            .map(|s| s.handle)
+            .collect();
+        assert!(u.contains(&"shawn.murphy".to_string()) || u.contains(&"shawnmurphy".to_string()),
+                "shawn alias missing: {u:?}");
+    }
+
+    #[test]
+    fn new_secondary_handle_shapes_present() {
+        let u: Vec<String> = usernames(&p("Jordan Meyers"))
+            .into_iter()
+            .map(|s| s.handle)
+            .collect();
+        // meyers_j (l_fi), jordan_m (f_li), j.m (fi.li)
+        assert!(u.contains(&"meyers_j".to_string()), "missing meyers_j: {u:?}");
+        assert!(u.contains(&"jordan_m".to_string()), "missing jordan_m: {u:?}");
+        assert!(u.contains(&"j.m".to_string()),      "missing j.m: {u:?}");
+    }
+
+    #[test]
+    fn expanded_default_domains_include_regional_providers() {
+        let d = default_domains();
+        for expected in ["yandex.ru", "mail.ru", "qq.com", "163.com",
+                          "fastmail.com", "zoho.com", "libero.it"] {
+            assert!(d.contains(&expected.to_string()), "missing domain {expected}");
+        }
+        // All entries must contain a dot (basic validity).
+        assert!(d.iter().all(|x| x.contains('.')));
+    }
+
+    #[test]
+    fn new_provider_weights_are_in_range() {
+        // New regional/privacy domains must have weights in (0, 1].
+        for dom in ["yandex.ru", "mail.ru", "qq.com", "fastmail.com",
+                    "web.de", "libero.it", "orange.fr", "hey.com"] {
+            let w = provider_weight(dom);
+            assert!(w > 0.0 && w <= 1.0, "{dom} weight {w} out of range");
+        }
+    }
+
+    #[test]
+    fn new_pivots_present_for_latin_name() {
+        let n = p("Jordan Meyers");
+        let pv = pivots(&n, Some("jordan.meyers@gmail.com"));
+        let platforms: Vec<&str> = pv.iter().map(|p| p.platform).collect();
+        for expected in ["Google — public records", "Reddit — user search",
+                          "Pinterest — people", "Webmii — people",
+                          "Reddit — profile", "Snapchat — profile",
+                          "Twitch — channel", "YouTube — handle",
+                          "Telegram — username"] {
+            assert!(platforms.contains(&expected), "missing pivot '{expected}': {platforms:?}");
+        }
+    }
+
+    #[test]
+    fn middle_name_formal_shapes_generated() {
+        let u: Vec<String> = usernames(&p("John F Kennedy"))
+            .into_iter()
+            .map(|s| s.handle)
+            .collect();
+        // first.M.last and first_M_last formal shapes
+        assert!(u.contains(&"john.f.kennedy".to_string()), "missing john.f.kennedy: {u:?}");
+        assert!(u.contains(&"john_f_kennedy".to_string()), "missing john_f_kennedy: {u:?}");
     }

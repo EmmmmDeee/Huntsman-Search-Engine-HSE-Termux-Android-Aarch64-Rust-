@@ -1876,6 +1876,61 @@ fn au032_ignores_non_colocation_edges() {
     assert!(rule_au_032_colocation_cluster(&[a, b, c], &rels, "s", 0).is_empty());
 }
 
+// ── AU-060 (graph-aware: transitive identity closure) ────────────────
+
+#[test]
+fn au060_fires_on_two_hop_identity_chain() {
+    use crate::core::relation::{Relation, RelationKind};
+    // email → domain → person: 2 hops, 1 intermediate node
+    let email = Entity::new(EntityKind::Email, "alice@example.com", 0.8, "s");
+    let domain = Entity::new(EntityKind::Domain, "example.com", 0.7, "s");
+    let person = Entity::new(EntityKind::Person, "Alice Doe", 0.9, "s");
+    let rels = [
+        Relation::new(
+            email.uid.clone(),
+            domain.uid.clone(),
+            RelationKind::BelongsToDomain,
+            0.8,
+            "s",
+        ),
+        Relation::new(
+            domain.uid.clone(),
+            person.uid.clone(),
+            RelationKind::RegisteredBy,
+            0.8,
+            "s",
+        ),
+    ];
+    let r = rule_au_060_transitive_identity_closure(
+        &[email.clone(), domain.clone(), person.clone()],
+        &rels,
+        "s",
+        0,
+    );
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-060");
+    assert_eq!(r[0].severity, Severity::Medium);
+    assert!(r[0].entity_uids.contains(&email.uid));
+    assert!(r[0].entity_uids.contains(&person.uid));
+    assert!(r[0].entity_uids.contains(&domain.uid));
+    assert!(r[0].description.contains("1 intermediate node"));
+}
+
+#[test]
+fn au060_no_fire_when_identity_pair_directly_connected() {
+    use crate::core::relation::{Relation, RelationKind};
+    let email = Entity::new(EntityKind::Email, "alice@example.com", 0.8, "s");
+    let person = Entity::new(EntityKind::Person, "Alice Doe", 0.9, "s");
+    let rels = [Relation::new(
+        email.uid.clone(),
+        person.uid.clone(),
+        RelationKind::DerivedFrom,
+        0.8,
+        "s",
+    )];
+    assert!(rule_au_060_transitive_identity_closure(&[email, person], &rels, "s", 0).is_empty());
+}
+
 // ── Crypto / identity / exposure rules (AU-039 … AU-043) ─────────────
 
 /// Build an entity with tags + a single evidence record (with optional attrs).

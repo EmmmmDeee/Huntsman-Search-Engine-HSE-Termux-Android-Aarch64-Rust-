@@ -133,6 +133,11 @@ impl Module for UsernameSearch {
             let url = site.url.replace("{}", &encoded);
             let client = ctx.http.clone();
             let sem = Arc::clone(&sem);
+            // Confidence + provenance the hit will carry, decided by how
+            // rigorously THIS site's rule corroborates existence (see
+            // `detection_strength`). Captured before the await so the async
+            // block doesn't need to borrow `site` past its lifetime.
+            let (hit_conf, hit_verified) = detection_strength(&site.detect);
             async move {
                 let _permit = sem.acquire().await;
                 let req = match site.method {
@@ -154,8 +159,13 @@ impl Module for UsernameSearch {
                 };
 
                 let status = resp.status().as_u16();
+                let found = |url: String| ProbeResult::Found {
+                    url,
+                    confidence: hit_conf,
+                    verified: hit_verified,
+                };
                 match site.detect {
-                    Detect::StatusEq(want) if status == want => ProbeResult::Found(url),
+                    Detect::StatusEq(want) if status == want => found(url),
                     Detect::StatusEq(_) => ProbeResult::NotFound,
                     Detect::StatusAndBody(want, needle) => {
                         if status != want {
@@ -168,7 +178,7 @@ impl Module for UsernameSearch {
                             };
                         scan_text_for_keys(&body);
                         if body.contains(needle) {
-                            ProbeResult::Found(url)
+                            found(url)
                         } else {
                             ProbeResult::NotFound
                         }
@@ -186,7 +196,7 @@ impl Module for UsernameSearch {
                         if body.contains(needle) {
                             ProbeResult::NotFound
                         } else {
-                            ProbeResult::Found(url)
+                            found(url)
                         }
                     }
                 }
@@ -205,21 +215,48 @@ impl Module for UsernameSearch {
         // finding M6 — `found=0` must not conflate "absent" with "couldn't tell").
         let mut inconclusive_probes = 0usize;
         let mut definitive_absent = 0usize;
+        // Provenance split: hits corroborated by a body marker vs. those resting
+        // on a bare HTTP-200 (which an SPA shell / soft-404 can fake). Surfaced in
+        // the summary so the operator can weigh a "47 platforms" result honestly.
+        let mut verified_hits = 0usize;
+        let mut weak_hits = 0usize;
         for (site_name, site_cat, outcome) in &results {
             match outcome {
-                ProbeResult::Found(url) => {
+                ProbeResult::Found {
+                    url,
+                    confidence,
+                    verified,
+                } => {
                     found_names.push(site_name);
                     *category_counts.entry(site_cat).or_insert(0) += 1;
-                    let mut e = Entity::new(EntityKind::Url, url.as_str(), 0.92, &ctx.scan_id);
+                    let mut e =
+                        Entity::new(EntityKind::Url, url.as_str(), *confidence, &ctx.scan_id);
                     e.tag("social-profile");
                     e.tag(format!("platform:{site_name}"));
                     e.tag(format!("cat:{site_cat}"));
+                    // Provenance tag lets the correlator / SPA discount status-only
+                    // hits without re-deriving how the match was made.
+                    if *verified {
+                        verified_hits += 1;
+                        e.tag("verified-detection");
+                    } else {
+                        weak_hits += 1;
+                        e.tag("weak-detection");
+                    }
                     e.add_evidence(
                         Evidence::new(SRC, format!("@{username} has a profile on {site_name}"))
                             .with_attr("platform", *site_name)
                             .with_attr("category", *site_cat)
                             .with_attr("username", username)
-                            .with_attr("url", url),
+                            .with_attr("url", url)
+                            .with_attr(
+                                "detection",
+                                if *verified {
+                                    "body-marker"
+                                } else {
+                                    "status-only"
+                                },
+                            ),
                     );
                     module_result.push(e);
                 }
@@ -279,6 +316,11 @@ impl Module for UsernameSearch {
             if social_count + dating_count + messaging_count + gaming_count >= 5 {
                 summary.tag("high-personal-exposure");
             }
+            // At least three body-marker-confirmed hits is a genuinely corroborated
+            // identity, not a pile of status-only guesses — let the SPA highlight it.
+            if verified_hits >= 3 {
+                summary.tag("strong-corroboration");
+            }
 
             let cat_summary: Vec<String> = category_counts
                 .iter()
@@ -301,7 +343,9 @@ impl Module for UsernameSearch {
                 .with_attr("messaging_count", messaging_count.to_string())
                 .with_attr("sites_probed", SITES.len().to_string())
                 .with_attr("sites_not_found", definitive_absent.to_string())
-                .with_attr("sites_inconclusive", inconclusive_probes.to_string()),
+                .with_attr("sites_inconclusive", inconclusive_probes.to_string())
+                .with_attr("hits_verified", verified_hits.to_string())
+                .with_attr("hits_status_only", weak_hits.to_string()),
             );
             module_result.push(summary);
         }
@@ -310,9 +354,37 @@ impl Module for UsernameSearch {
 }
 
 enum ProbeResult {
-    Found(String),
+    Found {
+        url: String,
+        /// Confidence to stamp on the emitted `Url`, tiered by detection rigor.
+        confidence: f64,
+        /// True when corroborated by a body marker (vs. a bare status code).
+        verified: bool,
+    },
     NotFound,
     Error,
+}
+
+/// Confidence and provenance for a positive hit, tiered by how rigorously a
+/// site's detection rule actually corroborates that the account exists.
+///
+/// Status-only detection ([`Detect::StatusEq`]) is the dominant false-positive
+/// source in Sherlock-class enumerators: single-page-app shells, soft-404s and
+/// login walls all answer HTTP 200 for a username that was never registered, so
+/// a bare 200 is *plausible but unverified*. Body-marker rules
+/// ([`Detect::StatusAndBody`] / [`Detect::StatusAndNotBody`]) inspect the page
+/// for an actual existence signal, so they earn full confidence. Stamping both
+/// at a flat 0.92 (as the module did before) overstated every status-only hit
+/// and let SPA false-positives masquerade as confirmed profiles.
+///
+/// The weak tier (0.74) stays above the engine's 0.50 `min_expand_confidence`
+/// floor — a status-200 hit is still worth pivoting on — but ranks visibly below
+/// a body-confirmed 0.92 so the correlator and SPA can weight it accordingly.
+fn detection_strength(detect: &Detect) -> (f64, bool) {
+    match detect {
+        Detect::StatusAndBody(..) | Detect::StatusAndNotBody(..) => (0.92, true),
+        Detect::StatusEq(_) => (0.74, false),
+    }
 }
 
 /// True when a zero-hit run is *inconclusive* rather than a confirmed absence:
