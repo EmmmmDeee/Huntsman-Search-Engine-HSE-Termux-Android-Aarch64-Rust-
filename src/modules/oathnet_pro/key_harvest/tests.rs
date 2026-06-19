@@ -285,7 +285,8 @@ fn extended_high_value_providers_resolve_to_their_service() {
         let min_len = KEY_PATTERNS
             .iter()
             .find(|p| p.prefix == prefix)
-            .map_or_else(|| panic!("{prefix} missing from KEY_PATTERNS"), |p| p.min_len);
+            .unwrap_or_else(|| panic!("{prefix} missing from KEY_PATTERNS"))
+            .min_len;
         let cand = synthesise_for(prefix, min_len);
         let (svc, _) = identify_api_key(&cand)
             .unwrap_or_else(|| panic!("expected {expected} for {cand}, got None"));
