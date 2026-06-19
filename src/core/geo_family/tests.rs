@@ -103,6 +103,22 @@ fn discordant_namesake_is_the_far_complement_of_corroboration() {
     assert!(!is_geo_discordant_namesake(&other, &subject));
     // No confirmed subject fix → nothing is judged discordant.
     assert!(!is_geo_discordant_namesake(&perth, &[]));
+
+    // The namesake decision composes geometry with surname distinctiveness: a far
+    // bearer is a namesake only when the shared surname is COMMON. A distinctive
+    // surname (the rare-surname subject's interstate kin) is never mislabelled.
+    assert!(
+        is_namesake(&perth, &subject, true),
+        "far + common = namesake"
+    );
+    assert!(
+        !is_namesake(&perth, &subject, false),
+        "far + distinctive surname = distant kin, not a namesake"
+    );
+    assert!(
+        !is_namesake(&near, &subject, true),
+        "a near relative is never a namesake, common surname or not"
+    );
 }
 
 #[test]

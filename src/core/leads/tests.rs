@@ -121,14 +121,16 @@ fn recommend_ranks_geo_corroborated_family_top() {
 /// the UI — so interstate look-alikes never crowd out the genuine local family.
 #[test]
 fn recommend_demotes_geo_discordant_namesakes() {
-    let mut subject = ent(EntityKind::Person, "Kyle Diegmann", 0.85);
+    // A common surname (the realistic case the finalize pass flags): same-surname
+    // far bearers are likely namesakes.
+    let mut subject = ent(EntityKind::Person, "Kyle Smith", 0.85);
     subject.tag("subject");
 
     // Two same-surname candidates, identical but for location: one local, one a
     // region away and flagged a likely namesake by the finalize pass.
-    let mut local = ent(EntityKind::Person, "Aaron Diegmann", 0.32);
+    let mut local = ent(EntityKind::Person, "Aaron Smith", 0.32);
     local.tag("family-candidate");
-    let mut namesake = ent(EntityKind::Person, "Zane Diegmann", 0.32);
+    let mut namesake = ent(EntityKind::Person, "Zane Smith", 0.32);
     namesake.tag("family-candidate");
     namesake.tag("geo-discordant");
 
@@ -139,8 +141,8 @@ fn recommend_demotes_geo_discordant_namesakes() {
     let entities = vec![subject, local.clone(), namesake.clone()];
 
     let leads = recommend(&entities, &relations, 0.50);
-    let local_lead = leads.iter().find(|l| l.value == "Aaron Diegmann").unwrap();
-    let namesake_lead = leads.iter().find(|l| l.value == "Zane Diegmann").unwrap();
+    let local_lead = leads.iter().find(|l| l.value == "Aaron Smith").unwrap();
+    let namesake_lead = leads.iter().find(|l| l.value == "Zane Smith").unwrap();
     assert!(
         local_lead.score > namesake_lead.score,
         "the local candidate ({}) outranks the namesake ({})",
@@ -155,7 +157,7 @@ fn recommend_demotes_geo_discordant_namesakes() {
         namesake_lead.reason
     );
     // The local candidate is the top lead overall.
-    assert_eq!(leads[0].value, "Aaron Diegmann");
+    assert_eq!(leads[0].value, "Aaron Smith");
 }
 
 /// Surname distinctiveness weights the family signal: at equal geography and

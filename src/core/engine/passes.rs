@@ -132,11 +132,14 @@ pub(super) fn promote_geo_corroborated_family(entities: &mut [Entity]) -> usize 
 ///
 /// The negative complement of [`promote_geo_corroborated_family`]: when the scan
 /// has a confirmed subject location, a `family-candidate` whose locality resolves
-/// BEYOND [`crate::core::geo_family::NAMESAKE_GEO_KM`] from the subject shares only
-/// the surname, not the region — more likely a coincidental namesake than a
-/// household relative. It earns a `geo-discordant` tag so the Leads ranking
-/// de-prioritises it (with a plain "different region — possible namesake" reason)
-/// and the analyst can tell the real local family from interstate look-alikes.
+/// BEYOND [`crate::core::geo_family::NAMESAKE_GEO_KM`] from the subject shares the
+/// surname but not the region — *and* the shared surname is COMMON. Both must hold:
+/// a far bearer of a DISTINCTIVE surname (a rare-surname subject's interstate kin)
+/// is far more likely a relative who moved than a coincidental stranger, so it is
+/// never flagged ([`crate::core::geo_family::is_namesake`]). A flagged entity earns
+/// a `geo-discordant` tag so the Leads ranking de-prioritises it (with a plain
+/// "different region — possible namesake" reason) and the analyst can tell the real
+/// local family from interstate look-alikes.
 ///
 /// Crucially this adds ONLY a tag — never an evidence record and never a
 /// confidence change. A discord is a *negative* signal; attaching it as evidence
@@ -146,15 +149,30 @@ pub(super) fn promote_geo_corroborated_family(entities: &mut [Entity]) -> usize 
 /// idempotent. The shared detector lives in [`crate::core::geo_family`]. Returns
 /// the number flagged.
 pub(super) fn flag_geo_discordant_namesakes(entities: &mut [Entity]) -> usize {
-    use crate::core::geo_family::{is_geo_discordant_namesake, subject_locations};
+    use crate::core::geo_family::{is_namesake, subject_locations};
 
     let subject = subject_locations(entities);
     if subject.is_empty() {
         return 0;
     }
+    // The family surname every `family-candidate` shares — the subject's. Resolved
+    // once; its commonness gates the whole pass (a rare surname → no namesakes).
+    let subject_surname_common =
+        subject_surname(entities).map(|s| crate::util::surnames::is_common(&s));
+
     let mut flagged = 0usize;
     for e in entities.iter_mut() {
-        if e.has_tag("geo-discordant") || !is_geo_discordant_namesake(e, &subject) {
+        if e.has_tag("geo-discordant") {
+            continue;
+        }
+        // Prefer the scan-wide subject surname; fall back to the candidate's own
+        // name (a Person carries it; a bare Address can't be judged without a
+        // subject, so it stays unflagged — conservative).
+        let common = subject_surname_common.unwrap_or_else(|| {
+            crate::util::surnames::surname_of(&e.value)
+                .is_some_and(|s| crate::util::surnames::is_common(&s))
+        });
+        if !is_namesake(e, &subject, common) {
             continue;
         }
         e.tag("geo-discordant");
@@ -167,6 +185,20 @@ pub(super) fn flag_geo_discordant_namesakes(entities: &mut [Entity]) -> usize {
         );
     }
     flagged
+}
+
+/// The subject's surname, if a subject Person is present — the family surname every
+/// `family-candidate` shares. Picks a seed-anchored / name-matched Person (tagged
+/// `subject`, `seed`, or `exact-name-match`); `None` when the scan has no named
+/// subject (then namesake-flagging falls back to each candidate's own surname).
+fn subject_surname(entities: &[Entity]) -> Option<String> {
+    entities
+        .iter()
+        .filter(|e| {
+            e.kind == EntityKind::Person
+                && (e.has_tag("subject") || e.has_tag("seed") || e.has_tag("exact-name-match"))
+        })
+        .find_map(|e| crate::util::surnames::surname_of(&e.value))
 }
 
 /// Pull any newly-available pooled API key into `keys` for every service that

@@ -111,45 +111,56 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
     assert_eq!(promote_geo_corroborated_family(&mut lone), 0);
 }
 
-/// The precision complement: a same-surname candidate a whole region from the
-/// subject is tagged `geo-discordant` (a likely namesake) WITHOUT any confidence
-/// change — tag-only, so it is demoted in the leads, never promoted or deleted. An
-/// in-area relative is left for the positive pass, and the flag is idempotent.
+/// The precision complement, surname-aware: a far same-surname candidate is tagged
+/// `geo-discordant` (a likely namesake) ONLY when the shared surname is common — a
+/// distinctive surname carries kinship across any distance, so a rare-surname
+/// subject's interstate kin are left alone. Tag-only (no confidence change), an
+/// in-area relative is untouched, and the flag is idempotent.
 #[test]
-fn flag_geo_discordant_namesakes_tags_far_namesakes_without_inflating() {
+fn flag_geo_discordant_namesakes_is_surname_aware_and_tag_only() {
     use crate::core::entity::{Entity, EntityKind, Evidence};
 
     // Subject's confirmed GPS near Woodford, QLD (Brisbane catchment).
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
-    // Same-surname candidate in Perth, WA (~3600 km) — a likely namesake.
-    let mut perth = Entity::new(EntityKind::Person, "Curt Moreau", 0.32, "s");
-    perth.tag("family-candidate");
-    perth.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "6000"));
-    let conf_before = perth.c_effective();
-    let sources_before = perth.source_count();
+    // Far (Perth, ~3600 km) COMMON-surname candidate → a likely namesake.
+    let mut common = Entity::new(EntityKind::Person, "Curt Smith", 0.32, "s");
+    common.tag("family-candidate");
+    common.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "6000"));
+    let conf_before = common.c_effective();
+    let sources_before = common.source_count();
+    // Far DISTINCTIVE-surname candidate (same distance) → distant kin, NOT a namesake.
+    let mut rare = Entity::new(EntityKind::Person, "Curt Moreau", 0.32, "s");
+    rare.tag("family-candidate");
+    rare.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "6000"));
     // In-area relative (Beerwah) — the positive pass's job, not this one.
     let mut near = Entity::new(EntityKind::Address, "QLD 4519, Australia", 0.32, "s");
     near.tag("family-candidate");
 
-    let mut ents = vec![gps, perth, near];
+    let mut ents = vec![gps, common, rare, near];
     assert_eq!(
         flag_geo_discordant_namesakes(&mut ents),
         1,
-        "only the far namesake is flagged"
+        "only the far COMMON-surname namesake is flagged"
     );
 
-    let perth = ents.iter().find(|e| e.value == "Curt Moreau").unwrap();
-    assert!(perth.has_tag("geo-discordant"));
+    let common = ents.iter().find(|e| e.value == "Curt Smith").unwrap();
+    assert!(common.has_tag("geo-discordant"));
     // Tag-only: confidence and the corroboration count are untouched, so a
     // negative signal can never PROMOTE the namesake it means to demote.
-    assert!((perth.c_effective() - conf_before).abs() < 1e-9);
-    assert_eq!(perth.source_count(), sources_before);
+    assert!((common.c_effective() - conf_before).abs() < 1e-9);
+    assert_eq!(common.source_count(), sources_before);
     assert!(
-        !perth.evidence.iter().any(|ev| ev.source == "geo_discord"),
+        !common.evidence.iter().any(|ev| ev.source == "geo_discord"),
         "discord adds no evidence record"
     );
 
+    // A far DISTINCTIVE surname is distant kin, not a namesake.
+    let rare = ents.iter().find(|e| e.value == "Curt Moreau").unwrap();
+    assert!(
+        !rare.has_tag("geo-discordant"),
+        "a far distinctive surname is kin, never a namesake"
+    );
     let near = ents.iter().find(|e| e.value.contains("4519")).unwrap();
     assert!(
         !near.has_tag("geo-discordant"),
@@ -159,11 +170,50 @@ fn flag_geo_discordant_namesakes_tags_far_namesakes_without_inflating() {
     // Idempotent, and nothing to judge without a confirmed subject fix.
     assert_eq!(flag_geo_discordant_namesakes(&mut ents), 0);
     let mut lone = vec![{
-        let mut e = Entity::new(EntityKind::Address, "WA 6000, Australia", 0.32, "s");
+        let mut e = Entity::new(EntityKind::Person, "Curt Smith", 0.32, "s");
         e.tag("family-candidate");
         e
     }];
-    assert_eq!(flag_geo_discordant_namesakes(&mut lone), 0);
+    assert_eq!(
+        flag_geo_discordant_namesakes(&mut lone),
+        0,
+        "no subject fix → nothing flagged"
+    );
+}
+
+/// The subject's surname gates the whole pass: with a named subject present, a
+/// candidate is judged by the SUBJECT's surname — which every family-candidate
+/// shares — not its own. So a rare-surname subject's kin are protected even when
+/// the candidate is a bare Address that carries no name of its own to fall back on.
+#[test]
+fn namesake_flagging_uses_the_subject_surname() {
+    use crate::core::entity::{Entity, EntityKind};
+
+    let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
+    gps.tag("geoint");
+    // A far family-candidate Address (no name of its own) in Perth, WA.
+    let mut far = Entity::new(EntityKind::Address, "WA 6000, Australia", 0.32, "s");
+    far.tag("family-candidate");
+
+    // A rare-surname subject protects the far candidate.
+    let mut rare_subject = Entity::new(EntityKind::Person, "Pat Moreau", 0.9, "s");
+    rare_subject.tag("subject");
+    let mut ents = vec![gps.clone(), rare_subject, far.clone()];
+    assert_eq!(
+        flag_geo_discordant_namesakes(&mut ents),
+        0,
+        "a distinctive subject surname leaves even a far address-only candidate alone"
+    );
+
+    // A common-surname subject makes the same far candidate a namesake.
+    let mut common_subject = Entity::new(EntityKind::Person, "Pat Smith", 0.9, "s");
+    common_subject.tag("subject");
+    let mut ents = vec![gps, common_subject, far];
+    assert_eq!(flag_geo_discordant_namesakes(&mut ents), 1);
+    assert!(
+        ents.iter()
+            .any(|e| e.value.contains("6000") && e.has_tag("geo-discordant"))
+    );
 }
 
 /// FTA invariant (cuts MCS-A): the local/environmental sensor modules read
