@@ -377,15 +377,20 @@ use crate::core::entity::Entity;
     }
 
     #[test]
-    fn priority_above_oathnet_pro() {
-        // Operator directive: SeekNow always queries before OathNet (its corpus
-        // already incorporates OathNet's). Phase 1 dispatches Paid modules in
-        // priority order, so SeekNow's must exceed oathnet_pro's (127).
-        assert!(
-            SeekNow.priority() > 127,
-            "SeekNow priority {} must exceed oathnet_pro's 127 so it runs first",
-            SeekNow.priority()
-        );
+    fn is_the_highest_priority_module_at_all_times() {
+        // Operator directive: SeekNow is THE highest-priority API, always queried
+        // first. Pin it to the maximum AND against the WHOLE registry, so neither
+        // a new module nor a priority retune can ever silently out-rank it.
+        let p = SeekNow.priority();
+        assert_eq!(p, u8::MAX, "SeekNow must be pinned to the maximum priority");
+        for m in crate::modules::registry() {
+            assert!(
+                p >= m.priority(),
+                "SeekNow ({p}) must be >= every module's priority; {} is {}",
+                m.name(),
+                m.priority()
+            );
+        }
     }
 
     #[test]
