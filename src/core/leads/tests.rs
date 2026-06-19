@@ -158,6 +158,47 @@ fn recommend_demotes_geo_discordant_namesakes() {
     assert_eq!(leads[0].value, "Aaron Diegmann");
 }
 
+/// Surname distinctiveness weights the family signal: at equal geography and
+/// confidence, a DISTINCTIVE shared surname (a rare-surname subject's real kin)
+/// outranks a COMMON one, and the common-surname lead is cautioned to corroborate
+/// elsewhere — so coincidental "another Smith" matches never bury genuine family.
+#[test]
+fn recommend_weights_family_by_surname_distinctiveness() {
+    let mut subject = ent(EntityKind::Person, "Pat Bamford", 0.85);
+    subject.tag("subject");
+    let mut rare = ent(EntityKind::Person, "Alex Bamford", 0.32); // distinctive surname
+    rare.tag("family-candidate");
+    let mut common = ent(EntityKind::Person, "Alex Smith", 0.32); // common surname
+    common.tag("family-candidate");
+
+    let relations = vec![
+        rel(&subject, &rare, RelationKind::AssociatedWith, 0.5),
+        rel(&subject, &common, RelationKind::AssociatedWith, 0.5),
+    ];
+    let leads = recommend(&[subject, rare.clone(), common.clone()], &relations, 0.50);
+
+    let rare_lead = leads.iter().find(|l| l.value == "Alex Bamford").unwrap();
+    let common_lead = leads.iter().find(|l| l.value == "Alex Smith").unwrap();
+    assert!(
+        rare_lead.score > common_lead.score,
+        "a distinctive shared surname ({}) outranks a common one ({})",
+        rare_lead.score,
+        common_lead.score
+    );
+    assert!(
+        common_lead.reason.contains("common surname"),
+        "the common-surname lead is cautioned: {}",
+        common_lead.reason
+    );
+    assert!(
+        !rare_lead.reason.contains("common surname"),
+        "the distinctive lead is not cautioned: {}",
+        rare_lead.reason
+    );
+    // The distinctive relative is the top next step.
+    assert_eq!(leads[0].value, "Alex Bamford");
+}
+
 /// Reliability lifts a lead, but only for a *new* person/persona — never for a
 /// value the subject already owns. A geo-corroborated relative beats a same-tier
 /// plain relative, and a VERIFIED owned identifier still trails an untapped

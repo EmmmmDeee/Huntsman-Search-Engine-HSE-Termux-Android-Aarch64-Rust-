@@ -151,6 +151,14 @@ fn core_does_not_import_util_directly() {
                 // (no I/O, no network). The engine's address_to_coords_pass uses
                 // it to convert Address entities into Coordinates for geo correlation.
                 && !line.contains("util::city_coords::city_coords")
+                // Pure, dependency-free offline surname-distinctiveness heuristic
+                // (a small embedded common-surname set; no state, no I/O), same leaf
+                // category as `address_au::locality_key`. `core::leads` uses it to
+                // treat a shared rare surname as corroborating and a shared common
+                // one with caution, so the family signal is weighted by how
+                // distinctive the name actually is.
+                && !line.contains("util::surnames::is_common")
+                && !line.contains("util::surnames::surname_of")
         })
         .collect();
     assert!(
