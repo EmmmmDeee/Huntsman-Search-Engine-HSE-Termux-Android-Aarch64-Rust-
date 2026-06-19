@@ -767,6 +767,36 @@ fn extract_breach_entities_with(
             }
         }
     }
+
+    // Free-text `bio` mining — a profile bio routinely carries an alternate
+    // contact email or phone the structured columns miss. Reuse the canonical
+    // scanner-grade extractors (one definition of "what an email/phone looks like
+    // in free text") so this never drifts from the rest of the engine. Lower
+    // confidence than a structured field: these are inferred from prose.
+    if let Some(bio) = val_str(item, "bio") {
+        for email in crate::util::extract::emails(&bio) {
+            if seen.insert(email.clone()) {
+                push_oathnet_entity(
+                    result,
+                    Entity::new(EntityKind::Email, &email, 0.55, scan_id),
+                    &ev,
+                    &["bio-mined"],
+                    is_target_row,
+                );
+            }
+        }
+        for phone in crate::util::extract::phones(&bio) {
+            if seen.insert(format!("@bio-phone:{phone}")) {
+                push_oathnet_entity(
+                    result,
+                    Entity::new(EntityKind::Phone, &phone, 0.50, scan_id),
+                    &ev,
+                    &["bio-mined"],
+                    is_target_row,
+                );
+            }
+        }
+    }
 }
 
 /// Apply the stealer-context tags (`oathnet-pro`, `stealer`, plus any
@@ -822,11 +852,43 @@ fn extract_stealer_entities(
         ev = ev.with_attr("username", &uname);
     }
 
+    // The login URL is where the victim's credentials were captured — the most
+    // actionable pivot in a stealer record (it confirms a service the subject
+    // uses). It was only ever an evidence attribute; emit it as a first-class
+    // Url, plus its host as a Domain, so wayback / dns_intel / cert_intel expand
+    // it for free. The host shares the domain-array dedup key, so a host already
+    // listed in the `domain` field is not duplicated.
+    if let Some(url) = val_str(item, "url").or_else(|| val_str(item, "url_str")) {
+        let u = url.trim();
+        if u.starts_with("http")
+            && u.contains('.')
+            && seen.insert(format!("@stealer-url:{}", u.to_lowercase()))
+        {
+            push_stealer_entity(
+                result,
+                Entity::new(EntityKind::Url, u, 0.55, scan_id),
+                &ev,
+                &["credential-url"],
+            );
+            if let Some(host) = crate::util::url_util::host_from_url(u) {
+                let hl = host.to_lowercase();
+                if hl.contains('.') && seen.insert(hl.clone()) {
+                    push_stealer_entity(
+                        result,
+                        Entity::new(EntityKind::Domain, &hl, 0.50, scan_id),
+                        &ev,
+                        &["credential-url"],
+                    );
+                }
+            }
+        }
+    }
+
     if let Some(emails) = item.get("email").and_then(|v| v.as_array()) {
         for email_val in emails {
             if let Some(email) = email_val.as_str() {
                 let lower = email.to_lowercase();
-                if lower.contains('@') && seen.insert(lower) {
+                if looks_like_email(&lower) && seen.insert(lower) {
                     push_oathnet_entity(
                         result,
                         Entity::new(EntityKind::Email, email, 0.65, scan_id),
@@ -846,10 +908,7 @@ fn extract_stealer_entities(
     // pipeline — HIBP, emailrep, epieos, etc. can then cross-reference.
     if let Some(uname) = val_str(item, "username") {
         let lower = uname.to_lowercase();
-        if lower.contains('@')
-            && lower.contains('.')
-            && seen.insert(format!("@stealer-user:{lower}"))
-        {
+        if looks_like_email(&lower) && seen.insert(format!("@stealer-user:{lower}")) {
             push_stealer_entity(
                 result,
                 Entity::new(EntityKind::Email, &uname, 0.60, scan_id),

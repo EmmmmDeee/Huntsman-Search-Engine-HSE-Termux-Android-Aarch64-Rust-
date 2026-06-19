@@ -487,3 +487,67 @@ use super::*;
             "redacted snapchat handle must be skipped"
         );
     }
+
+    #[test]
+    fn breach_bio_is_mined_for_contact_identifiers() {
+        use serde_json::json;
+        let item = json!({
+            "email": "subject@example.com",
+            "bio": "Reach me at alt.contact@proton.me or +14155550123 — DMs open",
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "subject@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        // Alternate contact email mined from the free-text bio, tagged bio-mined.
+        let mined = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email && e.value.contains("alt.contact@proton.me"))
+            .expect("bio-mined email");
+        assert!(mined.has_tag("bio-mined"));
+        // Phone mined from the bio (E.164 normalised by the shared extractor).
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Phone && e.has_tag("bio-mined")),
+            "bio-mined phone"
+        );
+    }
+
+    #[test]
+    fn stealer_url_becomes_url_and_domain_pivots() {
+        use serde_json::json;
+        let item = json!({
+            "username": "victim@example.com",
+            "url": "https://portal.acmebank.com/login",
+            "password": "secret"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_stealer_entities(&item, "scan", "oathnet.org:test", &mut seen, &mut result);
+
+        // The login URL is now a first-class Url pivot (was evidence-only).
+        let url = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Url && e.value.contains("portal.acmebank.com/login"))
+            .expect("stealer Url entity");
+        assert!(url.has_tag("credential-url"));
+        // Its host is emitted as a Domain pivot.
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "portal.acmebank.com"),
+            "stealer url host Domain"
+        );
+    }
