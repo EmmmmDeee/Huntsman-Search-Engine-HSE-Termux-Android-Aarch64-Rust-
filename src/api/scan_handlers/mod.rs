@@ -732,6 +732,84 @@ pub async fn scan_trust(
     ok_list("trust", scores)
 }
 
+/// Query parameters for [`scan_path`]: the two endpoint VALUES to connect and an
+/// optional cap on how many distinct pathways to return.
+#[derive(serde::Deserialize)]
+pub struct PathQuery {
+    from: String,
+    to: String,
+    paths: Option<usize>,
+}
+
+/// `GET /api/v1/scans/{id}/path?from=<value>&to=<value>[&paths=N]` — connection-path
+/// discovery ([`crate::core::path`]): the shortest chain of relationships linking two
+/// named entities in this scan's graph, plus up to N distinct alternative routes. The
+/// universal "how are A and B connected?" query — e.g. `from=Kyle Diegmann` to
+/// `to=Erik Diegmann`. Pure synthesis over the persisted entities + relations; the
+/// deeper the scan recursed, the more of the graph there is to connect across. Node
+/// UIDs are resolved to display labels server-side so the chain renders standalone.
+/// 404 if the scan is unknown, matching the other sub-resources.
+pub async fn scan_path(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<PathQuery>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (entities, relations) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let max_paths = q
+        .paths
+        .unwrap_or(crate::core::path::DEFAULT_MAX_PATHS)
+        .clamp(1, 10);
+    let paths = crate::core::path::connect_values(&entities, &relations, &q.from, &q.to, max_paths);
+    // Resolve every node UID in the returned paths to a display label, so the UI
+    // renders the chain without depending on which entities are paged into it.
+    let mut nodes = serde_json::Map::new();
+    for p in &paths {
+        for uid in &p.nodes {
+            if !nodes.contains_key(uid)
+                && let Some(e) = entities.iter().find(|e| e.uid == *uid)
+            {
+                let label = if e.raw_value.is_empty() {
+                    &e.value
+                } else {
+                    &e.raw_value
+                };
+                nodes.insert(
+                    uid.clone(),
+                    json!({ "value": label, "kind": e.kind.to_string() }),
+                );
+            }
+        }
+    }
+    let connected = !paths.is_empty();
+    (
+        StatusCode::OK,
+        Json(json!({
+            "from": q.from,
+            "to": q.to,
+            "connected": connected,
+            "paths": paths,
+            "nodes": nodes,
+        })),
+    )
+        .into_response()
+}
+
 pub async fn scan_delete(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,

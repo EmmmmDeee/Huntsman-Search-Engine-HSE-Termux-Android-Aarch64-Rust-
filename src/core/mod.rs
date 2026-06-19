@@ -24,6 +24,7 @@ pub mod live;
 pub mod metrics;
 pub mod module;
 pub mod network;
+pub mod path;
 pub mod port;
 pub mod profiles;
 pub mod relation;
