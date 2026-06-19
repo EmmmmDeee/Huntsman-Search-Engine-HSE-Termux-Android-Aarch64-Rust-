@@ -294,3 +294,71 @@ fn recommend_is_bounded_and_ranked() {
     let v2: Vec<&str> = again.iter().map(|l| l.value.as_str()).collect();
     assert_eq!(v1, v2);
 }
+
+/// A cross-investigation bridge (the history flywheel) lifts a lead's priority,
+/// sets `bridged`, and is named in the reason by the strength of the prior tie.
+#[test]
+fn history_bridge_boosts_lead_priority_and_is_flagged() {
+    let leads_for = |email_tag: Option<&str>| {
+        let mut subject = ent(EntityKind::Person, "Kyle Diegmann", 0.85);
+        subject.tag("subject");
+        let mut email = ent(EntityKind::Email, "kyle@example.com", 0.8);
+        if let Some(t) = email_tag {
+            email.tag(t);
+        }
+        let relations = vec![rel(&subject, &email, RelationKind::IdentifiedBy, 0.8)];
+        let entities = vec![subject, email];
+        recommend(&entities, &relations, 0.50)
+    };
+
+    let base = leads_for(None);
+    let bridged = leads_for(Some("cross-scan-relation"));
+    let base_email = base.iter().find(|l| l.value == "kyle@example.com").unwrap();
+    let bridged_email = bridged
+        .iter()
+        .find(|l| l.value == "kyle@example.com")
+        .unwrap();
+
+    assert!(!base_email.bridged, "no history tag ⇒ not a bridge");
+    assert!(
+        bridged_email.bridged,
+        "a cross-scan-relation lead is a bridge"
+    );
+    assert!(
+        bridged_email.score > base_email.score,
+        "history lifts the bridged lead's score ({} !> {})",
+        bridged_email.score,
+        base_email.score
+    );
+    assert!(
+        bridged_email
+            .reason
+            .contains("linked to it in a prior scan"),
+        "reason names the prior-relationship bridge: {}",
+        bridged_email.reason
+    );
+}
+
+/// The history boost is graded by tie strength — a recalled relationship outranks a
+/// co-occurrence, which outranks bare recurrence — and the strongest wins (never
+/// summed), so an entity carrying all three scores exactly as a relationship.
+#[test]
+fn history_boost_is_graded_and_takes_the_strongest() {
+    let tag = |s: &str| vec![s.to_string()];
+    assert!(
+        history_boost(&tag("cross-scan-relation")) > history_boost(&tag("cross-scan-cooccurrence"))
+    );
+    assert!(history_boost(&tag("cross-scan-cooccurrence")) > history_boost(&tag("cross-scan")));
+    assert!(history_boost(&tag("cross-scan")) > 0.0);
+    assert_eq!(history_boost(&[]), 0.0);
+    let all = vec![
+        "cross-scan".to_string(),
+        "cross-scan-cooccurrence".to_string(),
+        "cross-scan-relation".to_string(),
+    ];
+    assert_eq!(
+        history_boost(&all),
+        history_boost(&tag("cross-scan-relation")),
+        "strongest prior tie wins, boosts are never summed"
+    );
+}
