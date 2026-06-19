@@ -53,6 +53,89 @@ fn recommend_ranks_untapped_relatives() {
     );
 }
 
+/// A geo-corroborated relative — shared surname AND the subject's own confirmed
+/// area, two independent free signals ([`crate::core::geo_family`]) — is the single
+/// most reliable free pivot, so it is the TOP lead even though geo-corroboration
+/// lifted its confidence above the expansion floor. Its reason names the geo
+/// confirmation, and it stays flagged untapped (the engine held it below the floor
+/// through expansion and never auto-pivoted it). Without this, the binary
+/// "untapped ⇒ boost" ranked a *confirmed* relative below an unconfirmed guess.
+#[test]
+fn recommend_ranks_geo_corroborated_family_top() {
+    let mut subject = ent(EntityKind::Person, "Kyle Diegmann", 0.85);
+    subject.tag("subject");
+
+    // Geo-confirmed relative, promoted to PROBABLE (c_eff 0.56 > the 0.50 floor).
+    let mut confirmed = ent(EntityKind::Person, "Erik Diegmann", 0.56);
+    confirmed.tag("family-candidate");
+    confirmed.tag("geo-corroborated");
+
+    // Unconfirmed same-surname candidate, still below the floor.
+    let mut guess = ent(EntityKind::Person, "Curt Diegmann", 0.32);
+    guess.tag("family-candidate");
+
+    let relations = vec![
+        rel(&subject, &confirmed, RelationKind::AssociatedWith, 0.6),
+        rel(&subject, &guess, RelationKind::AssociatedWith, 0.5),
+    ];
+    let entities = vec![subject, confirmed.clone(), guess.clone()];
+
+    let leads = recommend(&entities, &relations, 0.50);
+    assert_eq!(
+        leads[0].value,
+        "Erik Diegmann",
+        "the geo-corroborated relative is the top lead, got {:?}",
+        leads.iter().map(|l| &l.value).collect::<Vec<_>>()
+    );
+    let top = &leads[0];
+    assert!(
+        top.reason.contains("relative")
+            && top.reason.contains("confirmed in the subject's area")
+            && top.reason.contains("not yet investigated"),
+        "reason: {}",
+        top.reason
+    );
+    // Both are relatives, but the confirmed one scores strictly higher than the
+    // unconfirmed guess — reliability is what separates them.
+    let guess_lead = leads.iter().find(|l| l.value == "Curt Diegmann").unwrap();
+    assert!(
+        top.score > guess_lead.score,
+        "confirmed ({}) must outrank unconfirmed ({})",
+        top.score,
+        guess_lead.score
+    );
+    // The UI badges this: corroborated vs a bare guess.
+    assert!(
+        top.confirmed,
+        "the geo-corroborated relative is flagged confirmed"
+    );
+    assert!(
+        !guess_lead.confirmed,
+        "an unconfirmed candidate is not flagged confirmed"
+    );
+}
+
+/// Reliability lifts a lead, but only for a *new* person/persona — never for a
+/// value the subject already owns. A geo-corroborated relative beats a same-tier
+/// plain relative, and a VERIFIED owned identifier still trails an untapped
+/// relative (owning your own email is confirmation, not a next step).
+#[test]
+fn confirmation_boost_rewards_new_people_not_owned_identifiers() {
+    // geo-corroborated > plain, at equal confidence/edge — confirmation decides.
+    let geo = confirmation_boost("people", "PROBABLE", &["geo-corroborated".into()]);
+    let plain = confirmation_boost("people", "PROBABLE", &[]);
+    assert!(
+        geo > plain,
+        "geo-corroboration is the strongest confirmation"
+    );
+    // A reliable *new* person earns a bonus; an owned identifier never does.
+    assert!(confirmation_boost("people", "VERIFIED", &[]) > 0.0);
+    assert_eq!(confirmation_boost("identifiers", "VERIFIED", &[]), 0.0);
+    assert_eq!(confirmation_boost("locations", "VERIFIED", &[]), 0.0);
+    // A bare candidate (no second signal) earns nothing.
+    assert_eq!(confirmation_boost("people", "CANDIDATE", &[]), 0.0);
+}
+
 /// Aliases and infrastructure are pivotable too, but a non-pivotable kind (or no
 /// connections at all) yields nothing — no speculative noise.
 #[test]

@@ -43,6 +43,10 @@ pub struct Lead {
     pub score: f64,
     /// Far-end entity tier (`VERIFIED` / `PROBABLE` / `CANDIDATE`).
     pub classification: String,
+    /// An INDEPENDENT second signal corroborates this lead — a geo-corroborated
+    /// relative (shared surname AND the subject's confirmed area) or a high-tier
+    /// new person. The reliable pivots, so the UI badges them and they rank first.
+    pub confirmed: bool,
     /// The network group this lead came from (`people` / `identifiers` / …).
     pub group: &'static str,
 }
@@ -76,19 +80,55 @@ fn group_weight(group: &str) -> f64 {
 }
 
 /// Composite pivot score: kind value × group weight × node trust × link strength,
-/// boosted when the entity is still untapped (below the expansion floor, so the
-/// engine did not pivot it — exactly the lead a human should pick up). The trust
-/// term floors at 0.4 so a low-confidence-but-novel relative still ranks, not
-/// zero.
+/// then lifted by two INDEPENDENT bonuses —
+/// * **novelty** (`+0.6` when still untapped: below the expansion floor, or a
+///   shared-surname relative the engine deliberately held back, so the engine did
+///   not pivot it — exactly the lead a human should pick up), and
+/// * **confirmation** (a second, independent signal vouches the connection is real
+///   — see [`confirmation_boost`]).
+///
+/// The trust term floors at 0.4 so a low-confidence-but-novel relative still ranks,
+/// not zero. A geo-corroborated relative earns BOTH bonuses (novel *and*
+/// confirmed), so every scan's reliably-linked family surfaces as its top one-tap
+/// pivots — the previous binary "untapped ⇒ ×1.6" instead penalised exactly those
+/// relatives the moment geo-corroboration lifted them over the floor.
 fn score(
     kind_value: f64,
     group_weight: f64,
     entity_conf: f64,
     edge_conf: f64,
     untapped: bool,
+    confirmation: f64,
 ) -> f64 {
     let base = kind_value * group_weight * (0.4 + 0.6 * entity_conf) * (0.5 + 0.5 * edge_conf);
-    if untapped { base * 1.6 } else { base }
+    let novelty = if untapped { 0.6 } else { 0.0 };
+    base * (1.0 + novelty + confirmation)
+}
+
+/// Reliability bonus for a lead, layered on top of novelty: how strongly an
+/// INDEPENDENT second signal confirms the connection is real and worth pivoting.
+///
+/// A `geo-corroborated` relative — shared surname AND the subject's own confirmed
+/// area, two independent free signals agreeing offline
+/// ([`crate::core::geo_family`]) — is the most reliable pivot a free scan can
+/// produce, so it leads. A high-tier *new* person or persona is corroborated, but
+/// by a single angle, so it earns less. Owned identifiers, locations and
+/// infrastructure get nothing here: a verified value the subject already owns is
+/// confirmation, not a fresh lead, and must not outrank a new person on its own
+/// reliability.
+fn confirmation_boost(group: &str, classification: &str, tags: &[String]) -> f64 {
+    if tags.iter().any(|t| t == "geo-corroborated") {
+        return 0.8;
+    }
+    if matches!(group, "people" | "aliases") {
+        match classification {
+            "VERIFIED" => 0.45,
+            "PROBABLE" => 0.20,
+            _ => 0.0,
+        }
+    } else {
+        0.0
+    }
 }
 
 /// A grounded, human reason for the lead, from its group, label, exposure tags
@@ -108,6 +148,9 @@ fn reason(group: &str, label: &str, tags: &[String], untapped: bool) -> String {
         .any(|t| t == "breach" || t == "stealer-log" || t == "breach-derived")
     {
         r.push_str(" · exposed in a breach");
+    }
+    if tags.iter().any(|t| t == "geo-corroborated") {
+        r.push_str(" · confirmed in the subject's area");
     }
     if untapped {
         r.push_str(" · not yet investigated");
@@ -130,7 +173,15 @@ pub fn recommend(entities: &[Entity], relations: &[Relation], expansion_floor: f
         .flat_map(|group: &ConnectionGroup| {
             group.items.iter().filter_map(move |conn| {
                 let (target_kind, kind_value) = pivot(&conn.kind)?;
-                let untapped = conn.entity_confidence < expansion_floor;
+                // Untapped = the engine did not pivot it: below the expansion
+                // floor, OR a shared-surname `family-candidate` (the engine
+                // deliberately holds the surname cluster below the floor so a scan
+                // doesn't fan out across a whole family tree). Geo-corroboration may
+                // lift such a relative's confidence over the floor at finalise, but
+                // it was still never auto-expanded — so it stays a one-tap lead.
+                let untapped = conn.entity_confidence < expansion_floor
+                    || conn.tags.iter().any(|t| t == "family-candidate");
+                let confirmation = confirmation_boost(group.key, &conn.classification, &conn.tags);
                 Some(Lead {
                     uid: conn.uid.clone(),
                     value: conn.value.clone(),
@@ -144,8 +195,10 @@ pub fn recommend(entities: &[Entity], relations: &[Relation], expansion_floor: f
                         conn.entity_confidence,
                         conn.edge_confidence,
                         untapped,
+                        confirmation,
                     ),
                     classification: conn.classification.clone(),
+                    confirmed: confirmation > 0.0,
                     group: group.key,
                 })
             })

@@ -205,10 +205,17 @@
     .lead-val{font-size:14px;font-weight:600;color:#222;word-break:break-word}
     .lead-reason{font-size:11.5px;color:#777;margin-top:2px}
     .lead-scan{flex-shrink:0}
+    /* Confirmed leads (an independent second signal corroborates them) get a
+       green accent + badge so the reliable pivots stand out from speculative ones. */
+    .lead-card.confirmed{border-left-color:#2bbf6a}
+    .lead-badge{display:inline-block;font-size:10px;font-weight:700;color:#1a8f4e;background:#e6f7ee;
+      border:1px solid #bfe8d0;border-radius:3px;padding:0 5px;margin-left:6px;vertical-align:middle;letter-spacing:.3px}
     body.dark-theme .lead-card{background:#1f1f1f;border-color:#333;border-left-color:#07aef1}
+    body.dark-theme .lead-card.confirmed{border-left-color:#2bbf6a}
     body.dark-theme .lead-card:hover{background:#243240}
     body.dark-theme .lead-val{color:#eee}
     body.dark-theme .lead-reason{color:#999}
+    body.dark-theme .lead-badge{color:#7fe0a8;background:#173726;border-color:#2c5d40}
     body.dark-theme .net-hero{background:linear-gradient(135deg,#16222c,#1f1f1f);border-color:#2d4a5a}
     body.dark-theme .net-hero-name{color:#eee}
     body.dark-theme .net-group{border-color:#333}
@@ -1762,14 +1769,17 @@ async function renderLeads(host, id){
       <a href="#/scaninfo?id=${attr(id)}&tab=network">Network</a>, or run a deeper scan.</p></div>`;
     return;
   }
+  const confirmedN = leads.filter(l=>l.confirmed).length;
   let html = `<p class="text-muted" style="font-size:12px;margin-bottom:10px">
     <i class="glyphicon glyphicon-flag"></i>&nbsp;<b>${leads.length}</b> recommended next step${leads.length===1?'':'s'}
-    — untapped pivots ranked by value. Click <b>Scan</b> to launch a focused follow-up.</p>`;
+    — untapped pivots ranked by value, the${confirmedN?` <b>${confirmedN}</b> corroborated`:''} reliable ones first.
+    Click <b>Scan</b> to launch a focused follow-up.</p>`;
   for (const l of leads){
     const icon = NET_GROUP_ICON[l.group] || 'glyphicon-flag';
-    html += `<div class="lead-card">
+    const badge = l.confirmed ? '<span class="lead-badge" title="An independent second signal corroborates this lead">✓ CONFIRMED</span>' : '';
+    html += `<div class="lead-card${l.confirmed?' confirmed':''}">
       <div class="lead-main">
-        <div class="lead-val"><i class="glyphicon ${icon}"></i>&nbsp;${esc(l.value)} ${kindPill(l.kind)}</div>
+        <div class="lead-val"><i class="glyphicon ${icon}"></i>&nbsp;${esc(l.value)} ${kindPill(l.kind)}${badge}</div>
         <div class="lead-reason">${esc(l.reason)}</div>
       </div>
       <button class="btn btn-info btn-sm lead-scan" data-kind="${attr(l.target_kind)}" data-value="${attr(l.value)}"
