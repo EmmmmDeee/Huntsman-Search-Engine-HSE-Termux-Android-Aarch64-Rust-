@@ -169,6 +169,14 @@ impl Module for OathnetPro {
         let names = oathnet::distinct_field(&items, "full_name");
         let genders = oathnet::distinct_field(&items, "gender");
         let dobs = oathnet::distinct_field(&items, "date_birth");
+        // Dossier-level credential-exposure signal: how many of these records
+        // leaked a fast, GPU-trivial hash (≈ plaintext once cracked). A single
+        // pass over the page already in hand — no extra query.
+        let fast_hashes = items
+            .iter()
+            .filter_map(|i| val_str(i, "password_hash"))
+            .filter(|h| identify_password_hash(h).is_some_and(|(_, fast)| fast))
+            .count();
 
         let mut ev = Evidence::new(
             SRC,
@@ -187,6 +195,9 @@ impl Module for OathnetPro {
         }
         if !dobs.is_empty() {
             ev = ev.with_attr("dates_of_birth", dobs.join(", "));
+        }
+        if fast_hashes > 0 {
+            ev = ev.with_attr("fast_crackable_hashes", fast_hashes.to_string());
         }
         parent.add_evidence(ev);
         result.push(parent);
@@ -703,11 +714,30 @@ fn extract_breach_entities_with(
             crate::util::str_util::truncate_safe(&ph, 16)
         ))
     {
+        // Hash intelligence: classify the algorithm + crackability so the dossier
+        // ranks credential exposure. A present, non-empty `salt` field defeats
+        // rainbow tables even for an otherwise-fast hash.
+        let hash_id = identify_password_hash(&ph);
+        let algo_tag = hash_id.map(|(a, _)| format!("hash:{a}"));
+        let mut extra: Vec<&str> = vec!["password-hash"];
+        if let Some(a) = &algo_tag {
+            extra.push(a);
+        }
+        if let Some((_, fast)) = hash_id {
+            extra.push(if fast {
+                "crackable:fast"
+            } else {
+                "crackable:slow"
+            });
+        }
+        if val_str(item, "salt").is_some_and(|s| !s.trim().is_empty()) {
+            extra.push("salted");
+        }
         push_oathnet_entity(
             result,
             Entity::new(EntityKind::Password, &ph, 0.50, scan_id),
             &ev,
-            &["password-hash"],
+            &extra,
             is_target_row,
         );
     }
@@ -1035,6 +1065,59 @@ fn iban_is_valid(raw: &str) -> bool {
         };
     }
     remainder == 1
+}
+
+/// Identify a leaked password hash's algorithm and whether it is a **fast**
+/// (unsalted, GPU-trivial) digest versus a **slow** adaptive KDF — the single
+/// strongest signal for how exposed the leaked credential really is (a fast
+/// MD5/SHA-1 is effectively plaintext; a bcrypt/argon2 digest is not). Pure,
+/// shape-anchored classification, the same discipline the key detector applies:
+/// prefixed `crypt(3)`/KDF formats by their `$id$` marker, bare digests by hex
+/// length. Returns `(algorithm, fast)`, or `None` for an unrecognised shape.
+fn identify_password_hash(s: &str) -> Option<(&'static str, bool)> {
+    let h = s.trim();
+    // Adaptive / salted KDF + crypt(3) formats — slow to crack by design.
+    for (prefix, algo) in [
+        ("$2a$", "bcrypt"),
+        ("$2b$", "bcrypt"),
+        ("$2y$", "bcrypt"),
+        ("$2x$", "bcrypt"),
+        ("$argon2", "argon2"),
+        ("$6$", "sha512crypt"),
+        ("$5$", "sha256crypt"),
+        ("$1$", "md5crypt"),
+        ("$P$", "phpass"),
+        ("$H$", "phpass"),
+        ("$7$", "scrypt"),
+        ("$scrypt$", "scrypt"),
+        ("$pbkdf2", "pbkdf2"),
+        ("pbkdf2_", "pbkdf2"),
+    ] {
+        if h.starts_with(prefix) {
+            return Some((algo, false));
+        }
+    }
+    // MySQL 4.1+: `*` followed by 40 hex — a fast SHA1(SHA1(pw)).
+    if let Some(rest) = h.strip_prefix('*')
+        && rest.len() == 40
+        && rest.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Some(("mysql", true));
+    }
+    // Bare hex digests — fast, unsalted, rainbow-table-friendly. 32 hex is MD5
+    // (also NTLM / LM at this length); the rest are the SHA-2 family by width.
+    if !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return match h.len() {
+            32 => Some(("md5", true)),
+            40 => Some(("sha1", true)),
+            56 => Some(("sha224", true)),
+            64 => Some(("sha256", true)),
+            96 => Some(("sha384", true)),
+            128 => Some(("sha512", true)),
+            _ => None,
+        };
+    }
+    None
 }
 
 #[cfg(test)]

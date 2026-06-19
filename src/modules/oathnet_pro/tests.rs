@@ -62,7 +62,13 @@ use super::*;
         );
         assert_eq!(
             tags_of(EntityKind::Password, "0123456789"),
-            ["breach", "oathnet-pro", "password-hash"]
+            [
+                "breach",
+                "oathnet-pro",
+                "password-hash",
+                "hash:md5",
+                "crackable:fast"
+            ]
         );
     }
 
@@ -550,4 +556,69 @@ use super::*;
                 .any(|e| e.kind == EntityKind::Domain && e.value == "portal.acmebank.com"),
             "stealer url host Domain"
         );
+    }
+
+    #[test]
+    fn identify_password_hash_classifies_common_formats() {
+        // Fast, unsalted digests by hex width.
+        assert_eq!(identify_password_hash(&"a".repeat(32)), Some(("md5", true)));
+        assert_eq!(identify_password_hash(&"a".repeat(40)), Some(("sha1", true)));
+        assert_eq!(
+            identify_password_hash(&"a".repeat(64)),
+            Some(("sha256", true))
+        );
+        assert_eq!(
+            identify_password_hash(&"a".repeat(128)),
+            Some(("sha512", true))
+        );
+        assert_eq!(
+            identify_password_hash(&format!("*{}", "A".repeat(40))),
+            Some(("mysql", true))
+        );
+        // Slow, adaptive / salted KDFs by prefix.
+        assert_eq!(
+            identify_password_hash("$2b$12$R9h/cIPz0gi.URNNX3kh2OPST9PgBkqquzi.Ss7KIUgO2t0jWMUW"),
+            Some(("bcrypt", false))
+        );
+        assert_eq!(
+            identify_password_hash("$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHQ$aGFzaGhhc2g"),
+            Some(("argon2", false))
+        );
+        assert_eq!(
+            identify_password_hash("$6$rounds=5000$salt$hashhashhashhashhash"),
+            Some(("sha512crypt", false))
+        );
+        // Non-hashes.
+        assert_eq!(identify_password_hash("not-a-hash"), None);
+        assert_eq!(identify_password_hash(&"a".repeat(33)), None); // odd width
+    }
+
+    #[test]
+    fn password_hash_entity_carries_hash_intel() {
+        use serde_json::json;
+        // A bcrypt digest with a salt → classified slow + salted.
+        let item = json!({
+            "email": "subject@example.com",
+            "password_hash": "$2b$12$R9h/cIPz0gi.URNNX3kh2OPST9PgBkqquzi.Ss7KIUgO2t0jWMUW",
+            "salt": "abc123",
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "subject@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let pw = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Password)
+            .expect("password entity");
+        assert!(pw.has_tag("hash:bcrypt"), "tags: {:?}", pw.tags);
+        assert!(pw.has_tag("crackable:slow"));
+        assert!(pw.has_tag("salted"));
     }
