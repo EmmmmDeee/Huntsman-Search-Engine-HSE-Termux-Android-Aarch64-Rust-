@@ -66,13 +66,27 @@ pub fn is_enrichment_source(source: &str) -> bool {
 /// just can't inflate [`Entity::source_count`] / `c_effective`.
 pub const RECALL_SOURCE: &str = "recall";
 
+/// Evidence source name of the cross-scan history link — the finalize pass that
+/// notes a finding ALSO appears in an earlier scan in the local intelligence
+/// database (the investigation flywheel).
+///
+/// Like [`RECALL_SOURCE`] this is provenance, not an independent observation: a
+/// recurrence can't tell a re-scan of the same subject from a genuinely separate
+/// sighting, so counting it would re-introduce exactly the recall over-credit
+/// (a single-source value graded a tier higher merely for having been seen
+/// before). The `cross_scan_history` evidence is kept and shown for the analyst —
+/// it is what SURFACES the link between two investigations — but it must never
+/// inflate [`Entity::source_count`] / `c_effective`.
+pub const CROSS_SCAN_SOURCE: &str = "cross_scan_history";
+
 /// True if `source` must NOT count toward cross-source corroboration — a
-/// deterministic self-enrichment pass ([`ENRICHMENT_ONLY_SOURCES`]) or the recall
-/// replay ([`RECALL_SOURCE`]). Both attach genuine, useful evidence, but neither
-/// is an independent observation, so neither may inflate the corroboration count.
+/// deterministic self-enrichment pass ([`ENRICHMENT_ONLY_SOURCES`]), the recall
+/// replay ([`RECALL_SOURCE`]), or the cross-scan history link ([`CROSS_SCAN_SOURCE`]).
+/// All attach genuine, useful evidence, but none is an independent observation, so
+/// none may inflate the corroboration count.
 #[inline]
 pub fn is_non_corroborating_source(source: &str) -> bool {
-    is_enrichment_source(source) || source == RECALL_SOURCE
+    is_enrichment_source(source) || source == RECALL_SOURCE || source == CROSS_SCAN_SOURCE
 }
 
 // ─── EntityKind ──────────────────────────────────────────────────────────────

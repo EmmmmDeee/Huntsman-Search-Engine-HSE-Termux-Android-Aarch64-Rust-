@@ -209,6 +209,11 @@ fn reason(group: &str, label: &str, value: &str, tags: &[String], untapped: bool
     {
         r.push_str(" · common surname — corroborate independently");
     }
+    // The cross-scan bridge (the history flywheel): this value also appears in an
+    // earlier investigation, so the lead links two scans — flag it independently.
+    if tags.iter().any(|t| t == "cross-scan") {
+        r.push_str(" · also in a prior scan");
+    }
     if untapped {
         r.push_str(" · not yet investigated");
     }

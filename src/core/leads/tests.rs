@@ -222,6 +222,29 @@ fn confirmation_boost_rewards_new_people_not_owned_identifiers() {
     assert_eq!(confirmation_boost("people", "CANDIDATE", &[]), 0.0);
 }
 
+/// A cross-scan bridge — a finding that also appears in an earlier investigation —
+/// is flagged in the lead's reason, so the history flywheel is visible in the
+/// actionable view, not just the raw evidence.
+#[test]
+fn recommend_flags_cross_scan_bridges() {
+    let mut subject = ent(EntityKind::Person, "Kyle Smith", 0.85);
+    subject.tag("subject");
+    let mut email = ent(EntityKind::Email, "shared@example.com", 0.7);
+    email.tag("cross-scan");
+    let relations = vec![rel(&subject, &email, RelationKind::IdentifiedBy, 0.7)];
+
+    let leads = recommend(&[subject, email.clone()], &relations, 0.50);
+    let lead = leads
+        .iter()
+        .find(|l| l.value == "shared@example.com")
+        .unwrap();
+    assert!(
+        lead.reason.contains("also in a prior scan"),
+        "the cross-scan bridge is surfaced in the reason: {}",
+        lead.reason
+    );
+}
+
 /// Aliases and infrastructure are pivotable too, but a non-pivotable kind (or no
 /// connections at all) yields nothing — no speculative noise.
 #[test]
