@@ -20,6 +20,7 @@ use std::collections::HashMap;
 
 use crate::core::entity::{CROSS_SCAN_SOURCE, Entity, EntityKind, Evidence};
 use crate::core::port::StoragePort;
+use crate::core::relation::RelationKind;
 
 /// Max entities probed against history per scan — bounds the indexed point-queries
 /// at finalise on a low-RAM Termux device. Specific identifiers in a scan number a
@@ -290,6 +291,190 @@ pub(super) fn link_cross_scan_cooccurrence(
         tracing::info!(
             linked,
             "cross-scan co-occurrence: recurring associations bridged"
+        );
+    }
+    linked
+}
+
+/// Marker prefix embedded in every relation-recall evidence summary, so the
+/// idempotency probe can tell (without re-querying the store) whether an endpoint
+/// already carries the recall for a given prior relationship — distinguishing it
+/// from the recurrence and co-occurrence evidence that share [`CROSS_SCAN_SOURCE`].
+const RELATION_RECALL_MARKER: &str = "Previously linked";
+
+/// Max relation-recall point-queries per scan. Like the co-occurrence pass this
+/// fans out to each prior scan that recorded a current candidate and reads that
+/// scan's relations, so it gets its own tight budget for a low-RAM Termux device.
+const MAX_RELATION_PROBES: usize = 48;
+
+/// Max distinct prior relationships recalled per current candidate, so an entity
+/// that participated in very many edges across prior investigations can't explode
+/// the number of recall evidence rows attached to it.
+const MAX_RECALLED_RELATIONS_PER_ENTITY: usize = 8;
+
+/// True for the IDENTITY-bearing relation kinds worth recalling across scans — the
+/// edges that connect a person to their identifiers, aliases, addresses, declared
+/// associates, and registrations. Pure-infrastructure edges (subdomain / hosting /
+/// DNS resolution / co-location / lineage) are excluded: recalling that a domain
+/// once resolved to an IP is not the human-network bridge this pass exists to
+/// surface.
+fn is_identity_relation(kind: RelationKind) -> bool {
+    matches!(
+        kind,
+        RelationKind::IdentifiedBy
+            | RelationKind::AliasOf
+            | RelationKind::LocatedAt
+            | RelationKind::AssociatedWith
+            | RelationKind::RegisteredBy
+    )
+}
+
+/// Build the relation-recall message naming the prior relationship `kind`, the
+/// `partner` value, and the `shared` prior-scan count. Centralised so the summary
+/// written in the mutation phase and the idempotency probe in
+/// [`endpoint_has_relation_recall`] can't drift; the [`RELATION_RECALL_MARKER`]
+/// prefix plus the kind string is what the probe keys on.
+fn relation_recall_summary(kind: &str, partner: &str, shared: usize) -> String {
+    format!(
+        "Previously linked ({kind}) to `{partner}` across {shared} earlier scan(s) in the \
+         local intelligence database — a known connection that bridges investigations"
+    )
+}
+
+/// True if `e` already carries the relation-recall evidence for the `(kind, partner)`
+/// prior relationship. Matches on the marker, the kind string, and the partner value
+/// so an entity recalled to several prior links isn't mistaken for already carrying a
+/// new one, and ignores the recurrence / co-occurrence evidence (same source, no
+/// marker).
+fn endpoint_has_relation_recall(e: &Entity, kind: &str, partner: &str) -> bool {
+    e.evidence.iter().any(|ev| {
+        ev.source == CROSS_SCAN_SOURCE
+            && ev.summary.starts_with(RELATION_RECALL_MARKER)
+            && ev.summary.contains(kind)
+            && ev.summary.contains(partner)
+    })
+}
+
+/// Recall this scan's findings' PRIOR RELATIONSHIPS from the local intelligence
+/// history — the semantic complement of [`link_cross_scan_cooccurrence`].
+///
+/// Recurrence notes a value was seen before; co-occurrence notes two values were
+/// seen together before; relation recall notes that a reappearing identifier was
+/// explicitly LINKED — `located_at` an address, `identified_by` a handle, `alias_of`
+/// another account, `associated_with` a person, `registered_by` an org — to something
+/// in an earlier investigation. Pulling that past conclusion forward surfaces a known
+/// connection (often to an entity not even present in this scan) the operator would
+/// otherwise have to rediscover from scratch — the richest cross-investigation bridge
+/// of the three history passes.
+///
+/// Same contract as its siblings: runs BEFORE persist (current `entities` read from
+/// the in-memory slice), pure over a [`StoragePort`], bounded ([`MAX_RELATION_PROBES`]
+/// / [`MAX_PRIOR_SCANS_PER_ENTITY`] / [`MAX_RECALLED_RELATIONS_PER_ENTITY`]),
+/// deterministic (slice order, sorted prior-scan ids, sorted recalls), idempotent
+/// ([`endpoint_has_relation_recall`]), store `Err`s skipped, and provenance-only via
+/// the non-corroborating [`CROSS_SCAN_SOURCE`] (never inflates confidence). Only the
+/// identity-bearing relation kinds ([`is_identity_relation`]) are recalled. Returns
+/// the number of entities that gained at least one recalled relationship.
+pub(super) fn link_cross_scan_relations(
+    store: &dyn StoragePort,
+    entities: &mut [Entity],
+    scan_id: &str,
+) -> usize {
+    // ── Read phase ───────────────────────────────────────────────────────────
+    // Plan (endpoint_index, kind_str, partner_value, shared_prior_scans). The kind
+    // is carried as its `&'static str` form so nothing borrows the per-iteration
+    // relation list and the plan key is `Hash`/`Eq` without changing `RelationKind`.
+    let mut planned: Vec<(usize, &'static str, String, usize)> = Vec::new();
+    let mut probes = 0usize;
+
+    for (i, e) in entities.iter().enumerate() {
+        if probes >= MAX_RELATION_PROBES {
+            break;
+        }
+        if !is_cross_scan_candidate(e) {
+            continue;
+        }
+        probes += 1;
+        let Ok(mut prior_ids) = store.scan_ids_for_entity(&e.uid) else {
+            continue;
+        };
+        prior_ids.retain(|id| id.as_str() != scan_id);
+        prior_ids.sort();
+        prior_ids.dedup();
+        prior_ids.truncate(MAX_PRIOR_SCANS_PER_ENTITY);
+        if prior_ids.is_empty() {
+            continue;
+        }
+
+        // (kind_str, partner_value) -> distinct prior scans the link recurred in.
+        let mut recalled: HashMap<(&'static str, String), usize> = HashMap::new();
+        for prior_id in &prior_ids {
+            if probes >= MAX_RELATION_PROBES {
+                break;
+            }
+            probes += 1;
+            let Ok(relations) = store.relations_for_scan(prior_id) else {
+                continue;
+            };
+            // Distinct (kind, partner) recalled from THIS prior scan, so one prior
+            // scan contributes at most 1 to a link's shared-scan count.
+            let mut seen_here: Vec<(&'static str, String)> = Vec::new();
+            for r in &relations {
+                if !is_identity_relation(r.kind) {
+                    continue;
+                }
+                let partner_uid = if r.from_uid == e.uid {
+                    &r.to_uid
+                } else if r.to_uid == e.uid {
+                    &r.from_uid
+                } else {
+                    continue;
+                };
+                // Resolve the partner's display value (a bounded point lookup).
+                let Ok(Some(partner)) = store.get_entity(partner_uid) else {
+                    continue;
+                };
+                let key = (r.kind.as_str(), partner.value);
+                if seen_here.contains(&key) {
+                    continue;
+                }
+                seen_here.push(key.clone());
+                *recalled.entry(key).or_insert(0) += 1;
+            }
+        }
+
+        // Deterministic, bounded recall set: tuple-sorted by (kind, partner value),
+        // then capped. The key is unique, so the trailing count never affects order.
+        let mut recall_list: Vec<((&'static str, String), usize)> = recalled.into_iter().collect();
+        recall_list.sort();
+        recall_list.truncate(MAX_RECALLED_RELATIONS_PER_ENTITY);
+        for ((kind, partner_value), shared) in recall_list {
+            planned.push((i, kind, partner_value, shared));
+        }
+    }
+
+    // ── Mutation phase ───────────────────────────────────────────────────────
+    let mut linked = 0usize;
+    for (idx, kind, partner_value, shared) in planned {
+        let e = &mut entities[idx];
+        if endpoint_has_relation_recall(e, kind, &partner_value) {
+            continue; // idempotent: already carries this recalled relationship
+        }
+        let gained_first = !e.has_tag("cross-scan-relation");
+        e.tag("cross-scan-relation");
+        e.add_evidence(Evidence::new(
+            CROSS_SCAN_SOURCE,
+            relation_recall_summary(kind, &partner_value, shared),
+        ));
+        if gained_first {
+            linked += 1;
+        }
+    }
+
+    if linked > 0 {
+        tracing::info!(
+            linked,
+            "cross-scan relation recall: prior connections surfaced"
         );
     }
     linked

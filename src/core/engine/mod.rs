@@ -564,6 +564,12 @@ impl ScanEngine {
             // stronger, data-driven historical link than single-value recurrence. Same
             // contract: before persist, provenance-only, never inflates confidence.
             history::link_cross_scan_cooccurrence(store.as_ref(), &mut entities, &scan.id);
+            // Relation recall: when a reappearing identifier was SEMANTICALLY linked
+            // (located_at / identified_by / alias_of / associated_with / registered_by)
+            // to something in a prior scan, surface that known connection now — pulling
+            // a past conclusion forward as a lead, often to an entity not even present
+            // this scan. Same contract: before persist, provenance-only, never inflates.
+            history::link_cross_scan_relations(store.as_ref(), &mut entities, &scan.id);
             // Determinism: normalise each entity's evidence/tags ordering before
             // persist, so concurrent dispatch's completion-order merging can't leak
             // into the stored/exported result (see `Entity::canonicalize_order`).

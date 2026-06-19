@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::relation::{Relation, RelationKind};
 use crate::core::test_support::InMemoryStore;
 
 fn ent(kind: EntityKind, value: &str, conf: f64, scan: &str) -> Entity {
@@ -283,4 +284,157 @@ fn cooccurrence_partners_recorded_in_deterministic_order() {
         })
         .collect();
     assert_eq!(partners, vec!["aaa@example.com", "zzz@example.com"]);
+}
+
+#[test]
+fn relation_recall_surfaces_a_prior_linked_connection() {
+    let store = InMemoryStore::new();
+    // A PRIOR investigation linked a phone to an address (located_at).
+    let prior_phone = ent(EntityKind::Phone, "+61400111222", 0.7, "prior-scan");
+    let prior_addr = ent(
+        EntityKind::Address,
+        "42 Wallaby Way, Brisbane QLD 4000",
+        0.7,
+        "prior-scan",
+    );
+    store.upsert_entity(&prior_phone).unwrap();
+    store.upsert_entity(&prior_addr).unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            prior_phone.uid.clone(),
+            prior_addr.uid.clone(),
+            RelationKind::LocatedAt,
+            0.7,
+            "prior-scan",
+        ))
+        .unwrap();
+
+    // This scan rediscovers ONLY the phone — the address is NOT present, so the
+    // recall is the only way the prior connection resurfaces.
+    let mut entities = vec![ent(EntityKind::Phone, "+61400111222", 0.55, "this-scan")];
+
+    let linked = link_cross_scan_relations(&store, &mut entities, "this-scan");
+    assert_eq!(linked, 1, "the reappearing phone recalls its prior address link");
+
+    let phone = &entities[0];
+    assert!(phone.has_tag("cross-scan-relation"));
+    assert!(
+        phone.evidence.iter().any(|ev| ev.source == CROSS_SCAN_SOURCE
+            && ev.summary.starts_with(RELATION_RECALL_MARKER)
+            && ev.summary.contains("located_at")
+            && ev.summary.contains(&prior_addr.value)),
+        "the recall names the relationship kind and the prior partner value"
+    );
+}
+
+#[test]
+fn relation_recall_is_silent_without_a_prior_link() {
+    let store = InMemoryStore::new();
+    // The phone recurs, but it was never part of any relation in the prior scan.
+    store
+        .upsert_entity(&ent(EntityKind::Phone, "+61400111222", 0.7, "prior-scan"))
+        .unwrap();
+    let mut entities = vec![ent(EntityKind::Phone, "+61400111222", 0.55, "this-scan")];
+    assert_eq!(
+        link_cross_scan_relations(&store, &mut entities, "this-scan"),
+        0
+    );
+    assert!(!entities[0].has_tag("cross-scan-relation"));
+}
+
+#[test]
+fn relation_recall_ignores_infrastructure_relations() {
+    let store = InMemoryStore::new();
+    // A prior scan linked an email to a PERSON (identified_by — an identity edge)
+    // and to a DOMAIN (belongs_to_domain — an infrastructure edge).
+    let prior_person = ent(EntityKind::Person, "Jane Citizen", 0.7, "prior-scan");
+    let prior_email = ent(EntityKind::Email, "jane@example.com", 0.7, "prior-scan");
+    let prior_domain = ent(EntityKind::Domain, "example.com", 0.7, "prior-scan");
+    store.upsert_entity(&prior_person).unwrap();
+    store.upsert_entity(&prior_email).unwrap();
+    store.upsert_entity(&prior_domain).unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            prior_person.uid.clone(),
+            prior_email.uid.clone(),
+            RelationKind::IdentifiedBy,
+            0.7,
+            "prior-scan",
+        ))
+        .unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            prior_email.uid.clone(),
+            prior_domain.uid.clone(),
+            RelationKind::BelongsToDomain,
+            0.7,
+            "prior-scan",
+        ))
+        .unwrap();
+
+    let mut entities = vec![ent(EntityKind::Email, "jane@example.com", 0.55, "this-scan")];
+    let linked = link_cross_scan_relations(&store, &mut entities, "this-scan");
+    assert_eq!(linked, 1, "only the identity-bearing link is recalled");
+
+    let email = &entities[0];
+    let recall = email
+        .evidence
+        .iter()
+        .find(|ev| ev.summary.starts_with(RELATION_RECALL_MARKER))
+        .expect("an identity-relation recall is attached");
+    assert!(recall.summary.contains("identified_by"));
+    assert!(recall.summary.contains(&prior_person.value));
+    // The infrastructure edge to the domain is NOT recalled.
+    assert!(
+        !email
+            .evidence
+            .iter()
+            .any(|ev| ev.summary.contains("belongs_to_domain")),
+        "infrastructure relations are excluded from recall"
+    );
+}
+
+#[test]
+fn relation_recall_is_idempotent_and_never_inflates_confidence() {
+    let store = InMemoryStore::new();
+    let prior_phone = ent(EntityKind::Phone, "+61400111222", 0.7, "prior-scan");
+    let prior_addr = ent(
+        EntityKind::Address,
+        "42 Wallaby Way, Brisbane QLD 4000",
+        0.7,
+        "prior-scan",
+    );
+    store.upsert_entity(&prior_phone).unwrap();
+    store.upsert_entity(&prior_addr).unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            prior_phone.uid.clone(),
+            prior_addr.uid.clone(),
+            RelationKind::LocatedAt,
+            0.7,
+            "prior-scan",
+        ))
+        .unwrap();
+
+    let phone = ent(EntityKind::Phone, "+61400111222", 0.55, "this-scan");
+    let conf_before = phone.c_effective();
+    let sources_before = phone.source_count();
+    let mut entities = vec![phone];
+
+    assert_eq!(
+        link_cross_scan_relations(&store, &mut entities, "this-scan"),
+        1
+    );
+    let evidence_after = entities[0].evidence.len();
+    // Non-corroborating: the recall reuses CROSS_SCAN_SOURCE, so it must not raise
+    // the effective confidence or the corroborating-source count.
+    assert!((entities[0].c_effective() - conf_before).abs() < 1e-9);
+    assert_eq!(entities[0].source_count(), sources_before);
+
+    // Idempotent: a second pass recalls nothing new and adds no duplicate evidence.
+    assert_eq!(
+        link_cross_scan_relations(&store, &mut entities, "this-scan"),
+        0
+    );
+    assert_eq!(entities[0].evidence.len(), evidence_after);
 }
