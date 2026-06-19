@@ -32,6 +32,7 @@ mod circuit;
 mod dispatch;
 mod enrich;
 mod expansion;
+mod history;
 mod ledger;
 mod passes;
 mod timeout;
@@ -552,6 +553,12 @@ impl ScanEngine {
             // so it never inflates confidence; runs after promotion (the two bands
             // are disjoint, but a corroborated relative is then never re-examined).
             flag_geo_discordant_namesakes(&mut entities);
+            // Local intelligence flywheel: tag any specific personal identifier
+            // (phone/email/handle/named person/precise address) that ALSO appears
+            // in an earlier scan in the store — a cross-investigation bridge recall
+            // (seed-centric) never makes. Runs before persist so a hit is genuinely
+            // prior; provenance only, so it never inflates confidence.
+            history::link_cross_scan_history(store.as_ref(), &mut entities, &scan.id);
             // Determinism: normalise each entity's evidence/tags ordering before
             // persist, so concurrent dispatch's completion-order merging can't leak
             // into the stored/exported result (see `Entity::canonicalize_order`).
