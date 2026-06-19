@@ -30,6 +30,16 @@ const LEAD_CAP: usize = 25;
 /// it sinks below the local family yet stays on the list for the analyst to judge.
 const NAMESAKE_PENALTY: f64 = 0.5;
 
+/// Multiplier for a bare family lead that shares only a COMMON surname (and isn't
+/// geo-confirmed) — "another Smith" is weak evidence, so it's discounted and the
+/// analyst is told to corroborate it independently ([`crate::util::surnames`]).
+const COMMON_SURNAME_FACTOR: f64 = 0.6;
+
+/// Multiplier for a family lead that shares a DISTINCTIVE surname — a shared rare
+/// name (Diegmann, Bamford) is itself corroborating, so it earns a small lift,
+/// which is what surfaces a rare-surname subject's real kin above the noise.
+const RARE_SURNAME_FACTOR: f64 = 1.15;
+
 /// A recommended next investigation step: an entity worth pivoting on, why, and
 /// the scan that would pursue it.
 #[derive(Debug, Clone, Serialize)]
@@ -149,9 +159,29 @@ fn confirmation_boost(group: &str, classification: &str, tags: &[String]) -> f64
     }
 }
 
-/// A grounded, human reason for the lead, from its group, label, exposure tags
-/// and untapped status.
-fn reason(group: &str, label: &str, tags: &[String], untapped: bool) -> String {
+/// Surname-distinctiveness multiplier for a *family* lead. A `family-candidate`
+/// shares the subject's surname by construction, so how distinctive that surname is
+/// says how much the bare match is worth: a rare surname is itself corroborating (a
+/// small lift), a common one is weak and wants a second angle (a discount). A
+/// geo-corroborated relative is already confirmed by location, so geo dominates and
+/// the name is not second-guessed; non-family leads are unaffected
+/// ([`crate::util::surnames`]).
+fn surname_factor(value: &str, tags: &[String]) -> f64 {
+    let family = tags.iter().any(|t| t == "family-candidate");
+    let geo_confirmed = tags.iter().any(|t| t == "geo-corroborated");
+    if !family || geo_confirmed {
+        return 1.0;
+    }
+    match crate::util::surnames::surname_of(value) {
+        Some(s) if crate::util::surnames::is_common(&s) => COMMON_SURNAME_FACTOR,
+        Some(_) => RARE_SURNAME_FACTOR,
+        None => 1.0,
+    }
+}
+
+/// A grounded, human reason for the lead, from its group, label, value, exposure
+/// tags and untapped status.
+fn reason(group: &str, label: &str, value: &str, tags: &[String], untapped: bool) -> String {
     let head = match group {
         "people" if label == "relative" => "A relative of the subject",
         "people" => "An associate of the subject",
@@ -167,10 +197,17 @@ fn reason(group: &str, label: &str, tags: &[String], untapped: bool) -> String {
     {
         r.push_str(" · exposed in a breach");
     }
+    // Geo first (the strongest free family signal), else fall back to surname
+    // distinctiveness: a bare common-surname match is the weakest family lead.
     if tags.iter().any(|t| t == "geo-corroborated") {
         r.push_str(" · confirmed in the subject's area");
     } else if tags.iter().any(|t| t == "geo-discordant") {
         r.push_str(" · different region — possible namesake");
+    } else if tags.iter().any(|t| t == "family-candidate")
+        && crate::util::surnames::surname_of(value)
+            .is_some_and(|s| crate::util::surnames::is_common(&s))
+    {
+        r.push_str(" · common surname — corroborate independently");
     }
     if untapped {
         r.push_str(" · not yet investigated");
@@ -216,7 +253,7 @@ pub fn recommend(entities: &[Entity], relations: &[Relation], expansion_floor: f
                     kind: conn.kind.clone(),
                     target_kind,
                     action: "scan",
-                    reason: reason(group.key, &conn.label, &conn.tags, untapped),
+                    reason: reason(group.key, &conn.label, &conn.value, &conn.tags, untapped),
                     score: score(
                         kind_value,
                         group_weight(group.key),
@@ -225,7 +262,7 @@ pub fn recommend(entities: &[Entity], relations: &[Relation], expansion_floor: f
                         untapped,
                         confirmation,
                         discordant,
-                    ),
+                    ) * surname_factor(&conn.value, &conn.tags),
                     classification: conn.classification.clone(),
                     confirmed: confirmation > 0.0,
                     discordant,
