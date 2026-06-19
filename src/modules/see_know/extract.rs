@@ -457,6 +457,11 @@ pub(super) fn extract_entities(
     // want everything. Maximum raw data."
     extract_rich_detail(item, scan_id, &ev, seen, result);
 
+    // Relatives / associates / household members → connected Person leads. The
+    // searched subject (`target_value`) anchors each via `related_to`, so a
+    // name search on one family member surfaces and binds to the others.
+    extract_associates(item, target_value, scan_id, key_fp, seen, result);
+
     // Domain is infrastructure, not a leaked credential, so it is the one kind
     // NOT tagged `breach` — keep its inline tail (and consume the last `ev`).
     if let Some(domain) = val_str(item, "domain")
@@ -586,6 +591,111 @@ const RICH_DETAIL_SKIP: &[&str] = &[
 /// fields are skipped.
 static RICH_DETAIL_SKIP_SET: std::sync::LazyLock<HashSet<&'static str>> =
     std::sync::LazyLock::new(|| RICH_DETAIL_SKIP.iter().copied().collect());
+
+/// People-search relationship arrays SeekNow returns on a name / identity
+/// record, mapped to the relationship label stamped on each emitted Person. These
+/// are the relatives / associates / household members that turn a single subject
+/// into their human network — the single highest-value field family for a
+/// person-centric scan, and (until now) silently dropped because the rich-detail
+/// pass skips arrays. Each becomes a `Person` carrying `related_to = <subject>`
+/// so the relation layer (`derive_declared_associations`) binds it to the subject
+/// — and a `family-candidate` tag so the surname kinship builder corroborates it
+/// independently. Order is widest-first so a name appearing under two labels
+/// keeps the closest (relative > household > associate).
+const RELATIONSHIP_FIELDS: &[(&str, &str)] = &[
+    ("relatives", "relative"),
+    ("possible_relatives", "relative"),
+    ("related_persons", "relative"),
+    ("relations", "relative"),
+    ("family", "relative"),
+    ("household", "household"),
+    ("household_members", "household"),
+    ("associates", "associate"),
+    ("possible_associates", "associate"),
+    ("known_associates", "associate"),
+    ("neighbors", "neighbor"),
+    ("neighbours", "neighbor"),
+];
+
+/// Confidence for a relative/associate Person — a corroborating lead, held
+/// deliberately below the 0.50 expansion floor so the family graph is recorded
+/// and connected without auto-pivoting a sub-scan of every named relative.
+const ASSOCIATE_CONF: f64 = 0.45;
+
+/// Pull a person name from a relationship-array element: a bare string, or an
+/// object carrying `full_name` / `name` / `first_name`+`last_name`.
+fn associate_name(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.trim().to_string()),
+        Value::Object(_) => val_str(v, "full_name")
+            .or_else(|| val_str(v, "name"))
+            .or_else(|| {
+                let f = val_str(v, "first_name").or_else(|| val_str(v, "firstname"))?;
+                let l = val_str(v, "last_name").or_else(|| val_str(v, "lastname"))?;
+                Some(format!("{} {}", f.trim(), l.trim()))
+            }),
+        _ => None,
+    }
+}
+
+/// Extract SeekNow's relatives / associates / household members as first-class
+/// `Person` entities, each bound to the searched subject by a `related_to`
+/// evidence attribute and a `relationship` label. This is what lets a name search
+/// on one family member surface — and connect to — the others (the angle-
+/// independent family graph: searching any member returns the rest). The emitted
+/// Person is a secondary, record-derived lead at [`ASSOCIATE_CONF`] — deliberately
+/// below the 0.50 expansion floor, so a relative is recorded and connected but not
+/// auto-pivoted into a full sub-scan (the family tree can't fan out unbounded);
+/// the relation builders, not this pass, assert the edge.
+pub(super) fn extract_associates(
+    item: &Value,
+    subject: &str,
+    scan_id: &str,
+    key_fp: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    let subject = subject.trim();
+    for (field, label) in RELATIONSHIP_FIELDS {
+        let Some(arr) = item.get(*field).and_then(Value::as_array) else {
+            continue;
+        };
+        for el in arr {
+            let Some(raw) = associate_name(el) else {
+                continue;
+            };
+            // A relationship entry must look like a real person name (a space) and
+            // not be the subject re-listed.
+            let name = crate::util::str_util::title_case(&raw);
+            if !name.contains(' ') || name.len() < 5 || name.eq_ignore_ascii_case(subject) {
+                continue;
+            }
+            if !seen.insert(format!("@assoc:{}", name.to_lowercase())) {
+                continue;
+            }
+            let mut e = Entity::new(EntityKind::Person, &name, ASSOCIATE_CONF, scan_id);
+            e.tag("see-know");
+            e.tag(*label);
+            // Relatives / household share the subject's surname cluster, so the
+            // free surname-kinship builder corroborates them; associates do not,
+            // so they lean on the declared `related_to` edge alone.
+            e.tag(if matches!(*label, "relative" | "household") {
+                "family-candidate"
+            } else {
+                "associate-candidate"
+            });
+            let mut ev = Evidence::new(SRC, format!("SeekNow {label} of {subject}"))
+                .with_attr("relationship", *label)
+                .with_attr("provider", "see-know.eu")
+                .with_attr("api_key_origin", key_fp);
+            if !subject.is_empty() {
+                ev = ev.with_attr("related_to", subject);
+            }
+            e.add_evidence(ev);
+            result.push(e);
+        }
+    }
+}
 
 /// Push a stealer/infrastructure-CONTEXT entity: tags `see-know` plus any
 /// `extra_tags`, but deliberately NOT `breach`. Device fingerprints (MAC, HWID,
@@ -856,5 +966,66 @@ mod tests {
         // key is consumed even when it fails to parse).
         let item = json!({"lat": "north"});
         assert_eq!(parse_coord(&item, &["lat"]), None);
+    }
+
+    #[test]
+    fn associates_extracted_as_related_persons() {
+        // A SeekNow name record for the subject lists relatives (mixed string +
+        // object shapes) and associates. Each becomes a Person bound to the
+        // subject by `related_to`, title-cased so it merges with the anchor.
+        let item = json!({
+            "full_name": "Kyle Diegmann",
+            "relatives": ["ERIK DIEGMANN", {"name": "curt diegmann"}, {"first_name":"Hayley","last_name":"Diegmann"}],
+            "associates": ["Jane Smith"],
+            "neighbours": ["Kyle Diegmann"], // the subject re-listed → skipped
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_associates(&item, "Kyle Diegmann", "s", "fp", &mut seen, &mut result);
+
+        let persons: Vec<&Entity> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Person)
+            .collect();
+        let names: std::collections::BTreeSet<&str> =
+            persons.iter().map(|e| e.value.as_str()).collect();
+        assert!(
+            names.contains("Erik Diegmann"),
+            "string relative, title-cased"
+        );
+        assert!(names.contains("Curt Diegmann"), "object .name relative");
+        assert!(
+            names.contains("Hayley Diegmann"),
+            "first+last composed relative"
+        );
+        assert!(names.contains("Jane Smith"), "associate");
+        assert!(
+            !names.contains("Kyle Diegmann"),
+            "the subject must not be re-emitted as their own relative"
+        );
+
+        // Every relative carries the declared edge data + corroboration tag.
+        let erik = persons.iter().find(|e| e.value == "Erik Diegmann").unwrap();
+        assert!(erik.has_tag("family-candidate"));
+        let related_to = erik
+            .evidence
+            .iter()
+            .find_map(|ev| ev.attributes.get("related_to"))
+            .map(String::as_str);
+        assert_eq!(related_to, Some("Kyle Diegmann"));
+        // Associates are not in the surname cluster → tagged differently.
+        let jane = persons.iter().find(|e| e.value == "Jane Smith").unwrap();
+        assert!(jane.has_tag("associate-candidate"));
+    }
+
+    #[test]
+    fn associates_noop_without_relationship_arrays() {
+        // A plain breach record (no relationship arrays) yields no associates.
+        let item = json!({"email": "a@b.com", "username": "ab"});
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_associates(&item, "Someone", "s", "fp", &mut seen, &mut result);
+        assert!(result.entities.is_empty());
     }
 }

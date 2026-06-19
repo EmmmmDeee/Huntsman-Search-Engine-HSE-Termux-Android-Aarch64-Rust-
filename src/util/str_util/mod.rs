@@ -15,6 +15,40 @@ pub fn nonempty(o: &Option<String>) -> Option<&str> {
     o.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
 
+/// Title-case a personal name into a canonical, merge-stable `Person` value:
+/// each whitespace token is lower-cased then its first character upper-cased,
+/// and runs of whitespace collapse to one space. `Person` values are NOT
+/// case-folded at UID normalisation, so a register's `ERIK DIEGMANN`, a scraped
+/// `erik diegmann`, and `name_intel`'s parsed anchor would otherwise fragment
+/// into three separate people; routing every module-minted name through this
+/// converges them onto one node (matching `name_intel`'s own lower-then-cap
+/// casing, so the subject anchor and discovered relatives share UIDs).
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::title_case;
+///
+/// assert_eq!(title_case("ERIK DIEGMANN"), "Erik Diegmann");
+/// assert_eq!(title_case("  kyle   diegmann "), "Kyle Diegmann");
+/// assert_eq!(title_case(""), "");
+/// ```
+#[must_use]
+pub fn title_case(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for word in s.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        let mut chars = word.chars();
+        if let Some(first) = chars.next() {
+            out.extend(first.to_uppercase());
+            for c in chars {
+                out.extend(c.to_lowercase());
+            }
+        }
+    }
+    out
+}
+
 /// The ASCII digits of `s`, in order, with every other character dropped.
 /// One definition of "keep only the digits" for phone / ABN / ACN / LEI
 /// normalisation (was re-derived inline in ~9 places).

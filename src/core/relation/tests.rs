@@ -15,6 +15,10 @@ fn relation_kind_as_str_matches_serde() {
         RelationKind::RegisteredBy,
         RelationKind::CoLocatedWith,
         RelationKind::DerivedFrom,
+        RelationKind::IdentifiedBy,
+        RelationKind::AliasOf,
+        RelationKind::LocatedAt,
+        RelationKind::AssociatedWith,
     ] {
         let json = serde_json::to_string(&k).unwrap();
         assert_eq!(json.trim_matches('"'), k.as_str(), "{k:?}");
@@ -87,10 +91,18 @@ fn derive_all_aggregates_every_structural_derivation() {
         + derive_colocation(&ents, "s").len()
         + derive_resolution(&ents, "s").len()
         + derive_registration(&ents, "s").len()
-        + derive_name_lineage(&ents, "s").len();
+        + derive_name_lineage(&ents, "s").len()
+        + derive_handles(&ents, "s").len()
+        + derive_identity_ownership(&ents, "s").len()
+        + derive_residency(&ents, "s").len()
+        + derive_kinship(&ents, "s").len()
+        + derive_declared_associations(&ents, "s").len();
     assert_eq!(all.len(), expected, "derive_all is the union of every pass");
     assert!(all.iter().any(|r| r.kind == RelationKind::SubdomainOf));
     assert!(all.iter().any(|r| r.kind == RelationKind::DerivedFrom));
+    // The handle's `source_name` evidence names the subject, so the identity
+    // layer also binds it (Person → handle) — the union must include that pass.
+    assert!(all.iter().any(|r| r.kind == RelationKind::IdentifiedBy));
 
     // No entities → no edges, no panic.
     assert!(derive_all(&[], "s").is_empty());
@@ -469,4 +481,265 @@ fn registration_dedups_repeated_registrant() {
         1,
         "one edge per (domain, registrant)"
     );
+}
+
+// ── Identity relations ───────────────────────────────────────────────────────
+
+#[test]
+fn handles_alias_shared_persona_across_platforms() {
+    // One persona ("jsmith") across two mailboxes and a username → a 3-clique of
+    // AliasOf edges. A different persona and a numeric handle stay unlinked.
+    let g1 = ent(EntityKind::Email, "jsmith@gmail.com", 0.7);
+    let o1 = ent(EntityKind::Email, "jsmith@outlook.com", 0.6);
+    let u1 = ent(EntityKind::Username, "jsmith", 0.5);
+    let other = ent(EntityKind::Email, "bobjones@gmail.com", 0.8);
+    let numeric = ent(EntityKind::Username, "12345", 0.9); // excluded by persona_key
+
+    let rels = derive_handles(&[g1.clone(), o1.clone(), u1.clone(), other, numeric], "s");
+    assert_eq!(rels.len(), 3, "C(3,2) alias edges for the one persona");
+    for r in &rels {
+        assert_eq!(r.kind, RelationKind::AliasOf);
+        assert!(
+            r.from_uid <= r.to_uid,
+            "canonical direction (smaller uid first)"
+        );
+    }
+    // Idempotent + deterministic: re-deriving yields the same id set & order.
+    let again = derive_handles(&[g1, o1, u1], "s");
+    let ids: Vec<&str> = rels.iter().map(|r| r.id.as_str()).collect();
+    let ids2: Vec<&str> = again.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(ids, ids2);
+}
+
+#[test]
+fn identity_ownership_evidence_then_fingerprint() {
+    use crate::core::entity::Evidence;
+    // Subject Person (seed-anchor tagged) + an evidence-named mailbox + a
+    // fingerprint-only handle + an unrelated handle that must NOT bind.
+    let mut subject = ent(EntityKind::Person, "Kyle Diegmann", 0.9);
+    subject.tag("subject");
+
+    // Evidence path: owner attribute names the subject → full-confidence edge.
+    let mut owned = ent(EntityKind::Email, "k.d@acme.com", 0.6);
+    owned.add_evidence(Evidence::new("breach", "dump").with_attr("owner", "Kyle Diegmann"));
+
+    // Fingerprint path: identity overlap with the subject, no evidence → damped.
+    let fp = ent(EntityKind::Username, "kdiegmann", 0.5);
+
+    // Unrelated handle: no evidence, no fingerprint overlap → no edge.
+    let unrelated = ent(EntityKind::Username, "zztopfan", 0.5);
+
+    let rels = derive_identity_ownership(
+        &[subject.clone(), owned.clone(), fp.clone(), unrelated],
+        "s",
+    );
+    assert_eq!(
+        rels.len(),
+        2,
+        "the named mailbox and the fingerprinted handle"
+    );
+    for r in &rels {
+        assert_eq!(r.kind, RelationKind::IdentifiedBy);
+        assert_eq!(
+            r.from_uid, subject.uid,
+            "Person is the `from` (owner) endpoint"
+        );
+    }
+    let owned_edge = rels.iter().find(|r| r.to_uid == owned.uid).unwrap();
+    let fp_edge = rels.iter().find(|r| r.to_uid == fp.uid).unwrap();
+    // Evidence edge carries full endpoint trust; fingerprint edge is damped.
+    assert!((owned_edge.confidence - 0.6_f64.min(0.9)).abs() < 1e-9);
+    assert!(
+        fp_edge.confidence < 0.5_f64.min(0.9),
+        "fingerprint ownership is a damped candidate"
+    );
+}
+
+#[test]
+fn identity_ownership_fingerprint_only_binds_the_subject() {
+    // A NON-subject Person must not accrete a handle by fingerprint alone — only
+    // the seed-anchored subject does, so an incidental namesake stays unlinked.
+    let nonsubject = ent(EntityKind::Person, "Kyle Diegmann", 0.9); // no `subject` tag
+    let handle = ent(EntityKind::Username, "kdiegmann", 0.5);
+    assert!(
+        derive_identity_ownership(&[nonsubject, handle], "s").is_empty(),
+        "fingerprint ownership requires the subject tag"
+    );
+}
+
+#[test]
+fn residency_links_person_to_place_by_owner_and_tag() {
+    use crate::core::entity::Evidence;
+    // Owner-named address (qld_unclaimed style) → LocatedAt to that Person.
+    let person = ent(EntityKind::Person, "Erik Diegmann", 0.5);
+    let mut addr = ent(EntityKind::Address, "QLD 4552, Australia", 0.5);
+    addr.add_evidence(
+        Evidence::new("qld_unclaimed", "unclaimed money").with_attr("owner", "Erik Diegmann"),
+    );
+
+    // A coordinate the scan already flagged as the subject's by name → subject.
+    let mut subject = ent(EntityKind::Person, "Kyle Diegmann", 0.8);
+    subject.tag("subject");
+    let mut coord = ent(EntityKind::Coordinates, "-26.65,152.95", 0.4);
+    coord.tag("exact-name-match");
+
+    let rels = derive_residency(
+        &[person.clone(), addr.clone(), subject.clone(), coord.clone()],
+        "s",
+    );
+    assert_eq!(rels.len(), 2);
+    assert!(rels.iter().all(|r| r.kind == RelationKind::LocatedAt));
+    assert!(
+        rels.iter()
+            .any(|r| r.from_uid == person.uid && r.to_uid == addr.uid),
+        "owner attribute binds the named person to the address"
+    );
+    assert!(
+        rels.iter()
+            .any(|r| r.from_uid == subject.uid && r.to_uid == coord.uid),
+        "exact-name-match place binds to the subject"
+    );
+}
+
+#[test]
+fn kinship_links_same_surname_distinct_people() {
+    let kyle = ent(EntityKind::Person, "Kyle Diegmann", 0.8);
+    let erik = ent(EntityKind::Person, "Erik Diegmann", 0.5);
+    let stranger = ent(EntityKind::Person, "Jane Smith", 0.6); // different surname
+
+    let rels = derive_kinship(&[kyle.clone(), erik.clone(), stranger], "s");
+    assert_eq!(rels.len(), 1, "one kinship candidate (Kyle ↔ Erik)");
+    let r = &rels[0];
+    assert_eq!(r.kind, RelationKind::AssociatedWith);
+    assert!(r.from_uid <= r.to_uid, "canonical direction");
+    // Damped: a surname match is a candidate, not endpoint-strength certainty.
+    assert!(
+        r.confidence < 0.8_f64.min(0.5),
+        "kinship confidence is damped below the endpoints"
+    );
+}
+
+#[test]
+fn kinship_skips_one_person_two_spellings() {
+    // The SAME person under two spellings (different uids, identical folded name)
+    // is not their own kin — the normalised-name guard drops the pair.
+    let a = ent(EntityKind::Person, "Kyle Diegmann", 0.8);
+    let b = ent(EntityKind::Person, "kyle diegmann", 0.7); // distinct entity, same identity
+    assert!(
+        derive_kinship(&[a, b], "s").is_empty(),
+        "two spellings of one person are not a kinship pair"
+    );
+}
+
+#[test]
+fn kinship_excludes_short_surnames() {
+    // Two-letter surnames alias far too readily (Ng, Le, Xu) — excluded.
+    let a = ent(EntityKind::Person, "Bob Ng", 0.6);
+    let b = ent(EntityKind::Person, "Al Ng", 0.6);
+    assert!(derive_kinship(&[a, b], "s").is_empty());
+}
+
+#[test]
+fn declared_associations_link_related_and_co_owners() {
+    use crate::core::entity::Evidence;
+    // A SeekNow relative (related_to) and a qld joint record (co_owner) each
+    // declare a relationship to a present Person — bound at FULL trust (declared,
+    // not the surname guess), so the edge confidence is the endpoint minimum.
+    let subject = ent(EntityKind::Person, "Kyle Diegmann", 0.8);
+    let mut rel = ent(EntityKind::Person, "Erik Diegmann", 0.55);
+    rel.add_evidence(
+        Evidence::new("see_know", "relative").with_attr("related_to", "Kyle Diegmann"),
+    );
+    let mut curt = ent(EntityKind::Person, "Curt Diegmann", 0.35);
+    curt.add_evidence(
+        Evidence::new("qld_unclaimed", "owner").with_attr("co_owner", "Hayley Diegmann"),
+    );
+    let hayley = ent(EntityKind::Person, "Hayley Diegmann", 0.35);
+
+    let rels = derive_declared_associations(
+        &[subject.clone(), rel.clone(), curt.clone(), hayley.clone()],
+        "s",
+    );
+    assert_eq!(rels.len(), 2, "related_to + co_owner");
+    assert!(rels.iter().all(|r| r.kind == RelationKind::AssociatedWith));
+    let connects = |a: &Entity, b: &Entity| {
+        let (lo, hi) = if a.uid <= b.uid {
+            (&a.uid, &b.uid)
+        } else {
+            (&b.uid, &a.uid)
+        };
+        rels.iter().find(|r| &r.from_uid == lo && &r.to_uid == hi)
+    };
+    let ke = connects(&subject, &rel).expect("related_to binds relative → subject");
+    assert!(
+        (ke.confidence - 0.55_f64).abs() < 1e-9,
+        "declared edge carries full endpoint trust, not a damped guess"
+    );
+    assert!(
+        connects(&curt, &hayley).is_some(),
+        "co_owner binds joint owners"
+    );
+}
+
+#[test]
+fn diegmann_family_connects_from_any_seed_angle() {
+    // Ground truth: Kyle, Erik, Curt and Hayley Diegmann are connected. A scan
+    // seeded on ANY of them surfaces the others (qld_unclaimed surname-broadened
+    // search emits each owner as a Person, name_intel anchors the subject), and
+    // the relation layer must connect all four regardless of which is the seed —
+    // the free, angle-independent family guarantee, proven via graph reachability.
+    let family = [
+        "Kyle Diegmann",
+        "Erik Diegmann",
+        "Curt Diegmann",
+        "Hayley Diegmann",
+    ];
+    for &seed in &family {
+        // The entity set this seed produces: the subject (exact-name-match) plus
+        // the rest as surname family-candidates, exactly as qld_unclaimed emits.
+        let ents: Vec<Entity> = family
+            .iter()
+            .map(|&name| {
+                let mut p = ent(
+                    EntityKind::Person,
+                    name,
+                    if name == seed { 0.6 } else { 0.35 },
+                );
+                p.tag(if name == seed {
+                    "exact-name-match"
+                } else {
+                    "family-candidate"
+                });
+                p
+            })
+            .collect();
+
+        let rels = derive_all(&ents, "s");
+        // Build an undirected graph over the association edges and BFS from seed.
+        let mut adj: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+        for r in rels
+            .iter()
+            .filter(|r| r.kind == RelationKind::AssociatedWith)
+        {
+            adj.entry(&r.from_uid).or_default().push(&r.to_uid);
+            adj.entry(&r.to_uid).or_default().push(&r.from_uid);
+        }
+        let subject = ents.iter().find(|e| e.value == seed).unwrap();
+        let mut reached = std::collections::HashSet::new();
+        let mut stack = vec![subject.uid.as_str()];
+        while let Some(u) = stack.pop() {
+            if reached.insert(u)
+                && let Some(neighbours) = adj.get(u)
+            {
+                stack.extend(neighbours.iter().copied());
+            }
+        }
+        for e in &ents {
+            assert!(
+                reached.contains(e.uid.as_str()),
+                "seeding on '{seed}': '{}' must be connected to the family graph",
+                e.value
+            );
+        }
+    }
 }

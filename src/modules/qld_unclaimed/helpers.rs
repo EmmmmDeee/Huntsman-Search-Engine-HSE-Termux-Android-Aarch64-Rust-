@@ -59,6 +59,37 @@ pub(super) fn owner_matches_full_name(owner: &str, seed: &str) -> bool {
             .all(|tok| owner_words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
 }
 
+/// The individual person name(s) in an unclaimed-money `owner` field — joint
+/// owners split (`&` / `and` / `,`), companies excluded, each title-cased into a
+/// merge-stable `Person` value. `"HAYLEY DIEGMANN & CURT DIEGMANN"` →
+/// `["Hayley Diegmann", "Curt Diegmann"]`; `"ACME PTY LTD"` → `[]` (a company,
+/// handled by the Organisation pass); `"(unknown owner)"` → `[]` (the parens
+/// fail the alphabetic guard). Surfacing the human owner as its own node is what
+/// lets the relation layer connect the family — by surname from any seed, and by
+/// the co-owner link a joint record declares.
+pub(super) fn owner_person_names(owner: &str) -> Vec<String> {
+    let normalised = owner.replace(" AND ", " & ").replace(" and ", " & ");
+    let mut out: Vec<String> = Vec::new();
+    for part in normalised.split(['&', ',', ';']) {
+        let p = part.trim();
+        let tokens = p.split_whitespace().count();
+        let name_shaped = p
+            .chars()
+            .all(|c| c.is_alphabetic() || c.is_whitespace() || matches!(c, '-' | '\'' | '.'));
+        if (2..=4).contains(&tokens)
+            && p.len() >= 5
+            && name_shaped
+            && !crate::util::abn::looks_like_company(p)
+        {
+            let name = crate::util::str_util::title_case(p);
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+    }
+    out
+}
+
 /// The datastore_search URL for one full-text query.
 pub(super) fn query_url(q: &str) -> String {
     crate::util::ckan::datastore_search_url(ACTION_BASE, RESOURCE_ID, q, MAX_RECORDS)
@@ -145,7 +176,9 @@ pub(super) fn records_to_entities(
         let (addr_conf, find_conf) = if exact { (0.38, 0.60) } else { (0.32, 0.35) };
 
         // Geo pivot when we have a usable postcode; otherwise a plain finding.
-        let mut entity = match pc {
+        // Borrow `pc` (don't move it) so the owner-Person pass below can still read
+        // the postcode for its residency evidence.
+        let mut entity = match &pc {
             Some(p) => {
                 let mut e = Entity::new(
                     EntityKind::Address,
@@ -185,6 +218,46 @@ pub(super) fn records_to_entities(
         });
         entity.add_evidence(ev);
         out.push(entity);
+
+        // Emit each HUMAN owner as a first-class Person so the family/identity
+        // graph has people to connect. The relation layer then binds them: the
+        // shared surname links relatives from ANY seed angle (free), and a joint
+        // record's co-owners are linked explicitly via the declared `co_owner`
+        // attribute. Family-candidate Persons stay below the 0.50 expansion floor
+        // (find_conf 0.35) so a relative is recorded and connected but never
+        // pivot-scanned as if they were the subject; an exact register hit on the
+        // seed merges with the name_intel subject anchor by its title-cased value.
+        let owner_persons = owner_person_names(&owner);
+        for (i, person) in owner_persons.iter().enumerate() {
+            // Exactness is PER-PERSON, not per-record: on a joint "HAYLEY & CURT"
+            // record seeded with "Curt", Curt is the exact subject while Hayley is
+            // a surname-only family candidate — so each co-owner is judged on its
+            // own name, and a family candidate stays below the 0.50 pivot floor.
+            let person_exact = owner_matches_full_name(person, seed);
+            let pconf = if person_exact { 0.60 } else { 0.35 };
+            let mut p = Entity::new(EntityKind::Person, person, pconf, scan_id);
+            p.tag(SRC);
+            p.tag("unclaimed-money");
+            p.tag("country:AU");
+            p.tag(if person_exact {
+                "exact-name-match"
+            } else {
+                "family-candidate"
+            });
+            let mut pev = Evidence::new(SRC, format!("QLD unclaimed money owner: {person}"))
+                .with_attr("owner_name", person)
+                .with_attr("register", "QLD Public Trustee unclaimed monies");
+            if let Some(p4) = pc.as_deref() {
+                pev = pev.with_attr("postcode", p4);
+            }
+            // Joint record → declare the co-owner association (cyclic over the
+            // owners, so all co-owners on one record connect, not just a pair).
+            if owner_persons.len() > 1 {
+                pev = pev.with_attr("co_owner", &owner_persons[(i + 1) % owner_persons.len()]);
+            }
+            p.add_evidence(pev);
+            out.push(p);
+        }
 
         // Unclaimed money is often owed to *companies* (dividends, refunds) — and
         // frequently to joint syndicates of several companies. Emit one

@@ -25,6 +25,25 @@ pub enum RelationKind {
     CoLocatedWith,
     /// `from` was discovered by pivoting on `to` during expansion (lineage).
     DerivedFrom,
+    /// `from` (a Person) is identified by `to` (an Email / Username / Phone) — an
+    /// identifier bound to the person either by an owner/name field in the
+    /// identifier's own evidence, or by an identity-fingerprint match to the
+    /// subject. The edge that turns a pile of orphan handles into *one person's*
+    /// account footprint.
+    IdentifiedBy,
+    /// `from` and `to` are the same online persona — an Email and a Username, or
+    /// two Emails, sharing one normalised handle / local-part. The cross-platform
+    /// "same username everywhere" pivot. Symmetric; emitted smaller-UID → larger.
+    AliasOf,
+    /// `from` (a Person) is located at `to` (an Address or Coordinates) — bound by
+    /// an owner / resident field in the place's evidence, or because the place
+    /// exactly matched the subject's name during the scan (`exact-name-match`).
+    LocatedAt,
+    /// `from` and `to` are associated people — a kinship / associate *candidate*
+    /// bound by a shared surname. Symmetric; emitted smaller-UID → larger. A lead
+    /// (carries a damped confidence) for the operator to confirm, surfacing the
+    /// subject's human network the way the infra builders surface their estate.
+    AssociatedWith,
 }
 
 impl RelationKind {
@@ -37,6 +56,10 @@ impl RelationKind {
             Self::RegisteredBy => "registered_by",
             Self::CoLocatedWith => "co_located_with",
             Self::DerivedFrom => "derived_from",
+            Self::IdentifiedBy => "identified_by",
+            Self::AliasOf => "alias_of",
+            Self::LocatedAt => "located_at",
+            Self::AssociatedWith => "associated_with",
         }
     }
 }
