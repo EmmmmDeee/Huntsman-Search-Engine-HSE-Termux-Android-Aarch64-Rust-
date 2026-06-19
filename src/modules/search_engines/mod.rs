@@ -67,7 +67,6 @@ use crate::core::{
 pub struct SearchEngines;
 
 const MAX_RESULTS_PER_ENGINE: usize = 20;
-const INTER_ENGINE_MS: u64 = 400;
 const MAX_PAGES: usize = 2;
 const MAX_ACCUMULATED_RESULTS: usize = 2000;
 /// How many engine fetches run at once in the primary pass. Bounded concurrency so
@@ -361,34 +360,35 @@ impl Module for SearchEngines {
                 }
             }
 
-            if !pivots.is_empty() {
+            if !pivots.is_empty() && !ctx.cancel.is_cancelled() {
+                // Flatten the (pivot × reliable engine) grid into one batch and
+                // fetch it with the same bounded concurrency as the primary pass —
+                // each request self-clamps to the deadline.
                 let reliable = reliable_engines();
-                for pivot_query in pivots.iter().take(10) {
-                    if ctx.cancel.is_cancelled() || std::time::Instant::now() >= fetch_deadline {
-                        break;
-                    }
-                    for engine in &reliable {
-                        if !engine_enabled(engine.name) {
-                            continue;
-                        }
-                        // Same hard-deadline guard as the primary pass: never start
-                        // a request that would overrun the kill timeout.
-                        if ctx.cancel.is_cancelled() || std::time::Instant::now() >= fetch_deadline
-                        {
-                            break;
-                        }
-                        if dead_engines.contains(engine.name) {
-                            continue;
-                        }
-                        let url = (engine.build_url)(pivot_query);
-                        if let Some(mut results) =
-                            fetch_and_parse(&url, engine, pivot_query, None, fetch_deadline).await
-                        {
-                            all_results.append(&mut results);
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(INTER_ENGINE_MS)).await;
-                    }
-                }
+                let jobs: Vec<_> = pivots
+                    .iter()
+                    .take(10)
+                    .flat_map(|pq| {
+                        reliable
+                            .iter()
+                            .filter(|e| engine_enabled(e.name) && !dead_engines.contains(e.name))
+                            .map(move |e| {
+                                fetch_one(*e, (e.build_url)(pq), pq.clone(), fetch_deadline)
+                            })
+                    })
+                    .collect();
+                let mut pivot_results: Vec<SearchResult> = futures::stream::iter(jobs)
+                    .buffer_unordered(ENGINE_CONCURRENCY)
+                    .collect::<Vec<Option<Vec<SearchResult>>>>()
+                    .await
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .collect();
+                // Determinism: racy completion order → sort the merged batch.
+                pivot_results
+                    .sort_by(|a, b| a.engine.cmp(b.engine).then_with(|| a.url.cmp(&b.url)));
+                all_results.append(&mut pivot_results);
             }
         }
 

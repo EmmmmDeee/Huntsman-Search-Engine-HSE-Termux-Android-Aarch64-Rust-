@@ -92,6 +92,20 @@ pub(super) async fn fetch_and_parse(
     results
 }
 
+/// One engine fetch (page 0 only) as a FIXED, owned-param signature future — the
+/// building block the secondary-pivot and recycler passes batch with
+/// `buffer_unordered`. Free function (not an inline async closure) so the buffered
+/// stream sees one concrete future type without tripping a higher-ranked-lifetime
+/// bound. Self-clamps to `deadline` via [`fetch_and_parse`].
+pub(super) async fn fetch_one(
+    engine: &'static EngineSpec,
+    url: String,
+    query: String,
+    deadline: std::time::Instant,
+) -> Option<Vec<SearchResult>> {
+    fetch_and_parse(&url, engine, &query, None, deadline).await
+}
+
 pub(super) async fn try_fetch(
     url: &str,
     ua: &str,
