@@ -373,7 +373,7 @@ impl Module for SearchEngines {
                             .iter()
                             .filter(|e| engine_enabled(e.name) && !dead_engines.contains(e.name))
                             .map(move |e| {
-                                fetch_one(*e, (e.build_url)(pq), pq.clone(), fetch_deadline)
+                                fetch_one(e, (e.build_url)(pq), pq.clone(), fetch_deadline)
                             })
                     })
                     .collect();

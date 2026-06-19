@@ -90,7 +90,7 @@ pub(super) async fn recycle_entities(
                 reliable
                     .iter()
                     .filter(|e| engine_enabled(e.name) && !dead_engines.contains(e.name))
-                    .map(move |e| fetch_one(*e, (e.build_url)(q), q.clone(), deadline))
+                    .map(move |e| fetch_one(e, (e.build_url)(q), q.clone(), deadline))
             })
             .collect();
         futures::stream::iter(jobs)

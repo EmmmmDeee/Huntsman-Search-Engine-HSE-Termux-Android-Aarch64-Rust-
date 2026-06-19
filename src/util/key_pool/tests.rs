@@ -260,6 +260,70 @@ fn next_key_avoids_error_prone_key() {
 }
 
 #[test]
+fn next_key_spreads_load_rather_than_hammering_the_single_best() {
+    // Two healthy, same-tier keys differing only by a single past error (below the
+    // back-off threshold, so both stay healthy). The old selector always returned
+    // the zero-error key — hammering it to its rate limit; the load-balancer fans
+    // requests out evenly so neither key is over-used.
+    let pool = KeyPool::new();
+    let mut a = KeyEntry::new("key-a");
+    a.status = KeyStatus::Active;
+    a.error_count = 1;
+    let mut b = KeyEntry::new("key-b");
+    b.status = KeyStatus::Active;
+    pool.add("shodan", a);
+    pool.add("shodan", b);
+
+    let picks: Vec<String> = (0..4).filter_map(|_| pool.next_key("shodan")).collect();
+    assert_eq!(
+        picks.iter().filter(|k| *k == "key-a").count(),
+        2,
+        "load is split, not hammered: {picks:?}"
+    );
+    assert_eq!(
+        picks.iter().filter(|k| *k == "key-b").count(),
+        2,
+        "{picks:?}"
+    );
+}
+
+#[test]
+fn just_recovered_key_yields_to_a_healthy_peer() {
+    // A key that came back from a rate-limit one second ago is still usable, but is
+    // held one band lower during the grace window so the pool leans on the fresh
+    // key — easing the throttled credential back in instead of re-hammering it.
+    let pool = KeyPool::new();
+    let mut fresh = KeyEntry::new("fresh");
+    fresh.status = KeyStatus::Active;
+    let mut recovered = KeyEntry::new("recovered");
+    recovered.status = KeyStatus::RateLimited;
+    recovered.rate_limit_reset = Some(crate::core::entity::unix_now().saturating_sub(1));
+    pool.add("shodan", fresh);
+    pool.add("shodan", recovered);
+
+    assert_eq!(pool.next_key("shodan").as_deref(), Some("fresh"));
+}
+
+#[test]
+fn selecting_a_recovered_key_flips_it_back_to_active() {
+    // When a rate-limited key's cooldown has well elapsed and it's the only one
+    // usable, the pool serves it AND updates its status to Active so the telemetry
+    // reflects reality (no more perpetual "rate_limited" on a recovered key).
+    let pool = KeyPool::new();
+    let mut k = KeyEntry::new("k");
+    k.status = KeyStatus::RateLimited;
+    k.rate_limit_reset = Some(crate::core::entity::unix_now().saturating_sub(60));
+    pool.add("shodan", k);
+
+    assert_eq!(pool.next_key("shodan").as_deref(), Some("k"));
+    assert_eq!(
+        pool.snapshot().services["shodan"][0].status,
+        KeyStatus::Active,
+        "a recovered key is marked Active on use"
+    );
+}
+
+#[test]
 fn add_rejects_non_poolable_services() {
     // The pool only holds reusable provider keys; the harvest catch-alls
     // (generic_hex, crypto_*, jwt_token, <svc>_login) must never enter it,

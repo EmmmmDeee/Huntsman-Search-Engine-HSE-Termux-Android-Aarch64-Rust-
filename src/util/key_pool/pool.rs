@@ -186,11 +186,19 @@ impl KeyPool {
         false
     }
 
-    /// Select the optimal key for a service. Prefers higher-tier keys with
-    /// better success rates. Falls back to round-robin among equally-ranked
-    /// candidates so no single key is over-used.
+    /// Select a key for a service with telemetry-driven, load-spreading rotation.
+    ///
+    /// Among the USABLE keys (cooled-down / invalid / revoked already filtered by
+    /// [`KeyEntry::is_usable`]) it serves the one with the greatest live
+    /// [`KeyEntry::selection_rank`] — highest tier, healthiest, then
+    /// least-recently-used — so requests fan out across the pool and no single key
+    /// is driven to its rate limit. The round-robin start makes equal-rank ties
+    /// deterministic and adds extra spread. The selection mutates telemetry
+    /// (`use_count`/`last_used`), so the *next* call sees the load it just placed
+    /// and naturally moves on to the next-idlest key.
     pub fn next_key(&self, service: &str) -> Option<String> {
         let lower = service.to_lowercase();
+        let now = crate::core::entity::unix_now();
         let mut data = self.data.lock();
         let entries = data.services.get_mut(&lower)?;
         if entries.is_empty() {
@@ -202,30 +210,35 @@ impl KeyPool {
         let len = entries.len();
 
         let mut best: Option<usize> = None;
-        let mut best_score: (KeyTier, u64) = (KeyTier::Trial, u64::MAX);
-
+        let mut best_rank: Option<(KeyTier, u8, u64)> = None;
         for offset in 0..len {
             let i = (*idx + offset) % len;
             let entry = &entries[i];
             if !entry.is_usable() {
                 continue;
             }
-            let score = (entry.tier, u64::MAX - entry.error_count);
-            if best.is_none() || score > best_score {
+            let rank = entry.selection_rank(now);
+            // Strict `>`: the FIRST key at the best rank (in rotated scan order)
+            // wins, so equal-rank keys round-robin via the start index.
+            if best_rank.is_none_or(|b| rank > b) {
                 best = Some(i);
-                best_score = score;
+                best_rank = Some(rank);
             }
         }
 
-        if let Some(i) = best {
-            let entry = &mut entries[i];
-            entry.use_count += 1;
-            entry.last_used = Some(crate::core::entity::unix_now());
-            *idx = i.wrapping_add(1);
-            Some(entry.value.clone())
-        } else {
-            None
+        let i = best?;
+        let entry = &mut entries[i];
+        // A key whose rate-limit cooldown has elapsed is healthy again: flip the
+        // status so it surfaces accurately and the post-throttle grace can lift.
+        if entry.status == KeyStatus::RateLimited
+            && entry.rate_limit_reset.is_some_and(|r| now >= r)
+        {
+            entry.status = KeyStatus::Active;
         }
+        entry.use_count += 1;
+        entry.last_used = Some(now);
+        *idx = i.wrapping_add(1);
+        Some(entry.value.clone())
     }
 
     pub fn mark_status(&self, service: &str, value: &str, status: KeyStatus) {
