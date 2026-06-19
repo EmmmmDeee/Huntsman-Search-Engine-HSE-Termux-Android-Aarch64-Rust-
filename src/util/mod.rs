@@ -5,6 +5,7 @@ pub mod address_au;
 pub mod atomic_file;
 pub mod budget;
 pub mod cell_db;
+pub mod circuit_breaker;
 pub mod city_coords;
 pub mod ckan;
 pub mod curl;
