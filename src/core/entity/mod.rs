@@ -53,6 +53,28 @@ pub fn is_enrichment_source(source: &str) -> bool {
     ENRICHMENT_ONLY_SOURCES.contains(&source)
 }
 
+/// Evidence source name of the recall pass — the local-database replay that
+/// re-injects a prior scan's entity into the working set.
+///
+/// Recall is a SECOND look at the SAME prior observation, not a new independent
+/// one, so it must never count toward cross-source corroboration. Counting it
+/// did exactly that: a single-source finding (a name-permuted handle, a breach
+/// co-occurrence row) gained a phantom "2nd source" on every re-scan and was
+/// promoted a whole confidence tier (CANDIDATE → PROBABLE) — so a recalled scan
+/// graded a tier higher than the identical fresh scan. The recall evidence is
+/// still attached (and shown in [`Entity::evidence_sources`]) for provenance; it
+/// just can't inflate [`Entity::source_count`] / `c_effective`.
+pub const RECALL_SOURCE: &str = "recall";
+
+/// True if `source` must NOT count toward cross-source corroboration — a
+/// deterministic self-enrichment pass ([`ENRICHMENT_ONLY_SOURCES`]) or the recall
+/// replay ([`RECALL_SOURCE`]). Both attach genuine, useful evidence, but neither
+/// is an independent observation, so neither may inflate the corroboration count.
+#[inline]
+pub fn is_non_corroborating_source(source: &str) -> bool {
+    is_enrichment_source(source) || source == RECALL_SOURCE
+}
+
 // ─── EntityKind ──────────────────────────────────────────────────────────────
 
 /// All value types an entity can represent.
@@ -387,7 +409,7 @@ impl Entity {
         let mut distinct: u32 = 0;
         for (i, ev) in self.evidence.iter().enumerate() {
             let s = ev.source.as_str();
-            if is_enrichment_source(s) {
+            if is_non_corroborating_source(s) {
                 continue;
             }
             if !self.evidence[..i]
@@ -538,16 +560,18 @@ impl Entity {
     }
 
     /// Distinct evidence sources that represent *independent* intelligence —
-    /// [`Self::evidence_sources`] minus the deterministic self-enrichment passes in
-    /// [`ENRICHMENT_ONLY_SOURCES`]. This is the honest cross-correlation set
-    /// that drives [`Self::source_count`]/[`Self::c_effective`] and the corroboration
+    /// [`Self::evidence_sources`] minus the non-corroborating passes (the
+    /// deterministic self-enrichment ones in [`ENRICHMENT_ONLY_SOURCES`] and the
+    /// [`RECALL_SOURCE`] memory replay; see [`is_non_corroborating_source`]). This
+    /// is the honest cross-correlation set that drives
+    /// [`Self::source_count`]/[`Self::c_effective`] and the corroboration
     /// correlator rules; the full [`Self::evidence_sources`] set is retained for
     /// display and attribute access.
     pub fn corroborating_sources(&self) -> std::collections::HashSet<&str> {
         self.evidence
             .iter()
             .map(|ev| ev.source.as_str())
-            .filter(|&s| !is_enrichment_source(s))
+            .filter(|&s| !is_non_corroborating_source(s))
             .collect()
     }
 

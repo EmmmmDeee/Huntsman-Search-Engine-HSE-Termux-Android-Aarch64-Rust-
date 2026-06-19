@@ -511,11 +511,13 @@ function kindToStr(k){
   return String(k);
 }
 function kindPill(k){const s=kindToStr(k);return `<span class="kind-pill k-${attr(s)}">${esc(s)}</span>`;}
-// Deterministic self-enrichment passes are NOT independent intelligence and
-// must not be counted as corroboration — mirror the backend's
-// ENRICHMENT_ONLY_SOURCES so a coarse geo guess the geospatial pass touched
-// isn't lifted out of the Candidate tier on the dashboard.
-const ENRICHMENT_SOURCES = new Set(['geo_normalize']);
+// Non-corroborating evidence sources — NOT independent intelligence, so they
+// must not count toward the C_eff boost. Mirrors the backend's
+// is_non_corroborating_source(): the deterministic self-enrichment pass
+// ('geo_normalize') and the recall replay ('recall'). Without 'recall' here a
+// re-scan's recalled rows would render a tier higher in Browse than the server
+// grades them (CANDIDATE shown as PROBABLE).
+const ENRICHMENT_SOURCES = new Set(['geo_normalize', 'recall']);
 // Distinct corroborating sources drive the C_eff boost — must match the
 // backend's Entity::source_count()/corroborating_sources(): count distinct
 // non-enrichment evidence.source strings; when none are present, fall back to
@@ -662,7 +664,7 @@ function parseHash(){
   if (segs[0]==='live')                     return {name:'live', params:{}, query};
   if (segs[0]==='engines')                  return {name:'engines', params:{}, query};
   if (segs[0]==='diff')                     return {name:'diff', params:{a:query.a||'', b:query.b||''}, query};
-  if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'network'}, query};
+  if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'report'}, query};
   return {name:'dash', params:{}, query};
 }
 function nav(href){ location.hash = href; }
@@ -1582,16 +1584,10 @@ async function renderScanInfo(v){
     <div id="attack-cov" style="margin:2px 0 12px 0"></div>
 
     <ul class="nav nav-tabs">
-      ${subTab('network', 'Network',      null,                tab)}
-      ${subTab('leads',   'Leads',        null,                tab)}
-      ${subTab('status',  'Status',       null,                tab)}
-      ${subTab('browse',  'Browse',       S.entities.length,   tab)}
-      ${subTab('graph',   'Graph',        null,                tab)}
-      ${subTab('rels',    'Relations',    S.relations.length,  tab)}
-      ${subTab('audit',   'Audit',        null,                tab)}
-      ${subTab('log',     'Scan Log',     null,                tab)}
-      ${subTab('corr',    'Correlations', S.correlations.length, tab)}
-      ${subTab('info',    'Scan Settings',null,                tab)}
+      ${subTab('report', 'Report',   null,              tab)}
+      ${subTab('browse', 'Browse',   S.entities.length, tab)}
+      ${subTab('graph',  'Graph',    null,              tab)}
+      ${subTab('log',    'Scan Log', null,              tab)}
     </ul>
     <div id="scan-body" style="padding-top:14px"></div>
   `;
@@ -1654,17 +1650,10 @@ async function renderScanInfo(v){
   })();
 
   const body = $('#scan-body');
-  if (tab==='network')     renderNetwork(body, id);
-  else if (tab==='leads')  renderLeads(body, id);
-  else if (tab==='status') renderStatus(body, scan);
-  else if (tab==='browse') renderBrowse(body);
+  if (tab==='browse')      renderBrowse(body);
   else if (tab==='graph')  renderGraph(body);
-  else if (tab==='rels')   renderRelations(body);
-  else if (tab==='audit')  renderAudit(body, id);
   else if (tab==='log')    renderLog(body, scan);
-  else if (tab==='corr')   renderCorrelations(body);
-  else if (tab==='info')   renderInfo(body, scan);
-  else                     renderStatus(body, scan);
+  else                     renderReport(body, id, scan);
 
   // SpiderFoot-style live refresh: while the scan is still running, re-pull and
   // re-render every 8s so entity/correlation counts and duration climb on their
@@ -1681,7 +1670,27 @@ function subTab(name, label, count, active){
   </a></li>`;
 }
 
-/* ── Network tab — the subject-centric relationship synthesis (the analyst's
+/* ── Report tab — the ONE digestible scan view. Stacks, in priority order, the
+   subject's network (who/what the seed connects to), the recommended next
+   pivots, cross-entity correlations, and the scored self-audit (incl. how much
+   breach co-occurrence was quarantined out of the result). Consolidates what
+   were ten tabs (Network / Leads / Status / Relations / Correlations / Audit /
+   Settings) into one — the rest live under Browse / Graph / Scan Log. ── */
+async function renderReport(host, id, scan){
+  host.innerHTML = `
+    <div id="rpt-network"></div>
+    <div id="rpt-leads"  style="margin-top:18px"></div>
+    <div id="rpt-corr"   style="margin-top:18px"></div>
+    <div id="rpt-audit"  style="margin-top:18px"></div>`;
+  // Each renderer owns its sub-section (and its own async fetch); composing them
+  // reuses the synthesis already built rather than duplicating any logic.
+  renderNetwork($('#rpt-network'), id);
+  renderLeads($('#rpt-leads'), id);
+  renderCorrelations($('#rpt-corr'));
+  renderAudit($('#rpt-audit'), id);
+}
+
+/* ── Network section — the subject-centric relationship synthesis (the analyst's
    "so what": who/what the seed connects to, grouped + ranked server-side). ── */
 const NET_GROUP_ICON = {people:'glyphicon-user', identifiers:'glyphicon-envelope',
   aliases:'glyphicon-random', locations:'glyphicon-map-marker', infrastructure:'glyphicon-cloud'};
