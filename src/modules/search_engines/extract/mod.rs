@@ -93,7 +93,7 @@ pub(super) async fn recycle_entities(
                 continue;
             }
             let url = (engine.build_url)(query);
-            if let Some(mut results) = fetch_and_parse(&url, engine, query, None).await {
+            if let Some(mut results) = fetch_and_parse(&url, engine, query, None, deadline).await {
                 recycled_results.append(&mut results);
             }
             tokio::time::sleep(std::time::Duration::from_millis(INTER_ENGINE_MS)).await;

@@ -1,5 +1,33 @@
 use super::*;
 
+    /// The fetch-timeout clamp is what stops an in-flight request from overrunning
+    /// the module deadline: a request is NEVER issued past the deadline, and one
+    /// issued under it is capped to the remaining budget (never the full fixed
+    /// ceiling), so it always finishes before the engine's hard kill.
+    #[test]
+    fn fetch_timeout_clamps_to_remaining_budget() {
+        use std::time::{Duration, Instant};
+        // Past / too-soon deadlines yield no request at all.
+        assert_eq!(fetch_timeout_ms(Instant::now() - Duration::from_secs(1)), None);
+        assert_eq!(
+            fetch_timeout_ms(Instant::now() + Duration::from_millis(500)),
+            None,
+            "under the MIN_FETCH floor → don't bother starting"
+        );
+        // Plenty of budget → capped at the per-request ceiling.
+        assert_eq!(
+            fetch_timeout_ms(Instant::now() + Duration::from_secs(60)),
+            Some(MAX_FETCH_MS)
+        );
+        // A few seconds left → clamped to (about) that, never the full ceiling.
+        let t = fetch_timeout_ms(Instant::now() + Duration::from_millis(3_000))
+            .expect("3 s is above the floor");
+        assert!(
+            (MIN_FETCH_MS..=3_000).contains(&t),
+            "clamped to the ~3 s that remain, not the 8 s ceiling: got {t}"
+        );
+    }
+
     /// SERP HTML comes from arbitrary, untrusted search engines — it can be
     /// truncated, malformed, or have a multibyte codepoint butted against any
     /// structural marker (`href=`, a quote, `<cite>`, the ` ›` breadcrumb, `>`,
