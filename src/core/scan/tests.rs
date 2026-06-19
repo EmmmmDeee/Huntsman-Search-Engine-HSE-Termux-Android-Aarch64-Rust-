@@ -594,6 +594,11 @@ fn detect_classifies_structured_kinds() {
         ("aabb.ccdd.eeff", MacAddress),
         ("AB12.CD34.EF56", MacAddress),
         ("-33.8688,151.2093", Coordinates),
+        // Self-evident rich coordinate notations now auto-detect too (the
+        // handle-shaped Maidenhead and bare space-separated decimals do not).
+        ("27°28'35.8\"S 153°00'59.8\"E", Coordinates), // degrees-minutes-seconds
+        ("geo:-27.4766,153.0166", Coordinates),        // RFC 5870 geo: URI
+        ("8FVC9G8F+6X", Coordinates),                  // Plus Code / Open Location Code
         ("AS13335", Asn),
         ("as15169", Asn),
         ("51824753556", AbnAcn),    // valid ABN (ATO worked example)
@@ -614,6 +619,25 @@ fn detect_classifies_structured_kinds() {
     for (value, want) in cases {
         assert_eq!(TargetKind::detect(value), want, "detect({value:?})");
     }
+}
+
+#[test]
+fn rich_coordinate_notations_normalise_to_canonical_decimal() {
+    // A self-evident notation auto-detects AND its value is canonicalised to the
+    // 6-dp "lat,lon" every downstream geo consumer already speaks.
+    let dms = Target::detect("27°28'35.8\"S 153°00'59.8\"E");
+    assert_eq!(dms.kind, TargetKind::Coordinates);
+    assert_eq!(dms.value, "-27.476611,153.016611");
+
+    let geo = Target::detect("geo:-27.4766,153.0166");
+    assert_eq!(geo.kind, TargetKind::Coordinates);
+    assert_eq!(geo.value, "-27.476600,153.016600");
+
+    // A Maidenhead locator is handle-shaped, so it is NOT auto-detected …
+    assert_ne!(TargetKind::detect("QG62kn"), TargetKind::Coordinates);
+    // … yet an explicit `--kind coordinates` accepts and normalises it.
+    let grid = Target::new(TargetKind::Coordinates, "QG62kn");
+    assert_eq!(grid.value, "-27.437500,152.875000");
 }
 
 #[test]

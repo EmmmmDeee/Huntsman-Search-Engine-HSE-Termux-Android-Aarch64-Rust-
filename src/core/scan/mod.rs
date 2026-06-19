@@ -198,10 +198,16 @@ impl TargetKind {
         if is_mac_shaped(v) {
             return Self::MacAddress;
         }
-        // 5. Coordinates — "lat,lon", both numeric and in range. Delegate to the
-        //    canonical, range-validating parser so this classifier and the geo
-        //    pipeline agree on exactly what counts as a coordinate pair.
-        if crate::util::geohash::parse_coords(v).is_some() {
+        // 5. Coordinates — a plain decimal "lat,lon" (the canonical, range-
+        //    validating parser the geo pipeline shares), or any *self-evident*
+        //    notation that carries an unambiguous marker: degrees-minutes-seconds
+        //    with °/′/″ glyphs or N/S/E/W letters, a `geo:` URI, or a Plus Code.
+        //    Handle-shaped notations (Maidenhead locators, bare space-separated
+        //    decimals) are deliberately NOT auto-detected — they are accepted
+        //    only via an explicit `--kind coordinates`, which normalises them.
+        if crate::util::geohash::parse_coords(v).is_some()
+            || crate::util::geo::coords::parse(v).is_some_and(|c| c.format.is_self_evident())
+        {
             return Self::Coordinates;
         }
         // 6. ASN — "AS" + digits.
