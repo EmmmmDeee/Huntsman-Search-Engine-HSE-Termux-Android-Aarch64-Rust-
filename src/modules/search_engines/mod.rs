@@ -392,10 +392,20 @@ impl Module for SearchEngines {
             }
         }
 
+        // Count how many DISTINCT engines returned each canonical URL BEFORE
+        // deduplication collapses the results to one `SearchResult` per URL.
+        // This map carries the cross-engine corroboration signal into
+        // `build_entities`; computing it after the dedup below would credit
+        // every URL to a single engine and silently defeat the "multi-engine
+        // corroboration boosts entity confidence" mechanism (a URL returned by
+        // N engines would always score 1).
+        let url_engine_count = url_engine_counts(&all_results);
+
         // Deduplicate results by canonical URL before entity extraction.
         let all_results = dedup_results(all_results);
 
-        let mut module_result = build_entities(target, &ctx.scan_id, &all_results);
+        let mut module_result =
+            build_entities(target, &ctx.scan_id, &all_results, &url_engine_count);
 
         // ── Recursive entity recycler: re-search high-confidence
         //    discovered entities for geolocation and cross-linking ─────
