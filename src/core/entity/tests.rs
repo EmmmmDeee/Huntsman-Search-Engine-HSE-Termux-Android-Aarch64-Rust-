@@ -115,6 +115,41 @@ fn geo_normalize_does_not_count_as_corroboration() {
 }
 
 #[test]
+fn recall_does_not_count_as_corroboration() {
+    // The exact fresh-vs-recalled regression: a single-source finding (here a
+    // breach co-occurrence row) replayed from the local DB by the recall pass
+    // must NOT gain a phantom second source and be promoted CANDIDATE → PROBABLE.
+    // Recall is a second look at the SAME prior observation, not a new one.
+    let mut e = Entity::new(EntityKind::Person, "Андрей Кулябин Алексеевич", 0.25, "s");
+    e.add_evidence(Evidence::new("oathnet_pro", "Breach on fincup.ru"));
+    e.add_evidence(Evidence::new(
+        "recall",
+        "Recalled from the local intelligence database",
+    ));
+    // Provenance keeps both, but corroboration sees only the one real source.
+    assert_eq!(e.evidence_sources().len(), 2);
+    assert_eq!(e.source_count(), 1, "recall is not an independent source");
+    assert!(
+        (e.c_effective() - 0.25).abs() < 1e-9,
+        "a recalled-only entity keeps its true confidence (was inflated to 0.51)"
+    );
+    assert_eq!(
+        e.classify(),
+        Classification::Candidate,
+        "stays CANDIDATE on re-scan, not falsely promoted to PROBABLE"
+    );
+
+    // A genuinely independent live module discovered alongside recall DOES boost.
+    e.add_evidence(Evidence::new("hibp", "verified breach"));
+    assert_eq!(
+        e.source_count(),
+        2,
+        "a real second module still corroborates"
+    );
+    assert!(e.c_effective() > 0.25);
+}
+
+#[test]
 fn uncorroborated_recycled_is_gated_until_a_second_source_confirms() {
     // Regression: a value scraped only from a recycled search snippet (the
     // lowest-reliability discovery path) must NOT be promoted to an expansion
