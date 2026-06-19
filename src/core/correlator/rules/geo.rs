@@ -838,9 +838,166 @@ fn extract_ratemyagent_suburb(url: &str) -> Option<String> {
     }
 }
 
+/// The AU postcode (4 digits, 0800–7999) a family-candidate entity names — from a
+/// standalone token in its value (`"QLD 4518, Australia"`) or a `postcode`
+/// evidence attribute (the `qld_unclaimed` owner Persons carry it). `None` when no
+/// plausible AU postcode is present.
+fn family_postcode(e: &Entity) -> Option<String> {
+    let valid = |t: &str| -> Option<String> {
+        let t = t.trim();
+        (t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| t.parse::<u32>().ok())
+            .flatten()
+            .filter(|n| (800..=7999).contains(n))
+            .map(|_| t.to_string())
+    };
+    for tok in e.value.split(|c: char| !c.is_ascii_digit()) {
+        if let Some(pc) = valid(tok) {
+            return Some(pc);
+        }
+    }
+    e.evidence
+        .iter()
+        .find_map(|ev| ev.attributes.get("postcode").and_then(|v| valid(v)))
+}
+
+/// Distance within which a family-candidate's locality counts as the subject's
+/// area. Generous (postcode/region grain, not street) — it answers "same part of
+/// the state as the subject", which for a shared-surname person is a strong
+/// independent second signal.
+const FAMILY_GEO_KM: f64 = 150.0;
+
+/// AU-061 — Family geo-corroboration (surname kin in the subject's confirmed area).
+///
+/// The free, offline SECOND ANGLE on family. A name scan surfaces
+/// `family-candidate` people/addresses (shared surname, from the AU registers and
+/// residential directories) at postcode grain, while `signal_radar` / geo give the
+/// SUBJECT a confirmed coordinate fix. This resolves each family-candidate's
+/// postcode to a centroid offline ([`crate::util::city_coords`] — exact suburb,
+/// else region) and keeps those within [`FAMILY_GEO_KM`] of the subject's fix, so
+/// "shared surname" and "same area as the subject" independently agree — turning a
+/// lone candidate into a RELIABLE relative. Pure + offline; nothing fires without
+/// both a confirmed subject coordinate and ≥1 in-area family-candidate.
+pub(in crate::core::correlator) fn rule_au_061_family_geo_corroboration(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // The subject's confirmed location(s): high-confidence Coordinates.
+    let subject: Vec<(String, (f64, f64))> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates && e.confidence >= 0.60)
+        .filter_map(|e| crate::util::geohash::parse_coords(&e.value).map(|ll| (e.uid.clone(), ll)))
+        .collect();
+    if subject.is_empty() {
+        return Vec::new();
+    }
+
+    // Family-candidates whose postcode resolves within FAMILY_GEO_KM of the
+    // subject — nearest first for a deterministic, readable description.
+    let mut in_area: Vec<(&Entity, f64)> = entities
+        .iter()
+        .filter(|e| e.has_tag("family-candidate"))
+        .filter_map(|e| {
+            let pc = family_postcode(e)?;
+            let (la, lo) = crate::util::city_coords::city_coords(&pc)?;
+            let km = subject
+                .iter()
+                .map(|(_, (sla, slo))| crate::util::geohash::haversine_km(la, lo, *sla, *slo))
+                .fold(f64::INFINITY, f64::min);
+            (km <= FAMILY_GEO_KM).then_some((e, km))
+        })
+        .collect();
+    if in_area.is_empty() {
+        return Vec::new();
+    }
+    in_area.sort_by(|a, b| {
+        a.1.partial_cmp(&b.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.uid.cmp(&b.0.uid))
+    });
+
+    let shown: Vec<String> = in_area
+        .iter()
+        .take(8)
+        .map(|(e, km)| format!("{} (~{km:.0} km)", e.value))
+        .collect();
+    let extra = in_area.len().saturating_sub(shown.len());
+    let mut uids: Vec<String> = subject.iter().map(|(u, _)| u.clone()).collect();
+    uids.extend(in_area.iter().map(|(e, _)| e.uid.clone()));
+
+    let severity = if in_area.len() >= 3 {
+        Severity::Critical
+    } else {
+        Severity::High
+    };
+    vec![Correlation::new(
+        "AU-061",
+        "Family geo-corroborated (surname kin in subject's area)",
+        severity,
+        format!(
+            "{} family-candidate(s) resolve to the subject's confirmed area (within {FAMILY_GEO_KM:.0} km): {}{} — shared surname AND same area as the subject independently corroborate them as relatives",
+            in_area.len(),
+            shown.join(", "),
+            if extra > 0 {
+                format!(", +{extra} more")
+            } else {
+                String::new()
+            },
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── AU-061 family geo-corroboration ───────────────────────────────────────
+
+    #[test]
+    fn au_061_corroborates_only_family_in_the_subjects_area() {
+        use crate::core::entity::Evidence;
+        // Subject's confirmed GPS fix near Woodford, QLD.
+        let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
+        gps.tag("geoint");
+        // Same-surname family, all `family-candidate`, postcode in value or evidence.
+        let mut near_addr = Entity::new(EntityKind::Address, "QLD 4518, Australia", 0.32, "s");
+        near_addr.tag("family-candidate"); // Beerwah (45xx) — ~40 km
+        let mut near_person = Entity::new(EntityKind::Person, "Stephen Moreau", 0.35, "s");
+        near_person.tag("family-candidate");
+        near_person
+            .add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "4169"));
+        let mut far = Entity::new(EntityKind::Address, "QLD 4870, Australia", 0.32, "s");
+        far.tag("family-candidate"); // Cairns (48xx) — ~1000 km, must be excluded
+        // Not family-candidate → ignored even though it's in the area.
+        let other = Entity::new(EntityKind::Address, "QLD 4000, Australia", 0.5, "s");
+
+        let ents = vec![
+            gps.clone(),
+            near_addr.clone(),
+            near_person.clone(),
+            far.clone(),
+            other,
+        ];
+        let out = rule_au_061_family_geo_corroboration(&ents, "s", 0);
+        assert_eq!(out.len(), 1, "one geo-corroboration correlation");
+        let c = &out[0];
+        assert_eq!(c.rule_id, "AU-061");
+        assert!(matches!(c.severity, Severity::High), "2 in-area → High");
+        assert!(c.description.contains("Stephen Moreau") && c.description.contains("4518"));
+        assert!(!c.description.contains("4870"), "Cairns is excluded as far");
+        // Links the subject coordinate + the two in-area relatives, not the far one.
+        assert!(c.entity_uids.contains(&gps.uid));
+        assert!(c.entity_uids.contains(&near_addr.uid) && c.entity_uids.contains(&near_person.uid));
+        assert!(!c.entity_uids.contains(&far.uid));
+
+        // No confirmed subject coordinate → nothing fires (no anchor to compare to).
+        let no_gps = vec![near_addr];
+        assert!(rule_au_061_family_geo_corroboration(&no_gps, "s", 0).is_empty());
+    }
 
     // ── coord_state ───────────────────────────────────────────────────────────
 
