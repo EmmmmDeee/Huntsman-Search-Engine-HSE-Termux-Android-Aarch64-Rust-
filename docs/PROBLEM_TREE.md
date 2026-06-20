@@ -2184,3 +2184,21 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   compounds with scan richness (more identities ⇒ quadratically more builds saved).
   No rule change (count 67). Gate green: fmt/clippy/doc clean, 3,304 lib tests, 24
   arch guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 42 note — same commit.
+- **2026-06-20** — **Cycle 43 (correctness: a property test finds a real bug in
+  the widest-path finder).** Hardening cycle 41's `strongest_path` (AU-069) with
+  property tests surfaced a genuine defect: the relaxation increased an
+  intermediate node's hop count whenever its bottleneck improved, so a
+  wider-but-longer route to that node could push the destination beyond the hop
+  budget — making reachability **asymmetric** (a→b found, b→a not) even though the
+  graph is undirected. A unit test missed it; the symmetry proptest caught it on a
+  6-node graph. Fixed with a correct, deterministic two-phase max-bottleneck
+  algorithm — a hop-bounded max-min Bellman-Ford (snapshot-relaxed, ≤k-edge-exact)
+  for the value, then a BFS over the ≥bottleneck subgraph to reconstruct the
+  shortest achieving route. The dominance + symmetry invariants now hold; the
+  failing case is checked in under `proptest-regressions/`. Also surfaced the
+  best-achievable connection reliability in the dossier CONNECTIONS view. This is
+  the directive's empirical-validation loop working as intended (a property test
+  empirically refuted an algorithm and drove its correction), strengthening
+  accuracy + future-resilience. No rule change (count 67). Gate green:
+  fmt/clippy/doc clean, 3,306 lib tests (+2), 24 arch guards, 0 failures.
+  **Paired:** `SOLUTION_TREE` cycle 43 note — same commit.

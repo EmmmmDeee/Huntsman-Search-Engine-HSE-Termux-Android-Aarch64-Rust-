@@ -1428,3 +1428,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   order-independence proptests all pass unchanged. No rule change (count 67). Gate
   green: 3,304 lib tests, 24 arch guards, fmt/clippy/doc clean. Paired:
   `PROBLEM_TREE` §8 cycle 42 — same commit.
+- **2026-06-20** — **Cycle 43 (empirical validation finds + fixes a real bug;
+  connection-quality surfacing).** Added property tests for `strongest_path` (the
+  AU-069 widest-path primitive): a max-bottleneck **dominance** invariant (the
+  widest route is never weaker than the shortest) and an undirected **symmetry**
+  invariant. The symmetry proptest immediately FAILED — exposing a genuine bug:
+  the single-array relaxation let an intermediate's hop count grow when its
+  bottleneck improved (preferring a wider-but-longer route), which could push the
+  destination past the hop budget → **asymmetric reachability**. Replaced it with a
+  correct two-phase algorithm: (1) a hop-bounded max-min Bellman-Ford for the
+  bottleneck VALUE (relaxing from each round's snapshot, honouring ≤k edges and
+  order-independent), then (2) a BFS over the ≥bottleneck subgraph to reconstruct
+  the shortest route achieving it. Both proptests + the existing unit tests now
+  pass; the failing seed is checked in (`proptest-regressions/`). Also surfaced the
+  **best-achievable reliability** (widest-route bottleneck) in the dossier
+  CONNECTIONS view when it beats the shortest path's weakest edge. This is the
+  directive's "empirically validated improvement" loop in action — a property test
+  found a defect a unit test missed, and the fix is locked in. No rule change
+  (count 67). Gate green: 3,306 lib tests (+2 proptests), 24 arch guards,
+  fmt/clippy/doc clean. Paired: `PROBLEM_TREE` §8 cycle 43 — same commit.

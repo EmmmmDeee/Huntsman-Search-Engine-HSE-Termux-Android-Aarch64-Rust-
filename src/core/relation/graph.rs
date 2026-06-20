@@ -439,57 +439,27 @@ pub fn strongest_path_in(
         return None;
     }
 
-    /// Best route found to a node so far: its bottleneck, hop count, and the
-    /// predecessor edge it arrived by (for path reconstruction).
-    struct Best {
-        bottleneck: f64,
-        hops: usize,
-        prev: Option<(String, RelationKind)>,
-    }
-    let mut best: HashMap<String, Best> = HashMap::new();
-    best.insert(
-        from_uid.to_string(),
-        Best {
-            bottleneck: f64::INFINITY,
-            hops: 0,
-            prev: None,
-        },
-    );
-
-    // Relax up to max_hops times; each round can extend a route by one edge.
-    // Frontier + adjacency are sorted so the relaxation is order-independent.
+    // ── Phase 1: the max-bottleneck VALUE, hop-bounded ──
+    // A max-min Bellman-Ford: after k rounds, `bn[v]` is the widest (greatest
+    // weakest-edge) route to `v` using ≤ k edges. Each round relaxes every edge
+    // from the PREVIOUS round's snapshot, so the "≤ k edges" invariant holds
+    // exactly and the hop budget is honoured. (A naive single-array relaxation
+    // that lets a node's hop count grow when its bottleneck improves can trade a
+    // shorter route for a wider-but-longer one and then overrun the budget — a
+    // real reachability asymmetry the property tests caught.) Max/`min` is
+    // commutative, so reading from the snapshot also makes the values
+    // order-independent (determinism).
+    let mut bn: HashMap<&str, f64> = HashMap::new();
+    bn.insert(from_uid, f64::INFINITY);
     for _ in 0..max_hops {
         let mut changed = false;
-        let mut frontier: Vec<String> = best.keys().cloned().collect();
-        frontier.sort_unstable();
-        for u in frontier {
-            let (ub, uh) = {
-                let bu = &best[&u];
-                (bu.bottleneck, bu.hops)
-            };
-            if uh >= max_hops {
-                continue;
-            }
-            for &(v, kind, c) in adj.get(u.as_str()).into_iter().flatten() {
+        let prev: Vec<(&str, f64)> = bn.iter().map(|(&k, &v)| (k, v)).collect();
+        for (u, ub) in prev {
+            for &(v, _, c) in adj.get(u).into_iter().flatten() {
                 let cand = ub.min(c);
-                let cand_hops = uh + 1;
-                let improve = match best.get(v) {
-                    None => true,
-                    // A strictly wider route wins; on an equal bottleneck the
-                    // shorter route wins, so the result is the widest-then-shortest.
-                    Some(bv) => {
-                        cand > bv.bottleneck || (cand == bv.bottleneck && cand_hops < bv.hops)
-                    }
-                };
-                if improve {
-                    best.insert(
-                        v.to_string(),
-                        Best {
-                            bottleneck: cand,
-                            hops: cand_hops,
-                            prev: Some((u.clone(), kind)),
-                        },
-                    );
+                let slot = bn.entry(v).or_insert(f64::NEG_INFINITY);
+                if cand > *slot {
+                    *slot = cand;
                     changed = true;
                 }
             }
@@ -498,39 +468,41 @@ pub fn strongest_path_in(
             break;
         }
     }
+    let bottleneck = bn.get(to_uid).copied().filter(|b| b.is_finite())?;
 
-    let dest = best.get(to_uid)?;
-    if dest.hops == 0 {
+    // ── Phase 2: reconstruct the SHORTEST route achieving that bottleneck ──
+    // BFS over the subgraph of edges at least as wide as `bottleneck`. Such a
+    // route exists (the value is achievable) and, since no route within budget is
+    // wider, its weakest edge is exactly `bottleneck` — so the reported path's
+    // strength matches phase 1 while staying as short as possible.
+    let mut wide = adj.clone();
+    for es in wide.values_mut() {
+        es.retain(|&(_, _, c)| c >= bottleneck - 1e-9);
+    }
+    let nodes = bfs_node_path(&wide, from_uid, to_uid, max_hops)?;
+
+    let mut steps: Vec<PathStep> = Vec::with_capacity(nodes.len().saturating_sub(1));
+    let mut min_confidence = f64::INFINITY;
+    for pair in nodes.windows(2) {
+        let (u, v) = (pair[0].as_str(), pair[1].as_str());
+        // The smallest-kind wide-enough edge u→v BFS traversed (adjacency sorted).
+        let edge = wide.get(u).and_then(|es| es.iter().find(|e| e.0 == v))?;
+        steps.push(PathStep {
+            kind: edge.1,
+            to_uid: v.to_string(),
+        });
+        min_confidence = min_confidence.min(edge.2);
+    }
+    if steps.is_empty() {
         return None;
     }
-    let bottleneck = dest.bottleneck;
-    // Walk predecessors dest → … → from, then reverse to forward order.
-    let mut rev_steps: Vec<PathStep> = Vec::with_capacity(dest.hops);
-    let mut cur = to_uid.to_string();
-    loop {
-        let node = best.get(&cur)?;
-        match &node.prev {
-            Some((p, kind)) => {
-                rev_steps.push(PathStep {
-                    kind: *kind,
-                    to_uid: cur.clone(),
-                });
-                cur = p.clone();
-            }
-            None => break,
-        }
-    }
-    if cur != from_uid {
-        return None;
-    }
-    rev_steps.reverse();
-    let hops = rev_steps.len();
+    let hops = steps.len();
     Some(IdentityPath {
         from_uid: from_uid.to_string(),
         to_uid: to_uid.to_string(),
-        steps: rev_steps,
+        steps,
         hops,
-        min_confidence: bottleneck,
+        min_confidence,
     })
 }
 
@@ -1180,6 +1152,49 @@ mod tests {
                     prop_assert!(p.hops >= 1 && p.hops <= 4);
                     prop_assert!(p.from_uid < p.to_uid);
                     prop_assert_eq!(&p.steps.last().unwrap().to_uid, &p.to_uid);
+                }
+            }
+
+            /// The **defining invariant of the widest path**: its bottleneck is at
+            /// least as strong as the weakest edge of the *shortest* path between
+            /// the same pair. `strongest_path` exists precisely to beat the
+            /// shortest route on reliability, so it can never be weaker. (The two
+            /// forced identities `n0`/`n1` are the probe pair; both finders share
+            /// the 4-hop budget so the comparison is apples-to-apples.)
+            #[test]
+            fn strongest_path_bottleneck_dominates_shortest((ents, rels) in graph()) {
+                let (a, b) = if ents[0].uid <= ents[1].uid {
+                    (&ents[0].uid, &ents[1].uid)
+                } else {
+                    (&ents[1].uid, &ents[0].uid)
+                };
+                let shortest = identity_paths(&ents, &rels, 4)
+                    .into_iter()
+                    .find(|p| &p.from_uid == a && &p.to_uid == b);
+                if let Some(sp) = shortest {
+                    let widest = strongest_path(&ents, &rels, a, b, 4);
+                    prop_assert!(widest.is_some(), "reachable shortest ⇒ reachable widest");
+                    let w = widest.unwrap();
+                    prop_assert!(w.min_confidence >= sp.min_confidence - 1e-9);
+                    // …and it is itself a well-formed, hop-bounded chain.
+                    prop_assert_eq!(w.steps.len(), w.hops);
+                    prop_assert!(w.hops >= 1 && w.hops <= 4);
+                    prop_assert_eq!(&w.steps.last().unwrap().to_uid, b);
+                }
+            }
+
+            /// Reachability and bottleneck are **symmetric** over the undirected
+            /// graph: the widest route a→b is exactly as strong as b→a. (The path
+            /// itself is oriented, so only the bottleneck is compared.)
+            #[test]
+            fn strongest_path_bottleneck_is_symmetric((ents, rels) in graph()) {
+                let (a, b) = (&ents[0].uid, &ents[1].uid);
+                let ab = strongest_path(&ents, &rels, a, b, 4).map(|p| p.min_confidence);
+                let ba = strongest_path(&ents, &rels, b, a, 4).map(|p| p.min_confidence);
+                match (ab, ba) {
+                    (Some(x), Some(y)) => prop_assert!((x - y).abs() < 1e-9),
+                    (None, None) => {}
+                    _ => prop_assert!(false, "reachability must be symmetric"),
                 }
             }
         }

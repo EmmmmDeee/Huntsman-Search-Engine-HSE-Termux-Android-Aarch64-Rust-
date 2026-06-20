@@ -222,11 +222,23 @@ fn print_connections(entities: &[Entity], relations: &[Relation]) {
         } else {
             String::new()
         };
+        // Best-achievable reliability: the widest (max-bottleneck) route's weakest
+        // link, shown when it beats the shortest path's — the most-trustworthy way
+        // these two connect may be stronger than the shortest chain suggests
+        // (AU-069's signal). Reuses the adjacency already built above.
+        let best = crate::core::relation::strongest_path_in(&adj, &c.from_uid, &c.to_uid, 5)
+            .map_or(c.min_confidence, |p| p.min_confidence);
+        let best_route = if best > c.min_confidence + 1e-9 {
+            format!(" · strongest route conf {best:.2}")
+        } else {
+            String::new()
+        };
         println!(
-            "    {} hop{}, weakest edge conf={:.2}{}",
+            "    {} hop{}, weakest edge conf={:.2}{}{}",
             c.hops,
             if c.hops == 1 { "" } else { "s" },
             c.min_confidence,
+            best_route,
             corroboration
         );
         println!();
