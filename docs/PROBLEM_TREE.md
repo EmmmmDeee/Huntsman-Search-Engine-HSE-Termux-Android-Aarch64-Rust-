@@ -2128,3 +2128,12 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   passes unchanged); no new rule, count stays 66. Gate green: fmt/clippy/doc clean,
   3,296 lib tests, 24 arch guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 38
   note — same commit.
+- **2026-06-20** — **Cycle 39 (AU-067 surfaced end-to-end).** The resolved-identity
+  capstone fired as a correlation but the cluster groupings weren't in the human
+  dossier. Added a "RESOLVED IDENTITIES — distinct identifiers that are one person"
+  section to the CLI scan report (`print_resolved_identities`), rendering each
+  ≥3-member equivalence class from the shared `resolve_identity_clusters` primitive
+  beside the pairwise CONNECTIONS view. Completes the feature for the operator;
+  deterministic, no behaviour change. Gate green: fmt/clippy/doc clean, 3,296 lib
+  tests, 24 arch guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 39 note —
+  same commit.

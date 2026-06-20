@@ -157,6 +157,7 @@ pub(super) fn print_dossier(
     }
 
     print_connections(entities, relations);
+    print_resolved_identities(entities, relations);
 
     print_diagnostics(scan, entities, kind, value, sid);
 }
@@ -236,6 +237,54 @@ fn print_connections(entities: &[Entity], relations: &[Relation]) {
     }
     if connections.len() > SHOWN {
         println!("  … {} more connection(s)", connections.len() - SHOWN);
+        println!();
+    }
+}
+
+/// RESOLVED IDENTITIES — the cluster-level synthesis of CONNECTIONS (AU-067).
+/// Where the link analysis above ties identities together pairwise, this collapses
+/// every transitively-connected identity into one *resolved identity* — the
+/// connected component of the identity graph — held together only as firmly as its
+/// weakest link. Reuses [`crate::core::relation::resolve_identity_clusters`], so
+/// the grouping can't disagree with the pairwise threads above or the AU-067
+/// correlation. Shows only ≥3-member resolutions; a 2-member cluster is a single
+/// link already rendered under CONNECTIONS.
+fn print_resolved_identities(entities: &[Entity], relations: &[Relation]) {
+    use std::collections::HashMap;
+
+    let clusters: Vec<_> = crate::core::relation::resolve_identity_clusters(entities, relations, 4)
+        .into_iter()
+        .filter(|c| c.members.len() >= 3)
+        .collect();
+    if clusters.is_empty() {
+        return;
+    }
+
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let label = |uid: &str| -> String {
+        by_uid.get(uid).map_or_else(
+            || format!("{}…", &uid[..uid.len().min(8)]),
+            |e| format!("{} ({})", super::super::truncate(&e.value, 36), e.kind),
+        )
+    };
+
+    println!(
+        "━━━ RESOLVED IDENTITIES ({}) — distinct identifiers that are one person ━━━",
+        clusters.len()
+    );
+    println!();
+    println!("  Every identity transitively linked into one (weakest-link confidence):");
+    println!();
+    for (i, c) in clusters.iter().enumerate() {
+        println!(
+            "  #{} — {} identifiers, weakest link conf={:.2}:",
+            i + 1,
+            c.members.len(),
+            c.min_confidence
+        );
+        for uid in &c.members {
+            println!("      • {}", label(uid));
+        }
         println!();
     }
 }

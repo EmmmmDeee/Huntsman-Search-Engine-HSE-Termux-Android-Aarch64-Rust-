@@ -1368,3 +1368,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   invariant now covers the endpoint-enumeration and family-set steps too. No rule
   or behaviour change (count stays 66). Gate green: 3,296 lib tests, 24 arch
   guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` §8 cycle 38 — same commit.
+- **2026-06-20** — **Cycle 39 (AU-067 end-to-end): RESOLVED IDENTITIES in the
+  dossier.** The AU-067 capstone existed as a correlation but the resolved
+  equivalence classes weren't surfaced in the human report. Added
+  `print_resolved_identities` to the CLI scan dossier — a "distinct identifiers that
+  are one person" section beside CONNECTIONS, rendering each ≥3-member cluster from
+  the shared `resolve_identity_clusters` primitive (so the grouping can't disagree
+  with the pairwise threads or the AU-067 finding). Presentation completion of a
+  feature; deterministic, reuses the tested primitive, no behaviour change. Gate
+  green: 3,296 lib tests, 24 arch guards, fmt/clippy/doc clean. Paired:
+  `PROBLEM_TREE` §8 cycle 39 — same commit.
