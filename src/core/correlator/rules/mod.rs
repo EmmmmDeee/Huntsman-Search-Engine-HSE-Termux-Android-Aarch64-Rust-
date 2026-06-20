@@ -5,7 +5,7 @@
 //! crypto); this module holds the shared helpers they all draw on and
 //! re-exports every rule so the dispatcher's `use rules::*` is unchanged.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::{Correlation, Severity};
 use crate::core::entity::{Entity, EntityKind};
@@ -225,6 +225,18 @@ fn is_breach_exposed_wallet(e: &Entity) -> bool {
                     .get("source_provider")
                     .is_some_and(|p| matches!(p.as_str(), "see-know" | "oathnet")))
     })
+}
+
+/// The distinct provenance families under an entity's evidence sources — the
+/// orthogonality measure shared by the multi-pathway (AU-062) and gap (AU-063)
+/// link-analysis detectors, so "which independent source families back this
+/// entity" has a single definition. The unclassified `"other"` bucket is
+/// retained here; callers that need genuine cross-family diversity drop it.
+fn source_families(e: &Entity) -> BTreeSet<&'static str> {
+    e.evidence_sources()
+        .into_iter()
+        .map(source_family)
+        .collect()
 }
 
 /// Coarse provenance *family* of an evidence/module source name. Used to measure

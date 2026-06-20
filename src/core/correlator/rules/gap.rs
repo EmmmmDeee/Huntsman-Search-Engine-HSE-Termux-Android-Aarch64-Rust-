@@ -16,7 +16,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use super::*;
-use crate::core::relation::{PathStep, disjoint_pathways, is_identity_kind};
+use crate::core::relation::{PathStep, disjoint_pathways, identity_uids};
 
 /// Orthogonal source families worth seeking to lift a single-route link to
 /// multi-pathway corroboration, ordered by how decisive each is for identity
@@ -59,13 +59,7 @@ pub(in crate::core) fn single_route_identity_links(
     const MAX_HOPS: usize = 5;
     const MAX_PATHS: usize = 4;
 
-    let mut identity_uids: Vec<&str> = entities
-        .iter()
-        .filter(|e| is_identity_kind(&e.kind))
-        .map(|e| e.uid.as_str())
-        .collect();
-    identity_uids.sort_unstable();
-    identity_uids.dedup();
+    let identity_uids = identity_uids(entities);
 
     let mut out = Vec::new();
     for (i, &a) in identity_uids.iter().enumerate() {
@@ -102,12 +96,7 @@ pub(in crate::core::correlator) fn rule_au_063_corroboration_gap(
     let families_of = |uid: &str| -> BTreeSet<&'static str> {
         by_uid
             .get(uid)
-            .map(|e| {
-                e.evidence_sources()
-                    .into_iter()
-                    .map(source_family)
-                    .collect()
-            })
+            .map(|&e| source_families(e))
             .unwrap_or_default()
     };
 

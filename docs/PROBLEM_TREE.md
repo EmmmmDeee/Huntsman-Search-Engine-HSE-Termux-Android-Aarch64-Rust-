@@ -2116,3 +2116,15 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   complete and unified. Rule count 65→66. Gate green: fmt/clippy/doc clean, 3,296
   lib tests (+6), 24 arch guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 37
   note — same commit.
+- **2026-06-20** — **Cycle 38 (refactor / DRY consolidation).** With the tool
+  complete and the prototype merged, "REFACTOR and merge pre-existing files" turned
+  inward on the recursive-linking family's own duplication: the identity-endpoint
+  enumeration (`filter is_identity_kind → map uid → sort → dedup`) was copy-pasted
+  in three places and the evidence→source-family closure in two. Both are now single
+  shared definitions (`core::relation::identity_uids`, `rules::source_families`),
+  so the rules and the graph primitives can't drift on what an identity endpoint or
+  a source-family set is — the codebase's "one finder, no drift" rule applied to
+  itself. Pure behaviour-preserving refactor (the AU-060/062/063/064/067 suite
+  passes unchanged); no new rule, count stays 66. Gate green: fmt/clippy/doc clean,
+  3,296 lib tests, 24 arch guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 38
+  note — same commit.

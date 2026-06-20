@@ -1356,3 +1356,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (uncollectable data / new EntityKinds+API / no-LLM invariant) — documented, not
   stubbed. Gate green: 3,296 lib tests (+6), 24 arch guards, fmt/clippy/doc clean.
   Paired: `PROBLEM_TREE` §8 cycle 37 — same commit.
+- **2026-06-20** — **Cycle 38 (refactor, DRY): one definition for the recursive-
+  linking primitives.** "REFACTOR and merge pre-existing files" applied to the
+  link-analysis family's own duplication. Two helpers, each previously copy-pasted,
+  are now single definitions: `core::relation::identity_uids` (sorted+deduped
+  identity-endpoint UIDs — was inline in `identity_paths`, `multipath_corroborated_links`,
+  `single_route_identity_links`) and `rules::source_families` (an entity's evidence
+  source-family set — was the duplicated `families_of` body in `multipath`/`gap`).
+  Behaviour-preserving: the full AU-060/062/063/064/067 suite + graph tests pass
+  unchanged, proving no drift. Net −~40 lines, and the "one finder, no drift"
+  invariant now covers the endpoint-enumeration and family-set steps too. No rule
+  or behaviour change (count stays 66). Gate green: 3,296 lib tests, 24 arch
+  guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` §8 cycle 38 — same commit.

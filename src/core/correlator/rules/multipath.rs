@@ -16,7 +16,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use super::*;
-use crate::core::relation::{disjoint_pathways, is_identity_kind};
+use crate::core::relation::{disjoint_pathways, identity_uids};
 
 /// One identity pair whose connection is corroborated by **≥2 edge-disjoint,
 /// source-orthogonal pathways** — the shared core of the AU-062 rule and the
@@ -59,25 +59,15 @@ pub(in crate::core) fn multipath_corroborated_links(
     const MAX_PATHS: usize = 4;
 
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
-    let mut identity_uids: Vec<&str> = entities
-        .iter()
-        .filter(|e| is_identity_kind(&e.kind))
-        .map(|e| e.uid.as_str())
-        .collect();
-    identity_uids.sort_unstable();
-    identity_uids.dedup();
+    let identity_uids = identity_uids(entities);
 
     // Source families resting under one entity (its evidence providers), the
-    // measure of orthogonality between routes.
+    // measure of orthogonality between routes — the shared `source_families`
+    // detector, so AU-062 and AU-063 agree on what an entity's families are.
     let families_of = |uid: &str| -> BTreeSet<&'static str> {
         by_uid
             .get(uid)
-            .map(|e| {
-                e.evidence_sources()
-                    .into_iter()
-                    .map(source_family)
-                    .collect()
-            })
+            .map(|&e| source_families(e))
             .unwrap_or_default()
     };
 

@@ -67,6 +67,23 @@ pub fn is_identity_kind(kind: &EntityKind) -> bool {
     )
 }
 
+/// The sorted, de-duplicated UIDs of the identity-bearing entities ([`is_identity_kind`])
+/// in `entities` — the canonical endpoint set every pair-wise link-analysis pass
+/// iterates. Sorting fixes a stable orientation (each unordered pair is visited
+/// once from its smaller UID) and deterministic tie-breaks. One definition, shared
+/// by [`identity_paths`] and the AU-062/AU-063 detectors, so they can't drift on
+/// which entities count as identity endpoints.
+pub fn identity_uids(entities: &[Entity]) -> Vec<&str> {
+    let mut uids: Vec<&str> = entities
+        .iter()
+        .filter(|e| is_identity_kind(&e.kind))
+        .map(|e| e.uid.as_str())
+        .collect();
+    uids.sort_unstable();
+    uids.dedup();
+    uids
+}
+
 /// Build the undirected adjacency of the relation graph — every edge added in
 /// both directions. Self-loops are skipped (they connect nothing). When
 /// `confine` is `Some(set)`, only edges whose *both* endpoints are in the set
@@ -156,13 +173,7 @@ pub fn identity_paths(
 
     // Identity endpoints in sorted UID order — each pair is computed once from
     // the smaller UID, fixing both orientation and shortest-path tie-breaks.
-    let mut identity_uids: Vec<&str> = entities
-        .iter()
-        .filter(|e| is_identity_kind(&e.kind))
-        .map(|e| e.uid.as_str())
-        .collect();
-    identity_uids.sort_unstable();
-    identity_uids.dedup();
+    let identity_uids = identity_uids(entities);
     let identity_set: HashSet<&str> = identity_uids.iter().copied().collect();
 
     let mut out: Vec<IdentityPath> = Vec::new();
