@@ -1566,3 +1566,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   maximising discovery while keeping the on-device resource guarantee the Termux
   target demands. No rule change (count 68). Gate green: 3,305 lib tests, 24 arch
   guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` §8 cycle 50 — same commit.
+- **2026-06-20** — **Cycle 51 (module consolidation: −2 redundant modules).**
+  Audited all 127 modules for consolidation; kept genuinely-distinct providers
+  separate (provider diversity is corroboration, not debt) and merged the two true
+  redundancies. (1) Deleted `ipapi` — a misnamed duplicate of `ip_whois_geo` (both
+  `GET https://ipwho.is/{ip}`); `ip_whois_geo` is the superset, so zero loss, and it
+  removes a false "two independent sources" signal the duplicate created (AU-026 /
+  `source_family` repointed to `ip_whois_geo`). (2) Folded `qld_unclaimed` into
+  `au_unclaimed` as a full `process_qld` pass (not a lossy table row) — QLD's
+  Person/ABN/suburb extraction preserved verbatim, evidence source string kept as
+  `"qld_unclaimed"` for downstream-rule compatibility, 5 tests ported, priority
+  raised into the government-register band. Registry 127 → **125**; docs/counts
+  synced and the README-count guard passes. Demonstrates the directive's
+  "minimise technical debt without compromising capability": two whole modules of
+  duplication removed, every entity/source/test still produced. No rule change
+  (count 68). Gate green: fmt/clippy/doc clean, lib + integration 0 failures, 24
+  arch guards. Paired: `PROBLEM_TREE` §8 cycle 51 — same commit.

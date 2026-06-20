@@ -66,10 +66,11 @@ const ANCHORING_GEO_SOURCES: &[&str] = &[
     "epieos",
     "contact_enrich",
     "proxycurl",
-    // AU public register (coarse postcode, person-linked)
+    // AU unclaimed-money registers — postcode-level, surname-anchored to the
+    // subject. `au_unclaimed` covers all states; its Queensland pass (folded in
+    // from the former `qld_unclaimed` module) still tags its evidence with the
+    // `qld_unclaimed` source, so both needles are retained.
     "qld_unclaimed",
-    // Multi-state AU unclaimed-money registers (NSW/VIC/WA/SA) — postcode-level,
-    // surname-anchored to the subject (same class as qld_unclaimed).
     "au_unclaimed",
     // AU residential people-finder directories (White Pages AU, True People
     // Search AU) — suburb/state/postcode for a confirmed name.

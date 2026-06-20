@@ -418,16 +418,16 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "censys → scan-db + IP info + physical location"
     );
 
-    // ipapi is a passive geolocation API identical in surface to the geo-5 above:
-    // IP address info + physical location + ISP/operator organisation.
+    // ip_whois_geo is a passive geolocation API identical in surface to the
+    // geo-5 above: IP address info + physical location + ISP/operator org.
     assert_eq!(
-        techniques("ipapi"),
+        techniques("ip_whois_geo"),
         vec!["T1590.005", "T1591.001", "T1591.002"],
-        "ipapi → IP Addresses + Physical Locations + Business Relationships"
+        "ip_whois_geo → IP Addresses + Physical Locations + Business Relationships"
     );
     assert!(
-        !techniques("ipapi").contains(&"T1596.005"),
-        "ipapi is a passive geo API, not a scan database (T1596.005)"
+        !techniques("ip_whois_geo").contains(&"T1596.005"),
+        "ip_whois_geo is a passive geo API, not a scan database (T1596.005)"
     );
 
     // Keybase: Social category but profiles include a user-declared location
@@ -690,7 +690,6 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "ip_geo",
         "ip2location",
         "ip_whois_geo",
-        "ipapi",
         "keybase",
         "numverify",
         "abuseipdb",
@@ -731,7 +730,7 @@ fn attack_overrides_attribute_collection_modules_precisely() {
 fn skiptrace_focus_maps_to_the_right_real_modules() {
     // The `skiptrace` profile restricts dispatch by category. This guard pins
     // that the focus resolves to a healthy, correct set of REAL modules — so a
-    // future category change (or a regression of the hudsonrock/qld_unclaimed
+    // future category change (or a regression of the hudsonrock/au_unclaimed
     // categorisations) can't silently gut or pollute debtor-location scans.
     use huntsman_search_engine::core::module::ModuleCategory;
     use huntsman_search_engine::core::profiles::SKIPTRACE_CATEGORIES;
@@ -756,11 +755,10 @@ fn skiptrace_focus_maps_to_the_right_real_modules() {
         );
     }
 
-    // The core person-locators MUST be in focus (incl. the two whose categories
-    // were corrected: hudsonrock → Breach, qld_unclaimed → People).
+    // The core person-locators MUST be in focus (incl. hudsonrock → Breach).
     for name in [
         "employer_pivot",  // People — where they work / ability to pay
-        "qld_unclaimed",   // People — name → government register + address
+        "au_unclaimed",    // Corporate — name → government register + address (incl. QLD)
         "geocode",         // Geo — address → coordinates
         "geo_intel",       // Geo
         "phone_intl",      // Phone — contactability + country
@@ -1302,7 +1300,6 @@ fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
     const COARSE_PROVIDERS: &[&str] = &[
         "ip_geo",
         "ipinfo",
-        "ipapi",
         "ip2location",
         "ipquery",
         "ip_whois_geo",
@@ -1356,7 +1353,7 @@ fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
         let prod = src.split("mod tests").next().unwrap_or(&src);
         // The gate is satisfied either by calling `is_plausible_provider_coord`
         // directly OR by building the entity through `coarse_provider_coords`,
-        // which applies that exact gate internally (ipinfo/ipapi/ip2location/
+        // which applies that exact gate internally (ipinfo/ip2location/
         // ipquery were consolidated onto the helper).
         let gated =
             prod.contains("is_plausible_provider_coord") || prod.contains("coarse_provider_coords");

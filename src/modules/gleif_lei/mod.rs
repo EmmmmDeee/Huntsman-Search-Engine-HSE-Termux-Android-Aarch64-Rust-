@@ -68,7 +68,7 @@ impl Module for GleifLei {
     fn priority(&self) -> u8 {
         // Government / public-records band (110-118): a global authoritative
         // registry, dispatched with the corporate sources (abn_lookup 118,
-        // opencorporates 116, qld_unclaimed 114, acnc_charities 112) and above the
+        // opencorporates 116, au_unclaimed 114, acnc_charities 112) and above the
         // generic free band. Global/cross-walk, so just below the AU-specific ones.
         111
     }

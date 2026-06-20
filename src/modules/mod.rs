@@ -66,7 +66,6 @@ pub mod ip_geo;
 pub mod ip_registry;
 pub mod ip_reputation;
 pub mod ip_whois_geo;
-pub mod ipapi;
 pub mod ipinfo;
 pub mod ipqs;
 pub mod ipquery;
@@ -97,7 +96,6 @@ pub mod proxycurl;
 pub mod psbdmp;
 pub mod pwned_passwords;
 pub mod qld_cadastre;
-pub mod qld_unclaimed;
 pub mod rdap_domain;
 pub mod reddit_user;
 pub mod ripestat;
@@ -272,7 +270,6 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(ip_geo::IpGeo),
         Arc::new(ipinfo::IpInfo),
         Arc::new(domainsdb::DomainsDb),
-        Arc::new(ipapi::IpApi),
         Arc::new(ipquery::IpQuery),
         Arc::new(ip_whois_geo::IpWhois),
         Arc::new(geo_intel::GeoIntel),
@@ -351,7 +348,6 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(wikidata::Wikidata),
         // Australian + global public-records / corporate registries
         Arc::new(opencorporates::OpenCorporates),
-        Arc::new(qld_unclaimed::QldUnclaimed),
         Arc::new(au_unclaimed::AuUnclaimed),
         Arc::new(au_people::AuPeople),
         Arc::new(asic_director::AsicDirector),

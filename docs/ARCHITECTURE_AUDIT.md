@@ -34,7 +34,7 @@ Threat 3 · Search 2 · Phone 2 · Other 2.
  http (api/axum) ──────┘    │
  web (embedded SPA) ◀─ api  ├─▶ correlator (68 rules)
                             └─▶ storage (rusqlite WAL + FTS5, via StoragePort)
- modules (118) ─▶ core types + core::hooks (fn-ptr registry, installed at startup)
+ modules (125) ─▶ core types + core::hooks (fn-ptr registry, installed at startup)
 ```
 
 **Invariant (enforced):** `core` is module-agnostic — the engine drives modules
@@ -85,7 +85,7 @@ allowlist remains.
   `Entity::c_effective` noisy-OR/multiplicative confidence fusion (clamped,
   monotone, contract-tested), SHA-256 deterministic UIDs, GREATEST-semantics
   merge.
-- **`modules`** (118) — OSINT sources, each `Module: accepts/produces/process`,
+- **`modules`** (125) — OSINT sources, each `Module: accepts/produces/process`,
   registered in `modules::registry()`; every module is mapped to MITRE ATT&CK
   Reconnaissance (TA0043) — by a per-category default (`techniques_for_category`),
   overridden where the category is too coarse (the two `Other`-category modules,

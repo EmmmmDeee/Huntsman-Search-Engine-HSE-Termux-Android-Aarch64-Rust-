@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (127 modules: 94 free · 28 key-gated · 5 paid)
+## Catalogue (125 modules: 92 free · 28 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -33,7 +33,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `keybase` | username | free | no | 100 | person, username, email, domain, address |
 | `username_variants` | username | free | **yes** | 98 | username |
 
-### people (16)
+### people (15)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -51,7 +51,6 @@ records. The engine knows nothing else — every module is a one-file change.
 | `au_people` | full_name | free | no | 88 | address, phone, email, person |
 | `au_electoral` | full_name | free | no | 85 | address, coordinates |
 | `au_property` | full_name | free | no | 84 | address, coordinates |
-| `qld_unclaimed` | full_name, organisation | free | no | 58 | address, coordinates, organisation |
 | `ahpra` | full_name, organisation | free | no | 86 | person, organisation |
 
 ### email (6)
@@ -102,7 +101,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `asic_director` | full_name | free | no | 89 | organisation, abn_acn, address |
-| `au_unclaimed` | full_name, organisation | free | no | 86 | address, coordinates |
+| `au_unclaimed` | full_name, organisation | free | no | 114 | address, coordinates, organisation, person |
 | `abn_lookup` | full_name, organisation, abn_acn | key_gated | no | 118 | abn_acn, address, organisation, person |
 | `opencorporates` | full_name, organisation, abn_acn | free | no | 116 | organisation, abn_acn, address |
 | `acnc_charities` | organisation | free | no | 112 | organisation, abn_acn, address, domain |
@@ -129,7 +128,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `hackertarget` | ip_address, domain, url | free | no | 24 | domain, ip_address |
 | `domainsdb` | full_name, domain, organisation | free | no | 19 | domain |
 
-### infrastructure (21)
+### infrastructure (20)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -149,7 +148,6 @@ records. The engine knows nothing else — every module is a one-file change.
 | `ip_whois_geo` | ip_address | free | no | 27 | coordinates, address, asn, organisation |
 | `ipquery` | ip_address | free | no | 27 | coordinates, address, asn, organisation |
 | `ip2location` | ip_address | free | no | 26 | coordinates, address, asn, organisation |
-| `ipapi` | ip_address | free | no | 26 | coordinates, address, asn, organisation |
 | `ipinfo` | ip_address | free | no | 25 | coordinates, address, asn, organisation, domain |
 | `ip_registry` | ip_address, asn | free | no | 23 | ip_address, asn, email, url |
 | `urlscan` | ip_address, domain, url | free | no | 15 | ip_address |

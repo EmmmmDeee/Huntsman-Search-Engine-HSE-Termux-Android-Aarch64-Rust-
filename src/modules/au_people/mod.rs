@@ -18,7 +18,7 @@
 //!   * Phone number: 0.50 (listed, unverified)
 //!   * Name variant confirmation: 0.60 (exact match in directory)
 //!
-//! Orthogonal to `qld_unclaimed` and `abn_lookup` — those mine business/govt
+//! Orthogonal to `au_unclaimed` and `abn_lookup` — those mine business/govt
 //! registers; this mines residential directories. Together they triangulate
 //! physical location from three independent source classes (TA0043 technique
 //! diversity principle).

@@ -50,8 +50,9 @@ pub fn parse_coords(value: &str) -> Result<(f64, f64)> {
 ///   - the `0.0, 0.0` "Null Island" sentinel that geo APIs and the Android
 ///     location stack emit when they have no real fix.
 ///
-/// Coarse IP/WiFi-geo providers (`ip_geo`, `ipinfo`, `ipapi`, `ip2location`,
-/// `ipquery`, `wigle`) want [`is_plausible_provider_coord`] instead: it
+/// Coarse IP/WiFi-geo providers (`ip_geo`, `ipinfo`, `ip_whois_geo`,
+/// `ip2location`, `ipquery`, `wigle`) want [`is_plausible_provider_coord`]
+/// instead: it
 /// builds on this but additionally drops the near-null-island placeholder
 /// band those APIs emit. Precise sources stay here so a real equatorial fix
 /// isn't discarded.
@@ -155,7 +156,7 @@ pub fn au_state_for_coords(lat: f64, lon: f64) -> Option<&'static str> {
 pub const NULL_ISLAND_BAND: f64 = 0.01;
 
 /// Validity check for coordinates coming from a *coarse* IP/WiFi-geolocation
-/// provider (`ipinfo`, `ipapi`, `ip2location`, `ipquery`, `wigle`, …):
+/// provider (`ipinfo`, `ip_whois_geo`, `ip2location`, `ipquery`, `wigle`, …):
 /// [`is_valid_coords`] **and** clear of the near-null-island
 /// [`NULL_ISLAND_BAND`] those providers emit as an "unknown" placeholder (a
 /// `loc` like `0.0000,0.0000` or `0.001,0.001`). Both components must exceed
@@ -182,7 +183,7 @@ pub fn is_plausible_provider_coord(lat: f64, lon: f64) -> bool {
 }
 
 /// Build the coarse IP-geolocation `geoint` Coordinates entity shared by the
-/// IP-geo provider modules (`ipinfo` / `ipapi` / `ip2location` / `ipquery`):
+/// IP-geo provider modules (`ipinfo` / `ip2location` / `ipquery`):
 /// the plausibility gate ([`is_plausible_provider_coord`]), the 4-decimal
 /// (~11 m — honest for city-level IP geo, not GPS precision) formatting, and
 /// the `geoint` tag. Born identically whichever provider returned the fix, so

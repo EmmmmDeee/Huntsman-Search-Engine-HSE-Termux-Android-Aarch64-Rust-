@@ -2347,3 +2347,27 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   maximised *and* resource-bounded. No rule change (count 68). Gate green: fmt/clippy/
   doc clean, 3,305 lib tests (CLI-boundary default — no fallout), 24 arch guards, 0
   failures. **Paired:** `SOLUTION_TREE` cycle 50 note — same commit.
+- **2026-06-20** — **Cycle 51 (consolidate redundant modules — debt down, no
+  capability lost).** Operator: "REFACTOR and consolidate modules where applicable."
+  A full audit of the 127-module layer found most apparent overlaps are *deliberate
+  provider diversity* (geocode/photon, the breach DBs, the IP-reputation providers,
+  cell_intel/opencellid) and were left alone; two pairs were genuine redundancy and
+  were merged: **(1)** `ipapi` and `ip_whois_geo` both called the identical endpoint
+  `GET https://ipwho.is/{ip}` — `ipapi` was a misnamed duplicate and `ip_whois_geo`
+  the strict superset (country/au-state tags, richer evidence). Removed `ipapi`; this
+  also fixes a latent **false-corroboration bug** — two modules wrapping one provider
+  were being counted as two independent geo sources — and the AU-026 GEO_SOURCES /
+  `source_family` lists were repointed to `ip_whois_geo` to keep corroboration
+  coverage. **(2)** `qld_unclaimed` folded into `au_unclaimed` (which already covered
+  the other six states): rather than flatten QLD into the simple state table (which
+  would have silently dropped QLD's Person/owner-ABN/suburb extraction), its full
+  pipeline moved in verbatim as a resilient `process_qld` pass, keeping the
+  `"qld_unclaimed"` evidence-source string so every downstream rule keyed on it still
+  fires, with 5 QLD tests ported and the module's priority lifted into the
+  government-register band the waterfall guard requires. Registry **127 → 125** (92
+  free · 28 key-gated · 5 paid); ~no lines of capability lost, two whole modules of
+  duplication gone. README / MODULES.md / ARCHITECTURE_AUDIT counts updated (and a
+  pre-existing README free-count off-by-one fixed); the `readme_module_overview_count
+  _matches_registry` guard passes. No rule change (count 68). Gate green: fmt/clippy/
+  doc clean, lib + integration tests 0 failures, 24 arch guards. **Paired:**
+  `SOLUTION_TREE` cycle 51 note — same commit.

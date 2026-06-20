@@ -353,7 +353,6 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "ip_",
         "ipinfo",
         "ipquery",
-        "ipapi",
         "ip2location",
         "geo",
         "wigle",

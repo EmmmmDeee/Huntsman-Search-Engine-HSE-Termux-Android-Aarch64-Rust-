@@ -36,7 +36,7 @@ use crate::core::entity::Evidence;
         // The sibling providers of the already-listed ipinfo/ipquery/wigle —
         // these fell through to "other" and were excluded from cross-family
         // diversity counts, contrary to the classifier's stated intent.
-        assert_eq!(source_family("ipapi"), "infra");
+        assert_eq!(source_family("ip_whois_geo"), "infra");
         assert_eq!(source_family("ip2location"), "infra");
         assert_eq!(source_family("mylnikov"), "infra");
     }

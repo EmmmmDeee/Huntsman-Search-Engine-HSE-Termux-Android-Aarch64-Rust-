@@ -1,12 +1,22 @@
-//! Australian multi-state unclaimed money registers (NSW, VIC, WA, SA, TAS, ACT).
+//! Australian unclaimed money registers — **all** states and territories
+//! (QLD, NSW, VIC, WA, SA, TAS, ACT).
 //!
-//! Complements [`crate::modules::qld_unclaimed`] which covers Queensland only. This module
-//! queries the open CKAN data portals for the remaining six states/territories
-//! via their published unclaimed-money datasets. Each query is surname-anchored
-//! (same precision strategy as qld_unclaimed) to avoid flooding the graph with
-//! common-name false positives.
+//! Queries the open CKAN data portals for every jurisdiction via their
+//! published unclaimed-money datasets. Each query is surname-anchored to avoid
+//! flooding the graph with common-name false positives.
+//!
+//! Queensland (the Public Trustee register on `data.qld.gov.au`) was folded in
+//! from the former standalone `qld_unclaimed` module and keeps its full, richer
+//! pipeline: surname-broadened search merged with an exact-name pass, joint /
+//! associated owner parsing into first-class `Person` nodes, company-owner
+//! `Organisation` ABN pivots, postcode-derived owner state, and suburb-level
+//! locality enumeration. The remaining states use the simpler postcode/suburb
+//! record extraction below. The QLD pass deliberately tags its evidence with the
+//! `qld_unclaimed` source so the correlator/relation/geo-family rules that key on
+//! the Queensland register source keep firing.
 //!
 //! Sources (all free, keyless, public CKAN APIs):
+//!   * QLD — data.qld.gov.au  (Public Trustee unclaimed monies)
 //!   * NSW — data.nsw.gov.au  (Office of State Revenue unclaimed money)
 //!   * VIC — data.vic.gov.au  (State Revenue Office)
 //!   * WA  — data.wa.gov.au   (Unclaimed money register)
@@ -19,9 +29,11 @@
 //!   * T1589.003 — Employee Names (confirms legal name variant)
 //!   * T1591.002 — Business Relationships (unclaimed from employer/estate)
 //!
-//! Each matching record yields:
+//! Each matching non-QLD record yields:
 //!   * `Address` at 0.55 confidence (postcode + suburb from record)
 //!   * `Coordinates` at 0.52 via offline postcode centroid (au-state tagged)
+
+mod qld_helpers;
 
 use async_trait::async_trait;
 use serde_json::{Map, Value};
@@ -198,11 +210,16 @@ impl Module for AuUnclaimed {
     }
 
     fn description(&self) -> &'static str {
-        "Australian multi-state unclaimed money registers (NSW, VIC, WA, SA) — name → address/postcode pivot"
+        "Australian unclaimed money registers (QLD, NSW, VIC, WA, SA) — name → address/postcode pivot"
     }
 
     fn priority(&self) -> u8 {
-        86
+        // Authoritative government register band (inherited from the folded-in
+        // QLD Public Trustee source, formerly `qld_unclaimed` at 114): a
+        // government unclaimed-money register must outrank the generic free
+        // name-intel band and sit alongside the other AU registries
+        // (abn_lookup 118, opencorporates 116, acnc_charities 112).
+        114
     }
 
     fn cost(&self) -> ModuleCost {
@@ -223,7 +240,15 @@ impl Module for AuUnclaimed {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Address, EntityKind::Coordinates];
+        // Address/Coordinates from every state's records; Organisation (company
+        // owners) and Person (joint/associated owners) additionally from the QLD
+        // pass folded in from the former `qld_unclaimed` module.
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Address,
+            EntityKind::Coordinates,
+            EntityKind::Organisation,
+            EntityKind::Person,
+        ];
         KINDS
     }
 
@@ -240,6 +265,13 @@ impl Module for AuUnclaimed {
 
         let mut result = ModuleResult::new();
 
+        // Queensland pass (folded in from `qld_unclaimed`) — runs first, with its
+        // own richer pipeline. Resilient: a QLD portal error is swallowed so the
+        // remaining state registers below still run (unlike the standalone module,
+        // which could surface a hard error for QLD alone).
+        process_qld(target, ctx, &mut result).await;
+
+        // Remaining states (NSW/VIC/WA/SA) — simple postcode/suburb extraction.
         for reg in REGISTERS {
             let url = format!(
                 "{}/datastore_search?resource_id={}&q={}&limit={}",
@@ -267,6 +299,69 @@ impl Module for AuUnclaimed {
 
         Ok(result)
     }
+}
+
+/// Queensland Public Trustee register pass — the full pipeline carried over from
+/// the former standalone `qld_unclaimed` module (surname-broadened search merged
+/// with an exact-name pass, owner Person/Organisation extraction, and
+/// suburb-level locality enumeration restricted to the seed's own postcodes).
+///
+/// Extends `out` in place; a portal/transport error is logged-as-skipped (the
+/// surrounding [`AuUnclaimed::process`] still runs the other states) rather than
+/// aborting the whole module.
+async fn process_qld(target: &Target, ctx: &ModuleContext, out: &mut ModuleResult) {
+    use qld_helpers::{
+        derive_query, exact_postcodes, merge_records, query_url, records_to_entities,
+        suburbs_to_entities,
+    };
+
+    let full = target.value.trim();
+    if full.len() < 3 {
+        return;
+    }
+    let surname = derive_query(target);
+
+    let broad: CkanResp = match fetch_json(&ctx.http, qld_helpers::SRC, &query_url(surname)).await {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    // A `success:false` (bad resource id / portal error) means no QLD data — skip
+    // the QLD pass but let the other states run.
+    if broad.success == Some(false) {
+        return;
+    }
+    let Some(broad_res) = broad.result else {
+        return;
+    };
+    let total = broad_res.total.unwrap_or(broad_res.records.len() as u64);
+    let mut records = broad_res.records;
+
+    if surname != full
+        && let Ok(exact) =
+            fetch_json::<CkanResp>(&ctx.http, qld_helpers::SRC, &query_url(full)).await
+        && let Some(exact_res) = exact.result
+    {
+        records = merge_records(exact_res.records, records);
+    }
+
+    let broadened = surname != full;
+
+    let mut pc_localities = Vec::new();
+    for pc in exact_postcodes(&records, full, broadened) {
+        let locs = crate::util::postcode_au::localities(&ctx.http, &pc).await;
+        if !locs.is_empty() {
+            pc_localities.push((pc, locs));
+        }
+    }
+
+    out.extend(records_to_entities(
+        &records,
+        total,
+        full,
+        broadened,
+        &ctx.scan_id,
+    ));
+    out.extend(suburbs_to_entities(&pc_localities, &ctx.scan_id));
 }
 
 #[cfg(test)]

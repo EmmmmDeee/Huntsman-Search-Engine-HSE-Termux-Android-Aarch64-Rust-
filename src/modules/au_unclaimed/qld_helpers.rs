@@ -1,4 +1,9 @@
-//! Pure helper functions: query derivation, record parsing, entity building.
+//! Queensland Public Trustee pure helpers: query derivation, record parsing,
+//! entity building. Folded in from the former standalone `qld_unclaimed` module
+//! so [`crate::modules::au_unclaimed`] now covers all states including QLD while
+//! preserving QLD's exact (richer) query semantics and entity output. The
+//! evidence `SRC` stays `"qld_unclaimed"` so the correlator / relation /
+//! geo-family rules that key on the Queensland register source keep firing.
 
 use std::sync::LazyLock;
 
@@ -12,7 +17,20 @@ use crate::core::{
 use crate::util::ckan::field_str;
 use crate::util::postcode_au::Locality;
 
-use super::{ACTION_BASE, MAX_RECORDS, POSTCODE_CAP, RESOURCE_ID, SRC, SUBURB_CAP};
+/// Evidence source tag for QLD register entities. Deliberately kept as
+/// `qld_unclaimed` (not `au_unclaimed`) so the downstream rules that key on the
+/// Queensland register source continue to recognise these records.
+pub(super) const SRC: &str = "qld_unclaimed";
+/// Queensland Government Open Data Portal (CKAN) action base.
+pub(super) const ACTION_BASE: &str = "https://www.data.qld.gov.au/api/3/action";
+/// Public Trustee unclaimed-monies datastore resource id.
+pub(super) const RESOURCE_ID: &str = "872065ae-ddfd-4b5f-ad15-e1935dadd883";
+/// Per-query record cap for the QLD register pass.
+pub(super) const MAX_RECORDS: usize = 20;
+/// Cap on the number of exact-match postcodes fanned out to suburb enumeration.
+pub(super) const POSTCODE_CAP: usize = 6;
+/// Cap on the localities emitted per resolved postcode.
+pub(super) const SUBURB_CAP: usize = 8;
 
 /// A 4-digit Australian postcode, else `None`.
 pub(super) fn postcode(rec: &Map<String, Value>) -> Option<String> {

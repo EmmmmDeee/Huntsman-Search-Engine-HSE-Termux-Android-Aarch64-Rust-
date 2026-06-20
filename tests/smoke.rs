@@ -1762,7 +1762,7 @@ fn priority_waterfall_seeknow_then_gov_then_free_then_geo() {
     for name in [
         "abn_lookup",
         "opencorporates",
-        "qld_unclaimed",
+        "au_unclaimed",
         "acnc_charities",
         "gleif_lei",
     ] {

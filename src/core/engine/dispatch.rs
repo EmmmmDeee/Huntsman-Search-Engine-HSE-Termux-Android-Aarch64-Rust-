@@ -298,7 +298,7 @@ pub(super) fn module_skip_reason(
             // (shodan, censys, RDAP, abuseipdb, etc. all support v6).
             // `should_skip_external_ipv4` rejects ANY `:`-containing
             // string and is reserved for the small set of IPv4-only
-            // modules (ipapi, ip-api.com, ipinfo.io, ipquery.io)
+            // modules (ip-api.com, ipinfo.io, ipquery.io)
             // that route through it inside their own `process`.
             TargetKind::IpAddress if preflight::should_skip_external_ip(&target.value) => {
                 return Some("private/reserved IP — external API would reject");
