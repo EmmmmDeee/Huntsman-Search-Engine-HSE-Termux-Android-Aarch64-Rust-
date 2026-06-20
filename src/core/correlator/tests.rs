@@ -4023,3 +4023,26 @@ fn au064_generalized_template_fires_on_a_repeated_route() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-064");
 }
+
+#[test]
+fn au067_resolved_identity_cluster_fires_on_three_linked_identities() {
+    use crate::core::relation::{Relation, RelationKind};
+    let mk_rel = |from: &Entity, to: &Entity, kind: RelationKind| {
+        Relation::new(from.uid.clone(), to.uid.clone(), kind, 0.8, "s")
+    };
+    let mk = |kind: EntityKind, v: &str| Entity::new(kind, v, 0.8, "s");
+    // Email, person and username all hang off one domain hub → a single
+    // transitive equivalence class of three identities (a resolved identity).
+    let email = mk(EntityKind::Email, "a@x.com");
+    let domain = mk(EntityKind::Domain, "x.com");
+    let person = mk(EntityKind::Person, "Alice");
+    let uname = mk(EntityKind::Username, "alice");
+    let rels = [
+        mk_rel(&email, &domain, RelationKind::BelongsToDomain),
+        mk_rel(&domain, &person, RelationKind::RegisteredBy),
+        mk_rel(&domain, &uname, RelationKind::DerivedFrom),
+    ];
+    let out = rule_au_067_resolved_identity_cluster(&[email, domain, person, uname], &rels, "s", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-067");
+}

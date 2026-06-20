@@ -1322,3 +1322,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   proves more routes, so more gaps auto-resolve in later scans. Gate green: 3,284
   lib tests (+1), 24 arch guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` §8
   cycle 35 — same commit.
+- **2026-06-20** — **Cycle 36 (SOL-CORR, C1 capstone): resolved identity clusters
+  — AU-067.** Mined from the uploaded `hse_modules` prototype's `IdentityClosure`
+  (union-find transitive clustering with weakest-link confidence), re-expressed
+  natively over `Entity`/`Relation` (no parallel type system). AU-060 reports a
+  transitive *pair*; nothing collapsed all such pairs into the *equivalence class*
+  — "{A,B,C,…} is one identity". (1) New shared graph primitive
+  `core::relation::resolve_identity_clusters` — union-find over the `identity_paths`
+  link set into connected components, each carrying the weakest-link confidence of
+  the links that bind it (one finder with AU-060/the dossier, no drift). (2) New
+  pure relation rule **AU-067** (`rules/resolved.rs`) delegating to it: fires for a
+  resolved identity of ≥3 members (a 2-member cluster is one pair = AU-060) above a
+  weakest-link floor, severity rising with size. Pure correlator rule → dispatched
+  in `RELATION_RULES`, firing test added; rule count 64→**65** (AU-001…064, 067;
+  AU-065/066 remain engine-emitted). The forward+backward "join seed data
+  intelligently" leg made concrete: orthogonal pairwise links resolved into one
+  identity. Gate green: 3,290 lib tests (+6), 24 arch guards, fmt/clippy/doc clean.
+  Paired: `PROBLEM_TREE` §8 cycle 36 — same commit.

@@ -2072,3 +2072,25 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   more routes, so more single-route gaps auto-resolve universally in later scans.
   Gate green: fmt/clippy/doc clean, 3,284 lib tests (+1), 24 arch guards, 0
   failures. **Paired:** `SOLUTION_TREE` SOL-CORR cycle 35 note — same commit.
+- **2026-06-20** — **Cycle 36 (C1 capstone): "join seed data intelligently"
+  realised as resolved identity clusters — AU-067 (informed by the uploaded
+  `hse_modules` suite).** The user attached an `hse_modules` v1.4.0 prototype
+  (ALPR/Flock, ADS-B, BTC co-spend, social-graph, cookie-chain deanon modules +
+  an `IdentityClosure` union-find clusterer) alongside the recursive-linking
+  spec. Most of its data-source pathways need signals an OSINT-on-a-seed tool
+  can't passively collect, and it carries a parallel `Uid`/`Confidence`/`Entity`
+  type system — so a blind port would be reckless churn. The genuinely-additive,
+  spec-aligned piece was its `IdentityClosure`: the main HSE had transitive
+  *pairs* (AU-060) and component *size* (`reachable_count`) but never resolved the
+  identity *equivalence classes*. Ported the algorithm — not the code — natively:
+  a shared `resolve_identity_clusters` graph primitive (union-find over the
+  existing `identity_paths` link set, weakest-link confidence) and pure rule
+  **AU-067** that surfaces each ≥3-identity resolved cluster above a confidence
+  floor. This is the forward+backward "join seed data intelligently" leg as a
+  first-class finding: many orthogonal pairwise links collapsed into a single
+  "these are all one identity". Clean + safe: pure graph logic over confirmed
+  relations, no new data/types/sensors/API; built on the shared finder (no drift
+  with AU-060 or the dossier). Rule count 64→65 (AU-067 pure; AU-065/066 stay
+  engine-emitted); README/ARCHITECTURE_AUDIT updated. Gate green: fmt/clippy/doc
+  clean, 3,290 lib tests (+6), 24 arch guards, 0 failures. **Paired:**
+  `SOLUTION_TREE` SOL-CORR cycle 36 note — same commit.

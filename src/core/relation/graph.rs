@@ -443,10 +443,147 @@ pub fn connection_templates(
         .collect()
 }
 
+/// A resolved identity: the set of identity entities that fall into one
+/// transitive equivalence class over the confirmed relation graph, with the
+/// weakest-link confidence of the links that bind them. The cluster-level
+/// counterpart to [`identity_paths`]' pairwise links — where the path finder
+/// answers "is A linked to B?", this answers "which identities are, together,
+/// one identity?" by taking the connected components of the identity-link graph.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IdentityClusterResult {
+    /// The identity member UIDs, sorted; always `len() >= 2`.
+    pub members: Vec<String>,
+    /// Weakest-link confidence — the minimum pairwise [`IdentityPath::min_confidence`]
+    /// across the links that merged the component. A resolved identity is only as
+    /// trustworthy as the weakest connection holding it together.
+    pub min_confidence: f64,
+}
+
+/// Resolve the **transitive identity equivalence classes** of the relation graph:
+/// group every identity entity reachable from another (within `max_hops`) into a
+/// single cluster, via union-find over the [`identity_paths`] link set. Returns
+/// only multi-member clusters (`len() >= 2`), each carrying the weakest-link
+/// confidence of the links that bind it, sorted by first member UID.
+///
+/// This is the cluster-level synthesis of the pairwise transitive closure: where
+/// AU-060 reports "A is linked to B", this collapses every such link into "{A, B,
+/// C, …} is one identity". Built on the shared `identity_paths` finder, so a
+/// cluster's membership can never disagree with the pairwise links the dossier
+/// renders (one finder, no drift). Deterministic — members and clusters are
+/// sorted, independent of input and hash-iteration order.
+pub fn resolve_identity_clusters(
+    entities: &[Entity],
+    relations: &[Relation],
+    max_hops: usize,
+) -> Vec<IdentityClusterResult> {
+    let paths = identity_paths(entities, relations, max_hops);
+    if paths.is_empty() {
+        return Vec::new();
+    }
+
+    // Intern every identity UID that participates in a link.
+    let mut index: HashMap<&str, usize> = HashMap::new();
+    let mut uids: Vec<&str> = Vec::new();
+    for p in &paths {
+        for u in [p.from_uid.as_str(), p.to_uid.as_str()] {
+            if !index.contains_key(u) {
+                index.insert(u, uids.len());
+                uids.push(u);
+            }
+        }
+    }
+
+    // Union-find with iterative path-halving — merge the endpoints of every link.
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    let mut parent: Vec<usize> = (0..uids.len()).collect();
+    for p in &paths {
+        let a = find(&mut parent, index[p.from_uid.as_str()]);
+        let b = find(&mut parent, index[p.to_uid.as_str()]);
+        if a != b {
+            parent[a] = b;
+        }
+    }
+
+    // Weakest-link confidence per component: the minimum link min_confidence
+    // among every link whose endpoints landed in that component.
+    let mut comp_conf: HashMap<usize, f64> = HashMap::new();
+    for p in &paths {
+        let r = find(&mut parent, index[p.from_uid.as_str()]);
+        let e = comp_conf.entry(r).or_insert(f64::INFINITY);
+        *e = e.min(p.min_confidence);
+    }
+
+    // Group members by component root.
+    let mut groups: HashMap<usize, Vec<&str>> = HashMap::new();
+    for (i, &u) in uids.iter().enumerate() {
+        let r = find(&mut parent, i);
+        groups.entry(r).or_default().push(u);
+    }
+
+    let mut out: Vec<IdentityClusterResult> = groups
+        .into_iter()
+        .filter(|(_, m)| m.len() >= 2)
+        .map(|(r, mut members)| {
+            members.sort_unstable();
+            IdentityClusterResult {
+                members: members.into_iter().map(str::to_string).collect(),
+                min_confidence: comp_conf.get(&r).copied().unwrap_or(0.0),
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| a.members[0].cmp(&b.members[0]));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::relation::Relation;
+
+    #[test]
+    fn resolve_identity_clusters_groups_transitive_identities_with_weakest_link() {
+        let mk = |k: EntityKind, v: &str| Entity::new(k, v, 0.8, "s");
+        let rel = |from: &Entity, to: &Entity, c: f64| {
+            Relation::new(
+                from.uid.clone(),
+                to.uid.clone(),
+                RelationKind::DerivedFrom,
+                c,
+                "s",
+            )
+        };
+        // email — uname (0.9) — phone (0.4): one component of 3 identities, whose
+        // weakest binding link is 0.4. A separate unlinked person is excluded.
+        let email = mk(EntityKind::Email, "a@x.com");
+        let uname = mk(EntityKind::Username, "alice");
+        let phone = mk(EntityKind::Phone, "+61400000000");
+        let lone = mk(EntityKind::Person, "Bob");
+        let rels = [rel(&email, &uname, 0.9), rel(&uname, &phone, 0.4)];
+        let ents = [email, uname, phone, lone];
+
+        let clusters = resolve_identity_clusters(&ents, &rels, 4);
+        assert_eq!(clusters.len(), 1, "one multi-identity cluster");
+        assert_eq!(clusters[0].members.len(), 3, "email + username + phone");
+        assert!(
+            (clusters[0].min_confidence - 0.4).abs() < 1e-9,
+            "the weakest link sets the cluster confidence"
+        );
+        // Deterministic: identical inputs yield byte-identical output.
+        assert_eq!(resolve_identity_clusters(&ents, &rels, 4), clusters);
+    }
+
+    #[test]
+    fn resolve_identity_clusters_empty_without_links() {
+        let a = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
+        let b = Entity::new(EntityKind::Username, "bob", 0.8, "s");
+        assert!(resolve_identity_clusters(&[a, b], &[], 4).is_empty());
+    }
 
     fn ent(kind: EntityKind, value: &str) -> Entity {
         Entity::new(kind, value, 0.8, "s")
