@@ -1212,3 +1212,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   refresh:** leverage-map SOL-CORR `[~]`; C1 `[~]`. Gate green: fmt/clippy/doc
   clean, 3,261 lib tests (+10), 0 failures. Paired: `PROBLEM_TREE` C1 + §8
   cycle 26 — same commit.
+- **2026-06-20** — **Cycle 27 (refactor, Rule 4): relation-graph primitive
+  consolidation.** Extends cycle 26's SOL-CORR: extracted the shared
+  `undirected_adjacency` + `reachable_count` into `core::relation::graph` (renamed
+  from `path`) and routed `core::network::synthesize` through them, deleting its
+  private adjacency loop + `reachable_from` DFS. One canonical relation-graph
+  builder now backs the subject-network view, the AU-060 transitive rule, and the
+  dossier CONNECTIONS section — they cannot drift ("delegate, never copy").
+  Behaviour-preserving (network 4 + AU-060 8 + path determinism proptest
+  unchanged); +3 helper tests. Gate green: 3,264 lib tests. Paired:
+  `PROBLEM_TREE` §8 cycle 27 — same commit.

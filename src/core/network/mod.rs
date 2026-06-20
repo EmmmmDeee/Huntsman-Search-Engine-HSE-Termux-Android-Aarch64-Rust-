@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use serde::Serialize;
 
 use crate::core::entity::Entity;
-use crate::core::relation::{Relation, RelationKind};
+use crate::core::relation::{Relation, RelationKind, reachable_count, undirected_adjacency};
 
 /// Maximum connections returned per group; the remainder are summarised by
 /// [`ConnectionGroup::total`]. A phone screen can't usefully scroll thousands of
@@ -170,16 +170,9 @@ pub fn synthesize(entities: &[Entity], relations: &[Relation]) -> SubjectNetwork
     };
 
     // Undirected adjacency: for the subject's view a link counts whichever way the
-    // edge points. Keyed by UID → list of (neighbour UID, kind, edge confidence).
-    let mut adj: HashMap<&str, Vec<(&str, RelationKind, f64)>> = HashMap::new();
-    for r in relations {
-        adj.entry(r.from_uid.as_str())
-            .or_default()
-            .push((r.to_uid.as_str(), r.kind, r.confidence));
-        adj.entry(r.to_uid.as_str())
-            .or_default()
-            .push((r.from_uid.as_str(), r.kind, r.confidence));
-    }
+    // edge points. Shared with the path finder / AU-060 via the one canonical
+    // builder (`None` = keep dangling endpoints; they're pruned at lookup below).
+    let adj = undirected_adjacency(relations, None);
 
     // ── Direct connections, deduplicated per (group, neighbour) keeping the
     // strongest edge (a pair linked by two kinds shows once, under its primary
@@ -253,7 +246,7 @@ pub fn synthesize(entities: &[Entity], relations: &[Relation]) -> SubjectNetwork
             classification: subject.classify().as_str().to_string(),
         }),
         direct_count: direct.len(),
-        reachable_count: reachable_from(subject.uid.as_str(), &adj),
+        reachable_count: reachable_count(subject.uid.as_str(), &adj),
         edge_count: relations.len(),
         groups,
     }
@@ -269,24 +262,6 @@ fn group_for_key(key: &str) -> &'static str {
         "locations" => "Locations",
         _ => "Infrastructure & lineage",
     }
-}
-
-/// Count entities reachable from `start` over the undirected relation graph
-/// (excluding `start` itself) — the subject's whole connected component.
-fn reachable_from(start: &str, adj: &HashMap<&str, Vec<(&str, RelationKind, f64)>>) -> usize {
-    let mut seen: HashSet<&str> = HashSet::new();
-    seen.insert(start);
-    let mut stack = vec![start];
-    while let Some(u) = stack.pop() {
-        if let Some(neighbours) = adj.get(u) {
-            for &(v, _, _) in neighbours {
-                if seen.insert(v) {
-                    stack.push(v);
-                }
-            }
-        }
-    }
-    seen.len().saturating_sub(1)
 }
 
 #[cfg(test)]

@@ -1903,3 +1903,18 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   count corrected 59→61 (AU-060/061 had shipped unlogged). C1 `[ ]`→`[~]`.
   Gate green: fmt/clippy/doc clean, 3,261 lib tests (+10), 0 failures.
   **Paired:** `SOLUTION_TREE` SOL-CORR `[ ]`→`[~]` + §3/§4 — same commit.
+- **2026-06-20** — **Cycle 27 (refactor, Rule 4): one relation-graph primitive —
+  `core::network` + AU-060 + the dossier now share `core::relation::graph`.**
+  Follow-through on cycle 26: `core::network::synthesize` carried its *own*
+  undirected-adjacency builder and a private `reachable_from` DFS — a second copy
+  of the graph mechanics the new path finder also built (exactly the drift Rule 4
+  forbids). Renamed the module `relation::path`→`relation::graph` (it now owns
+  adjacency + reachability + paths) and extracted `undirected_adjacency(relations,
+  confine)` — one builder; `confine = None` keeps dangling endpoints for the
+  subject-network view, `Some(set)` prunes them for the path/correlation view —
+  plus `reachable_count`. `network` and `identity_paths` both delegate to them, so
+  the subject-network view and the link-analysis view can never disagree about the
+  graph. Behaviour byte-identical (network's 4 tests + AU-060's 8 + the path
+  determinism proptest all pass unchanged); +3 helper unit tests. Gate green:
+  fmt/clippy/doc clean, 3,264 lib tests (+3), 0 failures. **Paired:**
+  `SOLUTION_TREE` SOL-CORR note + §5 — same commit.

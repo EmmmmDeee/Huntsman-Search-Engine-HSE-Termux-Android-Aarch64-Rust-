@@ -1,28 +1,37 @@
-//! Shortest-path link analysis over the relation graph — the canonical
-//! "how are these two identities connected?" finder.
+//! Graph analysis over the relation edge set — the canonical adjacency,
+//! reachability, and shortest-path primitives the whole system shares.
 //!
-//! This is the graph-free link-analysis primitive behind both the dossier's
-//! CONNECTIONS section and the AU-060 transitive-identity correlation rule.
-//! Instead of handing the operator a canvas to pivot by hand (Maltego), it
-//! computes the *thread* — the ordered chain of typed edges that ties one
-//! identity to another — and delivers it as a reproducible conclusion. One
-//! authoritative implementation, so the rule and the rendered dossier can never
-//! disagree about what links two entities (the `Rule 4` "delegate, never copy"
-//! invariant — a hand-rolled second BFS is exactly how two views drift).
+//! The relation layer ([`super`]) produces typed edges; this module is the one
+//! place that turns them into a traversable graph. It owns:
+//!   - [`undirected_adjacency`] — the single both-directions adjacency builder
+//!     (the subject-network view and the path finder used to keep private copies;
+//!     now they share one, so they cannot drift — `Rule 4`, "delegate, never
+//!     copy");
+//!   - [`reachable_count`] — connected-component size from a node;
+//!   - [`identity_paths`] — the graph-free link-analysis finder behind both the
+//!     dossier's CONNECTIONS section and the AU-060 transitive-identity rule:
+//!     instead of handing the operator a canvas to pivot by hand (Maltego), it
+//!     computes the *thread* — the ordered chain of typed edges that ties one
+//!     identity to another — and delivers it as a reproducible conclusion.
 //!
 //! # Determinism (architecture invariant)
-//! Pure BFS over a value-derived edge set. Parallel edges between one pair
-//! collapse to the lexicographically-smallest [`RelationKind`] label (so the
-//! rendered hop is stable), adjacency lists are sorted by neighbour UID, and
-//! every pair is computed exactly once from its smaller-UID endpoint — so the
-//! same entity + relation set always yields the byte-identical path set,
-//! independent of input order. Guarded by `identity_paths_is_order_independent`
-//! in the sibling test module.
+//! Pure BFS over a value-derived edge set. Adjacency lists are sorted by
+//! `(neighbour UID, kind, confidence)`, so a node's first-visited edge to a
+//! given neighbour is always its lexicographically-smallest-kind edge (parallel
+//! edges collapse to a stable label), and every identity pair is computed once
+//! from its smaller-UID endpoint — so the same entity + relation set always
+//! yields the byte-identical path set, independent of input order. Guarded by
+//! `identity_paths_is_order_independent` in the sibling test module.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::{Relation, RelationKind};
 use crate::core::entity::{Entity, EntityKind};
+
+/// The relation graph as an undirected adjacency list: each node UID maps to its
+/// incident `(neighbour UID, edge kind, edge confidence)` edges. Borrows from the
+/// `relations`/`entities` it is built from (see [`undirected_adjacency`]).
+pub type Adjacency<'a> = HashMap<&'a str, Vec<(&'a str, RelationKind, f64)>>;
 
 /// One hop on a connection path: the typed edge traversed and the entity it
 /// reaches. The first step leaves the path's `from_uid`; the last step's
@@ -58,6 +67,54 @@ pub fn is_identity_kind(kind: &EntityKind) -> bool {
     )
 }
 
+/// Build the undirected adjacency of the relation graph — every edge added in
+/// both directions. Self-loops are skipped (they connect nothing). When
+/// `confine` is `Some(set)`, only edges whose *both* endpoints are in the set
+/// are added (the path / correlation view, which must never traverse a dangling
+/// or quarantined node); pass `None` to keep every edge (the subject-network
+/// view, which tolerates a dangling endpoint and prunes it at lookup time).
+///
+/// Per-node edge lists are returned in input order; callers that need a
+/// deterministic traversal sort them (see [`identity_paths`]).
+pub fn undirected_adjacency<'a>(
+    relations: &'a [Relation],
+    confine: Option<&HashSet<&'a str>>,
+) -> Adjacency<'a> {
+    let mut adj: Adjacency<'a> = HashMap::new();
+    for r in relations {
+        let (a, b) = (r.from_uid.as_str(), r.to_uid.as_str());
+        if a == b {
+            continue; // a self-loop connects nothing
+        }
+        if let Some(set) = confine
+            && (!set.contains(a) || !set.contains(b))
+        {
+            continue; // dangling / quarantined endpoint — not traversable
+        }
+        adj.entry(a).or_default().push((b, r.kind, r.confidence));
+        adj.entry(b).or_default().push((a, r.kind, r.confidence));
+    }
+    adj
+}
+
+/// Count the entities reachable from `start` over the undirected graph,
+/// excluding `start` itself — the size of its connected component minus one.
+pub fn reachable_count<'a>(start: &'a str, adj: &Adjacency<'a>) -> usize {
+    let mut seen: HashSet<&str> = HashSet::new();
+    seen.insert(start);
+    let mut stack = vec![start];
+    while let Some(u) = stack.pop() {
+        if let Some(neighbours) = adj.get(u) {
+            for &(v, _, _) in neighbours {
+                if seen.insert(v) {
+                    stack.push(v);
+                }
+            }
+        }
+    }
+    seen.len().saturating_sub(1)
+}
+
 /// Compute the shortest typed path between every pair of identity entities that
 /// are connected through `1..=max_hops` relation edges.
 ///
@@ -80,40 +137,21 @@ pub fn identity_paths(
         return Vec::new();
     }
 
-    // A path may only traverse confirmed (present) nodes.
-    let by_uid: HashSet<&str> = entities.iter().map(|e| e.uid.as_str()).collect();
-
-    // Undirected edge map keyed by the unordered pair (smaller-UID, larger-UID),
-    // collapsing parallels to the smallest-kind label (and, for an equal kind,
-    // the weaker confidence — the conservative choice). A BTreeMap keeps the
-    // build deterministic before adjacency lists are materialised.
-    let mut edge: BTreeMap<(&str, &str), (RelationKind, f64)> = BTreeMap::new();
-    for r in relations {
-        let (a, b) = (r.from_uid.as_str(), r.to_uid.as_str());
-        if a == b || !by_uid.contains(a) || !by_uid.contains(b) {
-            continue;
-        }
-        let key = if a < b { (a, b) } else { (b, a) };
-        edge.entry(key)
-            .and_modify(|cur| {
-                let newer_label = r.kind.as_str() < cur.0.as_str();
-                let same_label_weaker = r.kind.as_str() == cur.0.as_str() && r.confidence < cur.1;
-                if newer_label || same_label_weaker {
-                    *cur = (r.kind, r.confidence);
-                }
-            })
-            .or_insert((r.kind, r.confidence));
-    }
-
-    // Adjacency: node -> [(neighbour, kind, confidence)], sorted by neighbour UID
-    // so BFS predecessor selection is independent of edge-map iteration order.
-    let mut adj: HashMap<&str, Vec<(&str, RelationKind, f64)>> = HashMap::new();
-    for (&(a, b), &(kind, conf)) in &edge {
-        adj.entry(a).or_default().push((b, kind, conf));
-        adj.entry(b).or_default().push((a, kind, conf));
-    }
+    // A path may only traverse confirmed (present) nodes — the shared adjacency
+    // builder, confined to the confirmed UID set so a dangling/quarantined edge
+    // is never walked.
+    let confirmed: HashSet<&str> = entities.iter().map(|e| e.uid.as_str()).collect();
+    let mut adj = undirected_adjacency(relations, Some(&confirmed));
+    // Sort each list by (neighbour, kind, confidence) so BFS's first visit to a
+    // neighbour deterministically takes the smallest-kind (then weakest) edge —
+    // parallel edges thus collapse to one stable label with no separate pass, and
+    // traversal is independent of input order.
     for v in adj.values_mut() {
-        v.sort_by(|x, y| x.0.cmp(y.0));
+        v.sort_by(|x, y| {
+            x.0.cmp(y.0)
+                .then_with(|| x.1.as_str().cmp(y.1.as_str()))
+                .then_with(|| x.2.total_cmp(&y.2))
+        });
     }
 
     // Identity endpoints in sorted UID order — each pair is computed once from
@@ -354,6 +392,58 @@ mod tests {
         let person = ent(EntityKind::Person, "A");
         let rels = [rel(&email, &person, RelationKind::IdentifiedBy, 0.7)];
         assert!(identity_paths(&[email, person], &rels, 0).is_empty());
+    }
+
+    #[test]
+    fn adjacency_is_bidirectional_and_confinable() {
+        let a = ent(EntityKind::Email, "a@x.com");
+        let b = ent(EntityKind::Person, "B");
+        let phantom = "ghost-uid";
+        let rels = [
+            rel(&a, &b, RelationKind::IdentifiedBy, 0.8),
+            Relation::new(
+                a.uid.clone(),
+                phantom.to_string(),
+                RelationKind::DerivedFrom,
+                0.8,
+                "s",
+            ),
+        ];
+        // Unconfined keeps the dangling edge (the subject-network view).
+        let raw = undirected_adjacency(&rels, None);
+        assert!(raw[a.uid.as_str()].iter().any(|&(n, _, _)| n == phantom));
+        // Confined to {a,b} prunes it; edges remain bidirectional.
+        let confirmed: HashSet<&str> = [a.uid.as_str(), b.uid.as_str()].into_iter().collect();
+        let confined = undirected_adjacency(&rels, Some(&confirmed));
+        assert!(
+            !confined[a.uid.as_str()]
+                .iter()
+                .any(|&(n, _, _)| n == phantom)
+        );
+        assert!(confined[b.uid.as_str()].iter().any(|&(n, _, _)| n == a.uid));
+    }
+
+    #[test]
+    fn adjacency_skips_self_loops() {
+        let a = ent(EntityKind::Email, "a@x.com");
+        let rels = [rel(&a, &a, RelationKind::AliasOf, 0.8)];
+        assert!(undirected_adjacency(&rels, None).is_empty());
+    }
+
+    #[test]
+    fn reachable_count_is_component_size_minus_one() {
+        // a — b — c chain; d isolated.
+        let a = ent(EntityKind::Email, "a@x.com");
+        let b = ent(EntityKind::Domain, "x.com");
+        let c = ent(EntityKind::Person, "C");
+        let d = ent(EntityKind::Username, "loner");
+        let rels = [
+            rel(&a, &b, RelationKind::BelongsToDomain, 0.8),
+            rel(&b, &c, RelationKind::RegisteredBy, 0.8),
+        ];
+        let adj = undirected_adjacency(&rels, None);
+        assert_eq!(reachable_count(a.uid.as_str(), &adj), 2); // reaches b, c
+        assert_eq!(reachable_count(d.uid.as_str(), &adj), 0); // isolated
     }
 
     mod property {
