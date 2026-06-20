@@ -1576,6 +1576,9 @@ async fn spa_references_only_registered_api_endpoints() {
             // Not Allowed), not the fallback's 404; the assertion below only
             // requires "not 404", which confirms the route is registered.
             "radar" => "/api/v1/radar".to_string(),
+            // Forward-only scan-plan preview — parameter-driven; a bare value
+            // exercises the registered route (returns 200, never the fallback 404).
+            "plan" => "/api/v1/plan?value=example.com".to_string(),
             other => panic!(
                 "SPA references /api/v1/{other} but this test has no probe for it — \
                  add one and confirm the route is registered in src/api/routes.rs"
@@ -1983,4 +1986,29 @@ async fn keys_pool_rotate_is_write_gated() {
         .insert(axum::extract::ConnectInfo(loopback));
     let resp = app.oneshot(post).await.unwrap();
     assert_eq!(resp.status(), http::StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn plan_preview_lists_engaged_modules_for_a_seed() {
+    let app = test_app("plan");
+    // A two-word name seed detects as a full name and engages real registry modules,
+    // WITHOUT running a scan.
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/plan?value=Kyle%20Diegmann"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["kind"].as_str().unwrap(), "full_name");
+    assert!(
+        json["module_count"].as_u64().unwrap() > 0,
+        "a name seed engages at least one module"
+    );
+    assert!(json["modules"].is_array());
+    assert!(json["categories"].is_array());
+
+    // An empty value is rejected cleanly, not a panic.
+    let resp = app.oneshot(get("/api/v1/plan?value=")).await.unwrap();
+    assert_eq!(resp.status(), 400);
 }

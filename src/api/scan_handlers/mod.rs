@@ -45,6 +45,79 @@ fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target), String> {
     Ok((scan, target))
 }
 
+/// Query for [`plan_preview`]: the seed value to preview.
+#[derive(serde::Deserialize)]
+pub struct PlanQuery {
+    value: String,
+}
+
+/// `GET /api/v1/plan?value=<seed>` — forward-only scan-plan PREVIEW.
+///
+/// Detects the seed's [`TargetKind`](crate::core::scan::TargetKind) and lists the
+/// modules that WOULD run on it (name, category, priority, description) **without
+/// executing a scan**. Pure and offline: it builds the module registry and filters it
+/// through the very same [`Module::accepts`](crate::core::module::Module::accepts) gate
+/// the engine uses at dispatch, so the preview is faithful to what a real scan will
+/// run. This lets an operator preview a scan's SCOPE and COST — how many modules, of
+/// which categories — before committing battery and time on a phone, and gives a
+/// reproducible, auditable "seed → engaged capabilities" trace with no side effects.
+pub async fn plan_preview(Query(q): Query<PlanQuery>) -> impl IntoResponse {
+    use crate::core::module::Module;
+
+    let value = q.value.trim();
+    if value.is_empty() {
+        return bad_request("value is empty");
+    }
+    let target = Target::detect(value);
+
+    let mut accepting: Vec<std::sync::Arc<dyn Module>> = crate::modules::registry()
+        .into_iter()
+        .filter(|m| m.accepts(&target))
+        .collect();
+    // Engine dispatch order: highest priority first, ties broken by name so the
+    // preview is deterministic.
+    accepting.sort_by(|a, b| {
+        b.priority()
+            .cmp(&a.priority())
+            .then_with(|| a.name().cmp(b.name()))
+    });
+
+    // Per-category tallies so the plan's shape is legible at a glance.
+    let mut by_category: std::collections::BTreeMap<&'static str, usize> =
+        std::collections::BTreeMap::new();
+    for m in &accepting {
+        *by_category.entry(m.category().as_str()).or_insert(0) += 1;
+    }
+
+    let modules: Vec<serde_json::Value> = accepting
+        .iter()
+        .map(|m| {
+            json!({
+                "name": m.name(),
+                "category": m.category().as_str(),
+                "priority": m.priority(),
+                "description": m.description(),
+            })
+        })
+        .collect();
+    let categories: Vec<serde_json::Value> = by_category
+        .into_iter()
+        .map(|(c, n)| json!({ "category": c, "count": n }))
+        .collect();
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "value": value,
+            "kind": target.kind.canonical_str(),
+            "module_count": modules.len(),
+            "categories": categories,
+            "modules": modules,
+        })),
+    )
+        .into_response()
+}
+
 pub async fn scan_create(
     State(s): State<Arc<AppState>>,
     Json(req): Json<ScanRequest>,

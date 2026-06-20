@@ -632,6 +632,8 @@ const API = {
   pivots:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/pivots'),
   auditScan: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/audit'),
   create:    body=>API._req('/api/v1/scans',{method:'POST',body}),
+  // Forward-only scan-plan preview: which modules a seed engages, before scanning.
+  plan:      value=>API._req('/api/v1/plan?value='+encodeURIComponent(value)),
   // Raw-text upload (not JSON): POST a dossier file's contents to be parsed and
   // ingested as a scan. Bypasses _req's JSON envelope.
   importDossier: text=>fetch('/api/v1/scans/import',{method:'POST',headers:{'Content-Type':'text/plain'},body:text}).then(async r=>{ if(!r.ok){ let e='HTTP '+r.status; try{ e=(await r.json()).error||e; }catch{} throw new Error(e); } return r.json(); }),
@@ -1129,6 +1131,26 @@ async function renderAttackDiff(a, b){
 }
 
 /* ═══════════ Page: NEWSCAN (#/newscan) ═══════════ */
+/* ── Forward-only scan-plan preview: which modules a seed engages, before spending
+   battery/time on a scan. GET /api/v1/plan?value=. Pure, offline, no scan run. ── */
+async function previewPlan(){
+  const value = ($('#scantarget').value || '').trim();
+  const out = $('#plan-preview');
+  if (!value){ out.innerHTML = '<span class="text-muted" style="font-size:12px">Enter a target above to preview.</span>'; return; }
+  out.innerHTML = '<span class="text-muted" style="font-size:12px">Resolving plan…</span>';
+  let p;
+  try { p = await API.plan(value); }
+  catch(e){ out.innerHTML = `<div class="alert alert-danger" style="margin:0;padding:6px 10px">${esc(e.message)}</div>`; return; }
+  const cats = (p.categories || []).map(c=>`<span class="tag" style="margin:0 4px 2px 0;display:inline-block">${esc(c.category)}&nbsp;${c.count}</span>`).join('');
+  const shown = (p.modules || []).slice(0, 40);
+  const mods = shown.map(m=>`<code style="margin:0 4px 2px 0;display:inline-block" title="${attr(m.description||'')}">${esc(m.name)}</code>`).join('');
+  out.innerHTML = `<div style="padding:8px 10px;border-left:3px solid #5bc0de;background:rgba(91,192,222,0.07)">
+    <div>Detected type: <span class="tag">${esc(p.kind)}</span> &middot; <b>${p.module_count}</b> module${p.module_count===1?'':'s'} will run</div>
+    <div style="margin-top:5px">${cats}</div>
+    <div style="margin-top:6px;line-height:1.9">${mods}${(p.modules||[]).length>40?' <span class="text-muted">…</span>':''}</div>
+  </div>`;
+}
+
 async function renderNewScan(v){
   if (!S.modules){ const m = await API.modules(); S.modules = m.modules || []; }
   const W = S.wizard;
@@ -1174,8 +1196,13 @@ async function renderNewScan(v){
             <input class="form-control" type="text" id="scanname" value="${attr(W.name)}" placeholder="The name of this scan.">
           </div>
           <label for="scantarget">Scan Target</label>
-          <div class="input-group" style="padding-bottom:10px">
+          <div class="input-group" style="padding-bottom:6px">
             <input class="form-control" type="text" id="scantarget" value="${attr(W.value)}" placeholder="The target of your scan." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          </div>
+          <div style="padding-bottom:10px">
+            <button class="btn btn-default btn-xs" type="button" onclick="previewPlan()"><i class="glyphicon glyphicon-eye-open"></i>&nbsp;Preview plan</button>
+            <span class="text-muted" style="font-size:11px;margin-left:6px">see which modules run, before scanning</span>
+            <div id="plan-preview" style="margin-top:8px"></div>
           </div>
           <label for="scankind">Target Type</label>
           <select id="scankind" class="form-control">
