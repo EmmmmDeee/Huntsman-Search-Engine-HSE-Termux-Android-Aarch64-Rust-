@@ -3950,3 +3950,32 @@ fn au030_fires_for_three_source_geo_cluster() {
     assert_eq!(r[0].rule_id, "AU-030");
     assert_eq!(r[0].severity, Severity::Medium);
 }
+
+#[test]
+fn au062_multipath_corroboration_fires_on_orthogonal_routes() {
+    use crate::core::relation::{Relation, RelationKind};
+    let mk_rel = |from: &Entity, to: &Entity, kind: RelationKind| {
+        Relation::new(from.uid.clone(), to.uid.clone(), kind, 0.8, "s")
+    };
+    // a↔b joined by two edge-disjoint routes through different source families:
+    // a—domain(infra)—b and a—org(identity_registry)—b.
+    let a = ent(EntityKind::Email, "a@x.com", 0.8, "s", false);
+    let b = ent(EntityKind::Username, "bob", 0.8, "s", false);
+    let d = ent(EntityKind::Domain, "x.com", 0.8, "dns_intel", false);
+    let o = ent(
+        EntityKind::Organisation,
+        "Acme Pty",
+        0.8,
+        "opencorporates",
+        false,
+    );
+    let rels = [
+        mk_rel(&a, &d, RelationKind::BelongsToDomain),
+        mk_rel(&d, &b, RelationKind::DerivedFrom),
+        mk_rel(&a, &o, RelationKind::RegisteredBy),
+        mk_rel(&o, &b, RelationKind::DerivedFrom),
+    ];
+    let out = rule_au_062_multipath_corroboration(&[a, b, d, o], &rels, "s", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-062");
+}

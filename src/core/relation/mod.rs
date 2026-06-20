@@ -50,7 +50,7 @@ pub use builders::{
     derive_structural,
 };
 pub use graph::{
-    Adjacency, IdentityPath, PathStep, identity_paths, is_identity_kind, reachable_count,
-    undirected_adjacency,
+    Adjacency, IdentityPath, PathStep, disjoint_pathways, identity_paths, is_identity_kind,
+    reachable_count, undirected_adjacency,
 };
 pub use types::{Relation, RelationKind};

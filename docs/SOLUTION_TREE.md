@@ -1240,3 +1240,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   "best-estimate with provenance + confidence radius" delivered end-to-end;
   SOL-GEOINT stays `[~]` for its remaining legs. Gate green: 3,264 lib tests.
   Paired: `PROBLEM_TREE` §8 cycle 29 — same commit.
+- **2026-06-20** — **Cycle 30 (SOL-CORR, C1): multi-pathway corroboration —
+  recursive-linking increment 1.** New `core::relation::disjoint_pathways`
+  primitive (greedy edge-disjoint shortest-path enumeration; deterministic,
+  order-independence tested) + new rule **AU-062**: two identities joined by ≥2
+  edge-disjoint pathways across ≥2 distinct OSINT source families are flagged as
+  multiply-corroborated (graph redundancy alone rejected). Reuses the AU-059
+  `source_family` orthogonality measure and the shared `core::relation::graph`
+  layer (so it can't drift from AU-060 or the dossier). Surfaced in the dossier
+  CONNECTIONS view. 62 rules. SOL-CORR advances (orthogonal-pathway corroboration
+  done; gap-fill + backward synthesis are increments 2–3). Gate green: 3,271 lib
+  tests (+7). Paired: `PROBLEM_TREE` §8 cycle 30 — same commit.

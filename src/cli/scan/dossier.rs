@@ -208,11 +208,29 @@ fn print_connections(entities: &[Entity], relations: &[Relation]) {
             }
         }
         println!("{line}");
+        // Corroboration multiplicity: how many edge-disjoint routes confirm this
+        // link (AU-062's signal). >1 means the connection survives any single
+        // pathway going dark — the orthogonal-route robustness.
+        let routes = crate::core::relation::disjoint_pathways(
+            entities,
+            relations,
+            &c.from_uid,
+            &c.to_uid,
+            5,
+            4,
+        )
+        .len();
+        let corroboration = if routes >= 2 {
+            format!(" · corroborated via {routes} independent pathways")
+        } else {
+            String::new()
+        };
         println!(
-            "    {} hop{}, weakest edge conf={:.2}",
+            "    {} hop{}, weakest edge conf={:.2}{}",
             c.hops,
             if c.hops == 1 { "" } else { "s" },
-            c.min_confidence
+            c.min_confidence,
+            corroboration
         );
         println!();
     }

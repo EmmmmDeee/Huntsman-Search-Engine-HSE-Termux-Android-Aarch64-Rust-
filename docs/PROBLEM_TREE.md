@@ -76,8 +76,8 @@ Each node: **ID · statement · location · impact · → optimal solution · pr
 Current baseline (grounded in the codebase, 2026-06-18): **126 modules** (93 free
 · 28 key-gated · 5 paid) across 14 categories (Infrastructure 21, Geo 20, People
 16, DnsRecon 13, Breach 11, Social 11, Email 6, Corporate 9, Phone 3, Web 5,
-Sensor 4, Threat 3, Search/Other 2 each); 61 native correlation rules
-(AU-001…AU-061); 0 `unsafe`; deterministic entity merge; SQLite store; SSE live;
+Sensor 4, Threat 3, Search/Other 2 each); 62 native correlation rules
+(AU-001…AU-062); 0 `unsafe`; deterministic entity merge; SQLite store; SSE live;
 axum SPA. Deps: `regex` in; **`proptest` 1.11 + `criterion` 0.8 direct (dev-only,
 zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
 `util::scan` + `util::html`); `bstr`, `fst`, `arbitrary` still NOT direct.**
@@ -1950,3 +1950,23 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   legs: more sources, movement/timeline geo, tighter AU bounding). Gate green:
   fmt/clippy/doc clean, 3,264 lib tests, 0 failures. **Paired:** `SOLUTION_TREE`
   SOL-GEOINT note + §5 — same commit.
+- **2026-06-20** — **Cycle 30 (C1): recursive multi-pathway linking, increment 1 —
+  orthogonal-route corroboration (AU-062).** Operator brief: *link OSINT through
+  as many orthogonal pathways as possible; use confirmed connections to develop
+  new means to the same connection.* Increment 1 — the foundation the rest stands
+  on — delivers **multi-pathway corroboration**: don't stop at one link between
+  two seeds, find every *independent* route and reward the connection that holds
+  up across them. New graph primitive `core::relation::disjoint_pathways` (greedy
+  edge-disjoint shortest-path enumeration — shortest, remove its edges, repeat —
+  so each route is independent; deterministic + order-independence tested). New
+  rule **AU-062 multi-pathway identity corroboration**: fires when two identities
+  are joined by ≥2 edge-disjoint pathways spanning ≥2 distinct OSINT **source
+  families** (reusing the AU-059 `source_family` orthogonality measure) — graph
+  redundancy alone is rejected; the routes must be genuinely independent data
+  sources. Confidence scales with route count + family diversity. Surfaced in the
+  dossier CONNECTIONS section (`· corroborated via N independent pathways`). 62
+  rules now (AU-001…AU-062). Gate green: fmt/clippy/doc clean, 3,271 lib tests
+  (+7), 24 arch guards, 0 failures. **Next increments:** (2) gap-fill — derive
+  the missing intermediate an absent independent route would need and emit it as a
+  lead; (3) backward synthesis — reverse a confirmed link into new forward seeds.
+  **Paired:** `SOLUTION_TREE` SOL-CORR note + §5 — same commit.

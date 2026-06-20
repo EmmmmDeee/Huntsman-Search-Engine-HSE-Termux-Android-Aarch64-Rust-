@@ -243,6 +243,121 @@ pub fn identity_paths(
     out
 }
 
+/// Up to `max_paths` **edge-disjoint** shortest pathways between two confirmed
+/// nodes, each at most `max_hops` long. Found greedily — shortest path, then its
+/// traversed adjacencies are removed and the search repeats — so every returned
+/// pathway is an *independent route*: it shares no relation edge with another.
+///
+/// The count is the **corroboration multiplicity**, the heart of cross-pathway
+/// linking: the more independent ways one entity reaches another, the more
+/// robustly the link is confirmed, and the more angles exist to re-derive it.
+/// Deterministic — the adjacency is sorted (fixing each greedy shortest path) and
+/// edges are removed by value. Each pathway is a `Vec<PathStep>` leaving
+/// `from_uid`; the final step's `to_uid` is `to_uid`.
+pub fn disjoint_pathways(
+    entities: &[Entity],
+    relations: &[Relation],
+    from_uid: &str,
+    to_uid: &str,
+    max_hops: usize,
+    max_paths: usize,
+) -> Vec<Vec<PathStep>> {
+    if from_uid == to_uid || max_hops == 0 || max_paths == 0 {
+        return Vec::new();
+    }
+    let confirmed: HashSet<&str> = entities.iter().map(|e| e.uid.as_str()).collect();
+    if !confirmed.contains(from_uid) || !confirmed.contains(to_uid) {
+        return Vec::new();
+    }
+    let mut adj = undirected_adjacency(relations, Some(&confirmed));
+    for v in adj.values_mut() {
+        v.sort_by(|x, y| {
+            x.0.cmp(y.0)
+                .then_with(|| x.1.as_str().cmp(y.1.as_str()))
+                .then_with(|| x.2.total_cmp(&y.2))
+        });
+    }
+
+    let mut pathways: Vec<Vec<PathStep>> = Vec::new();
+    for _ in 0..max_paths {
+        let Some(nodes) = bfs_node_path(&adj, from_uid, to_uid, max_hops) else {
+            break;
+        };
+        let mut steps: Vec<PathStep> = Vec::with_capacity(nodes.len().saturating_sub(1));
+        for pair in nodes.windows(2) {
+            let (u, v) = (pair[0].as_str(), pair[1].as_str());
+            // The smallest-kind edge u→v is the one BFS traversed; record it.
+            if let Some(&(_, kind, _)) = adj.get(u).and_then(|es| es.iter().find(|e| e.0 == v)) {
+                steps.push(PathStep {
+                    kind,
+                    to_uid: v.to_string(),
+                });
+            }
+            remove_pair_edges(&mut adj, u, v);
+        }
+        if steps.is_empty() {
+            break;
+        }
+        pathways.push(steps);
+    }
+    pathways
+}
+
+/// Shortest path (by hop count, ≤ `max_hops`) between `from` and `to` over `adj`,
+/// as the ordered node-UID sequence (`from … to`), or `None` if unreachable.
+/// Owned-`String` frontier so it composes with the mutable edge removal in
+/// [`disjoint_pathways`] without borrow gymnastics; deterministic on a sorted
+/// adjacency.
+fn bfs_node_path(
+    adj: &Adjacency<'_>,
+    from: &str,
+    to: &str,
+    max_hops: usize,
+) -> Option<Vec<String>> {
+    let mut dist: HashMap<String, usize> = HashMap::new();
+    let mut prev: HashMap<String, String> = HashMap::new();
+    dist.insert(from.to_string(), 0);
+    let mut queue: VecDeque<String> = VecDeque::new();
+    queue.push_back(from.to_string());
+    while let Some(u) = queue.pop_front() {
+        if u == to {
+            break;
+        }
+        let d = dist[&u];
+        if d >= max_hops {
+            continue;
+        }
+        for &(nbr, _, _) in adj.get(u.as_str()).into_iter().flatten() {
+            if !dist.contains_key(nbr) {
+                dist.insert(nbr.to_string(), d + 1);
+                prev.insert(nbr.to_string(), u.clone());
+                queue.push_back(nbr.to_string());
+            }
+        }
+    }
+    dist.get(to)?;
+    let mut seq = vec![to.to_string()];
+    let mut cur = to.to_string();
+    while cur != from {
+        let p = prev[&cur].clone();
+        seq.push(p.clone());
+        cur = p;
+    }
+    seq.reverse();
+    Some(seq)
+}
+
+/// Remove every edge between `u` and `v` (both directions) — so a subsequent
+/// shortest-path search cannot reuse this connection, forcing an independent route.
+fn remove_pair_edges(adj: &mut Adjacency<'_>, u: &str, v: &str) {
+    if let Some(es) = adj.get_mut(u) {
+        es.retain(|e| e.0 != v);
+    }
+    if let Some(es) = adj.get_mut(v) {
+        es.retain(|e| e.0 != u);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,6 +559,67 @@ mod tests {
         let adj = undirected_adjacency(&rels, None);
         assert_eq!(reachable_count(a.uid.as_str(), &adj), 2); // reaches b, c
         assert_eq!(reachable_count(d.uid.as_str(), &adj), 0); // isolated
+    }
+
+    #[test]
+    fn disjoint_pathways_finds_independent_routes() {
+        // A and B linked by TWO edge-disjoint routes: A→m1→B and A→m2→B.
+        let a = ent(EntityKind::Email, "a@x.com");
+        let b = ent(EntityKind::Username, "bob");
+        let m1 = ent(EntityKind::Domain, "x.com");
+        let m2 = ent(EntityKind::Person, "Bob R");
+        let rels = [
+            rel(&a, &m1, RelationKind::BelongsToDomain, 0.8),
+            rel(&m1, &b, RelationKind::DerivedFrom, 0.8),
+            rel(&a, &m2, RelationKind::IdentifiedBy, 0.8),
+            rel(&m2, &b, RelationKind::IdentifiedBy, 0.8),
+        ];
+        let ents = [a.clone(), b.clone(), m1, m2];
+        let paths = disjoint_pathways(&ents, &rels, &a.uid, &b.uid, 4, 4);
+        assert_eq!(paths.len(), 2, "two independent routes");
+        for p in &paths {
+            assert_eq!(p.len(), 2);
+            assert_eq!(p.last().unwrap().to_uid, b.uid);
+        }
+        let mids: HashSet<&str> = paths.iter().map(|p| p[0].to_uid.as_str()).collect();
+        assert_eq!(mids.len(), 2, "the routes go through different nodes");
+    }
+
+    #[test]
+    fn disjoint_pathways_single_route_yields_one() {
+        // One route A→m→B; its shared edge can't be reused for a second.
+        let a = ent(EntityKind::Email, "a@x.com");
+        let b = ent(EntityKind::Username, "bob");
+        let m = ent(EntityKind::Domain, "x.com");
+        let rels = [
+            rel(&a, &m, RelationKind::BelongsToDomain, 0.8),
+            rel(&m, &b, RelationKind::DerivedFrom, 0.8),
+        ];
+        let ents = [a.clone(), b.clone(), m];
+        assert_eq!(
+            disjoint_pathways(&ents, &rels, &a.uid, &b.uid, 4, 4).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn disjoint_pathways_is_order_independent() {
+        let a = ent(EntityKind::Email, "a@x.com");
+        let b = ent(EntityKind::Username, "bob");
+        let m1 = ent(EntityKind::Domain, "x.com");
+        let m2 = ent(EntityKind::Person, "Bob R");
+        let rels = vec![
+            rel(&a, &m1, RelationKind::BelongsToDomain, 0.8),
+            rel(&m1, &b, RelationKind::DerivedFrom, 0.8),
+            rel(&a, &m2, RelationKind::IdentifiedBy, 0.8),
+            rel(&m2, &b, RelationKind::IdentifiedBy, 0.8),
+        ];
+        let ents = [a.clone(), b.clone(), m1, m2];
+        let forward = disjoint_pathways(&ents, &rels, &a.uid, &b.uid, 4, 4);
+        let mut reversed = rels.clone();
+        reversed.reverse();
+        let backward = disjoint_pathways(&ents, &reversed, &a.uid, &b.uid, 4, 4);
+        assert_eq!(forward, backward, "pathways independent of edge order");
     }
 
     mod property {
