@@ -1468,3 +1468,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   graph unit test pins the behaviour (0.17 bridge fuses at 0.0, stays split at
   0.50). No rule change (count 67). Gate green: 3,307 lib tests (+1), 24 arch
   guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` §8 cycle 44 — same commit.
+- **2026-06-20** — **Cycle 45 (graph traversal, node criticality): articulation
+  points + AU-070 connection broker.** The pathway lenses answered pair- and
+  cluster-level questions but never *which node is critical*. New primitive
+  `core::relation::connection_brokers` finds the graph's **articulation points** in
+  identity terms — the nodes whose removal disconnects identities otherwise linked
+  only through them — by an obviously-correct remove-and-relabel (compare the
+  identity partition with and without each node) rather than fragile low-link
+  bookkeeping; it reuses the shared `sorted_confined_adjacency`, so it can't drift
+  from the routes the dossier renders. New rule **AU-070 "Connection broker"** fires
+  for a node that solely binds ≥3 identities (a 2-identity bridge stays AU-063's
+  fragile-pair job), severity rising with fan-out. This is the fourth connection
+  lens — REACHABILITY (AU-060), REDUNDANCY (AU-062), INTEGRITY (AU-069), and now
+  CRITICALITY (AU-070) — and the most actionable: the broker is the analyst's prime
+  pivot and the highest-leverage gap-fill target, since corroborating it hardens
+  every connection that runs through it. Pure + fully unit-tested (hub brokers three;
+  redundant triangle brokers none; 2-identity bridge below the floor). Compounds —
+  every scan surfaces its linchpin as a prime cross-scan pivot. Rule count 67→**68**.
+  Gate green: 3,313 lib tests (+6), 24 arch guards, fmt/clippy/doc clean. Paired:
+  `PROBLEM_TREE` §8 cycle 45 — same commit.

@@ -2227,3 +2227,23 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   keeps two 3-member clusters). No rule change (count 67). Gate green:
   fmt/clippy/doc clean, 3,307 lib tests (+1), 24 arch guards, 0 failures.
   **Paired:** `SOLUTION_TREE` cycle 44 note — same commit.
+- **2026-06-20** — **Cycle 45 (capability: node-criticality graph traversal —
+  the connection broker).** Capability gap against the directive's "superior graph
+  traversal techniques / richer entity correlation": every existing relation lens
+  was either pair-level (AU-060 reachability, AU-062 redundancy, AU-063 single-route
+  fragility, AU-069 integrity) or cluster-level (AU-067 equivalence classes) — none
+  answered the NODE-level question an analyst most wants on a discovered network:
+  *which single entity holds everything together?* Added the **articulation-point**
+  primitive `core::relation::connection_brokers` (an obviously-correct
+  remove-and-relabel over the shared confined adjacency — correctness over fragile
+  low-link bookkeeping; `O(V·(V+E))`, cheap at the bounded entity counts) and a new
+  rule **AU-070 "Connection broker"** that fires when one node is the sole link
+  binding ≥3 identities — remove it and the identity network fragments. It is a
+  distinct lens (criticality, not reachability/redundancy/integrity), the analyst's
+  prime pivot, and the highest-value gap-fill target (corroborate the broker and
+  every connection through it hardens). Pure, deterministic, fully unit-tested (hub
+  brokers three identities; redundant triangle has none; a 2-identity bridge stays
+  AU-063's job). Built on the same graph the dossier renders (one finder, no drift)
+  and compounds — every scan now surfaces its linchpin, a prime cross-scan pivot.
+  Rule count 67→**68**. Gate green: fmt/clippy/doc clean, 3,313 lib tests (+6), 24
+  arch guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 45 note — same commit.

@@ -4079,3 +4079,28 @@ fn au069_high_integrity_connection_fires_on_an_end_to_end_strong_route() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-069");
 }
+
+#[test]
+fn au070_connection_broker_fires_on_a_hub_holding_three_identities() {
+    use crate::core::relation::{Relation, RelationKind};
+    let edge = |from: &Entity, to: &Entity| {
+        Relation::new(
+            from.uid.clone(),
+            to.uid.clone(),
+            RelationKind::DerivedFrom,
+            0.8,
+            "s",
+        )
+    };
+    let mk = |k: EntityKind, v: &str| Entity::new(k, v, 0.8, "s");
+    // A domain hub is the sole link between three identities — its removal would
+    // fragment all three, so it is a connection broker.
+    let hub = mk(EntityKind::Domain, "x.com");
+    let email = mk(EntityKind::Email, "a@x.com");
+    let uname = mk(EntityKind::Username, "alice");
+    let person = mk(EntityKind::Person, "Bob");
+    let rels = [edge(&email, &hub), edge(&uname, &hub), edge(&person, &hub)];
+    let out = rule_au_070_connection_broker(&[hub, email, uname, person], &rels, "s", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-070");
+}

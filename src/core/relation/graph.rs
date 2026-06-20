@@ -706,6 +706,130 @@ pub fn resolve_identity_clusters(
     out
 }
 
+/// A connection broker: a single node whose removal disconnects identities that
+/// are otherwise linked **only** through it — the graph's articulation point, cast
+/// in identity terms. Where [`disjoint_pathways_in`] measures a pair's REDUNDANCY
+/// and [`strongest_path_in`] its INTEGRITY, this measures a *node's* CRITICALITY:
+/// the linchpin holding a cluster of identities together.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConnectionBroker {
+    /// The broker node's UID — remove it and `brokered` fragments.
+    pub uid: String,
+    /// The identity UIDs held together solely through `uid` (sorted, deduped);
+    /// always `len() >= 2`. Removing `uid` splits them into ≥2 components.
+    pub brokered: Vec<String>,
+}
+
+/// Component label of every node in `adj`, optionally with one node (and its
+/// incident edges) removed — the building block for articulation detection. A
+/// plain BFS labelling: two nodes share a label iff a path connects them in the
+/// graph minus `exclude`. Nodes are visited in sorted order so labels (and thus
+/// any downstream comparison) are deterministic.
+fn component_labels<'a>(adj: &Adjacency<'a>, exclude: Option<&str>) -> HashMap<&'a str, u32> {
+    let mut label: HashMap<&'a str, u32> = HashMap::new();
+    let mut nodes: Vec<&'a str> = adj.keys().copied().collect();
+    nodes.sort_unstable();
+    let mut next = 0u32;
+    for &start in &nodes {
+        if Some(start) == exclude || label.contains_key(start) {
+            continue;
+        }
+        label.insert(start, next);
+        let mut queue = VecDeque::from([start]);
+        while let Some(u) = queue.pop_front() {
+            if let Some(neighbours) = adj.get(u) {
+                for &(v, _, _) in neighbours {
+                    if Some(v) == exclude || label.contains_key(v) {
+                        continue;
+                    }
+                    label.insert(v, next);
+                    queue.push_back(v);
+                }
+            }
+        }
+        next += 1;
+    }
+    label
+}
+
+/// Find the **connection brokers** of the graph: the nodes whose removal would
+/// disconnect identities that are otherwise linked only through them. For each
+/// candidate node it compares the identity partition with and without that node —
+/// any identity group (≥2 identities that share a component) that fragments when
+/// the node is removed is "brokered" by it. The classic articulation-point idea,
+/// but reported in identity terms and computed by an obviously-correct
+/// remove-and-relabel (no fragile low-link bookkeeping): correctness over
+/// cleverness, and the bounded entity counts keep the `O(V·(V+E))` cost cheap.
+///
+/// Returns one [`ConnectionBroker`] per node that brokers ≥2 identities, sorted by
+/// broker UID, each carrying the sorted identity set it holds together. The
+/// `ids` set is the identity-endpoint universe (typically [`identity_uids`]);
+/// only nodes/identities present in `adj` participate. Deterministic. A node of
+/// degree < 2 can never be a broker and is skipped.
+pub fn connection_brokers<'a>(adj: &Adjacency<'a>, ids: &[&'a str]) -> Vec<ConnectionBroker> {
+    // Identities that actually appear as nodes in the graph.
+    let id_set: HashSet<&str> = ids
+        .iter()
+        .copied()
+        .filter(|u| adj.contains_key(u))
+        .collect();
+    if id_set.len() < 2 {
+        return Vec::new();
+    }
+
+    // Baseline identity partition: group the identities by their component.
+    let base = component_labels(adj, None);
+    let mut base_groups: HashMap<u32, Vec<&str>> = HashMap::new();
+    for &id in &id_set {
+        if let Some(&c) = base.get(id) {
+            base_groups.entry(c).or_default().push(id);
+        }
+    }
+    // Only a component holding ≥2 identities can be split by a broker.
+    base_groups.retain(|_, members| members.len() >= 2);
+    if base_groups.is_empty() {
+        return Vec::new();
+    }
+
+    // Try removing each node (sorted, for determinism) and see which identity
+    // groups fragment. A leaf (degree < 2) bridges nothing, so skip it.
+    let mut candidates: Vec<&str> = adj
+        .iter()
+        .filter(|(_, e)| e.len() >= 2)
+        .map(|(&u, _)| u)
+        .collect();
+    candidates.sort_unstable();
+
+    let mut out: Vec<ConnectionBroker> = Vec::new();
+    for b in candidates {
+        let sub = component_labels(adj, Some(b));
+        let mut brokered: Vec<&str> = Vec::new();
+        for members in base_groups.values() {
+            // The group's identities other than the candidate itself.
+            let rest: Vec<&str> = members.iter().copied().filter(|&u| u != b).collect();
+            if rest.len() < 2 {
+                continue;
+            }
+            // Removing `b` splits the group iff its identities no longer all share
+            // one component. Each survivor always has a label (only `b` is gone).
+            let distinct: HashSet<u32> = rest.iter().filter_map(|m| sub.get(m).copied()).collect();
+            if distinct.len() >= 2 {
+                brokered.extend(rest);
+            }
+        }
+        if brokered.len() >= 2 {
+            brokered.sort_unstable();
+            brokered.dedup();
+            out.push(ConnectionBroker {
+                uid: b.to_string(),
+                brokered: brokered.into_iter().map(str::to_string).collect(),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.uid.cmp(&b.uid));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -811,6 +935,76 @@ mod tests {
                 "every returned cluster clears the floor it was resolved under"
             );
         }
+    }
+
+    #[test]
+    fn connection_brokers_finds_the_hub_that_holds_identities_together() {
+        let mk = |k: EntityKind, v: &str| Entity::new(k, v, 0.8, "s");
+        let edge = |from: &Entity, to: &Entity| {
+            Relation::new(
+                from.uid.clone(),
+                to.uid.clone(),
+                RelationKind::DerivedFrom,
+                0.8,
+                "s",
+            )
+        };
+        // A domain hub links three identities that share no other connection. The
+        // hub is their sole broker: remove it and all three fall apart.
+        let hub = mk(EntityKind::Domain, "x.com");
+        let email = mk(EntityKind::Email, "a@x.com");
+        let uname = mk(EntityKind::Username, "alice");
+        let person = mk(EntityKind::Person, "Bob");
+        let rels = [edge(&email, &hub), edge(&uname, &hub), edge(&person, &hub)];
+        let ents = [hub.clone(), email.clone(), uname.clone(), person.clone()];
+        let adj = sorted_confined_adjacency(&ents, &rels);
+        let ids = identity_uids(&ents);
+
+        let brokers = connection_brokers(&adj, &ids);
+        assert_eq!(brokers.len(), 1, "the hub is the one broker");
+        assert_eq!(brokers[0].uid, hub.uid);
+        assert_eq!(
+            brokers[0].brokered.len(),
+            3,
+            "all three identities depend on it"
+        );
+        for id in [&email.uid, &uname.uid, &person.uid] {
+            assert!(
+                brokers[0].brokered.contains(id),
+                "identity must be brokered"
+            );
+        }
+        // A conduit hub is not itself one of the brokered identities.
+        assert!(!brokers[0].brokered.contains(&hub.uid));
+        // Deterministic: identical inputs yield byte-identical output.
+        assert_eq!(connection_brokers(&adj, &ids), brokers);
+    }
+
+    #[test]
+    fn connection_brokers_silent_when_a_redundant_route_exists() {
+        let mk = |k: EntityKind, v: &str| Entity::new(k, v, 0.8, "s");
+        let edge = |from: &Entity, to: &Entity| {
+            Relation::new(
+                from.uid.clone(),
+                to.uid.clone(),
+                RelationKind::DerivedFrom,
+                0.8,
+                "s",
+            )
+        };
+        // Three identities each linked to the other two (a triangle): no single
+        // node's removal can disconnect the rest, so there is no broker.
+        let a = mk(EntityKind::Email, "a@x.com");
+        let b = mk(EntityKind::Username, "alice");
+        let c = mk(EntityKind::Phone, "+61400000000");
+        let rels = [edge(&a, &b), edge(&b, &c), edge(&a, &c)];
+        let ents = [a, b, c];
+        let adj = sorted_confined_adjacency(&ents, &rels);
+        let ids = identity_uids(&ents);
+        assert!(
+            connection_brokers(&adj, &ids).is_empty(),
+            "redundancy means no single broker"
+        );
     }
 
     #[test]

@@ -13,7 +13,7 @@
 | Version / edition / MSRV | 1.4.0 · edition 2024 · 1.88 |
 | Source | ~137k LOC · 602 `.rs` files |
 | Modules | **118** registered — 89 Free · 24 KeyGated · 5 Paid · 14 categories |
-| Correlation rules | **67** deterministic (AU-001 … AU-064, AU-067/068/069) + 2 engine-emitted (AU-065/066) |
+| Correlation rules | **68** deterministic (AU-001 … AU-064, AU-067/068/069/070) + 2 engine-emitted (AU-065/066) |
 | Tests | ~2,995 lib + API/integration + architecture guards |
 | Unsafe | **0** — `#![forbid(unsafe_code)]` (`src/lib.rs:22`) |
 | Panic strategy | `panic = "unwind"` (`Cargo.toml:125`) + per-module `catch_unwind` at the dispatch boundary |
@@ -32,7 +32,7 @@ Threat 3 · Search 2 · Phone 2 · Other 2.
  bin (main.rs) ─▶ cli ─┐
                        ├─▶ core ─▶ util (http, keys, geo, datasets, …)
  http (api/axum) ──────┘    │
- web (embedded SPA) ◀─ api  ├─▶ correlator (67 rules)
+ web (embedded SPA) ◀─ api  ├─▶ correlator (68 rules)
                             └─▶ storage (rusqlite WAL + FTS5, via StoragePort)
  modules (118) ─▶ core types + core::hooks (fn-ptr registry, installed at startup)
 ```
@@ -63,22 +63,24 @@ allowlist remains.
   `circuit`/`timeout`, `enrich` (geo + key harvest), `ledger` (dedup/lineage). A
   panicking module is caught at the dispatch boundary (`run_module_guarded`), so
   it degrades to zero results rather than aborting the process.
-- **`core::correlator`** (`src/core/correlator/rules/`) — 67 deterministic rules
-  across `assoc`/`breach`/`crypto`/`gap`/`geo`/`infra`/`identity`/`integrity`/
-  `location`/`multipath`/`org`/`resolved`/`sim`/`template`/`transitive`,
+- **`core::correlator`** (`src/core/correlator/rules/`) — 68 deterministic rules
+  across `assoc`/`breach`/`broker`/`crypto`/`gap`/`geo`/`infra`/`identity`/
+  `integrity`/`location`/`multipath`/`org`/`resolved`/`sim`/`template`/`transitive`,
   synthesising entities into findings; candidate-quarantine before correlation. The
   recursive-linking family — `transitive` (AU-060), `multipath` (AU-062), `gap`
-  (AU-063), `template` (AU-064), `resolved` (AU-067), `integrity` (AU-069) — all
-  delegate to the shared `core::relation::graph` link-analysis primitives
-  (`identity_paths`, `disjoint_pathways`, `resolve_identity_clusters`,
-  `strongest_path`) that also back the dossier CONNECTIONS section, so rule
-  verdicts and the rendered chains can't drift: `multipath` rewards a link
-  confirmed by independent routes, `gap` names the orthogonal source family that
-  would corroborate a single-route link, `template` generalises a repeated route
+  (AU-063), `template` (AU-064), `resolved` (AU-067), `integrity` (AU-069), `broker`
+  (AU-070) — all delegate to the shared `core::relation::graph` link-analysis
+  primitives (`identity_paths`, `disjoint_pathways`, `resolve_identity_clusters`,
+  `strongest_path`, `connection_brokers`) that also back the dossier CONNECTIONS
+  section, so rule verdicts and the rendered chains can't drift: `multipath` rewards
+  a link confirmed by independent routes, `gap` names the orthogonal source family
+  that would corroborate a single-route link, `template` generalises a repeated route
   into a reusable attribution pattern, `resolved` collapses every
   transitively-linked identity into one resolved identity (the equivalence-class
-  capstone, weakest-link confidence), and `integrity` rewards the max-bottleneck
-  route — a connection reliable at every hop, not merely present.
+  capstone, weakest-link confidence), `integrity` rewards the max-bottleneck route —
+  a connection reliable at every hop, not merely present — and `broker` names the
+  identity articulation point: the single node whose removal would fragment ≥3
+  otherwise-linked identities (node criticality, the analyst's prime pivot).
 - **`core::{scan,entity,relation,timeline}`** — the typed domain model:
   `Entity::c_effective` noisy-OR/multiplicative confidence fusion (clamped,
   monotone, contract-tested), SHA-256 deterministic UIDs, GREATEST-semantics
@@ -98,7 +100,7 @@ allowlist remains.
   proven in ≥2 prior scans is resolved by the engine-emitted **AU-066** cross-scan
   gap-fill, which also boosts its endpoints; both are storage-dependent so they
   are emitted by the engine at finalise, not by pure correlator rules, and are
-  therefore distinct from the 67 correlator rules).
+  therefore distinct from the 68 correlator rules).
 - **`api`** (axum 0.8) — versioned `/api/v1`, SSE live stream, embedded SPA +
   vendor bundle; CSP + `127.0.0.1`-only bind (architecture invariant).
 - **`util`** — HTTP client (rustls + SSRF-guarded resolver), key pool, atomic
