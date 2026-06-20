@@ -76,8 +76,8 @@ Each node: **ID · statement · location · impact · → optimal solution · pr
 Current baseline (grounded in the codebase, 2026-06-18): **126 modules** (93 free
 · 28 key-gated · 5 paid) across 14 categories (Infrastructure 21, Geo 20, People
 16, DnsRecon 13, Breach 11, Social 11, Email 6, Corporate 9, Phone 3, Web 5,
-Sensor 4, Threat 3, Search/Other 2 each); 59 native correlation rules
-(AU-001…AU-059); 0 `unsafe`; deterministic entity merge; SQLite store; SSE live;
+Sensor 4, Threat 3, Search/Other 2 each); 61 native correlation rules
+(AU-001…AU-061); 0 `unsafe`; deterministic entity merge; SQLite store; SSE live;
 axum SPA. Deps: `regex` in; **`proptest` 1.11 + `criterion` 0.8 direct (dev-only,
 zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
 `util::scan` + `util::html`); `bstr`, `fst`, `arbitrary` still NOT direct.**
@@ -592,8 +592,8 @@ Grounded in the existing modules and the BUILD set of `OSINT_MATRIX_GAP_ANALYSIS
 Each node: **current → target → solution**. Everything here is built on §3.F
 primitives. AU bias and an offensive (active-collection) posture throughout.
 
-- **`[ ]` C1 · Correlation & identity depth — *the Maltego-without-graphs play***.
-  *Current:* 59 native rules + deterministic GREATEST-merge identity. *Target:*
+- **`[~]` C1 · Correlation & identity depth — *the Maltego-without-graphs play***.
+  *Current:* 61 native rules + deterministic GREATEST-merge identity. *Target:*
   out-link-analyse Maltego by delivering the *conclusion*, not a canvas.
   → **Solution:** (a) **transitive identity resolution** — if A↔B and B↔C share
   selectors, emit A↔C with decayed confidence (closure over the merge graph,
@@ -605,6 +605,18 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   gaps the AU-0xx register implies. GEXF stays as the *optional* escape hatch for
   users who want a graph (covers Maltego's graph crowd without heavy in-app
   graphing). **CAP-high**
+  *Delivered (cycle 26, 2026-06-20):* (a) **and** (b) landed on one shared,
+  property-tested primitive. `core::relation::identity_paths` is the canonical
+  deterministic shortest-typed-path finder over the relation graph (BFS, parallel
+  edges collapse to a stable label, every pair computed once from its smaller-UID
+  endpoint → byte-identical output under input permutation, proptested). AU-060
+  (transitive identity closure) was **refactored to delegate** to it (Rule 4:
+  one finder, so the rule and the rendered chain can never drift), and a new
+  **CONNECTIONS** dossier section renders the shortest typed thread tying each
+  identity back through the graph — the graph-free link-analysis conclusion, with
+  each chain's weakest-edge confidence. *Remaining:* (c) first-class timeline
+  output (footprint timeline shipped; widen), (d) further AU-0xx rule-gap fill,
+  and the "controller behind reused secrets" link facet.
 - **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
@@ -1870,3 +1882,24 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy/doc clean, 3,097 lib tests, 0 failures; `bash -n` +
   shellcheck clean. **Paired:** `SOLUTION_TREE` SOL-QUERY-PIPE cycle 25 +
   §4/§5 — same commit.
+- **2026-06-20** — **Cycle 26 (P→S): C1 link analysis — the `identity_paths`
+  primitive, AU-060 delegated to it, and a dossier CONNECTIONS section.**
+  P→S pick: §4 C1 (Maltego-without-graphs) was the highest-value open capability.
+  AU-060 transitive identity closure had already shipped, but (a) it carried its
+  own private BFS and (b) there was no operator-facing render of the *path* — the
+  dossier printed only the one-line verdict, and AU-060 sorted its path nodes (so
+  order was lost). Delivered: `core::relation::identity_paths` — the canonical,
+  deterministic shortest-typed-path finder over the relation graph (undirected
+  BFS; both endpoints must be identities, intermediates any kind; parallel edges
+  collapse to a stable smallest-kind label; every pair computed once from its
+  smaller-UID endpoint, so output is byte-identical under input permutation — two
+  proptests pin order-independence + path well-formedness, plus 8 unit tests).
+  AU-060 was **refactored to delegate** to it (Rule 4: one finder, so the rule
+  and the render can't drift — its 8 firing tests pass unchanged), and a new
+  dossier **CONNECTIONS** section renders the shortest typed thread tying each
+  identity back through the graph (`a@x (email) ──belongs_to_domain──▶ x.com
+  ──registered_by──▶ Alice (person)`), annotated with each chain's weakest-edge
+  confidence — graph-free link analysis, the conclusion not the canvas. Doc rule
+  count corrected 59→61 (AU-060/061 had shipped unlogged). C1 `[ ]`→`[~]`.
+  Gate green: fmt/clippy/doc clean, 3,261 lib tests (+10), 0 failures.
+  **Paired:** `SOLUTION_TREE` SOL-CORR `[ ]`→`[~]` + §3/§4 — same commit.

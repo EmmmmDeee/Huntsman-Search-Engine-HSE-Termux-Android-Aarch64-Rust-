@@ -13,7 +13,7 @@
 | Version / edition / MSRV | 1.4.0 · edition 2024 · 1.88 |
 | Source | ~137k LOC · 602 `.rs` files |
 | Modules | **118** registered — 89 Free · 24 KeyGated · 5 Paid · 14 categories |
-| Correlation rules | **59** deterministic (AU-001 … AU-059) |
+| Correlation rules | **61** deterministic (AU-001 … AU-061) |
 | Tests | ~2,995 lib + API/integration + architecture guards |
 | Unsafe | **0** — `#![forbid(unsafe_code)]` (`src/lib.rs:22`) |
 | Panic strategy | `panic = "unwind"` (`Cargo.toml:125`) + per-module `catch_unwind` at the dispatch boundary |
@@ -32,7 +32,7 @@ Threat 3 · Search 2 · Phone 2 · Other 2.
  bin (main.rs) ─▶ cli ─┐
                        ├─▶ core ─▶ util (http, keys, geo, datasets, …)
  http (api/axum) ──────┘    │
- web (embedded SPA) ◀─ api  ├─▶ correlator (59 rules)
+ web (embedded SPA) ◀─ api  ├─▶ correlator (61 rules)
                             └─▶ storage (rusqlite WAL + FTS5, via StoragePort)
  modules (118) ─▶ core types + core::hooks (fn-ptr registry, installed at startup)
 ```
@@ -63,9 +63,12 @@ allowlist remains.
   `circuit`/`timeout`, `enrich` (geo + key harvest), `ledger` (dedup/lineage). A
   panicking module is caught at the dispatch boundary (`run_module_guarded`), so
   it degrades to zero results rather than aborting the process.
-- **`core::correlator`** (`src/core/correlator/rules/`) — 59 deterministic rules
-  across `assoc`/`breach`/`crypto`/`geo`/`infra`/`org`/`identity`/`location`,
-  synthesising entities into findings; candidate-quarantine before correlation.
+- **`core::correlator`** (`src/core/correlator/rules/`) — 61 deterministic rules
+  across `assoc`/`breach`/`crypto`/`geo`/`infra`/`org`/`identity`/`location`/
+  `transitive`, synthesising entities into findings; candidate-quarantine before
+  correlation. The `transitive` family (AU-060) delegates to the shared
+  `core::relation::identity_paths` link-analysis primitive that also backs the
+  dossier CONNECTIONS section.
 - **`core::{scan,entity,relation,timeline}`** — the typed domain model:
   `Entity::c_effective` noisy-OR/multiplicative confidence fusion (clamped,
   monotone, contract-tested), SHA-256 deterministic UIDs, GREATEST-semantics

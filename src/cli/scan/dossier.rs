@@ -156,7 +156,70 @@ pub(super) fn print_dossier(
         println!();
     }
 
+    print_connections(entities, relations);
+
     print_diagnostics(scan, entities, kind, value, sid);
+}
+
+/// CONNECTIONS — graph-free link analysis (PROBLEM_TREE C1, the
+/// "Maltego-without-graphs" play). Renders the shortest typed *thread* tying
+/// each discovered identity back through the graph — the analytic conclusion an
+/// analyst would otherwise pivot a canvas to find. Reuses the very
+/// [`crate::core::relation::identity_paths`] primitive AU-060 fires on, so the
+/// rendered chain and the correlation can never disagree.
+fn print_connections(entities: &[Entity], relations: &[Relation]) {
+    use std::collections::HashMap;
+
+    let connections = crate::core::relation::identity_paths(entities, relations, 4);
+    if connections.is_empty() {
+        return;
+    }
+
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    // A uid label: the entity's (truncated) value + its kind, or a short uid
+    // stub if the node is somehow absent. UIDs are hex (ASCII) — byte-safe slice.
+    let label = |uid: &str| -> (String, String) {
+        by_uid.get(uid).map_or_else(
+            || (format!("{}…", &uid[..uid.len().min(8)]), "?".to_string()),
+            |e| (super::super::truncate(&e.value, 36), e.kind.to_string()),
+        )
+    };
+
+    const SHOWN: usize = 25;
+    println!(
+        "━━━ CONNECTIONS ({}) — identity link analysis ━━━",
+        connections.len()
+    );
+    println!();
+    println!("  The shortest typed path tying each identity back through the graph");
+    println!("  (a chain is only as strong as its weakest edge):");
+    println!();
+    for c in connections.iter().take(SHOWN) {
+        let (fv, fk) = label(&c.from_uid);
+        let mut line = format!("  {fv} ({fk})");
+        let last = c.steps.len().saturating_sub(1);
+        for (i, step) in c.steps.iter().enumerate() {
+            let (sv, sk) = label(&step.to_uid);
+            if i == last {
+                // Annotate the destination identity with its kind.
+                line.push_str(&format!("  ──{}──▶  {sv} ({sk})", step.kind));
+            } else {
+                line.push_str(&format!("  ──{}──▶  {sv}", step.kind));
+            }
+        }
+        println!("{line}");
+        println!(
+            "    {} hop{}, weakest edge conf={:.2}",
+            c.hops,
+            if c.hops == 1 { "" } else { "s" },
+            c.min_confidence
+        );
+        println!();
+    }
+    if connections.len() > SHOWN {
+        println!("  … {} more connection(s)", connections.len() - SHOWN);
+        println!();
+    }
 }
 
 fn print_diagnostics(scan: &Scan, entities: &[Entity], kind: &str, value: &str, sid: &str) {

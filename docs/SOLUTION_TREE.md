@@ -297,9 +297,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Unlockd (UK), SuicideGirls (global alt), Iwara (Japan/3D).
   *Closes / powers:* **C8** (webcam/fan/adult platform presence including non-English
   markets — the identity surface `username_search` left uncovered). ✅ delivered.
-- **`[ ]` SOL-CORR · Correlation & identity depth** → **C1** (Maltego-without-graphs):
+- **`[~]` SOL-CORR · Correlation & identity depth** → **C1** (Maltego-without-graphs):
   transitive identity closure (property-tested convergence), a text "Connections"
   dossier section, first-class timeline, AU-0xx rule-gap fill. Built on SOL-MERGE.
+  *Delivered (cycle 26):* the canonical `core::relation::identity_paths` primitive
+  (deterministic shortest typed paths between identity entities, order-independence
+  proptested) now backs **both** AU-060 transitive identity closure (refactored to
+  delegate — one finder, no drift) **and** a new dossier **CONNECTIONS** section
+  that renders the shortest typed thread between identities as text. *Remaining:*
+  first-class timeline output + further AU-0xx rule-gap fill.
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -464,7 +470,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-AU-MOAT | C3 | `[~]` |
 | SOL-NETINT | C4 | `[~]` |
 | SOL-CACHE-INTERSCAN | C9 | `[x]` |
-| SOL-CORR | C1 | `[ ]` |
+| SOL-CORR | C1 | `[~]` |
 | SOL-PERF-PUBLISH | C2 | `[ ]` |
 | SOL-GEOINT | C5 | `[~]` |
 | SOL-OFFENSIVE | C6 | `[ ]` |
@@ -1191,3 +1197,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   **§4 gap analysis:** SOL-QUERY-PIPE row added to §4d. Gate green:
   fmt/clippy/doc clean, 3,097 lib tests (+5 new), 0 failures; `bash -n` +
   shellcheck clean. Paired: `PROBLEM_TREE` §8 cycle 25 — same commit.
+- **2026-06-20** — **Cycle 26 (P→S): SOL-CORR `[ ]`→`[~]` — C1 link analysis.**
+  Gap pick: SOL-CORR (→ C1, Maltego-without-graphs) was the highest-value open
+  capability solution. Delivered the canonical `core::relation::identity_paths`
+  primitive — deterministic shortest typed paths between identity entities
+  (undirected BFS, stable parallel-edge collapse, each pair computed once from its
+  smaller-UID endpoint; order-independence + well-formedness proptested; 8 unit
+  tests). Refactored AU-060 transitive identity closure to **delegate** to it (one
+  finder, no drift — its 8 firing tests pass unchanged), and added a dossier
+  **CONNECTIONS** section rendering the shortest typed thread between identities
+  with each chain's weakest-edge confidence. Two of SOL-CORR's four sub-items are
+  now done (transitive closure, property-tested + the text Connections section);
+  first-class timeline output + further AU-0xx rule-gap fill remain. **S→P
+  refresh:** leverage-map SOL-CORR `[~]`; C1 `[~]`. Gate green: fmt/clippy/doc
+  clean, 3,261 lib tests (+10), 0 failures. Paired: `PROBLEM_TREE` C1 + §8
+  cycle 26 — same commit.
