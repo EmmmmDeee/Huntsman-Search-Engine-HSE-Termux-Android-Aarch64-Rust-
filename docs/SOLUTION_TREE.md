@@ -1504,3 +1504,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Compounds: every common-name scan now reports only trustworthy brokers. No rule
   change (count 68). Gate green: 3,314 lib tests (+1), 24 arch guards, fmt/clippy/doc
   clean. Paired: `PROBLEM_TREE` §8 cycle 46 — same commit.
+- **2026-06-20** — **Cycle 47 (freemail guard in `is_infrastructure_email`).** The
+  self-audit empirically surfaced an accuracy/coverage defect: `googlemail.com` sat
+  in both `FREEMAIL` and the `INFRA_MAIL` provider set, so every personal mailbox on
+  Gmail's alternate domain was classified as infrastructure — and that predicate
+  *gates emission* in `search_engines`/`whois`/`ripestat`, silently dropping real
+  subject emails. Solution: a freemail short-circuit in
+  `util::domains::is_infrastructure_email` — a consumer freemail address is personal
+  PII, never provider infrastructure, so only its role/automation desks (the
+  `is_role_localpart` branch) are gated; the contradictory `googlemail.com` infra
+  entry is removed. One small guard eliminates the whole freemail/infra-overlap class
+  (gmail, googlemail, yahoo, outlook, …) across all four call-sites at once. Measured
+  on the live scan: audit grade 62→**92**/100, both false-positive findings gone.
+  Compounds: every future scan retains consumer-freemail subject mail it used to
+  suppress. Regression assertions added (googlemail/yahoo/outlook personal = not
+  infra; `abuse@googlemail.com` = still infra). No rule change (count 68). Gate
+  green: 3,314 lib tests, 24 arch guards, fmt/clippy/doc clean. Paired:
+  `PROBLEM_TREE` §8 cycle 47 — same commit.

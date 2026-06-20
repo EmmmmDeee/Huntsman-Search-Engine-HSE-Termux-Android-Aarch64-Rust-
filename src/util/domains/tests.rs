@@ -17,6 +17,18 @@ use super::*;
         // Genuine personal mail is NOT infrastructure.
         assert!(!is_infrastructure_email("jordanavery@gmail.com"));
         assert!(!is_infrastructure_email("jane.doe@example.org"));
+        // Consumer freemail is personal PII, never infrastructure — even on
+        // googlemail.com, which is just Gmail's alternate domain (regression: it
+        // used to sit in the provider-infra set and suppressed real subject mail
+        // from SERP/WHOIS discovery).
+        assert!(!is_infrastructure_email("ali.kareem@googlemail.com"));
+        assert!(!is_infrastructure_email("alikareem@googlemail.com"));
+        assert!(!is_infrastructure_email("jdoe@yahoo.com"));
+        assert!(!is_infrastructure_email("jane@outlook.com"));
+        // …but an automated *desk* on a freemail domain is still infrastructure
+        // (the role local-part decides, not the provider).
+        assert!(is_infrastructure_email("abuse@googlemail.com"));
+        assert!(is_infrastructure_email("postmaster@gmail.com"));
         // Malformed input is safely false.
         assert!(!is_infrastructure_email("not-an-email"));
     }

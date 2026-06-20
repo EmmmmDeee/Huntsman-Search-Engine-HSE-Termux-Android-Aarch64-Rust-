@@ -224,10 +224,19 @@ pub fn is_infrastructure_email(email: &str) -> bool {
     if is_role_localpart(local) {
         return true;
     }
+    // A consumer freemail mailbox (gmail / googlemail / yahoo / outlook / …) is
+    // personal PII, never provider infrastructure — only its automated desks (an
+    // `abuse@`/`postmaster@` role local-part, caught above) are. Without this guard
+    // a freemail domain that also reads provider-ish — `googlemail.com` is literally
+    // Gmail — would mislabel every personal mailbox on it as infrastructure and
+    // suppress real subject emails from SERP/WHOIS/RIPE discovery.
+    let registrable = registrable_domain(domain).unwrap_or_else(|| domain.to_string());
+    if is_freemail(domain) || is_freemail(&registrable) {
+        return false;
+    }
     // Provider/infra mail domains: any registrable-domain match against the
     // curated infra set. Kept here (util) so both whois and ripestat can gate
     // emission without depending on `core`.
-    let registrable = registrable_domain(domain).unwrap_or_else(|| domain.to_string());
     INFRA_MAIL
         .iter()
         .any(|d| registrable == *d || domain == *d || domain.ends_with(&format!(".{d}")))
@@ -242,7 +251,6 @@ const INFRA_MAIL: &[&str] = &[
     "amazonaws.com",
     "amazon.com",
     "google.com",
-    "googlemail.com",
     "azure.com",
     "microsoft.com",
     "fastly.com",

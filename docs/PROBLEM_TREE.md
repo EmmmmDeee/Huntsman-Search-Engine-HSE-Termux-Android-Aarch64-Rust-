@@ -2265,3 +2265,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   on 0.17 links is structurally a broker at 0.0, none at 0.50). No rule change
   (count 68). Gate green: fmt/clippy/doc clean, 3,314 lib tests (+1), 24 arch
   guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 46 note — same commit.
+- **2026-06-20** — **Cycle 47 (self-audit finds an accuracy/coverage bug:
+  `googlemail.com` misclassified as infrastructure).** Running `hse audit` on the
+  live "Ali Kareem" scan — the engine's own quality tool, exactly the empirical
+  loop the directive calls for — flagged two HIGH findings: four `@googlemail.com`
+  subject emails (`ali.kareem@…`, `alikareem@…`, …) reported as "role/provider
+  mailboxes" and "infrastructure pollution". Root cause: `googlemail.com` (Gmail's
+  consumer alias, already in `FREEMAIL`) was *also* in the `INFRA_MAIL`
+  provider-domain set, so `is_infrastructure_email` returned true for **every**
+  personal mailbox on it. This is not cosmetic: that predicate *suppresses* emails
+  in `search_engines`, `whois`, and `ripestat`, so real subject `@googlemail.com`
+  addresses were silently dropped from SERP/WHOIS/RIPE discovery (a coverage loss)
+  and mislabelled noise everywhere else (an accuracy loss). Fixed at the class
+  level: a **freemail guard** — a consumer freemail mailbox is never
+  provider-infrastructure (only its automated desks, caught by the role-local-part
+  check), so any future freemail/infra overlap is immune — plus removed the
+  contradictory `googlemail.com` entry from `INFRA_MAIL`. `google.com` is kept (its
+  WHOIS desks like `dns-admin@` need it and it hosts no consumer mail). Measurable
+  gain: the audit grade for the same scan rose **62/100 (C, noisy) → 92/100 (A,
+  clean)** and the two false HIGH findings vanished. Universal + compounding: every
+  scan now keeps consumer-freemail subject emails instead of suppressing them. New
+  regression assertions pin freemail-vs-role on googlemail/yahoo/outlook. No rule
+  change (count 68). Gate green: fmt/clippy/doc clean, 3,314 lib tests, 24 arch
+  guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 47 note — same commit.
