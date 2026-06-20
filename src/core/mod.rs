@@ -4,6 +4,7 @@
 //! the other way around. This keeps the engine module-agnostic.
 
 pub mod attack;
+pub mod benchmark;
 pub mod cancel;
 pub mod community;
 pub mod convex;

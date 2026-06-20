@@ -8,6 +8,7 @@
 //! full reference.
 
 mod audit;
+mod benchmark;
 mod cells;
 mod config;
 mod diagnostics;
@@ -226,6 +227,7 @@ pub async fn run() -> Result<()> {
             log,
             json,
         } => audit::cmd_audit(csv, scan_id, log, json).await,
+        Command::Benchmark { scan_id, json } => benchmark::cmd_benchmark(scan_id, json),
         Command::Doctor => doctor::cmd_doctor().await,
         Command::Selftest { json } => selftest::cmd_selftest(json).await,
         Command::Provision {
