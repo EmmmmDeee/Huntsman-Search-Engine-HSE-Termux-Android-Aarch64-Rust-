@@ -40,7 +40,7 @@ mod writer;
 pub use ledger::DispatchLog;
 use passes::{
     consolidate_address_localities, flag_geo_discordant_namesakes, hot_inject_keys,
-    promote_geo_corroborated_family,
+    promote_geo_corroborated_family, promote_multipath_corroborated,
 };
 use writer::DbWriter;
 // The per-target dispatch context (`DispatchCx`) and the mutable accumulator
@@ -740,6 +740,44 @@ impl ScanEngine {
                         }
                     }
                     let _ = store.record_pathway_template(&ct.template);
+                }
+            }
+
+            // ── Multi-pathway corroboration boost (C2: confirmed links strengthen entities) ──
+            // AU-062 has just proven which identity entities are joined by ≥2
+            // edge-disjoint, source-orthogonal pathways — connections re-derivable
+            // down independent routes, robust to any one source going dark. Here
+            // that proof feeds back into the entities: each multipath-corroborated
+            // endpoint earns a `multipath-corroborated` tag and a corroboration
+            // evidence record, lifting its confidence band so the scan's OUTPUT
+            // reflects what its own correlation established. Built on the SAME
+            // detector the AU-062 rule uses (one finder, no drift) and idempotent
+            // via the tag. Best-effort and conditional: the re-persist runs only
+            // when a link is actually corroborated, and a hiccup there never aborts
+            // a finalised scan.
+            if let Ok(rels) = store.relations_for_scan(&scan.id) {
+                let boosted_n = promote_multipath_corroborated(&mut entities, &rels);
+                if boosted_n > 0 {
+                    let boosted: Vec<Entity> = entities
+                        .iter_mut()
+                        .filter(|e| e.has_tag("multipath-corroborated"))
+                        .map(|e| {
+                            e.canonicalize_order();
+                            e.clone()
+                        })
+                        .collect();
+                    match store.upsert_entities_batch(&boosted) {
+                        Ok(n) => info!(
+                            scan_id = %scan.id,
+                            boosted = n,
+                            "multipath-corroborated identities re-persisted (confirmed links strengthened the scan)"
+                        ),
+                        Err(e) => warn!(
+                            scan_id = %scan.id,
+                            error = %e,
+                            "multipath boost re-persist failed (non-fatal)"
+                        ),
+                    }
                 }
             }
 

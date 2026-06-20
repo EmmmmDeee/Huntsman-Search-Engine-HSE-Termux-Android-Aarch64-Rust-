@@ -18,17 +18,43 @@ use std::collections::{BTreeSet, HashMap};
 use super::*;
 use crate::core::relation::{disjoint_pathways, is_identity_kind};
 
-/// AU-062 — Multi-pathway identity corroboration.
+/// One identity pair whose connection is corroborated by **≥2 edge-disjoint,
+/// source-orthogonal pathways** — the shared core of the AU-062 rule and the
+/// engine's `promote_multipath_corroborated` pass. Both read this one detector,
+/// so the correlation finding and the confidence boost can never disagree on
+/// what a corroborated link is (one finder, no drift).
+#[derive(Debug, Clone)]
+pub(in crate::core) struct MultipathLink {
+    /// The two identity endpoints. The pair-scan visits each unordered pair once
+    /// with the lexicographically-smaller UID first, so `a_uid < b_uid` always.
+    pub a_uid: String,
+    pub b_uid: String,
+    /// Number of independent (edge-disjoint) routes joining the endpoints — the
+    /// corroboration multiplicity. Always `>= 2`.
+    pub pathways: usize,
+    /// The distinct, orthogonal source families those routes span, sorted. The
+    /// unclassified `"other"` family is excluded, and this is always `>= 2`.
+    pub families: Vec<&'static str>,
+    /// Every node on every route — endpoints and intermediates — sorted; the
+    /// correlation's `entity_uids` and the boost's promotion set are drawn from
+    /// here (the boost lifts only the two identity endpoints).
+    pub nodes: Vec<String>,
+}
+
+/// Find every identity pair joined by **two or more edge-disjoint pathways**
+/// that span **≥2 distinct OSINT source families** — the corroboration test at
+/// the heart of multi-pathway linking. Graph redundancy alone is not enough: two
+/// routes through the same source family (two breach echoes of one record) can
+/// agree spuriously, so the corroboration must be genuinely *orthogonal*.
 ///
-/// Confidence rises with both the number of independent pathways and the number
-/// of distinct source families they cross. The hop / path caps keep the
-/// pair-wise search bounded on a phone.
-pub(in crate::core::correlator) fn rule_au_062_multipath_corroboration(
+/// The shared finder behind both the AU-062 correlation and the engine's
+/// multipath-corroboration boost, built on [`disjoint_pathways`] so it stays
+/// consistent with the transitive-closure rule and the dossier's CONNECTIONS
+/// view. The hop / path caps keep the pair-wise search bounded on a phone.
+pub(in crate::core) fn multipath_corroborated_links(
     entities: &[Entity],
     relations: &[Relation],
-    scan_id: &str,
-    now: u64,
-) -> Vec<Correlation> {
+) -> Vec<MultipathLink> {
     const MAX_HOPS: usize = 5;
     const MAX_PATHS: usize = 4;
 
@@ -78,40 +104,65 @@ pub(in crate::core::correlator) fn rule_au_062_multipath_corroboration(
                 continue; // graph-redundant but not source-orthogonal
             }
 
-            let n = pathways.len();
-            let severity = if n >= 3 || families.len() >= 3 {
-                Severity::High
-            } else {
-                Severity::Medium
-            };
-            let (ea, eb) = (by_uid[a], by_uid[b]);
-            let fam_list: Vec<&str> = families.iter().copied().collect();
-            let mut entity_uids: Vec<String> = nodes.into_iter().collect();
-            entity_uids.sort_unstable();
-
-            out.push(Correlation::new(
-                "AU-062",
-                "Multi-pathway identity corroboration",
-                severity,
-                format!(
-                    "{} ({}) and {} ({}) are linked by {} independent pathway{} spanning {} \
-                     orthogonal source famil{} [{}] — the connection is corroborated across \
-                     multiple routes, not a single chain",
-                    ea.value,
-                    ea.kind,
-                    eb.value,
-                    eb.kind,
-                    n,
-                    if n == 1 { "" } else { "s" },
-                    families.len(),
-                    if families.len() == 1 { "y" } else { "ies" },
-                    fam_list.join(", "),
-                ),
-                entity_uids,
-                scan_id,
-                now,
-            ));
+            out.push(MultipathLink {
+                a_uid: a.to_string(),
+                b_uid: b.to_string(),
+                pathways: pathways.len(),
+                families: families.into_iter().collect(),
+                nodes: nodes.into_iter().collect(),
+            });
         }
+    }
+
+    out
+}
+
+/// AU-062 — Multi-pathway identity corroboration.
+///
+/// Confidence rises with both the number of independent pathways and the number
+/// of distinct source families they cross. Delegates the detection to
+/// [`multipath_corroborated_links`] — the same finder the engine's promotion
+/// pass uses — and formats each corroborated pair as a [`Correlation`].
+pub(in crate::core::correlator) fn rule_au_062_multipath_corroboration(
+    entities: &[Entity],
+    relations: &[Relation],
+    scan_id: &str,
+    now: u64,
+) -> Vec<Correlation> {
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+
+    let mut out = Vec::new();
+    for link in multipath_corroborated_links(entities, relations) {
+        let n = link.pathways;
+        let severity = if n >= 3 || link.families.len() >= 3 {
+            Severity::High
+        } else {
+            Severity::Medium
+        };
+        let (ea, eb) = (by_uid[link.a_uid.as_str()], by_uid[link.b_uid.as_str()]);
+
+        out.push(Correlation::new(
+            "AU-062",
+            "Multi-pathway identity corroboration",
+            severity,
+            format!(
+                "{} ({}) and {} ({}) are linked by {} independent pathway{} spanning {} \
+                 orthogonal source famil{} [{}] — the connection is corroborated across \
+                 multiple routes, not a single chain",
+                ea.value,
+                ea.kind,
+                eb.value,
+                eb.kind,
+                n,
+                if n == 1 { "" } else { "s" },
+                link.families.len(),
+                if link.families.len() == 1 { "y" } else { "ies" },
+                link.families.join(", "),
+            ),
+            link.nodes,
+            scan_id,
+            now,
+        ));
     }
 
     out

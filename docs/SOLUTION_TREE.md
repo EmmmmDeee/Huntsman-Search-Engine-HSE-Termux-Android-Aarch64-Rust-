@@ -1285,3 +1285,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   corroboration, gap analysis, backward synthesis, universal learning) is
   delivered end-to-end. Gate green: 3,280 lib tests. Paired: `PROBLEM_TREE` §8
   cycle 33 — same commit.
+- **2026-06-20** — **Cycle 34 (SOL-CORR, C1→C2): confirmed connections feed back
+  into the entities — the corroboration boost.** C1 made the *findings*; this
+  closes the loop so a confirmed connection measurably strengthens the scan's
+  OUTPUT. (1) Extracted the multi-pathway test AU-062 already ran into a shared
+  `correlator::multipath_corroborated_links` finder (≥2 edge-disjoint pathways
+  across ≥2 orthogonal source families); the rule now delegates to it — one
+  finder, no drift. (2) New engine finalise pass `promote_multipath_corroborated`
+  (in `engine/passes.rs`, mirroring `promote_geo_corroborated_family`): for each
+  corroborated link it tags both identity ENDPOINTS `multipath-corroborated` and
+  stamps a `multipath_corroboration` evidence record, lifting corroboration →
+  `c_effective` → classification band. Conduit intermediates are left alone; the
+  boost source classifies as `"other"` so it never feeds back to inflate AU-062;
+  idempotent via the tag. Best-effort, conditional re-persist (only when a link
+  fires). No new rule (64 unchanged) — this is an engine pass bridging the
+  correlator's proof to the entity confidence model. Gate green: 3,283 lib tests
+  (+1), 24 arch guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` §8 cycle 34 —
+  same commit.

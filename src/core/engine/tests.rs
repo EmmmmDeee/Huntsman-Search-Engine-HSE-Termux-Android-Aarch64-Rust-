@@ -111,6 +111,83 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
     assert_eq!(promote_geo_corroborated_family(&mut lone), 0);
 }
 
+/// Free, offline: an identity pair joined by two orthogonal pathways has BOTH
+/// its endpoints promoted (tagged + corroborated) so the confirmed connection
+/// strengthens the scan output — while the conduit intermediates are left alone
+/// and the pass is idempotent across re-runs. Shares the AU-062 detector, so
+/// this is the boost side of the same finding the correlator reports.
+#[test]
+fn promote_multipath_corroborated_lifts_only_orthogonally_linked_endpoints() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::relation::{Relation, RelationKind};
+
+    let sourced = |kind: EntityKind, value: &str, source: &str| {
+        let mut e = Entity::new(kind, value, 0.8, "s");
+        e.add_evidence(Evidence::new(source, "ev"));
+        e
+    };
+    let rel = |from: &Entity, to: &Entity, kind: RelationKind| {
+        Relation::new(from.uid.clone(), to.uid.clone(), kind, 0.8, "s")
+    };
+
+    // Two identity endpoints linked by two edge-disjoint routes through
+    // NON-identity intermediates of DIFFERENT source families (infra + registry)
+    // — the AU-062 criterion. The only identity pair is (email, username).
+    let email = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
+    let user = Entity::new(EntityKind::Username, "bob", 0.8, "s");
+    let dom = sourced(EntityKind::Domain, "x.com", "dns_intel"); // infra
+    let org = sourced(EntityKind::Organisation, "Acme Pty", "opencorporates"); // registry
+    let rels = [
+        rel(&email, &dom, RelationKind::BelongsToDomain),
+        rel(&dom, &user, RelationKind::DerivedFrom),
+        rel(&email, &org, RelationKind::RegisteredBy),
+        rel(&org, &user, RelationKind::DerivedFrom),
+    ];
+    let mut ents = vec![email.clone(), user.clone(), dom.clone(), org.clone()];
+
+    assert_eq!(
+        promote_multipath_corroborated(&mut ents, &rels),
+        2,
+        "both identity endpoints are promoted"
+    );
+    for v in ["a@x.com", "bob"] {
+        let e = ents.iter().find(|e| e.value == v).unwrap();
+        assert!(e.has_tag("multipath-corroborated"), "{v} must be tagged");
+        assert!(
+            e.evidence
+                .iter()
+                .any(|ev| ev.source == "multipath_corroboration"),
+            "{v} must carry corroboration evidence"
+        );
+    }
+    // The conduit intermediates are NOT themselves corroborated.
+    for v in ["x.com", "Acme Pty"] {
+        let e = ents.iter().find(|e| e.value == v).unwrap();
+        assert!(
+            !e.has_tag("multipath-corroborated"),
+            "{v} is a conduit, not a corroborated endpoint"
+        );
+    }
+
+    // Idempotent: a second pass (or a recall on a re-scan) promotes nothing new.
+    assert_eq!(promote_multipath_corroborated(&mut ents, &rels), 0);
+
+    // A single route is not multi-pathway corroboration → nothing promoted.
+    let e2 = Entity::new(EntityKind::Email, "c@z.com", 0.8, "s");
+    let u2 = Entity::new(EntityKind::Username, "carol", 0.8, "s");
+    let d2 = sourced(EntityKind::Domain, "z.com", "dns_intel");
+    let single = [
+        rel(&e2, &d2, RelationKind::BelongsToDomain),
+        rel(&d2, &u2, RelationKind::DerivedFrom),
+    ];
+    let mut one_route = vec![e2, u2, d2];
+    assert_eq!(
+        promote_multipath_corroborated(&mut one_route, &single),
+        0,
+        "a single pathway is not corroboration"
+    );
+}
+
 /// The precision complement, surname-aware: a far same-surname candidate is tagged
 /// `geo-discordant` (a likely namesake) ONLY when the shared surname is common — a
 /// distinctive surname carries kinship across any distance, so a rare-surname

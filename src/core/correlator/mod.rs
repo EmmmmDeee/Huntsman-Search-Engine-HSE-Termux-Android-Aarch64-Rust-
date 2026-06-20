@@ -201,6 +201,12 @@ type RuleFn = fn(&[Entity], &str, u64) -> Vec<Correlation>;
 
 mod rules;
 pub(crate) use rules::location::{au059_synergy_fix, is_anchoring_geo_source};
+// The shared multi-pathway corroboration detector — the AU-062 rule and the
+// engine's `promote_multipath_corroborated` pass both call this one finder, so
+// the correlation and the confidence boost can never drift apart. (The
+// `MultipathLink` it returns is `pub(in crate::core)`, so callers read its
+// fields by inference without naming the type.)
+pub(in crate::core) use rules::multipath::multipath_corroborated_links;
 use rules::*;
 
 const RULES: &[RuleFn] = &[

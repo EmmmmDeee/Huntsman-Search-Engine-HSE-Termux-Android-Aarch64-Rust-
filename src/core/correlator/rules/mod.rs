@@ -363,7 +363,7 @@ mod geo;
 mod identity;
 mod infra;
 pub(crate) mod location;
-mod multipath;
+pub(crate) mod multipath;
 mod org;
 mod template;
 mod transitive;

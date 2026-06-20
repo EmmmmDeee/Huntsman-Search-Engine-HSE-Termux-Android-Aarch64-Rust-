@@ -2029,3 +2029,23 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   **C1 is now delivered end-to-end** (orthogonal corroboration → gap analysis →
   backward synthesis → universal cross-scan learning). **Paired:** `SOLUTION_TREE`
   SOL-CORR `[~]` note + §5 — same commit.
+- **2026-06-20** — **Cycle 34 (C1→C2): "use confirmed connections as a tool"
+  applied to the OUTPUT — the multi-pathway corroboration boost.** C1 produced the
+  *findings* (AU-062…AU-065); the gap was that a connection corroborated across
+  many orthogonal routes was reported but did **not** strengthen the entities it
+  joined — the scan's leads still read the endpoints at their pre-correlation
+  confidence. Closed it: AU-062's detector is now a shared
+  `multipath_corroborated_links` finder, and a new engine finalise pass
+  `promote_multipath_corroborated` feeds its proof back into the entities — each
+  endpoint of a link confirmed by **≥2 edge-disjoint, source-orthogonal pathways**
+  earns a `multipath-corroborated` tag + corroboration evidence, lifting its
+  `c_effective` and classification band so the *result* reflects what the scan's
+  own correlation established. Only the two identity endpoints are lifted (a
+  conduit domain is not itself corroborated); the boost source is unscored
+  (`"other"`) so it can't feed back to inflate AU-062 on a recall; idempotent via
+  the tag. One finder shared with the rule → the boost and the correlation can
+  never disagree. No new rule (64 unchanged) — an engine pass bridging the
+  correlator's proof to the entity confidence model, mirroring the proven
+  `promote_geo_corroborated_family` pattern. Gate green: fmt/clippy/doc clean,
+  3,283 lib tests (+1), 24 arch guards, 0 failures. **Paired:** `SOLUTION_TREE`
+  SOL-CORR cycle 34 note — same commit.
