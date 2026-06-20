@@ -2012,3 +2012,42 @@ async fn plan_preview_lists_engaged_modules_for_a_seed() {
     let resp = app.oneshot(get("/api/v1/plan?value=")).await.unwrap();
     assert_eq!(resp.status(), 400);
 }
+
+#[tokio::test]
+async fn scan_benchmark_returns_a_scorecard() {
+    let (app, store) = test_app_with_store("benchmark");
+    let scan = Scan::new(
+        "s-bench",
+        Target::new(TargetKind::FullName, "Subject Person"),
+    );
+    store.upsert_scan(&scan).unwrap();
+    for v in ["a@example.com", "b@example.com"] {
+        store
+            .upsert_entity(&Entity::new(EntityKind::Email, v, 0.8, "s-bench"))
+            .unwrap();
+    }
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/scans/s-bench/benchmark"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["scan_id"].as_str().unwrap(), "s-bench");
+    assert_eq!(
+        json["scorecard"]["total_entities"].as_u64().unwrap(),
+        2,
+        "the scorecard reflects the seeded entities"
+    );
+    assert!(
+        json["metrics"].is_object(),
+        "the full metrics are embedded for traceability"
+    );
+
+    // Unknown scan -> 404.
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/benchmark"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}

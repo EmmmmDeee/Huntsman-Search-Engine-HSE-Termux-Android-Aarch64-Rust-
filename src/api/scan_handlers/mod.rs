@@ -986,6 +986,40 @@ pub async fn scan_pivots(
     ok_list("pivots", pivots)
 }
 
+/// `GET /api/v1/scans/{id}/benchmark` — the consolidated, auditable benchmark report
+/// ([`crate::core::benchmark`]): the scan's measurable OSINT dimensions (discovery
+/// depth, graph coverage, corroboration, density, throughput, module reliability,
+/// pivots) rolled into one scorecard for a reproducible A/B. The HTTP twin of
+/// `hse benchmark`, so a deployed Termux/web instance can emit the same evidence over
+/// the network. Pure synthesis over the persisted scan + entities + relations; 404 if
+/// the scan is unknown.
+pub async fn scan_benchmark(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let scan = match s.store.get_scan(&id) {
+        Ok(Some(sc)) => sc,
+        Ok(None) => return not_found(),
+        Err(e) => return internal_error(&e),
+    };
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (entities, relations) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let report = crate::core::benchmark::report(&scan, &entities, &relations);
+    (StatusCode::OK, Json(report)).into_response()
+}
+
 pub async fn scan_delete(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
