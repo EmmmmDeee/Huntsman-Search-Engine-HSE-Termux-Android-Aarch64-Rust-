@@ -260,12 +260,15 @@ pub const MAX_DEPTH: u32 = 3;
 
 /// Default recursive-expansion depth for the `hse scan` product surface when
 /// the operator gives neither an explicit `--depth` nor `--auto`/`--recursive`.
-/// Two hops balances coverage (seed → directly-discovered entities → their
-/// first-order pivots) against runtime on a phone. The library [`ScanOptions`]
-/// default stays `0` (single round) so programmatic/API callers and the test
-/// suite remain deterministic; this product default is applied at the CLI
-/// boundary in `cli::scan`.
-pub const DEFAULT_SCAN_DEPTH: u32 = 2;
+/// Defaults to the full [`MAX_DEPTH`] so the standard scan is **comprehensive by
+/// default** — the seed → discovered identifiers → their pivots → infrastructure
+/// chain runs to completion, giving every module a target of a kind it accepts
+/// (e.g. the Email→Domain→IP pipeline only reaches the IP modules at the third
+/// hop). The library [`ScanOptions`] default stays `0` (single round) so
+/// programmatic/API callers and the test suite remain deterministic; this product
+/// default is applied at the CLI boundary in `cli::scan`. Operators who want a
+/// faster, shallower sweep set `--depth` explicitly.
+pub const DEFAULT_SCAN_DEPTH: u32 = MAX_DEPTH;
 
 // Compile-time guard: the product default must never exceed the clamp ceiling,
 // or a bare `hse scan` would emit the "clamped to MAX_DEPTH" warning on every run.

@@ -92,9 +92,14 @@ pub enum Command {
         /// the depth where marginal yield justifies the cost.
         #[arg(short = 'A', long)]
         auto: bool,
-        /// Only expand entities whose C_eff is at least this. Default 0.50
-        /// (Probable tier and above). Set 0.75 for strict Verified-only expansion.
-        #[arg(long, default_value_t = 0.50)]
+        /// Only expand entities whose C_eff is at least this. Default 0.20 so the
+        /// scan is comprehensive — the seed's own derived identifiers (name → email
+        /// / username / handle permutations, emitted at 0.20–0.30) expand and feed
+        /// every downstream module, instead of starving the pipeline after the seed
+        /// round. Correlation still applies its own strict floors, so recall is wide
+        /// while the resolved findings stay precise. Raise it (e.g. 0.50 Probable,
+        /// 0.75 Verified-only) for a tighter, faster sweep.
+        #[arg(long, default_value_t = 0.20)]
         min_expand_confidence: f64,
         /// Hard cap on total entities. Stops expansion when reached.
         #[arg(long)]

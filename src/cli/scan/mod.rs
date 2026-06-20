@@ -79,7 +79,10 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
 
     // Depth resolution. `--auto`/`--recursive` only kick in when the operator
     // gave no explicit `--depth` (sentinel: `cmd.depth.is_none()`); otherwise an
-    // omitted `--depth` falls back to the product default (DEFAULT_SCAN_DEPTH=2).
+    // omitted `--depth` falls back to the comprehensive product default
+    // (DEFAULT_SCAN_DEPTH = MAX_DEPTH). `--recursive`'s `.min(0.40)` never raises
+    // the floor above the operator's value, so with the comprehensive default it
+    // stays at the 0.20 expansion floor.
     let (depth, min_expand_confidence, max_concurrent) = if cmd.auto && cmd.depth.is_none() {
         let has_paid = keys::load().contains_key("HUNTSMAN_OATHNET_KEY");
         let (auto_depth, auto_conf) = crate::core::scan::optimal_depth(target_kind, has_paid);

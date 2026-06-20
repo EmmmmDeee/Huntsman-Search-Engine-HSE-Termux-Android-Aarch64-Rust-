@@ -2288,3 +2288,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   regression assertions pin freemail-vs-role on googlemail/yahoo/outlook. No rule
   change (count 68). Gate green: fmt/clippy/doc clean, 3,314 lib tests, 24 arch
   guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 47 note — same commit.
+- **2026-06-20** — **Cycle 48 (comprehensive scans: stop starving the module set).**
+  Operator report: "scans are failing to execute every single file and module;
+  every file should be given a chance of finding its own unique data if not
+  enriching another's." Investigation (engine dispatch map) found the default scan
+  effectively stalled after the seed round on a person seed: `name_intel`'s derived
+  identifier permutations are emitted at `EMAIL_CONF` 0.30 / `PIVOT_CONF` 0.20,
+  *below* the 0.50 expansion floor, so they never became expansion targets — and the
+  default depth of 2 stopped one hop short of the infrastructure tier (the
+  Email→Domain→IP chain reaches the ~30 IP modules only on the third hop). Net: a
+  typical scan gave a target to only ~15 of 128 modules. Fixed by making the product
+  defaults **comprehensive**: `DEFAULT_SCAN_DEPTH = MAX_DEPTH` (3) and the CLI
+  `--min-expand-confidence` default 0.50 → **0.20**, so every seed-derived identifier
+  expands and feeds its downstream modules, and the discovery chain reaches the
+  infrastructure-tier modules. Crucially this widens *recall* only: the library
+  `ScanOptions::default()` stays depth 0 / 0.50 for API/test determinism (product
+  defaults are applied at the CLI boundary), and the strict 0.50 **correlation**
+  floors from cycles 44/46/47 are untouched — so the engine now *expands liberally
+  but correlates strictly* (guessed permutations get a chance to surface real data;
+  the resolved findings stay precise). Empirical: a free-only name scan now exercises
+  ≥29 distinct modules (was ~15), with the key-gated/paid tiers adding on top when
+  keys are present. No rule change (count 68). Gate green: fmt/clippy/doc clean,
+  3,314 lib tests (defaults referenced via constants — no fallout), 24 arch guards,
+  0 failures. **Paired:** `SOLUTION_TREE` cycle 48 note — same commit.

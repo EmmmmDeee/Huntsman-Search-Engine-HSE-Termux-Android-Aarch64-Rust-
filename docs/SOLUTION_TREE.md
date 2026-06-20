@@ -1521,3 +1521,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   infra; `abuse@googlemail.com` = still infra). No rule change (count 68). Gate
   green: 3,314 lib tests, 24 arch guards, fmt/clippy/doc clean. Paired:
   `PROBLEM_TREE` §8 cycle 47 — same commit.
+- **2026-06-20** — **Cycle 48 (comprehensive product defaults).** To give every
+  module a chance at a target (operator directive: "execute every single file and
+  module… every file should be given a chance"), the `hse scan` defaults become
+  comprehensive: `DEFAULT_SCAN_DEPTH = MAX_DEPTH` (3) so the Email→Domain→IP chain
+  reaches the infrastructure tier, and the CLI `--min-expand-confidence` default
+  drops 0.50 → 0.20 so name-derived identifier permutations (emitted at 0.20–0.30)
+  expand instead of starving the pipeline after the seed round. The split is
+  deliberate: **recall** widens (expansion floor 0.20) while **precision** is
+  unchanged (the library default stays 0.50 for API/tests; the AU-067/070 correlation
+  floors stay 0.50) — *expand liberally, correlate strictly*. `--recursive`'s
+  `.min(0.40)` clamp means it now tracks the 0.20 default rather than raising it.
+  Operators wanting a faster, shallower sweep set `--depth`/`--min-expand-confidence`
+  explicitly. Measured: a free-only name scan now exercises ≥29 distinct modules
+  (≈2× the prior ~15); key-gated/paid tiers stack on top with keys. Compounds: every
+  future scan, on any seed, now drives the full reachable module set. No rule change
+  (count 68). Gate green: 3,314 lib tests, 24 arch guards, fmt/clippy/doc clean.
+  Paired: `PROBLEM_TREE` §8 cycle 48 — same commit.
