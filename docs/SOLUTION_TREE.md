@@ -1378,3 +1378,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   feature; deterministic, reuses the tested primitive, no behaviour change. Gate
   green: 3,296 lib tests, 24 arch guards, fmt/clippy/doc clean. Paired:
   `PROBLEM_TREE` §8 cycle 39 — same commit.
+- **2026-06-20** — **Cycle 40 (C1, active gap-fill): the engine now PURSUES the
+  pathway AU-063 names.** Closes the last open leg of the recursive-linking spec —
+  "fill in the logical requirements that would have found the link from another
+  pathway." AU-063 only *named* the missing orthogonal family; now the engine acts
+  on it. (1) Shared selector `gap_fill_probes` (in `rules/gap.rs`, reusing
+  `single_route_identity_links` + the AU-063 absent-family logic) → each fragile-
+  link identity endpoint + the families missing from it. (2) New engine pass
+  `run_gap_fill` after expansion: for each probe it runs ONLY the missing-family
+  modules on the gap endpoint (classified via the now `pub(in crate::core)`
+  `source_family`), seeking corroboration of an already-confirmed link rather than
+  a stranger's footprint. Reuses the tested `dispatch_target`; bounded (≤8 probes,
+  budget/cancel-gated, honours passive/free/exclude, skips already-expanded
+  endpoints) and **toggle-gated** `feature.gap_fill` (default ON). New entities
+  flow into finalise normally. The selection logic is pure + unit-tested; the
+  dispatch reuses existing tested machinery. No rule change (count 66). Gate green:
+  3,298 lib tests (+2), 24 arch guards, fmt/clippy/doc clean. **SOL-CORR's full
+  arc — orthogonal corroboration, gap analysis, backward synthesis, universal
+  learning, cross-scan gap-fill, AND now active in-scan gap-fill — is delivered.**
+  Paired: `PROBLEM_TREE` §8 cycle 40 — same commit.

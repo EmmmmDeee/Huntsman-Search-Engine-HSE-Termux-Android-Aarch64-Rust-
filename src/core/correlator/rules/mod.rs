@@ -247,7 +247,7 @@ fn source_families(e: &Entity) -> BTreeSet<&'static str> {
 /// independent confirmation. `"other"` is the catch-all for unclassified sources
 /// and is excluded from family-diversity counts. Matching is lowercase-substring
 /// over the module names actually in the registry, most-specific first.
-pub(super) fn source_family(source: &str) -> &'static str {
+pub(in crate::core) fn source_family(source: &str) -> &'static str {
     let s = source.to_ascii_lowercase();
     let has = |needles: &[&str]| needles.iter().any(|n| s.contains(n));
     if has(&[

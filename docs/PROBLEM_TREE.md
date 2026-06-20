@@ -2137,3 +2137,21 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   deterministic, no behaviour change. Gate green: fmt/clippy/doc clean, 3,296 lib
   tests, 24 arch guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 39 note —
   same commit.
+- **2026-06-20** — **Cycle 40 (C1 completed): active in-scan gap-fill — the engine
+  pursues the missing pathway.** The recursive-linking spec's literal unmet clause
+  was "when gaps exist… fill in the logical requirements that would have found the
+  link from another pathway." AU-063 *named* the missing orthogonal family but
+  nothing *acted* on it. Now the engine does: after expansion, `run_gap_fill` takes
+  each fragile single-route identity endpoint (from the shared `gap_fill_probes`
+  selector) and runs ONLY the missing orthogonal family's modules on it to seek the
+  corroborating link. Safety by construction: confined to the missing-family
+  modules (seeks corroboration of an already-confirmed link, never a graph-adjacent
+  stranger's whole footprint), bounded (≤8 probes), budget/cancel-gated, honours
+  passive/free/exclude, skips already-expanded endpoints, and reuses the tested
+  `dispatch_target` (admission gates still filter results). Toggle `feature.gap_fill`
+  (default ON) for a clean off-switch. The pure selection logic is unit-tested; the
+  live dispatch reuses existing machinery (note: end-to-end live behaviour wants a
+  real-network device run to fully exercise). No rule change (count 66). Gate green:
+  fmt/clippy/doc clean, 3,298 lib tests (+2), 24 arch guards, 0 failures. **The
+  recursive-linking program is now complete end-to-end.** **Paired:** `SOLUTION_TREE`
+  cycle 40 note — same commit.

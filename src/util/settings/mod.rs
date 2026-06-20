@@ -112,7 +112,19 @@ pub const FEATURE_TOGGLES: &[(&str, bool)] = &[
     // Update-available notification: when ON the web UI shows a badge and
     // notification when commits are available (even if auto_update is OFF).
     ("feature.update_notify", true),
+    // Active gap-fill: after expansion, when a single-route (fragile) identity
+    // link is found, run the missing orthogonal source family's modules on the
+    // gap endpoints to actively seek the corroborating pathway AU-063 only names.
+    // Default ON — it is part of the recursive search and is bounded (a small
+    // probe cap, restricted to the missing-family modules, budget-gated, and
+    // respects passive/free/exclude). Turn off (`hse config feature.gap_fill off`)
+    // to skip the extra corroboration-seeking dispatch.
+    ("feature.gap_fill", true),
 ];
+
+/// The `feature.*` key gating active gap-fill — one source of the key string so
+/// the engine gate and the toggle registry can't drift.
+pub const GAP_FILL_FEATURE: &str = "feature.gap_fill";
 
 /// The `feature.*` key gating the live-sensor radar — the single source of the
 /// key string so the CLI gate, the API gate, and the toggle registry can't drift.

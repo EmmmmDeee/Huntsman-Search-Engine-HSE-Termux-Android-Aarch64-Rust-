@@ -267,6 +267,12 @@ Toggle keys:
   run the live sensors regardless of this toggle — the radar only ever surveys the
   operator's own surroundings, never a seed target, so it is walled off from
   target scanning by design.
+  `feature.gap_fill` (default **on**) gates active gap-fill: after expansion, when
+  a single-route (fragile) identity link is found, the engine runs the modules of
+  the missing orthogonal source family on the gap endpoints to actively pursue the
+  corroborating pathway (the AU-063 "logical requirement"). It is bounded (a small
+  probe cap, restricted to the missing-family modules, budget-gated, and honouring
+  passive/free/exclude). Turn it off for a leaner scan: `hse config feature.gap_fill off`.
 - `engine.<name>` — a single search engine (names from `hse engines`). Honoured
   by the search dispatch, the priority waterfall, and the liveness probe.
 - `module.<name>` — any registered module (names from `hse modules`). A disabled

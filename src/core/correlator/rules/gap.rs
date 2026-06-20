@@ -13,7 +13,7 @@
 //! [`crate::core::relation::disjoint_pathways`] primitive, so its notion of "one
 //! route" is exactly the multi-pathway rule's.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::*;
 use crate::core::relation::{PathStep, disjoint_pathways, identity_uids};
@@ -78,6 +78,73 @@ pub(in crate::core) fn single_route_identity_links(
         }
     }
     out
+}
+
+/// One active gap-fill probe: a fragile-link identity endpoint paired with the
+/// orthogonal source families MISSING from its single route. The engine runs the
+/// modules of those families on this endpoint to *actively pursue* the
+/// corroborating pathway AU-063 only names — restricted to the missing families
+/// so it seeks corroboration of an already-confirmed link, never a graph-adjacent
+/// stranger's whole footprint.
+pub(in crate::core) struct GapProbe {
+    /// The identity endpoint to probe.
+    pub endpoint_uid: String,
+    /// The orthogonal source families absent from the link — the modules to run.
+    pub missing_families: Vec<&'static str>,
+}
+
+/// Active gap-fill targets: for every fragile single-route identity link, both
+/// endpoints paired with the strongest orthogonal source families absent from the
+/// link (the AU-063 "logical requirement"). Deduplicated by endpoint (missing
+/// families unioned). The shared selector behind the engine's active gap-fill, so
+/// what the lead names and what the engine pursues are the same set.
+pub(in crate::core) fn gap_fill_probes(
+    entities: &[Entity],
+    relations: &[Relation],
+) -> Vec<GapProbe> {
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let families_of = |uid: &str| -> BTreeSet<&'static str> {
+        by_uid
+            .get(uid)
+            .map(|&e| source_families(e))
+            .unwrap_or_default()
+    };
+
+    let mut by_endpoint: BTreeMap<String, BTreeSet<&'static str>> = BTreeMap::new();
+    for link in single_route_identity_links(entities, relations) {
+        let mut present: BTreeSet<&'static str> = families_of(&link.a_uid);
+        present.extend(families_of(&link.b_uid));
+        for step in &link.route {
+            present.extend(families_of(&step.to_uid));
+        }
+        present.remove("other");
+
+        // The strongest two orthogonal families not yet on the link — the same
+        // "what would corroborate this" set AU-063 reports.
+        let absent: Vec<&'static str> = CORROBORATING_FAMILIES
+            .iter()
+            .copied()
+            .filter(|f| !present.contains(f))
+            .take(2)
+            .collect();
+        if absent.is_empty() {
+            continue;
+        }
+        for ep in [&link.a_uid, &link.b_uid] {
+            by_endpoint
+                .entry(ep.clone())
+                .or_default()
+                .extend(absent.iter().copied());
+        }
+    }
+
+    by_endpoint
+        .into_iter()
+        .map(|(endpoint_uid, fams)| GapProbe {
+            endpoint_uid,
+            missing_families: fams.into_iter().collect(),
+        })
+        .collect()
 }
 
 /// AU-063 — Single-pathway corroboration gap. Delegates the detection to
@@ -198,6 +265,45 @@ mod tests {
         // Names an orthogonal family to seek (breach leads the priority list).
         assert!(out[0].description.contains("breach"));
         assert!(out[0].entity_uids.contains(&a.uid));
+    }
+
+    #[test]
+    fn gap_fill_probes_name_missing_families_for_both_endpoints() {
+        // The active-gap-fill selector mirrors AU-063: a single infra route means
+        // both identity endpoints want the strongest orthogonal families.
+        let a = id(EntityKind::Email, "a@x.com");
+        let b = id(EntityKind::Username, "bob");
+        let d = sourced(EntityKind::Domain, "x.com", "dns_intel"); // infra
+        let rels = [
+            rel(&a, &d, RelationKind::BelongsToDomain),
+            rel(&d, &b, RelationKind::DerivedFrom),
+        ];
+        let probes = gap_fill_probes(&[a.clone(), b.clone(), d], &rels);
+        assert_eq!(probes.len(), 2, "both endpoints are probed");
+        assert!(
+            probes
+                .iter()
+                .all(|p| p.missing_families.contains(&"breach")),
+            "breach (top orthogonal family) is sought on each endpoint"
+        );
+        assert!(probes.iter().any(|p| p.endpoint_uid == a.uid));
+        assert!(probes.iter().any(|p| p.endpoint_uid == b.uid));
+    }
+
+    #[test]
+    fn gap_fill_probes_empty_when_link_already_corroborated() {
+        // Two independent routes → no gap → nothing to actively fill.
+        let a = id(EntityKind::Email, "a@x.com");
+        let b = id(EntityKind::Username, "bob");
+        let d = sourced(EntityKind::Domain, "x.com", "dns_intel");
+        let o = sourced(EntityKind::Organisation, "Acme", "opencorporates");
+        let rels = [
+            rel(&a, &d, RelationKind::BelongsToDomain),
+            rel(&d, &b, RelationKind::DerivedFrom),
+            rel(&a, &o, RelationKind::RegisteredBy),
+            rel(&o, &b, RelationKind::DerivedFrom),
+        ];
+        assert!(gap_fill_probes(&[a, b, d, o], &rels).is_empty());
     }
 
     #[test]

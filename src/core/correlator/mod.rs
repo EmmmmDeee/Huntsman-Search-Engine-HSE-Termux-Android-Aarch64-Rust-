@@ -211,6 +211,11 @@ pub(in crate::core) use rules::multipath::multipath_corroborated_links;
 // the engine's cross-scan gap resolution (AU-066) both call this one finder, so
 // the lead that flags a gap and the logic that fills it can't drift apart.
 pub(in crate::core) use rules::gap::single_route_identity_links;
+// Active gap-fill: the gap endpoints + the orthogonal families missing from each,
+// and the source-family classifier the engine maps those families to modules
+// with — so what AU-063 names, the engine actually pursues.
+pub(in crate::core) use rules::gap::gap_fill_probes;
+pub(in crate::core) use rules::source_family;
 use rules::*;
 
 const RULES: &[RuleFn] = &[

@@ -466,6 +466,26 @@ impl ScanEngine {
             let _ = self
                 .run_expansion(&scan.id, &target, &mut ctx, &opts, started, est)
                 .await;
+
+            // Active gap-fill (last leg of the recursive-linking program): for any
+            // single-route link the expansion gates left fragile, run the missing
+            // orthogonal family's modules on the gap endpoints to pursue the
+            // corroborating pathway AU-063 names. Bounded + toggle-gated; any new
+            // entities flow into finalise below.
+            let _ = self
+                .run_gap_fill(
+                    &scan.id,
+                    &target,
+                    &mut ctx,
+                    &opts,
+                    started,
+                    &mut entity_map,
+                    &mut visited,
+                    &mut stats,
+                    &mut *dispatched,
+                    &mut lineage,
+                )
+                .await;
         }
 
         // Scan body done — stop the wall-time watchdog so it can't fire after
@@ -1123,6 +1143,141 @@ impl ScanEngine {
         });
         out.truncate(MAX_ENTITIES);
         out
+    }
+
+    /// Active gap-fill — pursue the corroborating pathway AU-063 only names.
+    ///
+    /// After expansion, a single-route (fragile) identity link is a connection no
+    /// independent pathway corroborates. AU-063 reports *which* orthogonal source
+    /// family would confirm it; this runs the modules of that family on the gap
+    /// endpoints to actually go and find the link. Confined to the missing
+    /// families (not the endpoint's whole module graph), it seeks corroboration of
+    /// an already-confirmed connection rather than chasing a graph-adjacent
+    /// stranger's footprint — and it is bounded (a small probe cap, budget- and
+    /// cancel-gated) and honours passive/free/exclude exactly as expansion does.
+    /// New entities flow into finalise normally. Toggle: `feature.gap_fill` (ON).
+    /// Returns the number of endpoints probed.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_gap_fill(
+        &self,
+        scan_id: &str,
+        seed: &Target,
+        ctx: &mut ModuleContext,
+        opts: &ScanOptions,
+        started: Instant,
+        entity_map: &mut HashMap<String, Entity>,
+        visited: &mut HashSet<(TargetKind, String)>,
+        stats: &mut ModuleStats,
+        dispatched: &mut DispatchLog,
+        relations: &mut Vec<Relation>,
+    ) -> usize {
+        const MAX_PROBES: usize = 8;
+
+        if !crate::util::settings::get_bool(crate::util::settings::GAP_FILL_FEATURE, true) {
+            return 0;
+        }
+
+        // The gap analysis needs the full relation graph the finaliser will build:
+        // the in-flight lineage edges plus the structural edges derivable from the
+        // current entity set. Derive once, off a snapshot.
+        let ents: Vec<Entity> = entity_map.values().cloned().collect();
+        let mut rels = relations.clone();
+        rels.extend(crate::core::relation::derive_all(&ents, scan_id));
+
+        let probes = crate::core::correlator::gap_fill_probes(&ents, &rels);
+        if probes.is_empty() {
+            return 0;
+        }
+
+        let by_uid: HashMap<&str, &Entity> = ents.iter().map(|e| (e.uid.as_str(), e)).collect();
+        let mut before: HashSet<String> = HashSet::new();
+        let mut probed = 0usize;
+
+        for probe in probes {
+            if probed >= MAX_PROBES
+                || ctx.cancel.is_cancelled()
+                || budget_check(opts, started, entity_map.len()).is_some()
+            {
+                break;
+            }
+            let Some(&ep) = by_uid.get(probe.endpoint_uid.as_str()) else {
+                continue;
+            };
+            let Some(tk) = TargetKind::from_entity_kind(&ep.kind) else {
+                continue;
+            };
+            let target = Target::new(tk, ep.value.clone());
+            // Endpoints already expanded ran their whole module graph; the value is
+            // in the gap endpoints the expansion gates held back.
+            if visited.contains(&visit_key(&target)) {
+                continue;
+            }
+            // Only the modules in the MISSING orthogonal families the operator
+            // hasn't excluded — the corroboration-seeking set, classified by the
+            // same `source_family` the gap analysis uses.
+            let mut allow: Vec<String> = self
+                .modules
+                .iter()
+                .filter(|m| {
+                    let fam = crate::core::correlator::source_family(m.name());
+                    probe.missing_families.contains(&fam)
+                })
+                .map(|m| m.name().to_string())
+                .collect();
+            if let Some(user_allow) = &opts.modules {
+                allow.retain(|m| user_allow.contains(m));
+            }
+            if allow.is_empty() {
+                continue;
+            }
+
+            let gap_opts = ScanOptions {
+                modules: Some(allow),
+                ..opts.clone()
+            };
+
+            before.clear();
+            before.extend(entity_map.keys().cloned());
+            {
+                let cx = DispatchCx {
+                    scan_id,
+                    target: &target,
+                    opts: &gap_opts,
+                    is_expansion: true,
+                    seed_kind: seed.kind,
+                };
+                let mut dstate = DispatchState {
+                    entity_map: &mut *entity_map,
+                    stats: &mut *stats,
+                    dispatched: &mut *dispatched,
+                };
+                if let Err(e) = self.dispatch_target(&cx, ctx, &mut dstate).await {
+                    warn!(scan_id, error = %e, "gap-fill dispatch failed (continuing)");
+                }
+            }
+            // New entities this probe surfaced are derived from the gap endpoint.
+            for (uid, child) in entity_map.iter() {
+                if !before.contains(uid) {
+                    relations.push(Relation::new(
+                        uid.as_str(),
+                        probe.endpoint_uid.as_str(),
+                        RelationKind::DerivedFrom,
+                        child.confidence,
+                        scan_id,
+                    ));
+                }
+            }
+            visited.insert(visit_key(&target));
+            probed += 1;
+        }
+
+        if probed > 0 {
+            info!(
+                scan_id,
+                probed, "active gap-fill: probed gap endpoints for missing-family corroboration"
+            );
+        }
+        probed
     }
 
     /// Drive the expansion loop. Returns the stop reason for diagnostics.
