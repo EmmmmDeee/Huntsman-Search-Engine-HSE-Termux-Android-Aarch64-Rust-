@@ -1447,3 +1447,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   found a defect a unit test missed, and the fix is locked in. No rule change
   (count 67). Gate green: 3,306 lib tests (+2 proptests), 24 arch guards,
   fmt/clippy/doc clean. Paired: `PROBLEM_TREE` §8 cycle 43 — same commit.
+- **2026-06-20** — **Cycle 44 (correctness from real data): a confidence floor at
+  the identity-cluster union.** Running the engine on the common name "Ali Kareem"
+  (Australia) — exactly the "test on numerous seeds" the directive calls for —
+  surfaced a real fusion bug: `core::relation::resolve_identity_clusters` ran
+  union-find over *every* `identity_paths` link with no confidence floor, so one
+  weak edge fused unrelated namesakes into a single phantom identity (live: 59
+  distinct people merged at weakest-link 0.17 in AU-067 + the dossier). Solution: a
+  `min_confidence` parameter that gates the union itself — a link below the floor is
+  simply absent from the equivalence relation, so a weak bridge between two strong
+  sub-identities can no longer collapse them, and (because the floor gates the
+  binding links) every returned cluster's weakest-link confidence is itself ≥ the
+  floor. AU-067 and the dossier RESOLVED IDENTITIES view both pass the Probable
+  floor (0.50), keeping the cluster-level conclusion consistent with the pairwise
+  links and AU-060's own threshold (one finder, no drift). The change is universal
+  and self-reinforcing: every common-name scan now resists weak-link fusion, and the
+  tighter clusters feed cleaner downstream corroboration. Validated on the exact
+  failing scan (`b5ef6f41…`): floor 0.0 → a 59-member cluster @ 0.17; floor 0.50 →
+  it vanishes (largest genuine cluster 2 @ 0.90), i.e. zero phantom identities. New
+  graph unit test pins the behaviour (0.17 bridge fuses at 0.0, stays split at
+  0.50). No rule change (count 67). Gate green: 3,307 lib tests (+1), 24 arch
+  guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` §8 cycle 44 — same commit.

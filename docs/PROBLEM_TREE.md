@@ -2202,3 +2202,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   accuracy + future-resilience. No rule change (count 67). Gate green:
   fmt/clippy/doc clean, 3,306 lib tests (+2), 24 arch guards, 0 failures.
   **Paired:** `SOLUTION_TREE` cycle 43 note — same commit.
+- **2026-06-20** — **Cycle 44 (data-discovered correctness: stop weak links from
+  fusing strangers).** A real deep scan on the common name "Ali Kareem" (Australia)
+  exposed a genuine defect the synthetic tests never hit:
+  `resolve_identity_clusters` unioned *every* `identity_paths` link regardless of
+  confidence, so a single weak edge collapsed dozens of unrelated namesakes into
+  one "resolved identity". On the live data (scan `b5ef6f41…`, 598 entities / 488
+  relations) the dossier's RESOLVED IDENTITIES section and AU-067 reported **59
+  distinct people** (Mohammed Abdul Kareem, Salim Atshan Fahd, Mcneish Izack
+  Kareem, …) as a single person, bound by a weakest link of just **0.17**. Fixed by
+  adding a `min_confidence` floor applied **at the union, not afterwards**: only a
+  link whose weakest hop clears the floor may *bind* two identities, so a weak
+  bridge between two strong sub-identities now leaves them as the two distinct
+  clusters they are. Threaded the Probable-tier floor (0.50) through AU-067 and the
+  dossier; the union floor makes AU-067's old post-hoc confidence check redundant
+  (every returned cluster already clears it), leaving just the ≥3-member size gate.
+  Empirically validated on the exact failing data: at floor 0.0 the largest cluster
+  is 59 ids @ 0.17; at 0.50 that phantom is **gone** (largest genuine cluster 2 ids
+  @ 0.90), so AU-067 and the dossier now emit **zero** false resolved-identities for
+  this common-name target instead of one 59-strong phantom. Universal: every future
+  scan on a common name is protected from weak-link identity fusion, and the cleaner
+  clusters compound into cleaner corroboration. A new graph unit test reproduces the
+  exact pattern (two 0.9 sub-identities + one 0.17 bridge: 0.0 fuses all six, 0.50
+  keeps two 3-member clusters). No rule change (count 67). Gate green:
+  fmt/clippy/doc clean, 3,307 lib tests (+1), 24 arch guards, 0 failures.
+  **Paired:** `SOLUTION_TREE` cycle 44 note — same commit.

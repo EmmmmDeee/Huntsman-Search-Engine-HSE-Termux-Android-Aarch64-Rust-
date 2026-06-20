@@ -613,6 +613,15 @@ pub struct IdentityClusterResult {
 /// only multi-member clusters (`len() >= 2`), each carrying the weakest-link
 /// confidence of the links that bind it, sorted by first member UID.
 ///
+/// Only links whose weakest hop confidence is `>= min_confidence` may *bind* two
+/// identities together, and the floor is applied **at the union, not afterwards**.
+/// That distinction is the whole point: a single weak bridge between two otherwise
+/// strong sub-identities leaves them as the two distinct clusters they are, rather
+/// than fusing dozens of unrelated namesakes (e.g. the 299 "Ali Kareem" records)
+/// into one phantom person through one tenuous edge. Pass `0.0` to union on every
+/// link. Because the floor gates the binding links, every returned cluster's
+/// `min_confidence` is itself `>= min_confidence`.
+///
 /// This is the cluster-level synthesis of the pairwise transitive closure: where
 /// AU-060 reports "A is linked to B", this collapses every such link into "{A, B,
 /// C, …} is one identity". Built on the shared `identity_paths` finder, so a
@@ -623,8 +632,16 @@ pub fn resolve_identity_clusters(
     entities: &[Entity],
     relations: &[Relation],
     max_hops: usize,
+    min_confidence: f64,
 ) -> Vec<IdentityClusterResult> {
-    let paths = identity_paths(entities, relations, max_hops);
+    // Keep only links strong enough to *bind* identities. Filtering here — before
+    // the union — is what stops one weak edge from collapsing strangers together:
+    // a sub-floor link is simply absent from the equivalence relation. Every link
+    // that survives also defines the component's weakest-link confidence below.
+    let paths: Vec<IdentityPath> = identity_paths(entities, relations, max_hops)
+        .into_iter()
+        .filter(|p| p.min_confidence >= min_confidence)
+        .collect();
     if paths.is_empty() {
         return Vec::new();
     }
@@ -715,7 +732,7 @@ mod tests {
         let rels = [rel(&email, &uname, 0.9), rel(&uname, &phone, 0.4)];
         let ents = [email, uname, phone, lone];
 
-        let clusters = resolve_identity_clusters(&ents, &rels, 4);
+        let clusters = resolve_identity_clusters(&ents, &rels, 4, 0.0);
         assert_eq!(clusters.len(), 1, "one multi-identity cluster");
         assert_eq!(clusters[0].members.len(), 3, "email + username + phone");
         assert!(
@@ -723,14 +740,77 @@ mod tests {
             "the weakest link sets the cluster confidence"
         );
         // Deterministic: identical inputs yield byte-identical output.
-        assert_eq!(resolve_identity_clusters(&ents, &rels, 4), clusters);
+        assert_eq!(resolve_identity_clusters(&ents, &rels, 4, 0.0), clusters);
     }
 
     #[test]
     fn resolve_identity_clusters_empty_without_links() {
         let a = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
         let b = Entity::new(EntityKind::Username, "bob", 0.8, "s");
-        assert!(resolve_identity_clusters(&[a, b], &[], 4).is_empty());
+        assert!(resolve_identity_clusters(&[a, b], &[], 4, 0.0).is_empty());
+    }
+
+    #[test]
+    fn resolve_identity_clusters_floor_keeps_a_weak_bridge_from_fusing_strangers() {
+        // Two genuinely distinct people, each a tight 0.9-bound sub-identity, joined
+        // by a single tenuous 0.17 bridge between their usernames. This is the
+        // common-name fusion seen on real data: one weak edge would otherwise
+        // collapse two strangers into "one person".
+        let mk = |k: EntityKind, v: &str| Entity::new(k, v, 0.8, "s");
+        let rel = |from: &Entity, to: &Entity, c: f64| {
+            Relation::new(
+                from.uid.clone(),
+                to.uid.clone(),
+                RelationKind::DerivedFrom,
+                c,
+                "s",
+            )
+        };
+        let pa = mk(EntityKind::Person, "Ali Kareem A");
+        let ea = mk(EntityKind::Email, "a@x.com");
+        let ua = mk(EntityKind::Username, "ali_a");
+        let pb = mk(EntityKind::Person, "Ali Kareem B");
+        let eb = mk(EntityKind::Email, "b@y.com");
+        let ub = mk(EntityKind::Username, "ali_b");
+        let rels = [
+            rel(&pa, &ea, 0.9),
+            rel(&ea, &ua, 0.9),
+            rel(&pb, &eb, 0.9),
+            rel(&eb, &ub, 0.9),
+            rel(&ua, &ub, 0.17), // the weak bridge
+        ];
+        let ents = [
+            pa.clone(),
+            ea.clone(),
+            ua.clone(),
+            pb.clone(),
+            eb.clone(),
+            ub.clone(),
+        ];
+
+        // No floor: the weak bridge fuses all six into one phantom identity.
+        let fused = resolve_identity_clusters(&ents, &rels, 4, 0.0);
+        assert_eq!(fused.len(), 1, "without a floor the weak bridge fuses both");
+        assert_eq!(fused[0].members.len(), 6);
+
+        // With a 0.50 floor the bridge is excluded; the two real people stay apart.
+        let split = resolve_identity_clusters(&ents, &rels, 4, 0.50);
+        assert_eq!(
+            split.len(),
+            2,
+            "the floor keeps the strangers in two clusters"
+        );
+        for c in &split {
+            assert_eq!(
+                c.members.len(),
+                3,
+                "each person keeps its three identifiers"
+            );
+            assert!(
+                c.min_confidence >= 0.50,
+                "every returned cluster clears the floor it was resolved under"
+            );
+        }
     }
 
     #[test]

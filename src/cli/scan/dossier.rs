@@ -260,10 +260,16 @@ fn print_connections(entities: &[Entity], relations: &[Relation]) {
 fn print_resolved_identities(entities: &[Entity], relations: &[Relation]) {
     use std::collections::HashMap;
 
-    let clusters: Vec<_> = crate::core::relation::resolve_identity_clusters(entities, relations, 4)
-        .into_iter()
-        .filter(|c| c.members.len() >= 3)
-        .collect();
+    // Same weakest-link floor AU-067 resolves under (Probable tier): a link below
+    // it is too weak to *bind* two identities, so a single tenuous edge can't fuse
+    // dozens of unrelated namesakes into "one person" in this section.
+    const MIN_CONF: f64 = 0.50;
+
+    let clusters: Vec<_> =
+        crate::core::relation::resolve_identity_clusters(entities, relations, 4, MIN_CONF)
+            .into_iter()
+            .filter(|c| c.members.len() >= 3)
+            .collect();
     if clusters.is_empty() {
         return;
     }

@@ -38,10 +38,13 @@ pub(in crate::core::correlator) fn rule_au_067_resolved_identity_cluster(
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
 
     let mut out = Vec::new();
-    for cluster in resolve_identity_clusters(entities, relations, MAX_HOPS) {
-        // A 2-member cluster is one pair (AU-060's job); a resolved identity is a
-        // genuine ≥3-way collapse. The weakest-link floor keeps it trustworthy.
-        if cluster.members.len() < MIN_MEMBERS || cluster.min_confidence < MIN_CONF {
+    for cluster in resolve_identity_clusters(entities, relations, MAX_HOPS, MIN_CONF) {
+        // The weakest-link floor is now applied *at resolution* (passed above), so
+        // every cluster already clears MIN_CONF and rests on trustworthy links — a
+        // weak bridge can no longer fuse strangers into one identity. Only the size
+        // gate remains: a 2-member cluster is one pair (AU-060's job); a resolved
+        // identity is a genuine ≥3-way collapse.
+        if cluster.members.len() < MIN_MEMBERS {
             continue;
         }
 
