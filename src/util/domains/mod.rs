@@ -113,6 +113,35 @@ pub fn registrable_domain(host: &str) -> Option<String> {
     Some(labels[labels.len() - take..].join("."))
 }
 
+/// True if `s` looks like an Android / iOS **reverse-DNS application identifier**
+/// (`com.facebook.katana`, `com.google.android.gms`, `org.mozilla.firefox`)
+/// rather than a registrable web domain. Stealer logs record the app a credential
+/// was captured in using this reverse-DNS form, and its dotted shape otherwise
+/// sails through a bare `contains('.')` check — minting a bogus `Domain` entity
+/// whose final label (`katana`, `gms`, `firefox`) is not a real TLD, which then
+/// wastes DNS/cert/wayback expansion budget and pollutes the graph.
+///
+/// Discriminator (dependency-free — no Public Suffix List): a real registrable
+/// domain never *begins* with a generic top-level label; `com`/`org`/`net`/… are
+/// suffixes and appear *last*. A string with three or more labels whose *first*
+/// label is one of those generic TLDs is therefore reverse-DNS, i.e. an app id.
+/// Requiring 3+ labels keeps ordinary two-label domains (`net.au` is a suffix,
+/// not a candidate here) and apex domains safe. **Pure.**
+#[must_use]
+pub fn is_app_package_id(s: &str) -> bool {
+    let s = s.trim().trim_end_matches('.').to_ascii_lowercase();
+    let labels: Vec<&str> = s.split('.').filter(|l| !l.is_empty()).collect();
+    if labels.len() < 3 {
+        return false;
+    }
+    // Reverse-DNS package ids lead with a generic gTLD-style label. A genuine
+    // hostname can technically have a subdomain literally named `com`, but in the
+    // breach/stealer domain feeds this gates, that is vanishingly rare next to the
+    // flood of `com.*`/`org.*` Android package ids.
+    const RDNS_PREFIXES: &[&str] = &["com", "org", "net", "io", "app", "dev"];
+    RDNS_PREFIXES.contains(&labels[0])
+}
+
 /// True if `host` is `domain` itself or a subdomain of it — the host-label-safe
 /// "belongs to this domain" test. **Pure**, and allocation-free: it replaces the
 /// `host == d || host.ends_with(&format!(".{d}"))` idiom that was hand-rolled

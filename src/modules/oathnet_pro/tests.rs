@@ -115,6 +115,42 @@ use super::*;
     }
 
     #[test]
+    fn stealer_android_app_package_is_not_minted_as_domain() {
+        use serde_json::json;
+        // Real shape from a live oathnet stealer-search row (Android credential):
+        // the `domain` field is the reverse-DNS app PACKAGE, and the `url` is an
+        // `android://` scheme. Neither must become a `Domain` entity — a bogus
+        // `com.facebook.katana` domain previously expanded into a wasted
+        // HudsonRock `search-by-domain` call that pulled in strangers' records.
+        let item = json!({
+            "username": "alikareem",
+            "domain": ["com.facebook.katana"],
+            "url": "android://zQxb6hXv1MJiC1Yy==@com.facebook.katana/",
+            "password": "secret"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_stealer_entities(&item, "scan", "oathnet.org:test", &mut seen, &mut result);
+
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain),
+            "an Android app package must not be minted as a Domain entity"
+        );
+        // The credential itself (username@url) is still captured — the app
+        // context is preserved as a Credential, just not as a fake domain.
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Credential),
+            "the credential pivot is still emitted"
+        );
+    }
+
+    #[test]
     fn extract_breach_entities_non_target_row_tags_candidate() {
         use serde_json::json;
         // A row whose fields do NOT match the target: phone/person/country are

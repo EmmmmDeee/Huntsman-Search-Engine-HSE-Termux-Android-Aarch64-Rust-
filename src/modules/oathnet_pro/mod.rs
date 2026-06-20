@@ -941,7 +941,10 @@ fn extract_stealer_entities(
             );
             if let Some(host) = crate::util::url_util::host_from_url(u) {
                 let hl = host.to_lowercase();
-                if hl.contains('.') && seen.insert(hl.clone()) {
+                if hl.contains('.')
+                    && !crate::util::domains::is_app_package_id(&hl)
+                    && seen.insert(hl.clone())
+                {
                     push_stealer_entity(
                         result,
                         Entity::new(EntityKind::Domain, &hl, 0.50, scan_id),
@@ -992,6 +995,12 @@ fn extract_stealer_entities(
         for d in domains {
             if let Some(dom) = d.as_str()
                 && dom.contains('.')
+                // A stealer `domain` is frequently the reverse-DNS Android/iOS app
+                // package the credential was captured in (`com.facebook.katana`),
+                // not a web domain — skip it rather than mint a bogus Domain whose
+                // last label is not a TLD (`dns_intel`/`cert_intel`/`wayback` would
+                // then chase a non-existent host).
+                && !crate::util::domains::is_app_package_id(dom)
                 && seen.insert(dom.to_lowercase())
             {
                 push_stealer_entity(

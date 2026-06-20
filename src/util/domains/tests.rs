@@ -49,6 +49,29 @@ use super::*;
     }
 
     #[test]
+    fn app_package_id_detects_reverse_dns_packages() {
+        // Real Android / iOS reverse-DNS app identifiers — the stealer-log
+        // `domain` values that must NOT become Domain entities.
+        assert!(is_app_package_id("com.facebook.katana"));
+        assert!(is_app_package_id("com.google.android.gms"));
+        assert!(is_app_package_id("org.mozilla.firefox"));
+        assert!(is_app_package_id("net.whatsapp.WhatsApp"));
+        assert!(is_app_package_id("io.metamask.MetaMask"));
+        // Case / trailing-dot tolerant.
+        assert!(is_app_package_id("COM.Facebook.Katana."));
+        // Genuine registrable domains are NOT packages (TLD is the LAST label).
+        assert!(!is_app_package_id("facebook.com"));
+        assert!(!is_app_package_id("www.google.com"));
+        assert!(!is_app_package_id("shop.example.com.au"));
+        assert!(!is_app_package_id("mail.protonmail.com"));
+        // Two-label inputs are never treated as packages (a bare domain stays).
+        assert!(!is_app_package_id("example.com"));
+        assert!(!is_app_package_id("com.au"));
+        // A 3+-label host that does NOT lead with a generic TLD is a domain.
+        assert!(!is_app_package_id("api.stripe.com"));
+    }
+
+    #[test]
     fn is_or_subdomain_of_respects_label_boundaries() {
         // Equal and genuine subdomains belong.
         assert!(is_or_subdomain_of("example.com", "example.com"));

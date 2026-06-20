@@ -2526,3 +2526,29 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   −~150 lines of dead code. Gate green: fmt/clippy/doc clean, lib 3,283 (−5 tests,
   all for the deleted dead path), 24 arch guards, 0 failures. **Paired:**
   `SOLUTION_TREE` cycle 58 note — same commit.
+
+- **2026-06-20** — **Cycle 59 (empirical: Android app package mis-minted as a
+  Domain → wasted expansion).** `hse audit` on the latest *complete* "Ali Kareem"
+  scan scored 84/100 (B) and flagged `generic-domain-noise`, listing
+  `com.facebook.katana` among bogus bare domains. Raw-archive forensics pinned the
+  exact cause: an OathNet `stealer-search` row (`items[47]`) carries the captured
+  app as a **reverse-DNS Android package** in *both* fields —
+  `domain[0] = "com.facebook.katana"` and `url = "android://…@com.facebook.katana/"`.
+  The stealer `domain`-array path minted it as a `Domain` entity (its only guard was
+  `contains('.')`), and — worse than noise — that Domain then *expanded*: the
+  archive shows `cavalier.hudsonrock.com__search-by-domain__com.facebook.katana`,
+  a wasted HudsonRock call that pulls **other** `facebook.katana` app users' stealer
+  records (strangers) into the graph. A compounding pollution bug: one bad domain
+  spawns an API call that injects unrelated identities. Fix: a pure, dependency-free
+  `util::domains::is_app_package_id` (a registrable domain never *leads* with a
+  generic TLD — `com`/`org`/`net`/… are suffixes and appear last; so a 3+-label
+  string whose *first* label is one is reverse-DNS, i.e. an app id). It gates both
+  OathNet stealer Domain-minting paths (domain-array + url-host), and — because a
+  Domain minted before the gate can resurface via recall — also short-circuits
+  HudsonRock's `process()` for a Domain that is an app package (without making
+  `accepts()` value-dependent, preserving the registry-dispatch invariants). The
+  `android://` credential is still captured as a `Credential` entity; only the fake
+  domain is dropped. Regression-tested (helper truth table; OathNet skips the
+  package but keeps the credential; HudsonRock makes no request for a package
+  domain). Gate green: fmt/clippy/doc clean, lib 3,286 (+3), 24 arch guards, 0
+  failures. **Paired:** `SOLUTION_TREE` cycle 59 note — same commit.

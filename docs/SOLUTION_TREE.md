@@ -1680,3 +1680,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   noise on Termux, ~150 fewer lines to maintain. Gate green: lib 3,283 (−5 dead-path
   tests), 24 arch guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` cycle 58 —
   same commit.
+
+- **2026-06-20** — **Cycle 59 (`is_app_package_id` — an app package is not a
+  domain).** Principle surfaced by the audit + archive forensics: stealer logs name
+  the app a credential was stolen from in reverse-DNS form (`com.facebook.katana`),
+  which a bare `contains('.')` check happily mints as a `Domain` — that then burns a
+  HudsonRock `search-by-domain` call returning *strangers'* records. New pure helper
+  `util::domains::is_app_package_id`: 3+ labels whose first label is a generic TLD
+  (`com`/`org`/`net`/`io`/`app`/`dev`) is reverse-DNS, because a real registrable
+  domain carries its TLD *last*. No Public Suffix List dependency (consistent with
+  the project's curated-suffix philosophy). Wired in three places: both OathNet
+  stealer Domain-minting paths (so the junk never enters the graph) and a defensive
+  short-circuit in HudsonRock `process()` (so a Domain recalled from before the gate
+  still can't trigger the doomed call) — the latter without touching the
+  value-independent `accepts()` the dispatch invariants depend on. Compounding win:
+  kills both the noise *and* the noise-amplifying API expansion, on every future
+  stealer-bearing scan. Regression-tested. Gate green: lib 3,286 (+3), 24 arch
+  guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` cycle 59 — same commit.
