@@ -19,6 +19,7 @@ fn relation_kind_as_str_matches_serde() {
         RelationKind::AliasOf,
         RelationKind::LocatedAt,
         RelationKind::AssociatedWith,
+        RelationKind::SameAs,
     ] {
         let json = serde_json::to_string(&k).unwrap();
         assert_eq!(json.trim_matches('"'), k.as_str(), "{k:?}");
@@ -315,6 +316,43 @@ fn shared_selector_no_edge_for_distinct_values() {
 }
 
 #[test]
+fn canonical_identities_links_gmail_variants_as_same() {
+    // Reflexive self-pairing: the engine extracted two contextual forms of ONE
+    // address; the canonical resolver proves they are the same identity.
+    let a = ent(EntityKind::Email, "j.ohn+work@gmail.com", 0.6);
+    let b = ent(EntityKind::Email, "john@gmail.com", 0.5);
+    let edges = derive_canonical_identities(&[a.clone(), b.clone()], "s");
+    assert_eq!(edges.len(), 1, "two Gmail variants are one identity");
+    assert_eq!(edges[0].kind, RelationKind::SameAs);
+    let mut got = [edges[0].from_uid.clone(), edges[0].to_uid.clone()];
+    got.sort();
+    let mut want = [a.uid.clone(), b.uid.clone()];
+    want.sort();
+    assert_eq!(got, want, "the edge joins the two variants");
+    // Strong by construction — full endpoint trust, no damp: min(0.6, 0.5).
+    assert!((edges[0].confidence - 0.5).abs() < 1e-9);
+}
+
+#[test]
+fn canonical_identities_links_reordered_person_names() {
+    let a = ent(EntityKind::Person, "Jane Citizen", 0.6);
+    let b = ent(EntityKind::Person, "Citizen, Jane", 0.6);
+    let edges = derive_canonical_identities(&[a, b], "s");
+    assert_eq!(edges.len(), 1, "a name and its reordering are one person");
+    assert_eq!(edges[0].kind, RelationKind::SameAs);
+}
+
+#[test]
+fn canonical_identities_ignores_genuinely_distinct_entities() {
+    let a = ent(EntityKind::Email, "alice@gmail.com", 0.6);
+    let b = ent(EntityKind::Email, "bob@gmail.com", 0.6);
+    assert!(
+        derive_canonical_identities(&[a, b], "s").is_empty(),
+        "distinct addresses are not the same identity"
+    );
+}
+
+#[test]
 fn derive_all_aggregates_every_structural_derivation() {
     use crate::core::entity::Evidence;
     // A mixed set exercising two independent derivations: a subdomain edge
@@ -344,6 +382,7 @@ fn derive_all_aggregates_every_structural_derivation() {
         + derive_co_residence(&ents, "s").len()
         + derive_co_mention(&ents, "s").len()
         + derive_shared_selector(&ents, "s").len()
+        + derive_canonical_identities(&ents, "s").len()
         + derive_declared_associations(&ents, "s").len();
     assert_eq!(all.len(), expected, "derive_all is the union of every pass");
     assert!(all.iter().any(|r| r.kind == RelationKind::SubdomainOf));

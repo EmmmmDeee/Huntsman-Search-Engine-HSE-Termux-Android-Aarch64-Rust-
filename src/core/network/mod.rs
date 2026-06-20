@@ -95,7 +95,7 @@ fn group_for(kind: RelationKind) -> (&'static str, &'static str) {
     match kind {
         RelationKind::AssociatedWith => ("people", "People — family & associates"),
         RelationKind::IdentifiedBy => ("identifiers", "Identifiers — accounts & contacts"),
-        RelationKind::AliasOf => ("aliases", "Aliases — the same persona"),
+        RelationKind::AliasOf | RelationKind::SameAs => ("aliases", "Aliases — the same persona"),
         RelationKind::LocatedAt | RelationKind::CoLocatedWith => ("locations", "Locations"),
         RelationKind::SubdomainOf
         | RelationKind::BelongsToDomain
@@ -120,6 +120,7 @@ fn label_for(kind: RelationKind, other: &Entity) -> String {
         }
         RelationKind::IdentifiedBy => other.kind.to_string(),
         RelationKind::AliasOf => "alias".to_string(),
+        RelationKind::SameAs => "same as".to_string(),
         RelationKind::LocatedAt => "located at".to_string(),
         RelationKind::CoLocatedWith => "co-located".to_string(),
         RelationKind::SubdomainOf => "subdomain of".to_string(),

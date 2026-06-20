@@ -986,6 +986,60 @@ pub fn derive_shared_selector(entities: &[Entity], scan_id: &str) -> Vec<Relatio
     )
 }
 
+/// Derive `SameAs` edges between distinct entities the canonical resolver proves are
+/// the SAME real-world identity wearing two contexts — the reflexive self-pairing
+/// pivot ([`crate::core::resolve`]).
+///
+/// The resolver folds provider-specific representations to one canonical form (Gmail
+/// dot / `+tag` blindness, phone digit-only, order-insensitive names), so two entities
+/// the engine extracted SEPARATELY — `j.ohn+work@gmail.com` and `john@gmail.com`, a
+/// phone in national and E.164 form, "Jane Citizen" and "Citizen, Jane" — are revealed
+/// as one identity in two contexts. This wires that previously analysis-only signal
+/// into the graph: a single seed and every contextual variant of it collapse to one
+/// connected node for traversal, so the variant is a valid state-mutating self-pairing,
+/// not a new stranger. Strong by construction (the resolver only groups EXACT canonical
+/// collisions, never fuzzy guesses), so it carries full endpoint trust rather than a
+/// damp. Symmetric, canonically directed (smaller-uid → larger), deduped, deterministic.
+pub fn derive_canonical_identities(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::{HashMap, HashSet};
+
+    let groups = crate::core::resolve::suggest_merges(entities);
+    if groups.is_empty() {
+        return Vec::new();
+    }
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for group in &groups {
+        // `members` are the UIDs of contextual variants of one canonical identity,
+        // already sorted by the resolver — link every distinct pair as the same node.
+        let members = &group.members;
+        for i in 0..members.len() {
+            for j in (i + 1)..members.len() {
+                let (Some(a), Some(b)) = (
+                    by_uid.get(members[i].as_str()),
+                    by_uid.get(members[j].as_str()),
+                ) else {
+                    continue;
+                };
+                let (from, to) = if a.uid <= b.uid { (*a, *b) } else { (*b, *a) };
+                if seen.insert((from.uid.clone(), to.uid.clone())) {
+                    out.push(Relation::new(
+                        from.uid.as_str(),
+                        to.uid.as_str(),
+                        RelationKind::SameAs,
+                        from.confidence.min(to.confidence),
+                        scan_id,
+                    ));
+                }
+            }
+        }
+    }
+    sort_edges(&mut out);
+    out
+}
+
 /// Derive every deterministic, evidence-grounded relation the engine knows how
 /// to reconstruct from a persisted entity set alone — the infrastructure layer
 /// (structural ownership, geo co-location, DNS resolution, WHOIS registration,
@@ -1021,6 +1075,10 @@ pub fn derive_all(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     // selector (registrant, TLS/SSH fingerprint, gravatar) — the universal
     // reverse-WHOIS / fingerprint pivot, domain-agnostic across every scan.
     out.extend(derive_shared_selector(entities, scan_id));
+    // Canonical identities: collapse contextual VARIANTS of one entity (Gmail dot/+tag,
+    // phone formats, name reorderings) into SameAs edges via the canonical resolver —
+    // the reflexive self-pairing that makes a seed and its variants one traversable node.
+    out.extend(derive_canonical_identities(entities, scan_id));
     // Declared associations LAST so a `(from, kind, to)` edge a surname guess or a
     // co-residence inference already emitted is re-emitted here at full (declared)
     // confidence — the later, higher-trust edge wins on idempotent upsert.
