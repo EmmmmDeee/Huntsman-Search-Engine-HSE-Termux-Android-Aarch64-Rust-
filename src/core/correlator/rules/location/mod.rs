@@ -455,6 +455,10 @@ pub(crate) struct SynergyFix {
     pub class_names: Vec<&'static str>,
     pub lat: f64,
     pub lon: f64,
+    /// Robust confidence radius (km): the median great-circle distance from the
+    /// fix point to the contributing coordinates — half the sightings fall
+    /// within it, so it degrades gracefully under outliers (0.5 breakdown point).
+    pub radius_km: f64,
     pub geohash: String,
     pub state: &'static str,
     pub synergy_confidence: f64,
@@ -469,13 +473,14 @@ impl SynergyFix {
     pub(crate) fn description(&self) -> String {
         format!(
             "{} AU coordinate(s) from {} orthogonal source class(es) [{}] converge on \
-             {lat:.4},{lon:.4} (geohash={gh}, state={state}); synergy confidence {conf:.2} \
-             — MITRE T1591.001",
+             {lat:.4},{lon:.4} ± {radius:.1} km (geohash={gh}, state={state}); synergy \
+             confidence {conf:.2} — MITRE T1591.001",
             self.count,
             self.class_names.len(),
             self.class_names.join(", "),
             lat = self.lat,
             lon = self.lon,
+            radius = self.radius_km,
             gh = self.geohash,
             state = self.state,
             conf = self.synergy_confidence,
@@ -537,11 +542,16 @@ pub(crate) fn au059_synergy_fix(entities: &[Entity]) -> Option<SynergyFix> {
     uids.sort_unstable();
     uids.dedup();
 
+    // Robust spread: median distance from the fix to the contributing points.
+    let points: Vec<(f64, f64)> = parsed.iter().map(|(_, ll)| *ll).collect();
+    let radius_km = crate::util::geometry::median_distance_km((lat, lon), &points);
+
     Some(SynergyFix {
         count: parsed.len(),
         class_names,
         lat,
         lon,
+        radius_km,
         geohash: crate::util::geohash::geohash(lat, lon, 6),
         state,
         synergy_confidence,

@@ -1938,3 +1938,15 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   C5 stays `[~]` (best-estimate point now surfaced; confidence-radius render
   still open). Gate green: fmt/clippy/doc clean, 3,264 lib tests, 0 failures.
   **Paired:** `SOLUTION_TREE` SOL-GEOINT note + §5 — same commit.
+- **2026-06-20** — **Cycle 29 (P→S, C5): confidence radius on the best-location
+  estimate.** Closes the "confidence-radius render" gap cycle 28 left open. Added
+  `SynergyFix::radius_km` — the robust median great-circle distance from the fix
+  point to the contributing coordinates (0.5 breakdown point, via the existing
+  `util::geometry::median_distance_km`) — so the headline is now a best estimate
+  *with* its uncertainty: the dossier shows `lat,lon ± R km`, the API export
+  carries `radius_km`, and the AU-059 finding states `± R km` (all from the one
+  `au059_synergy_fix` source). C5's "single best-estimate with provenance + a
+  confidence radius" is now delivered end-to-end (C5 stays `[~]` for its other
+  legs: more sources, movement/timeline geo, tighter AU bounding). Gate green:
+  fmt/clippy/doc clean, 3,264 lib tests, 0 failures. **Paired:** `SOLUTION_TREE`
+  SOL-GEOINT note + §5 — same commit.

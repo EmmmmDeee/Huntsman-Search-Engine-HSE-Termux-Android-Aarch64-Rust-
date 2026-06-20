@@ -1233,3 +1233,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   corrupt-the-description robustness test. SOL-GEOINT stays `[~]` (point surfaced;
   confidence-radius render open). Gate green: 3,264 lib tests. Paired:
   `PROBLEM_TREE` §8 cycle 28 — same commit.
+- **2026-06-20** — **Cycle 29 (P→S, C5): confidence radius on the best location.**
+  Added `SynergyFix::radius_km` (robust median distance from the fix to the
+  contributing coords) so the best-estimate carries its uncertainty: dossier shows
+  `± R km`, the API export carries `radius_km`, the finding states `± R km`. C5's
+  "best-estimate with provenance + confidence radius" delivered end-to-end;
+  SOL-GEOINT stays `[~]` for its remaining legs. Gate green: 3,264 lib tests.
+  Paired: `PROBLEM_TREE` §8 cycle 29 — same commit.

@@ -300,8 +300,8 @@ fn print_diagnostics(scan: &Scan, entities: &[Entity], kind: &str, value: &str, 
     // carry — one computation, three renderings.
     if let Some(fix) = crate::core::correlator::au059_synergy_fix(entities) {
         println!(
-            "  Best location estimate: {:.4},{:.4}  (geohash={}, state={})",
-            fix.lat, fix.lon, fix.geohash, fix.state
+            "  Best location estimate: {:.4},{:.4} ± {:.1} km  (geohash={}, state={})",
+            fix.lat, fix.lon, fix.radius_km, fix.geohash, fix.state
         );
         println!(
             "    cross-seed synergy: {} AU coordinate(s) across {} orthogonal source class(es) [{}], confidence {:.2}",

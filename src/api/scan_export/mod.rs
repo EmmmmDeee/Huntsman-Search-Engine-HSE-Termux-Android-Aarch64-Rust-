@@ -210,6 +210,7 @@ pub(crate) fn extract_au_location_fix(
     json!({
         "lat": fix.lat,
         "lon": fix.lon,
+        "radius_km": fix.radius_km,
         "geohash": fix.geohash,
         "state": fix.state,
         "synergy_confidence": fix.synergy_confidence,

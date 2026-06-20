@@ -154,6 +154,10 @@ use super::*;
         assert_eq!(fix["class_count"], 2);
         assert!(fix["source_count"].as_u64().unwrap() >= 2);
         assert_eq!(fix["severity"], "medium", "2 classes ⇒ medium");
+        // Confidence radius: present, finite, non-negative, and tight for two
+        // coordinates ~150 m apart.
+        let radius = fix["radius_km"].as_f64().expect("radius_km present");
+        assert!(radius.is_finite() && (0.0..5.0).contains(&radius), "radius: {radius}");
     }
 
     #[test]
