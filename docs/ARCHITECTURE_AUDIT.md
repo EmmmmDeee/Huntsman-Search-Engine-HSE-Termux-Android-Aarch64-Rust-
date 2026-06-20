@@ -13,7 +13,7 @@
 | Version / edition / MSRV | 1.4.0 · edition 2024 · 1.88 |
 | Source | ~137k LOC · 602 `.rs` files |
 | Modules | **118** registered — 89 Free · 24 KeyGated · 5 Paid · 14 categories |
-| Correlation rules | **65** deterministic (AU-001 … AU-064, AU-067) + 2 engine-emitted (AU-065/066) |
+| Correlation rules | **66** deterministic (AU-001 … AU-064, AU-067/068) + 2 engine-emitted (AU-065/066) |
 | Tests | ~2,995 lib + API/integration + architecture guards |
 | Unsafe | **0** — `#![forbid(unsafe_code)]` (`src/lib.rs:22`) |
 | Panic strategy | `panic = "unwind"` (`Cargo.toml:125`) + per-module `catch_unwind` at the dispatch boundary |
@@ -32,7 +32,7 @@ Threat 3 · Search 2 · Phone 2 · Other 2.
  bin (main.rs) ─▶ cli ─┐
                        ├─▶ core ─▶ util (http, keys, geo, datasets, …)
  http (api/axum) ──────┘    │
- web (embedded SPA) ◀─ api  ├─▶ correlator (65 rules)
+ web (embedded SPA) ◀─ api  ├─▶ correlator (66 rules)
                             └─▶ storage (rusqlite WAL + FTS5, via StoragePort)
  modules (118) ─▶ core types + core::hooks (fn-ptr registry, installed at startup)
 ```
@@ -63,9 +63,9 @@ allowlist remains.
   `circuit`/`timeout`, `enrich` (geo + key harvest), `ledger` (dedup/lineage). A
   panicking module is caught at the dispatch boundary (`run_module_guarded`), so
   it degrades to zero results rather than aborting the process.
-- **`core::correlator`** (`src/core/correlator/rules/`) — 65 deterministic rules
+- **`core::correlator`** (`src/core/correlator/rules/`) — 66 deterministic rules
   across `assoc`/`breach`/`crypto`/`gap`/`geo`/`infra`/`org`/`identity`/`location`/
-  `multipath`/`resolved`/`template`/`transitive`, synthesising entities into
+  `multipath`/`resolved`/`sim`/`template`/`transitive`, synthesising entities into
   findings; candidate-quarantine before correlation. The recursive-linking family
   — `transitive` (AU-060), `multipath` (AU-062), `gap` (AU-063), `template`
   (AU-064), `resolved` (AU-067) — all delegate to the shared
@@ -96,7 +96,7 @@ allowlist remains.
   proven in ≥2 prior scans is resolved by the engine-emitted **AU-066** cross-scan
   gap-fill, which also boosts its endpoints; both are storage-dependent so they
   are emitted by the engine at finalise, not by pure correlator rules, and are
-  therefore distinct from the 65 correlator rules).
+  therefore distinct from the 66 correlator rules).
 - **`api`** (axum 0.8) — versioned `/api/v1`, SSE live stream, embedded SPA +
   vendor bundle; CSP + `127.0.0.1`-only bind (architecture invariant).
 - **`util`** — HTTP client (rustls + SSRF-guarded resolver), key pool, atomic

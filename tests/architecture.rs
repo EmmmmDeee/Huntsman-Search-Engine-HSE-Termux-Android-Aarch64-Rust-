@@ -159,6 +159,12 @@ fn core_does_not_import_util_directly() {
                 // distinctive the name actually is.
                 && !line.contains("util::surnames::is_common")
                 && !line.contains("util::surnames::surname_of")
+                // Pure, dependency-free offline SIM-anonymity classifier (a curated
+                // carrier→tier table; no state, no I/O), same leaf category as
+                // `surnames`/`address_au`. AU-068 reads the tier from a phone's tag
+                // (via `tier_for_tag` / `ANONYMITY_TAGS`) to surface a likely burner
+                // SIM, weighting how much attribution a phone-based link deserves.
+                && !line.contains("util::sim_anonymity")
         })
         .collect();
     assert!(

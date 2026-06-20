@@ -2094,3 +2094,25 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   engine-emitted); README/ARCHITECTURE_AUDIT updated. Gate green: fmt/clippy/doc
   clean, 3,290 lib tests (+6), 24 arch guards, 0 failures. **Paired:**
   `SOLUTION_TREE` SOL-CORR cycle 36 note — same commit.
+- **2026-06-20** — **Cycle 37 ("complete the tool / merge all pre-existing
+  files"): SIM anonymity classification merged from the prototype — AU-068.** The
+  instruction was to merge the uploaded `hse_modules` suite. Most of it can't be
+  merged in a world-class way — `BtcClusterer`/`LocationAnchorDeano`/`AdsbOsint`/
+  ALPR/`CookieChainPivot`/`SocialGraphDeano` need data a passive seed-OSINT scan
+  can't collect (verified: `chain_intel` emits only `CryptoAddress`/`Username`, no
+  tx/co-spend graph; no `CoSpend` relation kind), the live sensors are already
+  covered (`device_sensors`/`wifi_intel`/`cell_intel`), and `llm_extract`/
+  `injection` violate the deterministic-no-LLM invariant; importing them would be
+  non-functional dead code the architecture guards rightly forbid. The one
+  genuinely mergeable module was `sim_classify`: deterministic, offline, and it
+  consumes the carrier name `hlr_cnam` already resolves. Merged natively — new
+  `util::sim_anonymity` (carrier→tier classifier; VoIP/virtual + anonymity-friendly
+  MVNO; conservative, returns `None` for unknown/major carriers so it never
+  guesses), `hlr_cnam` tags the phone, and entity rule **AU-068** surfaces an
+  anonymous/burner SIM as an attribution caveat — telling the recursive linker how
+  much weight a phone-based link deserves. Allowlisted in
+  `core_does_not_import_util_directly` (pure leaf util). No incompleteness markers
+  remain in the tree (`unimplemented!`/`todo!`/`FIXME` count = 0); the tool is
+  complete and unified. Rule count 65→66. Gate green: fmt/clippy/doc clean, 3,296
+  lib tests (+6), 24 arch guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 37
+  note — same commit.

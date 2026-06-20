@@ -4046,3 +4046,13 @@ fn au067_resolved_identity_cluster_fires_on_three_linked_identities() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-067");
 }
+
+#[test]
+fn au068_anonymous_sim_fires_on_a_voip_tagged_phone() {
+    // hlr_cnam tags a VoIP/virtual-carrier phone `sim-voip`; AU-068 surfaces it.
+    let mut phone = Entity::new(EntityKind::Phone, "+61400000000", 0.85, "s");
+    phone.tag("sim-voip");
+    let out = rule_au_068_anonymous_sim(&[phone], "s", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-068");
+}

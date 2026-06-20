@@ -366,6 +366,7 @@ pub(crate) mod location;
 pub(crate) mod multipath;
 mod org;
 mod resolved;
+mod sim;
 mod template;
 mod transitive;
 
@@ -380,6 +381,7 @@ pub(super) use location::*;
 pub(super) use multipath::*;
 pub(super) use org::*;
 pub(super) use resolved::*;
+pub(super) use sim::*;
 pub(super) use template::*;
 pub(super) use transitive::*;
 

@@ -1339,3 +1339,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   intelligently" leg made concrete: orthogonal pairwise links resolved into one
   identity. Gate green: 3,290 lib tests (+6), 24 arch guards, fmt/clippy/doc clean.
   Paired: `PROBLEM_TREE` §8 cycle 36 — same commit.
+- **2026-06-20** — **Cycle 37 (prototype merge): SIM anonymity classification —
+  AU-068.** "Merge all pre-existing files": audited the uploaded `hse_modules`
+  prototype module-by-module; `sim_classify` was the one remaining genuinely
+  mergeable, design-compatible piece (deterministic, offline, consumes data the
+  tool already has). Ported the algorithm — not the code — natively: new pure
+  `util::sim_anonymity` classifier (carrier name → PrepaidMvno/VoipVirtual tier,
+  curated AU+US table, conservative — unknown/major carriers unclassified);
+  `hlr_cnam` applies it to the `network` carrier it resolves, tagging the phone
+  (`sim-voip`/`sim-mvno-prepaid`) + `sim_anonymity` evidence; new entity rule
+  **AU-068** surfaces a VoIP/MVNO phone as an attribution caveat (a burner is a
+  weak identity anchor — the linker weighs phone-based links accordingly).
+  `util::sim_anonymity` added to the `core_does_not_import_util_directly` allowlist
+  (pure leaf util, same category as `surnames`/`abn`). Rule count 65→**66**
+  (AU-068 pure entity rule). The other prototype modules remain non-mergeable
+  (uncollectable data / new EntityKinds+API / no-LLM invariant) — documented, not
+  stubbed. Gate green: 3,296 lib tests (+6), 24 arch guards, fmt/clippy/doc clean.
+  Paired: `PROBLEM_TREE` §8 cycle 37 — same commit.

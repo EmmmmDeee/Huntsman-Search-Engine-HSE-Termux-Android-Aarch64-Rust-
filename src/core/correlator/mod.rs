@@ -258,6 +258,7 @@ const RULES: &[RuleFn] = &[
     rule_au_044_shared_tracking_id,
     rule_au_045_multi_service_identity,
     rule_au_046_cross_platform_identity_resolution,
+    rule_au_068_anonymous_sim,
     rule_au_047_reused_secret_identity,
     rule_au_048_shared_public_key,
     rule_au_049_shared_address_association,

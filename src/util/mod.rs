@@ -38,6 +38,7 @@ pub mod scan;
 pub mod see_know;
 pub mod service_defs;
 pub mod settings;
+pub mod sim_anonymity;
 pub mod spf;
 pub mod str_util;
 pub mod surnames;
