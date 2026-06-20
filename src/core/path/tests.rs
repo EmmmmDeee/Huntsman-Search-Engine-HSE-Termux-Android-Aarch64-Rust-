@@ -190,3 +190,77 @@ fn pathfinding_is_deterministic_under_input_shuffling() {
         "the result is independent of entity / relation input order"
     );
 }
+
+#[test]
+fn connect_cross_scan_bridges_two_separate_investigations() {
+    use crate::core::test_support::InMemoryStore;
+    let store = InMemoryStore::new();
+    // Scan A discovered one email tied to a shared bridge entity; an INDEPENDENT scan B
+    // discovered a different email tied to the SAME bridge. Neither scan alone connects
+    // the two emails — only the merged cross-scan graph does.
+    let from_e = Entity::new(EntityKind::Email, "from@example.com", 0.7, "scan-a");
+    let bridge = Entity::new(EntityKind::Domain, "bridge.example", 0.6, "scan-a");
+    let to_e = Entity::new(EntityKind::Email, "to@example.com", 0.7, "scan-b");
+    store.upsert_entity(&from_e).unwrap();
+    store.upsert_entity(&bridge).unwrap();
+    store.upsert_entity(&to_e).unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            from_e.uid.as_str(),
+            bridge.uid.as_str(),
+            RelationKind::AssociatedWith,
+            0.6,
+            "scan-a",
+        ))
+        .unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            to_e.uid.as_str(),
+            bridge.uid.as_str(),
+            RelationKind::AssociatedWith,
+            0.6,
+            "scan-b",
+        ))
+        .unwrap();
+
+    let paths = connect_cross_scan(&store, "from@example.com", "to@example.com", 3);
+    assert!(
+        !paths.is_empty(),
+        "the two emails connect through the shared bridge across scans"
+    );
+    assert_eq!(paths[0].hops, 2);
+    assert_eq!(paths[0].nodes.first().unwrap(), &from_e.uid);
+    assert_eq!(paths[0].nodes.last().unwrap(), &to_e.uid);
+    assert!(
+        paths[0].nodes.contains(&bridge.uid),
+        "the route passes through the cross-scan bridge"
+    );
+}
+
+#[test]
+fn connect_cross_scan_is_empty_without_a_bridge_or_endpoint() {
+    use crate::core::test_support::InMemoryStore;
+    let store = InMemoryStore::new();
+    store
+        .upsert_entity(&Entity::new(
+            EntityKind::Email,
+            "lonely-a@example.com",
+            0.7,
+            "scan-a",
+        ))
+        .unwrap();
+    store
+        .upsert_entity(&Entity::new(
+            EntityKind::Email,
+            "lonely-b@example.com",
+            0.7,
+            "scan-b",
+        ))
+        .unwrap();
+    // No shared bridge ⇒ no connection.
+    assert!(
+        connect_cross_scan(&store, "lonely-a@example.com", "lonely-b@example.com", 3).is_empty()
+    );
+    // An unknown endpoint ⇒ empty, never a panic.
+    assert!(connect_cross_scan(&store, "lonely-a@example.com", "ghost@example.com", 3).is_empty());
+}

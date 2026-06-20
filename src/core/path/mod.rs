@@ -25,6 +25,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use serde::Serialize;
 
 use crate::core::entity::Entity;
+use crate::core::port::StoragePort;
 use crate::core::relation::Relation;
 
 /// Hard cap on path length (degrees of separation) explored. Six is the classic
@@ -318,6 +319,138 @@ pub fn connect_values(
     }
     // Rank: fewest hops, then strongest weakest-link, then node sequence (stable);
     // drop duplicate routes that distinct candidate pairs may have produced.
+    all.sort_by(|a, b| {
+        a.hops
+            .cmp(&b.hops)
+            .then_with(|| b.strength.total_cmp(&a.strength))
+            .then_with(|| a.nodes.cmp(&b.nodes))
+    });
+    all.dedup_by(|a, b| a.nodes == b.nodes);
+    all.truncate(max_paths);
+    all
+}
+
+/// Max bridging scans loaded when expanding a connection query across the local
+/// intelligence database — bounds the store reads so a value shared by many scans
+/// can't pull the whole database into memory on a Termux device.
+pub const CROSS_SCAN_MAX_SCANS: usize = 12;
+
+/// Hard cap on the merged cross-scan graph's entity count; once reached no more scans
+/// are pulled in, keeping the breadth-first search and adjacency bounded.
+const CROSS_SCAN_MAX_ENTITIES: usize = 4000;
+
+/// Max entity UIDs a single endpoint VALUE resolves to (a value that names several
+/// entities) — bounds the endpoint-pair fan-out.
+const CROSS_SCAN_ENDPOINT_CANDIDATES: usize = 5;
+
+/// Resolve a value to the entity UIDs it names ANYWHERE in the store — an exact
+/// (case-insensitive) match over the indexed search, deduped, sorted, and bounded.
+/// The cross-scan analog of [`resolve_value`]: it reaches entities in OTHER scans, not
+/// just a slice already in hand.
+fn resolve_across(store: &dyn StoragePort, value: &str, cap: usize) -> Vec<String> {
+    let needle = value.trim();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let lower = needle.to_lowercase();
+    let Ok(hits) = store.search_entities(needle, cap.saturating_mul(8)) else {
+        return Vec::new();
+    };
+    let mut uids: Vec<String> = hits
+        .into_iter()
+        .filter(|e| e.value.to_lowercase() == lower || e.raw_value.to_lowercase() == lower)
+        .map(|e| e.uid)
+        .collect();
+    uids.sort_unstable();
+    uids.dedup();
+    uids.truncate(cap);
+    uids
+}
+
+/// Connect two values across the WHOLE local intelligence database, not just one scan:
+/// resolve each endpoint to its entity anywhere in the store, pull in the bounded set
+/// of scans that recorded either endpoint, merge their entities and relations into one
+/// graph, and find the connection path(s) over it. This is how a seed reaches an entity
+/// discovered in a SEPARATE investigation — the cross-scan culmination of the historical
+/// flywheel, so connection discovery spans every scan, not the current one alone.
+///
+/// Store-driven but strictly bounded ([`CROSS_SCAN_MAX_SCANS`] /
+/// [`CROSS_SCAN_MAX_ENTITIES`]) and store-error-tolerant (a failed query is skipped,
+/// never propagated), so it is safe on a low-RAM Termux device. The traversal itself is
+/// the same pure, deterministic, [`MAX_HOPS`]-bounded breadth-first search as
+/// [`connect_values`] — only the graph it runs over is wider. Empty if either endpoint
+/// is unknown or they are unconnected across the loaded scans.
+#[must_use]
+pub fn connect_cross_scan(
+    store: &dyn StoragePort,
+    from_value: &str,
+    to_value: &str,
+    max_paths: usize,
+) -> Vec<ConnectionPath> {
+    if max_paths == 0 {
+        return Vec::new();
+    }
+    let from_uids = resolve_across(store, from_value, CROSS_SCAN_ENDPOINT_CANDIDATES);
+    let to_uids = resolve_across(store, to_value, CROSS_SCAN_ENDPOINT_CANDIDATES);
+    if from_uids.is_empty() || to_uids.is_empty() {
+        return Vec::new();
+    }
+
+    // Bounded set of scans that recorded either endpoint — the bridging neighbourhood.
+    let mut scan_ids: Vec<String> = Vec::new();
+    let mut seen_scans: HashSet<String> = HashSet::new();
+    for uid in from_uids.iter().chain(to_uids.iter()) {
+        let Ok(ids) = store.scan_ids_for_entity(uid) else {
+            continue;
+        };
+        for sid in ids {
+            if seen_scans.insert(sid.clone()) {
+                scan_ids.push(sid);
+            }
+        }
+    }
+    scan_ids.sort();
+    scan_ids.truncate(CROSS_SCAN_MAX_SCANS);
+
+    // Merge the bridging scans into one graph, deduped by uid / relation id, bounded.
+    let mut entities: HashMap<String, Entity> = HashMap::new();
+    let mut relations: HashMap<String, Relation> = HashMap::new();
+    for sid in &scan_ids {
+        if let Ok(ents) = store.entities_for_scan(sid) {
+            for e in ents {
+                entities.entry(e.uid.clone()).or_insert(e);
+            }
+        }
+        if let Ok(rels) = store.relations_for_scan(sid) {
+            for r in rels {
+                relations.entry(r.id.clone()).or_insert(r);
+            }
+        }
+        if entities.len() >= CROSS_SCAN_MAX_ENTITIES {
+            break;
+        }
+    }
+
+    // Deterministic merged graph (sorted), then the pure BFS over the wider graph.
+    let mut merged_entities: Vec<Entity> = entities.into_values().collect();
+    merged_entities.sort_by(|a, b| a.uid.cmp(&b.uid));
+    let mut merged_relations: Vec<Relation> = relations.into_values().collect();
+    merged_relations.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let mut all: Vec<ConnectionPath> = Vec::new();
+    for fu in &from_uids {
+        for tu in &to_uids {
+            if fu != tu {
+                all.extend(paths_between(
+                    &merged_entities,
+                    &merged_relations,
+                    fu,
+                    tu,
+                    max_paths,
+                ));
+            }
+        }
+    }
     all.sort_by(|a, b| {
         a.hops
             .cmp(&b.hops)

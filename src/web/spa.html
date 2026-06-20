@@ -622,7 +622,8 @@ const API = {
   // Network trust: entities ranked by graph-corroborated trust propagation.
   trust:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/trust'),
   // Connection path: how two named entities are linked through the relation graph.
-  path: (id,from,to,n)=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/path?from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to)+(n?'&paths='+n:'')),
+  // `cross` extends the search across every scan in the local intelligence database.
+  path: (id,from,to,n,cross)=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/path?from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to)+(n?'&paths='+n:'')+(cross?'&cross=true':'')),
   auditScan: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/audit'),
   create:    body=>API._req('/api/v1/scans',{method:'POST',body}),
   // Raw-text upload (not JSON): POST a dossier file's contents to be parsed and
@@ -1973,14 +1974,16 @@ async function renderPathTool(host, id){
       <input id="path-to" class="form-control" style="flex:1;min-width:140px" placeholder="To — e.g. Erik Diegmann">
       <button id="path-go" class="btn btn-primary">Find connection</button>
     </div>
+    <label style="font-weight:normal;font-size:12px;margin-top:6px"><input type="checkbox" id="path-cross">&nbsp;Search across all scans (reaches entities found in other investigations)</label>
     <div id="path-result" style="margin-top:10px"></div>`;
   const out = $('#path-result');
   const run = async () => {
     const from = $('#path-from').value.trim(), to = $('#path-to').value.trim();
     if (!from || !to){ out.innerHTML = '<span class="text-muted">Enter two entity values to connect.</span>'; return; }
+    const cross = $('#path-cross').checked;
     out.innerHTML = '<span class="text-muted">Searching the graph…</span>';
     let data;
-    try { data = await API.path(id, from, to); }
+    try { data = await API.path(id, from, to, null, cross); }
     catch(e){ out.innerHTML = `<div class="alert alert-danger" style="margin-bottom:0"><b>Error.</b> ${esc(e.message)}</div>`; return; }
     const paths = (data && data.paths) || [];
     const nodes = (data && data.nodes) || {};
