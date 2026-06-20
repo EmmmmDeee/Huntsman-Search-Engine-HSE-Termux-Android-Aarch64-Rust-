@@ -209,9 +209,8 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
         && let Some(asn) = conn.asn_num
     {
         let asn_str = format!("AS{asn}");
-        let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, scan_id);
+        let mut ae = crate::util::geo::ip_asn_entity(&asn_str, SRC, ip, scan_id);
         ae.tag("ip-whois");
-        ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
         result.push(ae);
     }
 

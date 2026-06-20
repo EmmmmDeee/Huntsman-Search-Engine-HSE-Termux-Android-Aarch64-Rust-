@@ -288,9 +288,8 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
 
     if let Some(isp) = &data.isp {
         if let Some(asn) = isp.asn.as_deref().filter(|s| !s.is_empty()) {
-            let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, scan_id);
+            let mut ae = crate::util::geo::ip_asn_entity(asn, SRC, ip, scan_id);
             ae.tag("ipquery");
-            ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
             out.push(ae);
         }
         if let Some(org) = isp.org.as_deref().filter(|s| !s.is_empty()) {

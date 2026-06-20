@@ -225,6 +225,46 @@ pub fn coarse_provider_coords(
     Some(e)
 }
 
+/// Build the `Asn` entity shared verbatim by every IP-geo provider module
+/// (`ip_geo` / `ipinfo` / `ip2location` / `ipquery` / `ip_whois_geo`).
+///
+/// Each of those modules emitted exactly
+/// `Entity::new(EntityKind::Asn, asn, 0.80, scan_id)` carrying a single
+/// `Evidence::new(src, format!("ASN for {ip}"))`, then optionally stamped one
+/// provider tag on top. That birth was byte-identical across all five, so it
+/// lives here once: the fixed `0.80` confidence and the `"ASN for {ip}"`
+/// evidence summary can no longer drift between the modules.
+///
+/// The two genuine per-module differences are kept at the call site, *not*
+/// pushed into the signature: the caller passes the already-formatted ASN
+/// string (some providers hand back `"AS1221"`, others a bare `"1221"` that the
+/// caller prefixes) and adds any provider tag (`"ipinfo"`, `"ip-whois"`, …)
+/// onto the returned entity. `src` is the calling module's own evidence source
+/// tag (its `SRC` constant). **Pure** (no IO).
+///
+/// ```
+/// use huntsman_search_engine::util::geo::ip_asn_entity;
+/// use huntsman_search_engine::core::entity::EntityKind;
+///
+/// let mut e = ip_asn_entity("AS1221", "ipinfo", "1.2.3.4", "scan-1");
+/// e.tag("ipinfo"); // caller layers its provider tag after
+/// assert_eq!(e.kind, EntityKind::Asn);
+/// assert_eq!(e.value, "AS1221");
+/// assert!((e.confidence - 0.80).abs() < 1e-9);
+/// assert_eq!(e.evidence[0].summary, "ASN for 1.2.3.4");
+/// assert!(e.has_tag("ipinfo"));
+/// ```
+#[must_use]
+pub fn ip_asn_entity(asn: &str, src: &str, ip: &str, scan_id: &str) -> crate::core::entity::Entity {
+    let mut e =
+        crate::core::entity::Entity::new(crate::core::entity::EntityKind::Asn, asn, 0.80, scan_id);
+    e.add_evidence(crate::core::entity::Evidence::new(
+        src,
+        format!("ASN for {ip}"),
+    ));
+    e
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

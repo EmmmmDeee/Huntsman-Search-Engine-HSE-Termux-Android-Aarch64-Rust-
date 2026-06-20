@@ -2433,3 +2433,23 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   SPA, live — scans with the same comprehensive defaults. No rule/module change.
   Gate green: fmt/clippy/doc clean, lib (3,282) + integration 0 failures, 24 arch
   guards. **Paired:** `SOLUTION_TREE` cycle 54 note — same commit.
+- **2026-06-20** — **Cycle 55 (module consolidation, final pass: the shared ASN
+  entity).** After the three clean merges (cycles 51/53, 127→124) and verifying no
+  same-provider duplicates remain, the last consolidation candidate was the IP-geo
+  entity-builder duplication across `ip_geo`/`ipinfo`/`ip2location`/`ipquery`/
+  `ip_whois_geo`. A full shared `emit_ip_geo_entities` builder was assessed and
+  **rejected as a leaky abstraction**: the Coordinates formatting (4-dp vs 6-dp) and
+  tags differ, the country/au-state tag policy splits two ways, and the
+  Address/Org/Coords confidences + evidence are all per-provider — a unifying builder
+  would need ~12 params + per-module branching, *worse* than the duplication (the
+  directive's "without compromising maintainability" gate). Extracted only the
+  genuinely byte-identical part — the `Asn` entity (`Entity::new(Asn, …, 0.80)` +
+  `Evidence::new(src, "ASN for {ip}")`), now `util::geo::ip_asn_entity` — unified
+  across all five modules, with the per-module ASN-string format and provider tag
+  kept at the call site so the helper stays a clean 4-param function. Behaviour
+  preserved: every one of the five modules' existing tests passed UNCHANGED; only the
+  new helper test/doctest was added. This closes the consolidation pass: the genuine
+  duplication is removed and the remaining per-provider variance is correctly left
+  in place rather than abstracted leakily. No rule/module-count change. Gate green:
+  fmt/clippy/doc clean, lib 3,283 + integration + 44 doctests, 0 failures, 24 arch
+  guards. **Paired:** `SOLUTION_TREE` cycle 55 note — same commit.

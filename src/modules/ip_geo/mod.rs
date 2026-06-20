@@ -187,9 +187,7 @@ fn build_entities(data: &IpApiResp, ip: &str, scan_id: &str) -> Vec<Entity> {
     if let Some(asn) = &data.asn
         && !asn.is_empty()
     {
-        let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, scan_id);
-        ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
-        result.push(ae);
+        result.push(crate::util::geo::ip_asn_entity(asn, SRC, ip, scan_id));
     }
 
     // Emit reverse DNS domain if present in ISP name

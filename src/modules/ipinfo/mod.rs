@@ -123,9 +123,8 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
         if let Some(asn) = org.split_whitespace().next()
             && asn.starts_with("AS")
         {
-            let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, scan_id);
+            let mut ae = crate::util::geo::ip_asn_entity(asn, SRC, ip, scan_id);
             ae.tag("ipinfo");
-            ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
             out.push(ae);
         }
     }

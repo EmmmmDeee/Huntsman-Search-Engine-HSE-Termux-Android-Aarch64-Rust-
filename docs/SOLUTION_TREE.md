@@ -1622,3 +1622,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   maximised everywhere, precision still governed by the strict correlation floors. No
   rule/module change. Gate green: fmt/clippy/doc clean, lib (3,282) + integration 0
   failures, 24 arch guards. Paired: `PROBLEM_TREE` §8 cycle 54 — same commit.
+- **2026-06-20** — **Cycle 55 (`util::geo::ip_asn_entity` — the one clean IP-geo
+  dedup).** Final consolidation pass. Rather than force a leaky per-provider
+  entity-builder, extracted only the byte-identical `Asn` entity construction shared
+  by all five IP-geo modules into `util::geo::ip_asn_entity(asn, src, ip, scan_id)`
+  (Asn at fixed 0.80 + "ASN for {ip}" evidence). The genuinely-variant parts
+  (Coordinates/Address/Org confidences, formatting, tag policy) stay in each module —
+  abstracting them would have needed ~12 params and hurt maintainability. Behaviour
+  is byte-for-byte preserved (all five modules' tests pass unchanged; new helper test
+  + doctest added). Conservative-by-design: a small, honest dedup that improves
+  consistency without introducing a leaky seam. Module count unchanged (124). Gate
+  green: fmt/clippy/doc clean, lib 3,283 + integration + 44 doctests, 0 failures.
+  Paired: `PROBLEM_TREE` §8 cycle 55 — same commit.

@@ -226,9 +226,8 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
         && !asn.is_empty()
     {
         let asn_str = format!("AS{asn}");
-        let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, scan_id);
+        let mut ae = crate::util::geo::ip_asn_entity(&asn_str, SRC, ip, scan_id);
         ae.tag("ip2location");
-        ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
         out.push(ae);
     }
 
