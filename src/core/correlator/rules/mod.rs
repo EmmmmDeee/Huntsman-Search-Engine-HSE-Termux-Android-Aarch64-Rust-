@@ -358,6 +358,7 @@ pub(super) fn source_family(source: &str) -> &'static str {
 mod assoc;
 mod breach;
 mod crypto;
+mod gap;
 mod geo;
 mod identity;
 mod infra;
@@ -369,6 +370,7 @@ mod transitive;
 pub(super) use assoc::*;
 pub(super) use breach::*;
 pub(super) use crypto::*;
+pub(super) use gap::*;
 pub(super) use geo::*;
 pub(super) use identity::*;
 pub(super) use infra::*;

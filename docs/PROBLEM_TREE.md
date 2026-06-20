@@ -76,8 +76,8 @@ Each node: **ID · statement · location · impact · → optimal solution · pr
 Current baseline (grounded in the codebase, 2026-06-18): **126 modules** (93 free
 · 28 key-gated · 5 paid) across 14 categories (Infrastructure 21, Geo 20, People
 16, DnsRecon 13, Breach 11, Social 11, Email 6, Corporate 9, Phone 3, Web 5,
-Sensor 4, Threat 3, Search/Other 2 each); 62 native correlation rules
-(AU-001…AU-062); 0 `unsafe`; deterministic entity merge; SQLite store; SSE live;
+Sensor 4, Threat 3, Search/Other 2 each); 63 native correlation rules
+(AU-001…AU-063); 0 `unsafe`; deterministic entity merge; SQLite store; SSE live;
 axum SPA. Deps: `regex` in; **`proptest` 1.11 + `criterion` 0.8 direct (dev-only,
 zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
 `util::scan` + `util::html`); `bstr`, `fst`, `arbitrary` still NOT direct.**
@@ -1970,3 +1970,20 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   the missing intermediate an absent independent route would need and emit it as a
   lead; (3) backward synthesis — reverse a confirmed link into new forward seeds.
   **Paired:** `SOLUTION_TREE` SOL-CORR note + §5 — same commit.
+- **2026-06-20** — **Cycle 31 (C1): recursive multi-pathway linking, increment 2 —
+  gap analysis (AU-063).** The dual of AU-062: where that rule rewards a link
+  confirmed by independent routes, **AU-063 single-pathway corroboration gap**
+  reasons *backwards* from a found-but-fragile connection to what would make it
+  solid. It fires for an identity pair joined by exactly **one transitive route**
+  (≥2 hops, no independent corroboration), reads the source families that route
+  already rests on, and emits the **logical requirement to fill the gap**: the
+  strongest *orthogonal* OSINT source families absent from the link (`breach`,
+  `social`, `presence`, `identity_registry`, … — `infra` excluded as it's usually
+  the existing route). E.g. *"a@x and bob are linked by a single 2-hop pathway
+  resting on [infra]; an orthogonal pathway through (breach or social) would
+  confirm it."* The same `disjoint_pathways` primitive defines "one route", so
+  AU-062 and AU-063 partition the space cleanly. Passive (a finding/lead) — the
+  groundwork for increment 3's active re-dispatch. 63 rules now. Gate green:
+  fmt/clippy/doc clean, 3,275 lib tests (+4), 24 arch guards, 0 failures.
+  **Next:** (3) backward synthesis → forward seeds + the universal/all-scans
+  learning loop. **Paired:** `SOLUTION_TREE` SOL-CORR note + §5 — same commit.

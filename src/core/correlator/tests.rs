@@ -3979,3 +3979,22 @@ fn au062_multipath_corroboration_fires_on_orthogonal_routes() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-062");
 }
+
+#[test]
+fn au063_corroboration_gap_flags_a_lone_transitive_link() {
+    use crate::core::relation::{Relation, RelationKind};
+    let mk_rel = |from: &Entity, to: &Entity, kind: RelationKind| {
+        Relation::new(from.uid.clone(), to.uid.clone(), kind, 0.8, "s")
+    };
+    // a—domain(infra)—b: a single transitive route, no orthogonal corroboration.
+    let a = ent(EntityKind::Email, "a@x.com", 0.8, "s", false);
+    let b = ent(EntityKind::Username, "bob", 0.8, "s", false);
+    let d = ent(EntityKind::Domain, "x.com", 0.8, "dns_intel", false);
+    let rels = [
+        mk_rel(&a, &d, RelationKind::BelongsToDomain),
+        mk_rel(&d, &b, RelationKind::DerivedFrom),
+    ];
+    let out = rule_au_063_corroboration_gap(&[a, b, d], &rels, "s", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-063");
+}

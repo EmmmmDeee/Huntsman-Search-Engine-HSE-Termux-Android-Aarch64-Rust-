@@ -1251,3 +1251,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   CONNECTIONS view. 62 rules. SOL-CORR advances (orthogonal-pathway corroboration
   done; gap-fill + backward synthesis are increments 2–3). Gate green: 3,271 lib
   tests (+7). Paired: `PROBLEM_TREE` §8 cycle 30 — same commit.
+- **2026-06-20** — **Cycle 31 (SOL-CORR, C1): gap analysis — recursive-linking
+  increment 2.** New rule **AU-063** (`rules/gap.rs`): the dual of AU-062 — for an
+  identity pair joined by a single transitive route, it reads the source families
+  the route rests on and names the strongest *orthogonal* families absent from it
+  (the logical requirement that would corroborate the link another way). Reuses
+  `disjoint_pathways` so "one route" means exactly what AU-062's "many routes"
+  does. Passive lead (a finding), the groundwork for active re-dispatch.
+  SOL-CORR advances (orthogonal corroboration + gap analysis done; backward
+  synthesis is increment 3). Gate green: 3,275 lib tests (+4). Paired:
+  `PROBLEM_TREE` §8 cycle 31 — same commit.
