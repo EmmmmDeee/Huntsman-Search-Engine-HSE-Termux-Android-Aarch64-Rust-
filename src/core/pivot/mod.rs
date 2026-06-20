@@ -50,6 +50,22 @@ pub struct PivotNode {
     /// Combined pivot score in `[0, 1]` — how much of a bridging intermediary the node
     /// is (betweenness-weighted, with degree as the secondary hub signal).
     pub score: f64,
+    /// Whether this node is a **cut vertex** (articulation point): removing it would
+    /// fragment the graph into more connected components. The exact, binary
+    /// single-point-of-failure signal complementing the continuous
+    /// [`betweenness`](PivotNode::betweenness) — a node can route many paths yet not be
+    /// a cut vertex (redundant routes exist), or be a modest-betweenness cut vertex that
+    /// alone holds one pendant cluster onto the rest of the network.
+    pub is_cut_vertex: bool,
+}
+
+/// One **bridge** (cut edge) of the relationship graph: a single relationship whose
+/// removal would disconnect the two sides it joins — an irreplaceable link, reported in
+/// the direction the scan derived it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BridgeEdge {
+    pub from_uid: String,
+    pub to_uid: String,
 }
 
 /// Detect the pivot nodes — the high-connectivity intermediaries — of a scan's
@@ -77,6 +93,15 @@ pub fn detect(entities: &[Entity], relations: &[Relation]) -> Vec<PivotNode> {
         vec![0.0; n]
     };
 
+    // Exact single-point-of-failure flag per node: a cut vertex is one whose removal
+    // fragments the graph (the precise binary complement to the continuous betweenness),
+    // from the same shared primitive — one extra O(V+E) pass over the graph already built.
+    let (cut_vertices, _bridges) = g.cut_vertices_and_bridges();
+    let mut is_cut = vec![false; n];
+    for c in cut_vertices {
+        is_cut[c] = true;
+    }
+
     // Combine: betweenness (the bridge) dominates, degree (the hub) is secondary; when
     // betweenness was skipped, degree carries the whole score.
     let max_degree = n.saturating_sub(1).max(1) as f64;
@@ -90,6 +115,7 @@ pub fn detect(entities: &[Entity], relations: &[Relation]) -> Vec<PivotNode> {
                 degree: degree[i],
                 betweenness: betweenness[i],
                 score,
+                is_cut_vertex: is_cut[i],
             }
         })
         .collect();
@@ -101,6 +127,28 @@ pub fn detect(entities: &[Entity], relations: &[Relation]) -> Vec<PivotNode> {
     });
     pivots.truncate(PIVOT_CAP);
     pivots
+}
+
+/// The relationship graph's **bridges** (cut edges): the links that are single points of
+/// failure for connectivity — remove one and the graph splits into more components. The
+/// edge complement to [`detect`]'s per-node [`is_cut_vertex`](PivotNode::is_cut_vertex)
+/// flag; together they map the graph's exact structural fragility (which entities and
+/// which links are irreplaceable), the sharp question betweenness only approximates.
+///
+/// Pure, deterministic, read-only over `(entities, relations)`. Bridges come back as
+/// `from_uid`/`to_uid` pairs in ascending-UID order, via one O(V+E) iterative pass of
+/// the shared [`Graph`] primitive's cut analysis.
+#[must_use]
+pub fn bridges(entities: &[Entity], relations: &[Relation]) -> Vec<BridgeEdge> {
+    let g = Graph::build(entities, relations);
+    let (_cut_vertices, bridge_pairs) = g.cut_vertices_and_bridges();
+    bridge_pairs
+        .into_iter()
+        .map(|(a, b)| BridgeEdge {
+            from_uid: g.uid(a).to_string(),
+            to_uid: g.uid(b).to_string(),
+        })
+        .collect()
 }
 
 /// Brandes' exact betweenness centrality for an unweighted UNDIRECTED graph, normalised

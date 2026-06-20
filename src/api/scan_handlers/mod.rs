@@ -983,7 +983,20 @@ pub async fn scan_pivots(
         Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
     let pivots = crate::core::pivot::detect(&entities, &relations);
-    ok_list("pivots", pivots)
+    let bridges = crate::core::pivot::bridges(&entities, &relations);
+    // {pivots, bridges, count}: the ranked intermediaries plus the graph's exact cut
+    // edges (single-point-of-failure links). `count` mirrors `ok_list` so existing
+    // clients reading `.pivots`/`.count` are unaffected.
+    let count = pivots.len();
+    (
+        StatusCode::OK,
+        Json(json!({
+            "pivots": pivots,
+            "bridges": bridges,
+            "count": count,
+        })),
+    )
+        .into_response()
 }
 
 /// `GET /api/v1/scans/{id}/benchmark` — the consolidated, auditable benchmark report

@@ -20,6 +20,7 @@ use huntsman_search_engine::{
         error::Result,
         live::LiveScanner,
         module::{Module, ModuleContext, ModuleResult},
+        relation::{Relation, RelationKind},
         scan::{Scan, Target, TargetKind},
     },
     storage::Store,
@@ -2047,6 +2048,64 @@ async fn scan_benchmark_returns_a_scorecard() {
     // Unknown scan -> 404.
     let resp = app
         .oneshot(get("/api/v1/scans/__nope__/benchmark"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn scan_pivots_reports_cut_vertices_and_bridges() {
+    let (app, store) = test_app_with_store("pivots");
+    let scan = Scan::new("s-piv", Target::new(TargetKind::FullName, "Subject Person"));
+    store.upsert_scan(&scan).unwrap();
+
+    // A path a—b—c—d: the interior nodes b and c are cut vertices, and all three
+    // edges are bridges (single points of failure for connectivity).
+    let a = Entity::new(EntityKind::Person, "Aa Person", 0.8, "s-piv");
+    let b = Entity::new(EntityKind::Email, "b@example.com", 0.8, "s-piv");
+    let c = Entity::new(EntityKind::Phone, "+15551230000", 0.8, "s-piv");
+    let d = Entity::new(EntityKind::Domain, "d.example.com", 0.8, "s-piv");
+    for e in [&a, &b, &c, &d] {
+        store.upsert_entity(e).unwrap();
+    }
+    for (x, y) in [(&a, &b), (&b, &c), (&c, &d)] {
+        store
+            .upsert_relation(&Relation::new(
+                x.uid.as_str(),
+                y.uid.as_str(),
+                RelationKind::AssociatedWith,
+                0.7,
+                "s-piv",
+            ))
+            .unwrap();
+    }
+
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/scans/s-piv/pivots"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+
+    let pivots = json["pivots"].as_array().expect("pivots is a list");
+    assert!(!pivots.is_empty(), "the path's interior nodes are pivots");
+    assert!(
+        pivots
+            .iter()
+            .any(|p| p["is_cut_vertex"].as_bool() == Some(true)),
+        "at least one pivot is flagged a cut vertex (single point of failure)"
+    );
+
+    let bridges = json["bridges"].as_array().expect("bridges is a list");
+    assert_eq!(bridges.len(), 3, "every edge on the path is a bridge");
+    for br in bridges {
+        assert!(br["from_uid"].is_string() && br["to_uid"].is_string());
+    }
+
+    // Unknown scan -> 404, matching the other sub-resources.
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/pivots"))
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);

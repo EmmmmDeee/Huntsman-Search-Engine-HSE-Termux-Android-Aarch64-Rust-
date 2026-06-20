@@ -110,6 +110,67 @@ fn isolated_and_lone_nodes_are_not_pivots() {
 }
 
 #[test]
+fn cut_vertex_flag_marks_articulation_points() {
+    // a — b — c: b is the cut vertex (removing it splits a from c); the endpoints
+    // are not. The flag is the exact complement of b's betweenness being 1.0.
+    let a = ent("a");
+    let b = ent("b");
+    let c = ent("c");
+    let entities = vec![a.clone(), b.clone(), c.clone()];
+    let relations = vec![rel(&a, &b), rel(&b, &c)];
+    let pivots = detect(&entities, &relations);
+    let pb = pivots.iter().find(|p| p.uid == b.uid).unwrap();
+    assert!(pb.is_cut_vertex, "the middle node fragments the graph if removed");
+    for p in pivots.iter().filter(|p| p.uid != b.uid) {
+        assert!(!p.is_cut_vertex, "an endpoint is not a single point of failure");
+    }
+}
+
+#[test]
+fn a_cycle_has_no_cut_vertices() {
+    // A triangle is 2-connected: no node is a cut vertex and there are no bridges.
+    let a = ent("a");
+    let b = ent("b");
+    let c = ent("c");
+    let entities = vec![a.clone(), b.clone(), c.clone()];
+    let relations = vec![rel(&a, &b), rel(&b, &c), rel(&a, &c)];
+    let pivots = detect(&entities, &relations);
+    assert!(
+        pivots.iter().all(|p| !p.is_cut_vertex),
+        "no node in a cycle is a single point of failure"
+    );
+    assert!(bridges(&entities, &relations).is_empty(), "a cycle has no bridge edges");
+}
+
+#[test]
+fn bridges_are_the_cut_edges_of_the_graph() {
+    // a — b — c: both edges are bridges; their endpoints come back UID-canonical.
+    let a = ent("a");
+    let b = ent("b");
+    let c = ent("c");
+    let entities = vec![a.clone(), b.clone(), c.clone()];
+    let relations = vec![rel(&a, &b), rel(&b, &c)];
+    let br = bridges(&entities, &relations);
+    assert_eq!(br.len(), 2, "both edges on the path are bridges");
+    // Every reported bridge is canonically ordered and corresponds to a real edge.
+    let mut pairs: Vec<(String, String)> =
+        br.iter().map(|e| (e.from_uid.clone(), e.to_uid.clone())).collect();
+    pairs.sort();
+    let mut expect = vec![
+        {
+            let (x, y) = (a.uid.clone(), b.uid.clone());
+            if x <= y { (x, y) } else { (y, x) }
+        },
+        {
+            let (x, y) = (b.uid.clone(), c.uid.clone());
+            if x <= y { (x, y) } else { (y, x) }
+        },
+    ];
+    expect.sort();
+    assert_eq!(pairs, expect, "the bridges are exactly the two path edges");
+}
+
+#[test]
 fn detection_is_deterministic_under_input_shuffling() {
     let centre = ent("centre");
     let leaves: Vec<Entity> = (0..5).map(|i| ent(&format!("leaf{i}"))).collect();
