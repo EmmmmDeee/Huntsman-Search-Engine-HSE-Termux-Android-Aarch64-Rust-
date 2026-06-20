@@ -156,7 +156,13 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         passive_only: cmd.passive_only,
         depth,
         min_expand_confidence,
-        max_entities: cmd.max_entities,
+        // Comprehensive-but-bounded: apply the product-default entity ceiling when
+        // the operator gave none, so the deep (MAX_DEPTH) low-floor default sweep
+        // can't run the frontier away and OOM a Termux device. `--max-entities`
+        // overrides; a profile's own cap wins via the overlay below.
+        max_entities: cmd
+            .max_entities
+            .or(Some(crate::core::scan::DEFAULT_MAX_ENTITIES)),
         max_wall_time_secs: cmd.max_wall_time_secs,
         scan_tags: Vec::new(),
         notes: None,

@@ -1555,3 +1555,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the gate proves nothing else moved. No rule change (count 68). Gate green: 3,305
   lib tests (−9 removed-surface tests), 24 arch guards, fmt/clippy/doc clean. Paired:
   `PROBLEM_TREE` §8 cycle 49 — same commit.
+- **2026-06-20** — **Cycle 50 (`DEFAULT_MAX_ENTITIES` — comprehensive yet bounded).**
+  Completes cycle 48: a new product-default entity ceiling (`DEFAULT_MAX_ENTITIES =
+  2500`) applied at the CLI boundary when `--max-entities` is omitted, so the deep
+  (MAX_DEPTH) low-floor (0.20) default sweep stays thorough but can never fan the
+  frontier out far enough to OOM a 4 GB Termux device. Mirrors the cycle-48 pattern:
+  the library/API default stays `None` (uncapped, deterministic); `--max-entities`
+  and profile overlays override. The expansion loop already honours the cap
+  (`budget_check` → `StopReason::MaxEntities`), so this is purely a safer default —
+  maximising discovery while keeping the on-device resource guarantee the Termux
+  target demands. No rule change (count 68). Gate green: 3,305 lib tests, 24 arch
+  guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` §8 cycle 50 — same commit.

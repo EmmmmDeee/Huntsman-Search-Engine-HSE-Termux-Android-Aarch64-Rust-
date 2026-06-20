@@ -274,6 +274,18 @@ pub const DEFAULT_SCAN_DEPTH: u32 = MAX_DEPTH;
 // or a bare `hse scan` would emit the "clamped to MAX_DEPTH" warning on every run.
 const _: () = assert!(DEFAULT_SCAN_DEPTH <= MAX_DEPTH);
 
+/// Default hard cap on total entities for the `hse scan` product surface, applied
+/// at the CLI boundary when the operator gives no explicit `--max-entities`. Now
+/// that the default scan is comprehensive (depth [`MAX_DEPTH`], a 0.20 expansion
+/// floor), a common-name seed could otherwise fan the frontier out without bound —
+/// hundreds of breach/permutation identifiers, each re-expanded — and exhaust RAM
+/// on a 4 GB no-root Termux device. This generous ceiling (≈4× a typical scan's
+/// entity count) keeps the comprehensive sweep thorough while making runaway
+/// impossible on-device; `--max-entities <N>` overrides it for power users, and the
+/// library [`ScanOptions`] default stays `None` (uncapped) so programmatic/API
+/// callers manage their own bounds.
+pub const DEFAULT_MAX_ENTITIES: usize = 2500;
+
 impl ScanOptions {
     /// Clamp `depth` to [`MAX_DEPTH`], warning once if it actually clamps.
     /// Applied at the CLI/API/live input boundaries — deliberately NOT inside

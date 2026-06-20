@@ -2331,3 +2331,19 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   scan/engine behaviour changed. No rule change (count 68). Gate green: fmt/clippy/
   doc clean, 3,305 lib tests (−9, the removed-surface tests), 24 arch guards, 0
   failures. **Paired:** `SOLUTION_TREE` cycle 49 note — same commit.
+- **2026-06-20** — **Cycle 50 (Termux safety bound for the comprehensive default).**
+  Cycle 48 made the default scan comprehensive (depth `MAX_DEPTH`, 0.20 expansion
+  floor) but left `max_entities` at its `None` (uncapped) default — a self-inflicted
+  regression: on a common-name seed the deep low-floor sweep can fan the frontier out
+  without bound (hundreds of breach/permutation identifiers, each re-expanded),
+  exhausting RAM on a 4 GB no-root Termux device. Fixed with a generous product
+  default `DEFAULT_MAX_ENTITIES = 2500` (≈4× a typical scan's entity count), applied
+  at the CLI boundary when the operator gives no `--max-entities`, so the
+  comprehensive default is **thorough but cannot run away on-device**. The split is
+  deliberate and consistent with cycle 48: the library `ScanOptions::default()` stays
+  `None` (uncapped) for programmatic/API determinism, `--max-entities <N>` overrides
+  for power users, and a `--profile`'s own cap still wins via the overlay. This closes
+  the "world-class for Termux" gap the comprehensiveness change opened — discovery is
+  maximised *and* resource-bounded. No rule change (count 68). Gate green: fmt/clippy/
+  doc clean, 3,305 lib tests (CLI-boundary default — no fallout), 24 arch guards, 0
+  failures. **Paired:** `SOLUTION_TREE` cycle 50 note — same commit.

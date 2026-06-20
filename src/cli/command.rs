@@ -104,7 +104,10 @@ pub enum Command {
         /// 0.75 Verified-only) for a tighter, faster sweep.
         #[arg(long, default_value_t = 0.20)]
         min_expand_confidence: f64,
-        /// Hard cap on total entities. Stops expansion when reached.
+        /// Hard cap on total entities; stops expansion when reached. Omitted ⇒ the
+        /// product default (2500) — a generous Termux on-device safety bound for the
+        /// comprehensive depth-3 default sweep. Pass a larger value (or use a
+        /// profile) to go further.
         #[arg(long)]
         max_entities: Option<usize>,
         /// Hard cap on total wall-time in seconds. Stops expansion when exceeded.
