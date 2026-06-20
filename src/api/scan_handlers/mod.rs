@@ -117,6 +117,21 @@ pub async fn radar_sweep(
     State(s): State<Arc<AppState>>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
+    // Completely disabled until deliberately enabled in a place separate from
+    // seed scans (`feature.live_radar`). The radar surveys the host device's own
+    // surroundings, so it stays walled off from target scanning until opted in.
+    if !crate::util::settings::live_radar_enabled() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "live radar disabled",
+                "detail": "the live-sensor radar is off by default and separate from scans; \
+                           enable it deliberately before use",
+                "enable": "set the feature.live_radar toggle on (CLI: hse config feature.live_radar on)",
+            })),
+        )
+            .into_response();
+    }
     let (target, opts) = radar_scan_spec(params.get("seed").map(String::as_str));
     let sid = scan_id("radar", target.kind.canonical_str());
     let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);

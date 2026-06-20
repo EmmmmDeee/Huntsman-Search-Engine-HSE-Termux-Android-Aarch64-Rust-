@@ -87,6 +87,14 @@ pub fn overrides() -> BTreeMap<String, bool> {
 /// features so the `hse config` listing, the web toggle catalogue, and the
 /// `PUT /settings/toggles` validator all agree on what `feature.*` keys exist.
 pub const FEATURE_TOGGLES: &[(&str, bool)] = &[
+    // Live-sensor radar (the device's own WiFi/Bluetooth/cell/GPS/LAN sweep, via
+    // `hse radar` and `POST /api/v1/radar`). Default OFF and **completely
+    // disabled** — it scans the operator's own surroundings, not a seed target,
+    // so it is deliberately walled off from seed-originated scans and must be
+    // enabled in this separate place before it will run anywhere:
+    // `hse config feature.live_radar on`. Seed scans never enable live sensors
+    // regardless of this toggle (`cli::scan` hard-sets `allow_live_sensors:false`).
+    ("feature.live_radar", false),
     // Autonomous region-scoped search augmentation. Default OFF (queries stay
     // geolocation-neutral). Turning it on makes regional the baseline for every
     // scan; the per-scan `--regional` flag still forces it on for one scan.
@@ -105,6 +113,19 @@ pub const FEATURE_TOGGLES: &[(&str, bool)] = &[
     // notification when commits are available (even if auto_update is OFF).
     ("feature.update_notify", true),
 ];
+
+/// The `feature.*` key gating the live-sensor radar — the single source of the
+/// key string so the CLI gate, the API gate, and the toggle registry can't drift.
+pub const LIVE_RADAR_FEATURE: &str = "feature.live_radar";
+
+/// Whether the live-sensor radar has been manually enabled. **Off by default**:
+/// the radar (`hse radar` / `POST /api/v1/radar`) scans the operator's own
+/// surroundings, so it is completely disabled until a deliberate opt-in here,
+/// kept separate from any seed-scan path. Both radar entry points consult this.
+#[must_use]
+pub fn live_radar_enabled() -> bool {
+    get_bool(LIVE_RADAR_FEATURE, false)
+}
 
 /// The feature toggles with their current effective state (override else
 /// default) — for the `hse config` listing and the settings UI.
