@@ -2552,3 +2552,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   package but keeps the credential; HudsonRock makes no request for a package
   domain). Gate green: fmt/clippy/doc clean, lib 3,286 (+3), 24 arch guards, 0
   failures. **Paired:** `SOLUTION_TREE` cycle 59 note — same commit.
+
+- **2026-06-20** — **Cycle 60 (empirical: stealer URL host → Domain proliferation,
+  fixed universally).** Same audit finding (`generic-domain-noise`, 44 bare
+  domains), deeper root cause. Of the flagged hosts, most are **stealer-credential
+  URL hosts** — sites the subject merely has an account on. The OathNet stealer
+  archive shows the shape plainly: all 53 rows carry a `url`, and the login URLs are
+  per-company subdomains of shared platforms — `akzonobel.taleo.net`,
+  `hondana.taleo.net`, `cargill.taleo.net`, `parsons.taleo.net`,
+  `siemenscorp.taleo.net` (one recruiting platform → five bogus "domains"). Both
+  `extract_stealer_entities` (oathnet_pro) and `see_know::extract` minted the
+  URL's host as a `Domain` "so wayback/dns/cert expand it for free" — but the
+  subject does not *own* these platforms, so that expansion enumerates the
+  *platform's* infrastructure (irrelevant), and worse, every shared platform
+  (`taleo.net`) becomes a false correlation **broker** linking unrelated people who
+  used it. The bare-domain noise the audit flags is the visible symptom; the
+  wasted dns/cert/wayback/HudsonRock budget and the false brokers are the hidden
+  cost. Fix (both modules, universal): stop minting the URL host as a `Domain` —
+  keep the `Url` (the account pathway, 100% preserved: every row has a url) and the
+  `<user>@<url>` `Credential`. The subject's genuinely-owned domains still enter via
+  the breach `email_domain` path, so no real coverage is lost; only the
+  third-party-platform infrastructure noise is. see_know's `domain`-field path also
+  gains the cycle-59 `is_app_package_id` gate for parity. Regression-tested (oathnet
+  + see_know: URL surfaces as Url, host is NOT a Domain, Credential still emitted).
+  Gate green: fmt/clippy/doc clean, lib 3,286 (net 0 — 2 tests refocused), 24 arch
+  guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 60 note — same commit.

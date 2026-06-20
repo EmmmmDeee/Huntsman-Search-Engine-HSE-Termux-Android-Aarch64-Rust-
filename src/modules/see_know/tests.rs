@@ -119,7 +119,8 @@ use crate::core::entity::Entity;
     fn extract_entities_spiders_stealer_url_into_pivots() {
         use serde_json::json;
         // A stealer-log row: a saved credential for a login URL. The URL is the
-        // highest-value pivot and must spider into Url + Domain + Credential,
+        // highest-value pivot and must spider into Url + Credential (NOT a Domain —
+        // the host is a third-party service the subject uses, not one they own),
         // none tagged `breach` (credential context / infrastructure, not PII).
         let item = json!({
             "dbname": "RedlineStealer",
@@ -152,10 +153,13 @@ use crate::core::entity::Entity;
             !url.has_tag("breach"),
             "stealer URL must NOT be tagged breach"
         );
-        // Host → Domain pivot (eTLD-aware host extraction, lowercased).
-        let dom = find(EntityKind::Domain, &|e| e.value == "accounts.example.com")
-            .expect("stealer URL host must surface as a Domain pivot");
-        assert!(dom.has_tag("stealer") && !dom.has_tag("breach"));
+        // The URL host must NOT be minted as a Domain: it is a third-party login
+        // surface the subject merely uses, and minting it spawned subdomain noise
+        // + misdirected crt.sh/DNS/whois expansion of the platform's own infra.
+        assert!(
+            find(EntityKind::Domain, &|e| e.value == "accounts.example.com").is_none(),
+            "stealer URL host must not become a Domain entity"
+        );
         // username@url Credential binding.
         assert!(
             find(EntityKind::Credential, &|e| {

@@ -923,10 +923,15 @@ fn extract_stealer_entities(
 
     // The login URL is where the victim's credentials were captured — the most
     // actionable pivot in a stealer record (it confirms a service the subject
-    // uses). It was only ever an evidence attribute; emit it as a first-class
-    // Url, plus its host as a Domain, so wayback / dns_intel / cert_intel expand
-    // it for free. The host shares the domain-array dedup key, so a host already
-    // listed in the `domain` field is not duplicated.
+    // uses). Emit it as a first-class Url. Its host is NOT additionally minted as
+    // a Domain: a stealer host is a third-party service the subject merely has an
+    // account on (`akzonobel.taleo.net`, `bitcoinptc.top`), not a domain they own
+    // — minting it spawned subdomain-proliferation noise and misdirected
+    // dns/cert/wayback/HudsonRock expansion that enumerates the *platform's*
+    // infrastructure (irrelevant to the subject) and forged false correlation
+    // brokers across everyone who used the same platform. The Url already records
+    // the account pathway, and the subject's genuinely-owned domains still enter
+    // the graph via the breach `email_domain` path.
     if let Some(url) = val_str(item, "url").or_else(|| val_str(item, "url_str")) {
         let u = url.trim();
         if u.starts_with("http")
@@ -939,20 +944,6 @@ fn extract_stealer_entities(
                 &ev,
                 &["credential-url"],
             );
-            if let Some(host) = crate::util::url_util::host_from_url(u) {
-                let hl = host.to_lowercase();
-                if hl.contains('.')
-                    && !crate::util::domains::is_app_package_id(&hl)
-                    && seen.insert(hl.clone())
-                {
-                    push_stealer_entity(
-                        result,
-                        Entity::new(EntityKind::Domain, &hl, 0.50, scan_id),
-                        &ev,
-                        &["credential-url"],
-                    );
-                }
-            }
         }
     }
 

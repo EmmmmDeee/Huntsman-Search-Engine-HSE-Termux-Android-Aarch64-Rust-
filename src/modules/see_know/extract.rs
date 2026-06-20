@@ -23,7 +23,6 @@ use crate::core::{
 use crate::util::extract::EMAIL_RE;
 use crate::util::geo::is_valid_coords;
 use crate::util::see_know::val_str;
-use crate::util::url_util::host_from_url;
 
 use super::SRC;
 use super::pivots::looks_like_steam_id;
@@ -403,37 +402,29 @@ pub(super) fn extract_entities(
     // The single most OSINT-valuable artifact in a stealer record is the URL
     // the victim had a saved credential for. SeekNow's /stealer endpoint (and
     // the /search auto-route into it) carries it as `url`/`url_str`. Spider it
-    // into three pivotable entities — exactly OathNet's proven stealer model —
-    // so the rest of the graph (domain enumeration, credential correlation,
-    // login-surface mapping) can converge on it:
+    // into two pivotable entities — exactly OathNet's stealer model — so the rest
+    // of the graph (credential correlation, login-surface mapping) can converge:
     //
     //   • the Url itself (the captured login surface);
-    //   • its registrable host as a Domain pivot (drives crt.sh, DNS, whois);
     //   • a `<username>@<url>` Credential when a login accompanies the URL.
+    //
+    // The URL's host is deliberately NOT minted as a Domain: a stealer host is a
+    // third-party service the subject merely has an account on
+    // (`akzonobel.taleo.net`, `bitcoinptc.top`), not a domain they own. Minting it
+    // spawned subdomain-proliferation noise and misdirected crt.sh/DNS/whois
+    // expansion of the *platform's* infrastructure, and forged false correlation
+    // brokers across everyone who used that platform. The Url already records the
+    // pathway; the subject's own domains arrive via the breach email-domain path.
     //
     // None are tagged `breach`: a saved-login URL is credential CONTEXT /
     // infrastructure, not leaked PII — the same policy `extract_stealer_entities`
-    // applies in oathnet_pro, and the same policy the Domain block below uses.
+    // applies in oathnet_pro.
     if let Some(url) = val_str(item, "url").or_else(|| val_str(item, "url_str")) {
         if url.len() >= 4 && seen.insert(format!("@url:{}", url.to_lowercase())) {
             let mut e = Entity::new(EntityKind::Url, &url, 0.60, scan_id);
             e.tag("see-know");
             e.tag("stealer");
             e.add_evidence(ev.clone());
-            result.push(e);
-        }
-        // The URL's host → Domain pivot (eTLD-aware host extraction; dotless /
-        // private / scheme-less junk is dropped by `host_from_url`).
-        if let Some(host) = host_from_url(&url)
-            && seen.insert(format!("@stealer-dom:{host}"))
-        {
-            let mut e = Entity::new(EntityKind::Domain, &host, 0.55, scan_id);
-            e.tag("see-know");
-            e.tag("stealer");
-            e.add_evidence(
-                Evidence::new(SRC, format!("Stealer credential captured for {host}"))
-                    .with_attr("url", &url),
-            );
             result.push(e);
         }
         // `<username>@<url>` Credential — the login↔surface binding, surfaced as
@@ -463,9 +454,12 @@ pub(super) fn extract_entities(
     extract_associates(item, target_value, scan_id, key_fp, seen, result);
 
     // Domain is infrastructure, not a leaked credential, so it is the one kind
-    // NOT tagged `breach` — keep its inline tail (and consume the last `ev`).
+    // NOT tagged `breach` — keep its inline tail (and consume the last `ev`). A
+    // reverse-DNS app package (`com.facebook.katana`) carried in this field is an
+    // app id, not a web domain — skip it (same gate as oathnet_pro's stealer path).
     if let Some(domain) = val_str(item, "domain")
         && domain.contains('.')
+        && !crate::util::domains::is_app_package_id(&domain)
         && seen.insert(domain.to_lowercase())
     {
         let mut e = Entity::new(EntityKind::Domain, &domain, 0.55, scan_id);

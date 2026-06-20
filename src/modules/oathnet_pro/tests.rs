@@ -566,7 +566,7 @@ use super::*;
     }
 
     #[test]
-    fn stealer_url_becomes_url_and_domain_pivots() {
+    fn stealer_url_becomes_url_pivot_but_host_is_not_a_domain() {
         use serde_json::json;
         let item = json!({
             "username": "victim@example.com",
@@ -577,20 +577,22 @@ use super::*;
         let mut result = ModuleResult::new();
         extract_stealer_entities(&item, "scan", "oathnet.org:test", &mut seen, &mut result);
 
-        // The login URL is now a first-class Url pivot (was evidence-only).
+        // The login URL is a first-class Url pivot (was evidence-only).
         let url = result
             .entities
             .iter()
             .find(|e| e.kind == EntityKind::Url && e.value.contains("portal.acmebank.com/login"))
             .expect("stealer Url entity");
         assert!(url.has_tag("credential-url"));
-        // Its host is emitted as a Domain pivot.
+        // Its host is a third-party service the subject merely uses — it must NOT
+        // become a Domain entity (that minted subdomain noise + misdirected
+        // dns/cert/wayback expansion of the platform's own infrastructure).
         assert!(
-            result
+            !result
                 .entities
                 .iter()
                 .any(|e| e.kind == EntityKind::Domain && e.value == "portal.acmebank.com"),
-            "stealer url host Domain"
+            "stealer url host must not be minted as a Domain"
         );
     }
 

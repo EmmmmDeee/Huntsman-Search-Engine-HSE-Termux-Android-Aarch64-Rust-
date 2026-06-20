@@ -1697,3 +1697,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   kills both the noise *and* the noise-amplifying API expansion, on every future
   stealer-bearing scan. Regression-tested. Gate green: lib 3,286 (+3), 24 arch
   guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` cycle 59 — same commit.
+
+- **2026-06-20** — **Cycle 60 (a stealer host is an account, not an asset —
+  universal).** Principle: a credential captured *on* a site means the subject has
+  an account there, not that they own the domain. Both stealer extractors
+  (`oathnet_pro::extract_stealer_entities` and `see_know::extract`) used to mint the
+  login URL's host as a `Domain`, which (a) proliferated subdomains of shared
+  platforms (`*.taleo.net`), (b) burned dns/cert/wayback/HudsonRock budget
+  enumerating the *platform's* infrastructure, and (c) forged false correlation
+  brokers across everyone who used that platform. Now both keep only the `Url`
+  (the account pathway) and the `<user>@<url>` `Credential`; the host is no longer
+  a Domain. Safe because every stealer row carries a `url` (so the pathway is fully
+  preserved) and the subject's *own* domains arrive independently via the breach
+  email-domain path. Mirrors SpiderFoot's account-vs-INTERNET_NAME distinction.
+  Compounding: less noise, less wasted API expansion on Termux, and sharper
+  correlation (no shared-platform mega-brokers) on every stealer-bearing scan.
+  Regression-tested in both modules. Gate green: lib 3,286 (net 0), 24 arch guards,
+  fmt/clippy/doc clean. Paired: `PROBLEM_TREE` cycle 60 — same commit.
