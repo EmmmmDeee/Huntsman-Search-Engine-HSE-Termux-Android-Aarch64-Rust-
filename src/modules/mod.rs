@@ -87,8 +87,7 @@ pub mod opencorporates;
 pub mod osintcat;
 pub mod overpass;
 pub mod pgp;
-pub mod phone_area_geo;
-pub mod phone_carrier_geo;
+pub mod phone_geo;
 pub mod phone_intl;
 pub mod photon;
 pub mod portscan;
@@ -328,8 +327,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         // Geolocation enrichment (passive, zero-API)
         Arc::new(geo_domain_classifier::GeoDomainClassifier),
         Arc::new(email_header_geo::EmailHeaderGeo),
-        Arc::new(phone_area_geo::PhoneAreaGeo),
-        Arc::new(phone_carrier_geo::PhoneCarrierGeo),
+        Arc::new(phone_geo::PhoneGeo),
         Arc::new(email_locale::EmailLocale),
         Arc::new(breach_timezone::BreachTimezone),
         // Threat intel & infrastructure

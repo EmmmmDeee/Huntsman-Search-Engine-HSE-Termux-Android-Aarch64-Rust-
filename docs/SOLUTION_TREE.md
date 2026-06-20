@@ -1598,3 +1598,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (count 68). Gate green: fmt/clippy/doc clean, lib (3,279) + integration 0 failures,
   24 arch guards (incl. `core_does_not_import_modules`). Paired: `PROBLEM_TREE` §8
   cycle 52 — same commit.
+- **2026-06-20** — **Cycle 53 (module consolidation: phone-geo pair → `phone_geo`).**
+  Third consolidation merge: `phone_area_geo` + `phone_carrier_geo` fused into one
+  passive `phone_geo` that runs both the area-code and carrier-prefix lookup passes
+  in a single call. Behaviour-preserving (tables/confidences/tags verbatim; both
+  passes independent), per-strategy evidence sources retained so the geo-anchoring
+  correlator classification is unchanged, all 23 original tests ported + 3 new
+  integration tests. Registry 125 → **124**; docs/counts synced and guarded. Same
+  "debt down, capability intact" pattern as cycles 51 (ipapi, qld). No rule change
+  (count 68). Gate green: fmt/clippy/doc clean, lib (3,280) + integration 0 failures,
+  24 arch guards. Paired: `PROBLEM_TREE` §8 cycle 53 — same commit.

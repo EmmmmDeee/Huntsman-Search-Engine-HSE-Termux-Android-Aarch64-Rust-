@@ -5,7 +5,7 @@
 //!           available). Inert with no key.
 //!
 //! Upgrades the project's *offline* phone-geo tables (`phone_intl`,
-//! `phone_carrier_geo`) to authoritative live data: for a `+61` (or any) number
+//! `phone_geo`) to authoritative live data: for a `+61` (or any) number
 //! it returns validity, **carrier**, **line type** (mobile/landline/voip), and
 //! **region** — emitted as a geocodable `Address` plus carrier/line evidence.
 //!

@@ -36,7 +36,9 @@ use super::*;
 ///   returns a home or work address for the *subject*
 /// - `qld_unclaimed` — Queensland register postcode (coarse but person-linked)
 /// - `github_user` / `keybase` — self-reported location on confirmed social profiles
-/// - `phone_area_geo` / `phone_carrier_geo` — phone number → city/carrier inference
+/// - `phone_area_geo` / `phone_carrier_geo` — phone number → city/carrier
+///   inference (both source strings are now emitted by the merged `phone_geo`
+///   module's two passes; the needles are retained here)
 /// - `fullcontact` — structured location from person-enrichment data-broker API
 /// - `breach_timezone` — timezone inferred from breach timestamp activity clustering
 const ANCHORING_GEO_SOURCES: &[&str] = &[
@@ -55,6 +57,9 @@ const ANCHORING_GEO_SOURCES: &[&str] = &[
     "github_user",
     "keybase",
     // Phone area-code and carrier inference — narrows person to city/region.
+    // Both needles are emitted by the merged `phone_geo` module: its area-code
+    // pass stamps `phone_area_geo`, its carrier pass `phone_carrier_geo`, so the
+    // per-strategy geo-source classification below is preserved.
     "phone_area_geo",
     "phone_carrier_geo",
     // Business registry addresses (legal registered location of subject/employer)

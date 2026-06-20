@@ -2393,3 +2393,20 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   not a side report. No rule change (count 68). Gate green: fmt/clippy/doc clean, lib
   (3,279) + integration tests 0 failures, 24 arch guards (incl. layering + ATT&CK
   mapping). **Paired:** `SOLUTION_TREE` cycle 52 note — same commit.
+- **2026-06-20** — **Cycle 53 (consolidation cont'd: fuse the phone-geo pair).**
+  Continuing "consolidate modules where applicable" (cycle 51 did the first two),
+  merged `phone_area_geo` + `phone_carrier_geo` → one `phone_geo`. Both were passive,
+  no-network, pure lookup-table modules accepting `Phone` and emitting geo at
+  complementary inference layers (area-code → city/region Address+Coordinates;
+  carrier-prefix → carrier/region Address). The fused module runs both passes in one
+  `process()` (independent — neither's no-match suppresses the other), preserving
+  every lookup table, confidence, and tag verbatim. Per the qld precedent, the
+  evidence source strings stay per-strategy (`"phone_area_geo"`/`"phone_carrier_geo"`)
+  because the correlator's `ANCHORING_GEO_SOURCES` + `geo_source_class()` key on them
+  for geo hull-anchoring/orthogonality — only the module *name* is the clean
+  `phone_geo`. 23 original tests ported + 3 integration tests proving both passes emit
+  independently. Registry **125 → 124** (91 free · 28 key-gated · 5 paid); zero
+  capability loss. Counts synced across README/MODULES.md/ARCHITECTURE_AUDIT; the
+  registry-count, MODULES.md, and README-count guards pass. No rule change (count
+  68). Gate green: fmt/clippy/doc clean, lib (3,280) + integration 0 failures, 24
+  arch guards. **Paired:** `SOLUTION_TREE` cycle 53 note — same commit.
