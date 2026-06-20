@@ -238,6 +238,8 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             "/scans/{id}/duplicates",
             get(scan_handlers::scan_duplicates),
         )
+        // Pivot-node detection — the graph's high-connectivity intermediaries.
+        .route("/scans/{id}/pivots", get(scan_handlers::scan_pivots))
         .route("/scans/{id}/audit", get(scan_handlers::scan_audit))
         .route("/scans/{a}/diff/{b}", get(scan_handlers::scan_diff))
         .route("/scans/{id}/events", get(handlers::scan_events_sse))

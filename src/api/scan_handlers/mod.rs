@@ -882,6 +882,37 @@ pub async fn scan_duplicates(
     ok_list("duplicates", groups)
 }
 
+/// `GET /api/v1/scans/{id}/pivots` — pivot-node detection ([`crate::core::pivot`]): the
+/// high-connectivity INTERMEDIARIES of the relationship graph (the shared address,
+/// registrant, or phone that bridges many otherwise-separate entities), ranked by
+/// betweenness + degree centrality. These are the highest-leverage nodes to expand or
+/// confirm — pivot-driven traversal. Pure synthesis over the persisted entities +
+/// relations; 404 if the scan is unknown, matching the other sub-resources.
+pub async fn scan_pivots(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (entities, relations) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let pivots = crate::core::pivot::detect(&entities, &relations);
+    ok_list("pivots", pivots)
+}
+
 pub async fn scan_delete(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
