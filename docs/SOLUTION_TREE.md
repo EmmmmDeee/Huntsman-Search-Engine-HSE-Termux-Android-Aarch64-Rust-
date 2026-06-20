@@ -1634,3 +1634,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   consistency without introducing a leaky seam. Module count unchanged (124). Gate
   green: fmt/clippy/doc clean, lib 3,283 + integration + 44 doctests, 0 failures.
   Paired: `PROBLEM_TREE` §8 cycle 55 — same commit.
+- **2026-06-20** — **Cycle 56 (AU-071 — robust identity cluster, the redundancy
+  synthesis).** Fourth connection lens, completing the set: REACHABILITY (AU-060),
+  REDUNDANCY-pairwise (AU-062), INTEGRITY (AU-069), CRITICALITY (AU-070), and now
+  cluster-level REDUNDANCY (AU-071). A resolved cluster is "robust" iff no
+  connection broker splits ≥2 of its members — removing any single connector leaves
+  the identities mutually reachable. Composed entirely from existing primitives
+  (`resolve_identity_clusters` + `connection_brokers` at the shared 0.50 floor): no
+  new graph code, no drift, High severity (a redundantly-bound cluster is the
+  strongest single-identity finding). Rejected a naive k-core approach because the
+  `identity_paths` projection is a transitive closure (every component is already a
+  near-clique, so k-core can't tell a dense cluster from a loose chain) — the
+  broker-split test measures genuine redundancy. Pure + unit-tested (two-anchor
+  cluster fires; single-hub star is silent). Rule count 68→**69**. Gate green: lib
+  (3,286) + integration 0 failures, 24 arch guards, fmt/clippy/doc clean. Paired:
+  `PROBLEM_TREE` §8 cycle 56 — same commit.

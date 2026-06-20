@@ -346,6 +346,7 @@ const RELATION_RULES: &[RelationRuleFn] = &[
     rule_au_067_resolved_identity_cluster,
     rule_au_069_high_integrity_connection,
     rule_au_070_connection_broker,
+    rule_au_071_robust_identity_cluster,
 ];
 
 /// Run every relation-aware rule over an already quarantine-filtered, confirmed

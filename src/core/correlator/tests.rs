@@ -4104,3 +4104,36 @@ fn au070_connection_broker_fires_on_a_hub_holding_three_identities() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-070");
 }
+
+#[test]
+fn au071_robust_identity_cluster_fires_on_a_redundantly_bound_cluster() {
+    use crate::core::relation::{Relation, RelationKind};
+    let edge = |from: &Entity, to: &Entity| {
+        Relation::new(
+            from.uid.clone(),
+            to.uid.clone(),
+            RelationKind::DerivedFrom,
+            0.8,
+            "s",
+        )
+    };
+    let mk = |k: EntityKind, v: &str| Entity::new(k, v, 0.8, "s");
+    // Three identities each bound to TWO shared anchors — removing either leaves
+    // them connected via the other, so the cluster has no single point of failure.
+    let email = mk(EntityKind::Email, "a@x.com");
+    let uname = mk(EntityKind::Username, "alice");
+    let person = mk(EntityKind::Person, "Alice");
+    let d1 = mk(EntityKind::Domain, "x.com");
+    let d2 = mk(EntityKind::Domain, "y.com");
+    let rels = [
+        edge(&email, &d1),
+        edge(&uname, &d1),
+        edge(&person, &d1),
+        edge(&email, &d2),
+        edge(&uname, &d2),
+        edge(&person, &d2),
+    ];
+    let out = rule_au_071_robust_identity_cluster(&[email, uname, person, d1, d2], &rels, "s", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-071");
+}

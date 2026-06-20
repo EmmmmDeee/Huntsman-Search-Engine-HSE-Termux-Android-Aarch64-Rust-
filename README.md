@@ -326,7 +326,7 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 - rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
 - 3,100+ tests (unit + API integration + architecture boundary enforcement)
-- 68 correlator rules (AU-001 through AU-064 plus AU-067/AU-068/AU-069/AU-070), incl. graph-aware edge, transitive, multi-pathway corroboration, gap-analysis, pathway-template, resolved-identity-cluster, anonymous-SIM, high-integrity-connection (max-bottleneck route), and connection-broker (identity articulation-point) rules (plus engine-emitted cross-scan findings AU-065/AU-066)
+- 69 correlator rules (AU-001 through AU-064 plus AU-067/AU-068/AU-069/AU-070/AU-071), incl. graph-aware edge, transitive, multi-pathway corroboration, gap-analysis, pathway-template, resolved-identity-cluster, anonymous-SIM, high-integrity-connection (max-bottleneck route), connection-broker (identity articulation-point), and robustly-corroborated-identity-cluster (no-single-point-of-failure k-redundant cluster) rules (plus engine-emitted cross-scan findings AU-065/AU-066)
 - 2 tokio worker threads (tuned for Termux low-power devices)
 - Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)
 

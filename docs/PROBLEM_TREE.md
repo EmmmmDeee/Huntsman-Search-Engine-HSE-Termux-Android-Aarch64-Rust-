@@ -2453,3 +2453,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   in place rather than abstracted leakily. No rule/module-count change. Gate green:
   fmt/clippy/doc clean, lib 3,283 + integration + 44 doctests, 0 failures, 24 arch
   guards. **Paired:** `SOLUTION_TREE` cycle 55 note — same commit.
+- **2026-06-20** — **Cycle 56 (new correlation lens: AU-071 robustly-corroborated
+  identity cluster).** Capability gap against "deeper relationship modelling /
+  richer entity correlation": the suite had a cluster-level synthesis of
+  *reachability* (AU-067 resolves a connected component) and a node-level
+  *criticality* finding (AU-070 names a broker whose removal fragments identities),
+  but nothing reported cluster-level **redundancy** — whether a resolved cluster is
+  bound robustly or hangs on one fragile connector. Added rule **AU-071 "Robustly-
+  corroborated identity cluster"**: a resolved cluster (≥3 identities, Probable
+  floor) that NO connection broker can split — its identities stay mutually
+  reachable after removing any single connector, because they are tied by
+  independent routes. It is the cluster-level synthesis of AU-062's pairwise
+  redundancy (as AU-067 is of AU-060's reachability) and the highest-confidence
+  single-identity conclusion. Implemented purely by composition — it reuses the
+  AU-067 `resolve_identity_clusters` and AU-070 `connection_brokers` primitives at
+  the same floor, so "robust" means exactly "an AU-067 cluster no AU-070 broker
+  splits" with no drift and **no new graph code**. A design note: a naive k-core
+  over `identity_paths` was rejected — that projection is the transitive closure, in
+  which any connected component is already a near-clique, so it could not distinguish
+  a dense cluster from a loose chain; the broker-split test measures *real*
+  redundancy instead. Pure, deterministic, fully unit-tested (fires on a
+  two-anchor-redundant cluster; silent on a single-hub star). Rule count 68→**69**.
+  Gate green: fmt/clippy/doc clean, lib (3,286) + integration 0 failures, 24 arch
+  guards. **Paired:** `SOLUTION_TREE` cycle 56 note — same commit.
