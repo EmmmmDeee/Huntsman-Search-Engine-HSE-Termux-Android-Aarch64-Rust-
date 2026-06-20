@@ -16,7 +16,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::*;
-use crate::core::relation::{PathStep, disjoint_pathways, identity_uids};
+use crate::core::relation::{
+    PathStep, disjoint_pathways_in, identity_uids, sorted_confined_adjacency,
+};
 
 /// Orthogonal source families worth seeking to lift a single-route link to
 /// multi-pathway corroboration, ordered by how decisive each is for identity
@@ -49,7 +51,7 @@ pub(in crate::core) struct SingleRouteLink {
 
 /// Find every identity pair connected by exactly one transitive route (≥2 hops)
 /// — a link that no independent pathway corroborates. A direct one-hop link is
-/// already solid and is excluded. Built on the shared [`disjoint_pathways`]
+/// already solid and is excluded. Built on the shared [`disjoint_pathways_in`]
 /// primitive, so its notion of "one route" is exactly the multi-pathway rule's;
 /// the hop / path caps keep the pair-wise search bounded on a phone.
 pub(in crate::core) fn single_route_identity_links(
@@ -60,11 +62,13 @@ pub(in crate::core) fn single_route_identity_links(
     const MAX_PATHS: usize = 4;
 
     let identity_uids = identity_uids(entities);
+    // Build the traversal graph ONCE and reuse it across every pair.
+    let adj = sorted_confined_adjacency(entities, relations);
 
     let mut out = Vec::new();
     for (i, &a) in identity_uids.iter().enumerate() {
         for &b in &identity_uids[i + 1..] {
-            let mut pathways = disjoint_pathways(entities, relations, a, b, MAX_HOPS, MAX_PATHS);
+            let mut pathways = disjoint_pathways_in(&adj, a, b, MAX_HOPS, MAX_PATHS);
             // Connected by exactly ONE route, and it is a transitive chain (≥2
             // hops): a direct one-hop link is already solid.
             if pathways.len() != 1 || pathways[0].len() < 2 {

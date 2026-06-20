@@ -1411,3 +1411,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   unit-tested (incl. the strongest≠shortest case). Rule count 66→**67**. Gate
   green: 3,304 lib tests (+6), 24 arch guards, fmt/clippy/doc clean. Paired:
   `PROBLEM_TREE` §8 cycle 41 — same commit.
+- **2026-06-20** — **Cycle 42 (efficiency + DRY refactor): build the traversal
+  graph once.** The per-pair relation rules each rebuilt and re-sorted the whole
+  adjacency on EVERY pair — AU-062/AU-063 via `disjoint_pathways`, AU-069 via
+  `strongest_path` — an O(N²) graph-build cost on the correlator's hot path that
+  grows with identity count. Factored the build+sort into one
+  `core::relation::sorted_confined_adjacency`, and split the per-pair finders into
+  public (build + delegate) and **`*_in`** variants (`disjoint_pathways_in`,
+  `strongest_path_in`) that take a prebuilt adjacency. Each rule (and the dossier
+  CONNECTIONS view) now builds the graph ONCE and reuses it across all pairs:
+  O(N²) graph builds → O(N). The read-only widest-path search reuses the shared
+  adjacency directly; the mutating disjoint search clones it per call (still far
+  cheaper than rebuild+resort). Also removes the build+sort duplicated across the
+  three finders (one definition). Behaviour-preserving: the AU-060/062/063/069
+  suite + the `disjoint_pathways`/`strongest_path` graph tests + the
+  order-independence proptests all pass unchanged. No rule change (count 67). Gate
+  green: 3,304 lib tests, 24 arch guards, fmt/clippy/doc clean. Paired:
+  `PROBLEM_TREE` §8 cycle 42 — same commit.

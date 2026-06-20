@@ -114,6 +114,33 @@ pub fn undirected_adjacency<'a>(
     adj
 }
 
+/// The canonical traversal adjacency: [`undirected_adjacency`] confined to the
+/// confirmed entity set and sorted by `(neighbour, kind, confidence)`, so every
+/// finder walks the same deterministic graph (a node's first-visited edge to a
+/// neighbour is its lexicographically-smallest-kind edge; parallel edges collapse
+/// to one stable label).
+///
+/// Factored so the shortest-path, disjoint-pathway, and widest-path finders share
+/// ONE build — and, crucially, so a rule running many pairwise queries can build
+/// it **once** and pass it to the `*_in` variants ([`disjoint_pathways_in`],
+/// [`strongest_path_in`]) instead of rebuilding and re-sorting it per pair (an
+/// O(N²)→O(N) reduction in graph builds on the correlator's hot path).
+pub fn sorted_confined_adjacency<'a>(
+    entities: &'a [Entity],
+    relations: &'a [Relation],
+) -> Adjacency<'a> {
+    let confirmed: HashSet<&str> = entities.iter().map(|e| e.uid.as_str()).collect();
+    let mut adj = undirected_adjacency(relations, Some(&confirmed));
+    for v in adj.values_mut() {
+        v.sort_by(|x, y| {
+            x.0.cmp(y.0)
+                .then_with(|| x.1.as_str().cmp(y.1.as_str()))
+                .then_with(|| x.2.total_cmp(&y.2))
+        });
+    }
+    adj
+}
+
 /// Count the entities reachable from `start` over the undirected graph,
 /// excluding `start` itself — the size of its connected component minus one.
 pub fn reachable_count<'a>(start: &'a str, adj: &Adjacency<'a>) -> usize {
@@ -154,22 +181,9 @@ pub fn identity_paths(
         return Vec::new();
     }
 
-    // A path may only traverse confirmed (present) nodes — the shared adjacency
-    // builder, confined to the confirmed UID set so a dangling/quarantined edge
-    // is never walked.
-    let confirmed: HashSet<&str> = entities.iter().map(|e| e.uid.as_str()).collect();
-    let mut adj = undirected_adjacency(relations, Some(&confirmed));
-    // Sort each list by (neighbour, kind, confidence) so BFS's first visit to a
-    // neighbour deterministically takes the smallest-kind (then weakest) edge —
-    // parallel edges thus collapse to one stable label with no separate pass, and
-    // traversal is independent of input order.
-    for v in adj.values_mut() {
-        v.sort_by(|x, y| {
-            x.0.cmp(y.0)
-                .then_with(|| x.1.as_str().cmp(y.1.as_str()))
-                .then_with(|| x.2.total_cmp(&y.2))
-        });
-    }
+    // The canonical sorted adjacency, confined to confirmed nodes so a
+    // dangling/quarantined edge is never walked (see [`sorted_confined_adjacency`]).
+    let adj = sorted_confined_adjacency(entities, relations);
 
     // Identity endpoints in sorted UID order — each pair is computed once from
     // the smaller UID, fixing both orientation and shortest-path tie-breaks.
@@ -276,18 +290,30 @@ pub fn disjoint_pathways(
     if from_uid == to_uid || max_hops == 0 || max_paths == 0 {
         return Vec::new();
     }
-    let confirmed: HashSet<&str> = entities.iter().map(|e| e.uid.as_str()).collect();
-    if !confirmed.contains(from_uid) || !confirmed.contains(to_uid) {
+    let adj = sorted_confined_adjacency(entities, relations);
+    disjoint_pathways_in(&adj, from_uid, to_uid, max_hops, max_paths)
+}
+
+/// [`disjoint_pathways`] over a **prebuilt** [`sorted_confined_adjacency`] — for a
+/// caller running the search across many identity pairs (AU-062 / AU-063), which
+/// builds the adjacency once and reuses it here rather than rebuilding it per
+/// pair. Each call clones the template internally because the greedy search
+/// removes traversed edges to force independent routes; the clone is still far
+/// cheaper than a rebuild-and-resort. A node absent from `adj` (unconfirmed /
+/// dangling) is simply unreachable, so no separate confirmed-set check is needed.
+pub fn disjoint_pathways_in(
+    adj: &Adjacency<'_>,
+    from_uid: &str,
+    to_uid: &str,
+    max_hops: usize,
+    max_paths: usize,
+) -> Vec<Vec<PathStep>> {
+    if from_uid == to_uid || max_hops == 0 || max_paths == 0 {
         return Vec::new();
     }
-    let mut adj = undirected_adjacency(relations, Some(&confirmed));
-    for v in adj.values_mut() {
-        v.sort_by(|x, y| {
-            x.0.cmp(y.0)
-                .then_with(|| x.1.as_str().cmp(y.1.as_str()))
-                .then_with(|| x.2.total_cmp(&y.2))
-        });
-    }
+    // A mutable working copy: the greedy search removes each route's edges so the
+    // next route must be edge-disjoint.
+    let mut adj = adj.clone();
 
     let mut pathways: Vec<Vec<PathStep>> = Vec::new();
     for _ in 0..max_paths {
@@ -394,17 +420,23 @@ pub fn strongest_path(
     if from_uid == to_uid || max_hops == 0 {
         return None;
     }
-    let confirmed: HashSet<&str> = entities.iter().map(|e| e.uid.as_str()).collect();
-    if !confirmed.contains(from_uid) || !confirmed.contains(to_uid) {
+    let adj = sorted_confined_adjacency(entities, relations);
+    strongest_path_in(&adj, from_uid, to_uid, max_hops)
+}
+
+/// [`strongest_path`] over a **prebuilt** [`sorted_confined_adjacency`] — for a
+/// caller running the widest-path search across many identity pairs (AU-069),
+/// which builds the adjacency once and reuses it here instead of rebuilding it per
+/// pair. The relaxation is read-only, so no per-call clone is needed. A node
+/// absent from `adj` (unconfirmed / dangling) is simply unreachable.
+pub fn strongest_path_in(
+    adj: &Adjacency<'_>,
+    from_uid: &str,
+    to_uid: &str,
+    max_hops: usize,
+) -> Option<IdentityPath> {
+    if from_uid == to_uid || max_hops == 0 {
         return None;
-    }
-    let mut adj = undirected_adjacency(relations, Some(&confirmed));
-    for v in adj.values_mut() {
-        v.sort_by(|x, y| {
-            x.0.cmp(y.0)
-                .then_with(|| x.1.as_str().cmp(y.1.as_str()))
-                .then_with(|| x.2.total_cmp(&y.2))
-        });
     }
 
     /// Best route found to a node so far: its bottleneck, hop count, and the

@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 
 use super::*;
-use crate::core::relation::{identity_uids, strongest_path};
+use crate::core::relation::{identity_uids, sorted_confined_adjacency, strongest_path_in};
 
 /// AU-069 — High-integrity connection.
 pub(in crate::core::correlator) fn rule_au_069_high_integrity_connection(
@@ -30,11 +30,14 @@ pub(in crate::core::correlator) fn rule_au_069_high_integrity_connection(
 
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
     let ids = identity_uids(entities);
+    // Build the traversal graph ONCE and reuse it for every pair's widest-path
+    // search (vs rebuilding + re-sorting it per `strongest_path` call).
+    let adj = sorted_confined_adjacency(entities, relations);
 
     let mut out = Vec::new();
     for (i, &a) in ids.iter().enumerate() {
         for &b in &ids[i + 1..] {
-            let Some(path) = strongest_path(entities, relations, a, b, MAX_HOPS) else {
+            let Some(path) = strongest_path_in(&adj, a, b, MAX_HOPS) else {
                 continue;
             };
             // Multi-hop only — a direct edge is trivially high-integrity and is

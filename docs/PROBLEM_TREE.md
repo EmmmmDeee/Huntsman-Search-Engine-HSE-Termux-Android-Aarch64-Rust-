@@ -2170,3 +2170,17 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   strongest≠shortest). Rule count 66→67. Gate green: fmt/clippy/doc clean, 3,304
   lib tests (+6), 24 arch guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 41
   note — same commit.
+- **2026-06-20** — **Cycle 42 (execution efficiency + scalability).** Capability
+  gap on the directive's efficiency/scalability axis: the per-pair relation rules
+  rebuilt the entire sorted adjacency on every identity pair (AU-062/AU-063 in
+  `disjoint_pathways`, AU-069 in `strongest_path`) — O(N²) graph builds per rule,
+  quadratic in identity count, on the correlator's hot finalize path. Factored the
+  one canonical build into `sorted_confined_adjacency` and added prebuilt-adjacency
+  `disjoint_pathways_in` / `strongest_path_in` variants, so each rule (and the
+  dossier) builds the graph ONCE and reuses it — O(N²)→O(N) graph builds, and the
+  build+sort is no longer triplicated (one definition, less debt). Pure refactor:
+  the AU-060/062/063/069 suite, the graph traversal tests, and the
+  order-independence proptests pass unchanged, proving no behaviour drift. The gain
+  compounds with scan richness (more identities ⇒ quadratically more builds saved).
+  No rule change (count 67). Gate green: fmt/clippy/doc clean, 3,304 lib tests, 24
+  arch guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 42 note — same commit.

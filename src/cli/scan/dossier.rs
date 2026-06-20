@@ -195,6 +195,9 @@ fn print_connections(entities: &[Entity], relations: &[Relation]) {
     println!("  The shortest typed path tying each identity back through the graph");
     println!("  (a chain is only as strong as its weakest edge):");
     println!();
+    // Build the traversal graph ONCE and reuse it for every connection's
+    // corroboration-multiplicity lookup below.
+    let adj = crate::core::relation::sorted_confined_adjacency(entities, relations);
     for c in connections.iter().take(SHOWN) {
         let (fv, fk) = label(&c.from_uid);
         let mut line = format!("  {fv} ({fk})");
@@ -212,15 +215,8 @@ fn print_connections(entities: &[Entity], relations: &[Relation]) {
         // Corroboration multiplicity: how many edge-disjoint routes confirm this
         // link (AU-062's signal). >1 means the connection survives any single
         // pathway going dark — the orthogonal-route robustness.
-        let routes = crate::core::relation::disjoint_pathways(
-            entities,
-            relations,
-            &c.from_uid,
-            &c.to_uid,
-            5,
-            4,
-        )
-        .len();
+        let routes =
+            crate::core::relation::disjoint_pathways_in(&adj, &c.from_uid, &c.to_uid, 5, 4).len();
         let corroboration = if routes >= 2 {
             format!(" · corroborated via {routes} independent pathways")
         } else {

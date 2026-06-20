@@ -16,7 +16,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use super::*;
-use crate::core::relation::{disjoint_pathways, identity_uids};
+use crate::core::relation::{disjoint_pathways_in, identity_uids, sorted_confined_adjacency};
 
 /// One identity pair whose connection is corroborated by **≥2 edge-disjoint,
 /// source-orthogonal pathways** — the shared core of the AU-062 rule and the
@@ -48,7 +48,7 @@ pub(in crate::core) struct MultipathLink {
 /// agree spuriously, so the corroboration must be genuinely *orthogonal*.
 ///
 /// The shared finder behind both the AU-062 correlation and the engine's
-/// multipath-corroboration boost, built on [`disjoint_pathways`] so it stays
+/// multipath-corroboration boost, built on [`disjoint_pathways_in`] so it stays
 /// consistent with the transitive-closure rule and the dossier's CONNECTIONS
 /// view. The hop / path caps keep the pair-wise search bounded on a phone.
 pub(in crate::core) fn multipath_corroborated_links(
@@ -60,6 +60,9 @@ pub(in crate::core) fn multipath_corroborated_links(
 
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
     let identity_uids = identity_uids(entities);
+    // Build the traversal graph ONCE and reuse it for every pair (vs rebuilding +
+    // re-sorting it per `disjoint_pathways` call).
+    let adj = sorted_confined_adjacency(entities, relations);
 
     // Source families resting under one entity (its evidence providers), the
     // measure of orthogonality between routes — the shared `source_families`
@@ -74,7 +77,7 @@ pub(in crate::core) fn multipath_corroborated_links(
     let mut out = Vec::new();
     for (i, &a) in identity_uids.iter().enumerate() {
         for &b in &identity_uids[i + 1..] {
-            let pathways = disjoint_pathways(entities, relations, a, b, MAX_HOPS, MAX_PATHS);
+            let pathways = disjoint_pathways_in(&adj, a, b, MAX_HOPS, MAX_PATHS);
             if pathways.len() < 2 {
                 continue; // a single route is not multi-pathway corroboration
             }

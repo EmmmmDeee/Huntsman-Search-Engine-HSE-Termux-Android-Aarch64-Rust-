@@ -51,7 +51,8 @@ pub use builders::{
 };
 pub use graph::{
     Adjacency, ConnectionTemplate, IdentityClusterResult, IdentityPath, PathStep,
-    connection_templates, disjoint_pathways, identity_paths, identity_uids, is_identity_kind,
-    reachable_count, resolve_identity_clusters, strongest_path, undirected_adjacency,
+    connection_templates, disjoint_pathways, disjoint_pathways_in, identity_paths, identity_uids,
+    is_identity_kind, reachable_count, resolve_identity_clusters, sorted_confined_adjacency,
+    strongest_path, strongest_path_in, undirected_adjacency,
 };
 pub use types::{Relation, RelationKind};
