@@ -231,6 +231,13 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/scans/{id}/trust", get(scan_handlers::scan_trust))
         // Connection-path discovery between two named entities (link analysis).
         .route("/scans/{id}/path", get(scan_handlers::scan_path))
+        // Objective per-scan quality / telemetry measures.
+        .route("/scans/{id}/metrics", get(scan_handlers::scan_metrics))
+        // Near-duplicate entity-resolution suggestions.
+        .route(
+            "/scans/{id}/duplicates",
+            get(scan_handlers::scan_duplicates),
+        )
         .route("/scans/{id}/audit", get(scan_handlers::scan_audit))
         .route("/scans/{a}/diff/{b}", get(scan_handlers::scan_diff))
         .route("/scans/{id}/events", get(handlers::scan_events_sse))

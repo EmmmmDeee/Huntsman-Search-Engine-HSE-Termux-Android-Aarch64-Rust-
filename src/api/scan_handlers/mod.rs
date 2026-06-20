@@ -827,6 +827,61 @@ pub async fn scan_path(
         .into_response()
 }
 
+/// `GET /api/v1/scans/{id}/metrics` — objective per-scan quality / telemetry measures
+/// ([`crate::core::metrics`]): entity & relation counts, the verified/probable/candidate
+/// tier breakdown, mean & median confidence, corroborated fraction, graph density and
+/// linked-entity fraction, cross-scan bridges, and distinct evidence sources — the
+/// empirical measure of how much corroborated intelligence the scan actually formed.
+/// Pure synthesis over the persisted entities + relations; 404 if the scan is unknown.
+pub async fn scan_metrics(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (entities, relations) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let metrics = crate::core::metrics::compute(&entities, &relations);
+    (StatusCode::OK, Json(metrics)).into_response()
+}
+
+/// `GET /api/v1/scans/{id}/duplicates` — near-duplicate entity-resolution suggestions
+/// ([`crate::core::resolve`]): groups of entities that are probably the SAME identity
+/// in different contexts (Gmail dot/`+tag` variants, phone formats, reordered names)
+/// that the exact-UID correlator missed. Read-only suggestions for the operator to
+/// confirm. Pure synthesis over the persisted entities; 404 if the scan is unknown.
+pub async fn scan_duplicates(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await;
+    let entities = match loaded {
+        Ok(Ok(e)) => e,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let groups = crate::core::resolve::suggest_merges(&entities);
+    ok_list("duplicates", groups)
+}
+
 pub async fn scan_delete(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,

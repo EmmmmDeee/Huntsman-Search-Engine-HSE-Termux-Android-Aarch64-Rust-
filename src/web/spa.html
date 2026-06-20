@@ -624,6 +624,10 @@ const API = {
   // Connection path: how two named entities are linked through the relation graph.
   // `cross` extends the search across every scan in the local intelligence database.
   path: (id,from,to,n,cross)=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/path?from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to)+(n?'&paths='+n:'')+(cross?'&cross=true':'')),
+  // Per-scan quality / telemetry measures (the empirical scan-quality dashboard).
+  metrics:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/metrics'),
+  // Near-duplicate entity-resolution suggestions (probable same-identity groups).
+  duplicates: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/duplicates'),
   auditScan: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/audit'),
   create:    body=>API._req('/api/v1/scans',{method:'POST',body}),
   // Raw-text upload (not JSON): POST a dossier file's contents to be parsed and
@@ -1712,22 +1716,26 @@ function subTab(name, label, count, active){
    Settings) into one — the rest live under Browse / Graph / Scan Log. ── */
 async function renderReport(host, id, scan){
   host.innerHTML = `
-    <div id="rpt-network"></div>
+    <div id="rpt-metrics"></div>
+    <div id="rpt-network"  style="margin-top:18px"></div>
     <div id="rpt-leads"    style="margin-top:18px"></div>
     <div id="rpt-timeline" style="margin-top:18px"></div>
     <div id="rpt-communities" style="margin-top:18px"></div>
     <div id="rpt-trust"    style="margin-top:18px"></div>
     <div id="rpt-path"     style="margin-top:18px"></div>
+    <div id="rpt-duplicates" style="margin-top:18px"></div>
     <div id="rpt-corr"     style="margin-top:18px"></div>
     <div id="rpt-audit"    style="margin-top:18px"></div>`;
   // Each renderer owns its sub-section (and its own async fetch); composing them
   // reuses the synthesis already built rather than duplicating any logic.
+  renderMetrics($('#rpt-metrics'), id);
   renderNetwork($('#rpt-network'), id);
   renderLeads($('#rpt-leads'), id);
   renderTimeline($('#rpt-timeline'), id);
   renderCommunities($('#rpt-communities'), id);
   renderTrust($('#rpt-trust'), id);
   renderPathTool($('#rpt-path'), id);
+  renderDuplicates($('#rpt-duplicates'), id);
   renderCorrelations($('#rpt-corr'));
   renderAudit($('#rpt-audit'), id);
 }
@@ -2008,6 +2016,56 @@ async function renderPathTool(host, id){
   $('#path-go').onclick = run;
   $('#path-from').onkeydown = e => { if (e.key === 'Enter') run(); };
   $('#path-to').onkeydown = e => { if (e.key === 'Enter') run(); };
+}
+
+/* ── Scan-quality dashboard — objective per-scan telemetry (GET /scans/{id}/metrics):
+   how much corroborated intelligence the scan formed. A nicety, so it fails quietly. ── */
+async function renderMetrics(host, id){
+  let m;
+  try { m = await API.metrics(id); }
+  catch(e){ host.innerHTML = ''; return; }
+  if (!m || !m.total_entities){ host.innerHTML = ''; return; }
+  const pct = x => Math.round((Number(x)||0)*100);
+  const t = m.tier_counts || {verified:0, probable:0, candidate:0};
+  const stat = (lab, val) => `<div style="flex:0 0 auto;min-width:80px;padding:6px 10px;background:rgba(127,127,127,0.07);border-radius:4px;text-align:center">`
+    + `<div style="font-size:18px;font-weight:600;line-height:1.1">${val}</div>`
+    + `<div class="text-muted" style="font-size:11px">${lab}</div></div>`;
+  host.innerHTML = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-dashboard"></i>&nbsp;Scan quality</h4>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">`
+    + stat('Entities', m.total_entities)
+    + stat('Verified', t.verified)
+    + stat('Relations', m.total_relations)
+    + stat('Corroborated', pct(m.corroborated_fraction)+'%')
+    + stat('Linked', pct(m.linked_entity_fraction)+'%')
+    + stat('Graph density', pct(m.graph_density)+'%')
+    + stat('Cross-scan', m.cross_scan_bridges)
+    + stat('Mean conf', (Number(m.mean_confidence)||0).toFixed(2))
+    + stat('Sources', m.distinct_evidence_sources)
+    + `</div>`;
+}
+
+/* ── Likely-duplicates aid — near-duplicate entity-resolution suggestions
+   (GET /scans/{id}/duplicates): probable same-identity groups the exact matcher
+   missed (Gmail variants, phone formats, reordered names). Fails quietly. ── */
+async function renderDuplicates(host, id){
+  let data;
+  try { data = await API.duplicates(id); }
+  catch(e){ host.innerHTML = ''; return; }
+  const groups = (data && data.duplicates) || [];
+  if (!groups.length){ host.innerHTML = ''; return; }
+  const byUid = {};
+  (S.entities||[]).forEach(e=>{ byUid[e.uid] = e; });
+  const val = uid => { const e = byUid[uid]; return e ? esc(e.raw_value||e.value) : esc(String(uid).slice(0,12))+'…'; };
+  let html = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-duplicate"></i>&nbsp;Likely duplicates</h4>
+    <p class="text-muted" style="font-size:12px;margin-bottom:8px">${groups.length} group${groups.length===1?'':'s'} that are probably one identity in different contexts — confirm before treating as the same.</p>`;
+  for (const g of groups){
+    const members = (g.members||[]).map(u=>`<code>${val(u)}</code>`).join(' ');
+    html += `<div style="margin-bottom:6px;padding:6px 10px;border-left:3px solid #f0ad4e;background:rgba(240,173,78,0.07)">
+      <div>${kindPill(g.kind)} ${members}</div>
+      <div class="text-muted" style="font-size:11px;margin-top:2px">${esc(g.reason||'')}</div>
+    </div>`;
+  }
+  host.innerHTML = html;
 }
 
 /* ── Relations tab — typed edges from the recursive crawl (provenance) ── */
