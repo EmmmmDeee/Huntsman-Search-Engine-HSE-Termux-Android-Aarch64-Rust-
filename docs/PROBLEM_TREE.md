@@ -2577,3 +2577,27 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   + see_know: URL surfaces as Url, host is NOT a Domain, Credential still emitted).
   Gate green: fmt/clippy/doc clean, lib 3,286 (net 0 — 2 tests refocused), 24 arch
   guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 60 note — same commit.
+
+- **2026-06-20** — **Cycle 61 (empirical: cross-address state bleed mints a phantom
+  geocoded city).** Re-running the "Ali Kareem" scan on the rebuilt binary and
+  re-auditing (the user's "re-scan + re-audit first") empirically confirmed cycles
+  58–60 — **0** dead au_unclaimed CKAN calls, **0** `com.facebook.katana` domains —
+  and the audit's `generic-domain-noise` finding was **eliminated** (score 85/100,
+  with `geo-divergence` now the sole finding). Drilling into that geo-divergence
+  surfaced a real extraction bug: a SERP bio "…Los Angeles, California Dallas,
+  Texas…" made `extract_addresses_from_text` (comma path) `rfind` back past the
+  first address and grab **"California Dallas"** as the city for Texas — the leading
+  "California" is actually the STATE of the preceding "Los Angeles, California". The
+  phantom "California Dallas, Texas" then inline-geocoded to Dallas at 0.50
+  Probable, a bogus location fix. Fix: in the comma path only, when the extracted
+  city begins with a state name that DIFFERS from the address's own state, strip
+  that bled-over token — recovering the true "Dallas, Texas". Safe by construction:
+  the differ-from-`state` guard preserves genuine state-named cities ("Virginia
+  Beach, Virginia", "Oklahoma City, Oklahoma" keep their token because it matches
+  their own state), and the comma-path restriction leaves word-path cities
+  ("Kansas City, Missouri") untouched. (The residual geo-divergence is *identity
+  conflation* — the seed name matches a US filmmaker, an AU person, and an Iraqi;
+  their real locations differ — which is a separate, larger concern than this
+  extraction defect.) Regression-tested (run-on split; Virginia Beach / Kansas City
+  preserved). Gate green: fmt/clippy/doc clean, lib 3,287 (+1), 24 arch guards, 0
+  failures. **Paired:** `SOLUTION_TREE` cycle 61 note — same commit.

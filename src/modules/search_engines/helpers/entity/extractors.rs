@@ -95,8 +95,8 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
             // "Jerome Despal, Nundah, Queensland" → "Nundah"
             // "lives in Houston, Texas" → "Houston"
             let pre_comma = before.trim_end_matches(',').trim();
-            let last_segment = match pre_comma.rfind(',') {
-                Some(i) => pre_comma[i + 1..].trim(),
+            let (last_segment, from_comma) = match pre_comma.rfind(',') {
+                Some(i) => (pre_comma[i + 1..].trim(), true),
                 None => {
                     let words: Vec<&str> = pre_comma.split_whitespace().collect();
                     let mut n = 0;
@@ -111,10 +111,35 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
                         continue;
                     }
                     let start_idx = words.len() - n;
-                    &pre_comma[pre_comma.find(words[start_idx]).unwrap_or(0)..]
+                    (
+                        &pre_comma[pre_comma.find(words[start_idx]).unwrap_or(0)..],
+                        false,
+                    )
                 }
             };
-            let city = last_segment.trim();
+            let mut city = last_segment.trim();
+            // Cross-address state bleed (comma path only): a run-on listing two
+            // places — "Los Angeles, California Dallas, Texas" — makes `rfind`
+            // grab "California Dallas" as the city for "Texas", because the
+            // leading "California" is really the STATE of the preceding
+            // "Los Angeles, California". When the city begins with a state name
+            // that DIFFERS from this address's own state, strip that bled-over
+            // token to recover the true city ("Dallas"). The differ-from-`state`
+            // guard keeps genuine state-named cities intact — "Virginia Beach,
+            // Virginia" and "Oklahoma City, Oklahoma" match their own state, so
+            // nothing is stripped — and the comma-path restriction leaves
+            // word-path cities like "Kansas City, Missouri" untouched.
+            if from_comma {
+                for bled in STATES {
+                    if !bled.eq_ignore_ascii_case(state)
+                        && let Some(rest) = city.strip_prefix(bled)
+                        && let Some(stripped) = rest.strip_prefix(' ')
+                    {
+                        city = stripped.trim_start();
+                        break;
+                    }
+                }
+            }
             if city.len() < 2
                 || city.len() > 40
                 || !city.starts_with(|c: char| c.is_ascii_uppercase())

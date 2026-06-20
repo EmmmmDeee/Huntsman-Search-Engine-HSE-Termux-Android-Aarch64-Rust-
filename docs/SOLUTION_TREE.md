@@ -1714,3 +1714,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   correlation (no shared-platform mega-brokers) on every stealer-bearing scan.
   Regression-tested in both modules. Gate green: lib 3,286 (net 0), 24 arch guards,
   fmt/clippy/doc clean. Paired: `PROBLEM_TREE` cycle 60 — same commit.
+
+- **2026-06-20** — **Cycle 61 (address extractor: don't let one address's state
+  bleed into the next).** The re-scan + re-audit the user asked for confirmed cycles
+  58–60 on fresh data (domain-noise finding gone, 85/100) and pointed at a clean
+  extraction defect behind one geo outlier: a run-on bio "Los Angeles, California
+  Dallas, Texas" yielded a phantom "California Dallas, Texas" because the comma-path
+  city grab reached back across the first address and kept its trailing state.
+  Fix: in the comma path, strip a leading state token from the city when it differs
+  from the address's own state, recovering "Dallas, Texas". The differ-from-state
+  guard is the safety: state-named cities whose token equals their state (Virginia
+  Beach, Virginia; Oklahoma City, Oklahoma) are untouched, and word-path cities
+  (Kansas City, Missouri) never enter this branch — so no gazetteer and no risk to
+  the AU-geo core. Improves geocode precision (no bogus Probable city fixes) without
+  altering the geo-confidence model. Note for the record: the remaining
+  geo-divergence is driven by *identity conflation* (several real people share the
+  seed name), a separate strand to tackle deliberately rather than via a geo
+  heuristic. Regression-tested. Gate green: lib 3,287 (+1), 24 arch guards,
+  fmt/clippy/doc clean. Paired: `PROBLEM_TREE` cycle 61 — same commit.
