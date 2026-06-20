@@ -358,7 +358,7 @@ pub(super) fn source_family(source: &str) -> &'static str {
 mod assoc;
 mod breach;
 mod crypto;
-mod gap;
+pub(crate) mod gap;
 mod geo;
 mod identity;
 mod infra;

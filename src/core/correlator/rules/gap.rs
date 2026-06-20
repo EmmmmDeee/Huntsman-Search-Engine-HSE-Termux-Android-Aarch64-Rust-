@@ -16,7 +16,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use super::*;
-use crate::core::relation::{disjoint_pathways, is_identity_kind};
+use crate::core::relation::{PathStep, disjoint_pathways, is_identity_kind};
 
 /// Orthogonal source families worth seeking to lift a single-route link to
 /// multi-pathway corroboration, ordered by how decisive each is for identity
@@ -32,17 +32,33 @@ const CORROBORATING_FAMILIES: &[&str] = &[
     "email_intel",
 ];
 
-/// AU-063 — Single-pathway corroboration gap.
-pub(in crate::core::correlator) fn rule_au_063_corroboration_gap(
+/// One identity pair joined by exactly ONE transitive route (≥2 hops) — a
+/// fragile, single-pathway link no independent route corroborates. The shared
+/// core of the AU-063 gap lead and the engine's cross-scan gap resolution, so
+/// "one route" means the same thing to the rule that *flags* the gap and the
+/// engine logic that *fills* it (one finder, no drift).
+#[derive(Debug, Clone)]
+pub(in crate::core) struct SingleRouteLink {
+    /// The identity endpoints, `a_uid < b_uid` (the pair-scan visits each
+    /// unordered pair once, lexicographically-smaller UID first).
+    pub a_uid: String,
+    pub b_uid: String,
+    /// The single transitive pathway joining them (`route.len() >= 2`).
+    pub route: Vec<PathStep>,
+}
+
+/// Find every identity pair connected by exactly one transitive route (≥2 hops)
+/// — a link that no independent pathway corroborates. A direct one-hop link is
+/// already solid and is excluded. Built on the shared [`disjoint_pathways`]
+/// primitive, so its notion of "one route" is exactly the multi-pathway rule's;
+/// the hop / path caps keep the pair-wise search bounded on a phone.
+pub(in crate::core) fn single_route_identity_links(
     entities: &[Entity],
     relations: &[Relation],
-    scan_id: &str,
-    now: u64,
-) -> Vec<Correlation> {
+) -> Vec<SingleRouteLink> {
     const MAX_HOPS: usize = 5;
     const MAX_PATHS: usize = 4;
 
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
     let mut identity_uids: Vec<&str> = entities
         .iter()
         .filter(|e| is_identity_kind(&e.kind))
@@ -50,6 +66,38 @@ pub(in crate::core::correlator) fn rule_au_063_corroboration_gap(
         .collect();
     identity_uids.sort_unstable();
     identity_uids.dedup();
+
+    let mut out = Vec::new();
+    for (i, &a) in identity_uids.iter().enumerate() {
+        for &b in &identity_uids[i + 1..] {
+            let mut pathways = disjoint_pathways(entities, relations, a, b, MAX_HOPS, MAX_PATHS);
+            // Connected by exactly ONE route, and it is a transitive chain (≥2
+            // hops): a direct one-hop link is already solid.
+            if pathways.len() != 1 || pathways[0].len() < 2 {
+                continue;
+            }
+            out.push(SingleRouteLink {
+                a_uid: a.to_string(),
+                b_uid: b.to_string(),
+                route: pathways.pop().expect("exactly one pathway"),
+            });
+        }
+    }
+    out
+}
+
+/// AU-063 — Single-pathway corroboration gap. Delegates the detection to
+/// [`single_route_identity_links`] — the same finder the engine's cross-scan
+/// gap resolution uses — and, for each fragile link, names the strongest
+/// orthogonal source families absent from its single route: the logical
+/// requirement that would corroborate the connection from another pathway.
+pub(in crate::core::correlator) fn rule_au_063_corroboration_gap(
+    entities: &[Entity],
+    relations: &[Relation],
+    scan_id: &str,
+    now: u64,
+) -> Vec<Correlation> {
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
 
     let families_of = |uid: &str| -> BTreeSet<&'static str> {
         by_uid
@@ -64,68 +112,61 @@ pub(in crate::core::correlator) fn rule_au_063_corroboration_gap(
     };
 
     let mut out = Vec::new();
-    for (i, &a) in identity_uids.iter().enumerate() {
-        for &b in &identity_uids[i + 1..] {
-            let pathways = disjoint_pathways(entities, relations, a, b, MAX_HOPS, MAX_PATHS);
-            // Connected by exactly ONE route, and it is a transitive chain (≥2
-            // hops): a direct one-hop link is already solid.
-            if pathways.len() != 1 || pathways[0].len() < 2 {
-                continue;
-            }
+    for link in single_route_identity_links(entities, relations) {
+        let (a, b) = (link.a_uid.as_str(), link.b_uid.as_str());
 
-            // Families already represented on the single link.
-            let mut present: BTreeSet<&'static str> = families_of(a);
-            present.extend(families_of(b));
-            let mut nodes: BTreeSet<String> = [a.to_string(), b.to_string()].into_iter().collect();
-            for step in &pathways[0] {
-                present.extend(families_of(&step.to_uid));
-                nodes.insert(step.to_uid.clone());
-            }
-            present.remove("other");
-
-            // The fill: the strongest orthogonal families NOT yet on the link —
-            // the logical requirement that would corroborate it independently.
-            let absent: Vec<&str> = CORROBORATING_FAMILIES
-                .iter()
-                .copied()
-                .filter(|f| !present.contains(f))
-                .take(2)
-                .collect();
-            if absent.is_empty() {
-                continue; // already broad — no obvious orthogonal angle to seek
-            }
-
-            let (ea, eb) = (by_uid[a], by_uid[b]);
-            let present_list = if present.is_empty() {
-                "infra".to_string()
-            } else {
-                present.iter().copied().collect::<Vec<_>>().join(", ")
-            };
-            let hops = pathways[0].len();
-            let mut entity_uids: Vec<String> = nodes.into_iter().collect();
-            entity_uids.sort_unstable();
-
-            out.push(Correlation::new(
-                "AU-063",
-                "Single-pathway corroboration gap",
-                Severity::Low,
-                format!(
-                    "{} ({}) and {} ({}) are linked by a single {}-hop pathway resting on [{}]; \
-                     no independent route corroborates it — a pathway through an orthogonal \
-                     source ({}) would confirm the connection",
-                    ea.value,
-                    ea.kind,
-                    eb.value,
-                    eb.kind,
-                    hops,
-                    present_list,
-                    absent.join(" or "),
-                ),
-                entity_uids,
-                scan_id,
-                now,
-            ));
+        // Families already represented on the single link.
+        let mut present: BTreeSet<&'static str> = families_of(a);
+        present.extend(families_of(b));
+        let mut nodes: BTreeSet<String> = [a.to_string(), b.to_string()].into_iter().collect();
+        for step in &link.route {
+            present.extend(families_of(&step.to_uid));
+            nodes.insert(step.to_uid.clone());
         }
+        present.remove("other");
+
+        // The fill: the strongest orthogonal families NOT yet on the link — the
+        // logical requirement that would corroborate it independently.
+        let absent: Vec<&str> = CORROBORATING_FAMILIES
+            .iter()
+            .copied()
+            .filter(|f| !present.contains(f))
+            .take(2)
+            .collect();
+        if absent.is_empty() {
+            continue; // already broad — no obvious orthogonal angle to seek
+        }
+
+        let (ea, eb) = (by_uid[a], by_uid[b]);
+        let present_list = if present.is_empty() {
+            "infra".to_string()
+        } else {
+            present.iter().copied().collect::<Vec<_>>().join(", ")
+        };
+        let hops = link.route.len();
+        let mut entity_uids: Vec<String> = nodes.into_iter().collect();
+        entity_uids.sort_unstable();
+
+        out.push(Correlation::new(
+            "AU-063",
+            "Single-pathway corroboration gap",
+            Severity::Low,
+            format!(
+                "{} ({}) and {} ({}) are linked by a single {}-hop pathway resting on [{}]; \
+                 no independent route corroborates it — a pathway through an orthogonal \
+                 source ({}) would confirm the connection",
+                ea.value,
+                ea.kind,
+                eb.value,
+                eb.kind,
+                hops,
+                present_list,
+                absent.join(" or "),
+            ),
+            entity_uids,
+            scan_id,
+            now,
+        ));
     }
 
     out

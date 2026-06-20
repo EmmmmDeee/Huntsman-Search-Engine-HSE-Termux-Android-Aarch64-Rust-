@@ -1302,3 +1302,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   correlator's proof to the entity confidence model. Gate green: 3,283 lib tests
   (+1), 24 arch guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` §8 cycle 34 —
   same commit.
+- **2026-06-20** — **Cycle 35 (SOL-CORR, C1→C2): cross-scan knowledge fills the
+  gap — AU-066.** The keystone joining gap analysis to universal learning: AU-063
+  *finds* a fragile single-route link and names the missing family; the cross-scan
+  `pathway_templates` store *holds* which route shapes are historically proven;
+  nothing yet used the latter to resolve the former. (1) Extracted AU-063's
+  detection into a shared `single_route_identity_links` finder (the rule delegates;
+  its 3 tests prove behaviour-preserving). (2) New engine-emitted **AU-066**
+  ("Cross-scan route fills single-pathway gap"): in the finalise template loop, a
+  fragile pair whose route shape is confirmed in **≥2 prior scans** (stricter than
+  AU-065's ≥1) is corroborated by the proven attribution method itself — the
+  accumulated cross-scan pathway is the orthogonal route the gap was missing.
+  (3) New `promote_cross_scan_corroborated` pass tags + evidence-stamps those
+  endpoints (`cross-scan-corroborated`), merged with the C2 multipath boost into a
+  single conditional re-persist. Conservative + sound: ≥2 gate, endpoints only,
+  unscored "other" evidence (no orthogonality feedback), idempotent. Engine-emitted
+  like AU-065, so the 64-rule count is unchanged and the rule-id guard is
+  satisfied (literal lives only in `engine/mod.rs`). The flywheel: every scan run
+  proves more routes, so more gaps auto-resolve in later scans. Gate green: 3,284
+  lib tests (+1), 24 arch guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` §8
+  cycle 35 — same commit.

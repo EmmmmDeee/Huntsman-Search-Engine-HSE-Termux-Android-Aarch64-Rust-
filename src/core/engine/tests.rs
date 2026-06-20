@@ -188,6 +188,55 @@ fn promote_multipath_corroborated_lifts_only_orthogonally_linked_endpoints() {
     );
 }
 
+/// Free, offline: the cross-scan gap boost lifts exactly the endpoints the engine
+/// queued (a fragile link whose route shape is proven in prior scans) — the
+/// accumulated-knowledge counterpart to the multipath boost — and is idempotent.
+#[test]
+fn promote_cross_scan_corroborated_lifts_queued_endpoints_idempotently() {
+    use crate::core::entity::{Entity, EntityKind};
+    use std::collections::HashMap;
+
+    let a = Entity::new(EntityKind::Email, "a@x.com", 0.4, "s");
+    let b = Entity::new(EntityKind::Username, "bob", 0.4, "s");
+    let other = Entity::new(EntityKind::Domain, "x.com", 0.4, "s");
+    let (ua, ub) = (a.uid.clone(), b.uid.clone());
+    let mut ents = vec![a, b, other];
+
+    let reason = "route shape proven in 2 prior scans".to_string();
+    let mut boost: HashMap<String, String> = HashMap::new();
+    boost.insert(ua.clone(), reason.clone());
+    boost.insert(ub.clone(), reason);
+
+    assert_eq!(
+        promote_cross_scan_corroborated(&mut ents, &boost),
+        2,
+        "both queued endpoints are promoted"
+    );
+    for uid in [&ua, &ub] {
+        let e = ents.iter().find(|e| &e.uid == uid).unwrap();
+        assert!(
+            e.has_tag("cross-scan-corroborated"),
+            "endpoint must be tagged"
+        );
+        assert!(
+            e.evidence
+                .iter()
+                .any(|ev| ev.source == "cross_scan_corroboration"),
+            "endpoint must carry cross-scan evidence"
+        );
+    }
+    // An entity not in the boost set is untouched.
+    let other = ents.iter().find(|e| e.value == "x.com").unwrap();
+    assert!(!other.has_tag("cross-scan-corroborated"));
+
+    // Idempotent, and an empty boost set is a no-op.
+    assert_eq!(promote_cross_scan_corroborated(&mut ents, &boost), 0);
+    assert_eq!(
+        promote_cross_scan_corroborated(&mut ents, &HashMap::new()),
+        0
+    );
+}
+
 /// The precision complement, surname-aware: a far same-surname candidate is tagged
 /// `geo-discordant` (a likely namesake) ONLY when the shared surname is common — a
 /// distinctive surname carries kinship across any distance, so a rare-surname

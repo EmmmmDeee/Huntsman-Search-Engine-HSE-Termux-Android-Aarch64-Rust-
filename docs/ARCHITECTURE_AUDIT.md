@@ -89,9 +89,11 @@ allowlist remains.
   inter-scan entity cache (`raw_archive`), and the cross-scan
   `pathway_templates` store (C1 universal linking — a route confirmed in one
   scan is credited in every later scan via the engine-emitted **AU-065**
-  cross-scan finding; AU-065 is storage-dependent so it is emitted by the engine
-  at finalise, not by a pure correlator rule, and is therefore distinct from the
-  64 correlator rules).
+  cross-scan finding, and a fragile single-pathway link whose route shape is
+  proven in ≥2 prior scans is resolved by the engine-emitted **AU-066** cross-scan
+  gap-fill, which also boosts its endpoints; both are storage-dependent so they
+  are emitted by the engine at finalise, not by pure correlator rules, and are
+  therefore distinct from the 64 correlator rules).
 - **`api`** (axum 0.8) — versioned `/api/v1`, SSE live stream, embedded SPA +
   vendor bundle; CSP + `127.0.0.1`-only bind (architecture invariant).
 - **`util`** — HTTP client (rustls + SSRF-guarded resolver), key pool, atomic

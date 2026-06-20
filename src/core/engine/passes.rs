@@ -202,6 +202,53 @@ pub(super) fn promote_multipath_corroborated(
     promoted
 }
 
+/// Promote cross-scan-corroborated identities (free, offline, per scan).
+///
+/// The cross-scan counterpart to [`promote_multipath_corroborated`]. A *fragile*
+/// single-pathway identity link (the AU-063 gap) is corroborated not by a second
+/// in-scan route but by the engine's accumulated cross-scan knowledge: when the
+/// link's own route SHAPE has been independently confirmed in prior scans, the
+/// attribution METHOD is proven, and that historical proof is the orthogonal
+/// pathway that fills the gap (the engine-emitted AU-066 finding). Each listed
+/// endpoint earns a `cross-scan-corroborated` tag and a `cross_scan_corroboration`
+/// evidence record, lifting its corroboration → `c_effective` → classification
+/// band so the scan's OUTPUT reflects the accumulated knowledge.
+///
+/// Conservative by design: the engine gates the `boost` set on a route proven in
+/// **≥2 prior scans** (stricter than the AU-065 finding's ≥1), and the evidence
+/// source classifies as the unscored `"other"` family, so it never feeds back to
+/// inflate the in-scan orthogonality measure. Free, offline, idempotent via the
+/// tag. `boost` maps each endpoint UID to its human reason; returns the number
+/// promoted.
+pub(super) fn promote_cross_scan_corroborated(
+    entities: &mut [Entity],
+    boost: &HashMap<String, String>,
+) -> usize {
+    use crate::core::entity::Evidence;
+
+    if boost.is_empty() {
+        return 0;
+    }
+    let mut promoted = 0usize;
+    for e in entities.iter_mut() {
+        if e.has_tag("cross-scan-corroborated") {
+            continue;
+        }
+        if let Some(reason) = boost.get(&e.uid) {
+            e.tag("cross-scan-corroborated");
+            e.add_evidence(Evidence::new("cross_scan_corroboration", reason.clone()));
+            promoted += 1;
+        }
+    }
+    if promoted > 0 {
+        info!(
+            promoted,
+            "cross-scan-corroborated identities promoted (free, offline — accumulated route knowledge fills the gap)"
+        );
+    }
+    promoted
+}
+
 /// Flag geo-discordant namesakes (free, offline, per scan).
 ///
 /// The negative complement of [`promote_geo_corroborated_family`]: when the scan

@@ -40,7 +40,8 @@ mod writer;
 pub use ledger::DispatchLog;
 use passes::{
     consolidate_address_localities, flag_geo_discordant_namesakes, hot_inject_keys,
-    promote_geo_corroborated_family, promote_multipath_corroborated,
+    promote_cross_scan_corroborated, promote_geo_corroborated_family,
+    promote_multipath_corroborated,
 };
 use writer::DbWriter;
 // The per-target dispatch context (`DispatchCx`) and the mutable accumulator
@@ -699,12 +700,25 @@ impl ScanEngine {
             // here as historically corroborated (the engine-level AU-065 finding —
             // it is storage-dependent, so it can't be a pure correlator rule);
             // then every route this scan produced is recorded, so a link learned
-            // once lifts every later scan. Best-effort: a storage hiccup never
-            // aborts a finalised scan.
+            // once lifts every later scan. A *fragile* single-pathway link (the
+            // AU-063 gap) whose route shape is proven in ≥2 prior scans is the
+            // engine-level AU-066 finding: accumulated cross-scan knowledge is the
+            // orthogonal pathway that fills the gap, and its endpoints are queued
+            // (`xscan_boost`) for the conservative boost below. Best-effort: a
+            // storage hiccup never aborts a finalised scan.
+            let mut xscan_boost: HashMap<String, String> = HashMap::new();
             if let (Ok(ents), Ok(rels)) = (
                 store.entities_for_scan(&scan.id),
                 store.relations_for_scan(&scan.id),
             ) {
+                // The fragile single-route identity pairs (a<b) — exactly AU-063's
+                // notion of an uncorroborated link, via the shared detector so the
+                // gap the lead flags is the gap the engine fills.
+                let fragile: HashSet<(String, String)> =
+                    crate::core::correlator::single_route_identity_links(&ents, &rels)
+                        .into_iter()
+                        .map(|l| (l.a_uid, l.b_uid))
+                        .collect();
                 for ct in crate::core::relation::connection_templates(&ents, &rels, 4) {
                     let prior = store.pathway_template_count(&ct.template).unwrap_or(0);
                     if prior >= 1 {
@@ -739,28 +753,76 @@ impl ScanEngine {
                             );
                         }
                     }
+                    // AU-066 — cross-scan route fills a single-pathway gap. A
+                    // fragile link whose route shape is proven in ≥2 PRIOR scans
+                    // (stricter than AU-065's ≥1, to keep the gap-fill conservative)
+                    // is corroborated by the proven attribution method itself: the
+                    // accumulated cross-scan pathway is the orthogonal route the
+                    // AU-063 gap was missing. Its endpoints are queued for the boost.
+                    if prior >= 2 {
+                        for (f, t) in &ct.pairs {
+                            if !fragile.contains(&(f.clone(), t.clone())) {
+                                continue; // only fragile (single-route) links are gaps to fill
+                            }
+                            let reason = format!(
+                                "the single-pathway link's route shape [{}] was independently \
+                                 confirmed in {prior} prior scans — the proven attribution method \
+                                 is the orthogonal pathway that fills the single-route gap",
+                                ct.template,
+                            );
+                            let c = crate::core::correlator::Correlation::new(
+                                "AU-066",
+                                "Cross-scan route fills single-pathway gap",
+                                crate::core::correlator::Severity::Medium,
+                                reason.clone(),
+                                vec![f.clone(), t.clone()],
+                                scan.id.as_str(),
+                                crate::core::entity::unix_now(),
+                            );
+                            if store.upsert_correlation(&c).is_ok()
+                                && emitted_corr.insert(correlation_key(&c))
+                            {
+                                emitter.emit(
+                                    &scan.id,
+                                    EventKind::CorrelationFound { correlation: c },
+                                );
+                            }
+                            xscan_boost
+                                .entry(f.clone())
+                                .or_insert_with(|| reason.clone());
+                            xscan_boost.entry(t.clone()).or_insert(reason);
+                        }
+                    }
                     let _ = store.record_pathway_template(&ct.template);
                 }
             }
 
-            // ── Multi-pathway corroboration boost (C2: confirmed links strengthen entities) ──
-            // AU-062 has just proven which identity entities are joined by ≥2
-            // edge-disjoint, source-orthogonal pathways — connections re-derivable
-            // down independent routes, robust to any one source going dark. Here
-            // that proof feeds back into the entities: each multipath-corroborated
-            // endpoint earns a `multipath-corroborated` tag and a corroboration
-            // evidence record, lifting its confidence band so the scan's OUTPUT
-            // reflects what its own correlation established. Built on the SAME
-            // detector the AU-062 rule uses (one finder, no drift) and idempotent
-            // via the tag. Best-effort and conditional: the re-persist runs only
-            // when a link is actually corroborated, and a hiccup there never aborts
-            // a finalised scan.
-            if let Ok(rels) = store.relations_for_scan(&scan.id) {
-                let boosted_n = promote_multipath_corroborated(&mut entities, &rels);
-                if boosted_n > 0 {
+            // ── Corroboration boosts: confirmed links strengthen the entities ──
+            // Two orthogonal corroboration signals feed back into the entity set so
+            // the scan's OUTPUT reflects what its own analysis established:
+            //   • multipath (C2): a link AU-062 proved via ≥2 edge-disjoint,
+            //     source-orthogonal IN-SCAN routes — robust to any one source going
+            //     dark (built on the SAME detector the rule uses).
+            //   • cross-scan (AU-066): a fragile single-route link whose route shape
+            //     is proven in ≥2 PRIOR scans — accumulated knowledge fills the gap.
+            // Both tag + evidence-stamp only the identity ENDPOINTS, are idempotent
+            // via their tags, and use unscored ("other") evidence sources so they
+            // never feed back to inflate the in-scan orthogonality measure.
+            // Best-effort and conditional: the single re-persist runs only when a
+            // boost actually fires and never aborts a finalised scan.
+            {
+                let mut boosted_any = false;
+                if let Ok(rels) = store.relations_for_scan(&scan.id) {
+                    boosted_any |= promote_multipath_corroborated(&mut entities, &rels) > 0;
+                }
+                boosted_any |= promote_cross_scan_corroborated(&mut entities, &xscan_boost) > 0;
+                if boosted_any {
                     let boosted: Vec<Entity> = entities
                         .iter_mut()
-                        .filter(|e| e.has_tag("multipath-corroborated"))
+                        .filter(|e| {
+                            e.has_tag("multipath-corroborated")
+                                || e.has_tag("cross-scan-corroborated")
+                        })
                         .map(|e| {
                             e.canonicalize_order();
                             e.clone()
@@ -770,12 +832,12 @@ impl ScanEngine {
                         Ok(n) => info!(
                             scan_id = %scan.id,
                             boosted = n,
-                            "multipath-corroborated identities re-persisted (confirmed links strengthened the scan)"
+                            "corroboration-boosted identities re-persisted (confirmed links strengthened the scan)"
                         ),
                         Err(e) => warn!(
                             scan_id = %scan.id,
                             error = %e,
-                            "multipath boost re-persist failed (non-fatal)"
+                            "corroboration boost re-persist failed (non-fatal)"
                         ),
                     }
                 }

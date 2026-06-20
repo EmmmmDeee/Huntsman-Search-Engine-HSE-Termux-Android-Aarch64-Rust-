@@ -207,6 +207,10 @@ pub(crate) use rules::location::{au059_synergy_fix, is_anchoring_geo_source};
 // `MultipathLink` it returns is `pub(in crate::core)`, so callers read its
 // fields by inference without naming the type.)
 pub(in crate::core) use rules::multipath::multipath_corroborated_links;
+// The shared single-pathway (fragile-link) detector — the AU-063 gap lead and
+// the engine's cross-scan gap resolution (AU-066) both call this one finder, so
+// the lead that flags a gap and the logic that fills it can't drift apart.
+pub(in crate::core) use rules::gap::single_route_identity_links;
 use rules::*;
 
 const RULES: &[RuleFn] = &[

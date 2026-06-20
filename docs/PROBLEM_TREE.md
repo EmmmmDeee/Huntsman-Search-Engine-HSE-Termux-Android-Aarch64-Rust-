@@ -2049,3 +2049,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `promote_geo_corroborated_family` pattern. Gate green: fmt/clippy/doc clean,
   3,283 lib tests (+1), 24 arch guards, 0 failures. **Paired:** `SOLUTION_TREE`
   SOL-CORR cycle 34 note — same commit.
+- **2026-06-20** — **Cycle 35 (C1→C2): "fill in the logical requirements from
+  another pathway" using confirmed connections — cross-scan gap resolution
+  (AU-066).** The gap that remained: AU-063 *named* the missing orthogonal family
+  for a fragile single-route link but nothing *filled* it, and the cross-scan
+  template store (the record of which route shapes are confirmed) was only tallied,
+  never applied to a new scan's gaps. Closed it by joining the two: a fragile link
+  whose own route SHAPE has been independently confirmed in **≥2 prior scans** is
+  corroborated by the proven attribution METHOD — the accumulated cross-scan
+  pathway is exactly the orthogonal route the AU-063 gap was missing. Built as: a
+  shared `single_route_identity_links` finder (AU-063 delegates — one finder, no
+  drift between the lead that flags the gap and the engine that fills it); the
+  engine-emitted **AU-066** finding ("Cross-scan route fills single-pathway gap")
+  raised in the finalise template loop where the prior-scan count is already known;
+  and a `promote_cross_scan_corroborated` boost that strengthens the endpoints,
+  merged with the C2 multipath boost into one conditional re-persist. Soundness
+  guards: the ≥2 threshold (stricter than AU-065's ≥1) keeps the gap-fill
+  conservative, only identity endpoints are lifted, the evidence source is unscored
+  ("other") so it can't feed back to inflate in-scan orthogonality, and the boost
+  is idempotent. Engine-emitted like AU-065 → 64-rule count unchanged, rule-id
+  guard satisfied. This is the flywheel the spec asks for: every scan run proves
+  more routes, so more single-route gaps auto-resolve universally in later scans.
+  Gate green: fmt/clippy/doc clean, 3,284 lib tests (+1), 24 arch guards, 0
+  failures. **Paired:** `SOLUTION_TREE` SOL-CORR cycle 35 note — same commit.
