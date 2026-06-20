@@ -1487,3 +1487,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   every scan surfaces its linchpin as a prime cross-scan pivot. Rule count 67→**68**.
   Gate green: 3,313 lib tests (+6), 24 arch guards, fmt/clippy/doc clean. Paired:
   `PROBLEM_TREE` §8 cycle 45 — same commit.
+- **2026-06-20** — **Cycle 46 (broker confidence floor + dossier surfacing).**
+  Real-data validation of cycle 45 against the "Ali Kareem" scan showed the
+  structural `connection_brokers` re-surfacing the namesake blob (two person nodes
+  each "brokering" 58 strangers over 0.17 links) — the same weak-link failure cycle
+  44 fixed for clustering, one layer down. Added a `min_confidence` floor to
+  `connection_brokers` (and its `component_labels` BFS): only edges ≥ floor *bind*
+  identities, mirroring `resolve_identity_clusters`. AU-070 and the dossier pass the
+  Probable floor (0.50), so the broker view, the resolved-identity view, and AU-060's
+  threshold all agree (one floor, no drift). Validated on the exact data: 2 brokers
+  of 58 at floor 0.0 → **0** at 0.50. Also added a first-class **CONNECTION BROKERS**
+  dossier section reusing the same floored primitive, so the load-bearing nodes —
+  the prime pivots to corroborate — are delivered as an analytic conclusion next to
+  CONNECTIONS and RESOLVED IDENTITIES, not left in the raw correlation list. New unit
+  test pins the floor (a hub on 0.17 links: a broker at 0.0, none at 0.50).
+  Compounds: every common-name scan now reports only trustworthy brokers. No rule
+  change (count 68). Gate green: 3,314 lib tests (+1), 24 arch guards, fmt/clippy/doc
+  clean. Paired: `PROBLEM_TREE` §8 cycle 46 — same commit.

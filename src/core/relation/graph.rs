@@ -720,12 +720,19 @@ pub struct ConnectionBroker {
     pub brokered: Vec<String>,
 }
 
-/// Component label of every node in `adj`, optionally with one node (and its
-/// incident edges) removed — the building block for articulation detection. A
-/// plain BFS labelling: two nodes share a label iff a path connects them in the
-/// graph minus `exclude`. Nodes are visited in sorted order so labels (and thus
-/// any downstream comparison) are deterministic.
-fn component_labels<'a>(adj: &Adjacency<'a>, exclude: Option<&str>) -> HashMap<&'a str, u32> {
+/// Component label of every node in `adj`, traversing only edges whose confidence
+/// is `>= min_confidence` and optionally with one node (and its incident edges)
+/// removed — the building block for articulation detection. A plain BFS labelling:
+/// two nodes share a label iff a path of binding (≥ floor) edges connects them in
+/// the graph minus `exclude`. Nodes are visited in sorted order so labels (and any
+/// downstream comparison) are deterministic. A node reachable only by sub-floor
+/// edges lands in its own singleton component — exactly as if those edges were
+/// absent.
+fn component_labels<'a>(
+    adj: &Adjacency<'a>,
+    exclude: Option<&str>,
+    min_confidence: f64,
+) -> HashMap<&'a str, u32> {
     let mut label: HashMap<&'a str, u32> = HashMap::new();
     let mut nodes: Vec<&'a str> = adj.keys().copied().collect();
     nodes.sort_unstable();
@@ -738,9 +745,9 @@ fn component_labels<'a>(adj: &Adjacency<'a>, exclude: Option<&str>) -> HashMap<&
         let mut queue = VecDeque::from([start]);
         while let Some(u) = queue.pop_front() {
             if let Some(neighbours) = adj.get(u) {
-                for &(v, _, _) in neighbours {
-                    if Some(v) == exclude || label.contains_key(v) {
-                        continue;
+                for &(v, _, conf) in neighbours {
+                    if conf < min_confidence || Some(v) == exclude || label.contains_key(v) {
+                        continue; // sub-floor / removed / already-seen edge
                     }
                     label.insert(v, next);
                     queue.push_back(v);
@@ -753,20 +760,32 @@ fn component_labels<'a>(adj: &Adjacency<'a>, exclude: Option<&str>) -> HashMap<&
 }
 
 /// Find the **connection brokers** of the graph: the nodes whose removal would
-/// disconnect identities that are otherwise linked only through them. For each
-/// candidate node it compares the identity partition with and without that node —
-/// any identity group (≥2 identities that share a component) that fragments when
-/// the node is removed is "brokered" by it. The classic articulation-point idea,
-/// but reported in identity terms and computed by an obviously-correct
-/// remove-and-relabel (no fragile low-link bookkeeping): correctness over
-/// cleverness, and the bounded entity counts keep the `O(V·(V+E))` cost cheap.
+/// disconnect identities that are otherwise linked only through them, counting only
+/// edges whose confidence is `>= min_confidence` as binding. For each candidate
+/// node it compares the identity partition with and without that node — any identity
+/// group (≥2 identities that share a component over the binding edges) that
+/// fragments when the node is removed is "brokered" by it. The classic
+/// articulation-point idea, but reported in identity terms and computed by an
+/// obviously-correct remove-and-relabel (no fragile low-link bookkeeping):
+/// correctness over cleverness, and the bounded entity counts keep the
+/// `O(V·(V+E))` cost cheap.
+///
+/// The confidence floor matters as much here as it does for
+/// [`resolve_identity_clusters`]: without it a single weak edge makes one node look
+/// like the linchpin of dozens of unrelated namesakes (e.g. a common-name person
+/// node "brokering" 58 strangers joined by 0.17 links). Pass `0.0` for the purely
+/// structural articulation points.
 ///
 /// Returns one [`ConnectionBroker`] per node that brokers ≥2 identities, sorted by
 /// broker UID, each carrying the sorted identity set it holds together. The
 /// `ids` set is the identity-endpoint universe (typically [`identity_uids`]);
-/// only nodes/identities present in `adj` participate. Deterministic. A node of
-/// degree < 2 can never be a broker and is skipped.
-pub fn connection_brokers<'a>(adj: &Adjacency<'a>, ids: &[&'a str]) -> Vec<ConnectionBroker> {
+/// only nodes/identities present in `adj` participate. Deterministic. A node with
+/// fewer than two binding edges can never be a broker and is skipped.
+pub fn connection_brokers<'a>(
+    adj: &Adjacency<'a>,
+    ids: &[&'a str],
+    min_confidence: f64,
+) -> Vec<ConnectionBroker> {
     // Identities that actually appear as nodes in the graph.
     let id_set: HashSet<&str> = ids
         .iter()
@@ -777,8 +796,8 @@ pub fn connection_brokers<'a>(adj: &Adjacency<'a>, ids: &[&'a str]) -> Vec<Conne
         return Vec::new();
     }
 
-    // Baseline identity partition: group the identities by their component.
-    let base = component_labels(adj, None);
+    // Baseline identity partition over the binding (≥ floor) edges.
+    let base = component_labels(adj, None, min_confidence);
     let mut base_groups: HashMap<u32, Vec<&str>> = HashMap::new();
     for &id in &id_set {
         if let Some(&c) = base.get(id) {
@@ -792,17 +811,17 @@ pub fn connection_brokers<'a>(adj: &Adjacency<'a>, ids: &[&'a str]) -> Vec<Conne
     }
 
     // Try removing each node (sorted, for determinism) and see which identity
-    // groups fragment. A leaf (degree < 2) bridges nothing, so skip it.
+    // groups fragment. A node with < 2 binding edges bridges nothing, so skip it.
     let mut candidates: Vec<&str> = adj
         .iter()
-        .filter(|(_, e)| e.len() >= 2)
+        .filter(|(_, e)| e.iter().filter(|(_, _, c)| *c >= min_confidence).count() >= 2)
         .map(|(&u, _)| u)
         .collect();
     candidates.sort_unstable();
 
     let mut out: Vec<ConnectionBroker> = Vec::new();
     for b in candidates {
-        let sub = component_labels(adj, Some(b));
+        let sub = component_labels(adj, Some(b), min_confidence);
         let mut brokered: Vec<&str> = Vec::new();
         for members in base_groups.values() {
             // The group's identities other than the candidate itself.
@@ -960,7 +979,7 @@ mod tests {
         let adj = sorted_confined_adjacency(&ents, &rels);
         let ids = identity_uids(&ents);
 
-        let brokers = connection_brokers(&adj, &ids);
+        let brokers = connection_brokers(&adj, &ids, 0.0);
         assert_eq!(brokers.len(), 1, "the hub is the one broker");
         assert_eq!(brokers[0].uid, hub.uid);
         assert_eq!(
@@ -977,7 +996,42 @@ mod tests {
         // A conduit hub is not itself one of the brokered identities.
         assert!(!brokers[0].brokered.contains(&hub.uid));
         // Deterministic: identical inputs yield byte-identical output.
-        assert_eq!(connection_brokers(&adj, &ids), brokers);
+        assert_eq!(connection_brokers(&adj, &ids, 0.0), brokers);
+    }
+
+    #[test]
+    fn connection_brokers_floor_ignores_weak_links() {
+        let mk = |k: EntityKind, v: &str| Entity::new(k, v, 0.8, "s");
+        let weak = |from: &Entity, to: &Entity| {
+            Relation::new(
+                from.uid.clone(),
+                to.uid.clone(),
+                RelationKind::DerivedFrom,
+                0.17,
+                "s",
+            )
+        };
+        // A hub joins three identities, but only by weak (0.17) links — the
+        // common-name namesake-blob shape seen on real data. Structurally it is a
+        // broker; above the Probable floor it is not, because no binding link
+        // actually ties the strangers together.
+        let hub = mk(EntityKind::Person, "Ali Kareem");
+        let a = mk(EntityKind::Email, "a@x.com");
+        let b = mk(EntityKind::Username, "alice");
+        let c = mk(EntityKind::Phone, "+61400000000");
+        let rels = [weak(&a, &hub), weak(&b, &hub), weak(&c, &hub)];
+        let ents = [hub, a, b, c];
+        let adj = sorted_confined_adjacency(&ents, &rels);
+        let ids = identity_uids(&ents);
+        assert_eq!(
+            connection_brokers(&adj, &ids, 0.0).len(),
+            1,
+            "structurally the hub brokers all three"
+        );
+        assert!(
+            connection_brokers(&adj, &ids, 0.50).is_empty(),
+            "no binding link clears the floor — the weak blob is not brokered"
+        );
     }
 
     #[test]
@@ -1002,7 +1056,7 @@ mod tests {
         let adj = sorted_confined_adjacency(&ents, &rels);
         let ids = identity_uids(&ents);
         assert!(
-            connection_brokers(&adj, &ids).is_empty(),
+            connection_brokers(&adj, &ids, 0.0).is_empty(),
             "redundancy means no single broker"
         );
     }

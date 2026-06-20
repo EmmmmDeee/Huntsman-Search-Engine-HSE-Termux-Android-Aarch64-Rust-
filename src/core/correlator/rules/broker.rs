@@ -33,6 +33,10 @@ pub(in crate::core::correlator) fn rule_au_070_connection_broker(
     // A 2-identity split is a fragile *pair* (AU-063); a broker is a genuine ≥3-way
     // linchpin.
     const MIN_BROKERED: usize = 3;
+    // Only links at or above the Probable tier may *bind* identities — the same
+    // floor AU-067 resolves under. Without it a single weak edge makes a common-name
+    // node look like the linchpin of dozens of unrelated namesakes.
+    const MIN_CONF: f64 = 0.50;
 
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
     let ids = identity_uids(entities);
@@ -40,7 +44,7 @@ pub(in crate::core::correlator) fn rule_au_070_connection_broker(
     let adj = sorted_confined_adjacency(entities, relations);
 
     let mut out = Vec::new();
-    for broker in connection_brokers(&adj, &ids) {
+    for broker in connection_brokers(&adj, &ids, MIN_CONF) {
         if broker.brokered.len() < MIN_BROKERED {
             continue;
         }

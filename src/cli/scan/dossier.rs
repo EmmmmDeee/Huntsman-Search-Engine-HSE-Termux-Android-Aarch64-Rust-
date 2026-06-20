@@ -158,6 +158,7 @@ pub(super) fn print_dossier(
 
     print_connections(entities, relations);
     print_resolved_identities(entities, relations);
+    print_connection_brokers(entities, relations);
 
     print_diagnostics(scan, entities, kind, value, sid);
 }
@@ -297,6 +298,61 @@ fn print_resolved_identities(entities: &[Entity], relations: &[Relation]) {
             c.min_confidence
         );
         for uid in &c.members {
+            println!("      • {}", label(uid));
+        }
+        println!();
+    }
+}
+
+/// CONNECTION BROKERS — the node-criticality synthesis (AU-070). Where CONNECTIONS
+/// ties identities pairwise and RESOLVED IDENTITIES collapses them into clusters,
+/// this names the **single nodes the network hangs on**: an entity whose removal
+/// would fragment ≥3 otherwise-linked identities (the graph's articulation points,
+/// in identity terms). Reuses [`crate::core::relation::connection_brokers`] over the
+/// same confined adjacency the threads above traverse, so it can't disagree with
+/// them or the AU-070 correlation. These are the prime pivots: corroborating a
+/// broker hardens every connection that runs through it.
+fn print_connection_brokers(entities: &[Entity], relations: &[Relation]) {
+    use std::collections::HashMap;
+
+    // Same Probable confidence floor and ≥3-identity floor AU-070 fires under: a
+    // weak link can't make a node a broker (no fusing strangers), and a 2-identity
+    // bridge is a single fragile pair already rendered under CONNECTIONS.
+    const MIN_CONF: f64 = 0.50;
+    let adj = crate::core::relation::sorted_confined_adjacency(entities, relations);
+    let ids = crate::core::relation::identity_uids(entities);
+    let brokers: Vec<_> = crate::core::relation::connection_brokers(&adj, &ids, MIN_CONF)
+        .into_iter()
+        .filter(|b| b.brokered.len() >= 3)
+        .collect();
+    if brokers.is_empty() {
+        return;
+    }
+
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let label = |uid: &str| -> String {
+        by_uid.get(uid).map_or_else(
+            || format!("{}…", &uid[..uid.len().min(8)]),
+            |e| format!("{} ({})", super::super::truncate(&e.value, 36), e.kind),
+        )
+    };
+
+    println!(
+        "━━━ CONNECTION BROKERS ({}) — single points that hold the network together ━━━",
+        brokers.len()
+    );
+    println!();
+    println!("  Remove one of these and the identities beneath it fall apart — the prime");
+    println!("  pivots to corroborate (hardening a broker hardens every link through it):");
+    println!();
+    for (i, b) in brokers.iter().enumerate() {
+        println!(
+            "  #{} — {} brokers {} identities:",
+            i + 1,
+            label(&b.uid),
+            b.brokered.len()
+        );
+        for uid in &b.brokered {
             println!("      • {}", label(uid));
         }
         println!();

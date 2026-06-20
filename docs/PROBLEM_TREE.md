@@ -2247,3 +2247,21 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   and compounds — every scan now surfaces its linchpin, a prime cross-scan pivot.
   Rule count 67→**68**. Gate green: fmt/clippy/doc clean, 3,313 lib tests (+6), 24
   arch guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 45 note — same commit.
+- **2026-06-20** — **Cycle 46 (real-data validation hardens AU-070 + surfaces it).**
+  Validating the cycle-45 broker against the live "Ali Kareem" scan (598 entities)
+  exposed that `connection_brokers` was *purely structural* — no confidence floor —
+  so it re-surfaced the very namesake blob cycle 44 suppressed: two common-name
+  person nodes each "brokering" **58 unrelated identities** joined only by 0.17
+  links. The empirical-validation loop catching the same weak-link vulnerability one
+  layer down. Fixed by giving `connection_brokers` a `min_confidence` floor applied
+  at traversal — only edges that clear the floor *bind* identities, so a weak edge
+  can't make a node a phantom linchpin — and AU-070 + the dossier pass the same
+  Probable floor (0.50) AU-067 uses. Empirically validated on the exact data: floor
+  0.0 → 2 brokers of 58 (noise); floor 0.50 → **0** (the weak blob is correctly not
+  a broker). Also surfaced brokers as a first-class **CONNECTION BROKERS** dossier
+  section (alongside CONNECTIONS and RESOLVED IDENTITIES), so the analyst sees the
+  network's load-bearing nodes — the prime corroboration pivots — directly rather
+  than buried in the correlation list. A new graph unit test pins the floor (a hub
+  on 0.17 links is structurally a broker at 0.0, none at 0.50). No rule change
+  (count 68). Gate green: fmt/clippy/doc clean, 3,314 lib tests (+1), 24 arch
+  guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 46 note — same commit.
