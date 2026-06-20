@@ -344,6 +344,7 @@ const RELATION_RULES: &[RelationRuleFn] = &[
     rule_au_063_corroboration_gap,
     rule_au_064_generalized_pathway_template,
     rule_au_067_resolved_identity_cluster,
+    rule_au_069_high_integrity_connection,
 ];
 
 /// Run every relation-aware rule over an already quarantine-filtered, confirmed

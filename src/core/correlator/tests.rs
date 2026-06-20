@@ -4056,3 +4056,26 @@ fn au068_anonymous_sim_fires_on_a_voip_tagged_phone() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-068");
 }
+
+#[test]
+fn au069_high_integrity_connection_fires_on_an_end_to_end_strong_route() {
+    use crate::core::relation::{Relation, RelationKind};
+    let edge = |from: &Entity, to: &Entity, c: f64| {
+        Relation::new(
+            from.uid.clone(),
+            to.uid.clone(),
+            RelationKind::DerivedFrom,
+            c,
+            "s",
+        )
+    };
+    let mk = |k: EntityKind, v: &str| Entity::new(k, v, 0.8, "s");
+    // email —0.9— person —0.9— username: every link on the route is strong.
+    let a = mk(EntityKind::Email, "a@x.com");
+    let mid = mk(EntityKind::Person, "Alice");
+    let b = mk(EntityKind::Username, "alice");
+    let rels = [edge(&a, &mid, 0.9), edge(&mid, &b, 0.9)];
+    let out = rule_au_069_high_integrity_connection(&[a, mid, b], &rels, "s", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-069");
+}

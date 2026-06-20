@@ -2155,3 +2155,18 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   fmt/clippy/doc clean, 3,298 lib tests (+2), 24 arch guards, 0 failures. **The
   recursive-linking program is now complete end-to-end.** **Paired:** `SOLUTION_TREE`
   cycle 40 note — same commit.
+- **2026-06-20** — **Cycle 41 (continuous improvement: superior graph traversal).**
+  Capability gap surfaced against the directive's "superior graph traversal
+  techniques": every pathway finder optimised for the SHORTEST route, so a
+  connection's reported strength was the weakest edge of its shortest chain — even
+  when a longer but end-to-end-stronger route existed. Added the **max-bottleneck
+  ("widest path")** primitive `core::relation::strongest_path` (deterministic
+  hop-capped Bellman-Ford, predecessor reconstruction) and a new rule **AU-069
+  High-integrity connection** that rewards a route reliable at every hop (weakest
+  link ≥ 0.70). It is a distinct quality lens from AU-060 (reachability) and AU-062
+  (redundancy), improving the *accuracy/quality* axis the directive calls for, and
+  it compounds (every scan now distinguishes reliably-connected identities from
+  merely-reachable ones). Pure, deterministic, fully unit-tested (incl.
+  strongest≠shortest). Rule count 66→67. Gate green: fmt/clippy/doc clean, 3,304
+  lib tests (+6), 24 arch guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 41
+  note — same commit.

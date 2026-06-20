@@ -369,6 +369,139 @@ fn remove_pair_edges(adj: &mut Adjacency<'_>, u: &str, v: &str) {
     }
 }
 
+/// The **max-bottleneck** ("widest") path between two confirmed nodes within
+/// `max_hops` — the route whose WEAKEST edge is as strong as possible.
+///
+/// Where [`identity_paths`] finds the *shortest* route (fewest hops), this finds
+/// the *most trustworthy* one: a connection is only as reliable as its weakest
+/// link, so the route that maximises that weakest link is the strongest evidence
+/// two nodes are genuinely connected — and it may be longer than the shortest. A
+/// superior traversal for connection *quality* (the AU-069 high-integrity rule),
+/// complementing the shortest-route rule (AU-060) and the redundancy rule
+/// (AU-062). Returns the path with its bottleneck as [`IdentityPath::min_confidence`],
+/// or `None` if `to_uid` is unreachable within the hop budget.
+///
+/// Deterministic: a Bellman-Ford-style relaxation (≤ `max_hops` rounds) over a
+/// sorted adjacency, with predecessors for reconstruction. The hops/round cap and
+/// the confirmed-node confinement match [`identity_paths`].
+pub fn strongest_path(
+    entities: &[Entity],
+    relations: &[Relation],
+    from_uid: &str,
+    to_uid: &str,
+    max_hops: usize,
+) -> Option<IdentityPath> {
+    if from_uid == to_uid || max_hops == 0 {
+        return None;
+    }
+    let confirmed: HashSet<&str> = entities.iter().map(|e| e.uid.as_str()).collect();
+    if !confirmed.contains(from_uid) || !confirmed.contains(to_uid) {
+        return None;
+    }
+    let mut adj = undirected_adjacency(relations, Some(&confirmed));
+    for v in adj.values_mut() {
+        v.sort_by(|x, y| {
+            x.0.cmp(y.0)
+                .then_with(|| x.1.as_str().cmp(y.1.as_str()))
+                .then_with(|| x.2.total_cmp(&y.2))
+        });
+    }
+
+    /// Best route found to a node so far: its bottleneck, hop count, and the
+    /// predecessor edge it arrived by (for path reconstruction).
+    struct Best {
+        bottleneck: f64,
+        hops: usize,
+        prev: Option<(String, RelationKind)>,
+    }
+    let mut best: HashMap<String, Best> = HashMap::new();
+    best.insert(
+        from_uid.to_string(),
+        Best {
+            bottleneck: f64::INFINITY,
+            hops: 0,
+            prev: None,
+        },
+    );
+
+    // Relax up to max_hops times; each round can extend a route by one edge.
+    // Frontier + adjacency are sorted so the relaxation is order-independent.
+    for _ in 0..max_hops {
+        let mut changed = false;
+        let mut frontier: Vec<String> = best.keys().cloned().collect();
+        frontier.sort_unstable();
+        for u in frontier {
+            let (ub, uh) = {
+                let bu = &best[&u];
+                (bu.bottleneck, bu.hops)
+            };
+            if uh >= max_hops {
+                continue;
+            }
+            for &(v, kind, c) in adj.get(u.as_str()).into_iter().flatten() {
+                let cand = ub.min(c);
+                let cand_hops = uh + 1;
+                let improve = match best.get(v) {
+                    None => true,
+                    // A strictly wider route wins; on an equal bottleneck the
+                    // shorter route wins, so the result is the widest-then-shortest.
+                    Some(bv) => {
+                        cand > bv.bottleneck || (cand == bv.bottleneck && cand_hops < bv.hops)
+                    }
+                };
+                if improve {
+                    best.insert(
+                        v.to_string(),
+                        Best {
+                            bottleneck: cand,
+                            hops: cand_hops,
+                            prev: Some((u.clone(), kind)),
+                        },
+                    );
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let dest = best.get(to_uid)?;
+    if dest.hops == 0 {
+        return None;
+    }
+    let bottleneck = dest.bottleneck;
+    // Walk predecessors dest → … → from, then reverse to forward order.
+    let mut rev_steps: Vec<PathStep> = Vec::with_capacity(dest.hops);
+    let mut cur = to_uid.to_string();
+    loop {
+        let node = best.get(&cur)?;
+        match &node.prev {
+            Some((p, kind)) => {
+                rev_steps.push(PathStep {
+                    kind: *kind,
+                    to_uid: cur.clone(),
+                });
+                cur = p.clone();
+            }
+            None => break,
+        }
+    }
+    if cur != from_uid {
+        return None;
+    }
+    rev_steps.reverse();
+    let hops = rev_steps.len();
+    Some(IdentityPath {
+        from_uid: from_uid.to_string(),
+        to_uid: to_uid.to_string(),
+        steps: rev_steps,
+        hops,
+        min_confidence: bottleneck,
+    })
+}
+
 /// A pathway pattern generalised from the scan's connections: the
 /// direction-canonical route string and every identity pair it linked. The unit
 /// of *"what route connected these kinds of identity"*, shared by the AU-064
@@ -594,6 +727,54 @@ mod tests {
         let a = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
         let b = Entity::new(EntityKind::Username, "bob", 0.8, "s");
         assert!(resolve_identity_clusters(&[a, b], &[], 4).is_empty());
+    }
+
+    #[test]
+    fn strongest_path_prefers_the_widest_route_over_the_shortest() {
+        let mk = |k: EntityKind, v: &str| Entity::new(k, v, 0.8, "s");
+        let edge = |from: &Entity, to: &Entity, c: f64| {
+            Relation::new(
+                from.uid.clone(),
+                to.uid.clone(),
+                RelationKind::DerivedFrom,
+                c,
+                "s",
+            )
+        };
+        let a = mk(EntityKind::Email, "a@x.com");
+        let b = mk(EntityKind::Username, "bob");
+        let x = mk(EntityKind::Person, "Mid");
+        let rels = [
+            edge(&a, &b, 0.30), // direct but weak — the SHORTEST route (1 hop)
+            edge(&a, &x, 0.90), // a strong 2-hop route via x …
+            edge(&x, &b, 0.90),
+        ];
+        let ents = [a.clone(), b.clone(), x.clone()];
+
+        // identity_paths takes the shortest (the weak direct edge).
+        let shortest = identity_paths(&ents, &rels, 4);
+        let direct = shortest
+            .iter()
+            .find(|p| p.from_uid == a.uid || p.to_uid == a.uid)
+            .expect("a path exists");
+        assert_eq!(direct.hops, 1);
+
+        // strongest_path takes the WIDEST: the 2-hop route, bottleneck 0.90.
+        let p = strongest_path(&ents, &rels, &a.uid, &b.uid, 4).expect("reachable");
+        assert_eq!(p.hops, 2, "the widest route is the longer, stronger one");
+        assert!(
+            (p.min_confidence - 0.90).abs() < 1e-9,
+            "bottleneck is the weakest edge on the widest route"
+        );
+        // Deterministic.
+        assert_eq!(strongest_path(&ents, &rels, &a.uid, &b.uid, 4), Some(p));
+    }
+
+    #[test]
+    fn strongest_path_none_when_unreachable() {
+        let a = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
+        let b = Entity::new(EntityKind::Username, "bob", 0.8, "s");
+        assert!(strongest_path(&[a.clone(), b.clone()], &[], &a.uid, &b.uid, 4).is_none());
     }
 
     fn ent(kind: EntityKind, value: &str) -> Entity {

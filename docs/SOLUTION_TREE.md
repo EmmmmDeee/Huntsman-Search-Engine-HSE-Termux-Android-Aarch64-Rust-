@@ -1397,3 +1397,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   arc — orthogonal corroboration, gap analysis, backward synthesis, universal
   learning, cross-scan gap-fill, AND now active in-scan gap-fill — is delivered.**
   Paired: `PROBLEM_TREE` §8 cycle 40 — same commit.
+- **2026-06-20** — **Cycle 41 (graph traversal, connection quality): max-bottleneck
+  "strongest path" + AU-069.** A directive-named "superior graph traversal" gap:
+  `identity_paths` only finds the *shortest* route, never the *most trustworthy*
+  one. New `core::relation::strongest_path` finds the **widest path** (maximise the
+  minimum edge confidence) via a deterministic, hop-capped Bellman-Ford relaxation
+  with predecessor reconstruction — the route reliable at every hop, which may be
+  longer than the shortest. New relation rule **AU-069** ("High-integrity
+  connection") fires when the strongest route between two identities (≥2 hops) has
+  every link ≥ 0.70 (High at ≥ 0.85) — a third quality lens complementing AU-060
+  (reachability, shortest route) and AU-062 (redundancy, independent routes): this
+  one is INTEGRITY (a single route trustworthy end to end). Pure + fully
+  unit-tested (incl. the strongest≠shortest case). Rule count 66→**67**. Gate
+  green: 3,304 lib tests (+6), 24 arch guards, fmt/clippy/doc clean. Paired:
+  `PROBLEM_TREE` §8 cycle 41 — same commit.
