@@ -82,6 +82,7 @@ use std::collections::HashMap;
 use serde::Serialize;
 
 use crate::core::entity::Entity;
+use crate::core::graph::Graph;
 use crate::core::relation::Relation;
 
 /// Hard cap on label-propagation rounds. Synchronous LPA reaches a stable
@@ -204,50 +205,28 @@ fn derive_label(members: &[&Entity]) -> String {
 /// ```
 #[must_use]
 pub fn detect(entities: &[Entity], relations: &[Relation]) -> Vec<Community> {
-    // ── Resolve entities by UID. A relation endpoint absent here is dangling and
-    // skipped (never a panic), exactly as `network::synthesize` handles them. ──
+    // ── Resolve entities by UID, so a community can carry the real entities (for
+    // its label and exemplar). A relation endpoint absent here is dangling. ──
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
 
-    // ── Build the undirected, deduplicated adjacency over only the nodes that
-    // actually participate in a (non-dangling, non-self) relation. Both endpoints
-    // must resolve; a self-loop contributes no community structure and is
-    // dropped. ──
-    let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();
-    for r in relations {
-        let (from, to) = (r.from_uid.as_str(), r.to_uid.as_str());
-        if from == to {
-            continue; // a self-loop is not a link between two nodes
-        }
-        if !by_uid.contains_key(from) || !by_uid.contains_key(to) {
-            continue; // dangling endpoint — skip, don't panic
-        }
-        adjacency.entry(from).or_default().push(to);
-        adjacency.entry(to).or_default().push(from);
-    }
-    if adjacency.is_empty() {
+    // ── Undirected, deduplicated adjacency over the present entities, from the shared
+    // primitive: parallel edges collapse, self-loops and dangling endpoints drop, and
+    // nodes are indexed in ascending-UID order. ──
+    let g = Graph::build(entities, relations);
+
+    // A community needs internal structure, so only CONNECTED nodes (degree ≥ 1)
+    // participate — an isolated entity is omitted entirely. The graph already orders
+    // nodes by ascending UID, so this connected subset inherits that fixed order and
+    // every later pass is independent of input and of `HashMap` iteration order.
+    let nodes: Vec<usize> = (0..g.node_count()).filter(|&i| g.degree(i) > 0).collect();
+    if nodes.is_empty() {
         return Vec::new();
     }
 
-    // Deterministic node order: ascending UID. Every later pass (label init,
-    // synchronous update, grouping) walks this fixed order, so nothing depends on
-    // `HashMap` iteration order.
-    let mut nodes: Vec<&str> = adjacency.keys().copied().collect();
-    nodes.sort_unstable();
-
-    // Sort + dedup each neighbour list so accumulation order — and the set of
-    // distinct neighbours — is fixed regardless of input ordering or parallel
-    // edges between the same pair (two relation kinds linking one pair count once
-    // for topology; membership is decided by structure, not edge multiplicity).
-    for neighbours in adjacency.values_mut() {
-        neighbours.sort_unstable();
-        neighbours.dedup();
-    }
-
-    // ── Label propagation. Each node's label starts as its own UID. ──
-    // `labels[i]` is the current label of `nodes[i]`; indices are stable for the
-    // whole run, so a node's neighbours can be referenced by index.
-    let index_of: HashMap<&str, usize> = nodes.iter().enumerate().map(|(i, &u)| (u, i)).collect();
-    let mut labels: Vec<&str> = nodes.clone();
+    // ── Label propagation. Each node's label starts as its own UID; `labels` is keyed
+    // by graph index so a node's neighbours resolve in O(1). An isolated node keeps a
+    // never-read slot — it is neither processed nor any node's neighbour. ──
+    let mut labels: Vec<&str> = (0..g.node_count()).map(|i| g.uid(i)).collect();
 
     for _ in 0..MAX_ROUNDS {
         // Synchronous: compute every node's next label against THIS round's
@@ -255,14 +234,14 @@ pub fn detect(entities: &[Entity], relations: &[Relation]) -> Vec<Community> {
         // result can't depend on node visitation order.
         let mut next: Vec<&str> = labels.clone();
         let mut changed = false;
-        for (i, &node) in nodes.iter().enumerate() {
-            // Tally neighbour labels (+ the node's own, so it never flips away
-            // from itself without a strictly more popular neighbour label). The
-            // neighbour list is UID-sorted, so the tally is built in fixed order.
+        for &i in &nodes {
+            // Tally neighbour labels (+ the node's own, so it never flips away from
+            // itself without a strictly more popular neighbour label). The neighbour
+            // indices are UID-sorted, so the tally is built in fixed order.
             let mut tally: HashMap<&str, usize> = HashMap::new();
             *tally.entry(labels[i]).or_insert(0) += 1;
-            for &nb in &adjacency[node] {
-                *tally.entry(labels[index_of[nb]]).or_insert(0) += 1;
+            for &nb in g.neighbours(i) {
+                *tally.entry(labels[nb]).or_insert(0) += 1;
             }
             // Winner: max count, ties broken by the lexicographically SMALLEST
             // label — the determinism pin (no dependence on map iteration order).
@@ -281,11 +260,11 @@ pub fn detect(entities: &[Entity], relations: &[Relation]) -> Vec<Community> {
         }
     }
 
-    // ── Group nodes by their final label into communities. ──
+    // ── Group connected nodes by their final label into communities. ──
     let mut groups: HashMap<&str, Vec<&Entity>> = HashMap::new();
-    for (i, &node) in nodes.iter().enumerate() {
-        // Every node in `nodes` resolved in `by_uid` by construction.
-        if let Some(&ent) = by_uid.get(node) {
+    for &i in &nodes {
+        // Every connected node resolves in `by_uid` by construction.
+        if let Some(&ent) = by_uid.get(g.uid(i)) {
             groups.entry(labels[i]).or_default().push(ent);
         }
     }
