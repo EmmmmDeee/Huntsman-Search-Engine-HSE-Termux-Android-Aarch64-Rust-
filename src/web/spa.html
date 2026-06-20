@@ -2070,6 +2070,7 @@ async function renderMetrics(host, id){
     + stat('Relations', m.total_relations)
     + stat('Corroborated', pct(m.corroborated_fraction)+'%')
     + stat('Linked', pct(m.linked_entity_fraction)+'%')
+    + ((m.seed_reach && m.seed_reach.anchored) ? stat('Reach', m.seed_reach.reachable_total) + stat('Max depth', m.seed_reach.max_depth+' hop'+(m.seed_reach.max_depth===1?'':'s')) : '')
     + stat('Graph density', pct(m.graph_density)+'%')
     + stat('Cross-scan', m.cross_scan_bridges)
     + stat('Mean conf', (Number(m.mean_confidence)||0).toFixed(2))

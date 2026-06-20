@@ -225,3 +225,100 @@ use super::*;
         let pi = kinds.find("person").expect("person present");
         assert!(di < ei && ei < pi, "kinds must be sorted ascending");
     }
+
+    #[test]
+    fn reachability_depth_profile_on_a_path() {
+        // a — b — c — d, anchored at a: exactly one entity at each hop 0..=3.
+        let a = ent(EntityKind::Person, "a", 0.6);
+        let b = ent(EntityKind::Email, "b@x.com", 0.6);
+        let c = ent(EntityKind::Phone, "+15551230000", 0.6);
+        let d = ent(EntityKind::Domain, "d.example.com", 0.6);
+        let rels = vec![
+            Relation::new(a.uid.clone(), b.uid.clone(), RelationKind::IdentifiedBy, 0.6, "scan"),
+            Relation::new(b.uid.clone(), c.uid.clone(), RelationKind::IdentifiedBy, 0.6, "scan"),
+            Relation::new(c.uid.clone(), d.uid.clone(), RelationKind::IdentifiedBy, 0.6, "scan"),
+        ];
+        let entities = vec![a.clone(), b, c, d];
+        let r = reachability(&entities, &rels, &a.uid);
+        assert!(r.anchored);
+        assert_eq!(r.reached_at_hop, vec![1, 1, 1, 1], "one entity per hop along the chain");
+        assert_eq!(r.max_depth, 3);
+        assert_eq!(r.reachable_total, 4);
+        assert!((r.reachable_fraction - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn reachability_counts_only_the_connected_component() {
+        // a — b, plus an orphan c not reachable from a.
+        let a = ent(EntityKind::Person, "a", 0.6);
+        let b = ent(EntityKind::Email, "b@x.com", 0.6);
+        let c = ent(EntityKind::Domain, "orphan.example.com", 0.6);
+        let rels = vec![Relation::new(
+            a.uid.clone(),
+            b.uid.clone(),
+            RelationKind::IdentifiedBy,
+            0.6,
+            "scan",
+        )];
+        let entities = vec![a.clone(), b, c];
+        let r = reachability(&entities, &rels, &a.uid);
+        assert_eq!(r.reachable_total, 2, "the orphan is unreachable from the seed");
+        assert_eq!(r.max_depth, 1);
+        assert!((r.reachable_fraction - (2.0 / 3.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn reachability_is_unanchored_for_an_absent_anchor() {
+        let a = ent(EntityKind::Person, "a", 0.6);
+        let r = reachability(std::slice::from_ref(&a), &[], "no-such-uid");
+        assert!(!r.anchored);
+        assert_eq!(r.reachable_total, 0);
+        assert_eq!(r.reachable_fraction, 0.0);
+        assert!(r.reached_at_hop.is_empty());
+    }
+
+    #[test]
+    fn compute_anchors_seed_reach_on_the_subject_tag() {
+        let mut subject = ent(EntityKind::Person, "subject", 0.85);
+        subject.tag("subject");
+        let relative = ent(EntityKind::Person, "relative", 0.5);
+        let rels = vec![Relation::new(
+            subject.uid.clone(),
+            relative.uid.clone(),
+            RelationKind::AssociatedWith,
+            0.5,
+            "scan",
+        )];
+        let entities = vec![subject, relative];
+        let m = compute(&entities, &rels);
+        assert!(m.seed_reach.anchored, "the subject-tagged entity anchors the reach");
+        assert_eq!(m.seed_reach.max_depth, 1);
+        assert_eq!(m.seed_reach.reachable_total, 2);
+        // No subject/seed tag ⇒ unanchored.
+        let m2 = compute(&[ent(EntityKind::Person, "lonely", 0.6)], &[]);
+        assert!(!m2.seed_reach.anchored);
+    }
+
+    #[test]
+    fn reachability_is_deterministic_under_input_shuffling() {
+        let mut s = ent(EntityKind::Person, "s", 0.8);
+        s.tag("subject");
+        let leaves: Vec<Entity> = (0..5)
+            .map(|i| ent(EntityKind::Email, &format!("l{i}@x.com"), 0.5))
+            .collect();
+        let rels: Vec<Relation> = leaves
+            .iter()
+            .map(|l| Relation::new(s.uid.clone(), l.uid.clone(), RelationKind::IdentifiedBy, 0.5, "scan"))
+            .collect();
+        let mut entities = vec![s.clone()];
+        entities.extend(leaves.iter().cloned());
+
+        let r1 = reachability(&entities, &rels, &s.uid);
+        let mut e2 = entities.clone();
+        e2.reverse();
+        let mut rl2 = rels.clone();
+        rl2.reverse();
+        let r2 = reachability(&e2, &rl2, &s.uid);
+        assert_eq!(r1, r2, "reach profile is order-independent");
+        assert_eq!(r1.reached_at_hop, vec![1, 5], "star: the subject plus 5 at hop 1");
+    }

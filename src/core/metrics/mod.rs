@@ -36,6 +36,11 @@
 //!   [`ScanMetrics::graph_density`]) — whether the findings form an attributed
 //!   graph or a pile of orphan nodes. A person scan that produced nodes but no
 //!   edges is a weaker result than one whose entities link into one footprint.
+//! * **Reach** ([`ScanMetrics::seed_reach`]) — how DEEP and WIDE the graph extends
+//!   from the seed: the multi-hop discovery-depth histogram and the fraction of the
+//!   graph reachable from the subject. Unlike the size-normalised density, this is
+//!   anchored on the origin, so it is the measure of multi-hop discovery and coverage
+//!   an OSINT engine is ultimately judged on.
 //! * **Provenance & continuity** ([`ScanMetrics::distinct_evidence_sources`],
 //!   [`ScanMetrics::cross_scan_bridges`]) — breadth of independent sourcing and
 //!   how much the scan tied into the historical flywheel.
@@ -66,6 +71,48 @@ pub struct TierCounts {
     pub probable: usize,
     /// Entities classified [`Classification::Candidate`] (`C_eff < 0.40`).
     pub candidate: usize,
+}
+
+/// Seed-anchored multi-hop reach: how far and how widely the relationship graph
+/// extends FROM the scan's subject.
+///
+/// This is the direct, reproducible measure of **multi-hop discovery depth** and
+/// **graph coverage from the seed** — the dimensions an OSINT engine is judged on —
+/// as opposed to [`graph_density`](ScanMetrics::graph_density), which is
+/// size-normalised and ignores where the seed sits. Derived by a bounded breadth-first
+/// sweep of the undirected relation graph from the subject, so it is deterministic and
+/// independent of input order.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SeedReach {
+    /// Whether a subject anchor was found (an entity tagged `subject`, else `seed`).
+    /// When `false` the rest is empty/zero — reach is undefined without an origin.
+    pub anchored: bool,
+    /// The greatest hop distance any reachable entity sits from the subject
+    /// (`0` = only the subject; `3` = the deepest finding is three relationships away).
+    pub max_depth: usize,
+    /// Entities first reached at each hop: `reached_at_hop[d]` is how many entities are
+    /// exactly `d` relationship-hops from the subject (`[0]` is the subject itself, so
+    /// `1` once anchored). The multi-hop discovery-depth histogram.
+    pub reached_at_hop: Vec<usize>,
+    /// Total entities reachable from the subject (`sum(reached_at_hop)`, subject
+    /// included).
+    pub reachable_total: usize,
+    /// Fraction of ALL entities reachable from the subject — coverage from the seed.
+    /// `0.0` when unanchored or the scan is empty.
+    pub reachable_fraction: f64,
+}
+
+impl SeedReach {
+    /// The empty, unanchored profile — no subject, nothing reachable.
+    fn unanchored() -> Self {
+        SeedReach {
+            anchored: false,
+            max_depth: 0,
+            reached_at_hop: Vec::new(),
+            reachable_total: 0,
+            reachable_fraction: 0.0,
+        }
+    }
 }
 
 /// Objective, deterministic quality / telemetry measures for a single scan.
@@ -126,6 +173,10 @@ pub struct ScanMetrics {
     /// the breadth of independent sourcing the scan drew on. Counts every
     /// distinct source label, including enrichment passes.
     pub distinct_evidence_sources: usize,
+    /// Seed-anchored multi-hop reach — how deep and wide the graph extends from the
+    /// subject (see [`SeedReach`]). The benchmark's headline multi-hop-depth /
+    /// coverage measure; unanchored when no `subject`/`seed` entity is present.
+    pub seed_reach: SeedReach,
 }
 
 /// The tag values that mark an entity as a cross-scan bridge — a finding tying
@@ -135,6 +186,91 @@ const CROSS_SCAN_TAGS: [&str; 3] = [
     "cross-scan-cooccurrence",
     "cross-scan-relation",
 ];
+
+/// Hard cap on the reach BFS depth — a safety bound against a pathological graph; a
+/// real OSINT footprint is far shallower, so this never bites a genuine scan.
+const MAX_REACH_DEPTH: usize = 24;
+
+/// The subject anchor for the reach profile: the entity tagged `subject`, else the
+/// first tagged `seed`, else `None`. Mirrors how the network synthesis picks the hub,
+/// so the measure is anchored on the same origin the operator sees as the seed.
+fn subject_uid(entities: &[Entity]) -> Option<&str> {
+    entities
+        .iter()
+        .find(|e| e.has_tag("subject"))
+        .or_else(|| entities.iter().find(|e| e.has_tag("seed")))
+        .map(|e| e.uid.as_str())
+}
+
+/// Seed-anchored reachability profile: a bounded breadth-first sweep of the undirected
+/// relation graph from `anchor_uid`, counting the entities first reached at each hop.
+///
+/// Deterministic and order-independent (neighbour lists are sorted; a node's hop
+/// distance is well-defined regardless of traversal order), O(V+E), and bounded by
+/// [`MAX_REACH_DEPTH`]. Returns an empty [`SeedReach::unanchored`] profile when the
+/// anchor is not present in `entities`. Pure and read-only — the reusable multi-hop
+/// reach primitive [`compute`] anchors on the subject.
+#[must_use]
+pub fn reachability(entities: &[Entity], relations: &[Relation], anchor_uid: &str) -> SeedReach {
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    let total = entities.len();
+    let present: HashSet<&str> = entities.iter().map(|e| e.uid.as_str()).collect();
+    if !present.contains(anchor_uid) {
+        return SeedReach::unanchored();
+    }
+
+    // Undirected adjacency over present-endpoint edges (self-loops skipped); neighbour
+    // lists sorted + deduped so the sweep is deterministic and degree is distinct.
+    let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
+    for r in relations {
+        let (f, t) = (r.from_uid.as_str(), r.to_uid.as_str());
+        if f == t || !present.contains(f) || !present.contains(t) {
+            continue;
+        }
+        adj.entry(f).or_default().push(t);
+        adj.entry(t).or_default().push(f);
+    }
+    for neighbours in adj.values_mut() {
+        neighbours.sort_unstable();
+        neighbours.dedup();
+    }
+
+    let mut reached_at_hop: Vec<usize> = vec![1]; // hop 0 = the subject itself
+    let mut visited: HashSet<&str> = HashSet::new();
+    visited.insert(anchor_uid);
+    let mut frontier: VecDeque<(&str, usize)> = VecDeque::new();
+    frontier.push_back((anchor_uid, 0));
+    let mut max_depth = 0usize;
+    while let Some((node, depth)) = frontier.pop_front() {
+        if depth >= MAX_REACH_DEPTH {
+            continue;
+        }
+        let Some(neighbours) = adj.get(node) else {
+            continue;
+        };
+        for &nb in neighbours {
+            if visited.insert(nb) {
+                let hop = depth + 1;
+                if reached_at_hop.len() <= hop {
+                    reached_at_hop.resize(hop + 1, 0);
+                }
+                reached_at_hop[hop] += 1;
+                max_depth = max_depth.max(hop);
+                frontier.push_back((nb, hop));
+            }
+        }
+    }
+
+    let reachable_total = visited.len();
+    SeedReach {
+        anchored: true,
+        max_depth,
+        reached_at_hop,
+        reachable_total,
+        reachable_fraction: fraction(reachable_total, total),
+    }
+}
 
 /// Compute the [`ScanMetrics`] for a scan from its entities and relations.
 ///
@@ -228,6 +364,12 @@ pub fn compute(entities: &[Entity], relations: &[Relation]) -> ScanMetrics {
     }
     let distinct_evidence_sources = sources.len();
 
+    // ── Seed-anchored multi-hop reach (depth + coverage from the subject) ────────
+    let seed_reach = match subject_uid(entities) {
+        Some(anchor) => reachability(entities, relations, anchor),
+        None => SeedReach::unanchored(),
+    };
+
     ScanMetrics {
         total_entities,
         entities_by_kind,
@@ -241,6 +383,7 @@ pub fn compute(entities: &[Entity], relations: &[Relation]) -> ScanMetrics {
         graph_density,
         cross_scan_bridges,
         distinct_evidence_sources,
+        seed_reach,
     }
 }
 
