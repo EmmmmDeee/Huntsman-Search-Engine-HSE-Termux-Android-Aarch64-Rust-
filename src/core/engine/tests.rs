@@ -1644,3 +1644,129 @@ fn incidental_infra_is_dropped_only_on_identity_seeds() {
         }
     }
 }
+
+/// A module that emits one subject finding and declares a known, distinctive
+/// ATT&CK Reconnaissance technique. Used to prove the engine stamps that
+/// technique onto the admitted entity — overriding `attack_techniques()`
+/// directly (the `ModuleCategory::Other` default maps to an empty set) so the
+/// expected tag is deterministic and independent of the live registry.
+struct AttackStampModule;
+
+#[async_trait::async_trait]
+impl Module for AttackStampModule {
+    fn name(&self) -> &'static str {
+        "attack_stamp_probe"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        t.kind == TargetKind::Email
+    }
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // "Email Addresses" — a real catalogued Reconnaissance sub-technique.
+        &["T1589.002"]
+    }
+    async fn process(
+        &self,
+        _: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        // A subject freemail address: survives every admission filter (not a
+        // placeholder, not infra, freemail is exempt from the incidental-infra
+        // gate) so the only thing that can be asserted is the ATT&CK stamping.
+        let mut e = Entity::new(
+            EntityKind::Email,
+            "foundsubject@gmail.com",
+            0.9,
+            &ctx.scan_id,
+        );
+        e.add_evidence(Evidence::new("attack_stamp_probe", "synthetic finding"));
+        let mut r = crate::core::module::ModuleResult::new();
+        r.push(e);
+        Ok(r)
+    }
+}
+
+/// Universal MITRE ATT&CK provenance: EVERY admitted entity must carry an
+/// `attack:<ID>` tag for each Reconnaissance technique its producing module
+/// declares, so the technique that collected a datum travels with the scan data
+/// (the entity's `tags`, hence JSON output, the dossier, and the DB). Drives the
+/// real admission path (`dispatch_target` → `finalise_module_result`) on BOTH the
+/// sequential (`max_concurrent == 0`) and concurrent (`max_concurrent > 0`, which
+/// carries the techniques through `DispatchOutcome` to the join site) codepaths,
+/// then inspects the merged working set. Exercises `dispatch_target` directly
+/// rather than the full `run` so the process-global search-regional toggle the
+/// engine sets is left untouched (it would race the `search_engines` query tests).
+#[tokio::test]
+async fn admitted_entities_are_stamped_with_their_modules_attack_techniques() {
+    use crate::core::test_support::InMemoryStore;
+
+    for max_concurrent in [0usize, 4] {
+        let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+        let (bus, _rx) = tokio::sync::broadcast::channel(64);
+        let engine = ScanEngine::new(vec![Arc::new(AttackStampModule)], store, bus.clone());
+
+        let target = Target::new(TargetKind::Email, "seed@gmail.com");
+        let opts = ScanOptions {
+            max_concurrent,
+            ..Default::default()
+        };
+        let mut ctx = ModuleContext {
+            scan_id: "stamp-scan".to_string(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+        };
+
+        let cx = DispatchCx {
+            scan_id: "stamp-scan",
+            target: &target,
+            opts: &opts,
+            is_expansion: false,
+            seed_kind: TargetKind::Email,
+        };
+        let mut entity_map: HashMap<String, Entity> = HashMap::new();
+        let mut stats = ModuleStats::default();
+        let mut dispatched: DispatchLog = DispatchLog::new();
+        let mut state = DispatchState {
+            entity_map: &mut entity_map,
+            stats: &mut stats,
+            dispatched: &mut dispatched,
+        };
+
+        engine
+            .dispatch_target(&cx, &mut ctx, &mut state)
+            .await
+            .expect("dispatch runs");
+
+        let found = entity_map
+            .values()
+            .find(|e| e.value == "foundsubject@gmail.com")
+            .unwrap_or_else(|| {
+                panic!("the probe's finding must be admitted (max_concurrent={max_concurrent})")
+            });
+        assert!(
+            found.has_tag("attack:T1589.002"),
+            "the admitted entity must carry its module's ATT&CK technique as an \
+             inline tag (max_concurrent={max_concurrent}); tags were {:?}",
+            found.tags
+        );
+        // Exactly the producing module's technique(s) — none invented, none dropped.
+        let attack_tags: Vec<&str> = found
+            .tags
+            .iter()
+            .filter(|t| t.starts_with("attack:"))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            attack_tags,
+            vec!["attack:T1589.002"],
+            "exactly the producing module's technique(s) are stamped \
+             (max_concurrent={max_concurrent})"
+        );
+    }
+}

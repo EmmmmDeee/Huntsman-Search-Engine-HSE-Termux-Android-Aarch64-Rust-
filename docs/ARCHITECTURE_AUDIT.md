@@ -90,7 +90,16 @@ allowlist remains.
   Reconnaissance (TA0043) — by a per-category default (`techniques_for_category`),
   overridden where the category is too coarse (the two `Other`-category modules,
   `api_key_probe`/`chain_intel`, must override, their default being empty). A
-  guard rejects any unmapped module or out-of-register technique ID.
+  guard rejects any unmapped module or out-of-register technique ID. The mapping
+  is woven into the data, not a side report: at the single admission point
+  (`engine::finalise_module_result`) **every admitted entity is stamped inline
+  with the producing module's technique(s)** as `attack:<TECHNIQUE_ID>` tags
+  (e.g. `attack:T1589.002`), so the technique that collected each datum travels
+  with it through JSON output, the full dossier, and the DB. Cross-module merges
+  union the tags (`Entity::merge`), so an entity reached via several modules
+  carries all their techniques. The engine sources the IDs from the dispatched
+  `Module` trait object (`Module::attack_techniques`), never `crate::modules` —
+  the `core ↛ modules` guard stays green.
 - **`storage`** (`src/storage/`) — the single `StoragePort` implementation over
   rusqlite (WAL + FTS5): events, entities, correlations, relations, the
   inter-scan entity cache (`raw_archive`), and the cross-scan

@@ -184,6 +184,19 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 - `securitytrails`, `see_know`, `seon`, `threatfox`, `trove_au`, `virustotal`, `whoisxml`
 - `wifi_intel`, `wigle`, `zoomeye`
 
+### MITRE ATT&CK alignment (in the data, not a side report)
+
+Every module is mapped to the MITRE ATT&CK **Reconnaissance** tactic (TA0043)
+technique(s) it implements. That mapping is **woven into every scan**: as each
+finding is admitted, the engine stamps it inline with its producing module's
+technique(s) as `attack:<TECHNIQUE_ID>` tags (e.g. `attack:T1589.002` "Email
+Addresses"). So the technique that collected a datum travels with the datum —
+visible in the entity's `tags` in JSON output, on each entity in the full
+dossier (`hse export <id> --format full`) and `hse scan --output dossier`, and
+in the database — with no separate coverage report to reconcile. A finding
+corroborated by several modules carries all of their techniques (merges union
+the tags).
+
 
 ## Web UI (SpiderFoot-style)
 

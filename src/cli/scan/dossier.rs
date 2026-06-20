@@ -101,6 +101,24 @@ pub(super) fn print_dossier(
                 println!("    tags: {}", e.tags.join(", "));
             }
 
+            // Compact MITRE ATT&CK provenance: the inline `attack:<ID>` tags the
+            // engine stamps onto every admitted entity, resolved to their
+            // Reconnaissance technique names. Surfaces, per finding, exactly which
+            // collection technique(s) produced it — the alignment lives in the
+            // data, not a separate coverage report. (CLI may import core::attack.)
+            let mitre: Vec<String> = e
+                .tags
+                .iter()
+                .filter_map(|t| t.strip_prefix("attack:"))
+                .map(|id| {
+                    crate::core::attack::technique(id)
+                        .map_or_else(|| id.to_string(), |t| format!("{} {}", t.id, t.name))
+                })
+                .collect();
+            if !mitre.is_empty() {
+                println!("    MITRE ATT&CK: {}", mitre.join("; "));
+            }
+
             for ev in &e.evidence {
                 println!(
                     "    ├─ {src} — {summary}",

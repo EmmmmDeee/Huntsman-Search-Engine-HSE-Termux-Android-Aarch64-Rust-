@@ -146,6 +146,21 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
         if !e.tags.is_empty() {
             let _ = writeln!(s, "    tags: {}", e.tags.join(", "));
         }
+        // The inline `attack:<ID>` provenance tags, resolved to their MITRE
+        // ATT&CK Reconnaissance technique names — the technique(s) that collected
+        // this finding, carried in the data itself (not a separate report).
+        let mitre: Vec<String> = e
+            .tags
+            .iter()
+            .filter_map(|t| t.strip_prefix("attack:"))
+            .map(|id| {
+                crate::core::attack::technique(id)
+                    .map_or_else(|| id.to_string(), |t| format!("{} {}", t.id, t.name))
+            })
+            .collect();
+        if !mitre.is_empty() {
+            let _ = writeln!(s, "    MITRE ATT&CK: {}", mitre.join("; "));
+        }
         for ev in &e.evidence {
             let _ = writeln!(s, "    ├─ [{}] {}", ev.source, ev.summary);
             for (k, v) in &ev.attributes {

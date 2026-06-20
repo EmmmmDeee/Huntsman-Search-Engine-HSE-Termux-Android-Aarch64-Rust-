@@ -2371,3 +2371,25 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   _matches_registry` guard passes. No rule change (count 68). Gate green: fmt/clippy/
   doc clean, lib + integration tests 0 failures, 24 arch guards. **Paired:**
   `SOLUTION_TREE` cycle 51 note — same commit.
+- **2026-06-20** — **Cycle 52 (MITRE incorporated into every scan — inline on the
+  data).** Operator: "MITRE-inspired OSINT should be incorporated into [all scans] —
+  the most comprehensive universal approach." Cycle 49 had removed the *separate*
+  MITRE coverage tab and kept the per-module technique mapping as metadata; this
+  closes the loop by stamping that mapping onto the findings themselves. Every
+  admitted entity is now tagged inline with the ATT&CK Reconnaissance technique(s)
+  of the module that collected it — an `attack:<ID>` tag (e.g. `attack:T1589.002`) —
+  applied at the single dispatch admission point so it is **universal** (every scan,
+  every seed, live + cached, sequential + concurrent), **persistent** (the tag rides
+  the entity into JSON, the DB, and every render), and **compounding** (cross-module
+  merges union the tags via `Entity::merge`, so an entity collected via several
+  techniques carries them all). The `--output dossier` and full-export views resolve
+  each tag to its technique name per finding ("MITRE ATT&CK: T1589.002 Email
+  Addresses"). Layering held: techniques are sourced from the dispatched object via
+  the `core::module::Module::attack_techniques()` trait method and threaded through
+  `finalise_module_result` + `DispatchOutcome` — **no `core → modules` import** (the
+  `core_does_not_import_modules` guard passes). With cycle 48 already running every
+  reachable module, the result is that every scan now exercises the technique surface
+  *and* labels every datum with the technique that produced it — MITRE in the data,
+  not a side report. No rule change (count 68). Gate green: fmt/clippy/doc clean, lib
+  (3,279) + integration tests 0 failures, 24 arch guards (incl. layering + ATT&CK
+  mapping). **Paired:** `SOLUTION_TREE` cycle 52 note — same commit.

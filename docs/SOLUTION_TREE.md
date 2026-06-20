@@ -1582,3 +1582,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   duplication removed, every entity/source/test still produced. No rule change
   (count 68). Gate green: fmt/clippy/doc clean, lib + integration 0 failures, 24
   arch guards. Paired: `PROBLEM_TREE` §8 cycle 51 — same commit.
+- **2026-06-20** — **Cycle 52 (ATT&CK technique stamped on every finding).** The
+  universal form of "MITRE in the scans": at the single dispatch admission point
+  (`finalise_module_result`), every admitted entity is tagged `attack:<ID>` with the
+  producing module's Reconnaissance technique(s). Sourced from the dispatched object
+  via the `Module::attack_techniques()` trait method (threaded through
+  `DispatchOutcome` for the concurrent join), so **no `core → modules` import** is
+  introduced — the layering guard stays green. Tags persist (JSON/DB) and the
+  dossier + full export resolve them to technique names per entity; `Entity::merge`
+  unions them so a multi-source entity carries every technique that found it.
+  Together with cycle 48 (every reachable module runs) and cycle 49 (the separate tab
+  removed, mapping kept), MITRE is now fully *in* the scan data on every seed, with
+  zero side report. A new engine test drives the real admission path on both the
+  sequential and concurrent dispatchers and asserts the stamp. No rule change
+  (count 68). Gate green: fmt/clippy/doc clean, lib (3,279) + integration 0 failures,
+  24 arch guards (incl. `core_does_not_import_modules`). Paired: `PROBLEM_TREE` §8
+  cycle 52 — same commit.
