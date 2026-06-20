@@ -55,6 +55,10 @@ fn report_consolidates_metrics_timing_and_pivots() {
         (r.scorecard.graph_coverage - 1.0).abs() < 1e-9,
         "all entities reachable from the subject"
     );
+    // Structural fragility: the shared address is the lone cut vertex, and both
+    // person→address links are bridges (removing either isolates a person).
+    assert_eq!(r.scorecard.cut_vertex_count, 1, "only the shared address fragments the graph");
+    assert_eq!(r.scorecard.bridge_count, 2, "each person's link to the address is a bridge");
 
     // The shared address is the top pivot.
     assert!(r.pivot_count >= 1);
@@ -76,6 +80,8 @@ fn report_handles_an_unfinished_empty_scan_without_panicking() {
     assert_eq!(r.entities_per_sec, 0.0);
     assert_eq!(r.scorecard.total_entities, 0);
     assert_eq!(r.scorecard.multi_hop_depth, 0);
+    assert_eq!(r.scorecard.cut_vertex_count, 0);
+    assert_eq!(r.scorecard.bridge_count, 0);
     assert_eq!(r.pivot_count, 0);
     assert!(r.top_pivot_uid.is_none());
 }

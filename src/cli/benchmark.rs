@@ -56,6 +56,8 @@ pub fn cmd_benchmark(scan_id: Option<String>, json: bool) -> Result<()> {
         sc.corroborated_fraction * 100.0
     );
     println!("  graph density     {:.0}%", sc.graph_density * 100.0);
+    println!("  cut vertices      {}", sc.cut_vertex_count);
+    println!("  bridges           {}", sc.bridge_count);
     println!("  cross-scan        {}", sc.cross_scan_bridges);
     println!("  pivot nodes       {}", report.pivot_count);
     Ok(())

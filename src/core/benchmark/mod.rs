@@ -2,12 +2,13 @@
 //!
 //! Rolls the engine's measurable OSINT dimensions into ONE reproducible artifact for
 //! head-to-head comparison: the graph-intelligence metrics ([`crate::core::metrics`]),
-//! the pivot count ([`crate::core::pivot`]), and the scan's own performance counters
-//! (wall-clock duration, throughput, and the module run / error / timeout tallies). The
-//! [`Scorecard`] is the headline — the dimensions a competitive OSINT benchmark is
-//! scored on: multi-hop discovery depth, graph coverage, relationship corroboration,
-//! density, and raw yield — so two tools (or two HSE configurations) run on an identical
-//! seed can be compared field by field.
+//! the pivot count and structural fragility ([`crate::core::pivot`]), and the scan's own
+//! performance counters (wall-clock duration, throughput, and the module run / error /
+//! timeout tallies). The [`Scorecard`] is the headline — the dimensions a competitive
+//! OSINT benchmark is scored on: multi-hop discovery depth, graph coverage, relationship
+//! corroboration, density, structural fragility (cut vertices / bridges), and raw yield
+//! — so two tools (or two HSE configurations) run on an identical seed can be compared
+//! field by field.
 //!
 //! Pure synthesis over a persisted [`Scan`] plus its [`Entity`] and [`Relation`] sets:
 //! deterministic and read-only, the evidence artifact the verification loop emits.
@@ -31,6 +32,15 @@ pub struct Scorecard {
     pub corroborated_fraction: f64,
     /// Undirected graph density.
     pub graph_density: f64,
+    /// Structural fragility: the number of **cut vertices** (articulation points) — the
+    /// entities whose removal fragments the network. A robustness/criticality axis
+    /// SpiderFoot reports nothing on; lower relative to size means a more resilient,
+    /// better-corroborated footprint.
+    pub cut_vertex_count: usize,
+    /// Structural fragility: the number of **bridges** (cut edges) — the single links
+    /// whose removal splits the graph. The irreplaceable connections; pairs with
+    /// [`cut_vertex_count`](Scorecard::cut_vertex_count) as the graph's fragility map.
+    pub bridge_count: usize,
     /// Raw entity yield.
     pub total_entities: usize,
     /// Typed-edge yield.
@@ -80,6 +90,11 @@ pub struct BenchmarkReport {
 pub fn report(scan: &Scan, entities: &[Entity], relations: &[Relation]) -> BenchmarkReport {
     let metrics = crate::core::metrics::compute(entities, relations);
     let pivots = crate::core::pivot::detect(entities, relations);
+    // Structural fragility: cut vertices come off the pivots' flags (a cut vertex always
+    // has degree ≥ 1, so every one is among the pivots); bridges are the graph's cut
+    // edges. Both are dimensions SpiderFoot reports nothing on.
+    let cut_vertex_count = pivots.iter().filter(|p| p.is_cut_vertex).count();
+    let bridge_count = crate::core::pivot::bridges(entities, relations).len();
 
     let duration_secs = scan.finished_at.map(|f| f.saturating_sub(scan.started_at));
     let entities_per_sec = match duration_secs {
@@ -92,6 +107,8 @@ pub fn report(scan: &Scan, entities: &[Entity], relations: &[Relation]) -> Bench
         graph_coverage: metrics.seed_reach.reachable_fraction,
         corroborated_fraction: metrics.corroborated_fraction,
         graph_density: metrics.graph_density,
+        cut_vertex_count,
+        bridge_count,
         total_entities: metrics.total_entities,
         total_relations: metrics.total_relations,
         cross_scan_bridges: metrics.cross_scan_bridges,

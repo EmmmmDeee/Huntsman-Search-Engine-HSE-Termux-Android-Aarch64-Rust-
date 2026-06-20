@@ -104,8 +104,8 @@ guarantees. This gap is tracked here precisely so HSE's superiority claim stays 
 
 HSE ships the reproducible instrument: **`hse benchmark [--scan-id <id|latest>] [--json]`**
 (and `GET /api/v1/scans/{id}/benchmark`) emits a consolidated scorecard — discovery depth,
-graph coverage, corroboration, density, throughput, module reliability, pivot count —
-across the axes above.
+graph coverage, corroboration, density, structural fragility (cut vertices / bridges),
+throughput, module reliability, pivot count — across the axes above.
 
 A formal A/B is: run SpiderFoot and HSE on an **identical seed under identical network
 conditions**, capture each tool's scorecard, and diff field-by-field
