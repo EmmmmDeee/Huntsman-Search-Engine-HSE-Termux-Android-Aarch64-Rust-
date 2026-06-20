@@ -6,52 +6,17 @@
 //! two or more distinct identity pairs, that route has proven itself repeatable.
 //! It is no longer a one-off chain but a **template**: a confirmed way to connect
 //! *that class* of identity to *that class* of identity, which the operator can
-//! re-apply, and which (persisted across scans) lets every future scan arrive at
-//! the same class of connection by a route already known to work.
+//! re-apply, and which (persisted across scans by the engine) lets every future
+//! scan arrive at the same class of connection by a route already known to work.
 //!
-//! Built on the shared [`crate::core::relation::identity_paths`] primitive, so
-//! the routes it generalises are exactly the ones the dossier renders and the
-//! transitive/multi-pathway rules fire on. The template is direction-canonical
-//! (a route and its reverse are one template), so `Email→…→Person` and
-//! `Person→…→Email` group together regardless of which endpoint hashed smaller.
+//! The generalisation itself is the shared [`crate::core::relation::connection_templates`]
+//! primitive, so the routes this rule fires on *within* a scan are exactly the
+//! ones the engine learns *across* scans — one definition, no drift.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 use super::*;
-use crate::core::relation::identity_paths;
-
-/// The canonical string form of a pathway: the interleaved node-kind / relation
-/// sequence, oriented to the lexicographically-smaller of the route and its
-/// reverse so a connection and its mirror are one template.
-fn canonical_template(node_kinds: &[String], rel_strs: &[&str]) -> String {
-    debug_assert_eq!(node_kinds.len(), rel_strs.len() + 1);
-    let render = |fwd: bool| -> String {
-        let n = node_kinds.len();
-        let mut s = String::new();
-        for i in 0..n {
-            let k = if fwd {
-                &node_kinds[i]
-            } else {
-                &node_kinds[n - 1 - i]
-            };
-            s.push_str(k);
-            if i < rel_strs.len() {
-                let r = if fwd {
-                    rel_strs[i]
-                } else {
-                    rel_strs[rel_strs.len() - 1 - i]
-                };
-                s.push_str(" →");
-                s.push_str(r);
-                s.push_str("→ ");
-            }
-        }
-        s
-    };
-    let forward = render(true);
-    let reverse = render(false);
-    forward.min(reverse)
-}
+use crate::core::relation::connection_templates;
 
 /// AU-064 — Generalized pathway template.
 pub(in crate::core::correlator) fn rule_au_064_generalized_pathway_template(
@@ -62,45 +27,17 @@ pub(in crate::core::correlator) fn rule_au_064_generalized_pathway_template(
 ) -> Vec<Correlation> {
     const MAX_HOPS: usize = 4;
 
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
-    let kind_of = |uid: &str| -> String {
-        by_uid
-            .get(uid)
-            .map_or_else(|| "?".to_string(), |e| e.kind.to_string())
-    };
-
-    // Group identity connections by their direction-canonical template. The
-    // pair list per template is the evidence that the route repeats.
-    let mut by_template: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
-    for path in identity_paths(entities, relations, MAX_HOPS) {
-        if path.hops < 2 {
-            continue; // a direct one-hop link is not a multi-step route to generalise
-        }
-        let mut node_kinds: Vec<String> = Vec::with_capacity(path.hops + 1);
-        node_kinds.push(kind_of(&path.from_uid));
-        let mut rel_strs: Vec<&str> = Vec::with_capacity(path.hops);
-        for step in &path.steps {
-            rel_strs.push(step.kind.as_str());
-            node_kinds.push(kind_of(&step.to_uid));
-        }
-        let template = canonical_template(&node_kinds, &rel_strs);
-        by_template
-            .entry(template)
-            .or_default()
-            .push((path.from_uid.clone(), path.to_uid.clone()));
-    }
-
     let mut out = Vec::new();
-    for (template, pairs) in by_template {
-        if pairs.len() < 2 {
+    for ct in connection_templates(entities, relations, MAX_HOPS) {
+        if ct.pairs.len() < 2 {
             continue; // a single instance is not yet a generalised pattern
         }
         let mut uids: BTreeSet<String> = BTreeSet::new();
-        for (f, t) in &pairs {
+        for (f, t) in &ct.pairs {
             uids.insert(f.clone());
             uids.insert(t.clone());
         }
-        let n = pairs.len();
+        let n = ct.pairs.len();
         let severity = if n >= 3 {
             Severity::Medium
         } else {
@@ -111,9 +48,10 @@ pub(in crate::core::correlator) fn rule_au_064_generalized_pathway_template(
             "Generalized pathway template",
             severity,
             format!(
-                "the route [{template}] linked {n} distinct identity pairs this scan — a \
-                 reusable attribution pattern, not a one-off chain; the same template is a \
-                 confirmed means to connect that class of identity again",
+                "the route [{}] linked {n} distinct identity pairs this scan — a reusable \
+                 attribution pattern, not a one-off chain; the same template is a confirmed \
+                 means to connect that class of identity again",
+                ct.template,
             ),
             uids.into_iter().collect(),
             scan_id,
@@ -174,19 +112,5 @@ mod tests {
             rel(&d1, &p1, RelationKind::RegisteredBy),
         ];
         assert!(rule_au_064_generalized_pathway_template(&[e1, d1, p1], &rels, "s", 0).is_empty());
-    }
-
-    #[test]
-    fn canonical_template_is_direction_invariant() {
-        // The route and its mirror canonicalise to one string.
-        let fwd = canonical_template(
-            &["email".into(), "domain".into(), "person".into()],
-            &["belongs_to_domain", "registered_by"],
-        );
-        let rev = canonical_template(
-            &["person".into(), "domain".into(), "email".into()],
-            &["registered_by", "belongs_to_domain"],
-        );
-        assert_eq!(fwd, rev);
     }
 }

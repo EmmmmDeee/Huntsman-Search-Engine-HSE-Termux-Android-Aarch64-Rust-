@@ -358,6 +358,91 @@ fn remove_pair_edges(adj: &mut Adjacency<'_>, u: &str, v: &str) {
     }
 }
 
+/// A pathway pattern generalised from the scan's connections: the
+/// direction-canonical route string and every identity pair it linked. The unit
+/// of *"what route connected these kinds of identity"*, shared by the AU-064
+/// generalisation rule (a template repeated within one scan) and the engine's
+/// cross-scan template store (a template repeated across scans — so a route
+/// learned once lifts every later scan).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConnectionTemplate {
+    /// e.g. `email →belongs_to_domain→ domain →registered_by→ person`.
+    pub template: String,
+    /// The `(from_uid, to_uid)` identity pairs this route linked.
+    pub pairs: Vec<(String, String)>,
+}
+
+/// Render a path's node-kind / relation sequence to its **direction-canonical**
+/// string — oriented to the lexicographically-smaller of the route and its
+/// reverse, so a route and its mirror are one template regardless of which
+/// endpoint hashed smaller.
+fn render_template(node_kinds: &[String], rel_strs: &[&str]) -> String {
+    let render = |fwd: bool| -> String {
+        let n = node_kinds.len();
+        let mut s = String::new();
+        for i in 0..n {
+            let k = if fwd {
+                &node_kinds[i]
+            } else {
+                &node_kinds[n - 1 - i]
+            };
+            s.push_str(k);
+            if i < rel_strs.len() {
+                let r = if fwd {
+                    rel_strs[i]
+                } else {
+                    rel_strs[rel_strs.len() - 1 - i]
+                };
+                s.push_str(" →");
+                s.push_str(r);
+                s.push_str("→ ");
+            }
+        }
+        s
+    };
+    render(true).min(render(false))
+}
+
+/// Generalise every multi-step identity connection into its direction-canonical
+/// pathway template, grouped with the identity pairs it linked. Deterministic,
+/// sorted by template. The basis for AU-064 (a template repeated *within* a scan)
+/// and the engine's cross-scan template store (repeated *across* scans).
+pub fn connection_templates(
+    entities: &[Entity],
+    relations: &[Relation],
+    max_hops: usize,
+) -> Vec<ConnectionTemplate> {
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let kind_of = |uid: &str| -> String {
+        by_uid
+            .get(uid)
+            .map_or_else(|| "?".to_string(), |e| e.kind.to_string())
+    };
+
+    let mut grouped: std::collections::BTreeMap<String, Vec<(String, String)>> =
+        std::collections::BTreeMap::new();
+    for path in identity_paths(entities, relations, max_hops) {
+        if path.hops < 2 {
+            continue; // a direct one-hop link is not a multi-step route to generalise
+        }
+        let mut node_kinds: Vec<String> = Vec::with_capacity(path.hops + 1);
+        node_kinds.push(kind_of(&path.from_uid));
+        let mut rel_strs: Vec<&str> = Vec::with_capacity(path.hops);
+        for step in &path.steps {
+            rel_strs.push(step.kind.as_str());
+            node_kinds.push(kind_of(&step.to_uid));
+        }
+        grouped
+            .entry(render_template(&node_kinds, &rel_strs))
+            .or_default()
+            .push((path.from_uid.clone(), path.to_uid.clone()));
+    }
+    grouped
+        .into_iter()
+        .map(|(template, pairs)| ConnectionTemplate { template, pairs })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,6 +705,31 @@ mod tests {
         reversed.reverse();
         let backward = disjoint_pathways(&ents, &reversed, &a.uid, &b.uid, 4, 4);
         assert_eq!(forward, backward, "pathways independent of edge order");
+    }
+
+    #[test]
+    fn connection_templates_group_repeated_routes_direction_invariantly() {
+        // Two pairs, the same abstract route → one canonical template, two pairs.
+        let e1 = ent(EntityKind::Email, "a@x.com");
+        let d1 = ent(EntityKind::Domain, "x.com");
+        let p1 = ent(EntityKind::Person, "Alice");
+        let e2 = ent(EntityKind::Email, "b@y.com");
+        let d2 = ent(EntityKind::Domain, "y.com");
+        let p2 = ent(EntityKind::Person, "Bob");
+        let rels = [
+            rel(&e1, &d1, RelationKind::BelongsToDomain, 0.8),
+            rel(&d1, &p1, RelationKind::RegisteredBy, 0.8),
+            rel(&e2, &d2, RelationKind::BelongsToDomain, 0.8),
+            rel(&d2, &p2, RelationKind::RegisteredBy, 0.8),
+        ];
+        let cts = connection_templates(&[e1, d1, p1, e2, d2, p2], &rels, 4);
+        assert_eq!(cts.len(), 1, "both pairs share one canonical template");
+        assert_eq!(cts[0].pairs.len(), 2);
+        assert!(cts[0].template.contains("email") && cts[0].template.contains("person"));
+        assert!(
+            cts[0].template.contains("belongs_to_domain")
+                && cts[0].template.contains("registered_by")
+        );
     }
 
     mod property {
