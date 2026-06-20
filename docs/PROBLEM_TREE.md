@@ -2306,8 +2306,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   defaults are applied at the CLI boundary), and the strict 0.50 **correlation**
   floors from cycles 44/46/47 are untouched — so the engine now *expands liberally
   but correlates strictly* (guessed permutations get a chance to surface real data;
-  the resolved findings stay precise). Empirical: a free-only name scan now exercises
-  ≥29 distinct modules (was ~15), with the key-gated/paid tiers adding on top when
-  keys are present. No rule change (count 68). Gate green: fmt/clippy/doc clean,
+  the resolved findings stay precise). Empirical: a completed free-only name scan now
+  exercises **59 distinct modules** (37 yielding data) versus the ~15 baseline (≈4×),
+  with the key-gated/paid tiers adding on top when keys are present. No rule change (count 68). Gate green: fmt/clippy/doc clean,
   3,314 lib tests (defaults referenced via constants — no fallout), 24 arch guards,
   0 failures. **Paired:** `SOLUTION_TREE` cycle 48 note — same commit.
+- **2026-06-20** — **Cycle 49 (consolidate MITRE: kill the separate "tab", keep the
+  per-module mapping).** Operator: "the MITRE ATT&CK tab is pointless; MITRE-inspired
+  OSINT should be incorporated into the actual scans, not separated from them —
+  refactor the MITRE elements into the appropriate modules." MITRE was a *purely
+  descriptive* reporting layer that never influenced collection: a SPA capability/
+  coverage/diff panel, four API endpoints (`/attack/capability.json`,
+  `/scans/{id}/attack-navigator.json`, `/scans/{id}/attack-coverage.json`,
+  `/scans/{a}/attack-coverage-diff/{b}`), a `navigator` export format, a per-scan
+  CLI "techniques exercised" block, an aggregate `hse modules` coverage summary, a
+  full-dossier ATT&CK section, and the `Assessment`/`CoverageDiff`/`navigator_layer`/
+  `coverage` + `capability_assessment`/`reconnaissance_coverage` machinery behind
+  them. All of it removed (777 deletions across 14 files). What stays is MITRE *in
+  the modules*: every module still declares the Reconnaissance technique it performs
+  (`Module::attack_techniques`, the `RECONNAISSANCE` catalogue, `techniques_for_category`,
+  the technique↔module reverse index) and the architecture guard still rejects any
+  unmapped module or out-of-catalogue ID — so the taxonomy lives as inline module
+  metadata, not a separate analytics surface. Purely a removal of reporting; no
+  scan/engine behaviour changed. No rule change (count 68). Gate green: fmt/clippy/
+  doc clean, 3,305 lib tests (−9, the removed-surface tests), 24 arch guards, 0
+  failures. **Paired:** `SOLUTION_TREE` cycle 49 note — same commit.

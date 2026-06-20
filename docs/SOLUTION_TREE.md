@@ -1533,8 +1533,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   floors stay 0.50) — *expand liberally, correlate strictly*. `--recursive`'s
   `.min(0.40)` clamp means it now tracks the 0.20 default rather than raising it.
   Operators wanting a faster, shallower sweep set `--depth`/`--min-expand-confidence`
-  explicitly. Measured: a free-only name scan now exercises ≥29 distinct modules
-  (≈2× the prior ~15); key-gated/paid tiers stack on top with keys. Compounds: every
+  explicitly. Measured: a completed free-only name scan now exercises 59 distinct
+  modules (37 yielding data) — ≈4× the prior ~15; key-gated/paid tiers stack on top
+  with keys. Compounds: every
   future scan, on any seed, now drives the full reachable module set. No rule change
   (count 68). Gate green: 3,314 lib tests, 24 arch guards, fmt/clippy/doc clean.
   Paired: `PROBLEM_TREE` §8 cycle 48 — same commit.
+- **2026-06-20** — **Cycle 49 (MITRE consolidated into the modules).** Removed the
+  entire separate MITRE ATT&CK reporting layer — SPA panels, four API endpoints, the
+  `navigator` export, the CLI per-scan coverage block, the `hse modules` aggregate
+  summary, the full-dossier ATT&CK section, and the `Assessment`/`CoverageDiff`/
+  `navigator_layer`/`coverage`/`capability_assessment`/`reconnaissance_coverage`
+  machinery (777 deletions, 14 files) — because it was a side-report that never
+  shaped collection. The MITRE knowledge is retained where it belongs: as inline
+  per-module metadata. Each `Module` still declares its Reconnaissance technique(s)
+  via `attack_techniques()` over the `RECONNAISSANCE` catalogue +
+  `techniques_for_category`, the technique↔module reverse index is kept, and the
+  architecture guard still enforces the mapping — so "which collection technique
+  does this module implement" is answerable from the module itself, with no separate
+  tab to maintain or diverge. Behaviour-preserving for scans (pure surface removal);
+  the gate proves nothing else moved. No rule change (count 68). Gate green: 3,305
+  lib tests (−9 removed-surface tests), 24 arch guards, fmt/clippy/doc clean. Paired:
+  `PROBLEM_TREE` §8 cycle 49 — same commit.

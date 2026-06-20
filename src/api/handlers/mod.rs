@@ -238,39 +238,6 @@ pub async fn version() -> Json<Value> {
     Json(json!({ "version": crate::VERSION }))
 }
 
-/// `GET /api/v1/attack/capability.json` — HSE's STATIC MITRE ATT&CK
-/// Reconnaissance (TA0043) capability: the catalogued techniques at least one
-/// module can exercise (`covered`, each with its implementing modules) versus
-/// those `no` module covers (`gaps`) — the tool's collection ceiling. Scan-
-/// independent (it describes the tool, not a scan), so the web UI can show
-/// "what can HSE collect?" up front. Reuses the cached module⇆technique maps.
-pub async fn attack_capability() -> Json<Value> {
-    let assessment = crate::modules::capability_assessment();
-    let index = crate::modules::technique_module_index();
-    let covered: Vec<Value> = assessment
-        .covered
-        .iter()
-        .map(|t| {
-            let modules = index.get(t.id).cloned().unwrap_or_default();
-            json!({ "id": t.id, "name": t.name, "modules": modules })
-        })
-        .collect();
-    let gaps: Vec<Value> = assessment
-        .gaps
-        .iter()
-        .map(|t| json!({ "id": t.id, "name": t.name }))
-        .collect();
-    Json(json!({
-        "tactic": crate::core::attack::TACTIC_NAME,
-        "tactic_id": crate::core::attack::TACTIC_ID,
-        "coverage_pct": assessment.coverage_pct(),
-        "covered_count": assessment.covered.len(),
-        "total": assessment.covered.len() + assessment.gaps.len(),
-        "covered": covered,
-        "gaps": gaps,
-    }))
-}
-
 /// Search-engine liveness panel data. Serves the latest cached sweep (populated
 /// by the periodic + startup background task in `hse serve`); if no sweep has run
 /// yet, runs one lazily. Each engine reports up/blocked/down + latency + result

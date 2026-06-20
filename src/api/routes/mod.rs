@@ -137,7 +137,6 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/version", get(handlers::version))
         // ── modules ──
         .route("/modules", get(handlers::modules_list))
-        .route("/attack/capability.json", get(handlers::attack_capability))
         .route("/modules/graph", get(handlers::modules_graph))
         .route("/engines/health", get(handlers::engines_health))
         .route("/stats", get(handlers::stats))
@@ -198,18 +197,6 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             get(scan_export::scan_report_json),
         )
         .route("/scans/{id}/graph.gexf", get(scan_export::scan_export_gexf))
-        .route(
-            "/scans/{id}/attack-navigator.json",
-            get(scan_export::scan_export_attack_navigator),
-        )
-        .route(
-            "/scans/{id}/attack-coverage.json",
-            get(scan_export::scan_attack_coverage),
-        )
-        .route(
-            "/scans/{a}/attack-coverage-diff/{b}",
-            get(scan_export::scan_attack_coverage_diff),
-        )
         .route("/scans/{id}/debug.txt", get(scan_export::scan_debug_bundle))
         .route(
             "/scans/{id}/correlations",

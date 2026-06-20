@@ -628,8 +628,6 @@ const API = {
   csvUrl:    id=>'/api/v1/scans/'+encodeURIComponent(id)+'/entities.csv',
   reportUrl: id=>'/api/v1/scans/'+encodeURIComponent(id)+'/report.json',
   gexfUrl:   id=>'/api/v1/scans/'+encodeURIComponent(id)+'/graph.gexf',
-  attackUrl: id=>'/api/v1/scans/'+encodeURIComponent(id)+'/attack-navigator.json',
-  attackCov: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/attack-coverage.json'),
   debugUrl:  id=>'/api/v1/scans/'+encodeURIComponent(id)+'/debug.txt',
   keysGet:   ()=>API._req('/api/v1/settings/keys'),
   keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body}),
@@ -661,14 +659,8 @@ const API = {
   // Temporal diff of two stored scans of the same subject → what the later run
   // added/removed/re-scored. {added,removed,common,confidence_shifts}.
   diff:       (a,b)=>API._req('/api/v1/scans/'+encodeURIComponent(a)+'/diff/'+encodeURIComponent(b)),
-  // MITRE ATT&CK Reconnaissance coverage delta between two scans:
-  // {gained,lost,shared} technique lists + counts.
-  attackDiff: (a,b)=>API._req('/api/v1/scans/'+encodeURIComponent(a)+'/attack-coverage-diff/'+encodeURIComponent(b)),
   // Module capability graph: which input kinds flow to which produced kinds.
   modulesGraph: ()=>API._req('/api/v1/modules/graph'),
-  // HSE's static MITRE ATT&CK capability: which Reconnaissance techniques the
-  // tool can exercise (covered, with modules) vs the catalogue gaps.
-  attackCapability: ()=>API._req('/api/v1/attack/capability.json'),
   // Cross-scan entity pivot: everywhere an identifier appears, across every
   // scan. {entity, scan_ids:[…], observation_count}.
   entityGet:  uid=>API._req('/api/v1/entities/'+encodeURIComponent(uid))
@@ -802,8 +794,6 @@ async function renderDash(v){
 
     ${apiBudgetsPanel(s)}
 
-    <div id="attack-cap" style="margin-top:12px"></div>
-
     <div class="panel panel-default" style="margin-top:12px">
       <div class="panel-heading"><b>Recent Scans</b>
         <a href="#/scans" class="pull-right" style="font-size:12px">View all &rarr;</a>
@@ -812,34 +802,6 @@ async function renderDash(v){
         : '<div class="panel-body text-center text-muted">No scans yet — start one from <a href="#/newscan">New Scan</a>.</div>'}
     </div>`;
   if (recent.length) wireScansTable();
-  renderAttackCapability();
-}
-
-// Fill #attack-cap with HSE's STATIC MITRE ATT&CK Reconnaissance capability:
-// the techniques the tool can collect (covered, each chip tooltipping its
-// modules) vs the catalogue gaps. Answers "what can HSE collect?" up front.
-// Self-contained, inline-styled, silent on failure.
-async function renderAttackCapability(){
-  const el = $('#attack-cap'); if(!el) return;
-  try {
-    const a = await API.attackCapability();
-    if(!a || !a.total){ el.innerHTML=''; return; }
-    const pct = Math.round(a.coverage_pct||0);
-    const chip = (t,fg,bg)=>{
-      const m = (t.modules||[]).join(', ');
-      return `<span title="${attr(t.id+'  '+(t.name||'')+(m?' — '+m:''))}" style="display:inline-block;margin:2px;padding:1px 6px;border-radius:3px;font-size:11px;font-family:monospace;cursor:help;background:${bg};color:${fg}">${esc(t.id)}</span>`;
-    };
-    const covered = (a.covered||[]).map(t=>chip(t,'#fff','#096dd9')).join('');
-    const gaps = (a.gaps||[]).map(t=>chip(t,'#999','#eee')).join('');
-    el.innerHTML =
-      `<div class="panel panel-default"><div class="panel-heading"><b>MITRE ATT&amp;CK ${esc(a.tactic)} (${esc(a.tactic_id)}) capability</b>`
-      + ` <span class="text-muted" style="font-weight:400">— ${a.covered_count}/${a.total} techniques collectable (${pct}%)</span></div>`
-      + `<div class="panel-body" style="padding:8px 12px">`
-      + `<div style="height:6px;background:#eee;border-radius:3px;overflow:hidden;margin-bottom:6px"><div style="height:100%;width:${pct}%;background:#096dd9"></div></div>`
-      + `<div>${covered}${gaps}</div>`
-      + (gaps ? `<div class="text-muted" style="font-size:11px;margin-top:4px">Dimmed = no module collects this technique (a capability gap).</div>` : '')
-      + `</div></div>`;
-  } catch(_){ el.innerHTML=''; }
 }
 
 /* ═══════════ Page: SCANLIST (#/scans) ═══════════ */
@@ -1049,10 +1011,7 @@ async function renderDiff(v){
     host.innerHTML = '<p class="text-muted">Computing diff…</p>';
     try {
       const d = await API.diff(av, bv);
-      // Entity diff first, then the MITRE ATT&CK coverage delta (filled async
-      // so a slow coverage compute never blocks the entity diff render).
-      host.innerHTML = renderDiffResult(d) + '<div id="attack-diff" style="margin-top:12px"></div>';
-      renderAttackDiff(av, bv);
+      host.innerHTML = renderDiffResult(d);
     } catch(e){ host.innerHTML = `<div class="alert alert-danger">${esc(e.message)}</div>`; }
   };
   $('#d-go').addEventListener('click', run);
@@ -1083,36 +1042,6 @@ function renderDiffResult(d){
     ${tbl('Added','#3c763d',added,diffRow)}
     ${tbl('Removed','#a94442',removed,diffRow)}
     ${tbl('Re-scored','#8a6d3b',shifts,shiftRow)}`;
-}
-
-// Fill #attack-diff with the MITRE ATT&CK Reconnaissance coverage delta between
-// two scans: techniques GAINED (the later run widened collection), LOST
-// (narrowed), and SHARED. Each chip's tooltip names the implementing modules.
-// Self-contained, inline-styled, silent on failure.
-async function renderAttackDiff(a, b){
-  const el = $('#attack-diff'); if(!el) return;
-  try {
-    const d = await API.attackDiff(a, b);
-    if(!d || !d.tactic_id){ el.innerHTML=''; return; }
-    const chip = (t,fg,bg)=>{
-      const m = (t.modules||[]).join(', ');
-      return `<span title="${attr(t.id+'  '+(t.name||'')+(m?' — '+m:''))}" style="display:inline-block;margin:2px;padding:1px 6px;border-radius:3px;font-size:11px;font-family:monospace;cursor:help;background:${bg};color:${fg}">${esc(t.id)}</span>`;
-    };
-    const sec = (label,arr,fg,bg)=> arr.length
-      ? `<div style="margin-top:4px"><span class="text-muted" style="font-size:11px">${label} (${arr.length}):</span> ${arr.map(t=>chip(t,fg,bg)).join('')}</div>`
-      : '';
-    const body = d.unchanged
-      ? '<span class="text-muted">No change in ATT&CK technique coverage between these scans.</span>'
-      : sec('Gained', d.gained||[], '#fff', '#3c763d') + sec('Lost', d.lost||[], '#fff', '#a94442');
-    el.innerHTML =
-      `<div class="panel panel-default"><div class="panel-heading" style="font-weight:600">`
-      + `MITRE ATT&amp;CK ${esc(d.tactic)} (${esc(d.tactic_id)}) coverage delta `
-      + `<span class="text-muted" style="font-weight:400">— +${d.gained_count} gained / −${d.lost_count} lost / ${d.shared_count} shared</span>`
-      + `</div><div class="panel-body" style="padding:8px 12px">`
-      + body
-      + sec('Shared', d.shared||[], '#777', '#eee')
-      + `</div></div>`;
-  } catch(_){ el.innerHTML=''; }
 }
 
 /* ═══════════ Page: NEWSCAN (#/newscan) ═══════════ */
@@ -1594,7 +1523,6 @@ async function renderScanInfo(v){
           <button class="btn btn-default btn-sm" data-rerun="${attr(id)}" title="Rescan"><i class="glyphicon glyphicon-repeat"></i>&nbsp;Rescan</button>
           <a class="btn btn-default btn-sm" href="${API.csvUrl(id)}" title="Export entities as CSV"><i class="glyphicon glyphicon-download-alt"></i>&nbsp;CSV</a>
           <a class="btn btn-default btn-sm" href="${API.reportUrl(id)}" title="Export full report as JSON"><i class="glyphicon glyphicon-save"></i>&nbsp;JSON</a>
-          <a class="btn btn-default btn-sm" href="${API.attackUrl(id)}" download title="MITRE ATT&CK Navigator layer: the Reconnaissance (TA0043) techniques this scan exercised. Import the .json at mitre-attack.github.io/attack-navigator to visualise coverage."><i class="glyphicon glyphicon-th"></i>&nbsp;ATT&amp;CK layer</a>
           <a class="btn btn-primary btn-sm" href="${API.debugUrl(id)}" download title="One-click debug bundle: every entity, the full event sequence, correlations, and the scored self-audit with every weakness — one file for complete offline debugging"><i class="glyphicon glyphicon-list-alt"></i>&nbsp;Debug bundle</a>
           <button class="btn btn-danger btn-sm" data-delete="${attr(id)}" title="Delete"><i class="glyphicon glyphicon-trash"></i></button>
         </div>
@@ -1607,8 +1535,6 @@ async function renderScanInfo(v){
       <div class="col-sm-3 col-xs-6"><div class="stat-card"><div class="lab">Started</div><div class="val dim">${esc(fmtDate(scan.started_at))}</div></div></div>
       <div class="col-sm-3 col-xs-6"><div class="stat-card"><div class="lab">Duration</div><div class="val dim">${esc(fmtDuration(dur))}</div></div></div>
     </div>
-
-    <div id="attack-cov" style="margin:2px 0 12px 0"></div>
 
     <ul class="nav nav-tabs">
       ${subTab('report', 'Report',   null,              tab)}
@@ -1648,33 +1574,6 @@ async function renderScanInfo(v){
   $$('.nav-tabs a[data-sub]').forEach(a=>a.addEventListener('click', e=>{
     e.preventDefault(); nav(`#/scaninfo?id=${id}&tab=${a.dataset.sub}`);
   }));
-
-  // MITRE ATT&CK Reconnaissance coverage + gaps — fetched inline so the panel
-  // appears under the stat cards without blocking the scan render. Covered
-  // techniques are filled, gaps dimmed; the "layer" link downloads the
-  // Navigator file. Failure is silent (the panel just stays empty).
-  (async()=>{
-    const el = $('#attack-cov'); if(!el) return;
-    try{
-      const a = await API.attackCov(id);
-      if(!a || !a.total){ el.innerHTML=''; return; }
-      const pct = Math.round(a.coverage_pct||0);
-      const chip = (t,on)=>{
-        const mods = (t.modules||[]).join(', ');
-        const tip = (t.name||'') + (on
-          ? (mods ? ' — covered by: '+mods : ' — covered')
-          : (mods ? ' — gap; enable: '+mods : ' — gap (no module implements this)'));
-        return `<span title="${attr(t.id+'  '+tip)}" style="display:inline-block;margin:2px;padding:1px 6px;border-radius:3px;font-size:11px;font-family:monospace;cursor:help;background:${on?'#096dd9':'#eee'};color:${on?'#fff':'#999'}">${esc(t.id)}</span>`;
-      };
-      const chips = (a.covered||[]).map(t=>chip(t,true)).join('') + (a.gaps||[]).map(t=>chip(t,false)).join('');
-      el.innerHTML =
-        `<div style="font-size:12px;margin-bottom:3px"><b>MITRE ATT&CK ${esc(a.tactic)} (${esc(a.tactic_id)})</b>`
-        + ` <span class="text-muted">— ${a.covered_count}/${a.total} techniques, ${pct}% coverage</span>`
-        + ` <a href="${API.attackUrl(id)}" download style="margin-left:6px;font-size:11px" title="Download the ATT&CK Navigator layer">&#x2913; layer</a></div>`
-        + `<div style="height:6px;background:#eee;border-radius:3px;overflow:hidden;margin-bottom:5px"><div style="height:100%;width:${pct}%;background:#096dd9"></div></div>`
-        + `<div>${chips}</div>`;
-    }catch(_){ el.innerHTML=''; }
-  })();
 
   const body = $('#scan-body');
   if (tab==='browse')      renderBrowse(body);

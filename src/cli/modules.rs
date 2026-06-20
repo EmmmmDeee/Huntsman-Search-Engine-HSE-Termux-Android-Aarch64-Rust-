@@ -88,27 +88,6 @@ pub(super) fn cmd_modules(category_filter: Option<String>, as_json: bool) -> Res
         }
     } else {
         println!("\n{} module(s) total.", filtered.len());
-        // MITRE ATT&CK Reconnaissance (TA0043) coverage across the listed
-        // modules — the standard vocabulary for what OSINT collection this set
-        // performs. Sorted, deduplicated, each shown with its technique name.
-        let mut techniques: Vec<&str> = filtered
-            .iter()
-            .flat_map(|m| m.attack_techniques().iter().copied())
-            .collect();
-        techniques.sort_unstable();
-        techniques.dedup();
-        if !techniques.is_empty() {
-            println!(
-                "\nMITRE ATT&CK {} ({}) coverage — {} technique(s):",
-                crate::core::attack::TACTIC_NAME,
-                crate::core::attack::TACTIC_ID,
-                techniques.len()
-            );
-            for id in techniques {
-                let name = crate::core::attack::technique(id).map_or("", |t| t.name);
-                println!("  {id:<11} {name}");
-            }
-        }
     }
     Ok(())
 }

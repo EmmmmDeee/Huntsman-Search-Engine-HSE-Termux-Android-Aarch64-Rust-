@@ -68,12 +68,15 @@ pub enum Command {
         timeout: Option<u64>,
         /// Recursive expansion depth. 0 = single round; 1+ auto-feeds discovered
         /// entities back as new scan targets, up to N rounds deep. Omit to use
-        /// the product default (2); `--auto`/`--recursive` override an omitted
-        /// value.
+        /// the comprehensive product default (MAX_DEPTH = 3); `--auto` overrides an
+        /// omitted value.
         #[arg(short, long)]
         depth: Option<u32>,
-        /// Shorthand for deep recursive expansion: sets depth to MAX_DEPTH (3)
-        /// and min_expand_confidence=0.40. Overridden by an explicit --depth.
+        /// Shorthand for deep recursive expansion: pins depth to MAX_DEPTH (3) and
+        /// clamps the expansion floor to ≤0.40. With the comprehensive default
+        /// (depth 3, floor 0.20) this now matches the default; kept for explicitness
+        /// and for use alongside a raised `--min-expand-confidence`. Overridden by
+        /// an explicit --depth.
         #[arg(short = 'R', long)]
         recursive: bool,
         /// COMPLETE scan — the no-compromise preset. Auto-detects the seed kind,
@@ -398,9 +401,7 @@ pub enum Command {
         /// Scan ID (or `latest` for the most-recent completed scan).
         #[arg(short, long)]
         scan_id: String,
-        /// Output format: json | csv | gexf | report | full | navigator.
-        /// `navigator` emits a MITRE ATT&CK Navigator layer of the
-        /// Reconnaissance techniques the scan exercised. Default `json`.
+        /// Output format: json | csv | gexf | report | full | debug. Default `json`.
         #[arg(short, long, default_value = "json")]
         format: String,
         /// File path to write to. Omit for stdout.

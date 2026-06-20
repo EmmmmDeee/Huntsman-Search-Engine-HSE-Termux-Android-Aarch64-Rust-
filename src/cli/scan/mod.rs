@@ -246,15 +246,6 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         Err(e) => eprintln!("warning: could not write full dossier: {e}"),
     }
 
-    // MITRE ATT&CK Reconnaissance (TA0043) techniques this scan's collection
-    // actually exercised — resolved from the modules that produced the findings
-    // (each evidence record cites its source module). Lets an investigation be
-    // reported in the framework's vocabulary, not just per-module metadata.
-    let attack_cov = {
-        let sources = crate::core::entity::evidence_sources(&entities);
-        crate::modules::reconnaissance_coverage(sources.iter().copied())
-    };
-
     if cmd.output == "json" {
         // Full self-optimization payload — scan + entities + correlations
         // + diagnostics (module ranking, confidence calibration, geo
@@ -275,7 +266,6 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
                 "correlations": correlations,
                 "relations": relations,
                 "diagnostics": diag,
-                "attack_reconnaissance": attack_cov,
             }))?
         );
     } else if cmd.output == "dossier" {
@@ -350,17 +340,6 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
                     truncate(&c.rule_name, 40),
                     c.description
                 );
-            }
-        }
-        if !attack_cov.is_empty() {
-            println!(
-                "\nMITRE ATT&CK {} ({}) exercised — {} technique(s):",
-                crate::core::attack::TACTIC_NAME,
-                crate::core::attack::TACTIC_ID,
-                attack_cov.len()
-            );
-            for t in &attack_cov {
-                println!("  {:<11} {}", t.id, t.name);
             }
         }
     }
