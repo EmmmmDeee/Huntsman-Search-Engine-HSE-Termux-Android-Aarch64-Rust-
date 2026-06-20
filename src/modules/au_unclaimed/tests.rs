@@ -1,9 +1,4 @@
 use super::*;
-use serde_json::json;
-
-fn map_from_value(v: Value) -> Map<String, Value> {
-    v.as_object().unwrap().clone()
-}
 
 #[test]
 fn accepts_fullname_and_org() {
@@ -12,61 +7,6 @@ fn accepts_fullname_and_org() {
     assert!(m.accepts(&Target::new(TargetKind::Organisation, "Acme Pty Ltd")));
     assert!(!m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
     assert!(!m.accepts(&Target::new(TargetKind::FullName, "Ha"))); // too short
-}
-
-#[test]
-fn surname_extracts_last_token() {
-    assert_eq!(surname("Haigen Bamford"), "Bamford");
-    assert_eq!(surname("Mary Jane Watson"), "Watson");
-    assert_eq!(surname("Solo"), "Solo");
-}
-
-#[test]
-fn owner_matches_all_tokens_case_insensitive() {
-    let rec = map_from_value(json!({"OWNER_NAME": "BAMFORD, HAIGEN J"}));
-    assert!(owner_matches(&rec, "OWNER_NAME", "Haigen Bamford"));
-    assert!(!owner_matches(&rec, "OWNER_NAME", "Jane Smith"));
-}
-
-#[test]
-fn record_to_entities_emits_address_and_coords() {
-    let reg = &REGISTERS[0]; // NSW
-    let record = map_from_value(json!({
-        "OWNER_NAME": "BAMFORD HAIGEN",
-        "POSTCODE": "2000",
-        "SUBURB": "Sydney",
-    }));
-    let ents = record_to_entities(&record, reg, "Haigen Bamford", "s");
-    let addr = ents.iter().find(|e| e.kind == EntityKind::Address).unwrap();
-    assert!(addr.value.contains("NSW"));
-    assert!(addr.has_tag("au-state:NSW") && addr.has_tag("country:AU"));
-}
-
-#[test]
-fn record_to_entities_missing_postcode_returns_empty() {
-    let reg = &REGISTERS[0];
-    let record = map_from_value(json!({"OWNER_NAME": "BAMFORD HAIGEN"}));
-    let ents = record_to_entities(&record, reg, "Haigen Bamford", "s");
-    assert!(ents.is_empty(), "no postcode → no entities");
-}
-
-#[test]
-fn postcode_centroid_covers_six_states_else_none() {
-    for (state, lat, lon) in [
-        ("NSW", -33.8688, 151.2093),
-        ("VIC", -37.8136, 144.9631),
-        ("WA", -31.9505, 115.8605),
-        ("SA", -34.9285, 138.6007),
-        ("TAS", -42.8821, 147.3272),
-        ("ACT", -35.2809, 149.1300),
-    ] {
-        let (got_lat, got_lon) = postcode_centroid("0000", state).unwrap();
-        assert!((got_lat - lat).abs() < 1e-9, "{state} lat");
-        assert!((got_lon - lon).abs() < 1e-9, "{state} lon");
-    }
-    assert!(postcode_centroid("4000", "QLD").is_none());
-    assert!(postcode_centroid("0800", "NT").is_none());
-    assert!(postcode_centroid("2000", "ZZ").is_none());
 }
 
 #[test]

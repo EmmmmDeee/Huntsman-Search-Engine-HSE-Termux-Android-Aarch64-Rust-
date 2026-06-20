@@ -2495,3 +2495,34 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   valid JSON parses; truncated JSON-shaped body still errors). No rule/module
   change. Gate green: fmt/clippy/doc clean, lib 3,288 (+2), 24 arch guards, 0
   failures. **Paired:** `SOLUTION_TREE` cycle 57 note — same commit.
+
+- **2026-06-20** — **Cycle 58 (empirical: `au_unclaimed` phantom multi-state
+  coverage removed).** Continuing the "Ali Kareem" validation loop, the cycle-57
+  fix was confirmed on the rebuilt binary (SeekNow's live `error code: 523` bodies
+  now log as "no results" with **zero** parse errors / breaker trips, and the new
+  AU-067/070/071 correlation lens fired on real data — a 30-identity resolved
+  cluster, its sole broker `lucca-kareem@hotmail.com`, and a separate
+  *redundantly-corroborated* 3-identity cluster with no single point of failure).
+  The same log then exposed a real capability gap: `au_unclaimed` received **76 KB
+  and 20 KB non-JSON bodies** from `data.vic.gov.au` and `catalogue.data.wa.gov.au`
+  — guaranteed-404 error pages. Live CKAN probes (2026-06) settled it: the module
+  claimed QLD/NSW/VIC/WA/SA coverage (its doc header even said TAS/ACT), but **only
+  QLD** publishes a record-level unclaimed-money datastore. NSW's unclaimed packages
+  are all `datastore_active=false` (external-link page, PDFs, summary xlsx — no
+  queryable resource); VIC returns HTTP 404 for *every* `/api/3/action` call (the
+  portal migrated off CKAN); WA's `package_search` for "unclaimed money" returns
+  **0** hits; SA is the national aggregator whose only datastore-active "unclaimed
+  monies" resource is the *harvested QLD* dataset (same resource id, which 404s on
+  SA's own datastore). The four non-QLD `resource_id`s were fabricated placeholders
+  (tell-tale symmetric/sequential hex), and the comment "Resource IDs sourced from
+  each state's CKAN portal" was false — every scan spent four guaranteed-404 calls
+  per name and falsely advertised five-state coverage. Fix: removed the four phantom
+  `StateRegister` entries and all now-dead support (`StateRegister`, `REGISTERS`,
+  `surname`, `owner_matches`, `record_to_entities`, `postcode_centroid`), simplified
+  `process` to the QLD pass alone, and rewrote the module docs with the per-state
+  empirical verdict plus guidance for re-adding a jurisdiction *only* with a
+  verified resource id. The working QLD pipeline (the real data source) is
+  untouched. Net: −1 fabricated coverage claim, −4 guaranteed-failed calls/scan,
+  −~150 lines of dead code. Gate green: fmt/clippy/doc clean, lib 3,283 (−5 tests,
+  all for the deleted dead path), 24 arch guards, 0 failures. **Paired:**
+  `SOLUTION_TREE` cycle 58 note — same commit.

@@ -1661,3 +1661,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   results" rather than a breaker-tripping error. Regression-tested. No rule/module
   change. Gate green: lib 3,288 (+2), 24 arch guards, fmt/clippy/doc clean. Paired:
   `PROBLEM_TREE` §8 cycle 57 — same commit.
+
+- **2026-06-20** — **Cycle 58 (`au_unclaimed` reduced to its verified QLD core).**
+  Principle: *no fabricated coverage*. Empirically probing every state's live CKAN
+  API (the "Ali Kareem" loop flagged 76 KB/20 KB non-JSON bodies from VIC/WA) proved
+  only Queensland publishes a queryable unclaimed-money datastore — NSW has no
+  datastore-active resource, VIC isn't on CKAN (404s), WA has no such dataset, and
+  SA only mirrors the harvested QLD record. The four non-QLD `StateRegister` entries
+  held fabricated `resource_id`s that 404'd every scan: phantom coverage that cost
+  four guaranteed-failed network calls per name and a false five-state advertisement.
+  Removed them and the now-dead generic-CKAN path (`StateRegister`, `REGISTERS`,
+  `surname`, `owner_matches`, `record_to_entities`, `postcode_centroid`); `process`
+  is now the single QLD pass, and the module docs carry the per-state empirical
+  verdict so a future contributor re-adds a jurisdiction *only* with a verified
+  resource id (QLD is the working template). The real QLD pipeline — joint-owner
+  Persons, company Organisation pivots, postcode→geo, suburb enumeration — is
+  unchanged. Durable wins: honest capability surface, less wall-time and breaker
+  noise on Termux, ~150 fewer lines to maintain. Gate green: lib 3,283 (−5 dead-path
+  tests), 24 arch guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` cycle 58 —
+  same commit.
