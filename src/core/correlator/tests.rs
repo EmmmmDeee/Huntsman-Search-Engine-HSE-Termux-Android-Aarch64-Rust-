@@ -3998,3 +3998,28 @@ fn au063_corroboration_gap_flags_a_lone_transitive_link() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-063");
 }
+
+#[test]
+fn au064_generalized_template_fires_on_a_repeated_route() {
+    use crate::core::relation::{Relation, RelationKind};
+    let mk_rel = |from: &Entity, to: &Entity, kind: RelationKind| {
+        Relation::new(from.uid.clone(), to.uid.clone(), kind, 0.8, "s")
+    };
+    let mk = |kind: EntityKind, v: &str| Entity::new(kind, v, 0.8, "s");
+    // Two pairs share the route Email→belongs_to_domain→Domain→registered_by→Person.
+    let e1 = mk(EntityKind::Email, "a@x.com");
+    let d1 = mk(EntityKind::Domain, "x.com");
+    let p1 = mk(EntityKind::Person, "Alice");
+    let e2 = mk(EntityKind::Email, "b@y.com");
+    let d2 = mk(EntityKind::Domain, "y.com");
+    let p2 = mk(EntityKind::Person, "Bob");
+    let rels = [
+        mk_rel(&e1, &d1, RelationKind::BelongsToDomain),
+        mk_rel(&d1, &p1, RelationKind::RegisteredBy),
+        mk_rel(&e2, &d2, RelationKind::BelongsToDomain),
+        mk_rel(&d2, &p2, RelationKind::RegisteredBy),
+    ];
+    let out = rule_au_064_generalized_pathway_template(&[e1, d1, p1, e2, d2, p2], &rels, "s", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-064");
+}

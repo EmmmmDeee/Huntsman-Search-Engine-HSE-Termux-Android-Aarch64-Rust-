@@ -13,7 +13,7 @@
 | Version / edition / MSRV | 1.4.0 · edition 2024 · 1.88 |
 | Source | ~137k LOC · 602 `.rs` files |
 | Modules | **118** registered — 89 Free · 24 KeyGated · 5 Paid · 14 categories |
-| Correlation rules | **63** deterministic (AU-001 … AU-063) |
+| Correlation rules | **64** deterministic (AU-001 … AU-064) |
 | Tests | ~2,995 lib + API/integration + architecture guards |
 | Unsafe | **0** — `#![forbid(unsafe_code)]` (`src/lib.rs:22`) |
 | Panic strategy | `panic = "unwind"` (`Cargo.toml:125`) + per-module `catch_unwind` at the dispatch boundary |
@@ -32,7 +32,7 @@ Threat 3 · Search 2 · Phone 2 · Other 2.
  bin (main.rs) ─▶ cli ─┐
                        ├─▶ core ─▶ util (http, keys, geo, datasets, …)
  http (api/axum) ──────┘    │
- web (embedded SPA) ◀─ api  ├─▶ correlator (63 rules)
+ web (embedded SPA) ◀─ api  ├─▶ correlator (64 rules)
                             └─▶ storage (rusqlite WAL + FTS5, via StoragePort)
  modules (118) ─▶ core types + core::hooks (fn-ptr registry, installed at startup)
 ```
@@ -63,16 +63,17 @@ allowlist remains.
   `circuit`/`timeout`, `enrich` (geo + key harvest), `ledger` (dedup/lineage). A
   panicking module is caught at the dispatch boundary (`run_module_guarded`), so
   it degrades to zero results rather than aborting the process.
-- **`core::correlator`** (`src/core/correlator/rules/`) — 63 deterministic rules
+- **`core::correlator`** (`src/core/correlator/rules/`) — 64 deterministic rules
   across `assoc`/`breach`/`crypto`/`gap`/`geo`/`infra`/`org`/`identity`/`location`/
-  `transitive`/`multipath`, synthesising entities into findings;
-  candidate-quarantine before correlation. The `transitive` (AU-060), `multipath`
-  (AU-062), and `gap` (AU-063) families all delegate to the shared
-  `core::relation::graph` link-analysis primitives (`identity_paths`,
-  `disjoint_pathways`) that also back the dossier CONNECTIONS section, so rule
-  verdicts and the rendered chains can't drift — `multipath` rewards a link
-  confirmed by independent routes, `gap` flags one that rests on a single route
-  and names the orthogonal source family that would corroborate it.
+  `multipath`/`template`/`transitive`, synthesising entities into findings;
+  candidate-quarantine before correlation. The recursive-linking family —
+  `transitive` (AU-060), `multipath` (AU-062), `gap` (AU-063), `template`
+  (AU-064) — all delegate to the shared `core::relation::graph` link-analysis
+  primitives (`identity_paths`, `disjoint_pathways`) that also back the dossier
+  CONNECTIONS section, so rule verdicts and the rendered chains can't drift:
+  `multipath` rewards a link confirmed by independent routes, `gap` names the
+  orthogonal source family that would corroborate a single-route link, and
+  `template` generalises a repeated route into a reusable attribution pattern.
 - **`core::{scan,entity,relation,timeline}`** — the typed domain model:
   `Entity::c_effective` noisy-OR/multiplicative confidence fusion (clamped,
   monotone, contract-tested), SHA-256 deterministic UIDs, GREATEST-semantics

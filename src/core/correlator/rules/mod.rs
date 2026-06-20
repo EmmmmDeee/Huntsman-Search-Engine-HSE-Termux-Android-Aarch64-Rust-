@@ -365,6 +365,7 @@ mod infra;
 pub(crate) mod location;
 mod multipath;
 mod org;
+mod template;
 mod transitive;
 
 pub(super) use assoc::*;
@@ -377,6 +378,7 @@ pub(super) use infra::*;
 pub(super) use location::*;
 pub(super) use multipath::*;
 pub(super) use org::*;
+pub(super) use template::*;
 pub(super) use transitive::*;
 
 #[cfg(test)]

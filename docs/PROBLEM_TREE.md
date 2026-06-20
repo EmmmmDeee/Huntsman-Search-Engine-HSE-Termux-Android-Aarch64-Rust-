@@ -76,8 +76,8 @@ Each node: **ID · statement · location · impact · → optimal solution · pr
 Current baseline (grounded in the codebase, 2026-06-18): **126 modules** (93 free
 · 28 key-gated · 5 paid) across 14 categories (Infrastructure 21, Geo 20, People
 16, DnsRecon 13, Breach 11, Social 11, Email 6, Corporate 9, Phone 3, Web 5,
-Sensor 4, Threat 3, Search/Other 2 each); 63 native correlation rules
-(AU-001…AU-063); 0 `unsafe`; deterministic entity merge; SQLite store; SSE live;
+Sensor 4, Threat 3, Search/Other 2 each); 64 native correlation rules
+(AU-001…AU-064); 0 `unsafe`; deterministic entity merge; SQLite store; SSE live;
 axum SPA. Deps: `regex` in; **`proptest` 1.11 + `criterion` 0.8 direct (dev-only,
 zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
 `util::scan` + `util::html`); `bstr`, `fst`, `arbitrary` still NOT direct.**
@@ -1987,3 +1987,21 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   fmt/clippy/doc clean, 3,275 lib tests (+4), 24 arch guards, 0 failures.
   **Next:** (3) backward synthesis → forward seeds + the universal/all-scans
   learning loop. **Paired:** `SOLUTION_TREE` SOL-CORR note + §5 — same commit.
+- **2026-06-20** — **Cycle 32 (C1): recursive multi-pathway linking, increment 3 —
+  backward synthesis / generalized pathway templates (AU-064).** Reasons *backward*
+  from confirmed connections to the general *means* that produced them. **AU-064
+  generalized pathway template** abstracts each identity connection into its
+  direction-canonical route — the ordered `(entity-kind →relation-kind→ …)`
+  pattern — and fires when the **same** template links ≥2 distinct identity pairs:
+  the route has proven repeatable, so it is no longer a one-off chain but a
+  *confirmed means to connect that class of identity again* (e.g. `Email
+  →belongs_to_domain→ Domain →registered_by→ Person`). This is the local proof of
+  generalisation — "use confirmed connections to develop new means to arrive at
+  the same connection". Pure core on the shared `identity_paths` primitive; the
+  template is the unit a future cross-scan store would persist so the route is
+  sought universally. 64 rules. Gate green: fmt/clippy/doc clean, 3,279 lib tests
+  (+4), 24 arch guards, 0 failures. **Remaining (the universal/all-scans leg):**
+  persist confirmed templates cross-scan via `raw_archive` (SOL-CACHE-INTERSCAN's
+  substrate) and consult them at correlate time, so a route learned in one scan
+  lifts every later scan — a storage+engine wiring step, scoped next.
+  **Paired:** `SOLUTION_TREE` SOL-CORR note + §5 — same commit.

@@ -1261,3 +1261,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   SOL-CORR advances (orthogonal corroboration + gap analysis done; backward
   synthesis is increment 3). Gate green: 3,275 lib tests (+4). Paired:
   `PROBLEM_TREE` §8 cycle 31 — same commit.
+- **2026-06-20** — **Cycle 32 (SOL-CORR, C1): backward synthesis — recursive-linking
+  increment 3.** New rule **AU-064** (`rules/template.rs`): abstracts each confirmed
+  identity connection into its direction-canonical pathway template
+  (`entity-kind →relation-kind→ …`) and fires when one template links ≥2 distinct
+  pairs — a route proven repeatable, a reusable means to reach that class of
+  connection. Pure core on `identity_paths`; the template is the unit cross-scan
+  persistence will store. SOL-CORR's in-scan link-analysis legs (orthogonal
+  corroboration, gap analysis, generalisation) are now done; the universal
+  cross-scan persistence (`raw_archive`-backed template store + correlate-time
+  consult) is the remaining storage+engine leg. Gate green: 3,279 lib tests (+4).
+  Paired: `PROBLEM_TREE` §8 cycle 32 — same commit.

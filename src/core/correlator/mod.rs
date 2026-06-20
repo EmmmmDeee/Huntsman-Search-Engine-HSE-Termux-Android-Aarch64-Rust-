@@ -326,6 +326,7 @@ const RELATION_RULES: &[RelationRuleFn] = &[
     rule_au_060_transitive_identity_closure,
     rule_au_062_multipath_corroboration,
     rule_au_063_corroboration_gap,
+    rule_au_064_generalized_pathway_template,
 ];
 
 /// Run every relation-aware rule over an already quarantine-filtered, confirmed
