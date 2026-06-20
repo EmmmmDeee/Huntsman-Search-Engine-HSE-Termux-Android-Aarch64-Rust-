@@ -818,33 +818,60 @@ fn residents_of<'a>(
 /// this edge AND the kinship one (same `(from, to)`, this the stronger) — two
 /// independent angles agreeing.
 pub fn derive_co_residence(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
-    use std::collections::HashSet;
-
     let person_by_name = persons_by_name(entities);
     if person_by_name.is_empty() {
         return Vec::new();
     }
+    // Each specific dwelling's named residents (≥2, capped to a household) is a
+    // co-residence group; `emit_pairwise` links the household.
+    let groups = entities
+        .iter()
+        .filter(|e| {
+            e.kind == EntityKind::Address && !COARSE_ADDRESS_TAGS.iter().any(|t| e.has_tag(t))
+        })
+        .filter_map(|place| {
+            let mut residents = residents_of(place, &person_by_name);
+            (residents.len() >= 2).then(|| {
+                residents.truncate(CO_RESIDENCE_MAX_PER_PLACE);
+                residents
+            })
+        });
+    emit_pairwise(groups, RelationKind::AssociatedWith, scan_id, |a, b| {
+        a.confidence.min(b.confidence) * CO_RESIDENCE_DAMP
+    })
+}
+
+/// Emit one canonically-directed (`smaller-uid → larger`), deduplicated `kind` edge
+/// per distinct pair within each group, the confidence from `conf(from, to)`. The
+/// shared "clique → symmetric pairwise edges" core every group-based builder needs
+/// (co-residence, co-mention, shared-selector, canonical identities): each assembles
+/// the entity groups it judges related — already filtered / capped to its own rules —
+/// and this performs the pairing, canonical direction, cross-group dedup, and
+/// deterministic final ordering ONCE, instead of every builder re-implementing the
+/// same nested loop. Members are sorted by UID, so the edge set is independent of how
+/// a caller ordered each group.
+fn emit_pairwise<'a>(
+    groups: impl IntoIterator<Item = Vec<&'a Entity>>,
+    kind: RelationKind,
+    scan_id: &str,
+    conf: impl Fn(&Entity, &Entity) -> f64,
+) -> Vec<Relation> {
+    use std::collections::HashSet;
 
     let mut seen: HashSet<(String, String)> = HashSet::new();
     let mut out = Vec::new();
-    for place in entities.iter().filter(|e| {
-        e.kind == EntityKind::Address && !COARSE_ADDRESS_TAGS.iter().any(|t| e.has_tag(t))
-    }) {
-        let mut residents = residents_of(place, &person_by_name);
-        if residents.len() < 2 {
-            continue;
-        }
-        residents.truncate(CO_RESIDENCE_MAX_PER_PLACE);
-        for i in 0..residents.len() {
-            for j in (i + 1)..residents.len() {
-                let (a, b) = (residents[i], residents[j]);
+    for mut members in groups {
+        members.sort_by(|a, b| a.uid.cmp(&b.uid));
+        for i in 0..members.len() {
+            for j in (i + 1)..members.len() {
+                let (a, b) = (members[i], members[j]);
                 let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
-                if seen.insert((from.uid.clone(), to.uid.clone())) {
+                if from.uid != to.uid && seen.insert((from.uid.clone(), to.uid.clone())) {
                     out.push(Relation::new(
                         from.uid.as_str(),
                         to.uid.as_str(),
-                        RelationKind::AssociatedWith,
-                        from.confidence.min(to.confidence) * CO_RESIDENCE_DAMP,
+                        kind,
+                        conf(from, to),
                         scan_id,
                     ));
                 }
@@ -900,37 +927,14 @@ fn link_by_shared_attribute(
     if by_value.is_empty() {
         return Vec::new();
     }
-
-    let mut seen: HashSet<(String, String)> = HashSet::new();
-    let mut out = Vec::new();
-    // Deterministic value order so the emitted edge set never depends on map order.
-    let mut groups: Vec<(&String, &Vec<&Entity>)> = by_value.iter().collect();
-    groups.sort_by(|a, b| a.0.cmp(b.0));
-    for (_value, members) in groups {
-        // A handful share an individuating selector; a crowd shares a generic one.
-        if members.len() < 2 || members.len() > crowd_cap {
-            continue;
-        }
-        let mut g = members.clone();
-        g.sort_by(|a, b| a.uid.cmp(&b.uid));
-        for i in 0..g.len() {
-            for j in (i + 1)..g.len() {
-                let (a, b) = (g[i], g[j]);
-                let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
-                if from.uid != to.uid && seen.insert((from.uid.clone(), to.uid.clone())) {
-                    out.push(Relation::new(
-                        from.uid.as_str(),
-                        to.uid.as_str(),
-                        RelationKind::AssociatedWith,
-                        from.confidence.min(to.confidence) * damp,
-                        scan_id,
-                    ));
-                }
-            }
-        }
-    }
-    sort_edges(&mut out);
-    out
+    // Keep only individuating groups (a handful share a real selector; a crowd shares a
+    // generic one); `emit_pairwise` handles direction, dedup, and deterministic order.
+    let groups = by_value
+        .into_values()
+        .filter(|members| (2..=crowd_cap).contains(&members.len()));
+    emit_pairwise(groups, RelationKind::AssociatedWith, scan_id, |a, b| {
+        a.confidence.min(b.confidence) * damp
+    })
 }
 
 /// Derive `AssociatedWith` CO-MENTION edges between distinct Persons NAMED IN THE
@@ -1001,43 +1005,25 @@ pub fn derive_shared_selector(entities: &[Entity], scan_id: &str) -> Vec<Relatio
 /// collisions, never fuzzy guesses), so it carries full endpoint trust rather than a
 /// damp. Symmetric, canonically directed (smaller-uid → larger), deduped, deterministic.
 pub fn derive_canonical_identities(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
 
     let groups = crate::core::resolve::suggest_merges(entities);
     if groups.is_empty() {
         return Vec::new();
     }
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
-
-    let mut seen: HashSet<(String, String)> = HashSet::new();
-    let mut out = Vec::new();
-    for group in &groups {
-        // `members` are the UIDs of contextual variants of one canonical identity,
-        // already sorted by the resolver — link every distinct pair as the same node.
-        let members = &group.members;
-        for i in 0..members.len() {
-            for j in (i + 1)..members.len() {
-                let (Some(a), Some(b)) = (
-                    by_uid.get(members[i].as_str()),
-                    by_uid.get(members[j].as_str()),
-                ) else {
-                    continue;
-                };
-                let (from, to) = if a.uid <= b.uid { (*a, *b) } else { (*b, *a) };
-                if seen.insert((from.uid.clone(), to.uid.clone())) {
-                    out.push(Relation::new(
-                        from.uid.as_str(),
-                        to.uid.as_str(),
-                        RelationKind::SameAs,
-                        from.confidence.min(to.confidence),
-                        scan_id,
-                    ));
-                }
-            }
-        }
-    }
-    sort_edges(&mut out);
-    out
+    // Resolve each canonical group's member UIDs back to entities; `emit_pairwise`
+    // links every distinct variant pair as the same node.
+    let entity_groups = groups.iter().map(|group| {
+        group
+            .members
+            .iter()
+            .filter_map(|uid| by_uid.get(uid.as_str()).copied())
+            .collect::<Vec<&Entity>>()
+    });
+    emit_pairwise(entity_groups, RelationKind::SameAs, scan_id, |a, b| {
+        a.confidence.min(b.confidence)
+    })
 }
 
 /// Derive every deterministic, evidence-grounded relation the engine knows how
