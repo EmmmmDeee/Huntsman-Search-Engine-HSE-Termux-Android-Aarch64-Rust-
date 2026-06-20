@@ -5,7 +5,7 @@ use super::budget::{
 };
 use super::client::{
     CLIENT, HARDCODED_KEY_FOR_TESTS, cache_get, cache_key, cache_put, is_auth_error,
-    key_fingerprint, resolve_key, typed_cache_key,
+    key_fingerprint, parse_response, resolve_key, typed_cache_key,
 };
 use super::endpoints::{SEARCH_LIMIT, build_search_body, extract_items};
 use crate::util::curl_client::AuthScheme;
@@ -299,5 +299,40 @@ fn reset_clears_override_too() {
         budget_snapshot().scan_cap,
         99,
         "reset_budget must clear the cap override"
+    );
+}
+
+#[test]
+fn parse_response_treats_non_json_body_as_no_results() {
+    // A normal "no results" / error-page / empty 200 response is NOT a failure:
+    // it must degrade to the Null sentinel (read as empty by extract_items), so it
+    // never errors the module or trips the circuit breaker. Regression for the
+    // serde "expected value at line 1 column 1" error seen on live empty responses.
+    for body in [
+        "",
+        "   ",
+        "\n\n",
+        "<html><body>error</body></html>",
+        "Gateway Timeout",
+    ] {
+        let v = parse_response(body).expect("non-JSON body must be Ok(Null), not an error");
+        assert!(
+            v.is_null(),
+            "non-JSON body {body:?} should parse to Null (no results)"
+        );
+        assert!(extract_items(&v).is_empty(), "Null yields no items");
+    }
+}
+
+#[test]
+fn parse_response_parses_valid_json_and_surfaces_malformed_json() {
+    // A real JSON object parses through unchanged.
+    let v = parse_response(r#"{"total":1,"results":[{"email":"a@x.com"}]}"#).expect("valid JSON");
+    assert_eq!(v["total"], 1);
+    // A body that LOOKS like JSON ({…) but is truncated/malformed is genuine drift
+    // and must still surface as an error — not be silently swallowed.
+    assert!(
+        parse_response(r#"{"total":1,"results":["#).is_err(),
+        "malformed JSON-shaped body must still error (schema-drift signal)"
     );
 }

@@ -2476,3 +2476,22 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   two-anchor-redundant cluster; silent on a single-hub star). Rule count 68→**69**.
   Gate green: fmt/clippy/doc clean, lib (3,286) + integration 0 failures, 24 arch
   guards. **Paired:** `SOLUTION_TREE` cycle 56 note — same commit.
+- **2026-06-20** — **Cycle 57 (empirical: SeekNow non-JSON response robustness).**
+  A comprehensive all-APIs scan on the seed "Ali Kareem" (the empirical-validation
+  loop) confirmed the cycle-48 comprehensive defaults work end to end (**44 distinct
+  modules dispatched** in the first minutes, vs ~15 pre-cycle-48) — and surfaced a
+  real robustness defect in `see_know`: `client::parse_response` hard-errored
+  (`serde_json` "expected value at line 1 column 1") on any non-JSON body. A normal
+  "no results" response — an empty/whitespace 200, or an HTML error/challenge/
+  gateway page — therefore became a *module error* that counts as a failure and
+  cools the provider off via the circuit breaker, when it should be treated as
+  simply empty. Fixed: a body that isn't JSON-shaped (doesn't start with `{`/`[`)
+  now returns the `Ok(Value::Null)` no-results sentinel the auth/quota branches
+  already use (read as empty by `extract_items`), with a debug log; a body that
+  *looks* like JSON but won't parse still errors (genuine schema-drift signal). A
+  universal defensive improvement — a misbehaving or empty keyed-API response
+  degrades gracefully instead of erroring and tripping the breaker on an ordinary
+  no-match. Regression-tested (empty/whitespace/HTML/plain-text → Null + no items;
+  valid JSON parses; truncated JSON-shaped body still errors). No rule/module
+  change. Gate green: fmt/clippy/doc clean, lib 3,288 (+2), 24 arch guards, 0
+  failures. **Paired:** `SOLUTION_TREE` cycle 57 note — same commit.

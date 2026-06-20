@@ -1649,3 +1649,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   cluster fires; single-hub star is silent). Rule count 68→**69**. Gate green: lib
   (3,286) + integration 0 failures, 24 arch guards, fmt/clippy/doc clean. Paired:
   `PROBLEM_TREE` §8 cycle 56 — same commit.
+- **2026-06-20** — **Cycle 57 (SeekNow parse robustness, found empirically).** The
+  all-APIs "Ali Kareem" validation scan both proved the comprehensive defaults
+  (44 distinct modules dispatched) and exposed a defect: `see_know::client::
+  parse_response` errored on a non-JSON body, so an ordinary empty/HTML/gateway "no
+  results" response counted as a module failure and tripped the circuit breaker.
+  Fix: a non-JSON-shaped body (not starting `{`/`[`) returns the `Ok(Value::Null)`
+  no-results sentinel (same one the auth/quota branches use; `extract_items` reads
+  it as empty), while a JSON-shaped-but-malformed body still errors (drift signal).
+  Defensive + universal: any keyed-API empty/garbage response now degrades to "no
+  results" rather than a breaker-tripping error. Regression-tested. No rule/module
+  change. Gate green: lib 3,288 (+2), 24 arch guards, fmt/clippy/doc clean. Paired:
+  `PROBLEM_TREE` §8 cycle 57 — same commit.
