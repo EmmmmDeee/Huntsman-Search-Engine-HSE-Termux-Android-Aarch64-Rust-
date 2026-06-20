@@ -3641,7 +3641,7 @@ mod all_eleven_classes {
             .map(|(src, lat, lon, conf)| au_coord(src, *lat, *lon, *conf))
             .collect();
         let corrs = correlate_entities(&ents, "s");
-        let fix = extract_au_location_fix(&corrs);
+        let fix = extract_au_location_fix(&corrs, &ents);
 
         assert!(fix.is_object(), "best_location must be a JSON object");
         assert_eq!(fix["state"], "NSW", "state must be NSW");
@@ -3779,7 +3779,7 @@ mod all_eleven_classes {
         ents.push(us);
 
         let corrs = correlate_entities(&ents, "s");
-        let fix = extract_au_location_fix(&corrs);
+        let fix = extract_au_location_fix(&corrs, &ents);
         assert_eq!(
             fix["state"], "NSW",
             "AU fix must survive a foreign sighting: {fix}"

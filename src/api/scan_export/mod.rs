@@ -147,7 +147,7 @@ pub(crate) fn build_scan_report(
         entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
     }
     let correlations = store.correlations_for_scan(scan_id)?;
-    let best_location = extract_au_location_fix(&correlations);
+    let best_location = extract_au_location_fix(&correlations, &entities);
     Ok(Some(json!({
         "scan": scan,
         "entities": entities,
@@ -180,8 +180,16 @@ pub(crate) fn build_scan_report(
 /// Returns a JSON object `{lat, lon, geohash, state, synergy_confidence,
 /// source_count, class_count, severity}` from the highest-rank AU-059 firing,
 /// or `serde_json::Value::Null` when no AU-059 correlation exists for the scan.
+/// The AU-059 `best_location` for the export, read **structurally** from the
+/// scan entities rather than by parsing the finding prose. It is present iff
+/// AU-059 actually fired this scan (the gated, ranked finding); the geo fields
+/// come from the one canonical [`crate::core::correlator::au059_synergy_fix`]
+/// computation the rule itself uses, so the structured export and the finding
+/// can never drift (they did, by construction, when this re-parsed the prose).
+/// Severity and the post-hoc `rank` are taken from the emitted correlation.
 pub(crate) fn extract_au_location_fix(
     correlations: &[crate::core::correlator::Correlation],
+    entities: &[crate::core::entity::Entity],
 ) -> serde_json::Value {
     let best = correlations
         .iter()
@@ -194,62 +202,21 @@ pub(crate) fn extract_au_location_fix(
     let Some(c) = best else {
         return serde_json::Value::Null;
     };
-    let desc = &c.description;
-
-    // source_count: first token before " AU coordinate"
-    let source_count: Option<u32> = desc
-        .split_once(" AU coordinate")
-        .and_then(|(n, _)| n.trim().parse().ok());
-
-    // class_count: token before " orthogonal source class"
-    let class_count: Option<u32> = desc
-        .split_once(" orthogonal source class")
-        .and_then(|(pre, _)| pre.rsplit_once(' ').map(|(_, n)| n))
-        .and_then(|n| n.parse().ok());
-
-    // lat,lon: after "converge on "
-    let (lat, lon) = desc
-        .split_once("converge on ")
-        .and_then(|(_, rest)| rest.split_once(' '))
-        .and_then(|(coord, _)| coord.split_once(','))
-        .and_then(|(la, lo)| {
-            let la: f64 = la.parse().ok()?;
-            let lo: f64 = lo.parse().ok()?;
-            Some((la, lo))
-        })
-        .unwrap_or((0.0, 0.0));
-
-    // geohash: between "geohash=" and ","
-    let geohash = desc
-        .split_once("geohash=")
-        .and_then(|(_, rest)| rest.split_once(','))
-        .map(|(gh, _)| gh.to_string())
-        .unwrap_or_default();
-
-    // state: between "state=" and ")"
-    let state = desc
-        .split_once("state=")
-        .and_then(|(_, rest)| rest.split_once(')'))
-        .map(|(st, _)| st.to_string())
-        .unwrap_or_default();
-
-    // synergy_confidence: after "synergy confidence " and before " —"
-    let synergy_confidence: f64 = desc
-        .split_once("synergy confidence ")
-        .and_then(|(_, rest)| rest.split_once(" —"))
-        .and_then(|(sc, _)| sc.parse().ok())
-        .unwrap_or(0.0);
+    // Recompute the structured fix from the same entities and gate the rule used.
+    let Some(fix) = crate::core::correlator::au059_synergy_fix(entities) else {
+        return serde_json::Value::Null;
+    };
 
     json!({
-        "lat": lat,
-        "lon": lon,
-        "geohash": geohash,
-        "state": state,
-        "synergy_confidence": synergy_confidence,
+        "lat": fix.lat,
+        "lon": fix.lon,
+        "geohash": fix.geohash,
+        "state": fix.state,
+        "synergy_confidence": fix.synergy_confidence,
         "severity": c.severity.as_canonical(),
         "rank": c.rank,
-        "source_count": source_count,
-        "class_count": class_count,
+        "source_count": fix.count,
+        "class_count": fix.class_names.len(),
         "rule_id": "AU-059",
     })
 }

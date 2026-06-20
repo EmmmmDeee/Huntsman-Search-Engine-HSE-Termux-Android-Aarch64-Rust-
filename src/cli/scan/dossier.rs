@@ -294,6 +294,24 @@ fn print_diagnostics(scan: &Scan, entities: &[Entity], kind: &str, value: &str, 
     let g = &diag.geo_precision;
     println!("━━━ GEO INTELLIGENCE ━━━");
     println!();
+    // Headline answer first: the single best location estimate when AU-059's
+    // cross-seed synergy gate fires (≥2 AU coordinates across ≥2 orthogonal
+    // source classes). Same structured fix the API export and the AU-059 finding
+    // carry — one computation, three renderings.
+    if let Some(fix) = crate::core::correlator::au059_synergy_fix(entities) {
+        println!(
+            "  Best location estimate: {:.4},{:.4}  (geohash={}, state={})",
+            fix.lat, fix.lon, fix.geohash, fix.state
+        );
+        println!(
+            "    cross-seed synergy: {} AU coordinate(s) across {} orthogonal source class(es) [{}], confidence {:.2}",
+            fix.count,
+            fix.class_names.len(),
+            fix.class_names.join(", "),
+            fix.synergy_confidence
+        );
+        println!();
+    }
     println!(
         "  Coordinates: {} total ({} with geohash, {} with timezone)",
         g.coordinates_count, g.coords_with_geohash, g.coords_with_timezone

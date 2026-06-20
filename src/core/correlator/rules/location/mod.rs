@@ -443,24 +443,65 @@ fn is_australian_coord(e: &Entity, (lat, lon): (f64, f64)) -> bool {
 /// collection methods agreeing is the strongest geo evidence short of a warrant);
 /// exactly 2 ⇒ `Medium`. The dominant AU state is reported for jurisdictional
 /// context (feeds AU-056).
-pub(in crate::core::correlator) fn rule_au_059_cross_seed_geo_synergy(
-    entities: &[Entity],
-    scan_id: &str,
-    ts: u64,
-) -> Vec<Correlation> {
+/// The structured AU-059 cross-seed geo-synergy fix — the **single source** of
+/// the synthesised location, so the rule's prose and the API's `best_location`
+/// fields can never disagree (the API used to recover these by string-splitting
+/// the finding description, which drift-broke on any reword — Rule 3).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SynergyFix {
+    /// Contributing AU person-anchored coordinates.
+    pub count: usize,
+    /// Distinct orthogonal source-class names, sorted.
+    pub class_names: Vec<&'static str>,
+    pub lat: f64,
+    pub lon: f64,
+    pub geohash: String,
+    pub state: &'static str,
+    pub synergy_confidence: f64,
+    pub severity: Severity,
+    /// UIDs of the contributing coordinate entities (sorted, deduped).
+    pub uids: Vec<String>,
+}
+
+impl SynergyFix {
+    /// The canonical AU-059 finding description, formatted from the structured
+    /// fix so the prose and the fields are one and the same.
+    pub(crate) fn description(&self) -> String {
+        format!(
+            "{} AU coordinate(s) from {} orthogonal source class(es) [{}] converge on \
+             {lat:.4},{lon:.4} (geohash={gh}, state={state}); synergy confidence {conf:.2} \
+             — MITRE T1591.001",
+            self.count,
+            self.class_names.len(),
+            self.class_names.join(", "),
+            lat = self.lat,
+            lon = self.lon,
+            gh = self.geohash,
+            state = self.state,
+            conf = self.synergy_confidence,
+        )
+    }
+}
+
+/// Compute the AU-059 cross-seed geo-synergy fix for a scan's entities, or `None`
+/// when the synergy gate isn't met (fewer than two AU person-anchored
+/// coordinates, or fewer than two distinct orthogonal source classes). Pure and
+/// deterministic. Shared by the rule (which formats its finding from it) and the
+/// API export (which reads its fields directly).
+pub(crate) fn au059_synergy_fix(entities: &[Entity]) -> Option<SynergyFix> {
     // Australian person-anchored coordinates only.
     let parsed: Vec<(&Entity, (f64, f64))> = person_anchored_coords(entities)
         .into_iter()
         .filter(|(e, ll)| is_australian_coord(e, *ll))
         .collect();
     if parsed.len() < 2 {
-        return Vec::new();
+        return None;
     }
 
     // The synergy gate: ≥2 *distinct orthogonal source classes* must agree.
     let classes = distinct_geo_classes(&parsed);
     if classes.len() < 2 {
-        return Vec::new();
+        return None;
     }
 
     // Confidence-weighted centroid, each weight boosted by class diversity so a
@@ -470,9 +511,7 @@ pub(in crate::core::correlator) fn rule_au_059_cross_seed_geo_synergy(
         .iter()
         .map(|(e, ll)| (*ll, e.c_effective() * class_bonus))
         .collect();
-    let Some((lat, lon)) = crate::util::geometry::weighted_centroid(&weighted) else {
-        return Vec::new();
-    };
+    let (lat, lon) = crate::util::geometry::weighted_centroid(&weighted)?;
 
     // Dominant AU state across the contributing coordinates (for AU-056 context).
     let state = au_state_majority(&parsed).unwrap_or("AU");
@@ -483,7 +522,7 @@ pub(in crate::core::correlator) fn rule_au_059_cross_seed_geo_synergy(
         .iter()
         .map(|(e, _)| e.c_effective())
         .fold(0.0_f64, f64::max);
-    let synergy_conf = (peak + (classes.len() as f64 - 1.0) * 0.08).min(0.97);
+    let synergy_confidence = (peak + (classes.len() as f64 - 1.0) * 0.08).min(0.97);
 
     let severity = if classes.len() >= 3 {
         Severity::High
@@ -491,27 +530,40 @@ pub(in crate::core::correlator) fn rule_au_059_cross_seed_geo_synergy(
         Severity::Medium
     };
 
-    let mut class_names: Vec<&str> = classes.iter().map(geo_class_name).collect();
+    let mut class_names: Vec<&'static str> = classes.iter().map(geo_class_name).collect();
     class_names.sort_unstable();
-    let gh = crate::util::geohash::geohash(lat, lon, 6);
 
     let mut uids: Vec<String> = parsed.iter().map(|(e, _)| e.uid.clone()).collect();
     uids.sort_unstable();
     uids.dedup();
 
+    Some(SynergyFix {
+        count: parsed.len(),
+        class_names,
+        lat,
+        lon,
+        geohash: crate::util::geohash::geohash(lat, lon, 6),
+        state,
+        synergy_confidence,
+        severity,
+        uids,
+    })
+}
+
+pub(in crate::core::correlator) fn rule_au_059_cross_seed_geo_synergy(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let Some(fix) = au059_synergy_fix(entities) else {
+        return Vec::new();
+    };
     vec![Correlation::new(
         "AU-059",
         "Cross-seed geographic synergy (orthogonal-class fix)",
-        severity,
-        format!(
-            "{} AU coordinate(s) from {} orthogonal source class(es) [{}] converge on \
-             {lat:.4},{lon:.4} (geohash={gh}, state={state}); synergy confidence {synergy_conf:.2} \
-             — MITRE T1591.001",
-            parsed.len(),
-            classes.len(),
-            class_names.join(", "),
-        ),
-        uids,
+        fix.severity,
+        fix.description(),
+        fix.uids.clone(),
         scan_id,
         ts,
     )]

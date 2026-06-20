@@ -1918,3 +1918,23 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   determinism proptest all pass unchanged); +3 helper unit tests. Gate green:
   fmt/clippy/doc clean, 3,264 lib tests (+3), 0 failures. **Paired:**
   `SOLUTION_TREE` SOL-CORR note + §5 — same commit.
+- **2026-06-20** — **Cycle 28 (S→P, Rule 3): the AU-059 location fix is one
+  structured source — kill the prose round-trip, surface it in the dossier (C5).**
+  Defect: the API's `extract_au_location_fix` recovered the structured
+  `best_location` (lat, lon, geohash, state, synergy confidence, source/class
+  counts) by **string-splitting AU-059's human finding description** — a
+  single-source violation that would silently null/garble `best_location` the
+  moment anyone reworded the finding. Fix: extracted `au059_synergy_fix(entities)
+  -> Option<SynergyFix>` as the **one** computation (the same gate + weighted
+  centroid AU-059 already ran); the rule now *formats its description from* the
+  struct, and the API reads the struct's fields directly (no parsing — severity
+  and the post-hoc rank still come from the emitted correlation). The CLI debug
+  bundle recomputes structurally too. **C5 bonus:** surfaced the best location
+  estimate as the headline of the dossier GEO INTELLIGENCE section (it was only
+  in the API export + buried in a correlation line before). Behaviour-preserving
+  (AU-059's 10 rule tests + the geo-synergy sims + all-eleven-classes all pass);
+  the prose-coupled API tests were replaced with a structural-robustness test
+  that corrupts the description and proves the fix still resolves from entities.
+  C5 stays `[~]` (best-estimate point now surfaced; confidence-radius render
+  still open). Gate green: fmt/clippy/doc clean, 3,264 lib tests, 0 failures.
+  **Paired:** `SOLUTION_TREE` SOL-GEOINT note + §5 — same commit.

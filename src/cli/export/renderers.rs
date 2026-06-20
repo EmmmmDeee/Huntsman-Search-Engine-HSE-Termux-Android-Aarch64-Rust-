@@ -340,7 +340,11 @@ pub(crate) fn render_debug_bundle(
     }
 
     // Best AU geolocation fix (AU-059 cross-seed synergy), if one fired.
-    let fix = crate::api::scan_export::extract_au_location_fix(&correlations);
+    // Recomputed structurally from the scan's confirmed entities (the set the
+    // rule ran on — candidates quarantined), not parsed from the finding prose.
+    let mut fix_entities = store.entities_for_scan(sid)?;
+    fix_entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+    let fix = crate::api::scan_export::extract_au_location_fix(&correlations, &fix_entities);
     if fix != serde_json::Value::Null {
         let lat = fix["lat"].as_f64().unwrap_or(0.0);
         let lon = fix["lon"].as_f64().unwrap_or(0.0);

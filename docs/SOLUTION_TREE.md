@@ -1222,3 +1222,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Behaviour-preserving (network 4 + AU-060 8 + path determinism proptest
   unchanged); +3 helper tests. Gate green: 3,264 lib tests. Paired:
   `PROBLEM_TREE` §8 cycle 27 — same commit.
+- **2026-06-20** — **Cycle 28 (S→P, Rule 3 + C5): one structured AU-059 location
+  fix.** SOL-GEOINT / single-source: the API recovered `best_location`'s fields by
+  parsing AU-059's finding prose. Extracted `au059_synergy_fix(entities)` as the
+  sole computation — the rule formats its description *from* it and the API reads
+  its fields directly (no string-splitting; severity/rank still from the
+  correlation). Surfaced the best-estimate as the headline of the dossier GEO
+  INTELLIGENCE section. Behaviour-preserving (AU-059 rule tests + geo-synergy sims
+  + all-eleven-classes pass); replaced the prose-coupled API tests with a
+  corrupt-the-description robustness test. SOL-GEOINT stays `[~]` (point surfaced;
+  confidence-radius render open). Gate green: 3,264 lib tests. Paired:
+  `PROBLEM_TREE` §8 cycle 28 — same commit.
