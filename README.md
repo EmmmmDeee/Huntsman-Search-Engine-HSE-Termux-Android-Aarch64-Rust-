@@ -71,6 +71,12 @@ so keys never leave the device).
 > That's the whole install: **one command, then `hse serve`, then open
 > `http://127.0.0.1:8080` in Chrome.** Everything below is reference detail.
 
+> **Web & API scans are as thorough as the CLI.** A scan launched from the
+> Chrome SPA's **New Scan** wizard, or via `POST /api/v1/scans` with `options`
+> omitted, uses the same comprehensive defaults as `hse scan` — depth 3,
+> expansion floor 0.20, entity cap 2500 — so you get the full seed → identifiers
+> → pivots → infrastructure sweep without tuning anything.
+
 > **Termux battery & background (required for long scans):** Android → Settings → Apps → Termux → Battery → set to **Unrestricted** and enable "Allow background data". Without this Android kills Termux mid-scan.
 
 ### Manual build (advanced — the installer already does this)

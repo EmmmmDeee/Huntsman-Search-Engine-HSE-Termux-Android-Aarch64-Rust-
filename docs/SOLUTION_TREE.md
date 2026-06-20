@@ -1608,3 +1608,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   "debt down, capability intact" pattern as cycles 51 (ipapi, qld). No rule change
   (count 68). Gate green: fmt/clippy/doc clean, lib (3,280) + integration 0 failures,
   24 arch guards. Paired: `PROBLEM_TREE` §8 cycle 53 — same commit.
+- **2026-06-20** — **Cycle 54 (API/SPA scans inherit the comprehensive defaults).**
+  Unified the scan-default story across all surfaces. New `DEFAULT_MIN_EXPAND_CONFIDENCE
+  = 0.20` constant is the single source of truth (CLI flag default, serde field
+  default, and `default_scan_options` all reference it). The serde defaults are now
+  comprehensive (depth `MAX_DEPTH`, floor 0.20, `default_request_max_entities` =
+  Some(2500)) while `ScanOptions::default()` is **decoupled** and stays conservative
+  (depth 0, floor 0.50, None) for library/test determinism — locked by a regression
+  test. The SPA wizard's form defaults and `all` use-case were set to depth 3 / floor
+  0.20 / cap 2500 (the `buildWizardOptions` override path is what mattered). Result:
+  CLI, HTTP API, Chrome SPA, and live scans all run the same comprehensive sweep, so
+  a seed scanned from the web UI is as thorough as one from `hse scan` — recall
+  maximised everywhere, precision still governed by the strict correlation floors. No
+  rule/module change. Gate green: fmt/clippy/doc clean, lib (3,282) + integration 0
+  failures, 24 arch guards. Paired: `PROBLEM_TREE` §8 cycle 54 — same commit.

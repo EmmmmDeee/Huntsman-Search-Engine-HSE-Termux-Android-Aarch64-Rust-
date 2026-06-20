@@ -2410,3 +2410,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   registry-count, MODULES.md, and README-count guards pass. No rule change (count
   68). Gate green: fmt/clippy/doc clean, lib (3,280) + integration 0 failures, 24
   arch guards. **Paired:** `SOLUTION_TREE` cycle 53 note — same commit.
+- **2026-06-20** — **Cycle 54 (comprehensive scans for the API + Chrome SPA).**
+  Cycle 48 made `hse scan` comprehensive (depth `MAX_DEPTH`, 0.20 floor, 2500-entity
+  cap), but the HTTP API and the SPA "New Scan" path still ran the conservative
+  defaults — the SPA `buildWizardOptions()` overrode the use-case with form defaults
+  of depth 2 / floor 0.50 / no cap, and the API's per-field serde defaults gave floor
+  0.50 / no cap. So Chrome-UI and API scans were materially less thorough than the
+  CLI for the same seed — a gap against the directive's "lightweight Chrome UI" +
+  "maximise discovery for every seed". Closed it by making the **serde / request
+  defaults** comprehensive while keeping the **library `ScanOptions::default()`**
+  conservative for programmatic/test determinism: introduced
+  `DEFAULT_MIN_EXPAND_CONFIDENCE = 0.20` as the single source of truth (CLI clap
+  default + serde field default + `default_scan_options` all reference it),
+  **decoupled** the serde field default from `Default::default()` (the library
+  default now uses literal 0.50; the serde default returns 0.20), added a
+  `default_request_max_entities` serde default of `Some(2500)`, and set the SPA
+  wizard's form defaults + `all` use-case to depth 3 / floor 0.20 / cap 2500. Lock
+  tests pin both halves: `library_default_stays_conservative_and_decoupled_from_serde`
+  (default stays depth 0 / 0.50 / None) and `scan_request_defaults_to_comprehensive_options`
+  + `empty_options_object_matches_product_defaults` (a bare `{"value":...}` request
+  and `options:{}` both yield depth 3 / 0.20 / 2500). Now every surface — CLI, API,
+  SPA, live — scans with the same comprehensive defaults. No rule/module change.
+  Gate green: fmt/clippy/doc clean, lib (3,282) + integration 0 failures, 24 arch
+  guards. **Paired:** `SOLUTION_TREE` cycle 54 note — same commit.

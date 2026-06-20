@@ -28,7 +28,8 @@ mod scoring;
 mod options;
 pub(crate) use options::default_scan_options;
 pub use options::{
-    DEFAULT_MAX_ENTITIES, DEFAULT_SCAN_DEPTH, ExpansionStrategy, MAX_DEPTH, ScanOptions,
+    DEFAULT_MAX_ENTITIES, DEFAULT_MIN_EXPAND_CONFIDENCE, DEFAULT_SCAN_DEPTH, ExpansionStrategy,
+    MAX_DEPTH, ScanOptions,
 };
 // Re-exported so external callers keep using `crate::core::scan::expansion_weight`
 // etc. unchanged after the expansion-economics model moved to `scoring`.
@@ -647,9 +648,12 @@ pub struct ScanRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<TargetKind>,
     pub value: String,
-    /// Per-scan options. Defaults to [`default_scan_options`] (product default
-    /// depth 2) when omitted, so a bare `{"value": "..."}` request recurses two
-    /// hops just like the CLI and web UI.
+    /// Per-scan options. Defaults to [`default_scan_options`] — the
+    /// **comprehensive** product defaults (depth 3, expansion floor 0.20, entity
+    /// cap 2500), matching `hse scan` — when omitted, so a bare
+    /// `{"value": "..."}` request is as thorough as the CLI and web UI. The same
+    /// values are the per-field serde defaults, so an `options` object that omits
+    /// any of these fields behaves identically to omitting `options` entirely.
     #[serde(default = "default_scan_options")]
     pub options: ScanOptions,
 }

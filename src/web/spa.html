@@ -435,9 +435,9 @@ const TARGET_KINDS = [
 const USE_CASES = {
   all: {
     label:'Complete (All)',
-    desc:'<b>Get anything and everything about the target — the no-compromise scan.</b><br><br>Every Huntsman module is enabled (slow), expansion runs to maximum depth (3) at the Probable floor, and ROI pruning is disabled so nothing is skipped. The seed kind is auto-detected. Equivalent to the CLI <code>hse scan --full</code>.',
+    desc:'<b>Get anything and everything about the target — the no-compromise scan.</b><br><br>Every Huntsman module is enabled (slow), expansion runs to maximum depth (3) at the comprehensive 0.20 floor (so even the seed\'s own derived identifiers expand), and ROI pruning is disabled so nothing is skipped. The seed kind is auto-detected. Equivalent to the CLI <code>hse scan --full</code>.',
     pick:_m=>true,
-    options:()=>({depth:3, min_expand_confidence:0.40, max_roi:false})
+    options:()=>({depth:3, min_expand_confidence:0.20, max_roi:false})
   },
   footprint: {
     label:'Footprint',
@@ -493,8 +493,12 @@ const S = {
     usecase:'all', modules:null,
     activeTab:'usecase', dataType:null,
     showAdv:false,
-    options:{ exclude_modules:[], throttle_ms:250, module_timeout_ms:null, depth:2,
-              min_expand_confidence:0.50, max_entities:null, max_wall_time_secs:null,
+    // Comprehensive standard-scan defaults, matching `hse scan` and the API's
+    // default_scan_options: depth 3 / expansion floor 0.20 / entity cap 2500.
+    // buildWizardOptions() submits these, and the Advanced-options form displays
+    // them, so a web scan is as thorough as the CLI out of the box.
+    options:{ exclude_modules:[], throttle_ms:250, module_timeout_ms:null, depth:3,
+              min_expand_confidence:0.20, max_entities:2500, max_wall_time_secs:null,
               max_concurrent:2, min_confidence:null, free_only:false }
   }
 };
@@ -1416,7 +1420,7 @@ function buildWizardOptions(){
     throttle_ms: Number(W.options.throttle_ms)||0,
     max_concurrent: Number(W.options.max_concurrent)||0,
     depth: Number(W.options.depth)||0,
-    min_expand_confidence: Number(W.options.min_expand_confidence)||0.75,
+    min_expand_confidence: Number(W.options.min_expand_confidence)||0.20,
     free_only: !!W.options.free_only
   };
   if (W.options.module_timeout_ms!=null && W.options.module_timeout_ms!=='') opts.module_timeout_ms = Number(W.options.module_timeout_ms);
@@ -2492,7 +2496,7 @@ function renderInfo(host, scan){
     ['Max concurrent', String(opts.max_concurrent??0)],
     ['Min confidence', opts.min_confidence!=null?opts.min_confidence.toFixed(2):'<span class="text-muted">no filter</span>'],
     ['Depth', String(opts.depth??0)],
-    ['Min expand C_eff', String(opts.min_expand_confidence??0.75)],
+    ['Min expand C_eff', String(opts.min_expand_confidence??0.20)],
     ['Max entities', opts.max_entities!=null?String(opts.max_entities):'<span class="text-muted">unlimited</span>'],
     ['Max wall time (s)', opts.max_wall_time_secs!=null?String(opts.max_wall_time_secs):'<span class="text-muted">unlimited</span>'],
     ['Tags', (opts.scan_tags||[]).length ? opts.scan_tags.map(t=>`<span class="tag">${esc(t)}</span>`).join(' ') : '<span class="text-muted">none</span>'],

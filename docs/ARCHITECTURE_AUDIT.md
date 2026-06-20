@@ -122,6 +122,15 @@ priority-ordered guarded dispatch → entities persisted (FTS-indexed) + events
 broadcast (SSE) → expansion rounds → `correlator.run` → diagnostics → CLI
 table / dossier / JSON, or the SPA.
 
+All three entry points apply the **same comprehensive scan defaults**: a
+`POST /api/v1/scans` with `options` omitted (or any field omitted), and the
+Chrome-SPA "New Scan" wizard, both default to depth 3 / expansion floor 0.20 /
+entity cap 2500 — exactly what `hse scan` uses. The API defaults flow from
+`ScanRequest`'s serde field defaults (`core::scan::options`); the SPA submits the
+same values from `buildWizardOptions()`. The library `ScanOptions::default()` is
+deliberately decoupled and stays conservative (depth 0, floor 0.50, uncapped) so
+programmatic callers and the test suite remain deterministic.
+
 ## CI / supply chain
 
 - **`ci.yml`** — `fmt --check`, `clippy --all-targets -D warnings`,
