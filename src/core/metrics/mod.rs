@@ -56,6 +56,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::entity::{Classification, Entity};
+use crate::core::graph::{Graph, UNREACHABLE};
 use crate::core::relation::Relation;
 
 /// Histogram of entities across the three [`Classification`] tiers.
@@ -212,57 +213,34 @@ fn subject_uid(entities: &[Entity]) -> Option<&str> {
 /// reach primitive [`compute`] anchors on the subject.
 #[must_use]
 pub fn reachability(entities: &[Entity], relations: &[Relation], anchor_uid: &str) -> SeedReach {
-    use std::collections::{HashMap, HashSet, VecDeque};
-
+    // The denominator is the RAW entity count (the coverage the operator sees), even if
+    // duplicate UIDs collapse to one node in the graph.
     let total = entities.len();
-    let present: HashSet<&str> = entities.iter().map(|e| e.uid.as_str()).collect();
-    if !present.contains(anchor_uid) {
+    let g = Graph::build(entities, relations);
+    let Some(src) = g.index_of(anchor_uid) else {
         return SeedReach::unanchored();
-    }
+    };
 
-    // Undirected adjacency over present-endpoint edges (self-loops skipped); neighbour
-    // lists sorted + deduped so the sweep is deterministic and degree is distinct.
-    let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
-    for r in relations {
-        let (f, t) = (r.from_uid.as_str(), r.to_uid.as_str());
-        if f == t || !present.contains(f) || !present.contains(t) {
-            continue;
-        }
-        adj.entry(f).or_default().push(t);
-        adj.entry(t).or_default().push(f);
-    }
-    for neighbours in adj.values_mut() {
-        neighbours.sort_unstable();
-        neighbours.dedup();
-    }
-
+    // Cycle-safe breadth-first hop distances from the anchor (the shared primitive's
+    // explicit-visited BFS), folded into the per-hop histogram. Bounded by
+    // [`MAX_REACH_DEPTH`] so a pathological chain stays capped — a real footprint is far
+    // shallower, so the bound never bites a genuine scan.
+    let dist = g.bfs_levels(src);
     let mut reached_at_hop: Vec<usize> = vec![1]; // hop 0 = the subject itself
-    let mut visited: HashSet<&str> = HashSet::new();
-    visited.insert(anchor_uid);
-    let mut frontier: VecDeque<(&str, usize)> = VecDeque::new();
-    frontier.push_back((anchor_uid, 0));
     let mut max_depth = 0usize;
-    while let Some((node, depth)) = frontier.pop_front() {
-        if depth >= MAX_REACH_DEPTH {
+    let mut reachable_total = 1usize; // the subject is always reached
+    for (i, &hop) in dist.iter().enumerate() {
+        if i == src || hop == UNREACHABLE || hop > MAX_REACH_DEPTH {
             continue;
         }
-        let Some(neighbours) = adj.get(node) else {
-            continue;
-        };
-        for &nb in neighbours {
-            if visited.insert(nb) {
-                let hop = depth + 1;
-                if reached_at_hop.len() <= hop {
-                    reached_at_hop.resize(hop + 1, 0);
-                }
-                reached_at_hop[hop] += 1;
-                max_depth = max_depth.max(hop);
-                frontier.push_back((nb, hop));
-            }
+        if reached_at_hop.len() <= hop {
+            reached_at_hop.resize(hop + 1, 0);
         }
+        reached_at_hop[hop] += 1;
+        max_depth = max_depth.max(hop);
+        reachable_total += 1;
     }
 
-    let reachable_total = visited.len();
     SeedReach {
         anchored: true,
         max_depth,

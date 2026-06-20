@@ -20,11 +20,12 @@
 //! ([`MAX_BETWEENNESS_NODES`]) so the O(V·E) betweenness can't run away on a low-RAM
 //! Termux device — above the bound it ranks on degree alone.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use serde::Serialize;
 
 use crate::core::entity::Entity;
+use crate::core::graph::Graph;
 use crate::core::relation::Relation;
 
 /// Above this node count the exact betweenness (Brandes, O(V·E)) is skipped and pivots
@@ -61,41 +62,17 @@ pub struct PivotNode {
 /// neighbour order), bounded ([`MAX_BETWEENNESS_NODES`] / [`PIVOT_CAP`]), read-only.
 #[must_use]
 pub fn detect(entities: &[Entity], relations: &[Relation]) -> Vec<PivotNode> {
-    // Node set = present entities, indexed in sorted-UID order for determinism.
-    let present: HashSet<&str> = entities.iter().map(|e| e.uid.as_str()).collect();
-    let mut uids: Vec<&str> = present.iter().copied().collect();
-    uids.sort_unstable();
-    let n = uids.len();
+    // The shared primitive gives the deterministic, deduplicated, self-loop-free
+    // undirected adjacency over the present entities (nodes in ascending-UID order).
+    let g = Graph::build(entities, relations);
+    let n = g.node_count();
     if n == 0 {
         return Vec::new();
     }
-    let index: HashMap<&str, usize> = uids.iter().enumerate().map(|(i, &u)| (u, i)).collect();
 
-    // Undirected adjacency over edges whose BOTH endpoints are present; collapse
-    // parallel edges and skip self-loops so a node's degree is its distinct neighbours.
-    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
-    let mut seen: HashSet<(usize, usize)> = HashSet::new();
-    for r in relations {
-        let (Some(&a), Some(&b)) = (index.get(r.from_uid.as_str()), index.get(r.to_uid.as_str()))
-        else {
-            continue;
-        };
-        if a == b {
-            continue;
-        }
-        let key = if a < b { (a, b) } else { (b, a) };
-        if seen.insert(key) {
-            adj[a].push(b);
-            adj[b].push(a);
-        }
-    }
-    for neighbours in &mut adj {
-        neighbours.sort_unstable();
-    }
-
-    let degree: Vec<usize> = adj.iter().map(Vec::len).collect();
+    let degree: Vec<usize> = (0..n).map(|i| g.degree(i)).collect();
     let betweenness = if n <= MAX_BETWEENNESS_NODES {
-        brandes_betweenness(&adj)
+        brandes_betweenness(&g)
     } else {
         vec![0.0; n]
     };
@@ -109,7 +86,7 @@ pub fn detect(entities: &[Entity], relations: &[Relation]) -> Vec<PivotNode> {
             let norm_degree = degree[i] as f64 / max_degree;
             let score = (0.7 * betweenness[i] + 0.3 * norm_degree).clamp(0.0, 1.0);
             PivotNode {
-                uid: uids[i].to_string(),
+                uid: g.uid(i).to_string(),
                 degree: degree[i],
                 betweenness: betweenness[i],
                 score,
@@ -127,12 +104,12 @@ pub fn detect(entities: &[Entity], relations: &[Relation]) -> Vec<PivotNode> {
 }
 
 /// Brandes' exact betweenness centrality for an unweighted UNDIRECTED graph, normalised
-/// to `[0, 1]` by the maximum possible value `(n-1)(n-2)/2`. Deterministic (the caller
-/// sorts each node's neighbours). O(V·E) time, O(V) working space per source — the
-/// standard accumulation: a forward BFS counts shortest-path multiplicities, a reverse
-/// pass over the BFS stack accumulates each node's dependency.
-fn brandes_betweenness(adj: &[Vec<usize>]) -> Vec<f64> {
-    let n = adj.len();
+/// to `[0, 1]` by the maximum possible value `(n-1)(n-2)/2`. Deterministic (the
+/// [`Graph`] sorts each node's neighbours). O(V·E) time, O(V) working space per source —
+/// the standard accumulation: a forward BFS counts shortest-path multiplicities, a
+/// reverse pass over the BFS stack accumulates each node's dependency.
+fn brandes_betweenness(g: &Graph) -> Vec<f64> {
+    let n = g.node_count();
     let mut bc = vec![0.0f64; n];
     for s in 0..n {
         let mut stack: Vec<usize> = Vec::new();
@@ -145,7 +122,7 @@ fn brandes_betweenness(adj: &[Vec<usize>]) -> Vec<f64> {
         queue.push_back(s);
         while let Some(v) = queue.pop_front() {
             stack.push(v);
-            for &w in &adj[v] {
+            for &w in g.neighbours(v) {
                 if dist[w] < 0 {
                     dist[w] = dist[v] + 1;
                     queue.push_back(w);

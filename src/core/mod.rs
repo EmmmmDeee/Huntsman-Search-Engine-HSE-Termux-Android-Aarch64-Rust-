@@ -19,6 +19,7 @@ pub mod error;
 pub mod event;
 pub mod geo_family;
 pub mod gexf;
+pub mod graph;
 pub mod hooks;
 pub mod leads;
 pub mod live;
