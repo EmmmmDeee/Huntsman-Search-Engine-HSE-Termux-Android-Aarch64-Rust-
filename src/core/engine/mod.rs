@@ -693,6 +693,56 @@ impl ScanEngine {
                 Err(e) => warn!(scan_id = %scan.id, error = %e, "correlator failed"),
             }
 
+            // ── Cross-scan pathway-template learning (C1 universal linking) ──
+            // Generalise this scan's confirmed connections into direction-
+            // canonical routes. A route a *prior* scan already proved is credited
+            // here as historically corroborated (the engine-level AU-065 finding —
+            // it is storage-dependent, so it can't be a pure correlator rule);
+            // then every route this scan produced is recorded, so a link learned
+            // once lifts every later scan. Best-effort: a storage hiccup never
+            // aborts a finalised scan.
+            if let (Ok(ents), Ok(rels)) = (
+                store.entities_for_scan(&scan.id),
+                store.relations_for_scan(&scan.id),
+            ) {
+                for ct in crate::core::relation::connection_templates(&ents, &rels, 4) {
+                    let prior = store.pathway_template_count(&ct.template).unwrap_or(0);
+                    if prior >= 1 {
+                        let mut uids: std::collections::BTreeSet<String> =
+                            std::collections::BTreeSet::new();
+                        for (f, t) in &ct.pairs {
+                            uids.insert(f.clone());
+                            uids.insert(t.clone());
+                        }
+                        let c = crate::core::correlator::Correlation::new(
+                            "AU-065",
+                            "Cross-scan corroborated route",
+                            crate::core::correlator::Severity::Medium,
+                            format!(
+                                "the route [{}] connecting {} identity pair(s) here was \
+                                 confirmed in {} prior scan(s) — a historically proven \
+                                 attribution pattern, not a one-off",
+                                ct.template,
+                                ct.pairs.len(),
+                                prior,
+                            ),
+                            uids.into_iter().collect::<Vec<_>>(),
+                            scan.id.as_str(),
+                            crate::core::entity::unix_now(),
+                        );
+                        if store.upsert_correlation(&c).is_ok()
+                            && emitted_corr.insert(correlation_key(&c))
+                        {
+                            emitter.emit(
+                                &scan.id,
+                                EventKind::CorrelationFound { correlation: c },
+                            );
+                        }
+                    }
+                    let _ = store.record_pathway_template(&ct.template);
+                }
+            }
+
             // Persist the key pool to disk after every scan. Keys discovered
             // during this scan (from breach data, page bodies, entity values)
             // are permanently stored with full provenance metadata.

@@ -2005,3 +2005,27 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   substrate) and consult them at correlate time, so a route learned in one scan
   lifts every later scan — a storage+engine wiring step, scoped next.
   **Paired:** `SOLUTION_TREE` SOL-CORR note + §5 — same commit.
+- **2026-06-20** — **Cycle 33 (C1): recursive multi-pathway linking, increment 4 —
+  the universal/all-scans learning loop (cross-scan template store + AU-065).**
+  Closes the "use confirmed connections to *universally* arrive at the same
+  connection, improving all scans" leg. Built in three green sub-steps:
+  **(1)** extracted `core::relation::connection_templates` as the shared
+  generaliser (AU-064 now delegates to it — one definition, no drift);
+  **(2)** new `pathway_templates` SQLite table + `StoragePort::{record_pathway_template,
+  pathway_template_count}` (default no-op; `Store` impl in `storage/templates.rs`;
+  schema-snapshot test updated) — the cross-scan memory, reusing the
+  SOL-CACHE-INTERSCAN persistence pattern; **(3)** engine finalise wiring:
+  generalise this scan's confirmed connections, **credit** any route a *prior*
+  scan already proved as the engine-emitted **AU-065 cross-scan corroborated
+  route** (`Medium`), then **record** every route so it lifts later scans. AU-065
+  is storage-dependent (it reads the cross-scan count), so it is emitted by the
+  engine at finalise rather than a pure correlator rule — the 64-rule count is
+  unchanged. Consult-before-record ordering means a scan never self-credits.
+  Components unit-tested (`connection_templates` in graph; the store round-trip +
+  accumulation in `storage::templates`); glue compiles and regresses nothing.
+  Gate green: fmt/clippy/doc clean, 3,280 lib tests, 24 arch guards, 0 failures.
+  **Remaining refinement:** a two-scan end-to-end fixture for AU-065, and
+  same-target dedup so a re-scan isn't counted as independent corroboration.
+  **C1 is now delivered end-to-end** (orthogonal corroboration → gap analysis →
+  backward synthesis → universal cross-scan learning). **Paired:** `SOLUTION_TREE`
+  SOL-CORR `[~]` note + §5 — same commit.

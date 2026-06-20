@@ -1272,3 +1272,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   cross-scan persistence (`raw_archive`-backed template store + correlate-time
   consult) is the remaining storage+engine leg. Gate green: 3,279 lib tests (+4).
   Paired: `PROBLEM_TREE` §8 cycle 32 — same commit.
+- **2026-06-20** — **Cycle 33 (SOL-CORR, C1): universal cross-scan learning loop —
+  recursive-linking increment 4.** Closes SOL-CORR's universal leg. (1) Shared
+  `connection_templates` generaliser (AU-064 delegates). (2) New `pathway_templates`
+  table + `StoragePort::{record_pathway_template, pathway_template_count}` (Store
+  impl in `storage/templates.rs`, schema snapshot updated) — cross-scan memory on
+  the SOL-CACHE-INTERSCAN pattern. (3) Engine finalise: generalise → credit a
+  route any prior scan proved as the engine-emitted **AU-065** cross-scan finding
+  → record every route. Consult-before-record means no self-crediting; AU-065 is
+  storage-dependent so it's engine-emitted (not a pure rule, 64-rule count
+  unchanged). **SOL-CORR `[~]`→`[x]`** — C1's link-analysis program (orthogonal
+  corroboration, gap analysis, backward synthesis, universal learning) is
+  delivered end-to-end. Gate green: 3,280 lib tests. Paired: `PROBLEM_TREE` §8
+  cycle 33 — same commit.

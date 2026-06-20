@@ -85,7 +85,13 @@ allowlist remains.
   `api_key_probe`/`chain_intel`, must override, their default being empty). A
   guard rejects any unmapped module or out-of-register technique ID.
 - **`storage`** (`src/storage/`) — the single `StoragePort` implementation over
-  rusqlite (WAL + FTS5): events, entities, correlations, relations.
+  rusqlite (WAL + FTS5): events, entities, correlations, relations, the
+  inter-scan entity cache (`raw_archive`), and the cross-scan
+  `pathway_templates` store (C1 universal linking — a route confirmed in one
+  scan is credited in every later scan via the engine-emitted **AU-065**
+  cross-scan finding; AU-065 is storage-dependent so it is emitted by the engine
+  at finalise, not by a pure correlator rule, and is therefore distinct from the
+  64 correlator rules).
 - **`api`** (axum 0.8) — versioned `/api/v1`, SSE live stream, embedded SPA +
   vendor bundle; CSP + `127.0.0.1`-only bind (architecture invariant).
 - **`util`** — HTTP client (rustls + SSRF-guarded resolver), key pool, atomic

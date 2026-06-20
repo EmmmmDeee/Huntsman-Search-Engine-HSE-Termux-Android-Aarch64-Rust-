@@ -98,6 +98,23 @@ pub trait StoragePort: Send + Sync {
         Ok(None)
     }
 
+    // ── Cross-scan pathway-template learning (C1 universal linking) ───────────
+    /// Record that a direction-canonical pathway `template` was confirmed by a
+    /// scan, incrementing its cross-scan seen-count. Best-effort; callers ignore
+    /// the error. Default no-op for test doubles; the SQLite `Store` persists to
+    /// `pathway_templates`.
+    fn record_pathway_template(&self, _template: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// The number of *earlier* scans that confirmed `template` (0 if never).
+    /// Consulted before the current scan records its own templates, so a
+    /// non-zero count credits a route proven in a strictly earlier scan. Default
+    /// `0` for test doubles.
+    fn pathway_template_count(&self, _template: &str) -> Result<u32> {
+        Ok(0)
+    }
+
     // ── Maintenance ─────────────────────────────────────────────────────────
     /// Bound the backing store's write-ahead footprint at a safe boundary
     /// (e.g. a completed scan). Default is a no-op for backends without a
