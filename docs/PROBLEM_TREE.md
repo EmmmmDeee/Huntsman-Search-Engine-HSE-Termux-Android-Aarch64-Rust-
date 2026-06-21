@@ -2824,3 +2824,21 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   The per-row identity match was also buried inside the per-record extractor, where the
   page loop could not see it to make a sampling decision. **Paired:** `SOLUTION_TREE`
   cycle 80 — same commit.
+
+- **2026-06-21** — **Cycle 81 (a scan found 558 entities and exported ZERO — the
+  empty-CSV data-loss, root-caused from HSE's own debug bundle).** The "Ali Kareem" run
+  emitted **558 `entity_found` events** (oathnet_pro 491, name_intel 46, qld_unclaimed
+  17, wikidata 2, social_probe 2) yet the dossier read `entities: 0`, `status: Running`,
+  and the CSV was header-only. Root cause, traced end-to-end: entities live only in the
+  in-memory `entity_map` and are written to the persisted `entities` table **once, at
+  `finalise_scan`**; the CSV/dossier/JSON/API all read that table via
+  `entities_for_scan`. The scan never finalised — two modules (`search_engines`,
+  `signal_radar`) were still in-flight (radio/curl subprocesses) when the snapshot was
+  taken, so `finalise_scan` had not run — leaving the table empty even though every
+  finding was *already durably logged* in the real-time `events` table (the `DbWriter`
+  actor persists each `EntityFound` the instant it is emitted; the debug bundle
+  reconstructs all 558 from it). On Termux/Android — where the OS reclaims backgrounded
+  processes and a flaky hardware-I/O module can stall a round for its full timeout —
+  *any* interruption (hang, OOM-kill, app backgrounded, or simply exporting mid-scan)
+  silently discards the entire result. A 558→0 cliff is the single largest quality
+  defect a scan can have. **Paired:** `SOLUTION_TREE` cycle 81 — same commit.

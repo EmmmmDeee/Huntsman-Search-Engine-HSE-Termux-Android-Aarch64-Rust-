@@ -1993,3 +1993,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   emails ≤ cap, and the target row still emitted at full confidence after the cap is
   spent). Gate green: lib 3,306, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean.
   Paired: `PROBLEM_TREE` cycle 80 — same commit.
+
+- **2026-06-21** — **Cycle 81 (recover a scan's entities from the durable event log).**
+  Closed the 558→0 export cliff at the single point every reader shares —
+  `Store::entities_for_scan`. When the `entities` table is empty for a scan (still
+  running, interrupted, or killed before `finalise_scan` wrote it), the read now falls
+  back to `entities_from_events`, which folds the scan's logged `EntityFound` entities
+  by UID through the SAME `Entity::merge` the engine uses in-flight. Each event is a
+  distinct *pre-merge* emission, folded **exactly once**, so corroboration sums
+  correctly and is never double-counted — and because the fallback fires only on an
+  empty table, a genuinely empty scan still returns empty and the common finalised read
+  never pays for it. The authoritative display ranking (relevance → C_eff → confidence →
+  uid) was lifted into a shared `sort_entities_for_display` so a recovered in-flight scan
+  and a finalised one order identically. One change at the central read path =>
+  CSV export, full dossier, JSON, and every API handler transparently recover what a
+  scan found even when it never finalises. **Deliberately rejected** write-path
+  incremental persistence: the store's upsert is a SUM-corroboration GREATEST-merge, so
+  re-persisting an evolving entity (checkpoint + finalise) would double-count
+  corroboration and corrupt tiering on *every* scan — the event-log reconstruction
+  sidesteps that by merging once, at read time, off purely additive data. +1 test
+  (logged events → recovered set; duplicate-UID corroboration summed once; empty scan
+  stays empty; a finalised table is preferred over the log). Gate green: lib 3,307, 24
+  arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 81 —
+  same commit.
