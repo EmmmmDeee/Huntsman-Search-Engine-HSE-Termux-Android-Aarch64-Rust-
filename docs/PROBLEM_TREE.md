@@ -2783,3 +2783,15 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `uid = SHA-256(kind:normalised_value)` + `merge`/`absorb` folds evidence, sums
   corroboration and maxes confidence, so the same record from multiple modules already
   collapses to one entity.) **Paired:** `SOLUTION_TREE` cycle 77 — same commit.
+
+- **2026-06-21** — **Cycle 78 (the password slot is a dumping ground; both parsers
+  trusted it).** Stealer/breach `password` fields routinely hold something other than
+  a secret — the Ali.kareem logs have `password: [fail]` (a capture sentinel) and
+  `password: ayilmazer486@gmail.com` (an email mis-stored in the slot). `oathnet_pro`'s
+  plaintext-password gate only rejected the `UPGRADE_TO_SEE`/`REDACTED` *redaction*
+  sentinels, so `[fail]` (len 6, varied) was minted as a `Password`; `see_know`'s gate
+  was weaker still — bare `!pw.is_empty()`. Worse, the email-in-slot was minted as a
+  `Password` by both, which **forges a reused-secret link (AU-047) across every row
+  with that capture quirk** and discards a real address lead. The "is this value a
+  secret?" decision was unwritten and inconsistent between the two parsers. **Paired:**
+  `SOLUTION_TREE` cycle 78 — same commit.

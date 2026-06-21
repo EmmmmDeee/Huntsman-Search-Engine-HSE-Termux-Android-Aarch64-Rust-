@@ -81,6 +81,71 @@ pub fn looks_like_email(s: &str) -> bool {
     }
 }
 
+/// What a breach/stealer **credential field** (`password`, `pass`,
+/// `hashed_password`, …) actually holds. Providers are inconsistent: the slot
+/// frequently carries a capture sentinel or an email rather than a secret, and
+/// minting those as a `Password` both loses a real lead and forges false
+/// reused-secret links. [`classify_credential_field`] is the one decision point
+/// every credential parser shares, so that judgement lives in a single place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialField {
+    /// A redaction / capture-failure placeholder (`[fail]`, `UPGRADE_TO_SEE…`) — drop.
+    Sentinel,
+    /// An email mis-stored in the credential slot — recover as an `Email` lead.
+    Email,
+    /// A genuine plaintext secret (the caller still applies its length/variety gate).
+    Secret,
+}
+
+/// Classify a raw credential-field value into a [`CredentialField`]. Trims first;
+/// an empty value is a [`Sentinel`](CredentialField::Sentinel). **Pure.**
+#[must_use]
+pub fn classify_credential_field(s: &str) -> CredentialField {
+    let t = s.trim();
+    if t.is_empty() || is_placeholder_secret(t) {
+        CredentialField::Sentinel
+    } else if looks_like_email(t) {
+        CredentialField::Email
+    } else {
+        CredentialField::Secret
+    }
+}
+
+/// True for a credential value that is a provider *placeholder*, not a real
+/// secret: a redaction marker (`UPGRADE_TO_SEE…`, `REDACTED`) anywhere in the
+/// value, or a **bracketed** stealer capture sentinel (`[fail]`, `[NOT_SAVED]`,
+/// `<empty>`). The bracket requirement is deliberate — a genuine (if terrible)
+/// password like `fail` or `null` must survive, so only the wrapped forms count.
+/// **Pure.**
+#[must_use]
+pub fn is_placeholder_secret(s: &str) -> bool {
+    let u = s.trim().to_ascii_uppercase();
+    if u.contains("UPGRADE_TO_SEE") || u.contains("REDACTED") {
+        return true;
+    }
+    let inner = u.trim_matches(|c| matches!(c, '[' | ']' | '<' | '>' | '(' | ')' | '{' | '}'));
+    inner.len() != u.len()
+        && matches!(
+            inner,
+            "FAIL"
+                | "FAILED"
+                | "NOT_SAVED"
+                | "NOT SAVED"
+                | "NOTSAVED"
+                | "EMPTY"
+                | "BLANK"
+                | "NULL"
+                | "NONE"
+                | "N/A"
+                | "NA"
+                | "UNKNOWN"
+                | "NOT_FOUND"
+                | "NO_PASSWORD"
+                | "NO PASSWORD"
+                | "ERROR"
+        )
+}
+
 /// Every plausibly-international phone number in `text`, normalised to `+<digits>`,
 /// de-duplicated with first-occurrence order preserved.
 ///

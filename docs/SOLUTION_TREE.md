@@ -1943,3 +1943,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   rows (combined forms, the separator guard, and an argon2 negative). Gate green: lib
   3,302, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE`
   cycle 77 — same commit.
+
+- **2026-06-21** — **Cycle 78 (one typed classifier for credential-field values).**
+  Added `util::extract::CredentialField` (`Sentinel` / `Email` / `Secret`) +
+  `classify_credential_field` + `is_placeholder_secret`, and routed both password
+  parsers through it: `oathnet_pro/breach.rs` and `see_know/extract` now **drop** a
+  capture sentinel, **recover** an email-in-slot as a 0.45 `Email` lead tagged
+  `recovered-from-password` (instead of a junk `Password`), and only emit a genuine
+  `Secret` — applying their own length/variety gate on top. `is_placeholder_secret`
+  rejects redaction markers anywhere plus **bracketed** capture sentinels (`[fail]`,
+  `<empty>`); the bracket requirement keeps a real-if-terrible `fail`/`null` password
+  from being discarded. One decision point replaces two divergent inline gates (the
+  enum makes the three outcomes explicit and reusable for future stealer modules).
+  +2 tests seeded from the logs (sentinel/email/secret split; the breach end-to-end
+  recovery + no-false-Password). Gate green: lib 3,304, 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 78 — same commit.

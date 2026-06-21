@@ -102,3 +102,24 @@ use super::*;
             assert!(!looks_like_email(junk), "{junk:?} must be rejected");
         }
     }
+
+    #[test]
+    fn classify_credential_field_separates_sentinels_emails_secrets() {
+        use CredentialField::{Email, Secret, Sentinel};
+        // Real stealer/breach values from the Ali.kareem logs.
+        assert_eq!(classify_credential_field("[fail]"), Sentinel);
+        assert_eq!(classify_credential_field("  [NOT_SAVED] "), Sentinel);
+        assert_eq!(classify_credential_field("<empty>"), Sentinel);
+        assert_eq!(classify_credential_field("UPGRADE_TO_SEE_xxxx"), Sentinel);
+        assert_eq!(classify_credential_field(""), Sentinel);
+        // An email mis-stored in the password slot is recovered as a lead.
+        assert_eq!(classify_credential_field("ayilmazer486@gmail.com"), Email);
+        // Genuine passwords from the logs stay secrets...
+        for pw in ["Yontem2006", "C0R4Pc1", "Kando1453!", "hakunamatata"] {
+            assert_eq!(classify_credential_field(pw), Secret, "{pw}");
+        }
+        // ...including a terrible bare `fail`/`null`: only the BRACKETED form is a
+        // sentinel, so a real (if weak) password is never silently discarded.
+        assert_eq!(classify_credential_field("fail"), Secret);
+        assert_eq!(classify_credential_field("null"), Secret);
+    }

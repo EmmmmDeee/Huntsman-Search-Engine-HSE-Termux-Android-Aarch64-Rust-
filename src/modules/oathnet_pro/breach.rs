@@ -6,6 +6,7 @@
 //! (`push_oathnet_entity`) lives here too. Reaches parent items via `use super::*`.
 
 use super::*;
+use crate::util::extract::CredentialField;
 // ─── Entity extraction ─────────────────────────────────────────────────────
 
 pub(super) fn breach_evidence(item: &Value) -> Evidence {
@@ -442,25 +443,46 @@ pub(super) fn extract_breach_entities_with(
     // sentinels and trivial (single-character / too-short) values are skipped.
     if let Some(pw) = val_str(item, "password") {
         let p = pw.trim();
-        let len = p.chars().count();
-        let first = p.chars().next();
-        let varied = p.chars().any(|c| Some(c) != first);
-        let acct = val_str(item, "email")
-            .or_else(|| val_str(item, "username"))
-            .unwrap_or_default()
-            .to_lowercase();
-        if (6..=128).contains(&len)
-            && varied
-            && !is_redacted_sentinel(p)
-            && seen.insert(format!("@pw:{}:{acct}", p.to_lowercase()))
-        {
-            push_oathnet_entity(
-                result,
-                Entity::new(EntityKind::Password, p, 0.55, scan_id),
-                &ev,
-                &["plaintext-password"],
-                is_target_row,
-            );
+        match crate::util::extract::classify_credential_field(p) {
+            // A capture sentinel ([fail], UPGRADE_TO_SEE…) is not a secret — drop it.
+            CredentialField::Sentinel => {}
+            // An email mis-stored in the password slot is a lead, not a secret:
+            // minting it as a Password would forge a reused-secret link across every
+            // row with the same quirk. Recover it into the email pipeline instead,
+            // at modest confidence (the field placement is itself suspect).
+            CredentialField::Email => {
+                let lower = p.to_lowercase();
+                if seen.insert(format!("@pw-email:{lower}")) {
+                    push_oathnet_entity(
+                        result,
+                        Entity::new(EntityKind::Email, p, 0.45, scan_id),
+                        &ev,
+                        &["recovered-from-password"],
+                        is_target_row,
+                    );
+                }
+            }
+            CredentialField::Secret => {
+                let len = p.chars().count();
+                let first = p.chars().next();
+                let varied = p.chars().any(|c| Some(c) != first);
+                let acct = val_str(item, "email")
+                    .or_else(|| val_str(item, "username"))
+                    .unwrap_or_default()
+                    .to_lowercase();
+                if (6..=128).contains(&len)
+                    && varied
+                    && seen.insert(format!("@pw:{}:{acct}", p.to_lowercase()))
+                {
+                    push_oathnet_entity(
+                        result,
+                        Entity::new(EntityKind::Password, p, 0.55, scan_id),
+                        &ev,
+                        &["plaintext-password"],
+                        is_target_row,
+                    );
+                }
+            }
         }
     }
 

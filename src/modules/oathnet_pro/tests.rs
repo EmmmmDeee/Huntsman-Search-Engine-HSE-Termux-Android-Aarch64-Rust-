@@ -796,3 +796,33 @@ use super::*;
             );
         }
     }
+
+    #[test]
+    fn plaintext_password_drops_sentinel_and_recovers_email() {
+        use serde_json::json;
+        // A capture sentinel in the password slot must not become a Password.
+        let item = json!({"email": "subject@example.com", "password": "[fail]", "source": "DB"});
+        let mut seen = HashSet::new();
+        let mut r = ModuleResult::new();
+        extract_breach_entities(&item, "subject@example.com", "scan", "oathnet.org:t", &mut seen, &mut r);
+        assert!(
+            !r.entities.iter().any(|e| e.kind == EntityKind::Password && e.value == "[fail]"),
+            "a [fail] sentinel must not be minted as a Password"
+        );
+
+        // An email mis-stored in the password slot is recovered as an Email lead,
+        // never as a Password (which would forge a reused-secret link).
+        let item = json!({"username": "ali", "password": "ayilmazer486@gmail.com", "source": "Stealer"});
+        let mut seen = HashSet::new();
+        let mut r = ModuleResult::new();
+        extract_breach_entities(&item, "ali", "scan", "oathnet.org:t", &mut seen, &mut r);
+        let recovered = r.entities.iter()
+            .find(|e| e.value == "ayilmazer486@gmail.com")
+            .expect("email recovered from the password field");
+        assert_eq!(recovered.kind, EntityKind::Email);
+        assert!(recovered.has_tag("recovered-from-password"), "tags: {:?}", recovered.tags);
+        assert!(
+            !r.entities.iter().any(|e| e.kind == EntityKind::Password && e.value.contains('@')),
+            "an email must not also be minted as a Password"
+        );
+    }

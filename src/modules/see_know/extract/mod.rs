@@ -265,17 +265,36 @@ pub(super) fn extract_entities(
         "hashed_password",
         "hash",
     ] {
-        if let Some(pw) = val_str(item, field)
-            && !pw.is_empty()
-            && seen.insert(format!("@pw:{pw}"))
-        {
-            push_breach_entity(
-                result,
-                Entity::new(EntityKind::Password, &pw, 0.75, scan_id),
-                &ev,
-                &["credential"],
-            );
-            break;
+        let Some(pw) = val_str(item, field) else {
+            continue;
+        };
+        let p = pw.trim();
+        match crate::util::extract::classify_credential_field(p) {
+            // Capture sentinel ([fail], …) — not a secret; try the next field.
+            crate::util::extract::CredentialField::Sentinel => continue,
+            // Email mis-stored in a credential slot — recover it as a lead rather
+            // than mint a junk Password (the same fix as oathnet_pro's breach path).
+            crate::util::extract::CredentialField::Email => {
+                if seen.insert(format!("@pw-email:{}", p.to_lowercase())) {
+                    let mut e = Entity::new(EntityKind::Email, p, 0.45, scan_id);
+                    e.tag("see-know");
+                    e.tag("recovered-from-password");
+                    e.add_evidence(ev.clone());
+                    result.push(e);
+                }
+                break;
+            }
+            crate::util::extract::CredentialField::Secret => {
+                if seen.insert(format!("@pw:{p}")) {
+                    push_breach_entity(
+                        result,
+                        Entity::new(EntityKind::Password, p, 0.75, scan_id),
+                        &ev,
+                        &["credential"],
+                    );
+                    break;
+                }
+            }
         }
     }
 
