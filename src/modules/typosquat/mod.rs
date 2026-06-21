@@ -20,10 +20,18 @@
 //! Pure permutation core (no I/O, unit-tested incl. canonical Punycode vectors)
 //! + bounded concurrent resolution. No API, no native deps — Termux-clean.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use tokio::sync::Semaphore;
+
+/// Session-level dedup: tracks registrable domains already fully processed by
+/// this module within one `hse` invocation. Real scan data showed `behindthename.com`
+/// dispatched 30 times (once per subdomain discovered), each triggering up to
+/// MAX_CANDIDATES DNS lookups for the same typosquat candidates. A second run
+/// on the same registrable domain produces zero new findings.
+static SEEN_REGISTRABLE: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -95,6 +103,21 @@ impl Module for Typosquat {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let original = target.value.trim().trim_end_matches('.').to_lowercase();
+
+        // Skip if we already fully processed this registrable domain in this scan —
+        // repeated subdomains of the same apex (e.g. api.behindthename.com,
+        // admin.behindthename.com) reduce to the same permutation set.
+        let reg =
+            crate::util::domains::registrable_domain(&original).unwrap_or_else(|| original.clone());
+        {
+            let mut seen = SEEN_REGISTRABLE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !seen.insert(reg.clone()) {
+                return Ok(result);
+            }
+        }
+
         let candidates = permutations(&original, MAX_CANDIDATES);
         if candidates.is_empty() {
             return Ok(result);
