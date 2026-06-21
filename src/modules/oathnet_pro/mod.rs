@@ -42,6 +42,18 @@ const SRC: &str = "oathnet_pro";
 /// must never reach the full-confidence, correlated, default-view tier.
 const CANDIDATE_CONF: f64 = 0.25;
 
+/// Maximum number of NON-matching (candidate) breach rows extracted into
+/// entities per page. A broad search — above all a `full_name` — routinely
+/// returns a whole page of strangers (the "Ali Kareem" scan got 100
+/// pureincubation.com rows, none of them Ali), and each stranger row mints
+/// several quarantined `candidate` entities (~5 per row), so an unbounded page
+/// floods a memory-constrained device with hundreds of low-value entities.
+/// Target-matching rows are always extracted in full; non-matching rows are
+/// only SAMPLED up to this bound, so a genuine-but-unmatchable lead still
+/// survives without the flood. Sized to keep a useful spot-check sample while
+/// cutting the worst-case candidate count by ~5×.
+const MAX_CANDIDATE_ROWS: usize = 20;
+
 pub struct OathnetPro;
 
 #[async_trait]
@@ -161,72 +173,44 @@ impl Module for OathnetPro {
             return Ok(result);
         }
 
-        let total = items.len();
-        let top_dbs = oathnet::top_dbnames(&items, 5);
-
-        let mut parent = target.to_entity(0.85, &ctx.scan_id);
-        parent.tag(tags::BREACH);
-        parent.tag("oathnet-pro");
-        // Aggregate identity attributes ADDITIVELY across every breach record:
-        // each record contributes its distinct country / name / gender / DOB so
-        // multiple hits (and aliases) are all retained and cross-correlatable,
-        // never overwritten to the last record. Order-preserving, deduplicated.
-        let countries = oathnet::distinct_field(&items, "country");
-        let names = oathnet::distinct_field(&items, "full_name");
-        let genders = oathnet::distinct_field(&items, "gender");
-        let dobs = oathnet::distinct_field(&items, "date_birth");
-        // Dossier-level credential-exposure signal: how many of these records
-        // leaked a fast, GPU-trivial hash (≈ plaintext once cracked). A single
-        // pass over the page already in hand — no extra query.
-        let fast_hashes = items
-            .iter()
-            .filter_map(|i| val_str(i, "password_hash"))
-            .filter(|h| identify_password_hash(h).is_some_and(|(_, fast)| fast))
-            .count();
-
-        let mut ev = Evidence::new(
-            SRC,
-            format!("OathNet: {total} breach record(s) — {}", top_dbs.join(", ")),
-        )
-        .with_attr("hits", total.to_string())
-        .with_attr("top_dbnames", top_dbs.join(", "));
-        if !countries.is_empty() {
-            ev = ev.with_attr("countries", countries.join(", "));
-        }
-        if !names.is_empty() {
-            ev = ev.with_attr("names", names.join("; "));
-        }
-        if !genders.is_empty() {
-            ev = ev.with_attr("genders", genders.join(", "));
-        }
-        if !dobs.is_empty() {
-            ev = ev.with_attr("dates_of_birth", dobs.join(", "));
-        }
-        if fast_hashes > 0 {
-            ev = ev.with_attr("fast_crackable_hashes", fast_hashes.to_string());
-        }
-        parent.add_evidence(ev);
-        result.push(parent);
-
-        // Hoist the per-target match context out of the per-record loop:
-        // `target_lower` and the significant-term split depend only on the
-        // target value, not the row, so computing them once (instead of once
-        // per breach record) eliminates a `to_lowercase()` allocation and a
-        // term-`Vec` build for every item on large breach pages.
+        // Classify every row against the target identity ONCE. This single pass
+        // drives all three downstream decisions — the honest parent dossier
+        // entity, the per-row `candidate` quarantine, and the candidate-flood
+        // cap — so the match is never recomputed.
         let match_ctx = TargetMatch::new(&target.value);
-        result.entities.reserve(items.len());
-        for item in &items {
-            extract_breach_entities_with(
-                item,
-                &match_ctx,
-                &ctx.scan_id,
-                &key_fp,
-                &mut seen,
-                &mut result,
-            );
-            store_api_credential(item);
-            extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
+        let row_matches: Vec<bool> = items.iter().map(|i| match_ctx.matches(i)).collect();
+
+        // Parent dossier entity — emitted ONLY when the subject actually appears
+        // in the records. The engine pre-seeds a subject anchor, so a broad
+        // `full_name` search that returns a page of strangers used to merge a
+        // false 0.85 `breach` hit — plus an aggregate dump of 100 strangers'
+        // names/countries — straight onto that anchor. `breach_parent_entity`
+        // returns `None` on a zero-match page and aggregates the subject's
+        // attributes over the MATCHING rows only.
+        let matching: Vec<Value> = items
+            .iter()
+            .zip(row_matches.iter().copied())
+            .filter(|(_, keep)| *keep)
+            .map(|(i, _)| i.clone())
+            .collect();
+        if let Some(parent) = breach_parent_entity(target, &ctx.scan_id, &matching, items.len()) {
+            result.push(parent);
         }
+
+        // Extract every breach row into entities, applying the candidate-flood
+        // cap (see `extract_breach_page`): target-matching rows are kept in full
+        // while non-matching strangers are only sampled, so a broad name search
+        // can't drown a memory-constrained device in low-value `candidate`
+        // noise. API-key harvesting runs unconditionally for every row inside
+        // the page pass.
+        extract_breach_page(
+            &items,
+            &row_matches,
+            &ctx.scan_id,
+            &key_fp,
+            &mut seen,
+            &mut result,
+        );
 
         // ── Query 2: Stealer search (Email/Username only) ───────────────
         // Stealer logs are indexed by login credentials (username/email +

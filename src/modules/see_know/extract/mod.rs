@@ -201,16 +201,23 @@ pub(super) fn extract_entities(
             &[],
         );
     }
-    if let Some(ip) = val_str(item, "ip")
-        && ip.len() >= 7
-        && seen.insert(ip.clone())
-    {
-        push_breach_entity(
-            result,
-            Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id),
-            &ev,
-            &["geolocation-lead"],
-        );
+    // Login IPs — the session `ip` plus the last-login `lastip`/`last_ip`, all
+    // geolocation leads. snusbase records carry ONLY `lastip`, so the subject's
+    // login location (e.g. 142.204.244.67 on ali.kareem95@gmail.com) was dropped
+    // entirely. Gate on a publicly-routable literal so a LAN address never
+    // becomes geo-noise — the prior `len >= 7` check admitted private IPs.
+    for ip_field in ["ip", "lastip", "last_ip"] {
+        if let Some(ip) = val_str(item, ip_field)
+            && crate::util::preflight::is_public_ip(&ip)
+            && seen.insert(ip.clone())
+        {
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id),
+                &ev,
+                &["geolocation-lead"],
+            );
+        }
     }
     if let Some(country) = val_str(item, "country")
         && seen.insert(format!("@country:{country}"))

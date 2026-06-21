@@ -1971,3 +1971,95 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   with one fewer hand-rolled error tail each. +1 test. Gate green: lib 3,305, 24 arch
   guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 79 —
   same commit.
+
+- **2026-06-21** — **Cycle 80 (cap the breach candidate flood; classify each row
+  once).** Lifted the per-page breach loop out of `mod.rs::process` into
+  `breach.rs::extract_breach_page`, the natural home beside `TargetMatch`,
+  `extract_breach_entities_with` and `push_oathnet_entity`. It builds the match context
+  once (the existing hoist), classifies each row once via `TargetMatch::matches`, and
+  threads that single `bool` into `extract_breach_entities_with` — whose signature
+  changed from `match_ctx: &TargetMatch` to `is_target_row: bool`, deleting the internal
+  re-match so the identity decision now lives in exactly one place and is reused for both
+  the quarantine demotion and the new sampling gate. **Target-matching rows are always
+  extracted in full; non-matching strangers are sampled at most `MAX_CANDIDATE_ROWS`
+  (= 20) per page**, cutting the worst-case candidate count ~5× (the Ali Kareem page's
+  491 → ≤ ~100) while keeping a spot-check sample. API-key harvest
+  (`store_api_credential` + `extract_api_keys_from_item`) stays **unconditional** for
+  every row — a leaked tool credential is valuable regardless of the cap and is too rare
+  to flood — and stays after PII extraction so per-row ordering is byte-identical for the
+  uncapped path. The `#[cfg(test)]` wrapper computes the bool the same way, so every
+  existing characterization test is unchanged. +1 test seeded from the exact failure
+  (100 `pureincubation.com` strangers + 1 trailing real "Ali Kareem" row → candidate
+  emails ≤ cap, and the target row still emitted at full confidence after the cap is
+  spent). Gate green: lib 3,306, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean.
+  Paired: `PROBLEM_TREE` cycle 80 — same commit.
+
+- **2026-06-21** — **Cycle 81 (recover a scan's entities from the durable event log).**
+  Closed the 558→0 export cliff at the single point every reader shares —
+  `Store::entities_for_scan`. When the `entities` table is empty for a scan (still
+  running, interrupted, or killed before `finalise_scan` wrote it), the read now falls
+  back to `entities_from_events`, which folds the scan's logged `EntityFound` entities
+  by UID through the SAME `Entity::merge` the engine uses in-flight. Each event is a
+  distinct *pre-merge* emission, folded **exactly once**, so corroboration sums
+  correctly and is never double-counted — and because the fallback fires only on an
+  empty table, a genuinely empty scan still returns empty and the common finalised read
+  never pays for it. The authoritative display ranking (relevance → C_eff → confidence →
+  uid) was lifted into a shared `sort_entities_for_display` so a recovered in-flight scan
+  and a finalised one order identically. One change at the central read path =>
+  CSV export, full dossier, JSON, and every API handler transparently recover what a
+  scan found even when it never finalises. **Deliberately rejected** write-path
+  incremental persistence: the store's upsert is a SUM-corroboration GREATEST-merge, so
+  re-persisting an evolving entity (checkpoint + finalise) would double-count
+  corroboration and corrupt tiering on *every* scan — the event-log reconstruction
+  sidesteps that by merging once, at read time, off purely additive data. +1 test
+  (logged events → recovered set; duplicate-UID corroboration summed once; empty scan
+  stays empty; a finalised table is preferred over the log). Gate green: lib 3,307, 24
+  arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 81 —
+  same commit.
+
+- **2026-06-21** — **Cycle 82 (an honest breach headline; one match pass for all three
+  decisions).** New `breach_parent_entity` returns `None` when the subject appears in
+  none of the returned records — so a stranger-only page no longer merges a false 0.85
+  `breach` hit onto the engine's seed anchor (the anchor still represents the subject; a
+  miss simply asserts nothing) — and, when the subject IS present, aggregates
+  `countries`/`names`/`genders`/`dates_of_birth` over the MATCHING rows ONLY, plus an
+  honest `hits` (matched) vs `records_returned` (page size) split. Consolidated the
+  identity match into a SINGLE pass in `process`: `row_matches: Vec<bool>` is computed
+  once and feeds the parent gate, the candidate-flood cap, and the per-row quarantine —
+  `extract_breach_page` now takes the precomputed `row_matches` instead of rebuilding a
+  `TargetMatch` (one source of truth; `TargetMatch::matches` promoted to `pub(super)`).
+  Net effect: for the "Ali Kareem" page the subject node loses its fabricated breach
+  tag and 100-stranger aggregate dump, while a genuine hit reads its own attributes
+  cleanly. +1 test (zero-match → `None`; subject present → parent aggregates only the
+  subject's row, `countries=AU` not the strangers' `ZZ`). Gate green: lib 3,308, 24 arch
+  guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 82 — same
+  commit.
+
+- **2026-06-21** — **Cycle 83 (capture the login IP from any field; one shared
+  public-IP gate).** Promoted `is_public_ip` into `util::preflight` beside `is_private_ip`
+  — one definition (`parses && !private`) for every breach/stealer parser — and routed
+  both extractors through it: `oathnet_pro`'s hand-rolled `pub(super) fn` became a
+  re-export (dropping its now-empty `use super::*`), and `see_know`'s weak `len >= 7`
+  gate was tightened to it, so a private LAN address can no longer masquerade as a
+  geolocation lead. Both now iterate `["ip", "lastip", "last_ip"]`, emitting each
+  DISTINCT public address as its own `geolocation-lead` (UID/`seen` dedup collapses the
+  ip == lastip case), so snusbase-shaped records finally yield the subject's login
+  location instead of nothing. Behaviour for clean `ip`-only records is unchanged. +2
+  tests (public `lastip` → lead; private `lastip` rejected — one per module). Gate green:
+  lib 3,310, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired:
+  `PROBLEM_TREE` cycle 83 — same commit.
+
+- **2026-06-21** — **Cycle 84 (flatten stealer `victims[].credentials[]` so the logins
+  survive).** Extended `extract_items` with a `victims` branch + a `flatten_victims`
+  helper that turns each nested credential into a standalone item: one infected host (one
+  victim / stealer log) shares its scalar context — `log_id`, host `ip` — with every
+  credential it leaked, so each flattened item carries BOTH the login
+  (`username`/`password`/`pwned_at`) and its provenance, and the existing field extractor
+  consumes it unchanged (yielding a `Username`, a `Password`, and — via cycle 83 — the
+  host IP as a geo lead). A victim with no `credentials` array still surfaces as one
+  host-intel item so nothing is lost. The change is purely additive: every flat shape is
+  matched first and unchanged, and an unknown shape still yields empty — so only the
+  previously-dropped stealer set is affected. +2 tests (the real `results:0`/`victims`
+  shape → 2 credential items inheriting `log_id`+`ip`; a credential-less victim → 1
+  host item). Gate green: lib 3,312, 24 arch guards, fmt/clippy(`--all-targets`)/doc
+  clean. Paired: `PROBLEM_TREE` cycle 84 — same commit.

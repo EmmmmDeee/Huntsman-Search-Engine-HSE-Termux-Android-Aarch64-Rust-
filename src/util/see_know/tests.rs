@@ -150,6 +150,45 @@ fn extract_items_empty_for_unknown_shape() {
 }
 
 #[test]
+fn extract_items_flattens_stealer_victims_into_credentials() {
+    // The exact stealer-log shape from the "Ali Kareem" dump: `results` is the
+    // scalar 0 (so the array branch falls through) while `victims` carries the
+    // leaked logins one level down. Each credential must become a standalone
+    // item that inherits the victim's scalar context (log_id), so the extractor
+    // sees every password instead of dropping the whole set.
+    let v = json!({
+        "success": true,
+        "results": 0,
+        "victims": [{
+            "log_id": "ea0621568ccd7fee",
+            "ip": "37.236.187.22",
+            "credentials": [
+                {"username": "ali", "password": "C0R4Pc1", "pwned_at": "2026-05-20T21:00:00Z"},
+                {"username": "ali", "password": "Yontem2006", "pwned_at": "2026-05-20T21:00:00Z"}
+            ]
+        }]
+    });
+    let items = extract_items(&v);
+    assert_eq!(items.len(), 2, "one item per leaked credential");
+    // Each flattened item carries both the credential and the victim's scalar
+    // context (log_id + host ip), so provenance and the login survive together.
+    assert_eq!(items[0]["username"], json!("ali"));
+    assert_eq!(items[0]["password"], json!("C0R4Pc1"));
+    assert_eq!(items[0]["log_id"], json!("ea0621568ccd7fee"));
+    assert_eq!(items[0]["ip"], json!("37.236.187.22"));
+    assert_eq!(items[1]["password"], json!("Yontem2006"));
+}
+
+#[test]
+fn extract_items_victim_without_credentials_still_yields_host_intel() {
+    // A victim with host-level data but no credential array must not vanish.
+    let v = json!({ "victims": [{ "log_id": "abc", "ip": "8.8.8.8" }] });
+    let items = extract_items(&v);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["ip"], json!("8.8.8.8"));
+}
+
+#[test]
 fn escape_json_handles_quotes_and_backslashes() {
     use super::endpoints::escape_json;
     assert_eq!(escape_json(r#"hello"world"#), r#"hello\"world"#);

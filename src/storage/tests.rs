@@ -606,6 +606,80 @@ fn event_log_round_trips_in_emission_order() {
 }
 
 #[test]
+fn entities_for_scan_recovers_from_event_log_when_not_finalised() {
+    // The "Ali Kareem" failure: a scan found 558 entities but the export read
+    // an empty result because the scan never finalised (a module hung / the
+    // process was killed before the entities table was written). The DB-writer
+    // had already durably logged every EntityFound, so entities_for_scan must
+    // recover from that log instead of reporting nothing — folding duplicate
+    // UIDs through merge exactly once (corroboration summed, NOT double-counted).
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    insert_scan(&store, "scan-live");
+
+    // Two distinct entities plus a DUPLICATE of the first (same kind+value =>
+    // same UID), each emitted as a real-time event. Nothing is written to the
+    // entities table — the scan never finalised.
+    let e1 = Entity::new(EntityKind::Email, "ali@example.com", 0.70, "scan-live");
+    let e1_uid = e1.uid.clone();
+    let e1_again = Entity::new(EntityKind::Email, "ali@example.com", 0.65, "scan-live");
+    let e2 = Entity::new(EntityKind::Person, "Ali Kareem", 0.85, "scan-live");
+    for (i, entity) in [e1, e1_again, e2].into_iter().enumerate() {
+        let mut ev = Event::new("scan-live", EventKind::EntityFound { entity });
+        ev.ts = 2000 + i as u64;
+        store.insert_event(&ev).unwrap();
+    }
+
+    // entities_for_scan transparently falls back to the event log.
+    let recovered = store.entities_for_scan("scan-live").unwrap();
+    assert_eq!(
+        recovered.len(),
+        2,
+        "two distinct UIDs recovered (the duplicate folds into one)"
+    );
+    let email = recovered
+        .iter()
+        .find(|e| e.uid == e1_uid)
+        .expect("recovered email entity");
+    assert_eq!(
+        email.corroboration, 2,
+        "duplicate-UID emissions fold once: corroboration summed (1+1), not 1 (unfolded) nor >2 (double-counted)"
+    );
+
+    // The direct reconstruction agrees with the fallback.
+    assert_eq!(store.entities_from_events("scan-live").unwrap().len(), 2);
+
+    // A genuinely empty scan (no EntityFound events) recovers empty — the
+    // fallback never invents a false positive.
+    insert_scan(&store, "scan-empty");
+    assert!(store.entities_for_scan("scan-empty").unwrap().is_empty());
+
+    // A FINALISED scan (rows in the entities table) keeps using them, never the
+    // event log: upsert one entity, log a DIFFERENT one as an event, and confirm
+    // only the persisted row is returned.
+    insert_scan(&store, "scan-final");
+    let persisted = Entity::new(EntityKind::Email, "final@example.com", 0.9, "scan-final");
+    store.upsert_entity(&persisted).unwrap();
+    store
+        .insert_event(&Event::new(
+            "scan-final",
+            EventKind::EntityFound {
+                entity: Entity::new(EntityKind::Person, "Decoy Person", 0.8, "scan-final"),
+            },
+        ))
+        .unwrap();
+    let finalised = store.entities_for_scan("scan-final").unwrap();
+    assert_eq!(
+        finalised.len(),
+        1,
+        "finalised read uses the table, not events"
+    );
+    assert_eq!(finalised[0].value, "final@example.com");
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn events_for_scan_returns_empty_for_unknown_id() {
     let path = tmp_db();
     let store = Store::open(&path).unwrap();

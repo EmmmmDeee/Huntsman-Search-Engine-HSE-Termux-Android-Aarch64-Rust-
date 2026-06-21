@@ -3,16 +3,16 @@
 //! Pure functions (no I/O, no module state) split out of the parent so the
 //! extraction code stays readable. Each rejects a placeholder/sentinel or
 //! malformed value, or classifies a leaked credential, before it becomes an
-//! entity. Reaches shared parent imports through `use super::*`.
-
-use super::*;
+//! entity. Self-contained: every dependency is reached by an explicit path, so
+//! the parent re-globs these validators via `use validate::*` without a
+//! reciprocal `use super::*` here.
 
 /// A syntactically valid, routable **public** IP: parses as v4/v6 and is not a
 /// private/reserved/loopback range. A leaked private IP can't geolocate and is
 /// noise for the `geolocation-lead` pivot, so it is dropped along with junk.
-pub(super) fn is_public_ip(s: &str) -> bool {
-    s.parse::<std::net::IpAddr>().is_ok() && !is_private_ip(s)
-}
+/// The definition is shared with `see_know` via `util::preflight` — re-exported
+/// here so the extractors keep reaching it by bare name through `use super::*`.
+pub(super) use crate::util::preflight::is_public_ip;
 
 /// At least `n` ASCII digits — separates a real phone/number from a placeholder
 /// sentinel that merely clears a raw character-length gate.

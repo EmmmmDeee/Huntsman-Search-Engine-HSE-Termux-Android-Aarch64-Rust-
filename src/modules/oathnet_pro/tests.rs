@@ -226,6 +226,179 @@ use super::*;
     }
 
     #[test]
+    fn candidate_flood_is_capped_but_target_rows_always_survive() {
+        use serde_json::json;
+        // The exact "Ali Kareem" failure mode: a broad `full_name` search
+        // returned 100 pureincubation.com rows, NONE of them Ali. Each stranger
+        // row mints several quarantined `candidate` entities, which flooded a
+        // memory-constrained device with low-value noise. `extract_breach_page`
+        // SAMPLES the non-matching rows (cap = MAX_CANDIDATE_ROWS) instead of
+        // emitting every one — but a genuinely matching row is ALWAYS extracted
+        // in full, even when it lands after the cap is already exhausted.
+        let mut items: Vec<serde_json::Value> = (0..100)
+            .map(|i| {
+                json!({
+                    "email": format!("stranger{i}@pureincubation.com"),
+                    "username": format!("stranger{i}"),
+                    "source": "pureincubation.com"
+                })
+            })
+            .collect();
+        // The real target lands LAST, long after the candidate cap is spent.
+        items.push(json!({
+            "email": "ali.kareem.real@example.com",
+            "full_name": "Ali Kareem",
+            "source": "RealLeak"
+        }));
+
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        let match_ctx = TargetMatch::new("Ali Kareem");
+        let row_matches: Vec<bool> = items.iter().map(|i| match_ctx.matches(i)).collect();
+        extract_breach_page(
+            &items,
+            &row_matches,
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+
+        // The candidate flood is bounded: one candidate email per SAMPLED
+        // stranger row, never more than the cap (and far below the unbounded
+        // 100 the page would otherwise emit).
+        let candidate_emails = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email && e.has_tag("candidate"))
+            .count();
+        assert!(
+            candidate_emails <= MAX_CANDIDATE_ROWS,
+            "candidate emails ({candidate_emails}) must not exceed the cap ({MAX_CANDIDATE_ROWS})"
+        );
+        assert!(
+            candidate_emails < 100,
+            "the stranger flood must be capped, not passed through"
+        );
+
+        // The genuine target row SURVIVES at full confidence with no candidate
+        // tag, despite arriving after the cap was exhausted.
+        let target = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Person && e.value == "Ali Kareem")
+            .expect("the matching target row must always be extracted");
+        assert!(
+            !target.has_tag("candidate"),
+            "the target row must not be quarantined"
+        );
+        assert!(
+            target.confidence > CANDIDATE_CONF,
+            "the target row keeps full confidence, not candidate strength"
+        );
+    }
+
+    #[test]
+    fn breach_parent_is_honest_about_whether_the_subject_appears() {
+        use serde_json::json;
+        // A `full_name` page of pure strangers must NOT mint a 0.85
+        // breach-tagged subject node: the engine pre-seeds a subject anchor, so
+        // that parent would merge a false "breach hit" — plus a 50-stranger
+        // name/country dump — onto it. Zero matching rows => None.
+        let strangers: Vec<serde_json::Value> = (0..50)
+            .map(|i| {
+                json!({
+                    "full_name": format!("Stranger {i}"),
+                    "country": "ZZ",
+                    "source": "pureincubation.com"
+                })
+            })
+            .collect();
+        let target = Target::new(TargetKind::FullName, "Ali Kareem");
+        let mc = TargetMatch::new("Ali Kareem");
+        let none_matching: Vec<serde_json::Value> =
+            strangers.iter().filter(|i| mc.matches(i)).cloned().collect();
+        assert!(none_matching.is_empty(), "no stranger should match the subject");
+        assert!(
+            breach_parent_entity(&target, "scan", &none_matching, strangers.len()).is_none(),
+            "a zero-match page must not produce a breach parent"
+        );
+
+        // When the subject genuinely appears, the parent aggregates over the
+        // MATCHING rows only — its own country (AU), never the strangers' ZZ.
+        let mut page = strangers.clone();
+        page.push(json!({
+            "full_name": "Ali Kareem",
+            "country": "AU",
+            "gender": "M",
+            "source": "RealLeak"
+        }));
+        let matching: Vec<serde_json::Value> =
+            page.iter().filter(|i| mc.matches(i)).cloned().collect();
+        assert_eq!(matching.len(), 1, "exactly the subject's own row matches");
+        let parent = breach_parent_entity(&target, "scan", &matching, page.len())
+            .expect("subject present => parent emitted");
+        assert_eq!(parent.value, "Ali Kareem");
+        assert!((parent.confidence - 0.85).abs() < 1e-9);
+        assert!(parent.has_tag("breach") && parent.has_tag("oathnet-pro"));
+        let ev = parent.evidence.first().expect("parent evidence");
+        assert_eq!(ev.attributes.get("hits").map(String::as_str), Some("1"));
+        assert_eq!(
+            ev.attributes.get("records_returned").map(String::as_str),
+            Some("51")
+        );
+        assert_eq!(
+            ev.attributes.get("countries").map(String::as_str),
+            Some("AU"),
+            "aggregates the subject's matching rows only, not the strangers' ZZ"
+        );
+        assert_eq!(
+            ev.attributes.get("names").map(String::as_str),
+            Some("Ali Kareem")
+        );
+    }
+
+    #[test]
+    fn lastip_login_ip_is_extracted_as_geolocation_lead() {
+        use serde_json::json;
+        // snusbase-style records carry the login IP in `lastip` (no `ip` field).
+        // Reading `ip` alone dropped the subject's geolocation; a PUBLIC lastip
+        // must surface as an IpAddress geo lead.
+        let item = json!({
+            "username": "ali.kareem",
+            "lastip": "142.204.244.67",
+            "source": "snusbase"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "ali.kareem",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let ip = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::IpAddress)
+            .expect("lastip extracted as IpAddress");
+        assert_eq!(ip.value, "142.204.244.67");
+        assert!(ip.has_tag("geolocation-lead"));
+
+        // A PRIVATE last-login IP can't geolocate — dropped, never minted.
+        let private = json!({ "username": "ali.kareem", "lastip": "192.168.1.5", "source": "x" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&private, "ali.kareem", "scan", "k", &mut seen, &mut result);
+        assert!(
+            result.entities.iter().all(|e| e.kind != EntityKind::IpAddress),
+            "private lastip must not become a geo lead"
+        );
+    }
+
+    #[test]
     fn full_name_matcher_requires_all_terms_not_just_one() {
         use serde_json::json;
         // "Jordan Parker" shares only the first name with the target — it must

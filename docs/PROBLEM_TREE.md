@@ -2808,3 +2808,77 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   truncated Pwned-Passwords hash range would yield a false "not pwned") and must not
   bloat the archive with a generic payload. **Paired:** `SOLUTION_TREE` cycle 79 —
   same commit.
+
+- **2026-06-21** — **Cycle 80 (a broad name search floods the page with stranger
+  `candidate` entities — ground-truthed against HSE's own "Ali Kareem" debug
+  bundle).** The uploaded HSE run (scan `9daad8…`, target `full_name = "Ali Kareem"`)
+  exported an **empty CSV**, and the debug timeline shows why `oathnet_pro` was no
+  help: its breach query returned **100 `pureincubation.com` rows — James Perry, James
+  Smith, Marina × N, not one of them Ali** — and the page extractor minted **491
+  entities** off them, every one a quarantined `candidate` at 0.25. That is ~5
+  low-value entities per stranger row: correct in *kind* (the quarantine demotion from
+  cycles 76/78 keeps them out of the default view and the correlator) but unbounded in
+  *volume*. On a memory-constrained Termux device a single broad `full_name` page can
+  therefore balloon the in-memory result with hundreds of strangers whose only purpose
+  is a manual spot-check — a sample of a dozen serves that need as well as a hundred.
+  The per-row identity match was also buried inside the per-record extractor, where the
+  page loop could not see it to make a sampling decision. **Paired:** `SOLUTION_TREE`
+  cycle 80 — same commit.
+
+- **2026-06-21** — **Cycle 81 (a scan found 558 entities and exported ZERO — the
+  empty-CSV data-loss, root-caused from HSE's own debug bundle).** The "Ali Kareem" run
+  emitted **558 `entity_found` events** (oathnet_pro 491, name_intel 46, qld_unclaimed
+  17, wikidata 2, social_probe 2) yet the dossier read `entities: 0`, `status: Running`,
+  and the CSV was header-only. Root cause, traced end-to-end: entities live only in the
+  in-memory `entity_map` and are written to the persisted `entities` table **once, at
+  `finalise_scan`**; the CSV/dossier/JSON/API all read that table via
+  `entities_for_scan`. The scan never finalised — two modules (`search_engines`,
+  `signal_radar`) were still in-flight (radio/curl subprocesses) when the snapshot was
+  taken, so `finalise_scan` had not run — leaving the table empty even though every
+  finding was *already durably logged* in the real-time `events` table (the `DbWriter`
+  actor persists each `EntityFound` the instant it is emitted; the debug bundle
+  reconstructs all 558 from it). On Termux/Android — where the OS reclaims backgrounded
+  processes and a flaky hardware-I/O module can stall a round for its full timeout —
+  *any* interruption (hang, OOM-kill, app backgrounded, or simply exporting mid-scan)
+  silently discards the entire result. A 558→0 cliff is the single largest quality
+  defect a scan can have. **Paired:** `SOLUTION_TREE` cycle 81 — same commit.
+
+- **2026-06-21** — **Cycle 82 (the headline entity asserted a breach hit the subject
+  never had).** `oathnet_pro` always minted the subject as a 0.85 `breach`-tagged
+  `Person`, with `countries`/`names`/`genders`/`dates_of_birth` aggregated over EVERY
+  returned record — even when ZERO of them matched the subject. The engine pre-seeds a
+  subject anchor and a re-emitted subject merges onto it by UID, so for "Ali Kareem"
+  this stamped the subject's own headline node with the `breach` tag at 0.85 and dumped
+  **56 countries and ~100 strangers' names** (`JAMES PERRY; James Smith; …`) into its
+  evidence — from a page in which the subject appeared in *none* of the records. That is
+  a fabricated exposure claim plus aggregate pollution merged onto the one node an
+  analyst reads first: the precise opposite of an honest dossier, and it survived the
+  candidate-flood cap because the parent is built off the whole page, not the per-row
+  extraction. **Paired:** `SOLUTION_TREE` cycle 82 — same commit.
+
+- **2026-06-21** — **Cycle 83 (the subject's login IP was dropped on the floor — and a
+  private one would have been geo-noise).** The uploaded snusbase combined-search dumps
+  carry the subject's login IP ONLY in a `lastip` field (no `ip`): real, public,
+  subject-tied addresses like `142.204.244.67` and `37.236.187.22` on
+  `ali.kareem95@gmail.com` / `ali.kareem`. Both breach extractors read `ip` alone, so
+  the single strongest geolocation lead a breach row offers — where the account actually
+  logged in from — was silently discarded for every snusbase-shaped record. Compounding
+  it, `see_know`'s IP gate was a bare `ip.len() >= 7`, which would have admitted a
+  private LAN address (`192.168.x`, CGNAT) as a `geolocation-lead` — un-geolocatable
+  noise — had it read the field at all; the public-IP check existed only as a
+  hand-rolled `pub(super)` fn inside `oathnet_pro`. **Paired:** `SOLUTION_TREE` cycle 83
+  — same commit.
+
+- **2026-06-21** — **Cycle 84 (the stealer endpoint dropped 100% of leaked
+  credentials — wrong response shape).** The uploaded `Stealerlogs` dump for the subject
+  is the see-know.eu `/stealer` response: `{ results: 0, victims: [ { log_id,
+  credentials: [ { username, password, pwned_at } … ] } ] }` — a `victims[]` array with
+  the logins nested one level down under `credentials[]`. The response normaliser
+  `extract_items` recognised only the FLAT shapes (top-level array, `/data/items`,
+  `/results` as an array, `/data` object); the stealer `results` is the scalar `0`, so
+  the `/results` branch (which demands an *array*) falls through, no other branch matches
+  `victims`, and the function returns an empty `Vec`. Net: every stealer credential the
+  subject leaked — `ali` / `C0R4Pc1` / `Yontem2006` / `03320085` / … across the whole
+  `credentials` array — was silently discarded before extraction even began. A stealer
+  log's reason for existing is its credential set, and it was the one shape the parser
+  couldn't see. **Paired:** `SOLUTION_TREE` cycle 84 — same commit.

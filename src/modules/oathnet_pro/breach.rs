@@ -129,7 +129,7 @@ impl TargetMatch {
     }
 
     /// True if any matchable field of `item` identifies the target.
-    fn matches(&self, item: &Value) -> bool {
+    pub(super) fn matches(&self, item: &Value) -> bool {
         for field in ["email", "username", "phone_number", "full_name"] {
             if let Some(v) = val_str(item, field) {
                 let vl = v.to_lowercase();
@@ -160,6 +160,117 @@ impl TargetMatch {
     }
 }
 
+/// Build the subject's breach **dossier** entity from the rows that matched the
+/// subject identity, or `None` when the subject does not appear in the page.
+///
+/// A broad search — above all a `full_name` — returns a page of strangers. The
+/// engine pre-inserts a seed anchor for the subject, so minting a 0.85
+/// `breach`-tagged parent off a ZERO-match page merged a false "breach hit" —
+/// and an aggregate dump of every stranger's name/country/DOB — straight onto
+/// that anchor. Gating on a real match keeps the subject's headline node honest,
+/// and aggregating identity attributes over the MATCHING rows ONLY (never the
+/// whole stranger-laden page) means the dossier reflects the subject's own
+/// records. Attributes are aggregated additively (order-preserving, deduplicated)
+/// so multiple hits and aliases are all retained, never overwritten.
+pub(super) fn breach_parent_entity(
+    target: &Target,
+    scan_id: &str,
+    matching: &[Value],
+    total_returned: usize,
+) -> Option<Entity> {
+    if matching.is_empty() {
+        return None;
+    }
+    let match_count = matching.len();
+    let top_dbs = oathnet::top_dbnames(matching, 5);
+    let countries = oathnet::distinct_field(matching, "country");
+    let names = oathnet::distinct_field(matching, "full_name");
+    let genders = oathnet::distinct_field(matching, "gender");
+    let dobs = oathnet::distinct_field(matching, "date_birth");
+    // Dossier-level credential-exposure signal: how many of the subject's own
+    // records leaked a fast, GPU-trivial hash (≈ plaintext once cracked).
+    let fast_hashes = matching
+        .iter()
+        .filter_map(|i| val_str(i, "password_hash"))
+        .filter(|h| identify_password_hash(h).is_some_and(|(_, fast)| fast))
+        .count();
+
+    let mut parent = target.to_entity(0.85, scan_id);
+    parent.tag(tags::BREACH);
+    parent.tag("oathnet-pro");
+    let mut ev = Evidence::new(
+        SRC,
+        format!(
+            "OathNet: {match_count} matching breach record(s) of {total_returned} — {}",
+            top_dbs.join(", ")
+        ),
+    )
+    .with_attr("hits", match_count.to_string())
+    .with_attr("records_returned", total_returned.to_string())
+    .with_attr("top_dbnames", top_dbs.join(", "));
+    if !countries.is_empty() {
+        ev = ev.with_attr("countries", countries.join(", "));
+    }
+    if !names.is_empty() {
+        ev = ev.with_attr("names", names.join("; "));
+    }
+    if !genders.is_empty() {
+        ev = ev.with_attr("genders", genders.join(", "));
+    }
+    if !dobs.is_empty() {
+        ev = ev.with_attr("dates_of_birth", dobs.join(", "));
+    }
+    if fast_hashes > 0 {
+        ev = ev.with_attr("fast_crackable_hashes", fast_hashes.to_string());
+    }
+    parent.add_evidence(ev);
+    Some(parent)
+}
+
+/// Extract a full page of breach records into entities, enforcing the
+/// candidate-flood cap.
+///
+/// Each row's target-match decision is precomputed by the caller (one pass that
+/// also feeds [`breach_parent_entity`]), passed in as `row_matches` aligned to
+/// `items`. Target-matching rows are always extracted in full; non-matching
+/// strangers are only sampled — at most `MAX_CANDIDATE_ROWS` of them — so a
+/// broad `full_name` search that returns a whole page of unrelated people can't
+/// drown a memory-constrained device in low-value `candidate` entities. API-key
+/// harvesting (`store_api_credential` + `extract_api_keys_from_item`) runs
+/// unconditionally for every row: a leaked tool credential is valuable
+/// independent of whether the row identifies the target, and such keys are rare
+/// enough never to flood.
+pub(super) fn extract_breach_page(
+    items: &[Value],
+    row_matches: &[bool],
+    scan_id: &str,
+    key_fp: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    debug_assert_eq!(
+        items.len(),
+        row_matches.len(),
+        "row_matches must be aligned 1:1 with items"
+    );
+    result.entities.reserve(items.len());
+    let mut candidate_rows = 0usize;
+    for (item, &is_target_row) in items.iter().zip(row_matches) {
+        // Target rows always extract; strangers only up to the cap.
+        if is_target_row {
+            extract_breach_entities_with(item, true, scan_id, key_fp, seen, result);
+        } else if candidate_rows < MAX_CANDIDATE_ROWS {
+            candidate_rows += 1;
+            extract_breach_entities_with(item, false, scan_id, key_fp, seen, result);
+        }
+        // Unconditional — independent of the candidate cap and the target
+        // match (see the doc comment), kept after PII extraction to preserve
+        // the original per-row ordering.
+        store_api_credential(item);
+        extract_api_keys_from_item(item, scan_id, seen, result);
+    }
+}
+
 #[cfg(test)]
 pub(super) fn extract_breach_entities(
     item: &Value,
@@ -169,19 +280,13 @@ pub(super) fn extract_breach_entities(
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
-    extract_breach_entities_with(
-        item,
-        &TargetMatch::new(target_value),
-        scan_id,
-        key_fp,
-        seen,
-        result,
-    );
+    let is_target_row = TargetMatch::new(target_value).matches(item);
+    extract_breach_entities_with(item, is_target_row, scan_id, key_fp, seen, result);
 }
 
 pub(super) fn extract_breach_entities_with(
     item: &Value,
-    match_ctx: &TargetMatch,
+    is_target_row: bool,
     scan_id: &str,
     key_fp: &str,
     seen: &mut HashSet<String>,
@@ -193,13 +298,13 @@ pub(super) fn extract_breach_entities_with(
         .with_attr("provider", "oathnet.org")
         .with_attr("api_key_origin", key_fp);
 
-    // Decide whether this breach row actually belongs to the target. Breach
-    // databases hold millions of records and a broad search (especially a
-    // `full_name`) returns rows for many different people. A non-matching row
-    // is NOT discarded — `push_oathnet_entity` demotes it to a quarantined
-    // `candidate` (out of the default view and the correlator) so genuine
-    // leads survive without flooding the result with strangers.
-    let is_target_row = match_ctx.matches(item);
+    // `is_target_row` (computed once per row by the caller via `TargetMatch`)
+    // decides whether this record belongs to the target. Breach databases hold
+    // millions of records and a broad search — above all a `full_name` —
+    // returns rows for many different people. A non-matching row is NOT
+    // discarded here: `push_oathnet_entity` demotes it to a quarantined
+    // `candidate` (out of the default view and the correlator) so genuine leads
+    // survive without flooding the result with strangers.
 
     if let Some(email) = val_str(item, "email") {
         let lower = email.to_lowercase();
@@ -253,17 +358,23 @@ pub(super) fn extract_breach_entities_with(
         }
     }
 
-    if let Some(ip) = val_str(item, "ip")
-        && is_public_ip(&ip)
-        && seen.insert(ip.clone())
-    {
-        push_oathnet_entity(
-            result,
-            Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id),
-            &ev,
-            &["geolocation-lead"],
-            is_target_row,
-        );
+    // Login IPs — the session `ip` AND the last-login `lastip`/`last_ip` are
+    // both geolocation leads tied to the account. snusbase-style records carry
+    // only `lastip`, so reading `ip` alone dropped the subject's login location;
+    // each distinct public address becomes its own lead.
+    for ip_field in ["ip", "lastip", "last_ip"] {
+        if let Some(ip) = val_str(item, ip_field)
+            && is_public_ip(&ip)
+            && seen.insert(ip.clone())
+        {
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id),
+                &ev,
+                &["geolocation-lead"],
+                is_target_row,
+            );
+        }
     }
 
     if let Some(country) = val_str(item, "country")
