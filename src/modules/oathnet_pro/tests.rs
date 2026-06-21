@@ -399,6 +399,37 @@ use super::*;
     }
 
     #[test]
+    fn composed_address_includes_postal_code_for_geocodability() {
+        use serde_json::json;
+        // A postcode-qualified address geocodes to the ZIP centroid, not the
+        // whole city. The breach record carries `postal_code`, so it belongs in
+        // the composed Address value, not only the evidence.
+        let item = json!({
+            "full_name": "Ali Kareem",
+            "city": "HAMPTON",
+            "state": "VA",
+            "postal_code": "23666",
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "Ali Kareem",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let addr = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Address && e.value.contains("HAMPTON"))
+            .expect("composed address entity");
+        assert_eq!(addr.value, "HAMPTON, VA, 23666");
+    }
+
+    #[test]
     fn full_name_matcher_requires_all_terms_not_just_one() {
         use serde_json::json;
         // "Jordan Parker" shares only the first name with the target — it must

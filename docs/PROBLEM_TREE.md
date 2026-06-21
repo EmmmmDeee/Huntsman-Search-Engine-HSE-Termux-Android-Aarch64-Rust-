@@ -2924,3 +2924,18 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `CANDIDATE_CONF` ceiling) lived only inside `oathnet_pro`, so the two breach pools
   judged "is this row the subject?" by different code — one had the answer, the other had
   none. **Paired:** `SOLUTION_TREE` cycle 87 — same commit.
+
+- **2026-06-21** — **Cycle 88 (a less-geocodable address and provider-plumbing leaking as
+  entities).** Two address/identity quality gaps surfaced by the dumps. **(a)** `oathnet_pro`
+  composed its physical `Address` from `[street, city, state]` ONLY — dropping the
+  `postal_code` the breach record carries (`23666` for HAMPTON, VA). A postcode-less
+  address geocodes to the whole city instead of the ZIP centroid, throwing away the
+  precision the downstream geocode + AU/geo-correlation chain runs on; the ZIP sat on the
+  evidence, unused for placement. `see_know` already composes the full street→postal→
+  country address, so the two pools emitted addresses at different precision from the same
+  record shape. **(b)** `see_know`'s maximum-raw-data `rich_detail` pass turns every
+  un-skipped scalar into an entity, but its skip list missed the **provider-internal record
+  IDs** snusbase stamps on every row — `uid` and `migration_id` (the provider's own database
+  keys, not the subject's) — so each record minted two `Other(...)` junk nodes, diluting the
+  graph with plumbing that reads like intelligence. **Paired:** `SOLUTION_TREE` cycle 88 —
+  same commit.
