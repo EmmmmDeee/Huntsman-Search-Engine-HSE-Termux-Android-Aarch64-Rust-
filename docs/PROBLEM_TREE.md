@@ -2882,3 +2882,20 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `credentials` array — was silently discarded before extraction even began. A stealer
   log's reason for existing is its credential set, and it was the one shape the parser
   couldn't see. **Paired:** `SOLUTION_TREE` cycle 84 — same commit.
+
+- **2026-06-21** — **Cycle 85 (see_know is structurally UNREACHABLE on Termux — the
+  paid source is killed before it can answer, every run).** see_know's `/search` has a
+  ~55 s server-side cap and routinely answers in 50–60 s; the whole module is sized for
+  that (curl 75 s < outer 78 s < module `max_timeout_ms` 80 s). But the engine's flat
+  `TERMUX_MODULE_TIMEOUT_CAP_MS` (45 s) clamps EVERY module on Termux without a user
+  override, and `termux_timeout_ms()` can only trim *below* the cap — there is no path
+  above it. So on Termux/aarch64 — the platform HSE exists for, and exactly where the
+  debug bundle ran (`termux: detected`, see_know `module_error: timeout` at precisely
+  45 s) — see_know is aborted before the upstream ever responds, returning ZERO data on
+  every phone scan. The operator's explicitly-enabled, highest-priority paid source is
+  silently wasted, and because paid modules run serially in Phase 1 (key-discovery-first)
+  the 45 s isn't just lost — it blocks the free fan-out behind it. Worse, cycles 83–84
+  (lastip capture, victim-credential flattening) parse see_know data that, on the target
+  platform, never arrives. The cap's own doc claimed 45 s "clears every legitimately-long
+  module's happy path" — it never accounted for a module whose happy path is the server's
+  own 55 s processing time. **Paired:** `SOLUTION_TREE` cycle 85 — same commit.
