@@ -2184,3 +2184,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   a pool used; non-breach / unknown-source / idempotent no-ops); −2 superseded module tests.
   Gate green: lib 3,330, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean — verified on
   rustc 1.96.0. Paired: `PROBLEM_TREE` cycle 91 — same commit.
+
+- **2026-06-21** — **Cycle 92 (brand→sector knowledge + the last two bare-name pools, reshaped
+  from a live run).** Working backwards from the real corpus: added a curated
+  `KNOWN_SOURCE_SECTORS` table to `util::breach_sector`, mapping the actual breach
+  brands/domains the live "Ali Kareem" graph surfaced (`neopets`→gaming, `tunngle`→gaming,
+  `deezer`→media, `edmodo`→education, `jefit`→health, `fling`→adult, `tumblr`→social,
+  `linkedin`→tech, …) plus the global long tail. Matching is whole-alnum-token, not
+  substring, so a needle can never bleed across an unrelated token (`zyngamania.com`→`None`);
+  resolution order is real-estate → structured category → known brand, each more conservative
+  than a guess. Added a `media` slug to the structured vocabulary for consistency. Then
+  finished the universal pass: `tag_breach_sector` now also reads `osintcat`'s dynamic
+  `breach_<name>` keys and `xposed_or_not`'s `breaches` list, and collects EVERY distinct
+  sector (multi-sector) rather than first-wins — an account in gaming+social+health breaches
+  earns all three tags, so a single-sector filter never misses it. `Entity::tag` dedups, so
+  the pass stays idempotent without the old early-return. +1 brand test (real corpus names),
+  +1 engine test (osintcat + multi-sector xposed). Gate green: lib 3,332, fmt/clippy
+  (`--all-targets`)/doc clean on rustc 1.96.0. Paired: `PROBLEM_TREE` cycle 92 — same commit.

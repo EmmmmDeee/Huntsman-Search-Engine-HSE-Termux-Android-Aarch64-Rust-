@@ -52,6 +52,34 @@ fn recognises_real_estate_by_brand_domain_or_category() {
 }
 
 #[test]
+fn maps_known_brands_from_the_real_corpus_by_bare_domain_or_tag() {
+    // The actual oathnet source domains from the live "Ali Kareem" graph —
+    // bare hosts with no embedded category — now resolve via the brand table.
+    assert_eq!(source_sector("neopets.com"), Some("gaming"));
+    assert_eq!(source_sector("tunngle.net"), Some("gaming"));
+    assert_eq!(source_sector("r2games.com"), Some("gaming"));
+    assert_eq!(source_sector("freegame2017.com"), Some("gaming"));
+    assert_eq!(source_sector("deezer.com"), Some("media"));
+    assert_eq!(source_sector("funimation.com"), Some("media"));
+    assert_eq!(source_sector("edmodo.com"), Some("education"));
+    assert_eq!(source_sector("jefit.com"), Some("health"));
+    assert_eq!(source_sector("fling.com"), Some("adult"));
+    // The bare `breach:<name>` tag spellings the xposed/oathnet pools emit.
+    assert_eq!(source_sector("zynga"), Some("gaming"));
+    assert_eq!(source_sector("tumblr"), Some("social"));
+    assert_eq!(source_sector("LinkedIn"), Some("tech")); // case-insensitive
+    assert_eq!(source_sector("myfitnesspal"), Some("health"));
+    // Whole-token match only: a brand needle can't bleed across a longer token.
+    assert_eq!(source_sector("zyngamania.com"), None);
+    assert_eq!(source_sector("pureincubation.com"), None); // still declined
+    // A structured token's embedded category still wins over the brand table.
+    assert_eq!(
+        source_sector("0645_ZYNGA_COM_202M_GAMING_092019"),
+        Some("gaming")
+    );
+}
+
+#[test]
 fn maps_other_structured_categories() {
     assert_eq!(
         source_sector("9001_ACME_COM_10M_FINANCE_012020"),
