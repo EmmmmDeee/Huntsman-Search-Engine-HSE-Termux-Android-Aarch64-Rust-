@@ -256,7 +256,11 @@ impl Module for DohResolver {
         matches!(t.kind, TargetKind::Domain | TargetKind::Url)
     }
     fn max_timeout_ms(&self) -> u64 {
-        10_000
+        // Live scan: 224 dispatches, 0 found — Cloudflare + Google DoH are
+        // unreachable from DC IPs. Lowering from 10 s to 5 s still leaves
+        // room for a healthy response (CF/Google answer in <1 s) while
+        // halving the concurrency-slot cost when both endpoints are blocked.
+        5_000
     }
 
     fn category(&self) -> ModuleCategory {
@@ -280,12 +284,22 @@ impl Module for DohResolver {
 
         let mut result = ModuleResult::new();
         let mut seen: HashSet<String> = HashSet::new();
+        let mut empty_count = 0usize;
 
-        for rtype in RECORD_TYPES {
+        for (i, rtype) in RECORD_TYPES.iter().enumerate() {
             if ctx.cancel.is_cancelled() {
                 break;
             }
             let records = query_doh(&domain, rtype, &ctx.http).await;
+            if records.is_empty() {
+                empty_count += 1;
+            }
+            // If the first two queries (A + AAAA) both return nothing, both
+            // Cloudflare and Google DoH are unreachable from this IP — skip
+            // remaining record types to free the concurrency slot immediately.
+            if i == 1 && empty_count == 2 {
+                break;
+            }
             result.entities.extend(records_for_type(
                 rtype,
                 &records,
