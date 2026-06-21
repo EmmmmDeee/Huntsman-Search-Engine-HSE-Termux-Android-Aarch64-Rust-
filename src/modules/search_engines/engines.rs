@@ -327,12 +327,18 @@ pub(super) const ENGINES: &[EngineSpec] = &[
 ];
 
 /// Engines used for the secondary pivot + entity-recycler passes — the most
-/// reliable from Termux residential IPs (Yahoo/Bing are stable; Brave works
-/// well off-CAPTCHA). Resolved by NAME via [`reliable_engines`] rather than by
-/// array index, so reordering or inserting into [`ENGINES`] can never silently
-/// repoint those passes at the wrong engines (the prior `ENGINES[0/1/5]`
-/// indexing was a latent drift bug). Order here is the order they're tried.
-pub(super) const RELIABLE_ENGINE_NAMES: [&str; 3] = ["yahoo", "bing", "brave"];
+/// reliable from both Termux residential and DC IPs. Resolved by NAME via
+/// [`reliable_engines`] rather than by array index, so reordering or inserting
+/// into [`ENGINES`] can never silently repoint those passes at the wrong
+/// engines (the prior `ENGINES[0/1/5]` indexing was a latent drift bug).
+/// Order here is the order they're tried.
+///
+/// Live scan evidence (depth-2 "Onur Ada", 6,688 engine dispatches each):
+///   metager:   100% hit, 0% blocked, 20 results/call (DC + residential)
+///   swisscows: 100% hit, 0% blocked,  4 results/call (DC + residential)
+///   dogpile:    97% hit, 0% blocked,  1 result/call  (DC + residential)
+///   yahoo/bing/brave: killed by SESSION_DEAD after <400 dispatches from DC IPs
+pub(super) const RELIABLE_ENGINE_NAMES: [&str; 3] = ["metager", "swisscows", "dogpile"];
 
 /// Resolve [`RELIABLE_ENGINE_NAMES`] to their [`EngineSpec`]s, preserving that
 /// order. A name absent from [`ENGINES`] is skipped; the

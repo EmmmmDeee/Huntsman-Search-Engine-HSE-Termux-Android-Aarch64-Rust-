@@ -1751,7 +1751,10 @@ fn reliable_engines_resolve_by_name() {
     // can't silently repoint them. Assert all three resolve, in order —
     // a rename/removal fails CI instead of degrading silently at runtime.
     let names: Vec<&str> = reliable_engines().iter().map(|e| e.name).collect();
-    assert_eq!(names, vec!["yahoo", "bing", "brave"]);
+    // Live scan data: metager/swisscows/dogpile are 97-100% hit / 0% blocked
+    // from DC IPs; yahoo/bing/brave get killed by SESSION_DEAD within ~400
+    // dispatches. Reliable pass now uses the DC-stable engines.
+    assert_eq!(names, vec!["metager", "swisscows", "dogpile"]);
 }
 
 #[test]
