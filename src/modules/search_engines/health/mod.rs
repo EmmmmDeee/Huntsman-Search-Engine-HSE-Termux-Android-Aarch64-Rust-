@@ -161,7 +161,9 @@ async fn probe_one(engine: &'static EngineSpec) -> EngineHealth {
     let start = Instant::now();
     // The liveness probe uses the full per-request ceiling, capped by any
     // per-engine override (e.g. DDG at 4 s vs global 8 s).
-    let probe_timeout = engine.max_fetch_ms.map_or(MAX_FETCH_MS, |cap| cap.min(MAX_FETCH_MS));
+    let probe_timeout = engine
+        .max_fetch_ms
+        .map_or(MAX_FETCH_MS, |cap| cap.min(MAX_FETCH_MS));
     let outcome = try_fetch(&url, engine.ua, post.as_deref(), probe_timeout).await;
     let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
     let (results, links) = match &outcome {
