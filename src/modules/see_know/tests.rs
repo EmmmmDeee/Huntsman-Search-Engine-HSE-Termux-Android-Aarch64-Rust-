@@ -232,6 +232,70 @@ use crate::core::entity::Entity;
     }
 
     #[test]
+    fn non_matching_record_is_quarantined_as_candidate() {
+        use crate::util::target_match::CANDIDATE_CONF;
+        use serde_json::json;
+        // A broad see_know NAME search can return same-name strangers; their PII
+        // must be demoted to quarantined `candidate` leads (mirroring
+        // oathnet_pro), never minted as the subject at full confidence.
+        let stranger =
+            json!({ "email": "bob.smith@example.com", "full_name": "Bob Smith", "source": "snusbase" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &stranger,
+            "Ali Kareem",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        let email = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email)
+            .expect("email entity");
+        assert!(
+            email.has_tag("candidate"),
+            "stranger email must be quarantined; tags: {:?}",
+            email.tags
+        );
+        assert!(
+            email.confidence <= CANDIDATE_CONF + 1e-9,
+            "stranger email demoted to candidate confidence"
+        );
+
+        // The subject's OWN record stays at full confidence, no candidate tag.
+        let subject = json!({
+            "email": "ali.kareem@example.com",
+            "full_name": "Ali Kareem",
+            "source": "snusbase"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &subject,
+            "Ali Kareem",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        let email = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email)
+            .expect("email entity");
+        assert!(!email.has_tag("candidate"), "subject email not quarantined");
+        assert!(
+            email.confidence > CANDIDATE_CONF,
+            "subject email keeps full confidence"
+        );
+    }
+
+    #[test]
     fn extract_entities_spiders_stealer_url_into_pivots() {
         use serde_json::json;
         // A stealer-log row: a saved credential for a login URL. The URL is the

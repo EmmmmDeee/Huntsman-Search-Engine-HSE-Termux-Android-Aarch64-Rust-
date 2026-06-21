@@ -16,6 +16,10 @@ use crate::core::{
     tags,
 };
 use crate::util::oathnet::{self, paths, val_str, val_str_or};
+// The target-identity matcher and the candidate-quarantine ceiling are shared
+// with see_know via `util::target_match` (one definition for both breach pools);
+// reached by bare name in `breach.rs` through its `use super::*`.
+use crate::util::target_match::{CANDIDATE_CONF, TargetMatch};
 
 pub mod key_harvest;
 mod validate;
@@ -34,13 +38,6 @@ pub fn reset_budget() {
 use key_harvest::{extract_api_keys_from_item, store_api_credential};
 
 const SRC: &str = "oathnet_pro";
-
-/// Confidence ceiling for an entity sourced from a breach row that does NOT
-/// match the scan target's identity. A broad search (especially a `full_name`)
-/// returns rows for many different people; those rows are preserved as
-/// quarantined `candidate` leads at this strength rather than discarded, but
-/// must never reach the full-confidence, correlated, default-view tier.
-const CANDIDATE_CONF: f64 = 0.25;
 
 /// Maximum number of NON-matching (candidate) breach rows extracted into
 /// entities per page. A broad search — above all a `full_name` — routinely

@@ -31,6 +31,7 @@ use crate::core::{
 use crate::util::extract::EMAIL_RE;
 use crate::util::geo::is_valid_coords;
 use crate::util::see_know::val_str;
+use crate::util::target_match::{CANDIDATE_CONF, TargetMatch};
 
 use super::SRC;
 use super::pivots::looks_like_steam_id;
@@ -194,6 +195,15 @@ pub(super) fn extract_entities(
     // record carries the complete source data plus its provenance (provider,
     // API-key origin, endpoint) for traceability.
     let ev = record_evidence(item, &dbname, endpoint, key_fp);
+
+    // Does this record actually identify the subject? A broad see_know search —
+    // above all a name auto-detect — can return same-name strangers; the
+    // identity + credential entities they yield are demoted to quarantined
+    // `candidate` leads below (mirroring oathnet_pro), so they never reach the
+    // subject's full-confidence tier. `quarantine_start` marks where this
+    // record's entities begin so the demotion targets exactly them.
+    let is_target = TargetMatch::new(target_value).matches(item);
+    let quarantine_start = result.entities.len();
 
     if let Some(email) = val_str(item, "email") {
         let lower = email.to_lowercase();
@@ -408,6 +418,20 @@ pub(super) fn extract_entities(
     // want everything. Maximum raw data."
     extract_rich_detail(item, scan_id, &ev, seen, result);
 
+    // Quarantine a non-matching record's identity/credential/raw-detail entities
+    // to CANDIDATE strength with a `candidate` tag — the same demotion
+    // oathnet_pro applies per row — so a same-name stranger from a broad search
+    // survives as a low-confidence lead instead of masquerading as the subject
+    // at full confidence. Applied to everything THIS record contributed above;
+    // declared relatives (next) carry their own `family-candidate` model and the
+    // subject's own rows (`is_target`) are untouched.
+    if !is_target {
+        for e in &mut result.entities[quarantine_start..] {
+            e.confidence = e.confidence.min(CANDIDATE_CONF);
+            e.tag(tags::CANDIDATE);
+        }
+    }
+
     // Relatives / associates / household members → connected Person leads. The
     // searched subject (`target_value`) anchors each via `related_to`, so a
     // name search on one family member surfaces and binds to the others.
@@ -423,6 +447,12 @@ pub(super) fn extract_entities(
     {
         let mut e = Entity::new(EntityKind::Domain, &domain, 0.55, scan_id);
         e.tag("see-know");
+        // Same quarantine as the identity block above (this push lands after it,
+        // so it is demoted here rather than by the range pass).
+        if !is_target {
+            e.confidence = e.confidence.min(CANDIDATE_CONF);
+            e.tag(tags::CANDIDATE);
+        }
         e.add_evidence(ev);
         result.push(e);
     }
