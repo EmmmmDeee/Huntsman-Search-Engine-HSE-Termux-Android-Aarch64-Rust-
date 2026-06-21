@@ -999,6 +999,88 @@ pub async fn scan_pivots(
         .into_response()
 }
 
+/// `GET /api/v1/scans/{id}/gaps` — discovery-gap analysis ([`crate::core::gap`]): the
+/// validated seeds a scan produced that are ISOLATED (no evidence-backed link), each
+/// classified by why it is isolated and given a concrete corrective action — including
+/// the registered modules that would query its re-injection kind, so an operator (or the
+/// engine) can force the missing observable path. This is the gap-resolution loop's
+/// instrument: it turns "no links" into "run these scans next". Pure synthesis over the
+/// persisted entities + relations; 404 if the scan is unknown.
+pub async fn scan_gaps(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (entities, relations) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+
+    let report = crate::core::gap::analyze(&entities, &relations);
+
+    // Attach, per orphan, the registered modules that would query its re-injection kind —
+    // the concrete "additional data sources" the gap-resolution loop should run. Computed
+    // here because the registry lives in the module layer, not in `core`.
+    let by_uid: std::collections::HashMap<&str, &crate::core::entity::Entity> =
+        entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let reg = crate::modules::registry();
+    let orphans: Vec<serde_json::Value> = report
+        .orphans
+        .iter()
+        .map(|o| {
+            let corrective: Vec<&'static str> = by_uid
+                .get(o.uid.as_str())
+                .and_then(|e| {
+                    crate::core::scan::TargetKind::from_entity_kind(&e.kind)
+                        .map(|tk| Target::new(tk, e.value.clone()))
+                })
+                .map(|target| {
+                    reg.iter()
+                        .filter(|m| m.accepts(&target))
+                        .map(|m| m.name())
+                        .collect()
+                })
+                .unwrap_or_default();
+            json!({
+                "uid": o.uid.clone(),
+                "kind": o.kind.clone(),
+                "value": o.value.clone(),
+                "confidence": o.confidence,
+                "isolation": o.isolation,
+                "reinjection_target": o.reinjection_target.clone(),
+                "action": o.action,
+                "corrective_modules": corrective,
+            })
+        })
+        .collect();
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "null_state": report.null_state,
+            "total_seeds": report.total_seeds,
+            "linked_seeds": report.linked_seeds,
+            "isolated_seeds": report.isolated_seeds,
+            "linked_fraction": report.linked_fraction,
+            "isolation": report.isolation,
+            "orphans": orphans,
+        })),
+    )
+        .into_response()
+}
+
 /// `GET /api/v1/scans/{id}/benchmark` — the consolidated, auditable benchmark report
 /// ([`crate::core::benchmark`]): the scan's measurable OSINT dimensions (discovery
 /// depth, graph coverage, corroboration, density, throughput, module reliability,

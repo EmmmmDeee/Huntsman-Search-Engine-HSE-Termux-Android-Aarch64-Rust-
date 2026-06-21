@@ -16,6 +16,7 @@ mod diff;
 mod doctor;
 mod engines;
 pub(crate) mod export;
+mod gap;
 mod keys_cmd;
 mod live;
 mod modules;
@@ -228,6 +229,7 @@ pub async fn run() -> Result<()> {
             json,
         } => audit::cmd_audit(csv, scan_id, log, json).await,
         Command::Benchmark { scan_id, json } => benchmark::cmd_benchmark(scan_id, json),
+        Command::Gaps { scan_id, json } => gap::cmd_gaps(scan_id, json),
         Command::Doctor => doctor::cmd_doctor().await,
         Command::Selftest { json } => selftest::cmd_selftest(json).await,
         Command::Provision {

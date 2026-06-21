@@ -70,9 +70,12 @@ Each HSE claim links to the code that makes it true.
   that names the network's *single points of failure* — the entities and the lone links
   whose removal fragments the graph, the sharp binary question betweenness only
   approximates — **community detection** (`core::community`, label propagation), **trust
-  propagation** (`core::trust`, damped personalized-PageRank), and **near-duplicate
-  resolution** (`core::resolve`). All read structural intelligence off one shared,
-  deterministic graph primitive (`core::graph`). SpiderFoot ships no equivalent.
+  propagation** (`core::trust`, damped personalized-PageRank), **near-duplicate
+  resolution** (`core::resolve`), and **discovery-gap analysis** (`core::gap`) that names
+  the validated seeds with *no* evidence-backed link and the corrective scan to connect
+  each — closing discovery blind spots rather than leaving them silent. All read
+  structural intelligence off one shared, deterministic graph primitive (`core::graph`).
+  SpiderFoot ships no equivalent.
 
 ### 2.5 Scan speed / efficiency & 2.6 Resource usage — **HSE supersedes (structural; figure pending A/B)**
 - *SpiderFoot:* Python interpreter + dependency tree.

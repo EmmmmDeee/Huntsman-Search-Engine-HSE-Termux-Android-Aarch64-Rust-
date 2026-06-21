@@ -1781,11 +1781,11 @@ async fn spa_is_gzip_compressed_for_a_gzip_capable_client() {
     let bytes = axum::body::to_bytes(resp.into_body(), 2_000_000)
         .await
         .unwrap();
-    // The uncompressed SPA is ~118 KB; gzip should bring the wire body well
+    // The uncompressed SPA is ~212 KB; gzip should bring the wire body well
     // under half that. (Generous bound so a future SPA edit doesn't flake.)
     assert!(
-        bytes.len() < 60_000,
-        "gzipped SPA should be much smaller than the ~118 KB source, got {} bytes",
+        bytes.len() < 80_000,
+        "gzipped SPA should be much smaller than the ~212 KB source, got {} bytes",
         bytes.len()
     );
 }
@@ -2106,6 +2106,59 @@ async fn scan_pivots_reports_cut_vertices_and_bridges() {
     // Unknown scan -> 404, matching the other sub-resources.
     let resp = app
         .oneshot(get("/api/v1/scans/__nope__/pivots"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn scan_gaps_reports_isolated_seeds_with_corrective_modules() {
+    let (app, store) = test_app_with_store("gaps");
+    let scan = Scan::new("s-gap", Target::new(TargetKind::FullName, "Subject Person"));
+    store.upsert_scan(&scan).unwrap();
+
+    // A linked pair (email—domain) plus an isolated phone (no relation).
+    let a = Entity::new(EntityKind::Email, "a@example.test", 0.8, "s-gap");
+    let b = Entity::new(EntityKind::Domain, "example.test", 0.8, "s-gap");
+    let orphan = Entity::new(EntityKind::Phone, "+15551230000", 0.8, "s-gap");
+    for e in [&a, &b, &orphan] {
+        store.upsert_entity(e).unwrap();
+    }
+    store
+        .upsert_relation(&Relation::new(
+            a.uid.as_str(),
+            b.uid.as_str(),
+            RelationKind::BelongsToDomain,
+            0.7,
+            "s-gap",
+        ))
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/scans/s-gap/gaps"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+
+    assert_eq!(json["total_seeds"].as_u64().unwrap(), 3);
+    assert_eq!(json["linked_seeds"].as_u64().unwrap(), 2);
+    assert_eq!(json["isolated_seeds"].as_u64().unwrap(), 1);
+    let orphans = json["orphans"].as_array().expect("orphans is a list");
+    assert_eq!(orphans.len(), 1, "the isolated phone is the only orphan");
+    let o = &orphans[0];
+    assert_eq!(o["kind"].as_str().unwrap(), "phone");
+    assert_eq!(o["isolation"].as_str().unwrap(), "unexpanded");
+    assert_eq!(o["reinjection_target"].as_str().unwrap(), "phone");
+    assert!(
+        !o["corrective_modules"].as_array().unwrap().is_empty(),
+        "the orphan phone has registered modules that would query it"
+    );
+
+    // Unknown scan -> 404.
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/gaps"))
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);

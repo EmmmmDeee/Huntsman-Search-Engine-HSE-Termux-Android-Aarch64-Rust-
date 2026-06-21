@@ -19,6 +19,7 @@ pub mod engine;
 pub mod entity;
 pub mod error;
 pub mod event;
+pub mod gap;
 pub mod geo_family;
 pub mod gexf;
 pub mod graph;

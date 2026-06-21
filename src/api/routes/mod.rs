@@ -242,6 +242,8 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         )
         // Pivot-node detection — the graph's high-connectivity intermediaries.
         .route("/scans/{id}/pivots", get(scan_handlers::scan_pivots))
+        // Discovery-gap analysis — isolated seeds and the corrective scans to link them.
+        .route("/scans/{id}/gaps", get(scan_handlers::scan_gaps))
         // Consolidated benchmark scorecard (HTTP twin of `hse benchmark`).
         .route("/scans/{id}/benchmark", get(scan_handlers::scan_benchmark))
         .route("/scans/{id}/audit", get(scan_handlers::scan_audit))

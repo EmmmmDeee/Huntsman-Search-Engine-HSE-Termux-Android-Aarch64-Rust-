@@ -630,6 +630,7 @@ const API = {
   duplicates: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/duplicates'),
   // Pivot nodes: the graph's high-connectivity intermediaries (betweenness centrality).
   pivots:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/pivots'),
+  gaps:       id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/gaps'),
   auditScan: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/audit'),
   create:    body=>API._req('/api/v1/scans',{method:'POST',body}),
   // Forward-only scan-plan preview: which modules a seed engages, before scanning.
@@ -1752,6 +1753,7 @@ async function renderReport(host, id, scan){
     <div id="rpt-communities" style="margin-top:18px"></div>
     <div id="rpt-trust"    style="margin-top:18px"></div>
     <div id="rpt-pivots"   style="margin-top:18px"></div>
+    <div id="rpt-gaps"     style="margin-top:18px"></div>
     <div id="rpt-path"     style="margin-top:18px"></div>
     <div id="rpt-duplicates" style="margin-top:18px"></div>
     <div id="rpt-corr"     style="margin-top:18px"></div>
@@ -1765,6 +1767,7 @@ async function renderReport(host, id, scan){
   renderCommunities($('#rpt-communities'), id);
   renderTrust($('#rpt-trust'), id);
   renderPivots($('#rpt-pivots'), id);
+  renderGaps($('#rpt-gaps'), id);
   renderPathTool($('#rpt-path'), id);
   renderDuplicates($('#rpt-duplicates'), id);
   renderCorrelations($('#rpt-corr'));
@@ -2038,6 +2041,39 @@ async function renderPivots(host, id){
     }
     if (bridges.length > 12){ html += `<div class="text-muted" style="font-size:11px">…and ${bridges.length-12} more.</div>`; }
   }
+  host.innerHTML = html;
+}
+
+/* ── Discovery gaps — validated seeds with no evidence-backed link, why they're
+   isolated, and the corrective scans that would connect them. GET /scans/{id}/gaps.
+   The gap-resolution loop made legible: turns "no links" into "run these next". ── */
+async function renderGaps(host, id){
+  let data;
+  try { data = await API.gaps(id); }
+  catch(e){ host.innerHTML = ''; return; }
+  if (!data || data.null_state){ host.innerHTML = ''; return; }
+  const orphans = data.orphans || [];
+  const linkedPct = Math.round((Number(data.linked_fraction)||0)*100);
+  let html = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-unchecked"></i>&nbsp;Discovery gaps</h4>
+    <p class="text-muted" style="font-size:12px;margin-bottom:8px">${data.linked_seeds}/${data.total_seeds} seeds linked (${linkedPct}%). Isolated seeds below are discovery blind spots — each shows the corrective scan that would connect it.</p>`;
+  if (!orphans.length){
+    html += `<p class="text-success" style="font-size:12px"><i class="glyphicon glyphicon-ok"></i> Every validated seed is linked into the graph.</p>`;
+    host.innerHTML = html; return;
+  }
+  const badge = { unexpanded:'label-warning', below_expand_floor:'label-default', terminal:'label-info' };
+  const nonTerminal = orphans.filter(o=>o.isolation!=='terminal');
+  const terminalCount = orphans.length - nonTerminal.length;
+  for (const o of nonTerminal.slice(0,15)){
+    const mods = (o.corrective_modules||[]);
+    const modStr = mods.length ? `<span class="text-muted" style="font-size:11px"> → run: ${mods.slice(0,6).map(esc).join(', ')}${mods.length>6?'…':''}</span>` : '';
+    html += `<div style="margin-bottom:6px;font-size:12px">
+      <span class="label ${badge[o.isolation]||'label-default'}">${esc(String(o.isolation).replace(/_/g,' '))}</span>
+      <code>${esc(o.value||o.uid)}</code> <span class="text-muted">(${esc(o.kind)})</span>
+      <div class="text-muted" style="font-size:11px;margin-left:4px">${esc(o.action)}${modStr}</div>
+    </div>`;
+  }
+  if (nonTerminal.length>15){ html += `<div class="text-muted" style="font-size:11px">…and ${nonTerminal.length-15} more actionable gaps.</div>`; }
+  if (terminalCount>0){ html += `<div class="text-muted" style="font-size:11px">+ ${terminalCount} terminal leaf/leaves (non-scannable; expected isolation).</div>`; }
   host.innerHTML = html;
 }
 
