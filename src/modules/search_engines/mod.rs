@@ -383,31 +383,27 @@ impl Module for SearchEngines {
             // appending — the persisted result must not depend on which engine
             // happened to answer first (Determinism Requirement).
             batch.sort_by(|a, b| a.0.cmp(b.0));
-            let prev_len = all_results.len();
             for (name, res) in batch {
                 match res {
-                    Some(mut results) => all_results.append(&mut results),
+                    Some(mut results) => {
+                        if qi == 0 {
+                            // Engine produced results on this seed — reset its streak.
+                            if !results.is_empty() {
+                                record_hit(name);
+                            } else {
+                                // Some(empty vec): parsed page but found no links.
+                                record_empty(name);
+                            }
+                        }
+                        all_results.append(&mut results);
+                    }
                     // Nothing on the FIRST query → down/blocked for this session;
                     // skip it on subsequent queries to save the budget.
                     None if qi == 0 => {
                         dead_engines.insert(name);
+                        record_empty(name);
                     }
                     None => {}
-                }
-            }
-            // Session-level empty accounting: engines that never produce anything
-            // across multiple seeds are silenced for the rest of the scan.
-            if qi == 0 {
-                for name in dead_engines.iter().copied() {
-                    record_empty(name);
-                }
-                // Any engine that contributed to new results this query resets its streak.
-                if all_results.len() > prev_len {
-                    for e in ENGINES {
-                        if engine_enabled(e.name) && !dead_engines.contains(e.name) {
-                            record_hit(e.name);
-                        }
-                    }
                 }
             }
             if all_results.len() >= MAX_ACCUMULATED_RESULTS {
