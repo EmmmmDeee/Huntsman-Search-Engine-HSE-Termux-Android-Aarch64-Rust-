@@ -39,7 +39,10 @@ fn demote_to_candidate_caps_confidence_tags_and_is_idempotent() {
     e.demote_to_candidate();
     assert!((e.confidence - CANDIDATE_CONF).abs() < f64::EPSILON);
     assert_eq!(
-        e.tags.iter().filter(|t| *t == crate::core::tags::CANDIDATE).count(),
+        e.tags
+            .iter()
+            .filter(|t| *t == crate::core::tags::CANDIDATE)
+            .count(),
         1
     );
     // Never RAISES an already-lower confidence.
