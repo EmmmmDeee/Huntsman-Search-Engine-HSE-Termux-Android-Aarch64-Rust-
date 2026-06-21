@@ -129,7 +129,7 @@ impl TargetMatch {
     }
 
     /// True if any matchable field of `item` identifies the target.
-    fn matches(&self, item: &Value) -> bool {
+    pub(super) fn matches(&self, item: &Value) -> bool {
         for field in ["email", "username", "phone_number", "full_name"] {
             if let Some(v) = val_str(item, field) {
                 let vl = v.to_lowercase();
@@ -160,38 +160,103 @@ impl TargetMatch {
     }
 }
 
+/// Build the subject's breach **dossier** entity from the rows that matched the
+/// subject identity, or `None` when the subject does not appear in the page.
+///
+/// A broad search — above all a `full_name` — returns a page of strangers. The
+/// engine pre-inserts a seed anchor for the subject, so minting a 0.85
+/// `breach`-tagged parent off a ZERO-match page merged a false "breach hit" —
+/// and an aggregate dump of every stranger's name/country/DOB — straight onto
+/// that anchor. Gating on a real match keeps the subject's headline node honest,
+/// and aggregating identity attributes over the MATCHING rows ONLY (never the
+/// whole stranger-laden page) means the dossier reflects the subject's own
+/// records. Attributes are aggregated additively (order-preserving, deduplicated)
+/// so multiple hits and aliases are all retained, never overwritten.
+pub(super) fn breach_parent_entity(
+    target: &Target,
+    scan_id: &str,
+    matching: &[Value],
+    total_returned: usize,
+) -> Option<Entity> {
+    if matching.is_empty() {
+        return None;
+    }
+    let match_count = matching.len();
+    let top_dbs = oathnet::top_dbnames(matching, 5);
+    let countries = oathnet::distinct_field(matching, "country");
+    let names = oathnet::distinct_field(matching, "full_name");
+    let genders = oathnet::distinct_field(matching, "gender");
+    let dobs = oathnet::distinct_field(matching, "date_birth");
+    // Dossier-level credential-exposure signal: how many of the subject's own
+    // records leaked a fast, GPU-trivial hash (≈ plaintext once cracked).
+    let fast_hashes = matching
+        .iter()
+        .filter_map(|i| val_str(i, "password_hash"))
+        .filter(|h| identify_password_hash(h).is_some_and(|(_, fast)| fast))
+        .count();
+
+    let mut parent = target.to_entity(0.85, scan_id);
+    parent.tag(tags::BREACH);
+    parent.tag("oathnet-pro");
+    let mut ev = Evidence::new(
+        SRC,
+        format!(
+            "OathNet: {match_count} matching breach record(s) of {total_returned} — {}",
+            top_dbs.join(", ")
+        ),
+    )
+    .with_attr("hits", match_count.to_string())
+    .with_attr("records_returned", total_returned.to_string())
+    .with_attr("top_dbnames", top_dbs.join(", "));
+    if !countries.is_empty() {
+        ev = ev.with_attr("countries", countries.join(", "));
+    }
+    if !names.is_empty() {
+        ev = ev.with_attr("names", names.join("; "));
+    }
+    if !genders.is_empty() {
+        ev = ev.with_attr("genders", genders.join(", "));
+    }
+    if !dobs.is_empty() {
+        ev = ev.with_attr("dates_of_birth", dobs.join(", "));
+    }
+    if fast_hashes > 0 {
+        ev = ev.with_attr("fast_crackable_hashes", fast_hashes.to_string());
+    }
+    parent.add_evidence(ev);
+    Some(parent)
+}
+
 /// Extract a full page of breach records into entities, enforcing the
 /// candidate-flood cap.
 ///
-/// The match context is built once for the whole page (not per record): the
-/// lowercased target and its significant-term split depend only on the target
-/// value, so building them once drops a `to_lowercase()` allocation and a
-/// term-`Vec` build for every item on large breach pages.
-///
-/// Each row is classified once via `TargetMatch::matches`. Target-matching
-/// rows are always extracted in full; non-matching strangers are only sampled —
-/// at most `MAX_CANDIDATE_ROWS` of them — so a broad `full_name` search that
-/// returns a whole page of unrelated people can't drown a memory-constrained
-/// device in low-value `candidate` entities. API-key harvesting
-/// (`store_api_credential` + `extract_api_keys_from_item`) runs unconditionally
-/// for every row: a leaked tool credential is valuable independent of whether
-/// the row identifies the target, and such keys are rare enough never to flood.
+/// Each row's target-match decision is precomputed by the caller (one pass that
+/// also feeds [`breach_parent_entity`]), passed in as `row_matches` aligned to
+/// `items`. Target-matching rows are always extracted in full; non-matching
+/// strangers are only sampled — at most `MAX_CANDIDATE_ROWS` of them — so a
+/// broad `full_name` search that returns a whole page of unrelated people can't
+/// drown a memory-constrained device in low-value `candidate` entities. API-key
+/// harvesting (`store_api_credential` + `extract_api_keys_from_item`) runs
+/// unconditionally for every row: a leaked tool credential is valuable
+/// independent of whether the row identifies the target, and such keys are rare
+/// enough never to flood.
 pub(super) fn extract_breach_page(
     items: &[Value],
-    target_value: &str,
+    row_matches: &[bool],
     scan_id: &str,
     key_fp: &str,
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
-    let match_ctx = TargetMatch::new(target_value);
+    debug_assert_eq!(
+        items.len(),
+        row_matches.len(),
+        "row_matches must be aligned 1:1 with items"
+    );
     result.entities.reserve(items.len());
     let mut candidate_rows = 0usize;
-    for item in items {
-        let is_target_row = match_ctx.matches(item);
-        // Target rows always extract; strangers only up to the cap. The match
-        // result is computed once here and threaded into the extractor, so the
-        // per-row identity decision is never recomputed.
+    for (item, &is_target_row) in items.iter().zip(row_matches) {
+        // Target rows always extract; strangers only up to the cap.
         if is_target_row {
             extract_breach_entities_with(item, true, scan_id, key_fp, seen, result);
         } else if candidate_rows < MAX_CANDIDATE_ROWS {

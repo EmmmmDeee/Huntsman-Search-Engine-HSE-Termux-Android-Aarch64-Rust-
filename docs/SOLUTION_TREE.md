@@ -2016,3 +2016,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   stays empty; a finalised table is preferred over the log). Gate green: lib 3,307, 24
   arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 81 —
   same commit.
+
+- **2026-06-21** — **Cycle 82 (an honest breach headline; one match pass for all three
+  decisions).** New `breach_parent_entity` returns `None` when the subject appears in
+  none of the returned records — so a stranger-only page no longer merges a false 0.85
+  `breach` hit onto the engine's seed anchor (the anchor still represents the subject; a
+  miss simply asserts nothing) — and, when the subject IS present, aggregates
+  `countries`/`names`/`genders`/`dates_of_birth` over the MATCHING rows ONLY, plus an
+  honest `hits` (matched) vs `records_returned` (page size) split. Consolidated the
+  identity match into a SINGLE pass in `process`: `row_matches: Vec<bool>` is computed
+  once and feeds the parent gate, the candidate-flood cap, and the per-row quarantine —
+  `extract_breach_page` now takes the precomputed `row_matches` instead of rebuilding a
+  `TargetMatch` (one source of truth; `TargetMatch::matches` promoted to `pub(super)`).
+  Net effect: for the "Ali Kareem" page the subject node loses its fabricated breach
+  tag and 100-stranger aggregate dump, while a genuine hit reads its own attributes
+  cleanly. +1 test (zero-match → `None`; subject present → parent aggregates only the
+  subject's row, `countries=AU` not the strangers' `ZZ`). Gate green: lib 3,308, 24 arch
+  guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 82 — same
+  commit.

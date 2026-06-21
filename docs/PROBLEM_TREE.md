@@ -2842,3 +2842,16 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   *any* interruption (hang, OOM-kill, app backgrounded, or simply exporting mid-scan)
   silently discards the entire result. A 558→0 cliff is the single largest quality
   defect a scan can have. **Paired:** `SOLUTION_TREE` cycle 81 — same commit.
+
+- **2026-06-21** — **Cycle 82 (the headline entity asserted a breach hit the subject
+  never had).** `oathnet_pro` always minted the subject as a 0.85 `breach`-tagged
+  `Person`, with `countries`/`names`/`genders`/`dates_of_birth` aggregated over EVERY
+  returned record — even when ZERO of them matched the subject. The engine pre-seeds a
+  subject anchor and a re-emitted subject merges onto it by UID, so for "Ali Kareem"
+  this stamped the subject's own headline node with the `breach` tag at 0.85 and dumped
+  **56 countries and ~100 strangers' names** (`JAMES PERRY; James Smith; …`) into its
+  evidence — from a page in which the subject appeared in *none* of the records. That is
+  a fabricated exposure claim plus aggregate pollution merged onto the one node an
+  analyst reads first: the precise opposite of an honest dossier, and it survived the
+  candidate-flood cap because the parent is built off the whole page, not the per-row
+  extraction. **Paired:** `SOLUTION_TREE` cycle 82 — same commit.

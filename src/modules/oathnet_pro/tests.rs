@@ -253,9 +253,11 @@ use super::*;
 
         let mut seen = HashSet::new();
         let mut result = ModuleResult::new();
+        let match_ctx = TargetMatch::new("Ali Kareem");
+        let row_matches: Vec<bool> = items.iter().map(|i| match_ctx.matches(i)).collect();
         extract_breach_page(
             &items,
-            "Ali Kareem",
+            &row_matches,
             "scan",
             "oathnet.org:test",
             &mut seen,
@@ -293,6 +295,66 @@ use super::*;
         assert!(
             target.confidence > CANDIDATE_CONF,
             "the target row keeps full confidence, not candidate strength"
+        );
+    }
+
+    #[test]
+    fn breach_parent_is_honest_about_whether_the_subject_appears() {
+        use serde_json::json;
+        // A `full_name` page of pure strangers must NOT mint a 0.85
+        // breach-tagged subject node: the engine pre-seeds a subject anchor, so
+        // that parent would merge a false "breach hit" — plus a 50-stranger
+        // name/country dump — onto it. Zero matching rows => None.
+        let strangers: Vec<serde_json::Value> = (0..50)
+            .map(|i| {
+                json!({
+                    "full_name": format!("Stranger {i}"),
+                    "country": "ZZ",
+                    "source": "pureincubation.com"
+                })
+            })
+            .collect();
+        let target = Target::new(TargetKind::FullName, "Ali Kareem");
+        let mc = TargetMatch::new("Ali Kareem");
+        let none_matching: Vec<serde_json::Value> =
+            strangers.iter().filter(|i| mc.matches(i)).cloned().collect();
+        assert!(none_matching.is_empty(), "no stranger should match the subject");
+        assert!(
+            breach_parent_entity(&target, "scan", &none_matching, strangers.len()).is_none(),
+            "a zero-match page must not produce a breach parent"
+        );
+
+        // When the subject genuinely appears, the parent aggregates over the
+        // MATCHING rows only — its own country (AU), never the strangers' ZZ.
+        let mut page = strangers.clone();
+        page.push(json!({
+            "full_name": "Ali Kareem",
+            "country": "AU",
+            "gender": "M",
+            "source": "RealLeak"
+        }));
+        let matching: Vec<serde_json::Value> =
+            page.iter().filter(|i| mc.matches(i)).cloned().collect();
+        assert_eq!(matching.len(), 1, "exactly the subject's own row matches");
+        let parent = breach_parent_entity(&target, "scan", &matching, page.len())
+            .expect("subject present => parent emitted");
+        assert_eq!(parent.value, "Ali Kareem");
+        assert!((parent.confidence - 0.85).abs() < 1e-9);
+        assert!(parent.has_tag("breach") && parent.has_tag("oathnet-pro"));
+        let ev = parent.evidence.first().expect("parent evidence");
+        assert_eq!(ev.attributes.get("hits").map(String::as_str), Some("1"));
+        assert_eq!(
+            ev.attributes.get("records_returned").map(String::as_str),
+            Some("51")
+        );
+        assert_eq!(
+            ev.attributes.get("countries").map(String::as_str),
+            Some("AU"),
+            "aggregates the subject's matching rows only, not the strangers' ZZ"
+        );
+        assert_eq!(
+            ev.attributes.get("names").map(String::as_str),
+            Some("Ali Kareem")
         );
     }
 
