@@ -386,14 +386,11 @@ impl Module for SearchEngines {
             for (name, res) in batch {
                 match res {
                     Some(mut results) => {
+                        // fetch_engine only returns Some(...) when results are
+                        // non-empty (empty → None via fetch_and_parse). Reset
+                        // the session-dead streak for this engine on qi == 0.
                         if qi == 0 {
-                            // Engine produced results on this seed — reset its streak.
-                            if !results.is_empty() {
-                                record_hit(name);
-                            } else {
-                                // Some(empty vec): parsed page but found no links.
-                                record_empty(name);
-                            }
+                            record_hit(name);
                         }
                         all_results.append(&mut results);
                     }
