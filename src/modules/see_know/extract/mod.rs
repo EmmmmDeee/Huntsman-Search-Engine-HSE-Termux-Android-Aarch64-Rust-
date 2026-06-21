@@ -471,14 +471,8 @@ fn push_breach_entity(
     for t in extra_tags {
         e.tag(*t);
     }
-    // Source-sector tag from the `source` (dbname) the evidence already carries —
-    // the same orthogonal classifier oathnet_pro uses, so a hit can be filtered
-    // by the breach's sector (e.g. `sector:real-estate`) regardless of pool.
-    if let Some(db) = ev.attributes.get("source")
-        && let Some(sector) = crate::util::breach_sector::source_sector(db)
-    {
-        e.tag(format!("sector:{sector}"));
-    }
+    // (Source-sector tagging is applied universally at engine admission —
+    // `core::engine::enrich::tag_breach_sector` — so it is not done per-module.)
     e.add_evidence(ev.clone());
     result.push(e);
 }

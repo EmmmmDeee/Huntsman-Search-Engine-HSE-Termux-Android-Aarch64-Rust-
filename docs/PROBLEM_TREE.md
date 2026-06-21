@@ -2966,3 +2966,15 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   the question "show me only the breached real-estate data" was answerable from data
   already in hand, and simply wasn't being asked of it. **Paired:** `SOLUTION_TREE` cycle 90
   — same commit.
+
+- **2026-06-21** — **Cycle 91 (the sector capability was bolted onto two files, not wired
+  to the engine).** Cycle 90 stamped `sector:<x>` per-module, in `oathnet_pro` and
+  `see_know` only — but HSE has ~9 breach pools. `hibp`, `dehashed`, `intelx`,
+  `hudsonrock`, `niamonx`, `osintcat`, `xposed_or_not` all tag `breach` and carry a source
+  DB on their evidence (HIBP's `breach_name`/`breach_domain`, dehashed's `database`, …),
+  yet none were sector-classified — so "breached real-estate exclusively" silently covered
+  two pools and missed the rest. And the per-module shape doesn't scale: each current and
+  future breach module would have to re-implement the same tag against its own source-field
+  key, the exact per-site duplication the consolidation arc has been removing. The sector
+  signal wasn't a *capability the engine applies*; it was two copies of a snippet. **Paired:**
+  `SOLUTION_TREE` cycle 91 — same commit.

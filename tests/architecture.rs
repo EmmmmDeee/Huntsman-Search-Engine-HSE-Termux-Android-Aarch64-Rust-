@@ -165,6 +165,14 @@ fn core_does_not_import_util_directly() {
                 // (via `tier_for_tag` / `ANONYMITY_TAGS`) to surface a likely burner
                 // SIM, weighting how much attribution a phone-based link deserves.
                 && !line.contains("util::sim_anonymity")
+                // Pure, dependency-free offline breach-source → sector classifier
+                // (a curated brand/category table + string parse; no state, no
+                // I/O, no upward deps), same leaf category as `sim_anonymity` /
+                // `surnames`. The engine's admission pass (`tag_breach_sector`)
+                // uses it to stamp every breach finding with its source's sector
+                // (`sector:real-estate`, …), so a hit is filterable by sector at
+                // one chokepoint regardless of which pool surfaced it.
+                && !line.contains("util::breach_sector")
         })
         .collect();
     assert!(
