@@ -340,7 +340,12 @@ pub(super) fn extract_breach_entities_with(
         ]
         .iter()
         .flatten()
-        .copied()
+        .map(|s| s.trim())
+        // `val_str` rejects empty strings but not whitespace-only ones, so trim
+        // each part and drop any that collapse to nothing — otherwise a blank
+        // `state`/`postal` would leave a `", ,"` gap or a trailing `", "` in the
+        // composed value and degrade geocoding.
+        .filter(|s| !s.is_empty())
         .collect::<Vec<&str>>()
         .join(", ");
         if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {

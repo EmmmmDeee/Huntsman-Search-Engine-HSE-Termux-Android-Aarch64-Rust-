@@ -403,9 +403,12 @@ use super::*;
         use serde_json::json;
         // A postcode-qualified address geocodes to the ZIP centroid, not the
         // whole city. The breach record carries `postal_code`, so it belongs in
-        // the composed Address value, not only the evidence.
+        // the composed Address value, not only the evidence. A whitespace-only
+        // `address_street` (which `val_str` admits) must be trimmed away rather
+        // than leaving a leading `", "` gap in the composed value.
         let item = json!({
             "full_name": "Ali Kareem",
+            "address_street": "   ",
             "city": "HAMPTON",
             "state": "VA",
             "postal_code": "23666",
