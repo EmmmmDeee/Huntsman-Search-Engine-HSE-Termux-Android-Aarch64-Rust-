@@ -1832,3 +1832,34 @@ fn html_entity_decoding_apostrophes() {
     assert_eq!(decode_html_entities("it&#x27;s"), "it's");
     assert_eq!(decode_html_entities("a&#39;b&amp;c"), "a'b&c");
 }
+
+#[test]
+fn session_dead_threshold_fires_after_n_consecutive_empties() {
+    // Use a fake engine name so this test is isolated from other tests
+    // that may have touched the real engine names.
+    const FAKE: &str = "__test_session_dead__";
+    // Reset any leftover state from prior runs of this test.
+    SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(FAKE);
+
+    assert!(
+        !is_session_dead(FAKE),
+        "should not be dead before threshold"
+    );
+    for i in 0..SESSION_DEAD_THRESHOLD {
+        record_empty(FAKE);
+        if i + 1 < SESSION_DEAD_THRESHOLD {
+            assert!(!is_session_dead(FAKE), "dead before threshold at i={i}");
+        }
+    }
+    assert!(
+        is_session_dead(FAKE),
+        "must be session-dead after threshold"
+    );
+
+    // record_hit resets the streak — engine is live again.
+    record_hit(FAKE);
+    assert!(!is_session_dead(FAKE), "hit must un-dead the engine");
+}
