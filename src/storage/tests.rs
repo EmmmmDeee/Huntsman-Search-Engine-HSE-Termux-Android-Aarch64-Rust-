@@ -669,7 +669,11 @@ fn entities_for_scan_recovers_from_event_log_when_not_finalised() {
         ))
         .unwrap();
     let finalised = store.entities_for_scan("scan-final").unwrap();
-    assert_eq!(finalised.len(), 1, "finalised read uses the table, not events");
+    assert_eq!(
+        finalised.len(),
+        1,
+        "finalised read uses the table, not events"
+    );
     assert_eq!(finalised[0].value, "final@example.com");
 
     let _ = std::fs::remove_file(&path);
