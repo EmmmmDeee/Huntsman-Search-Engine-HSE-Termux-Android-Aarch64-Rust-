@@ -2978,3 +2978,19 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   key, the exact per-site duplication the consolidation arc has been removing. The sector
   signal wasn't a *capability the engine applies*; it was two copies of a snippet. **Paired:**
   `SOLUTION_TREE` cycle 91 — same commit.
+
+- **2026-06-21** — **Cycle 92 (sector classification had near-zero recall on the real
+  corpus — proven by a live run).** A live scan of the real subject (`hse scan --kind
+  full_name -v "Ali Kareem"`) returned 608 entities and **zero** `sector:` tags. Root cause,
+  read straight off the data: `util::breach_sector::source_sector` only resolved (a)
+  real-estate keywords and (b) snusbase *structured* tokens (`…_GAMING_…`) — and the
+  structured-token pool (`see_know`) was **down (HTTP 523)** that run. Every other pool
+  surfaces **bare brand names** — `oathnet` source domains (`neopets.com`, `dlh.net`,
+  `tunngle.net`, `r2games.com`, …, overwhelmingly *gaming*) and `xposed_or_not`/`osintcat`
+  `breach:<name>` tags (`zynga`, `tumblr`, `linkedin`, `adobe`, `myfitnesspal`) — none of
+  which embed a category, so they all classified as `None`. The dominant true signal for
+  this identity ("heavily a gamer") was discarded. Two compounding gaps: the classifier had
+  no brand→sector knowledge, AND the cycle-91 pass never read `osintcat`'s dynamic
+  `breach_<name>` keys or `xposed_or_not`'s comma-joined `breaches` list, so even a
+  brand-aware classifier wouldn't have seen them. **Paired:** `SOLUTION_TREE` cycle 92 —
+  same commit.
