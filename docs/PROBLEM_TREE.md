@@ -2679,3 +2679,10 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   validators (`identify_password_hash`, `iban_is_valid`, `is_public_ip`, …) — in one
   scroll. Navigability and review cost suffer when unrelated logic shares a file this
   large. **Paired:** `SOLUTION_TREE` cycle 68 — same commit.
+
+- **2026-06-21** — **Cycle 69 (see_know/extract.rs was a 1,025-line flat file).** The
+  SeekNow record→entity layer bundled four independent extraction concerns in one
+  file: the core breach-field extraction, geo (lat/lon) extraction, associate /
+  relationship extraction, and the verbose rich-detail/context walk (with its
+  ~120-line `RICH_DETAIL_SKIP` table). One scroll to find any of them.
+  **Paired:** `SOLUTION_TREE` cycle 69 — same commit.

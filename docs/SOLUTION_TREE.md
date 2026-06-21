@@ -1823,3 +1823,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   resolve unchanged. Pure code movement — no module added/removed, registry stable,
   every oathnet test passes. Gate green: lib 3,290, 24 arch guards,
   fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 68 — same commit.
+
+- **2026-06-21** — **Cycle 69 (split see_know/extract.rs into an `extract/` module).**
+  `extract.rs` → `extract/mod.rs` (1,025 → **472** lines: core breach extraction +
+  `record_evidence` + the shared `push_breach_entity` + tests + wiring), with
+  `geo.rs` (132), `associates.rs` (111) and `rich_detail.rs` (338) as siblings. The
+  one-level-deeper nesting needed care: `extract_geo_entities` is called by the
+  parent `see_know/mod.rs`, so it's declared `pub(in crate::modules::see_know)` and
+  re-exported `pub(super)`; the intra-extract items (`extract_associates`,
+  `extract_rich_detail`) stay `pub(super)` with private re-exports; `parse_coord`'s
+  re-export is `#[cfg(test)]` (only the tests use it at parent level); and
+  `push_context_entity`'s doc link to `push_breach_entity` is fully-qualified
+  (`super::`) for the strict rustdoc lint. Pure code movement — registry stable, all
+  see_know tests pass. Gate green: lib 3,290, 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 69 — same commit.
