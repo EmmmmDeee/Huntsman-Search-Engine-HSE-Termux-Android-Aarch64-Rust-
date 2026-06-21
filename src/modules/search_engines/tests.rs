@@ -240,11 +240,13 @@ fn address_extractor_ignores_non_au_4digit() {
 fn build_queries_domain_produces_five_dorks() {
     let t = Target::new(TargetKind::Domain, "acme.com");
     let q = build_queries(&t);
-    assert!(q.len() >= 10);
-    assert!(q[0].contains("site:acme.com"));
-    assert!(q[1].contains("filetype:pdf"));
-    assert!(q[2].contains("@acme.com"));
-    assert!(q[3].contains("login"));
+    assert!(q.len() >= 9);
+    // Bare site:{v} removed (50% block rate, 27% hit rate in live scans);
+    // operator-enriched site: patterns are first now.
+    assert!(q[0].contains("filetype:pdf") && q[0].contains("site:acme.com"));
+    assert!(q[1].contains("@acme.com"));
+    assert!(q[2].contains("login"));
+    assert!(q.iter().any(|s| s.contains("link:acme.com")));
 }
 
 #[test]
