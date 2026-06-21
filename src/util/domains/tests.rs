@@ -22,6 +22,14 @@ use super::*;
         // Genuine personal mail is NOT infrastructure.
         assert!(!is_infrastructure_email("jordanavery@gmail.com"));
         assert!(!is_infrastructure_email("jane.doe@example.org"));
+        // Consumer freemail is NEVER infrastructure — googlemail.com is Gmail's
+        // alias (it used to be wrongly listed in INFRA_MAIL, so a real person's
+        // address was flagged as a provider mailbox; live audit caught it).
+        assert!(!is_infrastructure_email("oada@googlemail.com"));
+        assert!(!is_infrastructure_email("onur.ada@googlemail.com"));
+        // Even a role-ish local-part on freemail is a person/small-biz mailbox,
+        // not a provider desk — freemail short-circuits before the role check.
+        assert!(!is_infrastructure_email("sales@gmail.com"));
         // A real person whose local-part merely contains a role substring is
         // NOT gated (exact-token match, no false positive on "info").
         assert!(!is_infrastructure_email("infosys.engineer@example.org"));

@@ -234,13 +234,21 @@ pub fn is_infrastructure_email(email: &str) -> bool {
     let Some((local, domain)) = email.split_once('@') else {
         return false;
     };
+    // Consumer freemail (gmail/googlemail/yahoo/…) is by definition a person's
+    // mailbox, never provider infrastructure — short-circuit BEFORE the role and
+    // INFRA_MAIL checks. Without this, a freemail domain that also appears in
+    // INFRA_MAIL (googlemail.com did) misclassifies real people's addresses as
+    // infrastructure and the auditor flags them as role-mailbox-as-PII.
+    let registrable = registrable_domain(domain).unwrap_or_else(|| domain.to_string());
+    if is_freemail(domain) || is_freemail(&registrable) {
+        return false;
+    }
     if is_role_localpart(local) {
         return true;
     }
     // Provider/infra mail domains: any registrable-domain match against the
     // curated infra set. Kept here (util) so both whois and ripestat can gate
     // emission without depending on `core`.
-    let registrable = registrable_domain(domain).unwrap_or_else(|| domain.to_string());
     INFRA_MAIL
         .iter()
         .any(|d| registrable == *d || domain == *d || domain.ends_with(&format!(".{d}")))
@@ -254,8 +262,10 @@ const INFRA_MAIL: &[&str] = &[
     "cloudflare.com",
     "amazonaws.com",
     "amazon.com",
+    // NB: googlemail.com is NOT here — it is consumer freemail (Gmail's alias),
+    // handled by the is_freemail short-circuit above. google.com stays: it is
+    // Google's corporate/infra domain (noc@, dns-admin@, …), not a user mailbox.
     "google.com",
-    "googlemail.com",
     "azure.com",
     "microsoft.com",
     "fastly.com",
