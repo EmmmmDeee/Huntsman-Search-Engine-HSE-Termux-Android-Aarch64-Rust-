@@ -84,7 +84,9 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         }),
         ua: crate::util::curl::UA_MOBILE,
         ua_alt: crate::util::curl::UA_DESKTOP,
-        max_fetch_ms: None,
+        // Live scan: 0/203 ok, 591 ms avg — fails at network layer consistently.
+        // 800 ms cap cuts p95 outliers without sacrificing the near-zero hit rate.
+        max_fetch_ms: Some(800),
     },
     EngineSpec {
         name: "duckduckgo",
@@ -158,7 +160,8 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         }),
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_MOBILE,
-        max_fetch_ms: None,
+        // Live scan: 0/203 ok, 576 ms avg — consistently unreachable from DC IPs.
+        max_fetch_ms: Some(800),
     },
     // ── New engines (2026) ──────────────────────────────────────────
     EngineSpec {
@@ -189,7 +192,10 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_MOBILE,
-        max_fetch_ms: None,
+        // Live scan: 0/203 ok, 938 ms avg — Russian CDN blocks DC IPs at TLS layer.
+        // 1 s cap saves ~(938-1000 clamped → 938) ms per dispatch on average;
+        // cuts p95 outliers meaningfully.
+        max_fetch_ms: Some(1_000),
     },
     EngineSpec {
         name: "ecosia",
@@ -217,7 +223,10 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_FIREFOX,
         ua_alt: crate::util::curl::UA_DESKTOP,
-        max_fetch_ms: None,
+        // Live scan: 0/203 ok, 1780 ms avg, 3585 ms p95 — consistently blocked.
+        // 1.5 s cap cuts the long tail (p95 at 3.6 s) and saves ~460 ms per
+        // dispatch on average vs the global 8 s ceiling.
+        max_fetch_ms: Some(1_500),
     },
     EngineSpec {
         name: "dogpile",
@@ -279,7 +288,8 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_FIREFOX,
-        max_fetch_ms: None,
+        // Live scan: 0/203 ok, 794 ms avg — anti-bot blocks DC IPs consistently.
+        max_fetch_ms: Some(1_000),
     },
     // MetaGer (German non-profit) federates 50+ underlying engines and
     // returns clean HTML; rarely CAPTCHA-blocked.
