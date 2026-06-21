@@ -271,11 +271,7 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
         let state = loc.state.as_deref().unwrap_or("");
         let country = loc.country.as_deref().unwrap_or("");
         if !city.is_empty() && !country.is_empty() {
-            let addr = if !state.is_empty() {
-                format!("{city}, {state}, {country}")
-            } else {
-                format!("{city}, {country}")
-            };
+            let addr = crate::util::geo::compose_address(city, state, country);
             let mut ae = Entity::new(EntityKind::Address, &addr, 0.62, scan_id);
             ae.tag("ipquery");
             if cc.eq_ignore_ascii_case("AU") {

@@ -96,11 +96,7 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
     let region = data.region.as_deref().unwrap_or("");
     let country = data.country.as_deref().unwrap_or("");
     if !city.is_empty() {
-        let addr = if !region.is_empty() {
-            format!("{city}, {region}, {country}")
-        } else {
-            format!("{city}, {country}")
-        };
+        let addr = crate::util::geo::compose_address(city, region, country);
         let mut ae = Entity::new(EntityKind::Address, &addr, 0.60, scan_id);
         ae.tag("ipinfo");
         // Postal/ZIP narrows the address below city granularity — surface it as

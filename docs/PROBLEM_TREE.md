@@ -2693,3 +2693,14 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   the non-key secret detectors (PEM private keys, crypto-wallet addresses, recursive
   base64 unwrapping, Shannon entropy), and the key-emission/persistence path. The
   largest module file in the tree. **Paired:** `SOLUTION_TREE` cycle 70 — same commit.
+
+- **2026-06-21** — **Cycle 71 (the `City, Region, Country` address join was inlined
+  in four IP-geo modules).** `ipinfo`, `ipquery`, `censys`, and `ip_geo` each carried
+  the identical five-line conditional — emit `"City, Mid, Country"`, or
+  `"City, Country"` when the middle (region / state / province) component is empty —
+  differing only in the middle field's local name. Four copies of one formatting rule
+  is exactly the drift surface a shared helper removes. (`ip2location`'s variant folds
+  a ZIP into the middle, so it is genuinely different and left alone.) An Explore pass
+  confirmed the rest of the geo/JSON/HTTP surface is already consolidated
+  (`coarse_provider_coords`, `val_str`, `util::http::fetch`). **Paired:**
+  `SOLUTION_TREE` cycle 71 — same commit.

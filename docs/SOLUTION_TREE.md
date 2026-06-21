@@ -1852,3 +1852,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   for lower return. Pure code movement, all tests pass. Gate green: lib 3,290, 24 arch
   guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 70 — same
   commit.
+
+- **2026-06-21** — **Cycle 71 (single-source the IP-geo address join).** Added
+  `util::geo::compose_address(city, region, country)` — drops an empty middle
+  component so a city+country record reads `"City, Country"`, never `"City, , Country"`
+  — with a doctest, and routed `ipinfo` / `ipquery` / `censys` / `ip_geo` through it
+  (each keeps its own outer presence guard; only the inner format is shared). Behaviour
+  identical: same strings, same entities. `ip2location` left alone (its branch folds a
+  ZIP into the middle). Net −9 lines across 5 files, but the real win is one definition
+  of the join rule instead of four. Gate green: lib 3,290 + the new doctest, 24 arch
+  guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 71 — same
+  commit.
