@@ -149,7 +149,7 @@ pub(super) fn extract_entities(
 
     if let Some(email) = val_str(item, "email") {
         let lower = email.to_lowercase();
-        if lower.contains('@') && seen.insert(lower) {
+        if crate::util::extract::looks_like_email(&lower) && seen.insert(lower) {
             push_breach_entity(
                 result,
                 Entity::new(EntityKind::Email, &email, 0.70, scan_id),
@@ -340,8 +340,7 @@ pub(super) fn extract_entities(
     // reverse-DNS app package (`com.facebook.katana`) carried in this field is an
     // app id, not a web domain — skip it (same gate as oathnet_pro's stealer path).
     if let Some(domain) = val_str(item, "domain")
-        && domain.contains('.')
-        && !crate::util::domains::is_app_package_id(&domain)
+        && crate::util::domains::looks_like_domain(&domain)
         && seen.insert(domain.to_lowercase())
     {
         let mut e = Entity::new(EntityKind::Domain, &domain, 0.55, scan_id);

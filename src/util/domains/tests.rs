@@ -219,3 +219,35 @@ use super::*;
             Some("example.com.au")
         );
     }
+
+    #[test]
+    fn looks_like_domain_rejects_ip_and_app_package_noise() {
+        // Real registrable domains from the stealer/breach feeds.
+        for good in [
+            "discord.com",
+            "snapchat.com",
+            "a-zfastfitcentre.co.uk",
+            "xyz.blueskyweb.app",
+            "aliexprass.ml",
+            "gmail.com",
+        ] {
+            assert!(looks_like_domain(good), "{good} is a real domain");
+        }
+        // Noise that stealer/breach `domain` fields carry — minting any of these as
+        // a Domain misdirects dns/cert/wayback (the grounded bug from the scan logs).
+        for junk in [
+            "192.168.0.1",   // private LAN/router IP — pervasive in stealer logs
+            "192.168.1.1",
+            "79.98.132.222", // public C2/panel IP
+            "54.39.106.39",
+            "com.facebook.katana", // android app package (reverse-DNS, 3+ labels)
+            "com.google.android.apps.authenticator2",
+            "localhost",           // single label
+            "android",             // bare label
+            "1.2.3",               // numeric junk, no real TLD
+            "user@domain.com",     // stray @ — not a bare domain
+            "",
+        ] {
+            assert!(!looks_like_domain(junk), "{junk:?} must be rejected");
+        }
+    }

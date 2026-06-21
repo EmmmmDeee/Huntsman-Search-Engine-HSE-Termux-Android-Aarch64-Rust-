@@ -123,13 +123,12 @@ pub(super) fn extract_stealer_entities(
     if let Some(domains) = item.get("domain").and_then(|v| v.as_array()) {
         for d in domains {
             if let Some(dom) = d.as_str()
-                && dom.contains('.')
-                // A stealer `domain` is frequently the reverse-DNS Android/iOS app
-                // package the credential was captured in (`com.facebook.katana`),
-                // not a web domain — skip it rather than mint a bogus Domain whose
-                // last label is not a TLD (`dns_intel`/`cert_intel`/`wayback` would
-                // then chase a non-existent host).
-                && !crate::util::domains::is_app_package_id(dom)
+                // A stealer `domain` is frequently NOT a registrable web domain:
+                // a reverse-DNS app package (`com.facebook.katana`) or a bare IP
+                // (`192.168.0.1`, a router/C2/panel host). Minting either as a
+                // Domain sends `dns_intel`/`cert_intel`/`wayback` chasing a
+                // non-host — `looks_like_domain` gates both out in one place.
+                && crate::util::domains::looks_like_domain(dom)
                 && seen.insert(dom.to_lowercase())
             {
                 push_stealer_entity(

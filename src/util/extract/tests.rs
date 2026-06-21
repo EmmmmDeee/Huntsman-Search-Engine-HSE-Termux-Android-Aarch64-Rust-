@@ -77,3 +77,28 @@ use super::*;
             ["jane.doe@onet.eu"]
         );
     }
+
+    #[test]
+    fn looks_like_email_rejects_provider_field_junk() {
+        // Real addresses seen in the breach `email` fields for the Ali.kareem scan.
+        for good in [
+            "ali.kareem95@gmail.com",
+            "alik.8972@yahoo.com",
+            "dr.ali.ali52@gmail.com",
+        ] {
+            assert!(looks_like_email(good), "{good} is a real address");
+        }
+        // Junk a provider echoes/mangles into an `email` field — must not become an
+        // Email entity (this is the see_know `contains('@')`-only gap, now closed).
+        for junk in [
+            "Ali.kareem",     // username echoed into the email field (snusbase)
+            "ali.kareem",
+            "user@",          // no host
+            "@gmail.com",     // no local part
+            "user@localhost", // host has no dot
+            "a b@c.com",      // embedded whitespace
+            "",
+        ] {
+            assert!(!looks_like_email(junk), "{junk:?} must be rejected");
+        }
+    }

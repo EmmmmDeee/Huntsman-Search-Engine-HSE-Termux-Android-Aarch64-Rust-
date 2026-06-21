@@ -369,7 +369,9 @@ pub(super) fn extract_breach_entities_with(
     // — all free modules — for that domain without further cost.
     if let Some(ed) = val_str(item, "email_domain") {
         let lower = ed.to_lowercase();
-        if lower.contains('.') && !lower.contains('@') && seen.insert(format!("@edomain:{lower}")) {
+        if crate::util::domains::looks_like_domain(&lower)
+            && seen.insert(format!("@edomain:{lower}"))
+        {
             push_oathnet_entity(
                 result,
                 Entity::new(EntityKind::Domain, &lower, 0.55, scan_id),

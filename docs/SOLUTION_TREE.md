@@ -1913,3 +1913,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `without_url`; `cert_intel` is a raw-TLS connect (host:port, no query string) and
   unaffected. Net +36/−17. Gate green: lib 3,298, 24 arch guards,
   fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 75 — same commit.
+
+- **2026-06-21** — **Cycle 76 (one shared Email/Domain shape gate for every breach
+  parser).** Promoted `looks_like_email` out of `oathnet_pro` into
+  `util::extract::looks_like_email` (oathnet re-exports it, unchanged call sites), and
+  added `util::domains::looks_like_domain` — the consolidation of the triplicated
+  `contains('.') && !is_app_package_id` check **plus** an IP-literal reject and a
+  TLD-bearing-final-label sanity check. Routed all four emission sites through them:
+  `see_know`'s email field now validates shape (closing the `contains('@')`-only gap),
+  and `oathnet_pro` breach + stealer + `see_know` domain paths now drop IP and
+  app-package noise in one place. Result: a query echo (`Ali.kareem`) or a stealer
+  router IP (`192.168.0.1`) can no longer enter the graph as an entity, so correlation
+  sees only real addresses and registrable domains. Both helpers carry doctests; added
+  two unit tests seeded directly from the uploaded scan logs (real addresses/domains as
+  positives, the echo/IP/app-package noise as negatives). Behaviour for clean records
+  unchanged. Gate green: lib 3,300, 24 arch guards, fmt/clippy(`--all-targets`)/doc
+  clean. Paired: `PROBLEM_TREE` cycle 76 — same commit.

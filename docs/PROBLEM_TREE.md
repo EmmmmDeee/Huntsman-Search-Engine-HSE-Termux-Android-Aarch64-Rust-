@@ -2753,3 +2753,19 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `osintcat` bypassed the helper with the bare leaking form. A unit test confirmed the
   leak (unstripped error contains the secret; stripped does not). **Paired:**
   `SOLUTION_TREE` cycle 75 — same commit.
+
+- **2026-06-21** — **Cycle 76 (breach/stealer parsers minted garbage Email/Domain
+  entities — ground-truthed against real Ali.kareem scan logs).** Three uploaded
+  upstream dumps (combined-search + stealer-logs) exposed two data-quality leaks the
+  parsers waved through: **(1)** `see_know` emitted an `Email` on a bare
+  `value.contains('@')` with no shape check, so a provider echoing the query into the
+  field (snusbase returned `"email": "Ali.kareem"`, and half-values like `user@`)
+  became Email entities. **(2)** Every `domain`-field → `Domain` path (`oathnet_pro`
+  breach + stealer, `see_know`) gated only on `contains('.') && !is_app_package_id`,
+  so the IPs that saturate stealer logs — private (`192.168.0.1`) and public C2/panel
+  (`79.98.132.222`, `54.39.106.39`) — were minted as `Domain` entities, the exact
+  dns/cert/wayback misdirection the stealer path's own comment warns against. Both
+  pollute the graph and forge false correlations — the opposite of the cross-module
+  synergy intended. The `looks_like_email` gate also lived private to `oathnet_pro`,
+  and the domain check was triplicated. **Paired:** `SOLUTION_TREE` cycle 76 — same
+  commit.

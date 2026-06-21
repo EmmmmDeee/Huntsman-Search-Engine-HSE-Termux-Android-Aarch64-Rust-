@@ -142,6 +142,54 @@ pub fn is_app_package_id(s: &str) -> bool {
     RDNS_PREFIXES.contains(&labels[0])
 }
 
+/// True when `s` is structurally a registrable DNS domain worth minting as a
+/// `Domain` entity — as opposed to the noise breach/stealer `domain` fields
+/// routinely carry. The single gate every module's provider-`domain`-field →
+/// `Domain` path shares, so the same junk can't slip in through one parser. It
+/// rejects, in order:
+///   * empty values, or any with embedded whitespace or an `@`;
+///   * a bare IP literal (`192.168.0.1`, `79.98.132.222`) — a router / C2 / panel
+///     host, not a registrable domain, and a false lead that sends
+///     `dns_intel`/`cert_intel`/`wayback` chasing a non-host;
+///   * a reverse-DNS app package id (`com.facebook.katana`) — [`is_app_package_id`].
+///
+/// What survives needs ≥ 2 non-empty dot-separated labels and a final label (TLD)
+/// of ≥ 2 chars bearing at least one letter (so `1.2.3` and other numeric junk are
+/// rejected while `co.uk`, `xn--p1ai` pass). **Pure**, offline.
+///
+/// ```
+/// use huntsman_search_engine::util::domains::looks_like_domain;
+///
+/// assert!(looks_like_domain("discord.com"));
+/// assert!(looks_like_domain("a-zfastfitcentre.co.uk"));
+/// assert!(!looks_like_domain("192.168.0.1"));        // private IP, not a domain
+/// assert!(!looks_like_domain("79.98.132.222"));      // public IP, not a domain
+/// assert!(!looks_like_domain("com.facebook.katana")); // android app package
+/// assert!(!looks_like_domain("1.2.3"));               // numeric junk, no real TLD
+/// assert!(!looks_like_domain("localhost"));           // single label, no dot
+/// ```
+#[must_use]
+pub fn looks_like_domain(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() || s.contains('@') || s.contains(char::is_whitespace) {
+        return false;
+    }
+    // An IP literal is a host, not a registrable domain (IPv6 has no dots, so the
+    // dotted-label check below would already drop it; the parse also rejects v4).
+    if s.parse::<std::net::IpAddr>().is_ok() {
+        return false;
+    }
+    if is_app_package_id(s) {
+        return false;
+    }
+    let labels: Vec<&str> = s.trim_end_matches('.').split('.').collect();
+    labels.len() >= 2
+        && labels.iter().all(|l| !l.is_empty())
+        && labels
+            .last()
+            .is_some_and(|tld| tld.len() >= 2 && tld.chars().any(|c| c.is_ascii_alphabetic()))
+}
+
 /// True if `host` is `domain` itself or a subdomain of it — the host-label-safe
 /// "belongs to this domain" test. **Pure**, and allocation-free: it replaces the
 /// `host == d || host.ends_with(&format!(".{d}"))` idiom that was hand-rolled

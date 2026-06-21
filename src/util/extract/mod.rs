@@ -50,6 +50,37 @@ pub fn emails(text: &str) -> Vec<String> {
     out
 }
 
+/// Loose structural check that `s` is shaped like a single email address: a
+/// non-empty local part, an `@`, and a dotted host that neither starts nor ends
+/// with a dot, with no embedded whitespace. Enough to reject the junk that breach
+/// providers put in an `email` field — a bare username echoed back from the query
+/// (`ali.kareem`, no `@`), a redacted sentinel (`UPGRADE_TO_SEE@x`), or a half
+/// value (`user@`, `@host`) — without a full RFC 5322 parser. The single gate for
+/// any module that turns a provider `email` *field* into an `Email` entity, so a
+/// non-address never reaches the graph to pollute correlation. **Pure.**
+///
+/// ```
+/// use huntsman_search_engine::util::extract::looks_like_email;
+///
+/// assert!(looks_like_email("ali.kareem95@gmail.com"));
+/// assert!(!looks_like_email("ali.kareem")); // query echoed into the email field
+/// assert!(!looks_like_email("user@"));      // no host
+/// assert!(!looks_like_email("@example.com")); // no local part
+/// ```
+#[must_use]
+pub fn looks_like_email(s: &str) -> bool {
+    match s.split_once('@') {
+        Some((local, host)) => {
+            !local.is_empty()
+                && host.contains('.')
+                && !host.starts_with('.')
+                && !host.ends_with('.')
+                && !s.contains(char::is_whitespace)
+        }
+        None => false,
+    }
+}
+
 /// Every plausibly-international phone number in `text`, normalised to `+<digits>`,
 /// de-duplicated with first-occurrence order preserved.
 ///

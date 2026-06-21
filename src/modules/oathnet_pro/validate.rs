@@ -20,21 +20,10 @@ pub(super) fn has_min_digits(s: &str, n: usize) -> bool {
     s.chars().filter(char::is_ascii_digit).count() >= n
 }
 
-/// Loose structural email check: a non-empty local part, an `@`, and a dotted
-/// host with no surrounding spaces — enough to reject `UPGRADE_TO_SEE@x` and a
-/// bare `@` without a full RFC 5322 parser (the breach `email` field is clean).
-pub(super) fn looks_like_email(s: &str) -> bool {
-    match s.split_once('@') {
-        Some((local, host)) => {
-            !local.is_empty()
-                && host.contains('.')
-                && !host.starts_with('.')
-                && !host.ends_with('.')
-                && !s.contains(' ')
-        }
-        None => false,
-    }
-}
+/// The structural email gate now lives in [`crate::util::extract::looks_like_email`]
+/// — the single source shared by every breach/stealer parser. Re-exported here so
+/// the extractors keep reaching it by bare name through `use super::*`.
+pub(super) use crate::util::extract::looks_like_email;
 
 /// True for OathNet's redacted-data sentinels — a free-text field whose "value"
 /// is really a paywall marker, not the datum itself.
