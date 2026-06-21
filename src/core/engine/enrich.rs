@@ -232,6 +232,51 @@ pub(super) fn address_to_coords_pass(
     out
 }
 
+/// Tag a breach-derived entity with the **sector** of the source it leaked from
+/// (`sector:real-estate`, `sector:finance`, `sector:gaming`, …), classified from
+/// the breach source DB carried on its evidence.
+///
+/// This is the universal wiring for sector intelligence: a SINGLE admission-time
+/// pass connects EVERY breach pool — `oathnet_pro`, `see_know`, `hibp`,
+/// `dehashed`, `intelx`, `hudsonrock`, … — to [`crate::util::breach_sector`], so
+/// a hit can be filtered by the sector of the breach regardless of which module
+/// surfaced it (the answer to "show me only the breached real-estate data" is
+/// the tag `sector:real-estate`, applied identically everywhere). Each pool
+/// records the source DB under its own evidence key, so the classifier is tried
+/// against each known key; the first that resolves wins. Idempotent (skips an
+/// entity already sector-tagged), and a no-op for non-breach entities and
+/// unclassifiable sources — never a guess.
+pub(super) fn tag_breach_sector(entity: &mut crate::core::entity::Entity) {
+    if !entity.has_tag(crate::core::tags::BREACH) {
+        return;
+    }
+    if entity.tags.iter().any(|t| t.starts_with("sector:")) {
+        return;
+    }
+    // Source-DB evidence keys across the pools: oathnet `dbname`, see_know
+    // `source`, HIBP `breach_name`/`breach_domain`, dehashed `database` /
+    // `database_name`, plus the folded-record `source_db`.
+    const SOURCE_KEYS: &[&str] = &[
+        "dbname",
+        "source",
+        "breach_name",
+        "breach_domain",
+        "database",
+        "database_name",
+        "source_db",
+    ];
+    for ev in &entity.evidence {
+        for key in SOURCE_KEYS {
+            if let Some(src) = ev.attributes.get(*key)
+                && let Some(sector) = crate::util::breach_sector::source_sector(src)
+            {
+                entity.tag(format!("sector:{sector}"));
+                return;
+            }
+        }
+    }
+}
+
 /// Harvest any API keys embedded in an entity's value or evidence attributes into
 /// the global key pool (the force-multiplier loop: a key found in breach/leak data
 /// unlocks more modules). Best-effort and side-effecting only on the pool; the
@@ -282,8 +327,66 @@ pub(super) fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::entity::{Entity, EntityKind, Evidence};
     use crate::core::scan::{Target, TargetKind};
+
+    // ── tag_breach_sector (universal pool wiring) ─────────────────────────────
+
+    fn breach_entity(source_key: &str, source_val: &str) -> Entity {
+        let mut e = Entity::new(EntityKind::Email, "x@example.com", 0.7, "s");
+        e.tag(crate::core::tags::BREACH);
+        e.add_evidence(Evidence::new("pool", "breach row").with_attr(source_key, source_val));
+        e
+    }
+
+    #[test]
+    fn tag_breach_sector_wires_every_pool_via_its_own_source_key() {
+        // oathnet `dbname`, see_know `source`, HIBP `breach_domain` — one pass
+        // resolves the sector whichever key the pool used.
+        for (key, val) in [
+            ("dbname", "0123_HARCOURTS_AU_2M_REALESTATE_032021"),
+            ("source", "realestate.com.au"),
+            ("breach_domain", "ljhooker.com.au"),
+            ("database_name", "PropertyTree"),
+        ] {
+            let mut e = breach_entity(key, val);
+            tag_breach_sector(&mut e);
+            assert!(
+                e.has_tag("sector:real-estate"),
+                "{key}={val} should resolve real-estate; tags: {:?}",
+                e.tags
+            );
+        }
+        // The real GAMING source from the dump → sector:gaming.
+        let mut g = breach_entity("source", "0645_ZYNGA_COM_202M_GAMING_092019");
+        tag_breach_sector(&mut g);
+        assert!(g.has_tag("sector:gaming"));
+    }
+
+    #[test]
+    fn tag_breach_sector_is_a_no_op_off_the_breach_path() {
+        // A non-breach entity is untouched even with a property-looking source.
+        let mut not_breach = Entity::new(EntityKind::Email, "x@example.com", 0.7, "s");
+        not_breach
+            .add_evidence(Evidence::new("search", "x").with_attr("source", "realestate.com.au"));
+        tag_breach_sector(&mut not_breach);
+        assert!(!not_breach.tags.iter().any(|t| t.starts_with("sector:")));
+
+        // A breach entity from an unclassifiable source (the real pureincubation
+        // broker) gets no sector tag — never a guess.
+        let mut unknown = breach_entity("dbname", "pureincubation.com");
+        tag_breach_sector(&mut unknown);
+        assert!(!unknown.tags.iter().any(|t| t.starts_with("sector:")));
+
+        // Idempotent: re-running doesn't duplicate the tag.
+        let mut re = breach_entity("dbname", "realestate.com.au");
+        tag_breach_sector(&mut re);
+        tag_breach_sector(&mut re);
+        assert_eq!(
+            re.tags.iter().filter(|t| t.starts_with("sector:")).count(),
+            1
+        );
+    }
 
     // ── enrich_geospatial ─────────────────────────────────────────────────────
 

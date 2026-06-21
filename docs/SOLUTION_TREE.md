@@ -2166,3 +2166,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (every existing test fixture) is unchanged. +6 tests (4 classifier unit, 1 per pool).
   Gate green: lib 3,330, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean — verified
   on rustc 1.96.0. Paired: `PROBLEM_TREE` cycle 90 — same commit.
+
+- **2026-06-21** — **Cycle 91 (one universal chokepoint wires EVERY breach pool to the
+  sector classifier).** Hoisted sector tagging out of the two modules into a single
+  admission-time pass, `core::engine::enrich::tag_breach_sector`, run on every entity right
+  beside the existing universal stamps (MITRE ATT&CK, geospatial enrichment) and BEFORE the
+  `EntityFound` emit (so the event log + cycle-81 recovery carry it). Gated on the `breach`
+  tag, it reads the source DB across all pools' evidence keys (`dbname`, `source`,
+  `breach_name`, `breach_domain`, `database`, `database_name`, `source_db`) and stamps
+  `sector:<x>` via `util::breach_sector` — so `oathnet_pro`, `see_know`, `hibp`, `dehashed`,
+  `intelx`, `hudsonrock`, … and any FUTURE breach module are all wired by the one pass, for
+  free. Removed cycle 90's now-redundant per-module tagging (and its two module tests),
+  leaving a single mechanism. `util::breach_sector` was added to the `core → util` allowlist
+  in `tests/architecture.rs` — it is a pure, dependency-free offline classifier (no state,
+  no I/O), exactly the leaf category the guard already permits (`sim_anonymity`, `surnames`,
+  `city_coords`). +2 engine tests (the multi-key wiring resolves real-estate whichever key
+  a pool used; non-breach / unknown-source / idempotent no-ops); −2 superseded module tests.
+  Gate green: lib 3,330, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean — verified on
+  rustc 1.96.0. Paired: `PROBLEM_TREE` cycle 91 — same commit.

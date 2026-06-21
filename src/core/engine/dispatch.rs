@@ -530,6 +530,12 @@ impl super::ScanEngine {
                     for id in attack_techniques {
                         entity.tag(format!("attack:{id}"));
                     }
+                    // Universal breach-sector wiring: stamp the source's sector
+                    // (`sector:real-estate`, …) on every breach finding — one
+                    // chokepoint connects EVERY pool to `util::breach_sector`.
+                    // Before the emit so the event log (and the recovery rebuild)
+                    // carries it too.
+                    super::tag_breach_sector(&mut entity);
                     self.emit(
                         cx.scan_id,
                         EventKind::EntityFound {

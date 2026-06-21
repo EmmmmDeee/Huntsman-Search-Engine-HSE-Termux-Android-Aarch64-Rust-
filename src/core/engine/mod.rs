@@ -55,7 +55,10 @@ use dispatch::{
     dispatch_key, log_module_dispatch, module_skip_reason, run_module_guarded,
     target_distinct_sources,
 };
-use enrich::{address_to_coords_pass, enrich_geospatial, scan_entity_for_keys, seed_anchor_entity};
+use enrich::{
+    address_to_coords_pass, enrich_geospatial, scan_entity_for_keys, seed_anchor_entity,
+    tag_breach_sector,
+};
 use expansion::{
     apply_roi_cutoff, budget_check, cmp_expansion_candidates, correlation_key, visit_key,
 };
