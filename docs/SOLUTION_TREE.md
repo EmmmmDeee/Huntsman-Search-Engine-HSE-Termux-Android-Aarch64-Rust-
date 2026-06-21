@@ -1811,3 +1811,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   unchanged. Email/phone byte-mining now has one definition. Gate green: lib 3,290,
   24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE`
   cycle 67 — same commit.
+
+- **2026-06-21** — **Cycle 68 (split oathnet_pro/mod.rs into focused submodules).**
+  `mod.rs` 1,165 → **350** lines, now just setup + the `Module` impl + preflight +
+  the submodule wiring. Extracted: `breach.rs` (530 — breach-PII extraction +
+  `TargetMatch` + the shared `push_oathnet_entity`), `stealer.rs` (160 — stealer-log
+  leads), `validate.rs` (135 — the pure offline validators). Pattern: each submodule
+  `use super::*`; section items promoted to `pub(super)`; `mod.rs` re-globs each
+  (`use breach::*` …) so the `Module` impl, the sibling submodules, and the white-box
+  `tests` (which call `extract_breach_entities`, `is_public_ip`, … via `super::*`) all
+  resolve unchanged. Pure code movement — no module added/removed, registry stable,
+  every oathnet test passes. Gate green: lib 3,290, 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 68 — same commit.

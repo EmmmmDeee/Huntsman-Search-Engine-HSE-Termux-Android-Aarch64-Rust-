@@ -2670,3 +2670,12 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Four near-identical implementations of "what an email/phone looks like in scraped
   text" — the exact drift `util::extract` exists to prevent. **Paired:** `SOLUTION_TREE`
   cycle 67 — same commit.
+
+- **2026-06-21** — **Cycle 68 (oathnet_pro/mod.rs was a 1,165-line catch-all).** The
+  module's main file mixed four distinct concerns — the `Module` trait wiring +
+  preflight, the breach-PII extraction (`breach_evidence`, `TargetMatch`,
+  `extract_breach_entities*`, ~530 lines), the stealer-log extraction
+  (`push_stealer_entity`, `extract_stealer_entities`), and a set of pure offline
+  validators (`identify_password_hash`, `iban_is_valid`, `is_public_ip`, …) — in one
+  scroll. Navigability and review cost suffer when unrelated logic shares a file this
+  large. **Paired:** `SOLUTION_TREE` cycle 68 — same commit.
