@@ -12,7 +12,7 @@ use sha1::{Digest, Sha1};
 
 use crate::core::{
     entity::{Entity, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -146,10 +146,7 @@ impl Module for PwnedPasswords {
             return Ok(ModuleResult::new());
         }
 
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let body = crate::util::http::read_text(SRC, resp).await?;
 
         let Some(count) = parse_breach_count(&body, suffix) else {
             return Ok(ModuleResult::new());
