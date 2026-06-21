@@ -433,6 +433,45 @@ use super::*;
     }
 
     #[test]
+    fn breach_entities_carry_source_sector_tag() {
+        use serde_json::json;
+        // Working backwards from the real source-DB shapes: the sector is read
+        // off `dbname` and stamped on every entity, so a hit can be filtered to
+        // "breached real-estate exclusively" via `sector:real-estate`.
+        let item = json!({
+            "email": "agent@example.com",
+            "username": "agent99",
+            "dbname": "0123_HARCOURTS_AU_2M_REALESTATE_032021"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&item, "agent@example.com", "scan", "k", &mut seen, &mut result);
+        let email = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email)
+            .expect("email entity");
+        assert!(email.has_tag("sector:real-estate"), "tags: {:?}", email.tags);
+
+        // The real pureincubation source (a B2B data broker) is NOT real estate
+        // and carries no sector tag at all.
+        let item2 = json!({ "email": "x@example.com", "dbname": "pureincubation.com" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&item2, "x@example.com", "scan", "k", &mut seen, &mut result);
+        let email2 = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email)
+            .expect("email entity");
+        assert!(
+            !email2.tags.iter().any(|t| t.starts_with("sector:")),
+            "tags: {:?}",
+            email2.tags
+        );
+    }
+
+    #[test]
     fn full_name_matcher_requires_all_terms_not_just_one() {
         use serde_json::json;
         // "Jordan Parker" shares only the first name with the target — it must

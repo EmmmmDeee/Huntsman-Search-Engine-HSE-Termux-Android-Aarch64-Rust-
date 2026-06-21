@@ -2148,3 +2148,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   never-raise-lower-confidence), −1 relocated `util` constant test. Gate green: lib 3,324,
   24 arch guards, fmt/clippy(`--all-targets`)/doc clean — verified on rustc 1.96.0. Paired:
   `PROBLEM_TREE` cycle 89 — same commit.
+
+- **2026-06-21** — **Cycle 90 (source→sector classification; "breached real-estate
+  exclusively" as a filter, synergising both pools).** New `util::breach_sector::source_sector`,
+  built *backwards from the real source-DB shapes*: it reads the embedded snusbase category
+  (the second-from-last `_`-segment when the last is a date) and recognises real-estate /
+  property brands + portals + CRMs (AU emphasis: realestate.com.au, Harcourts, LJ Hooker,
+  PropertyTree, OnTheHouse, PEXA, …), returning a normalised sector slug or `None` (an
+  unknown source is left untagged, never guessed). Both breach pools now stamp every entity
+  `sector:<x>` from the `dbname`/`source` the evidence already carries — `oathnet_pro`'s
+  `push_oathnet_entity` (full coverage; every breach kind flows through it) and `see_know`'s
+  `push_breach_entity` — so the answer to "show me only the breached real-estate data" is the
+  tag `sector:real-estate`, applied identically across both pools (one orthogonal classifier,
+  no new feed, no blind scraping). Verified against the genuine dump values: `ZYNGA…`→`gaming`,
+  `AITYPE…`→`tech`, `pureincubation.com`→`None` (correctly not property), and
+  real-estate brands/categories→`real-estate`. Behaviour for sources that don't classify
+  (every existing test fixture) is unchanged. +6 tests (4 classifier unit, 1 per pool).
+  Gate green: lib 3,330, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean — verified
+  on rustc 1.96.0. Paired: `PROBLEM_TREE` cycle 90 — same commit.

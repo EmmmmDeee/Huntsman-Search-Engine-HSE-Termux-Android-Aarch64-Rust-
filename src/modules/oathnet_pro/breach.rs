@@ -78,6 +78,14 @@ pub(super) fn push_oathnet_entity(
     for t in extra_tags {
         e.tag(*t);
     }
+    // Source-sector tag, derived from the `dbname` the evidence already carries
+    // (one place — every breach kind flows through here). Lets a hit be filtered
+    // by the sector of the breach it came from, e.g. `sector:real-estate`.
+    if let Some(db) = ev.attributes.get("dbname")
+        && let Some(sector) = crate::util::breach_sector::source_sector(db)
+    {
+        e.tag(format!("sector:{sector}"));
+    }
     // Quarantine policy, enforced in ONE place: a row that doesn't match the
     // target identity yields CANDIDATE-strength, `candidate`-tagged entities, so
     // EVERY breach-derived kind — email, username, domain, social handle — is
