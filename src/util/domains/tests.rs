@@ -14,9 +14,17 @@ use super::*;
         assert!(is_infrastructure_email("noc@mail.cloudflare.com"));
         // Trailing dot / case tolerance.
         assert!(is_infrastructure_email("Abuse@Cloudflare.com."));
+        // Live-scan registrar/role artifacts that previously leaked into the
+        // people graph (Network Solutions placeholder, copyright + enquiry desks).
+        assert!(is_infrastructure_email("namehost@worldnic.com"));
+        assert!(is_infrastructure_email("dmca@telegram.org"));
+        assert!(is_infrastructure_email("generalenquiry@nswlrs.com.au"));
         // Genuine personal mail is NOT infrastructure.
         assert!(!is_infrastructure_email("jordanavery@gmail.com"));
         assert!(!is_infrastructure_email("jane.doe@example.org"));
+        // A real person whose local-part merely contains a role substring is
+        // NOT gated (exact-token match, no false positive on "info").
+        assert!(!is_infrastructure_email("infosys.engineer@example.org"));
         // Malformed input is safely false.
         assert!(!is_infrastructure_email("not-an-email"));
     }

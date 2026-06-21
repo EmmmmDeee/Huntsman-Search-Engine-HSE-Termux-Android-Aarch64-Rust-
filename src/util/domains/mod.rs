@@ -199,12 +199,25 @@ pub fn is_role_localpart(local: &str) -> bool {
         "daemon",
         "feedback",
         "enquiries",
+        "enquiry",
+        "generalenquiry",
+        "generalenquiries",
         "inquiries",
+        "inquiry",
         "careers",
         "jobs",
         "press",
         "media",
         "webmail",
+        // Registrar / DNS provider system mailboxes seen in live WHOIS records
+        // (Network Solutions `namehost@`, copyright `dmca@`, generic `domains@`).
+        "namehost",
+        "dmca",
+        "domains",
+        "domain",
+        "registrar",
+        "whois",
+        "nic",
     ];
     ROLE.contains(&base.as_str())
 }
@@ -271,6 +284,21 @@ const INFRA_MAIL: &[&str] = &[
     "ripe.net",
     "arin.net",
     "apnic.net",
+    // Registrars / registry operators whose contact mailboxes surface from
+    // WHOIS/RDAP (live scan: namehost@worldnic.com — Network Solutions).
+    "worldnic.com",
+    "networksolutions.com",
+    "web.com",
+    "tucows.com",
+    "enom.com",
+    "name.com",
+    "domaincontrol.com",
+    "wildwestdomains.com",
+    "publicdomainregistry.com",
+    "key-systems.net",
+    "ascio.com",
+    "nominet.uk",
+    "verisign.com",
 ];
 
 /// True if `domain` is a social platform or one of its country
