@@ -193,10 +193,7 @@ impl Module for WhoisXml {
             return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
-        let wrap: Wrap = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
+        let wrap: Wrap = crate::util::http::json_decode(SRC, resp).await?;
         // HTTP-200-with-error-payload (quota / scope / plan): mark
         // the key exhausted so subsequent scans don't keep burning
         // calls against a dead credential.

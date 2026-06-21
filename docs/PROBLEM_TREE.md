@@ -2727,3 +2727,15 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   as a third name token, shifting first/middle/last. Diacritic folding, non-Latin
   graceful-degrade, honorifics, suffixes, initials and whitespace were already
   correct. **Paired:** `SOLUTION_TREE` cycle 73 — same commit.
+
+- **2026-06-21** — **Cycle 74 (seven modules bypassed the shared JSON-decode path).**
+  `hunter_io`, `ip2location`, `disposable_check`, `ipinfo`, `whoisxml`, `ipquery` and
+  `crtsh` hand-rolled `resp.json().await.map_err(|e| Error::module(SRC, format!("JSON:
+  {e}")))` instead of `util::http::json_decode` — which 76 other call sites use. Not
+  cosmetic: that helper is the single chokepoint for **universal raw retention** (its
+  doc: the archive "is complete for ANY scan"), so these seven modules' responses were
+  silently **missing from the dossier's RAW SOURCE RECORDS**, and — bypassing the
+  32 MiB `JSON_BODY_CAP` — each could **OOM a constrained Termux device** on a hostile
+  or buggy oversized response. The hand-rolled error also collapsed a mid-stream read
+  failure and a parse failure into one undistinguished message. **Paired:**
+  `SOLUTION_TREE` cycle 74 — same commit.

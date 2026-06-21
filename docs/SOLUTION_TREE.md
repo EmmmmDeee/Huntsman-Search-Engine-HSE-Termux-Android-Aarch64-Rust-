@@ -1888,3 +1888,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   whose old expectation *was* the bug). No new deps; allocation-light; Termux-safe.
   Gate green: lib 3,297, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired:
   `PROBLEM_TREE` cycle 73 — same commit.
+
+- **2026-06-21** — **Cycle 74 (route the seven JSON holdouts through
+  `util::http::json_decode`).** Replaced each hand-rolled
+  `resp.json().await.map_err(…"JSON: {e}")` with `crate::util::http::json_decode(SRC,
+  resp).await?`, so all seven now share the capped + archived decode path: their
+  responses land in the universal raw archive (dossier completeness), the 32 MiB body
+  cap closes the Termux OOM vector, and read-vs-parse failures are reported distinctly.
+  Dropped four now-unused `Error` imports (`ip2location`, `disposable_check`, `ipinfo`,
+  `ipquery`); the other three still use `Error` elsewhere. Net −21 lines, behaviour for
+  valid responses unchanged (same deserialised structs, same entities). Gate green: lib
+  3,297, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE`
+  cycle 74 — same commit.
