@@ -6,6 +6,8 @@
 pub mod attack;
 pub mod benchmark;
 pub mod cancel;
+pub mod classifier;
+pub mod classify_module;
 pub mod community;
 pub mod convex;
 pub mod correlator;

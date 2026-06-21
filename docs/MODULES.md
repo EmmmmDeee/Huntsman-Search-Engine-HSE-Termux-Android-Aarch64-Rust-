@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (127 modules: 94 free · 28 key-gated · 5 paid)
+## Catalogue (128 modules: 95 free · 28 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -200,10 +200,11 @@ records. The engine knows nothing else — every module is a one-file change.
 | `signal_radar` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn, mac_address, api_key | free | **yes** | 60 | mac_address, ip_address, coordinates, device_id |
 | `local_net` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn, mac_address, api_key | free | **yes** | 58 | mac_address, ip_address |
 
-### other (2)
+### other (3)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
+| `classifier` | full_name, organisation, address | free | **yes** | 200 | email, username, phone, ip_address, domain, url, asn, cidr, coordinates, abn_acn, mac_address, crypto_address, device_id |
 | `api_key_probe` | api_key | free | **yes** | 200 | api_key, domain |
 | `chain_intel` | crypto_address | free | no | 90 | crypto_address, username |
 
