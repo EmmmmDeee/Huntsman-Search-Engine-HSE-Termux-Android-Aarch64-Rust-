@@ -2952,3 +2952,17 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   from the confidence/tier model it belongs to (`core::entity`, beside `VERIFIED_MIN` /
   `PROBABLE_MIN`). Two orthogonal capabilities, neither cleanly owned. **Paired:**
   `SOLUTION_TREE` cycle 89 — same commit.
+
+- **2026-06-21** — **Cycle 90 ("breached real-estate exclusively" had no mechanism — yet
+  the real data already encoded the answer).** An AU-focused investigation wants to filter
+  a scan to property/real-estate exposure, but the breach pools offered no way to do it:
+  every hit carried its source database name (`dbname` / `source`) on the evidence, and
+  nothing ever read it to classify the breach's *sector*. The signal was sitting unused.
+  And working backwards from the actual "Ali Kareem" dumps shows it was *legible*: snusbase
+  source DBs embed a category token — `0645_ZYNGA_COM_202M_GAMING_092019`,
+  `1769_AITYPE_COM_75M_TECH_122017` (real values) follow
+  `<id>_<NAME>_<TLD>_<SIZE>_<CATEGORY>_<MMYYYY>` — while oathnet sources are brand domains
+  (`pureincubation.com`, a B2B data broker that must NOT be mislabelled as property). So
+  the question "show me only the breached real-estate data" was answerable from data
+  already in hand, and simply wasn't being asked of it. **Paired:** `SOLUTION_TREE` cycle 90
+  — same commit.

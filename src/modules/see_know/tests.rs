@@ -232,6 +232,59 @@ use crate::core::entity::Entity;
     }
 
     #[test]
+    fn entities_carry_source_sector_tag() {
+        use serde_json::json;
+        // A real-estate source → every entity filterable via `sector:real-estate`.
+        let item = json!({
+            "email": "agent@example.com",
+            "full_name": "Real Agent",
+            "dbname": "realestate.com.au"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "agent@example.com",
+            "scan",
+            "search",
+            "k",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .find(|e| e.kind == EntityKind::Email)
+                .is_some_and(|e| e.has_tag("sector:real-estate")),
+            "email not sector-tagged"
+        );
+
+        // The real snusbase GAMING source from the dump → `sector:gaming`,
+        // not real estate.
+        let item2 =
+            json!({ "email": "g@example.com", "dbname": "0645_ZYNGA_COM_202M_GAMING_092019" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item2,
+            "g@example.com",
+            "scan",
+            "search",
+            "k",
+            &mut seen,
+            &mut result,
+        );
+        let email2 = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email)
+            .expect("email entity");
+        assert!(email2.has_tag("sector:gaming"), "tags: {:?}", email2.tags);
+        assert!(!email2.has_tag("sector:real-estate"));
+    }
+
+    #[test]
     fn provider_internal_record_ids_are_not_minted_as_entities() {
         use serde_json::json;
         // snusbase/see_know stamp `uid` + `migration_id` on every row (their own
