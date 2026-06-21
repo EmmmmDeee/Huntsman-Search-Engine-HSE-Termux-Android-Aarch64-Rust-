@@ -42,6 +42,18 @@ const SRC: &str = "oathnet_pro";
 /// must never reach the full-confidence, correlated, default-view tier.
 const CANDIDATE_CONF: f64 = 0.25;
 
+/// Maximum number of NON-matching (candidate) breach rows extracted into
+/// entities per page. A broad search — above all a `full_name` — routinely
+/// returns a whole page of strangers (the "Ali Kareem" scan got 100
+/// pureincubation.com rows, none of them Ali), and each stranger row mints
+/// several quarantined `candidate` entities (~5 per row), so an unbounded page
+/// floods a memory-constrained device with hundreds of low-value entities.
+/// Target-matching rows are always extracted in full; non-matching rows are
+/// only SAMPLED up to this bound, so a genuine-but-unmatchable lead still
+/// survives without the flood. Sized to keep a useful spot-check sample while
+/// cutting the worst-case candidate count by ~5×.
+const MAX_CANDIDATE_ROWS: usize = 20;
+
 pub struct OathnetPro;
 
 #[async_trait]
@@ -208,25 +220,20 @@ impl Module for OathnetPro {
         parent.add_evidence(ev);
         result.push(parent);
 
-        // Hoist the per-target match context out of the per-record loop:
-        // `target_lower` and the significant-term split depend only on the
-        // target value, not the row, so computing them once (instead of once
-        // per breach record) eliminates a `to_lowercase()` allocation and a
-        // term-`Vec` build for every item on large breach pages.
-        let match_ctx = TargetMatch::new(&target.value);
-        result.entities.reserve(items.len());
-        for item in &items {
-            extract_breach_entities_with(
-                item,
-                &match_ctx,
-                &ctx.scan_id,
-                &key_fp,
-                &mut seen,
-                &mut result,
-            );
-            store_api_credential(item);
-            extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
-        }
+        // Extract every breach row into entities, applying the candidate-flood
+        // cap (see `extract_breach_page`): target-matching rows are kept in
+        // full while non-matching strangers are only sampled, so a broad name
+        // search can't drown a memory-constrained device in low-value
+        // `candidate` noise. API-key harvesting runs unconditionally for every
+        // row inside the page pass.
+        extract_breach_page(
+            &items,
+            &target.value,
+            &ctx.scan_id,
+            &key_fp,
+            &mut seen,
+            &mut result,
+        );
 
         // ── Query 2: Stealer search (Email/Username only) ───────────────
         // Stealer logs are indexed by login credentials (username/email +

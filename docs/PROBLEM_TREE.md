@@ -2808,3 +2808,19 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   truncated Pwned-Passwords hash range would yield a false "not pwned") and must not
   bloat the archive with a generic payload. **Paired:** `SOLUTION_TREE` cycle 79 —
   same commit.
+
+- **2026-06-21** — **Cycle 80 (a broad name search floods the page with stranger
+  `candidate` entities — ground-truthed against HSE's own "Ali Kareem" debug
+  bundle).** The uploaded HSE run (scan `9daad8…`, target `full_name = "Ali Kareem"`)
+  exported an **empty CSV**, and the debug timeline shows why `oathnet_pro` was no
+  help: its breach query returned **100 `pureincubation.com` rows — James Perry, James
+  Smith, Marina × N, not one of them Ali** — and the page extractor minted **491
+  entities** off them, every one a quarantined `candidate` at 0.25. That is ~5
+  low-value entities per stranger row: correct in *kind* (the quarantine demotion from
+  cycles 76/78 keeps them out of the default view and the correlator) but unbounded in
+  *volume*. On a memory-constrained Termux device a single broad `full_name` page can
+  therefore balloon the in-memory result with hundreds of strangers whose only purpose
+  is a manual spot-check — a sample of a dozen serves that need as well as a hundred.
+  The per-row identity match was also buried inside the per-record extractor, where the
+  page loop could not see it to make a sampling decision. **Paired:** `SOLUTION_TREE`
+  cycle 80 — same commit.

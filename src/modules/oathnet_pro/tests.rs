@@ -226,6 +226,77 @@ use super::*;
     }
 
     #[test]
+    fn candidate_flood_is_capped_but_target_rows_always_survive() {
+        use serde_json::json;
+        // The exact "Ali Kareem" failure mode: a broad `full_name` search
+        // returned 100 pureincubation.com rows, NONE of them Ali. Each stranger
+        // row mints several quarantined `candidate` entities, which flooded a
+        // memory-constrained device with low-value noise. `extract_breach_page`
+        // SAMPLES the non-matching rows (cap = MAX_CANDIDATE_ROWS) instead of
+        // emitting every one — but a genuinely matching row is ALWAYS extracted
+        // in full, even when it lands after the cap is already exhausted.
+        let mut items: Vec<serde_json::Value> = (0..100)
+            .map(|i| {
+                json!({
+                    "email": format!("stranger{i}@pureincubation.com"),
+                    "username": format!("stranger{i}"),
+                    "source": "pureincubation.com"
+                })
+            })
+            .collect();
+        // The real target lands LAST, long after the candidate cap is spent.
+        items.push(json!({
+            "email": "ali.kareem.real@example.com",
+            "full_name": "Ali Kareem",
+            "source": "RealLeak"
+        }));
+
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_page(
+            &items,
+            "Ali Kareem",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+
+        // The candidate flood is bounded: one candidate email per SAMPLED
+        // stranger row, never more than the cap (and far below the unbounded
+        // 100 the page would otherwise emit).
+        let candidate_emails = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email && e.has_tag("candidate"))
+            .count();
+        assert!(
+            candidate_emails <= MAX_CANDIDATE_ROWS,
+            "candidate emails ({candidate_emails}) must not exceed the cap ({MAX_CANDIDATE_ROWS})"
+        );
+        assert!(
+            candidate_emails < 100,
+            "the stranger flood must be capped, not passed through"
+        );
+
+        // The genuine target row SURVIVES at full confidence with no candidate
+        // tag, despite arriving after the cap was exhausted.
+        let target = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Person && e.value == "Ali Kareem")
+            .expect("the matching target row must always be extracted");
+        assert!(
+            !target.has_tag("candidate"),
+            "the target row must not be quarantined"
+        );
+        assert!(
+            target.confidence > CANDIDATE_CONF,
+            "the target row keeps full confidence, not candidate strength"
+        );
+    }
+
+    #[test]
     fn full_name_matcher_requires_all_terms_not_just_one() {
         use serde_json::json;
         // "Jordan Parker" shares only the first name with the target — it must

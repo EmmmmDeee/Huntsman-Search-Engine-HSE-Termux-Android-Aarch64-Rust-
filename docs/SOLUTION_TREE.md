@@ -1971,3 +1971,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   with one fewer hand-rolled error tail each. +1 test. Gate green: lib 3,305, 24 arch
   guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 79 —
   same commit.
+
+- **2026-06-21** — **Cycle 80 (cap the breach candidate flood; classify each row
+  once).** Lifted the per-page breach loop out of `mod.rs::process` into
+  `breach.rs::extract_breach_page`, the natural home beside `TargetMatch`,
+  `extract_breach_entities_with` and `push_oathnet_entity`. It builds the match context
+  once (the existing hoist), classifies each row once via `TargetMatch::matches`, and
+  threads that single `bool` into `extract_breach_entities_with` — whose signature
+  changed from `match_ctx: &TargetMatch` to `is_target_row: bool`, deleting the internal
+  re-match so the identity decision now lives in exactly one place and is reused for both
+  the quarantine demotion and the new sampling gate. **Target-matching rows are always
+  extracted in full; non-matching strangers are sampled at most `MAX_CANDIDATE_ROWS`
+  (= 20) per page**, cutting the worst-case candidate count ~5× (the Ali Kareem page's
+  491 → ≤ ~100) while keeping a spot-check sample. API-key harvest
+  (`store_api_credential` + `extract_api_keys_from_item`) stays **unconditional** for
+  every row — a leaked tool credential is valuable regardless of the cap and is too rare
+  to flood — and stays after PII extraction so per-row ordering is byte-identical for the
+  uncapped path. The `#[cfg(test)]` wrapper computes the bool the same way, so every
+  existing characterization test is unchanged. +1 test seeded from the exact failure
+  (100 `pureincubation.com` strangers + 1 trailing real "Ali Kareem" row → candidate
+  emails ≤ cap, and the target row still emitted at full confidence after the cap is
+  spent). Gate green: lib 3,306, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean.
+  Paired: `PROBLEM_TREE` cycle 80 — same commit.

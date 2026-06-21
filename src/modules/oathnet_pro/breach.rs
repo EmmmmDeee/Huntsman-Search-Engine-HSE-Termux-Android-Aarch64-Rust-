@@ -160,6 +160,52 @@ impl TargetMatch {
     }
 }
 
+/// Extract a full page of breach records into entities, enforcing the
+/// candidate-flood cap.
+///
+/// The match context is built once for the whole page (not per record): the
+/// lowercased target and its significant-term split depend only on the target
+/// value, so building them once drops a `to_lowercase()` allocation and a
+/// term-`Vec` build for every item on large breach pages.
+///
+/// Each row is classified once via `TargetMatch::matches`. Target-matching
+/// rows are always extracted in full; non-matching strangers are only sampled —
+/// at most `MAX_CANDIDATE_ROWS` of them — so a broad `full_name` search that
+/// returns a whole page of unrelated people can't drown a memory-constrained
+/// device in low-value `candidate` entities. API-key harvesting
+/// (`store_api_credential` + `extract_api_keys_from_item`) runs unconditionally
+/// for every row: a leaked tool credential is valuable independent of whether
+/// the row identifies the target, and such keys are rare enough never to flood.
+pub(super) fn extract_breach_page(
+    items: &[Value],
+    target_value: &str,
+    scan_id: &str,
+    key_fp: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    let match_ctx = TargetMatch::new(target_value);
+    result.entities.reserve(items.len());
+    let mut candidate_rows = 0usize;
+    for item in items {
+        let is_target_row = match_ctx.matches(item);
+        // Target rows always extract; strangers only up to the cap. The match
+        // result is computed once here and threaded into the extractor, so the
+        // per-row identity decision is never recomputed.
+        if is_target_row {
+            extract_breach_entities_with(item, true, scan_id, key_fp, seen, result);
+        } else if candidate_rows < MAX_CANDIDATE_ROWS {
+            candidate_rows += 1;
+            extract_breach_entities_with(item, false, scan_id, key_fp, seen, result);
+        }
+        // Unconditional — independent of the candidate cap and the target
+        // match (see the doc comment), kept after PII extraction to preserve
+        // the original per-row ordering.
+        store_api_credential(item);
+        extract_api_keys_from_item(item, scan_id, seen, result);
+    }
+}
+
 #[cfg(test)]
 pub(super) fn extract_breach_entities(
     item: &Value,
@@ -169,19 +215,13 @@ pub(super) fn extract_breach_entities(
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
-    extract_breach_entities_with(
-        item,
-        &TargetMatch::new(target_value),
-        scan_id,
-        key_fp,
-        seen,
-        result,
-    );
+    let is_target_row = TargetMatch::new(target_value).matches(item);
+    extract_breach_entities_with(item, is_target_row, scan_id, key_fp, seen, result);
 }
 
 pub(super) fn extract_breach_entities_with(
     item: &Value,
-    match_ctx: &TargetMatch,
+    is_target_row: bool,
     scan_id: &str,
     key_fp: &str,
     seen: &mut HashSet<String>,
@@ -193,13 +233,13 @@ pub(super) fn extract_breach_entities_with(
         .with_attr("provider", "oathnet.org")
         .with_attr("api_key_origin", key_fp);
 
-    // Decide whether this breach row actually belongs to the target. Breach
-    // databases hold millions of records and a broad search (especially a
-    // `full_name`) returns rows for many different people. A non-matching row
-    // is NOT discarded — `push_oathnet_entity` demotes it to a quarantined
-    // `candidate` (out of the default view and the correlator) so genuine
-    // leads survive without flooding the result with strangers.
-    let is_target_row = match_ctx.matches(item);
+    // `is_target_row` (computed once per row by the caller via `TargetMatch`)
+    // decides whether this record belongs to the target. Breach databases hold
+    // millions of records and a broad search — above all a `full_name` —
+    // returns rows for many different people. A non-matching row is NOT
+    // discarded here: `push_oathnet_entity` demotes it to a quarantined
+    // `candidate` (out of the default view and the correlator) so genuine leads
+    // survive without flooding the result with strangers.
 
     if let Some(email) = val_str(item, "email") {
         let lower = email.to_lowercase();
