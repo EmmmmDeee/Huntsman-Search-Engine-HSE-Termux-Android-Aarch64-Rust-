@@ -214,20 +214,12 @@ async fn fetch_algolia_submissions(
         return Vec::new();
     };
 
-    let mut domains: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut remaining = body.as_str();
-    // Extract URLs from "url":"..." fields
-    while let Some(pos) = remaining.find("\"url\":\"") {
-        remaining = &remaining[pos + 7..];
-        let Some(end) = remaining.find('"') else {
-            break;
-        };
-        let url_str = &remaining[..end];
-        if let Some(domain) = extract_domain_from_url(url_str) {
-            domains.insert(domain);
-        }
-        remaining = &remaining[end..];
-    }
+    // Extract URLs from "url":"..." fields, then reduce to deduped domains.
+    let domains: std::collections::HashSet<String> =
+        crate::util::json::scan_string_field(&body, "url")
+            .iter()
+            .filter_map(|url_str| extract_domain_from_url(url_str))
+            .collect();
 
     domains
         .into_iter()

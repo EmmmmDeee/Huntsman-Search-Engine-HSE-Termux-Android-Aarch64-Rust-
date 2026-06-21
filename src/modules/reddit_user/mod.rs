@@ -243,20 +243,13 @@ async fn fetch_submitted(http: &reqwest::Client, username: &str, scan_id: &str) 
         return Vec::new();
     };
 
-    let mut subreddits: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // Parse subreddit names from JSON without a full Deserialize struct
-    let mut remaining = body.as_str();
-    while let Some(pos) = remaining.find("\"subreddit\":\"") {
-        remaining = &remaining[pos + 13..];
-        let Some(end) = remaining.find('"') else {
-            break;
-        };
-        let sub = &remaining[..end];
-        if !sub.is_empty() && sub.len() <= 50 {
-            subreddits.insert(sub.to_string());
-        }
-        remaining = &remaining[end..];
-    }
+    // Parse subreddit names from JSON without a full Deserialize struct; cap
+    // the length to skip pathological values, and dedup across the listing.
+    let subreddits: std::collections::HashSet<String> =
+        crate::util::json::scan_string_field(&body, "subreddit")
+            .into_iter()
+            .filter(|sub| sub.len() <= 50)
+            .collect();
 
     subreddits
         .into_iter()

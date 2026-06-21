@@ -112,21 +112,8 @@ pub(super) async fn fetch_orgs(
     let Ok(body) = resp.text().await else {
         return Vec::new();
     };
-    // Extract org login names
-    let mut orgs = Vec::new();
-    let mut remaining = body.as_str();
-    while let Some(pos) = remaining.find("\"login\":\"") {
-        remaining = &remaining[pos + 9..];
-        let Some(end) = remaining.find('"') else {
-            break;
-        };
-        let login = &remaining[..end];
-        if !login.is_empty() {
-            orgs.push(login.to_string());
-        }
-        remaining = &remaining[end..];
-    }
-    orgs
+    // Extract org login names.
+    crate::util::json::scan_string_field(&body, "login")
 }
 
 pub(super) async fn fetch_gists(
@@ -154,22 +141,13 @@ pub(super) async fn fetch_gists(
     let Ok(body) = resp.text().await else {
         return Vec::new();
     };
-    // Extract gist IDs from "id":"..." fields in gist objects
-    let mut gist_ids = Vec::new();
-    let mut remaining = body.as_str();
-    while let Some(pos) = remaining.find("\"id\":\"") {
-        remaining = &remaining[pos + 6..];
-        let Some(end) = remaining.find('"') else {
-            break;
-        };
-        let id = &remaining[..end];
-        if !id.is_empty() && id.len() == 32 {
-            // gist IDs are 32 hex chars
-            gist_ids.push(id.to_string());
-        }
-        remaining = &remaining[end..];
-    }
-    gist_ids
+    // Extract gist IDs from "id":"..." fields in gist objects. Gist IDs are
+    // 32 hex chars — the length filter drops the numeric owner/etc. ids that
+    // share the key (scan_string_field already skips the unquoted numerics).
+    crate::util::json::scan_string_field(&body, "id")
+        .into_iter()
+        .filter(|id| id.len() == 32)
+        .collect()
 }
 
 pub(super) async fn fetch_events(login: &str, ctx: &ModuleContext, result: &mut ModuleResult) {

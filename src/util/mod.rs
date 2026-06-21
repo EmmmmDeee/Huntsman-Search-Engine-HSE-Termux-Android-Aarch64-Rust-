@@ -46,3 +46,4 @@ pub mod termux;
 pub mod threat;
 pub mod uid;
 pub mod url_util;
+pub mod wigle;

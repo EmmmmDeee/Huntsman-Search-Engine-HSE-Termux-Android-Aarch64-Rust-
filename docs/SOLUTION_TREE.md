@@ -1732,3 +1732,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   seed name), a separate strand to tackle deliberately rather than via a geo
   heuristic. Regression-tested. Gate green: lib 3,287 (+1), 24 arch guards,
   fmt/clippy/doc clean. Paired: `PROBLEM_TREE` cycle 61 — same commit.
+
+- **2026-06-21** — **Cycle 62 (consolidate three duplication clusters into `util`).**
+  Single home for each, callers keep only their own filters/decoders:
+  1. **`util::str_util::parse_asn(&str) -> Option<u64>`** — case-insensitive `AS`
+     prefix, whitespace-tolerant, validated; rejects junk so callers don't build a
+     garbage URL. Migrated `bgpview` / `ip_registry` / `zoomeye` (the last gains
+     case-insensitive parsing it was missing).
+  2. **`util::json::scan_string_field(body, key) -> Vec<String>`** — the raw-body
+     `"key":"…"` scan, behaviour-preserving (skips numeric `"key":123`, value runs
+     to next quote, empties dropped, order kept). Migrated `github_user` (orgs +
+     gists), `reddit_user`, `hacker_news`; each keeps its own length-bound / dedup /
+     domain-extract step at the call site.
+  3. **`util::wigle`** (new submodule, alongside `util::oathnet` / `util::see_know`)
+     — `detail_url(netid, kind)` + `get(...)` doing the shared auth and WiGLE status
+     classification (429 → immediate Err with logged backoff, 401/403 → auth Err,
+     404 → Ok(None), success → response for caller to decode). `wifi_intel`'s rich
+     handling is preserved verbatim; `wigle::fetch_detail` keeps its swallow-to-None
+     contract. ~127 lines of duplicated logic across 8 modules collapse to ~77 lines
+     of shared, tested helpers (4 JSON-scan copies → 1, 3 ASN copies → 1, 2 WiGLE
+     copies → 1). No module added/removed — registry count stable. Gate green: lib
+     3,291 (+4), 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired:
+     `PROBLEM_TREE` cycle 62 — same commit.

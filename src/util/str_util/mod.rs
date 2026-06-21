@@ -64,6 +64,39 @@ pub fn ascii_digits(s: &str) -> String {
     s.chars().filter(char::is_ascii_digit).collect()
 }
 
+/// Parse an autonomous-system identifier to its numeric form, accepting an
+/// optional case-insensitive `AS` prefix and surrounding whitespace:
+/// `"AS13335"`, `"as13335"`, `"13335"`, `" 13335 "` all yield `Some(13335)`.
+/// Returns `None` for anything that isn't `AS?<ascii-digits>`, so callers reject
+/// malformed ASNs instead of building a garbage URL from them.
+///
+/// Single definition for the `bgpview` / `ip_registry` / `zoomeye` modules,
+/// which each open-coded the prefix-strip-and-validate and drifted on case
+/// handling. Re-add a textual prefix at the call site when needed
+/// (`format!("AS{n}")`).
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::parse_asn;
+///
+/// assert_eq!(parse_asn("AS13335"), Some(13335));
+/// assert_eq!(parse_asn("as13335"), Some(13335));
+/// assert_eq!(parse_asn("  13335 "), Some(13335));
+/// assert_eq!(parse_asn("ASN13335"), None); // only a bare `AS` prefix is shed
+/// assert_eq!(parse_asn("13335x"), None);
+/// ```
+#[must_use]
+pub fn parse_asn(s: &str) -> Option<u64> {
+    let t = s.trim();
+    let digits = match t.get(..2) {
+        Some(p) if p.eq_ignore_ascii_case("AS") => t[2..].trim(),
+        _ => t,
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 /// Round `i` **down** to the nearest UTF-8 character boundary of `s` (the start
 /// of the character `i` falls inside), clamped to `s.len()`. The canonical
 /// safe-slicing primitive for a *start* offset or a length cap:

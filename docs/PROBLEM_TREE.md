@@ -2601,3 +2601,20 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   extraction defect.) Regression-tested (run-on split; Virginia Beach / Kansas City
   preserved). Gate green: fmt/clippy/doc clean, lib 3,287 (+1), 24 arch guards, 0
   failures. **Paired:** `SOLUTION_TREE` cycle 61 note — same commit.
+
+- **2026-06-21** — **Cycle 62 (consolidation: three families of open-coded logic
+  duplicated across modules).** A duplication sweep of all 123 modules (the codebase
+  is otherwise well-factored — 108 modules already share `util::http`) surfaced
+  three genuine copy-paste clusters, each a drift risk: (1) **ASN normalisation** —
+  `bgpview`, `ip_registry`, `zoomeye` each open-coded "strip optional `AS` prefix,
+  validate digits, parse", and `zoomeye` had silently diverged (case-sensitive
+  prefix strip, so `as13335` slipped through). (2) **Raw-JSON field scanning** —
+  `github_user` (×2: orgs `login`, gist `id`), `reddit_user` (`subreddit`) and
+  `hacker_news` (`url`) each hand-rolled the same `find("\"key\":\"")` / slice-to-
+  next-quote loop. (3) **WiGLE `network/detail` plumbing** — `wigle::fetch_detail`
+  and `wifi_intel::query_wigle_detail` both built the same authenticated URL and
+  (in `wifi_intel`) classified 429/401/403/404; the rate-limit branch is subtle (a
+  429 must surface immediately, not sleep past the module's wall-clock budget) and
+  living in two copies invited exactly the kind of drift that bites later. Net effect
+  of the duplication: bug fixes had to be applied N times and didn't stay in sync.
+  **Paired:** `SOLUTION_TREE` cycle 62 — same commit.

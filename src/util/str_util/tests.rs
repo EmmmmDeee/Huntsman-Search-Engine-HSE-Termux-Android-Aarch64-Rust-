@@ -1,8 +1,26 @@
 
 use super::{
-    ascii_digits, char_window, find_ascii_ci, fold_ascii_lower, nonempty, slugify,
+    ascii_digits, char_window, find_ascii_ci, fold_ascii_lower, nonempty, parse_asn, slugify,
     truncate_display, truncate_safe,
 };
+
+    #[test]
+    fn parse_asn_strips_case_insensitive_prefix_and_validates() {
+        // The shared form the bgpview/ip_registry/zoomeye sites converged on.
+        assert_eq!(parse_asn("AS13335"), Some(13335));
+        assert_eq!(parse_asn("as13335"), Some(13335)); // zoomeye lacked this
+        assert_eq!(parse_asn("As13335"), Some(13335));
+        assert_eq!(parse_asn("13335"), Some(13335));
+        assert_eq!(parse_asn("  AS13335 "), Some(13335));
+        assert_eq!(parse_asn("AS 13335"), Some(13335)); // inner space trimmed
+        assert_eq!(parse_asn("4294967295"), Some(u64::from(u32::MAX))); // 32-bit ASN
+        // Rejections: not a bare AS prefix, or trailing junk → no garbage URL.
+        assert_eq!(parse_asn("ASN13335"), None);
+        assert_eq!(parse_asn("13335x"), None);
+        assert_eq!(parse_asn("AS"), None);
+        assert_eq!(parse_asn(""), None);
+        assert_eq!(parse_asn("astronomy"), None); // "as" prefix, "tronomy" not digits
+    }
 
     #[test]
     fn nonempty_trims_and_treats_blank_as_absent() {

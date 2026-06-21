@@ -124,9 +124,7 @@ async fn bgp_lookup_ip(ip: &str, ctx: &ModuleContext) -> Result<ModuleResult> {
 }
 
 async fn bgp_lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-    let raw = target.value.trim().to_uppercase();
-    let digits = raw.trim_start_matches("AS").trim();
-    let Ok(asn) = digits.parse::<u64>() else {
+    let Some(asn) = crate::util::str_util::parse_asn(&target.value) else {
         return Ok(ModuleResult::new());
     };
 
