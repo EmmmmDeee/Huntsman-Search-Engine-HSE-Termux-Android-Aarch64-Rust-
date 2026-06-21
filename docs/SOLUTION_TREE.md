@@ -2116,3 +2116,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   subject-full-confidence). Gate green: lib 3,322, 24 arch guards,
   fmt/clippy(`--all-targets`)/doc clean — verified on rustc 1.96.0. Paired:
   `PROBLEM_TREE` cycle 87 — same commit.
+
+- **2026-06-21** — **Cycle 88 (postcode-qualified addresses; stop minting provider
+  plumbing).** **(a)** `oathnet_pro`'s composed `Address` now appends `postal_code`
+  (`HAMPTON, VA, 23666`), still gated on city/street so a bare ZIP can never form a
+  standalone node — bringing it to parity with `see_know`'s street→postal→country
+  composition and handing the geocoder a ZIP-centroid-precise value instead of a
+  city-coarse one. **(b)** Added `uid` + `migration_id` to `see_know`'s `RICH_DETAIL_SKIP`
+  so the catch-all no longer mints the provider's internal record keys as `Other(...)`
+  nodes — one fewer junk entity per record, and the dossier stops carrying snusbase's
+  database bookkeeping as findings. Both are surgical and additive: the only behaviour
+  change is a more precise address string and the absence of two plumbing nodes; clean
+  records are otherwise identical. +2 tests (the composed value carries the ZIP;
+  `uid`/`migration_id` never become entities while the real person still does). Gate green:
+  lib 3,324, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean — verified on rustc
+  1.96.0. Paired: `PROBLEM_TREE` cycle 88 — same commit.

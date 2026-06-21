@@ -83,6 +83,12 @@ const RICH_DETAIL_SKIP: &[&str] = &[
     "_origin",
     "id",
     "_id",
+    // Provider-internal record IDs — snusbase/see_know stamp a `uid` and a
+    // `migration_id` on every row (their own database keys, not the subject's).
+    // Left un-skipped they leaked as `Other("uid")` / `Other("migration_id")`
+    // junk nodes — one per record — diluting the graph with plumbing.
+    "uid",
+    "migration_id",
     "log_id",
     "log",
     "salt",

@@ -232,6 +232,49 @@ use crate::core::entity::Entity;
     }
 
     #[test]
+    fn provider_internal_record_ids_are_not_minted_as_entities() {
+        use serde_json::json;
+        // snusbase/see_know stamp `uid` + `migration_id` on every row (their own
+        // database keys, not the subject's); they must not leak as Other() junk.
+        let item = json!({
+            "full_name": "Ali Kareem",
+            "uid": "9e15bceb60c0",
+            "migration_id": "48217",
+            "source": "snusbase"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "Ali Kareem",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            !result.entities.iter().any(
+                |e| matches!(&e.kind, EntityKind::Other(k) if k == "uid" || k == "migration_id")
+            ),
+            "provider-internal IDs must not become entities; got {:?}",
+            result
+                .entities
+                .iter()
+                .map(|e| (e.kind.to_string(), e.value.clone()))
+                .collect::<Vec<_>>()
+        );
+        // The real field (the person) is still extracted.
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Person && e.value == "Ali Kareem"),
+            "the subject person is still surfaced"
+        );
+    }
+
+    #[test]
     fn non_matching_record_is_quarantined_as_candidate() {
         use crate::util::target_match::CANDIDATE_CONF;
         use serde_json::json;

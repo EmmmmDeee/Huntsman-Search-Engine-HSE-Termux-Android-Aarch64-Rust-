@@ -324,13 +324,30 @@ pub(super) fn extract_breach_entities_with(
     let street = val_str(item, "address_street");
     let city = val_str(item, "city");
     let state = val_str(item, "state");
+    // Include the postal code in the composed value (the breach record carries it
+    // — e.g. `23666` for HAMPTON, VA). A postcode-qualified address geocodes to
+    // the ZIP centroid instead of the whole city, the precision the downstream
+    // geocode + geo-correlation chain depends on; it was previously kept only on
+    // the evidence. Postcode alone never forms an address — the city/street gate
+    // still guards that — so a bare ZIP can't mint a useless node.
+    let postal = val_str(item, "postal_code");
     if city.is_some() || street.is_some() {
-        let addr = [street.as_deref(), city.as_deref(), state.as_deref()]
-            .iter()
-            .flatten()
-            .copied()
-            .collect::<Vec<&str>>()
-            .join(", ");
+        let addr = [
+            street.as_deref(),
+            city.as_deref(),
+            state.as_deref(),
+            postal.as_deref(),
+        ]
+        .iter()
+        .flatten()
+        .map(|s| s.trim())
+        // `val_str` rejects empty strings but not whitespace-only ones, so trim
+        // each part and drop any that collapse to nothing — otherwise a blank
+        // `state`/`postal` would leave a `", ,"` gap or a trailing `", "` in the
+        // composed value and degrade geocoding.
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<&str>>()
+        .join(", ");
         if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {
             push_oathnet_entity(
                 result,
