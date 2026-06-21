@@ -3,21 +3,15 @@
 //! A broad provider search — above all a `full_name` — returns rows for many
 //! different people. [`TargetMatch`] decides whether a given record actually
 //! identifies the scan target, so every breach/stealer parser can quarantine
-//! strangers as low-confidence `candidate` leads instead of minting them at full
+//! strangers (via `Entity::demote_to_candidate`) instead of minting them at full
 //! confidence. Shared by `oathnet_pro` and `see_know` so the "is this row the
-//! subject?" decision — and the confidence ceiling a non-match is demoted to —
-//! are defined in exactly one place rather than drifting between the two pools.
+//! subject?" decision is defined in exactly one place rather than drifting
+//! between the two pools. This module is purely the *matcher* — the demotion it
+//! feeds is an orthogonal entity-tier capability that lives on `Entity` itself.
 
 use serde_json::Value;
 
 use crate::util::json::val_str;
-
-/// Confidence ceiling for an entity sourced from a record that does NOT match
-/// the scan target's identity. A broad search (especially a `full_name`) returns
-/// rows for many different people; those rows are preserved as quarantined
-/// `candidate` leads at this strength rather than discarded, but must never reach
-/// the full-confidence, correlated, default-view tier.
-pub const CANDIDATE_CONF: f64 = 0.25;
 
 /// Record fields, in priority order, whose value can identify the target. The
 /// UNION of the spellings the providers use for the same identifier (`phone`

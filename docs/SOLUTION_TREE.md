@@ -2131,3 +2131,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `uid`/`migration_id` never become entities while the real person still does). Gate green:
   lib 3,324, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean — verified on rustc
   1.96.0. Paired: `PROBLEM_TREE` cycle 88 — same commit.
+
+- **2026-06-21** — **Cycle 89 (demotion as a first-class, orthogonal `Entity` capability;
+  matching ⊥ tiering).** Promoted the candidate-quarantine into one method on the type it
+  mutates — `Entity::demote_to_candidate()` (cap to `CANDIDATE_CONF`, stamp `candidate`,
+  idempotent) — and moved `CANDIDATE_CONF` to `core::entity` beside the tier ladder it
+  belongs to (documented `< PROBABLE_MIN`, so a demoted entity is *guaranteed* to classify
+  `Candidate`). All three call sites — `oathnet_pro`'s push and `see_know`'s range pass +
+  domain push — now call the one method; `util::target_match` is left as a *pure matcher*
+  ("does this row identify the subject?") that no longer carries a confidence constant it
+  never used. Net effect: the two orthogonal capabilities each have a single, correct home
+  — `util::target_match` decides the match, `Entity` owns the tier mutation — and the
+  demotion semantics can evolve (e.g. a corroboration cap) in exactly one place for every
+  current and future pool. Behaviour is identical: the full breach/stealer characterization
+  + quarantine suites pass unchanged. +1 `core::entity` test (cap / tag / idempotent /
+  never-raise-lower-confidence), −1 relocated `util` constant test. Gate green: lib 3,324,
+  24 arch guards, fmt/clippy(`--all-targets`)/doc clean — verified on rustc 1.96.0. Paired:
+  `PROBLEM_TREE` cycle 89 — same commit.

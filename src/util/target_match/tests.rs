@@ -53,8 +53,3 @@ fn non_matching_record_is_not_the_subject() {
         "username": "jperry"
     })));
 }
-
-#[test]
-fn candidate_conf_is_the_quarantine_ceiling() {
-    assert!((CANDIDATE_CONF - 0.25).abs() < f64::EPSILON);
-}

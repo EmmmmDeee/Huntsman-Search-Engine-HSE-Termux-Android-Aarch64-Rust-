@@ -293,7 +293,7 @@ use super::*;
             "the target row must not be quarantined"
         );
         assert!(
-            target.confidence > CANDIDATE_CONF,
+            target.confidence > crate::core::entity::CANDIDATE_CONF,
             "the target row keeps full confidence, not candidate strength"
         );
     }
