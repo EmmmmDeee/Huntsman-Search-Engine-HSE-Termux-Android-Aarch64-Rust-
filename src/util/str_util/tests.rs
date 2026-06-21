@@ -1,8 +1,21 @@
 
 use super::{
-    ascii_digits, char_window, find_ascii_ci, fold_ascii_lower, nonempty, parse_asn, slugify,
-    truncate_display, truncate_safe,
+    ascii_digits, char_window, find_ascii_ci, fold_ascii_lower, is_handle, nonempty, parse_asn,
+    slugify, truncate_display, truncate_safe,
 };
+
+    #[test]
+    fn is_handle_enforces_bounds_and_charset() {
+        // reddit_user (3..=20) and hacker_news (2..=15) bounds.
+        assert!(is_handle("pg", 2, 15));
+        assert!(is_handle("spez", 3, 20));
+        assert!(is_handle("a-b_c9", 3, 20));
+        assert!(!is_handle("a", 3, 20)); // below min
+        assert!(!is_handle("x".repeat(21).as_str(), 3, 20)); // above max
+        assert!(!is_handle("bad.handle", 3, 20)); // '.' not allowed
+        assert!(!is_handle("space bar", 3, 20)); // space not allowed
+        assert!(!is_handle("café", 2, 15)); // non-ASCII rejected
+    }
 
     #[test]
     fn parse_asn_strips_case_insensitive_prefix_and_validates() {

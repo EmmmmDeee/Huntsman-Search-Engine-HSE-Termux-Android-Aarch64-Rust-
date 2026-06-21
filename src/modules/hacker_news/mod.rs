@@ -93,12 +93,7 @@ impl Module for HackerNews {
         let handle = target.value.trim();
         // HN handles are 2–15 chars of [A-Za-z0-9_-]. Reject anything else
         // before spending an HTTP round-trip.
-        if handle.len() < 2
-            || handle.len() > 15
-            || !handle
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        {
+        if !crate::util::str_util::is_handle(handle, 2, 15) {
             return Ok(ModuleResult::new());
         }
 

@@ -114,12 +114,7 @@ impl Module for RedditUser {
         let handle = target.value.trim();
         // Reddit usernames are 3–20 chars of [A-Za-z0-9_-]. Reject anything else
         // before the round-trip.
-        if handle.len() < 3
-            || handle.len() > 20
-            || !handle
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        {
+        if !crate::util::str_util::is_handle(handle, 3, 20) {
             return Ok(ModuleResult::new());
         }
 

@@ -1788,3 +1788,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `util::extract::EMAIL_RE` is now the sole email regex in the codebase. Gate green:
   lib 3,292, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired:
   `PROBLEM_TREE` cycle 65 — same commit.
+
+- **2026-06-21** — **Cycle 66 (`util::str_util::is_handle`).** One parameterised
+  predicate — `is_handle(s, min, max)`: length in `min..=max` and every char ASCII-
+  alphanumeric or `-`/`_` — now backs both `reddit_user` (3, 20) and `hacker_news`
+  (2, 15), replacing the two open-coded multi-line guards. Byte length equals char
+  count because the charset test rejects non-ASCII, so behaviour is preserved. The
+  handle charset is defined once. Gate green: lib 3,293 (+1), 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 66 — same commit.

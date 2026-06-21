@@ -2647,3 +2647,13 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   plus the two bio copies from cycle 64), defeating the single-source-of-truth the
   `util::extract` module was created to guarantee. **Paired:** `SOLUTION_TREE`
   cycle 65 — same commit.
+
+- **2026-06-21** — **Cycle 66 (duplicated handle pre-flight in the username modules).**
+  `reddit_user` and `hacker_news` each open-coded the same handle guard before
+  spending an HTTP round-trip — `len` bounds plus `chars().all(|c|
+  c.is_ascii_alphanumeric() || c == '-' || c == '_')` — differing only in the length
+  range (3–20 vs 2–15). The "what a platform handle looks like" charset lived in two
+  places. (Of the 15 modules touching `is_ascii_alphanumeric`, only these two share
+  this specific handle shape; the rest validate different things with different
+  separator sets, so they are intentionally left alone.) **Paired:** `SOLUTION_TREE`
+  cycle 66 — same commit.

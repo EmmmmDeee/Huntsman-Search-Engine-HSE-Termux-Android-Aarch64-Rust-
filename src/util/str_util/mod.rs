@@ -97,6 +97,28 @@ pub fn parse_asn(s: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
+/// True if `s` is a plausible platform handle: its length is in `min..=max` and
+/// every character is ASCII-alphanumeric or `-`/`_`. The shared pre-flight
+/// `reddit_user` and `hacker_news` gate on before spending an HTTP round-trip —
+/// pass each platform's own length bounds. (Byte length equals char count here:
+/// the charset test rejects any non-ASCII character.)
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::is_handle;
+///
+/// assert!(is_handle("spez", 3, 20));
+/// assert!(is_handle("pg", 2, 15));
+/// assert!(!is_handle("a", 2, 15)); // too short
+/// assert!(!is_handle("has space", 2, 15)); // bad charset
+/// assert!(!is_handle("toolongggg", 2, 8)); // too long
+/// ```
+#[must_use]
+pub fn is_handle(s: &str, min: usize, max: usize) -> bool {
+    (min..=max).contains(&s.len())
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// Round `i` **down** to the nearest UTF-8 character boundary of `s` (the start
 /// of the character `i` falls inside), clamped to `s.len()`. The canonical
 /// safe-slicing primitive for a *start* offset or a length cap:
