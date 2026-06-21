@@ -2910,3 +2910,17 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   can't fold with a `gender:male` from another because neither is normalized. The data is
   present in the dossier but an analyst has to dig per-record evidence to reconstruct what
   should read straight off the subject. **Paired:** `SOLUTION_TREE` cycle 86 — same commit.
+
+- **2026-06-21** — **Cycle 87 (see_know minted same-name strangers as the subject — no
+  target-match quarantine, and the matcher was unshared).** `oathnet_pro` demotes a
+  breach row that does not identify the subject to a quarantined `candidate` lead
+  (cycles 76/82) via its `TargetMatch`; `see_know` had **no such gate** — it emitted
+  every record's email / username / person / phone / credentials at full 0.65–0.75
+  confidence regardless of whether the row was the subject. A broad see_know name
+  auto-detect that returns same-name strangers (a different "Ali Kareem", a namesake
+  relative) therefore minted them AS the subject — the identical false-confidence flood
+  oathnet had already fixed, now in the *primary* paid pool that cycle 85 just made
+  reachable. Underneath it was a consolidation gap: the `TargetMatch` logic (and the
+  `CANDIDATE_CONF` ceiling) lived only inside `oathnet_pro`, so the two breach pools
+  judged "is this row the subject?" by different code — one had the answer, the other had
+  none. **Paired:** `SOLUTION_TREE` cycle 87 — same commit.

@@ -2097,3 +2097,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   across key/value spellings; the no-demographics no-op). Gate green: lib 3,315, 24 arch
   guards, fmt/clippy(`--all-targets`)/doc clean — verified on rustc 1.96.0. Paired:
   `PROBLEM_TREE` cycle 86 — same commit.
+
+- **2026-06-21** — **Cycle 87 (one shared target-matcher; quarantine see_know's
+  strangers).** Promoted `TargetMatch` **and** the `CANDIDATE_CONF` quarantine ceiling
+  out of `oathnet_pro` into `util::target_match` — one definition both breach pools
+  share, so "is this row the subject?" is judged by identical code. The shared matcher's
+  field list is the UNION of the providers' spellings (`phone`|`phone_number`,
+  `name`|`full_name`), which only ever *confirms* a genuine row whichever key the upstream
+  chose — a strict completeness gain for oathnet, whose own characterization suite is
+  unchanged. `oathnet_pro` now imports it (local struct + const deleted). `see_know`
+  computes `is_target` once per record and, when it does not match, demotes that record's
+  identity / credential / raw-detail entities to `candidate` strength in a single range
+  pass before `extract_associates` (which keeps its own `family-candidate` model), plus
+  the trailing domain inline — so a same-name stranger survives as a low-confidence lead
+  instead of masquerading as the subject. Subject rows and the common exact-match
+  username/email/phone searches are byte-identical (is_target = true ⇒ no demotion). +7
+  tests (6 matcher unit tests for the shared component; see_know stranger-demoted vs
+  subject-full-confidence). Gate green: lib 3,322, 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean — verified on rustc 1.96.0. Paired:
+  `PROBLEM_TREE` cycle 87 — same commit.

@@ -42,6 +42,7 @@ pub mod sim_anonymity;
 pub mod spf;
 pub mod str_util;
 pub mod surnames;
+pub mod target_match;
 pub mod termux;
 pub mod threat;
 pub mod uid;
