@@ -2899,3 +2899,14 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   platform, never arrives. The cap's own doc claimed 45 s "clears every legitimately-long
   module's happy path" — it never accounted for a module whose happy path is the server's
   own 55 s processing time. **Paired:** `SOLUTION_TREE` cycle 85 — same commit.
+
+- **2026-06-21** — **Cycle 86 (the subject's demographics were captured but never
+  surfaced or normalized).** see_know's `record_evidence` folds *every* record field onto
+  the evidence chain, so DOB / gender / age technically survive — but only as raw,
+  provider-keyed evidence attributes (`date_birth`, `birthdate`, `gender: "Male"`),
+  inconsistently spelled across providers and buried beneath the entity. The headline
+  `Person` node carries only the name; nothing promotes the demographics that actually
+  anchor an identity to a first-class, queryable form, and a `gender:M` from one record
+  can't fold with a `gender:male` from another because neither is normalized. The data is
+  present in the dossier but an analyst has to dig per-record evidence to reconstruct what
+  should read straight off the subject. **Paired:** `SOLUTION_TREE` cycle 86 — same commit.

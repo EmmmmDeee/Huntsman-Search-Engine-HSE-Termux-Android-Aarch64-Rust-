@@ -179,6 +179,59 @@ use crate::core::entity::Entity;
     }
 
     #[test]
+    fn person_carries_normalized_identity_demographics() {
+        use serde_json::json;
+        // The subject node should surface DOB/gender/age as first-class tags,
+        // normalized across provider key spellings (birthdate vs date_birth;
+        // "Male" -> M), so the dossier headline reads the demographics directly
+        // instead of leaving them buried in the raw-record evidence.
+        let item = json!({
+            "full_name": "Ali Kareem",
+            "birthdate": "1990-05-12",
+            "gender": "Male",
+            "age": 34,
+            "source": "snusbase"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "Ali Kareem",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        let person = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Person)
+            .expect("person entity");
+        assert!(person.has_tag("dob:1990-05-12"), "tags: {:?}", person.tags);
+        assert!(person.has_tag("gender:M"), "\"Male\" normalizes to M");
+        assert!(person.has_tag("age:34"));
+
+        // A record with no demographics adds no identity tags (and never panics).
+        let bare = json!({ "full_name": "Bare Name", "source": "x" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(&bare, "Bare Name", "scan", "search", "k", &mut seen, &mut result);
+        let p2 = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Person)
+            .expect("person entity");
+        assert!(
+            !p2.tags
+                .iter()
+                .any(|t| t.starts_with("dob:") || t.starts_with("gender:") || t.starts_with("age:")),
+            "no demographics => no identity tags; got {:?}",
+            p2.tags
+        );
+    }
+
+    #[test]
     fn extract_entities_spiders_stealer_url_into_pivots() {
         use serde_json::json;
         // A stealer-log row: a saved credential for a login URL. The URL is the
