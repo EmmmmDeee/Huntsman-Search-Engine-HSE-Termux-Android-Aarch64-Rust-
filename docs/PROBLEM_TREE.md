@@ -2855,3 +2855,16 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   analyst reads first: the precise opposite of an honest dossier, and it survived the
   candidate-flood cap because the parent is built off the whole page, not the per-row
   extraction. **Paired:** `SOLUTION_TREE` cycle 82 — same commit.
+
+- **2026-06-21** — **Cycle 83 (the subject's login IP was dropped on the floor — and a
+  private one would have been geo-noise).** The uploaded snusbase combined-search dumps
+  carry the subject's login IP ONLY in a `lastip` field (no `ip`): real, public,
+  subject-tied addresses like `142.204.244.67` and `37.236.187.22` on
+  `ali.kareem95@gmail.com` / `ali.kareem`. Both breach extractors read `ip` alone, so
+  the single strongest geolocation lead a breach row offers — where the account actually
+  logged in from — was silently discarded for every snusbase-shaped record. Compounding
+  it, `see_know`'s IP gate was a bare `ip.len() >= 7`, which would have admitted a
+  private LAN address (`192.168.x`, CGNAT) as a `geolocation-lead` — un-geolocatable
+  noise — had it read the field at all; the public-IP check existed only as a
+  hand-rolled `pub(super)` fn inside `oathnet_pro`. **Paired:** `SOLUTION_TREE` cycle 83
+  — same commit.

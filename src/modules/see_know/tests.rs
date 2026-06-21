@@ -116,6 +116,51 @@ use crate::core::entity::Entity;
     }
 
     #[test]
+    fn lastip_login_ip_is_extracted_and_private_is_rejected() {
+        use serde_json::json;
+        // snusbase records carry the subject's login IP ONLY in `lastip`; the
+        // extractor previously read `ip` alone and dropped it. A public lastip
+        // surfaces as a geolocation lead; a private one is rejected as noise
+        // (tightening the old `len >= 7` gate to a publicly-routable check).
+        let item = json!({ "username": "ali.kareem", "lastip": "37.236.187.22", "source": "snusbase" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "ali.kareem",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        let ip = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::IpAddress)
+            .expect("lastip extracted as IpAddress");
+        assert_eq!(ip.value, "37.236.187.22");
+        assert!(ip.has_tag("geolocation-lead"));
+
+        let private = json!({ "username": "x", "lastip": "10.0.0.4", "source": "x" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &private,
+            "x",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            result.entities.iter().all(|e| e.kind != EntityKind::IpAddress),
+            "private lastip must not become a geo lead"
+        );
+    }
+
+    #[test]
     fn extract_entities_spiders_stealer_url_into_pivots() {
         use serde_json::json;
         // A stealer-log row: a saved credential for a login URL. The URL is the

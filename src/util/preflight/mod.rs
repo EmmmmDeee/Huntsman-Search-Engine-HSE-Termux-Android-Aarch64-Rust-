@@ -164,6 +164,17 @@ pub fn is_private_ip(ip: &str) -> bool {
     ip.parse::<std::net::IpAddr>().is_ok_and(is_private_addr)
 }
 
+/// True only for a parseable, **publicly routable** IP literal: the single
+/// gate every breach/stealer extractor uses to decide whether an `ip` /
+/// `lastip` field is a geolocatable lead. A hostname, a malformed value, or any
+/// private/loopback/link-local/CGNAT address returns false, so a LAN login-IP
+/// never becomes geo-noise. Consolidates the identical check previously
+/// hand-rolled in `oathnet_pro` (and absent from `see_know`, which accepted any
+/// 7+-char string).
+pub fn is_public_ip(s: &str) -> bool {
+    s.parse::<std::net::IpAddr>().is_ok() && !is_private_ip(s)
+}
+
 /// True if `host` is configured network infrastructure — a proxy
 /// (`HUNTSMAN_SEARCH_PROXY` / `HUNTSMAN_PROXY`) or a rotation DNS resolver
 /// (`HUNTSMAN_DNS_RESOLVERS`) — and therefore must never be scanned AS a target:

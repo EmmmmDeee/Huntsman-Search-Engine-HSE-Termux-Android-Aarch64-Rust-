@@ -2034,3 +2034,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   subject's row, `countries=AU` not the strangers' `ZZ`). Gate green: lib 3,308, 24 arch
   guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 82 — same
   commit.
+
+- **2026-06-21** — **Cycle 83 (capture the login IP from any field; one shared
+  public-IP gate).** Promoted `is_public_ip` into `util::preflight` beside `is_private_ip`
+  — one definition (`parses && !private`) for every breach/stealer parser — and routed
+  both extractors through it: `oathnet_pro`'s hand-rolled `pub(super) fn` became a
+  re-export (dropping its now-empty `use super::*`), and `see_know`'s weak `len >= 7`
+  gate was tightened to it, so a private LAN address can no longer masquerade as a
+  geolocation lead. Both now iterate `["ip", "lastip", "last_ip"]`, emitting each
+  DISTINCT public address as its own `geolocation-lead` (UID/`seen` dedup collapses the
+  ip == lastip case), so snusbase-shaped records finally yield the subject's login
+  location instead of nothing. Behaviour for clean `ip`-only records is unchanged. +2
+  tests (public `lastip` → lead; private `lastip` rejected — one per module). Gate green:
+  lib 3,310, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired:
+  `PROBLEM_TREE` cycle 83 — same commit.

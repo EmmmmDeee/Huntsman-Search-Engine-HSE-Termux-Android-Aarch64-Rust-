@@ -358,17 +358,23 @@ pub(super) fn extract_breach_entities_with(
         }
     }
 
-    if let Some(ip) = val_str(item, "ip")
-        && is_public_ip(&ip)
-        && seen.insert(ip.clone())
-    {
-        push_oathnet_entity(
-            result,
-            Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id),
-            &ev,
-            &["geolocation-lead"],
-            is_target_row,
-        );
+    // Login IPs — the session `ip` AND the last-login `lastip`/`last_ip` are
+    // both geolocation leads tied to the account. snusbase-style records carry
+    // only `lastip`, so reading `ip` alone dropped the subject's login location;
+    // each distinct public address becomes its own lead.
+    for ip_field in ["ip", "lastip", "last_ip"] {
+        if let Some(ip) = val_str(item, ip_field)
+            && is_public_ip(&ip)
+            && seen.insert(ip.clone())
+        {
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id),
+                &ev,
+                &["geolocation-lead"],
+                is_target_row,
+            );
+        }
     }
 
     if let Some(country) = val_str(item, "country")

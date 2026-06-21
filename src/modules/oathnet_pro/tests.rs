@@ -359,6 +359,46 @@ use super::*;
     }
 
     #[test]
+    fn lastip_login_ip_is_extracted_as_geolocation_lead() {
+        use serde_json::json;
+        // snusbase-style records carry the login IP in `lastip` (no `ip` field).
+        // Reading `ip` alone dropped the subject's geolocation; a PUBLIC lastip
+        // must surface as an IpAddress geo lead.
+        let item = json!({
+            "username": "ali.kareem",
+            "lastip": "142.204.244.67",
+            "source": "snusbase"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "ali.kareem",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let ip = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::IpAddress)
+            .expect("lastip extracted as IpAddress");
+        assert_eq!(ip.value, "142.204.244.67");
+        assert!(ip.has_tag("geolocation-lead"));
+
+        // A PRIVATE last-login IP can't geolocate — dropped, never minted.
+        let private = json!({ "username": "ali.kareem", "lastip": "192.168.1.5", "source": "x" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&private, "ali.kareem", "scan", "k", &mut seen, &mut result);
+        assert!(
+            result.entities.iter().all(|e| e.kind != EntityKind::IpAddress),
+            "private lastip must not become a geo lead"
+        );
+    }
+
+    #[test]
     fn full_name_matcher_requires_all_terms_not_just_one() {
         use serde_json::json;
         // "Jordan Parker" shares only the first name with the target — it must
