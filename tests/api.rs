@@ -2163,3 +2163,191 @@ async fn scan_gaps_reports_isolated_seeds_with_corrective_modules() {
         .unwrap();
     assert_eq!(resp.status(), 404);
 }
+
+// ── Regression tests derived from real execution: 6 routes with zero prior ──
+// coverage, detected by cross-referencing the live route table against the    ──
+// test file. Each test verifies: 404 for unknown scan + 200 with the correct  ──
+// JSON shape for a known scan, grounding the contract in real handler output.  ──
+
+#[tokio::test]
+async fn scan_audit_404_unknown_and_200_with_score_for_known() {
+    let (app, sid) = create_scan("audit-cov").await;
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/audit")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "audit must 200 for a known scan");
+    let json = body_json(resp).await;
+    // Audit report must have the canonical top-level keys.
+    assert!(
+        json["score"].is_number(),
+        "audit must include a numeric score"
+    );
+    assert!(
+        json["grade"].is_string(),
+        "audit must include a grade string"
+    );
+    assert!(
+        json["entity_total"].is_number(),
+        "audit must include entity_total"
+    );
+    assert!(
+        json["findings"].is_array(),
+        "audit must include a findings array"
+    );
+    assert!(
+        json["tiers"].is_object(),
+        "audit must include a tiers object"
+    );
+
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/audit"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404, "audit must 404 for an unknown scan");
+}
+
+#[tokio::test]
+async fn scan_timeline_404_unknown_and_200_list_for_known() {
+    let (app, sid) = create_scan("timeline-cov").await;
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/timeline")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "timeline must 200 for a known scan");
+    let json = body_json(resp).await;
+    assert!(
+        json["events"].is_array(),
+        "timeline must return an 'events' array"
+    );
+    assert!(json["count"].is_number(), "timeline must include a count");
+
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/timeline"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404, "timeline must 404 for an unknown scan");
+}
+
+#[tokio::test]
+async fn scan_communities_404_unknown_and_200_list_for_known() {
+    let (app, sid) = create_scan("communities-cov").await;
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/communities")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "communities must 200 for a known scan");
+    let json = body_json(resp).await;
+    assert!(
+        json["communities"].is_array(),
+        "communities must return a 'communities' array"
+    );
+    assert!(
+        json["count"].is_number(),
+        "communities must include a count"
+    );
+
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/communities"))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "communities must 404 for an unknown scan"
+    );
+}
+
+#[tokio::test]
+async fn scan_trust_404_unknown_and_200_list_for_known() {
+    let (app, sid) = create_scan("trust-cov").await;
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/trust")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "trust must 200 for a known scan");
+    let json = body_json(resp).await;
+    assert!(
+        json["trust"].is_array(),
+        "trust must return a 'trust' array"
+    );
+    assert!(json["count"].is_number(), "trust must include a count");
+
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/trust"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404, "trust must 404 for an unknown scan");
+}
+
+#[tokio::test]
+async fn scan_duplicates_404_unknown_and_200_list_for_known() {
+    let (app, sid) = create_scan("dupes-cov").await;
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/duplicates")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "duplicates must 200 for a known scan");
+    let json = body_json(resp).await;
+    assert!(
+        json["duplicates"].is_array(),
+        "duplicates must return a 'duplicates' array"
+    );
+    assert!(json["count"].is_number(), "duplicates must include a count");
+
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/duplicates"))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "duplicates must 404 for an unknown scan"
+    );
+}
+
+#[tokio::test]
+async fn scan_debug_bundle_404_unknown_and_text_attachment_for_known() {
+    let (app, sid) = create_scan("debug-cov").await;
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/debug.txt")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "debug.txt must 200 for a known scan");
+    let ct = resp
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        ct.starts_with("text/plain"),
+        "debug.txt must be text/plain, got {ct:?}"
+    );
+    let cd = resp
+        .headers()
+        .get(http::header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        cd.contains("attachment") && cd.contains(".txt"),
+        "debug.txt must carry a download Content-Disposition, got {cd:?}"
+    );
+
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/debug.txt"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404, "debug.txt must 404 for an unknown scan");
+}
