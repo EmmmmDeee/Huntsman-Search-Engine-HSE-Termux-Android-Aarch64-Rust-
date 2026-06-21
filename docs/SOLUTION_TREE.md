@@ -1863,3 +1863,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   of the join rule instead of four. Gate green: lib 3,290 + the new doctest, 24 arch
   guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 71 — same
   commit.
+
+- **2026-06-21** — **Cycle 72 (single-source the AU-relevance coord tag).** Added
+  `util::geo::tag_au_state(&mut entity, lat, lon)` — tags `au-state:{STATE}` +
+  `country:AU` when the fix is in an AU state, no-op otherwise — and routed **13**
+  inlined call sites across 11 modules through it (regex-matched the exact both-tags
+  block, so the `&& let`-chain forms and the lone `au-state`-only site in
+  `search_engines` were left untouched — folding them in would have changed behaviour).
+  `opencellid`'s now-unused `au_state_for_coords` import was dropped. Behaviour
+  identical; net −27 lines. Gate green: lib 3,290, 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 72 — same commit.

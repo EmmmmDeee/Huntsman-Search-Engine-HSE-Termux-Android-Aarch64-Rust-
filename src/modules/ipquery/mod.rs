@@ -259,10 +259,7 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
             && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.58, scan_id)
         {
             ce.tag("ipquery");
-            if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
-                ce.tag(format!("au-state:{state}"));
-                ce.tag("country:AU");
-            }
+            crate::util::geo::tag_au_state(&mut ce, lat, lon);
             ce.add_evidence(geo_ev());
             out.push(ce);
         }

@@ -174,6 +174,18 @@ pub fn au_state_for_coords(lat: f64, lon: f64) -> Option<&'static str> {
     None
 }
 
+/// Tag `entity` with its Australian state and `country:AU` when `(lat, lon)`
+/// falls inside an AU state/territory; a no-op otherwise. Coordinate-emitting
+/// modules apply this exact AU-relevance pair (`au-state:{STATE}` + `country:AU`)
+/// to a fresh fix, so the lookup-and-tag lives here once rather than re-inlined
+/// per module. Uses [`au_state_for_coords`] for the offline classification.
+pub fn tag_au_state(entity: &mut crate::core::entity::Entity, lat: f64, lon: f64) {
+    if let Some(state) = au_state_for_coords(lat, lon) {
+        entity.tag(format!("au-state:{state}"));
+        entity.tag("country:AU");
+    }
+}
+
 /// Magnitude (in degrees) below which a *coarse* geolocation provider's
 /// coordinate component is treated as that provider's "no fix" placeholder
 /// rather than a real position. Several IP/WiFi-geo APIs return `0.0000` or a

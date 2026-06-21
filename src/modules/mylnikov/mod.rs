@@ -79,10 +79,7 @@ fn build_location_entity(bssid: &str, data: &MylnikovData, scan_id: &str) -> Opt
     e.tag("mylnikov");
     e.tag("geoint");
     e.tag("bssid-located");
-    if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
-        e.tag(format!("au-state:{state}"));
-        e.tag("country:AU");
-    }
+    crate::util::geo::tag_au_state(&mut e, lat, lon);
     let mut ev = Evidence::new(SRC, format!("Mylnikov BSSID {bssid} -> {coords}"))
         .with_attr("bssid", bssid)
         .with_attr("latitude", format!("{lat:.6}"))

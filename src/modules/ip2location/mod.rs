@@ -171,10 +171,7 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
         if data.is_proxy == Some(true) {
             ce.tag(tags::PROXY);
         }
-        if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
-            ce.tag(format!("au-state:{state}"));
-            ce.tag("country:AU");
-        }
+        crate::util::geo::tag_au_state(&mut ce, lat, lon);
         let ev = [
             ("city", (!city.is_empty()).then_some(city)),
             ("region", (!region.is_empty()).then_some(region)),

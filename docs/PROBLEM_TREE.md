@@ -2704,3 +2704,12 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   confirmed the rest of the geo/JSON/HTTP surface is already consolidated
   (`coarse_provider_coords`, `val_str`, `util::http::fetch`). **Paired:**
   `SOLUTION_TREE` cycle 71 — same commit.
+
+- **2026-06-21** — **Cycle 72 (the AU-relevance coord-tag block was copy-pasted into
+  13 sites).** The identical four lines — `if let Some(state) =
+  au_state_for_coords(lat, lon) { e.tag(format!("au-state:{state}")); e.tag("country:AU"); }`
+  — were inlined across ~11 coordinate-emitting modules (ipinfo, ipquery, ip2location,
+  mylnikov, overpass, photon, wigle, exif_geo, cell_intel, wikidata, opencellid). The
+  most-duplicated geo idiom in the tree, and the kind of thing where one site drifts
+  (a missing `country:AU`) and nobody notices. **Paired:** `SOLUTION_TREE` cycle 72 —
+  same commit.

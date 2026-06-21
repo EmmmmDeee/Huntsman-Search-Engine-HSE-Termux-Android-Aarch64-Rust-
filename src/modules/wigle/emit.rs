@@ -84,10 +84,7 @@ pub(super) fn extract_cell_intel(
         geo.tag("wigle");
         geo.tag("cell-tower");
         geo.tag("cell-observed");
-        if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
-            geo.tag(format!("au-state:{state}"));
-            geo.tag("country:AU");
-        }
+        crate::util::geo::tag_au_state(&mut geo, lat, lon);
         geo.add_evidence(
             Evidence::new(
                 SRC,
@@ -198,10 +195,7 @@ pub(super) fn emit_bssid_entities(
         e.tag("geoint");
         e.tag("wigle");
         e.tag(observation_tag);
-        if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
-            e.tag(format!("au-state:{state}"));
-            e.tag("country:AU");
-        }
+        crate::util::geo::tag_au_state(&mut e, lat, lon);
         e.add_evidence(
             Evidence::new(
                 SRC,

@@ -135,10 +135,7 @@ impl Module for CellIntel {
                 e.tag("geoint");
                 e.tag("cell-tower");
                 e.tag(format!("radio:{}", key.ctype.to_lowercase()));
-                if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
-                    e.tag(format!("au-state:{state}"));
-                    e.tag("country:AU");
-                }
+                crate::util::geo::tag_au_state(&mut e, lat, lon);
                 e.add_evidence(
                     Evidence::new(
                         SRC,
