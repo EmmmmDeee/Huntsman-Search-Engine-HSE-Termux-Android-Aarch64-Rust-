@@ -2713,3 +2713,17 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   most-duplicated geo idiom in the tree, and the kind of thing where one site drifts
   (a missing `country:AU`) and nobody notices. **Paired:** `SOLUTION_TREE` cycle 72 —
   same commit.
+
+- **2026-06-21** — **Cycle 73 (name-search gap analysis: `parse()` corrupted two
+  common name formats).** Driving the name pipeline (`name_intel` → `permute::parse`
+  → usernames/emails/pivots) over a representative sample of input shapes ("Ali
+  Kareem" and 11 variants) surfaced two systematic mis-parses: **(1)** "Last, First"
+  records order — `"Kareem, Ali"` parsed to first=kareem/last=ali, reversing *every*
+  derived handle, email and pivot (`kareem.ali` instead of `ali.kareem`); the worst
+  case, `"Smith, John Michael"`, yielded first=smith/last=michael, pure garbage. This
+  is the order electoral rolls, court records, CSV exports and citations emit — the
+  exact sources the AU record modules consume. **(2)** A parenthetical annotation —
+  `"Ali Kareem (Ali)"`, `"William (Bill) Gates"`, `"Jane Smith (Jones)"` — leaked in
+  as a third name token, shifting first/middle/last. Diacritic folding, non-Latin
+  graceful-degrade, honorifics, suffixes, initials and whitespace were already
+  correct. **Paired:** `SOLUTION_TREE` cycle 73 — same commit.

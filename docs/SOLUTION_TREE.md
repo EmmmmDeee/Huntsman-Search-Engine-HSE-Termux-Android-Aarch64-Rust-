@@ -1873,3 +1873,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `opencellid`'s now-unused `au_state_for_coords` import was dropped. Behaviour
   identical; net −27 lines. Gate green: lib 3,290, 24 arch guards,
   fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 72 — same commit.
+
+- **2026-06-21** — **Cycle 73 (teach `permute::parse` the two name formats it was
+  corrupting).** Two small, pure helpers ahead of tokenisation, so every FullName
+  search (the sole caller, `name_intel`, feeds the result into usernames + speculative
+  emails + investigation pivots): **(1)** `reorder_comma_name` detects "Last, First
+  \[Middle…\]" and returns natural order, with a clean fallback for the title/suffix
+  case (`"Ali Kareem, PhD"` is *not* a reorder) and honorific/suffix stripping around
+  the swap (`"Dr. Kareem, Ali Jr"` → `"Ali Kareem"`); now `parse("Kareem, Ali") ==
+  parse("Ali Kareem")`. **(2)** `strip_bracketed` drops nested/mixed `()[]{}`
+  annotations from the name tokens while the trailing-year number is still read from
+  the raw string (`"Ali Kareem (1990)"` → year 1990, handle `ali.kareem`). +7 tests
+  (incl. the canonical-identity round-trip and the corrected `handles_comma_separator`,
+  whose old expectation *was* the bug). No new deps; allocation-light; Termux-safe.
+  Gate green: lib 3,297, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired:
+  `PROBLEM_TREE` cycle 73 — same commit.
