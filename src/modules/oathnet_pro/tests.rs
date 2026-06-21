@@ -632,6 +632,33 @@ use super::*;
     }
 
     #[test]
+    fn identify_password_hash_reads_digest_with_appended_salt() {
+        // OathNet packs the salt onto the digest (real values from the Ali.kareem
+        // scan): space-separated, and behind a `,:` marker. Both must still be
+        // recognised as a fast, crackable MD5 — the strongest exposure signal,
+        // which the whole-string hex check used to miss entirely.
+        assert_eq!(
+            identify_password_hash("2f4370b7f7000f4f2a7cf96ec45f2858 _:=j[gpxgh[e<b!+k?2h(n0b'9pn=w"),
+            Some(("md5", true))
+        );
+        assert_eq!(
+            identify_password_hash("b3dd5393fc5e7f44fd4fd4c85490b414,:xpay"),
+            Some(("md5", true))
+        );
+        // A leading SHA-256 with an appended salt classifies by the 64-hex run.
+        assert_eq!(
+            identify_password_hash(&format!("{}:somesalt", "a".repeat(64))),
+            Some(("sha256", true))
+        );
+        // The remainder must begin at a separator: a token that merely starts with
+        // hex but runs straight into non-hex is not a digest.
+        assert_eq!(
+            identify_password_hash("2f4370b7f7000f4f2a7cf96ec45f2858XYZ"),
+            None
+        );
+    }
+
+    #[test]
     fn password_hash_entity_carries_hash_intel() {
         use serde_json::json;
         // A bcrypt digest with a salt → classified slow + salted.
@@ -659,6 +686,38 @@ use super::*;
         assert!(pw.has_tag("hash:bcrypt"), "tags: {:?}", pw.tags);
         assert!(pw.has_tag("crackable:slow"));
         assert!(pw.has_tag("salted"));
+    }
+
+    #[test]
+    fn password_hash_intel_handles_oathnet_appended_salt() {
+        use serde_json::json;
+        // OathNet's real format from the Ali.kareem scan (jefit row): the MD5 digest
+        // with the salt appended and no separate `salt` field. The appended salt
+        // used to leave the hash entirely unclassified; it must now read as a fast,
+        // crackable, salted MD5.
+        let item = json!({
+            "email": "ali.kareem95@gmail.com",
+            "password_hash": "2f4370b7f7000f4f2a7cf96ec45f2858 _:=j[gpxgh[e<b!+k?2h(n0b'9pn=w",
+            "source": "jefit.com"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "ali.kareem95@gmail.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let pw = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Password)
+            .expect("password entity");
+        assert!(pw.has_tag("hash:md5"), "tags: {:?}", pw.tags);
+        assert!(pw.has_tag("crackable:fast"));
+        assert!(pw.has_tag("salted"), "appended salt must set the salted tag");
     }
 
     #[test]

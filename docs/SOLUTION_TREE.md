@@ -1929,3 +1929,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   positives, the echo/IP/app-package noise as negatives). Behaviour for clean records
   unchanged. Gate green: lib 3,300, 24 arch guards, fmt/clippy(`--all-targets`)/doc
   clean. Paired: `PROBLEM_TREE` cycle 76 — same commit.
+
+- **2026-06-21** — **Cycle 77 (classify a breach digest by its leading hex run).**
+  Reworked `identify_password_hash`'s bare-digest arm to read the **leading hex run**
+  and classify by its length (requiring any remainder to begin at a separator), so the
+  OathNet `digest + salt` forms now resolve to `("md5", true)` instead of `None`; the
+  prefixed-KDF path (bcrypt/argon2, whose option commas must not be mis-split) is
+  untouched because it matches first. Paired with appended-salt detection in `breach.rs`
+  (a leading bare-hex digest with a non-empty remainder past the first separator) so the
+  `salted` signal is captured even when there is no dedicated `salt` field. Net effect:
+  the `jefit` MD5 now carries `hash:md5` + `crackable:fast` + `salted`, and `mod.rs`'s
+  fast-hash plaintext-equivalent filter sees it. +2 tests seeded from the real scan
+  rows (combined forms, the separator guard, and an argon2 negative). Gate green: lib
+  3,302, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE`
+  cycle 77 — same commit.

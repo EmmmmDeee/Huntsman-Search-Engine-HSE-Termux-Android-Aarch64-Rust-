@@ -111,18 +111,27 @@ pub(super) fn identify_password_hash(s: &str) -> Option<(&'static str, bool)> {
     {
         return Some(("mysql", true));
     }
-    // Bare hex digests — fast, unsalted, rainbow-table-friendly. 32 hex is MD5
-    // (also NTLM / LM at this length); the rest are the SHA-2 family by width.
-    if !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return match h.len() {
-            32 => Some(("md5", true)),
-            40 => Some(("sha1", true)),
-            56 => Some(("sha224", true)),
-            64 => Some(("sha256", true)),
-            96 => Some(("sha384", true)),
-            128 => Some(("sha512", true)),
-            _ => None,
-        };
+    // Bare hex digest, optionally with an appended salt. 32 hex is MD5 (also
+    // NTLM / LM at this length); the rest are the SHA-2 family by width. OathNet
+    // packs the salt onto the digest — space-separated (`"2f43… _:=j…"`) or behind
+    // a `,:` / `:` marker (`"b3dd…,:xpay"`) — so classify by the LEADING hex run's
+    // length rather than demanding the whole string be hex. The remainder, if any,
+    // must begin at a separator, so a token that merely *starts* with hex but is
+    // really something else is not misread as a digest.
+    let hex_len = h.bytes().take_while(u8::is_ascii_hexdigit).count();
+    if hex_len > 0 {
+        let rest = &h[hex_len..];
+        if rest.is_empty() || rest.starts_with([' ', '\t', ':', ',', ';', '|']) {
+            return match hex_len {
+                32 => Some(("md5", true)),
+                40 => Some(("sha1", true)),
+                56 => Some(("sha224", true)),
+                64 => Some(("sha256", true)),
+                96 => Some(("sha384", true)),
+                128 => Some(("sha512", true)),
+                _ => None,
+            };
+        }
     }
     None
 }

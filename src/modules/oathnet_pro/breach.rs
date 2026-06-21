@@ -408,7 +408,20 @@ pub(super) fn extract_breach_entities_with(
                 "crackable:slow"
             });
         }
-        if val_str(item, "salt").is_some_and(|s| !s.trim().is_empty()) {
+        // A salt defeats rainbow tables even for a fast hash. It arrives either as
+        // a dedicated `salt` field (Snusbase) or appended to the digest (OathNet:
+        // `"2f43… _:=j…"`, `"b3dd…,:xpay"`). Detect the appended form as a bare-hex
+        // digest with a non-empty remainder past the first separator — a prefixed
+        // KDF ($argon2/$2a$/…) carries its own salt, is already classified slow,
+        // and its option commas must not be misread as a salt separator.
+        let appended_salt = ph.trim().starts_with(|c: char| c.is_ascii_hexdigit())
+            && ph
+                .trim()
+                .split_once([' ', '\t', ':', ',', ';', '|'])
+                .is_some_and(|(digest, rest)| {
+                    digest.bytes().all(|b| b.is_ascii_hexdigit()) && !rest.trim().is_empty()
+                });
+        if appended_salt || val_str(item, "salt").is_some_and(|s| !s.trim().is_empty()) {
             extra.push("salted");
         }
         push_oathnet_entity(

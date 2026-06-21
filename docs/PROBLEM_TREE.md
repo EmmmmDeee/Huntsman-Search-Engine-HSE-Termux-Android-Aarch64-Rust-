@@ -2769,3 +2769,17 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   synergy intended. The `looks_like_email` gate also lived private to `oathnet_pro`,
   and the domain check was triplicated. **Paired:** `SOLUTION_TREE` cycle 76 — same
   commit.
+
+- **2026-06-21** — **Cycle 77 (a salted breach digest went unclassified, hiding the
+  strongest exposure signal).** OathNet packs the salt onto the password hash —
+  space-separated (`"2f4370b7…2858 _:=j[gpxgh…"`) or behind a `,:` marker
+  (`"b3dd…b414,:xpay"`), both real values from the Ali.kareem `jefit`/`boostbot` rows.
+  `identify_password_hash` demanded the *whole* string be hex, so the trailing salt
+  made it return `None`: the MD5 was emitted with **no `hash:md5`, no `crackable:fast`,
+  no `salted` tag** — and `mod.rs`'s fast-hash filter (which gates the
+  plaintext-equivalent warning) silently skipped it. A fast unsalted MD5 is
+  effectively plaintext; failing to flag it understates the account's exposure. (Also
+  verified list item #1, cross-provider **dedup**, is already correct:
+  `uid = SHA-256(kind:normalised_value)` + `merge`/`absorb` folds evidence, sums
+  corroboration and maxes confidence, so the same record from multiple modules already
+  collapses to one entity.) **Paired:** `SOLUTION_TREE` cycle 77 — same commit.
