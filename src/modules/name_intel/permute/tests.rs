@@ -547,3 +547,72 @@ use super::*;
         assert!(u.contains(&"john.f.kennedy".to_string()), "missing john.f.kennedy: {u:?}");
         assert!(u.contains(&"john_f_kennedy".to_string()), "missing john_f_kennedy: {u:?}");
     }
+
+    // ── Onur Ada seed ────────────────────────────────────────────────────────
+    // Live seed: "Onur Ada" — two-token Turkish name, short last name (3 chars),
+    // all ASCII after fold. Validates the NAMINT pipeline on a real, named subject.
+
+    #[test]
+    fn onur_ada_parses_correctly() {
+        let n = p("Onur Ada");
+        assert_eq!(n.first, "onur");
+        assert_eq!(n.last, "ada");
+        assert_eq!(n.middle, None);
+        assert_eq!(n.display_full(), "Onur Ada");
+        assert_eq!(n.display_first(), "Onur");
+        assert_eq!(n.display_last(), "Ada");
+    }
+
+    #[test]
+    fn onur_ada_core_namint_handles_present() {
+        let u: Vec<String> = usernames(&p("Onur Ada"))
+            .into_iter()
+            .map(|s| s.handle)
+            .collect();
+        // Primary shapes (f=onur, l=ada, fi=o, li=a)
+        for want in ["onur.ada", "onurada", "oada", "onur_ada", "onura"] {
+            assert!(u.contains(&want.to_string()), "missing primary handle '{want}': {u:?}");
+        }
+        // Secondary shapes
+        for want in ["ada.onur", "adaonur", "onur-ada", "o.ada", "ada_onur"] {
+            assert!(u.contains(&want.to_string()), "missing secondary handle '{want}': {u:?}");
+        }
+    }
+
+    #[test]
+    fn onur_ada_primary_emails_have_expected_shape() {
+        let domains = vec!["gmail.com".to_string(), "outlook.com".to_string()];
+        let e = emails(&p("Onur Ada"), &domains);
+        assert!(
+            e.contains(&"onur.ada@gmail.com".to_string()),
+            "top gmail shape missing: {e:?}"
+        );
+        assert!(
+            e.iter().any(|a| a.ends_with("@outlook.com")),
+            "outlook variant missing: {e:?}"
+        );
+        assert_eq!(e.first().map(String::as_str), Some("onur.ada@gmail.com"));
+    }
+
+    #[test]
+    fn onur_ada_pivots_cover_key_platforms() {
+        let n = p("Onur Ada");
+        let pv = pivots(&n, Some("onur.ada@gmail.com"));
+        let platforms: Vec<&str> = pv.iter().map(|p| p.platform).collect();
+        assert!(
+            platforms.iter().any(|pl| pl.starts_with("Google")),
+            "Google pivot missing: {platforms:?}"
+        );
+        assert!(
+            platforms.iter().any(|pl| pl.starts_with("LinkedIn")),
+            "LinkedIn pivot missing: {platforms:?}"
+        );
+        assert!(
+            platforms.iter().any(|pl| pl.starts_with("GitHub")),
+            "GitHub pivot missing: {platforms:?}"
+        );
+        assert!(
+            platforms.iter().any(|pl| pl.starts_with("Epieos")),
+            "Epieos pivot missing: {platforms:?}"
+        );
+    }
