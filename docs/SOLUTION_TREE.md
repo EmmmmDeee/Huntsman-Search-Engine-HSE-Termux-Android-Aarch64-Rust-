@@ -1796,3 +1796,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   count because the charset test rejects non-ASCII, so behaviour is preserved. The
   handle charset is defined once. Gate green: lib 3,293 (+1), 24 arch guards,
   fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 66 — same commit.
+
+- **2026-06-21** — **Cycle 67 (route `search_engines` text mining through
+  `util::extract`).** First, the divergence was healed *upward*: the web-script
+  fragment guard moved into `util::extract::page_emails` (new `SCRIPT_EXTS`), so the
+  canonical miner now rejects `viewtopic.php…@…` for every caller — `au_people`
+  included. Then `search_engines::extract_emails_from_text` / `extract_phones_from_text`
+  became thin wrappers over `page_emails` / `phones`, keeping only their search-context
+  cap + warning (so a pathological page can't mint an unbounded list); the ~115-line
+  byte scanners and the duplicate `is_email_local_char` / `is_domain_char` predicates
+  (plus their now-redundant tests) are gone. Net −100 lines. Behaviour is preserved
+  for real input and strictly improved for junk (search_engines now also dedups,
+  rejects `+0…` numbers and `.js` assets); all search_engines + au_people tests pass
+  unchanged. Email/phone byte-mining now has one definition. Gate green: lib 3,290,
+  24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE`
+  cycle 67 — same commit.

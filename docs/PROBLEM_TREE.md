@@ -2657,3 +2657,16 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   this specific handle shape; the rest validate different things with different
   separator sets, so they are intentionally left alone.) **Paired:** `SOLUTION_TREE`
   cycle 66 — same commit.
+
+- **2026-06-21** — **Cycle 67 (`search_engines` reimplements `util::extract`'s
+  byte-level text mining).** `search_engines` carried its own `extract_emails_from_text`
+  / `extract_phones_from_text` (~115 lines of hand-rolled `@`/`+` byte scanners) plus
+  duplicate char predicates `is_email_local_char` / `is_domain_char` in `helpers/text.rs`
+  — near-identical to `util::extract::page_emails` / `phones` / `is_email_local_byte` /
+  `is_domain_byte`. The copies had *diverged*: search_engines' email scanner had a
+  web-script-fragment guard (`viewtopic.php…@…`) the canonical `page_emails` lacked
+  (so `au_people`, the other `page_emails` caller, was still exposed to that bug),
+  while its phone scanner lacked the canonical E.164 country-digit gate and the dedup.
+  Four near-identical implementations of "what an email/phone looks like in scraped
+  text" — the exact drift `util::extract` exists to prevent. **Paired:** `SOLUTION_TREE`
+  cycle 67 — same commit.

@@ -193,11 +193,3 @@ pub(in crate::modules::search_engines) fn bigram_similarity(a: &str, b: &str) ->
     }
     (2 * matches) as f64 / (ba.len() + bb.len()) as f64
 }
-
-pub(in crate::modules::search_engines) fn is_email_local_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_' || b == b'+'
-}
-
-pub(in crate::modules::search_engines) fn is_domain_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'.' || b == b'-'
-}

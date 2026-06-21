@@ -65,3 +65,15 @@ use super::*;
         assert!(page_emails("logo@2x.png").is_empty());
         assert_eq!(page_emails("bob@example.com"), ["bob@example.com"]);
     }
+
+    #[test]
+    fn page_emails_drops_script_url_fragments() {
+        // URL fragments glued to `@` during HTML stripping are not mailboxes
+        // (the real-scan bug `viewtopic.phprose.cl@onet.eu`); a clean address in
+        // the same text still extracts. Consolidated from search_engines.
+        assert!(page_emails("see viewtopic.phprose.cl@onet.eu and index.html@x.com").is_empty());
+        assert_eq!(
+            page_emails("real person jane.doe@onet.eu posted"),
+            ["jane.doe@onet.eu"]
+        );
+    }

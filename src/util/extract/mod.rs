@@ -92,6 +92,13 @@ const ASSET_EXTS: &[&str] = &[
     ".png", ".jpg", ".gif", ".css", ".js", ".svg", ".webp", ".ico", ".woff", ".woff2",
 ];
 
+/// Web-script/page extensions that, when they appear in an email's *local* part,
+/// mark it as a URL fragment glued to the `@` during HTML stripping rather than
+/// a real mailbox (the real-scan bug `viewtopic.phprose.cl@onet.eu`).
+const SCRIPT_EXTS: &[&str] = &[
+    ".php", ".html", ".htm", ".asp", ".aspx", ".jsp", ".cgi", ".cfm", ".phtml",
+];
+
 fn is_email_local_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+')
 }
@@ -102,8 +109,8 @@ fn is_domain_byte(b: u8) -> bool {
 
 /// Email addresses mined from a scraped page body (raw HTML/markup or SERP
 /// snippet), lower-cased and de-duplicated. Drops asset references
-/// (`logo@2x.png`, `font@x.woff2`) and requires a dotted domain of reasonable
-/// length.
+/// (`logo@2x.png`, `font@x.woff2`) and web-script URL fragments
+/// (`viewtopic.php…@…`), and requires a dotted domain of reasonable length.
 #[must_use]
 pub fn page_emails(text: &str) -> Vec<String> {
     let bytes = text.as_bytes();
@@ -138,10 +145,13 @@ pub fn page_emails(text: &str) -> Vec<String> {
             && domain_end - local_start <= 254
         {
             let email = text[local_start..domain_end].to_lowercase();
+            // Local part (ASCII, so lowercasing preserves the `@` offset).
+            let local_lower = &email[..i - local_start];
+            let is_script_frag = SCRIPT_EXTS.iter().any(|ext| local_lower.contains(ext));
             let is_asset = ASSET_EXTS.iter().any(|ext| email.ends_with(ext))
                 || email.contains("@2x.")
                 || email.contains("@3x.");
-            if !is_asset && seen.insert(email.clone()) {
+            if !is_script_frag && !is_asset && seen.insert(email.clone()) {
                 out.push(email);
             }
         }
