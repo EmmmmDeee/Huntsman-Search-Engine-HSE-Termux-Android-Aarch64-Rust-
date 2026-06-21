@@ -1,8 +1,39 @@
 
 use super::{
-    ascii_digits, char_window, find_ascii_ci, fold_ascii_lower, nonempty, slugify,
-    truncate_display, truncate_safe,
+    ascii_digits, char_window, find_ascii_ci, fold_ascii_lower, is_handle, nonempty, parse_asn,
+    slugify, truncate_display, truncate_safe,
 };
+
+    #[test]
+    fn is_handle_enforces_bounds_and_charset() {
+        // reddit_user (3..=20) and hacker_news (2..=15) bounds.
+        assert!(is_handle("pg", 2, 15));
+        assert!(is_handle("spez", 3, 20));
+        assert!(is_handle("a-b_c9", 3, 20));
+        assert!(!is_handle("a", 3, 20)); // below min
+        assert!(!is_handle("x".repeat(21).as_str(), 3, 20)); // above max
+        assert!(!is_handle("bad.handle", 3, 20)); // '.' not allowed
+        assert!(!is_handle("space bar", 3, 20)); // space not allowed
+        assert!(!is_handle("café", 2, 15)); // non-ASCII rejected
+    }
+
+    #[test]
+    fn parse_asn_strips_case_insensitive_prefix_and_validates() {
+        // The shared form the bgpview/ip_registry/zoomeye sites converged on.
+        assert_eq!(parse_asn("AS13335"), Some(13335));
+        assert_eq!(parse_asn("as13335"), Some(13335)); // zoomeye lacked this
+        assert_eq!(parse_asn("As13335"), Some(13335));
+        assert_eq!(parse_asn("13335"), Some(13335));
+        assert_eq!(parse_asn("  AS13335 "), Some(13335));
+        assert_eq!(parse_asn("AS 13335"), Some(13335)); // inner space trimmed
+        assert_eq!(parse_asn("4294967295"), Some(u64::from(u32::MAX))); // 32-bit ASN
+        // Rejections: not a bare AS prefix, or trailing junk → no garbage URL.
+        assert_eq!(parse_asn("ASN13335"), None);
+        assert_eq!(parse_asn("13335x"), None);
+        assert_eq!(parse_asn("AS"), None);
+        assert_eq!(parse_asn(""), None);
+        assert_eq!(parse_asn("astronomy"), None); // "as" prefix, "tronomy" not digits
+    }
 
     #[test]
     fn nonempty_trims_and_treats_blank_as_absent() {

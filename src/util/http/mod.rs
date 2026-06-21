@@ -36,3 +36,14 @@ pub use keys::{scan_for_api_keys, scan_for_api_keys_with_source};
 pub(crate) use redact::redact_credentials;
 pub(crate) use url::RequestBuilderExt;
 pub use url::{json_decode, json_scanned, urldecode, urlencode};
+
+/// Browser User-Agent presented by the AU directory/registry scrapers
+/// (`asic_director`, `au_property`, `au_people`, `au_electoral`) so scraper
+/// detection on those sites doesn't short-circuit the request. Single source of
+/// truth — bump the Chrome version once here, not in four modules. Distinct from
+/// [`crate::util::curl::UA_POOL`], which rotates UAs for the curl fallback.
+pub const UA_BROWSER: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+/// Honest identifying User-Agent for keyed/polite APIs that ask callers to
+/// describe themselves (`github_user`, `reddit_user`, `hacker_news`).
+pub const UA_OSINT: &str = "HSE/1.0 OSINT research tool";

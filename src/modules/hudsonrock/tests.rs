@@ -38,6 +38,33 @@ use super::*;
         );
     }
 
+    #[tokio::test]
+    async fn android_app_package_domain_yields_nothing_without_a_request() {
+        // A reverse-DNS app package (`com.facebook.katana`) can reach process()
+        // by recall of a Domain minted before the upstream gate. search-by-domain
+        // for it would return strangers' stealer records — short-circuit to empty.
+        let (bus, _rx) = tokio::sync::broadcast::channel(8);
+        let ctx = ModuleContext {
+            scan_id: "t".into(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+        };
+        let r = HudsonRock
+            .process(
+                &Target::new(TargetKind::Domain, "com.facebook.katana"),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            r.is_empty(),
+            "an app package must not trigger a search-by-domain call"
+        );
+    }
+
     #[test]
     fn fresh_compromise_gets_higher_confidence() {
         let recent = Stealer {

@@ -1661,3 +1661,300 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   results" rather than a breaker-tripping error. Regression-tested. No rule/module
   change. Gate green: lib 3,288 (+2), 24 arch guards, fmt/clippy/doc clean. Paired:
   `PROBLEM_TREE` §8 cycle 57 — same commit.
+
+- **2026-06-20** — **Cycle 58 (`au_unclaimed` reduced to its verified QLD core).**
+  Principle: *no fabricated coverage*. Empirically probing every state's live CKAN
+  API (the "Ali Kareem" loop flagged 76 KB/20 KB non-JSON bodies from VIC/WA) proved
+  only Queensland publishes a queryable unclaimed-money datastore — NSW has no
+  datastore-active resource, VIC isn't on CKAN (404s), WA has no such dataset, and
+  SA only mirrors the harvested QLD record. The four non-QLD `StateRegister` entries
+  held fabricated `resource_id`s that 404'd every scan: phantom coverage that cost
+  four guaranteed-failed network calls per name and a false five-state advertisement.
+  Removed them and the now-dead generic-CKAN path (`StateRegister`, `REGISTERS`,
+  `surname`, `owner_matches`, `record_to_entities`, `postcode_centroid`); `process`
+  is now the single QLD pass, and the module docs carry the per-state empirical
+  verdict so a future contributor re-adds a jurisdiction *only* with a verified
+  resource id (QLD is the working template). The real QLD pipeline — joint-owner
+  Persons, company Organisation pivots, postcode→geo, suburb enumeration — is
+  unchanged. Durable wins: honest capability surface, less wall-time and breaker
+  noise on Termux, ~150 fewer lines to maintain. Gate green: lib 3,283 (−5 dead-path
+  tests), 24 arch guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` cycle 58 —
+  same commit.
+
+- **2026-06-20** — **Cycle 59 (`is_app_package_id` — an app package is not a
+  domain).** Principle surfaced by the audit + archive forensics: stealer logs name
+  the app a credential was stolen from in reverse-DNS form (`com.facebook.katana`),
+  which a bare `contains('.')` check happily mints as a `Domain` — that then burns a
+  HudsonRock `search-by-domain` call returning *strangers'* records. New pure helper
+  `util::domains::is_app_package_id`: 3+ labels whose first label is a generic TLD
+  (`com`/`org`/`net`/`io`/`app`/`dev`) is reverse-DNS, because a real registrable
+  domain carries its TLD *last*. No Public Suffix List dependency (consistent with
+  the project's curated-suffix philosophy). Wired in three places: both OathNet
+  stealer Domain-minting paths (so the junk never enters the graph) and a defensive
+  short-circuit in HudsonRock `process()` (so a Domain recalled from before the gate
+  still can't trigger the doomed call) — the latter without touching the
+  value-independent `accepts()` the dispatch invariants depend on. Compounding win:
+  kills both the noise *and* the noise-amplifying API expansion, on every future
+  stealer-bearing scan. Regression-tested. Gate green: lib 3,286 (+3), 24 arch
+  guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` cycle 59 — same commit.
+
+- **2026-06-20** — **Cycle 60 (a stealer host is an account, not an asset —
+  universal).** Principle: a credential captured *on* a site means the subject has
+  an account there, not that they own the domain. Both stealer extractors
+  (`oathnet_pro::extract_stealer_entities` and `see_know::extract`) used to mint the
+  login URL's host as a `Domain`, which (a) proliferated subdomains of shared
+  platforms (`*.taleo.net`), (b) burned dns/cert/wayback/HudsonRock budget
+  enumerating the *platform's* infrastructure, and (c) forged false correlation
+  brokers across everyone who used that platform. Now both keep only the `Url`
+  (the account pathway) and the `<user>@<url>` `Credential`; the host is no longer
+  a Domain. Safe because every stealer row carries a `url` (so the pathway is fully
+  preserved) and the subject's *own* domains arrive independently via the breach
+  email-domain path. Mirrors SpiderFoot's account-vs-INTERNET_NAME distinction.
+  Compounding: less noise, less wasted API expansion on Termux, and sharper
+  correlation (no shared-platform mega-brokers) on every stealer-bearing scan.
+  Regression-tested in both modules. Gate green: lib 3,286 (net 0), 24 arch guards,
+  fmt/clippy/doc clean. Paired: `PROBLEM_TREE` cycle 60 — same commit.
+
+- **2026-06-20** — **Cycle 61 (address extractor: don't let one address's state
+  bleed into the next).** The re-scan + re-audit the user asked for confirmed cycles
+  58–60 on fresh data (domain-noise finding gone, 85/100) and pointed at a clean
+  extraction defect behind one geo outlier: a run-on bio "Los Angeles, California
+  Dallas, Texas" yielded a phantom "California Dallas, Texas" because the comma-path
+  city grab reached back across the first address and kept its trailing state.
+  Fix: in the comma path, strip a leading state token from the city when it differs
+  from the address's own state, recovering "Dallas, Texas". The differ-from-state
+  guard is the safety: state-named cities whose token equals their state (Virginia
+  Beach, Virginia; Oklahoma City, Oklahoma) are untouched, and word-path cities
+  (Kansas City, Missouri) never enter this branch — so no gazetteer and no risk to
+  the AU-geo core. Improves geocode precision (no bogus Probable city fixes) without
+  altering the geo-confidence model. Note for the record: the remaining
+  geo-divergence is driven by *identity conflation* (several real people share the
+  seed name), a separate strand to tackle deliberately rather than via a geo
+  heuristic. Regression-tested. Gate green: lib 3,287 (+1), 24 arch guards,
+  fmt/clippy/doc clean. Paired: `PROBLEM_TREE` cycle 61 — same commit.
+
+- **2026-06-21** — **Cycle 62 (consolidate three duplication clusters into `util`).**
+  Single home for each, callers keep only their own filters/decoders:
+  1. **`util::str_util::parse_asn(&str) -> Option<u64>`** — case-insensitive `AS`
+     prefix, whitespace-tolerant, validated; rejects junk so callers don't build a
+     garbage URL. Migrated `bgpview` / `ip_registry` / `zoomeye` (the last gains
+     case-insensitive parsing it was missing).
+  2. **`util::json::scan_string_field(body, key) -> Vec<String>`** — the raw-body
+     `"key":"…"` scan, behaviour-preserving (skips numeric `"key":123`, value runs
+     to next quote, empties dropped, order kept). Migrated `github_user` (orgs +
+     gists), `reddit_user`, `hacker_news`; each keeps its own length-bound / dedup /
+     domain-extract step at the call site.
+  3. **`util::wigle`** (new submodule, alongside `util::oathnet` / `util::see_know`)
+     — `detail_url(netid, kind)` + `get(...)` doing the shared auth and WiGLE status
+     classification (429 → immediate Err with logged backoff, 401/403 → auth Err,
+     404 → Ok(None), success → response for caller to decode). `wifi_intel`'s rich
+     handling is preserved verbatim; `wigle::fetch_detail` keeps its swallow-to-None
+     contract. ~127 lines of duplicated logic across 8 modules collapse to ~77 lines
+     of shared, tested helpers (4 JSON-scan copies → 1, 3 ASN copies → 1, 2 WiGLE
+     copies → 1). No module added/removed — registry count stable. Gate green: lib
+     3,291 (+4), 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired:
+     `PROBLEM_TREE` cycle 62 — same commit.
+
+- **2026-06-21** — **Cycle 63 (centralise HTTP request-construction literals).**
+  `util::http::UA_BROWSER` and `util::http::UA_OSINT` now hold the two duplicated
+  User-Agents (single source of truth — the stale Chrome/120 bump is now one edit;
+  `UA_BROWSER` doc cross-links `util::curl::UA_POOL` to keep the two UA homes
+  distinct). Migrated all 11 call sites across `asic_director`, `au_property`,
+  `au_people`, `au_electoral`, `github_user`, `reddit_user`, `hacker_news`. And the
+  five `format!("Bearer {…}")` headers (`github_code_search`, `fullcontact`,
+  `github_user`) became `.bearer_auth(…)` — identical header value, now also flagged
+  sensitive for redaction. Behaviour-preserving; gate green: fmt/clippy(`--all-targets`)
+  /doc clean, lib 3,291, 24 arch guards, 0 failures. Paired: `PROBLEM_TREE` cycle 63
+  — same commit.
+
+- **2026-06-21** — **Cycle 64 (fold the bio matchers into `util::extract`).** Added
+  the canonical `util::extract::URL_RE` (the exact http(s) pattern, so trailing-
+  punctuation behaviour is preserved — callers still `trim_end_matches`) and pointed
+  both `reddit_user` and `hacker_news` at the existing canonical `EMAIL_RE` + the new
+  `URL_RE`, deleting their duplicated `bio_patterns()` (and the now-unused `regex` /
+  `OnceLock` imports). The bio email match now uses the one canonical definition
+  (stricter, validated TLD) — the modules' bio tests pass unchanged, confirming the
+  switch is behaviour-safe on real address shapes. Net: one email regex in the
+  codebase, not two; a reusable URL matcher for future callers. Gate green: lib 3,292
+  (+1), 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE`
+  cycle 64 — same commit.
+
+- **2026-06-21** — **Cycle 65 (point the last two email regexes at `EMAIL_RE`).**
+  `exa_search` now imports `crate::util::extract::EMAIL_RE` (call site `find_iter`
+  unchanged) with its local `static EMAIL_RE` deleted; `employer_pivot::extract_emails`
+  uses the canonical matcher directly, dropping its `OnceLock` regex while keeping its
+  domain filter (and no dedup, preserving behaviour). Both patterns were
+  character-class-identical, so the swap is behaviour-preserving — full suite passes.
+  `util::extract::EMAIL_RE` is now the sole email regex in the codebase. Gate green:
+  lib 3,292, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired:
+  `PROBLEM_TREE` cycle 65 — same commit.
+
+- **2026-06-21** — **Cycle 66 (`util::str_util::is_handle`).** One parameterised
+  predicate — `is_handle(s, min, max)`: length in `min..=max` and every char ASCII-
+  alphanumeric or `-`/`_` — now backs both `reddit_user` (3, 20) and `hacker_news`
+  (2, 15), replacing the two open-coded multi-line guards. Byte length equals char
+  count because the charset test rejects non-ASCII, so behaviour is preserved. The
+  handle charset is defined once. Gate green: lib 3,293 (+1), 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 66 — same commit.
+
+- **2026-06-21** — **Cycle 67 (route `search_engines` text mining through
+  `util::extract`).** First, the divergence was healed *upward*: the web-script
+  fragment guard moved into `util::extract::page_emails` (new `SCRIPT_EXTS`), so the
+  canonical miner now rejects `viewtopic.php…@…` for every caller — `au_people`
+  included. Then `search_engines::extract_emails_from_text` / `extract_phones_from_text`
+  became thin wrappers over `page_emails` / `phones`, keeping only their search-context
+  cap + warning (so a pathological page can't mint an unbounded list); the ~115-line
+  byte scanners and the duplicate `is_email_local_char` / `is_domain_char` predicates
+  (plus their now-redundant tests) are gone. Net −100 lines. Behaviour is preserved
+  for real input and strictly improved for junk (search_engines now also dedups,
+  rejects `+0…` numbers and `.js` assets); all search_engines + au_people tests pass
+  unchanged. Email/phone byte-mining now has one definition. Gate green: lib 3,290,
+  24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE`
+  cycle 67 — same commit.
+
+- **2026-06-21** — **Cycle 68 (split oathnet_pro/mod.rs into focused submodules).**
+  `mod.rs` 1,165 → **350** lines, now just setup + the `Module` impl + preflight +
+  the submodule wiring. Extracted: `breach.rs` (530 — breach-PII extraction +
+  `TargetMatch` + the shared `push_oathnet_entity`), `stealer.rs` (160 — stealer-log
+  leads), `validate.rs` (135 — the pure offline validators). Pattern: each submodule
+  `use super::*`; section items promoted to `pub(super)`; `mod.rs` re-globs each
+  (`use breach::*` …) so the `Module` impl, the sibling submodules, and the white-box
+  `tests` (which call `extract_breach_entities`, `is_public_ip`, … via `super::*`) all
+  resolve unchanged. Pure code movement — no module added/removed, registry stable,
+  every oathnet test passes. Gate green: lib 3,290, 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 68 — same commit.
+
+- **2026-06-21** — **Cycle 69 (split see_know/extract.rs into an `extract/` module).**
+  `extract.rs` → `extract/mod.rs` (1,025 → **472** lines: core breach extraction +
+  `record_evidence` + the shared `push_breach_entity` + tests + wiring), with
+  `geo.rs` (132), `associates.rs` (111) and `rich_detail.rs` (338) as siblings. The
+  one-level-deeper nesting needed care: `extract_geo_entities` is called by the
+  parent `see_know/mod.rs`, so it's declared `pub(in crate::modules::see_know)` and
+  re-exported `pub(super)`; the intra-extract items (`extract_associates`,
+  `extract_rich_detail`) stay `pub(super)` with private re-exports; `parse_coord`'s
+  re-export is `#[cfg(test)]` (only the tests use it at parent level); and
+  `push_context_entity`'s doc link to `push_breach_entity` is fully-qualified
+  (`super::`) for the strict rustdoc lint. Pure code movement — registry stable, all
+  see_know tests pass. Gate green: lib 3,290, 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 69 — same commit.
+
+- **2026-06-21** — **Cycle 70 (carve the self-contained detectors out of
+  key_harvest/mod.rs).** mod.rs 1,363 → **972** lines. Extracted the two cohesive,
+  low-coupling blocks as new siblings: `crypto.rs` (199 — `identify_pem_private_key`,
+  `identify_crypto_address`, the recursive-base64 unwrap + `shannon_entropy`) and
+  `emit.rs` (198 — `emit_key`/`emit_key_with` + the `store_api_credential*` writers).
+  Promotions: the detectors to `pub(super)` (only `BASE64_DECODE_MAX_DEPTH` needed it
+  for a white-box test); `emit_key*` to `pub(super)`; the public `store_api_credential*`
+  re-exported with `pub use` so `key_harvest::store_api_credential` still resolves for
+  the parent `oathnet_pro`. `emit.rs`'s doc link to `DetectionConfidence` (which stays
+  in mod.rs) is fully-qualified. The interconnected identification/tier sections were
+  left in place — their dense pub surface + 2,236-line test file make them higher-risk
+  for lower return. Pure code movement, all tests pass. Gate green: lib 3,290, 24 arch
+  guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 70 — same
+  commit.
+
+- **2026-06-21** — **Cycle 71 (single-source the IP-geo address join).** Added
+  `util::geo::compose_address(city, region, country)` — drops an empty middle
+  component so a city+country record reads `"City, Country"`, never `"City, , Country"`
+  — with a doctest, and routed `ipinfo` / `ipquery` / `censys` / `ip_geo` through it
+  (each keeps its own outer presence guard; only the inner format is shared). Behaviour
+  identical: same strings, same entities. `ip2location` left alone (its branch folds a
+  ZIP into the middle). Net −9 lines across 5 files, but the real win is one definition
+  of the join rule instead of four. Gate green: lib 3,290 + the new doctest, 24 arch
+  guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 71 — same
+  commit.
+
+- **2026-06-21** — **Cycle 72 (single-source the AU-relevance coord tag).** Added
+  `util::geo::tag_au_state(&mut entity, lat, lon)` — tags `au-state:{STATE}` +
+  `country:AU` when the fix is in an AU state, no-op otherwise — and routed **13**
+  inlined call sites across 11 modules through it (regex-matched the exact both-tags
+  block, so the `&& let`-chain forms and the lone `au-state`-only site in
+  `search_engines` were left untouched — folding them in would have changed behaviour).
+  `opencellid`'s now-unused `au_state_for_coords` import was dropped. Behaviour
+  identical; net −27 lines. Gate green: lib 3,290, 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 72 — same commit.
+
+- **2026-06-21** — **Cycle 73 (teach `permute::parse` the two name formats it was
+  corrupting).** Two small, pure helpers ahead of tokenisation, so every FullName
+  search (the sole caller, `name_intel`, feeds the result into usernames + speculative
+  emails + investigation pivots): **(1)** `reorder_comma_name` detects "Last, First
+  \[Middle…\]" and returns natural order, with a clean fallback for the title/suffix
+  case (`"Ali Kareem, PhD"` is *not* a reorder) and honorific/suffix stripping around
+  the swap (`"Dr. Kareem, Ali Jr"` → `"Ali Kareem"`); now `parse("Kareem, Ali") ==
+  parse("Ali Kareem")`. **(2)** `strip_bracketed` drops nested/mixed `()[]{}`
+  annotations from the name tokens while the trailing-year number is still read from
+  the raw string (`"Ali Kareem (1990)"` → year 1990, handle `ali.kareem`). +7 tests
+  (incl. the canonical-identity round-trip and the corrected `handles_comma_separator`,
+  whose old expectation *was* the bug). No new deps; allocation-light; Termux-safe.
+  Gate green: lib 3,297, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired:
+  `PROBLEM_TREE` cycle 73 — same commit.
+
+- **2026-06-21** — **Cycle 74 (route the seven JSON holdouts through
+  `util::http::json_decode`).** Replaced each hand-rolled
+  `resp.json().await.map_err(…"JSON: {e}")` with `crate::util::http::json_decode(SRC,
+  resp).await?`, so all seven now share the capped + archived decode path: their
+  responses land in the universal raw archive (dossier completeness), the 32 MiB body
+  cap closes the Termux OOM vector, and read-vs-parse failures are reported distinctly.
+  Dropped four now-unused `Error` imports (`ip2location`, `disposable_check`, `ipinfo`,
+  `ipquery`); the other three still use `Error` elsewhere. Net −21 lines, behaviour for
+  valid responses unchanged (same deserialised structs, same entities). Gate green: lib
+  3,297, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE`
+  cycle 74 — same commit.
+
+- **2026-06-21** — **Cycle 75 (strip the URL in `send_tagged`, the one chokepoint).**
+  Changed the transport-error map to `e.without_url().to_string()`, so every one of the
+  ~40 `send_tagged` callers — present and future — stops embedding the secret-bearing
+  URL in the error that reaches the logs; the module name (the actually-useful context)
+  is still attached. Pinned with a regression test that a key + email in the query
+  string never appear in the mapped error. Then closed the two holdouts that bypassed
+  the helper entirely with the bare leaking form: `niamonx` (×3) and `osintcat` now use
+  `send_tagged(SRC)`, deleting their hand-rolled `map_err` (and wiring the
+  `RequestBuilderExt` import). `hunter_io`/`whoisxml` were already safe via a local
+  `without_url`; `cert_intel` is a raw-TLS connect (host:port, no query string) and
+  unaffected. Net +36/−17. Gate green: lib 3,298, 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 75 — same commit.
+
+- **2026-06-21** — **Cycle 76 (one shared Email/Domain shape gate for every breach
+  parser).** Promoted `looks_like_email` out of `oathnet_pro` into
+  `util::extract::looks_like_email` (oathnet re-exports it, unchanged call sites), and
+  added `util::domains::looks_like_domain` — the consolidation of the triplicated
+  `contains('.') && !is_app_package_id` check **plus** an IP-literal reject and a
+  TLD-bearing-final-label sanity check. Routed all four emission sites through them:
+  `see_know`'s email field now validates shape (closing the `contains('@')`-only gap),
+  and `oathnet_pro` breach + stealer + `see_know` domain paths now drop IP and
+  app-package noise in one place. Result: a query echo (`Ali.kareem`) or a stealer
+  router IP (`192.168.0.1`) can no longer enter the graph as an entity, so correlation
+  sees only real addresses and registrable domains. Both helpers carry doctests; added
+  two unit tests seeded directly from the uploaded scan logs (real addresses/domains as
+  positives, the echo/IP/app-package noise as negatives). Behaviour for clean records
+  unchanged. Gate green: lib 3,300, 24 arch guards, fmt/clippy(`--all-targets`)/doc
+  clean. Paired: `PROBLEM_TREE` cycle 76 — same commit.
+
+- **2026-06-21** — **Cycle 77 (classify a breach digest by its leading hex run).**
+  Reworked `identify_password_hash`'s bare-digest arm to read the **leading hex run**
+  and classify by its length (requiring any remainder to begin at a separator), so the
+  OathNet `digest + salt` forms now resolve to `("md5", true)` instead of `None`; the
+  prefixed-KDF path (bcrypt/argon2, whose option commas must not be mis-split) is
+  untouched because it matches first. Paired with appended-salt detection in `breach.rs`
+  (a leading bare-hex digest with a non-empty remainder past the first separator) so the
+  `salted` signal is captured even when there is no dedicated `salt` field. Net effect:
+  the `jefit` MD5 now carries `hash:md5` + `crackable:fast` + `salted`, and `mod.rs`'s
+  fast-hash plaintext-equivalent filter sees it. +2 tests seeded from the real scan
+  rows (combined forms, the separator guard, and an argon2 negative). Gate green: lib
+  3,302, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE`
+  cycle 77 — same commit.
+
+- **2026-06-21** — **Cycle 78 (one typed classifier for credential-field values).**
+  Added `util::extract::CredentialField` (`Sentinel` / `Email` / `Secret`) +
+  `classify_credential_field` + `is_placeholder_secret`, and routed both password
+  parsers through it: `oathnet_pro/breach.rs` and `see_know/extract` now **drop** a
+  capture sentinel, **recover** an email-in-slot as a 0.45 `Email` lead tagged
+  `recovered-from-password` (instead of a junk `Password`), and only emit a genuine
+  `Secret` — applying their own length/variety gate on top. `is_placeholder_secret`
+  rejects redaction markers anywhere plus **bracketed** capture sentinels (`[fail]`,
+  `<empty>`); the bracket requirement keeps a real-if-terrible `fail`/`null` password
+  from being discarded. One decision point replaces two divergent inline gates (the
+  enum makes the three outcomes explicit and reusable for future stealer modules).
+  +2 tests seeded from the logs (sentinel/email/secret split; the breach end-to-end
+  recovery + no-false-Password). Gate green: lib 3,304, 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 78 — same commit.

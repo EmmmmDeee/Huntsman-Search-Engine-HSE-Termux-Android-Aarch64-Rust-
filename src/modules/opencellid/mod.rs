@@ -27,7 +27,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::geo::{au_state_for_coords, is_valid_coords, parse_coords};
+use crate::util::geo::{is_valid_coords, parse_coords};
 use crate::util::http::urlencode;
 
 const SRC: &str = "opencellid";
@@ -281,10 +281,7 @@ fn emit_cell_entities(result: &mut ModuleResult, cell: &CellEntry, scan_id: &str
     geo.tag("geoint");
     geo.tag("cell-tower");
     geo.tag(format!("radio:{}", radio.to_lowercase()));
-    if let Some(state) = au_state_for_coords(t_lat, t_lon) {
-        geo.tag(format!("au-state:{state}"));
-        geo.tag("country:AU");
-    }
+    crate::util::geo::tag_au_state(&mut geo, t_lat, t_lon);
     geo.add_evidence(
         Evidence::new(SRC, format!("OpenCelliD tower {tower_id} at {coords}"))
             .with_attr("tower_id", &tower_id)

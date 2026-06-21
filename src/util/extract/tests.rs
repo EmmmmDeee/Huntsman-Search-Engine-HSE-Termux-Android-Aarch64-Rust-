@@ -20,6 +20,21 @@ use super::*;
     }
 
     #[test]
+    fn url_re_matches_scheme_and_stops_at_sentence_punctuation() {
+        // The bio/profile cases reddit_user + hacker_news relied on: the match
+        // over-runs the trailing '.' (callers trim it) and stops at the space.
+        let m = URL_RE
+            .find("site https://paulgraham.com/bio.html. and more")
+            .unwrap();
+        assert_eq!(
+            m.as_str().trim_end_matches(['.', ',', ')']),
+            "https://paulgraham.com/bio.html"
+        );
+        assert!(URL_RE.is_match("http://x.io/p"));
+        assert!(!URL_RE.is_match("no scheme here example.com"));
+    }
+
+    #[test]
     fn extracts_and_lowercases_dedupes() {
         assert_eq!(emails("contact alice@example.com"), ["alice@example.com"]);
         let text = "Ping Alice@Example.COM and alice@example.com";
@@ -49,4 +64,62 @@ use super::*;
     fn page_emails_drops_asset_refs() {
         assert!(page_emails("logo@2x.png").is_empty());
         assert_eq!(page_emails("bob@example.com"), ["bob@example.com"]);
+    }
+
+    #[test]
+    fn page_emails_drops_script_url_fragments() {
+        // URL fragments glued to `@` during HTML stripping are not mailboxes
+        // (the real-scan bug `viewtopic.phprose.cl@onet.eu`); a clean address in
+        // the same text still extracts. Consolidated from search_engines.
+        assert!(page_emails("see viewtopic.phprose.cl@onet.eu and index.html@x.com").is_empty());
+        assert_eq!(
+            page_emails("real person jane.doe@onet.eu posted"),
+            ["jane.doe@onet.eu"]
+        );
+    }
+
+    #[test]
+    fn looks_like_email_rejects_provider_field_junk() {
+        // Real addresses seen in the breach `email` fields for the Ali.kareem scan.
+        for good in [
+            "ali.kareem95@gmail.com",
+            "alik.8972@yahoo.com",
+            "dr.ali.ali52@gmail.com",
+        ] {
+            assert!(looks_like_email(good), "{good} is a real address");
+        }
+        // Junk a provider echoes/mangles into an `email` field — must not become an
+        // Email entity (this is the see_know `contains('@')`-only gap, now closed).
+        for junk in [
+            "Ali.kareem",     // username echoed into the email field (snusbase)
+            "ali.kareem",
+            "user@",          // no host
+            "@gmail.com",     // no local part
+            "user@localhost", // host has no dot
+            "a b@c.com",      // embedded whitespace
+            "",
+        ] {
+            assert!(!looks_like_email(junk), "{junk:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn classify_credential_field_separates_sentinels_emails_secrets() {
+        use CredentialField::{Email, Secret, Sentinel};
+        // Real stealer/breach values from the Ali.kareem logs.
+        assert_eq!(classify_credential_field("[fail]"), Sentinel);
+        assert_eq!(classify_credential_field("  [NOT_SAVED] "), Sentinel);
+        assert_eq!(classify_credential_field("<empty>"), Sentinel);
+        assert_eq!(classify_credential_field("UPGRADE_TO_SEE_xxxx"), Sentinel);
+        assert_eq!(classify_credential_field(""), Sentinel);
+        // An email mis-stored in the password slot is recovered as a lead.
+        assert_eq!(classify_credential_field("ayilmazer486@gmail.com"), Email);
+        // Genuine passwords from the logs stay secrets...
+        for pw in ["Yontem2006", "C0R4Pc1", "Kando1453!", "hakunamatata"] {
+            assert_eq!(classify_credential_field(pw), Secret, "{pw}");
+        }
+        // ...including a terrible bare `fail`/`null`: only the BRACKETED form is a
+        // sentinel, so a real (if weak) password is never silently discarded.
+        assert_eq!(classify_credential_field("fail"), Secret);
+        assert_eq!(classify_credential_field("null"), Secret);
     }

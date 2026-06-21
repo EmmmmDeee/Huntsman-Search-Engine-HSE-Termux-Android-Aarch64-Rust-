@@ -489,10 +489,7 @@ impl Module for AuPeople {
             .http
             .get(&wp_url)
             .header("Accept", "text/html,application/xhtml+xml")
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            )
+            .header("User-Agent", crate::util::http::UA_BROWSER)
             .send_tagged(SRC)
             .await
             && resp.status().is_success()
@@ -511,10 +508,7 @@ impl Module for AuPeople {
             .http
             .get(&tps_url)
             .header("Accept", "text/html,application/xhtml+xml")
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            )
+            .header("User-Agent", crate::util::http::UA_BROWSER)
             .send_tagged(SRC)
             .await
             && resp.status().is_success()

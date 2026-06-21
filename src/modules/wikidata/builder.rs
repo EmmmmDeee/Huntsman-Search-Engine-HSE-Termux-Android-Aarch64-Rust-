@@ -108,10 +108,7 @@ pub(super) fn primary_entities(
         if let Some(d) = desc.as_deref() {
             ev = ev.with_attr("description", d);
         }
-        if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
-            c.tag(format!("au-state:{state}"));
-            c.tag("country:AU");
-        }
+        crate::util::geo::tag_au_state(&mut c, lat, lon);
         c.add_evidence(ev);
         out.push(c);
     }

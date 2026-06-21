@@ -260,11 +260,7 @@ fn build_entities(host: &HostResult, ip: &str, scan_id: &str) -> Vec<Entity> {
         let province = loc.province.as_deref().unwrap_or("");
         let country = loc.country.as_deref().unwrap_or("");
         if !city.is_empty() && !country.is_empty() {
-            let addr = if !province.is_empty() {
-                format!("{city}, {province}, {country}")
-            } else {
-                format!("{city}, {country}")
-            };
+            let addr = crate::util::geo::compose_address(city, province, country);
             let mut ae = Entity::new(EntityKind::Address, &addr, 0.60, scan_id);
             ae.tag("censys");
             ae.tag("geoint");

@@ -69,6 +69,32 @@ async fn send_tagged_maps_transport_errors_to_the_module() {
 }
 
 #[tokio::test]
+async fn send_tagged_strips_url_so_secrets_and_pii_dont_leak() {
+    // A request URL carries the API key and the searched target in its query
+    // string; a transport error must not embed either, because it flows into the
+    // downloadable verbose log. The scheme error here keys the URL onto the error
+    // (no network needed), exactly the case `without_url()` must neutralise.
+    let err = reqwest::Client::new()
+        .get("ftp://example.invalid/v1/lookup?apikey=SECRETKEY123&q=target@example.com")
+        .send_tagged("test_mod")
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        !msg.contains("SECRETKEY123"),
+        "API key leaked into error: {msg}"
+    );
+    assert!(
+        !msg.contains("target@example.com"),
+        "target PII leaked into error: {msg}"
+    );
+    assert!(
+        msg.contains("test_mod"),
+        "error must still name the module: {msg}"
+    );
+}
+
+#[tokio::test]
 async fn keyed_ok_or_404_classifies_miss_success_and_error() {
     use std::collections::HashMap;
     let (bus, _rx) = tokio::sync::broadcast::channel(1);

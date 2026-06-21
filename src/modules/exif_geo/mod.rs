@@ -228,10 +228,7 @@ impl Module for ExifGeo {
             e.tag("geoint");
             e.tag("exif");
             e.tag("photo-derived");
-            if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
-                e.tag(format!("au-state:{state}"));
-                e.tag("country:AU");
-            }
+            crate::util::geo::tag_au_state(&mut e, lat, lon);
             e.add_evidence(
                 evidence(format!("EXIF GPS extracted from {url}"))
                     .with_attr("latitude", lat.to_string())

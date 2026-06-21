@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
     tags,
@@ -136,10 +136,7 @@ impl Module for IpQuery {
             return Ok(ModuleResult::new());
         }
 
-        let data: Resp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
+        let data: Resp = crate::util::http::json_decode(SRC, resp).await?;
 
         let mut result = ModuleResult::new();
 
@@ -259,10 +256,7 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
             && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.58, scan_id)
         {
             ce.tag("ipquery");
-            if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
-                ce.tag(format!("au-state:{state}"));
-                ce.tag("country:AU");
-            }
+            crate::util::geo::tag_au_state(&mut ce, lat, lon);
             ce.add_evidence(geo_ev());
             out.push(ce);
         }
@@ -271,11 +265,7 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
         let state = loc.state.as_deref().unwrap_or("");
         let country = loc.country.as_deref().unwrap_or("");
         if !city.is_empty() && !country.is_empty() {
-            let addr = if !state.is_empty() {
-                format!("{city}, {state}, {country}")
-            } else {
-                format!("{city}, {country}")
-            };
+            let addr = crate::util::geo::compose_address(city, state, country);
             let mut ae = Entity::new(EntityKind::Address, &addr, 0.62, scan_id);
             ae.tag("ipquery");
             if cc.eq_ignore_ascii_case("AU") {

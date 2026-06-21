@@ -58,9 +58,18 @@ pub async fn json_decode<T: DeserializeOwned>(module: &str, resp: reqwest::Respo
 }
 
 /// Extension on [`reqwest::RequestBuilder`] that sends the request and maps any
-/// transport error to a module-tagged [`Error`]. Folds the
-/// `.send().await.map_err(|e| Error::module(module, e.to_string()))` tail that
-/// ~40 modules repeated verbatim into `builder.send_tagged(module).await`.
+/// transport error to a module-tagged [`Error`], **with the offending URL
+/// stripped** ([`reqwest::Error::without_url`]).
+///
+/// The strip is load-bearing, not cosmetic. A module's request URL routinely
+/// carries secrets in its query string — the upstream **API key** (`?apikey=…`)
+/// and the **target's PII** (the email / username / name being searched). The
+/// bare `e.to_string()` embeds that URL in the error, which then propagates into
+/// the downloadable verbose log (`/api/v1/logs`) and the event stream. Stripping
+/// it at this single chokepoint protects every caller — present and future — and
+/// folds the
+/// `.send().await.map_err(|e| Error::module(module, e.without_url().to_string()))`
+/// tail that ~40 modules repeated (several still in the bare, *leaking* form).
 ///
 /// Crate-internal (`pub(crate)`), so the `async fn` carries no public auto-trait
 /// caveat: callers invoke it on the concrete `RequestBuilder`, whose future is
@@ -73,6 +82,8 @@ impl RequestBuilderExt for reqwest::RequestBuilder {
     async fn send_tagged(self, module: &'static str) -> Result<reqwest::Response> {
         self.send()
             .await
-            .map_err(|e| Error::module(module, e.to_string()))
+            // `without_url()` drops the URL — it carries the API key and the
+            // target's PII in its query string, and this error reaches the logs.
+            .map_err(|e| Error::module(module, e.without_url().to_string()))
     }
 }

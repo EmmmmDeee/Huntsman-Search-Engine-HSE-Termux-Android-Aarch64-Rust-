@@ -2495,3 +2495,303 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   valid JSON parses; truncated JSON-shaped body still errors). No rule/module
   change. Gate green: fmt/clippy/doc clean, lib 3,288 (+2), 24 arch guards, 0
   failures. **Paired:** `SOLUTION_TREE` cycle 57 note — same commit.
+
+- **2026-06-20** — **Cycle 58 (empirical: `au_unclaimed` phantom multi-state
+  coverage removed).** Continuing the "Ali Kareem" validation loop, the cycle-57
+  fix was confirmed on the rebuilt binary (SeekNow's live `error code: 523` bodies
+  now log as "no results" with **zero** parse errors / breaker trips, and the new
+  AU-067/070/071 correlation lens fired on real data — a 30-identity resolved
+  cluster, its sole broker `lucca-kareem@hotmail.com`, and a separate
+  *redundantly-corroborated* 3-identity cluster with no single point of failure).
+  The same log then exposed a real capability gap: `au_unclaimed` received **76 KB
+  and 20 KB non-JSON bodies** from `data.vic.gov.au` and `catalogue.data.wa.gov.au`
+  — guaranteed-404 error pages. Live CKAN probes (2026-06) settled it: the module
+  claimed QLD/NSW/VIC/WA/SA coverage (its doc header even said TAS/ACT), but **only
+  QLD** publishes a record-level unclaimed-money datastore. NSW's unclaimed packages
+  are all `datastore_active=false` (external-link page, PDFs, summary xlsx — no
+  queryable resource); VIC returns HTTP 404 for *every* `/api/3/action` call (the
+  portal migrated off CKAN); WA's `package_search` for "unclaimed money" returns
+  **0** hits; SA is the national aggregator whose only datastore-active "unclaimed
+  monies" resource is the *harvested QLD* dataset (same resource id, which 404s on
+  SA's own datastore). The four non-QLD `resource_id`s were fabricated placeholders
+  (tell-tale symmetric/sequential hex), and the comment "Resource IDs sourced from
+  each state's CKAN portal" was false — every scan spent four guaranteed-404 calls
+  per name and falsely advertised five-state coverage. Fix: removed the four phantom
+  `StateRegister` entries and all now-dead support (`StateRegister`, `REGISTERS`,
+  `surname`, `owner_matches`, `record_to_entities`, `postcode_centroid`), simplified
+  `process` to the QLD pass alone, and rewrote the module docs with the per-state
+  empirical verdict plus guidance for re-adding a jurisdiction *only* with a
+  verified resource id. The working QLD pipeline (the real data source) is
+  untouched. Net: −1 fabricated coverage claim, −4 guaranteed-failed calls/scan,
+  −~150 lines of dead code. Gate green: fmt/clippy/doc clean, lib 3,283 (−5 tests,
+  all for the deleted dead path), 24 arch guards, 0 failures. **Paired:**
+  `SOLUTION_TREE` cycle 58 note — same commit.
+
+- **2026-06-20** — **Cycle 59 (empirical: Android app package mis-minted as a
+  Domain → wasted expansion).** `hse audit` on the latest *complete* "Ali Kareem"
+  scan scored 84/100 (B) and flagged `generic-domain-noise`, listing
+  `com.facebook.katana` among bogus bare domains. Raw-archive forensics pinned the
+  exact cause: an OathNet `stealer-search` row (`items[47]`) carries the captured
+  app as a **reverse-DNS Android package** in *both* fields —
+  `domain[0] = "com.facebook.katana"` and `url = "android://…@com.facebook.katana/"`.
+  The stealer `domain`-array path minted it as a `Domain` entity (its only guard was
+  `contains('.')`), and — worse than noise — that Domain then *expanded*: the
+  archive shows `cavalier.hudsonrock.com__search-by-domain__com.facebook.katana`,
+  a wasted HudsonRock call that pulls **other** `facebook.katana` app users' stealer
+  records (strangers) into the graph. A compounding pollution bug: one bad domain
+  spawns an API call that injects unrelated identities. Fix: a pure, dependency-free
+  `util::domains::is_app_package_id` (a registrable domain never *leads* with a
+  generic TLD — `com`/`org`/`net`/… are suffixes and appear last; so a 3+-label
+  string whose *first* label is one is reverse-DNS, i.e. an app id). It gates both
+  OathNet stealer Domain-minting paths (domain-array + url-host), and — because a
+  Domain minted before the gate can resurface via recall — also short-circuits
+  HudsonRock's `process()` for a Domain that is an app package (without making
+  `accepts()` value-dependent, preserving the registry-dispatch invariants). The
+  `android://` credential is still captured as a `Credential` entity; only the fake
+  domain is dropped. Regression-tested (helper truth table; OathNet skips the
+  package but keeps the credential; HudsonRock makes no request for a package
+  domain). Gate green: fmt/clippy/doc clean, lib 3,286 (+3), 24 arch guards, 0
+  failures. **Paired:** `SOLUTION_TREE` cycle 59 note — same commit.
+
+- **2026-06-20** — **Cycle 60 (empirical: stealer URL host → Domain proliferation,
+  fixed universally).** Same audit finding (`generic-domain-noise`, 44 bare
+  domains), deeper root cause. Of the flagged hosts, most are **stealer-credential
+  URL hosts** — sites the subject merely has an account on. The OathNet stealer
+  archive shows the shape plainly: all 53 rows carry a `url`, and the login URLs are
+  per-company subdomains of shared platforms — `akzonobel.taleo.net`,
+  `hondana.taleo.net`, `cargill.taleo.net`, `parsons.taleo.net`,
+  `siemenscorp.taleo.net` (one recruiting platform → five bogus "domains"). Both
+  `extract_stealer_entities` (oathnet_pro) and `see_know::extract` minted the
+  URL's host as a `Domain` "so wayback/dns/cert expand it for free" — but the
+  subject does not *own* these platforms, so that expansion enumerates the
+  *platform's* infrastructure (irrelevant), and worse, every shared platform
+  (`taleo.net`) becomes a false correlation **broker** linking unrelated people who
+  used it. The bare-domain noise the audit flags is the visible symptom; the
+  wasted dns/cert/wayback/HudsonRock budget and the false brokers are the hidden
+  cost. Fix (both modules, universal): stop minting the URL host as a `Domain` —
+  keep the `Url` (the account pathway, 100% preserved: every row has a url) and the
+  `<user>@<url>` `Credential`. The subject's genuinely-owned domains still enter via
+  the breach `email_domain` path, so no real coverage is lost; only the
+  third-party-platform infrastructure noise is. see_know's `domain`-field path also
+  gains the cycle-59 `is_app_package_id` gate for parity. Regression-tested (oathnet
+  + see_know: URL surfaces as Url, host is NOT a Domain, Credential still emitted).
+  Gate green: fmt/clippy/doc clean, lib 3,286 (net 0 — 2 tests refocused), 24 arch
+  guards, 0 failures. **Paired:** `SOLUTION_TREE` cycle 60 note — same commit.
+
+- **2026-06-20** — **Cycle 61 (empirical: cross-address state bleed mints a phantom
+  geocoded city).** Re-running the "Ali Kareem" scan on the rebuilt binary and
+  re-auditing (the user's "re-scan + re-audit first") empirically confirmed cycles
+  58–60 — **0** dead au_unclaimed CKAN calls, **0** `com.facebook.katana` domains —
+  and the audit's `generic-domain-noise` finding was **eliminated** (score 85/100,
+  with `geo-divergence` now the sole finding). Drilling into that geo-divergence
+  surfaced a real extraction bug: a SERP bio "…Los Angeles, California Dallas,
+  Texas…" made `extract_addresses_from_text` (comma path) `rfind` back past the
+  first address and grab **"California Dallas"** as the city for Texas — the leading
+  "California" is actually the STATE of the preceding "Los Angeles, California". The
+  phantom "California Dallas, Texas" then inline-geocoded to Dallas at 0.50
+  Probable, a bogus location fix. Fix: in the comma path only, when the extracted
+  city begins with a state name that DIFFERS from the address's own state, strip
+  that bled-over token — recovering the true "Dallas, Texas". Safe by construction:
+  the differ-from-`state` guard preserves genuine state-named cities ("Virginia
+  Beach, Virginia", "Oklahoma City, Oklahoma" keep their token because it matches
+  their own state), and the comma-path restriction leaves word-path cities
+  ("Kansas City, Missouri") untouched. (The residual geo-divergence is *identity
+  conflation* — the seed name matches a US filmmaker, an AU person, and an Iraqi;
+  their real locations differ — which is a separate, larger concern than this
+  extraction defect.) Regression-tested (run-on split; Virginia Beach / Kansas City
+  preserved). Gate green: fmt/clippy/doc clean, lib 3,287 (+1), 24 arch guards, 0
+  failures. **Paired:** `SOLUTION_TREE` cycle 61 note — same commit.
+
+- **2026-06-21** — **Cycle 62 (consolidation: three families of open-coded logic
+  duplicated across modules).** A duplication sweep of all 123 modules (the codebase
+  is otherwise well-factored — 108 modules already share `util::http`) surfaced
+  three genuine copy-paste clusters, each a drift risk: (1) **ASN normalisation** —
+  `bgpview`, `ip_registry`, `zoomeye` each open-coded "strip optional `AS` prefix,
+  validate digits, parse", and `zoomeye` had silently diverged (case-sensitive
+  prefix strip, so `as13335` slipped through). (2) **Raw-JSON field scanning** —
+  `github_user` (×2: orgs `login`, gist `id`), `reddit_user` (`subreddit`) and
+  `hacker_news` (`url`) each hand-rolled the same `find("\"key\":\"")` / slice-to-
+  next-quote loop. (3) **WiGLE `network/detail` plumbing** — `wigle::fetch_detail`
+  and `wifi_intel::query_wigle_detail` both built the same authenticated URL and
+  (in `wifi_intel`) classified 429/401/403/404; the rate-limit branch is subtle (a
+  429 must surface immediately, not sleep past the module's wall-clock budget) and
+  living in two copies invited exactly the kind of drift that bites later. Net effect
+  of the duplication: bug fixes had to be applied N times and didn't stay in sync.
+  **Paired:** `SOLUTION_TREE` cycle 62 — same commit.
+
+- **2026-06-21** — **Cycle 63 (duplicated HTTP request-construction literals).** Two
+  User-Agent strings were copy-pasted across modules: the AU-scraper browser UA
+  (`…X11; Linux…Chrome/120…`, in `asic_director`/`au_property`/`au_people`/
+  `au_electoral`, 7 uses) and the polite-API UA `HSE/1.0 OSINT research tool`
+  (`github_user`/`reddit_user`/`hacker_news`, 4 uses) — so a UA bump (Chrome/120 is
+  already stale) meant editing N modules. Separately, five sites hand-rolled
+  `.header("Authorization", format!("Bearer {t}"))` instead of reqwest's idiomatic
+  `.bearer_auth()` (which also marks the header sensitive for redaction). Low-risk
+  literal/idiom drift, not logic. **Paired:** `SOLUTION_TREE` cycle 63 — same commit.
+
+- **2026-06-21** — **Cycle 64 (a second email regex defeating `util::extract`'s
+  anti-drift purpose).** `reddit_user` and `hacker_news` each carried a verbatim-
+  identical `bio_patterns()` — an `OnceLock<(Regex, Regex)>` pairing a *bio-specific*
+  email regex (`[\w.+-]+@[\w-]+\.[\w.-]+`) with an http(s) URL regex. The email half
+  is exactly the drift `util::extract` exists to prevent: it diverged from the
+  canonical `EMAIL_RE` (looser — accepts a 1-char/numeric TLD like `x@y.1`), and
+  there was no shared URL matcher at all, so the pattern was duplicated rather than
+  reused. **Paired:** `SOLUTION_TREE` cycle 64 — same commit.
+
+- **2026-06-21** — **Cycle 65 (two more open-coded copies of the canonical email
+  regex).** Continuing the cycle-64 sweep, `exa_search` (a local `static EMAIL_RE`
+  *shadowing the canonical name*) and `employer_pivot` (`extract_emails`' `OnceLock`
+  regex) each re-declared the email pattern — trivially-reskinned variants
+  (`a-zA-Z` ordering; an escaped `\-`) that are character-class-identical to
+  `util::extract::EMAIL_RE`. Four independent email regexes had accreted (these two
+  plus the two bio copies from cycle 64), defeating the single-source-of-truth the
+  `util::extract` module was created to guarantee. **Paired:** `SOLUTION_TREE`
+  cycle 65 — same commit.
+
+- **2026-06-21** — **Cycle 66 (duplicated handle pre-flight in the username modules).**
+  `reddit_user` and `hacker_news` each open-coded the same handle guard before
+  spending an HTTP round-trip — `len` bounds plus `chars().all(|c|
+  c.is_ascii_alphanumeric() || c == '-' || c == '_')` — differing only in the length
+  range (3–20 vs 2–15). The "what a platform handle looks like" charset lived in two
+  places. (Of the 15 modules touching `is_ascii_alphanumeric`, only these two share
+  this specific handle shape; the rest validate different things with different
+  separator sets, so they are intentionally left alone.) **Paired:** `SOLUTION_TREE`
+  cycle 66 — same commit.
+
+- **2026-06-21** — **Cycle 67 (`search_engines` reimplements `util::extract`'s
+  byte-level text mining).** `search_engines` carried its own `extract_emails_from_text`
+  / `extract_phones_from_text` (~115 lines of hand-rolled `@`/`+` byte scanners) plus
+  duplicate char predicates `is_email_local_char` / `is_domain_char` in `helpers/text.rs`
+  — near-identical to `util::extract::page_emails` / `phones` / `is_email_local_byte` /
+  `is_domain_byte`. The copies had *diverged*: search_engines' email scanner had a
+  web-script-fragment guard (`viewtopic.php…@…`) the canonical `page_emails` lacked
+  (so `au_people`, the other `page_emails` caller, was still exposed to that bug),
+  while its phone scanner lacked the canonical E.164 country-digit gate and the dedup.
+  Four near-identical implementations of "what an email/phone looks like in scraped
+  text" — the exact drift `util::extract` exists to prevent. **Paired:** `SOLUTION_TREE`
+  cycle 67 — same commit.
+
+- **2026-06-21** — **Cycle 68 (oathnet_pro/mod.rs was a 1,165-line catch-all).** The
+  module's main file mixed four distinct concerns — the `Module` trait wiring +
+  preflight, the breach-PII extraction (`breach_evidence`, `TargetMatch`,
+  `extract_breach_entities*`, ~530 lines), the stealer-log extraction
+  (`push_stealer_entity`, `extract_stealer_entities`), and a set of pure offline
+  validators (`identify_password_hash`, `iban_is_valid`, `is_public_ip`, …) — in one
+  scroll. Navigability and review cost suffer when unrelated logic shares a file this
+  large. **Paired:** `SOLUTION_TREE` cycle 68 — same commit.
+
+- **2026-06-21** — **Cycle 69 (see_know/extract.rs was a 1,025-line flat file).** The
+  SeekNow record→entity layer bundled four independent extraction concerns in one
+  file: the core breach-field extraction, geo (lat/lon) extraction, associate /
+  relationship extraction, and the verbose rich-detail/context walk (with its
+  ~120-line `RICH_DETAIL_SKIP` table). One scroll to find any of them.
+  **Paired:** `SOLUTION_TREE` cycle 69 — same commit.
+
+- **2026-06-21** — **Cycle 70 (key_harvest/mod.rs was the 1,363-line harvester core).**
+  The API-key/secret harvester packed several distinct detector families into one
+  file: API-key identification + context analysis, the main extraction orchestrator,
+  the non-key secret detectors (PEM private keys, crypto-wallet addresses, recursive
+  base64 unwrapping, Shannon entropy), and the key-emission/persistence path. The
+  largest module file in the tree. **Paired:** `SOLUTION_TREE` cycle 70 — same commit.
+
+- **2026-06-21** — **Cycle 71 (the `City, Region, Country` address join was inlined
+  in four IP-geo modules).** `ipinfo`, `ipquery`, `censys`, and `ip_geo` each carried
+  the identical five-line conditional — emit `"City, Mid, Country"`, or
+  `"City, Country"` when the middle (region / state / province) component is empty —
+  differing only in the middle field's local name. Four copies of one formatting rule
+  is exactly the drift surface a shared helper removes. (`ip2location`'s variant folds
+  a ZIP into the middle, so it is genuinely different and left alone.) An Explore pass
+  confirmed the rest of the geo/JSON/HTTP surface is already consolidated
+  (`coarse_provider_coords`, `val_str`, `util::http::fetch`). **Paired:**
+  `SOLUTION_TREE` cycle 71 — same commit.
+
+- **2026-06-21** — **Cycle 72 (the AU-relevance coord-tag block was copy-pasted into
+  13 sites).** The identical four lines — `if let Some(state) =
+  au_state_for_coords(lat, lon) { e.tag(format!("au-state:{state}")); e.tag("country:AU"); }`
+  — were inlined across ~11 coordinate-emitting modules (ipinfo, ipquery, ip2location,
+  mylnikov, overpass, photon, wigle, exif_geo, cell_intel, wikidata, opencellid). The
+  most-duplicated geo idiom in the tree, and the kind of thing where one site drifts
+  (a missing `country:AU`) and nobody notices. **Paired:** `SOLUTION_TREE` cycle 72 —
+  same commit.
+
+- **2026-06-21** — **Cycle 73 (name-search gap analysis: `parse()` corrupted two
+  common name formats).** Driving the name pipeline (`name_intel` → `permute::parse`
+  → usernames/emails/pivots) over a representative sample of input shapes ("Ali
+  Kareem" and 11 variants) surfaced two systematic mis-parses: **(1)** "Last, First"
+  records order — `"Kareem, Ali"` parsed to first=kareem/last=ali, reversing *every*
+  derived handle, email and pivot (`kareem.ali` instead of `ali.kareem`); the worst
+  case, `"Smith, John Michael"`, yielded first=smith/last=michael, pure garbage. This
+  is the order electoral rolls, court records, CSV exports and citations emit — the
+  exact sources the AU record modules consume. **(2)** A parenthetical annotation —
+  `"Ali Kareem (Ali)"`, `"William (Bill) Gates"`, `"Jane Smith (Jones)"` — leaked in
+  as a third name token, shifting first/middle/last. Diacritic folding, non-Latin
+  graceful-degrade, honorifics, suffixes, initials and whitespace were already
+  correct. **Paired:** `SOLUTION_TREE` cycle 73 — same commit.
+
+- **2026-06-21** — **Cycle 74 (seven modules bypassed the shared JSON-decode path).**
+  `hunter_io`, `ip2location`, `disposable_check`, `ipinfo`, `whoisxml`, `ipquery` and
+  `crtsh` hand-rolled `resp.json().await.map_err(|e| Error::module(SRC, format!("JSON:
+  {e}")))` instead of `util::http::json_decode` — which 76 other call sites use. Not
+  cosmetic: that helper is the single chokepoint for **universal raw retention** (its
+  doc: the archive "is complete for ANY scan"), so these seven modules' responses were
+  silently **missing from the dossier's RAW SOURCE RECORDS**, and — bypassing the
+  32 MiB `JSON_BODY_CAP` — each could **OOM a constrained Termux device** on a hostile
+  or buggy oversized response. The hand-rolled error also collapsed a mid-stream read
+  failure and a parse failure into one undistinguished message. **Paired:**
+  `SOLUTION_TREE` cycle 74 — same commit.
+
+- **2026-06-21** — **Cycle 75 (`send_tagged` leaked the request URL — API key + target
+  PII — into the error logs).** `RequestBuilderExt::send_tagged`, the shared transport
+  helper its own doc says ~40 modules use, mapped a send failure with bare
+  `e.to_string()`. A reqwest transport error embeds the offending URL, whose query
+  string carries the upstream **API key** (`?apikey=…`) and the **target's PII** (the
+  email / username / name being searched) — and that error propagates into the
+  downloadable verbose log (`/api/v1/logs`) and the event stream. So a single timeout
+  or DNS failure on a keyed lookup could spill the operator's key and the subject's
+  identifier into a file the UI hands out. Two modules (`hunter_io`, `whoisxml`) had
+  already noticed and hand-rolled `e.without_url()` locally; `niamonx` (×3) and
+  `osintcat` bypassed the helper with the bare leaking form. A unit test confirmed the
+  leak (unstripped error contains the secret; stripped does not). **Paired:**
+  `SOLUTION_TREE` cycle 75 — same commit.
+
+- **2026-06-21** — **Cycle 76 (breach/stealer parsers minted garbage Email/Domain
+  entities — ground-truthed against real Ali.kareem scan logs).** Three uploaded
+  upstream dumps (combined-search + stealer-logs) exposed two data-quality leaks the
+  parsers waved through: **(1)** `see_know` emitted an `Email` on a bare
+  `value.contains('@')` with no shape check, so a provider echoing the query into the
+  field (snusbase returned `"email": "Ali.kareem"`, and half-values like `user@`)
+  became Email entities. **(2)** Every `domain`-field → `Domain` path (`oathnet_pro`
+  breach + stealer, `see_know`) gated only on `contains('.') && !is_app_package_id`,
+  so the IPs that saturate stealer logs — private (`192.168.0.1`) and public C2/panel
+  (`79.98.132.222`, `54.39.106.39`) — were minted as `Domain` entities, the exact
+  dns/cert/wayback misdirection the stealer path's own comment warns against. Both
+  pollute the graph and forge false correlations — the opposite of the cross-module
+  synergy intended. The `looks_like_email` gate also lived private to `oathnet_pro`,
+  and the domain check was triplicated. **Paired:** `SOLUTION_TREE` cycle 76 — same
+  commit.
+
+- **2026-06-21** — **Cycle 77 (a salted breach digest went unclassified, hiding the
+  strongest exposure signal).** OathNet packs the salt onto the password hash —
+  space-separated (`"2f4370b7…2858 _:=j[gpxgh…"`) or behind a `,:` marker
+  (`"b3dd…b414,:xpay"`), both real values from the Ali.kareem `jefit`/`boostbot` rows.
+  `identify_password_hash` demanded the *whole* string be hex, so the trailing salt
+  made it return `None`: the MD5 was emitted with **no `hash:md5`, no `crackable:fast`,
+  no `salted` tag** — and `mod.rs`'s fast-hash filter (which gates the
+  plaintext-equivalent warning) silently skipped it. A fast unsalted MD5 is
+  effectively plaintext; failing to flag it understates the account's exposure. (Also
+  verified list item #1, cross-provider **dedup**, is already correct:
+  `uid = SHA-256(kind:normalised_value)` + `merge`/`absorb` folds evidence, sums
+  corroboration and maxes confidence, so the same record from multiple modules already
+  collapses to one entity.) **Paired:** `SOLUTION_TREE` cycle 77 — same commit.
+
+- **2026-06-21** — **Cycle 78 (the password slot is a dumping ground; both parsers
+  trusted it).** Stealer/breach `password` fields routinely hold something other than
+  a secret — the Ali.kareem logs have `password: [fail]` (a capture sentinel) and
+  `password: ayilmazer486@gmail.com` (an email mis-stored in the slot). `oathnet_pro`'s
+  plaintext-password gate only rejected the `UPGRADE_TO_SEE`/`REDACTED` *redaction*
+  sentinels, so `[fail]` (len 6, varied) was minted as a `Password`; `see_know`'s gate
+  was weaker still — bare `!pw.is_empty()`. Worse, the email-in-slot was minted as a
+  `Password` by both, which **forges a reused-secret link (AU-047) across every row
+  with that capture quirk** and discards a real address lead. The "is this value a
+  secret?" decision was unwritten and inconsistent between the two parsers. **Paired:**
+  `SOLUTION_TREE` cycle 78 — same commit.

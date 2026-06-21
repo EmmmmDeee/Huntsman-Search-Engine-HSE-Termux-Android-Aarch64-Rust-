@@ -274,12 +274,10 @@ fn domain_for_target(t: &Target) -> Option<String> {
 }
 
 fn extract_emails(text: &str, employer_domain: &str) -> Vec<String> {
-    static R: OnceLock<Regex> = OnceLock::new();
-    let re = R.get_or_init(|| {
-        Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
-            .expect("constant employer email regex")
-    });
-    re.find_iter(text)
+    // Canonical email matcher (util::extract::EMAIL_RE) — same pattern this
+    // module open-coded; keep the per-call domain filter (no dedup here).
+    crate::util::extract::EMAIL_RE
+        .find_iter(text)
         .map(|m| m.as_str().to_lowercase())
         .filter(|s| {
             s.rsplit_once('@')

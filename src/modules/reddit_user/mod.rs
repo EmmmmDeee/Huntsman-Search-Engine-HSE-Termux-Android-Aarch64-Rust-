@@ -19,10 +19,7 @@
 //! multi-service identity confirmation. Anonymous calls are rate-limited; the
 //! engine's circuit breaker trips on the 429 so a busy run stops re-hitting it.
 
-use std::sync::OnceLock;
-
 use async_trait::async_trait;
-use regex::Regex;
 use serde::Deserialize;
 
 use crate::core::{
@@ -31,6 +28,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::extract::{EMAIL_RE, URL_RE};
 use crate::util::http::fetch_json_or_404;
 
 const SRC: &str = "reddit_user";
@@ -66,17 +64,6 @@ pub(super) struct Subreddit {
     pub(super) public_description: Option<String>,
     #[serde(default)]
     pub(super) title: Option<String>,
-}
-
-/// Email + http(s) URL extractors for the free-text profile bio. Compiled once.
-fn bio_patterns() -> &'static (Regex, Regex) {
-    static RES: OnceLock<(Regex, Regex)> = OnceLock::new();
-    RES.get_or_init(|| {
-        (
-            Regex::new(r"[\w.+-]+@[\w-]+\.[\w.-]+").expect("constant bio email regex"),
-            Regex::new(r#"https?://[^\s"'<>)]+"#).expect("constant bio url regex"),
-        )
-    })
 }
 
 #[async_trait]
@@ -127,12 +114,7 @@ impl Module for RedditUser {
         let handle = target.value.trim();
         // Reddit usernames are 3–20 chars of [A-Za-z0-9_-]. Reject anything else
         // before the round-trip.
-        if handle.len() < 3
-            || handle.len() > 20
-            || !handle
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        {
+        if !crate::util::str_util::is_handle(handle, 3, 20) {
             return Ok(ModuleResult::new());
         }
 
@@ -195,8 +177,7 @@ pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
             sr.public_description.as_deref().unwrap_or(""),
             sr.title.as_deref().unwrap_or("")
         );
-        let (email_re, url_re) = bio_patterns();
-        if let Some(m) = email_re.find(&bio) {
+        if let Some(m) = EMAIL_RE.find(&bio) {
             let email = m.as_str().to_lowercase();
             let mut e = Entity::new(EntityKind::Email, &email, 0.76, scan_id);
             e.tag("reddit");
@@ -207,7 +188,7 @@ pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
             );
             result.push(e);
         }
-        if let Some(m) = url_re.find(&bio) {
+        if let Some(m) = URL_RE.find(&bio) {
             let link = m.as_str().trim_end_matches(['.', ',', ')']);
             let mut url_e = Entity::new(EntityKind::Url, link, 0.70, scan_id);
             url_e.tag("reddit");
@@ -230,7 +211,7 @@ async fn fetch_submitted(http: &reqwest::Client, username: &str, scan_id: &str) 
     );
     let Ok(resp) = http
         .get(&url)
-        .header("User-Agent", "HSE/1.0 OSINT research tool")
+        .header("User-Agent", crate::util::http::UA_OSINT)
         .send()
         .await
     else {
@@ -243,20 +224,13 @@ async fn fetch_submitted(http: &reqwest::Client, username: &str, scan_id: &str) 
         return Vec::new();
     };
 
-    let mut subreddits: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // Parse subreddit names from JSON without a full Deserialize struct
-    let mut remaining = body.as_str();
-    while let Some(pos) = remaining.find("\"subreddit\":\"") {
-        remaining = &remaining[pos + 13..];
-        let Some(end) = remaining.find('"') else {
-            break;
-        };
-        let sub = &remaining[..end];
-        if !sub.is_empty() && sub.len() <= 50 {
-            subreddits.insert(sub.to_string());
-        }
-        remaining = &remaining[end..];
-    }
+    // Parse subreddit names from JSON without a full Deserialize struct; cap
+    // the length to skip pathological values, and dedup across the listing.
+    let subreddits: std::collections::HashSet<String> =
+        crate::util::json::scan_string_field(&body, "subreddit")
+            .into_iter()
+            .filter(|sub| sub.len() <= 50)
+            .collect();
 
     subreddits
         .into_iter()

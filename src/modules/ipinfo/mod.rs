@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
     tags,
@@ -69,10 +69,7 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
             && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.58, scan_id)
         {
             ce.tag("ipinfo");
-            if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
-                ce.tag(format!("au-state:{state}"));
-                ce.tag("country:AU");
-            }
+            crate::util::geo::tag_au_state(&mut ce, lat, lon);
             let ev = [
                 ("city", data.city.as_deref()),
                 ("region", data.region.as_deref()),
@@ -96,11 +93,7 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
     let region = data.region.as_deref().unwrap_or("");
     let country = data.country.as_deref().unwrap_or("");
     if !city.is_empty() {
-        let addr = if !region.is_empty() {
-            format!("{city}, {region}, {country}")
-        } else {
-            format!("{city}, {country}")
-        };
+        let addr = crate::util::geo::compose_address(city, region, country);
         let mut ae = Entity::new(EntityKind::Address, &addr, 0.60, scan_id);
         ae.tag("ipinfo");
         // Postal/ZIP narrows the address below city granularity — surface it as
@@ -201,10 +194,7 @@ impl Module for IpInfo {
             return Ok(ModuleResult::new());
         }
 
-        let data: IpInfoResp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
+        let data: IpInfoResp = crate::util::http::json_decode(SRC, resp).await?;
 
         let mut result = ModuleResult::new();
         result.entities = build_entities(ip, &data, &ctx.scan_id);

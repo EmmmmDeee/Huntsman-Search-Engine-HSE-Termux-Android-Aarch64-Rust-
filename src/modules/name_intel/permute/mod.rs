@@ -304,6 +304,73 @@ pub struct Pivot {
 
 // ── parse() ──────────────────────────────────────────────────────────────────
 
+/// Remove parenthetical / bracketed annotations — nicknames, maiden names, notes
+/// — that records and social display names append, e.g. `"William (Bill) Gates"`
+/// or `"Jane Smith (Jones)"`. Without this they leak in as spurious name tokens
+/// and shift first/middle/last (`"Ali Kareem (Ali)"` parsed to middle="kareem",
+/// last="ali"). Nested and mixed `()[]{}` are handled; a stray unmatched closer
+/// is ignored. The known-nickname expansion still recovers a canonical first
+/// name's aliases, so dropping the annotation costs nothing for the common case.
+fn strip_bracketed(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut depth: u32 = 0;
+    for c in raw.chars() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Detect the **"Last, First \[Middle…\]"** convention — the bibliographic /
+/// records / sorted-list order that electoral rolls, court records, CSV exports
+/// and citations emit — and return the display tokens reordered into natural
+/// **"First \[Middle…\] Last"** order. Returns `None` (so [`parse`] falls back to
+/// a plain split) when the comma is *not* a surname separator:
+///   * no comma, or a side that cleans to nothing;
+///   * the forename side is only a title — `"Ali Kareem, PhD"`, `"Kareem, Jr"` —
+///     where the comma introduces a suffix, not a given name.
+///
+/// A leading honorific on either side (`"Dr. Kareem, Ali"`, `"Kareem, Dr Ali"`)
+/// and any trailing generational/professional suffix on the forename side
+/// (`"Kareem, Ali Jr"`) are dropped, mirroring the stripping [`parse`] already
+/// applies to the plain form, so only real name tokens drive the reorder.
+fn reorder_comma_name(raw: &str) -> Option<Vec<String>> {
+    let (surname_side, forename_side) = raw.split_once(',')?;
+    let mut surname: Vec<String> = surname_side
+        .split_whitespace()
+        .filter_map(clean_display_token)
+        .collect();
+    let mut forename: Vec<String> = forename_side
+        .split_whitespace()
+        .filter_map(clean_display_token)
+        .collect();
+    let is_honorific = |t: &str| HONORIFICS.contains(&t.to_ascii_lowercase().as_str());
+    let is_suffix = |t: &str| GEN_SUFFIXES.contains(&t.to_ascii_lowercase().as_str());
+
+    if surname.len() >= 2 && surname.first().is_some_and(|t| is_honorific(t)) {
+        surname.remove(0);
+    }
+    if forename.first().is_some_and(|t| is_honorific(t)) {
+        forename.remove(0);
+    }
+    while forename.last().is_some_and(|t| is_suffix(t)) {
+        forename.pop();
+    }
+
+    // A surname separator only when real name tokens survive on both sides:
+    // "Ali Kareem, PhD" collapses the forename side to empty here, leaving the
+    // suffix for parse()'s plain-split path to strip.
+    if surname.is_empty() || forename.is_empty() {
+        return None;
+    }
+    forename.extend(surname); // First [Middle…] Last
+    Some(forename)
+}
+
 /// Parse a free-form name string into [`ParsedName`].
 ///
 /// Returns `None` when fewer than two alphabetic tokens survive cleaning. Leading
@@ -311,12 +378,19 @@ pub struct Pivot {
 /// (Jr., Sr., III, PhD, …) are stripped so they never appear in handle tokens.
 /// An optional 2–4 digit run is captured as `number`.
 pub fn parse(raw: &str) -> Option<ParsedName> {
+    // A trailing/parenthetical number (a birth year) is still read from the raw
+    // string; only the name *tokens* drop bracketed annotations.
     let number = extract_number(raw);
+    let cleaned = strip_bracketed(raw);
 
-    let mut display_words: Vec<String> = raw
-        .split(|c: char| c.is_whitespace() || c == ',')
-        .filter_map(clean_display_token)
-        .collect();
+    // "Last, First" records order is reordered to natural order first; otherwise
+    // the comma is just another token separator.
+    let mut display_words: Vec<String> = reorder_comma_name(&cleaned).unwrap_or_else(|| {
+        cleaned
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .filter_map(clean_display_token)
+            .collect()
+    });
 
     // Strip leading honorific when ≥ 3 words remain (so we keep ≥ 2 after).
     if display_words.len() > 2 {

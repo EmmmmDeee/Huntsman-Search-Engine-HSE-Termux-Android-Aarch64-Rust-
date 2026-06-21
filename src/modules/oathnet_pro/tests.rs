@@ -115,6 +115,42 @@ use super::*;
     }
 
     #[test]
+    fn stealer_android_app_package_is_not_minted_as_domain() {
+        use serde_json::json;
+        // Real shape from a live oathnet stealer-search row (Android credential):
+        // the `domain` field is the reverse-DNS app PACKAGE, and the `url` is an
+        // `android://` scheme. Neither must become a `Domain` entity — a bogus
+        // `com.facebook.katana` domain previously expanded into a wasted
+        // HudsonRock `search-by-domain` call that pulled in strangers' records.
+        let item = json!({
+            "username": "alikareem",
+            "domain": ["com.facebook.katana"],
+            "url": "android://zQxb6hXv1MJiC1Yy==@com.facebook.katana/",
+            "password": "secret"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_stealer_entities(&item, "scan", "oathnet.org:test", &mut seen, &mut result);
+
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain),
+            "an Android app package must not be minted as a Domain entity"
+        );
+        // The credential itself (username@url) is still captured — the app
+        // context is preserved as a Credential, just not as a fake domain.
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Credential),
+            "the credential pivot is still emitted"
+        );
+    }
+
+    #[test]
     fn extract_breach_entities_non_target_row_tags_candidate() {
         use serde_json::json;
         // A row whose fields do NOT match the target: phone/person/country are
@@ -530,7 +566,7 @@ use super::*;
     }
 
     #[test]
-    fn stealer_url_becomes_url_and_domain_pivots() {
+    fn stealer_url_becomes_url_pivot_but_host_is_not_a_domain() {
         use serde_json::json;
         let item = json!({
             "username": "victim@example.com",
@@ -541,20 +577,22 @@ use super::*;
         let mut result = ModuleResult::new();
         extract_stealer_entities(&item, "scan", "oathnet.org:test", &mut seen, &mut result);
 
-        // The login URL is now a first-class Url pivot (was evidence-only).
+        // The login URL is a first-class Url pivot (was evidence-only).
         let url = result
             .entities
             .iter()
             .find(|e| e.kind == EntityKind::Url && e.value.contains("portal.acmebank.com/login"))
             .expect("stealer Url entity");
         assert!(url.has_tag("credential-url"));
-        // Its host is emitted as a Domain pivot.
+        // Its host is a third-party service the subject merely uses — it must NOT
+        // become a Domain entity (that minted subdomain noise + misdirected
+        // dns/cert/wayback expansion of the platform's own infrastructure).
         assert!(
-            result
+            !result
                 .entities
                 .iter()
                 .any(|e| e.kind == EntityKind::Domain && e.value == "portal.acmebank.com"),
-            "stealer url host Domain"
+            "stealer url host must not be minted as a Domain"
         );
     }
 
@@ -594,6 +632,33 @@ use super::*;
     }
 
     #[test]
+    fn identify_password_hash_reads_digest_with_appended_salt() {
+        // OathNet packs the salt onto the digest (real values from the Ali.kareem
+        // scan): space-separated, and behind a `,:` marker. Both must still be
+        // recognised as a fast, crackable MD5 — the strongest exposure signal,
+        // which the whole-string hex check used to miss entirely.
+        assert_eq!(
+            identify_password_hash("2f4370b7f7000f4f2a7cf96ec45f2858 _:=j[gpxgh[e<b!+k?2h(n0b'9pn=w"),
+            Some(("md5", true))
+        );
+        assert_eq!(
+            identify_password_hash("b3dd5393fc5e7f44fd4fd4c85490b414,:xpay"),
+            Some(("md5", true))
+        );
+        // A leading SHA-256 with an appended salt classifies by the 64-hex run.
+        assert_eq!(
+            identify_password_hash(&format!("{}:somesalt", "a".repeat(64))),
+            Some(("sha256", true))
+        );
+        // The remainder must begin at a separator: a token that merely starts with
+        // hex but runs straight into non-hex is not a digest.
+        assert_eq!(
+            identify_password_hash("2f4370b7f7000f4f2a7cf96ec45f2858XYZ"),
+            None
+        );
+    }
+
+    #[test]
     fn password_hash_entity_carries_hash_intel() {
         use serde_json::json;
         // A bcrypt digest with a salt → classified slow + salted.
@@ -621,6 +686,38 @@ use super::*;
         assert!(pw.has_tag("hash:bcrypt"), "tags: {:?}", pw.tags);
         assert!(pw.has_tag("crackable:slow"));
         assert!(pw.has_tag("salted"));
+    }
+
+    #[test]
+    fn password_hash_intel_handles_oathnet_appended_salt() {
+        use serde_json::json;
+        // OathNet's real format from the Ali.kareem scan (jefit row): the MD5 digest
+        // with the salt appended and no separate `salt` field. The appended salt
+        // used to leave the hash entirely unclassified; it must now read as a fast,
+        // crackable, salted MD5.
+        let item = json!({
+            "email": "ali.kareem95@gmail.com",
+            "password_hash": "2f4370b7f7000f4f2a7cf96ec45f2858 _:=j[gpxgh[e<b!+k?2h(n0b'9pn=w",
+            "source": "jefit.com"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "ali.kareem95@gmail.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let pw = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Password)
+            .expect("password entity");
+        assert!(pw.has_tag("hash:md5"), "tags: {:?}", pw.tags);
+        assert!(pw.has_tag("crackable:fast"));
+        assert!(pw.has_tag("salted"), "appended salt must set the salted tag");
     }
 
     #[test]
@@ -698,4 +795,34 @@ use super::*;
                 "junk password '{junk}' must not be emitted"
             );
         }
+    }
+
+    #[test]
+    fn plaintext_password_drops_sentinel_and_recovers_email() {
+        use serde_json::json;
+        // A capture sentinel in the password slot must not become a Password.
+        let item = json!({"email": "subject@example.com", "password": "[fail]", "source": "DB"});
+        let mut seen = HashSet::new();
+        let mut r = ModuleResult::new();
+        extract_breach_entities(&item, "subject@example.com", "scan", "oathnet.org:t", &mut seen, &mut r);
+        assert!(
+            !r.entities.iter().any(|e| e.kind == EntityKind::Password && e.value == "[fail]"),
+            "a [fail] sentinel must not be minted as a Password"
+        );
+
+        // An email mis-stored in the password slot is recovered as an Email lead,
+        // never as a Password (which would forge a reused-secret link).
+        let item = json!({"username": "ali", "password": "ayilmazer486@gmail.com", "source": "Stealer"});
+        let mut seen = HashSet::new();
+        let mut r = ModuleResult::new();
+        extract_breach_entities(&item, "ali", "scan", "oathnet.org:t", &mut seen, &mut r);
+        let recovered = r.entities.iter()
+            .find(|e| e.value == "ayilmazer486@gmail.com")
+            .expect("email recovered from the password field");
+        assert_eq!(recovered.kind, EntityKind::Email);
+        assert!(recovered.has_tag("recovered-from-password"), "tags: {:?}", recovered.tags);
+        assert!(
+            !r.entities.iter().any(|e| e.kind == EntityKind::Password && e.value.contains('@')),
+            "an email must not also be minted as a Password"
+        );
     }

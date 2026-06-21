@@ -75,6 +75,31 @@ pub fn is_valid_coords(lat: f64, lon: f64) -> bool {
         && !(lat == 0.0 && lon == 0.0)
 }
 
+/// Compose a `"City, Region, Country"` address line from a geolocation record,
+/// dropping an empty middle component (region / state / province) so a record
+/// with only a city and country reads `"City, Country"` — never the
+/// `"City, , Country"` an empty join would leave. Several IP-geo providers
+/// expose the same three-tier shape under different field names, so this join
+/// lives here once rather than re-inlined per module.
+///
+/// The caller keeps its own presence guard: some sources emit an Address only
+/// when both city and country are present, others on a non-empty city alone.
+///
+/// ```
+/// use huntsman_search_engine::util::geo::compose_address;
+///
+/// assert_eq!(compose_address("Brisbane", "QLD", "AU"), "Brisbane, QLD, AU");
+/// assert_eq!(compose_address("Singapore", "", "SG"), "Singapore, SG");
+/// ```
+#[must_use]
+pub fn compose_address(city: &str, region: &str, country: &str) -> String {
+    if region.is_empty() {
+        format!("{city}, {country}")
+    } else {
+        format!("{city}, {region}, {country}")
+    }
+}
+
 /// True if a coordinate falls within the bounding box of the Australian
 /// mainland plus Tasmania. A coarse, **offline** AU-relevance gate: it lets a
 /// raw `Coordinates` seed be classified as on-region before (or without) a
@@ -147,6 +172,18 @@ pub fn au_state_for_coords(lat: f64, lon: f64) -> Option<&'static str> {
         }
     }
     None
+}
+
+/// Tag `entity` with its Australian state and `country:AU` when `(lat, lon)`
+/// falls inside an AU state/territory; a no-op otherwise. Coordinate-emitting
+/// modules apply this exact AU-relevance pair (`au-state:{STATE}` + `country:AU`)
+/// to a fresh fix, so the lookup-and-tag lives here once rather than re-inlined
+/// per module. Uses [`au_state_for_coords`] for the offline classification.
+pub fn tag_au_state(entity: &mut crate::core::entity::Entity, lat: f64, lon: f64) {
+    if let Some(state) = au_state_for_coords(lat, lon) {
+        entity.tag(format!("au-state:{state}"));
+        entity.tag("country:AU");
+    }
 }
 
 /// Magnitude (in degrees) below which a *coarse* geolocation provider's
