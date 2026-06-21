@@ -2637,3 +2637,13 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   canonical `EMAIL_RE` (looser — accepts a 1-char/numeric TLD like `x@y.1`), and
   there was no shared URL matcher at all, so the pattern was duplicated rather than
   reused. **Paired:** `SOLUTION_TREE` cycle 64 — same commit.
+
+- **2026-06-21** — **Cycle 65 (two more open-coded copies of the canonical email
+  regex).** Continuing the cycle-64 sweep, `exa_search` (a local `static EMAIL_RE`
+  *shadowing the canonical name*) and `employer_pivot` (`extract_emails`' `OnceLock`
+  regex) each re-declared the email pattern — trivially-reskinned variants
+  (`a-zA-Z` ordering; an escaped `\-`) that are character-class-identical to
+  `util::extract::EMAIL_RE`. Four independent email regexes had accreted (these two
+  plus the two bio copies from cycle 64), defeating the single-source-of-truth the
+  `util::extract` module was created to guarantee. **Paired:** `SOLUTION_TREE`
+  cycle 65 — same commit.

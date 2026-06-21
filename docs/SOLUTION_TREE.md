@@ -1778,3 +1778,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   codebase, not two; a reusable URL matcher for future callers. Gate green: lib 3,292
   (+1), 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE`
   cycle 64 — same commit.
+
+- **2026-06-21** — **Cycle 65 (point the last two email regexes at `EMAIL_RE`).**
+  `exa_search` now imports `crate::util::extract::EMAIL_RE` (call site `find_iter`
+  unchanged) with its local `static EMAIL_RE` deleted; `employer_pivot::extract_emails`
+  uses the canonical matcher directly, dropping its `OnceLock` regex while keeping its
+  domain filter (and no dedup, preserving behaviour). Both patterns were
+  character-class-identical, so the swap is behaviour-preserving — full suite passes.
+  `util::extract::EMAIL_RE` is now the sole email regex in the codebase. Gate green:
+  lib 3,292, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired:
+  `PROBLEM_TREE` cycle 65 — same commit.
