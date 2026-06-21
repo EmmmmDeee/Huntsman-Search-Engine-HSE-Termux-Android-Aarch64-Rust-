@@ -191,7 +191,10 @@ impl Module for RdapDomain {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        15_000
+        // RDAP servers (IANA bootstrap + registrar endpoints) respond within
+        // 4-6 s on healthy paths; 8 s provides margin and cuts the ceiling
+        // from 15 s, freeing concurrency slots faster.
+        8_000
     }
 
     fn category(&self) -> ModuleCategory {
