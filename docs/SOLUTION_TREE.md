@@ -2082,3 +2082,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   headroom locked). Gate green: lib 3,314, 24 arch guards, fmt/clippy(`--all-targets`)/doc
   clean — verified on the CI toolchain (rustc 1.96.0). Paired: `PROBLEM_TREE` cycle 85 —
   same commit.
+
+- **2026-06-21** — **Cycle 86 (promote the subject's demographics to normalized,
+  first-class tags).** New `identity_tags` helper reads DOB / gender / age across the key
+  spellings the providers use (`date_birth` | `birthdate` | `date_of_birth` | `dob`;
+  numeric-or-string `age`), normalizes them (gender collapses `male`/`m` → `M`,
+  `female`/`f` → `F`; one canonical `dob:` regardless of source key) and stamps them as
+  tags on the see_know `Person`. The dossier headline now reads
+  `Ali Kareem [dob:1990-05-12] [gender:M] [age:34]` directly instead of leaving the
+  demographics buried in raw-record evidence, and because tags merge by UID a value
+  re-stated across records folds to one. Purely additive: a record with no demographics
+  adds no tags (the `extract_entities` characterization test is unchanged), and the
+  full-field evidence fold still carries the raw values as before. +1 test (normalization
+  across key/value spellings; the no-demographics no-op). Gate green: lib 3,315, 24 arch
+  guards, fmt/clippy(`--all-targets`)/doc clean — verified on rustc 1.96.0. Paired:
+  `PROBLEM_TREE` cycle 86 — same commit.
