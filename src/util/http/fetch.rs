@@ -95,16 +95,15 @@ pub async fn read_body_capped(resp: reqwest::Response, cap: usize) -> Option<Str
 /// any legitimate OSINT JSON response (even a large `crt.sh` certificate list).
 pub(super) const JSON_BODY_CAP: usize = 32 * 1024 * 1024;
 
-/// Stream a response body into a String, refusing to buffer more than
-/// [`JSON_BODY_CAP`] bytes — the JSON-path equivalent of [`read_body_capped`].
-/// Errors (rather than truncating) past the cap, since a half-read JSON body
-/// can't be parsed anyway. Lossy UTF-8 so an odd-charset body still yields a
-/// parseable string instead of failing outright.
-pub(super) async fn read_json_text(resp: reqwest::Response, module: &str) -> Result<String> {
+/// Stream a response body into a `String`, **erroring** (not truncating) past
+/// [`JSON_BODY_CAP`] bytes: a body that needs parsing can't be trusted half-read,
+/// and an unbounded `resp.text()` would let a hostile/misconfigured upstream OOM a
+/// Termux device. Transport errors are module-tagged with credentials redacted;
+/// lossy UTF-8 so an odd-charset body still yields a string. The shared erroring-cap
+/// core of [`read_json_text`] and [`read_text`] (cf. the *truncating*, needle-check
+/// [`read_body_capped`]).
+async fn read_capped_or_err(resp: reqwest::Response, module: &str) -> Result<String> {
     use futures::StreamExt as _;
-    // Capture the request URL before the body stream consumes `resp`, so the
-    // raw archive can key this response by what was queried.
-    let url = resp.url().to_string();
     let mut stream = resp.bytes_stream();
     let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);
     while let Some(chunk) = stream.next().await {
@@ -120,13 +119,31 @@ pub(super) async fn read_json_text(resp: reqwest::Response, module: &str) -> Res
         }
         buf.extend_from_slice(&bytes);
     }
-    let text = String::from_utf8_lossy(&buf).into_owned();
-    // Universal raw retention: every module's JSON response is archived verbatim
-    // here — the single chokepoint shared by fetch_json, fetch_json_or_404,
-    // fetch_keyed_json and json_scanned — so the full dossier's RAW SOURCE
-    // RECORDS section is complete for ANY scan, not only the breach pools.
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Read a response body as text (capped via [`read_capped_or_err`]) **and archive
+/// it** to the raw-source record — the single chokepoint behind `json_decode`,
+/// `json_scanned`, and `fetch_json*`, so the dossier's RAW SOURCE RECORDS section
+/// is complete for any scan. Use [`read_text`] for endpoints whose body should not
+/// be archived.
+pub(super) async fn read_json_text(resp: reqwest::Response, module: &str) -> Result<String> {
+    // Capture the request URL before the body stream consumes `resp`, so the raw
+    // archive can key this response by what was queried.
+    let url = resp.url().to_string();
+    let text = read_capped_or_err(resp, module).await?;
     crate::util::raw_archive::record_http(module, &url, &text);
     Ok(text)
+}
+
+/// The text counterpart to [`json_decode`](super::url::json_decode): a bounded,
+/// credential-redacted body read for plain-text endpoints (DNS host lists,
+/// k-anonymity hash ranges, …). Unlike [`read_json_text`] it does **not** archive
+/// the body, so a large generic payload (a Pwned-Passwords hash range) is not
+/// retained as a source record. Replaces a hand-rolled, *unbounded*
+/// `resp.text().await` that could OOM a constrained device on a hostile body.
+pub async fn read_text(module: &str, resp: reqwest::Response) -> Result<String> {
+    read_capped_or_err(resp, module).await
 }
 
 /// Last up-to-4 *characters* of a key for log lines — char-boundary-safe.

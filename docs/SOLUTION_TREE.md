@@ -1958,3 +1958,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   +2 tests seeded from the logs (sentinel/email/secret split; the breach end-to-end
   recovery + no-false-Password). Gate green: lib 3,304, 24 arch guards,
   fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 78 — same commit.
+
+- **2026-06-21** — **Cycle 79 (a capped, non-archiving `read_text` chokepoint).**
+  Factored the erroring-cap streaming core out of `read_json_text` into a private
+  `read_capped_or_err` (behaviour-identical for the ~25 JSON callers), and added
+  `util::http::read_text` — the text counterpart to `json_decode`: bounded at
+  `JSON_BODY_CAP`, transport errors module-tagged with credentials redacted, and
+  **no archiving** (so a generic payload like a Pwned-Passwords hash range is not
+  retained as a source record). Routed `hackertarget`, `pwned_passwords` and
+  `social_location` through it, dropping two now-unused `Error` imports. Net effect:
+  the three text endpoints gain the OOM cap + redaction the JSON path already had,
+  with one fewer hand-rolled error tail each. +1 test. Gate green: lib 3,305, 24 arch
+  guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 79 —
+  same commit.

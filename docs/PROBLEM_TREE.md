@@ -2795,3 +2795,16 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   with that capture quirk** and discards a real address lead. The "is this value a
   secret?" decision was unwritten and inconsistent between the two parsers. **Paired:**
   `SOLUTION_TREE` cycle 78 — same commit.
+
+- **2026-06-21** — **Cycle 79 (three text endpoints read their body unbounded).**
+  `hackertarget`, `pwned_passwords` and `social_location` fetched plain-text bodies
+  with a hand-rolled `resp.text().await.map_err(|e| Error::module(SRC, e.to_string()))`
+  — **no size cap** (a hostile/misconfigured upstream could OOM a Termux device under
+  the probe fan-out, the exact threat the JSON path already guards with the 32 MiB
+  `JSON_BODY_CAP`) and **no credential redaction** in the transport-error path (the
+  same leak class fixed in `send_tagged`). The capped reader existed only behind the
+  JSON path (`read_json_text`, which also archives) and a *truncating* needle-checker
+  (`read_body_capped`); neither fit a text endpoint that must error-not-truncate (a
+  truncated Pwned-Passwords hash range would yield a false "not pwned") and must not
+  bloat the archive with a generic payload. **Paired:** `SOLUTION_TREE` cycle 79 —
+  same commit.

@@ -441,3 +441,18 @@ fn redact_over_masks_bare_key_param_after_boundary() {
     assert!(r.contains("key=***"), "got: {r}");
     assert!(r.contains("page=2"), "got: {r}");
 }
+
+#[tokio::test]
+async fn read_text_reads_body_with_module_tagged_errors() {
+    // The text counterpart to json_decode: returns the body verbatim, and (unlike
+    // read_json_text) does not archive it. The cap/redaction core is shared with
+    // read_json_text, exercised by the json_decode tests.
+    let ok = reqwest::Response::from(
+        http::Response::builder()
+            .status(200)
+            .body("plain text body".to_string())
+            .unwrap(),
+    );
+    let body = super::fetch::read_text("test_mod", ok).await.unwrap();
+    assert_eq!(body, "plain text body");
+}
