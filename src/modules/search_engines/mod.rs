@@ -78,56 +78,87 @@ const MAX_ACCUMULATED_RESULTS: usize = 2000;
 /// the deadline, so concurrency can never push the pass past the hard kill.
 const ENGINE_CONCURRENCY: usize = 6;
 
-/// After this many consecutive seeds where an engine returned nothing (empty or
-/// blocked or unreachable), the engine is considered session-dead and is
-/// silently skipped for the rest of the scan. Real execution data shows `aol`,
-/// `yandex`, and `searx` producing 0 results across 119 consecutive seeds from
-/// datacenter IPs — ~231 s of wasted round-trips per depth-2 scan. Three
-/// consecutive strikeouts is enough signal to stop trying.
+/// Consecutive-empty threshold for an engine that has **never** produced a
+/// result this session. From datacenter IPs `google`, `you`, `presearch`,
+/// `qwant`, … return 0 results on every seed; three strikeouts is enough signal
+/// that they're hard-blocked here, so stop probing them (saves ~200+ s/scan).
 const SESSION_DEAD_THRESHOLD: u8 = 3;
 
-/// Per-engine consecutive-empty counter, shared across all `process()` calls
-/// within one binary execution. A fresh `hse` invocation resets it (the static
-/// is initialised on first access, which is always within a single scan).
+/// Consecutive-empty threshold for an engine that **has** produced ≥1 result
+/// this session ("proven live"). Intermittently-blocked engines like `bing`
+/// (~48% block rate) and `ecosia` (~78%) routinely hit 3-block streaks *between*
+/// real hits; the low threshold was permanently silencing them mid-scan and
+/// discarding their later results (live depth-1 scan: `ecosia` was the 2nd-most
+/// productive engine at 182 results, yet was silenced after a 4-block run; `bing`
+/// lost its remaining hits the same way). A proven engine must miss this many
+/// seeds *in a row* before we accept it has genuinely gone down — high enough to
+/// ride out a normal block streak, low enough to abandon a truly dead host.
+const SESSION_DEAD_THRESHOLD_PROVEN: u8 = 10;
+
+/// Per-engine session liveness: consecutive empties and whether the engine has
+/// EVER returned a result this run. Shared across all `process()` calls within
+/// one binary execution; a fresh `hse` invocation starts empty.
+#[derive(Default, Clone, Copy)]
+struct EngineLiveness {
+    consecutive_empty: u8,
+    ever_hit: bool,
+}
+
 static SESSION_EMPTY_COUNTS: std::sync::LazyLock<
-    Mutex<std::collections::HashMap<&'static str, u8>>,
+    Mutex<std::collections::HashMap<&'static str, EngineLiveness>>,
 > = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
-/// True when `name` has reached the session-dead threshold.
+/// The applicable dead-threshold for a liveness record: a proven-live engine
+/// gets the tolerant threshold, an unproven one the aggressive default. **Pure.**
+fn dead_threshold(live: EngineLiveness) -> u8 {
+    if live.ever_hit {
+        SESSION_DEAD_THRESHOLD_PROVEN
+    } else {
+        SESSION_DEAD_THRESHOLD
+    }
+}
+
+/// True when `name` has missed enough consecutive seeds to be silenced — using
+/// the tolerant threshold once the engine has proven it can produce results.
 fn is_session_dead(name: &str) -> bool {
-    SESSION_EMPTY_COUNTS
+    let live = SESSION_EMPTY_COUNTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(name)
         .copied()
-        .unwrap_or(0)
-        >= SESSION_DEAD_THRESHOLD
+        .unwrap_or_default();
+    live.consecutive_empty >= dead_threshold(live)
 }
 
-/// Increment the empty count for `name`; mark it session-dead when the threshold
-/// is reached (logged once so operators know why it was silenced).
+/// Increment the empty streak for `name`; log once when it crosses its
+/// (proven-aware) threshold so operators know why it was silenced.
 fn record_empty(name: &'static str) {
     let mut map = SESSION_EMPTY_COUNTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let count = map.entry(name).or_insert(0);
-    *count = count.saturating_add(1);
-    if *count == SESSION_DEAD_THRESHOLD {
+    let live = map.entry(name).or_default();
+    live.consecutive_empty = live.consecutive_empty.saturating_add(1);
+    let threshold = dead_threshold(*live);
+    if live.consecutive_empty == threshold {
         tracing::debug!(
             engine = name,
-            threshold = SESSION_DEAD_THRESHOLD,
-            "search engine returned nothing for {SESSION_DEAD_THRESHOLD} consecutive seeds \
+            threshold,
+            proven = live.ever_hit,
+            "search engine returned nothing for {threshold} consecutive seeds \
              — silenced for the rest of this scan"
         );
     }
 }
 
-/// Reset the empty count for `name` when it actually returns results.
+/// Reset the empty streak for `name` when it actually returns results, and mark
+/// it "proven live" so future streaks are judged against the tolerant threshold.
 fn record_hit(name: &'static str) {
-    SESSION_EMPTY_COUNTS
+    let mut map = SESSION_EMPTY_COUNTS
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(name, 0);
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let live = map.entry(name).or_default();
+    live.consecutive_empty = 0;
+    live.ever_hit = true;
 }
 
 const SOCIAL_HOSTS: &[&str] = &[

@@ -1853,6 +1853,7 @@ fn session_dead_threshold_fires_after_n_consecutive_empties() {
         !is_session_dead(FAKE),
         "should not be dead before threshold"
     );
+    // An UNPROVEN engine (never produced a result) dies fast — google/you/etc.
     for i in 0..SESSION_DEAD_THRESHOLD {
         record_empty(FAKE);
         if i + 1 < SESSION_DEAD_THRESHOLD {
@@ -1867,4 +1868,43 @@ fn session_dead_threshold_fires_after_n_consecutive_empties() {
     // record_hit resets the streak — engine is live again.
     record_hit(FAKE);
     assert!(!is_session_dead(FAKE), "hit must un-dead the engine");
+}
+
+#[test]
+fn proven_engine_tolerates_long_block_streaks() {
+    // A "proven live" engine (≥1 result this session) must ride out the kind of
+    // 3-block streaks that intermittently-blocked engines (bing ~48% block,
+    // ecosia ~78%) routinely hit BETWEEN real results. The old flat threshold of
+    // 3 permanently silenced them mid-scan and discarded their later results.
+    const FAKE: &str = "__test_proven_engine__";
+    SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(FAKE);
+
+    // Prove it live, then feed it the streak that WOULD have killed it before.
+    record_hit(FAKE);
+    for _ in 0..SESSION_DEAD_THRESHOLD {
+        record_empty(FAKE);
+    }
+    assert!(
+        !is_session_dead(FAKE),
+        "a proven engine must survive an unproven-length empty streak"
+    );
+
+    // It still dies if the host genuinely goes down for the full tolerant run.
+    for _ in SESSION_DEAD_THRESHOLD..SESSION_DEAD_THRESHOLD_PROVEN {
+        record_empty(FAKE);
+    }
+    assert!(
+        is_session_dead(FAKE),
+        "a proven engine still dies after the tolerant threshold"
+    );
+
+    // A fresh hit revives it AND resets the streak.
+    record_hit(FAKE);
+    assert!(
+        !is_session_dead(FAKE),
+        "a later hit revives a silenced engine"
+    );
 }
