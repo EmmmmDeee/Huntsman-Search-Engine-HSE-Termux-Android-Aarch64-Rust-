@@ -292,6 +292,9 @@ pub async fn engines_health() -> Json<Value> {
                 "latency_ms": h.latency_ms,
                 "results": h.results,
                 "detail": h.detail,
+                // True when this engine has been silenced for the current scan
+                // after returning nothing for 3+ consecutive seeds.
+                "session_dead": crate::modules::search_engines::session_dead(h.name),
             })
         })
         .collect();
