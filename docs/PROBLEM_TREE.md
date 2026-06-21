@@ -2686,3 +2686,10 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   relationship extraction, and the verbose rich-detail/context walk (with its
   ~120-line `RICH_DETAIL_SKIP` table). One scroll to find any of them.
   **Paired:** `SOLUTION_TREE` cycle 69 — same commit.
+
+- **2026-06-21** — **Cycle 70 (key_harvest/mod.rs was the 1,363-line harvester core).**
+  The API-key/secret harvester packed several distinct detector families into one
+  file: API-key identification + context analysis, the main extraction orchestrator,
+  the non-key secret detectors (PEM private keys, crypto-wallet addresses, recursive
+  base64 unwrapping, Shannon entropy), and the key-emission/persistence path. The
+  largest module file in the tree. **Paired:** `SOLUTION_TREE` cycle 70 — same commit.

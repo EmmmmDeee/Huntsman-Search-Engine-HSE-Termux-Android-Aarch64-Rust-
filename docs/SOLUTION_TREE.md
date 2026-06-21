@@ -1837,3 +1837,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (`super::`) for the strict rustdoc lint. Pure code movement — registry stable, all
   see_know tests pass. Gate green: lib 3,290, 24 arch guards,
   fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 69 — same commit.
+
+- **2026-06-21** — **Cycle 70 (carve the self-contained detectors out of
+  key_harvest/mod.rs).** mod.rs 1,363 → **972** lines. Extracted the two cohesive,
+  low-coupling blocks as new siblings: `crypto.rs` (199 — `identify_pem_private_key`,
+  `identify_crypto_address`, the recursive-base64 unwrap + `shannon_entropy`) and
+  `emit.rs` (198 — `emit_key`/`emit_key_with` + the `store_api_credential*` writers).
+  Promotions: the detectors to `pub(super)` (only `BASE64_DECODE_MAX_DEPTH` needed it
+  for a white-box test); `emit_key*` to `pub(super)`; the public `store_api_credential*`
+  re-exported with `pub use` so `key_harvest::store_api_credential` still resolves for
+  the parent `oathnet_pro`. `emit.rs`'s doc link to `DetectionConfidence` (which stays
+  in mod.rs) is fully-qualified. The interconnected identification/tier sections were
+  left in place — their dense pub surface + 2,236-line test file make them higher-risk
+  for lower return. Pure code movement, all tests pass. Gate green: lib 3,290, 24 arch
+  guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 70 — same
+  commit.
