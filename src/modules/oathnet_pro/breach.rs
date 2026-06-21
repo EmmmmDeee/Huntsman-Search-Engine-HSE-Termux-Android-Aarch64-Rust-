@@ -79,14 +79,13 @@ pub(super) fn push_oathnet_entity(
         e.tag(*t);
     }
     // Quarantine policy, enforced in ONE place: a row that doesn't match the
-    // target identity yields CANDIDATE-strength, `candidate`-tagged entities.
-    // Demotion happens here (not at each call site) so EVERY breach-derived
-    // kind — email, username, domain, social handle — is gated uniformly. The
-    // prior code gated only phone/person/ip, letting a name search emit
-    // hundreds of strangers' emails/domains at full 0.70 confidence.
+    // target identity yields CANDIDATE-strength, `candidate`-tagged entities, so
+    // EVERY breach-derived kind — email, username, domain, social handle — is
+    // gated uniformly (the prior code gated only phone/person/ip, letting a name
+    // search emit hundreds of strangers' emails/domains at full 0.70). The
+    // demotion semantics are the shared `Entity::demote_to_candidate`.
     if !is_target_row {
-        e.confidence = e.confidence.min(CANDIDATE_CONF);
-        e.tag(tags::CANDIDATE);
+        e.demote_to_candidate();
     }
     e.add_evidence(ev.clone());
     result.push(e);

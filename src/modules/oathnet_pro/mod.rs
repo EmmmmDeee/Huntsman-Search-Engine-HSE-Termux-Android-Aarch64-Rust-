@@ -16,10 +16,11 @@ use crate::core::{
     tags,
 };
 use crate::util::oathnet::{self, paths, val_str, val_str_or};
-// The target-identity matcher and the candidate-quarantine ceiling are shared
-// with see_know via `util::target_match` (one definition for both breach pools);
-// reached by bare name in `breach.rs` through its `use super::*`.
-use crate::util::target_match::{CANDIDATE_CONF, TargetMatch};
+// The target-identity matcher is shared with see_know via `util::target_match`
+// (one definition for both breach pools); reached by bare name in `breach.rs`
+// through its `use super::*`. The non-match demotion itself is
+// `Entity::demote_to_candidate` (core) — matching stays orthogonal to tiering.
+use crate::util::target_match::TargetMatch;
 
 pub mod key_harvest;
 mod validate;

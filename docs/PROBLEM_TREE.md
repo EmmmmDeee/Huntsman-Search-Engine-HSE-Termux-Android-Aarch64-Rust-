@@ -2939,3 +2939,16 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   keys, not the subject's) — so each record minted two `Other(...)` junk nodes, diluting the
   graph with plumbing that reads like intelligence. **Paired:** `SOLUTION_TREE` cycle 88 —
   same commit.
+
+- **2026-06-21** — **Cycle 89 (the candidate-demotion was duplicated, and matching was
+  tangled with tiering).** "Quarantine a non-matching record" — *cap confidence to 0.25
+  and stamp the `candidate` tag* — was hand-written in THREE places: `oathnet_pro`'s
+  `push_oathnet_entity` (inline per push), and `see_know`'s batch range-pass plus its
+  trailing-domain push. Three copies of the same two lines, free to drift. Worse, the
+  ceiling constant `CANDIDATE_CONF` lived in `util::target_match` — a module whose entire
+  job is to answer *"does this row identify the subject?"* It never used the constant; the
+  constant was only consumed by the callers doing the demotion. So a **matching** capability
+  and an **entity-tier** capability were fused in one module, and the tier ceiling sat far
+  from the confidence/tier model it belongs to (`core::entity`, beside `VERIFIED_MIN` /
+  `PROBABLE_MIN`). Two orthogonal capabilities, neither cleanly owned. **Paired:**
+  `SOLUTION_TREE` cycle 89 — same commit.

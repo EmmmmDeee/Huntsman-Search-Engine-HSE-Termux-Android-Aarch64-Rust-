@@ -31,7 +31,7 @@ use crate::core::{
 use crate::util::extract::EMAIL_RE;
 use crate::util::geo::is_valid_coords;
 use crate::util::see_know::val_str;
-use crate::util::target_match::{CANDIDATE_CONF, TargetMatch};
+use crate::util::target_match::TargetMatch;
 
 use super::SRC;
 use super::pivots::looks_like_steam_id;
@@ -427,8 +427,7 @@ pub(super) fn extract_entities(
     // subject's own rows (`is_target`) are untouched.
     if !is_target {
         for e in &mut result.entities[quarantine_start..] {
-            e.confidence = e.confidence.min(CANDIDATE_CONF);
-            e.tag(tags::CANDIDATE);
+            e.demote_to_candidate();
         }
     }
 
@@ -450,8 +449,7 @@ pub(super) fn extract_entities(
         // Same quarantine as the identity block above (this push lands after it,
         // so it is demoted here rather than by the range pass).
         if !is_target {
-            e.confidence = e.confidence.min(CANDIDATE_CONF);
-            e.tag(tags::CANDIDATE);
+            e.demote_to_candidate();
         }
         e.add_evidence(ev);
         result.push(e);

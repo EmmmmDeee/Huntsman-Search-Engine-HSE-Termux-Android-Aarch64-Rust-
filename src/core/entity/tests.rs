@@ -26,6 +26,28 @@ fn uid_differs_across_kinds() {
     assert_ne!(e.uid, d.uid);
 }
 
+#[test]
+fn demote_to_candidate_caps_confidence_tags_and_is_idempotent() {
+    let mut e = Entity::new(EntityKind::Email, "stranger@example.com", 0.70, "s");
+    e.demote_to_candidate();
+    assert!((e.confidence - CANDIDATE_CONF).abs() < f64::EPSILON);
+    assert!(e.has_tag(crate::core::tags::CANDIDATE));
+    // Lands in the Candidate tier (the demotion's whole purpose).
+    assert_eq!(e.classify(), Classification::Candidate);
+    // Idempotent: a second call neither lowers confidence further nor
+    // duplicates the tag (min + de-duped tag).
+    e.demote_to_candidate();
+    assert!((e.confidence - CANDIDATE_CONF).abs() < f64::EPSILON);
+    assert_eq!(
+        e.tags.iter().filter(|t| *t == crate::core::tags::CANDIDATE).count(),
+        1
+    );
+    // Never RAISES an already-lower confidence.
+    let mut low = Entity::new(EntityKind::Email, "x@y.com", 0.10, "s");
+    low.demote_to_candidate();
+    assert!((low.confidence - 0.10).abs() < f64::EPSILON);
+}
+
 // ── C_eff formula ────────────────────────────────────────────────────────
 
 #[test]

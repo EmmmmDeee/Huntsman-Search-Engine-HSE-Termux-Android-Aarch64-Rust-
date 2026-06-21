@@ -276,7 +276,7 @@ use crate::core::entity::Entity;
 
     #[test]
     fn non_matching_record_is_quarantined_as_candidate() {
-        use crate::util::target_match::CANDIDATE_CONF;
+        use crate::core::entity::CANDIDATE_CONF;
         use serde_json::json;
         // A broad see_know NAME search can return same-name strangers; their PII
         // must be demoted to quarantined `candidate` leads (mirroring
