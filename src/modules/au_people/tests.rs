@@ -198,6 +198,40 @@ fn whitepages_ignores_out_of_range_postcode() {
 }
 
 #[test]
+fn clean_au_locality_strips_directory_chrome() {
+    // Live-scan artifact: a breadcrumb heading bled into the suburb because the
+    // raw ±60-char window was emitted verbatim. The cleaner must keep only the
+    // real `Suburb, STATE POSTCODE` tail.
+    assert_eq!(
+        clean_au_locality("Australian Suburbs Woronora, NSW 2232"),
+        Some("Woronora, NSW 2232".to_string())
+    );
+    // Genuine multi-word suburbs survive (no chrome word to strip).
+    assert_eq!(
+        clean_au_locality("results Gold Coast QLD 4217 profile"),
+        Some("Gold Coast, QLD 4217".to_string())
+    );
+    // A window that is only chrome around the postcode yields nothing.
+    assert_eq!(clean_au_locality("Search Results Profile NSW 2000"), None);
+    // No recognisable locality shape → None.
+    assert_eq!(clean_au_locality("just some text 99"), None);
+}
+
+#[test]
+fn whitepages_address_value_excludes_chrome_prefix() {
+    // End-to-end: the malformed "Australian SuburbsWoronora" must never reach
+    // the Address value. White Pages renders the breadcrumb + result together.
+    let html = "<nav>Australian Suburbs</nav><div>Woronora, NSW 2232</div>";
+    let ents = parse_whitepages_html(html, "Onur Ada", "s");
+    let addr = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("a clean address should be built");
+    assert_eq!(addr.value, "Woronora, NSW 2232");
+    assert!(!addr.value.contains("Suburbs"), "chrome must be stripped");
+}
+
+#[test]
 fn whitepages_mines_contact_emails() {
     let html = "<p>Email: haigen@example.com.au for enquiries</p>";
     let ents = parse_whitepages_html(html, "Haigen Bamford", "s");
