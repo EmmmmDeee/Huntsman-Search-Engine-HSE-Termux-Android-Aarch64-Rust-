@@ -189,7 +189,8 @@ impl Module for Typosquat {
 pub(crate) fn permutations(domain: &str, cap: usize) -> Vec<(String, &'static str)> {
     let domain = domain.trim().trim_end_matches('.').to_lowercase();
     // Reduce to the registrable domain, then split label | suffix on the first dot.
-    let registrable = crate::util::domains::registrable_domain(&domain).unwrap_or(domain.clone());
+    let registrable =
+        crate::util::domains::registrable_domain(&domain).unwrap_or_else(|| domain.clone());
     let Some((label, suffix)) = registrable.split_once('.') else {
         return Vec::new();
     };

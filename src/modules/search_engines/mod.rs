@@ -382,22 +382,20 @@ impl Module for SearchEngines {
                 break;
             }
 
-            let engines: Vec<&'static EngineSpec> = ENGINES
+            // Each live engine's WHOLE fetch (page 0 + its own pagination) is one
+            // future; ENGINE_CONCURRENCY of them run at once. Pagination stays
+            // sequential *within* an engine, concurrent *across* engines. The
+            // futures are built eagerly into a Vec (each owns its inputs), then
+            // streamed — so no borrow of the loop-local `query` outlives the batch.
+            // The liveness filter feeds the map directly: no intermediate Vec of
+            // engine refs is materialised on this per-query hot path.
+            let futs: Vec<_> = ENGINES
                 .iter()
                 .filter(|e| {
                     engine_enabled(e.name)
                         && !is_session_dead(e.name)
                         && !(qi > 0 && dead_engines.contains(e.name))
                 })
-                .collect();
-
-            // Each engine's WHOLE fetch (page 0 + its own pagination) is one
-            // future; ENGINE_CONCURRENCY of them run at once. Pagination stays
-            // sequential *within* an engine, concurrent *across* engines. The
-            // futures are built eagerly into a Vec (each owns its inputs), then
-            // streamed — so no borrow of the loop-local `query` outlives the batch.
-            let futs: Vec<_> = engines
-                .into_iter()
                 .map(|engine| {
                     let url = (engine.build_url)(query);
                     let post_body = engine.build_post.map(|f| f(query));
