@@ -2868,3 +2868,17 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   noise — had it read the field at all; the public-IP check existed only as a
   hand-rolled `pub(super)` fn inside `oathnet_pro`. **Paired:** `SOLUTION_TREE` cycle 83
   — same commit.
+
+- **2026-06-21** — **Cycle 84 (the stealer endpoint dropped 100% of leaked
+  credentials — wrong response shape).** The uploaded `Stealerlogs` dump for the subject
+  is the see-know.eu `/stealer` response: `{ results: 0, victims: [ { log_id,
+  credentials: [ { username, password, pwned_at } … ] } ] }` — a `victims[]` array with
+  the logins nested one level down under `credentials[]`. The response normaliser
+  `extract_items` recognised only the FLAT shapes (top-level array, `/data/items`,
+  `/results` as an array, `/data` object); the stealer `results` is the scalar `0`, so
+  the `/results` branch (which demands an *array*) falls through, no other branch matches
+  `victims`, and the function returns an empty `Vec`. Net: every stealer credential the
+  subject leaked — `ali` / `C0R4Pc1` / `Yontem2006` / `03320085` / … across the whole
+  `credentials` array — was silently discarded before extraction even began. A stealer
+  log's reason for existing is its credential set, and it was the one shape the parser
+  couldn't see. **Paired:** `SOLUTION_TREE` cycle 84 — same commit.

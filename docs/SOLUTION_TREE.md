@@ -2048,3 +2048,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   tests (public `lastip` → lead; private `lastip` rejected — one per module). Gate green:
   lib 3,310, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired:
   `PROBLEM_TREE` cycle 83 — same commit.
+
+- **2026-06-21** — **Cycle 84 (flatten stealer `victims[].credentials[]` so the logins
+  survive).** Extended `extract_items` with a `victims` branch + a `flatten_victims`
+  helper that turns each nested credential into a standalone item: one infected host (one
+  victim / stealer log) shares its scalar context — `log_id`, host `ip` — with every
+  credential it leaked, so each flattened item carries BOTH the login
+  (`username`/`password`/`pwned_at`) and its provenance, and the existing field extractor
+  consumes it unchanged (yielding a `Username`, a `Password`, and — via cycle 83 — the
+  host IP as a geo lead). A victim with no `credentials` array still surfaces as one
+  host-intel item so nothing is lost. The change is purely additive: every flat shape is
+  matched first and unchanged, and an unknown shape still yields empty — so only the
+  previously-dropped stealer set is affected. +2 tests (the real `results:0`/`victims`
+  shape → 2 credential items inheriting `log_id`+`ip`; a credential-less victim → 1
+  host item). Gate green: lib 3,312, 24 arch guards, fmt/clippy(`--all-targets`)/doc
+  clean. Paired: `PROBLEM_TREE` cycle 84 — same commit.
