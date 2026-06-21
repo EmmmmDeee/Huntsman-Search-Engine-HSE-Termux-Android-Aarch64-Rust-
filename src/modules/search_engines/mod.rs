@@ -39,6 +39,7 @@
 //!   - Phone (from snippet text at 0.55) → triggers numverify, phone_intl
 
 use std::collections::HashSet;
+use std::sync::Mutex;
 
 mod build;
 mod engines;
@@ -76,6 +77,58 @@ const MAX_ACCUMULATED_RESULTS: usize = 2000;
 /// fetches every engine at once via `join_all`. Each request still self-clamps to
 /// the deadline, so concurrency can never push the pass past the hard kill.
 const ENGINE_CONCURRENCY: usize = 6;
+
+/// After this many consecutive seeds where an engine returned nothing (empty or
+/// blocked or unreachable), the engine is considered session-dead and is
+/// silently skipped for the rest of the scan. Real execution data shows `aol`,
+/// `yandex`, and `searx` producing 0 results across 119 consecutive seeds from
+/// datacenter IPs — ~231 s of wasted round-trips per depth-2 scan. Three
+/// consecutive strikeouts is enough signal to stop trying.
+const SESSION_DEAD_THRESHOLD: u8 = 3;
+
+/// Per-engine consecutive-empty counter, shared across all `process()` calls
+/// within one binary execution. A fresh `hse` invocation resets it (the static
+/// is initialised on first access, which is always within a single scan).
+static SESSION_EMPTY_COUNTS: std::sync::LazyLock<
+    Mutex<std::collections::HashMap<&'static str, u8>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+/// True when `name` has reached the session-dead threshold.
+fn is_session_dead(name: &str) -> bool {
+    SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(name)
+        .copied()
+        .unwrap_or(0)
+        >= SESSION_DEAD_THRESHOLD
+}
+
+/// Increment the empty count for `name`; mark it session-dead when the threshold
+/// is reached (logged once so operators know why it was silenced).
+fn record_empty(name: &'static str) {
+    let mut map = SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let count = map.entry(name).or_insert(0);
+    *count = count.saturating_add(1);
+    if *count == SESSION_DEAD_THRESHOLD {
+        tracing::debug!(
+            engine = name,
+            threshold = SESSION_DEAD_THRESHOLD,
+            "search engine returned nothing for {SESSION_DEAD_THRESHOLD} consecutive seeds \
+             — silenced for the rest of this scan"
+        );
+    }
+}
+
+/// Reset the empty count for `name` when it actually returns results.
+fn record_hit(name: &'static str) {
+    SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(name, 0);
+}
 
 const SOCIAL_HOSTS: &[&str] = &[
     "facebook.com",
@@ -300,7 +353,11 @@ impl Module for SearchEngines {
 
             let engines: Vec<&'static EngineSpec> = ENGINES
                 .iter()
-                .filter(|e| engine_enabled(e.name) && !(qi > 0 && dead_engines.contains(e.name)))
+                .filter(|e| {
+                    engine_enabled(e.name)
+                        && !is_session_dead(e.name)
+                        && !(qi > 0 && dead_engines.contains(e.name))
+                })
                 .collect();
 
             // Each engine's WHOLE fetch (page 0 + its own pagination) is one
@@ -326,6 +383,7 @@ impl Module for SearchEngines {
             // appending — the persisted result must not depend on which engine
             // happened to answer first (Determinism Requirement).
             batch.sort_by(|a, b| a.0.cmp(b.0));
+            let prev_len = all_results.len();
             for (name, res) in batch {
                 match res {
                     Some(mut results) => all_results.append(&mut results),
@@ -335,6 +393,21 @@ impl Module for SearchEngines {
                         dead_engines.insert(name);
                     }
                     None => {}
+                }
+            }
+            // Session-level empty accounting: engines that never produce anything
+            // across multiple seeds are silenced for the rest of the scan.
+            if qi == 0 {
+                for name in dead_engines.iter().copied() {
+                    record_empty(name);
+                }
+                // Any engine that contributed to new results this query resets its streak.
+                if all_results.len() > prev_len {
+                    for e in ENGINES {
+                        if engine_enabled(e.name) && !dead_engines.contains(e.name) {
+                            record_hit(e.name);
+                        }
+                    }
                 }
             }
             if all_results.len() >= MAX_ACCUMULATED_RESULTS {
