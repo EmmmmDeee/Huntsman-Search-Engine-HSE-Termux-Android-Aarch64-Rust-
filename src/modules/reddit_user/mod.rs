@@ -230,7 +230,7 @@ async fn fetch_submitted(http: &reqwest::Client, username: &str, scan_id: &str) 
     );
     let Ok(resp) = http
         .get(&url)
-        .header("User-Agent", "HSE/1.0 OSINT research tool")
+        .header("User-Agent", crate::util::http::UA_OSINT)
         .send()
         .await
     else {

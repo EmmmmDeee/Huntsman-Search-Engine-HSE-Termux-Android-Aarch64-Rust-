@@ -201,7 +201,7 @@ async fn fetch_algolia_submissions(
     );
     let Ok(resp) = http
         .get(&url)
-        .header("User-Agent", "HSE/1.0 OSINT research tool")
+        .header("User-Agent", crate::util::http::UA_OSINT)
         .send()
         .await
     else {

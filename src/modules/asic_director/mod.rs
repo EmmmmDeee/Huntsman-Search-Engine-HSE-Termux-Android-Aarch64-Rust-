@@ -268,10 +268,7 @@ impl Module for AsicDirector {
         let resp = match ctx
             .http
             .get(&url)
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            )
+            .header("User-Agent", crate::util::http::UA_BROWSER)
             .header("Accept", "text/html,application/xhtml+xml")
             .send_tagged(SRC)
             .await

@@ -104,7 +104,7 @@ impl Module for GithubCodeSearch {
             .header("X-GitHub-Api-Version", "2022-11-28")
             .header("User-Agent", "huntsman-search-engine/1.4");
         if let Some(tok) = token {
-            req = req.header("Authorization", format!("Bearer {tok}"));
+            req = req.bearer_auth(tok);
         }
 
         let resp = req.send_tagged(SRC).await?;
@@ -151,7 +151,7 @@ impl Module for GithubCodeSearch {
                 .header("X-GitHub-Api-Version", "2022-11-28")
                 .header("User-Agent", "huntsman-search-engine/1.4");
             if let Some(tok) = token {
-                creq = creq.header("Authorization", format!("Bearer {tok}"));
+                creq = creq.bearer_auth(tok);
             }
             if let Ok(cr) = creq.send_tagged(SRC).await
                 && cr.status().is_success()

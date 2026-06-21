@@ -98,10 +98,10 @@ pub(super) async fn fetch_orgs(
     );
     let mut req = http
         .get(&url)
-        .header("User-Agent", "HSE/1.0 OSINT research tool")
+        .header("User-Agent", crate::util::http::UA_OSINT)
         .header("Accept", "application/vnd.github+json");
     if let Some(t) = token {
-        req = req.header("Authorization", format!("Bearer {t}"));
+        req = req.bearer_auth(t);
     }
     let Ok(resp) = req.send().await else {
         return Vec::new();
@@ -127,10 +127,10 @@ pub(super) async fn fetch_gists(
     );
     let mut req = http
         .get(&url)
-        .header("User-Agent", "HSE/1.0 OSINT research tool")
+        .header("User-Agent", crate::util::http::UA_OSINT)
         .header("Accept", "application/vnd.github+json");
     if let Some(t) = token {
-        req = req.header("Authorization", format!("Bearer {t}"));
+        req = req.bearer_auth(t);
     }
     let Ok(resp) = req.send().await else {
         return Vec::new();

@@ -1754,3 +1754,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
      copies → 1). No module added/removed — registry count stable. Gate green: lib
      3,291 (+4), 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired:
      `PROBLEM_TREE` cycle 62 — same commit.
+
+- **2026-06-21** — **Cycle 63 (centralise HTTP request-construction literals).**
+  `util::http::UA_BROWSER` and `util::http::UA_OSINT` now hold the two duplicated
+  User-Agents (single source of truth — the stale Chrome/120 bump is now one edit;
+  `UA_BROWSER` doc cross-links `util::curl::UA_POOL` to keep the two UA homes
+  distinct). Migrated all 11 call sites across `asic_director`, `au_property`,
+  `au_people`, `au_electoral`, `github_user`, `reddit_user`, `hacker_news`. And the
+  five `format!("Bearer {…}")` headers (`github_code_search`, `fullcontact`,
+  `github_user`) became `.bearer_auth(…)` — identical header value, now also flagged
+  sensitive for redaction. Behaviour-preserving; gate green: fmt/clippy(`--all-targets`)
+  /doc clean, lib 3,291, 24 arch guards, 0 failures. Paired: `PROBLEM_TREE` cycle 63
+  — same commit.

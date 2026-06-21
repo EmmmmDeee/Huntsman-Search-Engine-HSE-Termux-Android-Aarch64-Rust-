@@ -2618,3 +2618,13 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   living in two copies invited exactly the kind of drift that bites later. Net effect
   of the duplication: bug fixes had to be applied N times and didn't stay in sync.
   **Paired:** `SOLUTION_TREE` cycle 62 — same commit.
+
+- **2026-06-21** — **Cycle 63 (duplicated HTTP request-construction literals).** Two
+  User-Agent strings were copy-pasted across modules: the AU-scraper browser UA
+  (`…X11; Linux…Chrome/120…`, in `asic_director`/`au_property`/`au_people`/
+  `au_electoral`, 7 uses) and the polite-API UA `HSE/1.0 OSINT research tool`
+  (`github_user`/`reddit_user`/`hacker_news`, 4 uses) — so a UA bump (Chrome/120 is
+  already stale) meant editing N modules. Separately, five sites hand-rolled
+  `.header("Authorization", format!("Bearer {t}"))` instead of reqwest's idiomatic
+  `.bearer_auth()` (which also marks the header sensitive for redaction). Low-risk
+  literal/idiom drift, not logic. **Paired:** `SOLUTION_TREE` cycle 63 — same commit.
