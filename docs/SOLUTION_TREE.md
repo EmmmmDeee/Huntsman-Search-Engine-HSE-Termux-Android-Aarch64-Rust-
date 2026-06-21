@@ -1900,3 +1900,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   valid responses unchanged (same deserialised structs, same entities). Gate green: lib
   3,297, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE`
   cycle 74 — same commit.
+
+- **2026-06-21** — **Cycle 75 (strip the URL in `send_tagged`, the one chokepoint).**
+  Changed the transport-error map to `e.without_url().to_string()`, so every one of the
+  ~40 `send_tagged` callers — present and future — stops embedding the secret-bearing
+  URL in the error that reaches the logs; the module name (the actually-useful context)
+  is still attached. Pinned with a regression test that a key + email in the query
+  string never appear in the mapped error. Then closed the two holdouts that bypassed
+  the helper entirely with the bare leaking form: `niamonx` (×3) and `osintcat` now use
+  `send_tagged(SRC)`, deleting their hand-rolled `map_err` (and wiring the
+  `RequestBuilderExt` import). `hunter_io`/`whoisxml` were already safe via a local
+  `without_url`; `cert_intel` is a raw-TLS connect (host:port, no query string) and
+  unaffected. Net +36/−17. Gate green: lib 3,298, 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 75 — same commit.

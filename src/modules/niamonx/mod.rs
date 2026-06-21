@@ -23,6 +23,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::RequestBuilderExt;
 use crate::util::str_util::{slugify, truncate_display};
 
 const SRC: &str = "niamonx";
@@ -283,9 +284,8 @@ async fn fetch_pbs_v1(
         .post(format!("{BASE}/breaches_search"))
         .header("X-API-Key", key)
         .json(&PbsV1Body { query })
-        .send()
-        .await
-        .map_err(|e| Error::module(SRC, e.to_string()))?;
+        .send_tagged(SRC)
+        .await?;
     if !resp.status().is_success() {
         crate::util::http::note_keyed_error(resp.status().as_u16(), SRC, key, ctx);
         return Err(crate::util::http::http_status_error(SRC, resp).await);
@@ -308,9 +308,8 @@ async fn fetch_pbs_v2(
             value: query,
             kind: "auto",
         })
-        .send()
-        .await
-        .map_err(|e| Error::module(SRC, e.to_string()))?;
+        .send_tagged(SRC)
+        .await?;
     if !resp.status().is_success() {
         crate::util::http::note_keyed_error(resp.status().as_u16(), SRC, key, ctx);
         return Err(crate::util::http::http_status_error(SRC, resp).await);
@@ -337,9 +336,8 @@ async fn fetch_ulp(
             exact: true,
             limit: ULP_LIMIT,
         })
-        .send()
-        .await
-        .map_err(|e| Error::module(SRC, e.to_string()))?;
+        .send_tagged(SRC)
+        .await?;
     if !resp.status().is_success() {
         crate::util::http::note_keyed_error(resp.status().as_u16(), SRC, key, ctx);
         return Err(crate::util::http::http_status_error(SRC, resp).await);

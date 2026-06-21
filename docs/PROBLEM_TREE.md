@@ -2739,3 +2739,17 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   or buggy oversized response. The hand-rolled error also collapsed a mid-stream read
   failure and a parse failure into one undistinguished message. **Paired:**
   `SOLUTION_TREE` cycle 74 — same commit.
+
+- **2026-06-21** — **Cycle 75 (`send_tagged` leaked the request URL — API key + target
+  PII — into the error logs).** `RequestBuilderExt::send_tagged`, the shared transport
+  helper its own doc says ~40 modules use, mapped a send failure with bare
+  `e.to_string()`. A reqwest transport error embeds the offending URL, whose query
+  string carries the upstream **API key** (`?apikey=…`) and the **target's PII** (the
+  email / username / name being searched) — and that error propagates into the
+  downloadable verbose log (`/api/v1/logs`) and the event stream. So a single timeout
+  or DNS failure on a keyed lookup could spill the operator's key and the subject's
+  identifier into a file the UI hands out. Two modules (`hunter_io`, `whoisxml`) had
+  already noticed and hand-rolled `e.without_url()` locally; `niamonx` (×3) and
+  `osintcat` bypassed the helper with the bare leaking form. A unit test confirmed the
+  leak (unstripped error contains the secret; stripped does not). **Paired:**
+  `SOLUTION_TREE` cycle 75 — same commit.

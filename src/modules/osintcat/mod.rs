@@ -19,7 +19,9 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{fetch_keyed_json, json_scanned, keyed_ok_or_404, urlencode};
+use crate::util::http::{
+    RequestBuilderExt, fetch_keyed_json, json_scanned, keyed_ok_or_404, urlencode,
+};
 use crate::util::str_util::slugify;
 
 const SRC: &str = "osintcat";
@@ -174,9 +176,8 @@ async fn fetch_email_osint(email: &str, ctx: &ModuleContext) -> Result<Value> {
         .get(format!("{BASE}/email-osint?query={}", urlencode(email)))
         .header("x-api-key", key)
         .header("x-purpose", PURPOSE)
-        .send()
-        .await
-        .map_err(|e| Error::module(SRC, e.to_string()))?;
+        .send_tagged(SRC)
+        .await?;
 
     let Some(resp) = keyed_ok_or_404(SRC, key, ctx, resp).await? else {
         return Ok(Value::Null);
