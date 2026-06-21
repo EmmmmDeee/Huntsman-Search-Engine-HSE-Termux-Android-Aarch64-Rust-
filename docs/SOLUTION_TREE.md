@@ -2063,3 +2063,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   shape → 2 credential items inheriting `log_id`+`ip`; a credential-less victim → 1
   host item). Gate green: lib 3,312, 24 arch guards, fmt/clippy(`--all-targets`)/doc
   clean. Paired: `PROBLEM_TREE` cycle 84 — same commit.
+
+- **2026-06-21** — **Cycle 85 (a per-module Termux cap exemption so see_know survives
+  the clamp).** Added `Module::termux_timeout_cap_exempt()` (default `false`), threaded
+  through `resolve_timeout` → `apply_termux_cap` (now a 4th parameter). A blanket cap
+  raise was rejected: the cap was deliberately *lowered* 60→45 s to stop `search_engines`
+  burning the phone's wall-time for zero results, so the fix had to be surgical — cap the
+  wasteful modules, exempt the one whose slowness is the upstream's own server cap.
+  `see_know` opts in and keeps its full 80 s budget on Termux (still finite, still above
+  the 78 s curl outer so the response is actually observed), so the highest-priority paid
+  source finally returns data on the platform HSE targets — making cycles 83–84's
+  parsing reachable in production. Every other module is `false` and byte-identical;
+  exemption only changes behaviour on Termux without a `--module-timeout` override. The
+  trade is honest: the serial paid phase now spends ~55–60 s *productively* (data
+  retrieved) instead of 45 s *wasted* (timeout, nothing) — decoupling that phase from the
+  free fan-out is a noted follow-up, not this change. +2 tests (exempt keeps its budget
+  while a non-exempt peer at the same value still clamps; see_know's exemption + curl-outer
+  headroom locked). Gate green: lib 3,314, 24 arch guards, fmt/clippy(`--all-targets`)/doc
+  clean — verified on the CI toolchain (rustc 1.96.0). Paired: `PROBLEM_TREE` cycle 85 —
+  same commit.

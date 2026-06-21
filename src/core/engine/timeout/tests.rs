@@ -5,28 +5,44 @@ use super::*;
     #[test]
     fn termux_cap_bounds_long_modules_only_on_termux_without_override() {
         // Desktop (not Termux): full timeout preserved, even 120 s.
-        assert_eq!(apply_termux_cap(120_000, false, false), 120_000);
-        // Termux, no user override: the worst offenders are clamped to 45 s...
+        assert_eq!(apply_termux_cap(120_000, false, false, false), 120_000);
+        // Termux, no user override, not exempt: the worst offenders clamp to 45 s...
         assert_eq!(
-            apply_termux_cap(120_000, false, true),
+            apply_termux_cap(120_000, false, true, false),
             TERMUX_MODULE_TIMEOUT_CAP_MS
         );
         assert_eq!(
-            apply_termux_cap(90_000, false, true),
+            apply_termux_cap(90_000, false, true, false),
             TERMUX_MODULE_TIMEOUT_CAP_MS
         );
         // ...the old 60 s ceiling is now itself clamped down to the 45 s cap...
         assert_eq!(
-            apply_termux_cap(60_000, false, true),
+            apply_termux_cap(60_000, false, true, false),
             TERMUX_MODULE_TIMEOUT_CAP_MS
         );
         assert_eq!(TERMUX_MODULE_TIMEOUT_CAP_MS, 45_000);
         // ...while the common short timeouts pass through unchanged.
-        assert_eq!(apply_termux_cap(8_000, false, true), 8_000);
-        assert_eq!(apply_termux_cap(20_000, false, true), 20_000);
+        assert_eq!(apply_termux_cap(8_000, false, true, false), 8_000);
+        assert_eq!(apply_termux_cap(20_000, false, true, false), 20_000);
         // An explicit --module-timeout is honoured verbatim, even on Termux,
         // even above the cap (the operator asked for it).
-        assert_eq!(apply_termux_cap(120_000, true, true), 120_000);
+        assert_eq!(apply_termux_cap(120_000, true, true, false), 120_000);
+    }
+
+    #[test]
+    fn cap_exempt_module_keeps_its_full_termux_budget() {
+        // A cap-exempt module (e.g. see_know, whose ~55 s server cap exceeds the
+        // 45 s clamp) keeps its full budget on Termux — clamping it would
+        // guarantee a zero-data timeout on every phone scan. Exemption only
+        // matters on Termux without a user override (the cap's domain); elsewhere
+        // the value already passes through.
+        assert_eq!(apply_termux_cap(80_000, false, true, true), 80_000);
+        // Non-exempt peer with the same budget is still clamped — the exemption
+        // is per-module, not a blanket cap raise.
+        assert_eq!(
+            apply_termux_cap(80_000, false, true, false),
+            TERMUX_MODULE_TIMEOUT_CAP_MS
+        );
     }
 
     #[test]
@@ -88,15 +104,26 @@ use super::*;
         // Default module: desktop budget is the full 120 s; the Termux budget
         // defaults to the same value but is clamped by the cap to 45 s.
         assert_eq!(DefaultMod.termux_timeout_ms(), 120_000);
+        assert!(!DefaultMod.termux_timeout_cap_exempt());
         assert_eq!(
-            apply_termux_cap(DefaultMod.termux_timeout_ms(), false, true),
+            apply_termux_cap(
+                DefaultMod.termux_timeout_ms(),
+                false,
+                true,
+                DefaultMod.termux_timeout_cap_exempt()
+            ),
             45_000
         );
         // Trimmed module: its 30 s Termux budget is under the cap, so it is
         // used verbatim on a phone and is strictly tighter than the default.
         assert_eq!(TrimmedMod.termux_timeout_ms(), 30_000);
         assert_eq!(
-            apply_termux_cap(TrimmedMod.termux_timeout_ms(), false, true),
+            apply_termux_cap(
+                TrimmedMod.termux_timeout_ms(),
+                false,
+                true,
+                TrimmedMod.termux_timeout_cap_exempt()
+            ),
             30_000
         );
         assert!(TrimmedMod.termux_timeout_ms() < DefaultMod.termux_timeout_ms());

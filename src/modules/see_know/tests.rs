@@ -16,6 +16,24 @@ use crate::core::entity::Entity;
     }
 
     #[test]
+    fn is_exempt_from_the_termux_timeout_cap() {
+        // The 45s Termux module cap is BELOW see_know's ~55s server cap, so
+        // without an exemption every phone scan would time it out with zero data
+        // — silently wasting the operator's highest-priority paid source on the
+        // platform HSE targets. see_know must opt out so its budget survives the
+        // clamp, and that budget must still clear the curl outer timeout.
+        assert!(
+            SeekNow.termux_timeout_cap_exempt(),
+            "see_know must be exempt from the 45s Termux cap (server cap is ~55s)"
+        );
+        assert!(
+            SeekNow.termux_timeout_ms() >= 78_000,
+            "exempt budget {} must still exceed the 78s curl outer timeout",
+            SeekNow.termux_timeout_ms()
+        );
+    }
+
+    #[test]
     fn should_skip_seed_matches_preflight_policy() {
         // Skipped (junk) seeds.
         assert!(should_skip_seed(TargetKind::Email, "x@localhost"));
