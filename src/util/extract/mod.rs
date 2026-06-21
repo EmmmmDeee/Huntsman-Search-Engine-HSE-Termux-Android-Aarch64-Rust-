@@ -26,6 +26,15 @@ pub static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").expect("constant email regex")
 });
 
+/// Canonical free-text `http(s)` URL matcher: a scheme then any run of
+/// non-space, non-quote, non-angle-bracket, non-`)` characters. Scanner-grade —
+/// it deliberately over-matches trailing sentence punctuation, so callers
+/// `trim_end_matches(['.', ',', ')'])` the hit. Compiled once per process.
+/// Replaces the identical bio/profile-URL literal that `reddit_user` and
+/// `hacker_news` each carried.
+pub static URL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"https?://[^\s"'<>)]+"#).expect("constant url regex"));
+
 /// Every email address in `text`, lowercased and de-duplicated with
 /// first-occurrence order preserved.
 #[must_use]

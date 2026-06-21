@@ -2628,3 +2628,12 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `.header("Authorization", format!("Bearer {t}"))` instead of reqwest's idiomatic
   `.bearer_auth()` (which also marks the header sensitive for redaction). Low-risk
   literal/idiom drift, not logic. **Paired:** `SOLUTION_TREE` cycle 63 — same commit.
+
+- **2026-06-21** — **Cycle 64 (a second email regex defeating `util::extract`'s
+  anti-drift purpose).** `reddit_user` and `hacker_news` each carried a verbatim-
+  identical `bio_patterns()` — an `OnceLock<(Regex, Regex)>` pairing a *bio-specific*
+  email regex (`[\w.+-]+@[\w-]+\.[\w.-]+`) with an http(s) URL regex. The email half
+  is exactly the drift `util::extract` exists to prevent: it diverged from the
+  canonical `EMAIL_RE` (looser — accepts a 1-char/numeric TLD like `x@y.1`), and
+  there was no shared URL matcher at all, so the pattern was duplicated rather than
+  reused. **Paired:** `SOLUTION_TREE` cycle 64 — same commit.

@@ -20,6 +20,21 @@ use super::*;
     }
 
     #[test]
+    fn url_re_matches_scheme_and_stops_at_sentence_punctuation() {
+        // The bio/profile cases reddit_user + hacker_news relied on: the match
+        // over-runs the trailing '.' (callers trim it) and stops at the space.
+        let m = URL_RE
+            .find("site https://paulgraham.com/bio.html. and more")
+            .unwrap();
+        assert_eq!(
+            m.as_str().trim_end_matches(['.', ',', ')']),
+            "https://paulgraham.com/bio.html"
+        );
+        assert!(URL_RE.is_match("http://x.io/p"));
+        assert!(!URL_RE.is_match("no scheme here example.com"));
+    }
+
+    #[test]
     fn extracts_and_lowercases_dedupes() {
         assert_eq!(emails("contact alice@example.com"), ["alice@example.com"]);
         let text = "Ping Alice@Example.COM and alice@example.com";

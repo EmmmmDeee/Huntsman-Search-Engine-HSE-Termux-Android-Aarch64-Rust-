@@ -16,10 +16,7 @@
 //! correlator's AU-045 "multi-service identity confirmation" (rather than echoing
 //! a single source). Official, stable, and rate-limit-free.
 
-use std::sync::OnceLock;
-
 use async_trait::async_trait;
-use regex::Regex;
 use serde::Deserialize;
 
 use crate::core::{
@@ -28,6 +25,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::extract::{EMAIL_RE, URL_RE};
 use crate::util::http::fetch_json;
 
 const SRC: &str = "hacker_news";
@@ -45,18 +43,6 @@ pub(super) struct HnUser {
     pub(super) about: Option<String>,
     #[serde(default)]
     pub(super) submitted: Option<Vec<i64>>,
-}
-
-/// Email + http(s) URL extractors for the free-text `about` bio. Compiled once
-/// (codebase convention) — the bio is small but the module runs per scan.
-fn bio_patterns() -> &'static (Regex, Regex) {
-    static RES: OnceLock<(Regex, Regex)> = OnceLock::new();
-    RES.get_or_init(|| {
-        (
-            Regex::new(r"[\w.+-]+@[\w-]+\.[\w.-]+").expect("constant bio email regex"),
-            Regex::new(r#"https?://[^\s"'<>)]+"#).expect("constant bio url regex"),
-        )
-    })
 }
 
 #[async_trait]
@@ -162,8 +148,7 @@ pub(super) fn build_entities(user: HnUser, scan_id: &str) -> Vec<Entity> {
     result.push(u);
 
     if let Some(about) = user.about.as_deref() {
-        let (email_re, url_re) = bio_patterns();
-        if let Some(m) = email_re.find(about) {
+        if let Some(m) = EMAIL_RE.find(about) {
             let email = m.as_str().to_lowercase();
             let mut e = Entity::new(EntityKind::Email, &email, 0.78, scan_id);
             e.tag("hacker-news");
@@ -174,7 +159,7 @@ pub(super) fn build_entities(user: HnUser, scan_id: &str) -> Vec<Entity> {
             );
             result.push(e);
         }
-        if let Some(m) = url_re.find(about) {
+        if let Some(m) = URL_RE.find(about) {
             let link = m.as_str().trim_end_matches(['.', ',', ')']);
             let mut url_e = Entity::new(EntityKind::Url, link, 0.72, scan_id);
             url_e.tag("hacker-news");

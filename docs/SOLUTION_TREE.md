@@ -1766,3 +1766,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   sensitive for redaction. Behaviour-preserving; gate green: fmt/clippy(`--all-targets`)
   /doc clean, lib 3,291, 24 arch guards, 0 failures. Paired: `PROBLEM_TREE` cycle 63
   — same commit.
+
+- **2026-06-21** — **Cycle 64 (fold the bio matchers into `util::extract`).** Added
+  the canonical `util::extract::URL_RE` (the exact http(s) pattern, so trailing-
+  punctuation behaviour is preserved — callers still `trim_end_matches`) and pointed
+  both `reddit_user` and `hacker_news` at the existing canonical `EMAIL_RE` + the new
+  `URL_RE`, deleting their duplicated `bio_patterns()` (and the now-unused `regex` /
+  `OnceLock` imports). The bio email match now uses the one canonical definition
+  (stricter, validated TLD) — the modules' bio tests pass unchanged, confirming the
+  switch is behaviour-safe on real address shapes. Net: one email regex in the
+  codebase, not two; a reusable URL matcher for future callers. Gate green: lib 3,292
+  (+1), 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE`
+  cycle 64 — same commit.
