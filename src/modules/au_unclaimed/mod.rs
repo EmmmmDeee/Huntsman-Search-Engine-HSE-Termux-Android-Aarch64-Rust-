@@ -1,18 +1,19 @@
-//! Australian multi-state unclaimed money registers (NSW, VIC, WA, SA, TAS, ACT).
+//! Australian multi-state unclaimed money registers (NSW, SA).
 //!
 //! Complements [`crate::modules::qld_unclaimed`] which covers Queensland only. This module
-//! queries the open CKAN data portals for the remaining six states/territories
+//! queries the open CKAN data portals for the remaining states/territories
 //! via their published unclaimed-money datasets. Each query is surname-anchored
 //! (same precision strategy as qld_unclaimed) to avoid flooding the graph with
 //! common-name false positives.
 //!
 //! Sources (all free, keyless, public CKAN APIs):
 //!   * NSW — data.nsw.gov.au  (Office of State Revenue unclaimed money)
-//!   * VIC — data.vic.gov.au  (State Revenue Office)
-//!   * WA  — data.wa.gov.au   (Unclaimed money register)
 //!   * SA  — data.sa.gov.au   (RevenueSA unclaimed money)
-//!   * TAS — data.tas.gov.au  (State Revenue Office)
-//!   * ACT — data.act.gov.au  (ACT Revenue Office)
+//!
+//! Removed sources (CKAN portal migration broke the datastore API as of 2026-06;
+//! re-add once replacement resource IDs are confirmed):
+//!   * VIC — data.vic.gov.au  (returns HTML, not JSON)
+//!   * WA  — catalogue.data.wa.gov.au  (returns HTML, not JSON)
 //!
 //! MITRE ATT&CK:
 //!   * T1591.001 — Determine Physical Locations (address/postcode from records)
@@ -63,22 +64,13 @@ const REGISTERS: &[StateRegister] = &[
         location_field: "POSTCODE",
         suburb_field: Some("SUBURB"),
     },
-    StateRegister {
-        state: "VIC",
-        action_base: "https://www.data.vic.gov.au/api/3/action",
-        resource_id: "c54f5dcc-7ca1-4dbf-8419-1b48e86d9a01",
-        name_field: "OwnerName",
-        location_field: "Postcode",
-        suburb_field: Some("Suburb"),
-    },
-    StateRegister {
-        state: "WA",
-        action_base: "https://catalogue.data.wa.gov.au/api/3/action",
-        resource_id: "8d5b9b3e-2f2e-4c4a-bd7e-f6f3c8b9a1d2",
-        name_field: "name",
-        location_field: "postcode",
-        suburb_field: Some("suburb"),
-    },
+    // VIC (data.vic.gov.au resource c54f5dcc) removed: endpoint returns HTML
+    // (76 KB) instead of JSON as of 2026-06 — portal migration broke the CKAN
+    // datastore API for this resource. Re-add once the portal publishes a
+    // replacement resource_id.
+    //
+    // WA (catalogue.data.wa.gov.au resource 8d5b9b3e) removed: same cause —
+    // returns 20 KB HTML. Re-add once the correct resource_id is confirmed.
     StateRegister {
         state: "SA",
         action_base: "https://data.sa.gov.au/data/api/3/action",
@@ -198,7 +190,7 @@ impl Module for AuUnclaimed {
     }
 
     fn description(&self) -> &'static str {
-        "Australian multi-state unclaimed money registers (NSW, VIC, WA, SA) — name → address/postcode pivot"
+        "Australian unclaimed money registers (NSW, SA) — name → address/postcode pivot"
     }
 
     fn priority(&self) -> u8 {

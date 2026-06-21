@@ -5,6 +5,12 @@ pub(super) struct EngineSpec {
     pub(super) paginate: Option<fn(&str, usize) -> String>,
     pub(super) ua: &'static str,
     pub(super) ua_alt: &'static str,
+    /// Per-engine fetch ceiling (ms). Overrides the global `MAX_FETCH_MS` when
+    /// set. Use for engines whose real-world latency distribution makes the
+    /// global 8 s cap wasteful (e.g. DDG: 6.6 s avg / 56% unreachable from
+    /// datacenter IPs — a 4 s cap fails fast without sacrificing recall from
+    /// the 1/41 ok case).
+    pub(super) max_fetch_ms: Option<u64>,
 }
 
 // All 17 engines are always tried. Blocked engines are detected and
@@ -38,6 +44,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         }),
         ua: crate::util::curl::UA_MOBILE,
         ua_alt: crate::util::curl::UA_DESKTOP,
+        max_fetch_ms: None,
     },
     EngineSpec {
         name: "bing",
@@ -57,6 +64,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         }),
         ua: crate::util::curl::UA_MOBILE,
         ua_alt: crate::util::curl::UA_DESKTOP,
+        max_fetch_ms: None,
     },
     EngineSpec {
         name: "aol",
@@ -76,6 +84,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         }),
         ua: crate::util::curl::UA_MOBILE,
         ua_alt: crate::util::curl::UA_DESKTOP,
+        max_fetch_ms: None,
     },
     EngineSpec {
         name: "duckduckgo",
@@ -87,6 +96,9 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_FIREFOX,
         ua_alt: crate::util::curl::UA_DESKTOP,
+        // Live scans: 6.6 s avg / 56% unreachable from datacenter IPs.
+        // 4 s cap fails fast without sacrificing the occasional ok result.
+        max_fetch_ms: Some(4_000),
     },
     EngineSpec {
         name: "google",
@@ -106,6 +118,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         }),
         ua: crate::util::curl::UA_MOBILE,
         ua_alt: crate::util::curl::UA_DESKTOP,
+        max_fetch_ms: None,
     },
     EngineSpec {
         name: "brave",
@@ -125,6 +138,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         }),
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_SAFARI,
+        max_fetch_ms: None,
     },
     EngineSpec {
         name: "mojeek",
@@ -144,6 +158,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         }),
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_MOBILE,
+        max_fetch_ms: None,
     },
     // ── New engines (2026) ──────────────────────────────────────────
     EngineSpec {
@@ -158,6 +173,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_FIREFOX,
         ua_alt: crate::util::curl::UA_DESKTOP,
+        max_fetch_ms: None,
     },
     EngineSpec {
         name: "yandex",
@@ -173,6 +189,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_MOBILE,
+        max_fetch_ms: None,
     },
     EngineSpec {
         name: "ecosia",
@@ -186,6 +203,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_FIREFOX,
         ua_alt: crate::util::curl::UA_SAFARI,
+        max_fetch_ms: None,
     },
     EngineSpec {
         name: "qwant",
@@ -199,6 +217,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_FIREFOX,
         ua_alt: crate::util::curl::UA_DESKTOP,
+        max_fetch_ms: None,
     },
     EngineSpec {
         name: "dogpile",
@@ -212,6 +231,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_SAFARI,
+        max_fetch_ms: None,
     },
     EngineSpec {
         name: "swisscows",
@@ -225,6 +245,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_FIREFOX,
+        max_fetch_ms: None,
     },
     // ── Extended engines (2026 batch 2) ─────────────────────────────
     // you.com is conversational but exposes a classic /search HTML view
@@ -242,6 +263,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_FIREFOX,
+        max_fetch_ms: None,
     },
     // Presearch is a decentralised privacy engine that proxies to a
     // configurable backend. The HTML view is parsable like DDG/Brave.
@@ -257,6 +279,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_FIREFOX,
+        max_fetch_ms: None,
     },
     // MetaGer (German non-profit) federates 50+ underlying engines and
     // returns clean HTML; rarely CAPTCHA-blocked.
@@ -272,6 +295,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_FIREFOX,
         ua_alt: crate::util::curl::UA_DESKTOP,
+        max_fetch_ms: None,
     },
     // SearXNG public instances aggregate dozens of engines. We point
     // at the well-known etsi.org instance; if blocked, the engine
@@ -288,6 +312,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_FIREFOX,
+        max_fetch_ms: None,
     },
 ];
 
