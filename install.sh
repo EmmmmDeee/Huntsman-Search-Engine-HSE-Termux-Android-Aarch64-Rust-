@@ -822,7 +822,7 @@ if [[ ! -f "$KEYS_PATH" ]]; then
 # Uncomment and paste a value to enable the corresponding key-gated module.
 # File is chmod 0600 — never commit this file.
 #
-# Free modules (93 of 126) need no keys at all.
+# Free modules (95 of 128) need no keys at all.
 # The Settings page (hse serve → http://127.0.0.1:8080/settings) lets you
 # paste and save any key directly from Chrome on the device.
 #
