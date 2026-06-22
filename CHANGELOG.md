@@ -10,6 +10,36 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-06-22
+
+### Added
+
+- **PayID OSINT pivots** (`payid` module, #126 — free, passive, People category).
+  PayID (Australia's NPP) maps a memorable identifier — email, mobile/phone, ABN,
+  or Org ID — to a bank account, and the *confirm-payee* step returns the
+  registered **account-holder name**, so a lone phone or email pivots to a real
+  legal name. The module recognises which discovered identifiers are
+  PayID-eligible, normalises them to canonical NPP form (lower-cased email,
+  `+61…` E.164 phone, 11-digit ABN), and annotates them as confirm-payee pivots
+  with the operator step that reveals the name. The **ABN** PayID is flagged
+  `payid:registry-resolvable` — its holder name equals the ABN's registered
+  entity name, which `abn_lookup`/`opencorporates` already resolve lawfully from
+  the public register (the one PayID type whose name needs no banking app).
+  Deliberately **offline**: there is no public PayID resolution API, so the module
+  never contacts a bank/NPP endpoint and never auto-resolves a name from a
+  phone/email (that appears only inside the operator's own banking app). `payid`
+  is enrichment-only, so PayID-shape annotates an identifier without ever
+  inflating its confidence tier.
+
+### Fixed
+
+- **`dns_intel` SOA admin email treated as the subject.** The SOA RNAME admin
+  contact — always a role/zone mailbox (`hostmaster@`, `dns@`, an infra-domain
+  desk) — was emitted as a discrete Email entity and identity-clustered as the
+  subject's PII (a live domain-heavy scan surfaced dozens). It is now gated
+  through `is_infrastructure_email`, mirroring whois/ripestat/search_engines; a
+  genuine personal admin on a non-infra domain is still kept.
+
 ## [1.5.1] — 2026-06-22
 
 Accuracy and robustness fixes from an adversarial review of a live v1.5.0
