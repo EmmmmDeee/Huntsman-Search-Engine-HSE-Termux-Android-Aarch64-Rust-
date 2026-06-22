@@ -478,6 +478,27 @@ fn normalise_email_lowercases() {
 }
 
 #[test]
+fn normalise_email_strips_breach_escape_tail() {
+    // Regression (live oathnet breach co-occurrence): a value carrying the
+    // literal escape tail `\r\n` (the chars `\ r \ n`, not real whitespace) must
+    // fold to the clean address so it shares one UID and never leaks malformed.
+    assert_eq!(
+        normalise(&EntityKind::Email, "user@gmail.com\\r\\n"),
+        "user@gmail.com"
+    );
+    // Internal whitespace (a glued-on second field) is also cut.
+    assert_eq!(
+        normalise(&EntityKind::Email, "user@gmail.com extra"),
+        "user@gmail.com"
+    );
+    // The clean and dirty forms must share a UID (the dedup point).
+    assert_eq!(
+        Entity::new(EntityKind::Email, "user@gmail.com\\r\\n", 0.3, "s").uid,
+        Entity::new(EntityKind::Email, "user@gmail.com", 0.3, "s").uid
+    );
+}
+
+#[test]
 fn normalise_phone_strips_formatting() {
     let r = normalise(&EntityKind::Phone, "+61 04 1234 5678");
     assert_eq!(r, "+61041234567 8".replace(' ', ""));

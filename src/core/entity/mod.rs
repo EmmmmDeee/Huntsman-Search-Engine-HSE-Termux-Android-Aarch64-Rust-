@@ -836,14 +836,23 @@ pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
 pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
     match kind {
         EntityKind::Email => {
+            // Breach dumps sometimes append a literal escape tail
+            // (`…@gmail.com\r\n` — the four characters `\ r \ n`, NOT real
+            // whitespace that `trim` would catch) or embed stray whitespace. A
+            // real address contains neither a backslash nor internal whitespace,
+            // so cut at the first of either before folding — otherwise the junk
+            // tail fragments one address across two UIDs and leaks a malformed
+            // value into the bundle. Valid emails have no such char, so their
+            // UID is unchanged.
+            let trimmed = value.trim();
+            let cut = trimmed
+                .find(|c: char| c == '\\' || c.is_whitespace())
+                .unwrap_or(trimmed.len());
             // Total Unicode case-fold for dedup. `str::to_lowercase` maps every
             // char through `char::to_lowercase`, so a value whose only capital is
             // non-ASCII (`Ölaf`, a Cyrillic/Greek handle, Turkish `İ`) folds the
-            // same as its all-caps spelling — they must share a UID. (A previous
-            // ASCII-only "fast path" returned such values unfolded, fragmenting
-            // one identity across two UIDs; it also still allocated, so it bought
-            // nothing.)
-            value.trim().to_lowercase()
+            // same as its all-caps spelling — they must share a UID.
+            trimmed[..cut].to_lowercase()
         }
         EntityKind::Username => {
             // Same total Unicode case-fold as Email, plus stripping a leading `@`
