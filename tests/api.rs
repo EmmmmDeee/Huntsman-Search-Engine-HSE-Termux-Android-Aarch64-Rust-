@@ -734,6 +734,7 @@ async fn dossier_upload_creates_a_complete_scan_with_entities() {
         .method("POST")
         .uri("/api/v1/scans/import")
         .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
         .body(Body::from(dossier))
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -772,6 +773,7 @@ async fn dossier_upload_derives_and_persists_entity_relations() {
         .method("POST")
         .uri("/api/v1/scans/import")
         .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
         .body(Body::from(dossier))
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
@@ -794,6 +796,7 @@ async fn dossier_upload_rejects_unrecognised_format() {
         .method("POST")
         .uri("/api/v1/scans/import")
         .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
         .body(Body::from(
             "just some random prose with no dossier structure",
         ))
@@ -830,6 +833,7 @@ async fn dossier_upload_accepts_body_larger_than_axum_default_limit() {
         .method("POST")
         .uri("/api/v1/scans/import")
         .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
         .body(Body::from(dossier))
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
@@ -2323,4 +2327,65 @@ async fn scan_debug_bundle_404_unknown_and_text_attachment_for_known() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 404, "debug.txt must 404 for an unknown scan");
+}
+
+// ── Security: DNS-rebind Host guard + scan-import CSRF ──────────────────────
+
+#[tokio::test]
+async fn dns_rebind_host_header_is_rejected() {
+    let app = test_app("rebind");
+    // A mismatched Host (the DNS-rebind attacker's domain) is refused with 403
+    // before any handler — even though the socket peer is loopback.
+    let req = Request::builder()
+        .uri("/api/v1/health")
+        .header("host", "evil.example.com")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 403, "a rebind Host must be rejected");
+
+    // A loopback Host the user legitimately types is allowed through.
+    let ok = Request::builder()
+        .uri("/api/v1/health")
+        .header("host", "localhost:8080")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(ok).await.unwrap();
+    assert_eq!(resp.status(), 200, "a legitimate loopback Host passes");
+}
+
+#[tokio::test]
+async fn scan_import_requires_csrf_header() {
+    let app = test_app("csrf");
+    let dossier = "Entry #1:\nEMAILS: a@b.com\n";
+    // A text/plain POST WITHOUT the custom header is a CORS simple request — the
+    // CSRF vector — and must be blocked with 403.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import")
+        .header("content-type", "text/plain")
+        .body(Body::from(dossier))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "import without X-HSE-CSRF must be blocked"
+    );
+
+    // WITH the header the request is no longer CSRF-blocked (it proceeds to parse).
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import")
+        .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
+        .header("x-hse-csrf", "1")
+        .body(Body::from(dossier))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        403,
+        "with X-HSE-CSRF the import is not CSRF-blocked"
+    );
 }

@@ -273,7 +273,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
     // rather than SPA HTML.
     let api = Router::new().nest("/v1", api_v1).fallback(api_not_found);
 
-    Router::new()
+    let app = Router::new()
         .nest("/api", api)
         // ── static vendor bundle (Bootstrap 3, jQuery, D3, tablesorter, alertify) ──
         .route("/static/{file}", get(vendor_handler))
@@ -297,10 +297,79 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // buffered. Inner of CORS/security headers so those still apply to the
         // compressed response.
         .layer(CompressionLayer::new())
-        .layer(cors)
-        // Security headers on every response (outermost, so it also covers
-        // CORS preflight + the SPA + static + API). See `set_security_headers`.
-        .layer(axum::middleware::map_response(set_security_headers))
+        .layer(cors);
+
+    // Host-header allowlist (loopback binds only) — the single control that
+    // defeats DNS rebinding. Under rebinding a browser resolves an attacker
+    // domain to 127.0.0.1 and connects to loopback, so the per-handler
+    // `peer.ip().is_loopback()` guard PASSES and CORS only blocks *reading* the
+    // response, not *sending* the state-changing request (key writes, the
+    // binary-swap `/update/trigger`, scan import, …). Pinning `Host` to the
+    // loopback names the user actually types rejects the attacker's domain
+    // before any handler runs. Skipped for a non-loopback bind: the operator
+    // opted into exposure and the valid Host set (the box's own LAN IPs) isn't
+    // enumerable here.
+    let app = match host_allowlist(bind) {
+        Some(allowed) => {
+            let allowed = Arc::new(allowed);
+            app.layer(axum::middleware::from_fn(
+                move |req: axum::extract::Request, next: axum::middleware::Next| {
+                    enforce_host_allowlist(Arc::clone(&allowed), req, next)
+                },
+            ))
+        }
+        None => app,
+    };
+
+    // Security headers on every response (outermost, so it also covers CORS
+    // preflight, the SPA, static, the API, and the Host-guard 403). See
+    // `set_security_headers`.
+    app.layer(axum::middleware::map_response(set_security_headers))
+}
+
+/// The exact `Host` header values accepted for a **loopback** bind — the
+/// hostnames a user legitimately types to reach their own console
+/// (`127.0.0.1:PORT`, `localhost:PORT`, `[::1]:PORT`, the bind string itself,
+/// and the bare host forms). `None` for a non-loopback bind, where the valid
+/// Host set is the machine's own (unknowable here) addresses and the operator
+/// has explicitly accepted exposure — so the guard is not applied.
+fn host_allowlist(bind: &str) -> Option<std::collections::HashSet<String>> {
+    if !is_loopback_bind(bind) {
+        return None;
+    }
+    let port = bind.rsplit_once(':').map_or("8080", |(_, p)| p);
+    let mut set = std::collections::HashSet::new();
+    set.insert(bind.to_ascii_lowercase());
+    for h in ["localhost", "127.0.0.1", "[::1]"] {
+        set.insert(format!("{h}:{port}"));
+        set.insert(h.to_string());
+    }
+    Some(set)
+}
+
+/// Reject any request whose `Host` header is **present but not** in the loopback
+/// allowlist ([`host_allowlist`]) — the DNS-rebinding defense described at the
+/// call site. A rebind attack is browser-driven, and an HTTP/1.1 browser always
+/// sends `Host` set to the attacker's domain, so the *present-and-mismatched*
+/// case is exactly the attack; an **absent** `Host` is allowed through (a
+/// non-browser local client — or the test harness — that omits it is not the
+/// rebind threat and is already covered by the per-handler loopback guards).
+/// Returns `403` before the request reaches any handler.
+async fn enforce_host_allowlist(
+    allowed: Arc<std::collections::HashSet<String>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let rebind = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|h| !allowed.contains(&h.to_ascii_lowercase()));
+    if rebind {
+        (StatusCode::FORBIDDEN, "host not in loopback allowlist").into_response()
+    } else {
+        next.run(req).await
+    }
 }
 
 /// Content-Security-Policy for the embedded SPA.

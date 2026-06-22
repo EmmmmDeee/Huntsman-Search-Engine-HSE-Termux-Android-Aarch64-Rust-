@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tracing::info;
 
 use super::handlers::{
-    bad_request, internal_error, not_found, ok_list, spawn_scan, validated_target,
+    bad_request, forbidden, internal_error, not_found, ok_list, spawn_scan, validated_target,
 };
 use crate::api::AppState;
 use crate::core::entity::scan_id;
@@ -263,9 +263,26 @@ pub async fn scan_batch(
 /// lean), parsed by the SAME `cli::import` path the CLI uses, then persisted as a
 /// completed scan so it appears in the scan list and every view/export
 /// (entities, dossier, debug bundle) works on it identically to a live scan.
-pub async fn scan_import(State(s): State<Arc<AppState>>, body: String) -> impl IntoResponse {
+pub async fn scan_import(
+    State(s): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    body: String,
+) -> impl IntoResponse {
     use crate::core::entity::{EntityKind, unix_now};
     use crate::core::scan::{ScanStatus, TargetKind};
+
+    // CSRF guard. The body is `text/plain`, which is a CORS *simple request*
+    // (no preflight) — so without this, any website the operator has open could
+    // `fetch()` a fabricated dossier into their DB (CORS blocks reading the
+    // response, not sending the request). Requiring a custom header makes the
+    // request non-simple: a cross-origin caller must now preflight, and the
+    // preflight fails because `X-HSE-CSRF` is not in the CORS allow-headers set.
+    // The same-origin SPA sends it and never preflights. The header's mere
+    // presence is the token (it cannot be set cross-origin without the blocked
+    // preflight); the value is irrelevant.
+    if !headers.contains_key("x-hse-csrf") {
+        return forbidden("missing X-HSE-CSRF header (cross-site request blocked)");
+    }
 
     // Bound the upload so a hostile/huge paste can't exhaust phone memory.
     // NOTE: this in-handler check is the friendly-message backstop; the binding

@@ -66,6 +66,12 @@ pub(crate) fn bad_request(msg: impl Into<String>) -> axum::response::Response {
         .into_response()
 }
 
+/// A `403 Forbidden` JSON error, the access-control sibling of [`bad_request`]
+/// (e.g. a failed CSRF/loopback check). One shape for every refusal.
+pub(crate) fn forbidden(msg: impl Into<String>) -> axum::response::Response {
+    (StatusCode::FORBIDDEN, Json(json!({ "error": msg.into() }))).into_response()
+}
+
 pub(crate) fn ok_list<T: Serialize>(key: &str, items: Vec<T>) -> axum::response::Response {
     let n = items.len();
     let mut map = serde_json::Map::new();

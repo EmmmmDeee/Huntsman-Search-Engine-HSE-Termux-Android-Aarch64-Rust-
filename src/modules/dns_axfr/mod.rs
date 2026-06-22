@@ -103,6 +103,13 @@ impl Module for DnsAxfr {
                                 _ => None,
                             });
                     match ip {
+                        // SSRF guard: a scanned domain's NS record is attacker-
+                        // controllable and can point at a private/reserved IP
+                        // (127.0.0.1, 169.254.169.254, RFC1918). This raw-socket
+                        // AXFR path bypasses reqwest's `SsrfResolver`, so refuse
+                        // the transfer explicitly — otherwise the tool becomes an
+                        // internal port-53 prober for whoever controls the zone.
+                        Some(addr) if crate::util::preflight::is_private_addr(addr) => continue,
                         Some(addr) => addr.to_string(),
                         None => continue,
                     }
