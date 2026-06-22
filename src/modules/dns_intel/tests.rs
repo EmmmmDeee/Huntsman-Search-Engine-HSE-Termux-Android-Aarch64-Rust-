@@ -47,6 +47,29 @@ fn soa_rname_decodes() {
 }
 
 #[test]
+fn soa_admin_role_mailbox_is_gated_as_infrastructure() {
+    // The SOA RNAME is the zone's administrative contact, never the subject's
+    // PII. A live domain-heavy scan surfaced dozens of these (dns@, abuse@,
+    // hostmaster@) identity-clustered as the person — `resolve` now gates the
+    // emitted Email through `is_infrastructure_email` (mirroring whois/ripestat/
+    // SERP). Verify the SOA-derived address trips that gate for role/provider
+    // contacts while a genuine personal admin on a non-infra domain is kept.
+    use crate::util::domains::is_infrastructure_email;
+    assert!(is_infrastructure_email(&soa_rname_to_email(
+        "hostmaster.example.com"
+    )));
+    assert!(is_infrastructure_email(&soa_rname_to_email(
+        "dns.cloudflare.com"
+    )));
+    assert!(is_infrastructure_email(&soa_rname_to_email(
+        "root.subjectsite.com.au"
+    )));
+    assert!(!is_infrastructure_email(&soa_rname_to_email(
+        "alice.personaldomain.org"
+    )));
+}
+
+#[test]
 fn soa_rname_unescapes_dotted_local_part() {
     // A literal dot in the mailbox local part is `\.`-escaped in the RNAME;
     // the split must skip it AND the output must drop the backslash.
