@@ -10,6 +10,44 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.5.1] — 2026-06-22
+
+Accuracy and robustness fixes from an adversarial review of a live v1.5.0
+`full_name = Cindy Haynes` scan (plus dedicated panic-safety and determinism
+sweeps). Three corrected flaws were producing **materially wrong intelligence**;
+all are gate-verified (fmt, clippy `-D warnings`, full suite, MSRV 1.88, rustdoc).
+
+### Fixed
+
+- **Namesake location false-attribution.** A name search returns fuzzy
+  namesakes, and the per-result snippet extractors trusted every result's text
+  with no subject gate — a "Dr Cindy **He**" UNSW staff page was attributed to
+  "Cindy Haynes", injecting a false "Sydney, NSW" address + coordinate that drove
+  a wrong-state AU-056 jurisdiction and a 700 km geo-divergence. `url_matches_target`
+  now requires the distinctive **surname** for a multi-part name (not any term),
+  and snippet address extraction is gated on the surname appearing in the result.
+- **Phantom VERIFIED country "address".** A bare ISO country code ("US") reached
+  corroboration=106 by aggregating the shared `country` field across hundreds of
+  unrelated breach co-occurrence rows, surfacing as a confirmed US address for a
+  QLD subject. A bare country code is now refused at admission (the country
+  survives on its tag/attributes).
+- **Speculative permutations resurrected by recall.** Name-permuted emails
+  (`cindy.haynes@{gmail,hotmail,…}`) were shown VERIFIED with no real
+  confirmation: `source_count`'s stored-field fallback (meant for evidence-less
+  synthetic entities) also fired for entities whose evidence was all
+  non-corroborating, and `recall` ratchets that field up every re-scan. The
+  fallback is now reserved for genuinely evidence-less entities; an all-`recall`/
+  enrichment entity counts as one source and stays at its base tier.
+- **Correlator determinism** — every `entity_uids` `take(N)` over a HashMap-ordered
+  collection (AU-022/025/027/037) now uses the full member set or a
+  sort-before-cap, so the live and finalise passes agree and containment-dedup
+  folds them instead of persisting duplicate rows.
+- **`cert_intel` out-of-bounds panic** on an attacker-controlled leaf certificate
+  whose version-wrapper sits at the buffer tail — the serial-length read is now
+  bounds-checked.
+- **Email value normalisation** strips a literal breach-escape tail
+  (`…@gmail.com\r\n`) so the clean and dirty forms share one UID.
+
 ## [1.5.0] — 2026-06-22
 
 Unifies two parallel development lines and ships the combined result as one
