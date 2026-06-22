@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (125 modules: 92 free · 28 key-gated · 5 paid)
+## Catalogue (126 modules: 93 free · 28 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -33,7 +33,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `keybase` | username | free | no | 100 | person, username, email, domain, address |
 | `username_variants` | username | free | **yes** | 98 | username |
 
-### people (15)
+### people (16)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -52,6 +52,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `au_electoral` | full_name | free | no | 85 | address, coordinates |
 | `au_property` | full_name | free | no | 84 | address, coordinates |
 | `ahpra` | full_name, organisation | free | no | 86 | person, organisation |
+| `payid` | email, phone, abn_acn | free | **yes** | 80 | email, phone, abn_acn |
 
 ### email (6)
 

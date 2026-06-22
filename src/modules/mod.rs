@@ -86,6 +86,7 @@ pub mod opencellid;
 pub mod opencorporates;
 pub mod osintcat;
 pub mod overpass;
+pub mod payid;
 pub mod pgp;
 pub mod phone_geo;
 pub mod phone_intl;
@@ -299,6 +300,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(crates_io::CratesIo),
         Arc::new(reddit_user::RedditUser),
         Arc::new(gravatar::Gravatar),
+        Arc::new(payid::PayId),
         Arc::new(pgp::Pgp),
         Arc::new(psbdmp::Psbdmp),
         Arc::new(phone_intl::PhoneIntl),
