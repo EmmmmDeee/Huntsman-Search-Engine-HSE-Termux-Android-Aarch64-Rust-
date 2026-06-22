@@ -3,7 +3,7 @@
 **Prepared for:** Haigen Bamford
 **Date:** 2026-06-12
 **Companion to:** [`OSINT_SERVICE_VALUE_vs_HSE.md`](OSINT_SERVICE_VALUE_vs_HSE.md) (pricing + parity matrix)
-**Subject:** Huntsman Search Engine (HSE) v1.4.0 — 118 modules (89 free · 29 key-gated/paid; module baseline refreshed 2026-06-17)
+**Subject:** Huntsman Search Engine (HSE) v1.5.0 — 125 modules (92 free · 33 key-gated/paid; module baseline refreshed 2026-06-22)
 
 This document takes the capability-parity matrix from the value analysis and turns it into a **gap
 register**: for every capability where HSE is *not* at full free parity, it names the gap, sizes it,

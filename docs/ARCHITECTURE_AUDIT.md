@@ -10,7 +10,7 @@
 
 | Metric | Value |
 |---|---|
-| Version / edition / MSRV | 1.4.0 · edition 2024 · 1.88 |
+| Version / edition / MSRV | 1.5.0 · edition 2024 · 1.88 |
 | Source | ~137k LOC · 602 `.rs` files |
 | Modules | **118** registered — 89 Free · 24 KeyGated · 5 Paid · 14 categories |
 | Correlation rules | **69** deterministic (AU-001 … AU-064, AU-067/068/069/070/071) + 2 engine-emitted (AU-065/066) |
