@@ -122,8 +122,16 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
         e.add_evidence(ev);
         entities.push(e);
 
-        // Emit the admin contact as a discrete Email entity when present.
-        if admin_email.contains('@') {
+        // Emit the admin contact as a discrete Email entity when present — but
+        // NOT when it's a role/provider mailbox (`hostmaster@`, `dns@`, an
+        // infra-domain desk). The SOA RNAME is the zone's administrative contact,
+        // never the subject's PII; a live domain-heavy scan surfaced dozens of
+        // these (`dns@jomax.net`, `abuse@cloudflare.com`) treated as the person
+        // and identity-clustered. Mirrors the whois/ripestat/search_engines gate;
+        // a genuine personal admin (a real local-part on a non-infra domain) is
+        // still kept.
+        if admin_email.contains('@') && !crate::util::domains::is_infrastructure_email(&admin_email)
+        {
             let mut em = Entity::new(EntityKind::Email, &admin_email, 0.70, &ctx.scan_id);
             em.tag("dns-admin");
             em.add_evidence(

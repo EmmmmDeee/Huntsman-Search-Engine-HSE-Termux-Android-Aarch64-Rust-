@@ -65,7 +65,7 @@ pub const CANDIDATE_CONF: f64 = 0.25;
 /// and fired AU-003 / AU-034. Excluding it means a permutation needs two
 /// *genuine* sources to corroborate, while the derived entity still appears as a
 /// lead in the dossier (its evidence is kept and shown).
-pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &["geo_normalize", "name_intel"];
+pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &["geo_normalize", "name_intel", "payid"];
 
 /// True if `source` is a deterministic self-enrichment pass rather than an
 /// independent intelligence source (see [`ENRICHMENT_ONLY_SOURCES`]).
