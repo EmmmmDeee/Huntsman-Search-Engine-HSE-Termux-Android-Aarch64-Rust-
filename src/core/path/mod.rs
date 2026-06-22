@@ -220,8 +220,8 @@ pub fn shortest_path(
 }
 
 /// Up to `max_paths` DISTINCT connection pathways between two UIDs, shortest first.
-/// Each successive path is forced to route around the previous paths' intermediate
-/// nodes (node-disjoint), so the result is genuinely diverse routes — the multiple
+/// Each successive path is forced to route around the previous paths' edges
+/// (edge-disjoint), so the result is genuinely diverse routes — the multiple
 /// analytical pathways a corroborating investigation wants — not trivial reorderings
 /// of one chain. Deterministic and bounded. Empty if unconnected or an endpoint is
 /// absent.

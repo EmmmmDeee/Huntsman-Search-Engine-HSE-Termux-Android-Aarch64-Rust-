@@ -297,7 +297,12 @@ async fn fetch_listing(http: &reqwest::Client, provider: Provider, url: &str) ->
         return Access::PublicRead;
     }
     let body = match tokio::time::timeout(PROBE_TIMEOUT, http.get(url).send_tagged(SRC)).await {
-        Ok(Ok(resp)) => resp.text().await.unwrap_or_default(),
+        // Capped read (32 MiB): the public-bucket `ListBucketResult` is
+        // attacker-influenceable, so an uncapped `text()` is an OOM vector on the
+        // low-RAM Termux target.
+        Ok(Ok(resp)) => crate::util::http::read_body_capped(resp, crate::util::http::JSON_BODY_CAP)
+            .await
+            .unwrap_or_default(),
         _ => return Access::PublicRead,
     };
     if !body.contains("<ListBucketResult") {

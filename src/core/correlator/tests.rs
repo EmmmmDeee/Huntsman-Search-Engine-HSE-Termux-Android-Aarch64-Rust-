@@ -464,11 +464,13 @@ fn au033_links_abn_to_acnc_and_gleif_registry_orgs() {
 // ── AU-034 ──────────────────────────────────────────────────────────
 #[test]
 fn au034_links_username_to_email_by_shared_handle() {
-    // Username from one source, matching email from another → ≥2 distinct
-    // sources → fires, linking both uids.
+    // Username from one source, matching email from another INDEPENDENT
+    // observation → ≥2 distinct corroborating sources → fires, linking both uids.
+    // (Both sources must be genuine sightings: a `name_intel`-derived email is a
+    // derivation of the seed, not independent — see ENRICHMENT_ONLY_SOURCES.)
     let entities = vec![
         username("jmeyers", &["github_user"]),
-        email("jmeyers@gmail.com", &["name_intel"]),
+        email("jmeyers@gmail.com", &["hudsonrock"]),
     ];
     let r = rule_au_034_handle_reuse_identity(&entities, "scan-test", 0);
     assert_eq!(r.len(), 1);
@@ -1989,6 +1991,31 @@ fn au_039_links_wallet_to_identity() {
         &[],
     )];
     assert!(rule_au_039_wallet_identity(&only_wallet, "scan", 0).is_empty());
+}
+
+#[test]
+fn au_039_anchor_is_deterministic_under_multiple_identities() {
+    // With ≥2 identities present the anchor must be a stable choice (smallest
+    // Person UID), not whichever the randomized live-pass iteration hit first —
+    // otherwise the live and finalise passes name different people for one wallet
+    // and BOTH rows persist (disjoint entity sets escape containment-dedup).
+    let wallet = mk_tagged(
+        EntityKind::CryptoAddress,
+        "1A1zP1eP...",
+        "chain_intel",
+        &["crypto-address"],
+    );
+    let p1 = mk_tagged(EntityKind::Person, "Aaron Avery", "see_know", &[]);
+    let p2 = mk_tagged(EntityKind::Person, "Zoe Zimmer", "see_know", &[]);
+    let expected = std::cmp::min(p1.uid.clone(), p2.uid.clone());
+
+    let fwd = rule_au_039_wallet_identity(&[wallet.clone(), p1.clone(), p2.clone()], "scan", 0);
+    let rev = rule_au_039_wallet_identity(&[wallet.clone(), p2.clone(), p1.clone()], "scan", 0);
+    assert_eq!(fwd.len(), 1);
+    assert_eq!(rev.len(), 1);
+    // Same anchor regardless of input order, and it is the min-UID person.
+    assert_eq!(fwd[0].entity_uids, rev[0].entity_uids);
+    assert!(fwd[0].entity_uids.contains(&expected));
 }
 
 #[test]

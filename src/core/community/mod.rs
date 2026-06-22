@@ -276,8 +276,16 @@ pub fn detect(entities: &[Entity], relations: &[Relation]) -> Vec<Community> {
     }
 
     // Deterministic output order: largest first, ties broken by smallest member
-    // UID (every community has ≥ 1 member, so `[0]` is safe). `id` follows.
-    communities.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a[0].uid.cmp(&b[0].uid)));
+    // UID (every community has ≥ 1 member, so `[0]` is safe), then by the full
+    // member-UID sequence as a provable total-order backstop. LPA yields disjoint
+    // communities so the smallest UIDs already differ, but the final key keeps the
+    // order well-defined regardless of how the partition is produced. `id` follows.
+    communities.sort_by(|a, b| {
+        b.len()
+            .cmp(&a.len())
+            .then_with(|| a[0].uid.cmp(&b[0].uid))
+            .then_with(|| a.iter().map(|e| &e.uid).cmp(b.iter().map(|e| &e.uid)))
+    });
 
     communities
         .iter()

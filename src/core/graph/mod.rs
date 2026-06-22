@@ -155,6 +155,20 @@ impl Graph {
     /// recursion — so a long path can never overflow the stack on a low-RAM Termux
     /// device. Because [`Graph::build`] yields a simple graph (parallel edges collapsed,
     /// self-loops dropped), the "skip the one edge back to the DFS parent" rule is sound.
+    ///
+    /// **Distinct by design from
+    /// [`crate::core::relation::graph::connection_brokers`].** This is the
+    /// *unweighted, structural* articulation set over the full entity graph — every
+    /// edge counts equally — feeding the analytics surfaces (pivot scoring, the
+    /// benchmark). `connection_brokers` is the *confidence-floored, identity-framed*
+    /// view used by the correlator (AU-068/AU-070) and the dossier, where a
+    /// `min_confidence` floor stops one weak edge making a common-name node look like
+    /// the linchpin of dozens of unrelated namesakes. The two deliberately answer
+    /// different questions — pure topology vs binding-at-confidence — so a node can be
+    /// a structural cut vertex here yet not a broker there; that is expected, not a
+    /// discrepancy. They are kept separate on purpose (do not "unify" by dropping the
+    /// floor — that reintroduces the namesake-linchpin false positive the floor exists
+    /// to prevent).
     #[must_use]
     pub fn cut_vertices_and_bridges(&self) -> (Vec<usize>, Vec<(usize, usize)>) {
         let n = self.uids.len();

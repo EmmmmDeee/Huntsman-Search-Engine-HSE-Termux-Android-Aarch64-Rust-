@@ -17,19 +17,22 @@ pub(in crate::core::correlator) fn rule_au_039_wallet_identity(
     if wallets.is_empty() {
         return Vec::new();
     }
-    // Single pass for the anchor: track the best (Person preferred over Email)
-    // candidate seen so far instead of scanning the entity list once for each
-    // kind. A Person found at any point wins outright and ends the search.
-    let mut anchor: Option<&Entity> = None;
-    for e in entities {
-        if e.kind == EntityKind::Person {
-            anchor = Some(e);
-            break;
-        }
-        if anchor.is_none() && e.kind == EntityKind::Email {
-            anchor = Some(e);
-        }
-    }
+    // Deterministic anchor: the lexicographically-smallest Person UID, else the
+    // smallest Email UID. The live correlation pass iterates the entity map in
+    // randomized HashMap order, so a first-seen pick named a different identity
+    // per run — and because the live and finalise rows carry disjoint
+    // `[wallet, identity]` sets, containment-dedup kept BOTH, persisting two
+    // conflicting attributions for one wallet. The UID tie-break pins one answer.
+    let anchor = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .min_by(|a, b| a.uid.cmp(&b.uid))
+        .or_else(|| {
+            entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::Email)
+                .min_by(|a, b| a.uid.cmp(&b.uid))
+        });
     let Some(anchor) = anchor else {
         return Vec::new();
     };

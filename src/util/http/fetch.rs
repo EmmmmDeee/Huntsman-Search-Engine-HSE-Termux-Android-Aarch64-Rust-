@@ -105,7 +105,7 @@ pub async fn read_body_capped(resp: reqwest::Response, cap: usize) -> Option<Str
 /// payload would OOM a Termux device — the same threat `read_body_capped` /
 /// `error_snippet` already guard, but the JSON paths did not. 32 MiB is far above
 /// any legitimate OSINT JSON response (even a large `crt.sh` certificate list).
-pub(super) const JSON_BODY_CAP: usize = 32 * 1024 * 1024;
+pub const JSON_BODY_CAP: usize = 32 * 1024 * 1024;
 
 /// Stream a response body into a `String`, **erroring** (not truncating) past
 /// [`JSON_BODY_CAP`] bytes: a body that needs parsing can't be trusted half-read,
