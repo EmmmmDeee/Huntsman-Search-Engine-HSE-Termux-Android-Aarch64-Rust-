@@ -1,6 +1,6 @@
 [package]
 name        = "huntsman-search-engine"
-version     = "1.4.0"
+version     = "1.5.0"
 edition     = "2024"
 rust-version = "1.88"
 description = "Huntsman Search Engine — prototype OSINT/GEOINT platform for Termux aarch64 (no root)"
@@ -99,7 +99,7 @@ axum               = { version = "0.8",  default-features = false, features = ["
 # — pure Rust, no C/zlib dependency, so it preserves the no-native-libs Termux
 # build. `CompressionLayer`'s default predicate excludes `text/event-stream`,
 # so the SSE live-scan stream is never buffered/compressed.
-tower-http         = { version = "0.6",  features = ["cors", "compression-gzip"] }
+tower-http         = { version = "0.7",  features = ["cors", "compression-gzip"] }
 tokio-stream       = { version = "0.1",  features = ["sync"] }
 futures            = "0.3"
 # v1.2 — EXIF metadata parsing for the `exif_geo` module. Pure-Rust,

@@ -167,6 +167,26 @@ fn build_ns_entity(domain: &str, name: &str, scan_id: &str) -> Option<Entity> {
     Some(ns)
 }
 
+/// The registrable domain (eTLD+1) to query RDAP with, derived from a Domain or
+/// Url target. Returns `None` when the value yields no usable host (empty, or a
+/// URL with no host).
+///
+/// RDAP only resolves *registered* domains, not arbitrary hostnames:
+/// `rdap.org/domain/www.peekyou.com` errors/404s where `peekyou.com` succeeds.
+/// Reducing any subdomain (`www.`, `m.`, a host pulled from a URL) to its
+/// registrable base keeps a `www.`-prefixed Domain entity from wasting the
+/// lookup on a guaranteed 404. **Pure.**
+fn query_domain(target: &Target) -> Option<String> {
+    let host = match target.kind {
+        TargetKind::Url => crate::util::url_util::host_from_url(&target.value)?,
+        _ => target.value.trim().to_string(),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some(crate::util::domains::registrable_domain(&host).unwrap_or(host))
+}
+
 pub struct RdapDomain;
 
 #[async_trait]
@@ -191,7 +211,10 @@ impl Module for RdapDomain {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        15_000
+        // RDAP servers (IANA bootstrap + registrar endpoints) respond within
+        // 4-6 s on healthy paths; 8 s provides margin and cuts the ceiling
+        // from 15 s, freeing concurrency slots faster.
+        8_000
     }
 
     fn category(&self) -> ModuleCategory {
@@ -209,17 +232,10 @@ impl Module for RdapDomain {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let domain = match target.kind {
-            TargetKind::Url => match crate::util::url_util::host_from_url(&target.value) {
-                Some(h) => h,
-                None => return Ok(ModuleResult::new()),
-            },
-            _ => target.value.trim().to_string(),
+        let Some(domain) = query_domain(target) else {
+            return Ok(ModuleResult::new());
         };
         let domain = domain.as_str();
-        if domain.is_empty() {
-            return Ok(ModuleResult::new());
-        }
 
         // urlencode the path segment defensively: TargetKind::Domain
         // values are already DNS-label-shape per validation, but

@@ -517,6 +517,31 @@ impl super::ScanEngine {
                         self.emit_excluded(cx.scan_id, &entity, "incidental_infra");
                         continue;
                     }
+                    // Spam / homoglyph content gate. A breach co-occurrence dump
+                    // mints junk: scam Address text and "names" built from
+                    // Cyrillic/Greek glyphs that spoof ASCII (`Bеcоme а bitcоin
+                    // milliоnairе`), or random consonant strings (`ZonJZRJHHWD`).
+                    // Drop a cross-script homograph for any human-text kind, and a
+                    // gibberish random string for Person, at admission — neither is
+                    // ever the subject. Both gates are conservative (a real
+                    // accented name never trips them — see the validators).
+                    if matches!(
+                        entity.kind,
+                        crate::core::entity::EntityKind::Person
+                            | crate::core::entity::EntityKind::Address
+                            | crate::core::entity::EntityKind::Username
+                            | crate::core::entity::EntityKind::Organisation
+                    ) && crate::core::validation::is_confusable_mixed_script(&entity.value)
+                    {
+                        self.emit_excluded(cx.scan_id, &entity, "confusable_homoglyph");
+                        continue;
+                    }
+                    if entity.kind == crate::core::entity::EntityKind::Person
+                        && crate::core::validation::looks_like_gibberish_name(&entity.value)
+                    {
+                        self.emit_excluded(cx.scan_id, &entity, "gibberish_value");
+                        continue;
+                    }
                     // Universal MITRE ATT&CK provenance: stamp every ADMITTED
                     // entity with the Reconnaissance technique(s) of the module
                     // that produced it, as inline `attack:<ID>` tags. This makes

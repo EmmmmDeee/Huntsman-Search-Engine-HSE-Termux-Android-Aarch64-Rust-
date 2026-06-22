@@ -37,6 +37,10 @@ pub(super) async fn fetch_and_parse(
     let started = Instant::now();
     // No budget left to even start: skip rather than risk overrunning the kill.
     let timeout_ms = fetch_timeout_ms(deadline)?;
+    // Apply per-engine cap when set (e.g. DDG at 4 s vs global 8 s).
+    let timeout_ms = engine
+        .max_fetch_ms
+        .map_or(timeout_ms, |cap| timeout_ms.min(cap));
     // `outcome` records exactly what happened to this one request so the unified
     // debug log explains every search interaction — no black-box. One of:
     // ok / empty (parsed 0 → likely parser/soft-block) / blocked (anti-bot) /

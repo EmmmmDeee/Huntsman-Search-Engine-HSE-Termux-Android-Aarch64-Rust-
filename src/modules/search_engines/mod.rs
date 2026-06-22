@@ -39,6 +39,7 @@
 //!   - Phone (from snippet text at 0.55) → triggers numverify, phone_intl
 
 use std::collections::HashSet;
+use std::sync::Mutex;
 
 mod build;
 mod engines;
@@ -76,6 +77,89 @@ const MAX_ACCUMULATED_RESULTS: usize = 2000;
 /// fetches every engine at once via `join_all`. Each request still self-clamps to
 /// the deadline, so concurrency can never push the pass past the hard kill.
 const ENGINE_CONCURRENCY: usize = 6;
+
+/// Consecutive-empty threshold for an engine that has **never** produced a
+/// result this session. From datacenter IPs `google`, `you`, `presearch`,
+/// `qwant`, … return 0 results on every seed; three strikeouts is enough signal
+/// that they're hard-blocked here, so stop probing them (saves ~200+ s/scan).
+const SESSION_DEAD_THRESHOLD: u8 = 3;
+
+/// Consecutive-empty threshold for an engine that **has** produced ≥1 result
+/// this session ("proven live"). Intermittently-blocked engines like `bing`
+/// (~48% block rate) and `ecosia` (~78%) routinely hit 3-block streaks *between*
+/// real hits; the low threshold was permanently silencing them mid-scan and
+/// discarding their later results (live depth-1 scan: `ecosia` was the 2nd-most
+/// productive engine at 182 results, yet was silenced after a 4-block run; `bing`
+/// lost its remaining hits the same way). A proven engine must miss this many
+/// seeds *in a row* before we accept it has genuinely gone down — high enough to
+/// ride out a normal block streak, low enough to abandon a truly dead host.
+const SESSION_DEAD_THRESHOLD_PROVEN: u8 = 10;
+
+/// Per-engine session liveness: consecutive empties and whether the engine has
+/// EVER returned a result this run. Shared across all `process()` calls within
+/// one binary execution; a fresh `hse` invocation starts empty.
+#[derive(Default, Clone, Copy)]
+struct EngineLiveness {
+    consecutive_empty: u8,
+    ever_hit: bool,
+}
+
+static SESSION_EMPTY_COUNTS: std::sync::LazyLock<
+    Mutex<std::collections::HashMap<&'static str, EngineLiveness>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+/// The applicable dead-threshold for a liveness record: a proven-live engine
+/// gets the tolerant threshold, an unproven one the aggressive default. **Pure.**
+fn dead_threshold(live: EngineLiveness) -> u8 {
+    if live.ever_hit {
+        SESSION_DEAD_THRESHOLD_PROVEN
+    } else {
+        SESSION_DEAD_THRESHOLD
+    }
+}
+
+/// True when `name` has missed enough consecutive seeds to be silenced — using
+/// the tolerant threshold once the engine has proven it can produce results.
+fn is_session_dead(name: &str) -> bool {
+    let live = SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(name)
+        .copied()
+        .unwrap_or_default();
+    live.consecutive_empty >= dead_threshold(live)
+}
+
+/// Increment the empty streak for `name`; log once when it crosses its
+/// (proven-aware) threshold so operators know why it was silenced.
+fn record_empty(name: &'static str) {
+    let mut map = SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let live = map.entry(name).or_default();
+    live.consecutive_empty = live.consecutive_empty.saturating_add(1);
+    let threshold = dead_threshold(*live);
+    if live.consecutive_empty == threshold {
+        tracing::debug!(
+            engine = name,
+            threshold,
+            proven = live.ever_hit,
+            "search engine returned nothing for {threshold} consecutive seeds \
+             — silenced for the rest of this scan"
+        );
+    }
+}
+
+/// Reset the empty streak for `name` when it actually returns results, and mark
+/// it "proven live" so future streaks are judged against the tolerant threshold.
+fn record_hit(name: &'static str) {
+    let mut map = SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let live = map.entry(name).or_default();
+    live.consecutive_empty = 0;
+    live.ever_hit = true;
+}
 
 const SOCIAL_HOSTS: &[&str] = &[
     "facebook.com",
@@ -298,18 +382,20 @@ impl Module for SearchEngines {
                 break;
             }
 
-            let engines: Vec<&'static EngineSpec> = ENGINES
-                .iter()
-                .filter(|e| engine_enabled(e.name) && !(qi > 0 && dead_engines.contains(e.name)))
-                .collect();
-
-            // Each engine's WHOLE fetch (page 0 + its own pagination) is one
+            // Each live engine's WHOLE fetch (page 0 + its own pagination) is one
             // future; ENGINE_CONCURRENCY of them run at once. Pagination stays
             // sequential *within* an engine, concurrent *across* engines. The
             // futures are built eagerly into a Vec (each owns its inputs), then
             // streamed — so no borrow of the loop-local `query` outlives the batch.
-            let futs: Vec<_> = engines
-                .into_iter()
+            // The liveness filter feeds the map directly: no intermediate Vec of
+            // engine refs is materialised on this per-query hot path.
+            let futs: Vec<_> = ENGINES
+                .iter()
+                .filter(|e| {
+                    engine_enabled(e.name)
+                        && !is_session_dead(e.name)
+                        && !(qi > 0 && dead_engines.contains(e.name))
+                })
                 .map(|engine| {
                     let url = (engine.build_url)(query);
                     let post_body = engine.build_post.map(|f| f(query));
@@ -328,11 +414,20 @@ impl Module for SearchEngines {
             batch.sort_by(|a, b| a.0.cmp(b.0));
             for (name, res) in batch {
                 match res {
-                    Some(mut results) => all_results.append(&mut results),
+                    Some(mut results) => {
+                        // fetch_engine only returns Some(...) when results are
+                        // non-empty (empty → None via fetch_and_parse). Reset
+                        // the session-dead streak for this engine on qi == 0.
+                        if qi == 0 {
+                            record_hit(name);
+                        }
+                        all_results.append(&mut results);
+                    }
                     // Nothing on the FIRST query → down/blocked for this session;
                     // skip it on subsequent queries to save the budget.
                     None if qi == 0 => {
                         dead_engines.insert(name);
+                        record_empty(name);
                     }
                     None => {}
                 }
@@ -392,10 +487,20 @@ impl Module for SearchEngines {
             }
         }
 
+        // Count how many DISTINCT engines returned each canonical URL BEFORE
+        // deduplication collapses the results to one `SearchResult` per URL.
+        // This map carries the cross-engine corroboration signal into
+        // `build_entities`; computing it after the dedup below would credit
+        // every URL to a single engine and silently defeat the "multi-engine
+        // corroboration boosts entity confidence" mechanism (a URL returned by
+        // N engines would always score 1).
+        let url_engine_count = url_engine_counts(&all_results);
+
         // Deduplicate results by canonical URL before entity extraction.
         let all_results = dedup_results(all_results);
 
-        let mut module_result = build_entities(target, &ctx.scan_id, &all_results);
+        let mut module_result =
+            build_entities(target, &ctx.scan_id, &all_results, &url_engine_count);
 
         // ── Recursive entity recycler: re-search high-confidence
         //    discovered entities for geolocation and cross-linking ─────
@@ -442,6 +547,12 @@ fn regional_enabled() -> bool {
 /// universal toggleability registry. Default on; turned off (persisted) via
 /// `hse config engine.<name> off`. Checked in every engine-dispatch loop and the
 /// liveness probe so a disabled engine is never queried.
+/// True when `name` has been silenced by the session-dead tracker.
+/// Exported so the `/engines/health` API can surface it per-engine.
+pub(crate) fn session_dead(name: &str) -> bool {
+    is_session_dead(name)
+}
+
 pub(crate) fn engine_enabled(name: &str) -> bool {
     crate::util::settings::get_bool(&format!("engine.{name}"), true)
 }

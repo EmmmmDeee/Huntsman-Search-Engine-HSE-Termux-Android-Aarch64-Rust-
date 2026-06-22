@@ -20,17 +20,27 @@ use crate::api::AppState;
 pub async fn scan_entities_csv(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     if let Some(resp) = scan_missing(&s, &id) {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
-    let entities = match tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await {
-        Ok(Ok(es)) => es,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
-    };
+    let mut entities =
+        match tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await {
+            Ok(Ok(es)) => es,
+            Ok(Err(e)) => return internal_error(&e),
+            Err(e) => return internal_error(&format!("query task failed: {e}")),
+        };
+    // Quarantine by default (opt in with `?include_candidates=1`) — matches the
+    // `/entities` JSON endpoint and `report.json` so the downloaded CSV is the
+    // subject's confirmed footprint, not a foreign breach-victim list. Without
+    // this the CSV silently contradicted the self-audit's "excluded from
+    // export" promise and shipped hundreds of non-subject `candidate` rows.
+    if !crate::api::scan_handlers::wants_candidates(&params) {
+        entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+    }
     download_response(
         entities_to_csv(&entities),
         "text/csv; charset=utf-8",

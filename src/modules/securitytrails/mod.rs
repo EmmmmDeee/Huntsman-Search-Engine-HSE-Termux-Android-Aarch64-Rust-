@@ -234,10 +234,9 @@ impl SecurityTrails {
                 }
                 return Err(crate::util::http::http_status_error(SRC, resp).await);
             }
-            return resp
-                .json()
-                .await
-                .map_err(|e| Error::module(SRC, e.to_string()));
+            // Capped decode (32 MiB) — a raw `resp.json()` would buffer an
+            // unbounded body on the low-RAM Termux target.
+            return crate::util::http::json_decode(SRC, resp).await;
         }
     }
 }

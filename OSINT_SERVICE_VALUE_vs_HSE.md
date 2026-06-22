@@ -2,7 +2,7 @@
 
 **Prepared for:** Haigen Bamford
 **Date:** 2026-06-12
-**Analyst tool reference:** Huntsman Search Engine (HSE) v1.4.0 — 118 modules (89 free · 29 key-gated/paid; module baseline refreshed 2026-06-17)
+**Analyst tool reference:** Huntsman Search Engine (HSE) v1.5.0 — 125 modules (92 free · 33 key-gated/paid; module baseline refreshed 2026-06-22)
 **Purpose:** Price a range of OSINT services on a like-for-like basis and weigh each, capability by
 capability, against what HSE delivers natively or through bring-your-own-key (BYO-key) integration.
 **See also:** [`OSINT_MATRIX_GAP_ANALYSIS.md`](OSINT_MATRIX_GAP_ANALYSIS.md) — gap register, closeability

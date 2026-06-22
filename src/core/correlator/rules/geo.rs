@@ -384,6 +384,10 @@ pub(in crate::core::correlator) fn rule_au_018_email_address_colocation(
             emails.push(e);
         } else if matches!(e.kind, EntityKind::Address | EntityKind::Coordinates)
             && e.confidence >= 0.50
+            // Infrastructure geo (a WHOIS registrant filing address, a CDN/host
+            // location, an IP-only fix) is not the subject's home — it must not
+            // forge an identity↔location linkage with the email.
+            && !is_infrastructure_geo(e)
         {
             addresses.push(e);
         }
@@ -427,10 +431,11 @@ pub(in crate::core::correlator) fn rule_au_026_validated_address(
         "geo_intel",
         "wigle",
         "overpass",
-        "ip_geo",
-        "ip2location",
-        "ip_whois_geo",
-        "ipinfo",
+        // NB: IP-geo sources (`ip_geo` / `ip2location` / `ip_whois_geo` /
+        // `ipinfo`) are deliberately excluded — they locate the IP's
+        // datacentre/ISP, not the subject's street address, so counting two of
+        // them as "independent validation" geolocated the subject to a hosting
+        // region (H5). Street-address validation needs geocoders / registries.
         "opencorporates",
         "epieos",
         "proxycurl",
@@ -576,7 +581,14 @@ pub(in crate::core::correlator) fn rule_au_030_geo_convergence_score(
     let geo_entities: Vec<&Entity> = entities
         .iter()
         .filter(|e| {
-            matches!(e.kind, EntityKind::Address | EntityKind::Coordinates) && e.confidence >= 0.40
+            matches!(e.kind, EntityKind::Address | EntityKind::Coordinates)
+                && e.confidence >= 0.40
+                // Exclude infrastructure geo (registrant/hosting/IP-only fixes):
+                // otherwise a domain's registrant address + its hosting country
+                // manufacture two of the three "independent sources" this
+                // convergence score escalates to Critical on, geolocating the
+                // subject to their domain's datacentre.
+                && !is_infrastructure_geo(e)
         })
         .collect();
 
@@ -989,6 +1001,74 @@ mod tests {
         assert_eq!(coord_state(&weak), None);
         let email = Entity::new(EntityKind::Email, "a@b.com", 0.9, "s");
         assert_eq!(coord_state(&email), None);
+    }
+
+    // ── H5: infrastructure geo must not vote the subject's location ────────────
+
+    #[test]
+    fn infrastructure_geo_excluded_from_address_rollup_rules() {
+        use crate::core::entity::Evidence;
+        let email = {
+            let mut e = Entity::new(EntityKind::Email, "subject@example.com", 0.8, "s");
+            e.add_evidence(Evidence::new("hibp", "breach"));
+            e
+        };
+        // A WHOIS registrant filing address and a hosting-country address — both
+        // infrastructure geo, not the subject's home.
+        let registrant = {
+            let mut a = Entity::new(EntityKind::Address, "California, US", 0.50, "s");
+            a.tag(crate::core::tags::REGISTRANT);
+            a.add_evidence(Evidence::new("whois", "Registrant location"));
+            a
+        };
+        let hosting = {
+            let mut a = Entity::new(EntityKind::Address, "Sydney NSW, AU", 0.50, "s");
+            a.tag(crate::core::tags::HOSTING);
+            a.add_evidence(Evidence::new("urlscan", "Hosting country"));
+            a
+        };
+        let infra = vec![email.clone(), registrant, hosting];
+
+        // AU-018: no genuine subject address → no identity↔location linkage.
+        assert!(
+            rule_au_018_email_address_colocation(&infra, "s", 0).is_empty(),
+            "infra geo must not forge an email↔location linkage"
+        );
+        // AU-030: two infra-geo addresses are not multi-source convergence.
+        assert!(
+            rule_au_030_geo_convergence_score(&infra, "s", 0).is_empty(),
+            "infra geo must not manufacture geo convergence"
+        );
+
+        // AU-026: an address "validated" only by two IP-geo lookups is the host's
+        // location, not a street address — IP-geo is no longer an allowed source.
+        let ip_only = {
+            let mut a = Entity::new(EntityKind::Address, "Ashburn, Virginia, US", 0.6, "s");
+            a.add_evidence(Evidence::new("ip_geo", "IP city"));
+            a.add_evidence(Evidence::new("ipinfo", "IP city"));
+            a
+        };
+        assert!(
+            rule_au_026_validated_address(&[ip_only], "s", 0).is_empty(),
+            "two IP-geo lookups are not street-address validation"
+        );
+
+        // Control: a genuine geocoded home address STILL co-locates with the
+        // email — the fix targets infrastructure geo, not real fixes.
+        let home = {
+            let mut a = Entity::new(
+                EntityKind::Address,
+                "12 Smith St, Brisbane QLD 4000",
+                0.7,
+                "s",
+            );
+            a.add_evidence(Evidence::new("geocode", "geocoded"));
+            a
+        };
+        assert!(
+            !rule_au_018_email_address_colocation(&[email, home], "s", 0).is_empty(),
+            "a real geocoded address still co-locates with the email"
+        );
     }
 
     // ── extract_ratemyagent_suburb ────────────────────────────────────────────

@@ -239,6 +239,27 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Benchmark a scan: a consolidated scorecard of the measurable OSINT dimensions
+    /// (discovery depth, graph coverage, corroboration, density, throughput, pivots)
+    /// for a reproducible, auditable comparison against another tool on the same seed.
+    Benchmark {
+        /// Stored scan id to benchmark (`latest` for the most recent completed scan).
+        #[arg(long)]
+        scan_id: Option<String>,
+        /// Emit the machine-readable JSON report instead of the text scorecard.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Discovery gaps: the validated seeds with no evidence-backed link, why each is
+    /// isolated, and the corrective scans that would connect it — the gap-resolution loop.
+    Gaps {
+        /// Stored scan id to analyse (`latest` for the most recent completed scan).
+        #[arg(long)]
+        scan_id: Option<String>,
+        /// Emit the machine-readable JSON report instead of the text summary.
+        #[arg(long)]
+        json: bool,
+    },
     /// Verify environment: DB path, key file, Termux detection, module counts.
     /// (Subsumed by `hse diagnostics`; kept for scripting and the API/UI.)
     #[command(hide = true)]

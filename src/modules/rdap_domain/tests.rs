@@ -8,6 +8,34 @@ fn accepts_only_domain() {
 }
 
 #[test]
+fn query_domain_reduces_subdomains_to_registrable_base() {
+    // The reported flaw: a `www.`-prefixed Domain entity was queried verbatim
+    // (`rdap.org/domain/www.peekyou.com`) and 404'd. RDAP only resolves the
+    // registered domain, so the lookup must use the eTLD+1.
+    assert_eq!(
+        query_domain(&Target::new(TargetKind::Domain, "www.peekyou.com")).as_deref(),
+        Some("peekyou.com")
+    );
+    // A multi-label public suffix is preserved (no over-trim to the bare suffix).
+    assert_eq!(
+        query_domain(&Target::new(TargetKind::Domain, "shop.example.com.au")).as_deref(),
+        Some("example.com.au")
+    );
+    // An apex domain is unchanged.
+    assert_eq!(
+        query_domain(&Target::new(TargetKind::Domain, "peekyou.com")).as_deref(),
+        Some("peekyou.com")
+    );
+    // A URL target reduces its host the same way.
+    assert_eq!(
+        query_domain(&Target::new(TargetKind::Url, "https://www.peekyou.com/foo")).as_deref(),
+        Some("peekyou.com")
+    );
+    // Empty / hostless values yield no query.
+    assert_eq!(query_domain(&Target::new(TargetKind::Domain, "   ")), None);
+}
+
+#[test]
 fn priority_runs_after_whois() {
     // Whois (priority 32) is the canonical record holder; rdap fills
     // structured gaps after. Engine sorts highest-first.

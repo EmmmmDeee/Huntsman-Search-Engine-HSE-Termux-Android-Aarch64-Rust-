@@ -3,9 +3,21 @@
 use serde::de::DeserializeOwned;
 
 use crate::core::error::{Error, Result};
+use crate::util::circuit_breaker;
 
 use super::keys::scan_for_api_keys;
 use super::redact::redact_credentials;
+
+/// True if an HTTP status is a *server-side* fault that should count against a
+/// host's circuit breaker: any 5xx, or 429 (rate-limited / quota-exhausted).
+///
+/// A 404 — and every other definitive client answer (400/401/403/…) — is a
+/// valid response, not an endpoint fault, so it deliberately does **not** trip
+/// the breaker (gating on those would short-circuit a host that is up and simply
+/// answering "no" / "unauthorised").
+fn is_breaker_failure_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error() || status.as_u16() == 429
+}
 
 /// Read up to 200 characters of a non-success response body, trim, and
 /// return a single-line string safe to embed in an error message.
@@ -93,7 +105,7 @@ pub async fn read_body_capped(resp: reqwest::Response, cap: usize) -> Option<Str
 /// payload would OOM a Termux device — the same threat `read_body_capped` /
 /// `error_snippet` already guard, but the JSON paths did not. 32 MiB is far above
 /// any legitimate OSINT JSON response (even a large `crt.sh` certificate list).
-pub(super) const JSON_BODY_CAP: usize = 32 * 1024 * 1024;
+pub const JSON_BODY_CAP: usize = 32 * 1024 * 1024;
 
 /// Stream a response body into a `String`, **erroring** (not truncating) past
 /// [`JSON_BODY_CAP`] bytes: a body that needs parsing can't be trusted half-read,
@@ -205,9 +217,38 @@ async fn fetch_json_inner<T: DeserializeOwned>(
     url: &str,
     map_404_to_none: bool,
 ) -> Result<Option<T>> {
+    // Per-host circuit breaker: a host that has failed repeatedly is
+    // short-circuited until its cooldown elapses, so a dead/flaky endpoint stops
+    // burning a connect/read budget on every fan-out target. `host` is `None`
+    // for an unparseable / host-less URL, which is simply left un-gated. A
+    // blocked request returns the same "request failed" error the un-gated path
+    // would on a transport failure — never `Ok(None)`, which `fetch_json_or_404`
+    // would misread as a definitive "not found".
+    let host = circuit_breaker::host_of(url);
+    if let Some(h) = host.as_deref()
+        && !circuit_breaker::allow_host(h, crate::core::entity::unix_now())
+    {
+        return Err(Error::module(
+            module,
+            format!(
+                "request short-circuited by circuit breaker for {}",
+                redact_credentials(url)
+            ),
+        ));
+    }
     match client.get(url).send().await {
         Ok(resp) => {
             let status = resp.status();
+            // Record the outcome against the host breaker: a server-side fault
+            // (5xx / 429) is a failure; any other answer — including a 404 — is a
+            // successful round-trip to a live host.
+            if let Some(h) = host.as_deref() {
+                if is_breaker_failure_status(status) {
+                    circuit_breaker::record_failure(h, crate::core::entity::unix_now());
+                } else {
+                    circuit_breaker::record_success(h);
+                }
+            }
             if map_404_to_none && status.as_u16() == 404 {
                 return Ok(None);
             }
@@ -224,6 +265,12 @@ async fn fetch_json_inner<T: DeserializeOwned>(
             Ok(Some(data))
         }
         Err(transport) => {
+            // Transport failure → count it against the host breaker before the
+            // curl fallback: a wedged host should trip even though curl might
+            // occasionally rescue one call.
+            if let Some(h) = host.as_deref() {
+                circuit_breaker::record_failure(h, crate::core::entity::unix_now());
+            }
             // reqwest transport failure → one curl fallback attempt. curl
             // collapses every outcome (404, non-zero exit, parse failure) to
             // `None`, so a `None` here means the fallback ALSO failed — surface
@@ -399,15 +446,42 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
     header_name: &str,
 ) -> Result<Option<T>> {
     let key = ctx.key(key_env)?;
-    let resp = ctx
-        .http
-        .get(url)
-        .header(header_name, key)
-        .send()
-        .await
-        .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
+    // Per-host circuit breaker (see `fetch_json_inner`): short-circuit a host
+    // that has failed repeatedly, returning the same transport-style error this
+    // helper raises on a send failure. Host-less/unparseable URLs are un-gated.
+    let host = circuit_breaker::host_of(url);
+    if let Some(h) = host.as_deref()
+        && !circuit_breaker::allow_host(h, crate::core::entity::unix_now())
+    {
+        return Err(Error::module(
+            module,
+            format!(
+                "request short-circuited by circuit breaker for {}",
+                redact_credentials(url)
+            ),
+        ));
+    }
+    let resp = match ctx.http.get(url).header(header_name, key).send().await {
+        Ok(resp) => resp,
+        Err(e) => {
+            if let Some(h) = host.as_deref() {
+                circuit_breaker::record_failure(h, crate::core::entity::unix_now());
+            }
+            return Err(Error::module(module, redact_credentials(&e.to_string())));
+        }
+    };
 
     let status = resp.status();
+    // Record the outcome against the host breaker: 5xx / 429 is a server-side
+    // fault; everything else (including 404 and a key-rejection 401/403) is a
+    // live round-trip, so the host stays closed.
+    if let Some(h) = host.as_deref() {
+        if is_breaker_failure_status(status) {
+            circuit_breaker::record_failure(h, crate::core::entity::unix_now());
+        } else {
+            circuit_breaker::record_success(h);
+        }
+    }
     if status.as_u16() == 404 {
         return Ok(None);
     }

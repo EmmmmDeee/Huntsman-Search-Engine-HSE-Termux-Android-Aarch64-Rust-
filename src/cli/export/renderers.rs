@@ -3,19 +3,32 @@
 use crate::core::error::{Error, Result};
 use crate::storage::Store;
 
+/// A scan's entities with the quarantined `candidate` rows removed — the
+/// subject's confirmed footprint. The breach co-occurrence "strangers" carry
+/// the `candidate` tag and are non-subject PII; the structured exports
+/// (`json`/`csv`/`gexf`) drop them by default so they match `report.json` and
+/// the `/entities` API instead of leaking a foreign breach victim list under
+/// the subject's scan. The COMPLETE, nothing-hidden set is still available via
+/// `--format full` / `--format debug`.
+fn confirmed_entities(store: &Store, sid: &str) -> Result<Vec<crate::core::entity::Entity>> {
+    let mut entities = store.entities_for_scan(sid)?;
+    entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+    Ok(entities)
+}
+
 pub(super) fn render_json(store: &Store, sid: &str) -> Result<String> {
-    let entities = store.entities_for_scan(sid)?;
+    let entities = confirmed_entities(store, sid)?;
     serde_json::to_string_pretty(&entities)
         .map_err(|e| Error::Other(format!("json serialise: {e}")))
 }
 
 pub(super) fn render_csv(store: &Store, sid: &str) -> Result<String> {
-    let entities = store.entities_for_scan(sid)?;
+    let entities = confirmed_entities(store, sid)?;
     Ok(crate::api::scan_export::entities_to_csv(&entities))
 }
 
 pub(super) fn render_gexf(store: &Store, sid: &str) -> Result<String> {
-    let entities = store.entities_for_scan(sid)?;
+    let entities = confirmed_entities(store, sid)?;
     let relations = store.relations_for_scan(sid)?;
     Ok(crate::core::gexf::entities_to_gexf(
         &entities, &relations, sid,
@@ -383,7 +396,8 @@ pub(crate) fn render_debug_bundle(
         let _ = writeln!(
             s,
             "  quarantined: {} breach co-occurrence row(s) — non-subject, excluded from \
-             view/export/correlator & grade",
+             the correlator, the grade, and the default views/exports (report, json, \
+             csv, gexf); retained in this full bundle for transparency",
             report.quarantined
         );
     }

@@ -10,6 +10,36 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-06-22
+
+Unifies two parallel development lines and ships the combined result as one
+install-ready release (**125 modules — 92 free · 28 key-gated · 5 paid**;
+3,492 lib tests):
+
+- the **module-consolidation refactor** (127 → 124 modules with no capability
+  lost — `phone_area_geo`+`phone_carrier_geo` → `phone_geo`, `qld_unclaimed`
+  folded into `au_unclaimed`, IP-geo/ASN unified into `util::geo::ip_asn_entity`,
+  seven JSON holdouts routed through the shared `json_decode`), and
+- the **graph-analytics / cross-scan intelligence suite** — a shared `Graph`
+  primitive with community detection (deterministic label propagation),
+  cut-vertex/bridge detection, betweenness-centrality **pivot-node** detection,
+  connection-/path-discovery between entities and **across separate scans**,
+  damped **trust propagation**, near-duplicate **entity resolution**,
+  **discovery-gap** analysis, the universal entity **classifier** (every output
+  re-injectable as a seed), a consolidated **`hse benchmark`** scorecard (+ its
+  HTTP twin and a forward-only scan-plan preview), and history-aware lead
+  prioritisation.
+
+Plus a **dependency refresh** (tower-http 0.6 → 0.7; 26 transitive crates to
+their latest Rust-1.88-compatible versions) and **five data-quality fixes**
+verified against real-scan debug bundles: structured exports (CSV/JSON/GEXF) now
+honour the breach-co-occurrence quarantine (H1); `name_intel` name-permutations
+no longer self-corroborate into AU-003/AU-034 (H3); WHOIS-registrant / hosting /
+IP-geo locations no longer vote the subject's address in AU-018/026/030 (H5);
+`rdap_domain` reduces a host to its registrable domain before querying (M5); and
+a confusable-homograph / gibberish admission gate drops breach-dump spam
+"names" (L5).
+
 ### Added
 
 - **Test-coverage & proof-infrastructure expansion (~2,995 lib tests passing).**

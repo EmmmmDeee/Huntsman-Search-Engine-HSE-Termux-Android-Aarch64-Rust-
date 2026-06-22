@@ -252,13 +252,28 @@ async fn resolve_mx(domain: &str) -> Option<String> {
 }
 
 async fn smtp_rcpt_check(mx_host: &str, email: &str) -> SmtpVerdict {
-    let addr = format!("{mx_host}:25");
+    // SSRF guard: the MX host comes from an attacker-influenceable DNS record, so
+    // resolve it ourselves and dial only a PUBLIC address — pinning the target so
+    // there is no resolve-then-connect rebind window. Connecting by hostname
+    // string (the OS resolver, unfiltered) would let a crafted MX → localhost /
+    // RFC1918 / link-local turn the tool into a port-25 reachability oracle or
+    // internal open-relay prober. Mirrors `whois::resolve_public_whois`.
+    if crate::util::preflight::is_local_domain(mx_host) {
+        return SmtpVerdict::Unreachable(format!("{mx_host} is not a public host"));
+    }
+    let pinned = match tokio::net::lookup_host((mx_host, 25u16)).await {
+        Ok(mut addrs) => addrs.find(|a| !crate::util::preflight::is_private_addr(a.ip())),
+        Err(_) => None,
+    };
+    let Some(addr) = pinned else {
+        return SmtpVerdict::Unreachable(format!("{mx_host} has no public address"));
+    };
     let stream =
-        match tokio::time::timeout(std::time::Duration::from_secs(5), TcpStream::connect(&addr))
+        match tokio::time::timeout(std::time::Duration::from_secs(5), TcpStream::connect(addr))
             .await
         {
             Ok(Ok(s)) => s,
-            _ => return SmtpVerdict::Unreachable(format!("connect to {addr} failed")),
+            _ => return SmtpVerdict::Unreachable(format!("connect to {mx_host}:25 failed")),
         };
 
     let (reader, mut writer) = stream.into_split();

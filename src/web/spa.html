@@ -621,11 +621,30 @@ const API = {
   leads:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/leads'),
   // Footprint timeline: every dated event the evidence implies, oldest-first.
   timeline:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/timeline'),
+  // Graph communities: relationship sub-clusters via label propagation.
+  communities: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/communities'),
+  // Network trust: entities ranked by graph-corroborated trust propagation.
+  trust:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/trust'),
+  // Connection path: how two named entities are linked through the relation graph.
+  // `cross` extends the search across every scan in the local intelligence database.
+  path: (id,from,to,n,cross)=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/path?from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to)+(n?'&paths='+n:'')+(cross?'&cross=true':'')),
+  // Per-scan quality / telemetry measures (the empirical scan-quality dashboard).
+  metrics:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/metrics'),
+  // Near-duplicate entity-resolution suggestions (probable same-identity groups).
+  duplicates: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/duplicates'),
+  // Pivot nodes: the graph's high-connectivity intermediaries (betweenness centrality).
+  pivots:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/pivots'),
+  gaps:       id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/gaps'),
   auditScan: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/audit'),
   create:    body=>API._req('/api/v1/scans',{method:'POST',body}),
+  // Forward-only scan-plan preview: which modules a seed engages, before scanning.
+  plan:      value=>API._req('/api/v1/plan?value='+encodeURIComponent(value)),
   // Raw-text upload (not JSON): POST a dossier file's contents to be parsed and
   // ingested as a scan. Bypasses _req's JSON envelope.
-  importDossier: text=>fetch('/api/v1/scans/import',{method:'POST',headers:{'Content-Type':'text/plain'},body:text}).then(async r=>{ if(!r.ok){ let e='HTTP '+r.status; try{ e=(await r.json()).error||e; }catch{} throw new Error(e); } return r.json(); }),
+  // The X-HSE-CSRF header makes this a non-simple request: same-origin (here) it
+  // sends straight through, but a cross-site caller must preflight, which CORS
+  // rejects — so a hostile page can't POST a forged dossier into the local DB.
+  importDossier: text=>fetch('/api/v1/scans/import',{method:'POST',headers:{'Content-Type':'text/plain','X-HSE-CSRF':'1'},body:text}).then(async r=>{ if(!r.ok){ let e='HTTP '+r.status; try{ e=(await r.json()).error||e; }catch{} throw new Error(e); } return r.json(); }),
   rerun:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/rerun',{method:'POST'}),
   cancel:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/cancel',{method:'POST'}),
   remove:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id),{method:'DELETE'}),
@@ -1049,6 +1068,26 @@ function renderDiffResult(d){
 }
 
 /* ═══════════ Page: NEWSCAN (#/newscan) ═══════════ */
+/* ── Forward-only scan-plan preview: which modules a seed engages, before spending
+   battery/time on a scan. GET /api/v1/plan?value=. Pure, offline, no scan run. ── */
+async function previewPlan(){
+  const value = ($('#scantarget').value || '').trim();
+  const out = $('#plan-preview');
+  if (!value){ out.innerHTML = '<span class="text-muted" style="font-size:12px">Enter a target above to preview.</span>'; return; }
+  out.innerHTML = '<span class="text-muted" style="font-size:12px">Resolving plan…</span>';
+  let p;
+  try { p = await API.plan(value); }
+  catch(e){ out.innerHTML = `<div class="alert alert-danger" style="margin:0;padding:6px 10px">${esc(e.message)}</div>`; return; }
+  const cats = (p.categories || []).map(c=>`<span class="tag" style="margin:0 4px 2px 0;display:inline-block">${esc(c.category)}&nbsp;${c.count}</span>`).join('');
+  const shown = (p.modules || []).slice(0, 40);
+  const mods = shown.map(m=>`<code style="margin:0 4px 2px 0;display:inline-block" title="${attr(m.description||'')}">${esc(m.name)}</code>`).join('');
+  out.innerHTML = `<div style="padding:8px 10px;border-left:3px solid #5bc0de;background:rgba(91,192,222,0.07)">
+    <div>Detected type: <span class="tag">${esc(p.kind)}</span> &middot; <b>${p.module_count}</b> module${p.module_count===1?'':'s'} will run</div>
+    <div style="margin-top:5px">${cats}</div>
+    <div style="margin-top:6px;line-height:1.9">${mods}${(p.modules||[]).length>40?' <span class="text-muted">…</span>':''}</div>
+  </div>`;
+}
+
 async function renderNewScan(v){
   if (!S.modules){ const m = await API.modules(); S.modules = m.modules || []; }
   const W = S.wizard;
@@ -1094,8 +1133,13 @@ async function renderNewScan(v){
             <input class="form-control" type="text" id="scanname" value="${attr(W.name)}" placeholder="The name of this scan.">
           </div>
           <label for="scantarget">Scan Target</label>
-          <div class="input-group" style="padding-bottom:10px">
+          <div class="input-group" style="padding-bottom:6px">
             <input class="form-control" type="text" id="scantarget" value="${attr(W.value)}" placeholder="The target of your scan." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          </div>
+          <div style="padding-bottom:10px">
+            <button class="btn btn-default btn-xs" type="button" onclick="previewPlan()"><i class="glyphicon glyphicon-eye-open"></i>&nbsp;Preview plan</button>
+            <span class="text-muted" style="font-size:11px;margin-left:6px">see which modules run, before scanning</span>
+            <div id="plan-preview" style="margin-top:8px"></div>
           </div>
           <label for="scankind">Target Type</label>
           <select id="scankind" class="form-control">
@@ -1608,16 +1652,30 @@ function subTab(name, label, count, active){
    Settings) into one — the rest live under Browse / Graph / Scan Log. ── */
 async function renderReport(host, id, scan){
   host.innerHTML = `
-    <div id="rpt-network"></div>
+    <div id="rpt-metrics"></div>
+    <div id="rpt-network"  style="margin-top:18px"></div>
     <div id="rpt-leads"    style="margin-top:18px"></div>
     <div id="rpt-timeline" style="margin-top:18px"></div>
+    <div id="rpt-communities" style="margin-top:18px"></div>
+    <div id="rpt-trust"    style="margin-top:18px"></div>
+    <div id="rpt-pivots"   style="margin-top:18px"></div>
+    <div id="rpt-gaps"     style="margin-top:18px"></div>
+    <div id="rpt-path"     style="margin-top:18px"></div>
+    <div id="rpt-duplicates" style="margin-top:18px"></div>
     <div id="rpt-corr"     style="margin-top:18px"></div>
     <div id="rpt-audit"    style="margin-top:18px"></div>`;
   // Each renderer owns its sub-section (and its own async fetch); composing them
   // reuses the synthesis already built rather than duplicating any logic.
+  renderMetrics($('#rpt-metrics'), id);
   renderNetwork($('#rpt-network'), id);
   renderLeads($('#rpt-leads'), id);
   renderTimeline($('#rpt-timeline'), id);
+  renderCommunities($('#rpt-communities'), id);
+  renderTrust($('#rpt-trust'), id);
+  renderPivots($('#rpt-pivots'), id);
+  renderGaps($('#rpt-gaps'), id);
+  renderPathTool($('#rpt-path'), id);
+  renderDuplicates($('#rpt-duplicates'), id);
   renderCorrelations($('#rpt-corr'));
   renderAudit($('#rpt-audit'), id);
 }
@@ -1778,6 +1836,251 @@ async function renderTimeline(host, id){
     </div>`;
   }
   host.innerHTML = html + '</div>';
+}
+
+/* ── Communities section — the relationship graph partitioned into sub-clusters by
+   label propagation (the family cluster vs the infrastructure estate, …), each
+   with its members and a derived label. GET /scans/{id}/communities. ── */
+async function renderCommunities(host, id){
+  host.innerHTML = '<div class="empty-state"><h3>Detecting communities…</h3></div>';
+  let data;
+  try { data = await API.communities(id); }
+  catch(e){ host.innerHTML = `<div class="alert alert-danger"><b>Error.</b> ${esc(e.message)}</div>`; return; }
+  const comms = (data && data.communities) || [];
+  if (!comms.length){
+    host.innerHTML = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-th-large"></i>&nbsp;Communities</h4>
+      <div class="empty-state"><h3>No communities yet</h3>
+      <p>Sub-clusters appear once the scan derives a connected relationship graph —
+      run a deeper scan (<code>--depth ≥ 1</code>) so people, accounts and infrastructure link up.</p></div>`;
+    return;
+  }
+  const byUid = {};
+  (S.entities||[]).forEach(e=>{ byUid[e.uid] = e; });
+  const val = uid => { const e = byUid[uid]; return e ? esc(e.raw_value||e.value) : esc(String(uid).slice(0,12))+'…'; };
+  let html = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-th-large"></i>&nbsp;Communities</h4>
+    <p class="text-muted" style="font-size:12px;margin-bottom:10px"><b>${comms.length}</b> sub-cluster${comms.length===1?'':'s'} in the relationship graph, largest first.</p>`;
+  for (const c of comms){
+    const n = c.size || (c.uids||[]).length;
+    const members = (c.uids||[]).slice(0,8).map(u=>`<code>${val(u)}</code>`).join(' ');
+    const more = n > 8 ? ` <span class="text-muted">+${n-8} more</span>` : '';
+    html += `<div style="margin-bottom:8px;padding:8px 10px;border-left:3px solid #5bc0de;background:rgba(91,192,222,0.07)">
+      <div><span class="tag">${esc(c.label||('community '+c.id))}</span> <span class="text-muted">· ${n} member${n===1?'':'s'}</span></div>
+      <div style="margin-top:4px;line-height:1.9">${members}${more}</div>
+    </div>`;
+  }
+  host.innerHTML = html;
+}
+
+/* ── Trust section — entities ranked by how strongly the relationship graph
+   corroborates them (damped trust propagation from high-confidence anchors,
+   attenuating with distance). GET /scans/{id}/trust. Read-only; never alters
+   stored confidence — it is the network's vote, not raw per-entity confidence. ── */
+async function renderTrust(host, id){
+  host.innerHTML = '<div class="empty-state"><h3>Propagating network trust…</h3></div>';
+  let data;
+  try { data = await API.trust(id); }
+  catch(e){ host.innerHTML = `<div class="alert alert-danger"><b>Error.</b> ${esc(e.message)}</div>`; return; }
+  const scores = (data && data.trust) || [];
+  if (!scores.length){
+    host.innerHTML = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-stats"></i>&nbsp;Network trust</h4>
+      <div class="empty-state"><h3>No trust ranking yet</h3>
+      <p>Trust radiates across the relationship graph from high-confidence anchors.
+      It appears once the scan derives relations — run a deeper scan to populate it.</p></div>`;
+    return;
+  }
+  const byUid = {};
+  (S.entities||[]).forEach(e=>{ byUid[e.uid] = e; });
+  const top = scores.slice(0,12);
+  let html = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-stats"></i>&nbsp;Network trust</h4>
+    <p class="text-muted" style="font-size:12px;margin-bottom:10px">Top ${top.length} entit${top.length===1?'y':'ies'} by graph-corroborated trust — how strongly the network supports each, not raw confidence.</p>`;
+  for (const t of top){
+    const e = byUid[t.uid];
+    const label = e ? `${kindPill(e.kind)} <code>${esc(e.raw_value||e.value)}</code>`
+                    : `<code class="text-muted" style="font-size:10px">${esc(String(t.uid).slice(0,16))}…</code>`;
+    const score = Number(t.score) || 0;
+    const pct = Math.max(0, Math.min(100, Math.round(score*100)));
+    html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+      <div style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${label}</div>
+      <div style="flex:0 0 120px;background:rgba(127,127,127,0.2);border-radius:3px;height:10px;overflow:hidden">
+        <div style="width:${pct}%;height:100%;background:#5cb85c"></div></div>
+      <div style="flex:0 0 38px;text-align:right"><code>${score.toFixed(2)}</code></div>
+    </div>`;
+  }
+  host.innerHTML = html;
+}
+
+/* ── Pivot nodes — the high-connectivity intermediaries most of the graph routes
+   through (betweenness + degree centrality). GET /scans/{id}/pivots. The
+   highest-leverage entities to pivot on next; read-only, structural. ── */
+async function renderPivots(host, id){
+  let data;
+  try { data = await API.pivots(id); }
+  catch(e){ host.innerHTML = ''; return; }
+  const pivots = (data && data.pivots) || [];
+  const bridges = (data && data.bridges) || [];
+  if (!pivots.length && !bridges.length){ host.innerHTML = ''; return; }
+  const byUid = {};
+  (S.entities||[]).forEach(e=>{ byUid[e.uid] = e; });
+  const labelFor = (uid) => {
+    const e = byUid[uid];
+    return e ? `${kindPill(e.kind)} <code>${esc(e.raw_value||e.value)}</code>`
+             : `<code class="text-muted" style="font-size:10px">${esc(String(uid).slice(0,16))}…</code>`;
+  };
+  const top = pivots.slice(0, 12);
+  let html = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-screenshot"></i>&nbsp;Pivot nodes</h4>
+    <p class="text-muted" style="font-size:12px;margin-bottom:10px">The high-connectivity intermediaries most of the graph routes through — the highest-leverage entities to pivot on next. A <span class="label label-warning">critical</span> node is a single point of failure: remove it and the network fragments.</p>`;
+  for (const p of top){
+    const pctw = Math.max(0, Math.min(100, Math.round((Number(p.score)||0)*100)));
+    const cut = p.is_cut_vertex ? ` <span class="label label-warning" title="Cut vertex — removing this entity fragments the network into disconnected pieces">critical</span>` : '';
+    html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+      <div style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${labelFor(p.uid)}${cut}</div>
+      <div class="text-muted" style="flex:0 0 auto;font-size:11px">${p.degree} link${p.degree===1?'':'s'}</div>
+      <div style="flex:0 0 110px;background:rgba(127,127,127,0.2);border-radius:3px;height:10px;overflow:hidden">
+        <div style="width:${pctw}%;height:100%;background:#9b59b6"></div></div>
+    </div>`;
+  }
+  if (bridges.length){
+    html += `<h5 style="margin:14px 0 4px"><i class="glyphicon glyphicon-resize-horizontal"></i>&nbsp;Critical links <span class="text-muted" style="font-weight:normal;font-size:11px">(${bridges.length} bridge${bridges.length===1?'':'s'})</span></h5>
+      <p class="text-muted" style="font-size:12px;margin-bottom:6px">Single relationships whose removal would split the graph in two — irreplaceable connections to corroborate first.</p>`;
+    for (const br of bridges.slice(0, 12)){
+      html += `<div style="font-size:12px;margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${labelFor(br.from_uid)} <span class="text-muted">—</span> ${labelFor(br.to_uid)}</div>`;
+    }
+    if (bridges.length > 12){ html += `<div class="text-muted" style="font-size:11px">…and ${bridges.length-12} more.</div>`; }
+  }
+  host.innerHTML = html;
+}
+
+/* ── Discovery gaps — validated seeds with no evidence-backed link, why they're
+   isolated, and the corrective scans that would connect them. GET /scans/{id}/gaps.
+   The gap-resolution loop made legible: turns "no links" into "run these next". ── */
+async function renderGaps(host, id){
+  let data;
+  try { data = await API.gaps(id); }
+  catch(e){ host.innerHTML = ''; return; }
+  if (!data || data.null_state){ host.innerHTML = ''; return; }
+  const orphans = data.orphans || [];
+  const linkedPct = Math.round((Number(data.linked_fraction)||0)*100);
+  let html = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-unchecked"></i>&nbsp;Discovery gaps</h4>
+    <p class="text-muted" style="font-size:12px;margin-bottom:8px">${data.linked_seeds}/${data.total_seeds} seeds linked (${linkedPct}%). Isolated seeds below are discovery blind spots — each shows the corrective scan that would connect it.</p>`;
+  if (!orphans.length){
+    html += `<p class="text-success" style="font-size:12px"><i class="glyphicon glyphicon-ok"></i> Every validated seed is linked into the graph.</p>`;
+    host.innerHTML = html; return;
+  }
+  const badge = { unexpanded:'label-warning', below_expand_floor:'label-default', terminal:'label-info' };
+  const nonTerminal = orphans.filter(o=>o.isolation!=='terminal');
+  const terminalCount = orphans.length - nonTerminal.length;
+  for (const o of nonTerminal.slice(0,15)){
+    const mods = (o.corrective_modules||[]);
+    const modStr = mods.length ? `<span class="text-muted" style="font-size:11px"> → run: ${mods.slice(0,6).map(esc).join(', ')}${mods.length>6?'…':''}</span>` : '';
+    html += `<div style="margin-bottom:6px;font-size:12px">
+      <span class="label ${badge[o.isolation]||'label-default'}">${esc(String(o.isolation).replace(/_/g,' '))}</span>
+      <code>${esc(o.value||o.uid)}</code> <span class="text-muted">(${esc(o.kind)})</span>
+      <div class="text-muted" style="font-size:11px;margin-left:4px">${esc(o.action)}${modStr}</div>
+    </div>`;
+  }
+  if (nonTerminal.length>15){ html += `<div class="text-muted" style="font-size:11px">…and ${nonTerminal.length-15} more actionable gaps.</div>`; }
+  if (terminalCount>0){ html += `<div class="text-muted" style="font-size:11px">+ ${terminalCount} terminal leaf/leaves (non-scannable; expected isolation).</div>`; }
+  host.innerHTML = html;
+}
+
+/* ── Connection-path tool — link analysis between two named entities. Enter two
+   discovered values and find the shortest relationship chain linking them (plus
+   alternative routes). GET /scans/{id}/path. The deeper the scan recursed, the more
+   of the graph there is to connect across. ── */
+async function renderPathTool(host, id){
+  host.innerHTML = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-share-alt"></i>&nbsp;Connection path</h4>
+    <p class="text-muted" style="font-size:12px;margin-bottom:8px">Find how two discovered entities are linked through the relationship graph — the shortest chain plus alternative routes.</p>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <input id="path-from" class="form-control" style="flex:1;min-width:140px" placeholder="From — e.g. Kyle Diegmann">
+      <span class="text-muted">→</span>
+      <input id="path-to" class="form-control" style="flex:1;min-width:140px" placeholder="To — e.g. Erik Diegmann">
+      <button id="path-go" class="btn btn-primary">Find connection</button>
+    </div>
+    <label style="font-weight:normal;font-size:12px;margin-top:6px"><input type="checkbox" id="path-cross">&nbsp;Search across all scans (reaches entities found in other investigations)</label>
+    <div id="path-result" style="margin-top:10px"></div>`;
+  const out = $('#path-result');
+  const run = async () => {
+    const from = $('#path-from').value.trim(), to = $('#path-to').value.trim();
+    if (!from || !to){ out.innerHTML = '<span class="text-muted">Enter two entity values to connect.</span>'; return; }
+    const cross = $('#path-cross').checked;
+    out.innerHTML = '<span class="text-muted">Searching the graph…</span>';
+    let data;
+    try { data = await API.path(id, from, to, null, cross); }
+    catch(e){ out.innerHTML = `<div class="alert alert-danger" style="margin-bottom:0"><b>Error.</b> ${esc(e.message)}</div>`; return; }
+    const paths = (data && data.paths) || [];
+    const nodes = (data && data.nodes) || {};
+    const label = uid => { const n = nodes[uid]; return n ? `${kindPill(n.kind)} <code>${esc(n.value)}</code>` : `<code class="text-muted" style="font-size:10px">${esc(String(uid).slice(0,12))}…</code>`; };
+    if (!paths.length){
+      out.innerHTML = `<div class="alert alert-warning" style="margin-bottom:0"><b>No connection found</b> between <code>${esc(from)}</code> and <code>${esc(to)}</code> in this scan's graph (within 6 hops). Run a deeper scan so the recursion draws in the linking entities.</div>`;
+      return;
+    }
+    let html = `<p class="text-muted" style="font-size:12px;margin-bottom:8px"><b>${paths.length}</b> route${paths.length===1?'':'s'} found — shortest first.</p>`;
+    paths.forEach((p, i) => {
+      let chain = label(p.nodes[0]);
+      for (let k=0; k<p.edges.length; k++){
+        chain += ` <span class="text-muted">—<span class="tag" style="margin:0 3px">${esc(p.edges[k].kind)}</span>→</span> ${label(p.nodes[k+1])}`;
+      }
+      html += `<div style="margin-bottom:8px;padding:8px 10px;border-left:3px solid ${i===0?'#5cb85c':'#5bc0de'};background:rgba(127,127,127,0.06)">
+        <div style="margin-bottom:4px"><span class="badge">${p.hops} hop${p.hops===1?'':'s'}</span> <span class="text-muted">· strength ${Number(p.strength).toFixed(2)}</span></div>
+        <div style="line-height:2">${chain}</div>
+      </div>`;
+    });
+    out.innerHTML = html;
+  };
+  $('#path-go').onclick = run;
+  $('#path-from').onkeydown = e => { if (e.key === 'Enter') run(); };
+  $('#path-to').onkeydown = e => { if (e.key === 'Enter') run(); };
+}
+
+/* ── Scan-quality dashboard — objective per-scan telemetry (GET /scans/{id}/metrics):
+   how much corroborated intelligence the scan formed. A nicety, so it fails quietly. ── */
+async function renderMetrics(host, id){
+  let m;
+  try { m = await API.metrics(id); }
+  catch(e){ host.innerHTML = ''; return; }
+  if (!m || !m.total_entities){ host.innerHTML = ''; return; }
+  const pct = x => Math.round((Number(x)||0)*100);
+  const t = m.tier_counts || {verified:0, probable:0, candidate:0};
+  const stat = (lab, val) => `<div style="flex:0 0 auto;min-width:80px;padding:6px 10px;background:rgba(127,127,127,0.07);border-radius:4px;text-align:center">`
+    + `<div style="font-size:18px;font-weight:600;line-height:1.1">${val}</div>`
+    + `<div class="text-muted" style="font-size:11px">${lab}</div></div>`;
+  host.innerHTML = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-dashboard"></i>&nbsp;Scan quality</h4>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">`
+    + stat('Entities', m.total_entities)
+    + stat('Verified', t.verified)
+    + stat('Relations', m.total_relations)
+    + stat('Corroborated', pct(m.corroborated_fraction)+'%')
+    + stat('Linked', pct(m.linked_entity_fraction)+'%')
+    + ((m.seed_reach && m.seed_reach.anchored) ? stat('Reach', m.seed_reach.reachable_total) + stat('Max depth', m.seed_reach.max_depth+' hop'+(m.seed_reach.max_depth===1?'':'s')) : '')
+    + stat('Graph density', pct(m.graph_density)+'%')
+    + stat('Cross-scan', m.cross_scan_bridges)
+    + stat('Mean conf', (Number(m.mean_confidence)||0).toFixed(2))
+    + stat('Sources', m.distinct_evidence_sources)
+    + `</div>`;
+}
+
+/* ── Likely-duplicates aid — near-duplicate entity-resolution suggestions
+   (GET /scans/{id}/duplicates): probable same-identity groups the exact matcher
+   missed (Gmail variants, phone formats, reordered names). Fails quietly. ── */
+async function renderDuplicates(host, id){
+  let data;
+  try { data = await API.duplicates(id); }
+  catch(e){ host.innerHTML = ''; return; }
+  const groups = (data && data.duplicates) || [];
+  if (!groups.length){ host.innerHTML = ''; return; }
+  const byUid = {};
+  (S.entities||[]).forEach(e=>{ byUid[e.uid] = e; });
+  const val = uid => { const e = byUid[uid]; return e ? esc(e.raw_value||e.value) : esc(String(uid).slice(0,12))+'…'; };
+  let html = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-duplicate"></i>&nbsp;Likely duplicates</h4>
+    <p class="text-muted" style="font-size:12px;margin-bottom:8px">${groups.length} group${groups.length===1?'':'s'} that are probably one identity in different contexts — confirm before treating as the same.</p>`;
+  for (const g of groups){
+    const members = (g.members||[]).map(u=>`<code>${val(u)}</code>`).join(' ');
+    html += `<div style="margin-bottom:6px;padding:6px 10px;border-left:3px solid #f0ad4e;background:rgba(240,173,78,0.07)">
+      <div>${kindPill(g.kind)} ${members}</div>
+      <div class="text-muted" style="font-size:11px;margin-top:2px">${esc(g.reason||'')}</div>
+    </div>`;
+  }
+  host.innerHTML = html;
 }
 
 /* ── Relations tab — typed edges from the recursive crawl (provenance) ── */

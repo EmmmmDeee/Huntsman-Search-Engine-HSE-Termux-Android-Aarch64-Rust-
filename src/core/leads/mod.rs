@@ -40,6 +40,19 @@ const COMMON_SURNAME_FACTOR: f64 = 0.6;
 /// which is what surfaces a rare-surname subject's real kin above the noise.
 const RARE_SURNAME_FACTOR: f64 = 1.15;
 
+/// Pivot-score lift when a lead is a CROSS-INVESTIGATION BRIDGE — the same value
+/// independently surfaced in an EARLIER scan in the local intelligence database (the
+/// history flywheel). Graded by the strength of the prior tie, strongest wins: an
+/// explicit prior RELATIONSHIP (`cross-scan-relation`) is the richest signal, a prior
+/// CO-OCCURRENCE (`cross-scan-cooccurrence`) is next, and bare RECURRENCE
+/// (`cross-scan`) is the weakest. Historical corroboration is independent of every
+/// within-scan signal, so it lifts priority: a value two investigations already
+/// touched is a higher-yield pivot than a fresh one — accumulated intelligence
+/// driving prioritisation, not just annotation.
+const HISTORY_RELATION_BOOST: f64 = 0.5;
+const HISTORY_COOCCURRENCE_BOOST: f64 = 0.3;
+const HISTORY_RECURRENCE_BOOST: f64 = 0.15;
+
 /// A recommended next investigation step: an entity worth pivoting on, why, and
 /// the scan that would pursue it.
 #[derive(Debug, Clone, Serialize)]
@@ -67,6 +80,11 @@ pub struct Lead {
     /// (`geo-discordant`). Demoted in the ranking and flagged for the UI so the
     /// analyst can tell the genuine local family from interstate look-alikes.
     pub discordant: bool,
+    /// A CROSS-INVESTIGATION BRIDGE — the same value independently surfaced in an
+    /// earlier scan (the history flywheel: recurrence, co-occurrence, or a recalled
+    /// prior relationship). Earns a [`history_boost`] in the ranking and lets the UI
+    /// badge a lead that connects two investigations.
+    pub bridged: bool,
     /// The network group this lead came from (`people` / `identifiers` / …).
     pub group: &'static str,
 }
@@ -100,32 +118,34 @@ fn group_weight(group: &str) -> f64 {
 }
 
 /// Composite pivot score: kind value × group weight × node trust × link strength,
-/// then lifted by two INDEPENDENT bonuses —
-/// * **novelty** (`+0.6` when still untapped: below the expansion floor, or a
-///   shared-surname relative the engine deliberately held back, so the engine did
-///   not pivot it — exactly the lead a human should pick up), and
-/// * **confirmation** (a second, independent signal vouches the connection is real
-///   — see [`confirmation_boost`]).
+/// then lifted by **novelty** (`+0.6` when still untapped: below the expansion
+/// floor, or a shared-surname relative the engine deliberately held back, so it was
+/// never auto-pivoted — exactly the lead a human should pick up) and an additive
+/// corroboration **bonus**: the caller's [`confirmation_boost`] (an independent
+/// within-scan signal vouches the connection) PLUS its [`history_boost`] (the lead
+/// bridges an earlier investigation, so accumulated cross-scan intelligence lifts
+/// its priority). The two arrive pre-summed because the score only sums them — the
+/// caller keeps them apart to set the `confirmed` / `bridged` flags.
 ///
 /// The trust term floors at 0.4 so a low-confidence-but-novel relative still ranks,
-/// not zero. A geo-corroborated relative earns BOTH bonuses (novel *and*
-/// confirmed), so every scan's reliably-linked family surfaces as its top one-tap
-/// pivots — the previous binary "untapped ⇒ ×1.6" instead penalised exactly those
-/// relatives the moment geo-corroboration lifted them over the floor. A
-/// `discordant` lead (a likely namesake a region away) is finally scaled by
-/// [`NAMESAKE_PENALTY`] so it sinks below the genuine local family.
+/// not zero. A geo-corroborated relative earns novelty AND a confirmation bonus, so
+/// every scan's reliably-linked family surfaces as its top one-tap pivots — the
+/// previous binary "untapped ⇒ ×1.6" instead penalised exactly those relatives the
+/// moment geo-corroboration lifted them over the floor. A `discordant` lead (a
+/// likely namesake a region away) is finally scaled by [`NAMESAKE_PENALTY`] so it
+/// sinks below the genuine local family.
 fn score(
     kind_value: f64,
     group_weight: f64,
     entity_conf: f64,
     edge_conf: f64,
     untapped: bool,
-    confirmation: f64,
+    bonus: f64,
     discordant: bool,
 ) -> f64 {
     let base = kind_value * group_weight * (0.4 + 0.6 * entity_conf) * (0.5 + 0.5 * edge_conf);
     let novelty = if untapped { 0.6 } else { 0.0 };
-    let raw = base * (1.0 + novelty + confirmation);
+    let raw = base * (1.0 + novelty + bonus);
     if discordant {
         raw * NAMESAKE_PENALTY
     } else {
@@ -154,6 +174,25 @@ fn confirmation_boost(group: &str, classification: &str, tags: &[String]) -> f64
             "PROBABLE" => 0.20,
             _ => 0.0,
         }
+    } else {
+        0.0
+    }
+}
+
+/// Cross-investigation history lift for a lead, from the STRONGEST history-flywheel
+/// tag it carries ([`HISTORY_RELATION_BOOST`] / [`HISTORY_COOCCURRENCE_BOOST`] /
+/// [`HISTORY_RECURRENCE_BOOST`]). The three tags nest in strength — a recalled
+/// relationship implies the value also recurred — so the MAX applicable boost is
+/// taken, never summed. Zero when the lead bridges no prior scan. This is what makes
+/// the ranking data-driven on accumulated intelligence: history informs
+/// prioritisation, not just the reason text.
+fn history_boost(tags: &[String]) -> f64 {
+    if tags.iter().any(|t| t == "cross-scan-relation") {
+        HISTORY_RELATION_BOOST
+    } else if tags.iter().any(|t| t == "cross-scan-cooccurrence") {
+        HISTORY_COOCCURRENCE_BOOST
+    } else if tags.iter().any(|t| t == "cross-scan") {
+        HISTORY_RECURRENCE_BOOST
     } else {
         0.0
     }
@@ -209,9 +248,14 @@ fn reason(group: &str, label: &str, value: &str, tags: &[String], untapped: bool
     {
         r.push_str(" · common surname — corroborate independently");
     }
-    // The cross-scan bridge (the history flywheel): this value also appears in an
-    // earlier investigation, so the lead links two scans — flag it independently.
-    if tags.iter().any(|t| t == "cross-scan") {
+    // The cross-scan bridge (the history flywheel): this value links to an earlier
+    // investigation — annotated by the STRONGEST prior tie so the analyst sees HOW it
+    // bridges (a recalled relationship beats a co-occurrence beats bare recurrence).
+    if tags.iter().any(|t| t == "cross-scan-relation") {
+        r.push_str(" · linked to it in a prior scan");
+    } else if tags.iter().any(|t| t == "cross-scan-cooccurrence") {
+        r.push_str(" · seen with it in a prior scan");
+    } else if tags.iter().any(|t| t == "cross-scan") {
         r.push_str(" · also in a prior scan");
     }
     if untapped {
@@ -252,6 +296,9 @@ pub fn recommend(entities: &[Entity], relations: &[Relation], expansion_floor: f
                 } else {
                     confirmation_boost(group.key, &conn.classification, &conn.tags)
                 };
+                // Accumulated cross-scan intelligence lifts a lead's priority,
+                // independent of every within-scan signal (the history flywheel).
+                let history = history_boost(&conn.tags);
                 Some(Lead {
                     uid: conn.uid.clone(),
                     value: conn.value.clone(),
@@ -265,12 +312,13 @@ pub fn recommend(entities: &[Entity], relations: &[Relation], expansion_floor: f
                         conn.entity_confidence,
                         conn.edge_confidence,
                         untapped,
-                        confirmation,
+                        confirmation + history,
                         discordant,
                     ) * surname_factor(&conn.value, &conn.tags),
                     classification: conn.classification.clone(),
                     confirmed: confirmation > 0.0,
                     discordant,
+                    bridged: history > 0.0,
                     group: group.key,
                 })
             })

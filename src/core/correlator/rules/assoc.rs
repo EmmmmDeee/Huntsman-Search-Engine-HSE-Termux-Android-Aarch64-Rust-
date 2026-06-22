@@ -186,7 +186,9 @@ fn residence_groups(entities: &[Entity]) -> std::collections::BTreeMap<String, G
                 .entry(key)
                 .or_default()
                 .anchor_uid
-                .get_or_insert(a.uid.clone());
+                // Lazy: only the FIRST entity in each residence group sets the
+                // anchor, so clone the uid only when the slot is still empty.
+                .get_or_insert_with(|| a.uid.clone());
         }
     }
     for e in entities {
@@ -287,7 +289,8 @@ pub(in crate::core::correlator) fn rule_au_050_shared_phone_association(
                 .entry(key)
                 .or_default()
                 .anchor_uid
-                .get_or_insert(ph.uid.clone());
+                // Lazy: clone the uid only for the first phone in each group.
+                .get_or_insert_with(|| ph.uid.clone());
         }
     }
     for e in entities {

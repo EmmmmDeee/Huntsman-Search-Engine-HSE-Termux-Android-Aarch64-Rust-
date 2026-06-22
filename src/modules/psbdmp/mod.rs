@@ -69,7 +69,10 @@ impl Module for Psbdmp {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        12_000
+        // Live scan: psbdmp.ws averaged 14.8 s dispatch-to-done at 0/152 ok
+        // (consistently unreachable from DC IPs). The API is a single fetch;
+        // 6 s is enough for a healthy response and fails fast from DC.
+        6_000
     }
 
     fn produces(&self) -> &'static [EntityKind] {

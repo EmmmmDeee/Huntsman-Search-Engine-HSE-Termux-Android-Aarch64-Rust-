@@ -18,6 +18,31 @@ use super::*;
     }
 
     #[test]
+    fn host_allowlist_covers_loopback_aliases_and_rejects_rebind() {
+        let set = host_allowlist("127.0.0.1:8080").expect("loopback bind has an allowlist");
+        // The names a user legitimately types — all accepted.
+        for h in [
+            "127.0.0.1:8080",
+            "localhost:8080",
+            "[::1]:8080",
+            "localhost",
+            "127.0.0.1",
+        ] {
+            assert!(set.contains(h), "{h} must be allowed");
+        }
+        // A DNS-rebind Host (the attacker's domain) is NOT in the set.
+        assert!(!set.contains("evil.example.com:8080"));
+        assert!(!set.contains("evil.example.com"));
+    }
+
+    #[test]
+    fn host_allowlist_is_none_for_non_loopback_bind() {
+        // A 0.0.0.0 bind is an explicit operator choice to expose the API; the
+        // valid Host set is the box's own (unknowable) addresses, so no guard.
+        assert!(host_allowlist("0.0.0.0:8080").is_none());
+    }
+
+    #[test]
     fn loopback_edge_cases() {
         assert!(is_loopback_bind("localhost"));
         assert!(!is_loopback_bind("localhostx:8080"));

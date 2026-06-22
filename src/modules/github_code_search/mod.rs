@@ -155,8 +155,10 @@ impl Module for GithubCodeSearch {
             }
             if let Ok(cr) = creq.send_tagged(SRC).await
                 && cr.status().is_success()
-                && let Ok(raw) = cr.bytes().await
-                && let Ok(arr) = serde_json::from_slice::<Vec<CommitItem>>(&raw)
+                // Capped decode (32 MiB) — a raw `bytes()` would buffer an
+                // unbounded body on the low-RAM Termux target.
+                && let Ok(arr) =
+                    crate::util::http::json_decode::<Vec<CommitItem>>(SRC, cr).await
             {
                 let wrapped = CommitsResp { commits: arr };
                 result.extend(build_commit_emails(&wrapped, &full_name, &ctx.scan_id));

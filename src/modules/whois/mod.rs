@@ -254,7 +254,7 @@ impl Module for Whois {
             {
                 let mut oe = Entity::new(EntityKind::Organisation, org, 0.72, &_ctx.scan_id);
                 oe.tag("whois");
-                oe.tag("registrant");
+                oe.tag(crate::core::tags::REGISTRANT);
                 oe.add_evidence(
                     Evidence::new(SRC, format!("WHOIS registrant for {}", target.value))
                         .with_attr("parent_target", target.value.as_str()),
@@ -279,7 +279,7 @@ impl Module for Whois {
             {
                 let mut pe = Entity::new(EntityKind::Person, name, 0.72, &_ctx.scan_id);
                 pe.tag("whois");
-                pe.tag("registrant");
+                pe.tag(crate::core::tags::REGISTRANT);
                 pe.add_evidence(
                     Evidence::new(SRC, format!("WHOIS registrant for {}", target.value))
                         .with_attr("parent_target", target.value.as_str()),
@@ -303,7 +303,7 @@ impl Module for Whois {
                 let addr = parts.join(", ");
                 let mut ae = Entity::new(EntityKind::Address, &addr, 0.50, &_ctx.scan_id);
                 ae.tag("whois");
-                ae.tag("registrant");
+                ae.tag(crate::core::tags::REGISTRANT);
                 ae.tag("geoint");
                 ae.add_evidence(
                     Evidence::new(SRC, format!("Registrant location for {}", target.value))

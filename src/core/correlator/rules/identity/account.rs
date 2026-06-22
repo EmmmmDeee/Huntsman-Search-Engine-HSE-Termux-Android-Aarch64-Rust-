@@ -33,9 +33,17 @@ pub(in crate::core::correlator) fn rule_au_011_cross_platform_username(
                     .get("platforms_count")
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(0);
+                let list = ev.attributes.get("platforms").map(String::as_str);
                 if count > max_count {
                     max_count = count;
-                    best_list = ev.attributes.get("platforms").map(String::as_str);
+                    best_list = list;
+                } else if count == max_count && count > 0 {
+                    // Deterministic tie-break: keep the lexicographically-smaller
+                    // `platforms` string so the description text doesn't depend on
+                    // evidence iteration order (which isn't pinned here).
+                    if let Some(l) = list {
+                        best_list = Some(best_list.map_or(l, |b| b.min(l)));
+                    }
                 }
             }
             // Distinct independent platform-module confirmations (github_user +
@@ -235,13 +243,19 @@ pub(in crate::core::correlator) fn rule_au_034_handle_reuse_identity(
         let Some(matches) = emails_by_handle.get(&handle) else {
             continue;
         };
-        let mut sources: HashSet<&str> = u.evidence_sources();
+        // The independence gate must count only genuine, independent
+        // observations: `corroborating_sources()` (not `evidence_sources()`)
+        // excludes the replay/derivation passes — `recall`, `cross_scan_history`,
+        // `name_intel`, `geo_normalize` — so a name-permuted handle + email that
+        // each merely picked up a `recall` record can't manufacture two "distinct
+        // sources" and self-correlate. Matches AU-011/AU-023 and the geo rules.
+        let mut sources: HashSet<&str> = u.corroborating_sources();
         let mut matched_uids: Vec<String> = Vec::with_capacity(matches.len());
         let mut matched_values: Vec<&str> = Vec::with_capacity(matches.len());
         for e in matches {
             matched_uids.push(e.uid.clone());
             matched_values.push(e.value.as_str());
-            sources.extend(e.evidence_sources());
+            sources.extend(e.corroborating_sources());
         }
         if sources.len() < MIN_DISTINCT_SOURCES {
             continue;

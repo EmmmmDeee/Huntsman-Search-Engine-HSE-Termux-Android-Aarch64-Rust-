@@ -44,10 +44,10 @@ pub(crate) mod types;
 mod tests;
 
 pub use builders::{
-    CO_LOCATION_KM, derive_all, derive_co_residence, derive_colocation,
-    derive_declared_associations, derive_handles, derive_identity_ownership, derive_kinship,
-    derive_name_lineage, derive_registration, derive_residency, derive_resolution,
-    derive_structural,
+    CO_LOCATION_KM, derive_all, derive_canonical_identities, derive_co_mention,
+    derive_co_residence, derive_colocation, derive_declared_associations, derive_handles,
+    derive_identity_ownership, derive_kinship, derive_name_lineage, derive_registration,
+    derive_residency, derive_resolution, derive_shared_selector, derive_structural,
 };
 pub use graph::{
     Adjacency, ConnectionBroker, ConnectionTemplate, IdentityClusterResult, IdentityPath, PathStep,

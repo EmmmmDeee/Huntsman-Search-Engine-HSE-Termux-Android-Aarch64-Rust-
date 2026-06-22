@@ -190,7 +190,11 @@ async fn fetch_algolia_submissions(
     if !resp.status().is_success() {
         return Vec::new();
     }
-    let Ok(body) = resp.text().await else {
+    // Capped read (32 MiB) for the needle scan below — an uncapped `text()`
+    // would buffer an unbounded body on the low-RAM Termux target.
+    let Some(body) =
+        crate::util::http::read_body_capped(resp, crate::util::http::JSON_BODY_CAP).await
+    else {
         return Vec::new();
     };
 

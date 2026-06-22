@@ -230,6 +230,10 @@ fn install_core_hooks() {
 pub fn registry() -> Vec<Arc<dyn Module>> {
     install_core_hooks();
     vec![
+        // Priority 200 — runs first: types any value and extracts embedded entities from
+        // unstructured text so every output (including the system's own) is re-injectable
+        // as a seed. Pure/offline; lives in `core` (implements the core Module trait).
+        Arc::new(crate::core::classify_module::ClassifyModule),
         Arc::new(hibp::Hibp),
         Arc::new(hudsonrock::HudsonRock),
         Arc::new(xposed_or_not::XposedOrNot),

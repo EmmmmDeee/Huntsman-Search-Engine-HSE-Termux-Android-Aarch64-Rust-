@@ -426,3 +426,76 @@ fn validate_for_kind_dispatches() {
     // Unknown kind passes through OK (validators are opt-in)
     assert!(validate_for_kind("anything-else", "value").valid);
 }
+
+mod confusable_tests {
+    use super::super::{
+        confusable_report, is_confusable_mixed_script, looks_like_gibberish_name, skeleton,
+        strip_invisible,
+    };
+    use std::borrow::Cow;
+
+    #[test]
+    fn strip_invisible_removes_zero_width_and_borrows_clean() {
+        // A zero-width joiner padded into a value is removed (so the two spellings
+        // of "john" collapse to one and finally deduplicate).
+        assert_eq!(strip_invisible("jo\u{200D}hn"), "john");
+        // Already-clean input is returned borrowed — no allocation on the hot path.
+        let clean = strip_invisible("john");
+        assert!(matches!(clean, Cow::Borrowed("john")));
+        // A bidi override (the "Trojan Source" vector) is stripped.
+        assert_eq!(strip_invisible("a\u{202E}b"), "ab");
+        // Soft hyphen, word joiner and BOM all go too.
+        assert_eq!(strip_invisible("ab\u{00AD}cd\u{2060}ef\u{FEFF}"), "abcdef");
+    }
+
+    #[test]
+    fn skeleton_folds_cyrillic_homograph_to_ascii() {
+        // The Cyrillic-`а` paypal collapses to the ASCII skeleton.
+        assert_eq!(skeleton("p\u{0430}ypal.com"), "paypal.com");
+        // Clean ASCII is unchanged (modulo lowercasing).
+        assert_eq!(skeleton("PayPal.com"), "paypal.com");
+        // Full-width ASCII folds to plain ASCII.
+        assert_eq!(skeleton("\u{FF41}\u{FF42}\u{FF43}"), "abc");
+    }
+
+    #[test]
+    fn mixed_script_flags_only_the_deceptive_mix() {
+        // Cyrillic-`а` mixed with ASCII letters — flagged.
+        assert!(is_confusable_mixed_script("p\u{0430}ypal.com"));
+        // Pure ASCII — not flagged.
+        assert!(!is_confusable_mixed_script("paypal.com"));
+        // A legitimate all-Cyrillic string (no ASCII Latin letters) — not flagged.
+        assert!(!is_confusable_mixed_script(
+            "\u{043F}\u{0440}\u{0438}\u{0432}\u{0435}\u{0442}"
+        ));
+    }
+
+    #[test]
+    fn confusable_report_fails_homograph_and_passes_clean() {
+        let bad = confusable_report("p\u{0430}ypal.com");
+        assert!(!bad.valid);
+        assert_eq!(bad.reason, "seed.confusable");
+        assert!(bad.detail.contains("paypal.com"));
+        assert!(confusable_report("paypal.com").valid);
+    }
+
+    #[test]
+    fn gibberish_name_flags_random_strings_but_spares_real_names() {
+        // L5: the breach-dump junk "names" — caught.
+        assert!(looks_like_gibberish_name("ZonJZRJHHWD GvkJCJRWHWD"));
+        assert!(looks_like_gibberish_name("GvkJCJRWHWD")); // all-consonant token
+        assert!(looks_like_gibberish_name("ZonJZRJHHWD")); // 6+ consonant run
+
+        // Real names — never flagged, including the hard cases:
+        assert!(!looks_like_gibberish_name("Cindy Haynes"));
+        assert!(!looks_like_gibberish_name("Jordan Avery"));
+        assert!(!looks_like_gibberish_name("Müller")); // accented (non-ASCII)
+        assert!(!looks_like_gibberish_name("Nguyễn")); // accented vowels
+        assert!(!looks_like_gibberish_name("Krzysztof")); // Slavic, max run < 6
+        assert!(!looks_like_gibberish_name("Vrkljan")); // 5-consonant run, under bar
+        assert!(!looks_like_gibberish_name("Ng")); // short token, ignored
+        assert!(!looks_like_gibberish_name("Strzelecki"));
+        // A real surname next to a short particle stays safe.
+        assert!(!looks_like_gibberish_name("Le Guin"));
+    }
+}

@@ -44,6 +44,15 @@ pub enum RelationKind {
     /// (carries a damped confidence) for the operator to confirm, surfacing the
     /// subject's human network the way the infra builders surface their estate.
     AssociatedWith,
+    /// `from` and `to` are the SAME real-world entity observed in two disparate
+    /// contexts — a reflexive self-pairing the canonical resolver
+    /// ([`crate::core::resolve`]) proved: a Gmail address and its dotted / `+tag`
+    /// variant, one phone in two formats, a name and its reordering. Distinct from
+    /// [`AliasOf`](RelationKind::AliasOf) (a shared persona across DIFFERENT
+    /// identifiers): `SameAs` asserts ONE identity in two representations, the
+    /// edge that collapses contextual variants of a seed into a single node for
+    /// traversal. Symmetric; emitted smaller-UID → larger.
+    SameAs,
 }
 
 impl RelationKind {
@@ -60,6 +69,7 @@ impl RelationKind {
             Self::AliasOf => "alias_of",
             Self::LocatedAt => "located_at",
             Self::AssociatedWith => "associated_with",
+            Self::SameAs => "same_as",
         }
     }
 }

@@ -55,7 +55,17 @@ pub const CANDIDATE_CONF: f64 = 0.25;
 /// the evidence chain (their attributes are real and useful) and still appear
 /// in [`Entity::evidence_sources`] for display; they are only excluded from the
 /// *corroboration* count — see [`Entity::corroborating_sources`].
-pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &["geo_normalize"];
+///
+/// `name_intel` is the name-derivation pass: it deterministically permutes the
+/// seed display name into speculative handles and `name × freemail` email
+/// guesses (`cindy.haynes@gmail.com`, …). Like `geo_normalize` these are
+/// *derivations of the input*, not independent sightings, so counting one as a
+/// corroborating source let a pure guess reach the cross-source rules — a
+/// permuted `…@gmail.com` presented as "corroborated by 2 independent sources"
+/// and fired AU-003 / AU-034. Excluding it means a permutation needs two
+/// *genuine* sources to corroborate, while the derived entity still appears as a
+/// lead in the dossier (its evidence is kept and shown).
+pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &["geo_normalize", "name_intel"];
 
 /// True if `source` is a deterministic self-enrichment pass rather than an
 /// independent intelligence source (see [`ENRICHMENT_ONLY_SOURCES`]).

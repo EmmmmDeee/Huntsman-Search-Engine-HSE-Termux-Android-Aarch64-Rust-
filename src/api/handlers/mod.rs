@@ -66,6 +66,12 @@ pub(crate) fn bad_request(msg: impl Into<String>) -> axum::response::Response {
         .into_response()
 }
 
+/// A `403 Forbidden` JSON error, the access-control sibling of [`bad_request`]
+/// (e.g. a failed CSRF/loopback check). One shape for every refusal.
+pub(crate) fn forbidden(msg: impl Into<String>) -> axum::response::Response {
+    (StatusCode::FORBIDDEN, Json(json!({ "error": msg.into() }))).into_response()
+}
+
 pub(crate) fn ok_list<T: Serialize>(key: &str, items: Vec<T>) -> axum::response::Response {
     let n = items.len();
     let mut map = serde_json::Map::new();
@@ -259,6 +265,9 @@ pub async fn engines_health() -> Json<Value> {
                 "latency_ms": h.latency_ms,
                 "results": h.results,
                 "detail": h.detail,
+                // True when this engine has been silenced for the current scan
+                // after returning nothing for 3+ consecutive seeds.
+                "session_dead": crate::modules::search_engines::session_dead(h.name),
             })
         })
         .collect();

@@ -19,6 +19,7 @@ fn relation_kind_as_str_matches_serde() {
         RelationKind::AliasOf,
         RelationKind::LocatedAt,
         RelationKind::AssociatedWith,
+        RelationKind::SameAs,
     ] {
         let json = serde_json::to_string(&k).unwrap();
         assert_eq!(json.trim_matches('"'), k.as_str(), "{k:?}");
@@ -132,6 +133,225 @@ fn co_residence_links_different_surname_household_at_a_specific_address() {
     );
 }
 
+/// A Person carrying a `url` source attribute, the join key for co-mention.
+fn person_in_source(name: &str, conf: f64, url: &str) -> Entity {
+    use crate::core::entity::Evidence;
+    let mut e = ent(EntityKind::Person, name, conf);
+    e.add_evidence(Evidence::new("search_engines", "result").with_attr("url", url));
+    e
+}
+
+#[test]
+fn co_mention_links_two_people_named_in_the_same_source() {
+    // The reverse-engineered Kyle/Erik case: a single source names both, and the
+    // engine extracted each separately — co-mention recovers the shared-source tie.
+    let kyle = person_in_source("Kyle Diegmann", 0.6, "https://example.com/obituary");
+    let erik = person_in_source("Erik Diegmann", 0.5, "https://example.com/obituary");
+    let edges = derive_co_mention(&[kyle.clone(), erik.clone()], "s");
+    assert_eq!(edges.len(), 1, "one co-mention edge between the two");
+    let e = &edges[0];
+    assert_eq!(e.kind, RelationKind::AssociatedWith);
+    let mut got = [e.from_uid.clone(), e.to_uid.clone()];
+    got.sort();
+    let mut want = [kyle.uid.clone(), erik.uid.clone()];
+    want.sort();
+    assert_eq!(got, want, "endpoints are the two co-mentioned persons");
+    // Damped: min(0.6, 0.5) × CO_MENTION_DAMP (0.45).
+    assert!((e.confidence - 0.5 * 0.45).abs() < 1e-9);
+}
+
+#[test]
+fn co_mention_ignores_people_in_different_sources() {
+    let kyle = person_in_source("Kyle Diegmann", 0.6, "https://a.example/x");
+    let erik = person_in_source("Erik Diegmann", 0.5, "https://b.example/y");
+    assert!(
+        derive_co_mention(&[kyle, erik], "s").is_empty(),
+        "no shared source ⇒ no co-mention"
+    );
+}
+
+#[test]
+fn co_mention_skips_crowded_list_sources() {
+    // Six people (one more than the cap of 5) ⇒ a directory / round-up, not a
+    // relationship document.
+    let url = "https://example.com/directory";
+    let ents: Vec<Entity> = (0..6)
+        .map(|i| person_in_source(&format!("Person Number{i:02}"), 0.6, url))
+        .collect();
+    assert!(
+        derive_co_mention(&ents, "s").is_empty(),
+        "a crowded source mints no edges"
+    );
+}
+
+#[test]
+fn co_mention_pairs_a_small_group_deterministically() {
+    let url = "https://example.com/family-notice";
+    let ents = vec![
+        person_in_source("Aaron Diegmann", 0.6, url),
+        person_in_source("Beth Diegmann", 0.6, url),
+        person_in_source("Carl Diegmann", 0.6, url),
+    ];
+    let e1 = derive_co_mention(&ents, "s");
+    assert_eq!(e1.len(), 3, "three people in one source → C(3,2) = 3 edges");
+    // Deterministic under input reordering.
+    let mut shuffled = ents.clone();
+    shuffled.reverse();
+    let e2 = derive_co_mention(&shuffled, "s");
+    let ids1: Vec<&str> = e1.iter().map(|r| r.id.as_str()).collect();
+    let ids2: Vec<&str> = e2.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(ids1, ids2, "edge set is independent of input order");
+}
+
+/// An entity carrying one distinctive selector attribute, the join key for affiliation.
+fn entity_with_attr(
+    kind: EntityKind,
+    value: &str,
+    conf: f64,
+    attr: &str,
+    attr_val: &str,
+) -> Entity {
+    use crate::core::entity::Evidence;
+    let mut e = ent(kind, value, conf);
+    e.add_evidence(Evidence::new("whois", "rec").with_attr(attr, attr_val));
+    e
+}
+
+#[test]
+fn shared_selector_links_domains_by_shared_registrant() {
+    // The synthetic corporate → hidden-subsidiary archetype: two domains the engine
+    // found separately, tied by one registrant email already sitting in their evidence.
+    let a = entity_with_attr(
+        EntityKind::Domain,
+        "company-a.com",
+        0.7,
+        "registrant_email",
+        "admin@holdco.com",
+    );
+    let b = entity_with_attr(
+        EntityKind::Domain,
+        "company-b.com",
+        0.6,
+        "registrant_email",
+        "admin@holdco.com",
+    );
+    let edges = derive_shared_selector(&[a, b], "s");
+    assert_eq!(edges.len(), 1, "shared registrant ⇒ one affiliation edge");
+    assert_eq!(edges[0].kind, RelationKind::AssociatedWith);
+    // Damped: min(0.7, 0.6) × AFFILIATION_DAMP (0.45).
+    assert!((edges[0].confidence - 0.6 * 0.45).abs() < 1e-9);
+}
+
+#[test]
+fn shared_selector_links_any_kind_by_fingerprint() {
+    // A shared TLS cert serial ⇒ same operator, regardless of entity kind — the
+    // capability is domain-agnostic, not bound to one subject type.
+    let h1 = entity_with_attr(
+        EntityKind::Domain,
+        "h1.example",
+        0.6,
+        "cert_serial",
+        "0af3:21:bc",
+    );
+    let h2 = entity_with_attr(
+        EntityKind::IpAddress,
+        "203.0.113.9",
+        0.6,
+        "cert_serial",
+        "0af3:21:bc",
+    );
+    assert_eq!(derive_shared_selector(&[h1, h2], "s").len(), 1);
+}
+
+#[test]
+fn shared_selector_ignores_generic_non_allowlisted_attributes() {
+    // A shared REGISTRAR (GoDaddy) is not individuating and is not in the curated
+    // selector set — so it links nothing. This is the anti-overfitting guard.
+    let a = entity_with_attr(EntityKind::Domain, "x.com", 0.7, "registrar", "GoDaddy");
+    let b = entity_with_attr(EntityKind::Domain, "y.com", 0.6, "registrar", "GoDaddy");
+    assert!(
+        derive_shared_selector(&[a, b], "s").is_empty(),
+        "a shared registrar is not affiliation"
+    );
+}
+
+#[test]
+fn shared_selector_skips_crowded_privacy_proxy_values() {
+    // A registrant org shared by a crowd (a privacy proxy) is not an owner.
+    let org = "Privacy Protect LLC";
+    let ents: Vec<Entity> = (0..7)
+        .map(|i| {
+            entity_with_attr(
+                EntityKind::Domain,
+                &format!("d{i:02}.example"),
+                0.6,
+                "registrant_org",
+                org,
+            )
+        })
+        .collect();
+    assert!(
+        derive_shared_selector(&ents, "s").is_empty(),
+        "a crowd-shared registrant proxy mints no edges"
+    );
+}
+
+#[test]
+fn shared_selector_no_edge_for_distinct_values() {
+    let a = entity_with_attr(
+        EntityKind::Domain,
+        "a.com",
+        0.7,
+        "registrant_email",
+        "a@a.com",
+    );
+    let b = entity_with_attr(
+        EntityKind::Domain,
+        "b.com",
+        0.6,
+        "registrant_email",
+        "b@b.com",
+    );
+    assert!(derive_shared_selector(&[a, b], "s").is_empty());
+}
+
+#[test]
+fn canonical_identities_links_gmail_variants_as_same() {
+    // Reflexive self-pairing: the engine extracted two contextual forms of ONE
+    // address; the canonical resolver proves they are the same identity.
+    let a = ent(EntityKind::Email, "j.ohn+work@gmail.com", 0.6);
+    let b = ent(EntityKind::Email, "john@gmail.com", 0.5);
+    let edges = derive_canonical_identities(&[a.clone(), b.clone()], "s");
+    assert_eq!(edges.len(), 1, "two Gmail variants are one identity");
+    assert_eq!(edges[0].kind, RelationKind::SameAs);
+    let mut got = [edges[0].from_uid.clone(), edges[0].to_uid.clone()];
+    got.sort();
+    let mut want = [a.uid.clone(), b.uid.clone()];
+    want.sort();
+    assert_eq!(got, want, "the edge joins the two variants");
+    // Strong by construction — full endpoint trust, no damp: min(0.6, 0.5).
+    assert!((edges[0].confidence - 0.5).abs() < 1e-9);
+}
+
+#[test]
+fn canonical_identities_links_reordered_person_names() {
+    let a = ent(EntityKind::Person, "Jane Citizen", 0.6);
+    let b = ent(EntityKind::Person, "Citizen, Jane", 0.6);
+    let edges = derive_canonical_identities(&[a, b], "s");
+    assert_eq!(edges.len(), 1, "a name and its reordering are one person");
+    assert_eq!(edges[0].kind, RelationKind::SameAs);
+}
+
+#[test]
+fn canonical_identities_ignores_genuinely_distinct_entities() {
+    let a = ent(EntityKind::Email, "alice@gmail.com", 0.6);
+    let b = ent(EntityKind::Email, "bob@gmail.com", 0.6);
+    assert!(
+        derive_canonical_identities(&[a, b], "s").is_empty(),
+        "distinct addresses are not the same identity"
+    );
+}
+
 #[test]
 fn derive_all_aggregates_every_structural_derivation() {
     use crate::core::entity::Evidence;
@@ -160,6 +380,9 @@ fn derive_all_aggregates_every_structural_derivation() {
         + derive_residency(&ents, "s").len()
         + derive_kinship(&ents, "s").len()
         + derive_co_residence(&ents, "s").len()
+        + derive_co_mention(&ents, "s").len()
+        + derive_shared_selector(&ents, "s").len()
+        + derive_canonical_identities(&ents, "s").len()
         + derive_declared_associations(&ents, "s").len();
     assert_eq!(all.len(), expected, "derive_all is the union of every pass");
     assert!(all.iter().any(|r| r.kind == RelationKind::SubdomainOf));

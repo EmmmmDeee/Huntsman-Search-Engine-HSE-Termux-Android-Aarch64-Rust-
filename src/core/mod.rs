@@ -4,7 +4,11 @@
 //! the other way around. This keeps the engine module-agnostic.
 
 pub mod attack;
+pub mod benchmark;
 pub mod cancel;
+pub mod classifier;
+pub mod classify_module;
+pub mod community;
 pub mod convex;
 pub mod correlator;
 pub mod crypto;
@@ -15,22 +19,29 @@ pub mod engine;
 pub mod entity;
 pub mod error;
 pub mod event;
+pub mod gap;
 pub mod geo_family;
 pub mod gexf;
+pub mod graph;
 pub mod hooks;
 pub mod leads;
 pub mod live;
+pub mod metrics;
 pub mod module;
 pub mod network;
+pub mod path;
+pub mod pivot;
 pub mod port;
 pub mod profiles;
 pub mod relation;
+pub mod resolve;
 pub mod roi;
 pub mod scan;
 pub mod tags;
 #[cfg(test)]
 pub mod test_support;
 pub mod timeline;
+pub mod trust;
 pub mod validation;
 pub mod webhook;
 

@@ -55,12 +55,20 @@ pub(crate) struct ServiceQuota {
     pub revoked: usize,
     pub uses: u64,
     pub errors: u64,
+    /// Mean [`crate::util::key_pool::KeyEntry::health_score`] across this service's
+    /// keys — the at-a-glance "how healthy is this pool" number (0.0–1.0), `0.0`
+    /// for a service with no keys. The status counts above say *what* the keys
+    /// are; this says how operationally healthy they are overall.
+    pub avg_health: f64,
 }
 
-/// Summarise a key-pool snapshot into per-service status counts, dropping every
-/// key value. Pure (no global state) so it is unit-testable; sorted by service.
+/// Summarise a key-pool snapshot into per-service status counts (plus the mean
+/// per-key health score), dropping every key value. Does not touch the global
+/// pool, so it is unit-testable; the clock is sampled once up front so every
+/// score in one summary is consistent. Sorted by service.
 pub(crate) fn summarize_pool(data: &crate::util::key_pool::PoolData) -> Vec<ServiceQuota> {
     use crate::util::key_pool::KeyStatus;
+    let now = crate::core::entity::unix_now();
     let mut out: Vec<ServiceQuota> = data
         .services
         .iter()
@@ -70,6 +78,7 @@ pub(crate) fn summarize_pool(data: &crate::util::key_pool::PoolData) -> Vec<Serv
                 total: entries.len(),
                 ..Default::default()
             };
+            let mut health_sum = 0.0f64;
             for e in entries {
                 match e.status {
                     KeyStatus::Active => q.active += 1,
@@ -81,7 +90,14 @@ pub(crate) fn summarize_pool(data: &crate::util::key_pool::PoolData) -> Vec<Serv
                 }
                 q.uses += e.use_count;
                 q.errors += e.error_count;
+                health_sum += e.health_score(now);
             }
+            // Mean over all keys; 0.0 for an empty service (avoids 0/0).
+            q.avg_health = if entries.is_empty() {
+                0.0
+            } else {
+                health_sum / entries.len() as f64
+            };
             q
         })
         .collect();
@@ -89,9 +105,9 @@ pub(crate) fn summarize_pool(data: &crate::util::key_pool::PoolData) -> Vec<Serv
     out
 }
 
-/// `GET /api/v1/keys/status` — per-service key-pool health (counts by status +
-/// aggregate use/error totals) for the operator quota view. Never exposes key
-/// values. Reads the process-global pool.
+/// `GET /api/v1/keys/status` — per-service key-pool health (counts by status,
+/// aggregate use/error totals, and the mean per-key health score) for the
+/// operator quota view. Never exposes key values. Reads the process-global pool.
 pub async fn keys_status() -> Json<Value> {
     let services = summarize_pool(&crate::util::key_pool::global_pool().snapshot());
     Json(json!({ "count": services.len(), "services": services }))
