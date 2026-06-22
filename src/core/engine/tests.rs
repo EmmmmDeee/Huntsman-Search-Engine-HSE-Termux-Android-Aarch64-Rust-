@@ -111,6 +111,132 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
     assert_eq!(promote_geo_corroborated_family(&mut lone), 0);
 }
 
+/// Free, offline: an identity pair joined by two orthogonal pathways has BOTH
+/// its endpoints promoted (tagged + corroborated) so the confirmed connection
+/// strengthens the scan output — while the conduit intermediates are left alone
+/// and the pass is idempotent across re-runs. Shares the AU-062 detector, so
+/// this is the boost side of the same finding the correlator reports.
+#[test]
+fn promote_multipath_corroborated_lifts_only_orthogonally_linked_endpoints() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::relation::{Relation, RelationKind};
+
+    let sourced = |kind: EntityKind, value: &str, source: &str| {
+        let mut e = Entity::new(kind, value, 0.8, "s");
+        e.add_evidence(Evidence::new(source, "ev"));
+        e
+    };
+    let rel = |from: &Entity, to: &Entity, kind: RelationKind| {
+        Relation::new(from.uid.clone(), to.uid.clone(), kind, 0.8, "s")
+    };
+
+    // Two identity endpoints linked by two edge-disjoint routes through
+    // NON-identity intermediates of DIFFERENT source families (infra + registry)
+    // — the AU-062 criterion. The only identity pair is (email, username).
+    let email = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
+    let user = Entity::new(EntityKind::Username, "bob", 0.8, "s");
+    let dom = sourced(EntityKind::Domain, "x.com", "dns_intel"); // infra
+    let org = sourced(EntityKind::Organisation, "Acme Pty", "opencorporates"); // registry
+    let rels = [
+        rel(&email, &dom, RelationKind::BelongsToDomain),
+        rel(&dom, &user, RelationKind::DerivedFrom),
+        rel(&email, &org, RelationKind::RegisteredBy),
+        rel(&org, &user, RelationKind::DerivedFrom),
+    ];
+    let mut ents = vec![email.clone(), user.clone(), dom.clone(), org.clone()];
+
+    assert_eq!(
+        promote_multipath_corroborated(&mut ents, &rels),
+        2,
+        "both identity endpoints are promoted"
+    );
+    for v in ["a@x.com", "bob"] {
+        let e = ents.iter().find(|e| e.value == v).unwrap();
+        assert!(e.has_tag("multipath-corroborated"), "{v} must be tagged");
+        assert!(
+            e.evidence
+                .iter()
+                .any(|ev| ev.source == "multipath_corroboration"),
+            "{v} must carry corroboration evidence"
+        );
+    }
+    // The conduit intermediates are NOT themselves corroborated.
+    for v in ["x.com", "Acme Pty"] {
+        let e = ents.iter().find(|e| e.value == v).unwrap();
+        assert!(
+            !e.has_tag("multipath-corroborated"),
+            "{v} is a conduit, not a corroborated endpoint"
+        );
+    }
+
+    // Idempotent: a second pass (or a recall on a re-scan) promotes nothing new.
+    assert_eq!(promote_multipath_corroborated(&mut ents, &rels), 0);
+
+    // A single route is not multi-pathway corroboration → nothing promoted.
+    let e2 = Entity::new(EntityKind::Email, "c@z.com", 0.8, "s");
+    let u2 = Entity::new(EntityKind::Username, "carol", 0.8, "s");
+    let d2 = sourced(EntityKind::Domain, "z.com", "dns_intel");
+    let single = [
+        rel(&e2, &d2, RelationKind::BelongsToDomain),
+        rel(&d2, &u2, RelationKind::DerivedFrom),
+    ];
+    let mut one_route = vec![e2, u2, d2];
+    assert_eq!(
+        promote_multipath_corroborated(&mut one_route, &single),
+        0,
+        "a single pathway is not corroboration"
+    );
+}
+
+/// Free, offline: the cross-scan gap boost lifts exactly the endpoints the engine
+/// queued (a fragile link whose route shape is proven in prior scans) — the
+/// accumulated-knowledge counterpart to the multipath boost — and is idempotent.
+#[test]
+fn promote_cross_scan_corroborated_lifts_queued_endpoints_idempotently() {
+    use crate::core::entity::{Entity, EntityKind};
+    use std::collections::HashMap;
+
+    let a = Entity::new(EntityKind::Email, "a@x.com", 0.4, "s");
+    let b = Entity::new(EntityKind::Username, "bob", 0.4, "s");
+    let other = Entity::new(EntityKind::Domain, "x.com", 0.4, "s");
+    let (ua, ub) = (a.uid.clone(), b.uid.clone());
+    let mut ents = vec![a, b, other];
+
+    let reason = "route shape proven in 2 prior scans".to_string();
+    let mut boost: HashMap<String, String> = HashMap::new();
+    boost.insert(ua.clone(), reason.clone());
+    boost.insert(ub.clone(), reason);
+
+    assert_eq!(
+        promote_cross_scan_corroborated(&mut ents, &boost),
+        2,
+        "both queued endpoints are promoted"
+    );
+    for uid in [&ua, &ub] {
+        let e = ents.iter().find(|e| &e.uid == uid).unwrap();
+        assert!(
+            e.has_tag("cross-scan-corroborated"),
+            "endpoint must be tagged"
+        );
+        assert!(
+            e.evidence
+                .iter()
+                .any(|ev| ev.source == "cross_scan_corroboration"),
+            "endpoint must carry cross-scan evidence"
+        );
+    }
+    // An entity not in the boost set is untouched.
+    let other = ents.iter().find(|e| e.value == "x.com").unwrap();
+    assert!(!other.has_tag("cross-scan-corroborated"));
+
+    // Idempotent, and an empty boost set is a no-op.
+    assert_eq!(promote_cross_scan_corroborated(&mut ents, &boost), 0);
+    assert_eq!(
+        promote_cross_scan_corroborated(&mut ents, &HashMap::new()),
+        0
+    );
+}
+
 /// The precision complement, surname-aware: a far same-surname candidate is tagged
 /// `geo-discordant` (a likely namesake) ONLY when the shared surname is common — a
 /// distinctive surname carries kinship across any distance, so a rare-surname
@@ -1516,5 +1642,131 @@ fn incidental_infra_is_dropped_only_on_identity_seeds() {
                 e.value
             );
         }
+    }
+}
+
+/// A module that emits one subject finding and declares a known, distinctive
+/// ATT&CK Reconnaissance technique. Used to prove the engine stamps that
+/// technique onto the admitted entity — overriding `attack_techniques()`
+/// directly (the `ModuleCategory::Other` default maps to an empty set) so the
+/// expected tag is deterministic and independent of the live registry.
+struct AttackStampModule;
+
+#[async_trait::async_trait]
+impl Module for AttackStampModule {
+    fn name(&self) -> &'static str {
+        "attack_stamp_probe"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        t.kind == TargetKind::Email
+    }
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // "Email Addresses" — a real catalogued Reconnaissance sub-technique.
+        &["T1589.002"]
+    }
+    async fn process(
+        &self,
+        _: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        // A subject freemail address: survives every admission filter (not a
+        // placeholder, not infra, freemail is exempt from the incidental-infra
+        // gate) so the only thing that can be asserted is the ATT&CK stamping.
+        let mut e = Entity::new(
+            EntityKind::Email,
+            "foundsubject@gmail.com",
+            0.9,
+            &ctx.scan_id,
+        );
+        e.add_evidence(Evidence::new("attack_stamp_probe", "synthetic finding"));
+        let mut r = crate::core::module::ModuleResult::new();
+        r.push(e);
+        Ok(r)
+    }
+}
+
+/// Universal MITRE ATT&CK provenance: EVERY admitted entity must carry an
+/// `attack:<ID>` tag for each Reconnaissance technique its producing module
+/// declares, so the technique that collected a datum travels with the scan data
+/// (the entity's `tags`, hence JSON output, the dossier, and the DB). Drives the
+/// real admission path (`dispatch_target` → `finalise_module_result`) on BOTH the
+/// sequential (`max_concurrent == 0`) and concurrent (`max_concurrent > 0`, which
+/// carries the techniques through `DispatchOutcome` to the join site) codepaths,
+/// then inspects the merged working set. Exercises `dispatch_target` directly
+/// rather than the full `run` so the process-global search-regional toggle the
+/// engine sets is left untouched (it would race the `search_engines` query tests).
+#[tokio::test]
+async fn admitted_entities_are_stamped_with_their_modules_attack_techniques() {
+    use crate::core::test_support::InMemoryStore;
+
+    for max_concurrent in [0usize, 4] {
+        let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+        let (bus, _rx) = tokio::sync::broadcast::channel(64);
+        let engine = ScanEngine::new(vec![Arc::new(AttackStampModule)], store, bus.clone());
+
+        let target = Target::new(TargetKind::Email, "seed@gmail.com");
+        let opts = ScanOptions {
+            max_concurrent,
+            ..Default::default()
+        };
+        let mut ctx = ModuleContext {
+            scan_id: "stamp-scan".to_string(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+        };
+
+        let cx = DispatchCx {
+            scan_id: "stamp-scan",
+            target: &target,
+            opts: &opts,
+            is_expansion: false,
+            seed_kind: TargetKind::Email,
+        };
+        let mut entity_map: HashMap<String, Entity> = HashMap::new();
+        let mut stats = ModuleStats::default();
+        let mut dispatched: DispatchLog = DispatchLog::new();
+        let mut state = DispatchState {
+            entity_map: &mut entity_map,
+            stats: &mut stats,
+            dispatched: &mut dispatched,
+        };
+
+        engine
+            .dispatch_target(&cx, &mut ctx, &mut state)
+            .await
+            .expect("dispatch runs");
+
+        let found = entity_map
+            .values()
+            .find(|e| e.value == "foundsubject@gmail.com")
+            .unwrap_or_else(|| {
+                panic!("the probe's finding must be admitted (max_concurrent={max_concurrent})")
+            });
+        assert!(
+            found.has_tag("attack:T1589.002"),
+            "the admitted entity must carry its module's ATT&CK technique as an \
+             inline tag (max_concurrent={max_concurrent}); tags were {:?}",
+            found.tags
+        );
+        // Exactly the producing module's technique(s) — none invented, none dropped.
+        let attack_tags: Vec<&str> = found
+            .tags
+            .iter()
+            .filter(|t| t.starts_with("attack:"))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            attack_tags,
+            vec!["attack:T1589.002"],
+            "exactly the producing module's technique(s) are stamped \
+             (max_concurrent={max_concurrent})"
+        );
     }
 }

@@ -37,6 +37,7 @@
 //! builder, so the live and import paths produce the identical graph.
 
 pub(crate) mod builders;
+pub mod graph;
 pub(crate) mod types;
 
 #[cfg(test)]
@@ -47,5 +48,11 @@ pub use builders::{
     derive_co_residence, derive_colocation, derive_declared_associations, derive_handles,
     derive_identity_ownership, derive_kinship, derive_name_lineage, derive_registration,
     derive_residency, derive_resolution, derive_shared_selector, derive_structural,
+};
+pub use graph::{
+    Adjacency, ConnectionBroker, ConnectionTemplate, IdentityClusterResult, IdentityPath, PathStep,
+    connection_brokers, connection_templates, disjoint_pathways, disjoint_pathways_in,
+    identity_paths, identity_uids, is_identity_kind, reachable_count, resolve_identity_clusters,
+    sorted_confined_adjacency, strongest_path, strongest_path_in, undirected_adjacency,
 };
 pub use types::{Relation, RelationKind};

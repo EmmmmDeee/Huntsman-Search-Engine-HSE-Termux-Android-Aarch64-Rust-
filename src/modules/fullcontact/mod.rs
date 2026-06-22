@@ -144,7 +144,7 @@ impl Module for FullContact {
         let resp = ctx
             .http
             .post("https://api.fullcontact.com/v3/person.enrich")
-            .header("Authorization", format!("Bearer {key}"))
+            .bearer_auth(key)
             .header("Content-Type", "application/json")
             .body(body)
             .send_tagged(SRC)

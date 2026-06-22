@@ -16,6 +16,24 @@ use crate::core::entity::Entity;
     }
 
     #[test]
+    fn is_exempt_from_the_termux_timeout_cap() {
+        // The 45s Termux module cap is BELOW see_know's ~55s server cap, so
+        // without an exemption every phone scan would time it out with zero data
+        // — silently wasting the operator's highest-priority paid source on the
+        // platform HSE targets. see_know must opt out so its budget survives the
+        // clamp, and that budget must still clear the curl outer timeout.
+        assert!(
+            SeekNow.termux_timeout_cap_exempt(),
+            "see_know must be exempt from the 45s Termux cap (server cap is ~55s)"
+        );
+        assert!(
+            SeekNow.termux_timeout_ms() >= 78_000,
+            "exempt budget {} must still exceed the 78s curl outer timeout",
+            SeekNow.termux_timeout_ms()
+        );
+    }
+
+    #[test]
     fn should_skip_seed_matches_preflight_policy() {
         // Skipped (junk) seeds.
         assert!(should_skip_seed(TargetKind::Email, "x@localhost"));
@@ -116,10 +134,216 @@ use crate::core::entity::Entity;
     }
 
     #[test]
+    fn lastip_login_ip_is_extracted_and_private_is_rejected() {
+        use serde_json::json;
+        // snusbase records carry the subject's login IP ONLY in `lastip`; the
+        // extractor previously read `ip` alone and dropped it. A public lastip
+        // surfaces as a geolocation lead; a private one is rejected as noise
+        // (tightening the old `len >= 7` gate to a publicly-routable check).
+        let item = json!({ "username": "ali.kareem", "lastip": "37.236.187.22", "source": "snusbase" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "ali.kareem",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        let ip = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::IpAddress)
+            .expect("lastip extracted as IpAddress");
+        assert_eq!(ip.value, "37.236.187.22");
+        assert!(ip.has_tag("geolocation-lead"));
+
+        let private = json!({ "username": "x", "lastip": "10.0.0.4", "source": "x" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &private,
+            "x",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            result.entities.iter().all(|e| e.kind != EntityKind::IpAddress),
+            "private lastip must not become a geo lead"
+        );
+    }
+
+    #[test]
+    fn person_carries_normalized_identity_demographics() {
+        use serde_json::json;
+        // The subject node should surface DOB/gender/age as first-class tags,
+        // normalized across provider key spellings (birthdate vs date_birth;
+        // "Male" -> M), so the dossier headline reads the demographics directly
+        // instead of leaving them buried in the raw-record evidence.
+        let item = json!({
+            "full_name": "Ali Kareem",
+            "birthdate": "1990-05-12",
+            "gender": "Male",
+            "age": 34,
+            "source": "snusbase"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "Ali Kareem",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        let person = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Person)
+            .expect("person entity");
+        assert!(person.has_tag("dob:1990-05-12"), "tags: {:?}", person.tags);
+        assert!(person.has_tag("gender:M"), "\"Male\" normalizes to M");
+        assert!(person.has_tag("age:34"));
+
+        // A record with no demographics adds no identity tags (and never panics).
+        let bare = json!({ "full_name": "Bare Name", "source": "x" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(&bare, "Bare Name", "scan", "search", "k", &mut seen, &mut result);
+        let p2 = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Person)
+            .expect("person entity");
+        assert!(
+            !p2.tags
+                .iter()
+                .any(|t| t.starts_with("dob:") || t.starts_with("gender:") || t.starts_with("age:")),
+            "no demographics => no identity tags; got {:?}",
+            p2.tags
+        );
+    }
+
+    #[test]
+    fn provider_internal_record_ids_are_not_minted_as_entities() {
+        use serde_json::json;
+        // snusbase/see_know stamp `uid` + `migration_id` on every row (their own
+        // database keys, not the subject's); they must not leak as Other() junk.
+        let item = json!({
+            "full_name": "Ali Kareem",
+            "uid": "9e15bceb60c0",
+            "migration_id": "48217",
+            "source": "snusbase"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "Ali Kareem",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            !result.entities.iter().any(
+                |e| matches!(&e.kind, EntityKind::Other(k) if k == "uid" || k == "migration_id")
+            ),
+            "provider-internal IDs must not become entities; got {:?}",
+            result
+                .entities
+                .iter()
+                .map(|e| (e.kind.to_string(), e.value.clone()))
+                .collect::<Vec<_>>()
+        );
+        // The real field (the person) is still extracted.
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Person && e.value == "Ali Kareem"),
+            "the subject person is still surfaced"
+        );
+    }
+
+    #[test]
+    fn non_matching_record_is_quarantined_as_candidate() {
+        use crate::core::entity::CANDIDATE_CONF;
+        use serde_json::json;
+        // A broad see_know NAME search can return same-name strangers; their PII
+        // must be demoted to quarantined `candidate` leads (mirroring
+        // oathnet_pro), never minted as the subject at full confidence.
+        let stranger =
+            json!({ "email": "bob.smith@example.com", "full_name": "Bob Smith", "source": "snusbase" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &stranger,
+            "Ali Kareem",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        let email = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email)
+            .expect("email entity");
+        assert!(
+            email.has_tag("candidate"),
+            "stranger email must be quarantined; tags: {:?}",
+            email.tags
+        );
+        assert!(
+            email.confidence <= CANDIDATE_CONF + 1e-9,
+            "stranger email demoted to candidate confidence"
+        );
+
+        // The subject's OWN record stays at full confidence, no candidate tag.
+        let subject = json!({
+            "email": "ali.kareem@example.com",
+            "full_name": "Ali Kareem",
+            "source": "snusbase"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &subject,
+            "Ali Kareem",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        let email = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email)
+            .expect("email entity");
+        assert!(!email.has_tag("candidate"), "subject email not quarantined");
+        assert!(
+            email.confidence > CANDIDATE_CONF,
+            "subject email keeps full confidence"
+        );
+    }
+
+    #[test]
     fn extract_entities_spiders_stealer_url_into_pivots() {
         use serde_json::json;
         // A stealer-log row: a saved credential for a login URL. The URL is the
-        // highest-value pivot and must spider into Url + Domain + Credential,
+        // highest-value pivot and must spider into Url + Credential (NOT a Domain —
+        // the host is a third-party service the subject uses, not one they own),
         // none tagged `breach` (credential context / infrastructure, not PII).
         let item = json!({
             "dbname": "RedlineStealer",
@@ -152,10 +376,13 @@ use crate::core::entity::Entity;
             !url.has_tag("breach"),
             "stealer URL must NOT be tagged breach"
         );
-        // Host → Domain pivot (eTLD-aware host extraction, lowercased).
-        let dom = find(EntityKind::Domain, &|e| e.value == "accounts.example.com")
-            .expect("stealer URL host must surface as a Domain pivot");
-        assert!(dom.has_tag("stealer") && !dom.has_tag("breach"));
+        // The URL host must NOT be minted as a Domain: it is a third-party login
+        // surface the subject merely uses, and minting it spawned subdomain noise
+        // + misdirected crt.sh/DNS/whois expansion of the platform's own infra.
+        assert!(
+            find(EntityKind::Domain, &|e| e.value == "accounts.example.com").is_none(),
+            "stealer URL host must not become a Domain entity"
+        );
         // username@url Credential binding.
         assert!(
             find(EntityKind::Credential, &|e| {

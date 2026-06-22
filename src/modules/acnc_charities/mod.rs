@@ -87,8 +87,8 @@ impl Module for AcncCharities {
     fn priority(&self) -> u8 {
         // Government / public-records band (110-118): an authoritative federal
         // registry, dispatched with the other AU gov sources (abn_lookup 118,
-        // qld_unclaimed 114) and above the generic free band. Narrower than ABR
-        // (charities only) so it sits just below qld_unclaimed.
+        // au_unclaimed 114) and above the generic free band. Narrower than ABR
+        // (charities only) so it sits just below au_unclaimed.
         112
     }
 

@@ -1,32 +1,7 @@
 
-use super::{reconnaissance_coverage, registry, technique_module_index};
+use super::{registry, technique_module_index};
     use crate::core::dependency::{ALL_TARGET_KINDS, PROBE_VALUE};
     use crate::core::scan::Target;
-
-    #[test]
-    fn reconnaissance_coverage_resolves_real_sources_and_ignores_the_rest() {
-        // A scan whose findings came from search_engines + crtsh + a non-module
-        // source (`seed`) covers exactly the union of the two real modules'
-        // techniques; `seed` contributes nothing.
-        let cov = reconnaissance_coverage(["search_engines", "crtsh", "seed"]);
-        let ids: Vec<&str> = cov.iter().map(|t| t.id).collect();
-        // search_engines (Search) → T1593.002; crtsh (DnsRecon) → cert/DNS/WHOIS.
-        assert!(
-            ids.contains(&"T1593.002"),
-            "search engines technique present"
-        );
-        assert!(
-            ids.contains(&"T1596.003"),
-            "crt.sh is digital-certificate recon: {ids:?}"
-        );
-        // Sorted + deduped, and no phantom entries from the unknown `seed` source.
-        let mut sorted = ids.clone();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(ids, sorted, "coverage must be sorted and deduped");
-        // An all-unknown source set yields nothing.
-        assert!(reconnaissance_coverage(["seed", "geo_normalize"]).is_empty());
-    }
 
     /// Every registered module's `consumes()` must cover every `TargetKind`
     /// its `accepts()` matches against the canonical probe value.
@@ -106,21 +81,22 @@ use super::{reconnaissance_coverage, registry, technique_module_index};
     }
 
     #[test]
-    fn capability_assessment_partitions_catalogue_and_reflects_real_reach() {
-        let a = super::capability_assessment();
-        // covered ∪ gaps == the whole catalogue (Assessment invariant).
-        assert_eq!(
-            a.covered.len() + a.gaps.len(),
-            crate::core::attack::RECONNAISSANCE.len()
+    fn technique_module_index_reflects_real_reach() {
+        // HSE has many modules → the reverse index spans most of the curated
+        // catalogue (every keyed technique is implemented by ≥1 module). This
+        // pins that the per-module ATT&CK mapping is substantive, not vacuous.
+        let index = technique_module_index();
+        assert!(
+            index.len() >= 20,
+            "registry maps to {} techniques",
+            index.len()
         );
-        // HSE has many modules → it covers most of the curated catalogue.
-        assert!(a.covered.len() >= 20, "covered {} techniques", a.covered.len());
-        // Every covered technique is implemented by ≥1 module (consistent with
-        // the reverse index); every gap is implemented by none.
-        let index = super::technique_module_index();
-        assert!(a.covered.iter().all(|t| index.contains_key(t.id)));
-        assert!(a.gaps.iter().all(|t| !index.contains_key(t.id)));
-        // coverage_pct is a sane percentage.
-        let pct = a.coverage_pct();
-        assert!((0.0..=100.0).contains(&pct) && pct > 50.0);
+        // Every keyed technique is catalogued and has at least one module.
+        for (id, mods) in index {
+            assert!(
+                crate::core::attack::technique(id).is_some(),
+                "{id} must be catalogued"
+            );
+            assert!(!mods.is_empty(), "a keyed technique has ≥1 module");
+        }
     }

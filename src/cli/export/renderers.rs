@@ -22,35 +22,6 @@ pub(super) fn render_gexf(store: &Store, sid: &str) -> Result<String> {
     ))
 }
 
-/// MITRE ATT&CK **Navigator layer** for the scan — the Reconnaissance (TA0043)
-/// techniques its collection exercised, resolved from the modules that produced
-/// the evidence. Imports directly into the ATT&CK Navigator, so a scan's
-/// collection footprint can be reviewed (and diffed across scans) in the
-/// framework's own visual surface. Same coverage reducer as the `report`/CLI
-/// views, so the technique set never diverges between outputs.
-pub(crate) fn render_attack_layer(
-    store: &dyn crate::core::port::StoragePort,
-    sid: &str,
-) -> Result<String> {
-    let entities = store.entities_for_scan(sid)?;
-    let module_sources = crate::core::entity::evidence_sources(&entities);
-    let coverage = crate::modules::reconnaissance_coverage(module_sources.iter().copied());
-
-    let name = format!("HSE scan {sid}");
-    let description = format!(
-        "MITRE ATT&CK {} ({}) techniques exercised by Huntsman Search Engine scan {sid} \
-         ({} technique(s)).",
-        crate::core::attack::TACTIC_NAME,
-        crate::core::attack::TACTIC_ID,
-        coverage.len(),
-    );
-    Ok(crate::core::attack::navigator_layer(
-        &name,
-        &description,
-        &coverage,
-    ))
-}
-
 /// The **full dossier** — Huntsman's standard of maximum output detail. Emits
 /// EVERY entity (including quarantined `candidate` rows — nothing is hidden),
 /// each with its confidence/corroboration/tags and its COMPLETE evidence chain:
@@ -129,25 +100,6 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
         super::dossier::join_or_dash(sources.iter())
     );
 
-    // MITRE ATT&CK Reconnaissance (TA0043) coverage — the techniques this scan's
-    // collection exercised, resolved from the modules that produced the
-    // evidence. Persisted here so the archived investigation reads in the
-    // framework's vocabulary, not just the live CLI/JSON view.
-    let module_sources = crate::core::entity::evidence_sources(&entities);
-    let attack_cov = crate::modules::reconnaissance_coverage(module_sources.iter().copied());
-    if !attack_cov.is_empty() {
-        let _ = writeln!(
-            s,
-            "\n── MITRE ATT&CK {} ({}) — {} technique(s) exercised ──",
-            crate::core::attack::TACTIC_NAME,
-            crate::core::attack::TACTIC_ID,
-            attack_cov.len()
-        );
-        for t in &attack_cov {
-            let _ = writeln!(s, "  {:<11} {}", t.id, t.name);
-        }
-    }
-
     // Foreign API keys retrieved from endpoint data — surfaced up front because
     // a leaked third-party credential is the highest-signal finding in a scan.
     // These are ApiKey entities tagged `foreign-key`: recognised VENDOR keys
@@ -193,6 +145,21 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
         );
         if !e.tags.is_empty() {
             let _ = writeln!(s, "    tags: {}", e.tags.join(", "));
+        }
+        // The inline `attack:<ID>` provenance tags, resolved to their MITRE
+        // ATT&CK Reconnaissance technique names — the technique(s) that collected
+        // this finding, carried in the data itself (not a separate report).
+        let mitre: Vec<String> = e
+            .tags
+            .iter()
+            .filter_map(|t| t.strip_prefix("attack:"))
+            .map(|id| {
+                crate::core::attack::technique(id)
+                    .map_or_else(|| id.to_string(), |t| format!("{} {}", t.id, t.name))
+            })
+            .collect();
+        if !mitre.is_empty() {
+            let _ = writeln!(s, "    MITRE ATT&CK: {}", mitre.join("; "));
         }
         for ev in &e.evidence {
             let _ = writeln!(s, "    ├─ [{}] {}", ev.source, ev.summary);
@@ -340,7 +307,11 @@ pub(crate) fn render_debug_bundle(
     }
 
     // Best AU geolocation fix (AU-059 cross-seed synergy), if one fired.
-    let fix = crate::api::scan_export::extract_au_location_fix(&correlations);
+    // Recomputed structurally from the scan's confirmed entities (the set the
+    // rule ran on — candidates quarantined), not parsed from the finding prose.
+    let mut fix_entities = store.entities_for_scan(sid)?;
+    fix_entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+    let fix = crate::api::scan_export::extract_au_location_fix(&correlations, &fix_entities);
     if fix != serde_json::Value::Null {
         let lat = fix["lat"].as_f64().unwrap_or(0.0);
         let lon = fix["lon"].as_f64().unwrap_or(0.0);

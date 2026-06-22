@@ -147,7 +147,7 @@ pub(crate) fn build_scan_report(
         entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
     }
     let correlations = store.correlations_for_scan(scan_id)?;
-    let best_location = extract_au_location_fix(&correlations);
+    let best_location = extract_au_location_fix(&correlations, &entities);
     Ok(Some(json!({
         "scan": scan,
         "entities": entities,
@@ -180,8 +180,16 @@ pub(crate) fn build_scan_report(
 /// Returns a JSON object `{lat, lon, geohash, state, synergy_confidence,
 /// source_count, class_count, severity}` from the highest-rank AU-059 firing,
 /// or `serde_json::Value::Null` when no AU-059 correlation exists for the scan.
+/// The AU-059 `best_location` for the export, read **structurally** from the
+/// scan entities rather than by parsing the finding prose. It is present iff
+/// AU-059 actually fired this scan (the gated, ranked finding); the geo fields
+/// come from the one canonical [`crate::core::correlator::au059_synergy_fix`]
+/// computation the rule itself uses, so the structured export and the finding
+/// can never drift (they did, by construction, when this re-parsed the prose).
+/// Severity and the post-hoc `rank` are taken from the emitted correlation.
 pub(crate) fn extract_au_location_fix(
     correlations: &[crate::core::correlator::Correlation],
+    entities: &[crate::core::entity::Entity],
 ) -> serde_json::Value {
     let best = correlations
         .iter()
@@ -194,62 +202,22 @@ pub(crate) fn extract_au_location_fix(
     let Some(c) = best else {
         return serde_json::Value::Null;
     };
-    let desc = &c.description;
-
-    // source_count: first token before " AU coordinate"
-    let source_count: Option<u32> = desc
-        .split_once(" AU coordinate")
-        .and_then(|(n, _)| n.trim().parse().ok());
-
-    // class_count: token before " orthogonal source class"
-    let class_count: Option<u32> = desc
-        .split_once(" orthogonal source class")
-        .and_then(|(pre, _)| pre.rsplit_once(' ').map(|(_, n)| n))
-        .and_then(|n| n.parse().ok());
-
-    // lat,lon: after "converge on "
-    let (lat, lon) = desc
-        .split_once("converge on ")
-        .and_then(|(_, rest)| rest.split_once(' '))
-        .and_then(|(coord, _)| coord.split_once(','))
-        .and_then(|(la, lo)| {
-            let la: f64 = la.parse().ok()?;
-            let lo: f64 = lo.parse().ok()?;
-            Some((la, lo))
-        })
-        .unwrap_or((0.0, 0.0));
-
-    // geohash: between "geohash=" and ","
-    let geohash = desc
-        .split_once("geohash=")
-        .and_then(|(_, rest)| rest.split_once(','))
-        .map(|(gh, _)| gh.to_string())
-        .unwrap_or_default();
-
-    // state: between "state=" and ")"
-    let state = desc
-        .split_once("state=")
-        .and_then(|(_, rest)| rest.split_once(')'))
-        .map(|(st, _)| st.to_string())
-        .unwrap_or_default();
-
-    // synergy_confidence: after "synergy confidence " and before " —"
-    let synergy_confidence: f64 = desc
-        .split_once("synergy confidence ")
-        .and_then(|(_, rest)| rest.split_once(" —"))
-        .and_then(|(sc, _)| sc.parse().ok())
-        .unwrap_or(0.0);
+    // Recompute the structured fix from the same entities and gate the rule used.
+    let Some(fix) = crate::core::correlator::au059_synergy_fix(entities) else {
+        return serde_json::Value::Null;
+    };
 
     json!({
-        "lat": lat,
-        "lon": lon,
-        "geohash": geohash,
-        "state": state,
-        "synergy_confidence": synergy_confidence,
+        "lat": fix.lat,
+        "lon": fix.lon,
+        "radius_km": fix.radius_km,
+        "geohash": fix.geohash,
+        "state": fix.state,
+        "synergy_confidence": fix.synergy_confidence,
         "severity": c.severity.as_canonical(),
         "rank": c.rank,
-        "source_count": source_count,
-        "class_count": class_count,
+        "source_count": fix.count,
+        "class_count": fix.class_names.len(),
         "rule_id": "AU-059",
     })
 }
@@ -277,177 +245,6 @@ pub async fn scan_export_gexf(
     };
     let body = crate::core::gexf::entities_to_gexf(&entities, &relations, &id);
     download_response(body, "application/xml; charset=utf-8", &id, "gexf")
-}
-
-/// `GET /api/v1/scans/{id}/attack-navigator.json` — a MITRE ATT&CK Navigator
-/// layer of the Reconnaissance (TA0043) techniques the scan exercised. Same
-/// artifact as `hse export {id} --format navigator` (one shared renderer, so
-/// CLI and web can't diverge); the web UI's "ATT&CK layer" button downloads it
-/// for import into the ATT&CK Navigator.
-pub async fn scan_export_attack_navigator(
-    State(s): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
-    if let Some(resp) = scan_missing(&s, &id) {
-        return resp;
-    }
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    match tokio::task::spawn_blocking(move || {
-        crate::cli::export::render_attack_layer(store.as_ref(), &id2)
-    })
-    .await
-    {
-        Ok(Ok(body)) => download_named(
-            body,
-            "application/json; charset=utf-8",
-            &id,
-            "attack-navigator",
-            "json",
-        ),
-        Ok(Err(e)) => internal_error(&e),
-        Err(e) => internal_error(&format!("attack-layer render task failed: {e}")),
-    }
-}
-
-/// `GET /api/v1/scans/{id}/attack-coverage.json` — the scan's MITRE ATT&CK
-/// Reconnaissance (TA0043) **assessment**: the catalogued techniques split into
-/// those the collection `covered` and the `gaps` it missed, plus a coverage
-/// percentage. Returned **inline** (not a download) so the web UI renders it as
-/// a live panel. Same coverage reducer as the report / Navigator-layer views,
-/// so the figures never diverge.
-pub async fn scan_attack_coverage(
-    State(s): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
-    if let Some(resp) = scan_missing(&s, &id) {
-        return resp;
-    }
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    let entities = match tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await {
-        Ok(Ok(entities)) => entities,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
-    };
-    let module_sources = crate::core::entity::evidence_sources(&entities);
-    let covered = crate::modules::reconnaissance_coverage(module_sources.iter().copied());
-    let assessment = crate::core::attack::Assessment::from_covered(covered);
-
-    // Reverse index (technique → implementing modules), used twice: a covered
-    // technique lists the modules in THIS scan that exercised it (index ∩ the
-    // scan's evidence sources); a gap lists the idle modules that would close it
-    // (the full registry list) — turning the assessment into next-best-action.
-    let index = crate::modules::technique_module_index();
-    let covered_json: Vec<_> = assessment
-        .covered
-        .iter()
-        .map(|t| {
-            let by: Vec<&str> = index
-                .get(t.id)
-                .into_iter()
-                .flatten()
-                .filter(|m| module_sources.contains(*m))
-                .copied()
-                .collect();
-            json!({ "id": t.id, "name": t.name, "modules": by })
-        })
-        .collect();
-    let gaps_json: Vec<_> = assessment
-        .gaps
-        .iter()
-        .map(|t| {
-            let by = index.get(t.id).cloned().unwrap_or_default();
-            json!({ "id": t.id, "name": t.name, "modules": by })
-        })
-        .collect();
-
-    let payload = json!({
-        "scan_id": id,
-        "tactic": crate::core::attack::TACTIC_NAME,
-        "tactic_id": crate::core::attack::TACTIC_ID,
-        "coverage_pct": assessment.coverage_pct(),
-        "covered_count": assessment.covered.len(),
-        "total": assessment.covered.len() + assessment.gaps.len(),
-        "covered": covered_json,
-        "gaps": gaps_json,
-    });
-    let body = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
-    (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "application/json; charset=utf-8",
-        )],
-        body,
-    )
-        .into_response()
-}
-
-/// `GET /api/v1/scans/{a}/attack-coverage-diff/{b}` — how scan `a`'s MITRE
-/// ATT&CK Reconnaissance coverage changed against baseline scan `b`: techniques
-/// `gained` (newly exercised in `a`), `lost` (in `b` but not `a`), and `shared`.
-/// Each technique carries the registry modules that implement it. Returned
-/// inline so the web UI can render a re-scan's collection delta. Reuses the same
-/// evidence-source → coverage path as every other ATT&CK surface.
-pub async fn scan_attack_coverage_diff(
-    State(s): State<Arc<AppState>>,
-    Path((a, b)): Path<(String, String)>,
-) -> impl IntoResponse {
-    if let Some(resp) = scan_missing(&s, &a) {
-        return resp;
-    }
-    if let Some(resp) = scan_missing(&s, &b) {
-        return resp;
-    }
-    let coverage_of = |id: &str| -> Result<Vec<&'static crate::core::attack::Technique>, _> {
-        s.store.entities_for_scan(id).map(|ents| {
-            crate::modules::reconnaissance_coverage(crate::core::entity::evidence_sources(&ents))
-        })
-    };
-    let current = match coverage_of(&a) {
-        Ok(c) => c,
-        Err(e) => return internal_error(&e),
-    };
-    let baseline = match coverage_of(&b) {
-        Ok(c) => c,
-        Err(e) => return internal_error(&e),
-    };
-    let diff = crate::core::attack::CoverageDiff::new(&current, &baseline);
-
-    let index = crate::modules::technique_module_index();
-    let with_modules =
-        |techs: &[&'static crate::core::attack::Technique]| -> Vec<serde_json::Value> {
-            techs
-                .iter()
-                .map(|t| {
-                    let by = index.get(t.id).cloned().unwrap_or_default();
-                    json!({ "id": t.id, "name": t.name, "modules": by })
-                })
-                .collect()
-        };
-
-    let payload = json!({
-        "current_scan": a,
-        "baseline_scan": b,
-        "tactic": crate::core::attack::TACTIC_NAME,
-        "tactic_id": crate::core::attack::TACTIC_ID,
-        "unchanged": diff.is_unchanged(),
-        "gained_count": diff.gained.len(),
-        "lost_count": diff.lost.len(),
-        "shared_count": diff.shared.len(),
-        "gained": with_modules(&diff.gained),
-        "lost": with_modules(&diff.lost),
-        "shared": with_modules(&diff.shared),
-    });
-    let body = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
-    (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "application/json; charset=utf-8",
-        )],
-        body,
-    )
-        .into_response()
 }
 
 /// `GET /api/v1/scans/{id}/debug.txt` — the one-click debug bundle: the entire
@@ -485,23 +282,8 @@ pub(crate) fn download_response(
     scan_id: &str,
     ext: &str,
 ) -> axum::response::Response {
-    // Label and file extension coincide for the simple formats (gexf, debug.txt).
-    download_named(body, content_type, scan_id, ext, ext)
-}
-
-/// As [`download_response`], but with the descriptive name label and the file
-/// extension specified separately — for artifacts whose canonical extension
-/// differs from their label (e.g. an ATT&CK Navigator layer: label
-/// `attack-navigator`, extension `json`).
-pub(crate) fn download_named(
-    body: String,
-    content_type: &'static str,
-    scan_id: &str,
-    label: &str,
-    extension: &str,
-) -> axum::response::Response {
     let short_id: String = scan_id.chars().take(12).collect();
-    let filename = format!("hse-{label}-{short_id}.{extension}");
+    let filename = format!("hse-{ext}-{short_id}.{ext}");
     let disposition = format!("attachment; filename=\"{filename}\"");
     let mut resp = (StatusCode::OK, body).into_response();
     let headers = resp.headers_mut();

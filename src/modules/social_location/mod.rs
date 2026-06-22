@@ -13,7 +13,7 @@ use async_trait::async_trait;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -64,14 +64,8 @@ impl Module for SocialLocation {
         let mut result = ModuleResult::new();
         let url = target.value.trim();
 
-        let body = ctx
-            .http
-            .get(url)
-            .send_tagged(SRC)
-            .await?
-            .text()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let resp = ctx.http.get(url).send_tagged(SRC).await?;
+        let body = crate::util::http::read_text(SRC, resp).await?;
 
         let host = crate::util::url_util::host_from_url(url).unwrap_or_default();
         let is_professional = is_professional_host(&host);

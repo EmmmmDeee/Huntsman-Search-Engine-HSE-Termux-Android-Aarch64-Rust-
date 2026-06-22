@@ -12,7 +12,7 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
     tags,
@@ -110,10 +110,7 @@ impl Module for Ip2Location {
             return Ok(ModuleResult::new());
         }
 
-        let data: Resp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
+        let data: Resp = crate::util::http::json_decode(SRC, resp).await?;
 
         // The shared trust gate: an IP whose geolocation is infrastructure (a
         // CDN/anycast edge) is not the subject's location, so its
@@ -171,10 +168,7 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
         if data.is_proxy == Some(true) {
             ce.tag(tags::PROXY);
         }
-        if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
-            ce.tag(format!("au-state:{state}"));
-            ce.tag("country:AU");
-        }
+        crate::util::geo::tag_au_state(&mut ce, lat, lon);
         let ev = [
             ("city", (!city.is_empty()).then_some(city)),
             ("region", (!region.is_empty()).then_some(region)),
@@ -226,9 +220,8 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
         && !asn.is_empty()
     {
         let asn_str = format!("AS{asn}");
-        let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, scan_id);
+        let mut ae = crate::util::geo::ip_asn_entity(&asn_str, SRC, ip, scan_id);
         ae.tag("ip2location");
-        ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
         out.push(ae);
     }
 

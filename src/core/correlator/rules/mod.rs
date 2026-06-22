@@ -5,7 +5,7 @@
 //! crypto); this module holds the shared helpers they all draw on and
 //! re-exports every rule so the dispatcher's `use rules::*` is unchanged.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::{Correlation, Severity};
 use crate::core::entity::{Entity, EntityKind};
@@ -227,6 +227,18 @@ fn is_breach_exposed_wallet(e: &Entity) -> bool {
     })
 }
 
+/// The distinct provenance families under an entity's evidence sources — the
+/// orthogonality measure shared by the multi-pathway (AU-062) and gap (AU-063)
+/// link-analysis detectors, so "which independent source families back this
+/// entity" has a single definition. The unclassified `"other"` bucket is
+/// retained here; callers that need genuine cross-family diversity drop it.
+fn source_families(e: &Entity) -> BTreeSet<&'static str> {
+    e.evidence_sources()
+        .into_iter()
+        .map(source_family)
+        .collect()
+}
+
 /// Coarse provenance *family* of an evidence/module source name. Used to measure
 /// CROSS-SERVICE agreement, which is stronger than a raw source count: two
 /// sources in the same family (e.g. two breach DBs) can echo the same leaked
@@ -235,7 +247,7 @@ fn is_breach_exposed_wallet(e: &Entity) -> bool {
 /// independent confirmation. `"other"` is the catch-all for unclassified sources
 /// and is excluded from family-diversity counts. Matching is lowercase-substring
 /// over the module names actually in the registry, most-specific first.
-pub(super) fn source_family(source: &str) -> &'static str {
+pub(in crate::core) fn source_family(source: &str) -> &'static str {
     let s = source.to_ascii_lowercase();
     let has = |needles: &[&str]| needles.iter().any(|n| s.contains(n));
     if has(&[
@@ -341,7 +353,6 @@ pub(super) fn source_family(source: &str) -> &'static str {
         "ip_",
         "ipinfo",
         "ipquery",
-        "ipapi",
         "ip2location",
         "geo",
         "wigle",
@@ -357,22 +368,38 @@ pub(super) fn source_family(source: &str) -> &'static str {
 
 mod assoc;
 mod breach;
+mod broker;
 mod crypto;
+pub(crate) mod gap;
 mod geo;
 mod identity;
 mod infra;
+mod integrity;
 pub(crate) mod location;
+pub(crate) mod multipath;
 mod org;
+mod resolved;
+mod robust;
+mod sim;
+mod template;
 mod transitive;
 
 pub(super) use assoc::*;
 pub(super) use breach::*;
+pub(super) use broker::*;
 pub(super) use crypto::*;
+pub(super) use gap::*;
 pub(super) use geo::*;
 pub(super) use identity::*;
 pub(super) use infra::*;
+pub(super) use integrity::*;
 pub(super) use location::*;
+pub(super) use multipath::*;
 pub(super) use org::*;
+pub(super) use resolved::*;
+pub(super) use robust::*;
+pub(super) use sim::*;
+pub(super) use template::*;
 pub(super) use transitive::*;
 
 #[cfg(test)]

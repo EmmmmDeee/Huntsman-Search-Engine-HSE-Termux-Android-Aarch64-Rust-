@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use tracing::info;
 
 use crate::core::entity::{Entity, EntityKind};
+use crate::core::relation::Relation;
 
 /// Collapse `Address` entities that denote the **same locality** — differing
 /// only by a trailing postcode, case or punctuation — into a single entity,
@@ -123,6 +124,126 @@ pub(super) fn promote_geo_corroborated_family(entities: &mut [Entity]) -> usize 
         info!(
             promoted,
             "geo-corroborated family promoted to reliable (free, offline, cross-angle)"
+        );
+    }
+    promoted
+}
+
+/// Promote multi-pathway-corroborated identities (free, offline, per scan).
+///
+/// AU-062 proves which identity entities are joined by **≥2 edge-disjoint
+/// pathways spanning ≥2 orthogonal source families** — a connection re-derivable
+/// down several independent routes, robust to any single source going dark. This
+/// pass feeds that proof back into the entities themselves: each endpoint of such
+/// a link earns a `multipath-corroborated` tag and a `multipath_corroboration`
+/// evidence record, lifting its corroboration → `c_effective` → classification
+/// band so the scan's OUTPUT reflects what its own correlation established — a
+/// confirmed connection measurably strengthens the entities it connects.
+///
+/// Built on the SAME [`crate::core::correlator::multipath_corroborated_links`]
+/// detector the AU-062 rule uses, so the rule and the boost can never disagree
+/// (one finder, no drift). The boost lifts only the two identity ENDPOINTS of
+/// each link, never the intermediates (a conduit domain is not itself
+/// corroborated). The `multipath_corroboration` source classifies as the
+/// unscored `"other"` family, so it never feeds back to inflate AU-062's own
+/// orthogonality count on a later recall. Free, offline, idempotent — the tag
+/// guard means re-running, or a recall on a later scan, never double-stamps.
+/// Returns the number promoted.
+pub(super) fn promote_multipath_corroborated(
+    entities: &mut [Entity],
+    relations: &[Relation],
+) -> usize {
+    use crate::core::correlator::multipath_corroborated_links;
+    use crate::core::entity::Evidence;
+
+    // Resolve the corroborated endpoints (and the reason for each) up front, so
+    // the immutable borrow the detector takes on `entities` is released before
+    // the mutable promotion walk below.
+    let links = multipath_corroborated_links(entities, relations);
+    if links.is_empty() {
+        return 0;
+    }
+    let mut reason_by_uid: HashMap<String, String> = HashMap::new();
+    for link in &links {
+        let reason = format!(
+            "Linked across {} independent pathway{} spanning {} orthogonal source famil{} [{}] \
+             — the connection is corroborated by multiple routes, not a single chain",
+            link.pathways,
+            if link.pathways == 1 { "" } else { "s" },
+            link.families.len(),
+            if link.families.len() == 1 { "y" } else { "ies" },
+            link.families.join(", "),
+        );
+        // First reason wins for a hub endpoint shared by several links — one
+        // evidence record per entity is enough; the tag carries the signal.
+        reason_by_uid
+            .entry(link.a_uid.clone())
+            .or_insert_with(|| reason.clone());
+        reason_by_uid.entry(link.b_uid.clone()).or_insert(reason);
+    }
+
+    let mut promoted = 0usize;
+    for e in entities.iter_mut() {
+        if e.has_tag("multipath-corroborated") {
+            continue;
+        }
+        if let Some(reason) = reason_by_uid.get(&e.uid) {
+            e.tag("multipath-corroborated");
+            e.add_evidence(Evidence::new("multipath_corroboration", reason.clone()));
+            promoted += 1;
+        }
+    }
+    if promoted > 0 {
+        info!(
+            promoted,
+            "multi-pathway-corroborated identities promoted (free, offline — confirmed links strengthen the scan)"
+        );
+    }
+    promoted
+}
+
+/// Promote cross-scan-corroborated identities (free, offline, per scan).
+///
+/// The cross-scan counterpart to [`promote_multipath_corroborated`]. A *fragile*
+/// single-pathway identity link (the AU-063 gap) is corroborated not by a second
+/// in-scan route but by the engine's accumulated cross-scan knowledge: when the
+/// link's own route SHAPE has been independently confirmed in prior scans, the
+/// attribution METHOD is proven, and that historical proof is the orthogonal
+/// pathway that fills the gap (the engine-emitted AU-066 finding). Each listed
+/// endpoint earns a `cross-scan-corroborated` tag and a `cross_scan_corroboration`
+/// evidence record, lifting its corroboration → `c_effective` → classification
+/// band so the scan's OUTPUT reflects the accumulated knowledge.
+///
+/// Conservative by design: the engine gates the `boost` set on a route proven in
+/// **≥2 prior scans** (stricter than the AU-065 finding's ≥1), and the evidence
+/// source classifies as the unscored `"other"` family, so it never feeds back to
+/// inflate the in-scan orthogonality measure. Free, offline, idempotent via the
+/// tag. `boost` maps each endpoint UID to its human reason; returns the number
+/// promoted.
+pub(super) fn promote_cross_scan_corroborated(
+    entities: &mut [Entity],
+    boost: &HashMap<String, String>,
+) -> usize {
+    use crate::core::entity::Evidence;
+
+    if boost.is_empty() {
+        return 0;
+    }
+    let mut promoted = 0usize;
+    for e in entities.iter_mut() {
+        if e.has_tag("cross-scan-corroborated") {
+            continue;
+        }
+        if let Some(reason) = boost.get(&e.uid) {
+            e.tag("cross-scan-corroborated");
+            e.add_evidence(Evidence::new("cross_scan_corroboration", reason.clone()));
+            promoted += 1;
+        }
+    }
+    if promoted > 0 {
+        info!(
+            promoted,
+            "cross-scan-corroborated identities promoted (free, offline — accumulated route knowledge fills the gap)"
         );
     }
     promoted

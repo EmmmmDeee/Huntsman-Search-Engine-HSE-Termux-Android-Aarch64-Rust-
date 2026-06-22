@@ -70,14 +70,19 @@ impl Module for BgpView {
 
         match target.kind {
             TargetKind::Asn => {
-                // Normalise `AS13335` / `as13335` / `13335` → `13335`.
-                let asn = target.value.trim().to_uppercase();
-                let asn_num = asn.strip_prefix("AS").unwrap_or(&asn);
+                // Normalise `AS13335` / `as13335` / `13335` → `13335`; reject junk.
+                let Some(asn_num) = crate::util::str_util::parse_asn(&target.value) else {
+                    return Ok(result);
+                };
                 let url = format!("https://api.bgpview.io/asn/{asn_num}/prefixes");
                 let resp: BgpPrefixResponse =
                     crate::util::http::fetch_json(&ctx.http, SRC, &url).await?;
                 if let Some(data) = resp.data {
-                    result.extend(asn_prefix_entities(&data, asn_num, &ctx.scan_id));
+                    result.extend(asn_prefix_entities(
+                        &data,
+                        &asn_num.to_string(),
+                        &ctx.scan_id,
+                    ));
                 }
             }
             TargetKind::IpAddress => {

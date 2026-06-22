@@ -145,10 +145,7 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
             if let Some(ty) = elem.osm_type.as_deref().filter(|s| !s.is_empty()) {
                 ce.tag(format!("osm:{ty}"));
             }
-            if let Some(state) = crate::util::geo::au_state_for_coords(nlat, nlon) {
-                ce.tag(format!("au-state:{state}"));
-                ce.tag("country:AU");
-            }
+            crate::util::geo::tag_au_state(&mut ce, nlat, nlon);
             let mut ev = Evidence::new(SRC, format!("OSM {category} near {coord}"))
                 .with_attr("category", category);
             if let Some(ty) = elem.osm_type.as_deref().filter(|s| !s.is_empty()) {

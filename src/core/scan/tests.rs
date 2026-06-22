@@ -1175,15 +1175,68 @@ fn empty_options_object_matches_product_defaults() {
         from_empty.max_concurrent, product.max_concurrent,
         "omitted max_concurrent must deserialise to the product default"
     );
-    assert_eq!(
-        from_empty.min_expand_confidence,
-        product.min_expand_confidence
-    );
     assert_eq!(from_empty.regional_search, product.regional_search);
-    // depth is the one DOCUMENTED divergence: library Default is 0 (inert,
-    // deterministic for programmatic callers), serde default is the product 2.
+    // depth, min_expand_confidence and max_entities are the DOCUMENTED
+    // divergences: the library `Default` stays inert/deterministic for
+    // programmatic callers (depth 0, floor 0.50, uncapped) while the serde field
+    // defaults apply the COMPREHENSIVE product values so an API/web request that
+    // omits them is as thorough as `hse scan`.
     assert_eq!(from_empty.depth, DEFAULT_SCAN_DEPTH);
+    assert!((from_empty.min_expand_confidence - DEFAULT_MIN_EXPAND_CONFIDENCE).abs() < 1e-9);
+    assert_eq!(from_empty.max_entities, Some(DEFAULT_MAX_ENTITIES));
     // An explicit 0 is still honoured as fully-sequential.
     let explicit: ScanOptions = serde_json::from_str(r#"{"max_concurrent":0}"#).unwrap();
     assert_eq!(explicit.max_concurrent, 0);
+}
+
+/// Locks the DECOUPLING of the library default from the serde field defaults.
+/// The library `ScanOptions::default()` — used by programmatic callers and the
+/// test suite — must STAY conservative (depth 0 single-round, expansion floor
+/// 0.50 Probable, uncapped) for determinism, even though the CLI/API/web product
+/// surface now defaults to the comprehensive depth 3 / floor 0.20 / cap 2500.
+#[test]
+fn library_default_stays_conservative_and_decoupled_from_serde() {
+    let d = ScanOptions::default();
+    assert_eq!(d.depth, 0, "library default is single-round");
+    assert!(
+        (d.min_expand_confidence - 0.50).abs() < 1e-9,
+        "library default expansion floor stays at the conservative 0.50"
+    );
+    assert_eq!(d.max_entities, None, "library default stays uncapped");
+    // …and these MUST differ from the comprehensive product/serde defaults,
+    // i.e. the decoupling is real, not an accidental equality.
+    assert_ne!(d.depth, DEFAULT_SCAN_DEPTH);
+    assert!((d.min_expand_confidence - DEFAULT_MIN_EXPAND_CONFIDENCE).abs() > 1e-9);
+    assert_ne!(d.max_entities, Some(DEFAULT_MAX_ENTITIES));
+}
+
+/// A `ScanRequest` deserialised either with the whole `options` object omitted
+/// or with a present-but-empty `options:{}` must yield the SAME comprehensive
+/// product defaults as `hse scan`: depth 3, expansion floor 0.20, entity cap
+/// 2500. This is the API/SPA-thoroughness guarantee.
+#[test]
+fn scan_request_defaults_to_comprehensive_options() {
+    for body in [r#"{"value":"x"}"#, r#"{"value":"x","options":{}}"#] {
+        let req: ScanRequest = serde_json::from_str(body).unwrap();
+        assert_eq!(req.options.depth, DEFAULT_SCAN_DEPTH, "depth for {body}");
+        assert_eq!(req.options.depth, 3, "depth literal for {body}");
+        assert!(
+            (req.options.min_expand_confidence - DEFAULT_MIN_EXPAND_CONFIDENCE).abs() < 1e-9,
+            "expansion floor for {body}"
+        );
+        assert!(
+            (req.options.min_expand_confidence - 0.20).abs() < 1e-9,
+            "expansion floor literal for {body}"
+        );
+        assert_eq!(
+            req.options.max_entities,
+            Some(DEFAULT_MAX_ENTITIES),
+            "entity cap for {body}"
+        );
+        assert_eq!(
+            req.options.max_entities,
+            Some(2500),
+            "entity cap literal for {body}"
+        );
+    }
 }

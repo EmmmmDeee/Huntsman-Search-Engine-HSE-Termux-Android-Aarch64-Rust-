@@ -137,6 +137,11 @@ pub(super) struct DispatchOutcome {
     /// (the module and target are no longer available at join time). Empty
     /// when `ttl_secs == 0`.
     pub(super) cache_key: String,
+    /// The producing module's ATT&CK Reconnaissance technique IDs
+    /// (`module.attack_techniques()`), captured before spawning because the
+    /// `Module` object is gone by join time. `finalise_module_result` stamps
+    /// each admitted entity with an `attack:<ID>` tag per technique.
+    pub(super) attack_techniques: &'static [&'static str],
 }
 
 /// Stable archive key for the inter-scan entity cache: `module:kind:value`
@@ -298,7 +303,7 @@ pub(super) fn module_skip_reason(
             // (shodan, censys, RDAP, abuseipdb, etc. all support v6).
             // `should_skip_external_ipv4` rejects ANY `:`-containing
             // string and is reserved for the small set of IPv4-only
-            // modules (ipapi, ip-api.com, ipinfo.io, ipquery.io)
+            // modules (ip-api.com, ipinfo.io, ipquery.io)
             // that route through it inside their own `process`.
             TargetKind::IpAddress if preflight::should_skip_external_ip(&target.value) => {
                 return Some("private/reserved IP — external API would reject");
@@ -365,12 +370,21 @@ impl super::ScanEngine {
     /// emitted entities into the per-scan `entity_map`. Shared by
     /// `dispatch_target_sequential` and `dispatch_target_concurrent`
     /// so the event payload shape is identical between the two paths.
+    ///
+    /// `attack_techniques` is the producing module's
+    /// [`Module::attack_techniques`] —
+    /// every admitted entity is stamped with an `attack:<ID>` tag per technique,
+    /// so the ATT&CK Reconnaissance technique that collected each datum travels
+    /// with the finding. Sourced from the dispatched `Module` object at the call
+    /// site (never `crate::modules`, which `core` may not name), so the engine
+    /// stays module-agnostic.
     fn finalise_module_result(
         &self,
         cx: &DispatchCx,
         name: &'static str,
         result: TimeoutResult,
         state: &mut DispatchState,
+        attack_techniques: &'static [&'static str],
     ) {
         state.stats.run += 1;
         match result {
@@ -436,7 +450,7 @@ impl super::ScanEngine {
                 // trusted again immediately.
                 super::circuit::record_success(name);
                 let mut found = 0usize;
-                for entity in mr.entities.drain(..) {
+                for mut entity in mr.entities.drain(..) {
                     if let Some(min) = cx.opts.min_confidence
                         && entity.confidence < min
                     {
@@ -503,6 +517,25 @@ impl super::ScanEngine {
                         self.emit_excluded(cx.scan_id, &entity, "incidental_infra");
                         continue;
                     }
+                    // Universal MITRE ATT&CK provenance: stamp every ADMITTED
+                    // entity with the Reconnaissance technique(s) of the module
+                    // that produced it, as inline `attack:<ID>` tags. This makes
+                    // the technique that collected each datum travel with the data
+                    // (JSON `tags`, the full dossier, the DB) — MITRE alignment
+                    // lives in the findings themselves, not a separate coverage
+                    // report. `Entity::tag` de-dupes and `Entity::merge` unions
+                    // tags, so an entity collected via several modules carries all
+                    // of their techniques. Done at the single admission point AFTER
+                    // every drop filter so only surviving findings are stamped.
+                    for id in attack_techniques {
+                        entity.tag(format!("attack:{id}"));
+                    }
+                    // Universal breach-sector wiring: stamp the source's sector
+                    // (`sector:real-estate`, …) on every breach finding — one
+                    // chokepoint connects EVERY pool to `util::breach_sector`.
+                    // Before the emit so the event log (and the recovery rebuild)
+                    // carries it too.
+                    super::tag_breach_sector(&mut entity);
                     self.emit(
                         cx.scan_id,
                         EventKind::EntityFound {
@@ -510,7 +543,6 @@ impl super::ScanEngine {
                         },
                     );
                     super::scan_entity_for_keys(&entity);
-                    let mut entity = entity;
                     super::enrich_geospatial(&mut entity);
                     if let Some(existing) = state.entity_map.get_mut(&entity.uid) {
                         existing.merge(entity);
@@ -633,7 +665,13 @@ impl super::ScanEngine {
                 state.stats.cached += 1;
                 debug!(module = name, "cache hit — replaying archived entities");
                 let mr = ModuleResult { entities: cached };
-                self.finalise_module_result(cx, name, Ok(Ok(mr)), state);
+                self.finalise_module_result(
+                    cx,
+                    name,
+                    Ok(Ok(mr)),
+                    state,
+                    module.attack_techniques(),
+                );
                 super::hot_inject_keys(&mut ctx.keys);
                 if ctx.cancel.is_cancelled() {
                     return Ok(());
@@ -678,7 +716,7 @@ impl super::ScanEngine {
                 let _ = self.store.archive_module_result(key, ttl, &mr.entities);
             }
 
-            self.finalise_module_result(cx, name, result, state);
+            self.finalise_module_result(cx, name, result, state, module.attack_techniques());
 
             super::hot_inject_keys(&mut ctx.keys);
 
@@ -764,7 +802,13 @@ impl super::ScanEngine {
                 state.stats.cached += 1;
                 debug!(module = name, "cache hit — replaying archived entities");
                 let mr = ModuleResult { entities: cached };
-                self.finalise_module_result(cx, name, Ok(Ok(mr)), state);
+                self.finalise_module_result(
+                    cx,
+                    name,
+                    Ok(Ok(mr)),
+                    state,
+                    module.attack_techniques(),
+                );
                 super::hot_inject_keys(&mut ctx.keys);
                 continue;
             }
@@ -795,7 +839,7 @@ impl super::ScanEngine {
             {
                 let _ = self.store.archive_module_result(key, ttl, &mr.entities);
             }
-            self.finalise_module_result(cx, name, result, state);
+            self.finalise_module_result(cx, name, result, state, module.attack_techniques());
             // Hot-inject discovered keys so Phase 2 modules can use them.
             // Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl etc.)
             // cascade — their outputs feed web_crawler/search_engines, which
@@ -868,7 +912,13 @@ impl super::ScanEngine {
                 state.stats.cached += 1;
                 debug!(module = name, "cache hit — replaying archived entities");
                 let mr = ModuleResult { entities: cached };
-                self.finalise_module_result(cx, name, Ok(Ok(mr)), state);
+                self.finalise_module_result(
+                    cx,
+                    name,
+                    Ok(Ok(mr)),
+                    state,
+                    module.attack_techniques(),
+                );
                 continue;
             }
 
@@ -883,6 +933,12 @@ impl super::ScanEngine {
             let sid = Arc::clone(&scan_id_arc);
             let throttle_ms = cx.opts.throttle_ms;
             let module_timeout_ms = super::resolve_timeout(cx.opts, &*module_arc);
+            // Capture the producing module's ATT&CK Reconnaissance techniques
+            // before the spawn: `module` is unavailable at the join site (only a
+            // `DispatchOutcome` is). `&'static [&'static str]` is Copy, so it
+            // moves into the task for free and rides back out in the outcome,
+            // where `finalise_module_result` stamps each admitted entity.
+            let attack_techniques = module.attack_techniques();
 
             // Re-set the foreign-key scan-scope ambient INSIDE the spawned task:
             // tokio task-locals do NOT propagate across `spawn`, so without this the
@@ -925,6 +981,7 @@ impl super::ScanEngine {
                     result,
                     ttl_secs,
                     cache_key,
+                    attack_techniques,
                 }
             }));
         }
@@ -959,7 +1016,13 @@ impl super::ScanEngine {
                     &mr.entities,
                 );
             }
-            self.finalise_module_result(cx, outcome.name, outcome.result, state);
+            self.finalise_module_result(
+                cx,
+                outcome.name,
+                outcome.result,
+                state,
+                outcome.attack_techniques,
+            );
         }
         Ok(())
     }

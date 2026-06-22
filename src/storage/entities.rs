@@ -3,6 +3,8 @@
 //! reads. The `impl super::Store` block keeps these on the same `Store` type;
 //! split out of the unified store module so the persistence core is navigable.
 
+use std::collections::HashMap;
+
 use rusqlite::params;
 
 use crate::core::entity::Entity;
@@ -142,23 +144,39 @@ impl super::Store {
             .into_iter()
             .filter_map(|s| serde_json::from_str(&s).ok())
             .collect();
-        // The SQL `ORDER BY confidence` above is only a stable pre-order; the
-        // authoritative operator-facing ranking is applied here in Rust (the same
-        // SQL-preorder + Rust-authoritative-sort idiom `correlations_for_scan`
-        // uses), because the two signals that actually matter can't be expressed
-        // in SQL:
-        //   1. `c_effective()` — the corroboration-aware confidence. A finding
-        //      confirmed by N distinct sources must outrank an equally-(raw)-
-        //      confident single-source one; ordering by the stored `confidence`
-        //      column threw that signal away, burying corroborated identity under
-        //      single-source breach noise of the same nominal confidence.
-        //   2. subject-relevance. A CDN/anycast edge IP or a mega/shared-infra
-        //      domain is legitimately high-confidence (many sources agree it
-        //      exists) but it's the haystack, not the needle — so it's demoted
-        //      beneath subject-relevant findings regardless of how corroborated
-        //      its mere existence is.
-        // Deterministic total order (relevance, then C_eff, then raw confidence,
-        // then uid) so identical inputs always serialise identically.
+        // Recovery fallback. The `entities` table is only populated when a scan
+        // FINALISES; a scan still running, interrupted, or killed before
+        // finalisation (routine on Termux/Android, where the OS reclaims
+        // backgrounded processes) leaves it empty even though the module run
+        // already discovered — and durably logged — hundreds of entities. Rather
+        // than report nothing and lose that intelligence, rebuild it from the
+        // real-time event log. A genuinely empty scan has no `EntityFound`
+        // events, so this still returns empty — never a false positive — and the
+        // common finalised-read path never pays for it.
+        if entities.is_empty() {
+            return self.entities_from_events(scan_id);
+        }
+        Self::sort_entities_for_display(&mut entities);
+        Ok(entities)
+    }
+
+    /// Authoritative operator-facing entity ranking, shared by every read path
+    /// (`entities_for_scan` and the event-log recovery `entities_from_events`)
+    /// so a recovered in-flight scan and a finalised one rank identically.
+    ///
+    /// The SQL `ORDER BY confidence` is only a stable pre-order; the two signals
+    /// that actually matter can't be expressed in SQL. First, `c_effective()` —
+    /// the corroboration-aware confidence: a finding confirmed by N distinct
+    /// sources must outrank an equally-(raw)-confident single-source one, since
+    /// ordering by the stored `confidence` column alone buries corroborated
+    /// identity under single-source breach noise of the same nominal confidence.
+    /// Second, subject-relevance: a CDN/anycast edge IP or a mega/shared-infra
+    /// domain is legitimately high-confidence (many sources agree it exists) but
+    /// it's the haystack, not the needle, so it's demoted beneath subject-relevant
+    /// findings regardless of how corroborated its mere existence is. The
+    /// resulting deterministic total order — relevance, then C_eff, then raw
+    /// confidence, then uid — serialises identically for identical inputs.
+    fn sort_entities_for_display(entities: &mut [Entity]) {
         entities.sort_by(|a, b| {
             is_incidental_infra(a)
                 .cmp(&is_incidental_infra(b)) // false (relevant) sorts before true
@@ -174,6 +192,33 @@ impl super::Store {
                 })
                 .then_with(|| a.uid.cmp(&b.uid))
         });
+    }
+
+    /// Reconstruct a scan's entities from the durable event log.
+    ///
+    /// The real-time `events` table (written incrementally by the DB-writer
+    /// actor the instant a module emits) holds every `EntityFound` for the scan,
+    /// whereas the `entities` table is populated only at finalisation. This folds
+    /// the logged entities by UID through the SAME `Entity::merge` the engine
+    /// applies in-flight — each event is a distinct pre-merge emission, folded
+    /// exactly once, so corroboration sums correctly and is never double-counted.
+    /// The result is a faithful (if not yet finalise-enriched: no address-locality
+    /// consolidation, geo-family promotion, or cross-scan history) view of what
+    /// the scan found, ranked identically to a finalised read.
+    pub fn entities_from_events(&self, scan_id: &str) -> Result<Vec<Entity>> {
+        let mut map: HashMap<String, Entity> = HashMap::new();
+        for ev in self.events_for_scan(scan_id)? {
+            if let crate::core::event::EventKind::EntityFound { entity } = ev.kind {
+                match map.get_mut(&entity.uid) {
+                    Some(existing) => existing.merge(entity),
+                    None => {
+                        map.insert(entity.uid.clone(), entity);
+                    }
+                }
+            }
+        }
+        let mut entities: Vec<Entity> = map.into_values().collect();
+        Self::sort_entities_for_display(&mut entities);
         Ok(entities)
     }
 

@@ -115,6 +115,42 @@ use super::*;
     }
 
     #[test]
+    fn stealer_android_app_package_is_not_minted_as_domain() {
+        use serde_json::json;
+        // Real shape from a live oathnet stealer-search row (Android credential):
+        // the `domain` field is the reverse-DNS app PACKAGE, and the `url` is an
+        // `android://` scheme. Neither must become a `Domain` entity — a bogus
+        // `com.facebook.katana` domain previously expanded into a wasted
+        // HudsonRock `search-by-domain` call that pulled in strangers' records.
+        let item = json!({
+            "username": "alikareem",
+            "domain": ["com.facebook.katana"],
+            "url": "android://zQxb6hXv1MJiC1Yy==@com.facebook.katana/",
+            "password": "secret"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_stealer_entities(&item, "scan", "oathnet.org:test", &mut seen, &mut result);
+
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain),
+            "an Android app package must not be minted as a Domain entity"
+        );
+        // The credential itself (username@url) is still captured — the app
+        // context is preserved as a Credential, just not as a fake domain.
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Credential),
+            "the credential pivot is still emitted"
+        );
+    }
+
+    #[test]
     fn extract_breach_entities_non_target_row_tags_candidate() {
         use serde_json::json;
         // A row whose fields do NOT match the target: phone/person/country are
@@ -187,6 +223,213 @@ use super::*;
             domain.has_tag("candidate"),
             "stranger domain must be a candidate"
         );
+    }
+
+    #[test]
+    fn candidate_flood_is_capped_but_target_rows_always_survive() {
+        use serde_json::json;
+        // The exact "Ali Kareem" failure mode: a broad `full_name` search
+        // returned 100 pureincubation.com rows, NONE of them Ali. Each stranger
+        // row mints several quarantined `candidate` entities, which flooded a
+        // memory-constrained device with low-value noise. `extract_breach_page`
+        // SAMPLES the non-matching rows (cap = MAX_CANDIDATE_ROWS) instead of
+        // emitting every one — but a genuinely matching row is ALWAYS extracted
+        // in full, even when it lands after the cap is already exhausted.
+        let mut items: Vec<serde_json::Value> = (0..100)
+            .map(|i| {
+                json!({
+                    "email": format!("stranger{i}@pureincubation.com"),
+                    "username": format!("stranger{i}"),
+                    "source": "pureincubation.com"
+                })
+            })
+            .collect();
+        // The real target lands LAST, long after the candidate cap is spent.
+        items.push(json!({
+            "email": "ali.kareem.real@example.com",
+            "full_name": "Ali Kareem",
+            "source": "RealLeak"
+        }));
+
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        let match_ctx = TargetMatch::new("Ali Kareem");
+        let row_matches: Vec<bool> = items.iter().map(|i| match_ctx.matches(i)).collect();
+        extract_breach_page(
+            &items,
+            &row_matches,
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+
+        // The candidate flood is bounded: one candidate email per SAMPLED
+        // stranger row, never more than the cap (and far below the unbounded
+        // 100 the page would otherwise emit).
+        let candidate_emails = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email && e.has_tag("candidate"))
+            .count();
+        assert!(
+            candidate_emails <= MAX_CANDIDATE_ROWS,
+            "candidate emails ({candidate_emails}) must not exceed the cap ({MAX_CANDIDATE_ROWS})"
+        );
+        assert!(
+            candidate_emails < 100,
+            "the stranger flood must be capped, not passed through"
+        );
+
+        // The genuine target row SURVIVES at full confidence with no candidate
+        // tag, despite arriving after the cap was exhausted.
+        let target = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Person && e.value == "Ali Kareem")
+            .expect("the matching target row must always be extracted");
+        assert!(
+            !target.has_tag("candidate"),
+            "the target row must not be quarantined"
+        );
+        assert!(
+            target.confidence > crate::core::entity::CANDIDATE_CONF,
+            "the target row keeps full confidence, not candidate strength"
+        );
+    }
+
+    #[test]
+    fn breach_parent_is_honest_about_whether_the_subject_appears() {
+        use serde_json::json;
+        // A `full_name` page of pure strangers must NOT mint a 0.85
+        // breach-tagged subject node: the engine pre-seeds a subject anchor, so
+        // that parent would merge a false "breach hit" — plus a 50-stranger
+        // name/country dump — onto it. Zero matching rows => None.
+        let strangers: Vec<serde_json::Value> = (0..50)
+            .map(|i| {
+                json!({
+                    "full_name": format!("Stranger {i}"),
+                    "country": "ZZ",
+                    "source": "pureincubation.com"
+                })
+            })
+            .collect();
+        let target = Target::new(TargetKind::FullName, "Ali Kareem");
+        let mc = TargetMatch::new("Ali Kareem");
+        let none_matching: Vec<serde_json::Value> =
+            strangers.iter().filter(|i| mc.matches(i)).cloned().collect();
+        assert!(none_matching.is_empty(), "no stranger should match the subject");
+        assert!(
+            breach_parent_entity(&target, "scan", &none_matching, strangers.len()).is_none(),
+            "a zero-match page must not produce a breach parent"
+        );
+
+        // When the subject genuinely appears, the parent aggregates over the
+        // MATCHING rows only — its own country (AU), never the strangers' ZZ.
+        let mut page = strangers.clone();
+        page.push(json!({
+            "full_name": "Ali Kareem",
+            "country": "AU",
+            "gender": "M",
+            "source": "RealLeak"
+        }));
+        let matching: Vec<serde_json::Value> =
+            page.iter().filter(|i| mc.matches(i)).cloned().collect();
+        assert_eq!(matching.len(), 1, "exactly the subject's own row matches");
+        let parent = breach_parent_entity(&target, "scan", &matching, page.len())
+            .expect("subject present => parent emitted");
+        assert_eq!(parent.value, "Ali Kareem");
+        assert!((parent.confidence - 0.85).abs() < 1e-9);
+        assert!(parent.has_tag("breach") && parent.has_tag("oathnet-pro"));
+        let ev = parent.evidence.first().expect("parent evidence");
+        assert_eq!(ev.attributes.get("hits").map(String::as_str), Some("1"));
+        assert_eq!(
+            ev.attributes.get("records_returned").map(String::as_str),
+            Some("51")
+        );
+        assert_eq!(
+            ev.attributes.get("countries").map(String::as_str),
+            Some("AU"),
+            "aggregates the subject's matching rows only, not the strangers' ZZ"
+        );
+        assert_eq!(
+            ev.attributes.get("names").map(String::as_str),
+            Some("Ali Kareem")
+        );
+    }
+
+    #[test]
+    fn lastip_login_ip_is_extracted_as_geolocation_lead() {
+        use serde_json::json;
+        // snusbase-style records carry the login IP in `lastip` (no `ip` field).
+        // Reading `ip` alone dropped the subject's geolocation; a PUBLIC lastip
+        // must surface as an IpAddress geo lead.
+        let item = json!({
+            "username": "ali.kareem",
+            "lastip": "142.204.244.67",
+            "source": "snusbase"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "ali.kareem",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let ip = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::IpAddress)
+            .expect("lastip extracted as IpAddress");
+        assert_eq!(ip.value, "142.204.244.67");
+        assert!(ip.has_tag("geolocation-lead"));
+
+        // A PRIVATE last-login IP can't geolocate — dropped, never minted.
+        let private = json!({ "username": "ali.kareem", "lastip": "192.168.1.5", "source": "x" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&private, "ali.kareem", "scan", "k", &mut seen, &mut result);
+        assert!(
+            result.entities.iter().all(|e| e.kind != EntityKind::IpAddress),
+            "private lastip must not become a geo lead"
+        );
+    }
+
+    #[test]
+    fn composed_address_includes_postal_code_for_geocodability() {
+        use serde_json::json;
+        // A postcode-qualified address geocodes to the ZIP centroid, not the
+        // whole city. The breach record carries `postal_code`, so it belongs in
+        // the composed Address value, not only the evidence. A whitespace-only
+        // `address_street` (which `val_str` admits) must be trimmed away rather
+        // than leaving a leading `", "` gap in the composed value.
+        let item = json!({
+            "full_name": "Ali Kareem",
+            "address_street": "   ",
+            "city": "HAMPTON",
+            "state": "VA",
+            "postal_code": "23666",
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "Ali Kareem",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let addr = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Address && e.value.contains("HAMPTON"))
+            .expect("composed address entity");
+        assert_eq!(addr.value, "HAMPTON, VA, 23666");
     }
 
     #[test]
@@ -530,7 +773,7 @@ use super::*;
     }
 
     #[test]
-    fn stealer_url_becomes_url_and_domain_pivots() {
+    fn stealer_url_becomes_url_pivot_but_host_is_not_a_domain() {
         use serde_json::json;
         let item = json!({
             "username": "victim@example.com",
@@ -541,20 +784,22 @@ use super::*;
         let mut result = ModuleResult::new();
         extract_stealer_entities(&item, "scan", "oathnet.org:test", &mut seen, &mut result);
 
-        // The login URL is now a first-class Url pivot (was evidence-only).
+        // The login URL is a first-class Url pivot (was evidence-only).
         let url = result
             .entities
             .iter()
             .find(|e| e.kind == EntityKind::Url && e.value.contains("portal.acmebank.com/login"))
             .expect("stealer Url entity");
         assert!(url.has_tag("credential-url"));
-        // Its host is emitted as a Domain pivot.
+        // Its host is a third-party service the subject merely uses — it must NOT
+        // become a Domain entity (that minted subdomain noise + misdirected
+        // dns/cert/wayback expansion of the platform's own infrastructure).
         assert!(
-            result
+            !result
                 .entities
                 .iter()
                 .any(|e| e.kind == EntityKind::Domain && e.value == "portal.acmebank.com"),
-            "stealer url host Domain"
+            "stealer url host must not be minted as a Domain"
         );
     }
 
@@ -594,6 +839,33 @@ use super::*;
     }
 
     #[test]
+    fn identify_password_hash_reads_digest_with_appended_salt() {
+        // OathNet packs the salt onto the digest (real values from the Ali.kareem
+        // scan): space-separated, and behind a `,:` marker. Both must still be
+        // recognised as a fast, crackable MD5 — the strongest exposure signal,
+        // which the whole-string hex check used to miss entirely.
+        assert_eq!(
+            identify_password_hash("2f4370b7f7000f4f2a7cf96ec45f2858 _:=j[gpxgh[e<b!+k?2h(n0b'9pn=w"),
+            Some(("md5", true))
+        );
+        assert_eq!(
+            identify_password_hash("b3dd5393fc5e7f44fd4fd4c85490b414,:xpay"),
+            Some(("md5", true))
+        );
+        // A leading SHA-256 with an appended salt classifies by the 64-hex run.
+        assert_eq!(
+            identify_password_hash(&format!("{}:somesalt", "a".repeat(64))),
+            Some(("sha256", true))
+        );
+        // The remainder must begin at a separator: a token that merely starts with
+        // hex but runs straight into non-hex is not a digest.
+        assert_eq!(
+            identify_password_hash("2f4370b7f7000f4f2a7cf96ec45f2858XYZ"),
+            None
+        );
+    }
+
+    #[test]
     fn password_hash_entity_carries_hash_intel() {
         use serde_json::json;
         // A bcrypt digest with a salt → classified slow + salted.
@@ -621,6 +893,38 @@ use super::*;
         assert!(pw.has_tag("hash:bcrypt"), "tags: {:?}", pw.tags);
         assert!(pw.has_tag("crackable:slow"));
         assert!(pw.has_tag("salted"));
+    }
+
+    #[test]
+    fn password_hash_intel_handles_oathnet_appended_salt() {
+        use serde_json::json;
+        // OathNet's real format from the Ali.kareem scan (jefit row): the MD5 digest
+        // with the salt appended and no separate `salt` field. The appended salt
+        // used to leave the hash entirely unclassified; it must now read as a fast,
+        // crackable, salted MD5.
+        let item = json!({
+            "email": "ali.kareem95@gmail.com",
+            "password_hash": "2f4370b7f7000f4f2a7cf96ec45f2858 _:=j[gpxgh[e<b!+k?2h(n0b'9pn=w",
+            "source": "jefit.com"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "ali.kareem95@gmail.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let pw = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Password)
+            .expect("password entity");
+        assert!(pw.has_tag("hash:md5"), "tags: {:?}", pw.tags);
+        assert!(pw.has_tag("crackable:fast"));
+        assert!(pw.has_tag("salted"), "appended salt must set the salted tag");
     }
 
     #[test]
@@ -698,4 +1002,34 @@ use super::*;
                 "junk password '{junk}' must not be emitted"
             );
         }
+    }
+
+    #[test]
+    fn plaintext_password_drops_sentinel_and_recovers_email() {
+        use serde_json::json;
+        // A capture sentinel in the password slot must not become a Password.
+        let item = json!({"email": "subject@example.com", "password": "[fail]", "source": "DB"});
+        let mut seen = HashSet::new();
+        let mut r = ModuleResult::new();
+        extract_breach_entities(&item, "subject@example.com", "scan", "oathnet.org:t", &mut seen, &mut r);
+        assert!(
+            !r.entities.iter().any(|e| e.kind == EntityKind::Password && e.value == "[fail]"),
+            "a [fail] sentinel must not be minted as a Password"
+        );
+
+        // An email mis-stored in the password slot is recovered as an Email lead,
+        // never as a Password (which would forge a reused-secret link).
+        let item = json!({"username": "ali", "password": "ayilmazer486@gmail.com", "source": "Stealer"});
+        let mut seen = HashSet::new();
+        let mut r = ModuleResult::new();
+        extract_breach_entities(&item, "ali", "scan", "oathnet.org:t", &mut seen, &mut r);
+        let recovered = r.entities.iter()
+            .find(|e| e.value == "ayilmazer486@gmail.com")
+            .expect("email recovered from the password field");
+        assert_eq!(recovered.kind, EntityKind::Email);
+        assert!(recovered.has_tag("recovered-from-password"), "tags: {:?}", recovered.tags);
+        assert!(
+            !r.entities.iter().any(|e| e.kind == EntityKind::Password && e.value.contains('@')),
+            "an email must not also be minted as a Password"
+        );
     }

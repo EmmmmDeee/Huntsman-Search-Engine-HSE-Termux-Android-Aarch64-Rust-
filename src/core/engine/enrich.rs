@@ -232,6 +232,78 @@ pub(super) fn address_to_coords_pass(
     out
 }
 
+/// Tag a breach-derived entity with the **sector** of the source it leaked from
+/// (`sector:real-estate`, `sector:finance`, `sector:gaming`, …), classified from
+/// the breach source DB carried on its evidence.
+///
+/// This is the universal wiring for sector intelligence: a SINGLE admission-time
+/// pass connects EVERY breach pool to [`crate::util::breach_sector`], so a hit
+/// can be filtered by the sector of the breach regardless of which module
+/// surfaced it (the answer to "show me only the breached real-estate data" is
+/// the tag `sector:real-estate`, applied identically everywhere). Three source
+/// conventions are read: the fixed per-pool keys (`oathnet_pro` `dbname`,
+/// `see_know` `source`, HIBP `breach_name`/`breach_domain`, `dehashed`
+/// `database`), `osintcat`'s dynamic `breach_<name>` keys, and `xposed_or_not`'s
+/// comma-joined `breaches` list. EVERY distinct sector found is tagged (an
+/// account in breaches across several industries earns one `sector:` tag per
+/// industry), so a single-sector filter never misses a hit behind another
+/// sector. Idempotent (`Entity::tag` de-duplicates), and a no-op for non-breach
+/// entities and unclassifiable sources — never a guess.
+pub(super) fn tag_breach_sector(entity: &mut crate::core::entity::Entity) {
+    use crate::util::breach_sector::source_sector;
+    if !entity.has_tag(crate::core::tags::BREACH) {
+        return;
+    }
+    // Fixed per-pool keys whose VALUE is a clean source/DB name: oathnet
+    // `dbname`, see_know `source` (the canonical DB token) + `source_db` (its
+    // demoted secondary), HIBP `breach_name`/`breach_domain`, dehashed
+    // `database`/`database_name`.
+    const SOURCE_KEYS: &[&str] = &[
+        "dbname",
+        "source",
+        "breach_name",
+        "breach_domain",
+        "database",
+        "database_name",
+        "source_db",
+    ];
+    // Collect EVERY distinct sector across all breach-source signals: an account
+    // that surfaced in breaches from several industries earns a `sector:` tag for
+    // each, so a single-sector filter ("breached real-estate only") can never
+    // miss it behind another sector that merely classified first.
+    let mut sectors: Vec<&'static str> = Vec::new();
+    let note = |src: &str, sectors: &mut Vec<&'static str>| {
+        if let Some(sector) = source_sector(src)
+            && !sectors.contains(&sector)
+        {
+            sectors.push(sector);
+        }
+    };
+    for ev in &entity.evidence {
+        for (key, val) in &ev.attributes {
+            if SOURCE_KEYS.contains(&key.as_str()) {
+                note(val, &mut sectors);
+            }
+            // osintcat records each breach under a dynamic `breach_<name>` key
+            // (e.g. `breach_Zynga`); the leak name is the suffix. The fixed
+            // `breach_count`/`breach_date`/… suffixes simply never resolve, so no
+            // exclusion list is needed.
+            if let Some(name) = key.strip_prefix("breach_") {
+                note(name, &mut sectors);
+            }
+            // xposed_or_not joins every breach name into one `breaches` attr.
+            if key == "breaches" {
+                for name in val.split(", ") {
+                    note(name, &mut sectors);
+                }
+            }
+        }
+    }
+    for sector in sectors {
+        entity.tag(format!("sector:{sector}"));
+    }
+}
+
 /// Harvest any API keys embedded in an entity's value or evidence attributes into
 /// the global key pool (the force-multiplier loop: a key found in breach/leak data
 /// unlocks more modules). Best-effort and side-effecting only on the pool; the
@@ -282,8 +354,100 @@ pub(super) fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::entity::{Entity, EntityKind, Evidence};
     use crate::core::scan::{Target, TargetKind};
+
+    // ── tag_breach_sector (universal pool wiring) ─────────────────────────────
+
+    fn breach_entity(source_key: &str, source_val: &str) -> Entity {
+        let mut e = Entity::new(EntityKind::Email, "x@example.com", 0.7, "s");
+        e.tag(crate::core::tags::BREACH);
+        e.add_evidence(Evidence::new("pool", "breach row").with_attr(source_key, source_val));
+        e
+    }
+
+    #[test]
+    fn tag_breach_sector_wires_every_pool_via_its_own_source_key() {
+        // oathnet `dbname`, see_know `source`, HIBP `breach_domain` — one pass
+        // resolves the sector whichever key the pool used.
+        for (key, val) in [
+            ("dbname", "0123_HARCOURTS_AU_2M_REALESTATE_032021"),
+            ("source", "realestate.com.au"),
+            ("breach_domain", "ljhooker.com.au"),
+            ("database_name", "PropertyTree"),
+        ] {
+            let mut e = breach_entity(key, val);
+            tag_breach_sector(&mut e);
+            assert!(
+                e.has_tag("sector:real-estate"),
+                "{key}={val} should resolve real-estate; tags: {:?}",
+                e.tags
+            );
+        }
+        // The real GAMING source from the dump → sector:gaming.
+        let mut g = breach_entity("source", "0645_ZYNGA_COM_202M_GAMING_092019");
+        tag_breach_sector(&mut g);
+        assert!(g.has_tag("sector:gaming"));
+    }
+
+    #[test]
+    fn wires_the_bare_name_pools_osintcat_and_xposed() {
+        // osintcat records each breach under a dynamic `breach_<name>` key — the
+        // real `Zynga`/`Neopets` brands from the live graph now resolve.
+        let mut oc = Entity::new(EntityKind::Email, "x@example.com", 0.7, "s");
+        oc.tag(crate::core::tags::BREACH);
+        oc.add_evidence(
+            Evidence::new("osintcat", "breaches")
+                .with_attr("breach_count", "2")
+                .with_attr("breach_Neopets", "Breach: Neopets (2013-01-01)")
+                .with_attr("breach_SomeUnknownLeak", "Breach: SomeUnknownLeak (2020)"),
+        );
+        tag_breach_sector(&mut oc);
+        assert!(oc.has_tag("sector:gaming"), "tags: {:?}", oc.tags);
+
+        // xposed_or_not joins all breach names into one `breaches` attr; a single
+        // pass picks up EVERY distinct sector among them (multi-sector).
+        let mut xon = Entity::new(EntityKind::Email, "y@example.com", 0.7, "s");
+        xon.tag(crate::core::tags::BREACH);
+        xon.add_evidence(
+            Evidence::new("xposed_or_not", "breaches")
+                .with_attr("breaches", "Zynga, Tumblr, MyFitnessPal, Collection1"),
+        );
+        tag_breach_sector(&mut xon);
+        assert!(xon.has_tag("sector:gaming"));
+        assert!(xon.has_tag("sector:social"));
+        assert!(xon.has_tag("sector:health"));
+        // Collection1 is an unclassifiable combo list → no spurious tag for it.
+        assert_eq!(
+            xon.tags.iter().filter(|t| t.starts_with("sector:")).count(),
+            3
+        );
+    }
+
+    #[test]
+    fn tag_breach_sector_is_a_no_op_off_the_breach_path() {
+        // A non-breach entity is untouched even with a property-looking source.
+        let mut not_breach = Entity::new(EntityKind::Email, "x@example.com", 0.7, "s");
+        not_breach
+            .add_evidence(Evidence::new("search", "x").with_attr("source", "realestate.com.au"));
+        tag_breach_sector(&mut not_breach);
+        assert!(!not_breach.tags.iter().any(|t| t.starts_with("sector:")));
+
+        // A breach entity from an unclassifiable source (the real pureincubation
+        // broker) gets no sector tag — never a guess.
+        let mut unknown = breach_entity("dbname", "pureincubation.com");
+        tag_breach_sector(&mut unknown);
+        assert!(!unknown.tags.iter().any(|t| t.starts_with("sector:")));
+
+        // Idempotent: re-running doesn't duplicate the tag.
+        let mut re = breach_entity("dbname", "realestate.com.au");
+        tag_breach_sector(&mut re);
+        tag_breach_sector(&mut re);
+        assert_eq!(
+            re.tags.iter().filter(|t| t.starts_with("sector:")).count(),
+            1
+        );
+    }
 
     // ── enrich_geospatial ─────────────────────────────────────────────────────
 

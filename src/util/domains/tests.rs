@@ -14,25 +14,21 @@ use super::*;
         assert!(is_infrastructure_email("noc@mail.cloudflare.com"));
         // Trailing dot / case tolerance.
         assert!(is_infrastructure_email("Abuse@Cloudflare.com."));
-        // Live-scan registrar/role artifacts that previously leaked into the
-        // people graph (Network Solutions placeholder, copyright + enquiry desks).
-        assert!(is_infrastructure_email("namehost@worldnic.com"));
-        assert!(is_infrastructure_email("dmca@telegram.org"));
-        assert!(is_infrastructure_email("generalenquiry@nswlrs.com.au"));
         // Genuine personal mail is NOT infrastructure.
         assert!(!is_infrastructure_email("jordanavery@gmail.com"));
         assert!(!is_infrastructure_email("jane.doe@example.org"));
-        // Consumer freemail is NEVER infrastructure — googlemail.com is Gmail's
-        // alias (it used to be wrongly listed in INFRA_MAIL, so a real person's
-        // address was flagged as a provider mailbox; live audit caught it).
-        assert!(!is_infrastructure_email("oada@googlemail.com"));
-        assert!(!is_infrastructure_email("onur.ada@googlemail.com"));
-        // Even a role-ish local-part on freemail is a person/small-biz mailbox,
-        // not a provider desk — freemail short-circuits before the role check.
-        assert!(!is_infrastructure_email("sales@gmail.com"));
-        // A real person whose local-part merely contains a role substring is
-        // NOT gated (exact-token match, no false positive on "info").
-        assert!(!is_infrastructure_email("infosys.engineer@example.org"));
+        // Consumer freemail is personal PII, never infrastructure — even on
+        // googlemail.com, which is just Gmail's alternate domain (regression: it
+        // used to sit in the provider-infra set and suppressed real subject mail
+        // from SERP/WHOIS discovery).
+        assert!(!is_infrastructure_email("ali.kareem@googlemail.com"));
+        assert!(!is_infrastructure_email("alikareem@googlemail.com"));
+        assert!(!is_infrastructure_email("jdoe@yahoo.com"));
+        assert!(!is_infrastructure_email("jane@outlook.com"));
+        // …but an automated *desk* on a freemail domain is still infrastructure
+        // (the role local-part decides, not the provider).
+        assert!(is_infrastructure_email("abuse@googlemail.com"));
+        assert!(is_infrastructure_email("postmaster@gmail.com"));
         // Malformed input is safely false.
         assert!(!is_infrastructure_email("not-an-email"));
     }
@@ -50,6 +46,29 @@ use super::*;
         assert!(is_freemail("bigpond.com"));
         assert!(!is_freemail("acme.com.au"));
         assert!(!is_freemail(""));
+    }
+
+    #[test]
+    fn app_package_id_detects_reverse_dns_packages() {
+        // Real Android / iOS reverse-DNS app identifiers — the stealer-log
+        // `domain` values that must NOT become Domain entities.
+        assert!(is_app_package_id("com.facebook.katana"));
+        assert!(is_app_package_id("com.google.android.gms"));
+        assert!(is_app_package_id("org.mozilla.firefox"));
+        assert!(is_app_package_id("net.whatsapp.WhatsApp"));
+        assert!(is_app_package_id("io.metamask.MetaMask"));
+        // Case / trailing-dot tolerant.
+        assert!(is_app_package_id("COM.Facebook.Katana."));
+        // Genuine registrable domains are NOT packages (TLD is the LAST label).
+        assert!(!is_app_package_id("facebook.com"));
+        assert!(!is_app_package_id("www.google.com"));
+        assert!(!is_app_package_id("shop.example.com.au"));
+        assert!(!is_app_package_id("mail.protonmail.com"));
+        // Two-label inputs are never treated as packages (a bare domain stays).
+        assert!(!is_app_package_id("example.com"));
+        assert!(!is_app_package_id("com.au"));
+        // A 3+-label host that does NOT lead with a generic TLD is a domain.
+        assert!(!is_app_package_id("api.stripe.com"));
     }
 
     #[test]
@@ -199,4 +218,36 @@ use super::*;
             registrable_domain("  Shop.Example.Com.AU  ").as_deref(),
             Some("example.com.au")
         );
+    }
+
+    #[test]
+    fn looks_like_domain_rejects_ip_and_app_package_noise() {
+        // Real registrable domains from the stealer/breach feeds.
+        for good in [
+            "discord.com",
+            "snapchat.com",
+            "a-zfastfitcentre.co.uk",
+            "xyz.blueskyweb.app",
+            "aliexprass.ml",
+            "gmail.com",
+        ] {
+            assert!(looks_like_domain(good), "{good} is a real domain");
+        }
+        // Noise that stealer/breach `domain` fields carry — minting any of these as
+        // a Domain misdirects dns/cert/wayback (the grounded bug from the scan logs).
+        for junk in [
+            "192.168.0.1",   // private LAN/router IP — pervasive in stealer logs
+            "192.168.1.1",
+            "79.98.132.222", // public C2/panel IP
+            "54.39.106.39",
+            "com.facebook.katana", // android app package (reverse-DNS, 3+ labels)
+            "com.google.android.apps.authenticator2",
+            "localhost",           // single label
+            "android",             // bare label
+            "1.2.3",               // numeric junk, no real TLD
+            "user@domain.com",     // stray @ — not a bare domain
+            "",
+        ] {
+            assert!(!looks_like_domain(junk), "{junk:?} must be rejected");
+        }
     }

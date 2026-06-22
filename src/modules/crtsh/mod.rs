@@ -204,10 +204,7 @@ impl Module for CrtSh {
             return Err(Error::module(SRC, format!("HTTP {status}")));
         }
 
-        let entries: Vec<CrtEntry> = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
+        let entries: Vec<CrtEntry> = crate::util::http::json_decode(SRC, resp).await?;
 
         let mut result = ModuleResult::new();
         result.entities = build_entities(&entries, &target.value, &ctx.scan_id);

@@ -172,11 +172,7 @@ fn build_entities(data: &IpApiResp, ip: &str, scan_id: &str) -> Vec<Entity> {
     let region = data.region_name.as_deref().unwrap_or("");
     let country = data.country.as_deref().unwrap_or("");
     if !is_datacenter && !city.is_empty() && !country.is_empty() {
-        let addr = if !region.is_empty() {
-            format!("{city}, {region}, {country}")
-        } else {
-            format!("{city}, {country}")
-        };
+        let addr = crate::util::geo::compose_address(city, region, country);
         let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, scan_id);
         ae.tag("geoint");
         ae.add_evidence(Evidence::new(SRC, format!("IP address for {ip}")));
@@ -187,9 +183,7 @@ fn build_entities(data: &IpApiResp, ip: &str, scan_id: &str) -> Vec<Entity> {
     if let Some(asn) = &data.asn
         && !asn.is_empty()
     {
-        let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, scan_id);
-        ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
-        result.push(ae);
+        result.push(crate::util::geo::ip_asn_entity(asn, SRC, ip, scan_id));
     }
 
     // Emit reverse DNS domain if present in ISP name

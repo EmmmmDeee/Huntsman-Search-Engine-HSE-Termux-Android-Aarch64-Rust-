@@ -472,43 +472,19 @@ async fn scan_create_rejects_invalid_target() {
 // ── 5b. Live Signal Radar (button activation) ─────────────────────────────
 
 #[tokio::test]
-async fn radar_sweep_queues_a_live_sensor_scan() {
-    // The radar button (`POST /api/v1/radar`) takes NO target and is the sole
-    // activation path for the live device sensors. The handler reads only query
-    // params, so an empty body is correct.
+async fn radar_sweep_is_refused_until_live_radar_is_enabled() {
+    // The live-sensor radar is completely disabled by default and walled off from
+    // seed scans: the radar button (`POST /api/v1/radar`) is refused until the
+    // operator deliberately turns on `feature.live_radar` in the separate
+    // settings surface — never via a scan. (What a *permitted* sweep queues —
+    // sensors only, a non-target seed, `allow_live_sensors` set — is covered by
+    // the `radar_scan_spec_activates_only_the_live_sensors` unit test.)
     let app = test_app("radar");
-    let resp = app
-        .clone()
-        .oneshot(post_json("/api/v1/radar", ""))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), http::StatusCode::ACCEPTED);
-    let json = body_json(resp).await;
+    let resp = app.oneshot(post_json("/api/v1/radar", "")).await.unwrap();
     assert_eq!(
-        json["mode"].as_str(),
-        Some("radar"),
-        "radar response advertises its mode"
-    );
-    let sid = json["scan_id"]
-        .as_str()
-        .expect("radar returns a scan_id")
-        .to_string();
-    assert!(!sid.is_empty());
-
-    // The queued scan carries the live-sensor activation — `allow_live_sensors`
-    // set and a coordinate (non-target) seed — proving it is the radar, never an
-    // ordinary target scan.
-    let resp = app
-        .oneshot(get(&format!("/api/v1/scans/{sid}")))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let scan = body_json(resp).await;
-    assert_eq!(scan["target"]["kind"].as_str(), Some("coordinates"));
-    assert_eq!(
-        scan["options"]["allow_live_sensors"].as_bool(),
-        Some(true),
-        "radar scan MUST opt into live sensors — the only activation path"
+        resp.status(),
+        http::StatusCode::FORBIDDEN,
+        "live radar must be refused until manually enabled, separate from scans"
     );
 }
 
@@ -1557,9 +1533,6 @@ async fn spa_references_only_registered_api_endpoints() {
         }
         // A representative, parameter-free URL for this endpoint family.
         let url = match base.as_str() {
-            // Static ATT&CK capability assessment — scan-independent and
-            // parameter-free, so a bare GET exercises the registered route.
-            "attack" => "/api/v1/attack/capability.json".to_string(),
             "health" => "/api/v1/health".to_string(),
             "version" => "/api/v1/version".to_string(),
             "keys" => "/api/v1/keys/pool".to_string(),

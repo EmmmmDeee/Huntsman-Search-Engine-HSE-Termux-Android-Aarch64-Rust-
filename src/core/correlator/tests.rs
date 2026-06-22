@@ -3641,7 +3641,7 @@ mod all_eleven_classes {
             .map(|(src, lat, lon, conf)| au_coord(src, *lat, *lon, *conf))
             .collect();
         let corrs = correlate_entities(&ents, "s");
-        let fix = extract_au_location_fix(&corrs);
+        let fix = extract_au_location_fix(&corrs, &ents);
 
         assert!(fix.is_object(), "best_location must be a JSON object");
         assert_eq!(fix["state"], "NSW", "state must be NSW");
@@ -3779,7 +3779,7 @@ mod all_eleven_classes {
         ents.push(us);
 
         let corrs = correlate_entities(&ents, "s");
-        let fix = extract_au_location_fix(&corrs);
+        let fix = extract_au_location_fix(&corrs, &ents);
         assert_eq!(
             fix["state"], "NSW",
             "AU fix must survive a foreign sighting: {fix}"
@@ -3949,4 +3949,191 @@ fn au030_fires_for_three_source_geo_cluster() {
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-030");
     assert_eq!(r[0].severity, Severity::Medium);
+}
+
+#[test]
+fn au062_multipath_corroboration_fires_on_orthogonal_routes() {
+    use crate::core::relation::{Relation, RelationKind};
+    let mk_rel = |from: &Entity, to: &Entity, kind: RelationKind| {
+        Relation::new(from.uid.clone(), to.uid.clone(), kind, 0.8, "s")
+    };
+    // a↔b joined by two edge-disjoint routes through different source families:
+    // a—domain(infra)—b and a—org(identity_registry)—b.
+    let a = ent(EntityKind::Email, "a@x.com", 0.8, "s", false);
+    let b = ent(EntityKind::Username, "bob", 0.8, "s", false);
+    let d = ent(EntityKind::Domain, "x.com", 0.8, "dns_intel", false);
+    let o = ent(
+        EntityKind::Organisation,
+        "Acme Pty",
+        0.8,
+        "opencorporates",
+        false,
+    );
+    let rels = [
+        mk_rel(&a, &d, RelationKind::BelongsToDomain),
+        mk_rel(&d, &b, RelationKind::DerivedFrom),
+        mk_rel(&a, &o, RelationKind::RegisteredBy),
+        mk_rel(&o, &b, RelationKind::DerivedFrom),
+    ];
+    let out = rule_au_062_multipath_corroboration(&[a, b, d, o], &rels, "s", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-062");
+}
+
+#[test]
+fn au063_corroboration_gap_flags_a_lone_transitive_link() {
+    use crate::core::relation::{Relation, RelationKind};
+    let mk_rel = |from: &Entity, to: &Entity, kind: RelationKind| {
+        Relation::new(from.uid.clone(), to.uid.clone(), kind, 0.8, "s")
+    };
+    // a—domain(infra)—b: a single transitive route, no orthogonal corroboration.
+    let a = ent(EntityKind::Email, "a@x.com", 0.8, "s", false);
+    let b = ent(EntityKind::Username, "bob", 0.8, "s", false);
+    let d = ent(EntityKind::Domain, "x.com", 0.8, "dns_intel", false);
+    let rels = [
+        mk_rel(&a, &d, RelationKind::BelongsToDomain),
+        mk_rel(&d, &b, RelationKind::DerivedFrom),
+    ];
+    let out = rule_au_063_corroboration_gap(&[a, b, d], &rels, "s", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-063");
+}
+
+#[test]
+fn au064_generalized_template_fires_on_a_repeated_route() {
+    use crate::core::relation::{Relation, RelationKind};
+    let mk_rel = |from: &Entity, to: &Entity, kind: RelationKind| {
+        Relation::new(from.uid.clone(), to.uid.clone(), kind, 0.8, "s")
+    };
+    let mk = |kind: EntityKind, v: &str| Entity::new(kind, v, 0.8, "s");
+    // Two pairs share the route Email→belongs_to_domain→Domain→registered_by→Person.
+    let e1 = mk(EntityKind::Email, "a@x.com");
+    let d1 = mk(EntityKind::Domain, "x.com");
+    let p1 = mk(EntityKind::Person, "Alice");
+    let e2 = mk(EntityKind::Email, "b@y.com");
+    let d2 = mk(EntityKind::Domain, "y.com");
+    let p2 = mk(EntityKind::Person, "Bob");
+    let rels = [
+        mk_rel(&e1, &d1, RelationKind::BelongsToDomain),
+        mk_rel(&d1, &p1, RelationKind::RegisteredBy),
+        mk_rel(&e2, &d2, RelationKind::BelongsToDomain),
+        mk_rel(&d2, &p2, RelationKind::RegisteredBy),
+    ];
+    let out = rule_au_064_generalized_pathway_template(&[e1, d1, p1, e2, d2, p2], &rels, "s", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-064");
+}
+
+#[test]
+fn au067_resolved_identity_cluster_fires_on_three_linked_identities() {
+    use crate::core::relation::{Relation, RelationKind};
+    let mk_rel = |from: &Entity, to: &Entity, kind: RelationKind| {
+        Relation::new(from.uid.clone(), to.uid.clone(), kind, 0.8, "s")
+    };
+    let mk = |kind: EntityKind, v: &str| Entity::new(kind, v, 0.8, "s");
+    // Email, person and username all hang off one domain hub → a single
+    // transitive equivalence class of three identities (a resolved identity).
+    let email = mk(EntityKind::Email, "a@x.com");
+    let domain = mk(EntityKind::Domain, "x.com");
+    let person = mk(EntityKind::Person, "Alice");
+    let uname = mk(EntityKind::Username, "alice");
+    let rels = [
+        mk_rel(&email, &domain, RelationKind::BelongsToDomain),
+        mk_rel(&domain, &person, RelationKind::RegisteredBy),
+        mk_rel(&domain, &uname, RelationKind::DerivedFrom),
+    ];
+    let out = rule_au_067_resolved_identity_cluster(&[email, domain, person, uname], &rels, "s", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-067");
+}
+
+#[test]
+fn au068_anonymous_sim_fires_on_a_voip_tagged_phone() {
+    // hlr_cnam tags a VoIP/virtual-carrier phone `sim-voip`; AU-068 surfaces it.
+    let mut phone = Entity::new(EntityKind::Phone, "+61400000000", 0.85, "s");
+    phone.tag("sim-voip");
+    let out = rule_au_068_anonymous_sim(&[phone], "s", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-068");
+}
+
+#[test]
+fn au069_high_integrity_connection_fires_on_an_end_to_end_strong_route() {
+    use crate::core::relation::{Relation, RelationKind};
+    let edge = |from: &Entity, to: &Entity, c: f64| {
+        Relation::new(
+            from.uid.clone(),
+            to.uid.clone(),
+            RelationKind::DerivedFrom,
+            c,
+            "s",
+        )
+    };
+    let mk = |k: EntityKind, v: &str| Entity::new(k, v, 0.8, "s");
+    // email —0.9— person —0.9— username: every link on the route is strong.
+    let a = mk(EntityKind::Email, "a@x.com");
+    let mid = mk(EntityKind::Person, "Alice");
+    let b = mk(EntityKind::Username, "alice");
+    let rels = [edge(&a, &mid, 0.9), edge(&mid, &b, 0.9)];
+    let out = rule_au_069_high_integrity_connection(&[a, mid, b], &rels, "s", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-069");
+}
+
+#[test]
+fn au070_connection_broker_fires_on_a_hub_holding_three_identities() {
+    use crate::core::relation::{Relation, RelationKind};
+    let edge = |from: &Entity, to: &Entity| {
+        Relation::new(
+            from.uid.clone(),
+            to.uid.clone(),
+            RelationKind::DerivedFrom,
+            0.8,
+            "s",
+        )
+    };
+    let mk = |k: EntityKind, v: &str| Entity::new(k, v, 0.8, "s");
+    // A domain hub is the sole link between three identities — its removal would
+    // fragment all three, so it is a connection broker.
+    let hub = mk(EntityKind::Domain, "x.com");
+    let email = mk(EntityKind::Email, "a@x.com");
+    let uname = mk(EntityKind::Username, "alice");
+    let person = mk(EntityKind::Person, "Bob");
+    let rels = [edge(&email, &hub), edge(&uname, &hub), edge(&person, &hub)];
+    let out = rule_au_070_connection_broker(&[hub, email, uname, person], &rels, "s", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-070");
+}
+
+#[test]
+fn au071_robust_identity_cluster_fires_on_a_redundantly_bound_cluster() {
+    use crate::core::relation::{Relation, RelationKind};
+    let edge = |from: &Entity, to: &Entity| {
+        Relation::new(
+            from.uid.clone(),
+            to.uid.clone(),
+            RelationKind::DerivedFrom,
+            0.8,
+            "s",
+        )
+    };
+    let mk = |k: EntityKind, v: &str| Entity::new(k, v, 0.8, "s");
+    // Three identities each bound to TWO shared anchors — removing either leaves
+    // them connected via the other, so the cluster has no single point of failure.
+    let email = mk(EntityKind::Email, "a@x.com");
+    let uname = mk(EntityKind::Username, "alice");
+    let person = mk(EntityKind::Person, "Alice");
+    let d1 = mk(EntityKind::Domain, "x.com");
+    let d2 = mk(EntityKind::Domain, "y.com");
+    let rels = [
+        edge(&email, &d1),
+        edge(&uname, &d1),
+        edge(&person, &d1),
+        edge(&email, &d2),
+        edge(&uname, &d2),
+        edge(&person, &d2),
+    ];
+    let out = rule_au_071_robust_identity_cluster(&[email, uname, person, d1, d2], &rels, "s", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-071");
 }

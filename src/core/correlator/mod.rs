@@ -200,7 +200,22 @@ impl Correlator {
 type RuleFn = fn(&[Entity], &str, u64) -> Vec<Correlation>;
 
 mod rules;
-pub(crate) use rules::location::is_anchoring_geo_source;
+pub(crate) use rules::location::{au059_synergy_fix, is_anchoring_geo_source};
+// The shared multi-pathway corroboration detector — the AU-062 rule and the
+// engine's `promote_multipath_corroborated` pass both call this one finder, so
+// the correlation and the confidence boost can never drift apart. (The
+// `MultipathLink` it returns is `pub(in crate::core)`, so callers read its
+// fields by inference without naming the type.)
+pub(in crate::core) use rules::multipath::multipath_corroborated_links;
+// The shared single-pathway (fragile-link) detector — the AU-063 gap lead and
+// the engine's cross-scan gap resolution (AU-066) both call this one finder, so
+// the lead that flags a gap and the logic that fills it can't drift apart.
+pub(in crate::core) use rules::gap::single_route_identity_links;
+// Active gap-fill: the gap endpoints + the orthogonal families missing from each,
+// and the source-family classifier the engine maps those families to modules
+// with — so what AU-063 names, the engine actually pursues.
+pub(in crate::core) use rules::gap::gap_fill_probes;
+pub(in crate::core) use rules::source_family;
 use rules::*;
 
 const RULES: &[RuleFn] = &[
@@ -248,6 +263,7 @@ const RULES: &[RuleFn] = &[
     rule_au_044_shared_tracking_id,
     rule_au_045_multi_service_identity,
     rule_au_046_cross_platform_identity_resolution,
+    rule_au_068_anonymous_sim,
     rule_au_047_reused_secret_identity,
     rule_au_048_shared_public_key,
     rule_au_049_shared_address_association,
@@ -324,6 +340,13 @@ const RELATION_RULES: &[RelationRuleFn] = &[
     rule_au_031_malicious_adjacency,
     rule_au_032_colocation_cluster,
     rule_au_060_transitive_identity_closure,
+    rule_au_062_multipath_corroboration,
+    rule_au_063_corroboration_gap,
+    rule_au_064_generalized_pathway_template,
+    rule_au_067_resolved_identity_cluster,
+    rule_au_069_high_integrity_connection,
+    rule_au_070_connection_broker,
+    rule_au_071_robust_identity_cluster,
 ];
 
 /// Run every relation-aware rule over an already quarantine-filtered, confirmed

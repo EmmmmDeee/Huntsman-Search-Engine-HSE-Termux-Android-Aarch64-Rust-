@@ -11,10 +11,13 @@
 //!     dorks + LinkedIn/Facebook/X/Instagram/TikTok/GitHub/WhatsMyName/Epieos).
 //!
 //! Permutations are emitted as low-confidence *candidate* entities: they enrich
-//! the graph, feed the correlator's identity-surface rules, and are available
-//! for expansion — but sit below the default `min_expand_confidence` (0.50) so a
-//! `--depth` scan never auto-spends API budget on guesses. To pivot on them,
-//! lower the floor (e.g. `--min-expand-confidence 0.35 --depth 1`).
+//! the graph, feed the correlator's identity-surface rules, and are expanded by
+//! the comprehensive default scan (the `--min-expand-confidence` floor is 0.20, at
+//! or below the permutation confidences `EMAIL_CONF`/`PIVOT_CONF`), so every
+//! derived identifier gets a chance to surface unique data downstream. The
+//! correlator's own strict confidence floors keep the *resolved* findings precise
+//! regardless. Raise `--min-expand-confidence` for a tighter, cheaper sweep that
+//! skips the guesses.
 //!
 //! Priority 97 so derived identifiers exist during the seed round. Pure string
 //! transformation + one MD5 — no C deps, ideal for Termux/aarch64.

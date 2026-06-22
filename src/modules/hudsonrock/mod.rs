@@ -142,10 +142,20 @@ impl Module for HudsonRock {
                     "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-login?username={encoded}"
                 )
             }
-            TargetKind::Domain => format!(
-                "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-domain?domain={}",
-                urlencode(&target.value)
-            ),
+            TargetKind::Domain => {
+                // A reverse-DNS Android/iOS app package (`com.facebook.katana`)
+                // is not a web domain: `search-by-domain` for it returns other
+                // app users' stealer records (strangers), not the subject's. Such
+                // a value can still reach process() by recall of a Domain minted
+                // before the upstream gate existed, so skip the doomed query here.
+                if crate::util::domains::is_app_package_id(&target.value) {
+                    return Ok(ModuleResult::new());
+                }
+                format!(
+                    "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-domain?domain={}",
+                    urlencode(&target.value)
+                )
+            }
             _ => return Ok(ModuleResult::new()),
         };
 

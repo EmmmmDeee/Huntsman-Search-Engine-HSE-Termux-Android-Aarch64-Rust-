@@ -127,6 +127,25 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
         mark_quota_exhausted();
         return Ok(Value::Null);
     }
+    // A non-JSON response body — empty, a whitespace-only 200, an HTML error /
+    // challenge / gateway page, or a plain-text message — is "no results", not a
+    // module failure. Treat it as such (the same `Ok(Value::Null)` sentinel the
+    // auth/quota branches use, which `extract_items` reads as an empty result) so a
+    // normal empty response never errors the module or trips the circuit breaker.
+    // Without this, such a body surfaces as the serde "expected value at line 1
+    // column 1" error and cools the provider off after a perfectly ordinary
+    // no-match. A body that *looks* like JSON (starts with `{`/`[`) but won't parse
+    // is genuinely malformed → still surfaced as an error (real schema drift).
+    let trimmed = body.trim_start();
+    if !trimmed.starts_with('{') && !trimmed.starts_with('[') {
+        if !trimmed.is_empty() {
+            tracing::debug!(
+                preview = %body.chars().take(60).collect::<String>(),
+                "see_know: non-JSON response body treated as no results"
+            );
+        }
+        return Ok(Value::Null);
+    }
     serde_json::from_str(body).map_err(|e| Error::module("seek_now", e.to_string()))
 }
 

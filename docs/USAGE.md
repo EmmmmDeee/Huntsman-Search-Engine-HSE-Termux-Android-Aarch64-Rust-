@@ -20,7 +20,8 @@ hse set-key       Write a single HUNTSMAN_* key to ~/.huntsman.env
 hse provision     First-run setup (alias: setup)
 hse diagnostics   Run all health checks in one pass: doctor + selftest + engines (alias: diag, check)
 hse selftest      Run built-in self-checks
-hse radar         Local RF / sensor sweep (Termux)
+hse radar         Local RF / sensor sweep (Termux) — DISABLED by default;
+                  enable separately first: hse config feature.live_radar on
 hse oathnet-batch Generate a de-duplicated OathNet query plan from one seed
 hse config        View/set persistent capability toggles (e.g. engine.google off)
 hse doctor        Verify environment (DB, keys, Termux, modules)
@@ -259,6 +260,19 @@ Toggle keys:
   `--regional` flag (regional is already the per-scan default); turning
   `hse config feature.regional on` raises the *persistent* baseline so it survives
   even if the per-scan default ever changes.
+  `feature.live_radar` (default **off**) gates the live-sensor radar (`hse radar`
+  and `POST /api/v1/radar`) — the device's own WiFi/Bluetooth/cell/GPS/LAN sweep.
+  It is **completely disabled** until you turn it on here, deliberately and apart
+  from any scan: `hse config feature.live_radar on`. Seed-originated scans never
+  run the live sensors regardless of this toggle — the radar only ever surveys the
+  operator's own surroundings, never a seed target, so it is walled off from
+  target scanning by design.
+  `feature.gap_fill` (default **on**) gates active gap-fill: after expansion, when
+  a single-route (fragile) identity link is found, the engine runs the modules of
+  the missing orthogonal source family on the gap endpoints to actively pursue the
+  corroborating pathway (the AU-063 "logical requirement"). It is bounded (a small
+  probe cap, restricted to the missing-family modules, budget-gated, and honouring
+  passive/free/exclude). Turn it off for a leaner scan: `hse config feature.gap_fill off`.
 - `engine.<name>` — a single search engine (names from `hse engines`). Honoured
   by the search dispatch, the priority waterfall, and the liveness probe.
 - `module.<name>` — any registered module (names from `hse modules`). A disabled

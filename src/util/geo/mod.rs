@@ -50,8 +50,9 @@ pub fn parse_coords(value: &str) -> Result<(f64, f64)> {
 ///   - the `0.0, 0.0` "Null Island" sentinel that geo APIs and the Android
 ///     location stack emit when they have no real fix.
 ///
-/// Coarse IP/WiFi-geo providers (`ip_geo`, `ipinfo`, `ipapi`, `ip2location`,
-/// `ipquery`, `wigle`) want [`is_plausible_provider_coord`] instead: it
+/// Coarse IP/WiFi-geo providers (`ip_geo`, `ipinfo`, `ip_whois_geo`,
+/// `ip2location`, `ipquery`, `wigle`) want [`is_plausible_provider_coord`]
+/// instead: it
 /// builds on this but additionally drops the near-null-island placeholder
 /// band those APIs emit. Precise sources stay here so a real equatorial fix
 /// isn't discarded.
@@ -72,6 +73,31 @@ pub fn is_valid_coords(lat: f64, lon: f64) -> bool {
         && (-90.0..=90.0).contains(&lat)
         && (-180.0..=180.0).contains(&lon)
         && !(lat == 0.0 && lon == 0.0)
+}
+
+/// Compose a `"City, Region, Country"` address line from a geolocation record,
+/// dropping an empty middle component (region / state / province) so a record
+/// with only a city and country reads `"City, Country"` — never the
+/// `"City, , Country"` an empty join would leave. Several IP-geo providers
+/// expose the same three-tier shape under different field names, so this join
+/// lives here once rather than re-inlined per module.
+///
+/// The caller keeps its own presence guard: some sources emit an Address only
+/// when both city and country are present, others on a non-empty city alone.
+///
+/// ```
+/// use huntsman_search_engine::util::geo::compose_address;
+///
+/// assert_eq!(compose_address("Brisbane", "QLD", "AU"), "Brisbane, QLD, AU");
+/// assert_eq!(compose_address("Singapore", "", "SG"), "Singapore, SG");
+/// ```
+#[must_use]
+pub fn compose_address(city: &str, region: &str, country: &str) -> String {
+    if region.is_empty() {
+        format!("{city}, {country}")
+    } else {
+        format!("{city}, {region}, {country}")
+    }
 }
 
 /// True if a coordinate falls within the bounding box of the Australian
@@ -148,6 +174,18 @@ pub fn au_state_for_coords(lat: f64, lon: f64) -> Option<&'static str> {
     None
 }
 
+/// Tag `entity` with its Australian state and `country:AU` when `(lat, lon)`
+/// falls inside an AU state/territory; a no-op otherwise. Coordinate-emitting
+/// modules apply this exact AU-relevance pair (`au-state:{STATE}` + `country:AU`)
+/// to a fresh fix, so the lookup-and-tag lives here once rather than re-inlined
+/// per module. Uses [`au_state_for_coords`] for the offline classification.
+pub fn tag_au_state(entity: &mut crate::core::entity::Entity, lat: f64, lon: f64) {
+    if let Some(state) = au_state_for_coords(lat, lon) {
+        entity.tag(format!("au-state:{state}"));
+        entity.tag("country:AU");
+    }
+}
+
 /// Magnitude (in degrees) below which a *coarse* geolocation provider's
 /// coordinate component is treated as that provider's "no fix" placeholder
 /// rather than a real position. Several IP/WiFi-geo APIs return `0.0000` or a
@@ -155,7 +193,7 @@ pub fn au_state_for_coords(lat: f64, lon: f64) -> Option<&'static str> {
 pub const NULL_ISLAND_BAND: f64 = 0.01;
 
 /// Validity check for coordinates coming from a *coarse* IP/WiFi-geolocation
-/// provider (`ipinfo`, `ipapi`, `ip2location`, `ipquery`, `wigle`, …):
+/// provider (`ipinfo`, `ip_whois_geo`, `ip2location`, `ipquery`, `wigle`, …):
 /// [`is_valid_coords`] **and** clear of the near-null-island
 /// [`NULL_ISLAND_BAND`] those providers emit as an "unknown" placeholder (a
 /// `loc` like `0.0000,0.0000` or `0.001,0.001`). Both components must exceed
@@ -182,7 +220,7 @@ pub fn is_plausible_provider_coord(lat: f64, lon: f64) -> bool {
 }
 
 /// Build the coarse IP-geolocation `geoint` Coordinates entity shared by the
-/// IP-geo provider modules (`ipinfo` / `ipapi` / `ip2location` / `ipquery`):
+/// IP-geo provider modules (`ipinfo` / `ip2location` / `ipquery`):
 /// the plausibility gate ([`is_plausible_provider_coord`]), the 4-decimal
 /// (~11 m — honest for city-level IP geo, not GPS precision) formatting, and
 /// the `geoint` tag. Born identically whichever provider returned the fix, so
@@ -222,6 +260,46 @@ pub fn coarse_provider_coords(
         e.tag("off-region");
     }
     Some(e)
+}
+
+/// Build the `Asn` entity shared verbatim by every IP-geo provider module
+/// (`ip_geo` / `ipinfo` / `ip2location` / `ipquery` / `ip_whois_geo`).
+///
+/// Each of those modules emitted exactly
+/// `Entity::new(EntityKind::Asn, asn, 0.80, scan_id)` carrying a single
+/// `Evidence::new(src, format!("ASN for {ip}"))`, then optionally stamped one
+/// provider tag on top. That birth was byte-identical across all five, so it
+/// lives here once: the fixed `0.80` confidence and the `"ASN for {ip}"`
+/// evidence summary can no longer drift between the modules.
+///
+/// The two genuine per-module differences are kept at the call site, *not*
+/// pushed into the signature: the caller passes the already-formatted ASN
+/// string (some providers hand back `"AS1221"`, others a bare `"1221"` that the
+/// caller prefixes) and adds any provider tag (`"ipinfo"`, `"ip-whois"`, …)
+/// onto the returned entity. `src` is the calling module's own evidence source
+/// tag (its `SRC` constant). **Pure** (no IO).
+///
+/// ```
+/// use huntsman_search_engine::util::geo::ip_asn_entity;
+/// use huntsman_search_engine::core::entity::EntityKind;
+///
+/// let mut e = ip_asn_entity("AS1221", "ipinfo", "1.2.3.4", "scan-1");
+/// e.tag("ipinfo"); // caller layers its provider tag after
+/// assert_eq!(e.kind, EntityKind::Asn);
+/// assert_eq!(e.value, "AS1221");
+/// assert!((e.confidence - 0.80).abs() < 1e-9);
+/// assert_eq!(e.evidence[0].summary, "ASN for 1.2.3.4");
+/// assert!(e.has_tag("ipinfo"));
+/// ```
+#[must_use]
+pub fn ip_asn_entity(asn: &str, src: &str, ip: &str, scan_id: &str) -> crate::core::entity::Entity {
+    let mut e =
+        crate::core::entity::Entity::new(crate::core::entity::EntityKind::Asn, asn, 0.80, scan_id);
+    e.add_evidence(crate::core::entity::Evidence::new(
+        src,
+        format!("ASN for {ip}"),
+    ));
+    e
 }
 
 #[cfg(test)]

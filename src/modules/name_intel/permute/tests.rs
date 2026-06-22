@@ -26,6 +26,86 @@ use super::*;
     }
 
     #[test]
+    fn parse_reorders_last_comma_first() {
+        // Records / bibliographic "Last, First" order is the common failure case:
+        // without reordering, every derived handle, email and pivot is reversed.
+        let n = p("Kareem, Ali");
+        assert_eq!(n.first, "ali");
+        assert_eq!(n.last, "kareem");
+        assert_eq!(n.middle, None);
+        assert_eq!(n.display_full(), "Ali Kareem");
+        // The whole derivation now matches the natural-order spelling.
+        let u: Vec<_> = usernames(&n).into_iter().map(|h| h.handle).collect();
+        assert!(u.contains(&"ali.kareem".to_string()), "{u:?}");
+        assert!(!u.contains(&"kareem.ali".to_string()) || u.contains(&"ali.kareem".to_string()));
+        assert_eq!(parse("Kareem, Ali"), parse("Ali Kareem"));
+    }
+
+    #[test]
+    fn parse_reorders_last_comma_first_middle() {
+        // "Smith, John Michael" → John (first) Michael (middle) Smith (last).
+        let n = p("Smith, John Michael");
+        assert_eq!(n.first, "john");
+        assert_eq!(n.middle.as_deref(), Some("michael"));
+        assert_eq!(n.last, "smith");
+        assert_eq!(n.display_full(), "John Michael Smith");
+    }
+
+    #[test]
+    fn parse_comma_suffix_is_not_a_reorder() {
+        // A trailing title after the comma is a suffix, not a surname-first split.
+        let n = p("Ali Kareem, PhD");
+        assert_eq!(n.first, "ali");
+        assert_eq!(n.last, "kareem");
+        assert_eq!(n.display_full(), "Ali Kareem");
+    }
+
+    #[test]
+    fn parse_comma_strips_honorific_and_suffix_around_the_reorder() {
+        // Honorific on the surname side, generational suffix on the forename side.
+        assert_eq!(p("Dr. Kareem, Ali").display_full(), "Ali Kareem");
+        assert_eq!(p("Kareem, Ali Jr").display_full(), "Ali Kareem");
+        assert_eq!(p("Kareem, Dr Ali").display_full(), "Ali Kareem");
+    }
+
+    #[test]
+    fn parse_comma_reorder_preserves_hyphenated_surname() {
+        let n = p("Smith-Jones, Anna");
+        assert_eq!(n.first, "anna");
+        assert_eq!(n.last, "smithjones");
+        assert_eq!(
+            n.last_parts.as_deref(),
+            Some(["smith".to_string(), "jones".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn parse_strips_parenthetical_nickname_annotation() {
+        // "(Ali)" must not become a third name token (which made middle="kareem",
+        // last="ali"). Display names and records routinely carry such notes.
+        let n = p("Ali Kareem (Ali)");
+        assert_eq!(n.first, "ali");
+        assert_eq!(n.middle, None);
+        assert_eq!(n.last, "kareem");
+
+        // A bracketed maiden name is dropped from the handle tokens too.
+        let m = p("Jane Smith (Jones)");
+        assert_eq!(m.first, "jane");
+        assert_eq!(m.last, "smith");
+
+        // A bracketed year is still captured as the trailing number.
+        assert_eq!(p("Ali Kareem (1990)").number.as_deref(), Some("1990"));
+    }
+
+    #[test]
+    fn parse_handles_bracket_and_comma_together() {
+        // Records form: "Last, First (note)" → natural order, note dropped.
+        let n = p("Kareem, Ali (deceased)");
+        assert_eq!(n.first, "ali");
+        assert_eq!(n.last, "kareem");
+    }
+
+    #[test]
     fn single_token_is_rejected() {
         assert!(parse("Jordan").is_none());
         assert!(parse("   1987   ").is_none());
@@ -112,9 +192,12 @@ use super::*;
 
     #[test]
     fn handles_comma_separator() {
+        // "Last, First" records order resolves to natural order. (Previously the
+        // comma was a bare separator, so this kept "Meyers" as the first name and
+        // reversed the whole derivation — see parse_reorders_last_comma_first.)
         let n = p("Meyers, Jordan");
-        assert_eq!(n.first, "meyers");
-        assert_eq!(n.last, "jordan");
+        assert_eq!(n.first, "jordan");
+        assert_eq!(n.last, "meyers");
     }
 
     #[test]

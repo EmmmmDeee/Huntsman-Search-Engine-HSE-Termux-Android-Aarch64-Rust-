@@ -202,10 +202,7 @@ impl HackerTarget {
             return Err(Error::module(SRC, format!("HTTP {}", resp.status())));
         }
 
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| Error::module(SRC, e.to_string()))?;
+        let body = crate::util::http::read_text(SRC, resp).await?;
 
         if body.starts_with("error ") || body.contains("API count exceeded") {
             return Err(Error::module(SRC, body.trim().to_string()));

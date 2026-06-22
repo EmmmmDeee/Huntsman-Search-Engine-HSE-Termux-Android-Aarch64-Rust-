@@ -429,7 +429,7 @@ pub(in crate::core::correlator) fn rule_au_026_validated_address(
         "overpass",
         "ip_geo",
         "ip2location",
-        "ipapi",
+        "ip_whois_geo",
         "ipinfo",
         "opencorporates",
         "epieos",

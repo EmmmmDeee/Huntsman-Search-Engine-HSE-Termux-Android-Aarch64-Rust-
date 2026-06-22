@@ -16,7 +16,9 @@ use crate::core::scan::ScanOptions;
 /// burning the full minute for zero results on a phone: 45 s still clears every
 /// legitimately-long module's happy path (social_probe ~36 s, oathnet/overpass
 /// <30 s) while reclaiming the dead tail of hung mobile requests. Per-module
-/// `termux_timeout_ms()` can trim further below this.
+/// `termux_timeout_ms()` can trim further below this; a module whose happy path
+/// genuinely exceeds it (see_know's ~55 s `/search` server cap) opts out via
+/// [`Module::termux_timeout_cap_exempt`] rather than being killed every run.
 pub(super) const TERMUX_MODULE_TIMEOUT_CAP_MS: u64 = 45_000;
 
 pub(super) fn resolve_timeout(opts: &ScanOptions, module: &dyn Module) -> u64 {
@@ -31,14 +33,22 @@ pub(super) fn resolve_timeout(opts: &ScanOptions, module: &dyn Module) -> u64 {
         None if is_termux => module.termux_timeout_ms(),
         None => module.max_timeout_ms(),
     };
-    apply_termux_cap(base, user_set.is_some(), is_termux)
+    apply_termux_cap(
+        base,
+        user_set.is_some(),
+        is_termux,
+        module.termux_timeout_cap_exempt(),
+    )
 }
 
 /// Pure timeout-capping policy (split out so it's unit-testable without env):
 /// on Termux with no user override, clamp to [`TERMUX_MODULE_TIMEOUT_CAP_MS`];
-/// otherwise pass the resolved value through unchanged.
-fn apply_termux_cap(base_ms: u64, user_set: bool, is_termux: bool) -> u64 {
-    if is_termux && !user_set {
+/// otherwise pass the resolved value through unchanged. A `cap_exempt` module
+/// (its happy path legitimately exceeds the cap on a phone, e.g. see_know) is
+/// passed through so the engine waits for its real response instead of killing
+/// it — it stays bounded by its own `termux_timeout_ms`.
+fn apply_termux_cap(base_ms: u64, user_set: bool, is_termux: bool, cap_exempt: bool) -> u64 {
+    if is_termux && !user_set && !cap_exempt {
         base_ms.min(TERMUX_MODULE_TIMEOUT_CAP_MS)
     } else {
         base_ms

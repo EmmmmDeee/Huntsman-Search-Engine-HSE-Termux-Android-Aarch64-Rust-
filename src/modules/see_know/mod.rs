@@ -171,6 +171,16 @@ impl Module for SeekNow {
         80_000
     }
 
+    fn termux_timeout_cap_exempt(&self) -> bool {
+        // see_know's /search has a ~55s server-side cap and answers in 50–60s.
+        // The 45s Termux module cap would kill EVERY phone scan with a
+        // timeout-exit and zero data — silently wasting the operator's highest-
+        // priority paid source on the very platform HSE targets. As the operator
+        // explicitly enabled this key, keep its full (still-bounded) 80s budget
+        // on Termux too so the upstream response is actually awaited.
+        true
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = see_know::resolve_key(ctx.key_opt(see_know::KEY_ENV));
         // Stable origin fingerprint of the exact key in use — stamped onto every

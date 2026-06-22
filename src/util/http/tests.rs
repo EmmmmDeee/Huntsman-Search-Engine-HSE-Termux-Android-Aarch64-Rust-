@@ -69,6 +69,32 @@ async fn send_tagged_maps_transport_errors_to_the_module() {
 }
 
 #[tokio::test]
+async fn send_tagged_strips_url_so_secrets_and_pii_dont_leak() {
+    // A request URL carries the API key and the searched target in its query
+    // string; a transport error must not embed either, because it flows into the
+    // downloadable verbose log. The scheme error here keys the URL onto the error
+    // (no network needed), exactly the case `without_url()` must neutralise.
+    let err = reqwest::Client::new()
+        .get("ftp://example.invalid/v1/lookup?apikey=SECRETKEY123&q=target@example.com")
+        .send_tagged("test_mod")
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        !msg.contains("SECRETKEY123"),
+        "API key leaked into error: {msg}"
+    );
+    assert!(
+        !msg.contains("target@example.com"),
+        "target PII leaked into error: {msg}"
+    );
+    assert!(
+        msg.contains("test_mod"),
+        "error must still name the module: {msg}"
+    );
+}
+
+#[tokio::test]
 async fn keyed_ok_or_404_classifies_miss_success_and_error() {
     use std::collections::HashMap;
     let (bus, _rx) = tokio::sync::broadcast::channel(1);
@@ -414,4 +440,19 @@ fn redact_over_masks_bare_key_param_after_boundary() {
     let r = redact_credentials("?key=sortorder&page=2");
     assert!(r.contains("key=***"), "got: {r}");
     assert!(r.contains("page=2"), "got: {r}");
+}
+
+#[tokio::test]
+async fn read_text_reads_body_with_module_tagged_errors() {
+    // The text counterpart to json_decode: returns the body verbatim, and (unlike
+    // read_json_text) does not archive it. The cap/redaction core is shared with
+    // read_json_text, exercised by the json_decode tests.
+    let ok = reqwest::Response::from(
+        http::Response::builder()
+            .status(200)
+            .body("plain text body".to_string())
+            .unwrap(),
+    );
+    let body = super::fetch::read_text("test_mod", ok).await.unwrap();
+    assert_eq!(body, "plain text body");
 }

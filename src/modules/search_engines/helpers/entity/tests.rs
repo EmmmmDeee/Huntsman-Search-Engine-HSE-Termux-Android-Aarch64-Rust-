@@ -41,6 +41,44 @@ use super::*;
         );
     }
 
+    #[test]
+    fn extract_addresses_strips_bled_over_state_from_run_on_cities() {
+        // Real SERP bio that produced a bogus geolocation fix: a run-on listing
+        // two cities. `rfind` grabbed "California Dallas" as the city for Texas
+        // (the leading "California" is the STATE of "Los Angeles, California").
+        // The extractor must yield "Los Angeles, California" and "Dallas, Texas",
+        // never the phantom "California Dallas, Texas".
+        let addrs = extract_addresses_from_text(
+            "Graduate '13 Los Angeles, California Dallas, Texas Contact: x@y.com",
+        );
+        assert!(
+            addrs.iter().any(|a| a == "Los Angeles, California"),
+            "first address intact: {addrs:?}"
+        );
+        assert!(
+            addrs.iter().any(|a| a == "Dallas, Texas"),
+            "bled-over state stripped → real city recovered: {addrs:?}"
+        );
+        assert!(
+            !addrs.iter().any(|a| a.contains("California Dallas")),
+            "phantom 'California Dallas' city must not survive: {addrs:?}"
+        );
+
+        // Safety: a genuine city that BEGINS with its own state name keeps it —
+        // the bled token must DIFFER from the address's state to be stripped.
+        let vb = extract_addresses_from_text("Studio in Virginia Beach, Virginia today");
+        assert!(
+            vb.iter().any(|a| a == "Virginia Beach, Virginia"),
+            "state-named city preserved when token matches its state: {vb:?}"
+        );
+        // Safety: word-path cities (no preceding comma) are untouched.
+        let kc = extract_addresses_from_text("She lives in Kansas City, Missouri now");
+        assert!(
+            kc.iter().any(|a| a == "Kansas City, Missouri"),
+            "word-path state-named city preserved: {kc:?}"
+        );
+    }
+
     // ── score_username ───────────────────────────────────────────────────────
 
     #[test]

@@ -30,6 +30,17 @@ pub const CORROBORATION_DOUBT_DECAY: f64 = 0.65;
 /// Confidence decay constant per hour (γ = 0.85).
 pub const GAMMA_PER_HOUR: f64 = 0.85;
 
+/// Confidence ceiling a **quarantined** entity is capped to: a finding sourced
+/// from a record that does NOT match the scan target's identity (a stranger
+/// from a broad breach/stealer search) is preserved as a lead at this strength
+/// rather than discarded, but must never reach the correlated, default-view
+/// tier. Deliberately below [`Classification::PROBABLE_MIN`] (0.40) so a demoted
+/// entity always classifies as `Candidate`. The demotion itself is
+/// [`Entity::demote_to_candidate`] — one definition shared by every breach pool
+/// (the matcher that DECIDES a non-match lives separately in
+/// `util::target_match`, keeping "does this match?" orthogonal to "tier it").
+pub const CANDIDATE_CONF: f64 = 0.25;
+
 /// Evidence "sources" that are deterministic self-enrichment passes the engine
 /// runs over every entity of a given kind — NOT independent intelligence.
 ///
@@ -548,6 +559,19 @@ impl Entity {
         if !self.tags.contains(&t) {
             self.tags.push(t);
         }
+    }
+
+    /// Quarantine this entity into the `Candidate` tier: cap its confidence at
+    /// [`CANDIDATE_CONF`] and stamp the `candidate` tag. Idempotent (the tag
+    /// de-dupes; the cap is a `min`). The single, orthogonal definition of "this
+    /// finding doesn't identify the subject, keep it but out of the
+    /// full-confidence view" — applied by every breach/stealer pool
+    /// (`oathnet_pro`, `see_know`) to rows a `util::target_match::TargetMatch`
+    /// classified as a non-match, so the demotion semantics can never drift
+    /// between them.
+    pub fn demote_to_candidate(&mut self) {
+        self.confidence = self.confidence.min(CANDIDATE_CONF);
+        self.tag(crate::core::tags::CANDIDATE);
     }
 
     pub fn has_tag(&self, t: &str) -> bool {

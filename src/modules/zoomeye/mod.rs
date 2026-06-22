@@ -304,9 +304,7 @@ fn geo_asn(m: &Value) -> Option<String> {
         .as_i64()
         .map(|n| n.to_string())
         .or_else(|| node.as_str().map(str::to_string))?;
-    let digits = raw.trim().trim_start_matches("AS").trim();
-    (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
-        .then(|| format!("AS{digits}"))
+    crate::util::str_util::parse_asn(&raw).map(|n| format!("AS{n}"))
 }
 
 /// `portinfo.port[/service]` — the exposed service label.

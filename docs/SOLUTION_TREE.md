@@ -297,9 +297,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Unlockd (UK), SuicideGirls (global alt), Iwara (Japan/3D).
   *Closes / powers:* **C8** (webcam/fan/adult platform presence including non-English
   markets — the identity surface `username_search` left uncovered). ✅ delivered.
-- **`[ ]` SOL-CORR · Correlation & identity depth** → **C1** (Maltego-without-graphs):
+- **`[~]` SOL-CORR · Correlation & identity depth** → **C1** (Maltego-without-graphs):
   transitive identity closure (property-tested convergence), a text "Connections"
   dossier section, first-class timeline, AU-0xx rule-gap fill. Built on SOL-MERGE.
+  *Delivered (cycle 26):* the canonical `core::relation::identity_paths` primitive
+  (deterministic shortest typed paths between identity entities, order-independence
+  proptested) now backs **both** AU-060 transitive identity closure (refactored to
+  delegate — one finder, no drift) **and** a new dossier **CONNECTIONS** section
+  that renders the shortest typed thread between identities as text. *Remaining:*
+  first-class timeline output + further AU-0xx rule-gap fill.
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -464,7 +470,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-AU-MOAT | C3 | `[~]` |
 | SOL-NETINT | C4 | `[~]` |
 | SOL-CACHE-INTERSCAN | C9 | `[x]` |
-| SOL-CORR | C1 | `[ ]` |
+| SOL-CORR | C1 | `[~]` |
 | SOL-PERF-PUBLISH | C2 | `[ ]` |
 | SOL-GEOINT | C5 | `[~]` |
 | SOL-OFFENSIVE | C6 | `[ ]` |
@@ -1191,3 +1197,1007 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   **§4 gap analysis:** SOL-QUERY-PIPE row added to §4d. Gate green:
   fmt/clippy/doc clean, 3,097 lib tests (+5 new), 0 failures; `bash -n` +
   shellcheck clean. Paired: `PROBLEM_TREE` §8 cycle 25 — same commit.
+- **2026-06-20** — **Cycle 26 (P→S): SOL-CORR `[ ]`→`[~]` — C1 link analysis.**
+  Gap pick: SOL-CORR (→ C1, Maltego-without-graphs) was the highest-value open
+  capability solution. Delivered the canonical `core::relation::identity_paths`
+  primitive — deterministic shortest typed paths between identity entities
+  (undirected BFS, stable parallel-edge collapse, each pair computed once from its
+  smaller-UID endpoint; order-independence + well-formedness proptested; 8 unit
+  tests). Refactored AU-060 transitive identity closure to **delegate** to it (one
+  finder, no drift — its 8 firing tests pass unchanged), and added a dossier
+  **CONNECTIONS** section rendering the shortest typed thread between identities
+  with each chain's weakest-edge confidence. Two of SOL-CORR's four sub-items are
+  now done (transitive closure, property-tested + the text Connections section);
+  first-class timeline output + further AU-0xx rule-gap fill remain. **S→P
+  refresh:** leverage-map SOL-CORR `[~]`; C1 `[~]`. Gate green: fmt/clippy/doc
+  clean, 3,261 lib tests (+10), 0 failures. Paired: `PROBLEM_TREE` C1 + §8
+  cycle 26 — same commit.
+- **2026-06-20** — **Cycle 27 (refactor, Rule 4): relation-graph primitive
+  consolidation.** Extends cycle 26's SOL-CORR: extracted the shared
+  `undirected_adjacency` + `reachable_count` into `core::relation::graph` (renamed
+  from `path`) and routed `core::network::synthesize` through them, deleting its
+  private adjacency loop + `reachable_from` DFS. One canonical relation-graph
+  builder now backs the subject-network view, the AU-060 transitive rule, and the
+  dossier CONNECTIONS section — they cannot drift ("delegate, never copy").
+  Behaviour-preserving (network 4 + AU-060 8 + path determinism proptest
+  unchanged); +3 helper tests. Gate green: 3,264 lib tests. Paired:
+  `PROBLEM_TREE` §8 cycle 27 — same commit.
+- **2026-06-20** — **Cycle 28 (S→P, Rule 3 + C5): one structured AU-059 location
+  fix.** SOL-GEOINT / single-source: the API recovered `best_location`'s fields by
+  parsing AU-059's finding prose. Extracted `au059_synergy_fix(entities)` as the
+  sole computation — the rule formats its description *from* it and the API reads
+  its fields directly (no string-splitting; severity/rank still from the
+  correlation). Surfaced the best-estimate as the headline of the dossier GEO
+  INTELLIGENCE section. Behaviour-preserving (AU-059 rule tests + geo-synergy sims
+  + all-eleven-classes pass); replaced the prose-coupled API tests with a
+  corrupt-the-description robustness test. SOL-GEOINT stays `[~]` (point surfaced;
+  confidence-radius render open). Gate green: 3,264 lib tests. Paired:
+  `PROBLEM_TREE` §8 cycle 28 — same commit.
+- **2026-06-20** — **Cycle 29 (P→S, C5): confidence radius on the best location.**
+  Added `SynergyFix::radius_km` (robust median distance from the fix to the
+  contributing coords) so the best-estimate carries its uncertainty: dossier shows
+  `± R km`, the API export carries `radius_km`, the finding states `± R km`. C5's
+  "best-estimate with provenance + confidence radius" delivered end-to-end;
+  SOL-GEOINT stays `[~]` for its remaining legs. Gate green: 3,264 lib tests.
+  Paired: `PROBLEM_TREE` §8 cycle 29 — same commit.
+- **2026-06-20** — **Cycle 30 (SOL-CORR, C1): multi-pathway corroboration —
+  recursive-linking increment 1.** New `core::relation::disjoint_pathways`
+  primitive (greedy edge-disjoint shortest-path enumeration; deterministic,
+  order-independence tested) + new rule **AU-062**: two identities joined by ≥2
+  edge-disjoint pathways across ≥2 distinct OSINT source families are flagged as
+  multiply-corroborated (graph redundancy alone rejected). Reuses the AU-059
+  `source_family` orthogonality measure and the shared `core::relation::graph`
+  layer (so it can't drift from AU-060 or the dossier). Surfaced in the dossier
+  CONNECTIONS view. 62 rules. SOL-CORR advances (orthogonal-pathway corroboration
+  done; gap-fill + backward synthesis are increments 2–3). Gate green: 3,271 lib
+  tests (+7). Paired: `PROBLEM_TREE` §8 cycle 30 — same commit.
+- **2026-06-20** — **Cycle 31 (SOL-CORR, C1): gap analysis — recursive-linking
+  increment 2.** New rule **AU-063** (`rules/gap.rs`): the dual of AU-062 — for an
+  identity pair joined by a single transitive route, it reads the source families
+  the route rests on and names the strongest *orthogonal* families absent from it
+  (the logical requirement that would corroborate the link another way). Reuses
+  `disjoint_pathways` so "one route" means exactly what AU-062's "many routes"
+  does. Passive lead (a finding), the groundwork for active re-dispatch.
+  SOL-CORR advances (orthogonal corroboration + gap analysis done; backward
+  synthesis is increment 3). Gate green: 3,275 lib tests (+4). Paired:
+  `PROBLEM_TREE` §8 cycle 31 — same commit.
+- **2026-06-20** — **Cycle 32 (SOL-CORR, C1): backward synthesis — recursive-linking
+  increment 3.** New rule **AU-064** (`rules/template.rs`): abstracts each confirmed
+  identity connection into its direction-canonical pathway template
+  (`entity-kind →relation-kind→ …`) and fires when one template links ≥2 distinct
+  pairs — a route proven repeatable, a reusable means to reach that class of
+  connection. Pure core on `identity_paths`; the template is the unit cross-scan
+  persistence will store. SOL-CORR's in-scan link-analysis legs (orthogonal
+  corroboration, gap analysis, generalisation) are now done; the universal
+  cross-scan persistence (`raw_archive`-backed template store + correlate-time
+  consult) is the remaining storage+engine leg. Gate green: 3,279 lib tests (+4).
+  Paired: `PROBLEM_TREE` §8 cycle 32 — same commit.
+- **2026-06-20** — **Cycle 33 (SOL-CORR, C1): universal cross-scan learning loop —
+  recursive-linking increment 4.** Closes SOL-CORR's universal leg. (1) Shared
+  `connection_templates` generaliser (AU-064 delegates). (2) New `pathway_templates`
+  table + `StoragePort::{record_pathway_template, pathway_template_count}` (Store
+  impl in `storage/templates.rs`, schema snapshot updated) — cross-scan memory on
+  the SOL-CACHE-INTERSCAN pattern. (3) Engine finalise: generalise → credit a
+  route any prior scan proved as the engine-emitted **AU-065** cross-scan finding
+  → record every route. Consult-before-record means no self-crediting; AU-065 is
+  storage-dependent so it's engine-emitted (not a pure rule, 64-rule count
+  unchanged). **SOL-CORR `[~]`→`[x]`** — C1's link-analysis program (orthogonal
+  corroboration, gap analysis, backward synthesis, universal learning) is
+  delivered end-to-end. Gate green: 3,280 lib tests. Paired: `PROBLEM_TREE` §8
+  cycle 33 — same commit.
+- **2026-06-20** — **Cycle 34 (SOL-CORR, C1→C2): confirmed connections feed back
+  into the entities — the corroboration boost.** C1 made the *findings*; this
+  closes the loop so a confirmed connection measurably strengthens the scan's
+  OUTPUT. (1) Extracted the multi-pathway test AU-062 already ran into a shared
+  `correlator::multipath_corroborated_links` finder (≥2 edge-disjoint pathways
+  across ≥2 orthogonal source families); the rule now delegates to it — one
+  finder, no drift. (2) New engine finalise pass `promote_multipath_corroborated`
+  (in `engine/passes.rs`, mirroring `promote_geo_corroborated_family`): for each
+  corroborated link it tags both identity ENDPOINTS `multipath-corroborated` and
+  stamps a `multipath_corroboration` evidence record, lifting corroboration →
+  `c_effective` → classification band. Conduit intermediates are left alone; the
+  boost source classifies as `"other"` so it never feeds back to inflate AU-062;
+  idempotent via the tag. Best-effort, conditional re-persist (only when a link
+  fires). No new rule (64 unchanged) — this is an engine pass bridging the
+  correlator's proof to the entity confidence model. Gate green: 3,283 lib tests
+  (+1), 24 arch guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` §8 cycle 34 —
+  same commit.
+- **2026-06-20** — **Cycle 35 (SOL-CORR, C1→C2): cross-scan knowledge fills the
+  gap — AU-066.** The keystone joining gap analysis to universal learning: AU-063
+  *finds* a fragile single-route link and names the missing family; the cross-scan
+  `pathway_templates` store *holds* which route shapes are historically proven;
+  nothing yet used the latter to resolve the former. (1) Extracted AU-063's
+  detection into a shared `single_route_identity_links` finder (the rule delegates;
+  its 3 tests prove behaviour-preserving). (2) New engine-emitted **AU-066**
+  ("Cross-scan route fills single-pathway gap"): in the finalise template loop, a
+  fragile pair whose route shape is confirmed in **≥2 prior scans** (stricter than
+  AU-065's ≥1) is corroborated by the proven attribution method itself — the
+  accumulated cross-scan pathway is the orthogonal route the gap was missing.
+  (3) New `promote_cross_scan_corroborated` pass tags + evidence-stamps those
+  endpoints (`cross-scan-corroborated`), merged with the C2 multipath boost into a
+  single conditional re-persist. Conservative + sound: ≥2 gate, endpoints only,
+  unscored "other" evidence (no orthogonality feedback), idempotent. Engine-emitted
+  like AU-065, so the 64-rule count is unchanged and the rule-id guard is
+  satisfied (literal lives only in `engine/mod.rs`). The flywheel: every scan run
+  proves more routes, so more gaps auto-resolve in later scans. Gate green: 3,284
+  lib tests (+1), 24 arch guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` §8
+  cycle 35 — same commit.
+- **2026-06-20** — **Cycle 36 (SOL-CORR, C1 capstone): resolved identity clusters
+  — AU-067.** Mined from the uploaded `hse_modules` prototype's `IdentityClosure`
+  (union-find transitive clustering with weakest-link confidence), re-expressed
+  natively over `Entity`/`Relation` (no parallel type system). AU-060 reports a
+  transitive *pair*; nothing collapsed all such pairs into the *equivalence class*
+  — "{A,B,C,…} is one identity". (1) New shared graph primitive
+  `core::relation::resolve_identity_clusters` — union-find over the `identity_paths`
+  link set into connected components, each carrying the weakest-link confidence of
+  the links that bind it (one finder with AU-060/the dossier, no drift). (2) New
+  pure relation rule **AU-067** (`rules/resolved.rs`) delegating to it: fires for a
+  resolved identity of ≥3 members (a 2-member cluster is one pair = AU-060) above a
+  weakest-link floor, severity rising with size. Pure correlator rule → dispatched
+  in `RELATION_RULES`, firing test added; rule count 64→**65** (AU-001…064, 067;
+  AU-065/066 remain engine-emitted). The forward+backward "join seed data
+  intelligently" leg made concrete: orthogonal pairwise links resolved into one
+  identity. Gate green: 3,290 lib tests (+6), 24 arch guards, fmt/clippy/doc clean.
+  Paired: `PROBLEM_TREE` §8 cycle 36 — same commit.
+- **2026-06-20** — **Cycle 37 (prototype merge): SIM anonymity classification —
+  AU-068.** "Merge all pre-existing files": audited the uploaded `hse_modules`
+  prototype module-by-module; `sim_classify` was the one remaining genuinely
+  mergeable, design-compatible piece (deterministic, offline, consumes data the
+  tool already has). Ported the algorithm — not the code — natively: new pure
+  `util::sim_anonymity` classifier (carrier name → PrepaidMvno/VoipVirtual tier,
+  curated AU+US table, conservative — unknown/major carriers unclassified);
+  `hlr_cnam` applies it to the `network` carrier it resolves, tagging the phone
+  (`sim-voip`/`sim-mvno-prepaid`) + `sim_anonymity` evidence; new entity rule
+  **AU-068** surfaces a VoIP/MVNO phone as an attribution caveat (a burner is a
+  weak identity anchor — the linker weighs phone-based links accordingly).
+  `util::sim_anonymity` added to the `core_does_not_import_util_directly` allowlist
+  (pure leaf util, same category as `surnames`/`abn`). Rule count 65→**66**
+  (AU-068 pure entity rule). The other prototype modules remain non-mergeable
+  (uncollectable data / new EntityKinds+API / no-LLM invariant) — documented, not
+  stubbed. Gate green: 3,296 lib tests (+6), 24 arch guards, fmt/clippy/doc clean.
+  Paired: `PROBLEM_TREE` §8 cycle 37 — same commit.
+- **2026-06-20** — **Cycle 38 (refactor, DRY): one definition for the recursive-
+  linking primitives.** "REFACTOR and merge pre-existing files" applied to the
+  link-analysis family's own duplication. Two helpers, each previously copy-pasted,
+  are now single definitions: `core::relation::identity_uids` (sorted+deduped
+  identity-endpoint UIDs — was inline in `identity_paths`, `multipath_corroborated_links`,
+  `single_route_identity_links`) and `rules::source_families` (an entity's evidence
+  source-family set — was the duplicated `families_of` body in `multipath`/`gap`).
+  Behaviour-preserving: the full AU-060/062/063/064/067 suite + graph tests pass
+  unchanged, proving no drift. Net −~40 lines, and the "one finder, no drift"
+  invariant now covers the endpoint-enumeration and family-set steps too. No rule
+  or behaviour change (count stays 66). Gate green: 3,296 lib tests, 24 arch
+  guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` §8 cycle 38 — same commit.
+- **2026-06-20** — **Cycle 39 (AU-067 end-to-end): RESOLVED IDENTITIES in the
+  dossier.** The AU-067 capstone existed as a correlation but the resolved
+  equivalence classes weren't surfaced in the human report. Added
+  `print_resolved_identities` to the CLI scan dossier — a "distinct identifiers that
+  are one person" section beside CONNECTIONS, rendering each ≥3-member cluster from
+  the shared `resolve_identity_clusters` primitive (so the grouping can't disagree
+  with the pairwise threads or the AU-067 finding). Presentation completion of a
+  feature; deterministic, reuses the tested primitive, no behaviour change. Gate
+  green: 3,296 lib tests, 24 arch guards, fmt/clippy/doc clean. Paired:
+  `PROBLEM_TREE` §8 cycle 39 — same commit.
+- **2026-06-20** — **Cycle 40 (C1, active gap-fill): the engine now PURSUES the
+  pathway AU-063 names.** Closes the last open leg of the recursive-linking spec —
+  "fill in the logical requirements that would have found the link from another
+  pathway." AU-063 only *named* the missing orthogonal family; now the engine acts
+  on it. (1) Shared selector `gap_fill_probes` (in `rules/gap.rs`, reusing
+  `single_route_identity_links` + the AU-063 absent-family logic) → each fragile-
+  link identity endpoint + the families missing from it. (2) New engine pass
+  `run_gap_fill` after expansion: for each probe it runs ONLY the missing-family
+  modules on the gap endpoint (classified via the now `pub(in crate::core)`
+  `source_family`), seeking corroboration of an already-confirmed link rather than
+  a stranger's footprint. Reuses the tested `dispatch_target`; bounded (≤8 probes,
+  budget/cancel-gated, honours passive/free/exclude, skips already-expanded
+  endpoints) and **toggle-gated** `feature.gap_fill` (default ON). New entities
+  flow into finalise normally. The selection logic is pure + unit-tested; the
+  dispatch reuses existing tested machinery. No rule change (count 66). Gate green:
+  3,298 lib tests (+2), 24 arch guards, fmt/clippy/doc clean. **SOL-CORR's full
+  arc — orthogonal corroboration, gap analysis, backward synthesis, universal
+  learning, cross-scan gap-fill, AND now active in-scan gap-fill — is delivered.**
+  Paired: `PROBLEM_TREE` §8 cycle 40 — same commit.
+- **2026-06-20** — **Cycle 41 (graph traversal, connection quality): max-bottleneck
+  "strongest path" + AU-069.** A directive-named "superior graph traversal" gap:
+  `identity_paths` only finds the *shortest* route, never the *most trustworthy*
+  one. New `core::relation::strongest_path` finds the **widest path** (maximise the
+  minimum edge confidence) via a deterministic, hop-capped Bellman-Ford relaxation
+  with predecessor reconstruction — the route reliable at every hop, which may be
+  longer than the shortest. New relation rule **AU-069** ("High-integrity
+  connection") fires when the strongest route between two identities (≥2 hops) has
+  every link ≥ 0.70 (High at ≥ 0.85) — a third quality lens complementing AU-060
+  (reachability, shortest route) and AU-062 (redundancy, independent routes): this
+  one is INTEGRITY (a single route trustworthy end to end). Pure + fully
+  unit-tested (incl. the strongest≠shortest case). Rule count 66→**67**. Gate
+  green: 3,304 lib tests (+6), 24 arch guards, fmt/clippy/doc clean. Paired:
+  `PROBLEM_TREE` §8 cycle 41 — same commit.
+- **2026-06-20** — **Cycle 42 (efficiency + DRY refactor): build the traversal
+  graph once.** The per-pair relation rules each rebuilt and re-sorted the whole
+  adjacency on EVERY pair — AU-062/AU-063 via `disjoint_pathways`, AU-069 via
+  `strongest_path` — an O(N²) graph-build cost on the correlator's hot path that
+  grows with identity count. Factored the build+sort into one
+  `core::relation::sorted_confined_adjacency`, and split the per-pair finders into
+  public (build + delegate) and **`*_in`** variants (`disjoint_pathways_in`,
+  `strongest_path_in`) that take a prebuilt adjacency. Each rule (and the dossier
+  CONNECTIONS view) now builds the graph ONCE and reuses it across all pairs:
+  O(N²) graph builds → O(N). The read-only widest-path search reuses the shared
+  adjacency directly; the mutating disjoint search clones it per call (still far
+  cheaper than rebuild+resort). Also removes the build+sort duplicated across the
+  three finders (one definition). Behaviour-preserving: the AU-060/062/063/069
+  suite + the `disjoint_pathways`/`strongest_path` graph tests + the
+  order-independence proptests all pass unchanged. No rule change (count 67). Gate
+  green: 3,304 lib tests, 24 arch guards, fmt/clippy/doc clean. Paired:
+  `PROBLEM_TREE` §8 cycle 42 — same commit.
+- **2026-06-20** — **Cycle 43 (empirical validation finds + fixes a real bug;
+  connection-quality surfacing).** Added property tests for `strongest_path` (the
+  AU-069 widest-path primitive): a max-bottleneck **dominance** invariant (the
+  widest route is never weaker than the shortest) and an undirected **symmetry**
+  invariant. The symmetry proptest immediately FAILED — exposing a genuine bug:
+  the single-array relaxation let an intermediate's hop count grow when its
+  bottleneck improved (preferring a wider-but-longer route), which could push the
+  destination past the hop budget → **asymmetric reachability**. Replaced it with a
+  correct two-phase algorithm: (1) a hop-bounded max-min Bellman-Ford for the
+  bottleneck VALUE (relaxing from each round's snapshot, honouring ≤k edges and
+  order-independent), then (2) a BFS over the ≥bottleneck subgraph to reconstruct
+  the shortest route achieving it. Both proptests + the existing unit tests now
+  pass; the failing seed is checked in (`proptest-regressions/`). Also surfaced the
+  **best-achievable reliability** (widest-route bottleneck) in the dossier
+  CONNECTIONS view when it beats the shortest path's weakest edge. This is the
+  directive's "empirically validated improvement" loop in action — a property test
+  found a defect a unit test missed, and the fix is locked in. No rule change
+  (count 67). Gate green: 3,306 lib tests (+2 proptests), 24 arch guards,
+  fmt/clippy/doc clean. Paired: `PROBLEM_TREE` §8 cycle 43 — same commit.
+- **2026-06-20** — **Cycle 44 (correctness from real data): a confidence floor at
+  the identity-cluster union.** Running the engine on the common name "Ali Kareem"
+  (Australia) — exactly the "test on numerous seeds" the directive calls for —
+  surfaced a real fusion bug: `core::relation::resolve_identity_clusters` ran
+  union-find over *every* `identity_paths` link with no confidence floor, so one
+  weak edge fused unrelated namesakes into a single phantom identity (live: 59
+  distinct people merged at weakest-link 0.17 in AU-067 + the dossier). Solution: a
+  `min_confidence` parameter that gates the union itself — a link below the floor is
+  simply absent from the equivalence relation, so a weak bridge between two strong
+  sub-identities can no longer collapse them, and (because the floor gates the
+  binding links) every returned cluster's weakest-link confidence is itself ≥ the
+  floor. AU-067 and the dossier RESOLVED IDENTITIES view both pass the Probable
+  floor (0.50), keeping the cluster-level conclusion consistent with the pairwise
+  links and AU-060's own threshold (one finder, no drift). The change is universal
+  and self-reinforcing: every common-name scan now resists weak-link fusion, and the
+  tighter clusters feed cleaner downstream corroboration. Validated on the exact
+  failing scan (`b5ef6f41…`): floor 0.0 → a 59-member cluster @ 0.17; floor 0.50 →
+  it vanishes (largest genuine cluster 2 @ 0.90), i.e. zero phantom identities. New
+  graph unit test pins the behaviour (0.17 bridge fuses at 0.0, stays split at
+  0.50). No rule change (count 67). Gate green: 3,307 lib tests (+1), 24 arch
+  guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` §8 cycle 44 — same commit.
+- **2026-06-20** — **Cycle 45 (graph traversal, node criticality): articulation
+  points + AU-070 connection broker.** The pathway lenses answered pair- and
+  cluster-level questions but never *which node is critical*. New primitive
+  `core::relation::connection_brokers` finds the graph's **articulation points** in
+  identity terms — the nodes whose removal disconnects identities otherwise linked
+  only through them — by an obviously-correct remove-and-relabel (compare the
+  identity partition with and without each node) rather than fragile low-link
+  bookkeeping; it reuses the shared `sorted_confined_adjacency`, so it can't drift
+  from the routes the dossier renders. New rule **AU-070 "Connection broker"** fires
+  for a node that solely binds ≥3 identities (a 2-identity bridge stays AU-063's
+  fragile-pair job), severity rising with fan-out. This is the fourth connection
+  lens — REACHABILITY (AU-060), REDUNDANCY (AU-062), INTEGRITY (AU-069), and now
+  CRITICALITY (AU-070) — and the most actionable: the broker is the analyst's prime
+  pivot and the highest-leverage gap-fill target, since corroborating it hardens
+  every connection that runs through it. Pure + fully unit-tested (hub brokers three;
+  redundant triangle brokers none; 2-identity bridge below the floor). Compounds —
+  every scan surfaces its linchpin as a prime cross-scan pivot. Rule count 67→**68**.
+  Gate green: 3,313 lib tests (+6), 24 arch guards, fmt/clippy/doc clean. Paired:
+  `PROBLEM_TREE` §8 cycle 45 — same commit.
+- **2026-06-20** — **Cycle 46 (broker confidence floor + dossier surfacing).**
+  Real-data validation of cycle 45 against the "Ali Kareem" scan showed the
+  structural `connection_brokers` re-surfacing the namesake blob (two person nodes
+  each "brokering" 58 strangers over 0.17 links) — the same weak-link failure cycle
+  44 fixed for clustering, one layer down. Added a `min_confidence` floor to
+  `connection_brokers` (and its `component_labels` BFS): only edges ≥ floor *bind*
+  identities, mirroring `resolve_identity_clusters`. AU-070 and the dossier pass the
+  Probable floor (0.50), so the broker view, the resolved-identity view, and AU-060's
+  threshold all agree (one floor, no drift). Validated on the exact data: 2 brokers
+  of 58 at floor 0.0 → **0** at 0.50. Also added a first-class **CONNECTION BROKERS**
+  dossier section reusing the same floored primitive, so the load-bearing nodes —
+  the prime pivots to corroborate — are delivered as an analytic conclusion next to
+  CONNECTIONS and RESOLVED IDENTITIES, not left in the raw correlation list. New unit
+  test pins the floor (a hub on 0.17 links: a broker at 0.0, none at 0.50).
+  Compounds: every common-name scan now reports only trustworthy brokers. No rule
+  change (count 68). Gate green: 3,314 lib tests (+1), 24 arch guards, fmt/clippy/doc
+  clean. Paired: `PROBLEM_TREE` §8 cycle 46 — same commit.
+- **2026-06-20** — **Cycle 47 (freemail guard in `is_infrastructure_email`).** The
+  self-audit empirically surfaced an accuracy/coverage defect: `googlemail.com` sat
+  in both `FREEMAIL` and the `INFRA_MAIL` provider set, so every personal mailbox on
+  Gmail's alternate domain was classified as infrastructure — and that predicate
+  *gates emission* in `search_engines`/`whois`/`ripestat`, silently dropping real
+  subject emails. Solution: a freemail short-circuit in
+  `util::domains::is_infrastructure_email` — a consumer freemail address is personal
+  PII, never provider infrastructure, so only its role/automation desks (the
+  `is_role_localpart` branch) are gated; the contradictory `googlemail.com` infra
+  entry is removed. One small guard eliminates the whole freemail/infra-overlap class
+  (gmail, googlemail, yahoo, outlook, …) across all four call-sites at once. Measured
+  on the live scan: audit grade 62→**92**/100, both false-positive findings gone.
+  Compounds: every future scan retains consumer-freemail subject mail it used to
+  suppress. Regression assertions added (googlemail/yahoo/outlook personal = not
+  infra; `abuse@googlemail.com` = still infra). No rule change (count 68). Gate
+  green: 3,314 lib tests, 24 arch guards, fmt/clippy/doc clean. Paired:
+  `PROBLEM_TREE` §8 cycle 47 — same commit.
+- **2026-06-20** — **Cycle 48 (comprehensive product defaults).** To give every
+  module a chance at a target (operator directive: "execute every single file and
+  module… every file should be given a chance"), the `hse scan` defaults become
+  comprehensive: `DEFAULT_SCAN_DEPTH = MAX_DEPTH` (3) so the Email→Domain→IP chain
+  reaches the infrastructure tier, and the CLI `--min-expand-confidence` default
+  drops 0.50 → 0.20 so name-derived identifier permutations (emitted at 0.20–0.30)
+  expand instead of starving the pipeline after the seed round. The split is
+  deliberate: **recall** widens (expansion floor 0.20) while **precision** is
+  unchanged (the library default stays 0.50 for API/tests; the AU-067/070 correlation
+  floors stay 0.50) — *expand liberally, correlate strictly*. `--recursive`'s
+  `.min(0.40)` clamp means it now tracks the 0.20 default rather than raising it.
+  Operators wanting a faster, shallower sweep set `--depth`/`--min-expand-confidence`
+  explicitly. Measured: a completed free-only name scan now exercises 59 distinct
+  modules (37 yielding data) — ≈4× the prior ~15; key-gated/paid tiers stack on top
+  with keys. Compounds: every
+  future scan, on any seed, now drives the full reachable module set. No rule change
+  (count 68). Gate green: 3,314 lib tests, 24 arch guards, fmt/clippy/doc clean.
+  Paired: `PROBLEM_TREE` §8 cycle 48 — same commit.
+- **2026-06-20** — **Cycle 49 (MITRE consolidated into the modules).** Removed the
+  entire separate MITRE ATT&CK reporting layer — SPA panels, four API endpoints, the
+  `navigator` export, the CLI per-scan coverage block, the `hse modules` aggregate
+  summary, the full-dossier ATT&CK section, and the `Assessment`/`CoverageDiff`/
+  `navigator_layer`/`coverage`/`capability_assessment`/`reconnaissance_coverage`
+  machinery (777 deletions, 14 files) — because it was a side-report that never
+  shaped collection. The MITRE knowledge is retained where it belongs: as inline
+  per-module metadata. Each `Module` still declares its Reconnaissance technique(s)
+  via `attack_techniques()` over the `RECONNAISSANCE` catalogue +
+  `techniques_for_category`, the technique↔module reverse index is kept, and the
+  architecture guard still enforces the mapping — so "which collection technique
+  does this module implement" is answerable from the module itself, with no separate
+  tab to maintain or diverge. Behaviour-preserving for scans (pure surface removal);
+  the gate proves nothing else moved. No rule change (count 68). Gate green: 3,305
+  lib tests (−9 removed-surface tests), 24 arch guards, fmt/clippy/doc clean. Paired:
+  `PROBLEM_TREE` §8 cycle 49 — same commit.
+- **2026-06-20** — **Cycle 50 (`DEFAULT_MAX_ENTITIES` — comprehensive yet bounded).**
+  Completes cycle 48: a new product-default entity ceiling (`DEFAULT_MAX_ENTITIES =
+  2500`) applied at the CLI boundary when `--max-entities` is omitted, so the deep
+  (MAX_DEPTH) low-floor (0.20) default sweep stays thorough but can never fan the
+  frontier out far enough to OOM a 4 GB Termux device. Mirrors the cycle-48 pattern:
+  the library/API default stays `None` (uncapped, deterministic); `--max-entities`
+  and profile overlays override. The expansion loop already honours the cap
+  (`budget_check` → `StopReason::MaxEntities`), so this is purely a safer default —
+  maximising discovery while keeping the on-device resource guarantee the Termux
+  target demands. No rule change (count 68). Gate green: 3,305 lib tests, 24 arch
+  guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` §8 cycle 50 — same commit.
+- **2026-06-20** — **Cycle 51 (module consolidation: −2 redundant modules).**
+  Audited all 127 modules for consolidation; kept genuinely-distinct providers
+  separate (provider diversity is corroboration, not debt) and merged the two true
+  redundancies. (1) Deleted `ipapi` — a misnamed duplicate of `ip_whois_geo` (both
+  `GET https://ipwho.is/{ip}`); `ip_whois_geo` is the superset, so zero loss, and it
+  removes a false "two independent sources" signal the duplicate created (AU-026 /
+  `source_family` repointed to `ip_whois_geo`). (2) Folded `qld_unclaimed` into
+  `au_unclaimed` as a full `process_qld` pass (not a lossy table row) — QLD's
+  Person/ABN/suburb extraction preserved verbatim, evidence source string kept as
+  `"qld_unclaimed"` for downstream-rule compatibility, 5 tests ported, priority
+  raised into the government-register band. Registry 127 → **125**; docs/counts
+  synced and the README-count guard passes. Demonstrates the directive's
+  "minimise technical debt without compromising capability": two whole modules of
+  duplication removed, every entity/source/test still produced. No rule change
+  (count 68). Gate green: fmt/clippy/doc clean, lib + integration 0 failures, 24
+  arch guards. Paired: `PROBLEM_TREE` §8 cycle 51 — same commit.
+- **2026-06-20** — **Cycle 52 (ATT&CK technique stamped on every finding).** The
+  universal form of "MITRE in the scans": at the single dispatch admission point
+  (`finalise_module_result`), every admitted entity is tagged `attack:<ID>` with the
+  producing module's Reconnaissance technique(s). Sourced from the dispatched object
+  via the `Module::attack_techniques()` trait method (threaded through
+  `DispatchOutcome` for the concurrent join), so **no `core → modules` import** is
+  introduced — the layering guard stays green. Tags persist (JSON/DB) and the
+  dossier + full export resolve them to technique names per entity; `Entity::merge`
+  unions them so a multi-source entity carries every technique that found it.
+  Together with cycle 48 (every reachable module runs) and cycle 49 (the separate tab
+  removed, mapping kept), MITRE is now fully *in* the scan data on every seed, with
+  zero side report. A new engine test drives the real admission path on both the
+  sequential and concurrent dispatchers and asserts the stamp. No rule change
+  (count 68). Gate green: fmt/clippy/doc clean, lib (3,279) + integration 0 failures,
+  24 arch guards (incl. `core_does_not_import_modules`). Paired: `PROBLEM_TREE` §8
+  cycle 52 — same commit.
+- **2026-06-20** — **Cycle 53 (module consolidation: phone-geo pair → `phone_geo`).**
+  Third consolidation merge: `phone_area_geo` + `phone_carrier_geo` fused into one
+  passive `phone_geo` that runs both the area-code and carrier-prefix lookup passes
+  in a single call. Behaviour-preserving (tables/confidences/tags verbatim; both
+  passes independent), per-strategy evidence sources retained so the geo-anchoring
+  correlator classification is unchanged, all 23 original tests ported + 3 new
+  integration tests. Registry 125 → **124**; docs/counts synced and guarded. Same
+  "debt down, capability intact" pattern as cycles 51 (ipapi, qld). No rule change
+  (count 68). Gate green: fmt/clippy/doc clean, lib (3,280) + integration 0 failures,
+  24 arch guards. Paired: `PROBLEM_TREE` §8 cycle 53 — same commit.
+- **2026-06-20** — **Cycle 54 (API/SPA scans inherit the comprehensive defaults).**
+  Unified the scan-default story across all surfaces. New `DEFAULT_MIN_EXPAND_CONFIDENCE
+  = 0.20` constant is the single source of truth (CLI flag default, serde field
+  default, and `default_scan_options` all reference it). The serde defaults are now
+  comprehensive (depth `MAX_DEPTH`, floor 0.20, `default_request_max_entities` =
+  Some(2500)) while `ScanOptions::default()` is **decoupled** and stays conservative
+  (depth 0, floor 0.50, None) for library/test determinism — locked by a regression
+  test. The SPA wizard's form defaults and `all` use-case were set to depth 3 / floor
+  0.20 / cap 2500 (the `buildWizardOptions` override path is what mattered). Result:
+  CLI, HTTP API, Chrome SPA, and live scans all run the same comprehensive sweep, so
+  a seed scanned from the web UI is as thorough as one from `hse scan` — recall
+  maximised everywhere, precision still governed by the strict correlation floors. No
+  rule/module change. Gate green: fmt/clippy/doc clean, lib (3,282) + integration 0
+  failures, 24 arch guards. Paired: `PROBLEM_TREE` §8 cycle 54 — same commit.
+- **2026-06-20** — **Cycle 55 (`util::geo::ip_asn_entity` — the one clean IP-geo
+  dedup).** Final consolidation pass. Rather than force a leaky per-provider
+  entity-builder, extracted only the byte-identical `Asn` entity construction shared
+  by all five IP-geo modules into `util::geo::ip_asn_entity(asn, src, ip, scan_id)`
+  (Asn at fixed 0.80 + "ASN for {ip}" evidence). The genuinely-variant parts
+  (Coordinates/Address/Org confidences, formatting, tag policy) stay in each module —
+  abstracting them would have needed ~12 params and hurt maintainability. Behaviour
+  is byte-for-byte preserved (all five modules' tests pass unchanged; new helper test
+  + doctest added). Conservative-by-design: a small, honest dedup that improves
+  consistency without introducing a leaky seam. Module count unchanged (124). Gate
+  green: fmt/clippy/doc clean, lib 3,283 + integration + 44 doctests, 0 failures.
+  Paired: `PROBLEM_TREE` §8 cycle 55 — same commit.
+- **2026-06-20** — **Cycle 56 (AU-071 — robust identity cluster, the redundancy
+  synthesis).** Fourth connection lens, completing the set: REACHABILITY (AU-060),
+  REDUNDANCY-pairwise (AU-062), INTEGRITY (AU-069), CRITICALITY (AU-070), and now
+  cluster-level REDUNDANCY (AU-071). A resolved cluster is "robust" iff no
+  connection broker splits ≥2 of its members — removing any single connector leaves
+  the identities mutually reachable. Composed entirely from existing primitives
+  (`resolve_identity_clusters` + `connection_brokers` at the shared 0.50 floor): no
+  new graph code, no drift, High severity (a redundantly-bound cluster is the
+  strongest single-identity finding). Rejected a naive k-core approach because the
+  `identity_paths` projection is a transitive closure (every component is already a
+  near-clique, so k-core can't tell a dense cluster from a loose chain) — the
+  broker-split test measures genuine redundancy. Pure + unit-tested (two-anchor
+  cluster fires; single-hub star is silent). Rule count 68→**69**. Gate green: lib
+  (3,286) + integration 0 failures, 24 arch guards, fmt/clippy/doc clean. Paired:
+  `PROBLEM_TREE` §8 cycle 56 — same commit.
+- **2026-06-20** — **Cycle 57 (SeekNow parse robustness, found empirically).** The
+  all-APIs "Ali Kareem" validation scan both proved the comprehensive defaults
+  (44 distinct modules dispatched) and exposed a defect: `see_know::client::
+  parse_response` errored on a non-JSON body, so an ordinary empty/HTML/gateway "no
+  results" response counted as a module failure and tripped the circuit breaker.
+  Fix: a non-JSON-shaped body (not starting `{`/`[`) returns the `Ok(Value::Null)`
+  no-results sentinel (same one the auth/quota branches use; `extract_items` reads
+  it as empty), while a JSON-shaped-but-malformed body still errors (drift signal).
+  Defensive + universal: any keyed-API empty/garbage response now degrades to "no
+  results" rather than a breaker-tripping error. Regression-tested. No rule/module
+  change. Gate green: lib 3,288 (+2), 24 arch guards, fmt/clippy/doc clean. Paired:
+  `PROBLEM_TREE` §8 cycle 57 — same commit.
+
+- **2026-06-20** — **Cycle 58 (`au_unclaimed` reduced to its verified QLD core).**
+  Principle: *no fabricated coverage*. Empirically probing every state's live CKAN
+  API (the "Ali Kareem" loop flagged 76 KB/20 KB non-JSON bodies from VIC/WA) proved
+  only Queensland publishes a queryable unclaimed-money datastore — NSW has no
+  datastore-active resource, VIC isn't on CKAN (404s), WA has no such dataset, and
+  SA only mirrors the harvested QLD record. The four non-QLD `StateRegister` entries
+  held fabricated `resource_id`s that 404'd every scan: phantom coverage that cost
+  four guaranteed-failed network calls per name and a false five-state advertisement.
+  Removed them and the now-dead generic-CKAN path (`StateRegister`, `REGISTERS`,
+  `surname`, `owner_matches`, `record_to_entities`, `postcode_centroid`); `process`
+  is now the single QLD pass, and the module docs carry the per-state empirical
+  verdict so a future contributor re-adds a jurisdiction *only* with a verified
+  resource id (QLD is the working template). The real QLD pipeline — joint-owner
+  Persons, company Organisation pivots, postcode→geo, suburb enumeration — is
+  unchanged. Durable wins: honest capability surface, less wall-time and breaker
+  noise on Termux, ~150 fewer lines to maintain. Gate green: lib 3,283 (−5 dead-path
+  tests), 24 arch guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` cycle 58 —
+  same commit.
+
+- **2026-06-20** — **Cycle 59 (`is_app_package_id` — an app package is not a
+  domain).** Principle surfaced by the audit + archive forensics: stealer logs name
+  the app a credential was stolen from in reverse-DNS form (`com.facebook.katana`),
+  which a bare `contains('.')` check happily mints as a `Domain` — that then burns a
+  HudsonRock `search-by-domain` call returning *strangers'* records. New pure helper
+  `util::domains::is_app_package_id`: 3+ labels whose first label is a generic TLD
+  (`com`/`org`/`net`/`io`/`app`/`dev`) is reverse-DNS, because a real registrable
+  domain carries its TLD *last*. No Public Suffix List dependency (consistent with
+  the project's curated-suffix philosophy). Wired in three places: both OathNet
+  stealer Domain-minting paths (so the junk never enters the graph) and a defensive
+  short-circuit in HudsonRock `process()` (so a Domain recalled from before the gate
+  still can't trigger the doomed call) — the latter without touching the
+  value-independent `accepts()` the dispatch invariants depend on. Compounding win:
+  kills both the noise *and* the noise-amplifying API expansion, on every future
+  stealer-bearing scan. Regression-tested. Gate green: lib 3,286 (+3), 24 arch
+  guards, fmt/clippy/doc clean. Paired: `PROBLEM_TREE` cycle 59 — same commit.
+
+- **2026-06-20** — **Cycle 60 (a stealer host is an account, not an asset —
+  universal).** Principle: a credential captured *on* a site means the subject has
+  an account there, not that they own the domain. Both stealer extractors
+  (`oathnet_pro::extract_stealer_entities` and `see_know::extract`) used to mint the
+  login URL's host as a `Domain`, which (a) proliferated subdomains of shared
+  platforms (`*.taleo.net`), (b) burned dns/cert/wayback/HudsonRock budget
+  enumerating the *platform's* infrastructure, and (c) forged false correlation
+  brokers across everyone who used that platform. Now both keep only the `Url`
+  (the account pathway) and the `<user>@<url>` `Credential`; the host is no longer
+  a Domain. Safe because every stealer row carries a `url` (so the pathway is fully
+  preserved) and the subject's *own* domains arrive independently via the breach
+  email-domain path. Mirrors SpiderFoot's account-vs-INTERNET_NAME distinction.
+  Compounding: less noise, less wasted API expansion on Termux, and sharper
+  correlation (no shared-platform mega-brokers) on every stealer-bearing scan.
+  Regression-tested in both modules. Gate green: lib 3,286 (net 0), 24 arch guards,
+  fmt/clippy/doc clean. Paired: `PROBLEM_TREE` cycle 60 — same commit.
+
+- **2026-06-20** — **Cycle 61 (address extractor: don't let one address's state
+  bleed into the next).** The re-scan + re-audit the user asked for confirmed cycles
+  58–60 on fresh data (domain-noise finding gone, 85/100) and pointed at a clean
+  extraction defect behind one geo outlier: a run-on bio "Los Angeles, California
+  Dallas, Texas" yielded a phantom "California Dallas, Texas" because the comma-path
+  city grab reached back across the first address and kept its trailing state.
+  Fix: in the comma path, strip a leading state token from the city when it differs
+  from the address's own state, recovering "Dallas, Texas". The differ-from-state
+  guard is the safety: state-named cities whose token equals their state (Virginia
+  Beach, Virginia; Oklahoma City, Oklahoma) are untouched, and word-path cities
+  (Kansas City, Missouri) never enter this branch — so no gazetteer and no risk to
+  the AU-geo core. Improves geocode precision (no bogus Probable city fixes) without
+  altering the geo-confidence model. Note for the record: the remaining
+  geo-divergence is driven by *identity conflation* (several real people share the
+  seed name), a separate strand to tackle deliberately rather than via a geo
+  heuristic. Regression-tested. Gate green: lib 3,287 (+1), 24 arch guards,
+  fmt/clippy/doc clean. Paired: `PROBLEM_TREE` cycle 61 — same commit.
+
+- **2026-06-21** — **Cycle 62 (consolidate three duplication clusters into `util`).**
+  Single home for each, callers keep only their own filters/decoders:
+  1. **`util::str_util::parse_asn(&str) -> Option<u64>`** — case-insensitive `AS`
+     prefix, whitespace-tolerant, validated; rejects junk so callers don't build a
+     garbage URL. Migrated `bgpview` / `ip_registry` / `zoomeye` (the last gains
+     case-insensitive parsing it was missing).
+  2. **`util::json::scan_string_field(body, key) -> Vec<String>`** — the raw-body
+     `"key":"…"` scan, behaviour-preserving (skips numeric `"key":123`, value runs
+     to next quote, empties dropped, order kept). Migrated `github_user` (orgs +
+     gists), `reddit_user`, `hacker_news`; each keeps its own length-bound / dedup /
+     domain-extract step at the call site.
+  3. **`util::wigle`** (new submodule, alongside `util::oathnet` / `util::see_know`)
+     — `detail_url(netid, kind)` + `get(...)` doing the shared auth and WiGLE status
+     classification (429 → immediate Err with logged backoff, 401/403 → auth Err,
+     404 → Ok(None), success → response for caller to decode). `wifi_intel`'s rich
+     handling is preserved verbatim; `wigle::fetch_detail` keeps its swallow-to-None
+     contract. ~127 lines of duplicated logic across 8 modules collapse to ~77 lines
+     of shared, tested helpers (4 JSON-scan copies → 1, 3 ASN copies → 1, 2 WiGLE
+     copies → 1). No module added/removed — registry count stable. Gate green: lib
+     3,291 (+4), 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired:
+     `PROBLEM_TREE` cycle 62 — same commit.
+
+- **2026-06-21** — **Cycle 63 (centralise HTTP request-construction literals).**
+  `util::http::UA_BROWSER` and `util::http::UA_OSINT` now hold the two duplicated
+  User-Agents (single source of truth — the stale Chrome/120 bump is now one edit;
+  `UA_BROWSER` doc cross-links `util::curl::UA_POOL` to keep the two UA homes
+  distinct). Migrated all 11 call sites across `asic_director`, `au_property`,
+  `au_people`, `au_electoral`, `github_user`, `reddit_user`, `hacker_news`. And the
+  five `format!("Bearer {…}")` headers (`github_code_search`, `fullcontact`,
+  `github_user`) became `.bearer_auth(…)` — identical header value, now also flagged
+  sensitive for redaction. Behaviour-preserving; gate green: fmt/clippy(`--all-targets`)
+  /doc clean, lib 3,291, 24 arch guards, 0 failures. Paired: `PROBLEM_TREE` cycle 63
+  — same commit.
+
+- **2026-06-21** — **Cycle 64 (fold the bio matchers into `util::extract`).** Added
+  the canonical `util::extract::URL_RE` (the exact http(s) pattern, so trailing-
+  punctuation behaviour is preserved — callers still `trim_end_matches`) and pointed
+  both `reddit_user` and `hacker_news` at the existing canonical `EMAIL_RE` + the new
+  `URL_RE`, deleting their duplicated `bio_patterns()` (and the now-unused `regex` /
+  `OnceLock` imports). The bio email match now uses the one canonical definition
+  (stricter, validated TLD) — the modules' bio tests pass unchanged, confirming the
+  switch is behaviour-safe on real address shapes. Net: one email regex in the
+  codebase, not two; a reusable URL matcher for future callers. Gate green: lib 3,292
+  (+1), 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE`
+  cycle 64 — same commit.
+
+- **2026-06-21** — **Cycle 65 (point the last two email regexes at `EMAIL_RE`).**
+  `exa_search` now imports `crate::util::extract::EMAIL_RE` (call site `find_iter`
+  unchanged) with its local `static EMAIL_RE` deleted; `employer_pivot::extract_emails`
+  uses the canonical matcher directly, dropping its `OnceLock` regex while keeping its
+  domain filter (and no dedup, preserving behaviour). Both patterns were
+  character-class-identical, so the swap is behaviour-preserving — full suite passes.
+  `util::extract::EMAIL_RE` is now the sole email regex in the codebase. Gate green:
+  lib 3,292, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired:
+  `PROBLEM_TREE` cycle 65 — same commit.
+
+- **2026-06-21** — **Cycle 66 (`util::str_util::is_handle`).** One parameterised
+  predicate — `is_handle(s, min, max)`: length in `min..=max` and every char ASCII-
+  alphanumeric or `-`/`_` — now backs both `reddit_user` (3, 20) and `hacker_news`
+  (2, 15), replacing the two open-coded multi-line guards. Byte length equals char
+  count because the charset test rejects non-ASCII, so behaviour is preserved. The
+  handle charset is defined once. Gate green: lib 3,293 (+1), 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 66 — same commit.
+
+- **2026-06-21** — **Cycle 67 (route `search_engines` text mining through
+  `util::extract`).** First, the divergence was healed *upward*: the web-script
+  fragment guard moved into `util::extract::page_emails` (new `SCRIPT_EXTS`), so the
+  canonical miner now rejects `viewtopic.php…@…` for every caller — `au_people`
+  included. Then `search_engines::extract_emails_from_text` / `extract_phones_from_text`
+  became thin wrappers over `page_emails` / `phones`, keeping only their search-context
+  cap + warning (so a pathological page can't mint an unbounded list); the ~115-line
+  byte scanners and the duplicate `is_email_local_char` / `is_domain_char` predicates
+  (plus their now-redundant tests) are gone. Net −100 lines. Behaviour is preserved
+  for real input and strictly improved for junk (search_engines now also dedups,
+  rejects `+0…` numbers and `.js` assets); all search_engines + au_people tests pass
+  unchanged. Email/phone byte-mining now has one definition. Gate green: lib 3,290,
+  24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE`
+  cycle 67 — same commit.
+
+- **2026-06-21** — **Cycle 68 (split oathnet_pro/mod.rs into focused submodules).**
+  `mod.rs` 1,165 → **350** lines, now just setup + the `Module` impl + preflight +
+  the submodule wiring. Extracted: `breach.rs` (530 — breach-PII extraction +
+  `TargetMatch` + the shared `push_oathnet_entity`), `stealer.rs` (160 — stealer-log
+  leads), `validate.rs` (135 — the pure offline validators). Pattern: each submodule
+  `use super::*`; section items promoted to `pub(super)`; `mod.rs` re-globs each
+  (`use breach::*` …) so the `Module` impl, the sibling submodules, and the white-box
+  `tests` (which call `extract_breach_entities`, `is_public_ip`, … via `super::*`) all
+  resolve unchanged. Pure code movement — no module added/removed, registry stable,
+  every oathnet test passes. Gate green: lib 3,290, 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 68 — same commit.
+
+- **2026-06-21** — **Cycle 69 (split see_know/extract.rs into an `extract/` module).**
+  `extract.rs` → `extract/mod.rs` (1,025 → **472** lines: core breach extraction +
+  `record_evidence` + the shared `push_breach_entity` + tests + wiring), with
+  `geo.rs` (132), `associates.rs` (111) and `rich_detail.rs` (338) as siblings. The
+  one-level-deeper nesting needed care: `extract_geo_entities` is called by the
+  parent `see_know/mod.rs`, so it's declared `pub(in crate::modules::see_know)` and
+  re-exported `pub(super)`; the intra-extract items (`extract_associates`,
+  `extract_rich_detail`) stay `pub(super)` with private re-exports; `parse_coord`'s
+  re-export is `#[cfg(test)]` (only the tests use it at parent level); and
+  `push_context_entity`'s doc link to `push_breach_entity` is fully-qualified
+  (`super::`) for the strict rustdoc lint. Pure code movement — registry stable, all
+  see_know tests pass. Gate green: lib 3,290, 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 69 — same commit.
+
+- **2026-06-21** — **Cycle 70 (carve the self-contained detectors out of
+  key_harvest/mod.rs).** mod.rs 1,363 → **972** lines. Extracted the two cohesive,
+  low-coupling blocks as new siblings: `crypto.rs` (199 — `identify_pem_private_key`,
+  `identify_crypto_address`, the recursive-base64 unwrap + `shannon_entropy`) and
+  `emit.rs` (198 — `emit_key`/`emit_key_with` + the `store_api_credential*` writers).
+  Promotions: the detectors to `pub(super)` (only `BASE64_DECODE_MAX_DEPTH` needed it
+  for a white-box test); `emit_key*` to `pub(super)`; the public `store_api_credential*`
+  re-exported with `pub use` so `key_harvest::store_api_credential` still resolves for
+  the parent `oathnet_pro`. `emit.rs`'s doc link to `DetectionConfidence` (which stays
+  in mod.rs) is fully-qualified. The interconnected identification/tier sections were
+  left in place — their dense pub surface + 2,236-line test file make them higher-risk
+  for lower return. Pure code movement, all tests pass. Gate green: lib 3,290, 24 arch
+  guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 70 — same
+  commit.
+
+- **2026-06-21** — **Cycle 71 (single-source the IP-geo address join).** Added
+  `util::geo::compose_address(city, region, country)` — drops an empty middle
+  component so a city+country record reads `"City, Country"`, never `"City, , Country"`
+  — with a doctest, and routed `ipinfo` / `ipquery` / `censys` / `ip_geo` through it
+  (each keeps its own outer presence guard; only the inner format is shared). Behaviour
+  identical: same strings, same entities. `ip2location` left alone (its branch folds a
+  ZIP into the middle). Net −9 lines across 5 files, but the real win is one definition
+  of the join rule instead of four. Gate green: lib 3,290 + the new doctest, 24 arch
+  guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 71 — same
+  commit.
+
+- **2026-06-21** — **Cycle 72 (single-source the AU-relevance coord tag).** Added
+  `util::geo::tag_au_state(&mut entity, lat, lon)` — tags `au-state:{STATE}` +
+  `country:AU` when the fix is in an AU state, no-op otherwise — and routed **13**
+  inlined call sites across 11 modules through it (regex-matched the exact both-tags
+  block, so the `&& let`-chain forms and the lone `au-state`-only site in
+  `search_engines` were left untouched — folding them in would have changed behaviour).
+  `opencellid`'s now-unused `au_state_for_coords` import was dropped. Behaviour
+  identical; net −27 lines. Gate green: lib 3,290, 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 72 — same commit.
+
+- **2026-06-21** — **Cycle 73 (teach `permute::parse` the two name formats it was
+  corrupting).** Two small, pure helpers ahead of tokenisation, so every FullName
+  search (the sole caller, `name_intel`, feeds the result into usernames + speculative
+  emails + investigation pivots): **(1)** `reorder_comma_name` detects "Last, First
+  \[Middle…\]" and returns natural order, with a clean fallback for the title/suffix
+  case (`"Ali Kareem, PhD"` is *not* a reorder) and honorific/suffix stripping around
+  the swap (`"Dr. Kareem, Ali Jr"` → `"Ali Kareem"`); now `parse("Kareem, Ali") ==
+  parse("Ali Kareem")`. **(2)** `strip_bracketed` drops nested/mixed `()[]{}`
+  annotations from the name tokens while the trailing-year number is still read from
+  the raw string (`"Ali Kareem (1990)"` → year 1990, handle `ali.kareem`). +7 tests
+  (incl. the canonical-identity round-trip and the corrected `handles_comma_separator`,
+  whose old expectation *was* the bug). No new deps; allocation-light; Termux-safe.
+  Gate green: lib 3,297, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired:
+  `PROBLEM_TREE` cycle 73 — same commit.
+
+- **2026-06-21** — **Cycle 74 (route the seven JSON holdouts through
+  `util::http::json_decode`).** Replaced each hand-rolled
+  `resp.json().await.map_err(…"JSON: {e}")` with `crate::util::http::json_decode(SRC,
+  resp).await?`, so all seven now share the capped + archived decode path: their
+  responses land in the universal raw archive (dossier completeness), the 32 MiB body
+  cap closes the Termux OOM vector, and read-vs-parse failures are reported distinctly.
+  Dropped four now-unused `Error` imports (`ip2location`, `disposable_check`, `ipinfo`,
+  `ipquery`); the other three still use `Error` elsewhere. Net −21 lines, behaviour for
+  valid responses unchanged (same deserialised structs, same entities). Gate green: lib
+  3,297, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE`
+  cycle 74 — same commit.
+
+- **2026-06-21** — **Cycle 75 (strip the URL in `send_tagged`, the one chokepoint).**
+  Changed the transport-error map to `e.without_url().to_string()`, so every one of the
+  ~40 `send_tagged` callers — present and future — stops embedding the secret-bearing
+  URL in the error that reaches the logs; the module name (the actually-useful context)
+  is still attached. Pinned with a regression test that a key + email in the query
+  string never appear in the mapped error. Then closed the two holdouts that bypassed
+  the helper entirely with the bare leaking form: `niamonx` (×3) and `osintcat` now use
+  `send_tagged(SRC)`, deleting their hand-rolled `map_err` (and wiring the
+  `RequestBuilderExt` import). `hunter_io`/`whoisxml` were already safe via a local
+  `without_url`; `cert_intel` is a raw-TLS connect (host:port, no query string) and
+  unaffected. Net +36/−17. Gate green: lib 3,298, 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 75 — same commit.
+
+- **2026-06-21** — **Cycle 76 (one shared Email/Domain shape gate for every breach
+  parser).** Promoted `looks_like_email` out of `oathnet_pro` into
+  `util::extract::looks_like_email` (oathnet re-exports it, unchanged call sites), and
+  added `util::domains::looks_like_domain` — the consolidation of the triplicated
+  `contains('.') && !is_app_package_id` check **plus** an IP-literal reject and a
+  TLD-bearing-final-label sanity check. Routed all four emission sites through them:
+  `see_know`'s email field now validates shape (closing the `contains('@')`-only gap),
+  and `oathnet_pro` breach + stealer + `see_know` domain paths now drop IP and
+  app-package noise in one place. Result: a query echo (`Ali.kareem`) or a stealer
+  router IP (`192.168.0.1`) can no longer enter the graph as an entity, so correlation
+  sees only real addresses and registrable domains. Both helpers carry doctests; added
+  two unit tests seeded directly from the uploaded scan logs (real addresses/domains as
+  positives, the echo/IP/app-package noise as negatives). Behaviour for clean records
+  unchanged. Gate green: lib 3,300, 24 arch guards, fmt/clippy(`--all-targets`)/doc
+  clean. Paired: `PROBLEM_TREE` cycle 76 — same commit.
+
+- **2026-06-21** — **Cycle 77 (classify a breach digest by its leading hex run).**
+  Reworked `identify_password_hash`'s bare-digest arm to read the **leading hex run**
+  and classify by its length (requiring any remainder to begin at a separator), so the
+  OathNet `digest + salt` forms now resolve to `("md5", true)` instead of `None`; the
+  prefixed-KDF path (bcrypt/argon2, whose option commas must not be mis-split) is
+  untouched because it matches first. Paired with appended-salt detection in `breach.rs`
+  (a leading bare-hex digest with a non-empty remainder past the first separator) so the
+  `salted` signal is captured even when there is no dedicated `salt` field. Net effect:
+  the `jefit` MD5 now carries `hash:md5` + `crackable:fast` + `salted`, and `mod.rs`'s
+  fast-hash plaintext-equivalent filter sees it. +2 tests seeded from the real scan
+  rows (combined forms, the separator guard, and an argon2 negative). Gate green: lib
+  3,302, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE`
+  cycle 77 — same commit.
+
+- **2026-06-21** — **Cycle 78 (one typed classifier for credential-field values).**
+  Added `util::extract::CredentialField` (`Sentinel` / `Email` / `Secret`) +
+  `classify_credential_field` + `is_placeholder_secret`, and routed both password
+  parsers through it: `oathnet_pro/breach.rs` and `see_know/extract` now **drop** a
+  capture sentinel, **recover** an email-in-slot as a 0.45 `Email` lead tagged
+  `recovered-from-password` (instead of a junk `Password`), and only emit a genuine
+  `Secret` — applying their own length/variety gate on top. `is_placeholder_secret`
+  rejects redaction markers anywhere plus **bracketed** capture sentinels (`[fail]`,
+  `<empty>`); the bracket requirement keeps a real-if-terrible `fail`/`null` password
+  from being discarded. One decision point replaces two divergent inline gates (the
+  enum makes the three outcomes explicit and reusable for future stealer modules).
+  +2 tests seeded from the logs (sentinel/email/secret split; the breach end-to-end
+  recovery + no-false-Password). Gate green: lib 3,304, 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 78 — same commit.
+
+- **2026-06-21** — **Cycle 79 (a capped, non-archiving `read_text` chokepoint).**
+  Factored the erroring-cap streaming core out of `read_json_text` into a private
+  `read_capped_or_err` (behaviour-identical for the ~25 JSON callers), and added
+  `util::http::read_text` — the text counterpart to `json_decode`: bounded at
+  `JSON_BODY_CAP`, transport errors module-tagged with credentials redacted, and
+  **no archiving** (so a generic payload like a Pwned-Passwords hash range is not
+  retained as a source record). Routed `hackertarget`, `pwned_passwords` and
+  `social_location` through it, dropping two now-unused `Error` imports. Net effect:
+  the three text endpoints gain the OOM cap + redaction the JSON path already had,
+  with one fewer hand-rolled error tail each. +1 test. Gate green: lib 3,305, 24 arch
+  guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 79 —
+  same commit.
+
+- **2026-06-21** — **Cycle 80 (cap the breach candidate flood; classify each row
+  once).** Lifted the per-page breach loop out of `mod.rs::process` into
+  `breach.rs::extract_breach_page`, the natural home beside `TargetMatch`,
+  `extract_breach_entities_with` and `push_oathnet_entity`. It builds the match context
+  once (the existing hoist), classifies each row once via `TargetMatch::matches`, and
+  threads that single `bool` into `extract_breach_entities_with` — whose signature
+  changed from `match_ctx: &TargetMatch` to `is_target_row: bool`, deleting the internal
+  re-match so the identity decision now lives in exactly one place and is reused for both
+  the quarantine demotion and the new sampling gate. **Target-matching rows are always
+  extracted in full; non-matching strangers are sampled at most `MAX_CANDIDATE_ROWS`
+  (= 20) per page**, cutting the worst-case candidate count ~5× (the Ali Kareem page's
+  491 → ≤ ~100) while keeping a spot-check sample. API-key harvest
+  (`store_api_credential` + `extract_api_keys_from_item`) stays **unconditional** for
+  every row — a leaked tool credential is valuable regardless of the cap and is too rare
+  to flood — and stays after PII extraction so per-row ordering is byte-identical for the
+  uncapped path. The `#[cfg(test)]` wrapper computes the bool the same way, so every
+  existing characterization test is unchanged. +1 test seeded from the exact failure
+  (100 `pureincubation.com` strangers + 1 trailing real "Ali Kareem" row → candidate
+  emails ≤ cap, and the target row still emitted at full confidence after the cap is
+  spent). Gate green: lib 3,306, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean.
+  Paired: `PROBLEM_TREE` cycle 80 — same commit.
+
+- **2026-06-21** — **Cycle 81 (recover a scan's entities from the durable event log).**
+  Closed the 558→0 export cliff at the single point every reader shares —
+  `Store::entities_for_scan`. When the `entities` table is empty for a scan (still
+  running, interrupted, or killed before `finalise_scan` wrote it), the read now falls
+  back to `entities_from_events`, which folds the scan's logged `EntityFound` entities
+  by UID through the SAME `Entity::merge` the engine uses in-flight. Each event is a
+  distinct *pre-merge* emission, folded **exactly once**, so corroboration sums
+  correctly and is never double-counted — and because the fallback fires only on an
+  empty table, a genuinely empty scan still returns empty and the common finalised read
+  never pays for it. The authoritative display ranking (relevance → C_eff → confidence →
+  uid) was lifted into a shared `sort_entities_for_display` so a recovered in-flight scan
+  and a finalised one order identically. One change at the central read path =>
+  CSV export, full dossier, JSON, and every API handler transparently recover what a
+  scan found even when it never finalises. **Deliberately rejected** write-path
+  incremental persistence: the store's upsert is a SUM-corroboration GREATEST-merge, so
+  re-persisting an evolving entity (checkpoint + finalise) would double-count
+  corroboration and corrupt tiering on *every* scan — the event-log reconstruction
+  sidesteps that by merging once, at read time, off purely additive data. +1 test
+  (logged events → recovered set; duplicate-UID corroboration summed once; empty scan
+  stays empty; a finalised table is preferred over the log). Gate green: lib 3,307, 24
+  arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 81 —
+  same commit.
+
+- **2026-06-21** — **Cycle 82 (an honest breach headline; one match pass for all three
+  decisions).** New `breach_parent_entity` returns `None` when the subject appears in
+  none of the returned records — so a stranger-only page no longer merges a false 0.85
+  `breach` hit onto the engine's seed anchor (the anchor still represents the subject; a
+  miss simply asserts nothing) — and, when the subject IS present, aggregates
+  `countries`/`names`/`genders`/`dates_of_birth` over the MATCHING rows ONLY, plus an
+  honest `hits` (matched) vs `records_returned` (page size) split. Consolidated the
+  identity match into a SINGLE pass in `process`: `row_matches: Vec<bool>` is computed
+  once and feeds the parent gate, the candidate-flood cap, and the per-row quarantine —
+  `extract_breach_page` now takes the precomputed `row_matches` instead of rebuilding a
+  `TargetMatch` (one source of truth; `TargetMatch::matches` promoted to `pub(super)`).
+  Net effect: for the "Ali Kareem" page the subject node loses its fabricated breach
+  tag and 100-stranger aggregate dump, while a genuine hit reads its own attributes
+  cleanly. +1 test (zero-match → `None`; subject present → parent aggregates only the
+  subject's row, `countries=AU` not the strangers' `ZZ`). Gate green: lib 3,308, 24 arch
+  guards, fmt/clippy(`--all-targets`)/doc clean. Paired: `PROBLEM_TREE` cycle 82 — same
+  commit.
+
+- **2026-06-21** — **Cycle 83 (capture the login IP from any field; one shared
+  public-IP gate).** Promoted `is_public_ip` into `util::preflight` beside `is_private_ip`
+  — one definition (`parses && !private`) for every breach/stealer parser — and routed
+  both extractors through it: `oathnet_pro`'s hand-rolled `pub(super) fn` became a
+  re-export (dropping its now-empty `use super::*`), and `see_know`'s weak `len >= 7`
+  gate was tightened to it, so a private LAN address can no longer masquerade as a
+  geolocation lead. Both now iterate `["ip", "lastip", "last_ip"]`, emitting each
+  DISTINCT public address as its own `geolocation-lead` (UID/`seen` dedup collapses the
+  ip == lastip case), so snusbase-shaped records finally yield the subject's login
+  location instead of nothing. Behaviour for clean `ip`-only records is unchanged. +2
+  tests (public `lastip` → lead; private `lastip` rejected — one per module). Gate green:
+  lib 3,310, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean. Paired:
+  `PROBLEM_TREE` cycle 83 — same commit.
+
+- **2026-06-21** — **Cycle 84 (flatten stealer `victims[].credentials[]` so the logins
+  survive).** Extended `extract_items` with a `victims` branch + a `flatten_victims`
+  helper that turns each nested credential into a standalone item: one infected host (one
+  victim / stealer log) shares its scalar context — `log_id`, host `ip` — with every
+  credential it leaked, so each flattened item carries BOTH the login
+  (`username`/`password`/`pwned_at`) and its provenance, and the existing field extractor
+  consumes it unchanged (yielding a `Username`, a `Password`, and — via cycle 83 — the
+  host IP as a geo lead). A victim with no `credentials` array still surfaces as one
+  host-intel item so nothing is lost. The change is purely additive: every flat shape is
+  matched first and unchanged, and an unknown shape still yields empty — so only the
+  previously-dropped stealer set is affected. +2 tests (the real `results:0`/`victims`
+  shape → 2 credential items inheriting `log_id`+`ip`; a credential-less victim → 1
+  host item). Gate green: lib 3,312, 24 arch guards, fmt/clippy(`--all-targets`)/doc
+  clean. Paired: `PROBLEM_TREE` cycle 84 — same commit.
+
+- **2026-06-21** — **Cycle 85 (a per-module Termux cap exemption so see_know survives
+  the clamp).** Added `Module::termux_timeout_cap_exempt()` (default `false`), threaded
+  through `resolve_timeout` → `apply_termux_cap` (now a 4th parameter). A blanket cap
+  raise was rejected: the cap was deliberately *lowered* 60→45 s to stop `search_engines`
+  burning the phone's wall-time for zero results, so the fix had to be surgical — cap the
+  wasteful modules, exempt the one whose slowness is the upstream's own server cap.
+  `see_know` opts in and keeps its full 80 s budget on Termux (still finite, still above
+  the 78 s curl outer so the response is actually observed), so the highest-priority paid
+  source finally returns data on the platform HSE targets — making cycles 83–84's
+  parsing reachable in production. Every other module is `false` and byte-identical;
+  exemption only changes behaviour on Termux without a `--module-timeout` override. The
+  trade is honest: the serial paid phase now spends ~55–60 s *productively* (data
+  retrieved) instead of 45 s *wasted* (timeout, nothing) — decoupling that phase from the
+  free fan-out is a noted follow-up, not this change. +2 tests (exempt keeps its budget
+  while a non-exempt peer at the same value still clamps; see_know's exemption + curl-outer
+  headroom locked). Gate green: lib 3,314, 24 arch guards, fmt/clippy(`--all-targets`)/doc
+  clean — verified on the CI toolchain (rustc 1.96.0). Paired: `PROBLEM_TREE` cycle 85 —
+  same commit.
+
+- **2026-06-21** — **Cycle 86 (promote the subject's demographics to normalized,
+  first-class tags).** New `identity_tags` helper reads DOB / gender / age across the key
+  spellings the providers use (`date_birth` | `birthdate` | `date_of_birth` | `dob`;
+  numeric-or-string `age`), normalizes them (gender collapses `male`/`m` → `M`,
+  `female`/`f` → `F`; one canonical `dob:` regardless of source key) and stamps them as
+  tags on the see_know `Person`. The dossier headline now reads
+  `Ali Kareem [dob:1990-05-12] [gender:M] [age:34]` directly instead of leaving the
+  demographics buried in raw-record evidence, and because tags merge by UID a value
+  re-stated across records folds to one. Purely additive: a record with no demographics
+  adds no tags (the `extract_entities` characterization test is unchanged), and the
+  full-field evidence fold still carries the raw values as before. +1 test (normalization
+  across key/value spellings; the no-demographics no-op). Gate green: lib 3,315, 24 arch
+  guards, fmt/clippy(`--all-targets`)/doc clean — verified on rustc 1.96.0. Paired:
+  `PROBLEM_TREE` cycle 86 — same commit.
+
+- **2026-06-21** — **Cycle 87 (one shared target-matcher; quarantine see_know's
+  strangers).** Promoted `TargetMatch` **and** the `CANDIDATE_CONF` quarantine ceiling
+  out of `oathnet_pro` into `util::target_match` — one definition both breach pools
+  share, so "is this row the subject?" is judged by identical code. The shared matcher's
+  field list is the UNION of the providers' spellings (`phone`|`phone_number`,
+  `name`|`full_name`), which only ever *confirms* a genuine row whichever key the upstream
+  chose — a strict completeness gain for oathnet, whose own characterization suite is
+  unchanged. `oathnet_pro` now imports it (local struct + const deleted). `see_know`
+  computes `is_target` once per record and, when it does not match, demotes that record's
+  identity / credential / raw-detail entities to `candidate` strength in a single range
+  pass before `extract_associates` (which keeps its own `family-candidate` model), plus
+  the trailing domain inline — so a same-name stranger survives as a low-confidence lead
+  instead of masquerading as the subject. Subject rows and the common exact-match
+  username/email/phone searches are byte-identical (is_target = true ⇒ no demotion). +7
+  tests (6 matcher unit tests for the shared component; see_know stranger-demoted vs
+  subject-full-confidence). Gate green: lib 3,322, 24 arch guards,
+  fmt/clippy(`--all-targets`)/doc clean — verified on rustc 1.96.0. Paired:
+  `PROBLEM_TREE` cycle 87 — same commit.
+
+- **2026-06-21** — **Cycle 88 (postcode-qualified addresses; stop minting provider
+  plumbing).** **(a)** `oathnet_pro`'s composed `Address` now appends `postal_code`
+  (`HAMPTON, VA, 23666`), still gated on city/street so a bare ZIP can never form a
+  standalone node — bringing it to parity with `see_know`'s street→postal→country
+  composition and handing the geocoder a ZIP-centroid-precise value instead of a
+  city-coarse one. **(b)** Added `uid` + `migration_id` to `see_know`'s `RICH_DETAIL_SKIP`
+  so the catch-all no longer mints the provider's internal record keys as `Other(...)`
+  nodes — one fewer junk entity per record, and the dossier stops carrying snusbase's
+  database bookkeeping as findings. Both are surgical and additive: the only behaviour
+  change is a more precise address string and the absence of two plumbing nodes; clean
+  records are otherwise identical. +2 tests (the composed value carries the ZIP;
+  `uid`/`migration_id` never become entities while the real person still does). Gate green:
+  lib 3,324, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean — verified on rustc
+  1.96.0. Paired: `PROBLEM_TREE` cycle 88 — same commit.
+
+- **2026-06-21** — **Cycle 89 (demotion as a first-class, orthogonal `Entity` capability;
+  matching ⊥ tiering).** Promoted the candidate-quarantine into one method on the type it
+  mutates — `Entity::demote_to_candidate()` (cap to `CANDIDATE_CONF`, stamp `candidate`,
+  idempotent) — and moved `CANDIDATE_CONF` to `core::entity` beside the tier ladder it
+  belongs to (documented `< PROBABLE_MIN`, so a demoted entity is *guaranteed* to classify
+  `Candidate`). All three call sites — `oathnet_pro`'s push and `see_know`'s range pass +
+  domain push — now call the one method; `util::target_match` is left as a *pure matcher*
+  ("does this row identify the subject?") that no longer carries a confidence constant it
+  never used. Net effect: the two orthogonal capabilities each have a single, correct home
+  — `util::target_match` decides the match, `Entity` owns the tier mutation — and the
+  demotion semantics can evolve (e.g. a corroboration cap) in exactly one place for every
+  current and future pool. Behaviour is identical: the full breach/stealer characterization
+  + quarantine suites pass unchanged. +1 `core::entity` test (cap / tag / idempotent /
+  never-raise-lower-confidence), −1 relocated `util` constant test. Gate green: lib 3,324,
+  24 arch guards, fmt/clippy(`--all-targets`)/doc clean — verified on rustc 1.96.0. Paired:
+  `PROBLEM_TREE` cycle 89 — same commit.
+
+- **2026-06-21** — **Cycle 90 (source→sector classification; "breached real-estate
+  exclusively" as a filter, synergising both pools).** New `util::breach_sector::source_sector`,
+  built *backwards from the real source-DB shapes*: it reads the embedded snusbase category
+  (the second-from-last `_`-segment when the last is a date) and recognises real-estate /
+  property brands + portals + CRMs (AU emphasis: realestate.com.au, Harcourts, LJ Hooker,
+  PropertyTree, OnTheHouse, PEXA, …), returning a normalised sector slug or `None` (an
+  unknown source is left untagged, never guessed). Both breach pools now stamp every entity
+  `sector:<x>` from the `dbname`/`source` the evidence already carries — `oathnet_pro`'s
+  `push_oathnet_entity` (full coverage; every breach kind flows through it) and `see_know`'s
+  `push_breach_entity` — so the answer to "show me only the breached real-estate data" is the
+  tag `sector:real-estate`, applied identically across both pools (one orthogonal classifier,
+  no new feed, no blind scraping). Verified against the genuine dump values: `ZYNGA…`→`gaming`,
+  `AITYPE…`→`tech`, `pureincubation.com`→`None` (correctly not property), and
+  real-estate brands/categories→`real-estate`. Behaviour for sources that don't classify
+  (every existing test fixture) is unchanged. +6 tests (4 classifier unit, 1 per pool).
+  Gate green: lib 3,330, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean — verified
+  on rustc 1.96.0. Paired: `PROBLEM_TREE` cycle 90 — same commit.
+
+- **2026-06-21** — **Cycle 91 (one universal chokepoint wires EVERY breach pool to the
+  sector classifier).** Hoisted sector tagging out of the two modules into a single
+  admission-time pass, `core::engine::enrich::tag_breach_sector`, run on every entity right
+  beside the existing universal stamps (MITRE ATT&CK, geospatial enrichment) and BEFORE the
+  `EntityFound` emit (so the event log + cycle-81 recovery carry it). Gated on the `breach`
+  tag, it reads the source DB across all pools' evidence keys (`dbname`, `source`,
+  `breach_name`, `breach_domain`, `database`, `database_name`, `source_db`) and stamps
+  `sector:<x>` via `util::breach_sector` — so `oathnet_pro`, `see_know`, `hibp`, `dehashed`,
+  `intelx`, `hudsonrock`, … and any FUTURE breach module are all wired by the one pass, for
+  free. Removed cycle 90's now-redundant per-module tagging (and its two module tests),
+  leaving a single mechanism. `util::breach_sector` was added to the `core → util` allowlist
+  in `tests/architecture.rs` — it is a pure, dependency-free offline classifier (no state,
+  no I/O), exactly the leaf category the guard already permits (`sim_anonymity`, `surnames`,
+  `city_coords`). +2 engine tests (the multi-key wiring resolves real-estate whichever key
+  a pool used; non-breach / unknown-source / idempotent no-ops); −2 superseded module tests.
+  Gate green: lib 3,330, 24 arch guards, fmt/clippy(`--all-targets`)/doc clean — verified on
+  rustc 1.96.0. Paired: `PROBLEM_TREE` cycle 91 — same commit.
+
+- **2026-06-21** — **Cycle 92 (brand→sector knowledge + the last two bare-name pools, reshaped
+  from a live run).** Working backwards from the real corpus: added a curated
+  `KNOWN_SOURCE_SECTORS` table to `util::breach_sector`, mapping the actual breach
+  brands/domains the live "Ali Kareem" graph surfaced (`neopets`→gaming, `tunngle`→gaming,
+  `deezer`→media, `edmodo`→education, `jefit`→health, `fling`→adult, `tumblr`→social,
+  `linkedin`→tech, …) plus the global long tail. Matching is whole-alnum-token, not
+  substring, so a needle can never bleed across an unrelated token (`zyngamania.com`→`None`);
+  resolution order is real-estate → structured category → known brand, each more conservative
+  than a guess. Added a `media` slug to the structured vocabulary for consistency. Then
+  finished the universal pass: `tag_breach_sector` now also reads `osintcat`'s dynamic
+  `breach_<name>` keys and `xposed_or_not`'s `breaches` list, and collects EVERY distinct
+  sector (multi-sector) rather than first-wins — an account in gaming+social+health breaches
+  earns all three tags, so a single-sector filter never misses it. `Entity::tag` dedups, so
+  the pass stays idempotent without the old early-return. +1 brand test (real corpus names),
+  +1 engine test (osintcat + multi-sector xposed). Gate green: lib 3,332, fmt/clippy
+  (`--all-targets`)/doc clean on rustc 1.96.0. Paired: `PROBLEM_TREE` cycle 92 — same commit.
