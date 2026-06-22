@@ -103,25 +103,39 @@ pub(crate) fn is_anchoring_geo_source(source: &str) -> bool {
     ANCHORING_GEO_SOURCES.contains(&source)
 }
 
-/// True when a `Coordinates` entity does **not** locate the subject and must be
-/// kept out of their footprint: it is `hosting`-tagged (a CDN/cloud edge), it
-/// carries an `infra:` map-feature tag (an Overpass POI — a camera, a cell tower
-/// — scraped near a geolocated point), or it has no person-anchoring
-/// corroborating source at all ([`ANCHORING_GEO_SOURCES`]) — i.e. it rests purely
-/// on IP/WHOIS geo, chronolocation, or POI enrichment. See AU-052.
-fn is_infrastructure_geo(e: &Entity) -> bool {
-    // Single tag pass: detect the HOSTING tag and any `infra:` map-feature tag
-    // together instead of two separate `.iter()` scans.
+/// True when a geo entity (`Coordinates` **or** `Address`) does **not** locate
+/// the subject and must be kept out of their footprint: it is `hosting`-tagged
+/// (a CDN/cloud edge), it carries an `infra:` map-feature tag (an Overpass POI —
+/// a camera, a cell tower — scraped near a geolocated point), it is a WHOIS
+/// `registrant` location (the domain owner's filing/privacy address, not the
+/// subject's home), or — **for `Coordinates` only** — it has no person-anchoring
+/// corroborating source at all ([`ANCHORING_GEO_SOURCES`]), i.e. a bare lat/lon
+/// resting purely on IP/WHOIS geo, chronolocation, or POI enrichment. Used by
+/// the `Coordinates` rules (AU-052/053/059) and the `Address` rollup rules
+/// (AU-018/026/030) so neither lets a registrant/hosting/IP-geo location vote
+/// the subject's physical position.
+pub(in crate::core::correlator) fn is_infrastructure_geo(e: &Entity) -> bool {
+    // Single tag pass: detect the HOSTING tag, a WHOIS `registrant` location, and
+    // any `infra:` map-feature tag together instead of separate `.iter()` scans.
     for t in &e.tags {
-        if t == crate::core::tags::HOSTING || t.starts_with("infra:") {
+        if t == crate::core::tags::HOSTING
+            || t == crate::core::tags::REGISTRANT
+            || t.starts_with("infra:")
+        {
             return true;
         }
     }
-    // Anchor check straight off the evidence iterator — no intermediate HashSet
-    // allocation, and short-circuits on the first anchoring source.
-    !e.corroborating_sources()
-        .iter()
-        .any(|s| ANCHORING_GEO_SOURCES.contains(s))
+    // The "no person-anchoring source" heuristic only holds for `Coordinates`: a
+    // bare lat/lon with no anchoring source is almost always an IP/WHOIS-derived
+    // point. A street `Address` legitimately comes from registry sources
+    // (au_property, au_electoral, qld_unclaimed, opencorporates) that are NOT in
+    // ANCHORING_GEO_SOURCES, so applying the anchoring test to an address would
+    // discard a real home — addresses are gated by the infra TAGS above only.
+    e.kind == EntityKind::Coordinates
+        && !e
+            .corroborating_sources()
+            .iter()
+            .any(|s| ANCHORING_GEO_SOURCES.contains(s))
 }
 
 /// The coordinates admissible to a *person's* geo footprint: confirmed

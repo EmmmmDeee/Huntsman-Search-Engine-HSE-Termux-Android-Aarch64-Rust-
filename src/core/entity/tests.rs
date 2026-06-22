@@ -140,6 +140,33 @@ fn geo_normalize_does_not_count_as_corroboration() {
 }
 
 #[test]
+fn name_intel_permutation_does_not_count_as_corroboration() {
+    // The H3 flaw: `name_intel` permutes the seed name into speculative
+    // `name × freemail` email guesses. Such a guess is a derivation of the
+    // input, not an independent sighting, so it must NOT self-corroborate into
+    // the cross-source rules (AU-003 fires at 2 sources). A pure permutation
+    // therefore has zero corroborating sources.
+    let mut email = Entity::new(EntityKind::Email, "cindy.haynes@gmail.com", 0.30, "s");
+    email.add_evidence(Evidence::new(
+        "name_intel",
+        "Speculative email permuted from name",
+    ));
+    // Display surfaces the derived lead…
+    assert_eq!(email.evidence_sources().len(), 1);
+    // …but corroboration credits no source, so AU-003/AU-034 cannot fire on it.
+    assert_eq!(email.corroborating_sources().len(), 0);
+
+    // One genuine observation = one source (still below the 2-source bar): the
+    // permutation does not contribute a phantom second source.
+    email.add_evidence(Evidence::new("search_engines", "found on a public page"));
+    assert_eq!(email.source_count(), 1, "only the real source counts");
+
+    // Two genuine sources DO corroborate — the speculation never blocked that.
+    email.add_evidence(Evidence::new("hibp", "appears in a breach"));
+    assert_eq!(email.source_count(), 2);
+}
+
+#[test]
 fn recall_does_not_count_as_corroboration() {
     // The exact fresh-vs-recalled regression: a single-source finding (here a
     // breach co-occurrence row) replayed from the local DB by the recall pass

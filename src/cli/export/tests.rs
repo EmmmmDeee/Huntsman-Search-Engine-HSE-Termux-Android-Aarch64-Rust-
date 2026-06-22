@@ -43,6 +43,50 @@ fn render_full_dumps_every_field_and_provenance() {
 }
 
 #[test]
+fn structured_exports_quarantine_candidates_but_full_retains_them() {
+    // H1: the CSV/JSON/GEXF exports used to ship the quarantined `candidate`
+    // rows (non-subject breach co-occurrence strangers) even though the
+    // self-audit promised they were "excluded from export". The structured
+    // exports now default to the subject's confirmed footprint, while the
+    // nothing-hidden `full` bundle still retains everything for transparency.
+    use crate::core::entity::{Entity, EntityKind};
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("quarantine_test.db");
+    let store = Store::open(db.to_str().unwrap()).unwrap();
+
+    let target = Target::new(TargetKind::Email, "subject@example-real.com");
+    let scan = Scan::new("scan-q", target);
+    store.upsert_scan(&scan).unwrap();
+
+    let confirmed = Entity::new(EntityKind::Email, "subject@example-real.com", 0.8, "scan-q");
+    let mut stranger = Entity::new(EntityKind::Person, "Random Stranger", 0.25, "scan-q");
+    stranger.demote_to_candidate(); // tags `candidate`
+    store.upsert_entities_batch(&[confirmed, stranger]).unwrap();
+
+    for body in [
+        render_csv(&store, "scan-q").unwrap(),
+        render_json(&store, "scan-q").unwrap(),
+        render_gexf(&store, "scan-q").unwrap(),
+    ] {
+        assert!(
+            body.contains("subject@example-real.com"),
+            "the confirmed subject entity is exported"
+        );
+        assert!(
+            !body.contains("Random Stranger"),
+            "the quarantined candidate must NOT appear in a structured export"
+        );
+    }
+
+    // The full (nothing-hidden) bundle still carries the quarantined row.
+    let full = render_full(&store, "scan-q").unwrap();
+    assert!(
+        full.contains("Random Stranger"),
+        "the full bundle retains quarantined rows for transparency"
+    );
+}
+
+#[test]
 fn debug_bundle_includes_dossier_sequence_and_audit() {
     use crate::core::entity::{Entity, EntityKind};
     use crate::core::event::{Event, EventKind};

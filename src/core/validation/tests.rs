@@ -428,7 +428,10 @@ fn validate_for_kind_dispatches() {
 }
 
 mod confusable_tests {
-    use super::super::{confusable_report, is_confusable_mixed_script, skeleton, strip_invisible};
+    use super::super::{
+        confusable_report, is_confusable_mixed_script, looks_like_gibberish_name, skeleton,
+        strip_invisible,
+    };
     use std::borrow::Cow;
 
     #[test]
@@ -474,5 +477,25 @@ mod confusable_tests {
         assert_eq!(bad.reason, "seed.confusable");
         assert!(bad.detail.contains("paypal.com"));
         assert!(confusable_report("paypal.com").valid);
+    }
+
+    #[test]
+    fn gibberish_name_flags_random_strings_but_spares_real_names() {
+        // L5: the breach-dump junk "names" — caught.
+        assert!(looks_like_gibberish_name("ZonJZRJHHWD GvkJCJRWHWD"));
+        assert!(looks_like_gibberish_name("GvkJCJRWHWD")); // all-consonant token
+        assert!(looks_like_gibberish_name("ZonJZRJHHWD")); // 6+ consonant run
+
+        // Real names — never flagged, including the hard cases:
+        assert!(!looks_like_gibberish_name("Cindy Haynes"));
+        assert!(!looks_like_gibberish_name("Jordan Avery"));
+        assert!(!looks_like_gibberish_name("Müller")); // accented (non-ASCII)
+        assert!(!looks_like_gibberish_name("Nguyễn")); // accented vowels
+        assert!(!looks_like_gibberish_name("Krzysztof")); // Slavic, max run < 6
+        assert!(!looks_like_gibberish_name("Vrkljan")); // 5-consonant run, under bar
+        assert!(!looks_like_gibberish_name("Ng")); // short token, ignored
+        assert!(!looks_like_gibberish_name("Strzelecki"));
+        // A real surname next to a short particle stays safe.
+        assert!(!looks_like_gibberish_name("Le Guin"));
     }
 }

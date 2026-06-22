@@ -1194,10 +1194,15 @@ fn ground_truth_jordan_avery_identity_and_booroobin_geo() {
 
     // Identity anchor — the email cross-confirmed by two independent
     // modules, plus the username and phone that complete the cluster.
+    // NB both sources are genuine *observations* (two breach corpora): a
+    // `name_intel` name-permutation is a derivation of the seed, not an
+    // independent sighting, so it must not be one of the corroborating two
+    // (see `ENRICHMENT_ONLY_SOURCES`) — otherwise a `name × freemail` guess
+    // would self-confirm into AU-003.
     let email = id(
         EntityKind::Email,
         "jordanavery@gmail.com",
-        &["oathnet_pro", "name_intel"],
+        &["oathnet_pro", "hibp"],
     );
     let username = id(
         EntityKind::Username,
@@ -3940,15 +3945,28 @@ fn au021_fires_for_api_key_entity() {
 
 #[test]
 fn au030_fires_for_three_source_geo_cluster() {
+    // Genuine person-anchoring geo sources converging — AU-030 fires.
     let mut c1 = Entity::new(EntityKind::Coordinates, "51.5,0.1", 0.7, "s");
-    c1.add_evidence(Evidence::new("ip_geo", "x"));
-    c1.add_evidence(Evidence::new("ipinfo", "x"));
+    c1.add_evidence(Evidence::new("geocode", "x"));
+    c1.add_evidence(Evidence::new("wigle", "x"));
     let mut c2 = Entity::new(EntityKind::Coordinates, "51.6,0.2", 0.7, "s");
-    c2.add_evidence(Evidence::new("maxmind", "x"));
+    c2.add_evidence(Evidence::new("exif_geo", "x"));
     let r = rule_au_030_geo_convergence_score(&[c1, c2], "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-030");
     assert_eq!(r[0].severity, Severity::Medium);
+
+    // H5: the same shape built from IP-geo lookups (the host's location, not the
+    // subject's) is infrastructure geo and must NOT manufacture convergence.
+    let mut ip1 = Entity::new(EntityKind::Coordinates, "51.5,0.1", 0.7, "s");
+    ip1.add_evidence(Evidence::new("ip_geo", "x"));
+    ip1.add_evidence(Evidence::new("ipinfo", "x"));
+    let mut ip2 = Entity::new(EntityKind::Coordinates, "51.6,0.2", 0.7, "s");
+    ip2.add_evidence(Evidence::new("maxmind", "x"));
+    assert!(
+        rule_au_030_geo_convergence_score(&[ip1, ip2], "s", 0).is_empty(),
+        "IP-geo coordinates are the host's location, not subject geo convergence"
+    );
 }
 
 #[test]

@@ -185,3 +185,48 @@ pub fn confusable_report(value: &str) -> ValidationReport {
         ValidationReport::ok()
     }
 }
+
+/// True when a `Person` value looks like a **random/gibberish string** rather
+/// than a real name — the `ZonJZRJHHWD GvkJCJRWHWD`-style junk that breach
+/// co-occurrence dumps mint as "names".
+///
+/// **Deliberately conservative** — silently dropping a real (unusual) name is
+/// worse than admitting a low-confidence candidate, so the bar is set where no
+/// natural-language name reaches it. A whitespace-separated token is gibberish
+/// only when its alphabetic core is ≥ 6 letters AND either:
+///   * it contains **no** vowel-like character at all (every letter is an ASCII
+///     consonant — `GvkJCJRWHWD`), or
+///   * it contains a run of **6+ consecutive** ASCII consonants (`ZonJZRJHHWD`).
+///
+/// A "vowel-like" char is an ASCII vowel (incl. `y`) **or any non-ASCII letter**:
+/// treating accented characters as run-breaking keeps real names safe (`Müller`,
+/// `Nguyễn`), and even the consonant-densest Slavic names (`Vrkljan` → max run 5)
+/// stay under the 6 bar. Pure/offline.
+#[must_use]
+pub fn looks_like_gibberish_name(value: &str) -> bool {
+    // A char that interrupts a consonant run: an ASCII vowel (incl. `y`) or any
+    // non-ASCII letter (an accented vowel/consonant we don't want to misjudge).
+    fn breaks_run(c: char) -> bool {
+        !c.is_ascii() || matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u' | 'y')
+    }
+    value.split_whitespace().any(|token| {
+        let letters: Vec<char> = token.chars().filter(|c| c.is_alphabetic()).collect();
+        if letters.len() < 6 {
+            return false;
+        }
+        let mut run = 0usize;
+        let mut max_run = 0usize;
+        let mut any_break = false;
+        for &c in &letters {
+            if breaks_run(c) {
+                any_break = true;
+                run = 0;
+            } else {
+                run += 1;
+                max_run = max_run.max(run);
+            }
+        }
+        // No vowel-like char anywhere (all ASCII consonants), or a 6+ run.
+        !any_break || max_run >= 6
+    })
+}
