@@ -886,6 +886,40 @@ fn au037_fires_critical_on_plaintext_credentials() {
     assert!(rule_au_037_credential_exposure(&[email], "s", 0).is_empty());
 }
 
+#[test]
+fn au037_entity_uids_are_deterministic_under_input_order() {
+    // Determinism fix (the AU-039 take(N) family): the secret/identity samples are
+    // sorted-then-capped, so the persisted entity_uids SET is independent of the
+    // randomized HashMap input order — preventing duplicate AU-037 rows across the
+    // live and finalise passes. Use >cap (20) secrets so truncation engages.
+    use std::collections::BTreeSet;
+    let mut ents: Vec<Entity> = (0..25)
+        .map(|i| Entity::new(EntityKind::Password, format!("pw{i:02}"), 0.9, "s"))
+        .collect();
+    ents.push(Entity::new(
+        EntityKind::Email,
+        "subject@example.com",
+        0.9,
+        "s",
+    ));
+
+    let forward = rule_au_037_credential_exposure(&ents, "s", 0);
+    let mut reversed = ents.clone();
+    reversed.reverse();
+    let backward = rule_au_037_credential_exposure(&reversed, "s", 0);
+
+    assert_eq!(forward.len(), 1);
+    assert_eq!(backward.len(), 1);
+    let f: BTreeSet<&String> = forward[0].entity_uids.iter().collect();
+    let b: BTreeSet<&String> = backward[0].entity_uids.iter().collect();
+    assert_eq!(
+        f, b,
+        "entity_uids must be order-independent (sorted-then-capped)"
+    );
+    // The 20-cap on secrets is honoured (+ the one identity).
+    assert!(forward[0].entity_uids.len() <= 21);
+}
+
 // ── AU-038 ──────────────────────────────────────────────────────────
 
 #[test]
