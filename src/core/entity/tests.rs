@@ -303,6 +303,39 @@ fn source_count_no_evidence_uses_field() {
 }
 
 #[test]
+fn source_count_ignores_stored_field_when_all_evidence_is_noncorroborating() {
+    // Regression (live "Cindy Haynes" scan): a speculative name-permuted email
+    // whose ONLY evidence is the non-corroborating `name_intel` permutation plus
+    // a `recall` replay was lifted to VERIFIED — `source_count` fell back to the
+    // stored `corroboration` field, which recall ratchets up by one on every
+    // re-scan (the bundle showed C_eff 0.81 at corroboration=4). With evidence
+    // present but ALL non-corroborating, the count must be 1 (the stored
+    // magnitude is ignored), so the guess stays at its base confidence and the
+    // fallback is reserved for genuinely evidence-less synthetic entities.
+    let mut e = Entity::new(EntityKind::Email, "cindy.haynes@gmail.com", 0.30, "s");
+    e.corroboration = 4; // ratcheted up across recall cycles
+    e.add_evidence(Evidence::new(
+        "name_intel",
+        "Speculative email permuted from name",
+    ));
+    e.add_evidence(Evidence::new(
+        "recall",
+        "Recalled from the local intelligence database",
+    ));
+    assert_eq!(e.evidence_sources().len(), 2, "provenance keeps both");
+    assert_eq!(
+        e.source_count(),
+        1,
+        "all-non-corroborating evidence is one source; stored field ignored"
+    );
+    assert!(
+        (e.c_effective() - 0.30).abs() < 1e-9,
+        "stays at base confidence, not resurrected to VERIFIED"
+    );
+    assert_eq!(e.classify(), Classification::Candidate);
+}
+
+#[test]
 fn c_eff_clamped_to_one() {
     let mut e = email("a@b.com");
     e.confidence = 0.99;

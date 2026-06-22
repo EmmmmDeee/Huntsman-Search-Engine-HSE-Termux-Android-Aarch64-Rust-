@@ -461,11 +461,22 @@ impl Entity {
             // original bug), and deterministic self-enrichment passes
             // (`geo_normalize`) are excluded so they can't fabricate agreement.
             distinct
-        } else {
-            // No evidence (synthetic/test entity, or constructed pre-evidence):
-            // fall back to the explicitly-set field so a deliberate strength
-            // value is still honoured.
+        } else if self.evidence.is_empty() {
+            // No evidence at all (synthetic/test entity, or constructed
+            // pre-evidence): fall back to the explicitly-set field so a
+            // deliberate strength value is still honoured.
             self.corroboration.max(1)
+        } else {
+            // Evidence EXISTS but every record is non-corroborating — a
+            // deterministic enrichment pass (`geo_normalize`/`name_intel`) and/or
+            // a `recall` replay. Such an entity is NOT cross-corroborated, so it
+            // counts as ONE source. The stored `corroboration` magnitude must NOT
+            // resurrect it: recall ratchets that field up by one every re-scan,
+            // and a live scan was using it to lift a speculative name-permuted
+            // email (`cindy.haynes@gmail.com`, only `name_intel` + `recall`) to
+            // VERIFIED (C_eff 0.81) with zero real-world confirmation. A genuine
+            // hit attaches a corroborating source and takes the `distinct` branch.
+            1
         }
     }
 
