@@ -389,7 +389,14 @@ fn extract_serial_hex(der: &[u8]) -> String {
     let Some(start) = start else {
         return String::new();
     };
-    let len = der[start + 1] as usize;
+    // Bounds-check the length read: `der` is the remote leaf certificate, fully
+    // attacker-controlled and not required to be valid X.509. The wrapper scan
+    // can settle `start` on the final bytes, so `der[start + 1]` may be one past
+    // the end — guard it instead of indexing (mirrors the safe fallback branch).
+    let Some(&len_byte) = der.get(start + 1) else {
+        return String::new();
+    };
+    let len = len_byte as usize;
     if len == 0 || len > 20 || start + 2 + len > der.len() {
         return String::new();
     }
