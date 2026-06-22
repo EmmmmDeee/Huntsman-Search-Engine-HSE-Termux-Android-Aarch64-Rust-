@@ -191,7 +191,21 @@ pub fn is_fragment_value(kind: &EntityKind, value: &str) -> bool {
         // street name. A value with NO alphabetic character is a breach record's
         // numeric `city` field (a postcode) glued to a street number, e.g.
         // "4125, 327" (seen from an ashleymadison `city=4125` row); not a place.
-        EntityKind::Address => !v.chars().any(char::is_alphabetic),
+        //
+        // A BARE ISO country code ("AU", "US", "BR") is likewise not an address —
+        // it is a COUNTRY. Breach `country` fields emit it as one, and because the
+        // 2-letter code is shared across hundreds of unrelated co-occurrence rows
+        // it corroborates into a VERIFIED phantom address (a live QLD-subject scan
+        // produced "US" at corroboration=106). A genuine address carries locality
+        // beyond the country; the country itself survives on the `country:XX` tag
+        // and evidence attributes, so nothing is lost by refusing the entity.
+        EntityKind::Address => {
+            let t = v.trim();
+            !t.chars().any(char::is_alphabetic)
+                || (t.len() == 2
+                    && crate::util::geohash::country::country_name_for_iso(&t.to_ascii_uppercase())
+                        .is_some())
+        }
         _ => false,
     }
 }
