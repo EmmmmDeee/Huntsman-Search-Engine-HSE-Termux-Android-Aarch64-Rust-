@@ -487,10 +487,23 @@ pub(in crate::modules::search_engines) fn url_matches_target(url: &str, terms: &
     if path.len() < 4 {
         return false;
     }
-    terms
+    let significant: Vec<&str> = terms
         .iter()
+        .map(String::as_str)
         .filter(|w| w.len() >= 4)
-        .any(|w| path.contains(w.as_str()))
+        .collect();
+    match significant.split_last() {
+        None => false,
+        // A single distinctive token (email handle, username, one-word name): a
+        // path hit is sufficient — that token IS the identity.
+        Some((only, [])) => path.contains(only),
+        // A multi-part name: the LAST significant token is the surname — the
+        // distinctive anchor. A common FIRST name alone cross-attributes
+        // different people (a "Cindy He" UNSW staff page matched "Cindy
+        // Haynes"), so require the surname in the path; given names corroborate
+        // but cannot stand in for it.
+        Some((surname, _given)) => path.contains(surname),
+    }
 }
 
 /// Count how many DISTINCT engines returned each canonical URL, keyed by the

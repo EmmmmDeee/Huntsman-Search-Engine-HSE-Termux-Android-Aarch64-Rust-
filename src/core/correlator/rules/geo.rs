@@ -547,8 +547,12 @@ pub(in crate::core::correlator) fn rule_au_027_address_coordinates_chain(
         .expect("parsed is non-empty, so at least one cluster exists");
     let (anchor_lat, anchor_lon) = dominant[0].1;
 
-    let mut uids: Vec<String> = addresses.iter().take(3).map(|a| a.uid.clone()).collect();
-    uids.extend(dominant.iter().take(3).map(|(c, _)| c.uid.clone()));
+    // Full member set (no `take` cap): the live/finalise passes must yield the same
+    // uid SET so containment-dedup folds them — a `take(3)` of the HashMap-ordered
+    // address list gave disjoint samples that persisted as duplicate AU-027 rows
+    // (the AU-018 defect/fix). The described counts are already the full counts.
+    let mut uids: Vec<String> = addresses.iter().map(|a| a.uid.clone()).collect();
+    uids.extend(dominant.iter().map(|(c, _)| c.uid.clone()));
     vec![Correlation::new(
         "AU-027",
         "Address-coordinates geolocation chain",

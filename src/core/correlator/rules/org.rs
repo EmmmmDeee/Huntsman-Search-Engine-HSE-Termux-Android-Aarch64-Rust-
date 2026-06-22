@@ -60,7 +60,11 @@ pub(in crate::core::correlator) fn rule_au_022_organisation_with_breach(
         return Vec::new();
     }
     let mut uids: Vec<String> = orgs.iter().map(|e| e.uid.clone()).collect();
-    uids.extend(breach_entities.iter().take(5).map(|e| e.uid.clone()));
+    // Full member set (no `take` cap): the live and finalise passes must yield the
+    // same uid SET so storage's containment-dedup folds them. A `take(5)` of the
+    // HashMap-ordered breach list gave disjoint 5-samples across passes that
+    // persisted as duplicate AU-022 rows — the same defect (and fix) as AU-018.
+    uids.extend(breach_entities.iter().map(|e| e.uid.clone()));
     vec![Correlation::new(
         "AU-022",
         "Organisation linked to breach data",
@@ -141,7 +145,10 @@ pub(in crate::core::correlator) fn rule_au_025_corporate_identity_link(
         return Vec::new();
     }
     let mut uids: Vec<String> = orgs.iter().map(|o| o.uid.clone()).collect();
-    uids.extend(persons.iter().take(5).map(|p| p.uid.clone()));
+    // Full member set (no `take` cap) so the live/finalise uid SETs match and
+    // containment-dedup folds them, as in AU-018/AU-022 — a HashMap-ordered
+    // `take(5)` sample otherwise persists as duplicate AU-025 rows.
+    uids.extend(persons.iter().map(|p| p.uid.clone()));
     vec![Correlation::new(
         "AU-025",
         "Corporate registry linked to identity",

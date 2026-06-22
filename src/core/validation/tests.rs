@@ -52,6 +52,17 @@ fn fragment_value_rejects_truncated_and_keeps_complete() {
         "327 Main St, Brisbane QLD 4125"
     ));
 
+    // A BARE ISO country code is a COUNTRY, not an address. Breach `country`
+    // fields emit it, and the shared 2-letter code corroborates across hundreds
+    // of unrelated co-occurrence rows into a VERIFIED phantom address (a live
+    // scan produced "US" at corroboration=106 for a QLD subject). Reject it; a
+    // real locality that merely names a country is still kept.
+    assert!(is_fragment_value(&K::Address, "AU"));
+    assert!(is_fragment_value(&K::Address, "US"));
+    assert!(is_fragment_value(&K::Address, "br")); // case-insensitive
+    assert!(!is_fragment_value(&K::Address, "Sydney, Australia"));
+    assert!(!is_fragment_value(&K::Address, "Perth, WA")); // 2-letter state, not a country
+
     // Inherently-unique secrets are never fragments even if oddly shaped.
     assert!(!is_fragment_value(&K::Password, "@p"));
     assert!(!is_fragment_value(&K::ApiKey, "sk-..."));

@@ -461,11 +461,22 @@ impl Entity {
             // original bug), and deterministic self-enrichment passes
             // (`geo_normalize`) are excluded so they can't fabricate agreement.
             distinct
-        } else {
-            // No evidence (synthetic/test entity, or constructed pre-evidence):
-            // fall back to the explicitly-set field so a deliberate strength
-            // value is still honoured.
+        } else if self.evidence.is_empty() {
+            // No evidence at all (synthetic/test entity, or constructed
+            // pre-evidence): fall back to the explicitly-set field so a
+            // deliberate strength value is still honoured.
             self.corroboration.max(1)
+        } else {
+            // Evidence EXISTS but every record is non-corroborating — a
+            // deterministic enrichment pass (`geo_normalize`/`name_intel`) and/or
+            // a `recall` replay. Such an entity is NOT cross-corroborated, so it
+            // counts as ONE source. The stored `corroboration` magnitude must NOT
+            // resurrect it: recall ratchets that field up by one every re-scan,
+            // and a live scan was using it to lift a speculative name-permuted
+            // email (`cindy.haynes@gmail.com`, only `name_intel` + `recall`) to
+            // VERIFIED (C_eff 0.81) with zero real-world confirmation. A genuine
+            // hit attaches a corroborating source and takes the `distinct` branch.
+            1
         }
     }
 
@@ -836,14 +847,23 @@ pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
 pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
     match kind {
         EntityKind::Email => {
+            // Breach dumps sometimes append a literal escape tail
+            // (`…@gmail.com\r\n` — the four characters `\ r \ n`, NOT real
+            // whitespace that `trim` would catch) or embed stray whitespace. A
+            // real address contains neither a backslash nor internal whitespace,
+            // so cut at the first of either before folding — otherwise the junk
+            // tail fragments one address across two UIDs and leaks a malformed
+            // value into the bundle. Valid emails have no such char, so their
+            // UID is unchanged.
+            let trimmed = value.trim();
+            let cut = trimmed
+                .find(|c: char| c == '\\' || c.is_whitespace())
+                .unwrap_or(trimmed.len());
             // Total Unicode case-fold for dedup. `str::to_lowercase` maps every
             // char through `char::to_lowercase`, so a value whose only capital is
             // non-ASCII (`Ölaf`, a Cyrillic/Greek handle, Turkish `İ`) folds the
-            // same as its all-caps spelling — they must share a UID. (A previous
-            // ASCII-only "fast path" returned such values unfolded, fragmenting
-            // one identity across two UIDs; it also still allocated, so it bought
-            // nothing.)
-            value.trim().to_lowercase()
+            // same as its all-caps spelling — they must share a UID.
+            trimmed[..cut].to_lowercase()
         }
         EntityKind::Username => {
             // Same total Unicode case-fold as Email, plus stripping a leading `@`

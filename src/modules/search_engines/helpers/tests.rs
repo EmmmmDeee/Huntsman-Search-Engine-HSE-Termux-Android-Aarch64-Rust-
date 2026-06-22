@@ -480,6 +480,29 @@ fn url_matches_target_ignores_terms_under_4_chars() {
     assert!(!url_matches_target("https://example.com/abc/page", &terms));
 }
 
+#[test]
+fn url_matches_target_requires_surname_for_multipart_name() {
+    // Regression (live "Cindy Haynes" scan): a name search returns namesakes, so
+    // a common FIRST name alone must NOT match — a "Cindy He" UNSW page was being
+    // attributed to "Cindy Haynes". For a multi-part name the distinctive surname
+    // (last token) is required; given names corroborate but can't stand in.
+    let terms = vec!["cindy".to_string(), "haynes".to_string()];
+    assert!(!url_matches_target(
+        "https://www.unsw.edu.au/staff/cindy-he",
+        &terms
+    ));
+    assert!(!url_matches_target(
+        "https://example.com/cindy-smith",
+        &terms
+    ));
+    assert!(url_matches_target(
+        "https://example.com/cindy-haynes",
+        &terms
+    ));
+    // The surname alone is sufficient (initial + surname profile pages).
+    assert!(url_matches_target("https://example.com/c-haynes", &terms));
+}
+
 // ── canonicalize_url ─────────────────────────────────────────────────────────
 
 #[test]

@@ -235,7 +235,30 @@ pub(super) fn build_entities(
         //   AU place contextual     → 0.42 (context-inferred, no explicit state)
         // Corroboration cap for postcode-only / bare addresses is 0.60 to prevent
         // pure suburb mentions reaching Probable (0.75+) via repetition alone.
-        for addr in extract_addresses_from_text(&combined_text) {
+        //
+        // Subject-relevance gate: a name search returns fuzzy namesakes (a live
+        // "Cindy Haynes" scan surfaced a "Cindy He" UNSW staff page); trusting
+        // THEIR address injects a false location — here a "Sydney, NSW" fix that
+        // contradicted the QLD evidence and drove a wrong-state AU-056
+        // jurisdiction plus a 700 km geo-divergence. For a multi-part name,
+        // require the distinctive surname (the last name token) somewhere in this
+        // result's snippet or URL before extracting its address. Single-token
+        // targets (email handle / username) are not prone to this first-name
+        // collision and are unaffected.
+        let location_on_subject = if terms.len() >= 2 {
+            let hay = format!("{combined_text} {}", r.url).to_lowercase();
+            terms
+                .last()
+                .is_some_and(|surname| hay.contains(surname.as_str()))
+        } else {
+            true
+        };
+        let snippet_addresses = if location_on_subject {
+            extract_addresses_from_text(&combined_text)
+        } else {
+            Vec::new()
+        };
+        for addr in snippet_addresses {
             let addr_key = format!("@addr:{}", normalise_address_key(&addr));
             let has_postcode = addr
                 .split_whitespace()
