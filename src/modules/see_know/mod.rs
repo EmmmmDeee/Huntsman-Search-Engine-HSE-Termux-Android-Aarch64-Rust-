@@ -285,6 +285,17 @@ impl Module for SeekNow {
             let endpoint_results = dispatch_plan(key, v, &plan).await;
 
             for (endpoint, items) in &endpoint_results {
+                // Per-endpoint yield tracing: surfaces which endpoints return
+                // data for which target kinds in live logs, supporting the
+                // operator's directive to identify advantageous SeekNow usage.
+                if !items.is_empty() {
+                    tracing::debug!(
+                        endpoint,
+                        hits = items.len(),
+                        target_kind = ?target.kind,
+                        "see_know endpoint yielded data"
+                    );
+                }
                 for item in items {
                     extract_entities(
                         item,

@@ -21,20 +21,18 @@ use crate::util::see_know;
 
 use super::pivots::{looks_like_discord_id, looks_like_steam_id};
 
-/// SeekNow endpoints that hit a SINGLE third-party site to check username
-/// presence — exactly what the FREE `username_search` module already covers
-/// across 600+ sites (GitHub, X/Twitter, Reddit, TikTok, Roblox, Xbox,
-/// Minecraft, …). Spending a paid SeekNow lookup to re-confirm one of these is
-/// pure waste, so [`effective_plan`] strips them from every plan by default.
+/// SeekNow endpoints that check username presence on a single third-party
+/// site. The free `username_search` module also confirms existence across
+/// 600+ sites, but SeekNow's per-platform calls add what the free stack
+/// cannot: platform-specific profile depth (bios, follower counts, linked
+/// accounts) and breach/stealer context tied to THAT platform account.
 ///
-/// They are deliberately NOT deleted: the response extractors stay intact and
-/// the capability remains one filter-flip away, but the standing policy is
-/// "free breadth first, paid quota only for what free can't do" — breach /
-/// stealer / username-history aggregation and cross-platform ID resolution
-/// (Discord/Steam), which `SocialAggregate` (one multi-platform call) and the
-/// breach endpoints provide. Search-engine scraping (`search_engines`) and
-/// `social_probe` are the other free breadth methods layered alongside
-/// `username_search`; SeekNow sits on top of all of them as the paid multiplier.
+/// These are NOT filtered out. The operator's standing directive is to use
+/// see-know.eu MAXIMALLY — SeekNow's 5,000-daily quota vastly exceeds what
+/// HSE can realistically spend, so every endpoint that returns richer data
+/// than the free stack should fire. The budget cap (300/scan, 4,500/session)
+/// is the only rate limiter. Kept as a named constant for documentation and
+/// in case a future env-flag wants to restore conservative mode.
 const FREE_COVERED_SINGLE_ORIGIN: &[EndpointCall] = &[
     EndpointCall::GithubProfile,
     EndpointCall::TwitterProfile,
@@ -45,20 +43,24 @@ const FREE_COVERED_SINGLE_ORIGIN: &[EndpointCall] = &[
     EndpointCall::MinecraftProfile,
 ];
 
-/// True if `call` is a single-origin presence check the free username stack
-/// already covers (see [`FREE_COVERED_SINGLE_ORIGIN`]).
-fn is_free_covered_single_origin(call: EndpointCall) -> bool {
-    FREE_COVERED_SINGLE_ORIGIN.contains(&call)
+/// The plan actually dispatched: the full [`plan_endpoints`] matrix.
+///
+/// Previously this filtered out [`FREE_COVERED_SINGLE_ORIGIN`] to conserve
+/// quota. The operator's maximisation directive (SeekNow is the highest-
+/// priority paid source; its 5,000-daily pool is effectively unlimited for
+/// a single-operator deployment) means every endpoint that adds platform-
+/// specific profile depth or breach context should fire. Budget caps bound
+/// total spend; platform-presence filtering no longer does.
+pub(super) fn effective_plan(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
+    plan_endpoints(kind, value)
 }
 
-/// The plan actually dispatched: [`plan_endpoints`] minus the single-origin
-/// endpoints free username search already covers. Centralised so the
-/// quota-conservation policy is enforced in exactly one place and is unit
-/// testable without an HTTP client.
-pub(super) fn effective_plan(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
-    let mut plan = plan_endpoints(kind, value);
-    plan.retain(|&c| !is_free_covered_single_origin(c));
-    plan
+/// True if `call` is a platform-presence check that SeekNow covers at
+/// platform-profile depth. Retained for documentation and future policy
+/// control; not used by [`effective_plan`].
+#[allow(dead_code)]
+fn is_free_covered_single_origin(call: EndpointCall) -> bool {
+    FREE_COVERED_SINGLE_ORIGIN.contains(&call)
 }
 
 /// Per-target endpoint plan — names that will be dispatched concurrently

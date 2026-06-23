@@ -69,43 +69,34 @@ use super::*;
     }
 
     #[test]
-    fn effective_plan_drops_free_covered_single_origin_endpoints() {
-        // Quota conservation: SeekNow must not spend a paid lookup on a
-        // single-origin presence check the free username_search stack already
-        // covers. effective_plan() is what actually dispatches.
+    fn effective_plan_fires_the_full_username_matrix() {
+        // Maximisation directive: SeekNow's 5,000-daily quota is effectively
+        // unlimited for a single-operator deployment — every endpoint that adds
+        // platform-specific profile depth or breach context must fire. The old
+        // FREE_COVERED_SINGLE_ORIGIN filter that dropped github/twitter/… has
+        // been removed; effective_plan() now returns the complete matrix and
+        // relies solely on the budget cap (300/scan) as the rate limiter.
         let labels: Vec<&str> = effective_plan(TargetKind::Username, "alice")
             .iter()
             .map(|c| c.label())
             .collect();
-        for dropped in [
+        // Full platform coverage — every endpoint that adds profile+breach depth.
+        for expected in [
+            "social",
             "github",
             "twitter",
             "reddit",
             "tiktok",
+            "username_history",
             "roblox",
             "xbox",
             "minecraft",
         ] {
             assert!(
-                !labels.contains(&dropped),
-                "effective plan must DROP free-covered '{dropped}'; got {labels:?}"
+                labels.contains(&expected),
+                "effective plan must include '{expected}' (max-coverage mode); got {labels:?}"
             );
         }
-        // …while keeping the paid-unique value: username-history plus the
-        // multi-platform aggregate (one call across many sites — not single-origin).
-        for kept in ["social", "username_history"] {
-            assert!(
-                labels.contains(&kept),
-                "effective plan must KEEP paid-unique '{kept}'; got {labels:?}"
-            );
-        }
-        // The full matrix stays self-documenting — only dispatch is gated.
-        assert!(
-            plan_endpoints(TargetKind::Username, "alice")
-                .iter()
-                .any(|c| c.label() == "github"),
-            "plan_endpoints retains the capability (one policy-flip away)"
-        );
     }
 
     #[test]

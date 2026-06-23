@@ -10,28 +10,34 @@ pub use crate::util::budget::BudgetSnapshot;
 
 /// Per-scan + per-session quota budget for SeekNow API calls.
 ///
-/// SeekNow's premiumhq plan grants 5,000 daily lookups. The operator's
-/// standing directive is to use see-know.eu *maximally* — extensively, within
-/// reason, on every remotely promising seed — to maximise cross-correlation
-/// and the confidence of recursive searching. So each scan gets a 160-query
-/// envelope (env-tunable via `HUNTSMAN_SEEKNOW_SCAN_CAP`, runtime-overridable
-/// via `ScanOptions::seeknow_scan_cap`). A single Username seed alone plans up
-/// to 11 specialised endpoints (social aggregate, github, twitter, reddit,
-/// tiktok, history, roblox, xbox, minecraft, + discord/steam pivots)
-/// on top of the universal `/search`; with depth expansion every discovered
-/// username/email/phone/domain consumes its own matrix, so a cap of 160 lets
-/// the full 18-endpoint pool fire across ~10 recursively-discovered pivots in
-/// one scan — corroborating far more of the graph — while still allowing many
-/// full scans before the daily 5,000 ceiling. The cap is refreshed at each
-/// expansion-round boundary ([`refresh_round_budget`]) so SeekNow participates
-/// in EVERY iteration; the 500-query session ceiling (env-tunable via
-/// `HUNTSMAN_SEEKNOW_SESSION_CAP`, hard-clamped to 500 by the engine) bounds the
-/// total across all rounds of a deep scan — the "bound everything" invariant for
-/// a 4 GB device — while leaving room for ~3 full rounds at the per-round cap.
+/// SeekNow's premiumhq plan grants 5,000 daily lookups — compared with
+/// OathNet's much smaller pool, this is effectively unlimited for a single
+/// Termux-Android operator. The standing directive is to use see-know.eu
+/// MAXIMALLY: fire every useful endpoint on every viable seed, recurse
+/// pivots at full depth, and spend quota generously to maximise
+/// cross-correlation, confidence, and graph coverage. Budget caps are a
+/// safety net against bugs and misconfiguration, not a rationing policy.
+///
+/// Scan cap (default 300, env `HUNTSMAN_SEEKNOW_SCAN_CAP`,
+/// runtime `ScanOptions::seeknow_scan_cap`):
+///   A Username seed plans the full 18-endpoint matrix (breach+stealer+
+///   external via `/search`, social aggregate, all platform profiles,
+///   username history, discord/steam pivots). With 10 recursively-discovered
+///   pivots and the full matrix, that is ~180 calls per round. The cap at 300
+///   comfortably covers one full round plus one depth pass, while a single
+///   scan still consumes only 6 % of the daily 5,000 pool. The cap is
+///   refreshed at each expansion-round boundary ([`refresh_round_budget`])
+///   so SeekNow participates in EVERY iteration.
+///
+/// Session cap (default 4,500, env `HUNTSMAN_SEEKNOW_SESSION_CAP`):
+///   Bounds total dispatch across all scans in one `hse serve` / `hse live`
+///   process lifetime — 90 % of the daily pool, leaving 500 for other
+///   incidental usage. At the per-scan cap this allows ~15 full scans per
+///   session before the server's own quota-exhaustion response takes over.
 pub(super) static BUDGET: QuotaBudget = QuotaBudget::new(
     "seeknow",
-    160,
-    500,
+    300,
+    4500,
     "HUNTSMAN_SEEKNOW_SCAN_CAP",
     "HUNTSMAN_SEEKNOW_SESSION_CAP",
 );

@@ -272,19 +272,19 @@ fn budget_snapshot_reports_active_caps() {
 }
 
 #[test]
-fn default_scan_cap_is_higher_than_legacy_eight() {
-    // Regression guard for the operator's "use see-know.eu extensively"
-    // directive. The legacy cap was 8 lookups (99.84% of quota unused);
-    // it was raised to 120 and then to 160 so the full endpoint matrix
-    // fires across ~10 recursively-discovered pivots per round. Lock the
-    // floor at 120 so coverage can't silently regress below "extensive"
-    // (the per-round cap; the per-session ceiling is separate, now 500).
+fn default_scan_cap_is_at_least_maximise_floor() {
+    // Regression guard for the operator's "use see-know.eu MAXIMALLY"
+    // directive. The cap started at 8 (99.84 % unused), was raised to 120,
+    // 160, and now 300 (6 % of the 5,000-daily pool per scan) so the full
+    // 18-endpoint matrix fires across ~10 recursively-discovered pivots.
+    // Floor is 200: anything lower regresses toward the conservative mode
+    // explicitly rejected by the standing maximisation directive.
     let _guard = BUDGET_TEST_LOCK.lock();
     reset_budget();
     let cap = budget_snapshot().scan_cap;
     assert!(
-        (120..=200).contains(&cap),
-        "scan cap {cap} outside the extensive-use band [120, 200]"
+        cap >= 200,
+        "scan cap {cap} is below the maximise floor of 200 — standing directive requires extensive use"
     );
 }
 
