@@ -40,6 +40,10 @@ fn render_full_dumps_every_field_and_provenance() {
     assert!(out.contains("api_key_origin = see-know.eu:seek-62650f9a…0fd0a4"));
     assert!(out.contains("via_endpoint = search"));
     assert!(out.contains("username = 3toadsloth"));
+    // Exposure Index headline + breakdown mirror the live dossier — the on-disk
+    // full dossier opens with the same operator-facing verdict.
+    assert!(out.contains("── EXPOSURE INDEX ──"));
+    assert!(out.contains("Exposure "));
 }
 
 #[test]
@@ -144,6 +148,7 @@ fn debug_bundle_includes_dossier_sequence_and_audit() {
     assert!(out.contains("src/lib.rs"));
     assert!(out.contains("src/cli/export/mod.rs"));
     assert!(out.contains("HUNTSMAN FULL DOSSIER")); // §1 embeds render_full
+    assert!(out.contains("── EXPOSURE INDEX")); // §1 headline mirrors live dossier
     assert!(out.contains("── CORRELATIONS")); // §2
     assert!(out.contains("── SCAN SEQUENCE (2 events)")); // §3
     assert!(out.contains("module_start")); // histogram + JSONL

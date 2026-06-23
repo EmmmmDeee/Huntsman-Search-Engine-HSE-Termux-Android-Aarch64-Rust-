@@ -53,6 +53,7 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
         .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
     let mut entities = store.entities_for_scan(sid)?;
     let relations = store.relations_for_scan(sid)?;
+    let correlations = store.correlations_for_scan(sid)?;
     // Stable, readable grouping: by kind, then value.
     entities.sort_by(|a, b| {
         a.kind
@@ -95,6 +96,23 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
     let _ = writeln!(s, "status     : {:?}", scan.status);
     let _ = writeln!(s, "entities   : {}", entities.len());
     let _ = writeln!(s, "relations  : {}", relations.len());
+
+    // Exposure Index — the calibrated 0–100 headline with its transparent
+    // per-signal breakdown, mirroring the live dossier (`print_dossier`) so the
+    // on-disk/debug artifact opens with the same operator-facing verdict. Note
+    // `assess` excludes candidate rows and sub-floor speculation internally, so
+    // this matches what the operator saw live even though the dossier below lists
+    // every (incl. candidate) entity unredacted.
+    let exposure = crate::core::exposure::assess(&entities, &correlations);
+    let _ = writeln!(s, "\n── EXPOSURE INDEX ──");
+    let _ = writeln!(s, "  {}", exposure.summary_line());
+    for c in &exposure.components {
+        let _ = writeln!(
+            s,
+            "    · {:<22} {:>2}/{:<2}  {}",
+            c.name, c.score, c.max, c.detail
+        );
+    }
 
     let _ = writeln!(s, "\n── PROVENANCE ──");
     let _ = writeln!(
