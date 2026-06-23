@@ -317,6 +317,29 @@ fn import_txt_parses_victim_section_in_normal_order() {
 }
 
 #[test]
+fn import_txt_keeps_ipv6_victim_addresses() {
+    // The old `contains('.')` gate dropped every IPv6 victim IP. A mixed IPs line
+    // must keep both families and skip only the unspecified/`0.x` "no address" junk.
+    let body = "=== INFECTED MACHINES ===\nIPs: 10.0.0.5, 2001:db8::1, 0.0.0.0, ::, 203.0.113.9\n";
+    let (ents, _) = super::parse_oathnet_txt(body, "sid");
+    let ips: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        ips.contains(&"2001:db8::1"),
+        "IPv6 victim IP must be kept: {ips:?}"
+    );
+    assert!(
+        ips.contains(&"10.0.0.5"),
+        "IPv4 victim IP still kept: {ips:?}"
+    );
+    assert!(!ips.contains(&"0.0.0.0"), "0.x junk skipped: {ips:?}");
+    assert!(!ips.contains(&"::"), "unspecified IPv6 skipped: {ips:?}");
+}
+
+#[test]
 fn dossier_plaintext_password_and_session_token_become_linkable_credentials() {
     use crate::core::entity::EntityKind;
     // Stealer-log fields — a reused plaintext `password` and a `session` token —

@@ -135,6 +135,23 @@ pub fn is_placeholder_entity(kind: &EntityKind, value: &str) -> bool {
 /// comma/whitespace split and the digit/length checks are invariant under the
 /// punctuation-stripping the household rule applies first.
 pub fn is_specific_residence(s: &str) -> bool {
+    // A PO box / locked bag / private bag is a MAIL DROP, not a dwelling — many
+    // unrelated people and businesses share one, so clustering "co-residents" on it
+    // (AU-049/051) fuses strangers into a false household. Match the alphanumerics
+    // only, so every punctuation/spacing variant collapses ("P.O. Box", "PO Box",
+    // the normalised "po box") — and so does the raw-vs-normalised input the two
+    // callers pass. ("Box Hill", a real suburb, folds to "boxhill" and is unaffected.)
+    let compact: String = s
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    if ["pobox", "gpobox", "lockedbag", "privatebag"]
+        .iter()
+        .any(|m| compact.contains(m))
+    {
+        return false;
+    }
     let tokens = s
         .split(|c: char| c == ',' || c.is_whitespace())
         .filter(|t| !t.is_empty())

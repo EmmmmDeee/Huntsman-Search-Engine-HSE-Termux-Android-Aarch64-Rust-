@@ -13,6 +13,14 @@ fn specific_residence_accepts_streets_and_rejects_regions() {
     // No street-number signal, or too short — rejected.
     assert!(!is_specific_residence("Main Street"));
     assert!(!is_specific_residence("12 A"));
+    // A PO box / locked bag is a mail drop, not a dwelling — rejected in every
+    // punctuation variant so it never clusters a false household (AU-049/051).
+    assert!(!is_specific_residence("PO Box 123, Sydney NSW 2000"));
+    assert!(!is_specific_residence("P.O. Box 4567, Melbourne"));
+    assert!(!is_specific_residence("po box 99 brisbane")); // normalised form
+    assert!(!is_specific_residence("Locked Bag 12, Parramatta NSW"));
+    // A real street whose suburb merely contains "box" (Box Hill) is unaffected.
+    assert!(is_specific_residence("42 Station St, Box Hill VIC 3128"));
     // Invariant under the household rule's punctuation-stripping normalisation.
     assert_eq!(
         is_specific_residence("123 Main St., Apt #4"),
