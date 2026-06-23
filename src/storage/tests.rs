@@ -1394,3 +1394,86 @@ fn delete_scan_syncs_fts_so_rowid_reuse_cannot_poison_search() {
     }
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn low_confidence_evidence_flags_weak_findings_by_threshold_recency_and_source() {
+    use crate::core::entity::{Evidence, unix_now};
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    insert_scan(&store, "scan-a");
+
+    // Weak finding (below 0.30) from one module — must be flagged.
+    let mut weak = Entity::new(EntityKind::Email, "weak@example.com", 0.20, "scan-a");
+    weak.add_evidence(Evidence::new("flaky_mod", "thin match"));
+    store.upsert_entity(&weak).unwrap();
+
+    // Strong finding (>= 0.30) — must never be flagged.
+    let mut strong = Entity::new(EntityKind::Email, "strong@example.com", 0.90, "scan-a");
+    strong.add_evidence(Evidence::new("solid_mod", "confirmed"));
+    store.upsert_entity(&strong).unwrap();
+
+    // Boundary exactly at the threshold — excluded by the strict `<`.
+    let mut boundary = Entity::new(EntityKind::Username, "edgecase", 0.30, "scan-a");
+    boundary.add_evidence(Evidence::new("edge_mod", "exactly at threshold"));
+    store.upsert_entity(&boundary).unwrap();
+
+    // Weak finding corroborated by TWO modules — one anomaly per distinct source.
+    let mut multi = Entity::new(EntityKind::Phone, "+61400000000", 0.15, "scan-a");
+    multi.add_evidence(Evidence::new("mod_x", "a"));
+    multi.add_evidence(Evidence::new("mod_y", "b"));
+    store.upsert_entity(&multi).unwrap();
+
+    let anomalies = store.low_confidence_evidence(0.30, 3600).unwrap();
+
+    let uids: Vec<&str> = anomalies.iter().map(|a| a.entity_uid.as_str()).collect();
+    assert!(
+        !uids.contains(&strong.uid.as_str()),
+        "strong (>=0.30) finding must not be flagged"
+    );
+    assert!(
+        !uids.contains(&boundary.uid.as_str()),
+        "boundary (==0.30) excluded by strict `<`"
+    );
+
+    // Single-source weak finding present + correctly attributed to its module.
+    let w = anomalies
+        .iter()
+        .find(|a| a.entity_uid == weak.uid)
+        .expect("weak finding must be flagged");
+    assert_eq!(w.module_name, "flaky_mod");
+    assert!((w.confidence - 0.20).abs() < 1e-9);
+
+    // Multi-source weak finding → one anomaly per distinct module.
+    let mut multi_mods: Vec<&str> = anomalies
+        .iter()
+        .filter(|a| a.entity_uid == multi.uid)
+        .map(|a| a.module_name.as_str())
+        .collect();
+    multi_mods.sort_unstable();
+    assert_eq!(multi_mods, vec!["mod_x", "mod_y"]);
+
+    // Weakest-first ordering.
+    let confs: Vec<f64> = anomalies.iter().map(|a| a.confidence).collect();
+    assert!(
+        confs.windows(2).all(|w| w[0] <= w[1]),
+        "anomalies must be ordered weakest-first: {confs:?}"
+    );
+
+    // Recency: backdate the single-source weak finding past a short window → it drops out.
+    {
+        let conn = store.conn.lock();
+        let old = unix_now().saturating_sub(100_000) as i64;
+        conn.execute(
+            "UPDATE entities SET observed_at = ?1 WHERE uid = ?2",
+            rusqlite::params![old, weak.uid],
+        )
+        .unwrap();
+    }
+    let recent = store.low_confidence_evidence(0.30, 60).unwrap();
+    assert!(
+        !recent.iter().any(|a| a.entity_uid == weak.uid),
+        "backdated weak finding must be excluded by a 60s recency window"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}

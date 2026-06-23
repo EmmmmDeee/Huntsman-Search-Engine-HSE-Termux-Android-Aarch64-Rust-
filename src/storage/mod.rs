@@ -541,6 +541,79 @@ impl Store {
     }
 }
 
+/// One low-confidence finding flagged for human / LE review: a stored entity
+/// whose merged confidence fell below a review threshold, attributed to the
+/// module (evidence source) that produced it. Surfacing these is the
+/// "expose blind spots" half of the self-audit — weak evidence an analyst should
+/// corroborate or discard before it informs a conclusion.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvidenceAnomaly {
+    pub entity_uid: String,
+    pub module_name: String,
+    pub confidence: f64,
+    pub created_at: i64,
+}
+
+impl Store {
+    /// Low-confidence evidence anomalies observed within the last `since_seconds`:
+    /// every stored entity with `confidence < threshold` (the recommended review
+    /// default is `0.30`), expanded to one [`EvidenceAnomaly`] per DISTINCT
+    /// contributing module so a reviewer sees exactly which source produced each
+    /// weak finding. Ordered weakest-first. `since_seconds` is measured back from
+    /// now via the same `unix_now()` clock the rest of the store uses; a
+    /// non-positive value is treated as "since the epoch" (no recency bound).
+    ///
+    /// `confidence` is the entity's *merged* confidence (the GREATEST of its
+    /// corroborating sources) — the meaningful "how much do we trust this finding"
+    /// signal, since evidence records do not carry a separate per-source score.
+    pub fn low_confidence_evidence(
+        &self,
+        threshold: f64,
+        since_seconds: i64,
+    ) -> Result<Vec<EvidenceAnomaly>> {
+        let cutoff =
+            crate::core::entity::unix_now().saturating_sub(since_seconds.max(0) as u64) as i64;
+        let rows: Vec<(String, f64, i64, String)> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(
+                "SELECT uid, confidence, observed_at, data_json FROM entities \
+                 WHERE confidence < ?1 AND observed_at >= ?2 \
+                 ORDER BY confidence ASC, uid ASC",
+            )?;
+            let mapped = stmt.query_map(params![threshold, cutoff], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, f64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })?;
+            mapped.filter_map(std::result::Result::ok).collect()
+        };
+
+        // Evidence sources live inside each entity's JSON record; expand to one
+        // anomaly per distinct module so every weak source is individually visible.
+        let mut out = Vec::new();
+        for (uid, confidence, created_at, data_json) in rows {
+            let Ok(entity) = serde_json::from_str::<crate::core::entity::Entity>(&data_json) else {
+                continue;
+            };
+            let mut seen = std::collections::HashSet::new();
+            for ev in &entity.evidence {
+                if seen.insert(ev.source.clone()) {
+                    out.push(EvidenceAnomaly {
+                        entity_uid: uid.clone(),
+                        module_name: ev.source.clone(),
+                        confidence,
+                        created_at,
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
 // Entity persistence + FTS query live in the `entities` submodule (impl Store).
 
 // ── Event log ─────────────────────────────────────────────────────────────

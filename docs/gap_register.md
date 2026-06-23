@@ -1,0 +1,27 @@
+# HSE Gap Register
+
+Append-only log of autonomous-development loop items.
+Format: `YYYY-MM-DD | <module> | <change> | <reason> | <status>`
+
+## Session 2026-06-23 — baseline
+
+- `cargo test --all`: **PASS** (~2,140 lib + integration tests, 0 failed) on the
+  merged `main` baseline (commit `36c5096`).
+- Reality check vs the directive's assumptions (verified by grep, not assumed):
+  - **No LLM / model / inference subsystem** anywhere — zero matches for
+    `LlmAuditRecord`, `context_extract`, `ClassifierResult`,
+    `anthropic|openai|inference|softmax`.
+  - `src/audit.rs` exists but is a **pure scan-OUTPUT quality auditor** (noise
+    ratio, infra pollution, false-positive flags), not an LLM-call auditor.
+  - `Cargo.toml` version is **1.4.0** (the directive's `9.0.0` does not match the
+    repo). Left unchanged — a version bump is not a justified task.
+
+## Loop entries
+
+2026-06-23 | storage | Add `EvidenceAnomaly { entity_uid, module_name, confidence, created_at }` + `Store::low_confidence_evidence(threshold: f64, since_seconds: i64) -> Result<Vec<EvidenceAnomaly>>`: selects entities with `confidence < threshold` AND `observed_at >= now - since_seconds`, weakest-first, expanded to one anomaly per DISTINCT evidence source (module). Tests: weak flagged, strong & boundary(==threshold) excluded, multi-source -> per-module, recency exclusion. | P3 — LE/OSINT review value: surfaces weak findings for human corroboration ("expose blind spots"). Fits the real `entities` schema (`confidence` + `observed_at` columns; evidence sources in `data_json`) and reuses the existing `prune_events` recency idiom. Deviation: directive specified `threshold: f32`; used `f64` to match the codebase's `f64` confidence everywhere (an `f32`-vs-`f64`-column compare would be a type smell). | PASS
+
+2026-06-23 | (P1) audit | NOT IMPLEMENTED — `LlmAuditRecord` / `CREATE TABLE llm_audit` / `persist()` / wire into `context_extract`. | BLOCKED: prerequisites absent. No LLM/model/inference subsystem and no `context_extract` function exist anywhere (grep: 0 matches). Implementing the record + table would be consumer-less speculative dead infrastructure — no LLM calls to audit, no `context_extract` to wire into — a direct violation of this directive's own quality bar ("no dead fields ... no speculative refactoring; every change justified by LE/OSINT value") and the hard constraint against any network/LLM execution. Defer until a real LLM subsystem exists to be the first consumer. | BLOCKED
+
+2026-06-23 | (P2) classifier | NOT IMPLEMENTED — `ClassifierResult.entropy` (Shannon entropy; `>0.7` suppresses autonomous re-injection). | BLOCKED: prerequisite absent. No `ClassifierResult` struct, no probability-distribution classifier, and no "autonomous re-injection" mechanism exist (grep: 0 matches). Would be speculative dead code with no decision site to attach entropy to. Defer until a classifier emitting a probability distribution exists. | BLOCKED
+
+2026-06-23 | (P4) gap_register | No pre-existing open items — the register file was absent and was created this session. | No action required. | N/A
