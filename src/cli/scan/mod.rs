@@ -283,6 +283,11 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             }))?
         );
     } else if cmd.output == "dossier" {
+        let leverage = crate::core::engine::rank_enrichment_leverage(
+            store.as_ref(),
+            &entities,
+            entities.len(),
+        );
         dossier::print_dossier(
             &scan,
             &entities,
@@ -290,7 +295,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             &relations,
             kind_str,
             &cmd.value,
-            &sid,
+            &leverage,
         );
     } else {
         let color = use_color();
