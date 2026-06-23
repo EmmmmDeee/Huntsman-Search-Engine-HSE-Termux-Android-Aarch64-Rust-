@@ -39,6 +39,42 @@ use super::*;
     }
 
     #[test]
+    fn gexf_excludes_non_corroborating_co_occurrence() {
+        // Two candidates that share ONLY `name_intel` (the seed's permutation
+        // engine) must NOT draw a co-occurrence edge: that is common-derivation,
+        // not a shared sighting, and would wire every name-guess into a false
+        // cluster. Their lineage is carried by the typed `DerivedFrom` edges.
+        let mut a = Entity::new(EntityKind::Username, "jmeyers", 0.4, "s");
+        a.add_evidence(Evidence::new("name_intel", "derived"));
+        let mut b = Entity::new(EntityKind::Email, "jmeyers@gmail.com", 0.4, "s");
+        b.add_evidence(Evidence::new("name_intel", "derived"));
+        let xml = entities_to_gexf(&[a, b], &[], "s");
+        assert!(
+            !xml.contains(r#"<edge "#),
+            "name_intel-only derivation must not draw a co-occurrence edge"
+        );
+
+        // Once an INDEPENDENT source (hibp) names both, they genuinely co-occur —
+        // and the edge is labelled by the corroborating source alone, never the
+        // derivation pass.
+        let mut a = Entity::new(EntityKind::Username, "jmeyers", 0.4, "s");
+        a.add_evidence(Evidence::new("name_intel", "derived"));
+        a.add_evidence(Evidence::new("hibp", "breach"));
+        let mut b = Entity::new(EntityKind::Email, "jmeyers@gmail.com", 0.4, "s");
+        b.add_evidence(Evidence::new("name_intel", "derived"));
+        b.add_evidence(Evidence::new("hibp", "breach"));
+        let xml = entities_to_gexf(&[a, b], &[], "s");
+        assert!(
+            xml.contains(r#"label="hibp""#),
+            "a genuine shared source must co-occur, labelled by that source"
+        );
+        assert!(
+            !xml.contains("name_intel"),
+            "the derivation source is not a co-occurrence basis"
+        );
+    }
+
+    #[test]
     fn gexf_emits_typed_relation_edges() {
         use crate::core::relation::{Relation, RelationKind};
         let parent = Entity::new(EntityKind::Domain, "example.com", 0.9, "s");
