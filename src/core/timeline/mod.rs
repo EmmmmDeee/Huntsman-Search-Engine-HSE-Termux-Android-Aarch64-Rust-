@@ -117,9 +117,19 @@ fn classify(attr_key: &str) -> Option<TimelineEventKind> {
 /// Pure: walks evidence attributes, parses recognised date keys, and returns
 /// the events sorted oldest-first (ties broken by entity value then kind for
 /// determinism). Duplicate (ts, kind, entity, source) tuples are collapsed.
+///
+/// Candidate-quarantined entities (`tags::CANDIDATE` — breach co-occurrence
+/// strangers who merely sat near the subject in a dump) are excluded: the
+/// footprint timeline is the SUBJECT's chronology, so a neighbour's birth date /
+/// address / email must never appear as if it were the subject's life event. This
+/// mirrors the candidate exclusion the correlator and exposure index already
+/// apply.
 pub fn reconstruct(entities: &[Entity]) -> Vec<TimelineEvent> {
     let mut events: Vec<TimelineEvent> = Vec::new();
     for e in entities {
+        if e.has_tag(crate::core::tags::CANDIDATE) {
+            continue;
+        }
         for ev in &e.evidence {
             for (key, raw) in &ev.attributes {
                 let Some(kind) = classify(key) else { continue };

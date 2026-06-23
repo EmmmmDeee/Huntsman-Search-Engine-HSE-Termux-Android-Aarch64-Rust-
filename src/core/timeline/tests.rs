@@ -233,3 +233,29 @@ use super::*;
         assert_eq!(ts, -86400);
         assert_eq!(iso, "1969-12-31");
     }
+
+    #[test]
+    fn reconstruct_excludes_candidate_quarantined_entities() {
+        // Live-scan regression: a name scan's footprint timeline showed only the
+        // birth dates of quarantined breach co-occurrence STRANGERS, never the
+        // subject. The confirmed subject's DOB is the footprint; a candidate
+        // neighbour's must not appear as if it were the subject's life event.
+        let subject = entity_with_attrs(
+            EntityKind::Person,
+            "Matthew Diegmann",
+            "oathnet_pro",
+            &[("date_of_birth", "1990-05-05")],
+        );
+        let mut stranger = entity_with_attrs(
+            EntityKind::Person,
+            "Raymond Perez",
+            "oathnet_pro",
+            &[("date_of_birth", "1993-01-03")],
+        );
+        stranger.demote_to_candidate();
+
+        let events = reconstruct(&[subject, stranger]);
+        assert_eq!(events.len(), 1, "only the confirmed subject's event survives");
+        assert_eq!(events[0].entity_value, "Matthew Diegmann");
+        assert_eq!(events[0].iso, "1990-05-05");
+    }
