@@ -10,6 +10,35 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-06-23
+
+### Added
+
+Breach/stealer PII intelligence — three people-centric correlator rules that mine
+the structured fields breach, stealer-log and other leak modules already store as
+evidence attributes but never surfaced as findings. All run on the confirmed
+(candidate-filtered, quarantine-excluded) view, so breach co-occurrence strangers
+can't leak in. Proven end-to-end: an imported breach dossier fires all three.
+
+- **AU-073 Subject date of birth** — extracts and normalises DOB from breach
+  records and reports each distinct value with its independent-source count
+  (≥2 agree → High; single → Medium). DOB is the strongest disambiguator between
+  same-name people, so conflicting DOBs surface separately rather than being
+  silently merged — directly attacking the namesake failure class.
+- **AU-074 Australian government-ID exposure** — detects a leaked TFN / Medicare
+  / Centrelink CRN / driver-licence / passport by breach field key, confirmed by
+  format+checksum (TFN mod-11, Medicare mod-10) so a mislabelled number can't
+  fabricate a CRITICAL finding. The value is masked in the finding; the full
+  value stays in evidence (operator full-fidelity). The most serious
+  identity-theft signal (the Optus/Medibank exposure class).
+- **AU-075 Named associate** — surfaces a relative/associate stated in a breach or
+  stealer record (spouse, next-of-kin, emergency contact, the stealer-log owner)
+  — a declared tie the geo/surname family rules (AU-049/051/061) can't reach.
+
+To feed these on every source, the breach-PII fields are now preserved through
+the **oathnet_pro** allowlist and the **dossier import parser** (both previously
+dropped unmapped fields); `see_know` and the JSON import already preserved them.
+
 ## [1.7.0] — 2026-06-22
 
 ### Added
