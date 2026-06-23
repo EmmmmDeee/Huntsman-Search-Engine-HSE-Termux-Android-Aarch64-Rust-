@@ -40,6 +40,26 @@ pub(super) fn breach_evidence(item: &Value) -> Evidence {
         ("instagram", "instagram"),
         ("linkedin", "linkedin"),
         ("iban", "iban"),
+        // Australian government identifiers + stated relationships, so the
+        // breach-PII correlators (AU-073/074/075) see them when a dump carries
+        // them. Source-name variants normalise to the canonical key each rule
+        // scans for; absent fields are simply skipped, so these are inert on a
+        // record that doesn't include them.
+        ("tfn", "tfn"),
+        ("tax_file_number", "tfn"),
+        ("medicare", "medicare"),
+        ("medicare_number", "medicare"),
+        ("crn", "crn"),
+        ("centrelink_crn", "crn"),
+        ("drivers_license", "drivers_licence"),
+        ("driver_license", "drivers_licence"),
+        ("license_number", "drivers_licence"),
+        ("passport", "passport"),
+        ("passport_number", "passport"),
+        ("spouse", "spouse"),
+        ("partner", "partner"),
+        ("next_of_kin", "next_of_kin"),
+        ("emergency_contact", "emergency_contact"),
     ] {
         if let Some(v) = val_str(item, field) {
             ev = ev.with_attr(attr, &v);
