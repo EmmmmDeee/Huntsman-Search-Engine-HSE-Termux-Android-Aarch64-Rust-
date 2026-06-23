@@ -28,6 +28,18 @@ pub(super) fn print_dossier(
         "  Modules:   {} run, {} errored, {} deduped",
         scan.modules_run, scan.modules_errored, scan.modules_deduped
     );
+
+    // Exposure Index — the calibrated 0–100 headline (with its transparent
+    // breakdown) an operator reads first, aggregated from the breach/sensitive-PII/
+    // identifier/correlation signals already computed below.
+    let exposure = crate::core::exposure::assess(entities, correlations);
+    println!("  {}", exposure.summary_line());
+    for c in &exposure.components {
+        println!(
+            "    · {:<22} {:>2}/{:<2}  {}",
+            c.name, c.score, c.max, c.detail
+        );
+    }
     println!();
 
     let mut by_kind: BTreeMap<String, Vec<&Entity>> = BTreeMap::new();

@@ -109,8 +109,17 @@ pub(super) fn parse_oathnet_txt(
             if let Some(rest) = line.strip_prefix("IPs: ") {
                 for ip in rest.split(", ") {
                     let ip = ip.trim();
-                    if ip.contains('.') && !ip.starts_with("0.") && seen.insert(format!("ip:{ip}"))
-                    {
+                    // Parse so an IPv6 victim address is kept too — the old
+                    // `contains('.')` gate silently dropped EVERY IPv6 address. A
+                    // victim's private LAN IP is legitimate stealer data, so this
+                    // does NOT impose public-only; it only skips the "no address"
+                    // junk the log emits (the `0.x` / `::` unspecified forms).
+                    let keep = match ip.parse::<std::net::IpAddr>() {
+                        Ok(std::net::IpAddr::V4(v4)) => v4.octets()[0] != 0,
+                        Ok(std::net::IpAddr::V6(v6)) => !v6.is_unspecified(),
+                        Err(_) => false,
+                    };
+                    if keep && seen.insert(format!("ip:{ip}")) {
                         let mut e = Entity::new(EntityKind::IpAddress, ip, 0.60, &sid);
                         e.tag("stealer-victim");
                         e.tag("import");
