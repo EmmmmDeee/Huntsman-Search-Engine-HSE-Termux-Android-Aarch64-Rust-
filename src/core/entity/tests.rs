@@ -1239,6 +1239,62 @@ fn absorb_folds_signal_and_preserves_identity() {
 }
 
 #[test]
+fn absorb_merges_new_attributes_on_same_source_summary() {
+    // Regression (breach-PII proof): re-observing an entity from the SAME source
+    // with the SAME summary but NEW attributes (an updated breach dump) must NOT
+    // drop them — they merge into the one deduped record. Previously the whole
+    // record was discarded, so a re-import that gained a date_of_birth/tfn lost
+    // it and the AU-073/074 rules never fired.
+    let mut a = Entity::new(EntityKind::Email, "x@contoso.com", 0.6, "s");
+    a.add_evidence(
+        Evidence::new("import:dossier", "Breach entry").with_attr("email", "x@contoso.com"),
+    );
+    let mut b = Entity::new(EntityKind::Email, "x@contoso.com", 0.6, "s");
+    b.add_evidence(
+        Evidence::new("import:dossier", "Breach entry")
+            .with_attr("email", "x@contoso.com")
+            .with_attr("date_of_birth", "1980-11-08")
+            .with_attr("tfn", "123456782"),
+    );
+    a.merge(b);
+
+    assert_eq!(
+        a.evidence.len(),
+        1,
+        "still one record (deduped by source+summary)"
+    );
+    let attrs = &a.evidence[0].attributes;
+    assert_eq!(
+        attrs.get("date_of_birth").map(String::as_str),
+        Some("1980-11-08")
+    );
+    assert_eq!(attrs.get("tfn").map(String::as_str), Some("123456782"));
+}
+
+#[test]
+fn absorb_attribute_merge_is_order_independent() {
+    // A key both records set resolves to the lexicographically smaller value,
+    // regardless of merge order (the Determinism Requirement).
+    let mk = |v: &str| {
+        let mut e = Entity::new(EntityKind::Email, "x@contoso.com", 0.6, "s");
+        e.add_evidence(Evidence::new("src", "sum").with_attr("k", v));
+        e
+    };
+    let mut ab = mk("alpha");
+    ab.merge(mk("beta"));
+    let mut ba = mk("beta");
+    ba.merge(mk("alpha"));
+    assert_eq!(
+        ab.evidence[0].attributes.get("k"),
+        ba.evidence[0].attributes.get("k")
+    );
+    assert_eq!(
+        ab.evidence[0].attributes.get("k").map(String::as_str),
+        Some("alpha")
+    );
+}
+
+#[test]
 fn absorb_dedups_identically_on_both_branches() {
     // The evidence dedup has two implementations chosen by `len*len <= 256`.
     // Build entities large enough to cross into the HashSet branch (17×17 = 289)

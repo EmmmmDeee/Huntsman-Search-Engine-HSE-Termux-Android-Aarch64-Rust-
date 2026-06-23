@@ -739,48 +739,76 @@ impl Entity {
             .max(1);
         self.observed_at = u64::max(self.observed_at, other.observed_at);
         // Deduplicate evidence by (source, summary) to prevent accumulation
-        // across live mode iterations or re-scans. A linear `Vec::any` scan per
-        // incoming record is O(n×m); build a membership set of the existing
-        // `(source, summary)` keys once and keep it in sync as we push, so the
-        // fold stays linear even when an entity accumulates many evidence rows
-        // (re-scans / live mode). Push order and idempotence are unchanged.
-        // Small inputs (the overwhelming common case — a handful of rows on
-        // each side) stay on the original linear scan: building a hash set with
-        // owned keys would allocate more than the scan saves. Only when both
-        // sides are large enough for the O(n×m) scan to bite do we switch to a
-        // membership set, keeping the fold linear for re-scan / live-mode
-        // accumulation. Either branch yields identical results (first-wins,
-        // idempotent dedup by `(source, summary)`, push order preserved).
+        // across live mode iterations or re-scans — a repeated observation by the
+        // SAME source with the SAME summary is the same record, not new
+        // corroboration. BUT it may carry attributes the existing record lacks
+        // (an updated breach dump, a richer re-scan), so on a match MERGE the new
+        // attributes in rather than dropping the record: dropping it silently
+        // loses newly-discovered fields (a live re-import that gained a
+        // `date_of_birth`/`tfn` between scans, exactly the case the breach-PII
+        // rules depend on). [`merge_evidence_attrs`] keeps the fold deterministic
+        // (smaller value wins a key conflict) and idempotent. Small inputs (the
+        // overwhelming common case — a handful of rows) use a linear find; large
+        // ones use a `(source, summary)→index` map so the fold stays linear under
+        // re-scan / live-mode accumulation. Both branches yield identical results.
         if self.evidence.len() * other.evidence.len() <= 256 {
             for ev in other.evidence {
-                let dominated = self
+                match self
                     .evidence
-                    .iter()
-                    .any(|e| e.source == ev.source && e.summary == ev.summary);
-                if !dominated {
-                    self.evidence.push(ev);
+                    .iter_mut()
+                    .find(|e| e.source == ev.source && e.summary == ev.summary)
+                {
+                    Some(existing) => merge_evidence_attrs(existing, ev),
+                    None => self.evidence.push(ev),
                 }
             }
         } else {
-            // Owned membership keys: a borrowed `&str` set would alias
-            // `self.evidence`, which we mutate by pushing. Seed it with the
-            // existing rows; `insert` then returns false for any incoming row
-            // duplicating either an existing record OR an earlier incoming one
-            // (so duplicates within `other` are folded too — matching the scan).
-            let mut seen: std::collections::HashSet<(String, String)> = self
+            // Owned keys: a borrowed `&str` map would alias `self.evidence`, which
+            // we mutate. Seed it with the existing rows; a later incoming row
+            // duplicating an existing record OR an earlier incoming one merges
+            // into it (so duplicates within `other` are folded too).
+            let mut index: std::collections::HashMap<(String, String), usize> = self
                 .evidence
                 .iter()
-                .map(|e| (e.source.clone(), e.summary.clone()))
+                .enumerate()
+                .map(|(i, e)| ((e.source.clone(), e.summary.clone()), i))
                 .collect();
             self.evidence.reserve(other.evidence.len());
             for ev in other.evidence {
-                if seen.insert((ev.source.clone(), ev.summary.clone())) {
-                    self.evidence.push(ev);
+                let key = (ev.source.clone(), ev.summary.clone());
+                match index.get(&key) {
+                    Some(&i) => merge_evidence_attrs(&mut self.evidence[i], ev),
+                    None => {
+                        index.insert(key, self.evidence.len());
+                        self.evidence.push(ev);
+                    }
                 }
             }
         }
         for t in other.tags {
             self.tag(t);
+        }
+    }
+}
+
+/// Merge `incoming`'s attributes into `existing` — they are the same evidence
+/// record (matching `(source, summary)`), so add the keys `existing` lacks and,
+/// on a key both set, keep the lexicographically smaller value (as `merge` does
+/// for `raw_value`) so the fold is independent of merge order. This preserves the
+/// newly-discovered fields a re-observation carries — an updated breach dump or a
+/// richer re-scan — instead of dropping the whole record on the `(source,
+/// summary)` dedup.
+fn merge_evidence_attrs(existing: &mut Evidence, incoming: Evidence) {
+    for (k, v) in incoming.attributes {
+        match existing.attributes.get_mut(&k) {
+            Some(cur) => {
+                if v < *cur {
+                    *cur = v;
+                }
+            }
+            None => {
+                existing.attributes.insert(k, v);
+            }
         }
     }
 }

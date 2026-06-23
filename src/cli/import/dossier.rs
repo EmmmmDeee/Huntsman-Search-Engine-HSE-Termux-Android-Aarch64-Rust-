@@ -135,6 +135,35 @@ pub(super) fn parse_dossier(
                 "father",
                 "mother",
                 "owner_name",
+                // Common spelling/aliasing variants of the above that the
+                // AU-073/074/075 rules ALSO scan — without them a dump that uses
+                // e.g. `birthday`, `centrelink`, or `wife` would be silently
+                // dropped and the rule could never fire. Keep the parser's
+                // preserve-set aligned with the rules' scan-set.
+                "birth_date",
+                "birthday",
+                "dateofbirth",
+                "born",
+                "taxfilenumber",
+                "tax_file_no",
+                "medicare_no",
+                "medicarecard",
+                "centrelink",
+                "customer_reference_number",
+                "driver_licence",
+                "driver_license",
+                "licence_number",
+                "license_number",
+                "dl_number",
+                "passport_no",
+                "husband",
+                "wife",
+                "nextofkin",
+                "emergency_contact_name",
+                "parent",
+                "guardian",
+                "dependent",
+                "relationship",
             ];
             if !val.is_empty() && FIELDS.contains(&key.as_str()) {
                 entry.push((key, val.to_string()));
