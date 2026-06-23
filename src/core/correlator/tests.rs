@@ -3082,6 +3082,28 @@ fn au051_requires_shared_residence_and_distinguishes_roommates() {
     assert!(super::rules::rule_au_051_shared_surname_kin(&roommates, "s", 0).is_empty());
 }
 
+#[test]
+fn au051_common_surname_is_a_high_lead_not_critical_kin() {
+    // Two "Smith"s sharing one building address (unit numbers absent from the
+    // data) must NOT be asserted as Critical "likely relatives" — a common surname
+    // makes the shared-residence a coincidence risk (an apartment tower collapses
+    // unrelated co-residents onto one key). It still fires, but as a High LEAD to
+    // verify; a distinctive surname (Meyers, above) stays Critical.
+    let ents = vec![
+        person_at("Jordan Smith", "123 Main St, Springfield"),
+        person_at("Dana Smith", "123 Main St, Springfield"),
+    ];
+    let hits = super::rules::rule_au_051_shared_surname_kin(&ents, "s", 0);
+    assert_eq!(hits.len(), 1, "still fires — it is a lead, not silence");
+    assert_eq!(hits[0].rule_id, "AU-051");
+    assert_eq!(
+        hits[0].severity,
+        super::Severity::High,
+        "a common surname is a High lead, not a Critical kin assertion"
+    );
+    assert!(hits[0].description.contains("common surname"));
+}
+
 // ─── Geo convex footprint (AU-052) ───────────────────────────────────────────
 
 #[cfg(test)]

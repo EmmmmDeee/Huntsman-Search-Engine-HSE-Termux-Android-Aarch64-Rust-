@@ -10,6 +10,25 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.8.4] — 2026-06-23
+
+### Fixed
+
+- **Shared-surname kin (AU-051) is a High lead, not a Critical assertion, for common
+  surnames.** The rule reported Critical "likely relatives; kin pivot to reach the
+  subject" for *any* two same-surname people at one residence. But an apartment tower
+  or share-house whose unit numbers are absent from the data collapses unrelated
+  co-residents onto one residence key, and a common surname (Smith, Nguyen, …) makes
+  that coincidence likely — so the confident "relatives" claim was often false. A
+  common surname now fires as a **High lead to verify**; a distinctive surname keeps
+  the Critical kin signal. (Same `is_common` discount the kinship/leads/engine paths
+  apply.)
+- **Dossier import no longer drops the first section of a "UTF-8 with BOM" file.** The
+  BOM (U+FEFF, the Excel/Notepad default encoding) is not whitespace, so `str::trim`
+  left it on the first line — turning the `EMAILS:` section header into
+  `\u{feff}EMAILS:`, which matched no section, silently discarding the entire first
+  section and its entries. A single leading BOM is now stripped at ingest.
+
 ## [1.8.3] — 2026-06-23
 
 ### Fixed

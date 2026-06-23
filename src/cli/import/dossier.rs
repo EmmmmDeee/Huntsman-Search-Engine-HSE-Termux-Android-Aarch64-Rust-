@@ -38,6 +38,13 @@ pub(super) fn parse_dossier(
     let mut section = DossierSection::None;
     let mut entry: Vec<(String, String)> = Vec::new();
 
+    // A UTF-8 BOM (the "UTF-8 with BOM" default of Excel / Notepad / many
+    // exporters) is U+FEFF, which is NOT whitespace — `str::trim` leaves it on the
+    // first line, turning `EMAILS:` into `\u{feff}EMAILS:`. That matches no section
+    // header, so the ENTIRE first section (and its `-> value` items) was silently
+    // dropped. Strip a single leading BOM once at ingest.
+    let body = body.strip_prefix('\u{feff}').unwrap_or(body);
+
     for raw in body.lines() {
         let line = raw.trim();
         if line.is_empty() {
