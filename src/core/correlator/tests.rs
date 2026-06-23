@@ -2472,6 +2472,92 @@ fn au072_register_resolvable_abn_raises_severity() {
 }
 
 #[test]
+fn au073_dob_corroborated_across_sources_disambiguates_namesakes() {
+    // Two independent sources assert the same DOB (one as an ISO datetime that
+    // must normalise) → High. A namesake's DOB from a single source is a
+    // separate Medium finding — visible, not silently merged.
+    let mut p = Entity::new(EntityKind::Person, "Cindy Haynes", 0.9, "s");
+    p.add_evidence(
+        Evidence::new("oathnet_pro", "breach").with_attr("date_of_birth", "1980-11-08T00:00:00"),
+    );
+    let mut e = Entity::new(EntityKind::Email, "c@contoso.com", 0.9, "s");
+    e.add_evidence(Evidence::new("see_know", "breach").with_attr("dob", "1980-11-08"));
+    let mut ns = Entity::new(EntityKind::Email, "d@contoso.com", 0.9, "s");
+    ns.add_evidence(Evidence::new("hibp", "breach").with_attr("date_of_birth", "1975-01-01"));
+
+    let r = super::rules::rule_au_073_subject_date_of_birth(&[p, e, ns], "s", 0);
+    let main = r
+        .iter()
+        .find(|c| c.description.contains("1980-11-08"))
+        .expect("the corroborated DOB fires");
+    assert_eq!(main.rule_id, "AU-073");
+    assert_eq!(main.severity, Severity::High, "two agreeing sources → High");
+    let minor = r
+        .iter()
+        .find(|c| c.description.contains("1975-01-01"))
+        .expect("the namesake DOB is surfaced separately");
+    assert_eq!(minor.severity, Severity::Medium, "single source → Medium");
+}
+
+#[test]
+fn au074_government_id_exposure_validates_checksum_and_masks() {
+    // A checksum-valid TFN (ATO example 123456782) + a valid Medicare under their
+    // breach keys → CRITICAL, value masked. A bad-checksum TFN is rejected.
+    let mut e = Entity::new(EntityKind::Credential, "leak", 0.9, "s");
+    e.add_evidence(
+        Evidence::new("dehashed", "breach")
+            .with_attr("tfn", "123456782")
+            .with_attr("medicare", "2123456701"),
+    );
+    let mut bad = Entity::new(EntityKind::Credential, "leak2", 0.9, "s");
+    bad.add_evidence(Evidence::new("dehashed", "breach").with_attr("tfn", "123456789"));
+
+    let r = super::rules::rule_au_074_au_government_id_exposure(&[e, bad], "s", 0);
+    assert!(!r.is_empty(), "a valid gov-ID exposure must fire");
+    let crit = r
+        .iter()
+        .find(|c| c.rule_id == "AU-074")
+        .expect("AU-074 fires");
+    assert_eq!(crit.rule_id, "AU-074");
+    assert_eq!(crit.severity, Severity::Critical);
+    assert!(r.iter().any(|c| c.description.contains("Tax File Number")));
+    assert!(r.iter().any(|c| c.description.contains("Medicare")));
+    assert!(
+        r.iter().all(|c| !c.description.contains("123456782")),
+        "the raw value must be masked, never shown in the finding"
+    );
+    assert_eq!(
+        r.iter()
+            .filter(|c| c.description.contains("Tax File Number"))
+            .count(),
+        1,
+        "the bad-checksum TFN produced no finding"
+    );
+}
+
+#[test]
+fn au075_named_associate_from_breach_record() {
+    let mut e = Entity::new(EntityKind::Person, "Cindy Haynes", 0.9, "s");
+    e.add_evidence(
+        Evidence::new("see_know", "breach")
+            .with_attr("spouse", "Thomas Haynes")
+            .with_attr("emergency_contact", "self"),
+    );
+    let r = super::rules::rule_au_075_named_associate(&[e], "s", 0);
+    let hit = r
+        .iter()
+        .find(|c| c.description.contains("Thomas Haynes"))
+        .expect("the named spouse is surfaced");
+    assert_eq!(hit.rule_id, "AU-075");
+    assert!(hit.description.contains("spouse"));
+    assert!(
+        r.iter()
+            .all(|c| !c.description.contains("emergency contact")),
+        "a placeholder 'self' contact must be filtered out"
+    );
+}
+
+#[test]
 fn au046_resolves_an_alias_to_platform_exposed_identifiers() {
     // The alias confirmed across two platform families (npm=code, reddit=forum),
     // plus an email its npm account exposed → AU-046 links handle to identity.

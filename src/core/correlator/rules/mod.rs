@@ -368,6 +368,7 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
 
 mod assoc;
 mod breach;
+mod breach_pii;
 mod broker;
 mod crypto;
 pub(crate) mod gap;
@@ -387,6 +388,7 @@ mod transitive;
 
 pub(super) use assoc::*;
 pub(super) use breach::*;
+pub(super) use breach_pii::*;
 pub(super) use broker::*;
 pub(super) use crypto::*;
 pub(super) use gap::*;

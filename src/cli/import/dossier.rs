@@ -110,6 +110,31 @@ pub(super) fn parse_dossier(
                 "password",
                 "cookie",
                 "session",
+                // Breach-PII correlator join-keys (AU-073/074/075): date of
+                // birth (the namesake disambiguator), Australian government
+                // identifiers (the critical identity-theft exposure), and stated
+                // relationships. Normalised to the canonical key each rule scans.
+                "date_of_birth",
+                "dob",
+                "tfn",
+                "tax_file_number",
+                "medicare",
+                "medicare_number",
+                "crn",
+                "centrelink_crn",
+                "licence",
+                "license",
+                "drivers_licence",
+                "drivers_license",
+                "passport",
+                "passport_number",
+                "spouse",
+                "partner",
+                "next_of_kin",
+                "emergency_contact",
+                "father",
+                "mother",
+                "owner_name",
             ];
             if !val.is_empty() && FIELDS.contains(&key.as_str()) {
                 entry.push((key, val.to_string()));
