@@ -2421,6 +2421,57 @@ fn au011_counts_independent_platform_module_confirmations() {
 }
 
 #[test]
+fn au072_payid_surface_fires_on_multiple_payids_and_links_them() {
+    // Two PayID handles (email + phone) → the consolidated payment-identity
+    // surface fires, lists both channels, and links both uids in sorted order.
+    let mut email = Entity::new(EntityKind::Email, "a@contoso.com", 0.8, "s");
+    email.tag("payid");
+    email.tag("payid:email");
+    let mut phone = Entity::new(EntityKind::Phone, "+61410959140", 0.8, "s");
+    phone.tag("payid");
+    phone.tag("payid:phone");
+
+    // Deliberately unsorted input to exercise the determinism of entity_uids.
+    let r =
+        super::rules::rule_au_072_payid_payment_surface(&[phone.clone(), email.clone()], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-072");
+    assert_eq!(
+        r[0].severity,
+        Severity::Medium,
+        "no register-resolvable ABN → Medium"
+    );
+    assert!(r[0].description.contains("2 PayID"));
+    assert!(r[0].description.contains("email") && r[0].description.contains("phone"));
+    let mut expect = vec![email.uid.clone(), phone.uid.clone()];
+    expect.sort();
+    assert_eq!(r[0].entity_uids, expect, "full member set, sorted");
+
+    // A single PayID handle is not a surface.
+    assert!(super::rules::rule_au_072_payid_payment_surface(&[email], "s", 0).is_empty());
+}
+
+#[test]
+fn au072_register_resolvable_abn_raises_severity() {
+    let mut email = Entity::new(EntityKind::Email, "a@contoso.com", 0.8, "s");
+    email.tag("payid");
+    email.tag("payid:email");
+    let mut abn = Entity::new(EntityKind::AbnAcn, "51824753556", 0.9, "s");
+    abn.tag("payid");
+    abn.tag("payid:abn");
+    abn.tag("payid:registry-resolvable");
+
+    let r = super::rules::rule_au_072_payid_payment_surface(&[email, abn], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(
+        r[0].severity,
+        Severity::High,
+        "a register-resolvable ABN PayID lifts the severity"
+    );
+    assert!(r[0].description.contains("public register"));
+}
+
+#[test]
 fn au046_resolves_an_alias_to_platform_exposed_identifiers() {
     // The alias confirmed across two platform families (npm=code, reddit=forum),
     // plus an email its npm account exposed → AU-046 links handle to identity.

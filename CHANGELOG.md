@@ -10,6 +10,23 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-06-22
+
+### Added
+
+- **AU-072 — Consolidated PayID payment-identity surface.** The v1.6.0 `payid`
+  module tags each PayID-eligible identifier (email/phone/ABN) individually; this
+  correlator rule consolidates them. Once a subject carries two or more PayID
+  handles it fires a finding, because the aggregate is the signal — each handle
+  is an independent NPP confirm-payee route to the **same** registered
+  account-holder name, so multiple handles both widen the de-anonymisation
+  surface and cross-confirm the name. A register-resolvable ABN among them lifts
+  the severity to High (its holder name is resolvable from the public register
+  now). Runs on the confirmed view, so speculative name-permuted addresses never
+  inflate the count; `entity_uids` are the full member set sorted by uid (the
+  AU-039 determinism discipline). This completes the "use PayID for OSINT pivots"
+  capability — recognition (v1.6.0) plus the actionable correlation.
+
 ## [1.6.0] — 2026-06-22
 
 ### Added
