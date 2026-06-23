@@ -156,6 +156,17 @@ const GENERIC_HANDLES: &[&str] = &[
     "subscribe",
 ];
 
+/// Tokens that are never a person's chosen handle — protocol / markup / header
+/// noise (`http`, `https`, `www`, `dns`, `mailto`) or bare function words
+/// (`from`) that scrapers and breach-dump parsers routinely mis-extract as a
+/// "username". Unlike a role mailbox these are not even an organisational
+/// function; they are extraction artifacts, so any identity rule that keys on
+/// them fuses unrelated records. Stored canonical (separator-free, lowercase) to
+/// match [`canonical_handle`] output.
+const NON_IDENTITY_TOKENS: &[&str] = &[
+    "from", "dns", "www", "http", "https", "html", "href", "mailto", "tel", "url",
+];
+
 /// Canonical comparison form of a handle: ASCII-lowercased with the handle
 /// separators (`.`, `_`, `-`) removed, so the same handle written with
 /// inconsistent punctuation collapses to one token (`jordan.meyers`,
@@ -170,9 +181,12 @@ fn canonical_handle(s: &str) -> String {
 }
 
 /// True if `handle` (already canonicalised) is too generic to identify a
-/// person — a placeholder username or a role mailbox.
+/// person — a placeholder username, a role mailbox, or a non-identity
+/// extraction artifact (`from`, `dns`, `http`, …).
 fn is_generic_handle(handle: &str) -> bool {
-    crate::util::preflight::is_placeholder_username(handle) || GENERIC_HANDLES.contains(&handle)
+    crate::util::preflight::is_placeholder_username(handle)
+        || GENERIC_HANDLES.contains(&handle)
+        || NON_IDENTITY_TOKENS.contains(&handle)
 }
 
 /// Modules that *derive* a username by inference — a name permutation, an email

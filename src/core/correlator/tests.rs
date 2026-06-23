@@ -2628,6 +2628,85 @@ fn au046_resolves_an_alias_to_platform_exposed_identifiers() {
 }
 
 #[test]
+fn au045_046_reject_junk_and_role_handles_as_identity_anchors() {
+    // Regression for a live person-scan: `from` (a bare function word) and `dns`
+    // (a 3-char acronym) were mis-extracted as usernames and, "confirmed" across
+    // two source families, fired AU-045 "confirmed identity". They are parser
+    // artifacts, not aliases — the handle-quality gate must drop them.
+    let junk = |val: &str| {
+        let mut u = Entity::new(EntityKind::Username, val, 0.6, "scan");
+        for s in ["github_user", "reddit_user"] {
+            u.add_evidence(Evidence::new(s, "confirmed"));
+        }
+        u
+    };
+    // Covers both the length path (`dns`, `www` are < 4 chars) and the
+    // non-identity-token path (`from`, `http` are 4 chars but never handles).
+    for bad in ["from", "dns", "www", "http"] {
+        assert!(
+            super::rules::rule_au_045_multi_service_identity(&[junk(bad)], "scan", 0).is_empty(),
+            "AU-045 must not promote junk handle '{bad}' to a confirmed identity"
+        );
+    }
+
+    // A role mailbox confirmed across families is an org desk, not the subject.
+    let mut role = Entity::new(EntityKind::Email, "abuse@acme.com", 0.7, "scan");
+    for s in ["github_user", "hibp"] {
+        role.add_evidence(Evidence::new(s, "found"));
+    }
+    assert!(
+        super::rules::rule_au_045_multi_service_identity(&[role], "scan", 0).is_empty(),
+        "AU-045 must not promote a role mailbox to a confirmed identity"
+    );
+
+    // Control: a distinctive handle across the SAME two families still fires —
+    // the gate removes junk, not genuine cross-family confirmation.
+    let mut good = Entity::new(EntityKind::Username, "kylo4kylo", 0.6, "scan");
+    for s in ["github_user", "reddit_user"] {
+        good.add_evidence(Evidence::new(s, "confirmed"));
+    }
+    assert_eq!(
+        super::rules::rule_au_045_multi_service_identity(&[good], "scan", 0).len(),
+        1,
+        "a distinctive handle across two families must still fire AU-045"
+    );
+
+    // AU-046: the same junk handle must not be selected as a resolvable alias.
+    let mut email = Entity::new(EntityKind::Email, "k@example.com", 0.7, "scan");
+    email.add_evidence(Evidence::new("github_user", "maintainer email"));
+    let mut junk_alias = Entity::new(EntityKind::Username, "from", 0.6, "scan");
+    for s in ["github_user", "reddit_user"] {
+        junk_alias.add_evidence(Evidence::new(s, "confirmed account"));
+    }
+    assert!(
+        super::rules::rule_au_046_cross_platform_identity_resolution(
+            &[junk_alias, email.clone()],
+            "scan",
+            0,
+        )
+        .is_empty(),
+        "AU-046 must not resolve a junk handle to identifiers"
+    );
+
+    // Control: a distinctive alias across two platform families still resolves.
+    let mut real_alias = Entity::new(EntityKind::Username, "kylo4kylo", 0.6, "scan");
+    for s in ["github_user", "reddit_user"] {
+        real_alias.add_evidence(Evidence::new(s, "confirmed account"));
+    }
+    let hits = super::rules::rule_au_046_cross_platform_identity_resolution(
+        &[real_alias, email],
+        "scan",
+        0,
+    );
+    assert_eq!(
+        hits.len(),
+        1,
+        "a distinctive alias must still resolve via AU-046"
+    );
+    assert_eq!(hits[0].rule_id, "AU-046");
+}
+
+#[test]
 fn au047_links_identities_by_a_reused_unique_secret_only() {
     // The account-linking rule, and its precision gate. A salted hash carried against
     // two emails links them (same controller); an UNSALTED digest must NOT —
