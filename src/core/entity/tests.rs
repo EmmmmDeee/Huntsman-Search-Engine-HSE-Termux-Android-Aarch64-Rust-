@@ -532,6 +532,42 @@ fn normalise_email_strips_breach_escape_tail() {
 }
 
 #[test]
+fn normalise_email_strips_invisible_and_control_noise() {
+    let clean = "user@gmail.com";
+    // A UTF-8 BOM an exporter prepended is NOT whitespace, so it used to survive
+    // and key the same mailbox to a different UID (identity fragmentation).
+    assert_eq!(
+        normalise(&EntityKind::Email, "\u{feff}user@gmail.com"),
+        clean
+    );
+    // A zero-width space embedded mid-value is removed (not cut — the address
+    // before AND after it is real).
+    assert_eq!(
+        normalise(&EntityKind::Email, "user@gmail\u{200b}.com"),
+        clean
+    );
+    // A NUL-separated junk suffix is cut like the escape tail.
+    assert_eq!(
+        normalise(&EntityKind::Email, "user@gmail.com\u{0}junk"),
+        clean
+    );
+    // All three forms share the clean address's UID — the dedup point.
+    for dirty in [
+        "\u{feff}user@gmail.com",
+        "user@gmail\u{200b}.com",
+        "user@gmail.com\u{0}junk",
+    ] {
+        assert_eq!(
+            Entity::new(EntityKind::Email, dirty, 0.3, "s").uid,
+            Entity::new(EntityKind::Email, clean, 0.3, "s").uid,
+            "{dirty:?} must fold to the clean UID"
+        );
+    }
+    // A pristine address is untouched (no needless allocation path regression).
+    assert_eq!(normalise(&EntityKind::Email, clean), clean);
+}
+
+#[test]
 fn normalise_phone_strips_formatting() {
     let r = normalise(&EntityKind::Phone, "+61 04 1234 5678");
     assert_eq!(r, "+61041234567 8".replace(' ', ""));
@@ -903,6 +939,34 @@ fn normalise_username_strips_leading_handle_sigil_for_dedup() {
 }
 
 #[test]
+fn normalise_username_and_domain_strip_invisible_noise() {
+    // Identity integrity across the identity kinds: a BOM/zero-width char must not
+    // fork the UID for a username or a domain any more than for an email.
+    // A BOM before the `@handle` must still be removed AND the `@` stripped.
+    assert_eq!(
+        normalise(&EntityKind::Username, "\u{feff}@JordanAvery"),
+        "jordanavery"
+    );
+    assert_eq!(
+        normalise(&EntityKind::Username, "jordan\u{200b}avery"),
+        "jordanavery"
+    );
+    assert_eq!(
+        normalise(&EntityKind::Domain, "\u{feff}Example.COM"),
+        "example.com"
+    );
+    // Each noisy form shares the clean UID.
+    assert_eq!(
+        Entity::new(EntityKind::Username, "\u{feff}@jordanavery", 0.3, "s").uid,
+        Entity::new(EntityKind::Username, "jordanavery", 0.3, "s").uid
+    );
+    assert_eq!(
+        Entity::new(EntityKind::Domain, "\u{feff}example.com", 0.3, "s").uid,
+        Entity::new(EntityKind::Domain, "example.com", 0.3, "s").uid
+    );
+}
+
+#[test]
 fn normalise_folds_non_ascii_uppercase_for_dedup() {
     // Regression: the old fast path returned early when a value had no ASCII
     // uppercase byte, so a value whose only capital is NON-ASCII (e.g. a
@@ -1039,6 +1103,22 @@ fn normalise_domain_collapses_repeated_www_to_a_fixed_point() {
     // `www.www.` → trailing dot stripped → `www.www` → strip leading labels
     // down to the last non-`www.` label, which is itself `www`.
     assert_eq!(normalise(&EntityKind::Domain, "www.www."), "www");
+}
+
+#[test]
+fn normalise_domain_is_idempotent_when_a_bom_shields_a_control_byte() {
+    // Regression (proptest minimal case): a leading BOM is not whitespace, so it
+    // shields a following control/whitespace byte from `value.trim()`. Stripping
+    // the BOM exposes that byte at the edge — it must be re-trimmed in the SAME
+    // pass, or the first normalise keeps it (`\u{b}¡`) while a second strips it
+    // (`¡`), forking one host into two UIDs.
+    let once = normalise(&EntityKind::Domain, "\u{feff}\u{b}¡");
+    let twice = normalise(&EntityKind::Domain, &once);
+    assert_eq!(once, twice, "normalise must be a fixed point");
+    assert_eq!(
+        once, "¡",
+        "the shielded control byte is trimmed in one pass"
+    );
 }
 
 // ── Classification::as_str round-trips ──────────────────────────────────
@@ -1273,8 +1353,10 @@ fn absorb_merges_new_attributes_on_same_source_summary() {
 
 #[test]
 fn absorb_attribute_merge_is_order_independent() {
-    // A key both records set resolves to the lexicographically smaller value,
-    // regardless of merge order (the Determinism Requirement).
+    // A key both records set with DIFFERING values accumulates BOTH distinct
+    // observations (the conflict is evidence — e.g. a namesake's other DOB),
+    // sorted so the result is identical regardless of merge order (the Determinism
+    // Requirement). Matches `with_attr`'s in-record accumulation.
     let mk = |v: &str| {
         let mut e = Entity::new(EntityKind::Email, "x@contoso.com", 0.6, "s");
         e.add_evidence(Evidence::new("src", "sum").with_attr("k", v));
@@ -1286,11 +1368,13 @@ fn absorb_attribute_merge_is_order_independent() {
     ba.merge(mk("alpha"));
     assert_eq!(
         ab.evidence[0].attributes.get("k"),
-        ba.evidence[0].attributes.get("k")
+        ba.evidence[0].attributes.get("k"),
+        "merge order must not change the accumulated value"
     );
     assert_eq!(
         ab.evidence[0].attributes.get("k").map(String::as_str),
-        Some("alpha")
+        Some("alpha; beta"),
+        "both distinct observations are kept (sorted), not one dropped"
     );
 }
 

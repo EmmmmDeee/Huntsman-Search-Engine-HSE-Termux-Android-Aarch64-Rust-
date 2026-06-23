@@ -682,6 +682,18 @@ fn au001_does_not_count_generic_search_as_a_breach_source() {
     assert_eq!(rule_au_001_multi_breach(&[two], "s1", 0).len(), 1);
 }
 
+#[test]
+fn au001_does_not_raise_critical_on_a_role_mailbox() {
+    // Live person-scan false positive: `abuse@godaddy.com` (a registrar desk) is in
+    // HIBP + XposedOrNot as a matter of course — that is NOT the subject's breach
+    // exposure and must not fire a Critical.
+    let role = email("abuse@godaddy.com", &["hibp", "xposed_or_not"]);
+    assert!(rule_au_001_multi_breach(&[role], "s1", 0).is_empty());
+    // A genuine personal mailbox in the same two sources still fires.
+    let real = email("matthew@example.com", &["hibp", "xposed_or_not"]);
+    assert_eq!(rule_au_001_multi_breach(&[real], "s1", 0).len(), 1);
+}
+
 // ── AU-002 ──────────────────────────────────────────────────────────
 
 #[test]
@@ -1011,6 +1023,31 @@ fn au010_no_fire_at_two_sources() {
 fn au010_ignores_non_infrastructure_kinds() {
     let e = email("x@y.com", &["a", "b", "c"]);
     assert!(rule_au_010_infra_consensus(&[e], "s", 0).is_empty());
+}
+
+#[test]
+fn au010_recall_replay_does_not_manufacture_consensus() {
+    // Live person-scan flaw: a CDN edge IP "confirmed by dns_intel, doh_resolver,
+    // recall" fired AU-010 265× — but `recall` is a replay of the same prior
+    // observation, not an independent source, so `corroborating_sources` drops it
+    // below the 3-source bar and the infrastructure noise no longer fires.
+    let mk = |sources: &[&str]| {
+        let mut e = Entity::new(EntityKind::IpAddress, "104.26.7.243", 0.9, "scan-test");
+        for s in sources {
+            e.add_evidence(Evidence::new(*s, "test"));
+        }
+        e
+    };
+    assert!(
+        rule_au_010_infra_consensus(&[mk(&["dns_intel", "doh_resolver", "recall"])], "s", 0)
+            .is_empty(),
+        "two resolvers + a recall replay is not a 3-source consensus"
+    );
+    // Three INDEPENDENT infrastructure sources still fire.
+    assert_eq!(
+        rule_au_010_infra_consensus(&[mk(&["dns_intel", "doh_resolver", "crtsh"])], "s", 0).len(),
+        1
+    );
 }
 
 // ── AU-011 ──────────────────────────────────────────────────────────
@@ -2588,6 +2625,85 @@ fn au046_resolves_an_alias_to_platform_exposed_identifiers() {
             .is_empty(),
         "one platform family is not cross-platform resolution"
     );
+}
+
+#[test]
+fn au045_046_reject_junk_and_role_handles_as_identity_anchors() {
+    // Regression for a live person-scan: `from` (a bare function word) and `dns`
+    // (a 3-char acronym) were mis-extracted as usernames and, "confirmed" across
+    // two source families, fired AU-045 "confirmed identity". They are parser
+    // artifacts, not aliases — the handle-quality gate must drop them.
+    let junk = |val: &str| {
+        let mut u = Entity::new(EntityKind::Username, val, 0.6, "scan");
+        for s in ["github_user", "reddit_user"] {
+            u.add_evidence(Evidence::new(s, "confirmed"));
+        }
+        u
+    };
+    // Covers both the length path (`dns`, `www` are < 4 chars) and the
+    // non-identity-token path (`from`, `http` are 4 chars but never handles).
+    for bad in ["from", "dns", "www", "http"] {
+        assert!(
+            super::rules::rule_au_045_multi_service_identity(&[junk(bad)], "scan", 0).is_empty(),
+            "AU-045 must not promote junk handle '{bad}' to a confirmed identity"
+        );
+    }
+
+    // A role mailbox confirmed across families is an org desk, not the subject.
+    let mut role = Entity::new(EntityKind::Email, "abuse@acme.com", 0.7, "scan");
+    for s in ["github_user", "hibp"] {
+        role.add_evidence(Evidence::new(s, "found"));
+    }
+    assert!(
+        super::rules::rule_au_045_multi_service_identity(&[role], "scan", 0).is_empty(),
+        "AU-045 must not promote a role mailbox to a confirmed identity"
+    );
+
+    // Control: a distinctive handle across the SAME two families still fires —
+    // the gate removes junk, not genuine cross-family confirmation.
+    let mut good = Entity::new(EntityKind::Username, "kylo4kylo", 0.6, "scan");
+    for s in ["github_user", "reddit_user"] {
+        good.add_evidence(Evidence::new(s, "confirmed"));
+    }
+    assert_eq!(
+        super::rules::rule_au_045_multi_service_identity(&[good], "scan", 0).len(),
+        1,
+        "a distinctive handle across two families must still fire AU-045"
+    );
+
+    // AU-046: the same junk handle must not be selected as a resolvable alias.
+    let mut email = Entity::new(EntityKind::Email, "k@example.com", 0.7, "scan");
+    email.add_evidence(Evidence::new("github_user", "maintainer email"));
+    let mut junk_alias = Entity::new(EntityKind::Username, "from", 0.6, "scan");
+    for s in ["github_user", "reddit_user"] {
+        junk_alias.add_evidence(Evidence::new(s, "confirmed account"));
+    }
+    assert!(
+        super::rules::rule_au_046_cross_platform_identity_resolution(
+            &[junk_alias, email.clone()],
+            "scan",
+            0,
+        )
+        .is_empty(),
+        "AU-046 must not resolve a junk handle to identifiers"
+    );
+
+    // Control: a distinctive alias across two platform families still resolves.
+    let mut real_alias = Entity::new(EntityKind::Username, "kylo4kylo", 0.6, "scan");
+    for s in ["github_user", "reddit_user"] {
+        real_alias.add_evidence(Evidence::new(s, "confirmed account"));
+    }
+    let hits = super::rules::rule_au_046_cross_platform_identity_resolution(
+        &[real_alias, email],
+        "scan",
+        0,
+    );
+    assert_eq!(
+        hits.len(),
+        1,
+        "a distinctive alias must still resolve via AU-046"
+    );
+    assert_eq!(hits[0].rule_id, "AU-046");
 }
 
 #[test]

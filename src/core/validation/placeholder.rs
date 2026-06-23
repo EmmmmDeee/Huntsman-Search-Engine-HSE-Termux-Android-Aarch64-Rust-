@@ -92,6 +92,13 @@ pub(super) fn is_placeholder_email_local(local: &str) -> bool {
         "janedoe",
         "example",
         "sample",
+        // Test / redaction / placeholder markers an admission gate must not promote
+        // to a real mailbox. Exact local-part match (also via the separator-stripped
+        // form), so a real handle that merely CONTAINS one (`tester`, `firstnations`)
+        // is untouched. `noreply`/`donotreply` are handled on the role-mailbox path.
+        "test",
+        "redacted",
+        "placeholder",
     ];
     TEMPLATE.contains(&l.as_str()) || TEMPLATE.contains(&stripped.as_str())
 }

@@ -23,6 +23,10 @@ fn common_surnames_are_flagged_distinctive_ones_are_not() {
     {
         assert!(is_common(&common), "{common} should be common");
     }
+    // Top-~100 names whose absence previously over-weighted a shared-surname match.
+    for common in ["Griffiths", "Cox", "Chapman", "Lloyd", "Owen", "Hamilton"] {
+        assert!(is_common(common), "{common} should be common");
+    }
     assert!(is_common("  smith  "), "whitespace is ignored");
 
     // Distinctive surnames — including the people this tool is actually run on —

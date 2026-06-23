@@ -793,17 +793,24 @@ impl Entity {
 
 /// Merge `incoming`'s attributes into `existing` — they are the same evidence
 /// record (matching `(source, summary)`), so add the keys `existing` lacks and,
-/// on a key both set, keep the lexicographically smaller value (as `merge` does
-/// for `raw_value`) so the fold is independent of merge order. This preserves the
-/// newly-discovered fields a re-observation carries — an updated breach dump or a
-/// richer re-scan — instead of dropping the whole record on the `(source,
-/// summary)` dedup.
+/// on a key both set with DIFFERING values, accumulate the distinct observations
+/// as `"a; b"` rather than dropping one. A conflicting re-observation (a corrected
+/// value, or a namesake's differing `date_of_birth` on the same breach source) is
+/// itself evidence and must survive for the disambiguation rules to see it. This
+/// matches [`Evidence::with_attr`]'s in-record accumulation — eliminating the
+/// inconsistency where the public builder kept both and this absorb path kept one
+/// — but the values are SORTED (via the set) rather than appended in arrival
+/// order, so the fold stays independent of merge order (the Determinism
+/// Requirement) where `with_attr`'s append would not be.
 fn merge_evidence_attrs(existing: &mut Evidence, incoming: Evidence) {
     for (k, v) in incoming.attributes {
         match existing.attributes.get_mut(&k) {
             Some(cur) => {
-                if v < *cur {
-                    *cur = v;
+                if cur != &v {
+                    let mut parts: std::collections::BTreeSet<String> =
+                        cur.split("; ").map(String::from).collect();
+                    parts.extend(v.split("; ").map(String::from));
+                    *cur = parts.into_iter().collect::<Vec<_>>().join("; ");
                 }
             }
             None => {
@@ -864,6 +871,26 @@ pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
     hex::encode(h.finalize())
 }
 
+/// Invisible format / zero-width characters that are never part of a real
+/// identifier: BOM `U+FEFF`, zero-width space `U+200B`, ZWNJ/ZWJ `U+200C`/`U+200D`,
+/// word-joiner `U+2060`.
+const FORMAT_NOISE: [char; 5] = ['\u{feff}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{2060}'];
+
+/// Strip [`FORMAT_NOISE`] from an identifier value. Being non-whitespace, these
+/// chars survive `trim` and silently fork one value's SHA-256 UID — a BOM an
+/// exporter prepended (`\u{feff}alice@x.com`), a zero-width space in a scraped
+/// handle — fragmenting one identity across two nodes. They never occur in a real
+/// email / username / domain, so removal is loss-free. Borrows when the input is
+/// clean (the overwhelmingly common case), so the hot normalize path allocates
+/// only for the rare dirty value.
+fn strip_format_noise(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.contains(FORMAT_NOISE) {
+        std::borrow::Cow::Owned(s.chars().filter(|c| !FORMAT_NOISE.contains(c)).collect())
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
+}
+
 /// Normalise a value for a given kind.
 ///
 /// - Email → lowercase, trim
@@ -883,15 +910,22 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             // tail fragments one address across two UIDs and leaks a malformed
             // value into the bundle. Valid emails have no such char, so their
             // UID is unchanged.
-            let trimmed = value.trim();
-            let cut = trimmed
-                .find(|c: char| c == '\\' || c.is_whitespace())
-                .unwrap_or(trimmed.len());
+            // Strip invisible format / zero-width noise first (a BOM an exporter
+            // prepended, a zero-width space mid-value) — removal, not the cut
+            // below, because the noise can sit *before* the `@`, where cutting
+            // would truncate the local part. See [`strip_format_noise`].
+            let cleaned = strip_format_noise(value.trim());
+            // Cut at the first backslash / whitespace / control char: the breach
+            // escape tail, stray internal whitespace, or a NUL-separated junk
+            // suffix (`…@x.com\0junk`) all mark the end of the real address.
+            let cut = cleaned
+                .find(|c: char| c == '\\' || c.is_whitespace() || c.is_control())
+                .unwrap_or(cleaned.len());
             // Total Unicode case-fold for dedup. `str::to_lowercase` maps every
             // char through `char::to_lowercase`, so a value whose only capital is
             // non-ASCII (`Ölaf`, a Cyrillic/Greek handle, Turkish `İ`) folds the
             // same as its all-caps spelling — they must share a UID.
-            trimmed[..cut].to_lowercase()
+            cleaned[..cut].to_lowercase()
         }
         EntityKind::Username => {
             // Same total Unicode case-fold as Email, plus stripping a leading `@`
@@ -899,12 +933,30 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             // as `jordanavery` are the SAME account and must dedup to one UID.
             // Without this they fragmented into two identities, and the `@`-prefixed
             // copy also looked like a truncated value to the fragment auditor.
-            value.trim().trim_start_matches('@').trim().to_lowercase()
+            // Invisible format noise is removed first (see [`strip_format_noise`])
+            // so a BOM/zero-width char can neither fork the UID nor hide the
+            // leading `@` from the sigil strip.
+            strip_format_noise(value.trim())
+                .trim()
+                .trim_start_matches('@')
+                .trim()
+                .to_lowercase()
         }
         EntityKind::Domain => {
-            let trimmed = value.trim();
-            let mut s = String::with_capacity(trimmed.len());
-            for c in trimmed.chars() {
+            // Invisible format noise removed first (see [`strip_format_noise`]) so a
+            // BOM/zero-width char can't fork the host's UID.
+            let cleaned = strip_format_noise(value.trim());
+            // Re-trim AFTER stripping: a leading BOM/zero-width char is NOT
+            // whitespace, so the `value.trim()` above stops at it and leaves any
+            // whitespace/control byte sitting BEHIND it (`\u{feff}\u{b}host`) in
+            // place. Removing the format noise then exposes that byte at the edge;
+            // without this second trim it survives into the result, but a
+            // re-normalise (no BOM left to block `trim`) would strip it — so one
+            // host would key to two UIDs and `normalise` would not be idempotent.
+            // Mirrors the Username arm's post-strip `.trim()`.
+            let cleaned = cleaned.trim();
+            let mut s = String::with_capacity(cleaned.len());
+            for c in cleaned.chars() {
                 s.extend(c.to_lowercase());
             }
             // Trim trailing dots and any whitespace exposed by dot-stripping

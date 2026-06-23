@@ -134,6 +134,22 @@ pub fn subject_locations(entities: &[Entity]) -> Vec<(f64, f64)> {
         .collect()
 }
 
+/// The subject's surname, if a named subject Person is present — the family surname
+/// every `family-candidate` is presumed to share. Picks a seed-anchored /
+/// name-matched Person (tagged `subject`, `seed`, or `exact-name-match`); `None`
+/// when the scan has no named subject. The single source shared by the engine's
+/// namesake pass and the AU-061 correlator, so "whose surname?" can't drift.
+#[must_use]
+pub fn subject_surname(entities: &[Entity]) -> Option<String> {
+    entities
+        .iter()
+        .filter(|e| {
+            e.kind == EntityKind::Person
+                && (e.has_tag("subject") || e.has_tag("seed") || e.has_tag("exact-name-match"))
+        })
+        .find_map(|e| crate::util::surnames::surname_of(&e.value))
+}
+
 /// Great-circle distance (km) from a family-candidate's resolved locality to the
 /// NEAREST subject location, or `None` if its postcode doesn't resolve offline.
 /// Free + offline ([`crate::util::city_coords`]).

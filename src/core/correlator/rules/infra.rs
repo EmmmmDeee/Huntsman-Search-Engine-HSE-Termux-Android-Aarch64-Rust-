@@ -194,7 +194,14 @@ pub(in crate::core::correlator) fn rule_au_010_infra_consensus(
         .iter()
         .filter(|e| matches!(e.kind, EntityKind::Domain | EntityKind::IpAddress))
     {
-        let sources = e.evidence_sources();
+        // INDEPENDENT sources only: `recall` (a replay of a prior scan's same
+        // observation) and the deterministic enrichment passes are not new
+        // sightings, so they must not manufacture an "infrastructure consensus".
+        // A live person-scan surfaced 265 AU-010 firings on CDN/provider edge IPs
+        // "confirmed by dns_intel, doh_resolver, recall" — 2 resolvers + 1 replay,
+        // which `corroborating_sources` (the same set `c_effective` counts) drops
+        // below the 3-source bar, retiring the bulk of the infrastructure noise.
+        let sources = e.corroborating_sources();
         if sources.len() >= 3 {
             let mut names: Vec<&str> = sources.into_iter().collect();
             names.sort_unstable();

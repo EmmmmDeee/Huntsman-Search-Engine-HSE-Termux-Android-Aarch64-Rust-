@@ -278,8 +278,8 @@ pub(super) fn flag_geo_discordant_namesakes(entities: &mut [Entity]) -> usize {
     }
     // The family surname every `family-candidate` shares — the subject's. Resolved
     // once; its commonness gates the whole pass (a rare surname → no namesakes).
-    let subject_surname_common =
-        subject_surname(entities).map(|s| crate::util::surnames::is_common(&s));
+    let subject_surname_common = crate::core::geo_family::subject_surname(entities)
+        .map(|s| crate::util::surnames::is_common(&s));
 
     let mut flagged = 0usize;
     for e in entities.iter_mut() {
@@ -306,20 +306,6 @@ pub(super) fn flag_geo_discordant_namesakes(entities: &mut [Entity]) -> usize {
         );
     }
     flagged
-}
-
-/// The subject's surname, if a subject Person is present — the family surname every
-/// `family-candidate` shares. Picks a seed-anchored / name-matched Person (tagged
-/// `subject`, `seed`, or `exact-name-match`); `None` when the scan has no named
-/// subject (then namesake-flagging falls back to each candidate's own surname).
-fn subject_surname(entities: &[Entity]) -> Option<String> {
-    entities
-        .iter()
-        .filter(|e| {
-            e.kind == EntityKind::Person
-                && (e.has_tag("subject") || e.has_tag("seed") || e.has_tag("exact-name-match"))
-        })
-        .find_map(|e| crate::util::surnames::surname_of(&e.value))
 }
 
 /// Pull any newly-available pooled API key into `keys` for every service that

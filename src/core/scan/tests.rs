@@ -324,6 +324,13 @@ fn is_mega_domain_matches_roots_subdomains_and_www() {
         "PINTEREST.COM",
         "api.twitter.com",
         "github.com",
+        // People-search aggregators — the stranger co-occurrence noise this list
+        // exists to dampen.
+        "fastpeoplesearch.com",
+        "thatsthem.com",
+        "clustrmaps.com",
+        "zoominfo.com",
+        "rocketreach.co",
     ] {
         assert!(is_mega_domain(d), "{d} should be a mega-domain");
     }
@@ -354,6 +361,18 @@ fn is_infra_domain_matches_shared_providers() {
         "epik.com",      // registrar / nameserver provider
         "ns3.epik.com",
         "registrar-servers.com", // Namecheap control-plane
+        // Cloud DNS / CDN / cloud-app / ESP / mail-gateway infra (suffix-matched
+        // on the realistic NS / CNAME / MX forms they surface as).
+        "ns1-05.azure-dns.com",
+        "ns2-09.azure-dns.net",
+        "ns-cloud-a1.googledomains.com",
+        "ns1.cloudns.net",
+        "myapp.azureedge.net",
+        "myservice.cloudapp.net",
+        "django-env.elasticbeanstalk.com",
+        "us5.list-manage.com",
+        "target-com.mail.protection.outlook.com", // M365 EOP MX
+        "mx.emailsrvr.com",
     ] {
         assert!(is_infra_domain(d), "{d} should be shared infra");
         assert!(is_noncentral_domain(d), "{d} should be non-central");
@@ -362,6 +381,12 @@ fn is_infra_domain_matches_shared_providers() {
     for d in ["target-company.com.au", "johndoe.org", "acme-widgets.com"] {
         assert!(!is_infra_domain(d), "{d} must NOT be shared infra");
     }
+    // The M365 gateway suffix must NOT swallow `outlook.com` freemail itself —
+    // a subject's `…@outlook.com` is a prime finding, never infra.
+    assert!(
+        !is_infra_domain("outlook.com"),
+        "outlook.com freemail is not infra"
+    );
 }
 
 #[test]
