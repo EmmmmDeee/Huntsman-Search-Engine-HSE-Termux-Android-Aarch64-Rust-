@@ -73,6 +73,71 @@ use super::*;
     }
 
     #[test]
+    fn numeric_fields_coerced_and_household_attrs_stamped() {
+        use serde_json::json;
+        // Breach row encoding IDs/codes as JSON NUMBERS (a common real shape) — the
+        // string-only reader silently dropped the phone lead, the Discord pivot and
+        // the postcode. Also exercises the household/associate grouping attrs the
+        // live correlators (AU-049/050/051) read off a Person's evidence.
+        let item = json!({
+            "full_name": "Dana Whitlock",
+            "email": "dana.whitlock@example.com",
+            "phone_number": 61412345678_u64,
+            "discordid": 123456789012345678_u64,
+            "address_street": "12 Wattle St",
+            "city": "Logan",
+            "state": "QLD",
+            "postal_code": 4114,
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "dana.whitlock@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+
+        // Numeric phone & discordid are now recovered (previously dropped entirely).
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Phone && e.value == "61412345678"),
+            "numeric phone_number must coerce into a Phone entity"
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username
+                    && e.value == "discord:123456789012345678"),
+            "numeric discordid must coerce into a Discord username entity"
+        );
+
+        // The Person's evidence now carries the `phone` and street-anchored
+        // `address` attrs AU-050 (shared phone) and AU-049/051 (household/kin)
+        // cluster on — the gap that left those rules dead on live scans.
+        let person = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Person && e.value == "Dana Whitlock")
+            .expect("Person minted from full_name");
+        let ev = person.evidence.first().expect("breach evidence present");
+        assert_eq!(ev.attributes.get("phone").map(String::as_str), Some("61412345678"));
+        assert_eq!(
+            ev.attributes.get("address").map(String::as_str),
+            Some("12 Wattle St, Logan, QLD, 4114"),
+            "street-anchored residence stamped for household clustering"
+        );
+        // The numeric postcode is captured as its own evidence attr too.
+        assert_eq!(ev.attributes.get("postal_code").map(String::as_str), Some("4114"));
+    }
+
+    #[test]
     fn extract_stealer_entities_characterization() {
         use serde_json::json;
         let item = json!({

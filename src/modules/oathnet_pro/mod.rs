@@ -15,7 +15,7 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::oathnet::{self, paths, val_str, val_str_or};
+use crate::util::oathnet::{self, paths, val_str, val_str_coerce, val_str_or, val_str_or_coerce};
 // The target-identity matcher is shared with see_know via `util::target_match`
 // (one definition for both breach pools); reached by bare name in `breach.rs`
 // through its `use super::*`. The non-match demotion itself is

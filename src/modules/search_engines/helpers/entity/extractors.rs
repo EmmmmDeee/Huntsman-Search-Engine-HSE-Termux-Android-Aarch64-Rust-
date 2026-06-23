@@ -302,31 +302,41 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
             }
             let before: String = lower[before_start..pos].chars().collect();
             let combined = format!("{before} {context}");
+            // Whole-word state detection. The window is free prose, so a bare
+            // substring scan mis-reads ordinary words as a state abbreviation
+            // ("ser{vic}e" → VIC, "{act}ed" → ACT, "fan{tas}tic" → TAS), fabricating
+            // a wrong jurisdiction that then feeds the AU-056 cross-check and
+            // geo-divergence logic. Match the 2–3 letter abbreviations as whole
+            // tokens — mirroring `address_au::locality_key`, which never substrings a
+            // state — while the unambiguous full names stay a plain `contains`.
+            let toks: std::collections::HashSet<&str> = combined
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|t| !t.is_empty())
+                .collect();
+            let has_tok = |t: &str| toks.contains(t);
             if combined.contains("australia")
-                || combined.contains("qld")
-                || combined.contains("nsw")
-                || combined.contains("vic")
+                || has_tok("qld")
+                || has_tok("nsw")
+                || has_tok("vic")
                 || combined.contains("queensland")
                 || combined.contains("new south wales")
                 || combined.contains("victoria")
             {
-                let state_tag = if combined.contains("qld") || combined.contains("queensland") {
+                let state_tag = if has_tok("qld") || combined.contains("queensland") {
                     "QLD"
-                } else if combined.contains("nsw") || combined.contains("new south wales") {
+                } else if has_tok("nsw") || combined.contains("new south wales") {
                     "NSW"
-                } else if combined.contains("vic") || combined.contains("victoria") {
+                } else if has_tok("vic") || combined.contains("victoria") {
                     "VIC"
-                } else if combined.contains(" wa ") || combined.contains("western australia") {
+                } else if has_tok("wa") || combined.contains("western australia") {
                     "WA"
-                } else if combined.contains(" sa ") || combined.contains("south australia") {
+                } else if has_tok("sa") || combined.contains("south australia") {
                     "SA"
-                } else if combined.contains("tas") || combined.contains("tasmania") {
+                } else if has_tok("tas") || combined.contains("tasmania") {
                     "TAS"
-                } else if combined.contains(" nt ") || combined.contains("northern territory") {
+                } else if has_tok("nt") || combined.contains("northern territory") {
                     "NT"
-                } else if combined.contains("act")
-                    || combined.contains("australian capital territory")
-                {
+                } else if has_tok("act") || combined.contains("australian capital territory") {
                     "ACT"
                 } else {
                     "Australia"

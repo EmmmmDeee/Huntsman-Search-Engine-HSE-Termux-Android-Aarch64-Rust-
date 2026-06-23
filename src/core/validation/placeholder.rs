@@ -192,19 +192,25 @@ pub fn is_fragment_value(kind: &EntityKind, value: &str) -> bool {
         // numeric `city` field (a postcode) glued to a street number, e.g.
         // "4125, 327" (seen from an ashleymadison `city=4125` row); not a place.
         //
-        // A BARE ISO country code ("AU", "US", "BR") is likewise not an address —
-        // it is a COUNTRY. Breach `country` fields emit it as one, and because the
-        // 2-letter code is shared across hundreds of unrelated co-occurrence rows
-        // it corroborates into a VERIFIED phantom address (a live QLD-subject scan
-        // produced "US" at corroboration=106). A genuine address carries locality
-        // beyond the country; the country itself survives on the `country:XX` tag
-        // and evidence attributes, so nothing is lost by refusing the entity.
+        // A BARE 2-letter code ("AU", "US", "PK", "WA") is likewise not an address
+        // — it is a COUNTRY (ISO 3166-1 alpha-2, what breach `country` fields emit)
+        // or a region/state abbreviation. Because the 2-letter code is shared across
+        // hundreds of unrelated co-occurrence rows it corroborates into a VERIFIED
+        // phantom address (a live QLD-subject scan produced "US" at
+        // corroboration=106). A genuine address carries locality beyond the
+        // country/region; the country itself survives on the `country:XX` tag and
+        // evidence attributes, so nothing is lost by refusing the entity.
+        //
+        // Reject EVERY bare 2-letter alpha token, not only the ~54 codes the
+        // `country_name_for_iso` display table happens to name: that table is a
+        // deliberately-partial human-readable list, and breach corpora carry codes
+        // from every country (PK, BD, VE, IR, BG, HR, LT, LV, EE, LK, QA, …). Gating
+        // on the display table left every unlisted code reproducing the exact "US"
+        // phantom-address pathology unblocked.
         EntityKind::Address => {
             let t = v.trim();
             !t.chars().any(char::is_alphabetic)
-                || (t.len() == 2
-                    && crate::util::geohash::country::country_name_for_iso(&t.to_ascii_uppercase())
-                        .is_some())
+                || (t.len() == 2 && t.bytes().all(|b| b.is_ascii_alphabetic()))
         }
         _ => false,
     }

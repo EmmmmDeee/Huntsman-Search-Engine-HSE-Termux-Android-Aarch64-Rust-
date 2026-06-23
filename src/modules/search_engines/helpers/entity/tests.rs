@@ -92,6 +92,65 @@ use super::*;
     }
 
     #[test]
+    fn address_state_detection_is_whole_word_not_substring() {
+        // Ordinary words must not be mis-read as a state abbreviation — the free
+        // prose around an AU place name routinely contains "ser{vic}e", "{act}ed",
+        // which a bare substring scan turned into VIC / ACT and fabricated a wrong
+        // jurisdiction. (`Logan`/`Ipswich` are known AU suburbs so the place gate
+        // fires; only the state refinement is on trial.)
+        let acted = extract_addresses_from_text(
+            "Logan is a suburb in australia. the council acted quickly",
+        );
+        assert!(
+            !acted.iter().any(|a| a.contains("ACT")),
+            "\"acted\" must not be read as the ACT: {acted:?}"
+        );
+        let service =
+            extract_addresses_from_text("Ipswich in australia, the service desk was great");
+        assert!(
+            !service.iter().any(|a| a.contains("VIC")),
+            "\"service\" must not be read as VIC: {service:?}"
+        );
+        // A genuine whole-word state token still classifies correctly.
+        let real = extract_addresses_from_text("Logan QLD is home");
+        assert!(
+            real.iter().any(|a| a.contains("QLD")),
+            "a real QLD token must still classify: {real:?}"
+        );
+    }
+
+    #[test]
+    fn score_username_first_name_only_match_stays_candidate() {
+        // A DIFFERENT person who shares only the target's GIVEN name must not be
+        // promoted to PROBABLE: target "Jordan Meyers", SERP result for a stranger
+        // "jordan_blake" on a non-people-search host. Even with first-name
+        // co-occurrence (Signal 3) and a "jordan" stem (Signal 5) stacking, the
+        // surname-anchor cap holds it at CANDIDATE (0.30) — the wrong-attribution
+        // class `url_matches_target` already guards for paths.
+        let terms = vec!["jordan".to_string(), "meyers".to_string()];
+        let stranger = sr(
+            "Jordan Blake (@jordan_blake)",
+            "Jordan Blake's profile",
+            "https://x.com/jordan_blake",
+            "jordan meyers",
+        );
+        let (score, conf) = score_username("jordan_blake", "x.com", &terms, &stranger);
+        assert!(score < 3, "first-name-only stranger must not reach PROBABLE: {score}");
+        assert_eq!(conf, 0.30);
+
+        // The real subject's surname-anchored handle DOES reach PROBABLE.
+        let subject = sr(
+            "Jordan Meyers",
+            "profile",
+            "https://x.com/jmeyers",
+            "jordan meyers",
+        );
+        let (score, conf) = score_username("jmeyers", "x.com", &terms, &subject);
+        assert!(score >= 3, "surname-anchored handle must reach PROBABLE: {score}");
+        assert_eq!(conf, 0.55);
+    }
+
+    #[test]
     fn score_username_no_signals_gives_candidate_confidence() {
         // username "zzz" shares nothing with terms and host is not a people-search
         let r = sr("", "", "https://example.com/zzz", "alice bob");
