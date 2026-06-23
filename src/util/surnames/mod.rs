@@ -124,6 +124,25 @@ static COMMON_SURNAMES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "ellis",
         "fraser",
         "grant",
+        // Further top-~100 English / Welsh / Scottish names (as common as, or more
+        // common than, several already listed) — their absence let AU-051/AU-061
+        // assert a "distinctive shared surname → Critical kin" on a name that is in
+        // fact commonplace (two Griffiths / Coxes in one metro are not evident kin).
+        "griffiths",
+        "cox",
+        "chapman",
+        "reynolds",
+        "lloyd",
+        "harvey",
+        "owen",
+        "owens",
+        "fox",
+        "griffin",
+        "johnston",
+        "hamilton",
+        "wallace",
+        "fletcher",
+        "pearson",
         // Common migrant surnames in AU.
         "nguyen",
         "tran",
