@@ -10,6 +10,46 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.8.2] — 2026-06-23
+
+### Fixed
+
+- **Bare non-display ISO country codes no longer become phantom addresses.** The
+  `Address` fragment gate rejected a bare 2-letter country code only when it was
+  one of the ~54 countries in the human-readable `country_name_for_iso` table, so
+  every *other* ISO 3166-1 alpha-2 code (`PK`, `BD`, `VE`, `IR`, `BG`, `HR`, `LT`,
+  `LV`, `EE`, `LK`, `QA`, …) still slipped through and corroborated across hundreds
+  of unrelated breach co-occurrence rows into a VERIFIED phantom address — the exact
+  `US`-at-corroboration-106 pathology the gate was added to close. It now rejects
+  *every* bare 2-letter alpha token; the country still survives on the `country:XX`
+  tag and evidence attributes.
+- **Search-discovered usernames require the surname, not just a given name.**
+  `score_username` granted the PROBABLE tier (0.55) on *any* term overlap, so a
+  stranger sharing only the target's first name (`jordan_blake` for a "Jordan
+  Meyers" scan) was emitted as a confirmed handle and fed to the correlator. A
+  multi-part-name target now needs its surname (the distinctive anchor) — or
+  people-search provenance — to reach PROBABLE, mirroring `url_matches_target`;
+  first-name-only evidence stays a quarantined CANDIDATE.
+- **AU state classification is whole-word, not substring.** Prose around an
+  Australian place name routinely contains `ser{vic}e`, `{act}ed`, `fan{tas}tic`,
+  which a bare substring scan read as VIC / ACT / TAS and stamped a wrong
+  jurisdiction onto the address (feeding the AU-056 cross-check and geo-divergence
+  logic). The 2–3 letter abbreviations are now matched as whole tokens.
+- **Numeric breach fields are no longer silently dropped.** The shared JSON reader
+  accepted only string values, so a breach row encoding `discordid` (always a
+  64-bit int), `phone_number` or `postal_code` as a JSON *number* lost the Discord
+  pivot, the phone lead, and the postcode entirely. A coercing reader
+  (`val_str_coerce`) now recovers numeric scalars on the breach extraction paths.
+- **Household / associate correlators fire on live breach scans.** AU-049
+  (household), AU-050 (shared phone line) and AU-051 (same-surname kin) cluster
+  Persons by an `address` / `phone` attribute on their evidence, but the live
+  `oathnet_pro` breach module never stamped those attributes (it emitted standalone
+  Address/Phone entities and split `city`/`state`/`postal_code` attrs instead) — so
+  the three pivots fired only on hand-imported text dossiers, never on a real scan.
+  Breach evidence now carries a `phone` attr and a street-anchored `address` attr
+  (gated to a specific residence so a shared city can't fuse strangers into a false
+  household).
+
 ## [1.8.1] — 2026-06-23
 
 ### Fixed
