@@ -1189,11 +1189,16 @@ fn extract_family_names_rejects_subject_name_doublings_and_filler() {
         mk("haigenhaigen bamford", ""),
         mk("haigenbhaigen bamford", ""),
         mk("a company named bamford", ""),
+        // A NON-subject first name doubled ("fredfred") — `target_terms` can't
+        // catch it (it contains neither "haigen" nor "bamford"); only the new
+        // self-doubling guard does. Live regression: "Fredfred Diegmann" minted
+        // from a radaris `/p/Fred/Diegmann/` result.
+        mk("fredfred bamford", ""),
     ];
     let fam = extract_family_names(&results, &target);
     assert!(
         fam.is_empty(),
-        "subject-name doublings and filler must not become family members: {fam:?}"
+        "subject-name doublings, self-doublings and filler must not become family members: {fam:?}"
     );
 
     // A genuine relative sharing the surname is still extracted.

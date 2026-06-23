@@ -298,6 +298,17 @@ pub(super) fn extract_family_names(
             if target_terms.iter().any(|t| first.contains(t.as_str())) {
                 continue;
             }
+            // Reject a first name that is a token doubled onto itself
+            // ("fredfred", "annaanna") — snippet garble, never a real given name.
+            // The `target_terms` guard above only catches doublings of the
+            // SUBJECT's own terms; this catches a doubling of ANY token (a live
+            // scan minted "Fredfred Diegmann" from a radaris `/p/Fred/Diegmann/`
+            // result whose snippet doubled the first name). ASCII-validated above,
+            // so the byte split is codepoint-safe.
+            let fb = first.as_bytes();
+            if fb.len() >= 6 && fb.len() % 2 == 0 && fb[..fb.len() / 2] == fb[fb.len() / 2..] {
+                continue;
+            }
             if is_non_name_word(first) {
                 continue;
             }

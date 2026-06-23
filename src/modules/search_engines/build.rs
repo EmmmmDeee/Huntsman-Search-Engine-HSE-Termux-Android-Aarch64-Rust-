@@ -439,9 +439,17 @@ pub(super) fn build_entities(
         }
     }
 
-    // Extract family members: people sharing the target's last name
-    // found in search results (e.g., "Jeanette Despal" when target is
-    // "Jerome Despal"). These are high-value geolocation leads.
+    // Extract family members: people sharing the target's last name found in
+    // search results (e.g., "Jeanette Despal" when target is "Jerome Despal").
+    //
+    // A shared surname in a search snippet is a SPECULATIVE lead, not a confirmed
+    // relative: for a distinctive surname the SERPs surface unrelated global
+    // namesakes (a live "Matthew Diegmann" scan minted "Dominique Diegmann" from a
+    // ski-race page and "Elaine Diegmann" from a US healthcare NPI). So these are
+    // emitted candidate-tier — retained as leads (Network/full views) but excluded
+    // from the subject's confirmed footprint, the correlator and the exposure
+    // index, and never outranking the evidence-grounded registry relatives
+    // (`qld_unclaimed`'s `family-candidate`, ~0.35) the way the old 0.45 did.
     let family = extract_family_names(results, target);
     for (name, source_url) in &family {
         let key = format!("@person:{}", name.to_lowercase());
@@ -456,6 +464,7 @@ pub(super) fn build_entities(
                 )
                 .with_attr("url", source_url),
             );
+            e.demote_to_candidate();
             result.push(e);
         }
     }
