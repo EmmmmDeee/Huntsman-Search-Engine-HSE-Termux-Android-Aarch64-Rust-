@@ -12,7 +12,7 @@ pub(super) fn print_dossier(
     relations: &[Relation],
     kind: &str,
     value: &str,
-    sid: &str,
+    leverage: &[crate::core::engine::LeverageRanked],
 ) {
     use std::collections::BTreeMap;
 
@@ -21,7 +21,7 @@ pub(super) fn print_dossier(
     println!("╚══════════════════════════════════════════════════════════════╝");
     println!();
     println!("  Target:    {kind} = {value}");
-    println!("  Scan ID:   {}", &sid[..16]);
+    println!("  Scan ID:   {}", &scan.id[..16]);
     println!("  Status:    {}", scan.status.as_str());
     println!("  Entities:  {}", scan.entity_count);
     println!(
@@ -41,6 +41,26 @@ pub(super) fn print_dossier(
         );
     }
     println!();
+
+    // Cross-scan enrichment leverage — this scan's identifiers that also appear in
+    // earlier investigations in the local intelligence base, ranked by how many
+    // they bridge (data_retention_design §4.1). Only genuine bridges (degree ≥ 2)
+    // are shown here; the complete ranking is in `--output json`. Absent on a
+    // first-ever scan, where nothing bridges yet — that is correct, not a gap.
+    let bridges: Vec<&crate::core::engine::LeverageRanked> = leverage
+        .iter()
+        .filter(|l| l.cross_scan_degree >= 2)
+        .collect();
+    if !bridges.is_empty() {
+        println!("  Cross-scan leverage (identifiers bridging prior investigations):");
+        for l in bridges.iter().take(8) {
+            println!(
+                "    · {} {} — bridges {} investigations",
+                l.kind, l.value, l.cross_scan_degree
+            );
+        }
+        println!();
+    }
 
     let mut by_kind: BTreeMap<String, Vec<&Entity>> = BTreeMap::new();
     for e in entities {
@@ -190,7 +210,7 @@ pub(super) fn print_dossier(
     print_resolved_identities(entities, relations);
     print_connection_brokers(entities, relations);
 
-    print_diagnostics(scan, entities, kind, value, sid);
+    print_diagnostics(scan, entities, kind, value, &scan.id);
 }
 
 /// CONNECTIONS — graph-free link analysis (PROBLEM_TREE C1, the
