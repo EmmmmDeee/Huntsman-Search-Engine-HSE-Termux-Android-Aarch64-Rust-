@@ -324,6 +324,13 @@ fn is_mega_domain_matches_roots_subdomains_and_www() {
         "PINTEREST.COM",
         "api.twitter.com",
         "github.com",
+        // People-search aggregators — the stranger co-occurrence noise this list
+        // exists to dampen.
+        "fastpeoplesearch.com",
+        "thatsthem.com",
+        "clustrmaps.com",
+        "zoominfo.com",
+        "rocketreach.co",
     ] {
         assert!(is_mega_domain(d), "{d} should be a mega-domain");
     }
