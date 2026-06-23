@@ -1105,6 +1105,22 @@ fn normalise_domain_collapses_repeated_www_to_a_fixed_point() {
     assert_eq!(normalise(&EntityKind::Domain, "www.www."), "www");
 }
 
+#[test]
+fn normalise_domain_is_idempotent_when_a_bom_shields_a_control_byte() {
+    // Regression (proptest minimal case): a leading BOM is not whitespace, so it
+    // shields a following control/whitespace byte from `value.trim()`. Stripping
+    // the BOM exposes that byte at the edge — it must be re-trimmed in the SAME
+    // pass, or the first normalise keeps it (`\u{b}¡`) while a second strips it
+    // (`¡`), forking one host into two UIDs.
+    let once = normalise(&EntityKind::Domain, "\u{feff}\u{b}¡");
+    let twice = normalise(&EntityKind::Domain, &once);
+    assert_eq!(once, twice, "normalise must be a fixed point");
+    assert_eq!(
+        once, "¡",
+        "the shielded control byte is trimmed in one pass"
+    );
+}
+
 // ── Classification::as_str round-trips ──────────────────────────────────
 
 #[test]

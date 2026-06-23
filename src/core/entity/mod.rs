@@ -946,6 +946,15 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             // Invisible format noise removed first (see [`strip_format_noise`]) so a
             // BOM/zero-width char can't fork the host's UID.
             let cleaned = strip_format_noise(value.trim());
+            // Re-trim AFTER stripping: a leading BOM/zero-width char is NOT
+            // whitespace, so the `value.trim()` above stops at it and leaves any
+            // whitespace/control byte sitting BEHIND it (`\u{feff}\u{b}host`) in
+            // place. Removing the format noise then exposes that byte at the edge;
+            // without this second trim it survives into the result, but a
+            // re-normalise (no BOM left to block `trim`) would strip it — so one
+            // host would key to two UIDs and `normalise` would not be idempotent.
+            // Mirrors the Username arm's post-strip `.trim()`.
+            let cleaned = cleaned.trim();
             let mut s = String::with_capacity(cleaned.len());
             for c in cleaned.chars() {
                 s.extend(c.to_lowercase());
