@@ -682,6 +682,18 @@ fn au001_does_not_count_generic_search_as_a_breach_source() {
     assert_eq!(rule_au_001_multi_breach(&[two], "s1", 0).len(), 1);
 }
 
+#[test]
+fn au001_does_not_raise_critical_on_a_role_mailbox() {
+    // Live person-scan false positive: `abuse@godaddy.com` (a registrar desk) is in
+    // HIBP + XposedOrNot as a matter of course — that is NOT the subject's breach
+    // exposure and must not fire a Critical.
+    let role = email("abuse@godaddy.com", &["hibp", "xposed_or_not"]);
+    assert!(rule_au_001_multi_breach(&[role], "s1", 0).is_empty());
+    // A genuine personal mailbox in the same two sources still fires.
+    let real = email("matthew@example.com", &["hibp", "xposed_or_not"]);
+    assert_eq!(rule_au_001_multi_breach(&[real], "s1", 0).len(), 1);
+}
+
 // ── AU-002 ──────────────────────────────────────────────────────────
 
 #[test]

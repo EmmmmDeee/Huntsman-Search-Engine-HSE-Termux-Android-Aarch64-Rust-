@@ -467,6 +467,15 @@ pub(in crate::core::correlator) fn rule_au_001_multi_breach(
     ];
     let mut out = Vec::new();
     for e in entities_of_kind(entities, EntityKind::Email) {
+        // A role / provider mailbox (abuse@, noreply@, dns@, …) appears in breach
+        // corpora as a matter of course — it is a shared registrar/provider desk,
+        // not the subject's address — so its breach presence is NOT the subject's
+        // exposure and must never raise a Critical. A live person-scan fired AU-001
+        // CRITICAL on `abuse@godaddy.com` (hibp + xposed_or_not), a false positive
+        // surfaced from a WHOIS/RDAP registrar-contact emitter.
+        if crate::core::validation::is_role_mailbox(&e.value) {
+            continue;
+        }
         let sources = tagged_matching_sources(e, BREACH_SOURCES);
         if sources.len() >= 2 {
             let mut names: Vec<&str> = sources.into_iter().collect();
