@@ -152,6 +152,13 @@ const INFRA_DOMAINS: &[&str] = &[
     "akamai.net",
     "edgekey.net",
     "edgesuite.net",
+    "azure-dns.com", // Azure DNS nameservers (ns1-NN.azure-dns.*)
+    "azure-dns.net",
+    "azure-dns.org",
+    "azure-dns.info",
+    "googledomains.com", // Google Cloud DNS nameservers (ns-cloud-*.googledomains.com)
+    "cloudns.net",       // ClouDNS managed DNS
+    "dnsimple.com",      // DNSimple managed DNS
     // Registrar / hosting control-plane
     "secureserver.net",
     "domaincontrol.com",
@@ -165,6 +172,9 @@ const INFRA_DOMAINS: &[&str] = &[
     "cloudfront.net",
     "fastly.net",
     "fastlylb.net",
+    "azureedge.net",   // Azure CDN edge
+    "edgecastcdn.net", // Edgecast / Verizon Media CDN
+    "llnwd.net",       // Limelight Networks CDN
     // CDN / cloud / DNS *provider corporate domains* — discovered incidentally
     // via a WHOIS registrar/abuse/dns field, a nameserver, or a role mailbox
     // (`dns@cloudflare.com`). Never the subject's own infrastructure, so
@@ -188,6 +198,8 @@ const INFRA_DOMAINS: &[&str] = &[
     "azurewebsites.net",
     "windows.net",
     "azure.com",
+    "cloudapp.net",         // Azure cloud-service / VM endpoints
+    "elasticbeanstalk.com", // AWS Elastic Beanstalk app hosting
     // ESP / transactional mail
     "sendgrid.net",
     "sendgrid.com",
@@ -198,10 +210,17 @@ const INFRA_DOMAINS: &[&str] = &[
     "mcsv.net",
     "mcdlv.net",
     "rsgsv.net",
+    "list-manage.com", // Mailchimp campaign / click-tracking
+    "mailchimp.com",
+    "postmarkapp.com", // Postmark transactional mail
+    "mailjet.com",
     // Hosted-mail security gateways
     "mimecast.com",
     "pphosted.com",
     "messagelabs.com",
+    "protection.outlook.com", // Microsoft 365 Exchange Online Protection MX
+    "barracudanetworks.com",  // Barracuda mail security
+    "emailsrvr.com",          // Rackspace hosted email infra
 ];
 
 const MEGA_DOMAINS: &[&str] = &[
