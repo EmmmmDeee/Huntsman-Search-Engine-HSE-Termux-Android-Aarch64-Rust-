@@ -680,7 +680,17 @@ pub fn derive_kinship(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
 
     let mut seen: HashSet<(String, String)> = HashSet::new();
     let mut out = Vec::new();
-    for group in by_surname.values() {
+    for (surname, group) in &by_surname {
+        // A COMMON surname (Smith, Jones, Nguyen, Wang…) is shared by countless
+        // unrelated strangers; pairing everyone who happens to carry one would
+        // manufacture O(n²) false "associate" edges from a single popular name.
+        // Only a DISTINCTIVE surname is itself evidence of likely kinship — mirror
+        // the commonness discount the leads/engine paths already apply. (A genuine
+        // relative of a common-surname subject still surfaces through the
+        // evidence-grounded co-residence / declared-association passes.)
+        if crate::util::surnames::is_common(surname) {
+            continue;
+        }
         for i in 0..group.len() {
             for j in (i + 1)..group.len() {
                 let (a, b) = (group[i], group[j]);

@@ -37,6 +37,16 @@ pub(in crate::core::correlator) fn rule_au_060_transitive_identity_closure(
     now: u64,
 ) -> Vec<Correlation> {
     const MAX_HOPS: usize = 4;
+    // Weakest-link confidence floor, mirroring AU-067's `MIN_CONF`. A transitive
+    // chain is only as trustworthy as its weakest edge, so a path that routes
+    // through a DELIBERATELY-DAMPED lead-grade edge — a bare surname `derive_kinship`
+    // link (`min(conf) * 0.5`), a co-mention/affiliation lead — must not surface as
+    // an ASSERTED identity link. Without this floor AU-060 ignored the damps the
+    // relation builders apply, cross-linking same-surname strangers through a kin
+    // hop. `identity_paths` already computes the minimum edge confidence along each
+    // path (`IdentityPath::min_confidence`, the same field AU-067 floors on), so the
+    // check is a single comparison — no per-edge lookup, no drift from the primitive.
+    const MIN_CONF: f64 = 0.50;
 
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
 
@@ -44,6 +54,10 @@ pub(in crate::core::correlator) fn rule_au_060_transitive_identity_closure(
     for path in identity_paths(entities, relations, MAX_HOPS) {
         // Transitive only: a 1-hop direct edge is covered by the direct-link rules.
         if path.hops < 2 {
+            continue;
+        }
+        // A chain is only as strong as its weakest edge (see `MIN_CONF` above).
+        if path.min_confidence < MIN_CONF {
             continue;
         }
         let (Some(src_e), Some(dst_e)) = (
@@ -103,6 +117,51 @@ mod tests {
 
     fn rel(from: &Entity, to: &Entity, kind: RelationKind) -> Relation {
         Relation::new(from.uid.clone(), to.uid.clone(), kind, 0.8, "s")
+    }
+
+    fn rel_conf(from: &Entity, to: &Entity, kind: RelationKind, conf: f64) -> Relation {
+        Relation::new(from.uid.clone(), to.uid.clone(), kind, conf, "s")
+    }
+
+    #[test]
+    fn au060_suppresses_chain_through_a_damped_lead_edge() {
+        // email → person (strong 0.8) → person2 via a DAMPED kinship edge (0.40,
+        // what `derive_kinship` emits for a 0.8 surname pair: 0.8 * 0.5). The 2-hop
+        // path email→person2 has weakest-link confidence 0.40 < 0.50, so AU-060 must
+        // NOT assert the stranger person2 as a transitively-linked identity.
+        let email = mk(EntityKind::Email, "alice@example.com");
+        let person = mk(EntityKind::Person, "Alice Smith");
+        let person2 = mk(EntityKind::Person, "Bob Smith");
+        let rels = [
+            rel(&email, &person, RelationKind::DerivedFrom),
+            rel_conf(&person, &person2, RelationKind::AssociatedWith, 0.40),
+        ];
+        let entities = [email, person, person2];
+        assert!(
+            rule_au_060_transitive_identity_closure(&entities, &rels, "s", 0).is_empty(),
+            "a chain through a sub-0.50 damped edge must be suppressed"
+        );
+    }
+
+    #[test]
+    fn au060_still_fires_when_every_edge_clears_the_floor() {
+        // The same shape but the second edge is a strong 0.6 link (≥ 0.50): the
+        // transitive pair is legitimate and still fires — the floor gates only the
+        // damped leads, not honest mid-confidence structural edges.
+        let email = mk(EntityKind::Email, "alice@example.com");
+        let person = mk(EntityKind::Person, "Alice Smith");
+        let username = mk(EntityKind::Username, "asmith");
+        let rels = [
+            rel(&email, &person, RelationKind::DerivedFrom),
+            rel_conf(&person, &username, RelationKind::AssociatedWith, 0.60),
+        ];
+        let entities = [email, person, username];
+        let r = rule_au_060_transitive_identity_closure(&entities, &rels, "s", 0);
+        assert_eq!(
+            r.len(),
+            1,
+            "a chain whose weakest edge is ≥ 0.50 still fires"
+        );
     }
 
     #[test]
