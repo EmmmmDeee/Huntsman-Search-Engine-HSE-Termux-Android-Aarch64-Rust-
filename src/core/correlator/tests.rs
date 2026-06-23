@@ -1013,6 +1013,31 @@ fn au010_ignores_non_infrastructure_kinds() {
     assert!(rule_au_010_infra_consensus(&[e], "s", 0).is_empty());
 }
 
+#[test]
+fn au010_recall_replay_does_not_manufacture_consensus() {
+    // Live person-scan flaw: a CDN edge IP "confirmed by dns_intel, doh_resolver,
+    // recall" fired AU-010 265× — but `recall` is a replay of the same prior
+    // observation, not an independent source, so `corroborating_sources` drops it
+    // below the 3-source bar and the infrastructure noise no longer fires.
+    let mk = |sources: &[&str]| {
+        let mut e = Entity::new(EntityKind::IpAddress, "104.26.7.243", 0.9, "scan-test");
+        for s in sources {
+            e.add_evidence(Evidence::new(*s, "test"));
+        }
+        e
+    };
+    assert!(
+        rule_au_010_infra_consensus(&[mk(&["dns_intel", "doh_resolver", "recall"])], "s", 0)
+            .is_empty(),
+        "two resolvers + a recall replay is not a 3-source consensus"
+    );
+    // Three INDEPENDENT infrastructure sources still fire.
+    assert_eq!(
+        rule_au_010_infra_consensus(&[mk(&["dns_intel", "doh_resolver", "crtsh"])], "s", 0).len(),
+        1
+    );
+}
+
 // ── AU-011 ──────────────────────────────────────────────────────────
 
 #[test]
