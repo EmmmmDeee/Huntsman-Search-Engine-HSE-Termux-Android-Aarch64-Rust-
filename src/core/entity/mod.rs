@@ -864,6 +864,26 @@ pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
     hex::encode(h.finalize())
 }
 
+/// Invisible format / zero-width characters that are never part of a real
+/// identifier: BOM `U+FEFF`, zero-width space `U+200B`, ZWNJ/ZWJ `U+200C`/`U+200D`,
+/// word-joiner `U+2060`.
+const FORMAT_NOISE: [char; 5] = ['\u{feff}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{2060}'];
+
+/// Strip [`FORMAT_NOISE`] from an identifier value. Being non-whitespace, these
+/// chars survive `trim` and silently fork one value's SHA-256 UID — a BOM an
+/// exporter prepended (`\u{feff}alice@x.com`), a zero-width space in a scraped
+/// handle — fragmenting one identity across two nodes. They never occur in a real
+/// email / username / domain, so removal is loss-free. Borrows when the input is
+/// clean (the overwhelmingly common case), so the hot normalize path allocates
+/// only for the rare dirty value.
+fn strip_format_noise(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.contains(FORMAT_NOISE) {
+        std::borrow::Cow::Owned(s.chars().filter(|c| !FORMAT_NOISE.contains(c)).collect())
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
+}
+
 /// Normalise a value for a given kind.
 ///
 /// - Email → lowercase, trim
@@ -883,34 +903,11 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             // tail fragments one address across two UIDs and leaks a malformed
             // value into the bundle. Valid emails have no such char, so their
             // UID is unchanged.
-            let trimmed = value.trim();
-            // Strip invisible format / zero-width noise first — a UTF-8 BOM an
-            // exporter prepended (`\u{feff}`), a zero-width space embedded
-            // mid-value (`\u{200b}`). These are NOT whitespace, so `trim` and the
-            // cut below miss them, yet they key the SAME mailbox to a DIFFERENT
-            // UID — fragmenting one identity across two nodes. They never occur in
-            // a real address, so removing them is loss-free (vs cutting, which
-            // would truncate a value whose noise sits before the `@`).
-            let cleaned: std::borrow::Cow<'_, str> = if trimmed.chars().any(|c| {
-                matches!(
-                    c,
-                    '\u{feff}' | '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{2060}'
-                )
-            }) {
-                std::borrow::Cow::Owned(
-                    trimmed
-                        .chars()
-                        .filter(|c| {
-                            !matches!(
-                                c,
-                                '\u{feff}' | '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{2060}'
-                            )
-                        })
-                        .collect(),
-                )
-            } else {
-                std::borrow::Cow::Borrowed(trimmed)
-            };
+            // Strip invisible format / zero-width noise first (a BOM an exporter
+            // prepended, a zero-width space mid-value) — removal, not the cut
+            // below, because the noise can sit *before* the `@`, where cutting
+            // would truncate the local part. See [`strip_format_noise`].
+            let cleaned = strip_format_noise(value.trim());
             // Cut at the first backslash / whitespace / control char: the breach
             // escape tail, stray internal whitespace, or a NUL-separated junk
             // suffix (`…@x.com\0junk`) all mark the end of the real address.
@@ -929,12 +926,21 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             // as `jordanavery` are the SAME account and must dedup to one UID.
             // Without this they fragmented into two identities, and the `@`-prefixed
             // copy also looked like a truncated value to the fragment auditor.
-            value.trim().trim_start_matches('@').trim().to_lowercase()
+            // Invisible format noise is removed first (see [`strip_format_noise`])
+            // so a BOM/zero-width char can neither fork the UID nor hide the
+            // leading `@` from the sigil strip.
+            strip_format_noise(value.trim())
+                .trim()
+                .trim_start_matches('@')
+                .trim()
+                .to_lowercase()
         }
         EntityKind::Domain => {
-            let trimmed = value.trim();
-            let mut s = String::with_capacity(trimmed.len());
-            for c in trimmed.chars() {
+            // Invisible format noise removed first (see [`strip_format_noise`]) so a
+            // BOM/zero-width char can't fork the host's UID.
+            let cleaned = strip_format_noise(value.trim());
+            let mut s = String::with_capacity(cleaned.len());
+            for c in cleaned.chars() {
                 s.extend(c.to_lowercase());
             }
             // Trim trailing dots and any whitespace exposed by dot-stripping

@@ -939,6 +939,34 @@ fn normalise_username_strips_leading_handle_sigil_for_dedup() {
 }
 
 #[test]
+fn normalise_username_and_domain_strip_invisible_noise() {
+    // Identity integrity across the identity kinds: a BOM/zero-width char must not
+    // fork the UID for a username or a domain any more than for an email.
+    // A BOM before the `@handle` must still be removed AND the `@` stripped.
+    assert_eq!(
+        normalise(&EntityKind::Username, "\u{feff}@JordanAvery"),
+        "jordanavery"
+    );
+    assert_eq!(
+        normalise(&EntityKind::Username, "jordan\u{200b}avery"),
+        "jordanavery"
+    );
+    assert_eq!(
+        normalise(&EntityKind::Domain, "\u{feff}Example.COM"),
+        "example.com"
+    );
+    // Each noisy form shares the clean UID.
+    assert_eq!(
+        Entity::new(EntityKind::Username, "\u{feff}@jordanavery", 0.3, "s").uid,
+        Entity::new(EntityKind::Username, "jordanavery", 0.3, "s").uid
+    );
+    assert_eq!(
+        Entity::new(EntityKind::Domain, "\u{feff}example.com", 0.3, "s").uid,
+        Entity::new(EntityKind::Domain, "example.com", 0.3, "s").uid
+    );
+}
+
+#[test]
 fn normalise_folds_non_ascii_uppercase_for_dedup() {
     // Regression: the old fast path returned early when a value had no ASCII
     // uppercase byte, so a value whose only capital is NON-ASCII (e.g. a
