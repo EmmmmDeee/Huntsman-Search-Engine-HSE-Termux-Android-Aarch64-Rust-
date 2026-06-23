@@ -10,7 +10,85 @@ use rusqlite::params;
 use crate::core::entity::Entity;
 use crate::core::error::Result;
 
+/// A weak finding surfaced for analyst review: the engine admitted the entity, but
+/// at a stored confidence below the review threshold. The audit trail an LE/defence
+/// reviewer reads to find what should NOT yet be trusted — produced by
+/// [`Store::low_confidence_evidence`](super::Store::low_confidence_evidence).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvidenceAnomaly {
+    /// SHA-256 UID of the weak entity.
+    pub entity_uid: String,
+    /// The evidence-source module(s) that produced it — distinct, sorted, joined.
+    pub module_name: String,
+    /// The stored base confidence — strictly below the query threshold.
+    pub confidence: f64,
+    /// Unix epoch seconds the entity was last observed.
+    pub created_at: i64,
+}
+
 impl super::Store {
+    /// Default confidence floor below which a stored finding is an anomaly worth
+    /// review — inside the Candidate tier (`< 0.40`), set at 0.3 so only genuinely
+    /// weak findings surface.
+    pub const DEFAULT_LOW_CONFIDENCE_THRESHOLD: f64 = 0.3;
+
+    /// Every stored entity whose confidence is below `threshold` and that was
+    /// observed within the last `since_seconds` — the weak findings an analyst
+    /// should review before they are trusted as evidence (pass
+    /// [`Self::DEFAULT_LOW_CONFIDENCE_THRESHOLD`] for the 0.3 default). The indexed
+    /// `confidence` / `observed_at` columns drive the scan; each module is then
+    /// resolved from the entity's evidence sources. Ordered weakest-first for triage.
+    pub fn low_confidence_evidence(
+        &self,
+        threshold: f64,
+        since_seconds: i64,
+    ) -> Result<Vec<EvidenceAnomaly>> {
+        let cutoff = i64::try_from(crate::core::entity::unix_now())
+            .unwrap_or(i64::MAX)
+            .saturating_sub(since_seconds);
+        let rows: Vec<(String, f64, i64, String)> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(
+                "SELECT uid, confidence, observed_at, data_json
+                   FROM entities
+                  WHERE confidence < ?1 AND observed_at >= ?2
+                  ORDER BY confidence ASC, uid ASC",
+            )?;
+            let mapped = stmt.query_map(params![threshold, cutoff], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, f64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })?;
+            mapped.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        Ok(rows
+            .into_iter()
+            .map(|(uid, confidence, created_at, data_json)| {
+                // The producing module(s) live in the entity's evidence sources,
+                // serialised inside `data_json` (no dedicated column); resolve them
+                // best-effort, falling back to "unknown" if the row won't decode.
+                let module_name = serde_json::from_str::<Entity>(&data_json)
+                    .ok()
+                    .map(|e| {
+                        let mut srcs: Vec<&str> = e.evidence_sources().into_iter().collect();
+                        srcs.sort_unstable();
+                        srcs.join(", ")
+                    })
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "unknown".to_string());
+                EvidenceAnomaly {
+                    entity_uid: uid,
+                    module_name,
+                    confidence,
+                    created_at,
+                }
+            })
+            .collect())
+    }
+
     pub fn upsert_entity(&self, entity: &Entity) -> Result<()> {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
@@ -413,6 +491,53 @@ mod tests {
     use super::*;
     use crate::core::entity::EntityKind;
     use crate::storage::Store;
+
+    // ── low_confidence_evidence ───────────────────────────────────────────────
+
+    #[test]
+    fn low_confidence_evidence_flags_weak_recent_findings_only() {
+        use crate::core::entity::{Evidence, unix_now};
+        let store = Store::open(":memory:").expect("in-memory store");
+        let now = unix_now();
+
+        // Weak + recent → flagged, with its producing module resolved.
+        let mut weak = Entity::new(EntityKind::Username, "ghost", 0.20, "scan-a");
+        weak.add_evidence(Evidence::new("username_search", "speculative handle"));
+        weak.observed_at = now;
+        store.upsert_entity(&weak).unwrap();
+
+        // Strong + recent → above the threshold, not an anomaly.
+        let mut strong = Entity::new(EntityKind::Email, "real@example.com", 0.80, "scan-a");
+        strong.observed_at = now;
+        store.upsert_entity(&strong).unwrap();
+
+        // Weak but OLD → outside the since-window, not flagged.
+        let mut stale = Entity::new(EntityKind::Username, "stale", 0.10, "scan-a");
+        stale.observed_at = now.saturating_sub(100_000);
+        store.upsert_entity(&stale).unwrap();
+
+        let anomalies = store
+            .low_confidence_evidence(Store::DEFAULT_LOW_CONFIDENCE_THRESHOLD, 3_600)
+            .unwrap();
+        assert_eq!(
+            anomalies.len(),
+            1,
+            "only the weak, recent finding is an anomaly: {anomalies:?}"
+        );
+        let a = &anomalies[0];
+        assert_eq!(a.entity_uid, weak.uid);
+        assert!((a.confidence - 0.20).abs() < 1e-9);
+        assert_eq!(a.module_name, "username_search");
+
+        // A tighter threshold excludes the 0.20 finding entirely.
+        assert!(
+            store
+                .low_confidence_evidence(0.15, 3_600)
+                .unwrap()
+                .is_empty(),
+            "0.20 is not below a 0.15 threshold"
+        );
+    }
 
     // ── fts_prefix_query ──────────────────────────────────────────────────────
 
