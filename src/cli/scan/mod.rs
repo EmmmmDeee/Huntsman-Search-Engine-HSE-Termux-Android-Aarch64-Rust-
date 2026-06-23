@@ -273,6 +273,13 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
                 "relations": relations,
                 "diagnostics": diag,
                 "exposure": crate::core::exposure::assess(&entities, &correlations),
+                // Which of this scan's identifiers most bridge to the local
+                // intelligence base (data_retention_design §4.1) — ranked by
+                // realised cross-scan degree. A live cross-scan view (it grows as
+                // investigations accumulate), so it belongs in this live output, NOT
+                // the byte-deterministic debug bundle.
+                "enrichment_leverage":
+                    crate::core::engine::rank_enrichment_leverage(store.as_ref(), &entities, entities.len()),
             }))?
         );
     } else if cmd.output == "dossier" {

@@ -1756,7 +1756,7 @@ pub(crate) const LOCAL_PASSIVE_MODULES: &[&str] = &[
 /// `docs/data_retention_design.md` (§3–4.1) names: an identifier observed across
 /// many distinct investigations is the one that most empowers the rest, because
 /// each recurrence is a join that connects two otherwise-separate dossiers.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct LeverageRanked {
     /// SHA-256 UID of the identifier.
     pub entity_uid: String,
