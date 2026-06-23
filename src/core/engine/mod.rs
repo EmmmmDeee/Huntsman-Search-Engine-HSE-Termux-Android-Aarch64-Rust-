@@ -1751,5 +1751,68 @@ pub(crate) const LOCAL_PASSIVE_MODULES: &[&str] = &[
     "signal_radar",
 ];
 
+/// One retained identifier ranked by its realised cross-investigation leverage —
+/// the output of [`rank_enrichment_leverage`]. The enrichment-priority asset
+/// `docs/data_retention_design.md` (§3–4.1) names: an identifier observed across
+/// many distinct investigations is the one that most empowers the rest, because
+/// each recurrence is a join that connects two otherwise-separate dossiers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LeverageRanked {
+    /// SHA-256 UID of the identifier.
+    pub entity_uid: String,
+    /// The identifier kind (the join-key class).
+    pub kind: crate::core::entity::EntityKind,
+    /// The identifier value.
+    pub value: String,
+    /// Distinct scans in the local intelligence database that observed this value —
+    /// the cross-investigation degree. `>= 1` for every returned entry.
+    pub cross_scan_degree: usize,
+}
+
+/// Rank the high-leverage identifiers in `entities` by how many distinct
+/// investigations each one bridges — the "which of my retained data most empowers
+/// the rest" query (`docs/data_retention_design.md` §4.1), and the read-only
+/// counterpart to [`history::link_cross_scan_history`], which writes the same
+/// bridge as evidence.
+///
+/// Only [`history::is_cross_scan_candidate`] identifiers are scored — the strong
+/// join keys (email / phone / crypto / distinctive username / full-name person /
+/// specific address), never infrastructure, coarse geo, speculative permutations
+/// or already-recalled nodes — so the ranking can never be topped by noise.
+/// Leverage is the *realised* cross-scan degree
+/// ([`StoragePort::observation_count`] — the count of distinct scans that recorded
+/// the value); there is no invented weighting, so the score is exactly "how many
+/// separate dossiers this identifier already connects". Sorted strongest-first,
+/// ties broken by UID for determinism, truncated to `limit`. A store error on an
+/// entity skips it (never fails). Pure and offline — indexed point lookups only.
+#[must_use]
+pub fn rank_enrichment_leverage(
+    store: &dyn StoragePort,
+    entities: &[Entity],
+    limit: usize,
+) -> Vec<LeverageRanked> {
+    let mut out: Vec<LeverageRanked> = entities
+        .iter()
+        .filter(|e| history::is_cross_scan_candidate(e))
+        .filter_map(|e| {
+            let degree = store.observation_count(&e.uid).ok()?;
+            (degree > 0).then(|| LeverageRanked {
+                entity_uid: e.uid.clone(),
+                kind: e.kind.clone(),
+                value: e.value.clone(),
+                cross_scan_degree: degree,
+            })
+        })
+        .collect();
+    // Strongest-first; deterministic UID tie-break so the ranking is stable.
+    out.sort_by(|a, b| {
+        b.cross_scan_degree
+            .cmp(&a.cross_scan_degree)
+            .then_with(|| a.entity_uid.cmp(&b.entity_uid))
+    });
+    out.truncate(limit);
+    out
+}
+
 #[cfg(test)]
 mod tests;

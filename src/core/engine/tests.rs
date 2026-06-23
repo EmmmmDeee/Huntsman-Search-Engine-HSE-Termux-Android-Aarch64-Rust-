@@ -1770,3 +1770,50 @@ async fn admitted_entities_are_stamped_with_their_modules_attack_techniques() {
         );
     }
 }
+
+#[test]
+fn rank_enrichment_leverage_orders_join_keys_by_cross_scan_degree() {
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::test_support::InMemoryStore;
+
+    let store = InMemoryStore::new();
+    let up = |k, v, s| store.upsert_entity(&Entity::new(k, v, 0.7, s)).unwrap();
+
+    // An email observed across THREE investigations — in the in-memory store the
+    // accumulated corroboration is the observation_count, i.e. cross-scan degree 3.
+    for s in ["scan-a", "scan-b", "scan-c"] {
+        up(EntityKind::Email, "jane@example.com", s);
+    }
+    // A phone seen in ONE scan → degree 1.
+    up(EntityKind::Phone, "+61400111222", "scan-a");
+    // A mega/infra domain seen across FIVE scans — high degree, but NOT a join key,
+    // so it must never rank (the gate, not the degree, decides inclusion).
+    for s in ["s1", "s2", "s3", "s4", "s5"] {
+        up(EntityKind::Domain, "google.com", s);
+    }
+
+    let candidates = vec![
+        Entity::new(EntityKind::Email, "jane@example.com", 0.7, "now"),
+        Entity::new(EntityKind::Phone, "+61400111222", 0.7, "now"),
+        Entity::new(EntityKind::Domain, "google.com", 0.9, "now"),
+    ];
+
+    let ranked = rank_enrichment_leverage(&store, &candidates, 10);
+    assert_eq!(ranked.len(), 2, "the non-join-key domain is excluded");
+    assert_eq!(ranked[0].value, "jane@example.com");
+    assert_eq!(
+        ranked[0].cross_scan_degree, 3,
+        "email bridges 3 investigations"
+    );
+    assert_eq!(ranked[1].value, "+61400111222");
+    assert_eq!(ranked[1].cross_scan_degree, 1);
+    assert!(
+        ranked.iter().all(|r| r.kind != EntityKind::Domain),
+        "infrastructure is never an enrichment join key, whatever its degree"
+    );
+
+    // `limit` caps the result to the strongest-leverage identifiers.
+    let top1 = rank_enrichment_leverage(&store, &candidates, 1);
+    assert_eq!(top1.len(), 1);
+    assert_eq!(top1[0].value, "jane@example.com");
+}
