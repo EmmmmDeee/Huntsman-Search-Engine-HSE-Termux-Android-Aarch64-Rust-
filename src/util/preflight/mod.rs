@@ -265,6 +265,8 @@ pub fn is_placeholder_username(u: &str) -> bool {
             | "na"
             | "unknown"
             | "tbd"
+            | "redacted"
+            | "placeholder"
     )
 }
 

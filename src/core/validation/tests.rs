@@ -139,13 +139,23 @@ fn placeholder_entity_filters_artifacts_but_keeps_secrets() {
     assert!(is_placeholder_entity(&Email, "first.last@outlook.com"));
     assert!(is_placeholder_entity(&Email, "your.email@company.com"));
     assert!(is_placeholder_entity(&Email, "john.doe@gmail.com"));
-    // Real values pass through — including real mailboxes that merely START
-    // with a template-ish token.
+    // Test / redaction / placeholder local-parts an admission gate must drop (these
+    // are not caught by the role-mailbox gate, which `is_placeholder_entity` does
+    // not consult). The separator-stripped form matches too (`re.dacted`).
+    assert!(is_placeholder_entity(&Email, "test@gmail.com"));
+    assert!(is_placeholder_entity(&Email, "redacted@gmail.com"));
+    assert!(is_placeholder_entity(&Email, "placeholder@gmail.com"));
+    assert!(is_placeholder_entity(&Username, "redacted"));
+    assert!(is_placeholder_entity(&Username, "placeholder"));
+    // Real values pass through — including real mailboxes that merely START WITH or
+    // CONTAIN a template-ish token (exact match only).
     assert!(!is_placeholder_entity(&Domain, "cloudflare.com"));
     assert!(!is_placeholder_entity(&Email, "jordanavery@gmail.com"));
     assert!(!is_placeholder_entity(&Email, "matt@gmail.com"));
     assert!(!is_placeholder_entity(&Email, "john.smith@gmail.com"));
     assert!(!is_placeholder_entity(&Email, "firstnations@gmail.com"));
+    assert!(!is_placeholder_entity(&Email, "tester@gmail.com")); // contains "test", not equal
+    assert!(!is_placeholder_entity(&Username, "redactedtruth")); // contains "redacted"
     assert!(!is_placeholder_entity(&Person, "Jordan Avery"));
     // Inherently-unique secrets are NEVER filtered, even containing "example".
     assert!(!is_placeholder_entity(&Password, "example.com"));

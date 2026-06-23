@@ -470,7 +470,10 @@ async fn engine_dispatches_synthetic_module_end_to_end() {
         vec![Arc::new(SyntheticModule)],
         "end_to_end",
         TargetKind::Email,
-        "test@contoso.com",
+        // A non-placeholder mailbox: a bare `test@` local-part is now correctly
+        // dropped by the admission gate (`is_placeholder_email_local`), and this
+        // test exercises engine DISPATCH, not placeholder filtering.
+        "alice@contoso.com",
     );
     let scan = Scan::new(sid.clone(), target.clone());
 
@@ -479,7 +482,7 @@ async fn engine_dispatches_synthetic_module_end_to_end() {
 
     let stored = store.entities_for_scan(&sid).unwrap();
     assert_eq!(stored.len(), 1);
-    assert_eq!(stored[0].value, "test@contoso.com");
+    assert_eq!(stored[0].value, "alice@contoso.com");
     assert!(stored[0].has_tag("synthetic"));
 }
 
