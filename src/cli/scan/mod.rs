@@ -272,6 +272,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
                 "correlations": correlations,
                 "relations": relations,
                 "diagnostics": diag,
+                "exposure": crate::core::exposure::assess(&entities, &correlations),
             }))?
         );
     } else if cmd.output == "dossier" {
