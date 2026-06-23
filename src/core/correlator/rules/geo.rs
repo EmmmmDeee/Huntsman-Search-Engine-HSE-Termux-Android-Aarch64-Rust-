@@ -892,6 +892,21 @@ pub(in crate::core::correlator) fn rule_au_061_family_geo_corroboration(
                 .map(|km| (e, km))
         })
         .collect();
+    // Accuracy of the "shared surname" claim: the `family-candidate` tag is ALSO
+    // applied by the see_know household path to co-located people who do NOT share
+    // the subject's surname. When the subject's surname is known, drop such Person
+    // candidates — being in the same 150 km region without the shared surname is not
+    // a finding (millions share a metro), and asserting "shared surname relative"
+    // for them would be a FALSE evidentiary basis. Address family-candidates are
+    // surname-matched by their producing module (qld_unclaimed/au_people) and a bare
+    // Address carries no surname to re-check, so they are kept.
+    let subject_sn = crate::core::geo_family::subject_surname(entities);
+    if let Some(sn) = subject_sn.as_deref() {
+        in_area.retain(|(e, _)| {
+            e.kind != EntityKind::Person
+                || crate::util::surnames::surname_of(&e.value).as_deref() == Some(sn)
+        });
+    }
     if in_area.is_empty() {
         return Vec::new();
     }
@@ -917,8 +932,9 @@ pub(in crate::core::correlator) fn rule_au_061_family_geo_corroboration(
     // of relatives". A common surname makes shared-region co-location weak evidence,
     // so it never reaches Critical (stays a High lead) and the wording is softened;
     // a DISTINCTIVE surname keeps the strong "independently corroborate" reading.
-    let surname_common = crate::core::geo_family::subject_surname(entities)
-        .is_some_and(|s| crate::util::surnames::is_common(&s));
+    let surname_common = subject_sn
+        .as_deref()
+        .is_some_and(crate::util::surnames::is_common);
     let severity = if in_area.len() >= 3 && !surname_common {
         Severity::Critical
     } else {
@@ -1053,6 +1069,40 @@ mod tests {
             out[0].severity
         );
         assert!(out[0].description.contains("independently corroborate"));
+    }
+
+    #[test]
+    fn au_061_excludes_different_surname_household_candidates() {
+        use crate::core::entity::Evidence;
+        // A see_know-style household member with a DIFFERENT surname is tagged
+        // `family-candidate` but is NOT a shared-surname relative — it must not be
+        // counted toward AU-061's "shared surname" claim (a false evidentiary basis).
+        let mut gps = Entity::new(EntityKind::Coordinates, "-27.47,153.02", 0.9, "s");
+        gps.tag("geoint");
+        let mut subject = Entity::new(EntityKind::Person, "Dana Bamford", 0.8, "s");
+        subject.tag("subject");
+        let cand = |name: &str, pc: &str| {
+            let mut p = Entity::new(EntityKind::Person, name, 0.35, "s");
+            p.tag("family-candidate");
+            p.add_evidence(Evidence::new("see_know", "household").with_attr("postcode", pc));
+            p
+        };
+        let ents = vec![
+            gps,
+            subject,
+            cand("Erik Bamford", "4000"),
+            cand("Jane Bamford", "4169"),
+            cand("Bob Jones", "4101"), // co-resident, DIFFERENT surname → excluded
+        ];
+        let out = rule_au_061_family_geo_corroboration(&ents, "s", 0);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].description.contains("Bamford"));
+        assert!(
+            !out[0].description.contains("Jones"),
+            "different-surname household member must be excluded from the shared-surname finding"
+        );
+        // Two shared-surname relatives remain → High (not Critical).
+        assert!(matches!(out[0].severity, Severity::High));
     }
 
     // ── coord_state ───────────────────────────────────────────────────────────
