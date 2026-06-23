@@ -910,17 +910,31 @@ pub(in crate::core::correlator) fn rule_au_061_family_geo_corroboration(
     let mut uids: Vec<String> = subject.iter().map(|f| f.uid.clone()).collect();
     uids.extend(in_area.iter().map(|(e, _)| e.uid.clone()));
 
-    let severity = if in_area.len() >= 3 {
+    // Commonness gate (mirrors AU-051 / the kinship builder): within FAMILY_GEO_KM
+    // the namesake pass doesn't fire (it guards only beyond NAMESAKE_GEO_KM), so a
+    // COMMON subject surname would otherwise escalate to Critical on three unrelated
+    // same-surname people sharing one metro catchment — a confident false "household
+    // of relatives". A common surname makes shared-region co-location weak evidence,
+    // so it never reaches Critical (stays a High lead) and the wording is softened;
+    // a DISTINCTIVE surname keeps the strong "independently corroborate" reading.
+    let surname_common = crate::core::geo_family::subject_surname(entities)
+        .is_some_and(|s| crate::util::surnames::is_common(&s));
+    let severity = if in_area.len() >= 3 && !surname_common {
         Severity::Critical
     } else {
         Severity::High
+    };
+    let basis = if surname_common {
+        "a COMMON surname, so shared region is weak corroboration — verify before treating as kin"
+    } else {
+        "shared surname AND same area as the subject independently corroborate them as relatives"
     };
     vec![Correlation::new(
         "AU-061",
         "Family geo-corroborated (surname kin in subject's area)",
         severity,
         format!(
-            "{} family-candidate(s) resolve to the subject's confirmed area (within {FAMILY_GEO_KM:.0} km): {}{} — shared surname AND same area as the subject independently corroborate them as relatives",
+            "{} family-candidate(s) resolve to the subject's confirmed area (within {FAMILY_GEO_KM:.0} km): {}{} — {basis}",
             in_area.len(),
             shown.join(", "),
             if extra > 0 {
@@ -981,6 +995,64 @@ mod tests {
         // No confirmed subject coordinate → nothing fires (no anchor to compare to).
         let no_gps = vec![near_addr];
         assert!(rule_au_061_family_geo_corroboration(&no_gps, "s", 0).is_empty());
+    }
+
+    // Build a GPS fix + a named subject + 3 same-surname family-candidates all in
+    // the Brisbane catchment (≤150 km), to exercise the 3-candidate escalation.
+    fn three_same_surname_in_area(subject_full_name: &str, surname: &str) -> Vec<Entity> {
+        use crate::core::entity::Evidence;
+        let mut gps = Entity::new(EntityKind::Coordinates, "-27.47,153.02", 0.9, "s"); // Brisbane
+        gps.tag("geoint");
+        let mut subject = Entity::new(EntityKind::Person, subject_full_name, 0.8, "s");
+        subject.tag("subject");
+        let cand = |given: &str, pc: &str| {
+            let mut p = Entity::new(EntityKind::Person, format!("{given} {surname}"), 0.35, "s");
+            p.tag("family-candidate");
+            p.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", pc));
+            p
+        };
+        vec![
+            gps,
+            subject,
+            cand("Erik", "4000"),
+            cand("Jane", "4169"),
+            cand("Paul", "4101"),
+        ]
+    }
+
+    #[test]
+    fn au_061_common_surname_caps_at_high_not_critical() {
+        // Three "Smith"s in one metro catchment is coincidence, not a 3-relative
+        // household — a COMMON subject surname must not reach Critical.
+        let out = rule_au_061_family_geo_corroboration(
+            &three_same_surname_in_area("Dana Smith", "Smith"),
+            "s",
+            0,
+        );
+        assert_eq!(out.len(), 1);
+        assert!(
+            matches!(out[0].severity, Severity::High),
+            "common surname must cap at High, got {:?}",
+            out[0].severity
+        );
+        assert!(out[0].description.to_lowercase().contains("common surname"));
+    }
+
+    #[test]
+    fn au_061_distinctive_surname_reaches_critical_at_three() {
+        // A distinctive surname keeps the strong 3-relative Critical signal.
+        let out = rule_au_061_family_geo_corroboration(
+            &three_same_surname_in_area("Dana Bamford", "Bamford"),
+            "s",
+            0,
+        );
+        assert_eq!(out.len(), 1);
+        assert!(
+            matches!(out[0].severity, Severity::Critical),
+            "distinctive surname → Critical at 3, got {:?}",
+            out[0].severity
+        );
+        assert!(out[0].description.contains("independently corroborate"));
     }
 
     // ── coord_state ───────────────────────────────────────────────────────────
