@@ -10,6 +10,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.8.1] — 2026-06-23
+
+### Fixed
+
+- **Re-observed evidence no longer loses newly-discovered attributes.**
+  `Entity::absorb`'s `(source, summary)` evidence dedup was first-wins *drop*, so
+  when the same source re-observed an entity with the same summary but NEW
+  attributes (an updated breach dump, a richer re-scan), the new record was
+  discarded and its fields silently lost — across both the in-memory scan merge
+  and the recall/persist path (both use `merge`). It now MERGES the incoming
+  attributes into the matching record (keys it lacks are added; a key both set
+  resolves to the lexicographically smaller value, so the fold stays
+  merge-order-independent and idempotent). The dedup — no phantom corroboration
+  from a repeat observation — is otherwise unchanged.
+- **Dossier import parser aligned with the breach-PII rules' field variants.** The
+  AU-073/074/075 rules each scan several field-name variants (e.g. `birthday`,
+  `centrelink`, `husband`/`wife`); the parser only preserved a subset, so a dump
+  using a common variant had its field dropped and the rule never fired. The
+  parser's preserve-set now covers every key the three rules scan.
+
 ## [1.8.0] — 2026-06-23
 
 ### Added
