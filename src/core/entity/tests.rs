@@ -1337,8 +1337,10 @@ fn absorb_merges_new_attributes_on_same_source_summary() {
 
 #[test]
 fn absorb_attribute_merge_is_order_independent() {
-    // A key both records set resolves to the lexicographically smaller value,
-    // regardless of merge order (the Determinism Requirement).
+    // A key both records set with DIFFERING values accumulates BOTH distinct
+    // observations (the conflict is evidence — e.g. a namesake's other DOB),
+    // sorted so the result is identical regardless of merge order (the Determinism
+    // Requirement). Matches `with_attr`'s in-record accumulation.
     let mk = |v: &str| {
         let mut e = Entity::new(EntityKind::Email, "x@contoso.com", 0.6, "s");
         e.add_evidence(Evidence::new("src", "sum").with_attr("k", v));
@@ -1350,11 +1352,13 @@ fn absorb_attribute_merge_is_order_independent() {
     ba.merge(mk("alpha"));
     assert_eq!(
         ab.evidence[0].attributes.get("k"),
-        ba.evidence[0].attributes.get("k")
+        ba.evidence[0].attributes.get("k"),
+        "merge order must not change the accumulated value"
     );
     assert_eq!(
         ab.evidence[0].attributes.get("k").map(String::as_str),
-        Some("alpha")
+        Some("alpha; beta"),
+        "both distinct observations are kept (sorted), not one dropped"
     );
 }
 

@@ -793,17 +793,24 @@ impl Entity {
 
 /// Merge `incoming`'s attributes into `existing` — they are the same evidence
 /// record (matching `(source, summary)`), so add the keys `existing` lacks and,
-/// on a key both set, keep the lexicographically smaller value (as `merge` does
-/// for `raw_value`) so the fold is independent of merge order. This preserves the
-/// newly-discovered fields a re-observation carries — an updated breach dump or a
-/// richer re-scan — instead of dropping the whole record on the `(source,
-/// summary)` dedup.
+/// on a key both set with DIFFERING values, accumulate the distinct observations
+/// as `"a; b"` rather than dropping one. A conflicting re-observation (a corrected
+/// value, or a namesake's differing `date_of_birth` on the same breach source) is
+/// itself evidence and must survive for the disambiguation rules to see it. This
+/// matches [`Evidence::with_attr`]'s in-record accumulation — eliminating the
+/// inconsistency where the public builder kept both and this absorb path kept one
+/// — but the values are SORTED (via the set) rather than appended in arrival
+/// order, so the fold stays independent of merge order (the Determinism
+/// Requirement) where `with_attr`'s append would not be.
 fn merge_evidence_attrs(existing: &mut Evidence, incoming: Evidence) {
     for (k, v) in incoming.attributes {
         match existing.attributes.get_mut(&k) {
             Some(cur) => {
-                if v < *cur {
-                    *cur = v;
+                if cur != &v {
+                    let mut parts: std::collections::BTreeSet<String> =
+                        cur.split("; ").map(String::from).collect();
+                    parts.extend(v.split("; ").map(String::from));
+                    *cur = parts.into_iter().collect::<Vec<_>>().join("; ");
                 }
             }
             None => {
