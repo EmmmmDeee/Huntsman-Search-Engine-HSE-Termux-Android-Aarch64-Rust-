@@ -262,6 +262,7 @@ const RULES: &[RuleFn] = &[
     rule_au_043_paste_exposure,
     rule_au_044_shared_tracking_id,
     rule_au_045_multi_service_identity,
+    rule_au_072_payid_payment_surface,
     rule_au_046_cross_platform_identity_resolution,
     rule_au_068_anonymous_sim,
     rule_au_047_reused_secret_identity,
