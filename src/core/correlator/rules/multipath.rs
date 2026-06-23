@@ -233,4 +233,48 @@ mod tests {
         ];
         assert!(rule_au_062_multipath_corroboration(&[a, b, d1, d2], &rels, "s", 0).is_empty());
     }
+
+    #[test]
+    fn au062_excludes_non_corroborating_source_families() {
+        // The orthogonality measure must rest on INDEPENDENT families only. A route
+        // whose intermediate is backed solely by a non-corroborating pass — either
+        // `name_intel` (the seed's own permutation engine → identity_registry) or
+        // `geo_normalize` (a deterministic geo-replay → infra) — is not a second
+        // independent family. Each pair below has exactly ONE genuine family, so
+        // AU-062 must stay silent. Before the fix `source_families` read
+        // `evidence_sources`, counted these as a 2nd family, and fired — the AU-010
+        // over-credit, on the graph-orthogonality side.
+
+        // name_intel: genuine route = infra; derivation route = name_intel only.
+        let a = id(EntityKind::Email, "a@x.com");
+        let b = id(EntityKind::Username, "bob");
+        let infra = sourced(EntityKind::Domain, "x.com", "dns_intel");
+        let derived = sourced(EntityKind::Organisation, "Acme Pty", "name_intel");
+        let rels = [
+            rel(&a, &infra, RelationKind::BelongsToDomain),
+            rel(&infra, &b, RelationKind::DerivedFrom),
+            rel(&a, &derived, RelationKind::RegisteredBy),
+            rel(&derived, &b, RelationKind::DerivedFrom),
+        ];
+        assert!(
+            rule_au_062_multipath_corroboration(&[a, b, infra, derived], &rels, "s", 0).is_empty(),
+            "a name_intel-derived family is not independent orthogonal corroboration"
+        );
+
+        // geo_normalize: genuine route = identity_registry; replay route = geo_normalize only.
+        let a = id(EntityKind::Email, "a@x.com");
+        let b = id(EntityKind::Username, "bob");
+        let org = sourced(EntityKind::Organisation, "Acme Pty", "opencorporates");
+        let replay = sourced(EntityKind::Coordinates, "-27.0,153.0", "geo_normalize");
+        let rels = [
+            rel(&a, &org, RelationKind::RegisteredBy),
+            rel(&org, &b, RelationKind::DerivedFrom),
+            rel(&a, &replay, RelationKind::LocatedAt),
+            rel(&replay, &b, RelationKind::DerivedFrom),
+        ];
+        assert!(
+            rule_au_062_multipath_corroboration(&[a, b, org, replay], &rels, "s", 0).is_empty(),
+            "a geo_normalize-replay family is not independent orthogonal corroboration"
+        );
+    }
 }

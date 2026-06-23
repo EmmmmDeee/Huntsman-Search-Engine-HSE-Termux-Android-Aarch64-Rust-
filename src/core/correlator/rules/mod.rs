@@ -241,13 +241,23 @@ fn is_breach_exposed_wallet(e: &Entity) -> bool {
     })
 }
 
-/// The distinct provenance families under an entity's evidence sources — the
-/// orthogonality measure shared by the multi-pathway (AU-062) and gap (AU-063)
+/// The distinct provenance families under an entity's **corroborating** sources —
+/// the orthogonality measure shared by the multi-pathway (AU-062) and gap (AU-063)
 /// link-analysis detectors, so "which independent source families back this
 /// entity" has a single definition. The unclassified `"other"` bucket is
 /// retained here; callers that need genuine cross-family diversity drop it.
+///
+/// Built on [`Entity::corroborating_sources`], NOT `evidence_sources`: the
+/// non-corroborating replay/derivation passes
+/// ([`crate::core::entity::is_non_corroborating_source`] — `recall`,
+/// `cross_scan_history`, and the enrichment sources `name_intel` /
+/// `geo_normalize`) must not manufacture a "second orthogonal family". Two of
+/// them map to real families (`name_intel` → `identity_registry`, `geo_normalize`
+/// → `infra`), so counting them would let a seed-derivation or a geo-replay pose
+/// as independent cross-family corroboration — the exact over-credit the AU-010
+/// and `c_effective` fixes already removed from the source-count side.
 fn source_families(e: &Entity) -> BTreeSet<&'static str> {
-    e.evidence_sources()
+    e.corroborating_sources()
         .into_iter()
         .map(source_family)
         .collect()
