@@ -396,6 +396,75 @@ fn derive_all_aggregates_every_structural_derivation() {
 }
 
 #[test]
+fn person_scan_entities_anchor_a_relation_graph() {
+    // Regression guard for the live-bundle "relations: 0" symptom. The diagnosis
+    // was that the empty graph reflected an infrastructure-dominated, name-attr-poor
+    // entity set — NOT a broken builder. This locks that distinction: realistic
+    // person-scan shapes MUST anchor a graph (so a refactor that silently zeroes the
+    // derivers is caught), while genuinely unlinkable orphans MUST NOT fabricate
+    // identity edges (so the graph never invents a relationship from nothing).
+    use crate::core::entity::Evidence;
+    let subj_uid_in = |edges: &[Relation], uid: &str, k: RelationKind| {
+        edges
+            .iter()
+            .any(|r| r.kind == k && (r.from_uid == uid || r.to_uid == uid))
+    };
+
+    // A — FullName-seeded scan: the subject Person (tagged as name_intel tags it)
+    // plus two name-derived identifiers carrying `source_name`. The subject must be
+    // bound to BOTH identifiers (IdentifiedBy), so the dossier is a graph, not a
+    // pile of orphan handles.
+    let mut subj = ent(EntityKind::Person, "Haigen Bamford", 0.55);
+    subj.tag("seed");
+    subj.tag("subject");
+    let mut handle = ent(EntityKind::Username, "haigenb", 0.4);
+    handle.add_evidence(
+        Evidence::new("name_intel", "derived").with_attr("source_name", "Haigen Bamford"),
+    );
+    let mut mail = ent(EntityKind::Email, "haigenb@gmail.com", 0.45);
+    mail.add_evidence(
+        Evidence::new("name_intel", "derived").with_attr("source_name", "Haigen Bamford"),
+    );
+    let a = derive_all(&[subj.clone(), handle.clone(), mail.clone()], "s");
+    assert!(
+        subj_uid_in(&a, &subj.uid, RelationKind::IdentifiedBy),
+        "a tagged subject with name-attributed identifiers must anchor IdentifiedBy edges"
+    );
+    assert!(
+        a.iter()
+            .filter(|r| r.kind == RelationKind::IdentifiedBy)
+            .count()
+            >= 2,
+        "the subject must bind to both of its identifiers"
+    );
+
+    // B — Email-seeded scan: no subject Person, but the subject email's breach
+    // record names a present Person (`name` attr). The evidence-grounded ownership
+    // path must still resolve the email to that identity — the core deliverable of
+    // an email OSINT scan ("whose address is this?").
+    let mut semail = ent(EntityKind::Email, "haigen@example.com", 0.9);
+    semail.tag("seed");
+    semail.tag("subject");
+    semail.add_evidence(Evidence::new("hibp", "breach").with_attr("name", "Haigen Bamford"));
+    let person = ent(EntityKind::Person, "Haigen Bamford", 0.5);
+    let b = derive_all(&[semail.clone(), person], "s");
+    assert!(
+        subj_uid_in(&b, &semail.uid, RelationKind::IdentifiedBy),
+        "an email whose breach record names a present Person must resolve to that identity"
+    );
+
+    // C — Orphan identifiers with NO person-name evidence and no subject Person:
+    // the graph must NOT invent an IdentifiedBy edge from nothing (precision).
+    let e1 = ent(EntityKind::Email, "randomx@gmail.com", 0.6);
+    let p1 = ent(EntityKind::Phone, "+61400111222", 0.5);
+    let c = derive_all(&[e1, p1], "s");
+    assert!(
+        !c.iter().any(|r| r.kind == RelationKind::IdentifiedBy),
+        "orphan identifiers with no name signal must not fabricate identity edges"
+    );
+}
+
+#[test]
 fn relation_id_is_deterministic_and_idempotent() {
     let a = Relation::new("uidA", "uidB", RelationKind::SubdomainOf, 0.8, "s1");
     let b = Relation::new("uidA", "uidB", RelationKind::SubdomainOf, 0.8, "s1");
