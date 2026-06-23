@@ -10,6 +10,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.8.3] — 2026-06-23
+
+### Fixed
+
+- **Transitive identity closure (AU-060) honours the relation builders' damps.** The
+  rule asserted an identity link for any 2–4 hop path with no confidence floor, so a
+  chain routed through a deliberately-damped lead-grade edge — a bare-surname
+  `derive_kinship` link (`min(conf) × 0.5`), a co-mention/affiliation lead — surfaced
+  as a confirmed transitive identity, cross-linking same-surname strangers to the
+  subject. It now applies a weakest-link `>= 0.50` floor (mirroring AU-067, reusing
+  the `min_confidence` the path finder already computes): a chain through a sub-0.50
+  lead is suppressed; an all-strong-edge chain still fires.
+- **Common surnames no longer manufacture kinship edges.** `derive_kinship` paired
+  every two Persons sharing a surname with no commonness gate, producing O(n²) false
+  "associate" edges from a single popular name (ten "Smith"s → 45 edges). It now skips
+  a common surname (Smith, Jones, Nguyen, …) — mirroring the `is_common` discount the
+  leads/engine paths already apply — while a distinctive surname still links. Genuine
+  relatives of a common-surname subject still surface through the evidence-grounded
+  co-residence and declared-association passes.
+
 ## [1.8.2] — 2026-06-23
 
 ### Fixed

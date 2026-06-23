@@ -907,6 +907,24 @@ fn kinship_links_same_surname_distinct_people() {
 }
 
 #[test]
+fn kinship_skips_common_surnames() {
+    // A COMMON surname is shared by unrelated strangers — two "Smith"s on a scan
+    // are not evidence of kinship and must not be linked (the O(n²) false-associate
+    // blow-up). A distinctive surname still links (see kinship_links_… above).
+    let a = ent(EntityKind::Person, "Alice Smith", 0.7);
+    let b = ent(EntityKind::Person, "Bob Smith", 0.7);
+    assert!(
+        derive_kinship(&[a, b], "s").is_empty(),
+        "a common surname (Smith) is not a kinship signal"
+    );
+    // Sanity: an uncommon surname at the same confidences DOES link, so the empty
+    // result above is the commonness gate, not some other guard.
+    let c = ent(EntityKind::Person, "Alice Diegmann", 0.7);
+    let d = ent(EntityKind::Person, "Bob Diegmann", 0.7);
+    assert_eq!(derive_kinship(&[c, d], "s").len(), 1);
+}
+
+#[test]
 fn kinship_skips_one_person_two_spellings() {
     // The SAME person under two spellings (different uids, identical folded name)
     // is not their own kin — the normalised-name guard drops the pair.

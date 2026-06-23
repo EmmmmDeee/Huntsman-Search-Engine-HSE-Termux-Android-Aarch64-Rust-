@@ -312,8 +312,8 @@ All endpoints are under `/api/v1/`.
 
 | Method | Path                       | Notes |
 |--------|----------------------------|-------|
-| GET    | `/health`                  | `{ "status": "ok", "version": "1.8.2" }` |
-| GET    | `/version`                 | `{ "version": "1.8.2" }` |
+| GET    | `/health`                  | `{ "status": "ok", "version": "1.8.3" }` |
+| GET    | `/version`                 | `{ "version": "1.8.3" }` |
 | GET    | `/modules`                 | `{ "count": N, "modules": [{ name, priority, cost, passive }, ...] }` |
 | GET    | `/keys/status`             | `{ count, services: [{ service, total, active, rate_limited, exhausted, invalid, untested, uses, errors }, ...] }` — key-pool quota health, **never key values**. |
 | GET    | `/settings/keys`           | `{ keys: [{ name, set }], count, write_enabled, env_path }` — which `HUNTSMAN_*` keys are configured, **never their values**. Drives the Settings page. |
@@ -469,7 +469,7 @@ hse diff before.json latest
 Verifies the environment. Run after install and after any system change:
 
 ```
-HSE v1.8.2 — doctor
+HSE v1.8.3 — doctor
 
 Termux:    detected
 DB path:   /data/data/com.termux/files/home/.huntsman/huntsman.db
