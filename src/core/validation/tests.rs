@@ -60,8 +60,19 @@ fn fragment_value_rejects_truncated_and_keeps_complete() {
     assert!(is_fragment_value(&K::Address, "AU"));
     assert!(is_fragment_value(&K::Address, "US"));
     assert!(is_fragment_value(&K::Address, "br")); // case-insensitive
+    // Codes ABSENT from the country display-name table must reject too — the table
+    // names only ~54 countries, but breach corpora carry every ISO alpha-2 code.
+    // Gating on the table left these reproducing the "US" phantom unblocked.
+    for code in [
+        "PK", "BD", "VE", "IR", "BG", "HR", "LT", "LV", "EE", "LK", "QA", "wa",
+    ] {
+        assert!(
+            is_fragment_value(&K::Address, code),
+            "bare 2-letter code {code} must be a fragment, not a phantom address"
+        );
+    }
     assert!(!is_fragment_value(&K::Address, "Sydney, Australia"));
-    assert!(!is_fragment_value(&K::Address, "Perth, WA")); // 2-letter state, not a country
+    assert!(!is_fragment_value(&K::Address, "Perth, WA")); // locality present, kept
 
     // Inherently-unique secrets are never fragments even if oddly shaped.
     assert!(!is_fragment_value(&K::Password, "@p"));

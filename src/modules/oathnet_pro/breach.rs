@@ -61,7 +61,10 @@ pub(super) fn breach_evidence(item: &Value) -> Evidence {
         ("next_of_kin", "next_of_kin"),
         ("emergency_contact", "emergency_contact"),
     ] {
-        if let Some(v) = val_str(item, field) {
+        // Coerce numbers: breach dumps encode `postal_code`/`account_id`/`discordid`
+        // (and occasionally `date_birth`) as JSON ints, which the string-only read
+        // silently dropped from the evidence the correlators key on.
+        if let Some(v) = val_str_coerce(item, field) {
             ev = ev.with_attr(attr, &v);
         }
     }
@@ -77,6 +80,40 @@ pub(super) fn breach_evidence(item: &Value) -> Evidence {
     }
     if let Some(f) = val_str(item, "followers") {
         ev = ev.with_attr("followers", &f);
+    }
+
+    // Stamp the grouping attributes the household/associate correlators read off a
+    // Person's evidence — AU-049 (household), AU-050 (shared phone line), AU-051
+    // (same-surname kin) — so those cluster pivots fire on LIVE breach scans, not
+    // only on hand-imported text dossiers. The separate Phone / Address *entities*
+    // minted below are geo/pivot nodes; the clustering rules key off these evidence
+    // attrs (see `core::correlator::rules::assoc::{entity_phones,entity_residences}`).
+    if let Some(phone) = val_str_or_coerce(item, &["phone_number", "phone_national", "phone"]) {
+        ev = ev.with_attr("phone", &phone);
+    }
+    // The `address` attr is stamped only for a STREET-anchored residence: a bare
+    // city/postcode names a region thousands of people share and clustering on it
+    // would fuse strangers into a false household (the `is_specific_residence`
+    // residence gate AU-049/051 apply mirrors this intent). When a street is
+    // present the composed value is identical to the standalone Address entity's,
+    // so a Person's residence key aligns with that anchor node.
+    if let Some(street) = val_str(item, "address_street") {
+        let parts = [
+            Some(street),
+            val_str_coerce(item, "city"),
+            val_str_coerce(item, "state"),
+            val_str_coerce(item, "postal_code"),
+        ];
+        let addr = parts
+            .iter()
+            .flatten()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<&str>>()
+            .join(", ");
+        if !addr.is_empty() {
+            ev = ev.with_attr("address", &addr);
+        }
     }
     ev
 }
@@ -286,7 +323,7 @@ pub(super) fn extract_breach_entities_with(
         }
     }
 
-    if let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
+    if let Some(ph) = val_str_or_coerce(item, &["phone_number", "phone_national", "phone"])
         && has_min_digits(&ph, 7)
         && seen.insert(ph.to_lowercase())
     {
@@ -344,15 +381,15 @@ pub(super) fn extract_breach_entities_with(
     }
 
     let street = val_str(item, "address_street");
-    let city = val_str(item, "city");
-    let state = val_str(item, "state");
+    let city = val_str_coerce(item, "city");
+    let state = val_str_coerce(item, "state");
     // Include the postal code in the composed value (the breach record carries it
     // — e.g. `23666` for HAMPTON, VA). A postcode-qualified address geocodes to
     // the ZIP centroid instead of the whole city, the precision the downstream
     // geocode + geo-correlation chain depends on; it was previously kept only on
     // the evidence. Postcode alone never forms an address — the city/street gate
     // still guards that — so a bare ZIP can't mint a useless node.
-    let postal = val_str(item, "postal_code");
+    let postal = val_str_coerce(item, "postal_code");
     if city.is_some() || street.is_some() {
         let addr = [
             street.as_deref(),
@@ -381,7 +418,7 @@ pub(super) fn extract_breach_entities_with(
         }
     }
 
-    if let Some(did) = val_str(item, "discordid")
+    if let Some(did) = val_str_coerce(item, "discordid")
         && seen.insert(format!("@discord:{did}"))
     {
         push_oathnet_entity(
