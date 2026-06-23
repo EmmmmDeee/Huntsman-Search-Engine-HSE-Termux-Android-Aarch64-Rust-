@@ -286,6 +286,7 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "pwned",
         "breach",
         "stealer",
+        "hudsonrock", // infostealer-log intelligence (exact module name)
     ]) {
         "breach"
     } else if has(&[
@@ -296,6 +297,7 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "codeberg",
         "npm_author",
         "npm",
+        "crates", // crates.io — Rust package registry (exact module: crates_io)
     ]) {
         // Code-hosting is its own provider family: a handle present here is an
         // independent signal from a forum or social account (different platforms,
@@ -340,6 +342,7 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "startpage",
         "searx",
         "search_engines",
+        "exa_search", // Exa neural search (exact module name)
     ]) {
         "search"
     } else if has(&[
@@ -358,6 +361,18 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "linkedin",
         "abn",
         "whoisxml",
+        // Authoritative people / business / professional registries and identity
+        // enrichers (exact registry module names) — independent identity sources
+        // that were falling to `other`. A subject confirmed by, e.g., an electoral
+        // roll AND a breach is genuine cross-family corroboration (AU-045).
+        "fullcontact",
+        "contact_enrich",
+        "gleif_lei",
+        "asic_director",
+        "au_electoral",
+        "au_people",
+        "ahpra",
+        "acnc",
     ]) {
         "identity_registry"
     } else if has(&[
@@ -383,6 +398,24 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "mylnikov",
         "overpass",
         "registry",
+        // Internet-wide asset/IP scanners and IP-reputation feeds — exact registry
+        // module names whose forms don't contain an earlier needle. All resolve
+        // network infrastructure (host/port/ASN/route/reputation), so they belong
+        // to `infra`; leaving them in `other` silently under-counted infra
+        // orthogonality (AU-062/063) and let `source_family`'s "covers the registry"
+        // contract drift.
+        "abuseipdb",
+        "bgpview",
+        "criminal_ip",
+        "ipqs",
+        "netblock",
+        "netlas",
+        "onyphe",
+        "portscan",
+        "ripestat",
+        "securitytrails",
+        "zoomeye",
+        "domainsdb",
     ]) {
         "infra"
     } else {
