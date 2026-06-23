@@ -252,6 +252,45 @@ fn flatten_victims(victims: &[Value]) -> Vec<Value> {
     items
 }
 
+/// Query the remaining daily quota from `GET /api/v1/credits`.
+///
+/// Returns `(credits_remaining, daily_limit)`. `daily_limit` is `None` if
+/// the response does not carry it (some plan tiers omit it). The call does
+/// NOT consume a budget slot — it is a meta-query used to scale the scan cap
+/// dynamically to the operator's actual plan, not a data lookup.
+///
+/// Handles several observed response shapes:
+/// ```json
+/// {"credits_remaining": 4200, "daily_limit": 5000, "plan": "…"}
+/// {"data": {"credits_remaining": 4200, "daily_limit": 5000}}
+/// {"remaining": 4200, "total": 5000}
+/// {"credits": {"remaining": 4200, "daily": 5000}}
+/// ```
+pub async fn query_credits(key: &str) -> Option<(u32, Option<u32>)> {
+    let url = format!("{}/credits", base_url());
+    // Direct HTTP call — no budget gate, no archive (meta-query, not paid data).
+    let body = super::client::CLIENT.get(&url, key).await.ok()?;
+    let v: serde_json::Value = serde_json::from_str(body.trim()).ok()?;
+    // Walk candidate shapes to find (remaining, daily_limit).
+    let root = if let Some(d) = v.get("data") { d } else { &v };
+    let inner = root.get("credits").unwrap_or(root);
+
+    let remaining = inner
+        .get("credits_remaining")
+        .or_else(|| inner.get("remaining"))
+        .and_then(serde_json::Value::as_u64)?
+        as u32;
+
+    let daily_limit = inner
+        .get("daily_limit")
+        .or_else(|| inner.get("total"))
+        .or_else(|| inner.get("daily"))
+        .and_then(serde_json::Value::as_u64)
+        .map(|v| v as u32);
+
+    Some((remaining, daily_limit))
+}
+
 pub(super) fn escape_json(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }

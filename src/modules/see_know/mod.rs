@@ -193,6 +193,27 @@ impl Module for SeekNow {
         seen.insert(target.value.to_lowercase());
         let v = target.value.trim();
 
+        // Once per scan: probe the daily quota and scale the per-round scan cap
+        // to the operator's actual plan allocation. Fires only on the first
+        // target this scan (QUOTA_PROBED latch); subsequent seeds skip the
+        // extra HTTP call. Does NOT consume a budget slot.
+        if see_know::should_probe_quota()
+            && !ctx.cancel.is_cancelled()
+            && let Some((remaining, daily_limit)) = see_know::query_credits(key).await
+        {
+            // No daily_limit field — estimate from remaining assuming
+            // typical mid-scan usage (≤25% spent so far).
+            let limit = daily_limit
+                .unwrap_or_else(|| remaining.saturating_mul(4).min(500_000));
+            see_know::scale_scan_cap_from_daily(limit);
+            tracing::info!(
+                credits_remaining = remaining,
+                daily_limit = ?daily_limit,
+                scan_cap = see_know::scan_budget_remaining(),
+                "see_know quota probed — scan cap scaled to plan allocation"
+            );
+        }
+
         // Pre-flight skip — junk seeds (local domains, too-short usernames,
         // placeholder values, private IPs, unsupported kinds) never reach an
         // HTTP call, saving quota and pool noise.
