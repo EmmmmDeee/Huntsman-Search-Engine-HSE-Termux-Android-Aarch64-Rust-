@@ -10,6 +10,34 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-06-23
+
+### Added
+
+- **Target Exposure Index** — a calibrated `0–100` rollup of how exposed a subject
+  is, with a transparent per-component breakdown. Competitors (SpiderFoot) flag risk
+  per finding; HSE already computes the inputs, so the new `core::exposure` module
+  *aggregates* them — breach-corpus breadth, sensitive-PII disclosure
+  (government ID / DOB / financial / cleartext credential), confirmed-identifier
+  spread, and the correlator's own Critical/High verdicts — into one explainable
+  number (`MINIMAL`…`CRITICAL`). It counts only corroborated findings
+  (`c_effective ≥ 0.5`), so the speculative name-permutation guesses a name scan
+  emits by the dozen never inflate it. Surfaced as the dossier headline and in the
+  `hse scan --output json` payload (`"exposure"`). Pure, deterministic, core-only.
+
+### Fixed
+
+- **IPv6 stealer-log victim addresses are no longer dropped.** The TXT importer
+  gated victim IPs on `contains('.')`, discarding every IPv6 address; it now parses
+  each token as an `IpAddr` (keeping both families, including a victim's private LAN
+  IP) and skips only the unspecified / `0.x` placeholder.
+- **A PO box is no longer treated as a residence.** `is_specific_residence` accepted
+  `PO Box 123, …` as a dwelling, so the household/kin correlators (AU-049/051) could
+  fuse the unrelated people who share one mail drop into a false household. The
+  PO-box / GPO-box / locked-bag / private-bag forms are now rejected (matched on
+  alphanumerics so every punctuation variant collapses); a real street in a suburb
+  that merely contains "box" (Box Hill) is unaffected.
+
 ## [1.8.4] — 2026-06-23
 
 ### Fixed
