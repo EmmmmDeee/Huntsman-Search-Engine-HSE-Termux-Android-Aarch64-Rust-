@@ -377,17 +377,39 @@ pub(in crate::core::correlator) fn rule_au_051_shared_surname_kin(
             let mut kin_uids: Vec<String> = members.iter().map(|(_, u)| u.to_string()).collect();
             kin_uids.sort_unstable();
             uids.extend(kin_uids);
+            // A COMMON surname (Smith, Nguyen, …) shared at one address is far
+            // weaker kin evidence: an apartment tower or share-house whose unit
+            // numbers are absent from the data collapses unrelated same-surname
+            // co-residents onto one residence key, and a popular name makes that
+            // coincidence likely. Asserting "likely relatives; kin pivot" at
+            // Critical there is a confident false claim — surface it as a High LEAD
+            // to verify instead. A distinctive surname at one residence stays the
+            // Critical kin signal it has always been. (Same `is_common` discount the
+            // kinship/leads/engine paths already apply.)
+            let common = crate::util::surnames::is_common(&sn);
+            let (severity, qualifier) = if common {
+                (
+                    Severity::High,
+                    "possibly relatives (common surname — verify before treating as a kin pivot)",
+                )
+            } else {
+                (
+                    Severity::Critical,
+                    "likely relatives; kin pivot to reach the subject",
+                )
+            };
             out.push(Correlation::new(
                 "AU-051",
                 "Shared-surname kin (likely relatives)",
-                Severity::Critical,
+                severity,
                 format!(
                     "{} people sharing the family name '{}' co-located at one residence ('{}'): \
-                     {} — likely relatives; kin pivot to reach the subject",
+                     {} — {}",
                     names.len(),
                     sn,
                     addr,
-                    names.join(", ")
+                    names.join(", "),
+                    qualifier
                 ),
                 uids,
                 scan_id,

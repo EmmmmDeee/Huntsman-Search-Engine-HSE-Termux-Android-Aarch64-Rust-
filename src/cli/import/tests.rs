@@ -149,6 +149,22 @@ fn dossier_is_detected_and_oathnet_txt_is_not() {
 }
 
 #[test]
+fn dossier_parse_strips_leading_utf8_bom() {
+    // An exporter that writes "UTF-8 with BOM" (Excel / Notepad default) prefixes
+    // the file with U+FEFF, which `str::trim` does NOT strip — so the first section
+    // header `EMAILS:` became `\u{feff}EMAILS:`, matched no section, and the whole
+    // first section was silently dropped.
+    let bom_dossier = "\u{feff}EMAILS:\n  -> betocastillo097@gmail.com\n";
+    let (ents, _) = parse_dossier(bom_dossier, "sid");
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "betocastillo097@gmail.com"),
+        "the first section must parse despite a leading BOM: {:?}",
+        ents.iter().map(|e| (&e.kind, &e.value)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn dossier_parse_yields_correlated_individualised_entities() {
     let (mut ents, stats) = parse_dossier(DOSSIER, "sid");
     deduplicate_by_uid(&mut ents);
