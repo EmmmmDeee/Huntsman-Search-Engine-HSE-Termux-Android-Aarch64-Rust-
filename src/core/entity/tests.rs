@@ -532,6 +532,42 @@ fn normalise_email_strips_breach_escape_tail() {
 }
 
 #[test]
+fn normalise_email_strips_invisible_and_control_noise() {
+    let clean = "user@gmail.com";
+    // A UTF-8 BOM an exporter prepended is NOT whitespace, so it used to survive
+    // and key the same mailbox to a different UID (identity fragmentation).
+    assert_eq!(
+        normalise(&EntityKind::Email, "\u{feff}user@gmail.com"),
+        clean
+    );
+    // A zero-width space embedded mid-value is removed (not cut — the address
+    // before AND after it is real).
+    assert_eq!(
+        normalise(&EntityKind::Email, "user@gmail\u{200b}.com"),
+        clean
+    );
+    // A NUL-separated junk suffix is cut like the escape tail.
+    assert_eq!(
+        normalise(&EntityKind::Email, "user@gmail.com\u{0}junk"),
+        clean
+    );
+    // All three forms share the clean address's UID — the dedup point.
+    for dirty in [
+        "\u{feff}user@gmail.com",
+        "user@gmail\u{200b}.com",
+        "user@gmail.com\u{0}junk",
+    ] {
+        assert_eq!(
+            Entity::new(EntityKind::Email, dirty, 0.3, "s").uid,
+            Entity::new(EntityKind::Email, clean, 0.3, "s").uid,
+            "{dirty:?} must fold to the clean UID"
+        );
+    }
+    // A pristine address is untouched (no needless allocation path regression).
+    assert_eq!(normalise(&EntityKind::Email, clean), clean);
+}
+
+#[test]
 fn normalise_phone_strips_formatting() {
     let r = normalise(&EntityKind::Phone, "+61 04 1234 5678");
     assert_eq!(r, "+61041234567 8".replace(' ', ""));

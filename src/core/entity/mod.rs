@@ -884,14 +884,44 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             // value into the bundle. Valid emails have no such char, so their
             // UID is unchanged.
             let trimmed = value.trim();
-            let cut = trimmed
-                .find(|c: char| c == '\\' || c.is_whitespace())
-                .unwrap_or(trimmed.len());
+            // Strip invisible format / zero-width noise first — a UTF-8 BOM an
+            // exporter prepended (`\u{feff}`), a zero-width space embedded
+            // mid-value (`\u{200b}`). These are NOT whitespace, so `trim` and the
+            // cut below miss them, yet they key the SAME mailbox to a DIFFERENT
+            // UID — fragmenting one identity across two nodes. They never occur in
+            // a real address, so removing them is loss-free (vs cutting, which
+            // would truncate a value whose noise sits before the `@`).
+            let cleaned: std::borrow::Cow<'_, str> = if trimmed.chars().any(|c| {
+                matches!(
+                    c,
+                    '\u{feff}' | '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{2060}'
+                )
+            }) {
+                std::borrow::Cow::Owned(
+                    trimmed
+                        .chars()
+                        .filter(|c| {
+                            !matches!(
+                                c,
+                                '\u{feff}' | '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{2060}'
+                            )
+                        })
+                        .collect(),
+                )
+            } else {
+                std::borrow::Cow::Borrowed(trimmed)
+            };
+            // Cut at the first backslash / whitespace / control char: the breach
+            // escape tail, stray internal whitespace, or a NUL-separated junk
+            // suffix (`…@x.com\0junk`) all mark the end of the real address.
+            let cut = cleaned
+                .find(|c: char| c == '\\' || c.is_whitespace() || c.is_control())
+                .unwrap_or(cleaned.len());
             // Total Unicode case-fold for dedup. `str::to_lowercase` maps every
             // char through `char::to_lowercase`, so a value whose only capital is
             // non-ASCII (`Ölaf`, a Cyrillic/Greek handle, Turkish `İ`) folds the
             // same as its all-caps spelling — they must share a UID.
-            trimmed[..cut].to_lowercase()
+            cleaned[..cut].to_lowercase()
         }
         EntityKind::Username => {
             // Same total Unicode case-fold as Email, plus stripping a leading `@`
