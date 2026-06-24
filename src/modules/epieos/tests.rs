@@ -226,6 +226,111 @@ fn render_dossier(email: &str, entities: &[Entity]) {
     println!();
 }
 
+// ── Wire-level process() emulation — full engine code path ──────────────────
+//
+// A genuine `Epieos.process()` invocation runs against a local TCP server that
+// returns the exact Epieos API wire format. The complete production path
+// executes: key gate → POST via ctx.http → keyed_ok_or_404 → json_decode →
+// build_entities. No mocks, no stubbed return values — the entities produced
+// are the real HSE engine output.
+//
+// The endpoint override (`HUNTSMAN_EPIEOS_URL`) injects the local server
+// address; `reqwest::Client::new()` (no SSRF guard) can reach 127.0.0.1.
+// The key value is a dummy — it only needs to be non-None to pass the gate;
+// keyed_ok_or_404 passes any 200 response through regardless.
+//
+// Run to view the printed dossier:
+//   cargo test epieos::tests::process_against_emulated_server -- --nocapture
+#[tokio::test]
+async fn process_against_emulated_server_yields_genuine_entity_graph() {
+    use std::collections::HashMap;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let endpoint = format!("http://127.0.0.1:{port}");
+
+    // Serve one request: drain the incoming HTTP request (so reqwest's send
+    // completes its write), then return a valid 200 JSON response and close.
+    // Content-Length tells reqwest the body is complete without waiting for EOF.
+    let server = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut req_buf = vec![0u8; 8192];
+        let _ = sock.read(&mut req_buf).await;
+        let body = EMULATED_API_RESPONSE.as_bytes();
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        sock.write_all(headers.as_bytes()).await.unwrap();
+        sock.write_all(body).await.unwrap();
+    });
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let mut keys = HashMap::new();
+    keys.insert("HUNTSMAN_EPIEOS_KEY".into(), "emulated-key".into());
+    keys.insert("HUNTSMAN_EPIEOS_URL".into(), endpoint);
+
+    let ctx = crate::core::module::ModuleContext {
+        scan_id: "emulated-scan".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys,
+        cancel: crate::core::cancel::CancelHandle::new(),
+        proxy_pool: Default::default(),
+    };
+
+    let target = Target::new(TargetKind::Email, "haigen.bamford@example.com");
+    let result = Epieos
+        .process(&target, &ctx)
+        .await
+        .expect("process must succeed against emulated server");
+    server.await.unwrap();
+
+    render_dossier("haigen.bamford@example.com", &result.entities);
+
+    let anchor = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("email anchor");
+    assert!(anchor.has_tag("google-account"));
+    assert!(anchor.has_tag("skype"));
+    assert!(anchor.has_tag("has-maps-reviews"));
+
+    // Google and Skype names agree → one deduplicated Person lead.
+    let people: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .collect();
+    assert_eq!(people.len(), 1);
+    assert_eq!(people[0].value, "Haigen Bamford");
+
+    // Skype handle → Username.
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Username && e.value == "haigen.bamford")
+    );
+
+    // GEOINT: Skype city + QLD reviewed places are all Address entities.
+    let addrs: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address)
+        .collect();
+    assert!(addrs.iter().any(|a| a.value == "Brisbane, AU"));
+    let qag = addrs
+        .iter()
+        .find(|a| a.value.starts_with("Queensland Art Gallery"))
+        .expect("reviewed place becomes an Address entity");
+    assert!(qag.has_tag("geoint"));
+    assert!(qag.has_tag("country:AU"));
+    assert!(qag.has_tag("au-state:QLD"));
+}
+
 /// End-to-end emulation: an Epieos API response we synthesise locally is
 /// resolved into the full identity graph by the genuine module mapper, with no
 /// live call. Prints a dossier (under `--nocapture`) and asserts the extraction.

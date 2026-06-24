@@ -288,9 +288,15 @@ impl Module for Epieos {
             return Ok(ModuleResult::new());
         }
 
+        let url = ctx
+            .keys
+            .get("HUNTSMAN_EPIEOS_URL")
+            .map(String::as_str)
+            .unwrap_or("https://api.epieos.com/api/v1/email");
+
         let resp = ctx
             .http
-            .post("https://api.epieos.com/api/v1/email")
+            .post(url)
             .bearer_auth(key)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({ "email": email }))
