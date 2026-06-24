@@ -145,13 +145,21 @@ impl Module for CombSearch {
                 && identity.contains('@')
                 && seen_email.insert(identity.to_ascii_lowercase())
             {
-                let mut e = Entity::new(EntityKind::Email, identity, DOMAIN_ACCOUNT_CONF, &ctx.scan_id);
+                let mut e = Entity::new(
+                    EntityKind::Email,
+                    identity,
+                    DOMAIN_ACCOUNT_CONF,
+                    &ctx.scan_id,
+                );
                 e.tag(tags::BREACH);
                 e.tag("comb");
                 e.add_evidence(
-                    Evidence::new(SRC, format!("Exposed account `{identity}` in COMB compilation"))
-                        .with_attr("identity", identity)
-                        .with_attr("source", "proxynova-comb"),
+                    Evidence::new(
+                        SRC,
+                        format!("Exposed account `{identity}` in COMB compilation"),
+                    )
+                    .with_attr("identity", identity)
+                    .with_attr("source", "proxynova-comb"),
                 );
                 result.push(e);
             }
@@ -174,7 +182,12 @@ impl Module for CombSearch {
                 continue;
             }
 
-            let mut pw = Entity::new(EntityKind::Password, secret, secret_confidence(target.kind), &ctx.scan_id);
+            let mut pw = Entity::new(
+                EntityKind::Password,
+                secret,
+                secret_confidence(target.kind),
+                &ctx.scan_id,
+            );
             pw.tag(tags::BREACH);
             pw.tag("credential");
             pw.tag("comb");
@@ -184,9 +197,12 @@ impl Module for CombSearch {
                 pw.demote_to_candidate();
             }
             pw.add_evidence(
-                Evidence::new(SRC, format!("Leaked credential for `{identity}` in COMB compilation"))
-                    .with_attr("identity", identity)
-                    .with_attr("source", "proxynova-comb"),
+                Evidence::new(
+                    SRC,
+                    format!("Leaked credential for `{identity}` in COMB compilation"),
+                )
+                .with_attr("identity", identity)
+                .with_attr("source", "proxynova-comb"),
             );
             result.push(pw);
         }

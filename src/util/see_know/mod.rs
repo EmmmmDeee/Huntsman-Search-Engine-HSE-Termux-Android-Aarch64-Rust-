@@ -35,7 +35,7 @@ mod tests;
 // consumers (`api::handlers::stats`) keep working through the original path.
 pub use budget::{
     BudgetSnapshot, budget_remaining, budget_snapshot, is_key_invalid, is_quota_exhausted,
-    refresh_round_budget, reset_budget, scan_budget_remaining, scale_scan_cap_from_daily,
+    refresh_round_budget, reset_budget, scale_scan_cap_from_daily, scan_budget_remaining,
     set_scan_cap_override, should_probe_quota,
 };
 

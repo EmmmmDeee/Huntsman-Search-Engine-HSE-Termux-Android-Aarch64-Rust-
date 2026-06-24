@@ -76,7 +76,11 @@ pub fn scale_scan_cap_from_daily(daily_limit: u32) {
     }
     let cap = (daily_limit / 20).clamp(300, 2500);
     BUDGET.set_scan_cap_override(cap);
-    tracing::debug!(daily_limit, scan_cap = cap, "see_know scan cap scaled to plan quota");
+    tracing::debug!(
+        daily_limit,
+        scan_cap = cap,
+        "see_know scan cap scaled to plan quota"
+    );
 }
 
 /// Latched once per process when see-know.eu rejects the configured API key.
@@ -88,8 +92,7 @@ pub fn scale_scan_cap_from_daily(daily_limit: u32) {
 /// fast-fails the remaining ~160 doomed lookups for the rest of the scan. It is
 /// cleared by [`reset_budget`] at the start of each scan so a corrected key
 /// (UI Settings / `HUNTSMAN_SEEKNOW_KEY`) recovers without a process restart.
-pub(super) static KEY_INVALID: AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+pub(super) static KEY_INVALID: AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Install a runtime per-scan cap. `0` clears the override (falls back
 /// to env + static default). The engine calls this once at scan start

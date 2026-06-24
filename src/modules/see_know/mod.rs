@@ -203,8 +203,7 @@ impl Module for SeekNow {
         {
             // No daily_limit field — estimate from remaining assuming
             // typical mid-scan usage (≤25% spent so far).
-            let limit = daily_limit
-                .unwrap_or_else(|| remaining.saturating_mul(4).min(500_000));
+            let limit = daily_limit.unwrap_or_else(|| remaining.saturating_mul(4).min(500_000));
             see_know::scale_scan_cap_from_daily(limit);
             tracing::info!(
                 credits_remaining = remaining,

@@ -278,8 +278,7 @@ pub async fn query_credits(key: &str) -> Option<(u32, Option<u32>)> {
     let remaining = inner
         .get("credits_remaining")
         .or_else(|| inner.get("remaining"))
-        .and_then(serde_json::Value::as_u64)?
-        as u32;
+        .and_then(serde_json::Value::as_u64)? as u32;
 
     let daily_limit = inner
         .get("daily_limit")
