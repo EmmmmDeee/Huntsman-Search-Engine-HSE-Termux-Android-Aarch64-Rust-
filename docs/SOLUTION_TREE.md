@@ -1468,3 +1468,33 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   modules with structured sub-fields not yet surfaced — e.g. hackertarget (76 baseline; ASN org-name/country
   tags) or crtsh (0/121 inconsistency — environment-side, cannot fix without real crtsh connectivity).
   Paired: `PROBLEM_TREE` P-RDAP-B cycle 31 — same commit. SHA `575f0ed`.
+
+- **2026-06-24** — **Cycle 32 (P→S): SOL-SPF-A — SPF `a:domain` / `mx:domain` mechanisms as Domain OSINT pivots.**
+  **Evidence base:** Real SPF records of state.gov (`a:_msiplista.state.gov`) confirmed a live gap. Code
+  inspection of `src/util/spf/mod.rs`: `Member` enum had only `Ip`/`Include`/`Redirect`; `members()` doc
+  comment explicitly listed `a`, `mx`, `ptr`, `exists` as "not interpreted." Both `doh_resolver/mod.rs` and
+  `dns_intel/resolve.rs` exhaustive-match on the enum — adding new variants forces both callers simultaneously.
+  **Solutions delivered:**
+  - *SOL-SPF-A — a:/mx: domain mechanism extraction:* `Member::A(&'a str)` and `Member::Mx(&'a str)` added
+    to enum. `members()` updated with two new branches: `mech.strip_prefix("a:")` → `usable_domain()` guard
+    → `Member::A`; `mech.strip_prefix("mx:")` → `usable_domain()` guard → `Member::Mx`. Bare `a`/`mx` (no
+    colon) remain skipped — they reference the current domain (already tracked), not new OSINT pivots.
+    Qualifier stripping (`+/-/~/? prefix`) applies to these mechanisms as it does to include.
+  - *SOL-SPF-B — caller integration (doh_resolver):* New match arms emit Domain entities (conf 0.65) tagged
+    `spf-a` / `spf-mx`, dedup keys `spfa:{dom}` / `spfmx:{dom}`. Evidence string: "SPF a: mechanism for
+    {domain}" / "SPF mx: mechanism for {domain}".
+  - *SOL-SPF-C — caller integration (dns_intel):* Same arms added to `dns_intel/resolve.rs` matching
+    existing `include`/`redirect` pattern (no dedup key needed — module-level recall handles it).
+  4 new unit tests in `src/util/spf/tests.rs`: `members_yields_a_and_mx_domain_mechanisms` (bare a/mx
+  skipped; qualified `a:domain` and `mx:domain` yielded), `members_skips_a_mx_with_macros_or_dotless_targets`
+  (macro `%{d}` and dotless `localhost` rejected by `usable_domain()`).
+  Gate green: fmt/clippy/doc clean, **3,167 lib tests** (+2 vs cycle 31), 0 failures.
+  **Scan validation (runs 1 & 2, consistent, state.gov, depth=0, doh_resolver):**
+  doh_resolver=22 both runs. `_msiplista.state.gov` with tag `spf-a` present both runs (run 2: `recalled`).
+  github.com: no spurious spf-a/spf-mx entities (expected — github.com SPF uses only ip4:/include:).
+  **New baseline: doh_resolver (state.gov validation target)=22** (github.com doh_resolver=30 stable).
+  **S→P gap from this cycle:** SPF `ptr:` and `exists:domain` mechanisms not extracted — `exists:` is
+  almost always macro-bearing (filtered by `usable_domain()`) and `ptr:` (deprecated RFC 7208 §5.5)
+  add marginal value; deferred. Next pass should examine HTTPS DNS record type 65 for SvcPriority/
+  target-name / ALPN extraction and MX record hostname extraction as Domain entities.
+  Paired: `PROBLEM_TREE` P-SPF-A cycle 32 — same commit. SHA `d15c337`.

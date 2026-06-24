@@ -2068,3 +2068,18 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   unchanged at 9 (.com Verisign does not expose glue in RDAP — expected).
   **New baseline: rdap_domain (afnic.fr)=13** (new validation target; github.com=9 stable).
   **Paired:** `SOLUTION_TREE` SOL-RDAP-B cycle 31 — same commit. SHA `575f0ed`.
+
+- **2026-06-24** — **Cycle 32 (S→P): SPF `a:domain` / `mx:domain` mechanisms not extracted as Domain entities.**
+  **Source:** gap noted at end of cycle 31 solution tree; narrowed to `src/util/spf/mod.rs` via gap analysis
+  of hackertarget (no code gap — flat CSV), whois (skips domain targets behind HTTPS proxy — env constraint,
+  not fixable), cert_intel (116 entities in isolation, healthy), doh_resolver (30/30 baseline confirmed stable),
+  HTTPS DNS records type-65 (none for github.com), email security subqueries _mta-sts/_smtp._tls/_bimi
+  (all NXDOMAIN for github.com). Residual gap: `src/util/spf/mod.rs` `members()` comment explicitly listed
+  `a`, `mx`, `ptr`, `exists` as "not interpreted here — callers tag the domain itself."
+  - **(P-SPF-A)** `Member` enum has three variants — `Ip`, `Include`, `Redirect` — but no `A` or `Mx`.
+    `a:domain` and `mx:domain` SPF mechanisms reference additional infrastructure domains whose A/MX records
+    authorise mail sending; these are legitimate OSINT pivots (pivot graph expansion). Both `doh_resolver`
+    and `dns_intel/resolve.rs` consume `members()` via exhaustive match — adding variants forces both callers
+    to handle them simultaneously, preventing drift. Gap confirmed observable: `state.gov` SPF record contains
+    `a:_msiplista.state.gov` — this domain was silently discarded pre-fix.
+  **Paired:** `SOLUTION_TREE` SOL-SPF-A cycle 32 — same commit. SHA `d15c337`.
