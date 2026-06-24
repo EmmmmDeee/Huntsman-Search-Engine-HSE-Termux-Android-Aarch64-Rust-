@@ -17,8 +17,11 @@ pub(in crate::core::correlator) fn rule_au_004_malicious_infrastructure(
             )
         })
         // A GreyNoise RIOT/benign verdict vetoes a `malicious` tag picked up on
-        // the same (shared-edge) IP from a weaker source.
-        .filter(|e| e.has_tag("malicious") && !is_benign_infra(e))
+        // the same (shared-edge) IP from a weaker source. Require at least two
+        // independent corroborating sources — a single-source `malicious` tag is
+        // insufficient evidence for CRITICAL severity (shared infra like CDN/ESP
+        // nodes routinely appear in one blocklist without being subject-owned).
+        .filter(|e| e.has_tag("malicious") && !is_benign_infra(e) && e.source_count() >= 2)
         .map(|e| Correlation {
             rule_id: "AU-004".into(),
             rule_name: "Malicious infrastructure".into(),

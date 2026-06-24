@@ -291,6 +291,65 @@ pub async fn fetch_pooled(
     None
 }
 
+/// Fetch `url` and return `(http_status_code, body)`.
+///
+/// When `capture_body` is `false` the body is discarded (`-o /dev/null`) and the
+/// returned string is empty — use this fast path when the status code alone is
+/// sufficient. When `capture_body` is `true` the body is captured (capped at 8 KB
+/// via `--max-filesize`) so the caller can apply negative-pattern checks.
+///
+/// Uses curl's `-w "\n%{http_code}"` sentinel to surface the HTTP status even
+/// when the body was truncated by `--max-filesize` (curl exit code 63). Treating
+/// exit 63 as a hard failure would suppress real profiles whose pages exceed 8 KB.
+/// `timeout_ms` is reserved for future use; the current implementation encodes a
+/// 4-second curl `--max-time` internally.
+pub async fn fetch_with_status(url: &str, _timeout_ms: u64, capture_body: bool) -> (u16, String) {
+    let mut args: Vec<&str> = vec![
+        "-s",
+        "-w",
+        "\n%{http_code}",
+        "--max-time",
+        "4",
+        "-L",
+        "-A",
+        UA_MOBILE,
+    ];
+
+    let filesize_arg;
+    if capture_body {
+        filesize_arg = "8192";
+        args.extend_from_slice(&["--max-filesize", filesize_arg]);
+    } else {
+        args.extend_from_slice(&["-o", "/dev/null"]);
+    }
+    args.extend_from_slice(&["--", url]);
+
+    let output = tokio::process::Command::new("curl")
+        .args(&args)
+        .kill_on_drop(true)
+        .output()
+        .await;
+
+    match output {
+        Ok(o) => {
+            let raw = String::from_utf8_lossy(&o.stdout);
+            let is_truncated = o.status.code() == Some(63);
+            if o.status.success() || is_truncated {
+                if capture_body && let Some(nl) = raw.rfind('\n') {
+                    let body = raw[..nl].to_string();
+                    let code: u16 = raw[nl + 1..].trim().parse().unwrap_or(0);
+                    return (code, body);
+                }
+                let code: u16 = raw.trim().parse().unwrap_or(0);
+                (code, String::new())
+            } else {
+                (0, String::new())
+            }
+        }
+        _ => (0, String::new()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

@@ -615,48 +615,17 @@ pub(in crate::modules::search_engines) fn extract_emails_from_text(text: &str) -
 }
 
 pub(in crate::modules::search_engines) fn extract_phones_from_text(text: &str) -> Vec<String> {
-    let bytes = text.as_bytes();
-    let len = bytes.len();
     let mut phones = Vec::new();
-    let mut i = 0;
-    while i < len {
-        if bytes[i] == b'+' && i + 10 < len && matches!(bytes[i + 1], b'1'..=b'9') {
-            let start = i;
-            i += 1;
-            let mut digits = 0u32;
-            while i < len
-                && (bytes[i].is_ascii_digit()
-                    || bytes[i] == b'-'
-                    || bytes[i] == b' '
-                    || bytes[i] == b'('
-                    || bytes[i] == b')')
-            {
-                if bytes[i].is_ascii_digit() {
-                    digits += 1;
-                }
-                i += 1;
-            }
-            if (10..=15).contains(&digits) {
-                let cleaned: String = text[start..i]
-                    .chars()
-                    .filter(|c| c.is_ascii_digit() || *c == '+')
-                    .collect();
-                phones.push(cleaned);
-                // Raised from 30 → 300; warn on the ceiling so dropped numbers
-                // are visible in the logs rather than silently discarded.
-                if phones.len() >= 300 {
-                    tracing::warn!(
-                        target: "hse::parser",
-                        cap = 300,
-                        text_len = text.len(),
-                        "extract_phones_from_text hit cap — additional numbers in this text were not extracted"
-                    );
-                    break;
-                }
-            }
-        } else {
-            i += 1;
-        }
+    // Raised from 30 → 300; warn on the ceiling so dropped numbers are visible
+    // in the logs rather than silently discarded.
+    let truncated = crate::util::phone::scan_phones(text, 300, |p| phones.push(p));
+    if truncated {
+        tracing::warn!(
+            target: "hse::parser",
+            cap = 300,
+            text_len = text.len(),
+            "extract_phones_from_text hit cap — additional numbers in this text were not extracted"
+        );
     }
     phones
 }

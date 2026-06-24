@@ -769,10 +769,29 @@ fn au003_uses_distinct_sources_not_summed_corroboration() {
 
 #[test]
 fn au004_fires_on_malicious_domain() {
-    let e = tagged(EntityKind::Domain, "evil.example", &["malicious"]);
+    // Requires two independent sources to reach CRITICAL — shared infra appears
+    // in single blocklists without being subject-owned.
+    let mut e = tagged(EntityKind::Domain, "evil.example", &["malicious"]);
+    e.add_evidence(Evidence::new(
+        "ip_reputation",
+        "flagged malicious".to_string(),
+    ));
+    e.add_evidence(Evidence::new("threatfox", "c2 domain".to_string()));
     let r = rule_au_004_malicious_infrastructure(&[e], "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, Severity::Critical);
+}
+
+#[test]
+fn au004_no_fire_single_source() {
+    // Single-source malicious tag must NOT produce a CRITICAL — insufficient
+    // corroboration to distinguish CDN/ESP blocklist noise from real malice.
+    let mut e = tagged(EntityKind::Domain, "evil.example", &["malicious"]);
+    e.add_evidence(Evidence::new(
+        "ip_reputation",
+        "flagged malicious".to_string(),
+    ));
+    assert!(rule_au_004_malicious_infrastructure(&[e], "s", 0).is_empty());
 }
 
 #[test]
@@ -1160,11 +1179,16 @@ fn evaluate_rules_fires_expected_subset() {
     email.add_evidence(Evidence::new("hudsonrock", "t"));
     email.add_evidence(Evidence::new("xposed_or_not", "t"));
     email.tag("stealer-log");
-    let domain = tagged(
+    let mut domain = tagged(
         EntityKind::Domain,
         "evil.example",
         &["malicious", "vulnerable", "threat-intel"],
     );
+    domain.add_evidence(Evidence::new(
+        "ip_reputation",
+        "flagged malicious".to_string(),
+    ));
+    domain.add_evidence(Evidence::new("threatfox", "c2 domain".to_string()));
     let ip = tagged(EntityKind::IpAddress, "1.1.1.1", &["tor-exit"]);
     let firings = evaluate_rules(&[email, domain, ip], "s");
     let ids: HashSet<&str> = firings.iter().map(|c| c.rule_id.as_str()).collect();

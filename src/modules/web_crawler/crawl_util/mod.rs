@@ -532,40 +532,9 @@ pub(super) fn is_domain_char(b: u8) -> bool {
 }
 
 pub(super) fn extract_phones(body: &str, phones: &mut HashSet<String>) {
-    let bytes = body.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        // A leading `+` must be followed by a valid E.164 country-code digit
-        // (1-9). Rejecting `+0…` drops the false positives the old `is_ascii_digit`
-        // check let through (e.g. `+01020103` scraped from concatenated page
-        // numbers) without affecting any real international number.
-        if bytes[i] == b'+' && i + 10 < bytes.len() && matches!(bytes[i + 1], b'1'..=b'9') {
-            let start = i;
-            i += 1;
-            while i < bytes.len()
-                && (bytes[i].is_ascii_digit()
-                    || bytes[i] == b'-'
-                    || bytes[i] == b' '
-                    || bytes[i] == b'('
-                    || bytes[i] == b')')
-            {
-                i += 1;
-            }
-            let cleaned: String = body[start..i]
-                .chars()
-                .filter(|c| c.is_ascii_digit() || *c == '+')
-                .collect();
-            // Accept only what the canonical E.164 validator accepts (10-15 digits
-            // after the `+`) — the same definition the rest of the system uses, so
-            // the crawler can't surface a too-short scrape artifact that validation
-            // would reject everywhere else.
-            if crate::core::validation::validate_phone_e164(&cleaned).valid {
-                phones.insert(cleaned);
-            }
-        } else {
-            i += 1;
-        }
-    }
+    crate::util::phone::scan_phones(body, usize::MAX, |p| {
+        phones.insert(p);
+    });
 }
 
 pub(super) fn extract_api_keys_from_body(body: &str, domain: &str) {

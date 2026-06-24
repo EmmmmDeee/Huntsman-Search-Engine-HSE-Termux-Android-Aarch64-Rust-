@@ -53,6 +53,23 @@ pub(crate) fn is_noncentral_domain(domain: &str) -> bool {
     is_mega_domain(domain) || is_infra_domain(domain)
 }
 
+/// True when `entity` should receive the `platform-infra` tag at engine admission.
+///
+/// Tags the entity only when *every* evidence record that carries a
+/// `source_domain` attribute points to a mega/shared-infra domain. Mixed-
+/// provenance entities — discovered from both a platform page AND a
+/// subject-controlled domain — are NOT tagged, so they remain in default output.
+/// Direct-probe results (social_probe, oathnet_pro, …) never set `source_domain`
+/// and are always exempt.
+pub(crate) fn should_tag_platform_infra(entity: &crate::core::entity::Entity) -> bool {
+    let sourced: Vec<&str> = entity
+        .evidence
+        .iter()
+        .filter_map(|ev| ev.attributes.get("source_domain").map(String::as_str))
+        .collect();
+    !sourced.is_empty() && sourced.iter().all(|d| is_noncentral_domain(d))
+}
+
 /// Identity fingerprint of a name / handle / email-local: lowercase ASCII
 /// alphanumerics only (an email's local part is taken before `@`). Used to tie a
 /// discovered alias back to the subject without a dictionary name-split.

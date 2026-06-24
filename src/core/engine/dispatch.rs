@@ -441,19 +441,8 @@ impl super::ScanEngine {
                     // (social_probe, oathnet_pro, …) never set `source_domain`
                     // and are always exempt.
                     let mut entity = entity;
-                    {
-                        let sourced: Vec<&str> = entity
-                            .evidence
-                            .iter()
-                            .filter_map(|ev| ev.attributes.get("source_domain").map(String::as_str))
-                            .collect();
-                        let is_infra = !sourced.is_empty()
-                            && sourced
-                                .iter()
-                                .all(|d| crate::core::scan::is_noncentral_domain(d));
-                        if is_infra {
-                            entity.tag("platform-infra");
-                        }
+                    if crate::core::scan::should_tag_platform_infra(&entity) {
+                        entity.tag("platform-infra");
                     }
                     self.emit(
                         cx.scan_id,

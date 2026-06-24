@@ -329,7 +329,12 @@ impl Module for SocialProbe {
             let url = platform.url_pattern.replace("{}", &slug);
             checked_count += 1;
 
-            let (code, body) = probe_url(&url, !platform.negative_patterns.is_empty()).await;
+            let (code, body) = crate::util::curl::fetch_with_status(
+                &url,
+                4_000,
+                !platform.negative_patterns.is_empty(),
+            )
+            .await;
 
             let body_blocks = !platform.negative_patterns.is_empty()
                 && platform.negative_patterns.iter().any(|p| body.contains(p));
@@ -437,69 +442,4 @@ pub(super) fn build_target_summary(
         .with_attr("platforms", found_platforms.join(", ")),
     );
     Some(summary)
-}
-
-/// Probe `url` and return `(http_status_code, body)`.
-///
-/// When `capture_body` is false the body is discarded (`-o /dev/null`) and the
-/// returned string is empty — this is the fast path for platforms where the
-/// status code alone is reliable. When `capture_body` is true the response body
-/// is captured (capped at 8 KB via `--max-filesize`) so the caller can apply
-/// negative-pattern filtering against platforms that return 200 for all paths.
-pub(super) async fn probe_url(url: &str, capture_body: bool) -> (u16, String) {
-    let mut args: Vec<&str> = vec![
-        "-s",
-        "-w",
-        "\n%{http_code}",
-        "--max-time",
-        "4",
-        "-L",
-        "-A",
-        crate::util::curl::UA_MOBILE,
-    ];
-
-    // Body size cap (8 KB) — only applied when we need the body for pattern checks.
-    let filesize_arg;
-    if capture_body {
-        filesize_arg = "8192";
-        args.extend_from_slice(&["--max-filesize", filesize_arg]);
-    } else {
-        args.extend_from_slice(&["-o", "/dev/null"]);
-    }
-    args.extend_from_slice(&["--", url]);
-
-    let output = tokio::process::Command::new("curl")
-        .args(&args)
-        .kill_on_drop(true)
-        .output()
-        .await;
-
-    match output {
-        Ok(o) => {
-            let raw = String::from_utf8_lossy(&o.stdout);
-            // curl exit code 63 = file exceeded --max-filesize; the body was
-            // truncated but the HTTP status code is still written to stdout by
-            // -w "%{http_code}". Treating exit 63 as a hard failure (returning
-            // status 0) would suppress real profiles whose pages are >8 KB.
-            // Instead, accept the truncated body — it is enough for
-            // negative-pattern matching — while only treating true network
-            // failures (no output, non-63 curl error) as status 0.
-            let is_truncated = o.status.code() == Some(63);
-            if o.status.success() || is_truncated {
-                if capture_body {
-                    // Output is `<body>\n<http_code>` — split on the last newline.
-                    if let Some(nl) = raw.rfind('\n') {
-                        let body = raw[..nl].to_string();
-                        let code: u16 = raw[nl + 1..].trim().parse().unwrap_or(0);
-                        return (code, body);
-                    }
-                }
-                let code: u16 = raw.trim().parse().unwrap_or(0);
-                (code, String::new())
-            } else {
-                (0, String::new())
-            }
-        }
-        _ => (0, String::new()),
-    }
 }
