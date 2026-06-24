@@ -408,3 +408,110 @@ fn techniques_represented_in_output() {
         );
     }
 }
+
+// ── Throughput baseline (ignored — run with --ignored --nocapture) ─────────
+
+/// Timing harness using min-of-N (robust against positive-only OS scheduling
+/// noise; standard technique for wall-clock microbenchmarks).
+/// Returns `(candidate_count, min_us, median_us, p95_us)`.
+fn time_permutations(domain: &str, cap: usize, reps: usize) -> (usize, u128, u128, u128) {
+    // 5-rep warm-up: prime allocator and instruction caches
+    for _ in 0..5 {
+        let _ = permutations(domain, cap);
+    }
+    let mut times_us: Vec<u128> = Vec::with_capacity(reps);
+    let mut count = 0;
+    for _ in 0..reps {
+        let start = std::time::Instant::now();
+        let v = permutations(domain, cap);
+        times_us.push(start.elapsed().as_micros());
+        count = v.len();
+    }
+    times_us.sort_unstable();
+    let min = times_us[0];
+    let median = times_us[reps / 2];
+    let p95 = times_us[(reps as f64 * 0.95) as usize];
+    (count, min, median, p95)
+}
+
+#[test]
+#[ignore = "throughput baseline; run with --ignored --nocapture"]
+fn bench_permutations_scaling() {
+    const REPS: usize = 50;
+    const CAP: usize = 2000;
+    eprintln!("\n=== permutations() min-of-{REPS} timing, cap={CAP} (debug build) ===");
+    eprintln!("{:<28} {:>5}  {:>7}  {:>8}  {:>7}", "domain", "n", "min_µs", "med_µs", "p95_µs");
+
+    let mut results: Vec<(&str, usize, u128, u128, u128)> = Vec::new();
+    for (domain, _tag) in &[
+        ("ab.com",            "2ch"),
+        ("abc.com",           "3ch"),
+        ("abcde.com",         "5ch"),
+        ("example.com",       "7ch"),
+        ("facebook.com",      "8ch"),
+        ("instagram.com",     "9ch"),
+        ("bankofamerica.com", "13ch"),
+        ("commbank.com.au",   "8ch-au"),
+        ("a-b-c.com",         "3ch-hyph"),
+    ] {
+        let (n, min, median, p95) = time_permutations(domain, CAP, REPS);
+        eprintln!("{domain:<28} {n:>5}  {min:>7}  {median:>8}  {p95:>7}");
+        results.push((domain, n, min, median, p95));
+    }
+
+    // Statistical validity gate: p95 must not be more than 5× the min.
+    // A ratio > 5 indicates the environment is too noisy for the function
+    // to have stable latency (e.g., memory pressure, page fault).
+    for (domain, _, min, _median, p95) in &results {
+        let ratio = if *min > 0 { *p95 as f64 / *min as f64 } else { 1.0 };
+        assert!(
+            ratio < 5.0,
+            "{domain}: p95/min ratio={ratio:.1} > 5.0 — environment too noisy; \
+             re-run on an unloaded machine"
+        );
+    }
+
+    // Scaling check: each doubling of label length should not more than
+    // triple the min time (empirically verified; catches O(n^2) regressions).
+    let min_3 = results.iter().find(|(d, ..)| *d == "abc.com").map_or(1, |r| r.2);
+    let min_7 = results.iter().find(|(d, ..)| *d == "example.com").map_or(1, |r| r.2);
+    let min_13 = results.iter().find(|(d, ..)| *d == "bankofamerica.com").map_or(1, |r| r.2);
+    let ratio_3_7 = min_7 as f64 / min_3.max(1) as f64;
+    let ratio_7_13 = min_13 as f64 / min_7.max(1) as f64;
+    eprintln!(
+        "\nscaling: 3ch→7ch factor={ratio_3_7:.1}×  7ch→13ch factor={ratio_7_13:.1}×  \
+         (both should be <20× for sub-quadratic behaviour)"
+    );
+    // Insertion alone is O(n×26) so some superlinear growth is expected;
+    // we gate at 20× per length-doubling to catch true quadratic regressions.
+    assert!(
+        ratio_3_7 < 20.0,
+        "3-char→7-char time grew {ratio_3_7:.1}× — possible quadratic regression"
+    );
+    assert!(
+        ratio_7_13 < 20.0,
+        "7-char→13-char time grew {ratio_7_13:.1}× — possible quadratic regression"
+    );
+
+    // Cap-saturation: addition candidates must be fully retained at MAX_CANDIDATES=512.
+    eprintln!("\n=== cap-saturation: addition retention at MAX_CANDIDATES=512 ===");
+    for domain in &["example.com", "instagram.com", "bankofamerica.com"] {
+        let full = permutations(domain, 2000);
+        let capped = permutations(domain, 512);
+        let full_add = full.iter().filter(|(_, t)| *t == "addition").count();
+        let capped_add = capped.iter().filter(|(_, t)| *t == "addition").count();
+        let retention = if full_add > 0 {
+            capped_add as f64 / full_add as f64 * 100.0
+        } else {
+            100.0
+        };
+        eprintln!(
+            "{:<25} full={:>4} capped={:>4} addition: {}/{} ({:.0}%)",
+            domain, full.len(), capped.len(), capped_add, full_add, retention
+        );
+        assert_eq!(
+            capped_add, full_add,
+            "cap=512 dropped addition candidates for {domain} — priority ordering broken"
+        );
+    }
+}

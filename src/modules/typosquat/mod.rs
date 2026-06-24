@@ -97,9 +97,6 @@ const ATTACK_SUFFIXES: &[&str] = &[
     "store", "help", "support", "auth", "access", "signin",
 ];
 
-/// Vowel set for `vowel-swap` technique.
-const VOWELS: &[char] = &['a', 'e', 'i', 'o', 'u'];
-
 /// Compute entity confidence from the generating technique and resolution type.
 /// MX-only domains lose 0.05 — they are real phishing-prep signals but not yet
 /// confirmed as active sites.
@@ -289,6 +286,15 @@ pub(crate) fn permutations(domain: &str, cap: usize) -> Vec<(String, &'static st
     if label.is_empty() {
         return Vec::new();
     }
+    // All label characters are guaranteed ASCII (enforced by is_valid_label at
+    // output time), so we work with byte slices throughout — a Vec<u8> clone is
+    // 4× cheaper than Vec<char> for typical label lengths, and String::from_utf8
+    // consumes the Vec without a second copy (unlike collect::<String>()).
+    let bytes = label.as_bytes();
+    let n = bytes.len();
+
+    // `chars` is kept only for the homoglyph/keyboard lookup functions that
+    // take `char`.  It is never cloned; byte operations drive all construction.
     let chars: Vec<char> = label.chars().collect();
 
     // Accumulate (technique, label-string) pairs in priority order so that the
@@ -310,53 +316,56 @@ pub(crate) fn permutations(domain: &str, cap: usize) -> Vec<(String, &'static st
 
     // ── 2. Homoglyph — ASCII look-alike single-char substitution ─────────────
     for (i, &c) in chars.iter().enumerate() {
-        for &n in homoglyphs(c) {
-            let mut v = chars.clone();
-            v[i] = n;
-            push("homoglyph", v.into_iter().collect());
+        for &sub in homoglyphs(c) {
+            let mut b = bytes.to_vec();
+            b[i] = sub as u8; // sub is always ASCII
+            push("homoglyph", String::from_utf8(b).unwrap());
         }
     }
 
     // ── 3. Digraph — multi-char visual confusable substitution ────────────────
     // Contractions: two consecutive chars → one look-alike char.
-    for i in 0..chars.len().saturating_sub(1) {
-        let replacement: Option<char> = match (chars[i], chars[i + 1]) {
-            ('r', 'n') => Some('m'),
-            ('c', 'l') => Some('d'),
-            ('v', 'v') => Some('w'),
+    for i in 0..n.saturating_sub(1) {
+        let rep: Option<u8> = match (bytes[i], bytes[i + 1]) {
+            (b'r', b'n') => Some(b'm'),
+            (b'c', b'l') => Some(b'd'),
+            (b'v', b'v') => Some(b'w'),
             _ => None,
         };
-        if let Some(rep) = replacement {
-            let mut v: Vec<char> = chars[..i].to_vec();
-            v.push(rep);
-            v.extend_from_slice(&chars[i + 2..]);
-            push("digraph", v.into_iter().collect());
+        if let Some(rep_byte) = rep {
+            let mut b = Vec::with_capacity(n - 1);
+            b.extend_from_slice(&bytes[..i]);
+            b.push(rep_byte);
+            b.extend_from_slice(&bytes[i + 2..]);
+            push("digraph", String::from_utf8(b).unwrap());
         }
     }
     // Expansions: one char → two visually-similar chars (e.g. `m` → `rn`).
-    for (i, &c) in chars.iter().enumerate() {
-        let expansion: &[char] = match c {
-            'm' => &['r', 'n'],
-            'd' => &['c', 'l'],
-            'w' => &['v', 'v'],
-            _ => &[],
+    for i in 0..n {
+        let expansion: &[u8] = match bytes[i] {
+            b'm' => b"rn",
+            b'd' => b"cl",
+            b'w' => b"vv",
+            _ => b"",
         };
         if !expansion.is_empty() {
-            let mut v: Vec<char> = chars[..i].to_vec();
-            v.extend_from_slice(expansion);
-            v.extend_from_slice(&chars[i + 1..]);
-            push("digraph", v.into_iter().collect());
+            let mut b = Vec::with_capacity(n + 1);
+            b.extend_from_slice(&bytes[..i]);
+            b.extend_from_slice(expansion);
+            b.extend_from_slice(&bytes[i + 1..]);
+            push("digraph", String::from_utf8(b).unwrap());
         }
     }
 
     // ── 4. Vowel-swap — replace each vowel with every other vowel ─────────────
-    for (i, &c) in chars.iter().enumerate() {
-        if VOWELS.contains(&c) {
-            for &v_char in VOWELS {
-                if v_char != c {
-                    let mut v = chars.clone();
-                    v[i] = v_char;
-                    push("vowel-swap", v.into_iter().collect());
+    const VOWEL_BYTES: &[u8] = b"aeiou";
+    for i in 0..n {
+        if VOWEL_BYTES.contains(&bytes[i]) {
+            for &vb in VOWEL_BYTES {
+                if vb != bytes[i] {
+                    let mut b = bytes.to_vec();
+                    b[i] = vb;
+                    push("vowel-swap", String::from_utf8(b).unwrap());
                 }
             }
         }
@@ -364,84 +373,90 @@ pub(crate) fn permutations(domain: &str, cap: usize) -> Vec<(String, &'static st
 
     // ── 5. Keyboard — QWERTY-adjacent key replacement ─────────────────────────
     for (i, &c) in chars.iter().enumerate() {
-        for n in keyboard_neighbors(c).chars() {
-            let mut v = chars.clone();
-            v[i] = n;
-            push("keyboard", v.into_iter().collect());
+        for nb in keyboard_neighbors(c).bytes() {
+            let mut b = bytes.to_vec();
+            b[i] = nb;
+            push("keyboard", String::from_utf8(b).unwrap());
         }
     }
 
     // ── 6. Omission — drop one character ──────────────────────────────────────
-    for i in 0..chars.len() {
-        let mut v = chars.clone();
-        v.remove(i);
-        push("omission", v.into_iter().collect());
+    for i in 0..n {
+        let mut b = Vec::with_capacity(n - 1);
+        b.extend_from_slice(&bytes[..i]);
+        b.extend_from_slice(&bytes[i + 1..]);
+        push("omission", String::from_utf8(b).unwrap());
     }
 
     // ── 7. Transposition — swap two adjacent characters ───────────────────────
-    for i in 0..chars.len().saturating_sub(1) {
-        let mut v = chars.clone();
-        v.swap(i, i + 1);
-        push("transposition", v.into_iter().collect());
+    for i in 0..n.saturating_sub(1) {
+        let mut b = bytes.to_vec();
+        b.swap(i, i + 1);
+        push("transposition", String::from_utf8(b).unwrap());
     }
 
     // ── 8. Repetition — double one character ──────────────────────────────────
-    for i in 0..chars.len() {
-        let mut v = chars.clone();
-        v.insert(i, chars[i]);
-        push("repetition", v.into_iter().collect());
+    for i in 0..n {
+        let mut b = Vec::with_capacity(n + 1);
+        b.extend_from_slice(&bytes[..=i]); // bytes[..i] + bytes[i] (the repeated byte)
+        b.extend_from_slice(&bytes[i..]); // bytes[i..] (original tail incl. bytes[i])
+        push("repetition", String::from_utf8(b).unwrap());
     }
 
     // ── 9. Bitsquatting — flip one bit of each ASCII byte ────────────────────
-    for (i, &c) in chars.iter().enumerate() {
-        if !c.is_ascii_alphanumeric() {
+    for i in 0..n {
+        if !bytes[i].is_ascii_alphanumeric() {
             continue;
         }
         for bit in 0..7u8 {
-            let flipped = (c as u8) ^ (1 << bit);
+            let flipped = bytes[i] ^ (1 << bit);
             if flipped.is_ascii_lowercase() || flipped.is_ascii_digit() {
-                let mut v = chars.clone();
-                v[i] = flipped as char;
-                push("bitsquat", v.into_iter().collect());
+                let mut b = bytes.to_vec();
+                b[i] = flipped;
+                push("bitsquat", String::from_utf8(b).unwrap());
             }
         }
     }
 
     // ── 10. Hyphenation — insert a hyphen between adjacent characters ─────────
-    for i in 1..chars.len() {
-        let mut v = chars.clone();
-        v.insert(i, '-');
-        push("hyphenation", v.into_iter().collect());
+    for i in 1..n {
+        let mut b = Vec::with_capacity(n + 1);
+        b.extend_from_slice(&bytes[..i]);
+        b.push(b'-');
+        b.extend_from_slice(&bytes[i..]);
+        push("hyphenation", String::from_utf8(b).unwrap());
     }
 
     // ── 11. Hyphen-removal — strip hyphens from a hyphenated label ────────────
     // Each hyphen is removed individually; if more than one exists, the
     // all-removed form is also generated as a single variant.
-    let hyphen_positions: Vec<usize> = chars
+    let hyphen_positions: Vec<usize> = bytes
         .iter()
         .enumerate()
-        .filter(|&(_, c)| *c == '-')
+        .filter(|&(_, &b)| b == b'-')
         .map(|(i, _)| i)
         .collect();
     if !hyphen_positions.is_empty() {
         for &hi in &hyphen_positions {
-            let mut v = chars.clone();
-            v.remove(hi);
-            push("hyphen-removal", v.into_iter().collect());
+            let mut b = Vec::with_capacity(n - 1);
+            b.extend_from_slice(&bytes[..hi]);
+            b.extend_from_slice(&bytes[hi + 1..]);
+            push("hyphen-removal", String::from_utf8(b).unwrap());
         }
         if hyphen_positions.len() > 1 {
-            let all_removed: String = chars.iter().filter(|&&c| c != '-').collect();
-            push("hyphen-removal", all_removed);
+            let b: Vec<u8> = bytes.iter().copied().filter(|&x| x != b'-').collect();
+            push("hyphen-removal", String::from_utf8(b).unwrap());
         }
     }
 
     // ── 12. Plural — add or remove a trailing 's' ────────────────────────────
     {
-        let with_s: String = chars.iter().collect::<String>() + "s";
-        push("plural", with_s);
-        if chars.last() == Some(&'s') {
-            let without_s: String = chars[..chars.len() - 1].iter().collect();
-            push("plural", without_s);
+        push("plural", format!("{label}s"));
+        if bytes.last() == Some(&b's') {
+            push(
+                "plural",
+                String::from_utf8(bytes[..n - 1].to_vec()).unwrap(),
+            );
         }
     }
 
@@ -449,11 +464,13 @@ pub(crate) fn permutations(domain: &str, cap: usize) -> Vec<(String, &'static st
     // Lowest per-variant signal but catches `youutube`-style extra-char squats
     // not reachable by repetition alone.  Placed late so the cap favours
     // higher-value techniques.
-    for i in 0..=chars.len() {
-        for ins in 'a'..='z' {
-            let mut v = chars.clone();
-            v.insert(i, ins);
-            push("insertion", v.into_iter().collect());
+    for i in 0..=n {
+        for ins in b'a'..=b'z' {
+            let mut b = Vec::with_capacity(n + 1);
+            b.extend_from_slice(&bytes[..i]);
+            b.push(ins);
+            b.extend_from_slice(&bytes[i..]);
+            push("insertion", String::from_utf8(b).unwrap());
         }
     }
 
@@ -475,10 +492,10 @@ pub(crate) fn permutations(domain: &str, cap: usize) -> Vec<(String, &'static st
                 let (pb, hb) = hg_positions[b];
                 for &ca in ha {
                     for &cb in hb {
-                        let mut v = chars.clone();
-                        v[pa] = ca;
-                        v[pb] = cb;
-                        push("combo-homoglyph", v.into_iter().collect());
+                        let mut buf = bytes.to_vec();
+                        buf[pa] = ca as u8;
+                        buf[pb] = cb as u8;
+                        push("combo-homoglyph", String::from_utf8(buf).unwrap());
                     }
                 }
             }
