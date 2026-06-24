@@ -173,19 +173,25 @@ impl Module for EmailParse {
                     entity
                 }));
 
-                // firstname.lastname → Person entity (corporate emails)
+                // firstname.lastname → Person entity (corporate at 0.55, freemail at 0.45).
+                // Freemail usernames like ryne.manka@gmail.com still produce a Person
+                // candidate — the lower confidence and `freemail-inferred` tag signal
+                // that the inference is weaker and requires corroboration.
                 let parts: Vec<&str> = detagged.split(['.', '_']).collect();
                 if parts.len() == 2
                     && parts[0].len() >= 2
                     && parts[1].len() >= 2
                     && parts[0].chars().all(char::is_alphabetic)
                     && parts[1].chars().all(char::is_alphabetic)
-                    && is_corporate
                 {
+                    let person_conf = if is_corporate { 0.55 } else { 0.45 };
                     let name = format!("{} {}", capitalise(parts[0]), capitalise(parts[1]));
-                    let mut pe = Entity::new(EntityKind::Person, &name, 0.55, &ctx.scan_id);
+                    let mut pe = Entity::new(EntityKind::Person, &name, person_conf, &ctx.scan_id);
                     pe.tag("derived");
                     pe.tag("email-inferred");
+                    if !is_corporate {
+                        pe.tag("freemail-inferred");
+                    }
                     pe.add_evidence(
                         Evidence::new(SRC, format!("Name inferred from {}", target.value))
                             .with_attr("source_email", &target.value)
