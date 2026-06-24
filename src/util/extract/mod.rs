@@ -44,38 +44,18 @@ pub fn emails(text: &str) -> Vec<String> {
 /// Every plausibly-international phone number in `text`, normalised to `+<digits>`,
 /// de-duplicated with first-occurrence order preserved.
 ///
-/// Requires a leading `+` followed by a non-zero country digit and 7–15 total
-/// digits (E.164 range). Separators (spaces, hyphens, parentheses) are stripped.
+/// Requires a leading `+` followed by a non-zero country digit and 10–15 total
+/// digits (E.164 minimum; Niue +683 and Nauru +674 are the shortest real prefixes).
+/// Separators (spaces, hyphens, parentheses) are stripped.
 #[must_use]
 pub fn phones(text: &str) -> Vec<String> {
-    let bytes = text.as_bytes();
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'+' && i + 8 < bytes.len() && matches!(bytes[i + 1], b'1'..=b'9') {
-            let start = i;
-            i += 1;
-            let mut digits = 0u32;
-            while i < bytes.len() && matches!(bytes[i], b'0'..=b'9' | b'-' | b' ' | b'(' | b')') {
-                if bytes[i].is_ascii_digit() {
-                    digits += 1;
-                }
-                i += 1;
-            }
-            if (7..=15).contains(&digits) {
-                let cleaned: String = text[start..i]
-                    .chars()
-                    .filter(|c| c.is_ascii_digit() || *c == '+')
-                    .collect();
-                if seen.insert(cleaned.clone()) {
-                    out.push(cleaned);
-                }
-            }
-        } else {
-            i += 1;
+    crate::util::phone::scan_phones(text, usize::MAX, |p| {
+        if seen.insert(p.clone()) {
+            out.push(p);
         }
-    }
+    });
     out
 }
 
