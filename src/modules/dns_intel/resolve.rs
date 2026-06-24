@@ -192,6 +192,28 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                                 ));
                                 entities.push(de);
                             }
+                            crate::util::spf::Member::A(a_dom) => {
+                                let mut de =
+                                    Entity::new(EntityKind::Domain, a_dom, 0.65, &ctx.scan_id);
+                                de.tag("dns");
+                                de.tag("spf-a");
+                                de.add_evidence(Evidence::new(
+                                    SRC,
+                                    format!("SPF a: mechanism for {domain}"),
+                                ));
+                                entities.push(de);
+                            }
+                            crate::util::spf::Member::Mx(mx_dom) => {
+                                let mut de =
+                                    Entity::new(EntityKind::Domain, mx_dom, 0.65, &ctx.scan_id);
+                                de.tag("dns");
+                                de.tag("spf-mx");
+                                de.add_evidence(Evidence::new(
+                                    SRC,
+                                    format!("SPF mx: mechanism for {domain}"),
+                                ));
+                                entities.push(de);
+                            }
                         }
                     }
                 } else if b.len() >= 7 && b[..7].eq_ignore_ascii_case(b"v=dkim1") {

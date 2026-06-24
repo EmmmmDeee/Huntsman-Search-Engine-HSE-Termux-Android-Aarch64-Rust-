@@ -60,6 +60,32 @@ use super::{Member, is_spf, members};
     }
 
     #[test]
+    fn members_yields_a_and_mx_domain_mechanisms() {
+        let got: Vec<Member> = members(
+            "v=spf1 a:mail.example.com mx:relay.example.net a mx include:_spf.example.org -all",
+        )
+        .collect();
+        assert_eq!(
+            got,
+            vec![
+                Member::A("mail.example.com"),
+                Member::Mx("relay.example.net"),
+                // bare `a` and bare `mx` (no colon) are skipped — they reference the
+                // current domain's own A/MX records and add no new OSINT pivot
+                Member::Include("_spf.example.org"),
+            ]
+        );
+    }
+
+    #[test]
+    fn members_skips_a_mx_with_macros_or_dotless_targets() {
+        // Macro-bearing a:/mx: targets don't resolve to static domains.
+        let got: Vec<Member> =
+            members("v=spf1 a:%{d}.example.com mx:localhost a: mx: -all").collect();
+        assert!(got.is_empty(), "got: {got:?}");
+    }
+
+    #[test]
     fn members_yields_redirect_target_and_skips_macros() {
         let got: Vec<Member> =
             members("v=spf1 redirect=_spf.example.net include:%{i}._spf.macro.test").collect();

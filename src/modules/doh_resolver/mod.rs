@@ -385,6 +385,32 @@ fn records_for_type(
                                     out.push(e);
                                 }
                             }
+                            crate::util::spf::Member::A(a_dom) => {
+                                if seen.insert(format!("spfa:{a_dom}")) {
+                                    let mut e =
+                                        Entity::new(EntityKind::Domain, a_dom, 0.65, scan_id);
+                                    e.tag("dns");
+                                    e.tag("spf-a");
+                                    e.add_evidence(Evidence::new(
+                                        SRC,
+                                        format!("SPF a: mechanism for {domain}"),
+                                    ));
+                                    out.push(e);
+                                }
+                            }
+                            crate::util::spf::Member::Mx(mx_dom) => {
+                                if seen.insert(format!("spfmx:{mx_dom}")) {
+                                    let mut e =
+                                        Entity::new(EntityKind::Domain, mx_dom, 0.65, scan_id);
+                                    e.tag("dns");
+                                    e.tag("spf-mx");
+                                    e.add_evidence(Evidence::new(
+                                        SRC,
+                                        format!("SPF mx: mechanism for {domain}"),
+                                    ));
+                                    out.push(e);
+                                }
+                            }
                         }
                     }
                 } else if txt.trim_start().starts_with("v=DMARC1") {
