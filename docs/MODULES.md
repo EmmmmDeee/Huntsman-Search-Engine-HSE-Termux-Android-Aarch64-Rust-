@@ -88,6 +88,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `pwned_passwords` | email, username | free | no | 115 | — |
 | `leakix` | ip_address, domain | key_gated | no | 102 | — |
 | `hudsonrock` | email, username, domain | free | no | 130 | — |
+| `comb_search` | email, username, domain | free | no | 129 | email, password |
 
 ### threat (3)
 

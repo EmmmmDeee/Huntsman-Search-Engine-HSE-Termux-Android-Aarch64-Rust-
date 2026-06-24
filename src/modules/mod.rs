@@ -25,6 +25,7 @@ pub mod censys;
 pub mod cert_intel;
 pub mod chain_intel;
 pub mod cloud_storage;
+pub mod comb_search;
 pub mod contact_enrich;
 pub mod crates_io;
 pub mod criminal_ip;
@@ -237,6 +238,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(crate::core::classify_module::ClassifyModule),
         Arc::new(hibp::Hibp),
         Arc::new(hudsonrock::HudsonRock),
+        Arc::new(comb_search::CombSearch),
         Arc::new(xposed_or_not::XposedOrNot),
         Arc::new(osintcat::OsintCat),
         Arc::new(niamonx::NiamonX),
