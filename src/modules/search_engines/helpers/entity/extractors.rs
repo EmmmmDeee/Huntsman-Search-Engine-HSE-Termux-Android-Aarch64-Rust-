@@ -620,7 +620,7 @@ pub(in crate::modules::search_engines) fn extract_phones_from_text(text: &str) -
     let mut phones = Vec::new();
     let mut i = 0;
     while i < len {
-        if bytes[i] == b'+' && i + 10 < len && bytes[i + 1].is_ascii_digit() {
+        if bytes[i] == b'+' && i + 10 < len && matches!(bytes[i + 1], b'1'..=b'9') {
             let start = i;
             i += 1;
             let mut digits = 0u32;
@@ -659,4 +659,36 @@ pub(in crate::modules::search_engines) fn extract_phones_from_text(text: &str) -
         }
     }
     phones
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_phones_rejects_leading_zero_cc() {
+        // F2.3: country-code gate must reject +0... upfront, consistent with
+        // crawl_util and validate_phone_e164. Pre-fix this accepted +0123456789
+        // because is_ascii_digit() passes '0'; post-fix matches!(b'1'..=b'9').
+        let phones = extract_phones_from_text("call +0123456789 or +16502530000");
+        assert!(
+            !phones.iter().any(|p| p.starts_with("+0")),
+            "+0... must be rejected at extraction gate: {phones:?}"
+        );
+        assert!(
+            phones.iter().any(|p| p.starts_with("+1650")),
+            "valid US number must still be extracted: {phones:?}"
+        );
+    }
+
+    #[test]
+    fn extract_phones_is_utf8_safe() {
+        // F3.5: byte scan then string slice must not panic on multibyte input.
+        let input = "日本語 François +14155552671 résumé 𝔘";
+        let phones = extract_phones_from_text(input);
+        assert!(
+            phones.iter().any(|p| p == "+14155552671"),
+            "ASCII phone in multibyte text must be extracted: {phones:?}"
+        );
+    }
 }

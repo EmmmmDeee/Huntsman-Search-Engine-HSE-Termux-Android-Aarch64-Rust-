@@ -432,19 +432,25 @@ impl super::ScanEngine {
                         self.emit_excluded(cx.scan_id, &entity, "implausible_phone");
                         continue;
                     }
-                    // Tag entities whose evidence originates from a known
-                    // mega/platform or shared-infra domain as `platform-infra`
-                    // so callers can filter them from default output. Only
-                    // applies to entities that carry a `source_domain`
-                    // evidence attribute — direct-probe results (social_probe,
-                    // oathnet_pro, …) do not set this field and are exempt.
+                    // Tag entities as `platform-infra` only when EVERY
+                    // evidence record that carries a `source_domain` attribute
+                    // points to a mega/shared-infra domain. Mixed-provenance
+                    // entities — discovered from both a platform page AND a
+                    // subject-controlled domain — are NOT tagged, so they
+                    // remain in default output. Direct-probe results
+                    // (social_probe, oathnet_pro, …) never set `source_domain`
+                    // and are always exempt.
                     let mut entity = entity;
                     {
-                        let is_infra = entity.evidence.iter().any(|ev| {
-                            ev.attributes
-                                .get("source_domain")
-                                .is_some_and(|d| crate::core::scan::is_noncentral_domain(d))
-                        });
+                        let sourced: Vec<&str> = entity
+                            .evidence
+                            .iter()
+                            .filter_map(|ev| ev.attributes.get("source_domain").map(String::as_str))
+                            .collect();
+                        let is_infra = !sourced.is_empty()
+                            && sourced
+                                .iter()
+                                .all(|d| crate::core::scan::is_noncentral_domain(d));
                         if is_infra {
                             entity.tag("platform-infra");
                         }

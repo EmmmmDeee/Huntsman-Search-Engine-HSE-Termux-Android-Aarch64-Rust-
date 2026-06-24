@@ -475,18 +475,30 @@ pub(super) async fn probe_url(url: &str, capture_body: bool) -> (u16, String) {
         .await;
 
     match output {
-        Ok(o) if o.status.success() => {
+        Ok(o) => {
             let raw = String::from_utf8_lossy(&o.stdout);
-            if capture_body {
-                // Output is `<body>\n<http_code>` — split on the last newline.
-                if let Some(nl) = raw.rfind('\n') {
-                    let body = raw[..nl].to_string();
-                    let code: u16 = raw[nl + 1..].trim().parse().unwrap_or(0);
-                    return (code, body);
+            // curl exit code 63 = file exceeded --max-filesize; the body was
+            // truncated but the HTTP status code is still written to stdout by
+            // -w "%{http_code}". Treating exit 63 as a hard failure (returning
+            // status 0) would suppress real profiles whose pages are >8 KB.
+            // Instead, accept the truncated body — it is enough for
+            // negative-pattern matching — while only treating true network
+            // failures (no output, non-63 curl error) as status 0.
+            let is_truncated = o.status.code() == Some(63);
+            if o.status.success() || is_truncated {
+                if capture_body {
+                    // Output is `<body>\n<http_code>` — split on the last newline.
+                    if let Some(nl) = raw.rfind('\n') {
+                        let body = raw[..nl].to_string();
+                        let code: u16 = raw[nl + 1..].trim().parse().unwrap_or(0);
+                        return (code, body);
+                    }
                 }
+                let code: u16 = raw.trim().parse().unwrap_or(0);
+                (code, String::new())
+            } else {
+                (0, String::new())
             }
-            let code: u16 = raw.trim().parse().unwrap_or(0);
-            (code, String::new())
         }
         _ => (0, String::new()),
     }

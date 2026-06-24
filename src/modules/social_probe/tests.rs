@@ -1,6 +1,42 @@
 use super::*;
 
 #[test]
+fn high_risk_platforms_have_negative_patterns_and_standard_platforms_do_not() {
+    // F2.4 regression guard: the 6 high-risk platforms must have patterns so the
+    // body-capture path fires for them; standard platforms must keep &[] so the
+    // fast (-o /dev/null) path is preserved and no overhead is introduced.
+    let high_risk = [
+        "livejasmin",
+        "imlive",
+        "mydirtyhobby",
+        "sextpanther",
+        "stripchat",
+        "loyalfans",
+    ];
+    let standard = ["github", "reddit", "twitter", "twitch", "steam"];
+    for name in high_risk {
+        let p = USERNAME_PLATFORMS
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| panic!("{name} missing from USERNAME_PLATFORMS"));
+        assert!(
+            !p.negative_patterns.is_empty(),
+            "{name} must have at least one negative pattern (body capture enabled)"
+        );
+    }
+    for name in standard {
+        let p = USERNAME_PLATFORMS
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| panic!("{name} missing from USERNAME_PLATFORMS"));
+        assert!(
+            p.negative_patterns.is_empty(),
+            "{name} must have no negative patterns (fast path, no body capture)"
+        );
+    }
+}
+
+#[test]
 fn negative_patterns_field_compiles_and_defaults_empty() {
     // Every platform in the standard set must have the field; for most it is &[].
     for p in USERNAME_PLATFORMS {
