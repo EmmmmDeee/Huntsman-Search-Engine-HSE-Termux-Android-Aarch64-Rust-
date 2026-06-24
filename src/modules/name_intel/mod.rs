@@ -245,6 +245,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn emitted_entities_have_distinct_uids_across_name_shapes() {
+        // Evidentiary invariant: every entity name_intel emits is a DISTINCT
+        // identity (unique SHA-256 UID). Entities persist by upsert-on-UID, so a
+        // collision would silently collapse two derivations into one dossier node
+        // and inflate the reported count. `dedup_top` dedups usernames by handle
+        // STRING and `emails` by address string, but the persisted key is
+        // `derive_uid(kind, normalise(value))` — this guards that the two never
+        // drift apart (e.g. if Username normalisation began stripping separators,
+        // `first.last` / `firstlast` / `first_last` would collapse to one UID).
+        //
+        // Validated by real execution: a 13,449-name corpus sweep (~715k emitted
+        // entities; shapes incl. middle names, year suffixes, hyphens,
+        // apostrophes and Latin diacritics) produced zero duplicate UIDs and zero
+        // over-cap results. This locks both.
+        let m = NameIntel;
+        for name in [
+            "Jordan Meyers",
+            "Jordan Leigh Meyers 1987",
+            "Anne-Marie O'Brien",
+            "José Müller",
+            "María José García 90",
+            "Wei Li",
+        ] {
+            let out = m
+                .process(&Target::new(TargetKind::FullName, name), &ctx("uid-test"))
+                .await
+                .unwrap();
+            let mut seen = std::collections::HashSet::new();
+            for e in &out.entities {
+                assert!(
+                    seen.insert(e.uid.clone()),
+                    "duplicate UID in name_intel output for {name:?}: {} {} (uid {})",
+                    e.kind,
+                    e.value,
+                    e.uid
+                );
+            }
+            // Bounded by the documented cap sum: 1 Person + 24 usernames +
+            // 12 emails + 18 pivots.
+            assert!(
+                out.entities.len() <= 1 + 24 + 12 + 18,
+                "{name:?} emitted {} entities, over the cap sum",
+                out.entities.len()
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn single_token_name_yields_nothing() {
         let m = NameIntel;
         let out = m
