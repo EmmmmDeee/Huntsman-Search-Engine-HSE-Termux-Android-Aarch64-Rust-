@@ -40,6 +40,7 @@
 
 use std::collections::HashSet;
 
+mod breaker;
 mod build;
 mod engines;
 mod extract;
@@ -231,7 +232,15 @@ impl Module for SearchEngines {
         // Track engines that failed on the first query so we skip them
         // on subsequent queries — avoids burning the entire timeout
         // budget on engines that are down/blocked for this session.
-        let mut dead_engines: HashSet<&str> = HashSet::new();
+        //
+        // Cross-dispatch (scan-scoped) memory: engines proven dead earlier in
+        // THIS scan (failed first contact, never produced) are already muted, so
+        // a multi-target scan stops re-probing — and re-timing-out on — them
+        // instead of paying their per-request timeout once per target. Seeding
+        // `dead_engines` with that set also propagates the mute to the secondary
+        // pivot + recycler passes, which already honour `dead_engines`.
+        let scan_muted = breaker::muted_engines(&ctx.scan_id);
+        let mut dead_engines: HashSet<&str> = scan_muted.iter().copied().collect();
 
         // ── Primary pass: run all queries against live engines ─────
         for (qi, query) in queries.iter().enumerate() {
@@ -250,6 +259,12 @@ impl Module for SearchEngines {
                 if ctx.cancel.is_cancelled() {
                     break;
                 }
+                // Skip engines muted earlier in THIS scan (cross-dispatch) at
+                // every query, and engines that died earlier in THIS dispatch
+                // for the follow-up queries (within-dispatch, as before).
+                if scan_muted.contains(engine.name) {
+                    continue;
+                }
                 if qi > 0 && dead_engines.contains(engine.name) {
                     continue;
                 }
@@ -259,9 +274,12 @@ impl Module for SearchEngines {
                     break;
                 }
                 let before = all_results.len();
-                if let Some(mut results) =
-                    fetch_and_parse(&url, engine, query, post_body.as_deref()).await
-                {
+                let fetched = fetch_and_parse(&url, engine, query, post_body.as_deref()).await;
+                // Feed the scan-scoped breaker: any production protects the engine
+                // for the rest of the scan; a first-contact (qi == 0) failure with
+                // no production counts toward muting it on later dispatches.
+                breaker::record(&ctx.scan_id, engine.name, fetched.is_some(), qi == 0);
+                if let Some(mut results) = fetched {
                     let got_results = !results.is_empty();
                     all_results.append(&mut results);
                     if all_results.len() >= MAX_ACCUMULATED_RESULTS {
