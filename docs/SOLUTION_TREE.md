@@ -1417,3 +1417,30 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   hit. No regressions: doh_resolver=30, typosquat=104, hackertarget=76 (all stable).
   **New baseline: cloud_storage=26** (+189% vs cycle-28.1 baseline of 9).
   Paired: `PROBLEM_TREE` P-CS-A/B/C/D cycle 29 — same commit.
+
+- **2026-06-24** — **Cycle 30 (P→S): SOL-MODULE-DNS-INTEL — `dns_intel` world-class expansion: 146 subdomain labels, 20 verification vendors.**
+  **Evidence base:** 29-entity stable baseline (dns_intel=29 across cycle 28–29 runs). Gap analysis: P-DNS-A/B.
+  **Solutions delivered:**
+  - *SOL-DNS.A — subdomain dictionary:* SUBDOMAINS 94→146 (+52). New groups: Modern API/realtime (`graphql`,
+    `webhooks`, `webhook`, `ws`, `socket`); Large-org/SaaS (`gist`, `pages`, `raw`, `education`, `enterprise`,
+    `classroom`, `lab`, `copilot`, `avatars`, `objects`, `alive`, `collector`, `resources`, `developer`,
+    `developers`, `explore`, `marketplace`); Customer account (`account`, `accounts`, `billing`, `payment`,
+    `checkout`, `dashboard`, `console`); Build/deploy (`build`, `deploy`, `release`, `packages`, `npm`, `charts`,
+    `artifacts`, `artifact`); Health probes (`health`, `healthz`, `ping`, `ready`); Security (`vault`, `security`,
+    `trust`); Data (`data`, `analytics`); Regional (`us`, `eu`, `ap`, `us1`, `eu1`, `ap1`). All 52 new entries
+    pass `dictionary_is_unique_and_lowercase` (lowercase letters+digits only, no hyphens).
+  - *SOL-DNS.B — verification vendors:* VERIFICATION_VENDORS 14→20 (+6): `hubspot-developer-verification=`→hubspot,
+    `salesforce-authorization-verification=`→salesforce, `loaderio=`→loaderio, `twilio-domain-verification=`→twilio,
+    `yandex-verification:`→yandex, `shopify-domain-verification=`→shopify. `ms=` kept last; shadowing test passes.
+  - *SOL-DNS.C — doc accuracy:* Module doc "~67-label" → "146-label"; constants.rs header updated.
+  3 new tests: `dictionary_size_is_146`, `dictionary_covers_modern_infrastructure_labels`,
+  `verification_vendor_detects_new_vendors`.
+  Gate green: fmt/clippy/doc clean, **3,162 tests** (+3 vs cycle 29), 0 failures.
+  **Scan validation (runs 1 & 2, consistent):** `dns_intel=41` — up from 29, **+41%**. Confirmed new hits:
+  `gist.github.com`, `pages.github.com`, `education.github.com`, `enterprise.github.com`, `avatars.github.com`,
+  `objects.github.com`, `alive.github.com`, `collector.github.com`, `resources.github.com` and others.
+  No regressions: cloud_storage=26, doh_resolver=30, hackertarget=76, typosquat=104.
+  **New baseline: dns_intel=41**.
+  **S→P gap from this cycle:** rdap_domain nameserver glue records (`ipAddresses` field in RDAP JSON) not currently
+  extracted — potential cycle 31 target (P-RDAP-B). Logged for next gap analysis pass.
+  Paired: `PROBLEM_TREE` P-DNS-A/B cycle 30 — same commit. SHA `98031ea`.

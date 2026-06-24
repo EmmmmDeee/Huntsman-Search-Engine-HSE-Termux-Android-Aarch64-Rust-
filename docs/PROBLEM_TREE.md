@@ -2022,3 +2022,27 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   (no exposed containers — correct). New suffixes -prod/-staging/-static/-logs/-images/
   -uploads/-test/-archive/-files all produced hits. **New baseline: cloud_storage=26**.
   **Paired:** `SOLUTION_TREE` SOL-MODULE-CLOUD-STORAGE cycle 29 + §4/§5 — same commit.
+
+- **2026-06-24** — **Cycle 30 (S→P): `dns_intel` world-class expansion — subdomain dictionary 94→146, verification vendors 14→20.**
+  **Source:** gap analysis after cycle 29. Candidates examined: rdap_domain (9 entities — correct for github.com,
+  no structural gap); crtsh (0/121 inconsistency — environment-side rate limiting, not code-fixable); dns_intel
+  (29 entities — two code-fixable gaps):
+  - **(P-DNS-A)** SUBDOMAINS dictionary at 94 labels (doc comment stale at "~67-label"). 52 high-value modern
+    infrastructure labels absent: `graphql`, `webhooks`, `webhook`, `ws`, `socket`, `gist`, `pages`, `raw`,
+    `education`, `enterprise`, `classroom`, `lab`, `copilot`, `avatars`, `objects`, `alive`, `collector`,
+    `resources`, `developer`, `developers`, `explore`, `marketplace`, `account`, `accounts`, `billing`, `payment`,
+    `checkout`, `dashboard`, `console`, `build`, `deploy`, `release`, `packages`, `npm`, `charts`, `artifacts`,
+    `artifact`, `health`, `healthz`, `ping`, `ready`, `vault`, `security`, `trust`, `data`, `analytics`, `us`,
+    `eu`, `ap`, `us1`, `eu1`, `ap1`.
+  - **(P-DNS-B)** VERIFICATION_VENDORS at 14 entries; 6 widely-deployed SaaS platforms absent: HubSpot,
+    Salesforce, Loader.io, Twilio, Yandex, Shopify.
+  **Fix:** `src/modules/dns_intel/constants.rs` SUBDOMAINS 94→146 (+52 in 9 new groups); doc comment corrected.
+  `src/modules/dns_intel/helpers.rs` VERIFICATION_VENDORS 14→20 (+6; `ms=` kept last). `src/modules/dns_intel/mod.rs`
+  doc comment "~67-label" → "146-label". 3 new unit tests: `dictionary_size_is_146`,
+  `dictionary_covers_modern_infrastructure_labels`, `verification_vendor_detects_new_vendors`.
+  Gate green: fmt/clippy/doc clean, **3,162 lib tests** (+3 vs cycle 29), 0 failures.
+  **Validated (runs 1 & 2, consistent):** `dns_intel=41` — up from 29, **+12 entities (+41%)**.
+  New subdomain hits: gist, pages, education, enterprise, avatars, objects, alive, collector, resources and others.
+  No regressions: cloud_storage=26, doh_resolver=30, hackertarget=76, typosquat=104 (all stable).
+  **New baseline: dns_intel=41** (+41% vs cycle-29 baseline of 29).
+  **Paired:** `SOLUTION_TREE` SOL-MODULE-DNS-INTEL cycle 30 + §4/§5 — same commit. SHA `98031ea`.
