@@ -2017,5 +2017,8 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `_contains_new_suffixes`, `_do_spaces_url_format`, `_wasabi_url_format`,
   `is_exposed_gcs`, `is_exposed_digitalocean_spaces`, `is_exposed_wasabi`.
   Gate green: fmt/clippy/doc clean, **3,159 lib tests** (+7 vs cycle 28.1), 0 failures.
-  Validation scan pending. Expected: ≥9 from recall + new candidate hits across 80 probes.
+  **Validated (runs 1 & 2, consistent):** `cloud_storage=26` — up from 9, +189%.
+  AWS S3: 13 hits; GCS: 9 hits; Wasabi: 3 hits (new provider); DO Spaces/Azure: 0
+  (no exposed containers — correct). New suffixes -prod/-staging/-static/-logs/-images/
+  -uploads/-test/-archive/-files all produced hits. **New baseline: cloud_storage=26**.
   **Paired:** `SOLUTION_TREE` SOL-MODULE-CLOUD-STORAGE cycle 29 + §4/§5 — same commit.

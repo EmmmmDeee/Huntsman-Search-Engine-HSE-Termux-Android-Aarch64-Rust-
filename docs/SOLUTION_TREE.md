@@ -1407,5 +1407,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `generate_candidates_do_spaces_url_format`, `generate_candidates_wasabi_url_format`,
   `is_exposed_gcs`, `is_exposed_digitalocean_spaces`, `is_exposed_wasabi`.
   Gate green: fmt/clippy/doc clean, **3,159 tests** (+7 vs cycle 28.1), 0 failures.
-  Validation scan pending (release binary building). Paired: `PROBLEM_TREE` P-CS-A/B/C/D
-  cycle 29 — same commit.
+  **Scan validation (runs 1 & 2, consistent):** `cloud_storage=26` — up from 9
+  (pre-cycle-29 baseline), +189%. Provider breakdown: AWS S3: 13 hits
+  (github{,-backup,-assets,-data,-dev,-prod,-staging,-logs,-images,-uploads,-test,
+  -archive,-files}), GCS: 9 hits (github{,-public,-data,-backup,-logs,-images,-test,
+  -static,-archive}), Wasabi: 3 hits (github{,-backup,-files}) — new provider confirmed.
+  Azure Blob/DigitalOcean Spaces: 0 hits (no exposed containers — correct null result).
+  New suffixes -prod/-staging/-static/-logs/-images/-uploads/-test/-archive/-files all
+  hit. No regressions: doh_resolver=30, typosquat=104, hackertarget=76 (all stable).
+  **New baseline: cloud_storage=26** (+189% vs cycle-28.1 baseline of 9).
+  Paired: `PROBLEM_TREE` P-CS-A/B/C/D cycle 29 — same commit.
