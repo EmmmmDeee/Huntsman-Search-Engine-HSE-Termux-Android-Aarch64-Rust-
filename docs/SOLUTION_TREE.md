@@ -1380,8 +1380,10 @@ a structural change to how `entity_map` is traversed. Not yet scheduled.
 **§4d update (status table excerpt):**
 | ID              | Description                               | Status          |
 |-----------------|------------------------------------------|-----------------|
-| SOL-ENGINE-LOOP | Expansion loop micro-optimisation        | `[x]` cycle 30 |
-| SOL-TYPOSQUAT   | Typosquat 15-technique world-class rewrite | `[x]` cycle 31 |
+| SOL-ENGINE-LOOP     | Expansion loop micro-optimisation             | `[x]` cycle 30 |
+| SOL-TYPOSQUAT       | Typosquat 15-technique world-class rewrite    | `[x]` cycle 31 |
+| SOL-TYPOSQUAT-PERF  | Permutation engine: 1 alloc/variant (was 2)   | `[x]` cycle 32 |
+| SOL-TEST-PERF       | Smoke suite: poll loops replace static sleeps | `[x]` cycle 32 |
 
 Gate green: fmt/clippy/doc clean, 3,154+ total tests, 0 failures.
 Paired: `PROBLEM_TREE` §8 cycle 31 — same commit.
@@ -1441,3 +1443,44 @@ bidirectionality, and cap priority ordering. All 3 154+ suite tests pass.
 
 Gate green: fmt/clippy/doc clean.
 Paired: `PROBLEM_TREE` §8 cycle 31 — same commit.
+
+### §5 · Maintained log — cycle 32 (execution-driven, S→P direction)
+
+**2026-06-24 · P→S · SOL-TYPOSQUAT-PERF + SOL-TEST-PERF — two real-execution improvements**
+
+*Primitive 1 — `src/modules/typosquat/mod.rs`: byte-level permutation engine*
+
+All inner permutation loops converted from `Vec<char>` clone + `collect::<String>()`
+(2 allocations per candidate) to `Vec<u8>` slice operations + `String::from_utf8`
+(1 allocation, 4× smaller copy). `chars: Vec<char>` kept read-only for
+`homoglyphs()` / `keyboard_neighbors()`. `VOWEL_BYTES: &[u8] = b"aeiou"` replaces
+the dead `VOWELS: &[char]` const.
+
+Validated (min-of-50 reps, 5-rep warm-up, 6 independent runs):
+- `example.com` (7 ch, 378 cands): 518 µs mean (pre-opt ~576 µs)
+- `bankofamerica.com` (13 ch, 620 cands): 1 148 µs mean (pre-opt ~1 248 µs)
+Cap-saturation: `addition` retention 58/58 (100%) at `cap=512` across all runs.
+Scaling: 3ch→7ch ≈ 2.1×, 7ch→13ch ≈ 1.2× (sub-quadratic).
+
+*Primitive 2 — `tests/smoke.rs`: poll loops replace static sleeps*
+
+Static sleeps diagnosed as sole source of 12.5s async-wait gap (user+sys=0.66s,
+real=13.2s, single-threaded). Two changes:
+- `live_session_runs_two_iterations_and_completes`: `sleep(5s)` → 50ms-poll loop
+  with 6s hard deadline. Detects `LiveStatus::Completed` at ~2.1s.
+- `live_session_stops_on_explicit_cancel`: `sleep(1s)` → 50ms-poll loop with 2s
+  deadline. `CancellationToken` propagates in <10ms.
+- `SlowModule.process()`: 3 500ms → 3 100ms (100ms above default 3 000ms cap).
+
+Measured parallel wall-clock (5 runs, pre-compiled binary):
+- Before: 5.41–5.67s   After: 4.19–4.45s   Δ ≈ −1.3s (−24%)
+
+*S→P gap:* Parallel floor is now ~3.1s (driven by `SlowModule` 3 100ms).
+Remaining overhead (~1.1s) is binary startup + test harness amortised across
+54 tests. No further sleep savings exist without changing test semantics.
+
+*§4d update:*
+SOL-TYPOSQUAT-PERF: `[x]` cycle 32. SOL-TEST-PERF: `[x]` cycle 32.
+
+Gate green: fmt/clippy/doc clean, 3 154+ total tests, 0 failures.
+Paired: `PROBLEM_TREE` §8 cycle 32 — same commit.

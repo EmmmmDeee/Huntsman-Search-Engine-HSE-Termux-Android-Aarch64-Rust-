@@ -2109,3 +2109,36 @@ under the candidate cap so highest-signal squats are never crowded out.
 
 Gate green: fmt/clippy/doc clean, 3,154+ total tests, 0 failures.
 **Paired:** `SOLUTION_TREE` §5 cycle 31 — same commit.
+
+### §8 · Maintained log — cycle 32 (execution-driven, P→S direction)
+
+**2026-06-24 · P→S · Two real-execution performance signals converted to improvements**
+
+*Problem 1 (allocation pressure in typosquat permutation hot-path):*
+The `permutations()` inner loops used `chars.clone()` (a full `Vec<char>` copy per
+candidate) followed by `v.into_iter().collect::<String>()` — two heap allocations
+per variant. With 500–620 candidates per domain, this is 1 000–1 240 allocations
+per `permutations()` call. Identified as the principal allocation hot-path
+through bench_permutations_scaling (min-of-50 reps, 6 independent runs).
+
+*Problem 2 (test suite burns CPU wall time on unconditional sleeps):*
+Two smoke tests hard-coded static sleeps far above the minimum needed:
+- `live_session_runs_two_iterations_and_completes`: waited 5s for 2×1s iterations
+  to complete. The underlying async event (LiveStatus::Completed) fires at ~2.1s.
+- `live_session_stops_on_explicit_cancel`: waited 1s for CancellationToken to
+  propagate. Real propagation latency is <10ms.
+Confirmed by real execution: `user+sys = 0.66s` vs `real = 13.2s` in
+single-threaded mode — the 12.5s gap is pure async sleep, not computation.
+Parallel wall-clock was 5.4–5.7s with theoretical minimum (driven by
+`SlowModule` 3.5s sleep) of ~3.5s — 2s of headroom was recoverable.
+
+*Solutions delivered (see `SOLUTION_TREE` §5 cycle 32):*
+1. All permutation inner loops converted to `Vec<u8>` slice operations +
+   `String::from_utf8` — one allocation per variant (saves one clone + one
+   `collect::<String>()` allocation per candidate, 4× smaller copy).
+2. Static sleeps replaced with 50ms poll loops and hard-deadline `assert!`.
+   `SlowModule` sleep tightened 3 500ms → 3 100ms (still 100ms above the 3 000ms
+   engine default). Parallel wall-clock: 5.4–5.7s → 4.19–4.45s (−24%).
+
+Gate green: fmt/clippy/doc clean, 3 154+ total tests, 0 failures.
+**Paired:** `SOLUTION_TREE` §5 cycle 32 — same commit.

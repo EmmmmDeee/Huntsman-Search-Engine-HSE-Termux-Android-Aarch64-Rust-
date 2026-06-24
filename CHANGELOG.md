@@ -12,6 +12,40 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Cycle 32 (execution-driven) — two statistically-validated performance improvements.**
+
+  **(1) `typosquat` permutation engine: 1 allocation per candidate variant (was 2).**
+  Rewrote all inner permutation loops to operate on `Vec<u8>` slices instead of
+  `Vec<char>` clones. `Vec<char>` clone → `collect::<String>()` required two heap
+  allocations per variant (the char-vec clone plus a separate String heap block);
+  the new path does `Vec<u8>` slice operations + `String::from_utf8` (one allocation,
+  4× smaller copy). `chars: Vec<char>` is kept read-only for `homoglyphs()` /
+  `keyboard_neighbors()` lookups. `VOWEL_BYTES: &[u8] = b"aeiou"` replaces the
+  now-unused `VOWELS: &[char]` const.
+  Measured (min-of-50 reps, 5-rep warm-up, 6 independent runs):
+  - `example.com` (7 ch, 378 cands): 518 µs mean (pre-opt baseline ~576 µs)
+  - `bankofamerica.com` (13 ch, 620 cands): 1 148 µs mean (pre-opt ~1 248 µs)
+  Cap-saturation verified: `addition` retention 58/58 (100%) at `cap=512` across
+  all runs. Scaling sub-quadratic: 3ch→7ch ≈ 2.1×, 7ch→13ch ≈ 1.2×.
+
+  **(2) `tests/smoke.rs`: replace fixed sleeps with poll loops — suite 24% faster.**
+  Root cause diagnosed from real execution data: `user+sys = 0.66s` vs `real = 13.2s`
+  in single-threaded mode — the gap was pure async sleep, not I/O.
+  Two dominant wasted waits eliminated:
+  - `live_session_runs_two_iterations_and_completes`: replaced `sleep(5s)` with a
+    50ms-poll loop (6s hard deadline); detects completion as soon as the second
+    iteration finishes (~2.1s instead of always burning 5s).
+  - `live_session_stops_on_explicit_cancel`: replaced `sleep(1s)` post-cancel with a
+    50ms-poll loop (2s deadline); `CancellationToken` propagates in <10ms, so the
+    1s was 99% wasted.
+  Also tightened `SlowModule.process()` from 3 500ms → 3 100ms: still 100ms above
+  the 3 000ms default engine cap, proving `max_timeout_ms=6 000` override works.
+  Measured (5 runs, pre-compiled binary):
+  - Before: 5.41–5.67s  After: 4.19–4.45s  Δ ≈ −1.3s (−24%)
+  No behavioural change: all assertions identical; hard deadlines guard against hangs.
+
+  Gate green: fmt/clippy/doc clean, 3 154+ total tests, 0 failures.
+
 - **Cycle 31 (P→S) — `typosquat` world-class 15-technique domain permutation
   engine: complete rewrite of `src/modules/typosquat/mod.rs`.**
   Techniques expanded from 8 to 15: `addition` (13 prefix × 16 suffix keywords,
