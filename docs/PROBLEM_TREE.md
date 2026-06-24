@@ -1994,4 +1994,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `caa-issuer` Domain entities (0.70, PROBABLE, source=`doh_resolver`). Exactly +4
   as predicted. No regressions across all other modules. New baseline: **doh_resolver=30**
   (+30% vs cycle-27 baseline of 23). **Paired:** `SOLUTION_TREE` SOL-MODULE-DOH cycle
-  28.1 + §4/§5 — same commit. SHA `df00547` (code) + tree update pending push.
+  28.1 + §4/§5 — same commit. SHA `df00547`.
+- **2026-06-24** — **Cycle 29 (S→P): `cloud_storage` world-class rewrite — 5 providers,
+  16 suffixes, concurrent JoinSet probing, send_tagged fix.**
+  **Source:** gap analysis on 9-entity stable baseline (cycle 28.1 scans). Gaps:
+  - **(P-CS-A)** Only 3 providers (AWS S3, Azure Blob, GCS); DigitalOcean Spaces and
+    Wasabi entirely absent — both common in smaller-org deployments.
+  - **(P-CS-B)** Only 6 name suffixes (blank/-backup/-assets/-data/-public/-dev); 10+
+    high-value patterns absent: -prod/-staging/-static/-media/-logs/-images/-uploads/
+    -test/-archive/-files — all found routinely in real breach reports.
+  - **(P-CS-C)** Sequential probing in `for` loop: 18 probes × 3s = 54s worst-case;
+    timeout was 15s, effectively limiting coverage under load.
+  - **(P-CS-D)** `probe_url` called `http.head(url).send()` bypassing `send_tagged(SRC)` —
+    inconsistent with every other module, breaks proxy tagging.
+  **Fix:** complete rewrite `src/modules/cloud_storage/mod.rs` + new `tests.rs`.
+  SUFFIXES expanded to 16 entries; 5 providers (+ DigitalOcean Spaces nyc3, + Wasabi
+  us-east-1); `generate_bucket_names` → `generate_bucket_candidates` returns 80 triples
+  (16×5); `MAX_PROBES` removed — all candidates spawned via `JoinSet`; `probe_url` now
+  uses `send_tagged(SRC)`; `is_exposed` extended for DO Spaces/Wasabi (both 200|403);
+  `max_timeout_ms` raised 15s → 20s. 7 new unit tests (+7 vs 6 prior):
+  `generate_candidates_covers_all_suffixes_and_providers`, `_contains_all_providers`,
+  `_contains_new_suffixes`, `_do_spaces_url_format`, `_wasabi_url_format`,
+  `is_exposed_gcs`, `is_exposed_digitalocean_spaces`, `is_exposed_wasabi`.
+  Gate green: fmt/clippy/doc clean, **3,159 lib tests** (+7 vs cycle 28.1), 0 failures.
+  Validation scan pending. Expected: ≥9 from recall + new candidate hits across 80 probes.
+  **Paired:** `SOLUTION_TREE` SOL-MODULE-CLOUD-STORAGE cycle 29 + §4/§5 — same commit.

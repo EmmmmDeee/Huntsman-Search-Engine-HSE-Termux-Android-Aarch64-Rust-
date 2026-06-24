@@ -1,10 +1,10 @@
 //! Cloud storage exposure scanning — check for publicly accessible
-//! S3 buckets, Azure Blob containers, and GCS buckets derived from
-//! domain/organisation names.
+//! S3 buckets, Azure Blob containers, GCS buckets, DigitalOcean Spaces,
+//! and Wasabi buckets derived from domain/organisation names.
 //!
 //! Generates candidate bucket names from the target domain or org name
-//! and probes each with a HEAD request. Tags exposed storage as
-//! vulnerable. No API key required.
+//! (16 suffix variants × 5 providers = 80 candidates) and probes them
+//! concurrently. Tags exposed storage as vulnerable.  No API key required.
 
 use async_trait::async_trait;
 
@@ -14,9 +14,20 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "cloud_storage";
-const MAX_PROBES: usize = 18;
+
+/// Name-variant suffixes probed for every provider.
+///
+/// Covers the most common real-world bucket naming conventions: bare name,
+/// environment qualifiers (prod/staging/dev/test), content-type qualifiers
+/// (assets/static/media/images/uploads/files), and operational qualifiers
+/// (backup/data/logs/archive).
+const SUFFIXES: &[&str] = &[
+    "", "-backup", "-assets", "-data", "-public", "-dev", "-prod", "-staging", "-static", "-media",
+    "-logs", "-images", "-uploads", "-test", "-archive", "-files",
+];
 
 pub struct CloudStorage;
 
@@ -26,13 +37,13 @@ impl Module for CloudStorage {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Probe for publicly exposed S3/Azure/GCS buckets derived from domain names"
+        "Probe for publicly exposed S3/Azure/GCS/DO-Spaces/Wasabi buckets derived from domain names"
     }
     fn priority(&self) -> u8 {
         25
     }
     fn max_timeout_ms(&self) -> u64 {
-        15_000
+        20_000
     }
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain | TargetKind::Organisation)
@@ -54,16 +65,31 @@ impl Module for CloudStorage {
             return Ok(result);
         }
 
-        let candidates = generate_bucket_names(&base);
+        let candidates = generate_bucket_candidates(&base);
 
-        for (url, provider, bucket_name) in candidates.iter().take(MAX_PROBES) {
+        // Spawn all probes concurrently — wall-clock ≈ max(individual latencies).
+        let mut set: tokio::task::JoinSet<(String, &'static str, String, Option<u16>)> =
+            tokio::task::JoinSet::new();
+        for (url, provider, bucket_name) in candidates {
             if ctx.cancel.is_cancelled() {
                 break;
             }
-            if let Some(status) = probe_url(&ctx.http, url).await
+            let http = ctx.http.clone();
+            set.spawn(async move {
+                let status = probe_url(&http, &url).await;
+                (url, provider, bucket_name, status)
+            });
+        }
+
+        while let Some(join_result) = set.join_next().await {
+            if ctx.cancel.is_cancelled() {
+                set.abort_all();
+                break;
+            }
+            if let Ok((url, provider, bucket_name, Some(status))) = join_result
                 && is_exposed(status, provider)
             {
-                let mut e = Entity::new(EntityKind::Url, url, 0.80, &ctx.scan_id);
+                let mut e = Entity::new(EntityKind::Url, &url, 0.80, &ctx.scan_id);
                 e.tag("vulnerable");
                 e.tag("cloud-storage");
                 e.tag(format!("provider:{provider}"));
@@ -72,8 +98,8 @@ impl Module for CloudStorage {
                         SRC,
                         format!("{provider} bucket '{bucket_name}' is publicly accessible"),
                     )
-                    .with_attr("provider", *provider)
-                    .with_attr("bucket", bucket_name)
+                    .with_attr("provider", provider)
+                    .with_attr("bucket", &bucket_name)
                     .with_attr("http_status", status.to_string()),
                 );
                 result.push(e);
@@ -96,11 +122,12 @@ fn extract_base_name(value: &str) -> String {
         .collect()
 }
 
-fn generate_bucket_names(base: &str) -> Vec<(String, &'static str, String)> {
-    // One probe triple (S3 / Azure / GCS) per name variant, flattened — the six
-    // suffixes × three providers give the MAX_PROBES (18) candidate URLs.
-    ["", "-backup", "-assets", "-data", "-public", "-dev"]
-        .into_iter()
+/// Generate all (url, provider, bucket_name) triples for `base`.
+///
+/// `SUFFIXES.len() × 5 providers` candidates total.
+pub(crate) fn generate_bucket_candidates(base: &str) -> Vec<(String, &'static str, String)> {
+    SUFFIXES
+        .iter()
         .flat_map(|suffix| {
             let name = format!("{base}{suffix}");
             [
@@ -117,6 +144,16 @@ fn generate_bucket_names(base: &str) -> Vec<(String, &'static str, String)> {
                 (
                     format!("https://storage.googleapis.com/{name}"),
                     "GCS",
+                    name.clone(),
+                ),
+                (
+                    format!("https://{name}.nyc3.digitaloceanspaces.com"),
+                    "DigitalOcean Spaces",
+                    name.clone(),
+                ),
+                (
+                    format!("https://s3.us-east-1.wasabisys.com/{name}"),
+                    "Wasabi",
                     name,
                 ),
             ]
@@ -125,17 +162,25 @@ fn generate_bucket_names(base: &str) -> Vec<(String, &'static str, String)> {
 }
 
 async fn probe_url(http: &reqwest::Client, url: &str) -> Option<u16> {
-    match tokio::time::timeout(std::time::Duration::from_secs(3), http.head(url).send()).await {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(4),
+        http.head(url).send_tagged(SRC),
+    )
+    .await
+    {
         Ok(Ok(resp)) => Some(resp.status().as_u16()),
         _ => None,
     }
 }
 
-fn is_exposed(status: u16, provider: &str) -> bool {
+/// Returns `true` when the HTTP status indicates the bucket exists and is at
+/// least partially accessible. AWS S3, GCS, DO Spaces, and Wasabi all return
+/// 403 for private-but-existent buckets; Azure Blob only returns 200 for
+/// truly public containers.
+pub(crate) fn is_exposed(status: u16, provider: &str) -> bool {
     match provider {
-        "AWS S3" => matches!(status, 200 | 403),
+        "AWS S3" | "GCS" | "DigitalOcean Spaces" | "Wasabi" => matches!(status, 200 | 403),
         "Azure Blob" => status == 200,
-        "GCS" => matches!(status, 200 | 403),
         _ => status == 200,
     }
 }

@@ -603,8 +603,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   from Cloudflare DoH decoded by `decode_caa_hex_rdata()`), PTR (IpAddress targets →
   reverse-DNS hostnames), DMARC `_dmarc.{domain}` subquery (rua/ruf→Email). JoinSet
   parallel dispatch (~6× faster). `produces()` → [IP, Domain, Email]. `accepts()` →
-  Domain | Url | IpAddress. 23 new tests; 3,152 total. **P-DOH-F** (cloud_storage
-  next-improvement target) → logged for cycle 29.
+  Domain | Url | IpAddress. 23 new tests; 3,152 total. Baseline confirmed: **doh_resolver=30**.
+- **SOL-MODULE-CLOUD-STORAGE `[x]`** (cycle 29) — `cloud_storage` world-class rewrite:
+  5 providers (+ DigitalOcean Spaces nyc3 + Wasabi us-east-1); 16 suffixes (+ -prod/
+  -staging/-static/-media/-logs/-images/-uploads/-test/-archive/-files); 80 total
+  candidates (vs 18 prior, 4.4× coverage); JoinSet concurrent probing; `probe_url`
+  uses `send_tagged(SRC)`; `is_exposed` handles all 5 providers; `max_timeout_ms`
+  15s → 20s. 7 new unit tests; 3,159 total. Closes P-CS-A through P-CS-D.
 
 ---
 
@@ -1379,3 +1384,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   **Updated baseline for gap analysis:** doh_resolver=30 (+30% vs cycle-27 baseline).
   **Next cycle:** cloud_storage (9 entities, 6 suffixes, 3 providers — cycle 29).
   Paired: `PROBLEM_TREE` P-DOH-F cycle 28.1 — same commit.
+- **2026-06-24** — **Cycle 29 (P→S): SOL-MODULE-CLOUD-STORAGE — `cloud_storage`
+  world-class rewrite: 5 providers, 16 suffixes, JoinSet concurrent probing.**
+  **Evidence base:** 9-entity stable baseline (cloud_storage=9 across all 4 scan runs
+  during cycle 28/28.1 validation). Gap analysis found 4 sub-problems (P-CS-A/B/C/D).
+  **Solutions delivered:**
+  - *SOL-CS.A — new providers:* DigitalOcean Spaces (`{name}.nyc3.digitaloceanspaces.com`)
+    and Wasabi (`s3.us-east-1.wasabisys.com/{name}`). Both use same 200|403 exposure
+    detection as AWS S3/GCS (S3-compatible semantics). Azure Blob remains 200-only.
+  - *SOL-CS.B — new suffixes:* 10 high-value patterns added: -prod, -staging, -static,
+    -media, -logs, -images, -uploads, -test, -archive, -files. Total: 16 suffixes (was 6).
+    Combined with 5 providers: 80 candidate probes per scan (was 18 — 4.4× increase).
+    `MAX_PROBES` cap removed; `generate_bucket_names` → `generate_bucket_candidates`.
+  - *SOL-CS.C — concurrent JoinSet:* All 80 probes spawned simultaneously; collection via
+    `while set.join_next()` in completion order. Cancel propagation: `set.abort_all()` on
+    `ctx.cancel`. Wall-clock ≈ max(individual latencies) ≈ 4s typical vs 54s+ sequential.
+    `max_timeout_ms` raised 15s → 20s to accommodate concurrent resolution time.
+  - *SOL-CS.D — send_tagged:* `probe_url` now uses `http.head(url).send_tagged(SRC)` for
+    proper proxy routing and tagging, consistent with all other modules.
+  7 new unit tests: `generate_candidates_covers_all_suffixes_and_providers`,
+  `generate_candidates_contains_all_providers`, `generate_candidates_contains_new_suffixes`,
+  `generate_candidates_do_spaces_url_format`, `generate_candidates_wasabi_url_format`,
+  `is_exposed_gcs`, `is_exposed_digitalocean_spaces`, `is_exposed_wasabi`.
+  Gate green: fmt/clippy/doc clean, **3,159 tests** (+7 vs cycle 28.1), 0 failures.
+  Validation scan pending (release binary building). Paired: `PROBLEM_TREE` P-CS-A/B/C/D
+  cycle 29 — same commit.
