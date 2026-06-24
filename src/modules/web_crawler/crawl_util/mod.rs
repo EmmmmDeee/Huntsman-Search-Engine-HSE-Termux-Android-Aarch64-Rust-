@@ -539,7 +539,7 @@ pub(super) fn extract_phones(body: &str, phones: &mut HashSet<String>) {
         // (1-9). Rejecting `+0…` drops the false positives the old `is_ascii_digit`
         // check let through (e.g. `+01020103` scraped from concatenated page
         // numbers) without affecting any real international number.
-        if bytes[i] == b'+' && i + 8 < bytes.len() && matches!(bytes[i + 1], b'1'..=b'9') {
+        if bytes[i] == b'+' && i + 10 < bytes.len() && matches!(bytes[i + 1], b'1'..=b'9') {
             let start = i;
             i += 1;
             while i < bytes.len()
@@ -555,9 +555,9 @@ pub(super) fn extract_phones(body: &str, phones: &mut HashSet<String>) {
                 .chars()
                 .filter(|c| c.is_ascii_digit() || *c == '+')
                 .collect();
-            // Accept only what the canonical E.164 validator accepts (8-15 digits
+            // Accept only what the canonical E.164 validator accepts (10-15 digits
             // after the `+`) — the same definition the rest of the system uses, so
-            // the crawler can't surface a too-short "+1 234567" that validation
+            // the crawler can't surface a too-short scrape artifact that validation
             // would reject everywhere else.
             if crate::core::validation::validate_phone_e164(&cleaned).valid {
                 phones.insert(cleaned);

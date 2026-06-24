@@ -496,6 +496,15 @@ impl super::ScanEngine {
             module_skip_reason(module, cx.target, cx.opts, cx.is_expansion, target_sources)
         {
             stats.skipped += 1;
+            tracing::debug!(
+                module = module.name(),
+                target_kind = cx.target.kind.canonical_str(),
+                target_value = %cx.target.value,
+                is_expansion = cx.is_expansion,
+                corroborating_sources = target_sources,
+                skip_reason = reason,
+                "module skipped"
+            );
             self.emit_skipped(cx.scan_id, module.name(), reason);
             true
         } else {

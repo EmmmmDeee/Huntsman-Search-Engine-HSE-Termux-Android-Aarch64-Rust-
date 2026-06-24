@@ -2092,3 +2092,13 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
     - Scan `79ec1b3f9226` — `target: full_name = rhino-ryno23 rhino-ryno23` — 123 entities, all sourced from oathnet_pro free-text query; `name_intel` generating garbage emails (`rhinoryno.rhinoryno@gmail.com`). Exposure 0/100 [MINIMAL].
   - **Fix:** new `is_username_derived_name(name, query)` predicate in `core/validation/placeholder.rs` (exported via `core::validation`); guard inserted at the Person creation site in `oathnet_pro/mod.rs`. Rejects names containing hyphens (common in usernames, rare in real names) or matching the doubled-token `"X X"` pattern.
   **Paired:** `SOLUTION_TREE` SOL-USERNAME-NAME cycle 33 — same commit.
+
+- **2026-06-24** — **Cycle 34 (S→P): Short-digit strings passing E.164 admission inflate phone noise.**
+  - **(P-PHONE-LEN)** `src/modules/search_engines/helpers/entity/extractors.rs:623` used range `(7..=15)` to scan potential phone tokens; `src/core/validation/phone.rs:21` admitted `(8..=15)` digits after the `+`. This allowed 8- and 9-digit strings (web-scrape artefacts: version numbers, analytics IDs, session tokens) to appear as phone entities at 0.75 confidence in output. No inhabited country has subscriber numbers totalling fewer than 10 digits (e.g. Niue +683 XXXXXXX = 10 digits; Nauru +674 XXXXXXX = 10 digits). `src/modules/web_crawler/crawl_util/mod.rs:542` had the same `i + 8 < bytes.len()` lower-bound.
+  - **Evidence (Scan 1, `7e4d8de0`, 1360 entities):** 15 phone entities emitted; 13 were sub-10-digit strings matching known noise patterns (`+21002112`, `+219421994`, ...). Only 2 were plausible E.164 numbers.
+  **Paired:** `SOLUTION_TREE` SOL-PHONE-LEN cycle 34 — same commit.
+
+- **2026-06-24** — **Cycle 38 (S→P): `oathnet_pro` skip reason not structured-logged — diagnosis was opaque.**
+  - **(P-OATHNET-GATE-LOG)** `src/core/engine/dispatch.rs` emitted module-skip events at DEBUG level via `log::debug!` with a plain string. When `oathnet_pro` appeared in `modules_skipped: 14` in Scan 1, there was no structured field (module name, skip reason, is_expansion, corroborating_sources) queryable via `--output json` diagnostics, making root-cause determination manual and error-prone.
+  - **Evidence:** Scan 1 JSON showed `modules_skipped: 14` with no per-module breakdown; manual grep of logs required to determine skip reason.
+  **Paired:** `SOLUTION_TREE` SOL-OATHNET-GATE-LOG cycle 38 — same commit.

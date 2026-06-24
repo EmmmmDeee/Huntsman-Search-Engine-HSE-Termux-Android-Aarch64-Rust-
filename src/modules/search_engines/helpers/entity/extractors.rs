@@ -620,7 +620,7 @@ pub(in crate::modules::search_engines) fn extract_phones_from_text(text: &str) -
     let mut phones = Vec::new();
     let mut i = 0;
     while i < len {
-        if bytes[i] == b'+' && i + 8 < len && bytes[i + 1].is_ascii_digit() {
+        if bytes[i] == b'+' && i + 10 < len && bytes[i + 1].is_ascii_digit() {
             let start = i;
             i += 1;
             let mut digits = 0u32;
@@ -636,7 +636,7 @@ pub(in crate::modules::search_engines) fn extract_phones_from_text(text: &str) -
                 }
                 i += 1;
             }
-            if (7..=15).contains(&digits) {
+            if (10..=15).contains(&digits) {
                 let cleaned: String = text[start..i]
                     .chars()
                     .filter(|c| c.is_ascii_digit() || *c == '+')

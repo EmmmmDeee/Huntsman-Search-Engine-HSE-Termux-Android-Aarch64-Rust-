@@ -1507,3 +1507,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   - **Verification:** `cargo fmt --check` clean; `cargo clippy -D warnings` clean; `cargo test` 3167 passed, 0 failed; `cargo doc --document-private-items` clean.
   - **S→P gap from this cycle:** (1) `oathnet_pro` is still skipped on the primary username scan via the cross-correlation gate (≥2 sources required), even though the manual OathNet export returns 10 000 matches for `"Rhino-ryno23"` — the field-specific query `field=username` may not reach the same index, or the gate threshold is too conservative for Username targets. Investigate separately. (2) Other modules that create `Person` entities from arbitrary name fields (`search_engines/build.rs`, `crates_io`, `github_user`) have similar surface area but narrower queries; deferred for the next pass.
   Paired: `PROBLEM_TREE` P-USERNAME-NAME cycle 33 — same commit.
+
+- **2026-06-24** — **Cycle 34 (P→S): SOL-PHONE-LEN — raise E.164 minimum from 8 to 10 digits.**
+  - **Problem closed:** P-PHONE-LEN (cycle 34) — 8- and 9-digit web-scrape artefacts passing admission gate.
+  - *SOL-PHONE-LEN-A — extraction floor:* `src/modules/search_engines/helpers/entity/extractors.rs:623`: changed `i + 8 < len` → `i + 10 < len`; range `(7..=15)` → `(10..=15)`. Tokens shorter than 10 digits after `+` are never even assembled as candidates.
+  - *SOL-PHONE-LEN-B — validation gate:* `src/core/validation/phone.rs:21`: changed `(8..=15)` → `(10..=15)`. Belt-and-suspenders: even if a short token reaches validation from another extractor, it is rejected here. Comment updated to cite Niue (+683) and Nauru (+674) as the shortest-number inhabited countries.
+  - *SOL-PHONE-LEN-C — web_crawler extractor:* `src/modules/web_crawler/crawl_util/mod.rs:542`: changed `i + 8 < bytes.len()` → `i + 10 < bytes.len()`. Floor consistent across all three phone-extraction sites.
+  - *SOL-PHONE-LEN-D — test coverage:* `src/core/validation/tests.rs`: added `phone_e164_rejects_short_numbers_and_accepts_real_ones` — asserts 8-digit (+21002112) rejected, 9-digit (+219421994) rejected, 10-digit Singapore (+6569504420) accepted, 11-digit AU/US accepted, leading-zero CC rejected, no-plus rejected, 16-digit rejected. `src/modules/web_crawler/crawl_util/tests.rs`: updated `phone_extraction_bounds_digit_count` — explicit 7/8/9-digit rejection assertions added; acceptance case changed to 10-digit Singapore number.
+  - **Verification:** `cargo fmt --check` clean; `cargo clippy -D warnings` clean; `cargo test` 3168 passed (+1 vs cycle 33), 0 failed; `cargo doc --document-private-items` clean.
+  - **Expected impact:** ~13/15 noise phones eliminated from Scan 1 output in next real-execution re-run.
+  Paired: `PROBLEM_TREE` P-PHONE-LEN cycle 34 — same commit.
+
+- **2026-06-24** — **Cycle 38 (P→S): SOL-OATHNET-GATE-LOG — structured skip logging in dispatch.**
+  - **Problem closed:** P-OATHNET-GATE-LOG (cycle 38) — skip reason opacity in dispatch pipeline.
+  - *SOL-OATHNET-GATE-LOG-A — structured logging:* Added `tracing::debug!` with structured fields `{module, target_kind, target_value, is_expansion, corroborating_sources, skip_reason}` in `gate_skips()` in `src/core/engine/dispatch.rs`. Replaces opaque plain-string log.
+  - *SOL-OATHNET-GATE-LOG-B — diagnosis finding:* Running `hse scan -v rhino-ryno23 -m oathnet_pro --depth 0 --output json` with the new logging confirmed oathnet_pro DISPATCHED and RAN (`"message":"dispatch"` → `"message":"done","found":0`). The 14 `modules_skipped` in Scan 1 were other modules excluded by the `-m oathnet_pro` allowlist filter. oathnet_pro returned 0 breach records — `rhino-ryno23` has no OathNet breach data. **No gate bug exists.**
+  - **Verification:** `cargo fmt --check` clean; `cargo clippy -D warnings` clean; `cargo test` 3168 passed, 0 failed.
+  - **S→P gap from this cycle:** `modules_skipped` count in JSON output is still a bare integer — no per-module breakdown. A structured `skipped_modules: [{name, reason}]` array in the scan summary would make future diagnosis one-step rather than requiring DEBUG log grep.
+  Paired: `PROBLEM_TREE` P-OATHNET-GATE-LOG cycle 38 — same commit.

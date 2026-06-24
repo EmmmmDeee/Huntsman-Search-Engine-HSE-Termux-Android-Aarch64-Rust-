@@ -170,22 +170,25 @@ use super::*;
         );
         assert!(phones.contains("+14155552671"));
         assert!(phones.iter().any(|p| p.starts_with("+44")));
-        assert!(!phones.iter().any(|p| p.len() < 8)); // +123 is too short to qualify
+        // Practical minimum is 10 digits (no inhabited country has fewer).
+        assert!(!phones.iter().any(|p| p.len() < 11)); // '+' + 10 digits = 11 chars
         // E.164 country codes never start with 0 — `+0…` is a scrape artifact.
         assert!(!phones.iter().any(|p| p.starts_with("+0")));
 
-        // Acceptance now goes through the canonical E.164 validator, so a 7-digit
-        // "+X" (below the 8-digit E.164 minimum) is rejected here just as it is
-        // everywhere else — no more crawler-only too-short numbers.
+        // 7- and 8- and 9-digit strings are web-scrape noise — reject all.
         let mut short = HashSet::new();
         extract_phones("ring +1 234567 now", &mut short); // 7 digits
-        assert!(
-            short.is_empty(),
-            "7-digit number should be rejected: {short:?}"
-        );
+        assert!(short.is_empty(), "7-digit must be rejected: {short:?}");
+        let mut also_short = HashSet::new();
+        extract_phones("ring +1 2345678 now", &mut also_short); // 8 digits
+        assert!(also_short.is_empty(), "8-digit must be rejected: {also_short:?}");
+        let mut nine = HashSet::new();
+        extract_phones("ring +1 23456789 now", &mut nine); // 9 digits
+        assert!(nine.is_empty(), "9-digit must be rejected: {nine:?}");
+        // 10 digits — smallest real subscriber number (Niue +683, Singapore +65, etc.)
         let mut ok = HashSet::new();
-        extract_phones("ring +1 2345678 now", &mut ok); // 8 digits
-        assert!(ok.contains("+12345678"));
+        extract_phones("ring +6569504420 now", &mut ok); // 10 digits, Singapore
+        assert!(ok.contains("+6569504420"));
     }
 
     #[test]
