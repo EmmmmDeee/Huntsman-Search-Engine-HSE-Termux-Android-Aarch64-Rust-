@@ -141,6 +141,7 @@ impl Module for SearchEngines {
                 | TargetKind::AbnAcn
                 | TargetKind::Url
                 | TargetKind::Coordinates
+                | TargetKind::TrackingId
         )
     }
 

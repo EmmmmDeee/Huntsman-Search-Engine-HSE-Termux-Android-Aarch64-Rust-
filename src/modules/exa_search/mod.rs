@@ -90,6 +90,7 @@ impl Module for ExaSearch {
                 | TargetKind::Domain
                 | TargetKind::Organisation
                 | TargetKind::Phone
+                | TargetKind::TrackingId
         )
     }
 
@@ -151,6 +152,12 @@ impl Module for ExaSearch {
                 format!(
                     "online listings or directories containing phone number {}",
                     target.value
+                )
+            }
+            TargetKind::TrackingId => {
+                format!(
+                    "websites embedding Google Analytics or Tag Manager ID \"{}\"",
+                    target.value.to_ascii_uppercase()
                 )
             }
             _ => return Ok(ModuleResult::new()),

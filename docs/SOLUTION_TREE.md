@@ -1583,3 +1583,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   - *Audit findings — intentionally NOT wired:* `util/proxy/mod.rs validate()` uses curl `-x proxy_url` for proxy-routed status checks — `fetch_with_status` does not support proxy routing; custom invocation is correct. `util/key_pool/validation.rs validate_against_endpoint()` uses custom auth headers/BasicAuth/BearerAuth per ServiceDef — not representable in `fetch_with_status`; custom invocation is correct. `rule_au_009_stealer_log` (High) and `rule_au_021_api_key_exposure` (Critical) deliberately fire on single-entity findings — an email in stealer data or a discovered API key is an unconditional alert by nature, unlike the infra blocklist case where CDN nodes routinely appear in one list without subject ownership.
   - **Verification:** `cargo fmt` clean; `cargo clippy --all-targets --locked -D warnings` clean; `cargo test --locked` all passed, 0 failures.
   Paired: `PROBLEM_TREE` P-R5-EXTRACT-PHONE-STALE — same commit.
+
+- **2026-06-24** — **Cycle R6 (P→S): SOL-TRACKING-PIVOT-DEAD — TrackingId pivot graph closed end-to-end.**
+  - **Problem closed:** P-TRACKING-PIVOT-DEAD.
+  - *What was built (7 files, zero unsafe):*
+    1. `src/core/scan/detect.rs` — `is_tracking_id_shaped(v: &str) -> bool`: pattern-matches UA-/G-/GTM-/AW- shapes with length and charset gates.
+    2. `src/core/scan/mod.rs` — `TargetKind::TrackingId` variant; `from_entity_kind` maps `EntityKind::TrackingId → Some(TargetKind::TrackingId)`; `to_entity_kind` inverse; `canonical_str` → `"tracking_id"`; `detect()` calls `is_tracking_id_shaped` at step 9c; `validate()` arm calls `is_tracking_id_shaped` and rejects malformed IDs.
+    3. `src/core/dependency/mod.rs` — `TargetKind::TrackingId` added to `ALL_TARGET_KINDS` so `consumes()` probes it and the smoke test `every_declared_produced_pivot_has_a_consumer` can verify wiring.
+    4. `src/core/scan/scoring.rs` — Three exhaustive match arms: `seed_marginal_yield` → `(1.3, 1.1)` (terminal pivot); `round_retention` → `0.40` (collapses after one hop); `geo_npv` → `5.0` (minimal geo signal, domain pivot only).
+    5. `src/core/convex/mod.rs` — `dispatch_cost` → `1.0` (single-pivot terminal, same cost as ApiKey/DeviceId).
+    6. `src/modules/search_engines/mod.rs` + `queries/mod.rs` — `accepts()` covers `TrackingId`; three query templates: bare quoted ID, `site:github.com OR site:gitlab.com`, negative `‑site:google.com ‑site:googletagmanager.com`.
+    7. `src/modules/exa_search/mod.rs` — `accepts()` covers `TrackingId`; neural query: "websites embedding Google Analytics or Tag Manager ID \"{ID}\"".
+    8. `src/cli/mod.rs` — `parse_target_kind` accepts `"tracking_id" | "trackingid" | "ga" | "gtm"`.
+  - **Verification:** `cargo fmt` clean; `cargo clippy --all-targets --locked -D warnings` clean; `cargo test --locked` 3174 passed, 0 failed (includes smoke test `every_declared_produced_pivot_has_a_consumer` and CLI round-trip `every_seed_kind_canonical_form_round_trips`). `cargo build --release` clean.
+  - **S→P gap from this cycle:** `search_engines` query template is keyword-based; a `TrackingId` target also fits Exa's semantic engine (already wired). No dedicated TrackingId-specific modules (e.g. a direct API lookup against BuiltWith or Wappalyzer) exist. These are future work — the pivot graph closure itself is complete.
+  Paired: `PROBLEM_TREE` P-TRACKING-PIVOT-DEAD cycle R6 — same commit.

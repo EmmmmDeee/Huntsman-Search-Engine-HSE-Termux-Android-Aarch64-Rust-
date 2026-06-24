@@ -373,8 +373,9 @@ pub(super) fn parse_target_kind(s: &str) -> Result<TargetKind> {
         "mac" | "bssid" | "mac_address" => Ok(TargetKind::MacAddress),
         "crypto" | "crypto_address" | "wallet" | "btc" | "eth" => Ok(TargetKind::CryptoAddress),
         "device_id" | "deviceid" | "tower" | "cell" => Ok(TargetKind::DeviceId),
+        "tracking_id" | "trackingid" | "ga" | "gtm" => Ok(TargetKind::TrackingId),
         other => Err(Error::InvalidTarget(format!(
-            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, cidr, domain, url, asn, coords, address, org, abn, apikey, mac, crypto, tower"
+            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, cidr, domain, url, asn, coords, address, org, abn, apikey, mac, crypto, tower, tracking_id"
         ))),
     }
 }

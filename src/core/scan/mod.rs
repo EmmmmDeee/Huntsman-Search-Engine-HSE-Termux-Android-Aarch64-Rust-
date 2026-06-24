@@ -19,7 +19,7 @@ use classify::{identity_norm, identity_overlaps, is_infra_domain};
 mod detect;
 use detect::{
     has_company_suffix, is_address_shaped, is_cidr_shaped, is_domain_shaped, is_mac_shaped,
-    is_phone_shaped,
+    is_phone_shaped, is_tracking_id_shaped,
 };
 
 mod scoring;
@@ -57,6 +57,10 @@ pub enum TargetKind {
     ApiKey,
     CryptoAddress,
     DeviceId,
+    /// Google Analytics / Google Tag Manager / GA4 tracking identifier.
+    /// Pattern: `UA-XXXXXXX-X`, `GTM-XXXXXXX`, `G-XXXXXXXXXX`, `AW-XXXXXXXXX`.
+    /// Emitted by `web_crawler`; queued back for cross-domain co-ownership search.
+    TrackingId,
 }
 
 impl TargetKind {
@@ -84,10 +88,8 @@ impl TargetKind {
             EntityKind::MacAddress => Some(Self::MacAddress),
             EntityKind::CryptoAddress => Some(Self::CryptoAddress),
             EntityKind::DeviceId => Some(Self::DeviceId),
-            EntityKind::Credential
-            | EntityKind::TrackingId
-            | EntityKind::Password
-            | EntityKind::Other(_) => None,
+            EntityKind::TrackingId => Some(Self::TrackingId),
+            EntityKind::Credential | EntityKind::Password | EntityKind::Other(_) => None,
         }
     }
 
@@ -111,6 +113,7 @@ impl TargetKind {
             Self::MacAddress => EntityKind::MacAddress,
             Self::CryptoAddress => EntityKind::CryptoAddress,
             Self::DeviceId => EntityKind::DeviceId,
+            Self::TrackingId => EntityKind::TrackingId,
         }
     }
 
@@ -144,6 +147,7 @@ impl TargetKind {
             Self::MacAddress => "mac_address",
             Self::CryptoAddress => "crypto_address",
             Self::DeviceId => "device_id",
+            Self::TrackingId => "tracking_id",
         }
     }
 
@@ -238,7 +242,13 @@ impl TargetKind {
         if crate::core::crypto::classify_crypto_address(v).is_some() {
             return Self::CryptoAddress;
         }
-        // 9c. Cell tower ID: mcc-mnc-lac-cid (all-numeric, 4 segments, MCC in 200-999).
+        // 9c. Tracking ID — Google Analytics (UA-XXXXXXX-X / G-XXXXXXXXXX),
+        //     Google Tag Manager (GTM-XXXXXXX), Google Ads (AW-XXXXXXXXX).
+        //     Must be checked before the general Username fallback.
+        if is_tracking_id_shaped(v) {
+            return Self::TrackingId;
+        }
+        // 9d. Cell tower ID: mcc-mnc-lac-cid (all-numeric, 4 segments, MCC in 200-999).
         {
             let parts: Vec<&str> = v.split('-').collect();
             if parts.len() == 4
@@ -507,6 +517,13 @@ impl Target {
             | TargetKind::FullName
             | TargetKind::Address
             | TargetKind::Organisation => {}
+            TargetKind::TrackingId => {
+                if !is_tracking_id_shaped(v) {
+                    return Err(
+                        "not a recognised tracking ID (UA-XXXXXXX-X, G-XXXXXXXXXX, GTM-XXXXXXX, AW-XXXXXXXXX)",
+                    );
+                }
+            }
         }
 
         // Never scan our own egress infrastructure: a host/IP configured as a

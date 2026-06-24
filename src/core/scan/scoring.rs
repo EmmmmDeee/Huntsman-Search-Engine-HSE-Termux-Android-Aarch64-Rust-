@@ -53,6 +53,8 @@ pub(super) fn seed_marginal_yield(kind: TargetKind, has_paid_keys: bool) -> f64 
         // A cell tower ID resolves to a coordinate via OpenCelliD — terminal,
         // single-hop: tower → location.
         TargetKind::DeviceId => (1.2, 1.2),
+        // A tracking ID pivots to co-owned domains — single pivot, terminal.
+        TargetKind::TrackingId => (1.3, 1.1),
     };
     if has_paid_keys { paid } else { free }
 }
@@ -77,7 +79,8 @@ fn round_retention(kind: TargetKind) -> f64 {
         TargetKind::Coordinates
         | TargetKind::ApiKey
         | TargetKind::CryptoAddress
-        | TargetKind::DeviceId => 0.40,
+        | TargetKind::DeviceId
+        | TargetKind::TrackingId => 0.40,
     }
 }
 
@@ -193,6 +196,8 @@ pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
         TargetKind::CryptoAddress => 2.0,
         // A cell tower ID resolves directly to a coordinate — single-hop, terminal.
         TargetKind::DeviceId => 8.5,
+        // A tracking ID pivots to co-owned domains — minimal geo signal.
+        TargetKind::TrackingId => 5.0,
     }
 }
 

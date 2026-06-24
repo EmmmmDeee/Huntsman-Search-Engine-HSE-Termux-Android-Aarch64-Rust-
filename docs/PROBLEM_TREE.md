@@ -2134,3 +2134,8 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
 - **2026-06-24** — **Cycle R5 (Refactor audit→P): `util/extract::phones()` had pre-Cycle-34 digit bounds.**
   - **(P-R5-EXTRACT-PHONE-STALE)** `src/util/extract/mod.rs:56,66` used `i + 8 < bytes.len()` and `(7..=15).contains(&digits)` — the pre-Cycle-34 phone bounds that were already fixed in `crawl_util` and `extractors`. The function was not wired to `util::phone::scan_phones`, so the Cycle-34 minimum-10-digit fix and Cycle-39 CC-gate unification never propagated to it. Callers of `util::extract::phones()` could still emit 7–9-digit strings. Discovered by wiring audit after R1–R4.
   **Paired:** `SOLUTION_TREE` SOL-R5 — same commit.
+
+- **2026-06-24** — **Cycle R6 (P→S): TrackingId pivot-graph dead end closed.**
+  - **(P-TRACKING-PIVOT-DEAD)** `EntityKind::TrackingId` entities emitted by `web_crawler` (Google Analytics UA-XXXXXXX-X, G-XXXXXXXXXX; Tag Manager GTM-XXXXXXX; Google Ads AW-XXXXXXXXX) mapped to `None` in `TargetKind::from_entity_kind()`. Discovered tracking IDs were classified, stored, and correlated (entity-merge for co-ownership) but never queued as search targets. The co-owned-domain discovery path — search for a tracking ID → find other sites embedding the same ID — was entirely closed.
+  - **Root cause:** `TargetKind` had no `TrackingId` variant; `ALL_TARGET_KINDS` did not include it; no module's `accepts()` covered it; no query template existed for it.
+  **Paired:** `SOLUTION_TREE` SOL-TRACKING-PIVOT-DEAD cycle R6 — same commit.
