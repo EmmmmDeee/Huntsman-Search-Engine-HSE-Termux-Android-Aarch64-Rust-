@@ -1,9 +1,12 @@
 use super::*;
 
 #[test]
-fn accepts_domain_only() {
+fn accepts_domain_url_and_ip() {
     assert!(DohResolver.accepts(&Target::new(TargetKind::Domain, "x.com")));
-    assert!(!DohResolver.accepts(&Target::new(TargetKind::IpAddress, "1.2.3.4")));
+    assert!(DohResolver.accepts(&Target::new(TargetKind::Url, "https://x.com")));
+    assert!(DohResolver.accepts(&Target::new(TargetKind::IpAddress, "1.2.3.4")));
+    assert!(!DohResolver.accepts(&Target::new(TargetKind::Email, "x@example.com")));
+    assert!(!DohResolver.accepts(&Target::new(TargetKind::Phone, "+1555")));
 }
 
 #[test]
@@ -212,9 +215,12 @@ fn rtype_name_maps_handled_types() {
     assert_eq!(rtype_name(1), Some("A"));
     assert_eq!(rtype_name(28), Some("AAAA"));
     assert_eq!(rtype_name(5), Some("CNAME"));
+    assert_eq!(rtype_name(6), Some("SOA"));
+    assert_eq!(rtype_name(12), Some("PTR"));
     assert_eq!(rtype_name(15), Some("MX"));
     assert_eq!(rtype_name(16), Some("TXT"));
     assert_eq!(rtype_name(2), Some("NS"));
+    assert_eq!(rtype_name(257), Some("CAA"));
     assert_eq!(rtype_name(99), None); // unmapped → caller falls back to queried type
 }
 
@@ -257,4 +263,195 @@ fn untyped_record_falls_back_to_queried_type() {
         out.iter()
             .any(|e| e.kind == EntityKind::IpAddress && e.value == "5.6.7.8")
     );
+}
+
+// ── New tests for SOA, CAA, PTR, DMARC, reverse-DNS ────────────────────────
+
+#[test]
+fn ip_to_reverse_dns_ipv4() {
+    assert_eq!(
+        ip_to_reverse_dns("1.2.3.4").as_deref(),
+        Some("4.3.2.1.in-addr.arpa")
+    );
+    assert_eq!(
+        ip_to_reverse_dns("8.8.8.8").as_deref(),
+        Some("8.8.8.8.in-addr.arpa")
+    );
+    assert_eq!(
+        ip_to_reverse_dns("192.168.1.100").as_deref(),
+        Some("100.1.168.192.in-addr.arpa")
+    );
+}
+
+#[test]
+fn ip_to_reverse_dns_ipv6() {
+    // ::1 (loopback) reverse
+    assert_eq!(
+        ip_to_reverse_dns("::1").as_deref(),
+        Some("1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa")
+    );
+    // 2001:db8::1 reverse (documentation prefix)
+    assert_eq!(
+        ip_to_reverse_dns("2001:db8::1").as_deref(),
+        Some("1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa")
+    );
+}
+
+#[test]
+fn ip_to_reverse_dns_invalid() {
+    assert!(ip_to_reverse_dns("not-an-ip").is_none());
+    assert!(ip_to_reverse_dns("").is_none());
+    assert!(ip_to_reverse_dns("999.999.999.999").is_none());
+}
+
+#[test]
+fn parse_soa_fields_extracts_mname_and_rname() {
+    let soa = "ns1.example.com. hostmaster.example.com. 2024060101 3600 900 604800 300";
+    let (mname, email) = parse_soa_fields(soa).unwrap();
+    assert_eq!(mname, "ns1.example.com");
+    assert_eq!(email, "hostmaster@example.com");
+}
+
+#[test]
+fn parse_soa_fields_dotted_local_part() {
+    // local-part with a dot: `john.doe.example.com.` → `john@doe.example.com`
+    // (only the first dot is the separator)
+    let soa = "ns1.example.com. john.doe.example.com. 1 3600 900 604800 300";
+    let (_, email) = parse_soa_fields(soa).unwrap();
+    assert_eq!(email, "john@doe.example.com");
+}
+
+#[test]
+fn parse_soa_fields_too_short_domain_returns_none() {
+    // rname domain-part has no dot (e.g. "admin.tld") — not a valid address.
+    let soa = "ns1.example.com. admin.com 1 3600 900 604800 300";
+    assert!(parse_soa_fields(soa).is_none());
+}
+
+#[test]
+fn soa_record_emits_mname_domain_and_email() {
+    let out = run(
+        "SOA",
+        &["ns1.example.com. hostmaster.example.com. 2024060101 3600 900 604800 300"],
+    );
+    assert_eq!(out.len(), 2);
+    let ns = out.iter().find(|e| e.kind == EntityKind::Domain).unwrap();
+    assert_eq!(ns.value, "ns1.example.com");
+    assert!(ns.has_tag("ns-primary"));
+    let mail = out.iter().find(|e| e.kind == EntityKind::Email).unwrap();
+    assert_eq!(mail.value, "hostmaster@example.com");
+    assert!(mail.has_tag("soa-contact"));
+}
+
+#[test]
+fn parse_caa_issuer_extracts_issue_and_issuewild() {
+    assert_eq!(
+        parse_caa_issuer("0 issue \"letsencrypt.org\"").as_deref(),
+        Some("letsencrypt.org")
+    );
+    assert_eq!(
+        parse_caa_issuer("0 issuewild \"comodoca.com\"").as_deref(),
+        Some("comodoca.com")
+    );
+}
+
+#[test]
+fn parse_caa_issuer_strips_parameters() {
+    // CAA value may include ;param=val after the domain.
+    assert_eq!(
+        parse_caa_issuer("0 issue \"letsencrypt.org;validationmethods=dns-01\"").as_deref(),
+        Some("letsencrypt.org")
+    );
+}
+
+#[test]
+fn parse_caa_issuer_prohibit_all_returns_none() {
+    // ";" means no CA is authorised to issue — not a Domain entity.
+    assert!(parse_caa_issuer("0 issue \";\"").is_none());
+    assert!(parse_caa_issuer("0 issuewild \";\"").is_none());
+}
+
+#[test]
+fn parse_caa_issuer_iodef_returns_none() {
+    // iodef carries an incident-report URI, not a CA domain.
+    assert!(parse_caa_issuer("0 iodef \"mailto:caa@example.com\"").is_none());
+}
+
+#[test]
+fn caa_record_emits_ca_domain() {
+    let out = run("CAA", &["0 issue \"letsencrypt.org\""]);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].kind, EntityKind::Domain);
+    assert_eq!(out[0].value, "letsencrypt.org");
+    assert!(out[0].has_tag("caa-issuer"));
+}
+
+#[test]
+fn caa_multiple_issuers_deduplicated() {
+    let out = run(
+        "CAA",
+        &[
+            "0 issue \"letsencrypt.org\"",
+            "0 issuewild \"letsencrypt.org\"", // same CA — deduplicated
+            "0 issue \"digicert.com\"",
+        ],
+    );
+    assert_eq!(out.len(), 2);
+    let vals: Vec<&str> = out.iter().map(|e| e.value.as_str()).collect();
+    assert!(vals.contains(&"letsencrypt.org"));
+    assert!(vals.contains(&"digicert.com"));
+}
+
+#[test]
+fn ptr_record_emits_hostname_domain() {
+    let out = run("PTR", &["mail.example.com."]);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].kind, EntityKind::Domain);
+    assert_eq!(out[0].value, "mail.example.com");
+    assert!(out[0].has_tag("ptr"));
+}
+
+#[test]
+fn ptr_dotless_result_rejected() {
+    assert!(run("PTR", &["localhost"]).is_empty());
+    assert!(run("PTR", &[""]).is_empty());
+}
+
+#[test]
+fn dmarc_rua_emails_extracts_rua_and_ruf() {
+    let txt = "v=DMARC1; p=reject; rua=mailto:dmarc@example.com,mailto:reports@example.org; ruf=mailto:forensic@example.com";
+    let emails = dmarc_rua_emails(txt);
+    assert!(emails.contains(&"dmarc@example.com".to_string()));
+    assert!(emails.contains(&"reports@example.org".to_string()));
+    assert!(emails.contains(&"forensic@example.com".to_string()));
+}
+
+#[test]
+fn dmarc_rua_non_mailto_uris_ignored() {
+    let txt = "v=DMARC1; p=quarantine; rua=https://example.com/dmarc,mailto:ok@example.com";
+    let emails = dmarc_rua_emails(txt);
+    assert_eq!(emails, vec!["ok@example.com".to_string()]);
+}
+
+#[test]
+fn txt_dmarc_record_emits_email_entities() {
+    let out = run(
+        "TXT",
+        &["v=DMARC1; p=reject; rua=mailto:dmarc@example.com; ruf=mailto:ruf@example.com"],
+    );
+    assert_eq!(out.len(), 2);
+    let addrs: Vec<&str> = out.iter().map(|e| e.value.as_str()).collect();
+    assert!(addrs.contains(&"dmarc@example.com"));
+    assert!(addrs.contains(&"ruf@example.com"));
+    assert!(
+        out.iter()
+            .all(|e| e.kind == EntityKind::Email && e.has_tag("dmarc"))
+    );
+}
+
+#[test]
+fn txt_non_spf_non_dmarc_ignored() {
+    // Generic TXT records (google site verification, etc.) produce no entities.
+    let out = run("TXT", &["google-site-verification=abc123", "docusign=xyz"]);
+    assert!(out.is_empty());
 }

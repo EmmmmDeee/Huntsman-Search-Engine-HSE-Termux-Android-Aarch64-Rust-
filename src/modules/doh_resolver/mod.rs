@@ -4,12 +4,18 @@
 //!   `GET https://cloudflare-dns.com/dns-query?name={domain}&type={type}`
 //!   `GET https://dns.google/resolve?name={domain}&type={type}`
 //!
-//! Queries A, AAAA, MX, TXT, NS, CNAME records. Extracts IPs from A/AAAA,
-//! mail servers from MX, nameservers from NS, SPF/DKIM/DMARC from TXT.
+//! **Domain targets** — queries A, AAAA, MX, TXT, NS, CNAME, SOA, CAA concurrently
+//! via [`tokio::task::JoinSet`] plus a dedicated `_dmarc.{domain}` TXT subquery.
+//! Extracts: IPs (A/AAAA/SPF), mail servers (MX), nameservers (NS), CNAME aliases,
+//! SPF members (ip4/ip6/include/redirect), DMARC report addresses (rua/ruf),
+//! primary NS + zone-contact email (SOA), certificate-authority issuers (CAA).
+//!
+//! **IP address targets** — queries PTR (reverse DNS) and returns the hostnames
+//! as [`EntityKind::Domain`] entities.
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::{collections::HashSet, net::IpAddr};
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -48,15 +54,18 @@ fn rtype_name(t: u16) -> Option<&'static str> {
         1 => Some("A"),
         2 => Some("NS"),
         5 => Some("CNAME"),
+        6 => Some("SOA"),
+        12 => Some("PTR"),
         15 => Some("MX"),
         16 => Some("TXT"),
         28 => Some("AAAA"),
+        257 => Some("CAA"),
         _ => None,
     }
 }
 
-/// The record types we query, in order.
-const RECORD_TYPES: &[&str] = &["A", "AAAA", "MX", "TXT", "NS", "CNAME"];
+/// Record types queried for domain targets. All fire concurrently.
+const RECORD_TYPES: &[&str] = &["A", "AAAA", "MX", "TXT", "NS", "CNAME", "SOA", "CAA"];
 
 /// Reconstruct a TXT record's logical value from the DoH JSON presentation form.
 /// **Pure.** A TXT record is one or more character-strings; the resolvers return
@@ -107,12 +116,99 @@ fn target_domain(kind: TargetKind, value: &str) -> Option<String> {
     }
 }
 
+/// Convert an IP address string to its reverse-DNS query name. **Pure.**
+/// IPv4: `1.2.3.4` → `4.3.2.1.in-addr.arpa`
+/// IPv6: `2001:db8::1` → `1.0.0.0…0.8.b.d.0.1.0.0.2.ip6.arpa`
+pub(crate) fn ip_to_reverse_dns(ip: &str) -> Option<String> {
+    match ip.trim().parse::<IpAddr>().ok()? {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            Some(format!("{}.{}.{}.{}.in-addr.arpa", o[3], o[2], o[1], o[0]))
+        }
+        IpAddr::V6(v6) => {
+            let nibbles: Vec<char> = v6
+                .octets()
+                .iter()
+                .rev()
+                .flat_map(|b| [b & 0xf, b >> 4])
+                .map(|n| char::from_digit(u32::from(n), 16).unwrap_or('0'))
+                .collect();
+            let dotted = nibbles
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(".");
+            Some(format!("{dotted}.ip6.arpa"))
+        }
+    }
+}
+
+/// Parse SOA RDATA into `(mname, rname-as-email)`. **Pure.**
+/// SOA format: `mname rname serial refresh retry expire minimum`
+/// The rname encodes an email address: the first `.` is the `@` separator
+/// (e.g. `hostmaster.example.com.` → `hostmaster@example.com`).
+pub(crate) fn parse_soa_fields(data: &str) -> Option<(String, String)> {
+    let mut parts = data.split_whitespace();
+    let mname = parts.next()?.trim_end_matches('.').to_string();
+    let rname_raw = parts.next()?.trim_end_matches('.');
+    let (local, dom) = rname_raw.split_once('.')?;
+    if !dom.contains('.') {
+        return None; // too short to be a real domain
+    }
+    Some((mname, format!("{local}@{dom}")))
+}
+
+/// Parse CAA RDATA and return the CA domain for `issue`/`issuewild` tags. **Pure.**
+/// CAA format: `flags tag "value"` (value may be bare or quoted).
+/// Returns `None` for `iodef` tags and for prohibit-all (`";"`) values.
+pub(crate) fn parse_caa_issuer(data: &str) -> Option<String> {
+    let mut parts = data.splitn(3, ' ');
+    let _flags = parts.next()?;
+    let tag = parts.next()?.trim();
+    if !matches!(tag, "issue" | "issuewild") {
+        return None;
+    }
+    let value = parts.next()?.trim().trim_matches('"');
+    if value.is_empty() || value == ";" {
+        return None; // prohibit-all marker
+    }
+    // Strip CAA parameters after `;` (e.g. `letsencrypt.org;validationmethods=dns-01`).
+    let domain = value.split(';').next()?.trim();
+    if domain.is_empty() || !domain.contains('.') {
+        return None;
+    }
+    Some(domain.to_string())
+}
+
+/// Extract `rua=` and `ruf=` `mailto:` addresses from a DMARC TXT record. **Pure.**
+pub(crate) fn dmarc_rua_emails(txt: &str) -> Vec<String> {
+    let mut emails = Vec::new();
+    for part in txt.split(';') {
+        let part = part.trim();
+        let Some((key, value)) = part.split_once('=') else {
+            continue;
+        };
+        if !matches!(key.trim(), "rua" | "ruf") {
+            continue;
+        }
+        for uri in value.split(',') {
+            if let Some(addr) = uri.trim().strip_prefix("mailto:")
+                && addr.contains('@')
+            {
+                emails.push(addr.to_string());
+            }
+        }
+    }
+    emails
+}
+
 /// Map one record type's answers to entities. **Pure** (no network/IO): parses
-/// each record per its type — A/AAAA → `IpAddress`, MX/NS/CNAME → `Domain`, and
-/// SPF `TXT` → the `ip4:`/`ip6:`/`include:` members — deduplicating across the whole
-/// resolution via the shared `seen` set (keyed by a type prefix so an IP from an
-/// A record and an SPF `ip4:` of the same value are distinct). Skips blank /
-/// dotless hosts. `rtype` outside [`RECORD_TYPES`] yields nothing.
+/// each record per its type — A/AAAA → `IpAddress`, MX/NS/CNAME/PTR/SOA-mname/CAA
+/// → `Domain`, SOA-rname + DMARC rua/ruf → `Email`, SPF `TXT` → ip4/ip6/include
+/// members — deduplicating across the whole resolution via the shared `seen` set
+/// (keyed by a type prefix so an IP from an A record and an SPF `ip4:` of the same
+/// value are distinct). Skips blank / dotless hosts. `rtype` outside handled types
+/// yields nothing.
 fn records_for_type(
     rtype: &str,
     records: &[DohRecord],
@@ -177,6 +273,49 @@ fn records_for_type(
                     out.push(e);
                 }
             }
+            "SOA" => {
+                if let Some((mname, rname_email)) = parse_soa_fields(&rec.data) {
+                    if !mname.is_empty()
+                        && mname.contains('.')
+                        && seen.insert(format!("soa-ns:{mname}"))
+                    {
+                        let mut e = Entity::new(EntityKind::Domain, &mname, 0.75, scan_id);
+                        e.tag("dns");
+                        e.tag("ns-primary");
+                        e.add_evidence(base(format!("SOA primary NS for {domain}")));
+                        out.push(e);
+                    }
+                    if rname_email.contains('@') && seen.insert(format!("soa-email:{rname_email}"))
+                    {
+                        let mut e = Entity::new(EntityKind::Email, &rname_email, 0.60, scan_id);
+                        e.tag("dns");
+                        e.tag("soa-contact");
+                        e.add_evidence(base(format!("SOA zone contact for {domain}")));
+                        out.push(e);
+                    }
+                }
+            }
+            "CAA" => {
+                if let Some(issuer) = parse_caa_issuer(&rec.data)
+                    && seen.insert(format!("caa:{issuer}"))
+                {
+                    let mut e = Entity::new(EntityKind::Domain, &issuer, 0.70, scan_id);
+                    e.tag("dns");
+                    e.tag("caa-issuer");
+                    e.add_evidence(base(format!("CAA authorised CA for {domain}")));
+                    out.push(e);
+                }
+            }
+            "PTR" => {
+                let ptr = rec.data.trim().trim_end_matches('.');
+                if !ptr.is_empty() && ptr.contains('.') && seen.insert(format!("ptr:{ptr}")) {
+                    let mut e = Entity::new(EntityKind::Domain, ptr, 0.75, scan_id);
+                    e.tag("dns");
+                    e.tag("ptr");
+                    e.add_evidence(base(format!("PTR record for {domain}")));
+                    out.push(e);
+                }
+            }
             "TXT" => {
                 let txt = unquote_txt(rec.data.trim());
                 if crate::util::spf::is_spf(&txt) {
@@ -221,6 +360,16 @@ fn records_for_type(
                             }
                         }
                     }
+                } else if txt.trim_start().starts_with("v=DMARC1") {
+                    for email in dmarc_rua_emails(&txt) {
+                        if seen.insert(format!("dmarc:{email}")) {
+                            let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
+                            e.tag("dns");
+                            e.tag("dmarc");
+                            e.add_evidence(base(format!("DMARC report address for {domain}")));
+                            out.push(e);
+                        }
+                    }
                 }
             }
             "CNAME" => {
@@ -247,16 +396,19 @@ impl Module for DohResolver {
         "doh_resolver"
     }
     fn description(&self) -> &'static str {
-        "DNS-over-HTTPS via Cloudflare + Google (A/MX/TXT/NS — free, unlimited)"
+        "DNS-over-HTTPS via Cloudflare + Google — A/AAAA/MX/TXT/NS/CNAME/SOA/CAA + PTR for IPs (free, unlimited)"
     }
     fn priority(&self) -> u8 {
         34
     }
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::Url)
+        matches!(
+            t.kind,
+            TargetKind::Domain | TargetKind::Url | TargetKind::IpAddress
+        )
     }
     fn max_timeout_ms(&self) -> u64 {
-        10_000
+        15_000
     }
 
     fn category(&self) -> ModuleCategory {
@@ -269,31 +421,69 @@ impl Module for DohResolver {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Domain];
+        const KINDS: &[EntityKind] =
+            &[EntityKind::IpAddress, EntityKind::Domain, EntityKind::Email];
         KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let Some(domain) = target_domain(target.kind, &target.value) else {
-            return Ok(ModuleResult::new());
-        };
-
         let mut result = ModuleResult::new();
         let mut seen: HashSet<String> = HashSet::new();
 
-        for rtype in RECORD_TYPES {
-            if ctx.cancel.is_cancelled() {
-                break;
-            }
-            let records = query_doh(&domain, rtype, &ctx.http).await;
+        // IP address path: PTR (reverse DNS) only.
+        if target.kind == TargetKind::IpAddress {
+            let Some(ptr_name) = ip_to_reverse_dns(&target.value) else {
+                return Ok(result);
+            };
+            let records = query_doh(&ptr_name, "PTR", &ctx.http).await;
             result.entities.extend(records_for_type(
-                rtype,
+                "PTR",
                 &records,
-                &domain,
+                &target.value,
                 &mut seen,
                 &ctx.scan_id,
             ));
+            return Ok(result);
         }
+
+        // Domain / URL path: fire all record-type queries + DMARC subquery concurrently.
+        let Some(domain) = target_domain(target.kind, &target.value) else {
+            return Ok(result);
+        };
+
+        let mut set: tokio::task::JoinSet<(&'static str, Vec<DohRecord>)> =
+            tokio::task::JoinSet::new();
+
+        for rtype in RECORD_TYPES {
+            let rtype: &'static str = rtype;
+            let h = ctx.http.clone();
+            let d = domain.clone();
+            set.spawn(async move { (rtype, query_doh(&d, rtype, &h).await) });
+        }
+
+        // `_dmarc.{domain}` TXT subquery — report addresses not on the apex zone.
+        {
+            let h = ctx.http.clone();
+            let dmarc_name = format!("_dmarc.{domain}");
+            set.spawn(async move { ("TXT", query_doh(&dmarc_name, "TXT", &h).await) });
+        }
+
+        while let Some(join_result) = set.join_next().await {
+            if ctx.cancel.is_cancelled() {
+                set.abort_all();
+                break;
+            }
+            if let Ok((rtype, records)) = join_result {
+                result.entities.extend(records_for_type(
+                    rtype,
+                    &records,
+                    &domain,
+                    &mut seen,
+                    &ctx.scan_id,
+                ));
+            }
+        }
+
         Ok(result)
     }
 }
