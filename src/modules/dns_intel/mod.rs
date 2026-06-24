@@ -3,7 +3,7 @@
 //!
 //! **Domain targets** (sequential):
 //!   1. *Resolution* — A / AAAA / MX / NS / SOA / TXT lookups via `tokio::join!`.
-//!   2. *Subdomain brute-force* — ~67-label common-name dictionary, bounded
+//!   2. *Subdomain brute-force* — 146-label common-name dictionary, bounded
 //!      to 12 concurrent lookups.
 //!   3. *CAA inspection* — RFC 8659 Certification Authority Authorization.
 //!
