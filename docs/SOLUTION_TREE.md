@@ -598,6 +598,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `find_ip_entity()` recursive traversal. 2 new unit tests. Validation: 3rd scan run
   confirmed zero error + zero timeout. **P12/P13** (`waf_detect`/`web_crawler`
   consistent failures) → open in §4a.
+- **SOL-MODULE-DOH `[x]`** (cycle 28) — `doh_resolver` world-class rewrite: SOA
+  (mname→Domain, rname→Email), CAA (issue/issuewild→CA Domain), PTR (IpAddress targets
+  → reverse-DNS hostnames), DMARC `_dmarc.{domain}` subquery (rua/ruf→Email).
+  JoinSet parallel dispatch (~6× faster). `produces()` → [IP, Domain, Email].
+  `accepts()` → Domain | Url | IpAddress. 19 new tests; 3,148 total. **P-DOH-F**
+  (cloud_storage next-improvement target) → logged for cycle 29.
 
 ---
 
@@ -1304,3 +1310,43 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   as P12/P13; investigation pending. **§4 update:** SOL-PROXY-AWARE row added to §4d;
   P12/P13 added to §4a. Gate green: fmt/clippy/doc clean, 3,129 tests, 0 failures.
   Paired: `PROBLEM_TREE` §8 cycle 27 — same commit.
+- **2026-06-24** — **Cycle 28 (S→P): SOL-MODULE-DOH — `doh_resolver` world-class
+  rewrite: SOA/CAA/PTR record types, DMARC subquery, concurrent JoinSet queries,
+  IpAddress target support, +19 unit tests.**
+  **Evidence base:** 23-entity stable baseline (3 independent scan runs, zero
+  variance). Code audit identified 5 sub-problems (P-DOH-A through P-DOH-E).
+  **Solutions delivered:**
+  - *SOL-MODULE-DOH.A — new record types:* SOA (type 6) → `parse_soa_fields()`:
+    mname as Domain (confidence 0.75, `ns-primary`) + rname (first `.` → `@`) as
+    Email (confidence 0.60, `soa-contact`). CAA (type 257) → `parse_caa_issuer()`:
+    issue/issuewild tags → CA domain (confidence 0.70, `caa-issuer`); iodef and
+    prohibit-all (";") rejected; `;`-params stripped. PTR (type 12) → hostname as
+    Domain (confidence 0.75, `ptr`). `rtype_name()` extended: SOA=6, PTR=12, CAA=257.
+  - *SOL-MODULE-DOH.B — DMARC subquery:* `_dmarc.{domain}` TXT query fired as
+    9th concurrent task; `dmarc_rua_emails()` extracts all `rua=`/`ruf=` `mailto:`
+    URIs as Email entities (confidence 0.70, `dmarc`). Fires on every domain scan
+    — DMARC presence is universal on properly configured domains.
+  - *SOL-MODULE-DOH.C — concurrent JoinSet:* `tokio::task::JoinSet` replaces
+    sequential `for rtype in RECORD_TYPES` loop. All 8 record-type queries + DMARC
+    subquery spawn simultaneously; `while set.join_next()` collects in completion
+    order. Wall-clock ≈ max(individual latencies) ≈ 500ms typical vs 3s+ sequential
+    — ~6× faster; `max_timeout_ms` raised 10s → 15s.
+  - *SOL-MODULE-DOH.D — IpAddress support:* `accepts()` extended to include
+    `TargetKind::IpAddress`; `process()` dispatches IpAddress targets to a PTR-only
+    path via `ip_to_reverse_dns()`. IPv4: `1.2.3.4` → `4.3.2.1.in-addr.arpa`.
+    IPv6: octets reversed, each byte split to low/high nibble, join with `.` →
+    `1.0.0.0…8.b.d.0.1.0.0.2.ip6.arpa`. PTR hostnames emitted as Domain entities.
+  - *SOL-MODULE-DOH.E — produces() + test coverage:* `produces()` extended to
+    `[IpAddress, Domain, Email]`. 19 new unit tests: `ip_to_reverse_dns` (IPv4/IPv6/
+    invalid), `parse_soa_fields` (nominal/dotted-local/too-short), `soa_record_emits`,
+    `parse_caa_issuer` (issue/issuewild/prohibit/iodef/strip-params), `caa_record_emits`
+    + `caa_multiple_issuers_deduplicated`, `ptr_record_emits` + `ptr_dotless_rejected`,
+    `dmarc_rua_emails_extracts_rua_and_ruf` + `non_mailto_ignored`, `txt_dmarc_record_
+    emits_email_entities`, `txt_non_spf_non_dmarc_ignored`, `accepts_domain_url_and_ip`
+    (updated). Total: **3,148 tests** (+19 vs cycle 27).
+  **S→P gap from this cycle:** `cloud_storage` identified as next world-class candidate
+  — 9-entity stable baseline, only 6 bucket-name suffixes, only 3 providers (AWS S3/
+  Azure/GCS); gap analysis shows 400%+ potential coverage increase with 15–20 suffix
+  variants and 4–5 additional providers. Logged for cycle 29. **§4 update:**
+  SOL-MODULE-DOH row added to §4d. Gate green: fmt/clippy/doc clean, 3,148 tests, 0
+  failures. SHA `34449ba` pushed. Paired: `PROBLEM_TREE` §8 cycle 28 — same commit.

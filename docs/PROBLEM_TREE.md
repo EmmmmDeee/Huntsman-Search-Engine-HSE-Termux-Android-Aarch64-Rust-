@@ -1946,3 +1946,29 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   tests offset cycle 26 count baseline), 0 failures. SHA `2a0a7191b53dc0c92100c5d448
   df8bd6028c9617` pushed to `claude/vigilant-galileo-vmjk3e`. **Paired:**
   `SOLUTION_TREE` SOL-PROXY-AWARE cycle 27 + §4/§5 — same commit.
+- **2026-06-24** — **Cycle 28 (S→P): `doh_resolver` world-class rewrite — SOA/CAA/
+  PTR record types, DMARC subquery, concurrent JoinSet queries, IpAddress support.**
+  **Source:** gap analysis from 3 real-scan runs (23-entity stable baseline). Five
+  sub-problems identified from code audit:
+  - **(P-DOH-A)** Only 6 record types queried (A, AAAA, MX, TXT, NS, CNAME); SOA
+    (zone contact email + primary NS), CAA (certificate authority policy), and PTR
+    (reverse DNS hostnames) entirely absent.
+  - **(P-DOH-B)** DMARC report addresses (`rua=`/`ruf=` in `_dmarc.{domain}` TXT)
+    not queried or extracted — common email-attribution intelligence gap.
+  - **(P-DOH-C)** Queries sequential in a `for` loop — 6 types × 500ms typical =
+    3s wall-clock; could be dominated by the slowest single query if parallelised.
+  - **(P-DOH-D)** `IpAddress` target kind rejected by `accepts()` — no PTR/reverse-
+    DNS path existed; IP targets required a separate tool.
+  - **(P-DOH-E)** `produces()` declared only `[IpAddress, Domain]` — Email entities
+    surfaced by SOA rname and DMARC rua/ruf were undeclared.
+  **Fix:** complete rewrite of `src/modules/doh_resolver/mod.rs` + 19 new unit tests
+  in `tests.rs`. New helpers: `ip_to_reverse_dns()` (IPv4/IPv6 reverse-zone names),
+  `parse_soa_fields()` (mname + rname→email), `parse_caa_issuer()` (CA domain),
+  `dmarc_rua_emails()` (rua/ruf mailto: extraction). New record handlers in
+  `records_for_type()`: SOA, CAA, PTR. `process()` restructured: IpAddress path (PTR
+  only) + domain path (JoinSet parallel: 8 RECORD_TYPES + DMARC subquery). Gate
+  green: fmt/clippy/doc clean, **3,148 lib tests** (+19 vs cycle 27), 0 failures.
+  SHA `34449ba` pushed to `claude/vigilant-galileo-vmjk3e`. **New S→P gap:** cloud_
+  storage module identified as next world-class candidate (9 entities baseline, 6
+  suffixes, 3 providers). **Paired:** `SOLUTION_TREE` SOL-MODULE-DOH cycle 28 +
+  §4/§5 — same commit.
