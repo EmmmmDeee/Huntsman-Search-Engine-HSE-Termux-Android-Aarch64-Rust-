@@ -29,6 +29,12 @@ pub(super) struct Platform {
     pub(super) name: &'static str,
     pub(super) url_pattern: &'static str,
     pub(super) exists_codes: &'static [u16],
+    /// Substrings that, when found in the response body, indicate the profile
+    /// does NOT exist even though the server returned a success status code.
+    /// Used for platforms that return HTTP 200 for all paths regardless of
+    /// whether a user exists. Leave empty (`&[]`) for platforms where the
+    /// status code is reliable.
+    pub(super) negative_patterns: &'static [&'static str],
 }
 
 pub(super) const USERNAME_PLATFORMS: &[Platform] = &[
@@ -36,141 +42,207 @@ pub(super) const USERNAME_PLATFORMS: &[Platform] = &[
         name: "facebook",
         url_pattern: "https://www.facebook.com/{}",
         exists_codes: &[200, 302],
+        negative_patterns: &[],
     },
     Platform {
         name: "twitter",
         url_pattern: "https://twitter.com/{}",
         exists_codes: &[200, 301, 302],
+        negative_patterns: &[],
     },
     Platform {
         name: "instagram",
         url_pattern: "https://www.instagram.com/{}/",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "tiktok",
         url_pattern: "https://www.tiktok.com/@{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "github",
         url_pattern: "https://github.com/{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "gitlab",
         url_pattern: "https://gitlab.com/{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "reddit",
         url_pattern: "https://www.reddit.com/user/{}/about.json",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "pinterest",
         url_pattern: "https://www.pinterest.com/{}/",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "steam",
         url_pattern: "https://steamcommunity.com/id/{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "medium",
         url_pattern: "https://medium.com/@{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "devto",
         url_pattern: "https://dev.to/{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "keybase",
         url_pattern: "https://keybase.io/{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "hackernews",
         url_pattern: "https://news.ycombinator.com/user?id={}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "twitch",
         url_pattern: "https://www.twitch.tv/{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "vimeo",
         url_pattern: "https://vimeo.com/{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "soundcloud",
         url_pattern: "https://soundcloud.com/{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "spotify",
         url_pattern: "https://open.spotify.com/user/{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "flickr",
         url_pattern: "https://www.flickr.com/people/{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "bitbucket",
         url_pattern: "https://bitbucket.org/{}/",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "stackoverflow",
         url_pattern: "https://stackoverflow.com/users/{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "myspace",
         url_pattern: "https://myspace.com/{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "linktree",
         url_pattern: "https://linktr.ee/{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "about.me",
         url_pattern: "https://about.me/{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "behance",
         url_pattern: "https://www.behance.net/{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "dribbble",
         url_pattern: "https://dribbble.com/{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "mastodon",
         url_pattern: "https://mastodon.social/@{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "bluesky",
         url_pattern: "https://bsky.app/profile/{}.bsky.social",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "threads",
         url_pattern: "https://www.threads.net/@{}",
         exists_codes: &[200],
+        negative_patterns: &[],
+    },
+    // Platforms known to return HTTP 200 for all paths regardless of user existence.
+    // negative_patterns gate the false positives that status-code-only checks miss.
+    Platform {
+        name: "livejasmin",
+        url_pattern: "https://www.livejasmin.com/en/{}",
+        exists_codes: &[200],
+        negative_patterns: &["Page Not Found", "performer not found", "no results"],
+    },
+    Platform {
+        name: "imlive",
+        url_pattern: "https://www.imlive.com/{}",
+        exists_codes: &[200],
+        negative_patterns: &["Page Not Found", "user not found", "404"],
+    },
+    Platform {
+        name: "mydirtyhobby",
+        url_pattern: "https://www.mydirtyhobby.com/{}",
+        exists_codes: &[200],
+        negative_patterns: &["Leider existiert", "not found", "does not exist"],
+    },
+    Platform {
+        name: "sextpanther",
+        url_pattern: "https://www.sextpanther.com/{}",
+        exists_codes: &[200],
+        negative_patterns: &["Page Not Found", "user not found", "profile not found"],
+    },
+    Platform {
+        name: "stripchat",
+        url_pattern: "https://stripchat.com/{}",
+        exists_codes: &[200],
+        negative_patterns: &["Model Not Found", "not found", "404 Not Found"],
+    },
+    Platform {
+        name: "loyalfans",
+        url_pattern: "https://www.loyalfans.com/{}",
+        exists_codes: &[200],
+        negative_patterns: &["Page Not Found", "user not found", "profile not found"],
     },
 ];
 
@@ -179,11 +251,13 @@ pub(super) const NAME_PLATFORMS: &[Platform] = &[
         name: "facebook-public",
         url_pattern: "https://www.facebook.com/public/{}/",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
     Platform {
         name: "peekyou",
         url_pattern: "https://www.peekyou.com/{}",
         exists_codes: &[200],
+        negative_patterns: &[],
     },
 ];
 
@@ -255,9 +329,12 @@ impl Module for SocialProbe {
             let url = platform.url_pattern.replace("{}", &slug);
             checked_count += 1;
 
-            let code = probe_url(&url).await;
+            let (code, body) = probe_url(&url, !platform.negative_patterns.is_empty()).await;
 
-            if platform.exists_codes.contains(&code) {
+            let body_blocks = !platform.negative_patterns.is_empty()
+                && platform.negative_patterns.iter().any(|p| body.contains(p));
+
+            if platform.exists_codes.contains(&code) && !body_blocks {
                 found_count += 1;
                 found_platforms.push(platform.name);
 
@@ -362,31 +439,55 @@ pub(super) fn build_target_summary(
     Some(summary)
 }
 
-pub(super) async fn probe_url(url: &str) -> u16 {
+/// Probe `url` and return `(http_status_code, body)`.
+///
+/// When `capture_body` is false the body is discarded (`-o /dev/null`) and the
+/// returned string is empty — this is the fast path for platforms where the
+/// status code alone is reliable. When `capture_body` is true the response body
+/// is captured (capped at 8 KB via `--max-filesize`) so the caller can apply
+/// negative-pattern filtering against platforms that return 200 for all paths.
+pub(super) async fn probe_url(url: &str, capture_body: bool) -> (u16, String) {
+    let mut args: Vec<&str> = vec![
+        "-s",
+        "-w",
+        "\n%{http_code}",
+        "--max-time",
+        "4",
+        "-L",
+        "-A",
+        crate::util::curl::UA_MOBILE,
+    ];
+
+    // Body size cap (8 KB) — only applied when we need the body for pattern checks.
+    let filesize_arg;
+    if capture_body {
+        filesize_arg = "8192";
+        args.extend_from_slice(&["--max-filesize", filesize_arg]);
+    } else {
+        args.extend_from_slice(&["-o", "/dev/null"]);
+    }
+    args.extend_from_slice(&["--", url]);
+
     let output = tokio::process::Command::new("curl")
-        .args([
-            "-s",
-            "-o",
-            "/dev/null",
-            "-w",
-            "%{http_code}",
-            "--max-time",
-            "4",
-            "-L",
-            "-A",
-            crate::util::curl::UA_MOBILE,
-            "--",
-            url,
-        ])
+        .args(&args)
         .kill_on_drop(true)
         .output()
         .await;
 
     match output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-            .trim()
-            .parse()
-            .unwrap_or(0),
-        _ => 0,
+        Ok(o) if o.status.success() => {
+            let raw = String::from_utf8_lossy(&o.stdout);
+            if capture_body {
+                // Output is `<body>\n<http_code>` — split on the last newline.
+                if let Some(nl) = raw.rfind('\n') {
+                    let body = raw[..nl].to_string();
+                    let code: u16 = raw[nl + 1..].trim().parse().unwrap_or(0);
+                    return (code, body);
+                }
+            }
+            let code: u16 = raw.trim().parse().unwrap_or(0);
+            (code, String::new())
+        }
+        _ => (0, String::new()),
     }
 }

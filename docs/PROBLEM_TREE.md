@@ -2102,3 +2102,8 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   - **(P-OATHNET-GATE-LOG)** `src/core/engine/dispatch.rs` emitted module-skip events at DEBUG level via `log::debug!` with a plain string. When `oathnet_pro` appeared in `modules_skipped: 14` in Scan 1, there was no structured field (module name, skip reason, is_expansion, corroborating_sources) queryable via `--output json` diagnostics, making root-cause determination manual and error-prone.
   - **Evidence:** Scan 1 JSON showed `modules_skipped: 14` with no per-module breakdown; manual grep of logs required to determine skip reason.
   **Paired:** `SOLUTION_TREE` SOL-OATHNET-GATE-LOG cycle 38 — same commit.
+
+- **2026-06-24** — **Cycle 35 (S→P): Social probe emits false positives for platforms that return HTTP 200 for all paths.**
+  - **(P-SOCIAL-BODY)** `src/modules/social_probe/mod.rs:probe_url()` discarded the response body entirely (`-o /dev/null`), relying only on the HTTP status code. Platforms that return HTTP 200 for every URL path — including non-existent user profiles — produce confirmed-platform entities with no actual evidence the user exists. Six adult-content platforms (livejasmin, imlive, mydirtyhobby, sextpanther, stripchat, loyalfans) exhibit this behaviour, causing false positives in the 67-platform count from Scan 1.
+  - **Evidence (Scan 1, `7e4d8de0`):** 67 platforms confirmed; manual spot-check of 3 high-risk platforms returned 200 for a known-absent username, confirming status-code-only validation insufficient for these platforms.
+  **Paired:** `SOLUTION_TREE` SOL-SOCIAL-BODY cycle 35 — same commit.
