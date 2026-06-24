@@ -270,7 +270,8 @@ pub async fn run() -> Result<()> {
             scan_id,
             format,
             out,
-        } => export::cmd_export(scan_id, format, out).await,
+            include_infra,
+        } => export::cmd_export(scan_id, format, out, include_infra).await,
         Command::Diff { from, to, format } => diff::cmd_diff(from, to, format),
         Command::Update { check, r#ref } => update::cmd_update(check, r#ref).await,
         Command::OathnetBatch {

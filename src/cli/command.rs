@@ -401,6 +401,12 @@ pub enum Command {
         /// File path to write to. Omit for stdout.
         #[arg(short, long)]
         out: Option<String>,
+        /// Include platform/shared-infrastructure entities (cloud buckets, CDN
+        /// IPs, analytics IDs sourced from third-party platform pages) that are
+        /// hidden by default. Equivalent to `--format full` for the report
+        /// format but scoped only to the infra filter.
+        #[arg(long, default_value_t = false)]
+        include_infra: bool,
     },
 
     /// Compare two completed scans: entities added / removed / re-scored.

@@ -14,7 +14,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 use super::handlers::{internal_error, not_found};
-use super::scan_handlers::{scan_missing, wants_candidates};
+use super::scan_handlers::{scan_missing, wants_candidates, wants_infra};
 use crate::api::AppState;
 
 pub async fn scan_entities_csv(
@@ -105,7 +105,12 @@ pub async fn scan_report_json(
     Path(id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    match build_scan_report(&*s.store, &id, wants_candidates(&params)) {
+    match build_scan_report(
+        &*s.store,
+        &id,
+        wants_candidates(&params),
+        wants_infra(&params),
+    ) {
         Ok(Some(report)) => {
             let body = serde_json::to_string_pretty(&report).unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "failed to serialize scan report to JSON string");
@@ -134,6 +139,7 @@ pub(crate) fn build_scan_report(
     store: &dyn crate::core::port::StoragePort,
     scan_id: &str,
     include_candidates: bool,
+    include_infra: bool,
 ) -> crate::core::error::Result<Option<serde_json::Value>> {
     let Some(scan) = store.get_scan(scan_id)? else {
         return Ok(None);
@@ -145,6 +151,14 @@ pub(crate) fn build_scan_report(
     // the full set for investigation.
     if !include_candidates {
         entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+    }
+    // Strip platform/shared-infrastructure entities (cloud buckets, CDN IPs,
+    // analytics IDs sourced from third-party platform pages) from default
+    // output. They inflate the count and obscure subject-owned entities.
+    // `include_infra=true` (via `--include-infra` or `--output full`) restores
+    // them.
+    if !include_infra {
+        entities.retain(|e| !e.has_tag("platform-infra"));
     }
     let correlations = store.correlations_for_scan(scan_id)?;
     let best_location = extract_au_location_fix(&correlations);

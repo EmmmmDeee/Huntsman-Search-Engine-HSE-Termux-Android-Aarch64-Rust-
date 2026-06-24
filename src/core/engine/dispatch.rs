@@ -432,6 +432,23 @@ impl super::ScanEngine {
                         self.emit_excluded(cx.scan_id, &entity, "implausible_phone");
                         continue;
                     }
+                    // Tag entities whose evidence originates from a known
+                    // mega/platform or shared-infra domain as `platform-infra`
+                    // so callers can filter them from default output. Only
+                    // applies to entities that carry a `source_domain`
+                    // evidence attribute — direct-probe results (social_probe,
+                    // oathnet_pro, …) do not set this field and are exempt.
+                    let mut entity = entity;
+                    {
+                        let is_infra = entity.evidence.iter().any(|ev| {
+                            ev.attributes
+                                .get("source_domain")
+                                .is_some_and(|d| crate::core::scan::is_noncentral_domain(d))
+                        });
+                        if is_infra {
+                            entity.tag("platform-infra");
+                        }
+                    }
                     self.emit(
                         cx.scan_id,
                         EventKind::EntityFound {
@@ -439,7 +456,6 @@ impl super::ScanEngine {
                         },
                     );
                     super::scan_entity_for_keys(&entity);
-                    let mut entity = entity;
                     super::enrich_geospatial(&mut entity);
                     if let Some(existing) = state.entity_map.get_mut(&entity.uid) {
                         existing.merge(entity);

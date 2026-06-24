@@ -24,17 +24,53 @@ use super::*;
         store.upsert_entity(&candidate).unwrap();
 
         let port = &store as &dyn crate::core::port::StoragePort;
-        let default = build_scan_report(port, sid, false).unwrap().unwrap();
+        let default = build_scan_report(port, sid, false, false).unwrap().unwrap();
         assert_eq!(
             default["entity_count"].as_u64(),
             Some(1),
             "default report hides the candidate"
         );
-        let full = build_scan_report(port, sid, true).unwrap().unwrap();
+        let full = build_scan_report(port, sid, true, false).unwrap().unwrap();
         assert_eq!(
             full["entity_count"].as_u64(),
             Some(2),
             "include_candidates returns the full set"
+        );
+    }
+
+    #[test]
+    fn report_hides_platform_infra_by_default_and_includes_on_request() {
+        use crate::core::entity::{Entity, EntityKind};
+        use crate::core::scan::{Scan, Target, TargetKind};
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("infra.db");
+        let store = crate::storage::Store::open(db.to_str().unwrap()).unwrap();
+        let sid = "infra-scan";
+        store
+            .upsert_scan(&Scan::new(
+                sid,
+                Target::new(TargetKind::Username, "testuser"),
+            ))
+            .unwrap();
+        store
+            .upsert_entity(&Entity::new(EntityKind::Email, "me@real.com", 0.85, sid))
+            .unwrap();
+        let mut infra = Entity::new(EntityKind::Domain, "s3.amazonaws.com", 0.40, sid);
+        infra.tag("platform-infra");
+        store.upsert_entity(&infra).unwrap();
+
+        let port = &store as &dyn crate::core::port::StoragePort;
+        let default = build_scan_report(port, sid, false, false).unwrap().unwrap();
+        assert_eq!(
+            default["entity_count"].as_u64(),
+            Some(1),
+            "default report hides platform-infra entity"
+        );
+        let with_infra = build_scan_report(port, sid, false, true).unwrap().unwrap();
+        assert_eq!(
+            with_infra["entity_count"].as_u64(),
+            Some(2),
+            "include_infra=true returns the infra entity"
         );
     }
 

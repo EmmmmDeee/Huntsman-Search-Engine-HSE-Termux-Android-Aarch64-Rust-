@@ -200,9 +200,9 @@ fn export_formats_determinism_audit() {
     // structurally with that one field removed — robust regardless of whether
     // the two renders happened to land in the same wall-clock second.
     let mut r1: serde_json::Value =
-        serde_json::from_str(&render_report(&store, "scan-au").unwrap()).unwrap();
+        serde_json::from_str(&render_report(&store, "scan-au", false).unwrap()).unwrap();
     let mut r2: serde_json::Value =
-        serde_json::from_str(&render_report(&store, "scan-au").unwrap()).unwrap();
+        serde_json::from_str(&render_report(&store, "scan-au", false).unwrap()).unwrap();
     assert!(
         r1.get("exported_at").is_some(),
         "exported_at must be present"
