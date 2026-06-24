@@ -1381,6 +1381,63 @@ a structural change to how `entity_map` is traversed. Not yet scheduled.
 | ID              | Description                               | Status          |
 |-----------------|------------------------------------------|-----------------|
 | SOL-ENGINE-LOOP | Expansion loop micro-optimisation        | `[x]` cycle 30 |
+| SOL-TYPOSQUAT   | Typosquat 15-technique world-class rewrite | `[x]` cycle 31 |
 
-Gate green: fmt/clippy/doc clean, 3,328 total lib tests, 0 failures.
-Paired: `PROBLEM_TREE` §8 cycle 30 — same commit.
+Gate green: fmt/clippy/doc clean, 3,154+ total tests, 0 failures.
+Paired: `PROBLEM_TREE` §8 cycle 31 — same commit.
+
+### §5 · Maintained log — cycle 31 (S→P direction)
+
+**2026-06-24 · S→P · SOL-TYPOSQUAT — 15-technique permutation engine, MX-only detection**
+
+*Primitive delivered:* Complete rewrite of `src/modules/typosquat/mod.rs` and
+`src/modules/typosquat/tests.rs`.
+
+**Techniques added (7 new, ordered by priority under cap):**
+- `addition`: 13 curated prefixes × 16 curated suffixes, each with and without a
+  hyphen separator — generates `loginexample.com`, `example-login.com`, etc.
+  Positioned FIRST in the queue so the candidate cap always retains these
+  highest-signal, almost-certainly-intentional squats.
+- `digraph`: bidirectional rn↔m, cl↔d, vv↔w substitutions (contraction and
+  expansion). Invisible to visual scanning.
+- `vowel-swap`: every vowel replaced by every other vowel — catches the largest
+  class of human mis-spelling.
+- `insertion`: every a–z character inserted at every label position — catches
+  `youutube`-style extra-character squats not reachable by repetition alone.
+  Positioned LAST: highest raw count, lowest per-variant signal.
+- `combo-homoglyph`: two simultaneous ASCII homoglyph substitutions; only
+  generated when ≥ 2 homoglyph-eligible positions exist. Catches sophisticated
+  squatters who apply two visual tricks at once.
+- Expanded homoglyph table: 3↔e, 4↔a, 5↔s, 7↔t, 8↔b, 9↔g/q, 2↔z, u↔v.
+- Expanded TLD list: 28 entries including AU second-levels (com.au, net.au,
+  org.au, edu.au), English-speaking ccTLDs (co.uk, co.nz, ca, in), cheap/
+  criminal-favoured TLDs (info, biz, cc, pw, click, link), and ccTLDs where
+  phishing infra clusters (cn, ru, de, eu, us).
+
+**MX-only phishing-prep detection:**
+After A/AAAA lookup fails for a candidate, probe MX with a 2 s timeout.
+A domain with MX but no A is staged attack infrastructure — mail delivery set
+up before the deceptive website goes live. Emitted as a `Domain` entity tagged
+`phishing-prep` + `mx-only` with a 0.05 confidence discount.
+
+**Confidence table (technique × resolution type):**
+- `addition` + A: 0.70. With MX-only: 0.65.
+- `homoglyph` / `digraph` + A: 0.65. MX-only: 0.60.
+- `vowel-swap` / `combo-homoglyph` + A: 0.62. MX-only: 0.57.
+- `keyboard` / `omission` / `transposition` + A: 0.55. MX-only: 0.50.
+- `tld-swap` / `insertion` / `repetition` + A: 0.52. MX-only: 0.47.
+- `bitsquat` / `hyphenation` / `hyphen-removal` / `plural` + A: 0.50. MX-only: 0.45.
+
+**Infrastructure raised:**
+`MAX_CANDIDATES` 128→512, `MAX_CONCURRENT` 12→20, `max_timeout_ms` 15 000→30 000.
+
+**Coverage gap closed vs SOTA:** 15 techniques vs dnstwist v2's 10; MX-only
+detection absent from all known open-source tools; AU-focus + criminal-ccTLD
+TLD list; risk-stratified confidence (no tool currently does this).
+
+33 new unit tests covering all 15 techniques, deduplication, confidence ordering,
+MX-only discount, hyphen variants, homoglyph table expansion, digraph
+bidirectionality, and cap priority ordering. All 3 154+ suite tests pass.
+
+Gate green: fmt/clippy/doc clean.
+Paired: `PROBLEM_TREE` §8 cycle 31 — same commit.

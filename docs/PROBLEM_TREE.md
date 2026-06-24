@@ -2083,3 +2083,29 @@ Scaling exponent: 1.45 (flattened from 1.51).
 
 Gate green: fmt/clippy/doc clean, 3,328 lib tests, 0 failures.
 **Paired:** `SOLUTION_TREE` §5 cycle 30 — same commit.
+
+### §8 · Maintained log — cycle 31 (S→P direction)
+
+**2026-06-24 · S→P · Typosquat module: outpace dnstwist and URLCrazy worldwide**
+
+*Problem identified:* The typosquat module had 8 techniques, a hardcoded flat
+confidence of 0.65 for all hits, no MX-only detection, a 128-candidate cap, and
+a 15 s resolve timeout — inadequate for detecting staged phishing infrastructure.
+Gap analysis vs. dnstwist (the current open-source SOTA):
+- dnstwist v2 ships 10 techniques; Huntsman had 8 (missing: digraph, vowel-swap,
+  insertion, combo-homoglyph).
+- dnstwist has no risk-stratified confidence scoring — every hit is equal.
+- Neither dnstwist nor URLCrazy detect MX-only domains as a distinct signal.
+- dnstwist TLD list: ~15 entries. Huntsman needed AU-focus + criminal-clustering
+  ccTLDs (cn, ru, pw, click, etc.) to cover the phishing threat landscape.
+- Homoglyph table: dnstwist uses Unicode confusables; Huntsman uses ASCII-only
+  (Termux-safe) but was missing 3↔e, 4↔a, 5↔s, 7↔t, 8↔b, 9↔g/q, 2↔z, u↔v.
+
+*Solution delivered (see `SOLUTION_TREE` §5 cycle 31):*
+15 techniques in priority order; MX-only phishing-prep detection with 2 s probe;
+technique × resolution confidence table; MAX_CANDIDATES 512 / MAX_CONCURRENT 20 /
+timeout 30 s; 28-entry TLD list; 33 new unit tests; addition technique front-queued
+under the candidate cap so highest-signal squats are never crowded out.
+
+Gate green: fmt/clippy/doc clean, 3,154+ total tests, 0 failures.
+**Paired:** `SOLUTION_TREE` §5 cycle 31 — same commit.

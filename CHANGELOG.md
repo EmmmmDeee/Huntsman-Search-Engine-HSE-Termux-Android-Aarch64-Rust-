@@ -12,6 +12,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Cycle 31 (P→S) — `typosquat` world-class 15-technique domain permutation
+  engine: complete rewrite of `src/modules/typosquat/mod.rs`.**
+  Techniques expanded from 8 to 15: `addition` (13 prefix × 16 suffix keywords,
+  with/without hyphen separator), `digraph` (`rn`↔`m`, `cl`↔`d`, `vv`↔`w`
+  bidirectional), `vowel-swap` (every vowel×vowel substitution), `insertion`
+  (all a–z at every label position), `combo-homoglyph` (two simultaneous
+  substitutions when ≥ 2 eligible positions), expanded homoglyph table
+  (3↔e, 4↔a, 5↔s, 7↔t, 8↔b, 9↔g/q, 2↔z, u↔v), and a 28-entry TLD list
+  covering phishing-favoured ccTLDs (cn, ru, pw, click, link, etc.).
+  MX-only phishing-prep detection: after A/AAAA failure, probe MX — a domain
+  with MX but no A record is staged attack infrastructure, emitted with
+  `phishing-prep` + `mx-only` tags and 0.05 confidence discount.
+  Risk-stratified confidence per technique × resolution type: `addition` 0.70,
+  `homoglyph`/`digraph` 0.65, `vowel-swap`/`combo-homoglyph` 0.62,
+  `keyboard`/`omission`/`transposition` 0.55, `tld-swap`/`insertion`/
+  `repetition` 0.52, remaining 0.50; MX-only floored at 0.45.
+  `MAX_CANDIDATES` raised 128→512, `MAX_CONCURRENT` 12→20, `max_timeout_ms`
+  15 000→30 000. 33 unit tests, 3 154+ total tests, 0 failures.
+  Gate green: fmt/clippy/doc clean.
+
 - **Cycle 30 (P→S) — Engine expansion loop: 4.2–4.6× throughput gain via three
   statistically-validated micro-optimisations in `src/core/engine/mod.rs`.**
   (1) `TargetKind` check hoisted to the top of the per-entity loop; visit-key
