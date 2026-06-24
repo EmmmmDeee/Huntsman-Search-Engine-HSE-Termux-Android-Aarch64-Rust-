@@ -1989,6 +1989,9 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `parse_caa_issuer_handles_cloudflare_hex_format`, `parse_caa_issuer_hex_issuewild`,
   `caa_hex_record_emits_ca_domain`, `caa_hex_and_text_formats_deduplicated`.
   Gate green: fmt/clippy/doc clean, **3,152 lib tests** (+4 vs cycle 28), 0 failures.
-  Expected post-fix: github.com CAA sources digicert.com, globalsign.com, letsencrypt.org,
-  sectigo.com as caa-issuer Domain entities (+4), raising doh_resolver from 26→~30.
-  **Paired:** `SOLUTION_TREE` SOL-MODULE-DOH cycle 28.1 + §4/§5 — same commit.
+  **Validated (runs 3 & 4, consistent):** `doh_resolver=30` confirmed in both runs —
+  digicert.com, globalsign.com, letsencrypt.org, sectigo.com all surfaced as
+  `caa-issuer` Domain entities (0.70, PROBABLE, source=`doh_resolver`). Exactly +4
+  as predicted. No regressions across all other modules. New baseline: **doh_resolver=30**
+  (+30% vs cycle-27 baseline of 23). **Paired:** `SOLUTION_TREE` SOL-MODULE-DOH cycle
+  28.1 + §4/§5 — same commit. SHA `df00547` (code) + tree update pending push.

@@ -1369,7 +1369,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   4 new unit tests: `parse_caa_issuer_handles_cloudflare_hex_format` (issue tag),
   `parse_caa_issuer_hex_issuewild` (issuewild tag), `caa_hex_record_emits_ca_domain`
   (entity emission), `caa_hex_and_text_formats_deduplicated` (dedup across both).
-  Gate green: fmt/clippy/doc clean, **3,152 tests** (+4), 0 failures. Release binary
-  built; scan 3 pending to validate CAA entities now surface (+4 expected: digicert.com,
-  globalsign.com, letsencrypt.org, sectigo.com). Paired: `PROBLEM_TREE` P-DOH-F
-  cycle 28.1 — same commit.
+  Gate green: fmt/clippy/doc clean, **3,152 tests** (+4), 0 failures.
+  **Scan validation (runs 3 & 4, consistent):** `doh_resolver=30` — up from 26
+  (runs 1–2) and 23 (pre-cycle-28 baseline). +4 CAA issuer domains confirmed in
+  both runs: `digicert.com` (0.70), `globalsign.com` (0.70), `letsencrypt.org`
+  (0.70), `sectigo.com` (0.70) — all tagged `caa-issuer`, sourced `doh_resolver`.
+  No regressions: typosquat=104, hackertarget=76, dns_intel=29, rdap_domain=9,
+  cloud_storage=9 (all stable). SHA `df00547` pushed.
+  **Updated baseline for gap analysis:** doh_resolver=30 (+30% vs cycle-27 baseline).
+  **Next cycle:** cloud_storage (9 entities, 6 suffixes, 3 providers — cycle 29).
+  Paired: `PROBLEM_TREE` P-DOH-F cycle 28.1 — same commit.
