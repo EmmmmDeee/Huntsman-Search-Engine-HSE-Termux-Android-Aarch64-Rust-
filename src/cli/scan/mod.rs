@@ -142,8 +142,23 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         cmd.expansion_strategy.parse().map_err(|e: String| {
             crate::core::error::Error::Other(format!("--expansion-strategy: {e}"))
         })?;
+    // Validate the requested / excluded module names against the live registry.
+    // A typo, or a name removed in an upgrade, was silently ignored — a real run
+    // of `--modules <removed-name>` dispatched ZERO modules with no warning,
+    // leaving the operator with an empty scan and no idea why. Surface it:
+    // "nothing is a black box".
+    let include_modules = split_csv(cmd.modules);
+    let unknown = unknown_module_names(&include_modules, &exclude_modules);
+    if !unknown.is_empty() {
+        eprintln!(
+            "warning: ignoring {} unrecognised module name(s) in --modules/--exclude: {} \
+             — run `hse modules` for the catalogue",
+            unknown.len(),
+            unknown.join(", ")
+        );
+    }
     let options = ScanOptions {
-        modules: split_csv(cmd.modules),
+        modules: include_modules,
         exclude_modules,
         // No CLI flag yet; a category focus is supplied by a profile (e.g.
         // `--profile skiptrace`) and overlaid below.
@@ -365,6 +380,26 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     Ok(())
 }
 
+/// The `--modules` / `--exclude` names that are not registered modules
+/// (deduplicated, sorted), checked against the live registry. A typo, or a name
+/// removed in an upgrade, was silently dropped from the filter; surfacing it
+/// lets the operator see why a scan ran fewer modules than they requested.
+fn unknown_module_names(requested: &Option<Vec<String>>, excluded: &[String]) -> Vec<String> {
+    let known: std::collections::HashSet<&str> = crate::modules::registry()
+        .iter()
+        .map(|m| m.name())
+        .collect();
+    requested
+        .iter()
+        .flatten()
+        .chain(excluded.iter())
+        .filter(|m| !known.contains(m.as_str()))
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 /// Resolve the effective `(depth, min_expand_confidence, max_concurrent)` from
 /// the scan-mode flags. **Pure**: the `--auto` tuning is supplied lazily through
 /// `optimal`, so no key/file IO (nor its `eprintln`) happens off the auto path.
@@ -447,6 +482,38 @@ mod tests {
     use super::*;
     use crate::core::entity::{Entity, EntityKind, Evidence};
     use std::cell::Cell;
+
+    #[test]
+    fn unknown_module_names_flags_typos_and_removed_modules() {
+        // Derived from a real run: `--modules ipapi` — a name removed when that
+        // module was consolidated into ip_whois_geo — dispatched ZERO modules
+        // with no warning. Pin that an unregistered name is flagged while a real
+        // one is not, against the LIVE registry (so it tracks real renames).
+        let req = Some(vec![
+            "ip_geo".to_string(),        // registered → must NOT be flagged
+            "ipapi".to_string(),         // removed     → must be flagged
+            "totally_bogus".to_string(), // typo        → must be flagged
+        ]);
+        let unknown = unknown_module_names(&req, &[]);
+        assert!(
+            !unknown.iter().any(|m| m == "ip_geo"),
+            "a registered module must not be flagged"
+        );
+        assert!(
+            unknown.iter().any(|m| m == "ipapi"),
+            "a removed module name must be flagged"
+        );
+        assert!(
+            unknown.iter().any(|m| m == "totally_bogus"),
+            "a typo'd name must be flagged"
+        );
+        // Excluded names are validated too; output is sorted + deduplicated.
+        let unknown_ex =
+            unknown_module_names(&None, &["whois".to_string(), "no_such_excl".to_string()]);
+        assert_eq!(unknown_ex, vec!["no_such_excl".to_string()]);
+        // An all-valid request flags nothing.
+        assert!(unknown_module_names(&Some(vec!["ip_geo".to_string()]), &[]).is_empty());
+    }
 
     #[test]
     fn tuning_explicit_depth_overrides_modes_and_keeps_optimal_lazy() {
