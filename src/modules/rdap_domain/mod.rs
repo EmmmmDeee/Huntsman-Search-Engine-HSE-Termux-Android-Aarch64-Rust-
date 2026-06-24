@@ -4,7 +4,8 @@
 //!
 //! Complements `whois` with structured registry data: status flags,
 //! events (registration / expiration / last-changed), nameservers,
-//! and contact roles. The rdap.org redirector resolves the right
+//! nameserver glue-record IP addresses, and contact roles. The rdap.org
+//! redirector resolves the right
 //! bootstrap registry for any TLD, so we don't need to maintain our
 //! own bootstrap table.
 //!
@@ -55,9 +56,19 @@ struct EntityRef {
 }
 
 #[derive(Deserialize)]
+struct IpAddresses {
+    #[serde(default)]
+    v4: Vec<String>,
+    #[serde(default)]
+    v6: Vec<String>,
+}
+
+#[derive(Deserialize)]
 struct Nameserver {
     #[serde(default, rename = "ldhName")]
     name: Option<String>,
+    #[serde(default, rename = "ipAddresses")]
+    ip_addresses: Option<IpAddresses>,
 }
 
 #[derive(Deserialize)]
@@ -151,6 +162,29 @@ fn build_domain_entity(domain: &str, body: &RdapResp, scan_id: &str) -> Entity {
     entity
 }
 
+/// Build `IpAddress` entities from RDAP nameserver glue-record `ipAddresses`. **Pure** (no network/IO).
+fn build_ns_ip_entities(domain: &str, ns: &Nameserver, scan_id: &str) -> Vec<Entity> {
+    let Some(ips) = &ns.ip_addresses else {
+        return Vec::new();
+    };
+    let ns_name = ns.name.as_deref().unwrap_or(domain);
+    ips.v4
+        .iter()
+        .chain(ips.v6.iter())
+        .filter(|ip| !ip.trim().is_empty())
+        .filter_map(|ip| {
+            let addr: std::net::IpAddr = ip.trim().parse().ok()?;
+            let mut e = Entity::new(EntityKind::IpAddress, addr.to_string(), 0.80, scan_id);
+            e.tag("rdap-ns-glue");
+            e.add_evidence(
+                Evidence::new(SRC, format!("RDAP nameserver glue for {domain}"))
+                    .with_attr("nameserver", ns_name),
+            );
+            Some(e)
+        })
+        .collect()
+}
+
 /// Build a `Domain` entity for one RDAP nameserver. **Pure** (no network/IO).
 /// `Entity::new` normalises the domain (trim, lowercase, strip trailing dot), so
 /// we only reject a blank/whitespace name here. Returns `None` for a blank name.
@@ -204,7 +238,7 @@ impl Module for RdapDomain {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Domain];
+        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress];
         KINDS
     }
 
@@ -255,6 +289,12 @@ impl Module for RdapDomain {
                 .iter()
                 .take(MAX_NS)
                 .filter_map(|n| build_ns_entity(domain, n.name.as_deref()?, &ctx.scan_id)),
+        );
+        result.extend(
+            body.nameservers
+                .iter()
+                .take(MAX_NS)
+                .flat_map(|n| build_ns_ip_entities(domain, n, &ctx.scan_id)),
         );
 
         Ok(result)
