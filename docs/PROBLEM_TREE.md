@@ -2037,3 +2037,49 @@ photographer's timezone — a high-value OSINT signal that was entirely ignored.
 
 Gate green: fmt/clippy/doc clean, 3,130 total lib tests (+22 new), 0 failures.
 **Paired:** `SOLUTION_TREE` §5 cycle 29 — same commit.
+
+### §8 · Maintained log — cycle 30 (P→S direction)
+
+**2026-06-24 · P→S · Engine expansion loop O(n^1.5) throughput problem**
+
+*Problem:* Three allocation/computation hot-spots in the `run_expansion` inner
+loop caused O(n^1.5) engine scaling — statistically confirmed across 3 independent
+runs at each of three entity budgets (CV ≤ 2.3%):
+
+1. **`subject_identities` O(n) clone waste** — reconstructed every round by cloning
+   all Verified identity entity values, but in the FanoutModule scenario (all
+   Username entities at c_eff=0.9 ≥ VERIFIED_MIN=0.75) the wrong-identity gate
+   short-circuits immediately without reading the Vec. The clone scan was pure waste.
+
+2. **`already_dispatched_this_scan` penalty loop** — the `TargetKind` check was
+   positioned after multiple gate calls; the visit-key was built via
+   `Target::new + visit_key + normalise()` (two allocations); only then did the
+   code check `visited.insert()`. The vast majority of entities in later rounds
+   are already dispatched, so every entity in the working set traversed all gate
+   logic before hitting the `already_dispatched` branch.
+
+3. **`corroborating_sources()` HashSet per new candidate** — always allocated a
+   full `HashSet<&str>` for the geo-corroboration bonus computation, even when the
+   entity had no anchoring geo evidence at all (the common case).
+
+Measured baseline (3 runs, debug label / release build):
+- n=1000: 149 ms mean (CV 0.6%), n=2000: 382 ms mean (CV 0.8%),
+  n=4000: 1229 ms mean (CV 2.3%) — scaling exponent ≈ 1.51 (O(n^1.5)).
+
+*Solution delivered (see `SOLUTION_TREE` §5 cycle 30):*
+- TargetKind check hoisted to TOP; visit key built directly from pre-normalised
+  `entity.value`; `visited.contains()` checked immediately — already-dispatched
+  entities exit with one clone + one hash lookup, skipping all gate logic.
+- `subject_identities` Vec construction guarded by a cheap `any()` scan; uses
+  `Vec::new()` directly when no unverified identity entities exist.
+- Geo-corroboration bonus guarded by `evidence.iter().any()` — common path avoids
+  all HashSet allocation.
+
+Measured post-fix (3 runs):
+- n=1000: 35.5 ms mean (CV 2.3%) — **4.2×** speedup.
+- n=2000: 82.8 ms mean (CV 0.2%) — **4.6×** speedup.
+- n=4000: 267.2 ms mean (CV 4.3%) — **4.6×** speedup.
+Scaling exponent: 1.45 (flattened from 1.51).
+
+Gate green: fmt/clippy/doc clean, 3,328 lib tests, 0 failures.
+**Paired:** `SOLUTION_TREE` §5 cycle 30 — same commit.

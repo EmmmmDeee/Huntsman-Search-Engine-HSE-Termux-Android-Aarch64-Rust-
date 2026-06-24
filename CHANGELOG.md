@@ -10,6 +10,32 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Changed
+
+- **Cycle 30 (P→S) — Engine expansion loop: 4.2–4.6× throughput gain via three
+  statistically-validated micro-optimisations in `src/core/engine/mod.rs`.**
+  (1) `TargetKind` check hoisted to the top of the per-entity loop; visit-key
+  built directly from the pre-normalised `entity.value` (avoids the redundant
+  `normalise()` call inside `visit_key()`); `visited.contains()` tested
+  immediately after — already-dispatched entities pay one clone + one hash
+  lookup per round, skipping all subsequent gate logic (confidence floor,
+  recycled-snippet check, ROI saturation, wrong-identity pivot, non-routable IP,
+  incidental-infra). This is the hot path once the working set grows past a
+  few rounds.
+  (2) `subject_identities` Vec construction guarded by a cheap `any()` scan:
+  when every `Username`/`Person`/`Email` entity already has `c_eff ≥
+  VERIFIED_MIN`, the wrong-identity gate short-circuits before reading the Vec,
+  so the O(n) clone scan is skipped entirely in the common FanoutModule case.
+  (3) Geo-corroboration bonus guarded by `evidence.iter().any()` before
+  allocating the `corroborating_sources()` HashSet — the common path (no
+  anchoring geo evidence) avoids all allocation.
+  Benchmark (3 runs each, release build):
+  - `n=1000`: 35.5 ms mean (CV 2.3%) — down from 149 ms (**4.2× faster**)
+  - `n=2000`: 82.8 ms mean (CV 0.2%) — down from 382 ms (**4.6× faster**)
+  - `n=4000`: 267.2 ms mean (CV 4.3%) — down from 1229 ms (**4.6× faster**)
+  Scaling exponent: 1.45 (down from 1.51 — O(n^1.5) curve flattened).
+  Gate green: fmt/clippy/doc clean, 3,328 total lib tests, 0 failures.
+
 ### Added
 
 - **Cycle 29 (S→P) — `exif_geo` world-class GPS intelligence extraction: DOP-derived

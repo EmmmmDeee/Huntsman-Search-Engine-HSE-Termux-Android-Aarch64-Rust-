@@ -1334,3 +1334,53 @@ as known limitations, not bugs.
 
 Gate green: fmt/clippy/doc clean, 3,130 total lib tests (+22), 0 failures.
 Paired: `PROBLEM_TREE` §8 cycle 29 — same commit.
+
+### §5 · Maintained log — cycle 30 (S→P direction)
+
+**2026-06-24 · S→P · Engine expansion loop: 3-point micro-optimisation**
+
+**`engine/mod.rs` — expansion loop throughput**
+
+*Delivered:* Three targeted changes to `run_expansion`'s per-entity inner loop:
+
+1. **TargetKind hoist + early visited exit** — `TargetKind::from_entity_kind`
+   moved from mid-loop (after confidence, recycled, ROI gates) to the very top.
+   Visit key built as `(tk, entity.value.clone())` directly — `entity.value` is
+   pre-normalised by `Entity::new`, making the `normalise()` call inside
+   `visit_key()` redundant. `visited.contains(&key)` tested immediately; already-
+   dispatched entities `continue` with one clone + one hash lookup, skipping all
+   downstream gate logic. The `already_dispatched_this_scan` audit event is
+   preserved — it is counted by `audit/events.rs::EntityExcluded { reason }`.
+
+2. **`subject_identities` lazy guard** — `has_unverified_identity` `any()` scan
+   (O(n), zero allocations) guards the O(n) `String` clone scan. When all
+   Username/Person/Email entities are Verified (c_eff ≥ VERIFIED_MIN), returns
+   `Vec::new()` without cloning a single value. Wrong-identity gate semantics
+   unchanged — it still consumes the Vec when needed.
+
+3. **Geo-corroboration `any()` short-circuit** — `entity.evidence.iter().any()`
+   check (using `is_enrichment_source` + `is_anchoring_geo_source`) guards the
+   `corroborating_sources()` HashSet allocation. The common path (no anchoring
+   geo evidence) pays zero allocation cost.
+
+Validated against 3-run statistical protocol (CV ≤ 4.3% across all caps):
+- n=1000: 149→35.5 ms (**4.2×**), n=2000: 382→82.8 ms (**4.6×**),
+  n=4000: 1229→267.2 ms (**4.6×**). Scaling exponent: 1.45 ← 1.51.
+
+*§4a update:* Engine O(n^1.5) scaling partially addressed — constant factor
+reduced 4.2–4.6×; exponent marginally improved (1.51→1.45). Remaining
+super-linear component is intrinsic to the multi-round expansion structure
+(entity_map grows each round, each round iterates the full map). True O(n)
+per-round would require an incremental "new entities only" data structure.
+
+*S→P gap:* Exponent is still > 1.0. True incremental expansion (tracking
+only newly-added entities per round) would address the remainder but requires
+a structural change to how `entity_map` is traversed. Not yet scheduled.
+
+**§4d update (status table excerpt):**
+| ID              | Description                               | Status          |
+|-----------------|------------------------------------------|-----------------|
+| SOL-ENGINE-LOOP | Expansion loop micro-optimisation        | `[x]` cycle 30 |
+
+Gate green: fmt/clippy/doc clean, 3,328 total lib tests, 0 failures.
+Paired: `PROBLEM_TREE` §8 cycle 30 — same commit.

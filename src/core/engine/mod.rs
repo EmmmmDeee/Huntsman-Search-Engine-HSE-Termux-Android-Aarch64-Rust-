@@ -999,17 +999,32 @@ impl ScanEngine {
             let subject_identities: Vec<String> = if opts.expand_all_identities {
                 Vec::new()
             } else {
-                std::iter::once(seed.value.clone())
-                    .chain(entity_map.values().filter_map(|e| {
-                        use crate::core::entity::{Classification, EntityKind};
-                        let is_identity = matches!(
-                            e.kind,
-                            EntityKind::Username | EntityKind::Person | EntityKind::Email
-                        );
-                        (is_identity && e.c_effective() >= Classification::VERIFIED_MIN)
-                            .then(|| e.value.clone())
-                    }))
-                    .collect()
+                use crate::core::entity::{Classification, EntityKind};
+                // The wrong-identity gate short-circuits immediately when every
+                // identity entity in the working set is Verified (c_eff ≥
+                // VERIFIED_MIN). In that common FanoutModule scenario the built Vec
+                // is never read, so skip the O(n) clone scan entirely; a cheap
+                // `any()` guard suffices.
+                let has_unverified_identity = entity_map.values().any(|e| {
+                    matches!(
+                        e.kind,
+                        EntityKind::Username | EntityKind::Person | EntityKind::Email
+                    ) && e.c_effective() < Classification::VERIFIED_MIN
+                });
+                if has_unverified_identity {
+                    std::iter::once(seed.value.clone())
+                        .chain(entity_map.values().filter_map(|e| {
+                            let is_identity = matches!(
+                                e.kind,
+                                EntityKind::Username | EntityKind::Person | EntityKind::Email
+                            );
+                            (is_identity && e.c_effective() >= Classification::VERIFIED_MIN)
+                                .then(|| e.value.clone())
+                        }))
+                        .collect()
+                } else {
+                    Vec::new()
+                }
             };
 
             // At most one candidate per working-set entity survives the gates;
@@ -1022,6 +1037,28 @@ impl ScanEngine {
             let strip = |s: &str| s.trim().trim_start_matches("www.").to_ascii_lowercase();
             let seed_stripped = strip(&seed.value);
             for entity in entity_map.values() {
+                // Hoist the TargetKind check first: non-pivotable kinds
+                // (Credential, Password, DeviceId, TrackingId, Other) can be
+                // rejected without touching any per-round allocation or gate.
+                let Some(tk) = TargetKind::from_entity_kind(&entity.kind) else {
+                    self.emit_excluded(scan_id, entity, "non_pivotable_kind");
+                    continue;
+                };
+                // Build the visit key directly from the pre-normalised entity
+                // value. Entity::new already stores the normalised form, so the
+                // extra `normalise()` call inside `visit_key()` is redundant here.
+                // Checking containment BEFORE the remaining gates means the
+                // growing majority of already-dispatched entities pay only one
+                // clone + a hash lookup per round — all heavy gate logic is
+                // skipped for them.
+                let key = (tk, entity.value.clone());
+                if visited.contains(&key) {
+                    // This exact target was already dispatched (or queued) this
+                    // scan. The event must stay visible rather than a silent drop
+                    // — it is counted in the audit signature's excluded_reasons.
+                    self.emit_excluded(scan_id, entity, "already_dispatched_this_scan");
+                    continue;
+                }
                 // Hoist the two pure-but-repeated scores: `c_effective()` is read
                 // up to four times below (the floor check, the wrong-identity gate,
                 // the strategy weight, the convex premium) and `source_count()`
@@ -1057,14 +1094,6 @@ impl ScanEngine {
                     self.emit_excluded(scan_id, entity, "roi_saturated");
                     continue;
                 }
-                // A kind with no external search target (Credential, Password,
-                // DeviceId, TrackingId, Other) cannot be pivoted on. Previously
-                // this was a silent `continue` — a black box. Record it so the
-                // logs show exactly why the entity was not expanded.
-                let Some(tk) = TargetKind::from_entity_kind(&entity.kind) else {
-                    self.emit_excluded(scan_id, entity, "non_pivotable_kind");
-                    continue;
-                };
                 // Wrong-identity gate: an uncorroborated, non-verified
                 // Username/Person whose handle shares no overlap with the
                 // subject's confirmed identity is a different person. Recording it
@@ -1132,59 +1161,61 @@ impl ScanEngine {
                     }
                 }
                 let new_target = Target::new(tk, entity.value.clone());
-                let key = visit_key(&new_target);
-                if visited.insert(key) {
-                    let richness = self.graph.richness_for(tk);
-                    // Strategy weight × a non-saturating corroboration prior.
-                    // c_effective() clamps at 1.0, erasing the cross-correlation
-                    // signal for confident pivots; re-apply it on the ranking so
-                    // a lead confirmed by N independent sources is dispatched
-                    // ahead of an equally-confident single-source lead (its
-                    // dispatch is likelier to yield genuine children).
-                    let mut weight = crate::core::scan::expansion_weight_for_strategy(
-                        opts.expansion_strategy,
+                // `key` was built at the top of the loop and confirmed absent
+                // from `visited` there; insert it now that the entity has
+                // cleared all gates.
+                visited.insert(key);
+                let richness = self.graph.richness_for(tk);
+                // Strategy weight × a non-saturating corroboration prior.
+                // c_effective() clamps at 1.0, erasing the cross-correlation
+                // signal for confident pivots; re-apply it on the ranking so
+                // a lead confirmed by N independent sources is dispatched
+                // ahead of an equally-confident single-source lead (its
+                // dispatch is likelier to yield genuine children).
+                let mut weight = crate::core::scan::expansion_weight_for_strategy(
+                    opts.expansion_strategy,
+                    tk,
+                    c_eff,
+                    &entity.value,
+                    has_paid,
+                    richness,
+                ) * crate::core::scan::corroboration_prior(source_count);
+                // Convex (optionality / barbell) budget allocation, opt-in:
+                // multiply by a convexity premium for heavy-tailed upside over
+                // per-kind dispatch cost, so the bounded budget favours cheap,
+                // high-optionality identity leads over saturated infrastructure.
+                // Neutral (×≈1) for the confident cheap core, so it only
+                // re-sorts the uncertain tail and the expensive infra.
+                if opts.convex_budget {
+                    weight *= crate::core::convex::optionality_multiplier(
                         tk,
+                        source_count,
                         c_eff,
-                        &entity.value,
-                        has_paid,
                         richness,
-                    ) * crate::core::scan::corroboration_prior(source_count);
-                    // Convex (optionality / barbell) budget allocation, opt-in:
-                    // multiply by a convexity premium for heavy-tailed upside over
-                    // per-kind dispatch cost, so the bounded budget favours cheap,
-                    // high-optionality identity leads over saturated infrastructure.
-                    // Neutral (×≈1) for the confident cheap core, so it only
-                    // re-sorts the uncertain tail and the expensive infra.
-                    if opts.convex_budget {
-                        weight *= crate::core::convex::optionality_multiplier(
-                            tk,
-                            source_count,
-                            c_eff,
-                            richness,
-                        );
-                    }
-                    // Geo-corroboration bonus: entities confirmed by anchoring
-                    // geo sources (self-reported address, photo GPS, registry
-                    // address, person-enrichment location) rank slightly ahead
-                    // of equal-weight entities with no person-anchored geo
-                    // signal. Each anchoring geo source contributes +2%, capped
-                    // at +10%, keeping the bonus sub-dominant to the confidence
-                    // and corroboration factors.
+                    );
+                }
+                // Geo-corroboration bonus: entities confirmed by anchoring
+                // geo sources (self-reported address, photo GPS, registry
+                // address, person-enrichment location) rank slightly ahead
+                // of equal-weight entities with no person-anchored geo
+                // signal. Each anchoring geo source contributes +2%, capped
+                // at +10%, keeping the bonus sub-dominant to the confidence
+                // and corroboration factors.
+                // Guard with `any()` first: most entities have no anchoring
+                // geo evidence at all, so the common path avoids allocating
+                // the dedup HashSet inside `corroborating_sources()`.
+                if entity.evidence.iter().any(|ev| {
+                    !crate::core::entity::is_enrichment_source(&ev.source)
+                        && crate::core::correlator::is_anchoring_geo_source(&ev.source)
+                }) {
                     let anchoring_geo_count = entity
                         .corroborating_sources()
                         .into_iter()
                         .filter(|s| crate::core::correlator::is_anchoring_geo_source(s))
                         .count();
-                    if anchoring_geo_count > 0 {
-                        weight *= 1.0 + (anchoring_geo_count as f64 * 0.02).min(0.10);
-                    }
-                    next.push((new_target, weight, entity.uid.clone()));
-                } else {
-                    // This exact target was already dispatched (or queued) this
-                    // scan. Skipping it prevents an infinite pivot cycle, but the
-                    // decision must be visible rather than a silent drop.
-                    self.emit_excluded(scan_id, entity, "already_dispatched_this_scan");
+                    weight *= 1.0 + (anchoring_geo_count as f64 * 0.02).min(0.10);
                 }
+                next.push((new_target, weight, entity.uid.clone()));
             }
 
             // Sort expansion candidates by weighted score (descending), with a
