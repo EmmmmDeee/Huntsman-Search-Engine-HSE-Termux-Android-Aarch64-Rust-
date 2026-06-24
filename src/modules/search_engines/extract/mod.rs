@@ -314,9 +314,20 @@ pub(super) fn extract_family_names(
 
 // ─── Secondary pivot: extract usernames from discovered URLs ──────────────────
 
+/// Matches `(@handle)` in page titles — the canonical form X/Twitter and
+/// Instagram use to show "DisplayName (@handle)" in SERP snippets. Compiled
+/// once; the capture group is the handle without the `@`.
+static TITLE_MENTION_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"\(@([A-Za-z0-9_]{2,25})\)").expect("title mention regex")
+});
+
 /// Extract potential username pivots from search results. Social
 /// profile URLs contain usernames in their path that can be used
 /// as secondary search seeds to find cross-platform identity links.
+///
+/// Also mines `(@handle)` patterns from result titles — the standard
+/// format platforms use to disclose the real account handle separately
+/// from the display name (e.g. `Ryno23 (@ZMKCR) / Posts / X`).
 pub(super) fn extract_username_pivots(results: &[SearchResult], target: &Target) -> Vec<String> {
     let terms = target_terms(target);
     let mut seen = HashSet::new();
@@ -328,6 +339,8 @@ pub(super) fn extract_username_pivots(results: &[SearchResult], target: &Target)
         if !is_social_host(&host) {
             continue;
         }
+
+        // ── Path-segment pivot ───────────────────────────────────────
         if let Some(username) = extract_path_username(&r.url) {
             let lower = username.to_lowercase();
             if lower.len() >= 3
@@ -339,6 +352,31 @@ pub(super) fn extract_username_pivots(results: &[SearchResult], target: &Target)
                 let (score, _) = score_username(&lower, &host, &terms, r);
                 if score >= 3 {
                     pivots.push(format!("\"{username}\""));
+                }
+            }
+        }
+
+        // ── @mention pivot from title ────────────────────────────────
+        // Platforms show "DisplayName (@handle)" in page titles; extract
+        // the parenthesised handle when the title is confirmed to be about
+        // the target (at least one seed term ≥4 chars appears in it).
+        // No score gate — title @-mention on a confirmed-target social
+        // result is a near-certain cross-platform handle disclosure.
+        let title_lower = r.title.to_lowercase();
+        if terms
+            .iter()
+            .filter(|t| t.len() >= 4)
+            .any(|t| title_lower.contains(t.as_str()))
+        {
+            for cap in TITLE_MENTION_RE.captures_iter(&r.title) {
+                let handle = &cap[1];
+                let lower = handle.to_lowercase();
+                if lower.len() >= 2
+                    && lower != target_lower
+                    && !is_navigation_path(&lower)
+                    && seen.insert(lower.clone())
+                {
+                    pivots.push(format!("\"{handle}\""));
                 }
             }
         }

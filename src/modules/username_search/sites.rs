@@ -1704,4 +1704,64 @@ pub(super) const SITES: &[Site] = &[
         200,
         "social"
     ),
+    // ── Creator / Adult Content ────────────────────────────────────
+    // OnlyFans 404s on missing profiles; 200 on existing.
+    s!("OnlyFans", "https://onlyfans.com/{}", H, 200, "social"),
+    // Fansly returns 404 for non-existent handles.
+    s!("Fansly", "https://fansly.com/{}", H, 200, "social"),
+    // Throne (creator wishlist hub).
+    s!("Throne", "https://throne.com/{}", H, 200, "social"),
+    // ── 3D / Design Marketplace ────────────────────────────────────
+    // CGTrader designer profiles — confirmed populated from live OSINT
+    // (ryno23 profile observed in search results 2026-06-24).
+    s!(
+        "CGTrader",
+        "https://www.cgtrader.com/designers/{}",
+        H,
+        200,
+        "photo"
+    ),
+    // TurboSquid artist profiles.
+    s!(
+        "TurboSquid",
+        "https://www.turbosquid.com/Search/Artists/{}",
+        H,
+        200,
+        "photo"
+    ),
+    // ── Music / Audio ─────────────────────────────────────────────
+    s!("Audiomack", "https://audiomack.com/{}", H, 200, "music"),
+    s!(
+        "Reverbnation",
+        "https://www.reverbnation.com/{}",
+        H,
+        200,
+        "music"
+    ),
+    // ── Professional / Portfolio ───────────────────────────────────
+    // Wellfound is the rebranded AngelList (different URL from angel.co/u/{}).
+    s!(
+        "Wellfound",
+        "https://wellfound.com/u/{}",
+        H,
+        200,
+        "business"
+    ),
+    // ── Writing / Reading ──────────────────────────────────────────
+    s!("Inkitt", "https://www.inkitt.com/{}", H, 200, "blog"),
+    s!(
+        "Royal Road",
+        "https://www.royalroad.com/profile/{}",
+        H,
+        200,
+        "blog"
+    ),
+    // ── Anime / Misc ───────────────────────────────────────────────
+    s!(
+        "Myanimelist",
+        "https://myanimelist.net/profile/{}",
+        H,
+        200,
+        "other"
+    ),
 ];
