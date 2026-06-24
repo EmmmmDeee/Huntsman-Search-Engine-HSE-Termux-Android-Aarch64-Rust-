@@ -188,7 +188,9 @@ pub fn truncate_display(s: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ascii_digits, fold_ascii_lower, nonempty, slugify, truncate_display, truncate_safe};
+    use super::{
+        ascii_digits, fold_ascii_lower, nonempty, slugify, truncate_display, truncate_safe,
+    };
 
     #[test]
     fn nonempty_trims_and_treats_blank_as_absent() {
@@ -312,7 +314,10 @@ mod tests {
         assert_eq!(slugify("Hello World"), "hello-world");
         assert_eq!(slugify("github.com"), "github-com");
         assert_eq!(slugify("---"), "");
-        assert_eq!(slugify("client transfer prohibited"), "client-transfer-prohibited");
+        assert_eq!(
+            slugify("client transfer prohibited"),
+            "client-transfer-prohibited"
+        );
         assert_eq!(slugify("no-spaces"), "no-spaces");
         assert_eq!(slugify("a  b   c"), "a-b-c");
         assert_eq!(slugify(""), "");

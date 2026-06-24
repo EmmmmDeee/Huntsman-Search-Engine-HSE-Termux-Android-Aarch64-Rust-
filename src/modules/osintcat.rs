@@ -123,8 +123,7 @@ impl Module for OsintCat {
 
         // Footprint — free endpoint.
         let fp_url = format!("{BASE}/email-footprint?query={}", urlencode(email));
-        match fetch_keyed_json::<OcFootprintResponse>(ctx, SRC, &fp_url, KEY_ENV, "x-api-key")
-            .await
+        match fetch_keyed_json::<OcFootprintResponse>(ctx, SRC, &fp_url, KEY_ENV, "x-api-key").await
         {
             Ok(Some(fp)) => emit_footprint(&fp, &mut entity, &mut result),
             Ok(None) => {} // 404 — no footprint data

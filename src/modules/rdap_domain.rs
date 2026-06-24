@@ -272,7 +272,6 @@ mod tests {
         assert!(RdapDomain.priority() < 32);
     }
 
-
     fn resp(json: &str) -> RdapResp {
         serde_json::from_str(json).unwrap()
     }
