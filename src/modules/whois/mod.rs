@@ -4,6 +4,15 @@
 //! whois server, then parse the response for registrar / dates / registrant
 //! email. The parser is line-prefix based, robust across the half-dozen
 //! mostly-but-not-quite-RFC-3912 dialects in the wild.
+//!
+//! ## Proxy-environment fallback
+//!
+//! TCP port 43 is not routable through an HTTPS proxy. When `HTTPS_PROXY` or
+//! `https_proxy` is set the module detects this at dispatch time:
+//! - **Domain targets** — skip cleanly; `rdap_domain` covers RDAP over HTTPS.
+//! - **IP targets** — fall back to `https://rdap.org/ip/{addr}` which routes to
+//!   the authoritative RIR (ARIN/RIPE/APNIC/LACNIC/AFRINIC) and returns the
+//!   same org / country / abuse-contact data that TCP WHOIS would have provided.
 
 mod client;
 mod parse;
@@ -12,6 +21,7 @@ mod parse;
 mod tests;
 
 use async_trait::async_trait;
+use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -19,6 +29,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::RequestBuilderExt;
 
 use client::{find_referral, query, resolve_public_whois};
 use parse::{WhoisFields, field, parse_whois};
@@ -26,6 +37,159 @@ use parse::{WhoisFields, field, parse_whois};
 const SRC: &str = "whois";
 const IANA_WHOIS: &str = "whois.iana.org:43";
 pub(super) const QUERY_TIMEOUT_MS: u64 = 4000;
+
+// ── Proxy-environment detection ────────────────────────────────────────────
+
+/// True when the process is running behind an HTTPS proxy. In that environment
+/// TCP port 43 (raw WHOIS) is not reachable, so domain targets skip and IP
+/// targets fall back to RDAP-over-HTTPS.
+fn behind_proxy() -> bool {
+    std::env::var_os("HTTPS_PROXY").is_some() || std::env::var_os("https_proxy").is_some()
+}
+
+// ── RDAP-over-HTTPS fallback for IP targets ────────────────────────────────
+
+#[derive(Deserialize)]
+struct RdapIpResp {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    country: Option<String>,
+    #[serde(default)]
+    entities: Vec<RdapIpEntity>,
+}
+
+#[derive(Deserialize)]
+struct RdapIpEntity {
+    #[serde(default)]
+    roles: Vec<String>,
+    #[serde(default, rename = "vcardArray")]
+    vcard_array: Option<serde_json::Value>,
+    #[serde(default)]
+    entities: Vec<RdapIpEntity>,
+}
+
+/// Extract the value of a named vCard property from a `vcardArray` JSON value.
+/// `vcardArray = ["vcard", [[name, params, type, value], ...]]`
+pub(crate) fn vcard_field(vcard: &serde_json::Value, prop: &str) -> Option<String> {
+    let items = vcard.as_array()?.get(1)?.as_array()?;
+    items.iter().find_map(|item| {
+        let arr = item.as_array()?;
+        (arr.first()?.as_str()? == prop)
+            .then(|| arr.get(3)?.as_str().map(str::to_string))?
+    })
+}
+
+/// Walk `entities` recursively, returning the first one whose `roles` list
+/// contains `role`.
+fn find_ip_entity<'a>(entities: &'a [RdapIpEntity], role: &str) -> Option<&'a RdapIpEntity> {
+    for e in entities {
+        if e.roles.iter().any(|r| r == role) {
+            return Some(e);
+        }
+        if let Some(found) = find_ip_entity(&e.entities, role) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// RDAP-over-HTTPS fallback for IP targets when TCP/43 is unavailable.
+///
+/// `https://rdap.org/ip/{ip}` bootstraps to the authoritative RIR (ARIN /
+/// RIPE / APNIC / LACNIC / AFRINIC) and returns the same org / country /
+/// abuse-contact data that raw WHOIS would have provided.
+async fn rdap_ip_fallback(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+    let url = format!(
+        "https://rdap.org/ip/{}",
+        crate::util::http::urlencode(&target.value)
+    );
+    let resp = ctx
+        .http
+        .get(&url)
+        .header("Accept", "application/rdap+json")
+        .timeout(std::time::Duration::from_secs(10))
+        .send_tagged(SRC)
+        .await
+        .map_err(|e| Error::module(SRC, e.to_string()))?;
+
+    let status = resp.status();
+    if status.as_u16() == 404 {
+        return Ok(ModuleResult::new());
+    }
+    if !status.is_success() {
+        return Err(crate::util::http::http_status_error(SRC, resp).await);
+    }
+
+    let body: RdapIpResp =
+        crate::util::http::json_decode(SRC, resp).await?;
+
+    let mut result = ModuleResult::new();
+    let net_name = body.name.as_deref().unwrap_or("").trim().to_string();
+    let country = body.country.as_deref().unwrap_or("").trim().to_string();
+
+    // Registrant org name from vCard `fn` field, falling back to network block name.
+    let org_name = find_ip_entity(&body.entities, "registrant")
+        .and_then(|e| e.vcard_array.as_ref())
+        .and_then(|vc| vcard_field(vc, "fn"))
+        .filter(|s| !s.is_empty())
+        .or_else(|| (!net_name.is_empty()).then(|| net_name.clone()));
+
+    if let Some(org) = &org_name {
+        let org = org.trim();
+        if org.len() >= 3 {
+            let mut ev =
+                Evidence::new(SRC, format!("RDAP network registrant for {}", target.value))
+                    .with_attr("source", "rdap-fallback")
+                    .with_attr("ip", target.value.as_str());
+            if !net_name.is_empty() {
+                ev = ev.with_attr("net_name", net_name.as_str());
+            }
+            if !country.is_empty() {
+                ev = ev.with_attr("country", country.as_str());
+            }
+            let mut oe = Entity::new(EntityKind::Organisation, org, 0.72, &ctx.scan_id);
+            oe.tag("whois");
+            oe.tag("rdap-fallback");
+            oe.tag("ip-registrant");
+            oe.add_evidence(ev);
+            result.push(oe);
+        }
+    }
+
+    if !country.is_empty() {
+        let mut ae = Entity::new(EntityKind::Address, &country, 0.50, &ctx.scan_id);
+        ae.tag("whois");
+        ae.tag("rdap-fallback");
+        ae.tag("geoint");
+        ae.add_evidence(
+            Evidence::new(SRC, format!("RDAP country for {}", target.value))
+                .with_attr("source", "rdap-fallback")
+                .with_attr("ip", target.value.as_str()),
+        );
+        result.push(ae);
+    }
+
+    // Abuse contact email — the RIR abuse role is never GDPR-redacted for IPs.
+    if let Some(email) = find_ip_entity(&body.entities, "abuse")
+        .and_then(|e| e.vcard_array.as_ref())
+        .and_then(|vc| vcard_field(vc, "email"))
+        .filter(|e| e.contains('@'))
+        .filter(|e| !crate::util::domains::is_infrastructure_email(e))
+    {
+        let mut ee = Entity::new(EntityKind::Email, &email, 0.72, &ctx.scan_id);
+        ee.tag("whois-abuse");
+        ee.tag("rdap-fallback");
+        ee.add_evidence(
+            Evidence::new(SRC, format!("RDAP abuse contact for {}", target.value))
+                .with_attr("source", "rdap-fallback")
+                .with_attr("ip", target.value.as_str()),
+        );
+        result.push(ee);
+    }
+
+    Ok(result)
+}
 
 pub struct Whois;
 
@@ -78,6 +242,23 @@ impl Module for Whois {
     }
 
     async fn process(&self, target: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
+        // When running behind an HTTPS proxy, TCP port 43 is not routable.
+        // Domain targets skip instantly (rdap_domain covers that path over HTTPS).
+        // IP targets fall back to RDAP-over-HTTPS for the same org/country/abuse data.
+        if behind_proxy() {
+            return match target.kind {
+                TargetKind::IpAddress => rdap_ip_fallback(target, _ctx).await,
+                _ => {
+                    tracing::debug!(
+                        module = SRC,
+                        "skipping domain WHOIS — TCP/43 unavailable behind HTTPS proxy; \
+                         rdap_domain provides structured registry data over HTTPS"
+                    );
+                    Ok(ModuleResult::new())
+                }
+            };
+        }
+
         let query_value = match target.kind {
             TargetKind::Url => {
                 let host = crate::util::url_util::host_only(&target.value);

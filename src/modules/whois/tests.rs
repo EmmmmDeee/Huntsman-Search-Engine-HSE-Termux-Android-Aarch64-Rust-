@@ -3,6 +3,7 @@ use crate::core::scan::{Target, TargetKind};
 use super::Whois;
 use super::client::find_referral;
 use super::parse::{all_fields, field, parse_whois, starts_with_ascii_ci};
+use super::vcard_field;
 use crate::core::module::Module;
 
 #[test]
@@ -94,4 +95,39 @@ fn starts_with_ascii_ci_matches_prefix_ignoring_case() {
     assert!(!starts_with_ascii_ci("Reg", "registrar:"));
     // The empty key is a prefix of everything.
     assert!(starts_with_ascii_ci("anything", ""));
+}
+
+#[test]
+fn vcard_field_extracts_fn_and_email() {
+    // Standard vcardArray structure: ["vcard", [[name, params, type, value], ...]]
+    let vc: serde_json::Value = serde_json::json!([
+        "vcard",
+        [
+            ["version", {}, "text", "4.0"],
+            ["fn", {}, "text", "Example Organisation Ltd"],
+            ["email", {}, "text", "abuse@example.org"]
+        ]
+    ]);
+    assert_eq!(
+        vcard_field(&vc, "fn").as_deref(),
+        Some("Example Organisation Ltd"),
+        "fn field extracted"
+    );
+    assert_eq!(
+        vcard_field(&vc, "email").as_deref(),
+        Some("abuse@example.org"),
+        "email field extracted"
+    );
+    assert!(
+        vcard_field(&vc, "tel").is_none(),
+        "missing field returns None"
+    );
+}
+
+#[test]
+fn vcard_field_returns_none_for_malformed_input() {
+    let not_a_vcard = serde_json::json!({"key": "value"});
+    assert!(vcard_field(&not_a_vcard, "fn").is_none());
+    let empty_array = serde_json::json!([]);
+    assert!(vcard_field(&empty_array, "fn").is_none());
 }
