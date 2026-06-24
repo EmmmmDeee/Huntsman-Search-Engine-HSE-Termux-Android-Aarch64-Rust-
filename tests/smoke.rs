@@ -1402,7 +1402,7 @@ impl Module for SlowModule {
         6_000
     }
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        tokio::time::sleep(std::time::Duration::from_millis(3_500)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(3_100)).await;
         let mut r = ModuleResult::new();
         let mut e = Entity::new(EntityKind::Email, &target.value, 0.9, &ctx.scan_id);
         e.tag("slow-completed");
@@ -1604,8 +1604,23 @@ async fn live_session_runs_two_iterations_and_completes() {
         },
     );
 
-    // Wait for completion (2 iterations × 1s interval + processing time).
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    // Poll for completion (2 iterations × 1s interval + processing time).
+    // Replaces a fixed 5s sleep: detects completion as soon as it happens
+    // (~2.1s) rather than always waiting the full conservative upper bound.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let done = scanner
+            .get(&live_id)
+            .is_some_and(|s| matches!(s.status, LiveStatus::Completed));
+        if done {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "live session did not complete within 6s"
+        );
+    }
 
     let session = scanner.get(&live_id).expect("session should exist");
     assert!(
@@ -1652,8 +1667,22 @@ async fn live_session_stops_on_explicit_cancel() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     assert!(scanner.stop(&live_id), "stop should find the session");
 
-    // Give the loop time to notice the cancel and clean up.
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    // Poll for Stopped: CancellationToken propagates in <10ms; no need
+    // for a fixed 1s sleep. 2s hard deadline keeps the test from hanging.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let done = scanner
+            .get(&live_id)
+            .is_some_and(|s| matches!(s.status, LiveStatus::Stopped));
+        if done {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "live session did not stop within 2s"
+        );
+    }
 
     let session = scanner.get(&live_id).expect("session should still exist");
     assert!(
