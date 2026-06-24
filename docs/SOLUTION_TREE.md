@@ -1444,3 +1444,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   **S→P gap from this cycle:** rdap_domain nameserver glue records (`ipAddresses` field in RDAP JSON) not currently
   extracted — potential cycle 31 target (P-RDAP-B). Logged for next gap analysis pass.
   Paired: `PROBLEM_TREE` P-DNS-A/B cycle 30 — same commit. SHA `98031ea`.
+
+- **2026-06-24** — **Cycle 31 (P→S): SOL-RDAP-B — `rdap_domain` nameserver glue-record `ipAddresses` extraction.**
+  **Evidence base:** RDAP response for afnic.fr (AFNIC, .fr registry) confirmed `ipAddresses` with v4+v6
+  per nameserver. Code gap P-RDAP-B verified: `Nameserver` struct had no `ip_addresses` field, `produces()`
+  declared only `[Domain]`. RFC 7483 §10.2.2 defines `ipAddresses.v4`/`v6` as standard glue-record fields.
+  **Solutions delivered:**
+  - *SOL-RDAP-B — glue extraction:* `IpAddresses { v4: Vec<String>, v6: Vec<String> }` struct added.
+    `ip_addresses: Option<IpAddresses>` added to `Nameserver`. `build_ns_ip_entities()` parses each IP via
+    `parse::<IpAddr>()` (invalid/empty silently skipped), emits `IpAddress` entity tagged `rdap-ns-glue` with
+    `nameserver` attribute. `process()` extended with a second `flat_map` over `body.nameservers.iter().take(MAX_NS)`.
+    `produces()` updated to `[Domain, IpAddress]`. Module/const doc updated.
+  3 new tests: `ns_ip_entities_extracted_from_glue_records` (v4+v6, tag, attribute),
+  `ns_ip_entities_skips_invalid_and_empty`, `ns_ip_entities_absent_yields_empty`.
+  Gate green: fmt/clippy/doc clean, **3,165 lib tests** (+3 vs cycle 30), 0 failures.
+  **Scan validation (runs 1 & 2, consistent, afnic.fr, depth=0):** `rdap_domain=13` — 5 Domain + 8 IpAddress.
+  IPv4 glue: 192.134.0.49, 192.134.4.1, 192.93.0.4, 194.0.36.1.
+  IPv6 glue: 2001:660:3005::1:2, 2001:660:3006::1:1, 2001:678:4c::1, 2001:67c:2218:2::4:1.
+  Registry scope note: .com (Verisign) omits `ipAddresses` — github.com rdap_domain=9 unchanged (expected).
+  ccTLDs (.fr AFNIC, .br, .au, etc.) include glue; feature activates automatically for those registries.
+  **New baseline: rdap_domain (afnic.fr validation target)=13**.
+  **S→P gap from this cycle:** All 6 top-level modules now have >9 entity baselines. Next pass: examine
+  modules with structured sub-fields not yet surfaced — e.g. hackertarget (76 baseline; ASN org-name/country
+  tags) or crtsh (0/121 inconsistency — environment-side, cannot fix without real crtsh connectivity).
+  Paired: `PROBLEM_TREE` P-RDAP-B cycle 31 — same commit. SHA `575f0ed`.

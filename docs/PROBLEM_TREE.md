@@ -2046,3 +2046,25 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   No regressions: cloud_storage=26, doh_resolver=30, hackertarget=76, typosquat=104 (all stable).
   **New baseline: dns_intel=41** (+41% vs cycle-29 baseline of 29).
   **Paired:** `SOLUTION_TREE` SOL-MODULE-DNS-INTEL cycle 30 + §4/§5 — same commit. SHA `98031ea`.
+
+- **2026-06-24** — **Cycle 31 (S→P): `rdap_domain` nameserver glue-record `ipAddresses` not extracted.**
+  **Source:** gap noted in cycle 30 solution tree. Gap analysis: rdap_domain=9 for github.com (1 domain +
+  4 NS domains + 4 extras). Code inspection of `Nameserver` struct (mod.rs:57-61) confirmed `ipAddresses`
+  field silently dropped — RFC 7483 §10.2.2 defines `ipAddresses.v4` and `ipAddresses.v6` arrays for glue.
+  - **(P-RDAP-B)** `Nameserver` deserialization extracts only `ldhName`; `ipAddresses` (glue record IPv4/IPv6
+    arrays) absent from struct → zero `IpAddress` entities produced from RDAP even when the registry provides
+    them. Note: .com (Verisign) RDAP omits `ipAddresses`; ccTLDs (e.g. .fr/AFNIC, .nl/SIDN) include full
+    glue. `produces()` declared only `[Domain]` — incorrect given RFC 7483 data model.
+  **Fix:** Add `IpAddresses` struct (`v4: Vec<String>`, `v6: Vec<String>`); add `ip_addresses:
+  Option<IpAddresses>` to `Nameserver`. Add `build_ns_ip_entities()`: parse each IP with `parse::<IpAddr>()`
+  (skips invalid/empty), emit `IpAddress` entities tagged `rdap-ns-glue`. Extend `process()` to fan out glue
+  IPs per NS. Update `produces()` → `[Domain, IpAddress]`. Module doc updated.
+  3 new tests: `ns_ip_entities_extracted_from_glue_records`, `ns_ip_entities_skips_invalid_and_empty`,
+  `ns_ip_entities_absent_yields_empty`.
+  Gate green: fmt/clippy/doc clean, **3,165 lib tests** (+3 vs cycle 30), 0 failures.
+  **Validated (runs 1 & 2, consistent, afnic.fr):** `rdap_domain=13` — 5 Domain + 8 IpAddress (4 IPv4 +
+  4 IPv6 glue records). IPs confirmed: 192.134.0.49, 192.134.4.1, 192.93.0.4, 194.0.36.1,
+  2001:660:3005::1:2, 2001:660:3006::1:1, 2001:678:4c::1, 2001:67c:2218:2::4:1. github.com baseline
+  unchanged at 9 (.com Verisign does not expose glue in RDAP — expected).
+  **New baseline: rdap_domain (afnic.fr)=13** (new validation target; github.com=9 stable).
+  **Paired:** `SOLUTION_TREE` SOL-RDAP-B cycle 31 — same commit. SHA `575f0ed`.
