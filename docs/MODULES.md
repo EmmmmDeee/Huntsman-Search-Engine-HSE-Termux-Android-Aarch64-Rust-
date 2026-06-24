@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (126 modules: 93 free · 28 key-gated · 5 paid)
+## Catalogue (128 modules: 95 free · 28 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -17,11 +17,12 @@ records. The engine knows nothing else — every module is a one-file change.
 | `exa_search` | email, username, phone, full_name, domain, organisation | key_gated | no | 87 | url, domain, email, phone |
 | `search_engines` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn | free | no | 113 | url, domain, email, username, phone, address, coordinates, person, organisation, abn_acn |
 
-### social (11)
+### social (12)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `username_search` | username | free | no | 111 | url, username |
+| `gaming_profile` | username | free | no | 106 | username, url |
 | `social_probe` | username, full_name | free | no | 108 | url, username, person, domain |
 | `streaming_probe` | username | free | no | 108 | url, username |
 | `github_code_search` | email, username | free | no | 85 | url, username, email |

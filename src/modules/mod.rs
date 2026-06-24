@@ -47,6 +47,7 @@ pub mod epieos;
 pub mod exa_search;
 pub mod exif_geo;
 pub mod fullcontact;
+pub mod gaming_profile;
 pub mod geo_domain_classifier;
 pub mod geo_intel;
 pub mod geocode;
@@ -297,6 +298,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(username_variants::UsernameVariants),
         Arc::new(github_user::GithubUser),
         Arc::new(github_code_search::GithubCodeSearch),
+        Arc::new(gaming_profile::GamingProfile),
         Arc::new(hacker_news::HackerNews),
         Arc::new(npm_author::NpmAuthor),
         Arc::new(crates_io::CratesIo),
