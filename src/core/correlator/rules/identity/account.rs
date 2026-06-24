@@ -685,3 +685,180 @@ pub(in crate::core::correlator) fn rule_au_055_primary_source_accounts(
         rank: 0.0,
     }]
 }
+
+/// AU-076 — Email local-part ↔ Username canonical identity bridge.
+///
+/// When an Email entity's local part (text before the `@`) canonicalises to the
+/// same handle as a Username entity — where canonical means separator-stripped
+/// lowercase (`john.doe` = `john_doe` = `johndoe`) — both almost certainly belong
+/// to the same subject: the username *is* the email login. This is the strongest
+/// purely free, zero-API identity link the engine can derive, requiring no
+/// external service and no historical data.
+///
+/// Excludes generic/role handles (`info`, `support`, `dns`, …) that would create
+/// spurious links between unrelated entities. Severity: High because the
+/// conjunction is highly specific — the same canonical string appearing in two
+/// entity kinds from independent sources is not coincidental.
+pub(in crate::core::correlator) fn rule_au_076_email_username_localpart_bridge(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // Pre-build the username index: canonical_handle → (entity, original value).
+    // Filter generic handles up front so none of the inner loop even considers them.
+    let usernames: Vec<(String, &Entity)> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username)
+        .filter_map(|e| {
+            let ch = canonical_handle(&e.value);
+            // At least 4 chars and not a generic/role token.
+            if ch.len() >= 4 && !is_generic_handle(&ch) {
+                Some((ch, e))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if usernames.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out: Vec<Correlation> = Vec::new();
+
+    for email_e in entities.iter().filter(|e| e.kind == EntityKind::Email) {
+        let local = match email_e.value.split('@').next() {
+            Some(l) if !l.is_empty() => l,
+            _ => continue,
+        };
+        let canon_local = canonical_handle(local);
+        if canon_local.len() < 4 || is_generic_handle(&canon_local) {
+            continue;
+        }
+        for (canon_u, u_e) in &usernames {
+            if canon_u != &canon_local {
+                continue;
+            }
+            let mut uids = vec![email_e.uid.clone(), u_e.uid.clone()];
+            uids.sort_unstable();
+            out.push(Correlation {
+                rule_id: "AU-076".into(),
+                rule_name: "Email-username local-part identity bridge".into(),
+                severity: Severity::High,
+                description: format!(
+                    "Email '{}' local-part canonicalises to username '{}' — the handle is the \
+                     email login (free, offline, zero-API identity resolution)",
+                    email_e.value, u_e.value,
+                ),
+                entity_uids: uids,
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            });
+        }
+    }
+    out
+}
+
+/// AU-077 — Name-derived username independently confirmed on a platform.
+///
+/// When a username was *derived* from a name or email (via `name_intel`,
+/// `email_parse`, or `username_variants`) AND separately *confirmed* live by a
+/// platform-discovery module (`github_user`, `social_probe`, etc.), the
+/// conjunction is a high-confidence identity bridge: the name PREDICTED the
+/// handle, and the platform VERIFIED it exists. Purely free — requires no API
+/// keys beyond whichever discovery module ran (many of which are also free).
+///
+/// This is the engine's core "prediction confirmed" signal: a permutation that a
+/// name-intelligence pass emitted as a speculative candidate but that a live probe
+/// independently found in the wild is almost certainly the subject's actual handle.
+pub(in crate::core::correlator) fn rule_au_077_name_derived_username_confirmed(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username)
+        .filter(|e| {
+            // Must carry at least one derivation AND at least one discovery source.
+            let has_derived = e
+                .evidence
+                .iter()
+                .any(|ev| USERNAME_DERIVATION_SOURCES.contains(&ev.source.as_str()));
+            let has_confirmed = e
+                .evidence
+                .iter()
+                .any(|ev| USERNAME_DISCOVERY_SOURCES.contains(&ev.source.as_str()));
+            has_derived && has_confirmed
+        })
+        .map(|e| {
+            let confirmed_by: Vec<&str> = e
+                .evidence
+                .iter()
+                .filter(|ev| USERNAME_DISCOVERY_SOURCES.contains(&ev.source.as_str()))
+                .map(|ev| ev.source.as_str())
+                .collect::<std::collections::BTreeSet<&str>>()
+                .into_iter()
+                .collect();
+            let confirmed_by_str = confirmed_by.join(", ");
+            Correlation {
+                rule_id: "AU-077".into(),
+                rule_name: "Name-derived username confirmed on platform".into(),
+                severity: Severity::High,
+                description: format!(
+                    "Username '{}' was predicted by a name/email derivation pass and \
+                     independently confirmed live on: {} — prediction + verification is a \
+                     strong, free identity bridge requiring no breach data",
+                    e.value, confirmed_by_str,
+                ),
+                entity_uids: vec![e.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            }
+        })
+        .collect()
+}
+
+/// AU-078 — High-leverage cross-investigation hub entity.
+///
+/// An entity tagged `hub-entity` by the cross-scan history pass has been observed
+/// in three or more distinct prior investigations.
+/// Hub identifiers are the highest-value data points in the intelligence database:
+/// each recurrence is a join that connects two otherwise-separate dossiers, and a
+/// hub seen in many investigations often represents a shared address, phone number,
+/// email alias, or cryptocurrency address belonging to a prolific subject.
+///
+/// Surfaced as Medium — not High/Critical — because the hub classification is
+/// database-relative (only meaningful with prior scan history) and provenance-only
+/// (never inflates the entity's own confidence score).
+///
+/// Only fires when the `feature.recall` toggle is on (the same gate that enables
+/// the cross-scan history pass that produces the tag); when recall is off the tag
+/// is never written and this rule never fires.
+pub(in crate::core::correlator) fn rule_au_078_hub_entity(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    entities
+        .iter()
+        .filter(|e| e.has_tag("hub-entity"))
+        .map(|e| Correlation {
+            rule_id: "AU-078".into(),
+            rule_name: "High-leverage cross-investigation hub entity".into(),
+            severity: Severity::Medium,
+            description: format!(
+                "{} '{}' is a hub identifier recorded in 3+ prior investigations in the local \
+                 intelligence database — a high-leverage anchor for cross-case attribution; \
+                 prioritise for further enrichment",
+                e.kind, e.value,
+            ),
+            entity_uids: vec![e.uid.clone()],
+            scan_id: scan_id.into(),
+            ts,
+            rank: 0.0,
+        })
+        .collect()
+}

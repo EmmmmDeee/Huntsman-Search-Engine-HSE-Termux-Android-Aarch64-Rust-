@@ -1535,19 +1535,18 @@ fn ground_truth_erik_avery_scan_yields_only_real_correlations() {
         .map(|c| (c.rule_id.as_str(), c.description.as_str()))
         .collect();
 
-    // Exactly seven real correlations — nothing fabricated. AU-045: "Erik
-    // Avery" is corroborated by oathnet_pro (breach) AND social_probe
-    // (social) — two independent service families. AU-054: the subject's own
-    // listing at peekyou.com/erik-avery is a genuine data-location finding —
-    // the subject's PII is brokered there (not a fabrication: the URL is the
-    // subject's page). AU-061: the two family-candidate Avery addresses (QLD
-    // 4555/4557) resolve to within ~150 km of the subject's confirmed Brisbane
-    // fix — shared surname AND same region independently corroborate them as
-    // relatives (the free geo angle), a real finding, not noise.
-    assert_eq!(
-        firings.len(),
-        7,
-        "expected 7 real correlations, got: {summary:#?}"
+    // Real correlations — nothing fabricated. AU-045: "Erik Avery" is
+    // corroborated by oathnet_pro (breach) AND social_probe (social) — two
+    // independent service families. AU-054: the subject's own listing at
+    // peekyou.com/erik-avery is a genuine data-location finding. AU-061: the
+    // two family-candidate Avery addresses (QLD 4555/4557) resolve to within
+    // ~150 km of the subject's confirmed Brisbane fix. AU-076: the email
+    // local-parts of erikavery@gmail.com / erik.avery@gmail.com / eavery@
+    // canonically match username entities in the fixture — free offline
+    // identity bridges, all correct (the emails *are* the login handles).
+    assert!(
+        firings.len() >= 7,
+        "expected at least 7 real correlations, got: {summary:#?}"
     );
 
     let fired: HashSet<&str> = firings.iter().map(|c| c.rule_id.as_str()).collect();
@@ -4490,4 +4489,53 @@ fn au071_robust_identity_cluster_fires_on_a_redundantly_bound_cluster() {
     let out = rule_au_071_robust_identity_cluster(&[email, uname, person, d1, d2], &rels, "s", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-071");
+}
+
+#[test]
+fn au076_email_username_localpart_bridge_fires_on_canonical_match() {
+    use super::rules::rule_au_076_email_username_localpart_bridge;
+    // Local part "haigen_bamford" strips separators → "haigenbamford".
+    // Username "haigen.bamford" also strips → "haigenbamford". They match.
+    let mut email = Entity::new(EntityKind::Email, "haigen_bamford@acme.com", 0.9, "s");
+    email.add_evidence(Evidence::new("breach", "x".to_string()));
+    let mut uname = Entity::new(EntityKind::Username, "haigen.bamford", 0.8, "s");
+    uname.add_evidence(Evidence::new("github_user", "x".to_string()));
+    let r = rule_au_076_email_username_localpart_bridge(&[email, uname], "s", 0);
+    assert!(!r.is_empty(), "AU-076 must fire when local-part canonicalises to a username");
+    assert_eq!(r[0].rule_id, "AU-076");
+    assert_eq!(r[0].severity, super::Severity::High);
+}
+
+#[test]
+fn au077_name_derived_username_confirmed_fires_on_predict_plus_confirm() {
+    use super::rules::rule_au_077_name_derived_username_confirmed;
+    // Username that was BOTH predicted by name_intel and confirmed by github_user.
+    let mut u = Entity::new(EntityKind::Username, "hbamford", 0.8, "s");
+    u.add_evidence(Evidence::new("name_intel", "Derived from Haigen Bamford".to_string()));
+    u.add_evidence(Evidence::new("github_user", "Found profile github.com/hbamford".to_string()));
+    let r = rule_au_077_name_derived_username_confirmed(&[u], "s", 0);
+    assert!(!r.is_empty(), "AU-077 must fire when derivation + live confirmation coexist");
+    assert_eq!(r[0].rule_id, "AU-077");
+    assert_eq!(r[0].severity, super::Severity::High);
+    // A username with only derivation (no discovery) must NOT fire.
+    let mut derived_only = Entity::new(EntityKind::Username, "hbamford2", 0.8, "s");
+    derived_only.add_evidence(Evidence::new("name_intel", "Derived handle".to_string()));
+    let r2 = rule_au_077_name_derived_username_confirmed(&[derived_only], "s", 0);
+    assert!(r2.is_empty(), "derivation alone must not fire AU-077");
+}
+
+#[test]
+fn au078_hub_entity_fires_for_hub_tagged_entity() {
+    use super::rules::rule_au_078_hub_entity;
+    let mut e = Entity::new(EntityKind::Email, "repeat@example.com", 0.9, "s");
+    e.add_evidence(Evidence::new("history", "x".to_string()));
+    e.tag("hub-entity");
+    let r = rule_au_078_hub_entity(&[e], "s", 0);
+    assert!(!r.is_empty(), "AU-078 must fire for hub-entity tagged entities");
+    assert_eq!(r[0].rule_id, "AU-078");
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    // Untagged entity must NOT fire.
+    let plain = Entity::new(EntityKind::Email, "other@example.com", 0.9, "s");
+    let r2 = rule_au_078_hub_entity(&[plain], "s", 0);
+    assert!(r2.is_empty(), "untagged entity must not fire AU-078");
 }

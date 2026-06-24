@@ -266,6 +266,13 @@ const RULES: &[RuleFn] = &[
     rule_au_073_subject_date_of_birth,
     rule_au_074_au_government_id_exposure,
     rule_au_075_named_associate,
+    // Free, offline identity-resolution rules — require no API keys.
+    // AU-076: email local-part ↔ username canonical match (zero-API bridge).
+    // AU-077: name-derived username independently confirmed on a platform.
+    // AU-078: hub entity observed in 3+ distinct prior investigations.
+    rule_au_076_email_username_localpart_bridge,
+    rule_au_077_name_derived_username_confirmed,
+    rule_au_078_hub_entity,
     rule_au_046_cross_platform_identity_resolution,
     rule_au_068_anonymous_sim,
     rule_au_047_reused_secret_identity,

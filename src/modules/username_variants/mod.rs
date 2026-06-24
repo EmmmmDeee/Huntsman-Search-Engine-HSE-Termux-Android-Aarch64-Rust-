@@ -166,11 +166,18 @@ impl Module for UsernameVariants {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Username)
+        matches!(t.kind, TargetKind::Username | TargetKind::Email)
     }
 
     fn category(&self) -> ModuleCategory {
         ModuleCategory::Social
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Generates Username variants (T1593.001 Social-media, T1589.003
+        // Employee Names) and — when called on an Email seed — also covers
+        // T1589.002 Email Addresses. Superset of the Social category default.
+        &["T1593.001", "T1589.002", "T1589.003"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
@@ -179,7 +186,27 @@ impl Module for UsernameVariants {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let variants = Self::variants(&target.value);
+        // For Email seeds, derive variants from the local part (text before @).
+        // This surfaces separator-swap variants at depth=0 before any expansion
+        // round dispatches `username_variants` on the derived Username entities.
+        let (seed, source_key, source_val): (String, &'static str, String) = match target.kind {
+            TargetKind::Email => {
+                let local = target
+                    .value
+                    .split('@')
+                    .next()
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                (local, "source_email", target.value.clone())
+            }
+            _ => (
+                target.value.clone(),
+                "source_username",
+                target.value.clone(),
+            ),
+        };
+
+        let variants = Self::variants(&seed);
         let mut result = ModuleResult::with_capacity(variants.len());
         result.extend(variants.into_iter().map(|v| {
             let mut e = Entity::new(EntityKind::Username, &v, VARIANT_CONF, &ctx.scan_id);
@@ -187,8 +214,8 @@ impl Module for UsernameVariants {
             e.tag("variant");
             e.tag("candidate");
             e.add_evidence(
-                Evidence::new(SRC, format!("Handle variant of '{}'", target.value))
-                    .with_attr("source_username", &target.value)
+                Evidence::new(SRC, format!("Handle variant of '{seed}'"))
+                    .with_attr(source_key, &source_val)
                     .with_attr("derivation", "handle_variant"),
             );
             e

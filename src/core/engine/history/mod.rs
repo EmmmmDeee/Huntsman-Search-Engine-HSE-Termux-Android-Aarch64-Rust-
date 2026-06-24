@@ -27,6 +27,12 @@ use crate::core::relation::RelationKind;
 /// few dozen at most, so this rarely bites; it just caps the pathological case.
 const MAX_PROBES: usize = 48;
 
+/// Prior-scan count threshold at or above which an entity is classified as a
+/// "hub" — a high-leverage identifier that bridges three or more distinct
+/// investigations. Hub entities get a distinguishing tag and stronger evidence
+/// summary so both operators and the AU-078 correlator rule can prioritise them.
+const HUB_THRESHOLD: usize = 3;
+
 /// Max point-queries the co-occurrence pass may issue per scan. The pairing pass
 /// is heavier than plain recurrence — for each current candidate it fans out to
 /// every prior scan that recorded it and reads that scan's entities — so it gets
@@ -112,13 +118,23 @@ pub(super) fn link_cross_scan_history(
             continue;
         }
         e.tag("cross-scan");
-        e.add_evidence(Evidence::new(
-            CROSS_SCAN_SOURCE,
+        // Hub detection: an identifier seen in 3+ distinct prior scans bridges
+        // multiple independent investigations. Tag it separately so the AU-078
+        // correlator rule and the UI can surface it as a high-leverage lead.
+        let summary = if prior >= HUB_THRESHOLD {
+            e.tag("hub-entity");
             format!(
-                "Also recorded in {prior} earlier scan(s) in the local intelligence database — \
-                 this identifier bridges investigations"
-            ),
-        ));
+                "High-leverage hub identifier: recorded in {prior} earlier investigations \
+                 in the local intelligence database — bridges multiple distinct cases and \
+                 should be prioritised for cross-investigation attribution"
+            )
+        } else {
+            format!(
+                "Also recorded in {prior} earlier scan(s) in the local intelligence database \
+                 — this identifier bridges investigations"
+            )
+        };
+        e.add_evidence(Evidence::new(CROSS_SCAN_SOURCE, summary));
         linked += 1;
     }
     if linked > 0 {
@@ -278,6 +294,12 @@ pub(super) fn link_cross_scan_cooccurrence(
         }
         let gained_first = !e.has_tag("cross-scan-cooccurrence");
         e.tag("cross-scan-cooccurrence");
+        // A recurring pairing seen in 3+ prior scans is a high-confidence
+        // structural link — tag it as a hub co-occurrence so AU-078 and the
+        // UI can weight it above a one-off association.
+        if shared >= HUB_THRESHOLD {
+            e.tag("hub-cooccurrence");
+        }
         e.add_evidence(Evidence::new(
             CROSS_SCAN_SOURCE,
             cooccurrence_summary(&partner_value, shared),
