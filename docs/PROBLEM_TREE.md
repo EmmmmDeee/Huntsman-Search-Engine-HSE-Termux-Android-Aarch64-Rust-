@@ -2083,3 +2083,12 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
     to handle them simultaneously, preventing drift. Gap confirmed observable: `state.gov` SPF record contains
     `a:_msiplista.state.gov` — this domain was silently discarded pre-fix.
   **Paired:** `SOLUTION_TREE` SOL-SPF-A cycle 32 — same commit. SHA `d15c337`.
+
+- **2026-06-24** — **Cycle 33 (S→P): Username-as-name leakage from `oathnet_pro` creates spurious child scans.**
+  - **(P-USERNAME-NAME)** `oathnet_pro` extracts `Person` entities from breach-record `full_name`/`display_name`/`name` fields without validating that the value looks like a real human name. When a breach database stores a user's full name as `"{username} {username}"` (some platforms populate the field by doubling the username when no real name is available), `oathnet_pro/mod.rs:554-565` emits `Person("rhino-ryno23 rhino-ryno23")`.  The engine maps `EntityKind::Person → TargetKind::FullName` (scan/mod.rs:71), spawning a child scan that runs `oathnet_pro` free-text and `name_intel` on the garbage name, producing **123 irrelevant entities (94% noise)**.  The existing `is_placeholder_person()` gate in `core/validation/placeholder.rs` only catches `"John Doe"`-style templates and never fires on hyphenated or doubled-token patterns.
+  - **Root cause location:** `src/modules/oathnet_pro/mod.rs:554-565` (Person-entity creation site) and `src/core/validation/placeholder.rs:50-66` (gate too narrow).
+  - **Evidence (two real-execution scans):**
+    - Scan `b6ec7638061f` — `target: username = rhino-ryno23` — oathnet_pro SKIPPED (cross-correlation gate), 0 Person entities, 83/100 self-audit, 0% noise in this run. Child scan exists from a prior session stored in local DB.
+    - Scan `79ec1b3f9226` — `target: full_name = rhino-ryno23 rhino-ryno23` — 123 entities, all sourced from oathnet_pro free-text query; `name_intel` generating garbage emails (`rhinoryno.rhinoryno@gmail.com`). Exposure 0/100 [MINIMAL].
+  - **Fix:** new `is_username_derived_name(name, query)` predicate in `core/validation/placeholder.rs` (exported via `core::validation`); guard inserted at the Person creation site in `oathnet_pro/mod.rs`. Rejects names containing hyphens (common in usernames, rare in real names) or matching the doubled-token `"X X"` pattern.
+  **Paired:** `SOLUTION_TREE` SOL-USERNAME-NAME cycle 33 — same commit.

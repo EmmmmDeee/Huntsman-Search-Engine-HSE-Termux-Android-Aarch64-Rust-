@@ -245,6 +245,7 @@ impl Module for OathnetPro {
 // `is_local_domain`) live in `crate::util::preflight` — both
 // oathnet_pro and see_know share the policy so a target rejected
 // by one provider is rejected by the other.
+use crate::core::validation::is_username_derived_name;
 use crate::util::preflight::{is_local_domain, is_placeholder_username, is_private_ip};
 
 /// True for inputs that empirically waste an OathNet lookup for `kind` — junk
@@ -554,7 +555,11 @@ fn extract_breach_entities_with(
 
     if let Some(n) = val_str_or(item, &["full_name", "display_name", "name"]) {
         let t = n.trim();
-        if t.len() >= 4 && t.contains(' ') && seen.insert(t.to_lowercase()) {
+        if t.len() >= 4
+            && t.contains(' ')
+            && !is_username_derived_name(t, &match_ctx.lower)
+            && seen.insert(t.to_lowercase())
+        {
             push_oathnet_entity(
                 result,
                 Entity::new(EntityKind::Person, t, 0.70, scan_id),
