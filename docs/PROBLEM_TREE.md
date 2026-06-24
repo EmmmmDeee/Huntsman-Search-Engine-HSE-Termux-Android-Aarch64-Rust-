@@ -1972,3 +1972,23 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   storage module identified as next world-class candidate (9 entities baseline, 6
   suffixes, 3 providers). **Paired:** `SOLUTION_TREE` SOL-MODULE-DOH cycle 28 +
   §4/§5 — same commit.
+- **2026-06-24** — **Cycle 28.1 (S→P validation): `doh_resolver` CAA hex format fix.**
+  **Source:** live scan validation of cycle 28 output (2 runs, both `doh_resolver`=26
+  entities, +3 above baseline 23). Real-execution evidence confirmed SOA and DMARC
+  were firing; CAA was silently not firing. Live DoH probe to Cloudflare revealed:
+  - **(P-DOH-F)** CAA records returned by Cloudflare DoH in RFC 3597 "Unknown-format"
+    hex RDATA (`\# 19 00 05 69 73 73 75 65...`) rather than canonical text format
+    (`0 issue "digicert.com"`). `parse_caa_issuer()` only parsed the text form;
+    Cloudflare data fell through silently. Google DoH returns text form, so if
+    Google responded first the parser worked, but with non-deterministic dual-resolver
+    ordering CAA coverage was effectively 50% at best — confirmed zero in 2 live runs.
+  **Fix:** `decode_caa_hex_rdata()` pure function added: strips `\#` prefix, consumes
+  byte-count token, collects hex bytes, decodes CAA RDATA (flags 1 byte + tag_len 1
+  byte + tag + value), reconstructs canonical text form. `parse_caa_issuer()` detects
+  `\#` prefix and routes through decoder before existing parser. 4 new unit tests:
+  `parse_caa_issuer_handles_cloudflare_hex_format`, `parse_caa_issuer_hex_issuewild`,
+  `caa_hex_record_emits_ca_domain`, `caa_hex_and_text_formats_deduplicated`.
+  Gate green: fmt/clippy/doc clean, **3,152 lib tests** (+4 vs cycle 28), 0 failures.
+  Expected post-fix: github.com CAA sources digicert.com, globalsign.com, letsencrypt.org,
+  sectigo.com as caa-issuer Domain entities (+4), raising doh_resolver from 26→~30.
+  **Paired:** `SOLUTION_TREE` SOL-MODULE-DOH cycle 28.1 + §4/§5 — same commit.

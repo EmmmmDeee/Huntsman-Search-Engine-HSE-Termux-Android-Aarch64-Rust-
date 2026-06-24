@@ -598,12 +598,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `find_ip_entity()` recursive traversal. 2 new unit tests. Validation: 3rd scan run
   confirmed zero error + zero timeout. **P12/P13** (`waf_detect`/`web_crawler`
   consistent failures) → open in §4a.
-- **SOL-MODULE-DOH `[x]`** (cycle 28) — `doh_resolver` world-class rewrite: SOA
-  (mname→Domain, rname→Email), CAA (issue/issuewild→CA Domain), PTR (IpAddress targets
-  → reverse-DNS hostnames), DMARC `_dmarc.{domain}` subquery (rua/ruf→Email).
-  JoinSet parallel dispatch (~6× faster). `produces()` → [IP, Domain, Email].
-  `accepts()` → Domain | Url | IpAddress. 19 new tests; 3,148 total. **P-DOH-F**
-  (cloud_storage next-improvement target) → logged for cycle 29.
+- **SOL-MODULE-DOH `[x]`** (cycles 28 + 28.1) — `doh_resolver` world-class rewrite:
+  SOA (mname→Domain, rname→Email), CAA (issue/issuewild→CA Domain, RFC 3597 hex format
+  from Cloudflare DoH decoded by `decode_caa_hex_rdata()`), PTR (IpAddress targets →
+  reverse-DNS hostnames), DMARC `_dmarc.{domain}` subquery (rua/ruf→Email). JoinSet
+  parallel dispatch (~6× faster). `produces()` → [IP, Domain, Email]. `accepts()` →
+  Domain | Url | IpAddress. 23 new tests; 3,152 total. **P-DOH-F** (cloud_storage
+  next-improvement target) → logged for cycle 29.
 
 ---
 
@@ -1350,3 +1351,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   variants and 4–5 additional providers. Logged for cycle 29. **§4 update:**
   SOL-MODULE-DOH row added to §4d. Gate green: fmt/clippy/doc clean, 3,148 tests, 0
   failures. SHA `34449ba` pushed. Paired: `PROBLEM_TREE` §8 cycle 28 — same commit.
+- **2026-06-24** — **Cycle 28.1 (P→S): SOL-MODULE-DOH.F — `doh_resolver` CAA RFC 3597
+  hex-format decoder.**
+  **Evidence base:** 2 live scan runs post cycle-28 both showing `doh_resolver`=26
+  (vs baseline 23, +3). SOA confirmed: `hostmaster@nsone.net` (SOA RNAME, VERIFIED
+  0.805), `awsdns-hostmaster@amazon.com` (SOA rname, PROBABLE 0.60). DMARC confirmed:
+  `dmarc@github.com` (PROBABLE 0.70). CAA: zero entities in both runs — confirmed as
+  P-DOH-F via live Cloudflare DoH probe. Raw DoH response for `github.com CAA`:
+  `{"data":"\\# 19 00 05 69 73 73 75 65 64 69 67 69 63 65 72 74 2e 63 6f 6d"}` —
+  RFC 3597 binary hex, not canonical `0 issue "digicert.com"` text.
+  **Solution:** `decode_caa_hex_rdata()` helper (pure, no alloc beyond the byte Vec):
+  strips `\#` prefix, skips byte-count token, hex-decodes bytes, interprets as CAA
+  RDATA: `flags[0]`, `tag_len[1]`, `tag[2..2+tag_len]`, `value[2+tag_len..]`. Returns
+  canonical `"flags tag \"value\""` string. `parse_caa_issuer()` pre-checks for `\#`
+  and routes to decoder; existing text-form path unchanged — handles both Cloudflare
+  (hex) and Google DoH (text) formats uniformly regardless of resolver race outcome.
+  4 new unit tests: `parse_caa_issuer_handles_cloudflare_hex_format` (issue tag),
+  `parse_caa_issuer_hex_issuewild` (issuewild tag), `caa_hex_record_emits_ca_domain`
+  (entity emission), `caa_hex_and_text_formats_deduplicated` (dedup across both).
+  Gate green: fmt/clippy/doc clean, **3,152 tests** (+4), 0 failures. Release binary
+  built; scan 3 pending to validate CAA entities now surface (+4 expected: digicert.com,
+  globalsign.com, letsencrypt.org, sectigo.com). Paired: `PROBLEM_TREE` P-DOH-F
+  cycle 28.1 — same commit.

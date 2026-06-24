@@ -455,3 +455,42 @@ fn txt_non_spf_non_dmarc_ignored() {
     let out = run("TXT", &["google-site-verification=abc123", "docusign=xyz"]);
     assert!(out.is_empty());
 }
+
+// ── RFC 3597 hex-encoded CAA (Cloudflare DoH format) ──────────────────────
+
+#[test]
+fn parse_caa_issuer_handles_cloudflare_hex_format() {
+    // \# 19 00 05 69 73 73 75 65 64 69 67 69 63 65 72 74 2e 63 6f 6d
+    // = flags=0, tag_len=5, tag="issue", value="digicert.com"
+    let hex = r"\# 19 00 05 69 73 73 75 65 64 69 67 69 63 65 72 74 2e 63 6f 6d";
+    assert_eq!(parse_caa_issuer(hex).as_deref(), Some("digicert.com"));
+}
+
+#[test]
+fn parse_caa_issuer_hex_issuewild() {
+    // \# 23 00 09 69 73 73 75 65 77 69 6c 64 64 69 67 69 63 65 72 74 2e 63 6f 6d
+    // = flags=0, tag_len=9, tag="issuewild", value="digicert.com"
+    let hex = r"\# 23 00 09 69 73 73 75 65 77 69 6c 64 64 69 67 69 63 65 72 74 2e 63 6f 6d";
+    assert_eq!(parse_caa_issuer(hex).as_deref(), Some("digicert.com"));
+}
+
+#[test]
+fn caa_hex_record_emits_ca_domain() {
+    let out = run(
+        "CAA",
+        &[r"\# 19 00 05 69 73 73 75 65 64 69 67 69 63 65 72 74 2e 63 6f 6d"],
+    );
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].value, "digicert.com");
+    assert!(out[0].has_tag("caa-issuer"));
+}
+
+#[test]
+fn caa_hex_and_text_formats_deduplicated() {
+    // Same CA from Cloudflare hex format + Google text format — should dedup
+    let hex = r"\# 19 00 05 69 73 73 75 65 64 69 67 69 63 65 72 74 2e 63 6f 6d"; // issue digicert.com
+    let text = "0 issuewild \"digicert.com\"";
+    let out = run("CAA", &[hex, text]);
+    assert_eq!(out.len(), 1, "deduplicated to single entity");
+    assert_eq!(out[0].value, "digicert.com");
+}

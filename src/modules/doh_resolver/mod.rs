@@ -158,11 +158,38 @@ pub(crate) fn parse_soa_fields(data: &str) -> Option<(String, String)> {
     Some((mname, format!("{local}@{dom}")))
 }
 
+/// Decode a CAA record presented in RFC 3597 "Unknown" hex format.
+///
+/// Cloudflare DoH returns CAA RDATA as `\# <byte-count> <hex-bytes...>` rather
+/// than the canonical `flags tag "value"` text form. This converts it to the
+/// canonical form so `parse_caa_issuer` can handle both sources uniformly.
+fn decode_caa_hex_rdata(data: &str) -> Option<String> {
+    let rest = data.trim_start().strip_prefix("\\#")?.trim_start();
+    let mut tokens = rest.split_whitespace();
+    tokens.next()?; // byte-count; consume and discard
+    let bytes: Vec<u8> = tokens
+        .map(|h| u8::from_str_radix(h, 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let tag_len = *bytes.get(1)? as usize;
+    if bytes.len() < 2 + tag_len {
+        return None;
+    }
+    let tag = std::str::from_utf8(&bytes[2..2 + tag_len]).ok()?;
+    let value = std::str::from_utf8(&bytes[2 + tag_len..]).ok()?;
+    Some(format!("{} {} \"{}\"", bytes[0], tag, value))
+}
+
 /// Parse CAA RDATA and return the CA domain for `issue`/`issuewild` tags. **Pure.**
 /// CAA format: `flags tag "value"` (value may be bare or quoted).
+/// Also handles RFC 3597 hex-encoded RDATA returned by Cloudflare DoH.
 /// Returns `None` for `iodef` tags and for prohibit-all (`";"`) values.
 pub(crate) fn parse_caa_issuer(data: &str) -> Option<String> {
-    let mut parts = data.splitn(3, ' ');
+    let canonical = if data.trim_start().starts_with("\\#") {
+        decode_caa_hex_rdata(data)?
+    } else {
+        data.to_string()
+    };
+    let mut parts = canonical.splitn(3, ' ');
     let _flags = parts.next()?;
     let tag = parts.next()?.trim();
     if !matches!(tag, "issue" | "issuewild") {
