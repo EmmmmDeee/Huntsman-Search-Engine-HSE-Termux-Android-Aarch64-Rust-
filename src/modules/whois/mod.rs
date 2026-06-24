@@ -75,8 +75,7 @@ pub(crate) fn vcard_field(vcard: &serde_json::Value, prop: &str) -> Option<Strin
     let items = vcard.as_array()?.get(1)?.as_array()?;
     items.iter().find_map(|item| {
         let arr = item.as_array()?;
-        (arr.first()?.as_str()? == prop)
-            .then(|| arr.get(3)?.as_str().map(str::to_string))?
+        (arr.first()?.as_str()? == prop).then(|| arr.get(3)?.as_str().map(str::to_string))?
     })
 }
 
@@ -121,8 +120,7 @@ async fn rdap_ip_fallback(target: &Target, ctx: &ModuleContext) -> Result<Module
         return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
 
-    let body: RdapIpResp =
-        crate::util::http::json_decode(SRC, resp).await?;
+    let body: RdapIpResp = crate::util::http::json_decode(SRC, resp).await?;
 
     let mut result = ModuleResult::new();
     let net_name = body.name.as_deref().unwrap_or("").trim().to_string();

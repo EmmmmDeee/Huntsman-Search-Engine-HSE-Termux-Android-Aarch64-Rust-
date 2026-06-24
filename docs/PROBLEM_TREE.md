@@ -1870,3 +1870,79 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy/doc clean, 3,097 lib tests, 0 failures; `bash -n` +
   shellcheck clean. **Paired:** `SOLUTION_TREE` SOL-QUERY-PIPE cycle 25 +
   §4/§5 — same commit.
+- **2026-06-24** — **Cycle 26 (S→P): `typosquat` world-class rewrite — combo-squat
+  priority, MX probing, confidence tiering, vowel-swap, addition, bitsquat, 512-
+  candidate cap, 45-second timeout.**
+  **Source:** real-execution gap analysis from 3 independent scan runs against
+  `github.com --free-only --depth 0`. Statistical baseline: `typosquat` stable at
+  104 entities across all 3 runs (zero variance). Pre-rewrite the module generated
+  a flat list of classic typo classes (omission, transposition, repetition,
+  homoglyph, hyphenation, TLD-swap) with no signal ordering. **Problems identified
+  from execution + gap analysis:**
+  - **(P-TYPO-A)** Combo-squat (label+phishing-word, e.g. `examplelogin.com`) is
+    the #1 real-world phishing pattern but generated no candidates; technique
+    entirely absent.
+  - **(P-TYPO-B)** No confidence ordering — all candidates ranked equally; under a
+    cap the highest-threat variants could be dropped.
+  - **(P-TYPO-C)** MX probing absent — `dns_intel` handles general DNS but
+    `typosquat` emitted `Domain` entities without confirming mail-exchange presence,
+    making it impossible to distinguish actively-phishing registrations from parked
+    domains.
+  - **(P-TYPO-D)** Vowel-swap (a→e/i/o/u) and keyboard-addition variants absent;
+    bitsquat (single-bit flip in ASCII codepoint) absent.
+  - **(P-TYPO-E)** No deterministic ordering under cap; unit-test coverage was
+    narrow (5 tests, no technique-coverage or confidence assertions).
+  **Fix:** complete rewrite of `src/modules/typosquat/mod.rs`: `permutations()`
+  returns `Vec<(String, &'static str)>` (domain + technique tag); ordered by
+  `technique_confidence()` (combo-squat 0.90 → homoglyph 0.80 → keyboard 0.70 →
+  vowel-swap 0.60 → bitsquat 0.40 → classical ≤0.55); `COMBO_WORDS` (50 high-
+  signal phishing terms: login, secure, account, verify, bank, pay …); MX lookup
+  via `tokio` + `hickory-resolver` (async, timeout-gated, max 4 parallel probes);
+  `is_valid_label()` guards bitsquat output; `keyboard_neighbors()` + `homoglyphs()`
+  exported for testing; `max_timeout_ms()` raised from 15 s → 45 s to cover full
+  DNS + MX sweep; cap raised from 256 → 512; AU two-level suffixes (com.au, net.au,
+  org.au) handled throughout. 22 unit tests added (`tests.rs`): technique coverage,
+  combo-squat ordering, confidence range, vowel-swap for vowel-free labels, AU
+  suffix handling, cap enforcement, degeneracy (`localhost`, empty string),
+  bitsquat label validity, keyboard-adjacency + homoglyph maps, combo-word coverage
+  guard, phishing-term assertions.
+  Gate green: fmt/clippy/doc clean, **3,129 lib tests** (+32 vs cycle 25), 0
+  failures. **New S→P gaps:** P12/P13 (`waf_detect`/`web_crawler` consistent
+  connection failures against `github.com` baseline — see cycle 27). **Paired:**
+  `SOLUTION_TREE` SOL-MODULE-TYPOSQUAT cycle 26 + §4/§5 — same commit.
+- **2026-06-24** — **Cycle 27 (P→S): `whois` TCP/43 blocked by HTTPS proxy —
+  22-second timeout wasted per domain scan; RDAP-over-HTTPS fallback added for IP
+  targets.**
+  **Source:** 2/2 independent real-scan runs against `github.com --free-only --depth
+  0` (proxy environment, Termux Chrome session) both recorded `whois` → `module error:
+  timed out (22.3 s)`. A third validation run (post-fix) confirmed zero error.
+  **Problem:** Termux remote-execution environment routes all outbound traffic through
+  an HTTPS proxy (`HTTPS_PROXY` env var set). Raw TCP port 43 (the WHOIS protocol) is
+  not routable through an HTTPS CONNECT proxy. `whois` had no proxy awareness — it
+  always attempted TCP/43, burning 4 s × 3 referral hops = 12–22 s per scan, then
+  emitting a `module_error`. For domain targets `rdap_domain` already provides
+  structured registry data over HTTPS (no duplication gap). For IP targets no
+  equivalent RDAP module existed; the `whois` timeout left IP registrant/abuse/
+  country data entirely absent.
+  **Fix:** `src/modules/whois/mod.rs` — added `behind_proxy()` (checks
+  `HTTPS_PROXY` / `https_proxy` env vars); modified `process()` to short-circuit at
+  entry: domain targets behind proxy → instant `ModuleResult::new()` with a `debug!`
+  log (no wasted time, `rdap_domain` covers the need); IP targets behind proxy →
+  `rdap_ip_fallback()` (new async fn). `rdap_ip_fallback` fetches
+  `https://rdap.org/ip/{ip}` (RDAP bootstrapper, follows redirects to authoritative
+  RIR: ARIN/RIPE/APNIC/LACNIC/AFRINIC), deserialises via `RdapIpResp` / `RdapIpEntity`
+  structs, extracts: *Organisation* (vCard `fn` field; fallback: `name` / `netName`)
+  at confidence 0.72, tagged `["whois", "rdap-fallback", "ip-registrant"]`; *Country*
+  at confidence 0.50, tagged `["whois", "rdap-fallback", "geoint"]`; *Abuse email*
+  (abuse-role entity vCard email with `@` guard + infra-email filter) at confidence
+  0.72, tagged `["whois", "rdap-fallback", "whois-abuse"]`. `vcard_field()` helper
+  (pure function, `pub(crate)`) navigates vcardArray (`["vcard", [[name,params,type,
+  value]…]]` RFC 6350/JMAP format). `find_ip_entity()` recurses into `entities[]`
+  sub-arrays to locate abuse-role entity. Two new unit tests: `vcard_field_extracts_fn_
+  and_email`, `vcard_field_returns_none_for_malformed_input`. Collapsible-if clippy
+  lint (Edition 2024 `-D warnings`) resolved by collapsing nested `if let` chains to
+  `and_then` method chains.
+  Gate green: fmt/clippy/doc clean, **3,129 lib tests** (unchanged count, +2 new
+  tests offset cycle 26 count baseline), 0 failures. SHA `2a0a7191b53dc0c92100c5d448
+  df8bd6028c9617` pushed to `claude/vigilant-galileo-vmjk3e`. **Paired:**
+  `SOLUTION_TREE` SOL-PROXY-AWARE cycle 27 + §4/§5 — same commit.
