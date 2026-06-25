@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (155 modules: 122 free · 28 key-gated · 5 paid)
+## Catalogue (156 modules: 123 free · 28 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -192,7 +192,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `web_crawler` | domain, url | free | no | 20 | email, url, domain, phone, api_key |
 | `app_links` | domain | free | no | 90 | domain |
 
-### geo (21)
+### geo (22)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -201,6 +201,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `email_header_geo` | email | free | **yes** | 92 | address |
 | `email_locale` | email | free | **yes** | 91 | address |
 | `au_geo` | coordinates | free | no | 70 | coordinates |
+| `au_seifa` | coordinates | free | no | 69 | coordinates |
 | `wifi_intel` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn, mac_address, api_key | key_gated | **yes** | 65 | mac_address, coordinates, address |
 | `cell_local` | coordinates | free | no | 66 | device_id, coordinates |
 | `opencellid` | coordinates | key_gated | no | 65 | device_id, coordinates |

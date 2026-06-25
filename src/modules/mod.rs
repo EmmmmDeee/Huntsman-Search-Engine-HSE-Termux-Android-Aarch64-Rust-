@@ -17,6 +17,7 @@ pub mod au_electoral;
 pub mod au_geo;
 pub mod au_people;
 pub mod au_property;
+pub mod au_seifa;
 pub mod au_unclaimed;
 pub mod austlii;
 pub mod bgpview;
@@ -425,6 +426,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(au_electoral::AuElectoral),
         Arc::new(au_property::AuProperty),
         Arc::new(au_geo::AuGeo),
+        Arc::new(au_seifa::AuSeifa),
         Arc::new(acnc_charities::AcncCharities),
         Arc::new(gleif_lei::GleifLei),
         Arc::new(acma_rrl::AcmaRrl),
