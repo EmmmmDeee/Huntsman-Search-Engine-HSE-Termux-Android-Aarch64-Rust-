@@ -301,7 +301,11 @@ impl Module for Epieos {
             return Ok(ModuleResult::new());
         };
 
-        let body: EpieosResp = crate::util::http::json_decode(SRC, resp).await?;
+        // json_scanned: epieos responses include Google review text (free-form
+        // user content) that may contain embedded API keys.
+        let body: EpieosResp = crate::util::http::json_scanned(resp, SRC)
+            .await
+            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
 
         let mut result = ModuleResult::new();
         result.extend(build_entities(target, &body, &ctx.scan_id));

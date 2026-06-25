@@ -109,7 +109,11 @@ impl Module for GithubUser {
             return Err(crate::util::http::http_status_error("github_user", resp).await);
         }
 
-        let user: GhUser = crate::util::http::json_decode(SRC, resp).await?;
+        // json_scanned: GitHub user profiles include bio and blog fields —
+        // free-form user text that may contain embedded API keys.
+        let user: GhUser = crate::util::http::json_scanned(resp, SRC)
+            .await
+            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
 
         let mut result = ModuleResult::new();
 
