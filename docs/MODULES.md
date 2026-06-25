@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (151 modules: 118 free · 28 key-gated · 5 paid)
+## Catalogue (152 modules: 119 free · 28 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -17,7 +17,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `exa_search` | email, username, phone, full_name, domain, organisation | key_gated | no | 87 | url, domain, email, phone |
 | `search_engines` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn | free | no | 113 | url, domain, email, username, phone, address, coordinates, person, organisation, abn_acn |
 
-### social (32)
+### social (33)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -27,6 +27,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `streaming_probe` | username | free | no | 108 | url, username |
 | `steam_profile` | username | free | no | 105 | person, username, url, address, coordinates |
 | `structured_id` | username | free | **yes** | 103 | username, mac_address |
+| `fediverse` | email | free | no | 104 | username, url, email |
 | `github_code_search` | email, username | free | no | 85 | url, username, email |
 | `github_user` | username | free | no | 107 | person, email, username, domain, url, organisation, address, credential |
 | `github_commits` | email | free | no | 106 | person, username, url |

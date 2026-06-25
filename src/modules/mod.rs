@@ -54,6 +54,7 @@ pub mod employer_pivot;
 pub mod epieos;
 pub mod exa_search;
 pub mod exif_geo;
+pub mod fediverse;
 pub mod fullcontact;
 pub mod gaming_profile;
 pub mod geo_domain_classifier;
@@ -360,6 +361,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(crates_io::CratesIo),
         Arc::new(reddit_user::RedditUser),
         Arc::new(gravatar::Gravatar),
+        Arc::new(fediverse::Fediverse),
         Arc::new(payid::PayId),
         Arc::new(pgp::Pgp),
         Arc::new(psbdmp::Psbdmp),
