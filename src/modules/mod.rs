@@ -37,6 +37,7 @@ pub mod devto;
 pub mod disposable_check;
 pub mod dns_axfr;
 pub mod dns_intel;
+pub mod dockerhub_user;
 pub mod doh_resolver;
 pub mod domainsdb;
 pub mod email_canonical;
@@ -63,6 +64,7 @@ pub mod hackertarget;
 pub mod hibp;
 pub mod hlr_cnam;
 pub mod hudsonrock;
+pub mod huggingface_user;
 pub mod hunter_io;
 pub mod intelx;
 pub mod ip2location;
@@ -318,6 +320,8 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(mastodon_user::MastodonUser),
         Arc::new(gitlab_user::GitlabUser),
         Arc::new(codeberg_user::CodebergUser),
+        Arc::new(huggingface_user::HuggingfaceUser),
+        Arc::new(dockerhub_user::DockerhubUser),
         Arc::new(npm_author::NpmAuthor),
         Arc::new(crates_io::CratesIo),
         Arc::new(reddit_user::RedditUser),

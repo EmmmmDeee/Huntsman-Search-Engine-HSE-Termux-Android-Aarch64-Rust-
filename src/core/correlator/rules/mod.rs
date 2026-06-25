@@ -303,7 +303,8 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "codeberg",
         "npm_author",
         "npm",
-        "crates", // crates.io — Rust package registry (exact module: crates_io)
+        "crates",      // crates.io — Rust package registry (exact module: crates_io)
+        "huggingface", // HuggingFace model/dataset registry (exact module: huggingface_user)
     ]) {
         // Code-hosting is its own provider family: a handle present here is an
         // independent signal from a forum or social account (different platforms,
@@ -425,6 +426,7 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "securitytrails",
         "zoomeye",
         "domainsdb",
+        "dockerhub", // Docker Hub container registry (exact module: dockerhub_user)
     ]) {
         "infra"
     } else {

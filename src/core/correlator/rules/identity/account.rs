@@ -30,6 +30,10 @@ pub(in crate::core::correlator) fn rule_au_011_cross_platform_username(
         "mastodon_user",
         "keybase",
         "gravatar",
+        "huggingface_user",
+        "dockerhub_user",
+        "crates_io",
+        "npm_author",
     ];
     entities
         .iter()
