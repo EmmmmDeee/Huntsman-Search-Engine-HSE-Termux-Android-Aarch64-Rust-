@@ -210,8 +210,7 @@ pub fn total_count() -> u64 {
                 r.get::<_, i64>(0)
             })
         })
-        .map(|n| n as u64)
-        .unwrap_or(0)
+        .map_or(0, |n| n as u64)
 }
 
 #[cfg(test)]

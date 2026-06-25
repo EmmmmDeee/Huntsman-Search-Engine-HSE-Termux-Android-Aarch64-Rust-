@@ -3008,3 +3008,12 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   blank line at `scan_handlers/mod.rs:94` failed `cargo fmt --check`, halting the `check`
   CI job at its very first step before clippy/doc/test ever ran. **Paired:** `SOLUTION_TREE`
   — same commit.
+
+- **2026-06-25** — **A 1.96-only clippy lint surfaced once the earlier gates cleared.** With
+  `audit` and `fmt` previously aborting CI before clippy could run, the branch's 45 cycles of
+  code had **never** completed a `clippy -D warnings` pass under CI's newer toolchain (1.96 vs
+  the local 1.94). The first clean run flagged `clippy::map_unwrap_or` at
+  `util/key_vault/mod.rs:213` (`.map(|n| n as u64).unwrap_or(0)`) — a lint absent from the
+  local toolchain, exactly the CI/local skew CLAUDE.md warns about. Clippy reported "1 previous
+  error", confirming it was the sole crate-wide violation. **Paired:** `SOLUTION_TREE` — same
+  commit.

@@ -2215,3 +2215,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   main's AU-076–082). Ran `cargo fmt --all` to clear the stray blank line that broke CI.
   Full gate green locally: ~4,048 tests 0 failed, `clippy --all-targets -D warnings` clean,
   rustdoc lints clean, fmt clean. Paired: `PROBLEM_TREE` — same commit.
+
+- **2026-06-25** — **Cleared the lone 1.96 clippy lint CI exposed.** Rewrote
+  `util/key_vault::total_count`'s `.map(|n| n as u64).unwrap_or(0)` as the idiomatic
+  `.map_or(0, |n| n as u64)` (semantically identical on a `Result`: map the `Ok`, default on
+  `Err`). Since the local toolchain (1.94) lacks this lint, verified the edit with `cargo check
+  --lib` and reasoned from clippy's "1 previous error" that this was the only crate-wide
+  violation — no need to chase a toolchain install. A multiline scan for sibling
+  `.map(…).unwrap_or(…)` shapes confirmed the rest are `.and_then`/`.or_else`/`.find_map`
+  chains the lint does not target. Paired: `PROBLEM_TREE` — same commit.
