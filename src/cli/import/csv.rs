@@ -188,6 +188,11 @@ pub(super) fn parse_dehashed_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportS
         stats.breach_records += 1;
     }
 
+    // A leaked password field is sometimes itself a wallet/API key, and a row
+    // can carry a router BSSID — scan the whole table for all three.
+    push_macs(body, sid, "dehashed", &mut entities);
+    push_crypto(body, sid, "dehashed", &mut entities);
+    push_api_keys(body, sid, "dehashed", &mut entities);
     (entities, stats)
 }
 

@@ -67,6 +67,10 @@ pub(super) fn parse_oathnet_html(body: &str, sid: &str) -> Vec<crate::core::enti
         }
     }
 
+    // Any BSSID / wallet / API key embedded in the export's text.
+    push_macs(body, sid, "oathnet-html", &mut entities);
+    push_crypto(body, sid, "oathnet-html", &mut entities);
+    push_api_keys(body, sid, "oathnet-html", &mut entities);
     entities
 }
 

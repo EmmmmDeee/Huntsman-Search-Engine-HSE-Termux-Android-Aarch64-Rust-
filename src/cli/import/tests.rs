@@ -187,6 +187,25 @@ async fn import_extracts_leaked_api_key_from_body() {
         "the loose AWS key must be recovered as an ApiKey finding"
     );
 }
+
+#[tokio::test]
+async fn dehashed_csv_also_mines_wallets_from_any_field() {
+    use crate::core::entity::EntityKind;
+    // The breach "password" field is itself a wallet — the table scan recovers it.
+    let (ents, label) = entities_from_upload(
+        "id,email,username,database_name,password\n\
+         1,a@b.com,x,Breach,1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa\n",
+        "s",
+    )
+    .await
+    .unwrap();
+    assert_eq!(label, "dehashed-csv");
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::CryptoAddress && e.has_tag("dehashed")),
+        "the DeHashed table scan must recover a wallet from any field"
+    );
+}
 use crate::core::entity::{Entity, EntityKind};
 
 // The exact shape of the user-provided "Isaac Frost.txt" dossier upload.
