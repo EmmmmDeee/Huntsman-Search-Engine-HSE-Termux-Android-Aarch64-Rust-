@@ -113,15 +113,13 @@ pub fn load() -> HashMap<String, String> {
                     keys.len()
                 );
             }
-            continue;
-        }
-        if map.contains_key(svc.env_var) {
-            continue;
-        }
-        if let Some(key) = pool.next_key(svc.name) {
-            map.insert(svc.env_var.to_string(), key);
         }
     }
+    // Fill any env var still missing a value from the pool. Single-sourced with
+    // the pool's own gap-fill helper instead of re-inlining the
+    // skip-if-present-else-`next_key` loop (the two had drifted apart). A
+    // CSV-expanded service already has its env entry set above, so this skips it.
+    crate::util::key_pool::merge_pool_into_env(&pool, &mut map);
 
     map
 }
