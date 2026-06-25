@@ -43,14 +43,14 @@ impl Module for EmailLocale {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Address];
+        const KINDS: &[EntityKind] = &[EntityKind::Address, EntityKind::Coordinates];
         KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let email = target.value.clone();
-        let Some((local, _domain)) = email.split_once('@') else {
+        let Some((local, domain)) = email.split_once('@') else {
             return Ok(result);
         };
 
@@ -58,7 +58,48 @@ impl Module for EmailLocale {
             return Ok(result);
         }
 
+        // ccTLD signal: a geographic country-code TLD on the domain is an
+        // independent geographic signal (e.g. `@company.de` → Germany). Emit
+        // a separate Address entity so the geospatial layer picks it up even
+        // when the local-part pattern has no match. Common non-geographic TLDs
+        // used as generic branding (.io, .ai, .co, .tv, .app, .ly, .me) are
+        // excluded — they carry no reliable country signal.
+        let cctld_geo = domain.rsplit('.').next().and_then(|tld| cctld_country(tld));
+        if let Some((country, locale_code)) = cctld_geo {
+            let ev = Evidence::new(
+                SRC,
+                format!(
+                    "Email domain ccTLD .{} indicates {country}",
+                    domain.rsplit('.').next().unwrap_or("")
+                ),
+            )
+            .with_attr("cctld", domain.rsplit('.').next().unwrap_or(""))
+            .with_attr("locale", locale_code);
+            let mut ae = Entity::new(EntityKind::Address, country, 0.40, &ctx.scan_id);
+            ae.tag("geoint");
+            ae.tag("coarse");
+            ae.tag("cctld-inferred");
+            ae.add_evidence(ev.clone());
+            result.push(ae);
+            if let Some((lat, lon)) = locale_centroid(locale_code) {
+                let coords = format!("{lat},{lon}");
+                let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.30, &ctx.scan_id);
+                ce.tag("geoint");
+                ce.tag("coarse");
+                ce.tag("cctld-inferred");
+                ce.add_evidence(ev);
+                result.push(ce);
+            }
+        }
+
         if let Some(geo) = detect_locale_from_local_part(local) {
+            let ev = Evidence::new(
+                SRC,
+                format!("Email local part matches {} naming pattern", geo.locale),
+            )
+            .with_attr("locale", geo.locale)
+            .with_attr("pattern", geo.pattern);
+
             let mut e = Entity::new(
                 EntityKind::Address,
                 geo.region,
@@ -68,15 +109,27 @@ impl Module for EmailLocale {
             e.tag("geoint");
             e.tag("coarse");
             e.tag("locale-inferred");
-            e.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Email local part matches {} naming pattern", geo.locale),
-                )
-                .with_attr("locale", geo.locale)
-                .with_attr("pattern", geo.pattern),
-            );
+            e.add_evidence(ev.clone());
             result.push(e);
+
+            // Emit a coarse Coordinates entity (country/region centroid) so the
+            // geospatial layer can plot the inferred locale. Confidence is kept
+            // well below the Address confidence — the centroid is an approximation
+            // of a country-level inference, not a confirmed location.
+            if let Some((lat, lon)) = locale_centroid(geo.locale) {
+                let coords = format!("{lat},{lon}");
+                let mut ce = Entity::new(
+                    EntityKind::Coordinates,
+                    &coords,
+                    geo.confidence - 0.10,
+                    &ctx.scan_id,
+                );
+                ce.tag("geoint");
+                ce.tag("coarse");
+                ce.tag("locale-inferred");
+                ce.add_evidence(ev);
+                result.push(ce);
+            }
         }
 
         Ok(result)
@@ -130,6 +183,91 @@ fn detect_locale_from_local_part(local: &str) -> Option<LocaleGeo> {
                 pattern: "given_name",
                 confidence: 0.30,
             })
+    })
+}
+
+/// Map a 2-letter ccTLD to `(country_name, locale_code)` for geographic ccTLDs
+/// that reliably indicate a country. Non-geographic TLDs used as generic
+/// branding (.io, .ai, .co, .tv, .app, .ly, .me, .to, .is) are absent —
+/// they carry no durable country signal. Returns `None` for unknown or
+/// non-geographic TLDs.
+fn cctld_country(tld: &str) -> Option<(&'static str, &'static str)> {
+    Some(match tld {
+        "de" => ("Germany", "de"),
+        "fr" => ("France", "fr"),
+        "it" => ("Italy", "it"),
+        "es" => ("Spain", "es"),
+        "nl" => ("Netherlands", "nl"),
+        "pl" => ("Poland", "pl"),
+        "ru" => ("Russia", "ru"),
+        "ua" => ("Ukraine", "ua"),
+        "se" => ("Sweden", "se"),
+        "no" => ("Norway", "no"),
+        "dk" => ("Denmark", "dk"),
+        "fi" => ("Finland", "fi"),
+        "pt" => ("Portugal", "pt"),
+        "ro" => ("Romania", "ro"),
+        "cz" => ("Czech Republic", "cz"),
+        "sk" => ("Slovakia", "sk"),
+        "hu" => ("Hungary", "hu"),
+        "at" => ("Austria", "at"),
+        "be" => ("Belgium", "be"),
+        "ch" => ("Switzerland", "ch"),
+        "gr" => ("Greece", "el"),
+        "tr" => ("Turkey", "tr"),
+        "jp" => ("Japan", "ja"),
+        "cn" => ("China", "zh"),
+        "kr" => ("South Korea", "ko"),
+        "in" => ("India", "hi"),
+        "au" => ("Australia", "en-au"),
+        "nz" => ("New Zealand", "en-nz"),
+        "za" => ("South Africa", "af"),
+        "br" => ("Brazil", "pt-br"),
+        "mx" => ("Mexico", "es-mx"),
+        "ar" => ("Argentina", "es-ar"),
+        "uk" => ("United Kingdom", "en-gb"),
+        _ => return None,
+    })
+}
+
+/// Map a locale code (as emitted by the pattern tables) to an approximate
+/// country/region centroid `(lat, lon)`. Returns `None` for ambiguous regions
+/// that span multiple countries with no single representative point (e.g. `pt`
+/// covers both Portugal and Latin America — a centroid would be misleading).
+fn locale_centroid(locale: &str) -> Option<(f64, f64)> {
+    // Centroids are national capitals or geographic midpoints — clearly coarse.
+    Some(match locale {
+        "sv" | "se" => (59.334_6, 18.063_2), // Stockholm, Sweden
+        "ru" => (55.751_2, 37.618_4),        // Moscow, Russia
+        "ua" => (50.450_0, 30.523_4),        // Kyiv, Ukraine
+        "pl" => (52.229_7, 21.011_2),        // Warsaw, Poland
+        "fi" => (60.169_9, 24.938_4),        // Helsinki, Finland
+        "ro" => (44.436_9, 26.102_8),        // Bucharest, Romania
+        "tr" => (39.925_5, 32.866_3),        // Ankara, Turkey
+        "el" => (37.983_9, 23.729_4),        // Athens, Greece
+        "it" => (41.902_8, 12.496_4),        // Rome, Italy
+        "fr" => (48.856_6, 2.352_2),         // Paris, France
+        "de" => (52.520_0, 13.404_9),        // Berlin, Germany
+        "ja" => (35.689_5, 139.691_7),       // Tokyo, Japan
+        "zh" => (39.904_2, 116.407_4),       // Beijing, China
+        "es" | "es-mx" | "es-ar" => (40.416_7, -3.703_5), // Madrid, Spain
+        "nl" => (52.370_2, 4.895_2),         // Amsterdam, Netherlands
+        "cz" => (50.075_5, 14.437_8),        // Prague, Czech Republic
+        "sk" => (48.148_6, 17.107_5),        // Bratislava, Slovakia
+        "hu" => (47.497_9, 19.039_8),        // Budapest, Hungary
+        "at" => (48.208_2, 16.373_8),        // Vienna, Austria
+        "be" => (50.850_3, 4.351_7),         // Brussels, Belgium
+        "ch" => (46.948_0, 7.447_4),         // Bern, Switzerland
+        "no" => (59.913_9, 10.752_2),        // Oslo, Norway
+        "dk" => (55.676_1, 12.568_4),        // Copenhagen, Denmark
+        "pt" | "pt-br" => (38.716_8, -9.142_1), // Lisbon, Portugal
+        "ko" => (37.566_5, 126.978_0),       // Seoul, South Korea
+        "hi" => (28.613_9, 77.209_0),        // New Delhi, India
+        "en-au" => (-33.868_8, 151.209_3),   // Sydney, Australia
+        "en-nz" => (-36.848_5, 174.763_3),   // Auckland, New Zealand
+        "af" => (-25.746_0, 28.188_1),       // Pretoria, South Africa
+        "en-gb" => (51.507_4, -0.127_8),     // London, United Kingdom
+        _ => return None,
     })
 }
 

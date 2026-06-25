@@ -98,6 +98,7 @@ impl Module for Proxycurl {
             EntityKind::Domain,
             EntityKind::Phone,
             EntityKind::Organisation,
+            EntityKind::Url,
         ];
         KINDS
     }
@@ -124,7 +125,11 @@ impl Module for Proxycurl {
             return Ok(ModuleResult::new());
         };
 
-        let profile: types::LinkedInProfile = crate::util::http::json_decode(SRC, resp).await?;
+        // json_scanned: LinkedIn profiles include headline and summary
+        // (free-form user text) that may contain embedded API keys or tokens.
+        let profile: types::LinkedInProfile = crate::util::http::json_scanned(resp, SRC)
+            .await
+            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
 
         Ok(build::build_entities(&profile, target, &ctx.scan_id))
     }

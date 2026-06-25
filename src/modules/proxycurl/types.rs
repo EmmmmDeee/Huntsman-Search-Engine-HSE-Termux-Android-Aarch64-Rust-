@@ -38,6 +38,10 @@ pub(super) struct LinkedInProfile {
     pub(super) personal_emails: Vec<String>,
     #[serde(default)]
     pub(super) personal_numbers: Vec<String>,
+    /// Personal website URL from the LinkedIn profile. Present on the Proxycurl
+    /// API response when the user has published a website link.
+    #[serde(default)]
+    pub(super) website_url: Option<String>,
 }
 
 impl LinkedInProfile {

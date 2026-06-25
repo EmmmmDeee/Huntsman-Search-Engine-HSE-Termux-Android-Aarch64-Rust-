@@ -58,11 +58,76 @@ fn cert_evidence(entry: &CrtEntry, summary: &str) -> Evidence {
     ev
 }
 
-/// Map crt.sh certificate entries to deduplicated Domain/Email entities.
-/// **Pure** (no network/IO): splits each cert's SAN list + common name, skips
-/// wildcards, classifies a name as a subdomain of `domain_base` (case-folded) for
-/// a confidence boost, dedups across the whole response, then returns the
-/// highest-confidence [`MAX_ENTITIES`].
+/// Well-known public CAs whose organisation names add no OSINT signal.
+/// Any issuer `O=` value that is a case-insensitive prefix/equal match against
+/// one of these is suppressed from the Organisation entity list.
+const PUBLIC_CA_ORG_PREFIXES: &[&str] = &[
+    "let's encrypt",
+    "letsencrypt",
+    "digicert",
+    "sectigo",
+    "comodo",
+    "globalsign",
+    "identrust",
+    "entrust",
+    "godaddy",
+    "thawte",
+    "geotrust",
+    "rapidssl",
+    "network solutions",
+    "amazon",
+    "cloudflare",
+    "microsoft",
+    "google trust services",
+    "google",
+    "apple",
+    "buypass",
+    "zerossl",
+    "ssl.com",
+    "actalis",
+    "certum",
+    "swisssign",
+    "d-trust",
+    "trustwave",
+    "baltimore cybertrust",
+    "cybertrust",
+    "verisign",
+    "symantec",
+    "norton",
+];
+
+/// Extract the `O=` value from an X.509 Distinguished Name string such as
+/// `"C=US, O=Let's Encrypt, CN=E5"`.  Returns `None` when no O= field is
+/// present or the value is empty.
+fn parse_dn_org(dn: &str) -> Option<&str> {
+    for segment in dn.split(',') {
+        let seg = segment.trim();
+        if let Some(rest) = seg.strip_prefix("O=") {
+            let org = rest.trim();
+            if !org.is_empty() {
+                return Some(org);
+            }
+        }
+    }
+    None
+}
+
+fn is_public_ca(org: &str) -> bool {
+    let lower = org.to_lowercase();
+    PUBLIC_CA_ORG_PREFIXES
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+}
+
+/// Map crt.sh certificate entries to deduplicated Domain/Email/Organisation
+/// entities.  **Pure** (no network/IO): splits each cert's SAN list + common
+/// name, skips wildcards, classifies a name as a subdomain of `domain_base`
+/// (case-folded) for a confidence boost, dedups across the whole response,
+/// then returns the highest-confidence [`MAX_ENTITIES`].
+///
+/// Organisation entities are emitted for non-public issuing CAs only — these
+/// signal enterprise or custom PKI infrastructure and are a high-value
+/// attribution pivot.
 fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec<Entity> {
     let base = domain_base.trim().to_lowercase();
     // Pre-compute the `.base` subdomain suffix once instead of re-formatting it
@@ -70,6 +135,7 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
     let dot_base = format!(".{base}");
     let mut seen_domains: HashSet<String> = HashSet::new();
     let mut seen_emails: HashSet<String> = HashSet::new();
+    let mut seen_issuers: HashSet<String> = HashSet::new();
 
     let mut out: Vec<Entity> = entries
         .iter()
@@ -110,6 +176,37 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
             }
         })
         .collect();
+
+    // Non-public issuing CA organisations — emitted once per unique O= value.
+    // A custom or enterprise CA in the CT log reveals internal PKI and is a
+    // strong attribution pivot: all domains signed by the same private CA
+    // share an operator.
+    out.extend(
+        entries
+            .iter()
+            .filter_map(|entry| {
+                let dn = entry.issuer_name.as_deref()?;
+                let org = parse_dn_org(dn)?;
+                if is_public_ca(org) {
+                    return None;
+                }
+                let key = org.to_lowercase();
+                if !seen_issuers.insert(key) {
+                    return None;
+                }
+                let mut o = Entity::new(EntityKind::Organisation, org, 0.55, scan_id);
+                o.tag(tags::CT_LOG);
+                o.tag("certificate-issuer");
+                o.tag("derived");
+                o.add_evidence(
+                    cert_evidence(entry, &format!("Certificate issuer organisation: {org}"))
+                        .with_attr("issuer_dn", dn)
+                        .with_attr("signed_domain", domain_base),
+                );
+                Some(o)
+            })
+            .take(10),
+    );
 
     out.sort_by(|a, b| {
         b.confidence
@@ -169,11 +266,7 @@ impl Module for CrtSh {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[
-            EntityKind::Domain,
-            EntityKind::Email,
-            EntityKind::Organisation,
-        ];
+        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::Email];
         KINDS
     }
 

@@ -1,10 +1,15 @@
-//! OpenCorporates — Australian company director and shell-company lookup.
+//! OpenCorporates — Australian company and officer/director lookup.
 //!
-//! Endpoint: `GET https://api.opencorporates.com/v0.4/companies/search?q={name}&jurisdiction_code=au`
-//! Auth:     Optional API Token (`HUNTSMAN_OPENCORP_KEY`). Free tier is generous.
+//! Two endpoints sharing the same auth:
+//!   * Company search:  `GET /v0.4/companies/search?q={name}&jurisdiction_code=au`
+//!   * Officer search:  `GET /v0.4/officers/search?q={name}&jurisdiction_code=au`
 //!
-//! Cross-references company names, directors, and registration details
-//! against the global OpenCorporates dataset with Australian jurisdiction focus.
+//! Auth:     Optional API Token (`HUNTSMAN_OPENCORP_KEY`). Free tier requires
+//!           a key since late 2023; without one all requests return 401.
+//!
+//! Company search is used for `Organisation`/`AbnAcn` targets; officer search
+//! is used for `FullName` targets to find companies where the person serves as
+//! a director — the correct pivot endpoint for people-to-company correlation.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -50,8 +55,24 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
     if co.jurisdiction_code.as_deref() == Some("au") {
         entity.tag("country:AU");
     }
-    if co.current_status.as_deref() == Some("Active") {
-        entity.tag("active");
+    match co.current_status.as_deref() {
+        Some("Active") => {
+            entity.tag("active");
+        }
+        Some(s) if !s.is_empty() => {
+            entity.tag("inactive");
+        }
+        _ => {}
+    }
+    if co
+        .dissolution_date
+        .as_deref()
+        .is_some_and(|d| !d.is_empty())
+    {
+        entity.tag("dissolved");
+        // A dissolved company is less likely to be the current operating entity;
+        // pull confidence down slightly so live entities rank above it.
+        entity.confidence = (entity.confidence - 0.10).max(0.10);
     }
 
     let mut ev = [
@@ -124,6 +145,136 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
                 .with_attr("company_name", name),
         );
         out.push(acn);
+    }
+
+    out
+}
+
+/// Officer search response: `/v0.4/officers/search`.
+#[derive(Deserialize)]
+pub(super) struct OcOfficerResp {
+    #[serde(default)]
+    pub(super) results: Option<OcOfficerResults>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct OcOfficerResults {
+    #[serde(default)]
+    pub(super) officers: Vec<OcOfficerWrapper>,
+    #[serde(default)]
+    pub(super) total_count: Option<u64>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct OcOfficerWrapper {
+    #[serde(default)]
+    pub(super) officer: Option<OcOfficer>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct OcOfficer {
+    #[serde(default)]
+    pub(super) name: Option<String>,
+    #[serde(default)]
+    pub(super) position: Option<String>,
+    #[serde(default)]
+    pub(super) company: Option<OcOfficerCompany>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct OcOfficerCompany {
+    #[serde(default)]
+    pub(super) name: Option<String>,
+    #[serde(default)]
+    pub(super) company_number: Option<String>,
+    #[serde(default)]
+    pub(super) jurisdiction_code: Option<String>,
+    #[serde(default)]
+    pub(super) current_status: Option<String>,
+    #[serde(default)]
+    pub(super) opencorporates_url: Option<String>,
+}
+
+/// Map one OpenCorporates officer record to entities. **Pure** (no network/IO):
+/// emits the `Organisation` the person directs (if usable), an `AbnAcn` for AU
+/// registrations, and a corroborating `Person` entity carrying the officer name
+/// and position as evidence. `total` is the officer-search hit count. Returns
+/// an empty `Vec` when neither the officer name nor the company name is usable.
+pub(super) fn build_officer_entities(
+    officer: &OcOfficer,
+    total: u64,
+    scan_id: &str,
+) -> Vec<Entity> {
+    let mut out = Vec::new();
+
+    let officer_name = officer
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| n.len() >= 2);
+    let position = officer
+        .position
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
+
+    if let Some(co) = officer.company.as_ref() {
+        let co_name = co.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
+        if let Some(name) = co_name {
+            let mut org = Entity::new(EntityKind::Organisation, name, 0.72, scan_id);
+            org.tag("opencorporates");
+            if co.jurisdiction_code.as_deref() == Some("au") {
+                org.tag("country:AU");
+            }
+            if co.current_status.as_deref() == Some("Active") {
+                org.tag("active");
+            }
+            let mut ev = Evidence::new(SRC, format!("OpenCorporates officer search: {name}"))
+                .with_attr("total_matches", total.to_string());
+            if let Some(p) = position {
+                ev = ev.with_attr("officer_position", p);
+            }
+            if let Some(on) = officer_name {
+                ev = ev.with_attr("officer_name", on);
+            }
+            if let Some(url) = co.opencorporates_url.as_deref() {
+                ev = ev.with_attr("opencorporates_url", url);
+            }
+            if let Some(jur) = co.jurisdiction_code.as_deref() {
+                ev = ev.with_attr("jurisdiction", jur);
+            }
+            org.add_evidence(ev);
+            out.push(org);
+
+            if let Some(num) = co.company_number.as_deref()
+                && !num.is_empty()
+                && co.jurisdiction_code.as_deref() == Some("au")
+            {
+                let mut acn = Entity::new(EntityKind::AbnAcn, num, 0.78, scan_id);
+                acn.tag("opencorporates");
+                acn.tag("company-number");
+                acn.add_evidence(
+                    Evidence::new(SRC, format!("AU company number for {name}"))
+                        .with_attr("company_name", name),
+                );
+                out.push(acn);
+            }
+        }
+    }
+
+    // Corroborating Person entity for the officer name (confirms handle→identity).
+    if let Some(name) = officer_name.filter(|n| n.contains(' ')) {
+        let mut pe = Entity::new(EntityKind::Person, name, 0.72, scan_id);
+        pe.tag("opencorporates");
+        pe.tag("officer");
+        if let Some(p) = position {
+            pe.tag(format!("role:{}", p.to_lowercase().replace(' ', "-")));
+        }
+        pe.add_evidence(
+            Evidence::new(SRC, format!("OpenCorporates officer: {name}"))
+                .with_attr("total_matches", total.to_string()),
+        );
+        out.push(pe);
     }
 
     out
@@ -217,6 +368,8 @@ impl Module for OpenCorporates {
             EntityKind::AbnAcn,
             EntityKind::Address,
             EntityKind::Coordinates,
+            // Person: emitted from officer search (FullName targets only).
+            EntityKind::Person,
         ];
         KINDS
     }
@@ -227,11 +380,23 @@ impl Module for OpenCorporates {
             return Ok(ModuleResult::new());
         }
 
-        let mut url = format!(
-            "https://api.opencorporates.com/v0.4/companies/search?q={}&jurisdiction_code=au&per_page={PER_PAGE}",
-            urlencode(query),
-        );
+        // Full names pivot through officer search (people → companies they direct);
+        // organisation names and ABN/ACN numbers pivot through company search.
+        let use_officer_search = target.kind == TargetKind::FullName;
 
+        let base = if use_officer_search {
+            format!(
+                "https://api.opencorporates.com/v0.4/officers/search?q={}&jurisdiction_code=au&per_page={PER_PAGE}",
+                urlencode(query),
+            )
+        } else {
+            format!(
+                "https://api.opencorporates.com/v0.4/companies/search?q={}&jurisdiction_code=au&per_page={PER_PAGE}",
+                urlencode(query),
+            )
+        };
+
+        let mut url = base;
         if let Some(key) = ctx.key_opt(KEY_ENV) {
             url.push_str(&format!("&api_token={}", urlencode(key)));
         }
@@ -259,28 +424,45 @@ impl Module for OpenCorporates {
             return Err(Error::module(SRC, format!("HTTP {status}")));
         }
 
-        let body: OcResp = crate::util::http::json_decode(SRC, resp).await?;
-
-        let Some(results) = body.results else {
-            return Ok(ModuleResult::new());
-        };
-        if results.companies.is_empty() {
-            return Ok(ModuleResult::new());
-        }
-
-        let total = results
-            .total_count
-            .unwrap_or(results.companies.len() as u64);
         let mut result = ModuleResult::new();
 
-        result.extend(
-            results
-                .companies
-                .iter()
-                .take(PER_PAGE)
-                .filter_map(|wrapper| wrapper.company.as_ref())
-                .flat_map(|co| build_company_entities(co, total, &ctx.scan_id)),
-        );
+        if use_officer_search {
+            let body: OcOfficerResp = crate::util::http::json_decode(SRC, resp).await?;
+            let Some(results) = body.results else {
+                return Ok(result);
+            };
+            if results.officers.is_empty() {
+                return Ok(result);
+            }
+            let total = results.total_count.unwrap_or(results.officers.len() as u64);
+            result.extend(
+                results
+                    .officers
+                    .iter()
+                    .take(PER_PAGE)
+                    .filter_map(|w| w.officer.as_ref())
+                    .flat_map(|o| build_officer_entities(o, total, &ctx.scan_id)),
+            );
+        } else {
+            let body: OcResp = crate::util::http::json_decode(SRC, resp).await?;
+            let Some(results) = body.results else {
+                return Ok(result);
+            };
+            if results.companies.is_empty() {
+                return Ok(result);
+            }
+            let total = results
+                .total_count
+                .unwrap_or(results.companies.len() as u64);
+            result.extend(
+                results
+                    .companies
+                    .iter()
+                    .take(PER_PAGE)
+                    .filter_map(|wrapper| wrapper.company.as_ref())
+                    .flat_map(|co| build_company_entities(co, total, &ctx.scan_id)),
+            );
+        }
 
         Ok(result)
     }

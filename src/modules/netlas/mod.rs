@@ -189,16 +189,17 @@ impl Module for Netlas {
             .send_tagged(SRC)
             .await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            crate::util::http::note_keyed_error(status.as_u16(), SRC, key, ctx);
+        // 401/403/429 → note_keyed_error + Err; 404 → clean miss; other non-2xx → Err.
+        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         let body: NetlasResp = crate::util::http::json_decode(SRC, resp).await?;
         let mut result = ModuleResult::new();
 
         let mut all_emails: Vec<String> = Vec::new();
+        let mut all_cert_domains: Vec<String> = Vec::new();
+        let mut cert_orgs: Vec<String> = Vec::new();
         let mut port_list: Vec<String> = Vec::new();
         let mut jarm_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut cve_list: Vec<String> = Vec::new();
@@ -250,9 +251,17 @@ impl Module for Netlas {
                     if let Some(emails) = &subj.email {
                         all_emails.extend(emails.iter().cloned());
                     }
+                    // OV/EV certificates carry the verified organisation name in
+                    // the Subject O field — a confirmed legal entity name.
+                    if let Some(orgs) = &subj.organization {
+                        cert_orgs.extend(orgs.iter().filter(|o| !o.is_empty()).cloned());
+                    }
                 }
                 if let Some(emails) = &cert.emails {
                     all_emails.extend(emails.iter().cloned());
+                }
+                if let Some(doms) = &cert.domains {
+                    all_cert_domains.extend(doms.iter().cloned());
                 }
             }
             if let Some(http_data) = &data.http
@@ -338,6 +347,10 @@ impl Module for Netlas {
         result.push(ip_entity);
 
         // ISP → Organisation entity.
+        let isp_lc = isp_val
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty());
         if let Some(isp) = isp_val.as_deref().filter(|s| s.len() >= 3) {
             let mut org = Entity::new(EntityKind::Organisation, isp, 0.60, &ctx.scan_id);
             org.tag("netlas");
@@ -347,6 +360,34 @@ impl Module for Netlas {
                     .with_attr("source", "netlas"),
             );
             result.push(org);
+        }
+
+        // SSL Subject O field → Organisation entity (OV/EV certs only).
+        // Deduplicate and skip values that match the ISP already emitted.
+        cert_orgs.sort();
+        cert_orgs.dedup();
+        for cert_org in cert_orgs.iter().take(3) {
+            let org_lc = cert_org.trim().to_ascii_lowercase();
+            if org_lc.len() < 3 || isp_lc.as_deref() == Some(&org_lc) {
+                continue;
+            }
+            let mut oe = Entity::new(
+                EntityKind::Organisation,
+                cert_org.trim(),
+                0.70,
+                &ctx.scan_id,
+            );
+            oe.tag("netlas");
+            oe.tag("ssl-subject-org");
+            oe.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("SSL/TLS certificate Subject O for {ip_str}: {cert_org}"),
+                )
+                .with_attr("ip", ip_str)
+                .with_attr("cert_org", cert_org.as_str()),
+            );
+            result.push(oe);
         }
 
         // Geolocation → Coordinates + Address.
@@ -376,6 +417,23 @@ impl Module for Netlas {
                 addr.tag("netlas");
                 addr.add_evidence(Evidence::new(SRC, format!("Netlas location for {ip_str}")));
                 result.push(addr);
+            }
+        }
+
+        // SSL/TLS SAN domains → Domain entities for BFS.
+        all_cert_domains.sort();
+        all_cert_domains.dedup();
+        for dom in all_cert_domains.iter().take(20) {
+            let dom = dom.trim().trim_start_matches('*').trim_start_matches('.');
+            if dom.len() >= 4 && dom.contains('.') && !dom.contains(char::is_whitespace) {
+                let mut de = Entity::new(EntityKind::Domain, dom, 0.70, &ctx.scan_id);
+                de.tag("netlas");
+                de.tag("ssl-san");
+                de.add_evidence(
+                    Evidence::new(SRC, format!("SSL/TLS SAN domain for {ip_str}"))
+                        .with_attr("ip", ip_str),
+                );
+                result.push(de);
             }
         }
 

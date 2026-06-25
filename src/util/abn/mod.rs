@@ -206,7 +206,7 @@ pub fn company_names(owner: &str) -> Vec<String> {
             .trim_end_matches('.')
             .to_uppercase();
         if matches!(first.as_str(), "CO" | "COMPANY") && !segments.is_empty() {
-            let prev = segments.last_mut().unwrap();
+            let prev = segments.last_mut().expect("guarded by !is_empty() above");
             prev.push_str(" & ");
             prev.push_str(seg);
         } else {

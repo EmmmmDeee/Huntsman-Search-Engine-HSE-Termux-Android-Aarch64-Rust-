@@ -79,7 +79,14 @@ impl Module for Seon {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Person, EntityKind::Url];
+        // Always re-emits the seed (Email or Phone) enriched with SEON signal,
+        // plus Person (name from email path) and Url (social platform profiles).
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Email,
+            EntityKind::Phone,
+            EntityKind::Person,
+            EntityKind::Url,
+        ];
         KINDS
     }
 
@@ -118,12 +125,10 @@ impl Seon {
             .send_tagged(SRC)
             .await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let code = status.as_u16();
-            crate::util::http::note_keyed_error(code, SRC, key, ctx);
-            return Err(crate::util::http::http_status_error(SRC, resp).await);
-        }
+        // 401/403/429 → note_keyed_error + Err; 404 → empty; other non-2xx → Err.
+        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
+            return Ok(ModuleResult::new());
+        };
 
         let body: SeonEmailResp = crate::util::http::json_scanned(resp, SRC)
             .await
@@ -161,12 +166,10 @@ impl Seon {
             .send_tagged(SRC)
             .await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let code = status.as_u16();
-            crate::util::http::note_keyed_error(code, SRC, key, ctx);
-            return Err(crate::util::http::http_status_error(SRC, resp).await);
-        }
+        // 401/403/429 → note_keyed_error + Err; 404 → empty; other non-2xx → Err.
+        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
+            return Ok(ModuleResult::new());
+        };
 
         let body: SeonPhoneResp = crate::util::http::json_scanned(resp, SRC)
             .await

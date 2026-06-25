@@ -58,6 +58,8 @@ pub fn cmd_benchmark(scan_id: Option<String>, json: bool) -> Result<()> {
     println!("  graph density     {:.0}%", sc.graph_density * 100.0);
     println!("  cut vertices      {}", sc.cut_vertex_count);
     println!("  bridges           {}", sc.bridge_count);
+    println!("  degeneracy        {}", sc.degeneracy);
+    println!("  main core         {} entities", sc.main_core_size);
     println!("  cross-scan        {}", sc.cross_scan_bridges);
     println!("  pivot nodes       {}", report.pivot_count);
     Ok(())

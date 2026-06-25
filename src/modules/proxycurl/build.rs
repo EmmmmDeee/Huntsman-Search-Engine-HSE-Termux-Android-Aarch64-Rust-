@@ -220,5 +220,31 @@ pub(super) fn build_entities(
             }),
     );
 
+    // ── Personal website URL ──────────────────────────────────────────────
+    if let Some(url) = profile
+        .website_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+    {
+        let mut ue = Entity::new(EntityKind::Url, url, 0.72, scan_id);
+        ue.tag("proxycurl");
+        ue.tag("linkedin");
+        ue.add_evidence(Evidence::new(SRC, "Website URL from LinkedIn profile"));
+        result.push(ue);
+        // Also surface the host as a Domain pivot.
+        if let Some(host) = crate::util::url_util::host_from_url(url)
+            && !host.eq_ignore_ascii_case("linkedin.com")
+            && !host.eq_ignore_ascii_case("lnkd.in")
+        {
+            let mut de = Entity::new(EntityKind::Domain, &host, 0.68, scan_id);
+            de.tag("proxycurl");
+            de.tag("linkedin");
+            de.tag("derived");
+            de.add_evidence(Evidence::new(SRC, "Website domain from LinkedIn profile"));
+            result.push(de);
+        }
+    }
+
     result
 }

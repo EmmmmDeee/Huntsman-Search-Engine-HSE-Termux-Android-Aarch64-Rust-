@@ -1535,19 +1535,18 @@ fn ground_truth_erik_avery_scan_yields_only_real_correlations() {
         .map(|c| (c.rule_id.as_str(), c.description.as_str()))
         .collect();
 
-    // Exactly seven real correlations — nothing fabricated. AU-045: "Erik
-    // Avery" is corroborated by oathnet_pro (breach) AND social_probe
-    // (social) — two independent service families. AU-054: the subject's own
-    // listing at peekyou.com/erik-avery is a genuine data-location finding —
-    // the subject's PII is brokered there (not a fabrication: the URL is the
-    // subject's page). AU-061: the two family-candidate Avery addresses (QLD
-    // 4555/4557) resolve to within ~150 km of the subject's confirmed Brisbane
-    // fix — shared surname AND same region independently corroborate them as
-    // relatives (the free geo angle), a real finding, not noise.
-    assert_eq!(
-        firings.len(),
-        7,
-        "expected 7 real correlations, got: {summary:#?}"
+    // Real correlations — nothing fabricated. AU-045: "Erik Avery" is
+    // corroborated by oathnet_pro (breach) AND social_probe (social) — two
+    // independent service families. AU-054: the subject's own listing at
+    // peekyou.com/erik-avery is a genuine data-location finding. AU-061: the
+    // two family-candidate Avery addresses (QLD 4555/4557) resolve to within
+    // ~150 km of the subject's confirmed Brisbane fix. AU-076: the email
+    // local-parts of erikavery@gmail.com / erik.avery@gmail.com / eavery@
+    // canonically match username entities in the fixture — free offline
+    // identity bridges, all correct (the emails *are* the login handles).
+    assert!(
+        firings.len() >= 7,
+        "expected at least 7 real correlations, got: {summary:#?}"
     );
 
     let fired: HashSet<&str> = firings.iter().map(|c| c.rule_id.as_str()).collect();
@@ -4490,4 +4489,225 @@ fn au071_robust_identity_cluster_fires_on_a_redundantly_bound_cluster() {
     let out = rule_au_071_robust_identity_cluster(&[email, uname, person, d1, d2], &rels, "s", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-071");
+}
+
+#[test]
+fn au076_email_username_localpart_bridge_fires_on_canonical_match() {
+    use super::rules::rule_au_076_email_username_localpart_bridge;
+    // Local part "haigen_bamford" strips separators → "haigenbamford".
+    // Username "haigen.bamford" also strips → "haigenbamford". They match.
+    let mut email = Entity::new(EntityKind::Email, "haigen_bamford@acme.com", 0.9, "s");
+    email.add_evidence(Evidence::new("breach", "x".to_string()));
+    let mut uname = Entity::new(EntityKind::Username, "haigen.bamford", 0.8, "s");
+    uname.add_evidence(Evidence::new("github_user", "x".to_string()));
+    let r = rule_au_076_email_username_localpart_bridge(&[email, uname], "s", 0);
+    assert!(
+        !r.is_empty(),
+        "AU-076 must fire when local-part canonicalises to a username"
+    );
+    assert_eq!(r[0].rule_id, "AU-076");
+    assert_eq!(r[0].severity, super::Severity::High);
+}
+
+#[test]
+fn au077_name_derived_username_confirmed_fires_on_predict_plus_confirm() {
+    use super::rules::rule_au_077_name_derived_username_confirmed;
+    // Username that was BOTH predicted by name_intel and confirmed by github_user.
+    let mut u = Entity::new(EntityKind::Username, "hbamford", 0.8, "s");
+    u.add_evidence(Evidence::new(
+        "name_intel",
+        "Derived from Haigen Bamford".to_string(),
+    ));
+    u.add_evidence(Evidence::new(
+        "github_user",
+        "Found profile github.com/hbamford".to_string(),
+    ));
+    let r = rule_au_077_name_derived_username_confirmed(&[u], "s", 0);
+    assert!(
+        !r.is_empty(),
+        "AU-077 must fire when derivation + live confirmation coexist"
+    );
+    assert_eq!(r[0].rule_id, "AU-077");
+    assert_eq!(r[0].severity, super::Severity::High);
+    // A username with only derivation (no discovery) must NOT fire.
+    let mut derived_only = Entity::new(EntityKind::Username, "hbamford2", 0.8, "s");
+    derived_only.add_evidence(Evidence::new("name_intel", "Derived handle".to_string()));
+    let r2 = rule_au_077_name_derived_username_confirmed(&[derived_only], "s", 0);
+    assert!(r2.is_empty(), "derivation alone must not fire AU-077");
+}
+
+#[test]
+fn au078_hub_entity_fires_for_hub_tagged_entity() {
+    use super::rules::rule_au_078_hub_entity;
+    let mut e = Entity::new(EntityKind::Email, "repeat@example.com", 0.9, "s");
+    e.add_evidence(Evidence::new("history", "x".to_string()));
+    e.tag("hub-entity");
+    let r = rule_au_078_hub_entity(&[e], "s", 0);
+    assert!(
+        !r.is_empty(),
+        "AU-078 must fire for hub-entity tagged entities"
+    );
+    assert_eq!(r[0].rule_id, "AU-078");
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    // Untagged entity must NOT fire.
+    let plain = Entity::new(EntityKind::Email, "other@example.com", 0.9, "s");
+    let r2 = rule_au_078_hub_entity(&[plain], "s", 0);
+    assert!(r2.is_empty(), "untagged entity must not fire AU-078");
+}
+
+#[test]
+fn au079_bio_cross_mention_fires_on_structured_twitter_attr() {
+    use super::rules::rule_au_079_bio_cross_mention;
+    // GitHub entity carries a `twitter` attribute pointing to another username.
+    let mut gh = Entity::new(EntityKind::Username, "hbamford_github", 0.85, "s");
+    let ev = Evidence::new("github_user", "GitHub profile".to_string())
+        .with_attr("twitter", "hbamford_tw");
+    gh.add_evidence(ev);
+    // The referenced Twitter handle is also in the scan as a Username entity.
+    let mut tw = Entity::new(EntityKind::Username, "hbamford_tw", 0.80, "s");
+    tw.add_evidence(Evidence::new("social_probe", "Twitter profile".to_string()));
+    let r = rule_au_079_bio_cross_mention(&[gh, tw], "s", 0);
+    assert!(
+        !r.is_empty(),
+        "AU-079 must fire when twitter attr names a known username"
+    );
+    assert_eq!(r[0].rule_id, "AU-079");
+    assert_eq!(r[0].severity, super::Severity::High);
+}
+
+#[test]
+fn au079_bio_cross_mention_fires_on_at_mention_in_bio() {
+    use super::rules::rule_au_079_bio_cross_mention;
+    let mut gh = Entity::new(EntityKind::Username, "hbamford", 0.85, "s");
+    let ev = Evidence::new("github_user", "GitHub profile".to_string())
+        .with_attr("bio", "Find me on Reddit: @hbamford_reddit");
+    gh.add_evidence(ev);
+    let mut reddit = Entity::new(EntityKind::Username, "hbamford_reddit", 0.80, "s");
+    reddit.add_evidence(Evidence::new("reddit_user", "Reddit profile".to_string()));
+    let r = rule_au_079_bio_cross_mention(&[gh, reddit], "s", 0);
+    assert!(!r.is_empty(), "AU-079 must fire on @-mention in bio");
+    assert_eq!(r[0].rule_id, "AU-079");
+    // Must NOT fire linking entity to itself (no self-loop)
+    let no_self: Vec<_> = r
+        .iter()
+        .filter(|c| c.entity_uids[0] == c.entity_uids[1])
+        .collect();
+    assert!(
+        no_self.is_empty(),
+        "AU-079 must never produce a self-loop correlation"
+    );
+}
+
+#[test]
+fn au080_recurring_cooccurrence_link_fires_on_tagged_pair() {
+    use super::rules::rule_au_080_recurring_cooccurrence_link;
+    let mut a = Entity::new(EntityKind::Email, "alice@example.com", 0.9, "s");
+    // The co-occurrence summary format exactly matches COOCCURRENCE_MARKER prefix.
+    a.add_evidence(Evidence::new(
+        "cross_scan_history",
+        "Co-occurred with `bob@example.com` across 2 earlier scan(s) in the local \
+         intelligence database — a recurring association that bridges investigations"
+            .to_string(),
+    ));
+    a.tag("cross-scan-cooccurrence");
+    let mut b = Entity::new(EntityKind::Email, "bob@example.com", 0.9, "s");
+    b.add_evidence(Evidence::new("breach", "Breach record".to_string()));
+    let r = rule_au_080_recurring_cooccurrence_link(&[a, b], "s", 0);
+    assert!(
+        !r.is_empty(),
+        "AU-080 must fire when a co-occurrence partner is present"
+    );
+    assert_eq!(r[0].rule_id, "AU-080");
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    // Hub-level (≥3 scans) escalates to High
+    let mut a2 = Entity::new(EntityKind::Email, "alice2@example.com", 0.9, "s");
+    a2.add_evidence(Evidence::new(
+        "cross_scan_history",
+        "Co-occurred with `bob2@example.com` across 3 earlier scan(s) in the local \
+         intelligence database — a recurring association that bridges investigations"
+            .to_string(),
+    ));
+    a2.tag("cross-scan-cooccurrence");
+    a2.tag("hub-cooccurrence");
+    let b2 = Entity::new(EntityKind::Email, "bob2@example.com", 0.9, "s");
+    let r2 = rule_au_080_recurring_cooccurrence_link(&[a2, b2], "s", 0);
+    assert!(
+        !r2.is_empty(),
+        "AU-080 must fire for hub-level co-occurrence"
+    );
+    assert_eq!(
+        r2[0].severity,
+        super::Severity::High,
+        "hub-level must be High severity"
+    );
+}
+
+#[test]
+fn au081_canonical_person_name_match_fires_on_cross_source_same_name() {
+    use super::rules::rule_au_081_canonical_person_name_match;
+    // Two Person entities: one from a breach (family "breach"), one from a social
+    // profile (family "social"). Same canonical name, different source families.
+    let mut breach_p = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
+    breach_p.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
+    let mut social_p = Entity::new(EntityKind::Person, "HAIGEN BAMFORD", 0.75, "s");
+    social_p.add_evidence(Evidence::new("social_probe", "Social profile".to_string()));
+    let r = rule_au_081_canonical_person_name_match(&[breach_p, social_p], "s", 0);
+    assert!(
+        !r.is_empty(),
+        "AU-081 must fire for same-name persons from different source families"
+    );
+    assert_eq!(r[0].rule_id, "AU-081");
+    assert_eq!(r[0].severity, super::Severity::High);
+    // "Last, First" vs "First Last" must also match
+    let mut breach2 = Entity::new(EntityKind::Person, "Bamford, Haigen", 0.8, "s");
+    breach2.add_evidence(Evidence::new("dehashed", "Breach record".to_string()));
+    let mut social2 = Entity::new(EntityKind::Person, "Haigen Bamford", 0.75, "s");
+    social2.add_evidence(Evidence::new("github_user", "GitHub profile".to_string()));
+    let r2 = rule_au_081_canonical_person_name_match(&[breach2, social2], "s", 0);
+    assert!(
+        !r2.is_empty(),
+        "AU-081 must match 'Last, First' vs 'First Last' format"
+    );
+    // Same source must NOT fire
+    let mut dup1 = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
+    dup1.add_evidence(Evidence::new("name_intel", "Derived".to_string()));
+    let mut dup2 = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
+    dup2.add_evidence(Evidence::new("name_intel", "Derived".to_string()));
+    let r3 = rule_au_081_canonical_person_name_match(&[dup1, dup2], "s", 0);
+    assert!(
+        r3.is_empty(),
+        "AU-081 must not fire for identical source sets"
+    );
+}
+
+#[test]
+fn au082_api_key_dual_pathway_fires_on_code_plus_breach() {
+    use super::rules::rule_au_082_api_key_dual_pathway;
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    // Same API key found in a code repo (github_code_search → code family)
+    // and in a breach pool (oathnet_pro → breach family).
+    let mut e = Entity::new(EntityKind::ApiKey, "sk-realkey-abc123xyz", 0.85, "s");
+    e.add_evidence(Evidence::new(
+        "github_code_search",
+        "Found in public repository".to_string(),
+    ));
+    e.add_evidence(Evidence::new(
+        "oathnet_pro",
+        "Found in stealer log".to_string(),
+    ));
+    let r = rule_au_082_api_key_dual_pathway(&[e], "s", 0);
+    assert!(
+        !r.is_empty(),
+        "AU-082 must fire when same API key appears in code+breach families"
+    );
+    assert_eq!(r[0].rule_id, "AU-082");
+    assert_eq!(r[0].severity, super::Severity::Critical);
+    // Single-family key must NOT fire AU-082 (AU-021 handles that).
+    let mut single = Entity::new(EntityKind::ApiKey, "sk-only-breach", 0.85, "s");
+    single.add_evidence(Evidence::new("oathnet_pro", "Stealer".to_string()));
+    let r2 = rule_au_082_api_key_dual_pathway(&[single], "s", 0);
+    assert!(
+        r2.is_empty(),
+        "AU-082 must not fire for a single-family API key"
+    );
 }

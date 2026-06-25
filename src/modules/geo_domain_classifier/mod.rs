@@ -50,7 +50,7 @@ impl Module for GeoDomainClassifier {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Address];
+        const KINDS: &[EntityKind] = &[EntityKind::Address, EntityKind::Coordinates];
         KINDS
     }
 
@@ -87,6 +87,26 @@ impl Module for GeoDomainClassifier {
                 .with_attr("country_code", geo.country_code)
                 .with_attr("method", geo.method),
             );
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(geo.location) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    geo.confidence - 0.10,
+                    &ctx.scan_id,
+                );
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.tag("domain-inferred");
+                c.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("Geocode of domain-inferred location '{}'", geo.location),
+                    )
+                    .with_attr("domain", &domain),
+                );
+                result.push(c);
+            }
             result.push(e);
         }
 

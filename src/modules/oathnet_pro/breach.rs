@@ -36,6 +36,11 @@ pub(super) fn breach_evidence(item: &Value) -> Evidence {
         ("postal_code", "postal_code"),
         ("bio", "bio"),
         ("location", "location"),
+        ("employer", "employer"),
+        ("company", "employer"),
+        ("organization", "employer"),
+        ("organisation", "employer"),
+        ("workplace", "employer"),
         ("discordid", "discord_id"),
         ("instagram", "instagram"),
         ("linkedin", "linkedin"),
@@ -371,6 +376,19 @@ pub(super) fn extract_breach_entities_with(
     if let Some(country) = val_str(item, "country")
         && seen.insert(format!("@country:{country}"))
     {
+        if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country) {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+            c.tag("addr-derived");
+            c.tag("geoint");
+            c.tag("breach");
+            c.tag("oathnet-pro");
+            if !is_target_row {
+                c.demote_to_candidate();
+            }
+            c.add_evidence(ev.clone());
+            result.push(c);
+        }
         push_oathnet_entity(
             result,
             Entity::new(EntityKind::Address, &country, 0.55, scan_id),
@@ -408,11 +426,54 @@ pub(super) fn extract_breach_entities_with(
         .collect::<Vec<&str>>()
         .join(", ");
         if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.55, scan_id);
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.tag("breach");
+                c.tag("oathnet-pro");
+                if !is_target_row {
+                    c.demote_to_candidate();
+                }
+                c.add_evidence(ev.clone());
+                result.push(c);
+            }
             push_oathnet_entity(
                 result,
                 Entity::new(EntityKind::Address, &addr, 0.65, scan_id),
                 &ev,
                 &[],
+                is_target_row,
+            );
+        }
+    }
+
+    // Free-text `location` field — emitted as an Address hint when no structured
+    // street/city/state address was found (or in addition to it if they differ).
+    // Requires ≥4 chars to filter out empty-string variants and single tokens like
+    // "US" that are already captured as the `country` evidence attribute.
+    if let Some(loc) = val_str(item, "location") {
+        let loc = loc.trim();
+        if loc.len() >= 4 && seen.insert(format!("@loc:{}", loc.to_lowercase())) {
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.30, scan_id);
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.tag("breach");
+                c.tag("oathnet-pro");
+                if !is_target_row {
+                    c.demote_to_candidate();
+                }
+                c.add_evidence(ev.clone());
+                result.push(c);
+            }
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::Address, loc, 0.40, scan_id),
+                &ev,
+                &["geo-hint", "free-text-location"],
                 is_target_row,
             );
         }
@@ -480,6 +541,28 @@ pub(super) fn extract_breach_entities_with(
                 &["linkedin"],
                 is_target_row,
             );
+        }
+    }
+
+    // Employer / company → Organisation entity. Breach dumps from LinkedIn,
+    // dating apps, and e-commerce platforms frequently carry an employer or
+    // company field. Emitting it as Organisation feeds the employer_pivot and
+    // opencorporates chains — mirroring the see_know extractor.
+    for k in [
+        "employer",
+        "company",
+        "organization",
+        "organisation",
+        "workplace",
+    ] {
+        if let Some(org) = val_str(item, k) {
+            let org = org.trim();
+            if org.len() >= 2 && seen.insert(format!("@org:{}", org.to_ascii_lowercase())) {
+                let mut oe = Entity::new(EntityKind::Organisation, org, 0.50, scan_id);
+                oe.tag("oathnet");
+                oe.tag("employer-field");
+                push_oathnet_entity(result, oe, &ev, &[], is_target_row);
+            }
         }
     }
 

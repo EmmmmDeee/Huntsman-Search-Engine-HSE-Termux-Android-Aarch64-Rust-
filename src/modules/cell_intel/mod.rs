@@ -89,7 +89,7 @@ impl Module for CellIntel {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Coordinates];
+        const KINDS: &[EntityKind] = &[EntityKind::DeviceId, EntityKind::Coordinates];
         KINDS
     }
 

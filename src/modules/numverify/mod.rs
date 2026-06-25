@@ -9,7 +9,7 @@
 //! it returns validity, **carrier**, **line type** (mobile/landline/voip), and
 //! **region** — emitted as a geocodable `Address` plus carrier/line evidence.
 //!
-//! The response→entity mapping is the pure [`build_entity`] (unit-tested); the
+//! The response→entity mapping is the pure `build_entity` (unit-tested); the
 //! network shell owns only auth/transport.
 
 use async_trait::async_trait;
@@ -79,7 +79,11 @@ impl Module for NumVerify {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Address];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Address,
+            EntityKind::Organisation,
+            EntityKind::Coordinates,
+        ];
         KINDS
     }
 
@@ -99,30 +103,30 @@ impl Module for NumVerify {
             .send_tagged(SRC)
             .await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let code = status.as_u16();
-            crate::util::http::note_keyed_error(code, SRC, key, ctx);
-            return Err(Error::module(SRC, format!("HTTP {status}")));
-        }
+        // 401/403/429 → note_keyed_error + Err; 404 → empty; other non-2xx → Err.
+        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
+            return Ok(ModuleResult::new());
+        };
         let parsed: NvResp = crate::util::http::json_scanned(resp, SRC)
             .await
             .map_err(|e| Error::module(SRC, e))?;
 
         let mut result = ModuleResult::new();
-        if let Some(e) = build_entity(&parsed, &ctx.scan_id) {
-            result.push(e);
-        }
+        result
+            .entities
+            .extend(build_entities(&parsed, &ctx.scan_id));
         Ok(result)
     }
 }
 
-/// Map a validation response to a geocodable region `Address` carrying carrier /
-/// line-type / country evidence. `None` when the number is invalid or carries no
-/// usable region. Pure of I/O (unit-tested).
-fn build_entity(r: &NvResp, scan_id: &str) -> Option<Entity> {
+/// Map a validation response to entities. **Pure** (no network/IO):
+/// emits an `Address` (geocodable region/country) and, when the carrier
+/// is present, an `Organisation` for the carrier — consistent with
+/// ip2location/ipquery which emit the ISP as an Organisation pivot.
+/// Returns an empty `Vec` when the number is invalid or carries no usable region.
+fn build_entities(r: &NvResp, scan_id: &str) -> Vec<Entity> {
     if !r.valid {
-        return None;
+        return Vec::new();
     }
     // A geocodable place string from region + country (either may be absent).
     let region = r
@@ -139,8 +143,10 @@ fn build_entity(r: &NvResp, scan_id: &str) -> Option<Entity> {
         (Some(reg), Some(c)) => format!("{reg}, {c}"),
         (Some(reg), None) => reg.to_string(),
         (None, Some(c)) => c.to_string(),
-        (None, None) => return None,
+        (None, None) => return Vec::new(),
     };
+
+    let mut out = Vec::new();
 
     let mut e = Entity::new(EntityKind::Address, &place, 0.55, scan_id);
     e.tag(SRC);
@@ -161,8 +167,29 @@ fn build_entity(r: &NvResp, scan_id: &str) -> Option<Entity> {
     if let Some(intl) = &r.international_format {
         ev = ev.with_attr("international_format", intl);
     }
-    e.add_evidence(ev);
-    Some(e)
+    e.add_evidence(ev.clone());
+    out.push(e);
+    if let Some((lat, lon)) = crate::util::city_coords::city_coords(&place) {
+        let coord_val = format!("{lat:.4},{lon:.4}");
+        let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+        c.tag(SRC);
+        c.tag("addr-derived");
+        c.tag("geoint");
+        c.tag("phone-region");
+        c.add_evidence(ev);
+        out.push(c);
+    }
+
+    // Carrier → Organisation pivot (same pattern as ip2location ISP extraction).
+    if let Some(carrier) = r.carrier.as_deref().map(str::trim).filter(|c| c.len() >= 2) {
+        let mut oe = Entity::new(EntityKind::Organisation, carrier, 0.60, scan_id);
+        oe.tag(SRC);
+        oe.tag("carrier");
+        oe.add_evidence(Evidence::new(SRC, format!("Phone carrier: {carrier}")));
+        out.push(oe);
+    }
+
+    out
 }
 
 #[cfg(test)]

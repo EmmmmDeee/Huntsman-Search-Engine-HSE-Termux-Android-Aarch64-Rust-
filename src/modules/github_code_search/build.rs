@@ -78,28 +78,29 @@ pub(super) fn build_repo_entities(
     out
 }
 
-/// Build Email entities from a repository's recent commits. Pure.
+/// Build Email and Person entities from a repository's recent commits. Pure.
 pub(super) fn build_commit_emails(
     commits: &CommitsResp,
     repo_name: &str,
     scan_id: &str,
 ) -> Vec<Entity> {
-    let mut seen = std::collections::HashSet::new();
-    commits
-        .commits
-        .iter()
-        .filter_map(|item| {
-            let author = item.commit.as_ref()?.author.as_ref()?;
-            let email = nonempty(&author.email)?;
-            // Skip noreply GitHub emails — not real contact addresses.
-            if email.contains("noreply.github.com") || email.contains("users.noreply") {
-                return None;
-            }
-            let email_lc = email.to_lowercase();
-            if !seen.insert(email_lc.clone()) {
-                return None;
-            }
+    let mut seen_emails = std::collections::HashSet::new();
+    let mut seen_names = std::collections::HashSet::new();
+    let mut out = Vec::new();
 
+    for item in &commits.commits {
+        let Some(author) = item.commit.as_ref().and_then(|c| c.author.as_ref()) else {
+            continue;
+        };
+        let Some(email) = nonempty(&author.email) else {
+            continue;
+        };
+        // Skip noreply GitHub emails — not real contact addresses.
+        if email.contains("noreply.github.com") || email.contains("users.noreply") {
+            continue;
+        }
+        let email_lc = email.to_lowercase();
+        if seen_emails.insert(email_lc.clone()) {
             let mut e = Entity::new(EntityKind::Email, &email_lc, 0.35, scan_id);
             e.tag(SRC);
             e.tag("github");
@@ -111,7 +112,33 @@ pub(super) fn build_commit_emails(
                 ev = ev.with_attr("commit_author_name", name);
             }
             e.add_evidence(ev);
-            Some(e)
-        })
-        .collect()
+            out.push(e);
+        }
+
+        // Commit author name → Person entity (low confidence; one of potentially
+        // many contributors to the repo).
+        if let Some(name) = author.name.as_deref().map(str::trim).filter(|n| {
+            n.len() >= 4
+                && n.contains(' ')
+                && !n.eq_ignore_ascii_case("github actions")
+                && !n.to_lowercase().contains("bot")
+        }) {
+            let name_lc = name.to_lowercase();
+            if seen_names.insert(name_lc) {
+                let mut pe = Entity::new(EntityKind::Person, name, 0.30, scan_id);
+                pe.tag(SRC);
+                pe.tag("github");
+                pe.tag("commit-author");
+                pe.tag("derived");
+                pe.add_evidence(
+                    Evidence::new(SRC, format!("Commit author name from {repo_name}"))
+                        .with_attr("repo", repo_name)
+                        .with_attr("author_name", name),
+                );
+                out.push(pe);
+            }
+        }
+    }
+
+    out
 }

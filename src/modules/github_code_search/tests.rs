@@ -115,9 +115,13 @@ fn build_commit_emails_deduplicates() {
         ],
     };
     let ents = build_commit_emails(&commits, "test/repo", "s");
+    let email_ents: Vec<_> = ents
+        .iter()
+        .filter(|e| e.kind == crate::core::entity::EntityKind::Email)
+        .collect();
     assert_eq!(
-        ents.len(),
+        email_ents.len(),
         1,
-        "duplicate lowercased email should be deduped"
+        "duplicate lowercased email should be deduped to one Email entity"
     );
 }

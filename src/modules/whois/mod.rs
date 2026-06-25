@@ -70,9 +70,11 @@ impl Module for Whois {
         const KINDS: &[EntityKind] = &[
             EntityKind::Domain,
             EntityKind::Email,
+            EntityKind::Phone,
             EntityKind::Person,
             EntityKind::Organisation,
             EntityKind::Address,
+            EntityKind::Coordinates,
         ];
         KINDS
     }
@@ -122,11 +124,16 @@ impl Module for Whois {
             registrant_country,
             registrant_state,
             admin_email,
+            admin_name,
+            admin_org,
             tech_email,
+            tech_name,
+            tech_org,
             abuse_email,
             nameservers,
             statuses,
             dnssec,
+            phones,
         } = parse_whois(&response);
 
         // No actionable data parsed — skip the entity to avoid noise.
@@ -309,8 +316,80 @@ impl Module for Whois {
                     Evidence::new(SRC, format!("Registrant location for {}", target.value))
                         .with_attr("parent_target", target.value.as_str()),
                 );
+                if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
+                    let coord_val = format!("{lat:.4},{lon:.4}");
+                    let mut c =
+                        Entity::new(EntityKind::Coordinates, &coord_val, 0.40, &_ctx.scan_id);
+                    c.tag("whois");
+                    c.tag("addr-derived");
+                    c.tag("geoint");
+                    c.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!("Geocode of registrant address for {}", target.value),
+                        )
+                        .with_attr("parent_target", target.value.as_str()),
+                    );
+                    result.push(c);
+                }
                 result.push(ae);
             }
+        }
+
+        // Admin and tech contact names / organisations — same redaction filter
+        // as the registrant block above.
+        let is_redacted = |s: &str| {
+            let l = s.to_lowercase();
+            l.contains("privacy")
+                || l.contains("redacted")
+                || l.contains("data protected")
+                || l.contains("not disclosed")
+        };
+        for (name_opt, role) in [(&admin_name, "admin"), (&tech_name, "tech")] {
+            if let Some(name) = name_opt
+                .as_deref()
+                .map(str::trim)
+                .filter(|n| n.len() >= 4 && n.contains(' ') && !is_redacted(n))
+            {
+                let mut pe = Entity::new(EntityKind::Person, name, 0.65, &_ctx.scan_id);
+                pe.tag("whois");
+                pe.tag(role);
+                pe.add_evidence(
+                    Evidence::new(SRC, format!("WHOIS {} contact for {}", role, target.value))
+                        .with_attr("role", role)
+                        .with_attr("parent_target", target.value.as_str()),
+                );
+                result.push(pe);
+            }
+        }
+        for (org_opt, role) in [(&admin_org, "admin"), (&tech_org, "tech")] {
+            if let Some(org) = org_opt
+                .as_deref()
+                .map(str::trim)
+                .filter(|o| o.len() >= 3 && !is_redacted(o))
+            {
+                let mut oe = Entity::new(EntityKind::Organisation, org, 0.62, &_ctx.scan_id);
+                oe.tag("whois");
+                oe.tag(role);
+                oe.add_evidence(
+                    Evidence::new(SRC, format!("WHOIS {} org for {}", role, target.value))
+                        .with_attr("role", role)
+                        .with_attr("parent_target", target.value.as_str()),
+                );
+                result.push(oe);
+            }
+        }
+
+        // Contact phone numbers — redacted values are already excluded in
+        // parse_whois; each surviving number is in E.164 `+<digits>` form.
+        for phone in &phones {
+            let mut pe = Entity::new(EntityKind::Phone, phone, 0.68, &_ctx.scan_id);
+            pe.tag("whois");
+            pe.add_evidence(
+                Evidence::new(SRC, format!("WHOIS contact phone for {}", target.value))
+                    .with_attr("parent_target", target.value.as_str()),
+            );
+            result.push(pe);
         }
 
         // Surface nameservers as Domain entities too so DNS chaining

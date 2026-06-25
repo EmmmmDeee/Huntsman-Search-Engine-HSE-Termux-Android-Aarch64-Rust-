@@ -108,6 +108,7 @@ impl Module for IpQuery {
 
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
+            EntityKind::IpAddress,
             EntityKind::Coordinates,
             EntityKind::Address,
             EntityKind::Asn,

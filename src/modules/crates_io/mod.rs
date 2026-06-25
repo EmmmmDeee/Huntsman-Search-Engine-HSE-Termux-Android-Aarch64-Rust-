@@ -20,6 +20,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::profile_kit;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -84,10 +85,8 @@ fn build_entities(body: &UserResp, scan_id: &str) -> Vec<Entity> {
 
     // Real name → Person (handle→identity).
     if let Some(name) = user.name.as_deref()
-        && name.split_whitespace().count() >= 2
-        && !crate::core::validation::is_placeholder_entity(&EntityKind::Person, name)
+        && let Some(mut p) = profile_kit::person_from_name(name, 0.70, scan_id)
     {
-        let mut p = Entity::new(EntityKind::Person, name.trim(), 0.70, scan_id);
         p.tag("crates-io");
         p.tag("derived");
         p.add_evidence(
@@ -116,9 +115,42 @@ fn build_entities(body: &UserResp, scan_id: &str) -> Vec<Entity> {
             .with_attr("source", "crates_io_profile"),
         );
         result.push(url_e);
+
+        // Direct GitHub username extraction — crates.io authenticates via GitHub
+        // so the url field is nearly always `https://github.com/{handle}`.
+        // Emitting the Username directly saves one expansion round-trip.
+        if let Some(gh_user) = github_username_from_url(link) {
+            let mut g = Entity::new(EntityKind::Username, gh_user, 0.80, scan_id);
+            g.tag("github");
+            g.tag("crates-io-pivot");
+            g.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("GitHub username from crates.io profile of '{}'", user.login),
+                )
+                .with_attr("source_url", link)
+                .with_attr("crates_login", &user.login),
+            );
+            result.push(g);
+        }
     }
 
     result
+}
+
+/// Extract the GitHub username from a URL of the form
+/// `https://github.com/{username}` (path depth exactly 1, no trailing slash).
+/// Returns `None` for any other URL shape.
+fn github_username_from_url(url: &str) -> Option<&str> {
+    let path = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))?;
+    let path = path.trim_end_matches('/');
+    // Must be a bare username — no slashes (would be a repo/path), no query.
+    if path.is_empty() || path.contains('/') || path.contains('?') || path.contains('#') {
+        return None;
+    }
+    Some(path)
 }
 
 #[async_trait]

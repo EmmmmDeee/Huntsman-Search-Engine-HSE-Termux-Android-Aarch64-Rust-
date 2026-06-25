@@ -41,6 +41,20 @@ pub struct Scorecard {
     /// whose removal splits the graph. The irreplaceable connections; pairs with
     /// [`cut_vertex_count`](Scorecard::cut_vertex_count) as the graph's fragility map.
     pub bridge_count: usize,
+    /// Structural **cohesion**: the graph's degeneracy — the largest `k` for which a
+    /// `k`-core exists (see [`crate::core::metrics::ScanMetrics::graph_degeneracy`]). The
+    /// exact complement to the fragility counts above: where cut vertices and bridges
+    /// measure where the footprint *breaks*, degeneracy measures whether it has a
+    /// redundantly-corroborated *core that holds* — `≥2` means a cluster of entities each
+    /// bound by multiple independent links, not a sprawl of single-thread leads. Another
+    /// robustness axis SpiderFoot reports nothing on.
+    pub degeneracy: usize,
+    /// Structural cohesion: the size of the **main core** — how many entities sit in that
+    /// densest `k`-core (see [`crate::core::metrics::ScanMetrics::main_core_size`]). The
+    /// count of entities forming the cohesive heart of the footprint; read with
+    /// [`degeneracy`](Scorecard::degeneracy) it says both *how* corroborated the core is
+    /// and *how much* of the graph it spans.
+    pub main_core_size: usize,
     /// Raw entity yield.
     pub total_entities: usize,
     /// Typed-edge yield.
@@ -109,6 +123,8 @@ pub fn report(scan: &Scan, entities: &[Entity], relations: &[Relation]) -> Bench
         graph_density: metrics.graph_density,
         cut_vertex_count,
         bridge_count,
+        degeneracy: metrics.graph_degeneracy,
+        main_core_size: metrics.main_core_size,
         total_entities: metrics.total_entities,
         total_relations: metrics.total_relations,
         cross_scan_bridges: metrics.cross_scan_bridges,

@@ -41,6 +41,8 @@ use super::*;
         assert_eq!(m.corroborated_fraction, 0.0);
         assert_eq!(m.linked_entity_fraction, 0.0);
         assert_eq!(m.graph_density, 0.0);
+        assert_eq!(m.graph_degeneracy, 0);
+        assert_eq!(m.main_core_size, 0);
         assert_eq!(m.cross_scan_bridges, 0);
         assert_eq!(m.distinct_evidence_sources, 0);
     }
@@ -135,6 +137,29 @@ use super::*;
         assert!((m.linked_entity_fraction - 0.75).abs() < 1e-9, "{}", m.linked_entity_fraction);
         // relations_by_kind sorted by name (single kind here).
         assert_eq!(m.relations_by_kind, vec![("identified_by".to_string(), 2)]);
+        // Cohesion: a—b—c is a path (a tree) ⇒ degeneracy 1, and its three connected
+        // nodes form the 1-core; the orphan d (coreness 0) is excluded.
+        assert_eq!(m.graph_degeneracy, 1);
+        assert_eq!(m.main_core_size, 3);
+    }
+
+    #[test]
+    fn cohesion_measures_capture_a_dense_core_amid_a_sparse_periphery() {
+        // A triangle a-b-c (a 2-core) with a pendant tail c—d and an orphan e. Density is
+        // diluted by the periphery, but degeneracy reports the cohesive heart exists and
+        // the main core is exactly the three triangle members.
+        let a = ent(EntityKind::Person, "a", 0.6);
+        let b = ent(EntityKind::Person, "b", 0.6);
+        let c = ent(EntityKind::Person, "c", 0.6);
+        let d = ent(EntityKind::Person, "d", 0.6);
+        let e = ent(EntityKind::Person, "e", 0.6); // orphan — coreness 0
+        let mk = |x: &Entity, y: &Entity| {
+            Relation::new(x.uid.clone(), y.uid.clone(), RelationKind::AssociatedWith, 0.6, "scan")
+        };
+        let rels = vec![mk(&a, &b), mk(&b, &c), mk(&a, &c), mk(&c, &d)];
+        let m = compute(&[a, b, c, d, e], &rels);
+        assert_eq!(m.graph_degeneracy, 2, "the triangle is a 2-core");
+        assert_eq!(m.main_core_size, 3, "exactly the three triangle members are the main core");
     }
 
     #[test]

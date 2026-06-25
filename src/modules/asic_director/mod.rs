@@ -144,8 +144,18 @@ fn build_director_entities(
         if let Some(st) = crate::util::address_au::state_code(addr) {
             ae.tag(format!("au-state:{st}"));
         }
-        ae.add_evidence(ev_base.with_attr("registered_office", addr));
+        ae.add_evidence(ev_base.clone().with_attr("registered_office", addr));
         out.push(ae);
+        if let Some((lat, lon)) = crate::util::city_coords::city_coords(addr) {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.62, scan_id);
+            c.tag(SRC);
+            c.tag("addr-derived");
+            c.tag("geoint");
+            c.tag("country:AU");
+            c.add_evidence(ev_base.with_attr("registered_office", addr));
+            out.push(c);
+        }
     }
 
     out
@@ -249,6 +259,7 @@ impl Module for AsicDirector {
             EntityKind::Organisation,
             EntityKind::AbnAcn,
             EntityKind::Address,
+            EntityKind::Coordinates,
         ];
         KINDS
     }

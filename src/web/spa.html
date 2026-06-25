@@ -1932,8 +1932,16 @@ async function renderPivots(host, id){
   for (const p of top){
     const pctw = Math.max(0, Math.min(100, Math.round((Number(p.score)||0)*100)));
     const cut = p.is_cut_vertex ? ` <span class="label label-warning" title="Cut vertex — removing this entity fragments the network into disconnected pieces">critical</span>` : '';
+    // coreness: k-core index. 0 = isolated periphery; higher = more deeply embedded.
+    // ≥2 renders as a coloured badge (robust core member); 1 and 0 are muted.
+    const cn = Number(p.coreness)||0;
+    const cnBadge = cn >= 2
+      ? ` <span class="label label-info" title="Coreness ${cn} — member of the ${cn}-core (redundantly corroborated; robust against single-entity removal)">⬡${cn}</span>`
+      : cn === 1
+        ? ` <span class="text-muted" style="font-size:10px" title="Coreness 1 — connected but not in a dense cluster">⬡1</span>`
+        : '';
     html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
-      <div style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${labelFor(p.uid)}${cut}</div>
+      <div style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${labelFor(p.uid)}${cut}${cnBadge}</div>
       <div class="text-muted" style="flex:0 0 auto;font-size:11px">${p.degree} link${p.degree===1?'':'s'}</div>
       <div style="flex:0 0 110px;background:rgba(127,127,127,0.2);border-radius:3px;height:10px;overflow:hidden">
         <div style="width:${pctw}%;height:100%;background:#9b59b6"></div></div>

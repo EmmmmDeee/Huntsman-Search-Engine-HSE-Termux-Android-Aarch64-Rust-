@@ -51,6 +51,24 @@ pub(super) fn records_to_entities(resp: &GleifResp, query: &str, scan_id: &str) 
         } else {
             "name-candidate"
         });
+        // GLEIF entity status is authoritative (ISO 17442): "ACTIVE", "INACTIVE",
+        // or "ANNULLED". Tag it directly so rule engines can filter without
+        // parsing evidence attributes.
+        match entity
+            .status
+            .as_deref()
+            .map(str::to_ascii_uppercase)
+            .as_deref()
+        {
+            Some("ACTIVE") => {
+                org.tag("active");
+            }
+            Some("INACTIVE" | "ANNULLED") => {
+                org.tag("inactive");
+                org.confidence = (org.confidence - 0.10).max(0.10);
+            }
+            _ => {}
+        }
         org.add_evidence(record_evidence(&lei, entity, &name, total));
         out.push(org);
 

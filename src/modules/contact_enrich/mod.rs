@@ -156,9 +156,12 @@ impl Module for ContactEnrich {
 
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
+            EntityKind::Phone,
+            EntityKind::Email,
             EntityKind::Person,
             EntityKind::Username,
             EntityKind::Address,
+            EntityKind::Coordinates,
             EntityKind::Url,
         ];
         KINDS
@@ -217,7 +220,11 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         }
         if !status.is_success() {
             let code = status.as_u16();
-            crate::util::http::note_keyed_error(code, "numverify", key, ctx);
+            // Only mark the key exhausted for 401/403/429 — a 500 server error
+            // must not evict the key from the pool.
+            if crate::util::http::is_keyed_error_status(code) {
+                crate::util::http::note_keyed_error(code, "numverify", key, ctx);
+            }
             return Err(crate::util::http::http_status_error("contact_enrich", resp).await);
         }
         let data: NumverifyResp = crate::util::http::json_decode(SRC, resp).await?;
@@ -456,6 +463,18 @@ pub(super) fn build_email_entities(
             SRC,
             format!("Gravatar location for {normalised}"),
         ));
+        if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+            c.tag("gravatar");
+            c.tag("addr-derived");
+            c.tag("geoint");
+            c.add_evidence(Evidence::new(
+                SRC,
+                format!("Geocode of Gravatar location for {normalised}"),
+            ));
+            result.push(c);
+        }
         result.push(ae);
     }
     result.extend(entry.urls.iter().filter_map(|url_entry| {

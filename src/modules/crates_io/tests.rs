@@ -57,14 +57,21 @@ use super::*;
                 "avatar":"https://x/a","url":"https://github.com/alice"}}"#,
         );
         let ents = build_entities(&body, "s");
-        assert_eq!(ents.len(), 3);
+        // Username (crates) + GitHub Username pivot + Person + Url
+        assert_eq!(ents.len(), 4);
 
-        let u = of_kind(&ents, EntityKind::Username).expect("username entity");
-        assert_eq!(u.value, "alice");
+        let u = ents.iter().find(|e| e.kind == EntityKind::Username && e.value == "alice")
+            .expect("crates username entity");
         assert!(u.has_tag("crates-io") && u.has_tag("code"));
         let attr = |k: &str| u.evidence[0].attributes.get(k).map(String::as_str);
         assert_eq!(attr("profile_url"), Some("https://crates.io/users/alice"));
         assert_eq!(attr("name"), Some("Alice Smith"));
+
+        // GitHub username pivot extracted from the profile URL.
+        let gh = ents.iter().find(|e| e.kind == EntityKind::Username && e.value == "alice"
+            && e.has_tag("github"));
+        assert!(gh.is_some(), "must emit GitHub username pivot");
+        assert!(gh.unwrap().has_tag("crates-io-pivot"));
 
         let p = of_kind(&ents, EntityKind::Person).expect("person entity");
         assert_eq!(p.value, "Alice Smith");

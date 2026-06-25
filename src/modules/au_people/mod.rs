@@ -270,6 +270,24 @@ pub(super) fn parse_whitepages_html(html: &str, full_name: &str, scan_id: &str) 
                         // Preserve the raw window for provenance/audit.
                         .with_attr("context", &trimmed),
                     );
+                    if let Some((lat, lon)) = crate::util::city_coords::city_coords(&locality) {
+                        let coord_val = format!("{lat:.4},{lon:.4}");
+                        let mut c = Entity::new(
+                            EntityKind::Coordinates,
+                            &coord_val,
+                            addr_conf - 0.10,
+                            scan_id,
+                        );
+                        c.tag(SRC);
+                        c.tag("addr-derived");
+                        c.tag("geoint");
+                        c.tag("country:AU");
+                        c.add_evidence(Evidence::new(
+                            SRC,
+                            format!("Geocode of White Pages AU address for {full_name}"),
+                        ));
+                        out.push(c);
+                    }
                     out.push(ae);
                 }
             }
@@ -338,6 +356,26 @@ pub(super) fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<
                 ae
             }),
     );
+    // Geocode TPS address lines to Coordinates.
+    let tps_coords: Vec<_> = out
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address && e.tags.iter().any(|t| t == "tps-au"))
+        .filter_map(|e| {
+            let (lat, lon) = crate::util::city_coords::city_coords(&e.value)?;
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.42, scan_id);
+            c.tag(SRC);
+            c.tag("addr-derived");
+            c.tag("geoint");
+            c.tag("country:AU");
+            c.add_evidence(Evidence::new(
+                SRC,
+                format!("Geocode of True People Search AU address for {full_name}"),
+            ));
+            Some(c)
+        })
+        .collect();
+    out.extend(tps_coords);
 
     // Mine emails.
     out.extend(page_emails(&stripped).into_iter().map(|email| {
@@ -539,6 +577,7 @@ impl Module for AuPeople {
             EntityKind::Phone,
             EntityKind::Email,
             EntityKind::Person,
+            EntityKind::Coordinates,
         ];
         KINDS
     }

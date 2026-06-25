@@ -142,6 +142,7 @@ impl Module for Gravatar {
             EntityKind::Username,
             EntityKind::Url,
             EntityKind::Address,
+            EntityKind::Coordinates,
         ];
         KINDS
     }
@@ -240,6 +241,16 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
         .filter(|l| l.len() >= 2)
     {
         push(result, EntityKind::Address, loc, 0.60, &["geo-hint"]);
+        if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            push(
+                result,
+                EntityKind::Coordinates,
+                &coord_val,
+                0.50,
+                &["addr-derived", "geoint"],
+            );
+        }
     }
 
     // Profile + avatar URLs, and any personal URLs the owner listed.
@@ -251,8 +262,10 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
         .filter(|u| u.starts_with("http"))
         .for_each(|u| push(result, EntityKind::Url, u, 0.60, &[]));
 
-    // Linked social accounts — each becomes a platform-prefixed Username pivot
-    // (mirrors the see_know/breach convention) plus its account URL.
+    // Linked social accounts — each becomes a bare Username pivot (tagged with
+    // the platform name) so it deduplicates correctly with usernames discovered
+    // by platform-native modules (devto, gitlab_user, github_user, etc.).
+    // The account URL is emitted separately as a Url entity.
     for acct in &entry.accounts {
         let platform = acct
             .shortname
@@ -261,7 +274,7 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
             .unwrap_or("account")
             .trim();
         let verified = acct.verified.as_deref() == Some("true");
-        let mut tags: Vec<&str> = vec![platform];
+        let mut tags: Vec<&str> = vec![platform, "gravatar-pivot"];
         if verified {
             tags.push("verified");
         }
@@ -271,13 +284,16 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
             .map(str::trim)
             .filter(|u| !u.is_empty())
         {
-            push(
-                result,
-                EntityKind::Username,
-                &format!("{platform}:{uname}"),
-                if verified { 0.65 } else { 0.55 },
-                &tags,
+            let conf = if verified { 0.65 } else { 0.55 };
+            let mut e = Entity::new(EntityKind::Username, uname, conf, scan_id);
+            e.tag(SRC);
+            tags.iter().for_each(|t| e.tag(*t));
+            e.add_evidence(
+                ev.clone()
+                    .with_attr("platform", platform)
+                    .with_attr("platform_handle", format!("{platform}:{uname}")),
             );
+            result.push(e);
         }
         if let Some(u) = acct
             .url

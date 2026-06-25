@@ -150,6 +150,21 @@ pub(super) async fn recycle_entities(
                     e.tag(format!("au-state:{state}"));
                 }
                 e.add_evidence(recycled_evidence(r, "Address", &addr, &combined));
+                if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
+                    let coord_val = format!("{lat:.4},{lon:.4}");
+                    let mut c = Entity::new(
+                        EntityKind::Coordinates,
+                        &coord_val,
+                        base_conf - 0.10,
+                        &scan_id,
+                    );
+                    c.tag("addr-derived");
+                    c.tag("geoint");
+                    c.tag("search-discovered");
+                    c.tag("recycled");
+                    c.add_evidence(recycled_evidence(r, "Coordinates", &coord_val, &combined));
+                    result.push(c);
+                }
                 result.push(e);
             }
         }

@@ -149,6 +149,37 @@ impl Module for EmailParse {
                         .map(str::to_string),
                 );
 
+                // ── Initial-blend and separator-swap patterns ─────────────────
+                // When the local part is a two-token firstname.lastname (or
+                // firstname_lastname / firstname-lastname) shape, derive the
+                // initial-blend handles that dominate real-world platform
+                // username conventions but are absent from a plain local-part
+                // extraction. These are the highest-value free derivations:
+                // `flast` (hbamford) and `first_last` (haigen_bamford) together
+                // cover the majority of corporate email→username mappings.
+                // Restricted to exactly 2 all-alphabetic tokens of length ≥ 2
+                // so single-token locals and numeric-suffixed locals don't fire.
+                let name_parts: Vec<&str> = detagged
+                    .split(['.', '_', '-'])
+                    .filter(|p| p.len() >= 2 && p.chars().all(char::is_alphabetic))
+                    .collect();
+                if name_parts.len() == 2 {
+                    let f = name_parts[0];
+                    let l = name_parts[1];
+                    let fi = f.chars().next().unwrap_or('x');
+                    let li = l.chars().next().unwrap_or('x');
+                    // flast  — initial + last:  e.g. hbamford
+                    candidates.insert(format!("{fi}{l}"));
+                    // firstl — first + last-initial:  e.g. haigenb
+                    candidates.insert(format!("{f}{li}"));
+                    // i.last — initial dot last:  e.g. h.bamford
+                    candidates.insert(format!("{fi}.{l}"));
+                    // first_last — underscore form:  e.g. haigen_bamford
+                    candidates.insert(format!("{f}_{l}"));
+                    // first-last — hyphen form:  e.g. haigen-bamford
+                    candidates.insert(format!("{f}-{l}"));
+                }
+
                 // "Corporate" = not a consumer mailbox. Use the SAME shared
                 // freemail list the domain-extraction step above uses, not a
                 // second, shorter inline list. The inline list held only 8 of

@@ -148,7 +148,7 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
     entity.add_evidence(ev);
     out.push(entity);
 
-    // ── Person leads from each DISTINCT real name (Google + Skype) ────────
+    // ── Person leads from each DISTINCT real name (Google + Skype + Calendar) ─
     let mut seen_names = HashSet::new();
     for (label, conf, name) in [
         ("google", 0.75, nonempty(&body.name)),
@@ -156,6 +156,11 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
             "platform:skype",
             0.70,
             skype.and_then(|s| nonempty(&s.name)),
+        ),
+        (
+            "google-calendar",
+            0.68,
+            body.calendar.as_ref().and_then(|c| nonempty(&c.name)),
         ),
     ] {
         if let Some(name) = name.filter(|n| is_person_name(n))
@@ -192,6 +197,18 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
                 ae.tag("country:AU");
             }
             ae.add_evidence(Evidence::new(SRC, format!("Skype location for {email}")));
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&location) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.42, scan_id);
+                c.tag("epieos");
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Geocode of Skype location for {email}"),
+                ));
+                out.push(c);
+            }
             out.push(ae);
         }
     }
@@ -223,6 +240,18 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
                 rev_ev = rev_ev.with_attr("review_date", d);
             }
             ae.add_evidence(rev_ev);
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(place) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.42, scan_id);
+                c.tag("epieos");
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Geocode of Maps review place '{place}' for {email}"),
+                ));
+                out.push(c);
+            }
             out.push(ae);
         }
     }
@@ -273,6 +302,7 @@ impl Module for Epieos {
             EntityKind::Person,
             EntityKind::Username,
             EntityKind::Address,
+            EntityKind::Coordinates,
         ];
         KINDS
     }
@@ -301,7 +331,11 @@ impl Module for Epieos {
             return Ok(ModuleResult::new());
         };
 
-        let body: EpieosResp = crate::util::http::json_decode(SRC, resp).await?;
+        // json_scanned: epieos responses include Google review text (free-form
+        // user content) that may contain embedded API keys.
+        let body: EpieosResp = crate::util::http::json_scanned(resp, SRC)
+            .await
+            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
 
         let mut result = ModuleResult::new();
         result.extend(build_entities(target, &body, &ctx.scan_id));

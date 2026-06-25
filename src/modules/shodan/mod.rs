@@ -108,17 +108,16 @@ impl Module for Shodan {
         &["T1590.005", "T1591.001", "T1591.002", "T1596.005"]
     }
     fn produces(&self) -> &'static [EntityKind] {
-        // Free + paid Shodan paths emit IP host context: domains, URLs,
-        // ASN labels, plus the dominant ISP/org as Organisation and
-        // the host's country as Address. The Organisation + Address
-        // emissions were previously undeclared, making the module
-        // graph under-report Shodan's downstream pivot value.
+        // Free + paid Shodan paths emit IP host context: domains (PTR/SAN
+        // hostnames), ASN labels, plus the dominant ISP/org as Organisation
+        // and the host's country as Address. Neither endpoint returns a URL
+        // field, so Url is not listed.
         const KINDS: &[EntityKind] = &[
             EntityKind::Domain,
-            EntityKind::Url,
             EntityKind::Asn,
             EntityKind::Organisation,
             EntityKind::Address,
+            EntityKind::Coordinates,
             EntityKind::IpAddress,
         ];
         KINDS
@@ -298,15 +297,11 @@ impl Shodan {
             urlencode(key),
         );
         let resp = ctx.http.get(&url).send_tagged(SRC).await?;
-        let status = resp.status();
-        if status.as_u16() == 404 {
+        // 404 → host not in Shodan (clean miss); 401/403/429 → note_keyed_error + Err;
+        // other non-2xx → Err via http_status_error.
+        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
             return Ok(());
-        }
-        if !status.is_success() {
-            let code = status.as_u16();
-            crate::util::http::note_keyed_error(code, SRC, key, ctx);
-            return Err(crate::util::http::http_status_error(SRC, resp).await);
-        }
+        };
         let body: HostResp = crate::util::http::json_decode(SRC, resp).await?;
 
         let mut entity = target_entity(ip, &ctx.scan_id);
@@ -316,6 +311,9 @@ impl Shodan {
         }
         if let Some(c) = body.country_code.as_deref() {
             entity.tag(format!("country:{}", c.to_uppercase()));
+        }
+        if let Some(os) = body.os.as_deref() {
+            entity.tag(format!("os:{os}"));
         }
 
         let mut ev = [
@@ -380,6 +378,11 @@ impl Shodan {
                 }),
         );
 
+        let org_lc = body
+            .org
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty());
         if let Some(org) = &body.org
             && !org.is_empty()
         {
@@ -387,6 +390,19 @@ impl Shodan {
             oe.tag("shodan");
             oe.add_evidence(Evidence::new(SRC, format!("Organisation for {ip}")));
             result.push(oe);
+        }
+        // ISP is a distinct OSINT pivot when it differs from org (e.g. org="AWS
+        // EC2", isp="Amazon.com" — the provider layer above the customer org).
+        if let Some(isp) = &body.isp {
+            let isp = isp.trim();
+            let isp_lc = isp.to_ascii_lowercase();
+            if !isp.is_empty() && org_lc.as_deref() != Some(isp_lc.as_str()) {
+                let mut ie = Entity::new(EntityKind::Organisation, isp, 0.65, &ctx.scan_id);
+                ie.tag("shodan");
+                ie.tag("isp");
+                ie.add_evidence(Evidence::new(SRC, format!("ISP for {ip}")));
+                result.push(ie);
+            }
         }
         if let Some(asn) = &body.asn
             && !asn.is_empty()
@@ -399,6 +415,15 @@ impl Shodan {
         if let Some(country) = &body.country_name
             && !country.is_empty()
         {
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(country) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, &ctx.scan_id);
+                c.tag("shodan");
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.add_evidence(Evidence::new(SRC, format!("Geocode of country for {ip}")));
+                result.push(c);
+            }
             let mut addr = Entity::new(EntityKind::Address, country, 0.55, &ctx.scan_id);
             addr.tag("shodan");
             addr.tag("geoint");

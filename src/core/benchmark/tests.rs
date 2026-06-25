@@ -59,6 +59,11 @@ fn report_consolidates_metrics_timing_and_pivots() {
     // person→address links are bridges (removing either isolates a person).
     assert_eq!(r.scorecard.cut_vertex_count, 1, "only the shared address fragments the graph");
     assert_eq!(r.scorecard.bridge_count, 2, "each person's link to the address is a bridge");
+    // Structural cohesion (the complement): the chain is a tree, so degeneracy is 1 and
+    // its three connected nodes form the 1-core — no redundantly-corroborated heart.
+    assert_eq!(r.scorecard.degeneracy, 1, "a 2-hop chain has no 2-core");
+    assert_eq!(r.scorecard.main_core_size, 3);
+    assert_eq!(r.metrics.graph_degeneracy, 1, "the embedded metrics carry the same cohesion read");
 
     // The shared address is the top pivot.
     assert!(r.pivot_count >= 1);
@@ -82,6 +87,8 @@ fn report_handles_an_unfinished_empty_scan_without_panicking() {
     assert_eq!(r.scorecard.multi_hop_depth, 0);
     assert_eq!(r.scorecard.cut_vertex_count, 0);
     assert_eq!(r.scorecard.bridge_count, 0);
+    assert_eq!(r.scorecard.degeneracy, 0, "an empty graph has degeneracy 0");
+    assert_eq!(r.scorecard.main_core_size, 0);
     assert_eq!(r.pivot_count, 0);
     assert!(r.top_pivot_uid.is_none());
 }
