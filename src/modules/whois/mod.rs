@@ -123,7 +123,11 @@ impl Module for Whois {
             registrant_country,
             registrant_state,
             admin_email,
+            admin_name,
+            admin_org,
             tech_email,
+            tech_name,
+            tech_org,
             abuse_email,
             nameservers,
             statuses,
@@ -312,6 +316,50 @@ impl Module for Whois {
                         .with_attr("parent_target", target.value.as_str()),
                 );
                 result.push(ae);
+            }
+        }
+
+        // Admin and tech contact names / organisations — same redaction filter
+        // as the registrant block above.
+        let is_redacted = |s: &str| {
+            let l = s.to_lowercase();
+            l.contains("privacy")
+                || l.contains("redacted")
+                || l.contains("data protected")
+                || l.contains("not disclosed")
+        };
+        for (name_opt, role) in [(&admin_name, "admin"), (&tech_name, "tech")] {
+            if let Some(name) = name_opt
+                .as_deref()
+                .map(str::trim)
+                .filter(|n| n.len() >= 4 && n.contains(' ') && !is_redacted(n))
+            {
+                let mut pe = Entity::new(EntityKind::Person, name, 0.65, &_ctx.scan_id);
+                pe.tag("whois");
+                pe.tag(role);
+                pe.add_evidence(
+                    Evidence::new(SRC, format!("WHOIS {} contact for {}", role, target.value))
+                        .with_attr("role", role)
+                        .with_attr("parent_target", target.value.as_str()),
+                );
+                result.push(pe);
+            }
+        }
+        for (org_opt, role) in [(&admin_org, "admin"), (&tech_org, "tech")] {
+            if let Some(org) = org_opt
+                .as_deref()
+                .map(str::trim)
+                .filter(|o| o.len() >= 3 && !is_redacted(o))
+            {
+                let mut oe = Entity::new(EntityKind::Organisation, org, 0.62, &_ctx.scan_id);
+                oe.tag("whois");
+                oe.tag(role);
+                oe.add_evidence(
+                    Evidence::new(SRC, format!("WHOIS {} org for {}", role, target.value))
+                        .with_attr("role", role)
+                        .with_attr("parent_target", target.value.as_str()),
+                );
+                result.push(oe);
             }
         }
 

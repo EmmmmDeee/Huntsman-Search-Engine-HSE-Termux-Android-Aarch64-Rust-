@@ -57,7 +57,11 @@ pub(super) struct WhoisFields {
     pub(super) registrant_country: Option<String>,
     pub(super) registrant_state: Option<String>,
     pub(super) admin_email: Option<String>,
+    pub(super) admin_name: Option<String>,
+    pub(super) admin_org: Option<String>,
     pub(super) tech_email: Option<String>,
+    pub(super) tech_name: Option<String>,
+    pub(super) tech_org: Option<String>,
     pub(super) abuse_email: Option<String>,
     pub(super) nameservers: Vec<String>,
     pub(super) statuses: Vec<String>,
@@ -139,7 +143,11 @@ pub(super) fn parse_whois(response: &str) -> WhoisFields {
             &["Registrant State/Province:", "Registrant State:"],
         ),
         admin_email: field(response, &["Admin Email:"]).filter(|e| e.contains('@')),
+        admin_name: field(response, &["Admin Name:"]),
+        admin_org: field(response, &["Admin Organization:", "Admin Organisation:"]),
         tech_email: field(response, &["Tech Email:"]).filter(|e| e.contains('@')),
+        tech_name: field(response, &["Tech Name:"]),
+        tech_org: field(response, &["Tech Organization:", "Tech Organisation:"]),
         abuse_email: field(
             response,
             &[
