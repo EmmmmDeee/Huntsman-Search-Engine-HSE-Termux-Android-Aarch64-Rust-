@@ -93,8 +93,12 @@ impl Module for RipeStat {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] =
-            &[EntityKind::Asn, EntityKind::Organisation, EntityKind::Email];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Asn,
+            EntityKind::Cidr,
+            EntityKind::Organisation,
+            EntityKind::Email,
+        ];
         KINDS
     }
 
@@ -142,9 +146,10 @@ async fn stat<T: DeserializeOwned + Default>(
         .map(|r| r.data)
 }
 
-/// ASN entities (`AS<n>`) + covering prefix evidence, from `network-info`.
+/// ASN entities (`AS<n>`) + covering `Cidr` entity, from `network-info`.
 fn build_asns(ni: &NetworkInfo, scan_id: &str) -> Vec<Entity> {
-    ni.asns
+    let mut out: Vec<Entity> = ni
+        .asns
         .iter()
         .filter(|a| a.chars().all(|c| c.is_ascii_digit()) && !a.is_empty())
         .map(|a| {
@@ -157,7 +162,25 @@ fn build_asns(ni: &NetworkInfo, scan_id: &str) -> Vec<Entity> {
             e.add_evidence(ev);
             e
         })
-        .collect()
+        .collect();
+    // The covering network prefix is a scannable CIDR — emit it so the graph
+    // can expand into constituent host IPs via the scan engine.
+    if let Some(prefix) = ni
+        .prefix
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| p.contains('/'))
+    {
+        let mut ce = Entity::new(EntityKind::Cidr, prefix, 0.70, scan_id);
+        ce.tag(SRC);
+        ce.tag("network-prefix");
+        ce.add_evidence(Evidence::new(
+            SRC,
+            "Covering prefix (RIPEstat network-info)",
+        ));
+        out.push(ce);
+    }
+    out
 }
 
 /// The network holder organisation, from `as-overview`.

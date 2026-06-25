@@ -7,14 +7,18 @@ use super::*;
             prefix: Some("8.8.8.0/24".into()),
         };
         let es = build_asns(&ni, "scan");
-        assert_eq!(es.len(), 1, "only the valid numeric ASN");
-        assert_eq!(es[0].kind, EntityKind::Asn);
-        assert_eq!(es[0].value, "AS15169");
-        assert!(es[0].has_tag("ripestat"));
+        // One ASN entity + one Cidr entity from the covering prefix.
+        assert_eq!(es.len(), 2, "valid numeric ASN + covering Cidr");
+        let asn_e = es.iter().find(|e| e.kind == EntityKind::Asn).unwrap();
+        assert_eq!(asn_e.value, "AS15169");
+        assert!(asn_e.has_tag("ripestat"));
         assert_eq!(
-            es[0].evidence[0].attributes.get("prefix").unwrap(),
+            asn_e.evidence[0].attributes.get("prefix").unwrap(),
             "8.8.8.0/24"
         );
+        let cidr_e = es.iter().find(|e| e.kind == EntityKind::Cidr).unwrap();
+        assert_eq!(cidr_e.value, "8.8.8.0/24");
+        assert!(cidr_e.has_tag("network-prefix"));
     }
 
     #[test]
