@@ -105,10 +105,21 @@ impl UsernameVariants {
             add_variant(&mut out, &norm, collapsed.clone());
         }
 
-        // 2. Trailing-digit strip on the collapsed form (jdoe1990 → jdoe).
+        // 2a. Trailing-digit strip on the collapsed form (jdoe1990 → jdoe).
         let deburred = collapsed.trim_end_matches(|c: char| c.is_ascii_digit());
         if deburred != collapsed {
             add_variant(&mut out, &norm, deburred.to_string());
+        }
+
+        // 2b. Leading-digit strip: year- or number-prefixed handles like
+        //     `90jdoe`, `2001smith`, `00hbamford` — the digits mark a birth
+        //     year, graduation year or numeric disambiguator. Strip the leading
+        //     run of digits from the COLLAPSED form. Only fire when the
+        //     remaining alpha core is ≥ MIN_HANDLE_LEN (short remainders like
+        //     `90ab` are too ambiguous). Complement of the trailing-digit pass.
+        let lead_stripped = collapsed.trim_start_matches(|c: char| c.is_ascii_digit());
+        if lead_stripped != collapsed && lead_stripped.len() >= MIN_HANDLE_LEN {
+            add_variant(&mut out, &norm, lead_stripped.to_string());
         }
 
         // 3. Strip separator-bounded vanity tokens (lead) and vanity-or-numeric

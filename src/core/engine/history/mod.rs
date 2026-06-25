@@ -58,6 +58,18 @@ const MAX_PARTNERS_PER_ENTITY: usize = 8;
 /// the [`CROSS_SCAN_SOURCE`] source but never contains this phrase.
 const COOCCURRENCE_MARKER: &str = "Co-occurred with `";
 
+/// Strip ASCII handle separators (`.`, `_`, `-`) and lowercase — the canonical
+/// form used for handle comparison across platforms. Duplicated here (rather than
+/// calling into `correlator::rules`) to keep the history module independent of the
+/// correlator's internals.
+fn canonical_username(value: &str) -> String {
+    value
+        .chars()
+        .filter(|&c| c != '.' && c != '_' && c != '-')
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 /// True if `e` is a SPECIFIC personal identifier worth checking against history —
 /// the kind of value whose recurrence across scans genuinely bridges two
 /// investigations. Excludes infrastructure (every scan touches `google.com`),
@@ -111,10 +123,87 @@ pub(super) fn link_cross_scan_history(
         }
         probes += 1;
         let Ok(ids) = store.scan_ids_for_entity(&e.uid) else {
+            // For Username entities: even when the exact-value lookup fails, try
+            // the separator-stripped canonical form.  People reuse handles with
+            // different punctuation across platforms, so "j.doe" and "jdoe" share
+            // one canonical form — a prior scan that recorded the canonical variant
+            // should still bridge to the current entity.
+            if e.kind == EntityKind::Username {
+                let canon = canonical_username(&e.value);
+                if canon != e.value && canon.len() >= 4 {
+                    let canon_uid = crate::core::entity::derive_uid(&EntityKind::Username, &canon);
+                    if canon_uid != e.uid {
+                        if probes >= MAX_PROBES {
+                            break;
+                        }
+                        probes += 1;
+                        if let Ok(canon_ids) = store.scan_ids_for_entity(&canon_uid) {
+                            let prior =
+                                canon_ids.iter().filter(|id| id.as_str() != scan_id).count();
+                            if prior > 0 {
+                                e.tag("cross-scan");
+                                let summary = if prior >= HUB_THRESHOLD {
+                                    e.tag("hub-entity");
+                                    format!(
+                                        "High-leverage hub identifier: canonical form '{canon}' \
+                                         recorded in {prior} earlier investigation(s) — bridges \
+                                         multiple cases across handle-separator variants"
+                                    )
+                                } else {
+                                    format!(
+                                        "Canonical form '{canon}' also recorded in {prior} \
+                                         earlier scan(s) — separator-variant handle bridges \
+                                         investigations"
+                                    )
+                                };
+                                e.add_evidence(Evidence::new(CROSS_SCAN_SOURCE, summary));
+                                linked += 1;
+                            }
+                        }
+                    }
+                }
+            }
             continue;
         };
         let prior = ids.iter().filter(|id| id.as_str() != scan_id).count();
         if prior == 0 {
+            // For Usernames: attempt canonical probe even when the exact UID has
+            // no prior history, for the same separator-variant bridging reason.
+            if e.kind == EntityKind::Username && !e.has_tag("cross-scan") {
+                let canon = canonical_username(&e.value);
+                if canon != e.value && canon.len() >= 4 {
+                    let canon_uid = crate::core::entity::derive_uid(&EntityKind::Username, &canon);
+                    if canon_uid != e.uid {
+                        if probes >= MAX_PROBES {
+                            break;
+                        }
+                        probes += 1;
+                        if let Ok(canon_ids) = store.scan_ids_for_entity(&canon_uid) {
+                            let prior_c =
+                                canon_ids.iter().filter(|id| id.as_str() != scan_id).count();
+                            if prior_c > 0 {
+                                e.tag("cross-scan");
+                                let summary = if prior_c >= HUB_THRESHOLD {
+                                    e.tag("hub-entity");
+                                    format!(
+                                        "High-leverage hub identifier: canonical form '{canon}' \
+                                         recorded in {prior_c} earlier investigation(s) — bridges \
+                                         multiple cases across handle-separator variants"
+                                    )
+                                } else {
+                                    format!(
+                                        "Canonical form '{canon}' also recorded in {prior_c} \
+                                         earlier scan(s) — separator-variant handle bridges \
+                                         investigations"
+                                    )
+                                };
+                                e.add_evidence(Evidence::new(CROSS_SCAN_SOURCE, summary));
+                                linked += 1;
+                            }
+                        }
+                    }
+                }
+            }
             continue;
         }
         e.tag("cross-scan");
