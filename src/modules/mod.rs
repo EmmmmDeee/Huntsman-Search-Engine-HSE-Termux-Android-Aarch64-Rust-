@@ -55,6 +55,7 @@ pub mod fullcontact;
 pub mod geo_domain_classifier;
 pub mod geo_intel;
 pub mod geocode;
+pub mod gitea_user;
 pub mod github_code_search;
 pub mod github_user;
 pub mod gitlab_user;
@@ -79,6 +80,7 @@ pub mod ipinfo;
 pub mod ipqs;
 pub mod ipquery;
 pub mod keybase;
+pub mod launchpad_user;
 pub mod leakix;
 pub mod lobsters;
 pub mod local_net;
@@ -322,12 +324,14 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(bluesky_user::BlueskyUser),
         Arc::new(mastodon_user::MastodonUser),
         Arc::new(gitlab_user::GitlabUser),
+        Arc::new(gitea_user::GiteaUser),
         Arc::new(bitbucket_user::BitbucketUser),
         Arc::new(codeberg_user::CodebergUser),
         Arc::new(codewars_user::CodewarsUser),
         Arc::new(huggingface_user::HuggingfaceUser),
         Arc::new(dockerhub_user::DockerhubUser),
         Arc::new(hexpm_user::HexpmUser),
+        Arc::new(launchpad_user::LaunchpadUser),
         Arc::new(npm_author::NpmAuthor),
         Arc::new(crates_io::CratesIo),
         Arc::new(reddit_user::RedditUser),

@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (139 modules: 106 free · 28 key-gated · 5 paid)
+## Catalogue (141 modules: 108 free · 28 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -17,7 +17,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `exa_search` | email, username, phone, full_name, domain, organisation | key_gated | no | 87 | url, domain, email, phone |
 | `search_engines` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn | free | no | 113 | url, domain, email, username, phone, address, coordinates, person, organisation, abn_acn |
 
-### social (23)
+### social (25)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -29,6 +29,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `hacker_news` | username | free | no | 106 | username, email, url |
 | `lobsters` | username | free | no | 106 | username, email, url, domain |
 | `gitlab_user` | username | free | no | 106 | username, person, email, url, domain, address, organisation |
+| `gitea_user` | username | free | no | 98 | username, person, email, url, domain, address |
 | `reddit_user` | username | free | no | 105 | username, email, url |
 | `stackoverflow_user` | username | free | no | 105 | username, person, url, domain, address |
 | `bluesky_user` | username | free | no | 104 | username, person, email, url, domain |
@@ -37,6 +38,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `mastodon_user` | username | free | no | 103 | username, person, email, url, domain, address |
 | `huggingface_user` | username | free | no | 52 | username, person, email, url, domain, organisation |
 | `hexpm_user` | username | free | no | 51 | username, person, url |
+| `launchpad_user` | username | free | no | 53 | username, person, email, url |
 | `dockerhub_user` | username | free | no | 50 | username, person, email, url, domain, organisation, address |
 | `codewars_user` | username | free | no | 49 | username, person, url, organisation, address |
 | `bitbucket_user` | username | free | no | 97 | username, person, url, domain, address |
