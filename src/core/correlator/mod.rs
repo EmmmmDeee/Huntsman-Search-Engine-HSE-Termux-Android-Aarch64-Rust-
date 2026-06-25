@@ -303,6 +303,8 @@ const RULES: &[RuleFn] = &[
     rule_au_084_cell_tower_dual_source,
     // AU-085: AU fixed-line area code cross-checked against address/coordinate state.
     rule_au_085_phone_region_jurisdiction,
+    // AU-086: a name-derived email guess independently confirmed in real data.
+    rule_au_086_name_derived_email_confirmed,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

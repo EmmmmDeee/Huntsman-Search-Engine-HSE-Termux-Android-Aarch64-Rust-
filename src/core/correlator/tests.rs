@@ -4971,6 +4971,46 @@ fn au077_name_derived_username_confirmed_fires_on_predict_plus_confirm() {
 }
 
 #[test]
+fn au086_name_derived_email_confirmed_fires_on_predict_plus_confirm() {
+    use super::rules::rule_au_086_name_derived_email_confirmed;
+    // An email name_intel permuted from the subject AND confirmed by a breach
+    // corpus (HIBP) — the "guessed address verified real" signal.
+    let mut e = Entity::new(EntityKind::Email, "moale.mcknight@gmail.com", 0.30, "s");
+    e.tag("name-derived");
+    e.add_evidence(Evidence::new(
+        "name_intel",
+        "Speculative email permuted from name",
+    ));
+    e.add_evidence(Evidence::new("hibp", "found in 2 breaches"));
+    let r = rule_au_086_name_derived_email_confirmed(&[e], "s", 0);
+    assert!(
+        !r.is_empty(),
+        "AU-086 must fire on derivation + breach confirmation"
+    );
+    assert_eq!(r[0].rule_id, "AU-086");
+    assert_eq!(r[0].severity, super::Severity::High);
+    assert!(r[0].description.contains("hibp"));
+
+    // Derivation alone (an unconfirmed permutation) must NOT fire.
+    let mut guess = Entity::new(EntityKind::Email, "mmcknight@gmail.com", 0.30, "s");
+    guess.tag("name-derived");
+    guess.add_evidence(Evidence::new("name_intel", "permuted"));
+    assert!(
+        rule_au_086_name_derived_email_confirmed(&[guess], "s", 0).is_empty(),
+        "an unconfirmed permutation must not fire AU-086"
+    );
+
+    // A real (non-derived) breach email must not fire either — the rule is about
+    // confirming a PREDICTION, not flagging every breached address.
+    let mut found = Entity::new(EntityKind::Email, "someone@corp.com", 0.72, "s");
+    found.add_evidence(Evidence::new("hibp", "breached"));
+    assert!(
+        rule_au_086_name_derived_email_confirmed(&[found], "s", 0).is_empty(),
+        "a non-derived breach email must not fire AU-086"
+    );
+}
+
+#[test]
 fn au078_hub_entity_fires_for_hub_tagged_entity() {
     use super::rules::rule_au_078_hub_entity;
     let mut e = Entity::new(EntityKind::Email, "repeat@example.com", 0.9, "s");

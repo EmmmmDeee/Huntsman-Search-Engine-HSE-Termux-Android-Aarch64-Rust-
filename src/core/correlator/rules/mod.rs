@@ -212,6 +212,32 @@ const USERNAME_DISCOVERY_SOURCES: &[&str] = &[
     "oathnet_pro",
 ];
 
+/// Modules that *confirm an email exists in real data* — breach corpora,
+/// account-presence probes and profile lookups. A name-derived email GUESS
+/// (`name_intel`'s `firstname.lastname@provider` permutation) that any of these
+/// independently corroborates is almost certainly the subject's actual address —
+/// the "prediction confirmed" signal for emails (AU-086), the email analogue of
+/// the username bridge AU-077. Search-snippet recycling is deliberately excluded
+/// (a guessed string echoed in a result page is not confirmation).
+const EMAIL_CONFIRMATION_SOURCES: &[&str] = &[
+    "hibp",
+    "oathnet_pro",
+    "comb_search",
+    "dehashed",
+    "xposed_or_not",
+    "epieos",
+    "emailrep",
+    "gravatar",
+    "holehe",
+    "hunter_io",
+    "seon",
+    "fullcontact",
+    "see_know",
+    "intelx",
+    "psbdmp",
+    "leakix",
+];
+
 /// Tags that mark an entity as known-bad for adjacency analysis.
 const ADJACENCY_BAD_TAGS: &[&str] = &["malicious", "threat-intel", "vulnerable"];
 

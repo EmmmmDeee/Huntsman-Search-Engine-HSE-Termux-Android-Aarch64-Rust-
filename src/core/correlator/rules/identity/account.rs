@@ -4,7 +4,9 @@
 
 use super::*;
 // USERNAME_* constants are private in rules/mod.rs but accessible to descendants.
-use super::super::{USERNAME_DERIVATION_SOURCES, USERNAME_DISCOVERY_SOURCES};
+use super::super::{
+    EMAIL_CONFIRMATION_SOURCES, USERNAME_DERIVATION_SOURCES, USERNAME_DISCOVERY_SOURCES,
+};
 
 pub(in crate::core::correlator) fn rule_au_011_cross_platform_username(
     entities: &[Entity],
@@ -837,6 +839,70 @@ pub(in crate::core::correlator) fn rule_au_077_name_derived_username_confirmed(
                      independently confirmed live on: {} — prediction + verification is a \
                      strong, free identity bridge requiring no breach data",
                     e.value, confirmed_by_str,
+                ),
+                entity_uids: vec![e.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            }
+        })
+        .collect()
+}
+
+/// AU-086 — Name-derived email independently confirmed.
+///
+/// The email analogue of AU-077. `name_intel` permutes a subject's name into the
+/// likely `firstname.lastname@provider` addresses (tagged `name-derived`,
+/// emitted at CANDIDATE confidence). On their own they are guesses — but when an
+/// independent breach / account-presence / profile source
+/// ([`EMAIL_CONFIRMATION_SOURCES`] — HIBP, OathNet, Gravatar, holehe, …) finds
+/// that exact address in real data, the name PREDICTED the email and a real
+/// corpus VERIFIED it: it is almost certainly the subject's actual address.
+///
+/// This exists because the predicted-then-confirmed signal for emails was
+/// previously surfaced for usernames only (AU-035/AU-077), so a confirmed
+/// name-derived email stayed a low-confidence CANDIDATE buried among the dozens
+/// of unconfirmed permutations — a real finding lost in the noise. AU-086 lifts
+/// it to a High correlation so the operator sees exactly which guessed address
+/// was confirmed real.
+pub(in crate::core::correlator) fn rule_au_086_name_derived_email_confirmed(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .filter(|e| {
+            // Predicted by a name-derivation pass (name_intel's permutation)…
+            let derived =
+                e.has_tag("name-derived") || e.evidence.iter().any(|ev| ev.source == "name_intel");
+            // …AND independently confirmed in real data by ≥1 corpus/probe.
+            let confirmed = e
+                .evidence
+                .iter()
+                .any(|ev| EMAIL_CONFIRMATION_SOURCES.contains(&ev.source.as_str()));
+            derived && confirmed
+        })
+        .map(|e| {
+            let confirmed_by: Vec<&str> = e
+                .evidence
+                .iter()
+                .filter(|ev| EMAIL_CONFIRMATION_SOURCES.contains(&ev.source.as_str()))
+                .map(|ev| ev.source.as_str())
+                .collect::<std::collections::BTreeSet<&str>>()
+                .into_iter()
+                .collect();
+            Correlation {
+                rule_id: "AU-086".into(),
+                rule_name: "Name-derived email confirmed".into(),
+                severity: Severity::High,
+                description: format!(
+                    "Email '{}' was predicted by a name-derivation pass and independently \
+                     confirmed in real data by: {} — a guessed address verified against a \
+                     breach/presence source is almost certainly the subject's actual email",
+                    e.value,
+                    confirmed_by.join(", "),
                 ),
                 entity_uids: vec![e.uid.clone()],
                 scan_id: scan_id.into(),
