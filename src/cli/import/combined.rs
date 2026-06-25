@@ -234,6 +234,7 @@ pub(super) fn parse_combined_search(body: &str, sid: &str) -> (Vec<Entity>, Impo
     push_macs(body, sid, "combined-search", &mut entities);
     push_crypto(body, sid, "combined-search", &mut entities);
     push_api_keys(body, sid, "combined-search", &mut entities);
+    push_ibans(body, sid, "combined-search", &mut entities);
     (entities, stats)
 }
 

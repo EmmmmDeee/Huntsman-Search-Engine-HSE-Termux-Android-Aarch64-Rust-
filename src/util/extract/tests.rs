@@ -137,3 +137,16 @@ use super::*;
         // An IPv6 fragment (4-hex groups) is not a MAC.
         assert!(macs("2606:2800:220:1:248:1893:25c8:1946").is_empty());
     }
+
+    #[test]
+    fn ibans_validates_mod97_checksum() {
+        // The canonical valid example IBAN.
+        assert_eq!(
+            ibans("transfer to GB82WEST12345698765432 today"),
+            vec!["GB82WEST12345698765432".to_string()]
+        );
+        // Shape-valid but wrong check digits → rejected.
+        assert!(ibans("GB00WEST12345698765432").is_empty());
+        // Not IBAN-shaped.
+        assert!(ibans("just some words and 12345 digits").is_empty());
+    }

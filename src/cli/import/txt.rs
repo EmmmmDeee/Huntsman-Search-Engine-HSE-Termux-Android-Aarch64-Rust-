@@ -261,6 +261,7 @@ pub(super) fn parse_oathnet_txt(
     push_crypto(body, &sid, "stealer", &mut entities);
     // Leaked API keys/tokens anywhere in the log, not just `service: key` lines.
     push_api_keys(body, &sid, "stealer", &mut entities);
+    push_ibans(body, &sid, "stealer", &mut entities);
     (entities, stats)
 }
 

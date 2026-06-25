@@ -71,6 +71,7 @@ pub(super) fn parse_oathnet_html(body: &str, sid: &str) -> Vec<crate::core::enti
     push_macs(body, sid, "oathnet-html", &mut entities);
     push_crypto(body, sid, "oathnet-html", &mut entities);
     push_api_keys(body, sid, "oathnet-html", &mut entities);
+    push_ibans(body, sid, "oathnet-html", &mut entities);
     entities
 }
 

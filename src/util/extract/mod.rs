@@ -59,6 +59,53 @@ pub fn emails(text: &str) -> Vec<String> {
     out
 }
 
+/// Matches an IBAN-shaped token: a 2-letter country code, 2 check digits, then
+/// 10–30 alphanumerics (contiguous form, as breach dumps store it).
+pub static IBAN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b[A-Z]{2}[0-9]{2}[A-Z0-9]{10,30}\b").expect("constant iban regex")
+});
+
+/// Every checksum-valid IBAN (international bank account number) in `text`,
+/// upper-cased and de-duplicated. Validated by the ISO 13616 mod-97 check, so a
+/// random alphanumeric run that merely looks IBAN-shaped is rejected (~1-in-97
+/// would otherwise slip through the shape alone). Recovers a victim's bank
+/// account from a breach/stealer dump as a financial-intel finding.
+#[must_use]
+pub fn ibans(text: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for m in IBAN_RE.find_iter(text) {
+        let iban: String = m
+            .as_str()
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .flat_map(char::to_uppercase)
+            .collect();
+        if (15..=34).contains(&iban.len()) && iban_mod97_valid(&iban) && seen.insert(iban.clone()) {
+            out.push(iban);
+        }
+    }
+    out
+}
+
+/// ISO 13616 IBAN checksum: move the first four chars to the end, map letters
+/// `A`–`Z` to `10`–`35`, and require the resulting decimal `mod 97 == 1`.
+fn iban_mod97_valid(iban: &str) -> bool {
+    let rearranged = format!("{}{}", &iban[4..], &iban[..4]);
+    let mut rem: u32 = 0;
+    for c in rearranged.chars() {
+        if let Some(d) = c.to_digit(10) {
+            rem = (rem * 10 + d) % 97;
+        } else if c.is_ascii_uppercase() {
+            // A letter contributes two decimal digits (10..=35).
+            rem = (rem * 100 + (c as u32 - 'A' as u32 + 10)) % 97;
+        } else {
+            return false;
+        }
+    }
+    rem == 1
+}
+
 /// Every plausible MAC address / WiFi BSSID in `text`, normalised to lowercase
 /// colon form and de-duplicated. The all-zero and broadcast addresses are
 /// dropped (never a real device/access-point). Pulls a victim's router BSSID

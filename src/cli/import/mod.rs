@@ -481,6 +481,36 @@ fn push_api_keys(
     n
 }
 
+/// Extract checksum-valid IBANs (international bank accounts) from `text` and
+/// push them as `Other("iban")` financial-intel entities — a victim's bank
+/// account recovered from a breach/stealer dump. Capped at 50/import.
+fn push_ibans(
+    text: &str,
+    sid: &str,
+    source_tag: &str,
+    entities: &mut Vec<crate::core::entity::Entity>,
+) -> usize {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let mut n = 0;
+    for iban in crate::util::extract::ibans(text).into_iter().take(50) {
+        let mut e = Entity::new(EntityKind::Other("iban".into()), &iban, 0.62, sid);
+        e.tag("import");
+        e.tag(source_tag);
+        e.tag("iban");
+        e.tag("financial");
+        e.add_evidence(
+            Evidence::new(
+                "import:iban",
+                format!("Bank account (IBAN) `{iban}` in {source_tag} data"),
+            )
+            .with_attr("iban", &iban),
+        );
+        entities.push(e);
+        n += 1;
+    }
+    n
+}
+
 fn store_key_in_pool(service: &str, key: &str, notes: String) {
     let pool = crate::util::key_pool::global_pool();
     let mut entry = crate::util::key_pool::KeyEntry::new(key);

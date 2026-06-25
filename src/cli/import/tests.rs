@@ -206,6 +206,25 @@ async fn dehashed_csv_also_mines_wallets_from_any_field() {
         "the DeHashed table scan must recover a wallet from any field"
     );
 }
+
+#[tokio::test]
+async fn import_extracts_iban_as_financial_finding() {
+    use crate::core::entity::EntityKind;
+    let (ents, label) = entities_from_upload(
+        "URL: https://x.com\nBank account: GB82WEST12345698765432\n",
+        "s",
+    )
+    .await
+    .unwrap();
+    assert_eq!(label, "oathnet-txt");
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Other("iban".into())
+                && e.value == "GB82WEST12345698765432"
+                && e.has_tag("financial")),
+        "a checksum-valid IBAN must become a financial finding"
+    );
+}
 use crate::core::entity::{Entity, EntityKind};
 
 // The exact shape of the user-provided "Isaac Frost.txt" dossier upload.
