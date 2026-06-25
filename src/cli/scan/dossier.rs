@@ -293,6 +293,34 @@ fn print_diagnostics(
         println!();
     }
 
+    if !diag.coordinate_clusters.is_empty() {
+        println!(
+            "  Coordinate clusters ({} place{}):",
+            diag.coordinate_clusters.len(),
+            if diag.coordinate_clusters.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        );
+        for (i, cl) in diag.coordinate_clusters.iter().take(10).enumerate() {
+            let country = cl.country_iso.as_deref().unwrap_or("?");
+            println!(
+                "    [{i}] {:.5},{:.5}  ±{:.2} km (robust)  / {:.2} km (worst-case)  [{country}]  \
+                 {n} pts, {d:.2} km diam, {s} source(s)  ({gh})",
+                cl.centroid_lat,
+                cl.centroid_lon,
+                cl.median_radius_km,
+                cl.enclosing_radius_km,
+                n = cl.member_count,
+                d = cl.diameter_km,
+                s = cl.source_diversity,
+                gh = cl.centroid_geohash,
+            );
+        }
+        println!();
+    }
+
     let timeline = crate::core::timeline::reconstruct(entities);
     println!("━━━ TIMELINE ({} events) ━━━", timeline.len());
     println!();

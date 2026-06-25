@@ -362,9 +362,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   CSV import with GZ decompression via `flate2`); `cell_local` module (free, Geo,
   priority 66, `spawn_blocking` DB query, silent no-op when DB absent). 126→127
   modules, 93→94 free, Geo 20→21.
-  *Remaining:* Weiszfeld/Welzl centroid fusion; AU bounding precision;
-  movement/timeline layer; provenance radius output; auto-scheduled re-sync of
-  the local cell DB (currently requires manual `hse cells import` trigger).
+  *Partial (cycle 45, 2026-06-25):* Weiszfeld confidence-weighted centroid fusion +
+  Welzl bounding circle integrated into `cluster_coordinates()`. `CoordinateCluster`
+  now carries `median_radius_km` (robust uncertainty) and `enclosing_radius_km`
+  (worst-case bounding). Dossier GEO INTELLIGENCE section now renders cluster centres
+  with ± robust / worst-case radii. Centroid upgrades from positional median →
+  Weiszfeld geometric median; geohash/country/TZ use the better estimate.
+  *Remaining:* AU bounding precision; movement/timeline layer;
+  auto-scheduled re-sync of the local cell DB (manual `hse cells import` required).
 - **`[ ]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
   credential-reuse graph, `aho-corasick` (SOL-F1) key-harvest + entropy gate.
 - **`[ ]` SOL-FORENSIC · Reproducible intelligence product** → **C7**: byte-stable
@@ -500,9 +505,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **C4** — `[~]` (SOL-NETINT). S→P audit cycle 20: `securitytrails`, `bgpview`, and
   `ripestat` were stale "remaining" notes — all three modules already registered.
   *Remaining:* passive-DNS history; CDN cert-hash origin pivot.
-- **C5** — `[~]` (`opencellid` cycle 19 + `cell_local` + `hse cells import` cycle 21
-  delivered; free offline DB leg now available; Weiszfeld/Welzl centroid + provenance
-  radius + auto-sync still open).
+- **C5** — `[~]` (`opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21
+  + Weiszfeld/Welzl centroid fusion + provenance radius cycle 45 all delivered;
+  auto-sync of local cell DB + AU bounding precision + timeline layer still open).
 - **C1/C2/C6/C7** — capability nodes; solutions sketched, none started (gated on
   the §3.F enablers landing first, by design).
 - **AU-063 (cycle 20 S→P gap → delivered cycle 41, 2026-06-25):** `opencellid` and
@@ -1706,6 +1711,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 - **2026-06-25** — **Cycle 40 (S→P): SOL-TRACKING-PIVOT-C delivered — social-profile URL priority boost in expansion heap.**
   S→P pass on cycle 37: the gap was explicit — "add a priority boost for `Url` entities tagged `social-profile` so they rank above generic domains." Delivered: `+15%` weight multiplier in `src/core/engine/mod.rs` expansion loop for `TargetKind::Url && entity.has_tag("social-profile")`. Added after the existing geo-corroboration bonus block so the two sub-dominant boosts compose cleanly. The fix ensures `web_crawler` is dispatched against confirmed social profile pages early in each expansion round rather than being pre-empted by generic domain/IP targets. **Gap refresh:** SOL-TRACKING-PIVOT-C is now delivered; the S→P gap for cycle 37 is closed. §4a gains no new items. Gate green: fmt/clippy/doc/test --locked all clean, 3216 lib tests, 0 failures.
+
+- **2026-06-25** — **Cycle 45 (P→S): C5 Weiszfeld/Welzl centroid fusion + provenance radius integrated.**
+  P→S pass on the remaining C5/SOL-GEOINT item. The Weiszfeld and Welzl implementations
+  in `src/util/geometry/` were already proven correct and tested; only the integration into
+  diagnostic clustering was missing. Delivered:
+  - `src/util/diagnostics/analyse.rs`: `coord_pairs` type extended with confidence weight
+    (`e.c_effective()` as 5th element); all iteration patterns updated.
+  - `src/util/diagnostics/cluster.rs`: `cluster_coordinates()` now builds
+    `weighted_points: Vec<((lat, lon), weight)>` per cluster and calls
+    `weighted_geometric_median` (Weiszfeld) for the centroid, with fallback to
+    `weighted_centroid` then positional median. `median_distance_km` computes the
+    robust uncertainty radius; `min_enclosing_circle` (Welzl) gives the worst-case
+    bounding radius.
+  - `src/util/diagnostics/types.rs`: `CoordinateCluster` gains `median_radius_km` and
+    `enclosing_radius_km` fields (both serialised in JSON output).
+  - `src/cli/scan/dossier.rs`: GEO INTELLIGENCE section now renders clusters with
+    `±{robust} km (robust) / {worst-case} km (worst-case)` provenance radius.
+  - `src/util/diagnostics/tests.rs`: test helpers updated with `..Default::default()`.
+  C5/SOL-GEOINT: `[~]` — centroid fusion + provenance radius delivered; remaining:
+  AU bounding precision, timeline layer, cell_local auto-sync.
+  Gate: 3220 tests, 0 failures.
+  Paired: `PROBLEM_TREE` — same commit.
 
 - **2026-06-25** — **Cycle 44 (P→S): §7 S4 residual closed — archived success bodies now redacted.**
   P→S pass on the long-standing §7 S4 residual: `read_json_text` (the single chokepoint in

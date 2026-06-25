@@ -205,6 +205,7 @@ fn make_cluster(iso: &str, diversity: usize) -> CoordinateCluster {
         country_iso: Some(iso.to_string()),
         timezone: String::new(),
         source_diversity: diversity,
+        ..Default::default()
     }
 }
 
@@ -238,6 +239,7 @@ fn country_coherence_neutralises_unknown_country() {
         country_iso: None,
         timezone: String::new(),
         source_diversity: 1,
+        ..Default::default()
     };
     assert_eq!(country_coherence_weight(&c, "AU"), 0.7);
 }

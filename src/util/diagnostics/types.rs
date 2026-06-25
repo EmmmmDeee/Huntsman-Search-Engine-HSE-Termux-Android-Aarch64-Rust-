@@ -41,7 +41,8 @@ pub struct ScanDiagnostics {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CoordinateCluster {
-    /// Median lat/lon of cluster members.
+    /// Confidence-weighted geometric median (Weiszfeld, outlier-robust).
+    /// Falls back to positional median when < 2 distinct points exist.
     pub centroid_lat: f64,
     pub centroid_lon: f64,
     pub centroid_geohash: String,
@@ -54,6 +55,12 @@ pub struct CoordinateCluster {
     pub timezone: String,
     /// How many independent modules contributed coords to this cluster.
     pub source_diversity: usize,
+    /// Robust uncertainty radius: median distance from the geometric median
+    /// to all cluster members (same 0.5 breakdown point as the median).
+    pub median_radius_km: f64,
+    /// Worst-case bounding radius: Welzl minimum-enclosing-circle radius
+    /// (Chebyshev / L∞). Every member lies within `centroid ± enclosing_radius_km`.
+    pub enclosing_radius_km: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
