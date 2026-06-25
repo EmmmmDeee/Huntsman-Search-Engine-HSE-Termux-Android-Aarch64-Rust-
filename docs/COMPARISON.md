@@ -3,7 +3,7 @@
 An honest, sourced comparison of HSE against the OSINT tools it is most often
 measured against. HSE is a comprehensive, **on-device** (Termux / Android,
 no root), **free-first** OSINT / GEOINT and breach-intelligence engine —
-154 modules (121 keyless), Rust, `#![forbid(unsafe_code)]`, ~3,900 tests.
+155 modules (122 keyless), Rust, `#![forbid(unsafe_code)]`, ~3,900 tests.
 This is written to help an operator decide what to run, not as a marketing
 claim, so it states where competitors lead too.
 
@@ -11,7 +11,7 @@ claim, so it states where competitors lead too.
 |---|---|---|---|---|---|---|
 | Model | Proprietary, self-host | Open-core + SaaS (HX) | Enterprise licence | Free OSS | SaaS | SaaS (fraud/KYC) |
 | Runs on a phone (Termux, no root) | ✅ single binary | ⚠️ Python, server-oriented | ❌ desktop/JVM | ⚠️ Python | n/a (hosted) | n/a (hosted) |
-| Keyless / free module coverage | ✅ 121 of 154 | broad (key-optional) | needs hubs/keys | narrow | n/a | n/a |
+| Keyless / free module coverage | ✅ 122 of 155 | broad (key-optional) | needs hubs/keys | narrow | n/a | n/a |
 | Breach / stealer credential intel | ✅ | partial | via hubs | ❌ | ❌ | ✅ (signals) |
 | Email / phone → digital footprint | ✅ | partial | via hubs | partial | ❌ | ✅ (core) |
 | Australian public-records depth | ✅ registries, electoral, property, ACMA, … | ❌ | ❌ | ❌ | ❌ | ❌ |
