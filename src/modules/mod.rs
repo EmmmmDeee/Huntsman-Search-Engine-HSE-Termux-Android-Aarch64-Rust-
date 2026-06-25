@@ -61,6 +61,7 @@ pub mod geo_intel;
 pub mod geocode;
 pub mod gitea_user;
 pub mod github_code_search;
+pub mod github_commits;
 pub mod github_user;
 pub mod gitlab_user;
 pub mod gleif_lei;
@@ -330,6 +331,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(username_variants::UsernameVariants),
         Arc::new(github_user::GithubUser),
         Arc::new(github_code_search::GithubCodeSearch),
+        Arc::new(github_commits::GithubCommits),
         Arc::new(gaming_profile::GamingProfile),
         Arc::new(hacker_news::HackerNews),
         Arc::new(lobsters::Lobsters),

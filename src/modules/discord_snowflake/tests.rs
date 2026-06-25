@@ -47,8 +47,8 @@ fn is_free_passive_social() {
     assert!(!m.attack_techniques().is_empty());
     assert!(m.accepts(&Target::new(TargetKind::Username, "175928847299117063")));
     assert!(!m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
-    // A Steam ID must never be accepted as a Discord snowflake.
-    assert!(!m.accepts(&Target::new(TargetKind::Username, "76561197960265728")));
+    // accepts() is kind-only; the Steam-ID exclusion is enforced in
+    // snowflake_candidate / process() (pinned by candidate_gates_and_excludes_steam).
 }
 
 #[tokio::test]

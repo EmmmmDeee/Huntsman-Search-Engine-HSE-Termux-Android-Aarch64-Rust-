@@ -64,7 +64,10 @@ impl Module for DiscordSnowflake {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Username) && snowflake_candidate(t.value.trim()).is_some()
+        // Kind-only so the dispatch index (built from `consumes()`) stays
+        // consistent with `accepts()` and the module is actually indexed for
+        // Username; the snowflake validation is applied in `process()`.
+        matches!(t.kind, TargetKind::Username)
     }
 
     fn category(&self) -> ModuleCategory {
