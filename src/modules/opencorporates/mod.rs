@@ -55,8 +55,24 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
     if co.jurisdiction_code.as_deref() == Some("au") {
         entity.tag("country:AU");
     }
-    if co.current_status.as_deref() == Some("Active") {
-        entity.tag("active");
+    match co.current_status.as_deref() {
+        Some("Active") => {
+            entity.tag("active");
+        }
+        Some(s) if !s.is_empty() => {
+            entity.tag("inactive");
+        }
+        _ => {}
+    }
+    if co
+        .dissolution_date
+        .as_deref()
+        .is_some_and(|d| !d.is_empty())
+    {
+        entity.tag("dissolved");
+        // A dissolved company is less likely to be the current operating entity;
+        // pull confidence down slightly so live entities rank above it.
+        entity.confidence = (entity.confidence - 0.10).max(0.10);
     }
 
     let mut ev = [
