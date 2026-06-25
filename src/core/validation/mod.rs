@@ -43,7 +43,7 @@ pub use coordinates::validate_coordinates;
 pub use domain::validate_domain_shape;
 pub use email::{is_role_mailbox, validate_email_syntax};
 pub use ip::{is_bogus_ip, is_cdn_edge_ip, is_non_routable_ip, untrusted_ip_geo_reason};
-pub use phone::validate_phone_e164;
+pub use phone::{to_e164_au, validate_phone_e164};
 pub use placeholder::{
     is_fragment_value, is_placeholder_domain, is_placeholder_entity, is_specific_residence,
     is_username_derived_name,

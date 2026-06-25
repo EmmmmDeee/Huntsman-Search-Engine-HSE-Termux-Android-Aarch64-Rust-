@@ -266,7 +266,7 @@ fn dehashed_csv_parses_quoted_fields_and_every_kind() {
     // comma, so it must be quoted — exercising the RFC-4180 field reader.
     let csv = "id,email,username,hashed_password.1,name,database_name,url,password,address,phone\n\
         1,jordanavery@gmail.com,javery,$2a$10$abcdefghijklmnopqrs,Jordan Avery,ExampleBreach2019,\
-https://site.example/u,Sup3rSecret!,\"12 Smith St, Carlton VIC 3053\",+61412345678\n";
+https://site.example/u,Sup3rSecret!,\"12 Smith St, Carlton VIC 3053\",0412 345 678\n";
     let (ents, stats) = parse_dehashed_csv(csv, "s");
     let has = |k: EntityKind, pred: &dyn Fn(&str) -> bool| {
         ents.iter().any(|e| e.kind == k && pred(&e.value))
@@ -280,7 +280,8 @@ https://site.example/u,Sup3rSecret!,\"12 Smith St, Carlton VIC 3053\",+614123456
     assert!(has(EntityKind::Address, &|v| v
         .to_ascii_lowercase()
         .contains("carlton")));
-    assert!(ents.iter().any(|e| e.kind == EntityKind::Phone));
+    // The AU local phone is recovered and canonicalised to E.164.
+    assert!(has(EntityKind::Phone, &|v| v == "+61412345678"));
     assert!(ents.iter().any(|e| e.kind == EntityKind::Url));
     // Every breach entity carries its source database in evidence.
     let em = ents

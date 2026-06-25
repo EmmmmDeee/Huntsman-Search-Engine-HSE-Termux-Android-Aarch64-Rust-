@@ -160,11 +160,10 @@ pub(super) fn parse_dehashed_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportS
                 );
             }
         }
-        if let Some(ph) = get(phone_i)
-            && crate::core::validation::validate_phone_e164(ph).valid
+        if let Some(ph) = get(phone_i).and_then(crate::core::validation::to_e164_au)
             && seen.insert(format!("ph:{ph}"))
         {
-            push(Entity::new(EntityKind::Phone, ph, 0.62, sid), "breach");
+            push(Entity::new(EntityKind::Phone, &ph, 0.62, sid), "breach");
             stats.phones += 1;
         }
         if let Some(addr) = get(addr_i)

@@ -333,11 +333,10 @@ fn emit_dossier_entry(
         push(Entity::new(EntityKind::IpAddress, ip, 0.65, sid), "breach");
         stats.ips += 1;
     }
-    if let Some(ph) = get("phone")
-        && crate::core::validation::validate_phone_e164(ph).valid
+    if let Some(ph) = get("phone").and_then(crate::core::validation::to_e164_au)
         && seen.insert(format!("ph:{ph}"))
     {
-        push(Entity::new(EntityKind::Phone, ph, 0.62, sid), "breach");
+        push(Entity::new(EntityKind::Phone, &ph, 0.62, sid), "breach");
         stats.phones += 1;
     }
     // A dossier's `address` is the strongest associate-pivot seed there is: the

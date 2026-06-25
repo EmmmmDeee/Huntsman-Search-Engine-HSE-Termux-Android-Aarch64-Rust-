@@ -213,11 +213,10 @@ pub(super) fn parse_combined_search(body: &str, sid: &str) -> (Vec<Entity>, Impo
                 stats.ips += 1;
             }
         }
-        if let Some(ph) = get("phone")
-            && crate::core::validation::validate_phone_e164(ph).valid
+        if let Some(ph) = get("phone").and_then(crate::core::validation::to_e164_au)
             && seen.insert(format!("ph:{ph}"))
         {
-            push(Entity::new(EntityKind::Phone, ph, 0.62, sid), "breach");
+            push(Entity::new(EntityKind::Phone, &ph, 0.62, sid), "breach");
             stats.phones += 1;
         }
         if let Some(u) = get("url")
