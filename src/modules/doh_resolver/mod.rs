@@ -219,6 +219,10 @@ fn records_for_type(
                                     out.push(e);
                                 }
                             }
+                            // a: and mx: mechanism targets are domain pivots but
+                            // doh_resolver doesn't resolve them independently — the
+                            // spf module already handles them via its own DNS pass.
+                            crate::util::spf::Member::A(_) | crate::util::spf::Member::Mx(_) => {}
                         }
                     }
                 }

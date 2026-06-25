@@ -282,6 +282,7 @@ const RULES: &[RuleFn] = &[
     rule_au_058_professional_profile_geo,
     rule_au_059_cross_seed_geo_synergy,
     rule_au_061_family_geo_corroboration,
+    rule_au_078_cell_tower_dual_source,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
@@ -351,6 +352,8 @@ const RELATION_RULES: &[RelationRuleFn] = &[
     rule_au_069_high_integrity_connection,
     rule_au_070_connection_broker,
     rule_au_071_robust_identity_cluster,
+    rule_au_076_shared_registrant,
+    rule_au_077_shared_hosting_ip,
 ];
 
 /// Run every relation-aware rule over an already quarantine-filtered, confirmed

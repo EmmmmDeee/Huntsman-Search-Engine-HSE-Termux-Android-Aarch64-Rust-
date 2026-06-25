@@ -53,6 +53,20 @@ pub enum RelationKind {
     /// edge that collapses contextual variants of a seed into a single node for
     /// traversal. Symmetric; emitted smaller-UID → larger.
     SameAs,
+    /// `from` and `to` (both Domain entities) share the same operator — inferred
+    /// from a shared WHOIS registrant, shared dedicated IP, or shared web-analytics
+    /// ID (GA/GTM/pixel). The infrastructure-layer counterpart of
+    /// [`AssociatedWith`](RelationKind::AssociatedWith): where that links *people*
+    /// a document co-names, this links *domains* an operator co-controls. Symmetric;
+    /// emitted smaller-UID → larger.
+    SameOperator,
+    /// `from` (a [`Username`](crate::core::entity::EntityKind::Username)) is the
+    /// authenticated identity behind `to` (a [`Url`](crate::core::entity::EntityKind::Url)
+    /// that is a social-platform profile page). The edge that makes the identity hub
+    /// explicit in the graph: a Username entity and the profile URL whose embedded
+    /// handle matches it — case-insensitively, across every supported social platform.
+    /// Directed `Username → Url`.
+    SameIdentity,
 }
 
 impl RelationKind {
@@ -70,6 +84,8 @@ impl RelationKind {
             Self::LocatedAt => "located_at",
             Self::AssociatedWith => "associated_with",
             Self::SameAs => "same_as",
+            Self::SameOperator => "same_operator",
+            Self::SameIdentity => "same_identity",
         }
     }
 }

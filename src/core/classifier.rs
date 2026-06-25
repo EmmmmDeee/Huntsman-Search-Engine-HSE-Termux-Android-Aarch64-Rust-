@@ -127,6 +127,7 @@ fn score(tk: TargetKind) -> (f64, &'static str) {
         TargetKind::Phone => (0.80, "dialable-shape"),
         TargetKind::Domain => (0.75, "domain-shape"),
         TargetKind::DeviceId => (0.70, "cell-id-shape"),
+        TargetKind::TrackingId => (0.70, "tracker-shape"),
         // Free-text fallbacks — recognised by weak heuristics, ranked below the floor or
         // just at it so they are still classified but expand cautiously.
         TargetKind::Organisation => (0.60, "company-suffix"),
