@@ -20,6 +20,7 @@ pub(in crate::core::correlator) fn rule_au_011_cross_platform_username(
     const PLATFORM_SOURCES: &[&str] = &[
         "github_user",
         "gitlab_user",
+        "bitbucket_user",
         "codeberg_user",
         "reddit_user",
         "hacker_news",

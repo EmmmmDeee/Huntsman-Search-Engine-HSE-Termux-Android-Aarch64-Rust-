@@ -298,7 +298,7 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
     } else if has(&[
         "github",
         "gitlab",
-        "bitbucket",
+        "bitbucket", // Bitbucket Cloud (exact module: bitbucket_user)
         "sourceforge",
         "codeberg",
         "npm_author",
