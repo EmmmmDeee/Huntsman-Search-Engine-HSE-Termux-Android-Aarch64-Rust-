@@ -2,11 +2,11 @@ use super::client::{build_client, build_client_with_trace};
 use super::fetch::{
     JSON_BODY_CAP, is_keyed_error_status, key_tail, keyed_ok_or_404, retry_after_secs,
 };
-use crate::util::found_keys::{is_key_delimiter, key_tokens};
 use super::redact::{redact_credentials, redact_literal_secrets};
 use super::ssrf::{filter_public, redirect_to_private_ip};
 use super::url::json_decode;
 use super::url::{RequestBuilderExt, urlencode};
+use crate::util::found_keys::{is_key_delimiter, key_tokens};
 
 #[test]
 fn keyed_error_status_classification() {
@@ -418,7 +418,9 @@ fn key_scan_tokeniser_bounds_query_string_keys_cleanly() {
         "bare key must be its own token: {tokens:?}"
     );
     assert!(
-        !tokens.iter().any(|t: &&str| t.contains('&') || t.contains('?')),
+        !tokens
+            .iter()
+            .any(|t: &&str| t.contains('&') || t.contains('?')),
         "no token may carry query separators: {tokens:?}"
     );
     use crate::modules::oathnet_pro::key_harvest::identify_api_key;
