@@ -276,13 +276,12 @@ impl Module for IpQs {
         // For IP targets, emit Organisation and Asn as pivot entities — consistent
         // with shodan/abuseipdb/greynoise which extract the same provider context.
         if target.kind == TargetKind::IpAddress {
-            // Prefer organization over isp (more specific); fall back to isp.
-            let org_name = body
+            let org_lc = body
                 .organization
                 .as_deref()
-                .filter(|o| o.len() >= 2)
-                .or_else(|| body.isp.as_deref().filter(|i| i.len() >= 2));
-            if let Some(org) = org_name {
+                .map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| s.len() >= 2);
+            if let Some(org) = body.organization.as_deref().filter(|o| o.len() >= 2) {
                 let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, &ctx.scan_id);
                 oe.tag("ipqs");
                 oe.add_evidence(
@@ -290,6 +289,21 @@ impl Module for IpQs {
                         .with_attr("ip", value),
                 );
                 result.push(oe);
+            }
+            // ISP is a distinct pivot when it differs from org (e.g. the network
+            // provider vs the organisation that leases the block).
+            if let Some(isp) = body.isp.as_deref().filter(|i| i.len() >= 2) {
+                let isp_lc = isp.trim().to_ascii_lowercase();
+                if org_lc.as_deref() != Some(&isp_lc) {
+                    let mut ie = Entity::new(EntityKind::Organisation, isp, 0.60, &ctx.scan_id);
+                    ie.tag("ipqs");
+                    ie.tag("isp");
+                    ie.add_evidence(
+                        Evidence::new(SRC, format!("ISP for {value} via IPQS"))
+                            .with_attr("ip", value),
+                    );
+                    result.push(ie);
+                }
             }
             if let Some(asn_n) = body.asn.filter(|n| *n > 0) {
                 let asn_str = format!("AS{asn_n}");
@@ -299,6 +313,24 @@ impl Module for IpQs {
                     Evidence::new(SRC, format!("ASN for {value} via IPQS")).with_attr("ip", value),
                 );
                 result.push(ae);
+            }
+        }
+
+        // For phone targets, emit the carrier as an Organisation entity — the
+        // mobile network operator is a durable identity signal for burner-risk
+        // analysis (cross-referenced with sim_anonymity).
+        if target.kind == TargetKind::Phone
+            && let Some(carrier) = body.carrier.as_deref().filter(|c| c.len() >= 2)
+        {
+            {
+                let mut ce = Entity::new(EntityKind::Organisation, carrier, 0.60, &ctx.scan_id);
+                ce.tag("ipqs");
+                ce.tag("carrier");
+                ce.add_evidence(
+                    Evidence::new(SRC, format!("Phone carrier for {value} via IPQS"))
+                        .with_attr("phone", value),
+                );
+                result.push(ce);
             }
         }
 
