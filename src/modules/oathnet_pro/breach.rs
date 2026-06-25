@@ -376,6 +376,19 @@ pub(super) fn extract_breach_entities_with(
     if let Some(country) = val_str(item, "country")
         && seen.insert(format!("@country:{country}"))
     {
+        if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country) {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+            c.tag("addr-derived");
+            c.tag("geoint");
+            c.tag("breach");
+            c.tag("oathnet-pro");
+            if !is_target_row {
+                c.demote_to_candidate();
+            }
+            c.add_evidence(ev.clone());
+            result.push(c);
+        }
         push_oathnet_entity(
             result,
             Entity::new(EntityKind::Address, &country, 0.55, scan_id),
@@ -413,6 +426,19 @@ pub(super) fn extract_breach_entities_with(
         .collect::<Vec<&str>>()
         .join(", ");
         if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.55, scan_id);
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.tag("breach");
+                c.tag("oathnet-pro");
+                if !is_target_row {
+                    c.demote_to_candidate();
+                }
+                c.add_evidence(ev.clone());
+                result.push(c);
+            }
             push_oathnet_entity(
                 result,
                 Entity::new(EntityKind::Address, &addr, 0.65, scan_id),
@@ -430,6 +456,19 @@ pub(super) fn extract_breach_entities_with(
     if let Some(loc) = val_str(item, "location") {
         let loc = loc.trim();
         if loc.len() >= 4 && seen.insert(format!("@loc:{}", loc.to_lowercase())) {
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.30, scan_id);
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.tag("breach");
+                c.tag("oathnet-pro");
+                if !is_target_row {
+                    c.demote_to_candidate();
+                }
+                c.add_evidence(ev.clone());
+                result.push(c);
+            }
             push_oathnet_entity(
                 result,
                 Entity::new(EntityKind::Address, loc, 0.40, scan_id),

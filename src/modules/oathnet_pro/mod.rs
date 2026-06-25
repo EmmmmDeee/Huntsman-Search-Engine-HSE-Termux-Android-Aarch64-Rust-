@@ -118,6 +118,7 @@ impl Module for OathnetPro {
             EntityKind::Person,
             EntityKind::IpAddress,
             EntityKind::Address,
+            EntityKind::Coordinates,
             EntityKind::Url,
             EntityKind::Domain,
             EntityKind::Credential,
