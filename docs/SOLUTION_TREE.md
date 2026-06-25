@@ -503,10 +503,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   radius + auto-sync still open).
 - **C1/C2/C6/C7** — capability nodes; solutions sketched, none started (gated on
   the §3.F enablers landing first, by design).
-- **AU-060 (new, cycle 20 S→P gap):** `opencellid` emits `DeviceId` (tower MCC/MNC/
-  LAC/CID) and `cell_intel` also emits `DeviceId` for the same tower type — no
-  correlation rule cross-validates them. Candidate rule AU-060: medium-confidence
-  corroboration signal when both modules fire for the same tower. No solution node yet.
+- **AU-063 (cycle 20 S→P gap → delivered cycle 41, 2026-06-25):** `opencellid` and
+  `cell_intel` both confirm the same `mcc-mnc-lac-cid` tower via orthogonal methods
+  (live hardware sensor × crowdsourced database). **Closed** — AU-063
+  `rule_au_063_cell_tower_dual_source` added to `src/core/correlator/rules/geo.rs`
+  and wired into `RULES`. See §5 cycle 41.
 - **cell_local auto-sync (new, cycle 21 S→P gap):** `hse cells import` requires a
   manual trigger and a BYO OpenCelliD key; no auto-scheduled re-sync exists. A
   recurring `hse cells import --country world` cron/daemon path would keep the local
@@ -1702,3 +1703,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 - **2026-06-25** — **Cycle 40 (S→P): SOL-TRACKING-PIVOT-C delivered — social-profile URL priority boost in expansion heap.**
   S→P pass on cycle 37: the gap was explicit — "add a priority boost for `Url` entities tagged `social-profile` so they rank above generic domains." Delivered: `+15%` weight multiplier in `src/core/engine/mod.rs` expansion loop for `TargetKind::Url && entity.has_tag("social-profile")`. Added after the existing geo-corroboration bonus block so the two sub-dominant boosts compose cleanly. The fix ensures `web_crawler` is dispatched against confirmed social profile pages early in each expansion round rather than being pre-empted by generic domain/IP targets. **Gap refresh:** SOL-TRACKING-PIVOT-C is now delivered; the S→P gap for cycle 37 is closed. §4a gains no new items. Gate green: fmt/clippy/doc/test --locked all clean, 3216 lib tests, 0 failures.
+
+- **2026-06-25** — **Cycle 41 (P→S): AU-063 delivered — dual-source cell tower corroboration rule.**
+  P→S pass on cycle 20 S→P gap ("AU-060-candidate"): `opencellid` and `cell_intel` both emit `DeviceId` with the same `mcc-mnc-lac-cid` key; when both fire, the same tower is confirmed by live hardware observation (Termux telephony sensor) AND crowdsourced database lookup — two orthogonal, independent methods. AU-060 was already taken (transitive identity closure); next available ID was **AU-063**. Delivered: `rule_au_063_cell_tower_dual_source` in `src/core/correlator/rules/geo.rs`, wired into `RULES` in `mod.rs`. Severity: Low (1–2 corroborated towers) / Medium (≥3). 4 new tests in `src/core/correlator/tests.rs` (fires/not-fires/severity/non-cell guard). Doc updates: `docs/ARCHITECTURE_AUDIT.md` 62→63 rules, `README.md` 59→63 rules. **Gap refresh:** §4a AU-060/AU-063 gap closed (now "delivered cycle 41"). §4a gains no new items. Gate green: fmt/clippy/doc/test --locked all clean, 3220 lib tests, 0 failures.
+  Paired: `PROBLEM_TREE` — same commit.

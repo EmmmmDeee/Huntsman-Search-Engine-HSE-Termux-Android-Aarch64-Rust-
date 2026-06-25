@@ -13,7 +13,7 @@
 | Version / edition / MSRV | 1.4.0 · edition 2024 · 1.88 |
 | Source | ~137k LOC · 602 `.rs` files |
 | Modules | **118** registered — 89 Free · 24 KeyGated · 5 Paid · 14 categories |
-| Correlation rules | **62** deterministic (AU-001 … AU-062) |
+| Correlation rules | **63** deterministic (AU-001 … AU-063) |
 | Relation kinds | **9** — `SubdomainOf` · `BelongsToDomain` · `HostedOn` · `ResolvesTo` · `RegisteredBy` · `CoLocatedWith` · `DerivedFrom` · `SameOperator` (R13) · `SameIdentity` (R14) |
 | Tests | ~3,216 lib + API/integration + architecture guards |
 | Unsafe | **0** — `#![forbid(unsafe_code)]` (`src/lib.rs:22`) |

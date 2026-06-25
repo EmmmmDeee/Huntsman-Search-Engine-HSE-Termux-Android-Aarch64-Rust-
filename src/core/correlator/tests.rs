@@ -4219,3 +4219,58 @@ fn au062_no_fire_on_shared_hosting_fanout() {
         "8 distinct sites on one IP is shared hosting, not co-ownership: {r:?}"
     );
 }
+
+// ─── AU-063 tests ─────────────────────────────────────────────────────────────
+
+fn cell_tower(tower_id: &str, sources: &[&str]) -> Entity {
+    let mut e = Entity::new(EntityKind::DeviceId, tower_id, 0.78, "s");
+    e.tag("cell-tower");
+    for src in sources {
+        e.add_evidence(Evidence::new(*src, format!("tower {tower_id}")));
+    }
+    e
+}
+
+#[test]
+fn au063_fires_when_both_sources_present() {
+    use super::rules::rule_au_063_cell_tower_dual_source;
+    let ents = vec![cell_tower(
+        "505-1-1234-56789",
+        &["cell_intel", "opencellid"],
+    )];
+    let r = rule_au_063_cell_tower_dual_source(&ents, "s", 0);
+    assert_eq!(r.len(), 1, "dual-source cell tower must fire AU-063");
+    assert_eq!(r[0].rule_id, "AU-063");
+}
+
+#[test]
+fn au063_does_not_fire_on_single_source() {
+    use super::rules::rule_au_063_cell_tower_dual_source;
+    let ents = vec![cell_tower("505-1-1234-56789", &["cell_intel"])];
+    let r = rule_au_063_cell_tower_dual_source(&ents, "s", 0);
+    assert!(r.is_empty(), "single-source tower must not fire AU-063");
+}
+
+#[test]
+fn au063_medium_severity_for_three_or_more_towers() {
+    use super::rules::rule_au_063_cell_tower_dual_source;
+    let ents = vec![
+        cell_tower("505-1-1234-11111", &["cell_intel", "opencellid"]),
+        cell_tower("505-1-1234-22222", &["cell_intel", "opencellid"]),
+        cell_tower("505-1-1234-33333", &["cell_intel", "opencellid"]),
+    ];
+    let r = rule_au_063_cell_tower_dual_source(&ents, "s", 0);
+    assert_eq!(r.len(), 1, "three dual-source towers must fire one AU-063");
+    assert_eq!(r[0].severity, Severity::Medium);
+}
+
+#[test]
+fn au063_ignores_non_cell_tower_device_ids() {
+    use super::rules::rule_au_063_cell_tower_dual_source;
+    let mut e = Entity::new(EntityKind::DeviceId, "aa:bb:cc:dd:ee:ff", 0.8, "s");
+    e.add_evidence(Evidence::new("cell_intel", "mac addr"));
+    e.add_evidence(Evidence::new("opencellid", "mac addr"));
+    // No cell-tower tag → must not fire.
+    let r = rule_au_063_cell_tower_dual_source(&[e], "s", 0);
+    assert!(r.is_empty(), "non-cell-tower DeviceId must not fire AU-063");
+}

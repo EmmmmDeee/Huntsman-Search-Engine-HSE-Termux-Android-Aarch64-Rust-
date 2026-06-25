@@ -838,6 +838,63 @@ fn extract_ratemyagent_suburb(url: &str) -> Option<String> {
     }
 }
 
+/// AU-063 — Dual-source cell tower corroboration (live sensor × crowdsourced database).
+///
+/// Fires when one or more `DeviceId` entities tagged `cell-tower` are independently
+/// confirmed by both `cell_intel` (live Termux telephony sensor — hardware observation
+/// via `termux-telephony-cellinfo`) and `opencellid` (crowdsourced tower database —
+/// OpenCelliD API). Two orthogonal sources agreeing on the same `mcc-mnc-lac-cid`
+/// key upgrades the tower from a single-source report to a cross-validated sighting:
+/// the radio signal was physically detected AND the database independently records it.
+///
+/// Severity scales with corroborated tower count: Low for 1–2 towers (data-quality
+/// upgrade), Medium for ≥3 (a multi-tower radio environment narrows the subject's
+/// position to within a cell footprint). The Coordinates entities spawned by these
+/// towers are the primary geoint leads; this rule surfaces the corroboration quality.
+pub(in crate::core::correlator) fn rule_au_063_cell_tower_dual_source(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let corroborated: Vec<&Entity> = entities_of_kind(entities, EntityKind::DeviceId)
+        .into_iter()
+        .filter(|e| {
+            if !e.has_tag("cell-tower") {
+                return false;
+            }
+            let sources = e.evidence_sources();
+            sources.contains("cell_intel") && sources.contains("opencellid")
+        })
+        .collect();
+
+    if corroborated.is_empty() {
+        return Vec::new();
+    }
+
+    let severity = if corroborated.len() >= 3 {
+        Severity::Medium
+    } else {
+        Severity::Low
+    };
+    let mut uids: Vec<String> = corroborated.iter().map(|e| e.uid.clone()).collect();
+    uids.sort_unstable();
+    uids.dedup();
+
+    vec![Correlation::new(
+        "AU-063",
+        "Dual-source cell tower corroboration",
+        severity,
+        format!(
+            "{} cell tower(s) independently confirmed by live telephony sensor (cell_intel) \
+             and crowdsourced database (opencellid) — MITRE T1592 (Gather Victim Host Information)",
+            corroborated.len(),
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
