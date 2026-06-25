@@ -151,8 +151,13 @@ pub fn reset_found_keys(scan_id: &str) {
 /// import. Every entry is a recognised vendor key (the sink uses the
 /// vendor-only identifier), so all are high-confidence.
 pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
-    crate::util::found_keys::drain(scan_id)
-        .into_iter()
+    let found = crate::util::found_keys::drain(scan_id);
+    // Persist every discovered key to the cross-scan permanent vault BEFORE
+    // mapping to entities, so a vault write failure (disk full, permissions)
+    // never prevents entities from being emitted. Crypto wallet addresses are
+    // included — the vault stores everything with full provenance.
+    crate::util::key_vault::persist_batch(&found, scan_id);
+    found.into_iter()
         .map(|fk| {
             // A crypto wallet address is identified alongside keys (both are
             // high-entropy tokens) but is a distinct artifact — emit it as a
