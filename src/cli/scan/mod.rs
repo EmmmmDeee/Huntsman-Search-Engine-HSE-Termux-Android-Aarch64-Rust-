@@ -261,6 +261,29 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             .saturating_mul(1000);
         let diag =
             crate::util::diagnostics::analyse(&sid, kind_str, &cmd.value, wall_ms, &entities);
+
+        // Per-module skip reasons — derived from the event log so the operator
+        // can diagnose "why was oathnet_pro in modules_skipped?" without
+        // needing --log-level debug. Grouped as { module: { reason: count } }
+        // using BTreeMap for stable JSON key order.
+        let module_skip_reasons: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeMap<String, usize>,
+        > = {
+            use crate::core::event::EventKind;
+            let events = store.events_for_scan(&sid).unwrap_or_default();
+            let mut acc: std::collections::BTreeMap<
+                String,
+                std::collections::BTreeMap<String, usize>,
+            > = std::collections::BTreeMap::new();
+            for ev in events {
+                if let EventKind::ModuleSkipped { module, reason } = ev.kind {
+                    *acc.entry(module).or_default().entry(reason).or_insert(0) += 1;
+                }
+            }
+            acc
+        };
+
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -270,6 +293,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
                 "relations": relations,
                 "diagnostics": diag,
                 "attack_reconnaissance": attack_cov,
+                "module_skip_reasons": module_skip_reasons,
             }))?
         );
     } else if cmd.output == "dossier" {
