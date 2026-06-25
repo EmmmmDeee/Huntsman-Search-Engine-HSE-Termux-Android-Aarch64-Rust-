@@ -120,6 +120,7 @@ impl Module for OathnetPro {
             EntityKind::Address,
             EntityKind::Url,
             EntityKind::Domain,
+            EntityKind::Credential,
         ];
         KINDS
     }
