@@ -108,14 +108,12 @@ impl Module for Shodan {
         &["T1590.005", "T1591.001", "T1591.002", "T1596.005"]
     }
     fn produces(&self) -> &'static [EntityKind] {
-        // Free + paid Shodan paths emit IP host context: domains, URLs,
-        // ASN labels, plus the dominant ISP/org as Organisation and
-        // the host's country as Address. The Organisation + Address
-        // emissions were previously undeclared, making the module
-        // graph under-report Shodan's downstream pivot value.
+        // Free + paid Shodan paths emit IP host context: domains (PTR/SAN
+        // hostnames), ASN labels, plus the dominant ISP/org as Organisation
+        // and the host's country as Address. Neither endpoint returns a URL
+        // field, so Url is not listed.
         const KINDS: &[EntityKind] = &[
             EntityKind::Domain,
-            EntityKind::Url,
             EntityKind::Asn,
             EntityKind::Organisation,
             EntityKind::Address,
