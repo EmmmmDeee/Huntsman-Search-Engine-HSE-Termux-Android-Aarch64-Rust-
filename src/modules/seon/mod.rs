@@ -79,7 +79,14 @@ impl Module for Seon {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Person, EntityKind::Url];
+        // Always re-emits the seed (Email or Phone) enriched with SEON signal,
+        // plus Person (name from email path) and Url (social platform profiles).
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Email,
+            EntityKind::Phone,
+            EntityKind::Person,
+            EntityKind::Url,
+        ];
         KINDS
     }
 
