@@ -27,6 +27,7 @@ pub mod cert_intel;
 pub mod chain_intel;
 pub mod cloud_storage;
 pub mod codeberg_user;
+pub mod codewars_user;
 pub mod contact_enrich;
 pub mod crates_io;
 pub mod criminal_ip;
@@ -321,6 +322,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(mastodon_user::MastodonUser),
         Arc::new(gitlab_user::GitlabUser),
         Arc::new(codeberg_user::CodebergUser),
+        Arc::new(codewars_user::CodewarsUser),
         Arc::new(huggingface_user::HuggingfaceUser),
         Arc::new(dockerhub_user::DockerhubUser),
         Arc::new(hexpm_user::HexpmUser),

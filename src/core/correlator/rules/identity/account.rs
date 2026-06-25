@@ -33,6 +33,7 @@ pub(in crate::core::correlator) fn rule_au_011_cross_platform_username(
         "huggingface_user",
         "dockerhub_user",
         "hexpm_user",
+        "codewars_user",
         "crates_io",
         "npm_author",
     ];
