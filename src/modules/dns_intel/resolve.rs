@@ -122,8 +122,16 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
         e.add_evidence(ev);
         entities.push(e);
 
-        // Emit the admin contact as a discrete Email entity when present.
-        if admin_email.contains('@') {
+        // Emit the admin contact as a discrete Email entity when present — but
+        // NOT when it's a role/provider mailbox (`hostmaster@`, `dns@`, an
+        // infra-domain desk). The SOA RNAME is the zone's administrative contact,
+        // never the subject's PII; a live domain-heavy scan surfaced dozens of
+        // these (`dns@jomax.net`, `abuse@cloudflare.com`) treated as the person
+        // and identity-clustered. Mirrors the whois/ripestat/search_engines gate;
+        // a genuine personal admin (a real local-part on a non-infra domain) is
+        // still kept.
+        if admin_email.contains('@') && !crate::util::domains::is_infrastructure_email(&admin_email)
+        {
             let mut em = Entity::new(EntityKind::Email, &admin_email, 0.70, &ctx.scan_id);
             em.tag("dns-admin");
             em.add_evidence(
@@ -157,6 +165,32 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                 let b = t.as_bytes();
                 if crate::util::spf::is_spf(t) {
                     dom.tag("spf");
+                    // Static SPF security analysis: tag the catch-all posture and
+                    // every misconfiguration (open `+all`, >10 DNS lookups,
+                    // deprecated `ptr`, macros, unreachable mechanisms, …) so a
+                    // weak or broken sender policy surfaces as a queryable signal.
+                    if let Some(spf) = crate::util::spf::parse(t) {
+                        dom.tag(spf.all_policy().tag());
+                        let issues = spf.issues();
+                        for issue in &issues {
+                            dom.tag(issue.tag());
+                        }
+                        if !issues.is_empty() {
+                            let flags = issues
+                                .iter()
+                                .map(crate::util::spf::SpfIssue::tag)
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            dom.add_evidence(Evidence::new(
+                                SRC,
+                                format!(
+                                    "SPF posture {} — {} DNS-lookup term(s); flags: {flags}",
+                                    spf.all_policy().tag(),
+                                    spf.dns_lookup_count(),
+                                ),
+                            ));
+                        }
+                    }
                     for member in crate::util::spf::members(t) {
                         match member {
                             crate::util::spf::Member::Ip(ip) => {

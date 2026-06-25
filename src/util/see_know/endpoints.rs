@@ -184,7 +184,8 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
 
 pub(super) fn extract_items(v: &Value) -> Vec<Value> {
     // SeekNow returns one of: { data: { items: [...] } }, { results: [...] },
-    // { data: {...} } (single object), or a top-level array.
+    // { data: {...} } (single object), a top-level array, or — for the stealer
+    // endpoint — { results: 0, victims: [ { log_id, credentials: [...] } ] }.
     if let Some(arr) = v.as_array() {
         return arr.clone();
     }
@@ -194,6 +195,14 @@ pub(super) fn extract_items(v: &Value) -> Vec<Value> {
     if let Some(results) = v.pointer("/results").and_then(|v| v.as_array()) {
         return results.clone();
     }
+    // Stealer-log shape. The scalar `results` count is routinely `0` even when
+    // `victims` carries data (so the array branch above falls through), and the
+    // leaked credentials are nested a level down — `victims[].credentials[]`.
+    // Reading only the flat shapes dropped 100% of stealer credentials. Flatten
+    // them into standalone items so the extractor sees each leaked login.
+    if let Some(victims) = v.pointer("/victims").and_then(|v| v.as_array()) {
+        return flatten_victims(victims);
+    }
     if let Some(data) = v.pointer("/data") {
         // Single-object data — wrap in a one-element vec for uniform handling.
         if data.is_object() {
@@ -201,6 +210,46 @@ pub(super) fn extract_items(v: &Value) -> Vec<Value> {
         }
     }
     Vec::new()
+}
+
+/// Flatten SeekNow's stealer `victims[].credentials[]` nesting into standalone
+/// credential items.
+///
+/// Each victim is one infected host (one stealer log). Its scalar context
+/// (`log_id`, any host/system/`ip` fields) is inherited by every credential it
+/// leaked, so the flattened item carries both the login (`username`/`password`)
+/// and the host provenance — and the existing field extractor handles it
+/// unchanged. A victim with no `credentials` array still surfaces as one item
+/// so host-level intel is never lost. Nested non-credential structures are not
+/// inherited (the extractor reads scalar fields).
+fn flatten_victims(victims: &[Value]) -> Vec<Value> {
+    let mut items = Vec::new();
+    for victim in victims {
+        let Some(vobj) = victim.as_object() else {
+            continue;
+        };
+        let base: serde_json::Map<String, Value> = vobj
+            .iter()
+            .filter(|(k, val)| k.as_str() != "credentials" && (val.is_string() || val.is_number()))
+            .map(|(k, val)| (k.clone(), val.clone()))
+            .collect();
+        match vobj.get("credentials").and_then(|c| c.as_array()) {
+            Some(creds) if !creds.is_empty() => {
+                for cred in creds {
+                    let mut item = base.clone();
+                    if let Some(cobj) = cred.as_object() {
+                        for (k, val) in cobj {
+                            item.insert(k.clone(), val.clone());
+                        }
+                    }
+                    items.push(Value::Object(item));
+                }
+            }
+            // A victim with no credentials still carries host-level intelligence.
+            _ => items.push(Value::Object(base)),
+        }
+    }
+    items
 }
 
 pub(super) fn escape_json(s: &str) -> String {

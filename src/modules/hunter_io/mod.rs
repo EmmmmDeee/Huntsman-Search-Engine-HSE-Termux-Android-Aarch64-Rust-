@@ -183,10 +183,7 @@ impl Module for HunterIo {
             return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
-        let wrap: Wrap = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
+        let wrap: Wrap = crate::util::http::json_decode(SRC, resp).await?;
         // HTTP-200-with-errors array: Hunter signals quota / scope /
         // plan problems out-of-band of the HTTP status. Mark the
         // key exhausted instead of silently returning empty.

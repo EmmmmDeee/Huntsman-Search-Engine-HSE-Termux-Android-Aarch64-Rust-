@@ -92,7 +92,7 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
         // alongside Null Island / out-of-range / non-finite it also emits a
         // sub-degree jitter band around (0,0) as its "no fix" placeholder.
         // Gate on the same is_plausible_provider_coord the other IP/WiFi-geo
-        // sources use (ip_geo/ipinfo/ipapi/ip2location/ipquery/wigle) so a
+        // sources use (ip_geo/ipinfo/ip2location/ipquery/wigle) so a
         // 0.005,0.005 placeholder can't become a high-confidence false fix
         // that poisons the geo-cluster correlator.
         if !is_plausible_provider_coord(lat, lon) {
@@ -209,9 +209,8 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
         && let Some(asn) = conn.asn_num
     {
         let asn_str = format!("AS{asn}");
-        let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, scan_id);
+        let mut ae = crate::util::geo::ip_asn_entity(&asn_str, SRC, ip, scan_id);
         ae.tag("ip-whois");
-        ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
         result.push(ae);
     }
 

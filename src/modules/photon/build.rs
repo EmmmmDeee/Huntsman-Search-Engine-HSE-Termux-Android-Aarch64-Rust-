@@ -66,10 +66,7 @@ pub(super) fn build_forward(addr: &str, feature: &Feature, scan_id: &str) -> Opt
         }
         ev = osm_attrs(ev, &mut e, props);
     }
-    if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
-        e.tag(format!("au-state:{state}"));
-        e.tag("country:AU");
-    }
+    crate::util::geo::tag_au_state(&mut e, lat, lon);
     e.add_evidence(ev);
     Some(e)
 }
@@ -118,10 +115,7 @@ pub(super) fn build_reverse(lat: f64, lon: f64, props: &Props, scan_id: &str) ->
         ev = ev.with_attr("postcode", p);
     }
     ev = osm_attrs(ev, &mut ae, props);
-    if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
-        ae.tag(format!("au-state:{state}"));
-        ae.tag("country:AU");
-    }
+    crate::util::geo::tag_au_state(&mut ae, lat, lon);
     ae.add_evidence(ev);
     Some(ae)
 }

@@ -95,8 +95,8 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
             // "Jerome Despal, Nundah, Queensland" → "Nundah"
             // "lives in Houston, Texas" → "Houston"
             let pre_comma = before.trim_end_matches(',').trim();
-            let last_segment = match pre_comma.rfind(',') {
-                Some(i) => pre_comma[i + 1..].trim(),
+            let (last_segment, from_comma) = match pre_comma.rfind(',') {
+                Some(i) => (pre_comma[i + 1..].trim(), true),
                 None => {
                     let words: Vec<&str> = pre_comma.split_whitespace().collect();
                     let mut n = 0;
@@ -111,10 +111,35 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
                         continue;
                     }
                     let start_idx = words.len() - n;
-                    &pre_comma[pre_comma.find(words[start_idx]).unwrap_or(0)..]
+                    (
+                        &pre_comma[pre_comma.find(words[start_idx]).unwrap_or(0)..],
+                        false,
+                    )
                 }
             };
-            let city = last_segment.trim();
+            let mut city = last_segment.trim();
+            // Cross-address state bleed (comma path only): a run-on listing two
+            // places — "Los Angeles, California Dallas, Texas" — makes `rfind`
+            // grab "California Dallas" as the city for "Texas", because the
+            // leading "California" is really the STATE of the preceding
+            // "Los Angeles, California". When the city begins with a state name
+            // that DIFFERS from this address's own state, strip that bled-over
+            // token to recover the true city ("Dallas"). The differ-from-`state`
+            // guard keeps genuine state-named cities intact — "Virginia Beach,
+            // Virginia" and "Oklahoma City, Oklahoma" match their own state, so
+            // nothing is stripped — and the comma-path restriction leaves
+            // word-path cities like "Kansas City, Missouri" untouched.
+            if from_comma {
+                for bled in STATES {
+                    if !bled.eq_ignore_ascii_case(state)
+                        && let Some(rest) = city.strip_prefix(bled)
+                        && let Some(stripped) = rest.strip_prefix(' ')
+                    {
+                        city = stripped.trim_start();
+                        break;
+                    }
+                }
+            }
             if city.len() < 2
                 || city.len() > 40
                 || !city.starts_with(|c: char| c.is_ascii_uppercase())
@@ -277,31 +302,41 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
             }
             let before: String = lower[before_start..pos].chars().collect();
             let combined = format!("{before} {context}");
+            // Whole-word state detection. The window is free prose, so a bare
+            // substring scan mis-reads ordinary words as a state abbreviation
+            // ("ser{vic}e" → VIC, "{act}ed" → ACT, "fan{tas}tic" → TAS), fabricating
+            // a wrong jurisdiction that then feeds the AU-056 cross-check and
+            // geo-divergence logic. Match the 2–3 letter abbreviations as whole
+            // tokens — mirroring `address_au::locality_key`, which never substrings a
+            // state — while the unambiguous full names stay a plain `contains`.
+            let toks: std::collections::HashSet<&str> = combined
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|t| !t.is_empty())
+                .collect();
+            let has_tok = |t: &str| toks.contains(t);
             if combined.contains("australia")
-                || combined.contains("qld")
-                || combined.contains("nsw")
-                || combined.contains("vic")
+                || has_tok("qld")
+                || has_tok("nsw")
+                || has_tok("vic")
                 || combined.contains("queensland")
                 || combined.contains("new south wales")
                 || combined.contains("victoria")
             {
-                let state_tag = if combined.contains("qld") || combined.contains("queensland") {
+                let state_tag = if has_tok("qld") || combined.contains("queensland") {
                     "QLD"
-                } else if combined.contains("nsw") || combined.contains("new south wales") {
+                } else if has_tok("nsw") || combined.contains("new south wales") {
                     "NSW"
-                } else if combined.contains("vic") || combined.contains("victoria") {
+                } else if has_tok("vic") || combined.contains("victoria") {
                     "VIC"
-                } else if combined.contains(" wa ") || combined.contains("western australia") {
+                } else if has_tok("wa") || combined.contains("western australia") {
                     "WA"
-                } else if combined.contains(" sa ") || combined.contains("south australia") {
+                } else if has_tok("sa") || combined.contains("south australia") {
                     "SA"
-                } else if combined.contains("tas") || combined.contains("tasmania") {
+                } else if has_tok("tas") || combined.contains("tasmania") {
                     "TAS"
-                } else if combined.contains(" nt ") || combined.contains("northern territory") {
+                } else if has_tok("nt") || combined.contains("northern territory") {
                     "NT"
-                } else if combined.contains("act")
-                    || combined.contains("australian capital territory")
-                {
+                } else if has_tok("act") || combined.contains("australian capital territory") {
                     "ACT"
                 } else {
                     "Australia"
@@ -542,122 +577,37 @@ pub(in crate::modules::search_engines) fn extract_organisations_from_text(
 }
 
 pub(in crate::modules::search_engines) fn extract_emails_from_text(text: &str) -> Vec<String> {
-    let mut emails = Vec::new();
-    let bytes = text.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-    while i < len {
-        if bytes[i] != b'@' || i == 0 || i + 1 >= len {
-            i += 1;
-            continue;
-        }
-        if !is_email_local_char(bytes[i - 1]) || !bytes[i + 1].is_ascii_alphanumeric() {
-            i += 1;
-            continue;
-        }
-        let mut local_start = i;
-        while local_start > 0 && is_email_local_char(bytes[local_start - 1]) {
-            local_start -= 1;
-        }
-        let mut domain_end = i + 1;
-        while domain_end < len && is_domain_char(bytes[domain_end]) {
-            domain_end += 1;
-        }
-        while domain_end > i + 1 && bytes[domain_end - 1] == b'.' {
-            domain_end -= 1;
-        }
-        let domain = &text[i + 1..domain_end];
-        // A local-part that contains a web-script/page extension (`viewtopic.php`,
-        // `index.html`) is not a mailbox — the `@` was glued to a forum/CMS URL
-        // fragment during HTML stripping (a real scan produced the bogus
-        // `viewtopic.phprose.cl@onet.eu`). Reject these outright.
-        let local_lower = text[local_start..i].to_lowercase();
-        const SCRIPT_EXT: &[&str] = &[
-            ".php", ".html", ".htm", ".asp", ".aspx", ".jsp", ".cgi", ".cfm", ".phtml",
-        ];
-        if SCRIPT_EXT.iter().any(|ext| local_lower.contains(ext)) {
-            i = domain_end;
-            continue;
-        }
-        if domain.contains('.') && domain.len() > 3 && (domain_end - local_start) <= 254 {
-            let email = text[local_start..domain_end].to_lowercase();
-            if !email.ends_with(".png")
-                && !email.ends_with(".jpg")
-                && !email.ends_with(".gif")
-                && !email.ends_with(".css")
-                && !email.ends_with(".svg")
-                && !email.ends_with(".webp")
-                && !email.ends_with(".ico")
-                && !email.ends_with(".woff")
-                && !email.ends_with(".woff2")
-                && !email.contains("@2x.")
-                && !email.contains("@3x.")
-            {
-                emails.push(email);
-                // Raised from 50 → 500: a single results page can legitimately
-                // list many mailboxes (staff directories, breach dumps). When the
-                // ceiling is actually reached, warn so the logs reveal that some
-                // addresses were dropped rather than silently losing them.
-                if emails.len() >= 500 {
-                    tracing::warn!(
-                        target: "hse::parser",
-                        cap = 500,
-                        text_len = text.len(),
-                        "extract_emails_from_text hit cap — additional mailboxes in this text were not extracted"
-                    );
-                    break;
-                }
-            }
-        }
-        i = domain_end;
+    // Canonical mining lives in `util::extract::page_emails` (deduped, asset- and
+    // web-script-fragment-filtered — the `viewtopic.php…@…` guard now lives there
+    // and so also protects au_people). This wrapper keeps the search-context cap so
+    // a pathological results page can't mint an unbounded mailbox list, warning
+    // when it bites so dropped addresses stay visible in the logs.
+    let mut emails = crate::util::extract::page_emails(text);
+    if emails.len() > 500 {
+        tracing::warn!(
+            target: "hse::parser",
+            cap = 500,
+            text_len = text.len(),
+            "extract_emails_from_text hit cap — additional mailboxes in this text were not extracted"
+        );
+        emails.truncate(500);
     }
     emails
 }
 
 pub(in crate::modules::search_engines) fn extract_phones_from_text(text: &str) -> Vec<String> {
-    let mut phones = Vec::new();
-    // Raised from 30 → 300; warn on the ceiling so dropped numbers are visible
-    // in the logs rather than silently discarded.
-    let truncated = crate::util::phone::scan_phones(text, 300, |p| phones.push(p));
-    if truncated {
+    // Canonical mining lives in `util::extract::phones` (deduped, with the E.164
+    // country-digit gate that rejects `+0…`). This wrapper keeps the search-context
+    // cap + warning.
+    let mut phones = crate::util::extract::phones(text);
+    if phones.len() > 300 {
         tracing::warn!(
             target: "hse::parser",
             cap = 300,
             text_len = text.len(),
             "extract_phones_from_text hit cap — additional numbers in this text were not extracted"
         );
+        phones.truncate(300);
     }
     phones
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extract_phones_rejects_leading_zero_cc() {
-        // F2.3: country-code gate must reject +0... upfront, consistent with
-        // crawl_util and validate_phone_e164. Pre-fix this accepted +0123456789
-        // because is_ascii_digit() passes '0'; post-fix matches!(b'1'..=b'9').
-        let phones = extract_phones_from_text("call +0123456789 or +16502530000");
-        assert!(
-            !phones.iter().any(|p| p.starts_with("+0")),
-            "+0... must be rejected at extraction gate: {phones:?}"
-        );
-        assert!(
-            phones.iter().any(|p| p.starts_with("+1650")),
-            "valid US number must still be extracted: {phones:?}"
-        );
-    }
-
-    #[test]
-    fn extract_phones_is_utf8_safe() {
-        // F3.5: byte scan then string slice must not panic on multibyte input.
-        let input = "日本語 François +14155552671 résumé 𝔘";
-        let phones = extract_phones_from_text(input);
-        assert!(
-            phones.iter().any(|p| p == "+14155552671"),
-            "ASCII phone in multibyte text must be extracted: {phones:?}"
-        );
-    }
 }

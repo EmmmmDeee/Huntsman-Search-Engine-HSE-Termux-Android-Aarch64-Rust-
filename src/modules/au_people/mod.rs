@@ -18,15 +18,24 @@
 //!   * Phone number: 0.50 (listed, unverified)
 //!   * Name variant confirmation: 0.60 (exact match in directory)
 //!
-//! Orthogonal to `qld_unclaimed` and `abn_lookup` — those mine business/govt
+//! Orthogonal to `au_unclaimed` and `abn_lookup` — those mine business/govt
 //! registers; this mines residential directories. Together they triangulate
 //! physical location from three independent source classes (TA0043 technique
 //! diversity principle).
+//!
+//! It also extracts the **relatives / associates** these directories list
+//! ([`parse_relatives`]) as Person entities bound to the subject by `related_to`
+//! — a second, independent FAMILY angle alongside the government registers, so
+//! the relation layer forms a *reliable* family link (two sources, plus surname
+//! kinship) rather than a single-source candidate.
 
 #[cfg(test)]
 mod tests;
 
+use std::sync::LazyLock;
+
 use async_trait::async_trait;
+use regex::Regex;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -56,6 +65,76 @@ pub(super) fn split_name(full: &str) -> (&str, &str) {
 /// Extract au-state tag from suburb/state text. Pure.
 pub(super) fn state_tag_from_text(text: &str) -> Option<String> {
     crate::util::address_au::state_code(text).map(|s| format!("au-state:{s}"))
+}
+
+/// Isolate the canonical `Suburb, STATE POSTCODE` locality from a noisy
+/// directory window. **Pure.**
+///
+/// The White Pages parser grabs a ±60-char byte window around each postcode,
+/// which captures page chrome adjacent to the address — breadcrumb labels
+/// ("Australian Suburbs"), section headings, "profile"/"results" boilerplate.
+/// Emitting the raw window as the Address value produced malformed entities
+/// like `"Australian SuburbsWoronora, NSW 2232"` (observed live: it then became
+/// a re-scan seed, wasting classifier/search/geocode dispatches on garbage).
+///
+/// This keeps only the 1-3 capitalised words immediately before the
+/// `STATE POSTCODE` tail and drops a leading directory-chrome stop-word so a
+/// genuine multi-word suburb ("Gold Coast", "St Kilda") survives while
+/// "Australian Suburbs Woronora" collapses to "Woronora". Returns `None` when
+/// the window holds no recognisable `Suburb STATE POSTCODE` shape.
+pub(super) fn clean_au_locality(window: &str) -> Option<String> {
+    static LOCALITY_RE: LazyLock<Regex> = LazyLock::new(|| {
+        // 1-3 capitalised words, optional comma, AU state, 4-digit postcode.
+        Regex::new(
+            r"([A-Z][A-Za-z'.\-]+(?:\s+[A-Z][A-Za-z'.\-]+){0,2}),?\s+(NSW|VIC|QLD|SA|WA|TAS|NT|ACT)\s+(\d{4})\b",
+        )
+        .expect("constant AU locality regex")
+    });
+    // Words that head page chrome but never a real AU suburb — stripped from the
+    // front of the captured suburb run (data-driven from live scan artifacts).
+    const CHROME_WORDS: &[&str] = &[
+        "Australian",
+        "Suburbs",
+        "Suburb",
+        "Profile",
+        "Profiles",
+        "Results",
+        "Result",
+        "Search",
+        "Background",
+        "View",
+        "Address",
+        "Addresses",
+        "Location",
+        "Locations",
+        "Home",
+        "Find",
+        "People",
+        "Name",
+        "Names",
+        "Phone",
+    ];
+    // The window can hold several matches (e.g. a breadcrumb postcode then the
+    // result's own); the LAST is the one adjacent to the postcode we scanned.
+    let caps = LOCALITY_RE.captures_iter(window).last()?;
+    let suburb_raw = caps.get(1)?.as_str();
+    let state = caps.get(2)?.as_str();
+    let postcode = caps.get(3)?.as_str();
+
+    // Drop leading chrome words; keep the trailing real suburb tokens.
+    let mut words: Vec<&str> = suburb_raw.split_whitespace().collect();
+    while words.len() > 1 && CHROME_WORDS.contains(&words[0]) {
+        words.remove(0);
+    }
+    // A suburb that is ONLY a chrome word is not a real locality.
+    if words.len() == 1 && CHROME_WORDS.contains(&words[0]) {
+        return None;
+    }
+    let suburb = words.join(" ");
+    if suburb.is_empty() {
+        return None;
+    }
+    Some(format!("{suburb}, {state} {postcode}"))
 }
 
 /// Parse White Pages AU result HTML for address/phone/name entries.
@@ -146,14 +225,20 @@ pub(super) fn parse_whitepages_html(html: &str, full_name: &str, scan_id: &str) 
                 // Strip HTML tags from context.
                 let stripped = strip_html(context);
                 let trimmed = stripped.trim().replace("  ", " ");
-                if !trimmed.is_empty()
-                    && trimmed.len() > 5
-                    && !seen_addresses.insert(trimmed.clone())
-                {
+                // Isolate the canonical `Suburb, STATE POSTCODE` locality from the
+                // noisy window — the raw window carries page chrome adjacent to the
+                // postcode (breadcrumb labels, headings) that must not become part
+                // of the Address value. Skip the postcode entirely if no clean
+                // locality is recoverable.
+                let Some(locality) = clean_au_locality(&trimmed) else {
+                    i += 4;
+                    continue;
+                };
+                if !seen_addresses.insert(locality.clone()) {
                     i += 4;
                     continue;
                 }
-                if !trimmed.is_empty() && trimmed.len() > 5 {
+                {
                     // Does the seed name appear in the HTML up to just past the
                     // postcode? `i + 64` is a byte offset into untrusted HTML, so
                     // clamp it to a char boundary (raw `html[..i+64]` panics on
@@ -168,12 +253,12 @@ pub(super) fn parse_whitepages_html(html: &str, full_name: &str, scan_id: &str) 
                     } else {
                         0.42
                     };
-                    let mut ae = Entity::new(EntityKind::Address, &trimmed, addr_conf, scan_id);
+                    let mut ae = Entity::new(EntityKind::Address, &locality, addr_conf, scan_id);
                     ae.tag(SRC);
                     ae.tag("au-directory");
                     ae.tag("whitepages");
                     ae.tag("country:AU");
-                    if let Some(st) = state_tag_from_text(&trimmed) {
+                    if let Some(st) = state_tag_from_text(&locality) {
                         ae.tag(st);
                     }
                     ae.add_evidence(
@@ -182,6 +267,7 @@ pub(super) fn parse_whitepages_html(html: &str, full_name: &str, scan_id: &str) 
                             format!("White Pages AU address context for {full_name}"),
                         )
                         .with_attr("postcode", postcode)
+                        // Preserve the raw window for provenance/audit.
                         .with_attr("context", &trimmed),
                     );
                     out.push(ae);
@@ -269,6 +355,148 @@ pub(super) fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<
     out
 }
 
+/// Relationship-section markers AU people-search pages use to list a person's
+/// relatives and associates (True People Search AU; "people you may know"). The
+/// names that follow are the family/associate angle this module adds.
+static RELATIVES_SECTION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?is)(?:possible relatives|relatives|possible associates|known associates|associates|related to|lives with|household members?|also known as)\b(.{0,300})",
+    )
+    .expect("constant relatives-section regex")
+});
+
+/// Extract the relatives/associates a people-search page lists as Person
+/// entities bound to the subject by a `related_to` attribute (so the relation
+/// layer links them, and surname kinship corroborates).
+///
+/// Deliberately CONSERVATIVE for reliability: within a relationship section it
+/// keeps only well-formed capitalised name runs **ending in the subject's
+/// surname** — the family the operator is after — which also rejects the page
+/// chrome ("View Profile", "Background Check", suburb names). Each is emitted
+/// below the 0.50 expansion floor (0.45) so a relative is recorded and linked
+/// but never auto-pivoted into its own sub-scan. Pure.
+pub(super) fn parse_relatives(html: &str, full_name: &str, scan_id: &str) -> Vec<Entity> {
+    let text = strip_html(html);
+    let full = full_name.trim();
+    let surname_lc = match full.rsplit(' ').next() {
+        Some(s) if s.chars().filter(|c| c.is_alphabetic()).count() >= 2 => s.to_lowercase(),
+        _ => return Vec::new(),
+    };
+    let subject_lc = full.to_lowercase();
+    // Capitalised page chrome that sits adjacent to names on people-search
+    // results and would otherwise be mis-read as a given name ("View **Profile**
+    // Helene Moreau"). A given-name token must not be one of these.
+    const CHROME: &[&str] = &[
+        "view",
+        "profile",
+        "background",
+        "check",
+        "search",
+        "report",
+        "address",
+        "phone",
+        "age",
+        "record",
+        "records",
+        "details",
+        "more",
+        "see",
+        "full",
+        "results",
+        "result",
+        "public",
+        "people",
+        "find",
+        "lookup",
+        "contact",
+        "email",
+        "relatives",
+        "associates",
+        "possible",
+        "known",
+        "related",
+        "lives",
+        "household",
+        "also",
+        "aka",
+        "name",
+        "names",
+        "mobile",
+        "landline",
+        "current",
+        "former",
+        "city",
+        "state",
+        "suburb",
+        "this",
+        "person",
+        "and",
+        "the",
+        "with",
+    ];
+    let strip_punct = |w: &str| w.trim_matches(|c: char| !c.is_alphabetic()).to_lowercase();
+    let is_name_token = |t: &str| {
+        let tl = strip_punct(t);
+        t.chars().next().is_some_and(char::is_uppercase)
+            && t.len() <= 20
+            && t.chars()
+                .all(|c| c.is_alphabetic() || matches!(c, '.' | '\'' | '-'))
+            && !CHROME.contains(&tl.as_str())
+    };
+
+    let mut out = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for sec in RELATIVES_SECTION_RE.captures_iter(&text) {
+        let Some(window) = sec.get(1) else { continue };
+        let words: Vec<&str> = window.as_str().split_whitespace().collect();
+        for (i, w) in words.iter().enumerate() {
+            if strip_punct(w) != surname_lc {
+                continue;
+            }
+            // Walk back over up to two immediately-preceding name tokens (given
+            // name + optional middle name/initial); stop at the first non-name.
+            let mut given: Vec<&str> = Vec::new();
+            for j in (0..i).rev() {
+                if given.len() >= 2 || !is_name_token(words[j]) {
+                    break;
+                }
+                given.push(words[j]);
+            }
+            if given.is_empty() {
+                continue;
+            }
+            given.reverse();
+            let raw = format!(
+                "{} {}",
+                given.join(" "),
+                w.trim_matches(|c: char| !c.is_alphabetic())
+            );
+            let name = crate::util::str_util::title_case(&raw);
+            let name_lc = name.to_lowercase();
+            if name.len() < 5 || name_lc == subject_lc || !seen.insert(name_lc) {
+                continue;
+            }
+            let mut e = Entity::new(EntityKind::Person, &name, 0.45, scan_id);
+            e.tag(SRC);
+            e.tag("au-directory");
+            e.tag("relatives");
+            e.tag("family-candidate");
+            e.tag("country:AU");
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("AU residential directory lists {name} as a relative of {full}"),
+                )
+                .with_attr("relationship", "relative")
+                .with_attr("related_to", full)
+                .with_attr("source", "au_people_relatives"),
+            );
+            out.push(e);
+        }
+    }
+    out
+}
+
 /// Deduplicate entities by (kind, value) from a mutable result. Pure.
 pub(super) fn dedup_by_kind_value(entities: &mut Vec<Entity>) {
     let mut seen = std::collections::HashSet::new();
@@ -338,16 +566,14 @@ impl Module for AuPeople {
             .http
             .get(&wp_url)
             .header("Accept", "text/html,application/xhtml+xml")
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            )
+            .header("User-Agent", crate::util::http::UA_BROWSER)
             .send_tagged(SRC)
             .await
             && resp.status().is_success()
             && let Some(html) = read_body_capped(resp, 1_000_000).await
         {
             result.extend(parse_whitepages_html(&html, full_name, &ctx.scan_id));
+            result.extend(parse_relatives(&html, full_name, &ctx.scan_id));
         }
 
         // True People Search AU.
@@ -359,16 +585,14 @@ impl Module for AuPeople {
             .http
             .get(&tps_url)
             .header("Accept", "text/html,application/xhtml+xml")
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            )
+            .header("User-Agent", crate::util::http::UA_BROWSER)
             .send_tagged(SRC)
             .await
             && resp.status().is_success()
             && let Some(html) = read_body_capped(resp, 1_000_000).await
         {
             result.extend(parse_tps_html(&html, full_name, &ctx.scan_id));
+            result.extend(parse_relatives(&html, full_name, &ctx.scan_id));
         }
 
         // Emit a Person anchor for the name if we got any results — confirms

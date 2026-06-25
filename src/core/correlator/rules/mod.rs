@@ -5,7 +5,7 @@
 //! crypto); this module holds the shared helpers they all draw on and
 //! re-exports every rule so the dispatcher's `use rules::*` is unchanged.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::{Correlation, Severity};
 use crate::core::entity::{Entity, EntityKind};
@@ -156,6 +156,17 @@ const GENERIC_HANDLES: &[&str] = &[
     "subscribe",
 ];
 
+/// Tokens that are never a person's chosen handle — protocol / markup / header
+/// noise (`http`, `https`, `www`, `dns`, `mailto`) or bare function words
+/// (`from`) that scrapers and breach-dump parsers routinely mis-extract as a
+/// "username". Unlike a role mailbox these are not even an organisational
+/// function; they are extraction artifacts, so any identity rule that keys on
+/// them fuses unrelated records. Stored canonical (separator-free, lowercase) to
+/// match [`canonical_handle`] output.
+const NON_IDENTITY_TOKENS: &[&str] = &[
+    "from", "dns", "www", "http", "https", "html", "href", "mailto", "tel", "url",
+];
+
 /// Canonical comparison form of a handle: ASCII-lowercased with the handle
 /// separators (`.`, `_`, `-`) removed, so the same handle written with
 /// inconsistent punctuation collapses to one token (`jordan.meyers`,
@@ -170,9 +181,12 @@ fn canonical_handle(s: &str) -> String {
 }
 
 /// True if `handle` (already canonicalised) is too generic to identify a
-/// person — a placeholder username or a role mailbox.
+/// person — a placeholder username, a role mailbox, or a non-identity
+/// extraction artifact (`from`, `dns`, `http`, …).
 fn is_generic_handle(handle: &str) -> bool {
-    crate::util::preflight::is_placeholder_username(handle) || GENERIC_HANDLES.contains(&handle)
+    crate::util::preflight::is_placeholder_username(handle)
+        || GENERIC_HANDLES.contains(&handle)
+        || NON_IDENTITY_TOKENS.contains(&handle)
 }
 
 /// Modules that *derive* a username by inference — a name permutation, an email
@@ -227,6 +241,28 @@ fn is_breach_exposed_wallet(e: &Entity) -> bool {
     })
 }
 
+/// The distinct provenance families under an entity's **corroborating** sources —
+/// the orthogonality measure shared by the multi-pathway (AU-062) and gap (AU-063)
+/// link-analysis detectors, so "which independent source families back this
+/// entity" has a single definition. The unclassified `"other"` bucket is
+/// retained here; callers that need genuine cross-family diversity drop it.
+///
+/// Built on [`Entity::corroborating_sources`], NOT `evidence_sources`: the
+/// non-corroborating replay/derivation passes
+/// ([`crate::core::entity::is_non_corroborating_source`] — `recall`,
+/// `cross_scan_history`, and the enrichment sources `name_intel` /
+/// `geo_normalize`) must not manufacture a "second orthogonal family". Two of
+/// them map to real families (`name_intel` → `identity_registry`, `geo_normalize`
+/// → `infra`), so counting them would let a seed-derivation or a geo-replay pose
+/// as independent cross-family corroboration — the exact over-credit the AU-010
+/// and `c_effective` fixes already removed from the source-count side.
+fn source_families(e: &Entity) -> BTreeSet<&'static str> {
+    e.corroborating_sources()
+        .into_iter()
+        .map(source_family)
+        .collect()
+}
+
 /// Coarse provenance *family* of an evidence/module source name. Used to measure
 /// CROSS-SERVICE agreement, which is stronger than a raw source count: two
 /// sources in the same family (e.g. two breach DBs) can echo the same leaked
@@ -235,7 +271,7 @@ fn is_breach_exposed_wallet(e: &Entity) -> bool {
 /// independent confirmation. `"other"` is the catch-all for unclassified sources
 /// and is excluded from family-diversity counts. Matching is lowercase-substring
 /// over the module names actually in the registry, most-specific first.
-pub(super) fn source_family(source: &str) -> &'static str {
+pub(in crate::core) fn source_family(source: &str) -> &'static str {
     let s = source.to_ascii_lowercase();
     let has = |needles: &[&str]| needles.iter().any(|n| s.contains(n));
     if has(&[
@@ -250,6 +286,7 @@ pub(super) fn source_family(source: &str) -> &'static str {
         "pwned",
         "breach",
         "stealer",
+        "hudsonrock", // infostealer-log intelligence (exact module name)
     ]) {
         "breach"
     } else if has(&[
@@ -260,6 +297,7 @@ pub(super) fn source_family(source: &str) -> &'static str {
         "codeberg",
         "npm_author",
         "npm",
+        "crates", // crates.io — Rust package registry (exact module: crates_io)
     ]) {
         // Code-hosting is its own provider family: a handle present here is an
         // independent signal from a forum or social account (different platforms,
@@ -304,6 +342,7 @@ pub(super) fn source_family(source: &str) -> &'static str {
         "startpage",
         "searx",
         "search_engines",
+        "exa_search", // Exa neural search (exact module name)
     ]) {
         "search"
     } else if has(&[
@@ -322,6 +361,18 @@ pub(super) fn source_family(source: &str) -> &'static str {
         "linkedin",
         "abn",
         "whoisxml",
+        // Authoritative people / business / professional registries and identity
+        // enrichers (exact registry module names) — independent identity sources
+        // that were falling to `other`. A subject confirmed by, e.g., an electoral
+        // roll AND a breach is genuine cross-family corroboration (AU-045).
+        "fullcontact",
+        "contact_enrich",
+        "gleif_lei",
+        "asic_director",
+        "au_electoral",
+        "au_people",
+        "ahpra",
+        "acnc",
     ]) {
         "identity_registry"
     } else if has(&[
@@ -341,13 +392,30 @@ pub(super) fn source_family(source: &str) -> &'static str {
         "ip_",
         "ipinfo",
         "ipquery",
-        "ipapi",
         "ip2location",
         "geo",
         "wigle",
         "mylnikov",
         "overpass",
         "registry",
+        // Internet-wide asset/IP scanners and IP-reputation feeds — exact registry
+        // module names whose forms don't contain an earlier needle. All resolve
+        // network infrastructure (host/port/ASN/route/reputation), so they belong
+        // to `infra`; leaving them in `other` silently under-counted infra
+        // orthogonality (AU-062/063) and let `source_family`'s "covers the registry"
+        // contract drift.
+        "abuseipdb",
+        "bgpview",
+        "criminal_ip",
+        "ipqs",
+        "netblock",
+        "netlas",
+        "onyphe",
+        "portscan",
+        "ripestat",
+        "securitytrails",
+        "zoomeye",
+        "domainsdb",
     ]) {
         "infra"
     } else {
@@ -357,22 +425,42 @@ pub(super) fn source_family(source: &str) -> &'static str {
 
 mod assoc;
 mod breach;
+mod breach_pii;
+mod broker;
 mod crypto;
+pub(crate) mod gap;
 mod geo;
 mod identity;
 mod infra;
+mod integrity;
 pub(crate) mod location;
+pub(crate) mod multipath;
 mod org;
+mod payid;
+mod resolved;
+mod robust;
+mod sim;
+mod template;
 mod transitive;
 
 pub(super) use assoc::*;
 pub(super) use breach::*;
+pub(super) use breach_pii::*;
+pub(super) use broker::*;
 pub(super) use crypto::*;
+pub(super) use gap::*;
 pub(super) use geo::*;
 pub(super) use identity::*;
 pub(super) use infra::*;
+pub(super) use integrity::*;
 pub(super) use location::*;
+pub(super) use multipath::*;
 pub(super) use org::*;
+pub(super) use payid::*;
+pub(super) use resolved::*;
+pub(super) use robust::*;
+pub(super) use sim::*;
+pub(super) use template::*;
 pub(super) use transitive::*;
 
 #[cfg(test)]

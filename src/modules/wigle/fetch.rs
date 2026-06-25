@@ -80,21 +80,13 @@ pub(super) async fn fetch_detail(
     bssid: &str,
     kind: NetworkKind,
 ) -> Option<DetailResp> {
-    let encoded = crate::util::http::urlencode(bssid);
-    let url = format!(
-        "https://api.wigle.net/api/v2/network/detail?netid={encoded}&type={kind}",
-        kind = kind.as_str(),
-    );
-    let resp = http
-        .get(&url)
-        .basic_auth(user, Some(token))
-        .header("Accept", "application/json")
-        .send()
+    // Shared WiGLE auth + status classification; this fetcher swallows every
+    // non-success outcome (404/auth/rate-limit/other) into None, as before.
+    let url = crate::util::wigle::detail_url(bssid, kind.as_str());
+    let resp = crate::util::wigle::get(http, user, token, &url, SRC)
         .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
+        .ok()
+        .flatten()?;
     crate::util::http::json_scanned::<DetailResp>(resp, SRC)
         .await
         .ok()

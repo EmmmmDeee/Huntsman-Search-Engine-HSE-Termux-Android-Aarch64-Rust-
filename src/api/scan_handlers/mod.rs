@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tracing::info;
 
 use super::handlers::{
-    bad_request, internal_error, not_found, ok_list, spawn_scan, validated_target,
+    bad_request, forbidden, internal_error, not_found, ok_list, spawn_scan, validated_target,
 };
 use crate::api::AppState;
 use crate::core::entity::scan_id;
@@ -45,6 +45,79 @@ fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target), String> {
     Ok((scan, target))
 }
 
+/// Query for [`plan_preview`]: the seed value to preview.
+#[derive(serde::Deserialize)]
+pub struct PlanQuery {
+    value: String,
+}
+
+/// `GET /api/v1/plan?value=<seed>` — forward-only scan-plan PREVIEW.
+///
+/// Detects the seed's [`TargetKind`](crate::core::scan::TargetKind) and lists the
+/// modules that WOULD run on it (name, category, priority, description) **without
+/// executing a scan**. Pure and offline: it builds the module registry and filters it
+/// through the very same [`Module::accepts`](crate::core::module::Module::accepts) gate
+/// the engine uses at dispatch, so the preview is faithful to what a real scan will
+/// run. This lets an operator preview a scan's SCOPE and COST — how many modules, of
+/// which categories — before committing battery and time on a phone, and gives a
+/// reproducible, auditable "seed → engaged capabilities" trace with no side effects.
+pub async fn plan_preview(Query(q): Query<PlanQuery>) -> impl IntoResponse {
+    use crate::core::module::Module;
+
+    let value = q.value.trim();
+    if value.is_empty() {
+        return bad_request("value is empty");
+    }
+    let target = Target::detect(value);
+
+    let mut accepting: Vec<std::sync::Arc<dyn Module>> = crate::modules::registry()
+        .into_iter()
+        .filter(|m| m.accepts(&target))
+        .collect();
+    // Engine dispatch order: highest priority first, ties broken by name so the
+    // preview is deterministic.
+    accepting.sort_by(|a, b| {
+        b.priority()
+            .cmp(&a.priority())
+            .then_with(|| a.name().cmp(b.name()))
+    });
+
+    // Per-category tallies so the plan's shape is legible at a glance.
+    let mut by_category: std::collections::BTreeMap<&'static str, usize> =
+        std::collections::BTreeMap::new();
+    for m in &accepting {
+        *by_category.entry(m.category().as_str()).or_insert(0) += 1;
+    }
+
+    let modules: Vec<serde_json::Value> = accepting
+        .iter()
+        .map(|m| {
+            json!({
+                "name": m.name(),
+                "category": m.category().as_str(),
+                "priority": m.priority(),
+                "description": m.description(),
+            })
+        })
+        .collect();
+    let categories: Vec<serde_json::Value> = by_category
+        .into_iter()
+        .map(|(c, n)| json!({ "category": c, "count": n }))
+        .collect();
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "value": value,
+            "kind": target.kind.canonical_str(),
+            "module_count": modules.len(),
+            "categories": categories,
+            "modules": modules,
+        })),
+    )
+        .into_response()
+}
+
 pub async fn scan_create(
     State(s): State<Arc<AppState>>,
     Json(req): Json<ScanRequest>,
@@ -64,6 +137,85 @@ pub async fn scan_create(
     (
         StatusCode::ACCEPTED,
         Json(json!({ "scan_id": scan.id, "status": "queued" })),
+    )
+        .into_response()
+}
+
+/// Build the `(target, options)` for a radar sweep from the optional seed
+/// **type**. Pure (no store / engine access) so the radar's invariants — *only*
+/// the live device sensors run, `allow_live_sensors` is set (the sole activation
+/// path), the sweep is passive and single-round, and it carries no real target —
+/// are unit-testable without an `AppState`. `Some("mac"|"mac_address"|"bssid")`
+/// anchors the sweep on the local network (a sentinel MAC); anything else (incl.
+/// `None`) is the default GPS/RF ambient survey (a sentinel coordinate). The
+/// sensors ignore the seed value, so it is always a sentinel, never a target.
+fn radar_scan_spec(seed: Option<&str>) -> (Target, crate::core::scan::ScanOptions) {
+    use crate::core::scan::TargetKind;
+    let (kind, value) = match seed {
+        Some("mac" | "mac_address" | "bssid") => (TargetKind::MacAddress, "00:00:00:00:00:00"),
+        _ => (TargetKind::Coordinates, "0,0"),
+    };
+    let opts = crate::core::scan::ScanOptions {
+        modules: Some(
+            crate::core::engine::LOCAL_PASSIVE_MODULES
+                .iter()
+                .map(|m| (*m).to_string())
+                .collect(),
+        ),
+        passive_only: true,
+        depth: 0,
+        allow_live_sensors: true,
+        ..Default::default()
+    };
+    (Target::new(kind, value), opts)
+}
+
+/// `POST /api/v1/radar` — run ONE autonomous live-sensor sweep (the radar button).
+///
+/// The dedicated, user-triggered activation for the live device sensors
+/// (`signal_radar`, `device_sensors`, `wifi_intel`, `cell_intel`, `local_net`).
+/// It takes **no target** — it surveys the device's own ambient RF / network
+/// environment (Wi-Fi APs, Bluetooth, cell towers, GPS fix, LAN ARP) — and is
+/// entirely separate from target seed scanning: an ordinary scan never runs these
+/// modules (the `allow_live_sensors` gate keeps them off); only this endpoint sets
+/// it. The sweep is seeded with a sentinel value purely so the sensors (which gate
+/// on `Coordinates`/`MacAddress` and ignore the value) dispatch.
+///
+/// The *only* input is an optional seed **type** via `?seed=` — `coordinates`
+/// (default; GPS/RF ambient survey) or `mac`/`mac_address`/`bssid` (a
+/// BSSID-anchored local-network survey). Every sensor accepts both kinds and
+/// ignores the value, so this just labels the sweep's anchor; it never carries a
+/// real target.
+pub async fn radar_sweep(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    // Completely disabled until deliberately enabled in a place separate from
+    // seed scans (`feature.live_radar`). The radar surveys the host device's own
+    // surroundings, so it stays walled off from target scanning until opted in.
+    if !crate::util::settings::live_radar_enabled() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "live radar disabled",
+                "detail": "the live-sensor radar is off by default and separate from scans; \
+                           enable it deliberately before use",
+                "enable": "set the feature.live_radar toggle on (CLI: hse config feature.live_radar on)",
+            })),
+        )
+            .into_response();
+    }
+    let (target, opts) = radar_scan_spec(params.get("seed").map(String::as_str));
+    let sid = scan_id("radar", target.kind.canonical_str());
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    if let Err(e) = s.store.upsert_scan(&scan) {
+        return internal_error(&e);
+    }
+    spawn_scan(&s, scan, target);
+    info!(scan_id = %sid, "radar sweep queued — live device sensors (button activation)");
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({ "scan_id": sid, "status": "queued", "mode": "radar" })),
     )
         .into_response()
 }
@@ -111,9 +263,26 @@ pub async fn scan_batch(
 /// lean), parsed by the SAME `cli::import` path the CLI uses, then persisted as a
 /// completed scan so it appears in the scan list and every view/export
 /// (entities, dossier, debug bundle) works on it identically to a live scan.
-pub async fn scan_import(State(s): State<Arc<AppState>>, body: String) -> impl IntoResponse {
+pub async fn scan_import(
+    State(s): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    body: String,
+) -> impl IntoResponse {
     use crate::core::entity::{EntityKind, unix_now};
     use crate::core::scan::{ScanStatus, TargetKind};
+
+    // CSRF guard. The body is `text/plain`, which is a CORS *simple request*
+    // (no preflight) — so without this, any website the operator has open could
+    // `fetch()` a fabricated dossier into their DB (CORS blocks reading the
+    // response, not sending the request). Requiring a custom header makes the
+    // request non-simple: a cross-origin caller must now preflight, and the
+    // preflight fails because `X-HSE-CSRF` is not in the CORS allow-headers set.
+    // The same-origin SPA sends it and never preflights. The header's mere
+    // presence is the token (it cannot be set cross-origin without the blocked
+    // preflight); the value is irrelevant.
+    if !headers.contains_key("x-hse-csrf") {
+        return forbidden("missing X-HSE-CSRF header (cross-site request blocked)");
+    }
 
     // Bound the upload so a hostile/huge paste can't exhaust phone memory.
     // NOTE: this in-handler check is the friendly-message backstop; the binding
@@ -526,6 +695,466 @@ pub async fn scan_relations(
         })
         .collect();
     ok_list("relations", resolved)
+}
+
+/// `GET /api/v1/scans/{id}/network` — the subject-centric relationship synthesis
+/// ([`crate::core::network`]) that powers the web UI's Network view: the seed hub
+/// plus its connections grouped into people / identifiers / aliases / locations /
+/// infrastructure, ranked by link strength and bounded for a phone. The synthesis
+/// is pure Rust over the persisted entities + relations; 404 if the scan is
+/// unknown, matching the other `/scans/{id}/...` sub-resources.
+pub async fn scan_network(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (entities, relations) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let network = crate::core::network::synthesize(&entities, &relations);
+    (StatusCode::OK, Json(network)).into_response()
+}
+
+/// `GET /api/v1/scans/{id}/leads` — proactive next-best-action recommendations
+/// ([`crate::core::leads`]): the untapped identities this scan surfaced but did
+/// not pivot (family/associate connections held below the expansion floor most of
+/// all), ranked by pivot value — each a one-click follow-up scan from the web UI.
+/// 404 if the scan is unknown, matching the other sub-resources.
+pub async fn scan_leads(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let scan = match s.store.get_scan(&id) {
+        Ok(Some(scan)) => scan,
+        Ok(None) => return not_found(),
+        Err(e) => return internal_error(&e),
+    };
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (entities, relations) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let leads =
+        crate::core::leads::recommend(&entities, &relations, scan.options.min_expand_confidence);
+    ok_list("leads", leads)
+}
+
+/// `GET /api/v1/scans/{id}/timeline` — the subject's footprint reconstructed as a
+/// single chronology ([`crate::core::timeline`]): every dated event the evidence
+/// implies (a breach exposure, a domain registration, an account creation, …),
+/// ordered oldest-first. Pure synthesis over the persisted entities; 404 if the
+/// scan is unknown, matching the other `/scans/{id}/...` sub-resources.
+pub async fn scan_timeline(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await;
+    let entities = match loaded {
+        Ok(Ok(e)) => e,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let events = crate::core::timeline::reconstruct(&entities);
+    ok_list("events", events)
+}
+
+/// `GET /api/v1/scans/{id}/communities` — relationship-graph community detection
+/// ([`crate::core::community`]): the scan's graph partitioned into sub-clusters by
+/// deterministic label propagation (e.g. the family cluster vs the infrastructure
+/// estate), each community carrying its member UIDs, size, and a derived label.
+/// Pure synthesis over the persisted entities + relations; 404 if the scan is
+/// unknown, matching the other `/scans/{id}/...` sub-resources.
+pub async fn scan_communities(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (entities, relations) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let communities = crate::core::community::detect(&entities, &relations);
+    ok_list("communities", communities)
+}
+
+/// `GET /api/v1/scans/{id}/trust` — relationship-graph trust propagation
+/// ([`crate::core::trust`]): every entity ranked by how strongly the graph
+/// corroborates it, via damped personalized-PageRank-style propagation from
+/// high-confidence anchors, attenuating with graph distance. Read-only — never
+/// mutates stored confidence. Pure synthesis over the persisted entities +
+/// relations; 404 if the scan is unknown, matching the other sub-resources.
+pub async fn scan_trust(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (entities, relations) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let scores = crate::core::trust::propagate(&entities, &relations);
+    ok_list("trust", scores)
+}
+
+/// Query parameters for [`scan_path`]: the two endpoint VALUES to connect, an optional
+/// cap on how many distinct pathways to return, and an optional `cross` flag to extend
+/// the search across the WHOLE local intelligence database rather than this scan alone.
+#[derive(serde::Deserialize)]
+pub struct PathQuery {
+    from: String,
+    to: String,
+    paths: Option<usize>,
+    cross: Option<bool>,
+}
+
+/// `GET /api/v1/scans/{id}/path?from=<value>&to=<value>[&paths=N][&cross=true]` —
+/// connection-path discovery ([`crate::core::path`]): the shortest chain of
+/// relationships linking two named entities, plus up to N distinct alternative routes.
+/// The universal "how are A and B connected?" query — e.g. `from=Kyle Diegmann` to
+/// `to=Erik Diegmann`. By default it searches THIS scan's graph; with `cross=true` it
+/// reaches across every scan in the local intelligence database (bounded), so a seed
+/// connects to an entity discovered in a SEPARATE investigation. Node UIDs are resolved
+/// to display labels server-side so the chain renders standalone. 404 if the scan is
+/// unknown, matching the other sub-resources.
+pub async fn scan_path(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<PathQuery>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let from = q.from.clone();
+    let to = q.to.clone();
+    let cross = q.cross.unwrap_or(false);
+    let max_paths = q
+        .paths
+        .unwrap_or(crate::core::path::DEFAULT_MAX_PATHS)
+        .clamp(1, 10);
+    // Path discovery touches the store (cross-scan pulls in other scans), so the whole
+    // computation — paths plus node-label resolution — runs off the async runtime.
+    type PathResult = (
+        Vec<crate::core::path::ConnectionPath>,
+        serde_json::Map<String, serde_json::Value>,
+    );
+    let computed =
+        tokio::task::spawn_blocking(move || -> Result<PathResult, crate::core::error::Error> {
+            let paths = if cross {
+                crate::core::path::connect_cross_scan(store.as_ref(), &from, &to, max_paths)
+            } else {
+                let entities = store.entities_for_scan(&id2)?;
+                let relations = store.relations_for_scan(&id2)?;
+                crate::core::path::connect_values(&entities, &relations, &from, &to, max_paths)
+            };
+            // Resolve each node UID to a display label via a point lookup, so the chain
+            // renders standalone regardless of which scan a node came from.
+            let mut nodes = serde_json::Map::new();
+            for p in &paths {
+                for uid in &p.nodes {
+                    if !nodes.contains_key(uid)
+                        && let Ok(Some(e)) = store.get_entity(uid)
+                    {
+                        let label = if e.raw_value.is_empty() {
+                            e.value
+                        } else {
+                            e.raw_value
+                        };
+                        nodes.insert(
+                            uid.clone(),
+                            json!({ "value": label, "kind": e.kind.to_string() }),
+                        );
+                    }
+                }
+            }
+            Ok((paths, nodes))
+        })
+        .await;
+    let (paths, nodes) = match computed {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let connected = !paths.is_empty();
+    (
+        StatusCode::OK,
+        Json(json!({
+            "from": q.from,
+            "to": q.to,
+            "cross_scan": cross,
+            "connected": connected,
+            "paths": paths,
+            "nodes": nodes,
+        })),
+    )
+        .into_response()
+}
+
+/// `GET /api/v1/scans/{id}/metrics` — objective per-scan quality / telemetry measures
+/// ([`crate::core::metrics`]): entity & relation counts, the verified/probable/candidate
+/// tier breakdown, mean & median confidence, corroborated fraction, graph density and
+/// linked-entity fraction, cross-scan bridges, and distinct evidence sources — the
+/// empirical measure of how much corroborated intelligence the scan actually formed.
+/// Pure synthesis over the persisted entities + relations; 404 if the scan is unknown.
+pub async fn scan_metrics(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (entities, relations) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let metrics = crate::core::metrics::compute(&entities, &relations);
+    (StatusCode::OK, Json(metrics)).into_response()
+}
+
+/// `GET /api/v1/scans/{id}/duplicates` — near-duplicate entity-resolution suggestions
+/// ([`crate::core::resolve`]): groups of entities that are probably the SAME identity
+/// in different contexts (Gmail dot/`+tag` variants, phone formats, reordered names)
+/// that the exact-UID correlator missed. Read-only suggestions for the operator to
+/// confirm. Pure synthesis over the persisted entities; 404 if the scan is unknown.
+pub async fn scan_duplicates(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await;
+    let entities = match loaded {
+        Ok(Ok(e)) => e,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let groups = crate::core::resolve::suggest_merges(&entities);
+    ok_list("duplicates", groups)
+}
+
+/// `GET /api/v1/scans/{id}/pivots` — pivot-node detection ([`crate::core::pivot`]): the
+/// high-connectivity INTERMEDIARIES of the relationship graph (the shared address,
+/// registrant, or phone that bridges many otherwise-separate entities), ranked by
+/// betweenness + degree centrality. These are the highest-leverage nodes to expand or
+/// confirm — pivot-driven traversal. Pure synthesis over the persisted entities +
+/// relations; 404 if the scan is unknown, matching the other sub-resources.
+pub async fn scan_pivots(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (entities, relations) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let pivots = crate::core::pivot::detect(&entities, &relations);
+    let bridges = crate::core::pivot::bridges(&entities, &relations);
+    // {pivots, bridges, count}: the ranked intermediaries plus the graph's exact cut
+    // edges (single-point-of-failure links). `count` mirrors `ok_list` so existing
+    // clients reading `.pivots`/`.count` are unaffected.
+    let count = pivots.len();
+    (
+        StatusCode::OK,
+        Json(json!({
+            "pivots": pivots,
+            "bridges": bridges,
+            "count": count,
+        })),
+    )
+        .into_response()
+}
+
+/// `GET /api/v1/scans/{id}/gaps` — discovery-gap analysis ([`crate::core::gap`]): the
+/// validated seeds a scan produced that are ISOLATED (no evidence-backed link), each
+/// classified by why it is isolated and given a concrete corrective action — including
+/// the registered modules that would query its re-injection kind, so an operator (or the
+/// engine) can force the missing observable path. This is the gap-resolution loop's
+/// instrument: it turns "no links" into "run these scans next". Pure synthesis over the
+/// persisted entities + relations; 404 if the scan is unknown.
+pub async fn scan_gaps(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (entities, relations) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+
+    let report = crate::core::gap::analyze(&entities, &relations);
+
+    // Attach, per orphan, the registered modules that would query its re-injection kind —
+    // the concrete "additional data sources" the gap-resolution loop should run. Computed
+    // here because the registry lives in the module layer, not in `core`.
+    let by_uid: std::collections::HashMap<&str, &crate::core::entity::Entity> =
+        entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let reg = crate::modules::registry();
+    let orphans: Vec<serde_json::Value> = report
+        .orphans
+        .iter()
+        .map(|o| {
+            let corrective: Vec<&'static str> = by_uid
+                .get(o.uid.as_str())
+                .and_then(|e| {
+                    crate::core::scan::TargetKind::from_entity_kind(&e.kind)
+                        .map(|tk| Target::new(tk, e.value.clone()))
+                })
+                .map(|target| {
+                    reg.iter()
+                        .filter(|m| m.accepts(&target))
+                        .map(|m| m.name())
+                        .collect()
+                })
+                .unwrap_or_default();
+            json!({
+                "uid": o.uid.clone(),
+                "kind": o.kind.clone(),
+                "value": o.value.clone(),
+                "confidence": o.confidence,
+                "isolation": o.isolation,
+                "reinjection_target": o.reinjection_target.clone(),
+                "action": o.action,
+                "corrective_modules": corrective,
+            })
+        })
+        .collect();
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "null_state": report.null_state,
+            "total_seeds": report.total_seeds,
+            "linked_seeds": report.linked_seeds,
+            "isolated_seeds": report.isolated_seeds,
+            "linked_fraction": report.linked_fraction,
+            "isolation": report.isolation,
+            "orphans": orphans,
+        })),
+    )
+        .into_response()
+}
+
+/// `GET /api/v1/scans/{id}/benchmark` — the consolidated, auditable benchmark report
+/// ([`crate::core::benchmark`]): the scan's measurable OSINT dimensions (discovery
+/// depth, graph coverage, corroboration, density, throughput, module reliability,
+/// pivots) rolled into one scorecard for a reproducible A/B. The HTTP twin of
+/// `hse benchmark`, so a deployed Termux/web instance can emit the same evidence over
+/// the network. Pure synthesis over the persisted scan + entities + relations; 404 if
+/// the scan is unknown.
+pub async fn scan_benchmark(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let scan = match s.store.get_scan(&id) {
+        Ok(Some(sc)) => sc,
+        Ok(None) => return not_found(),
+        Err(e) => return internal_error(&e),
+    };
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (entities, relations) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let report = crate::core::benchmark::report(&scan, &entities, &relations);
+    (StatusCode::OK, Json(report)).into_response()
 }
 
 pub async fn scan_delete(

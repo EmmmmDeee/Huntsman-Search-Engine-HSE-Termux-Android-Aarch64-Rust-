@@ -104,7 +104,7 @@ impl Module for GithubCodeSearch {
             .header("X-GitHub-Api-Version", "2022-11-28")
             .header("User-Agent", "huntsman-search-engine/1.4");
         if let Some(tok) = token {
-            req = req.header("Authorization", format!("Bearer {tok}"));
+            req = req.bearer_auth(tok);
         }
 
         let resp = req.send_tagged(SRC).await?;
@@ -151,12 +151,14 @@ impl Module for GithubCodeSearch {
                 .header("X-GitHub-Api-Version", "2022-11-28")
                 .header("User-Agent", "huntsman-search-engine/1.4");
             if let Some(tok) = token {
-                creq = creq.header("Authorization", format!("Bearer {tok}"));
+                creq = creq.bearer_auth(tok);
             }
             if let Ok(cr) = creq.send_tagged(SRC).await
                 && cr.status().is_success()
-                && let Ok(raw) = cr.bytes().await
-                && let Ok(arr) = serde_json::from_slice::<Vec<CommitItem>>(&raw)
+                // Capped decode (32 MiB) — a raw `bytes()` would buffer an
+                // unbounded body on the low-RAM Termux target.
+                && let Ok(arr) =
+                    crate::util::http::json_decode::<Vec<CommitItem>>(SRC, cr).await
             {
                 let wrapped = CommitsResp { commits: arr };
                 result.extend(build_commit_emails(&wrapped, &full_name, &ctx.scan_id));

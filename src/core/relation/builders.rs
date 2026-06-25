@@ -311,626 +311,773 @@ pub fn derive_name_lineage(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
     out
 }
 
-/// Upper bound on distinct registrable domains sharing a single dedicated IP for
-/// `derive_co_ownership` to emit a `SameOperator` edge — mirrors the AU-062
-/// correlator cap (`MAX_CO_HOSTED_REGISTRABLE`). Both must stay in sync: the
-/// correlator fires when ≤N sites share an IP; the builder emits the structural
-/// edge for the same membership set.
-const MAX_CO_HOSTED_REGISTRABLE: usize = 5;
+// ── Identity relations ───────────────────────────────────────────────────────
+//
+// The builders above reconstruct the *infrastructure* graph (subdomains, hosting,
+// DNS, WHOIS). For a person-centric scan that is mostly empty — the high-value
+// edges bind the SUBJECT to their identifiers, accounts, places and associates.
+// Without them a 500-entity person scan persists zero relations (nodes, no edges)
+// and the dossier/force-graph shows an unconnected pile. These builders add that
+// identity layer, holding to the same rigor as the infra builders: deterministic
+// (stable, deduped, canonically-directed), evidence- or structure-grounded so no
+// false edge fires, and confidence carried from the endpoints — *damped* for the
+// two candidate signals (fingerprint ownership, surname kinship) so a lead never
+// masquerades as a certainty.
 
-/// Derive `SameOperator` edges between domain/site entities that share an operator
-/// — inferred from three complementary evidence classes, each with appropriate
-/// false-positive guards. Runs AFTER the other builders so it can read the
-/// `RegisteredBy` and `ResolvesTo` edges they produced (passed as `relations`).
+/// Confidence damp for a fingerprint-based [`RelationKind::IdentifiedBy`] edge:
+/// the endpoints are real, but binding a handle to the subject purely by an
+/// identity-fingerprint overlap is a lead, not a structural certainty.
+const IDENTITY_CANDIDATE_DAMP: f64 = 0.6;
+
+/// Confidence damp for a surname-based [`RelationKind::AssociatedWith`] kinship
+/// edge — a candidate association (people can share a surname by coincidence),
+/// surfaced for the operator to confirm.
+const KINSHIP_DAMP: f64 = 0.5;
+
+/// Score damp for an inferred co-residence edge. Two distinct people NAMED at the
+/// SAME specific street address (a register's separate owner records, a household
+/// roll) are linked even when they share no surname — the household tie the surname
+/// kinship structurally can't see. Evidence-grounded (both names are on a record at
+/// that address), so it outranks a bare surname guess ([`KINSHIP_DAMP`]); damped
+/// below a DECLARED relationship because "same address" can occasionally be a shared
+/// building rather than one household.
+const CO_RESIDENCE_DAMP: f64 = 0.8;
+
+/// Tags that mark an `Address` as too COARSE to be a dwelling — a postcode / suburb
+/// centroid, not a specific home. Two people sharing a postcode are not
+/// co-residents, so these places never link a household.
+const COARSE_ADDRESS_TAGS: &[&str] = &["coarse", "postcode-only", "candidate-suburb"];
+
+/// Max residents paired per place — a household is small; this bounds the O(k²)
+/// pairing on a pathological owner list (Determinism + low-RAM Termux).
+const CO_RESIDENCE_MAX_PER_PLACE: usize = 8;
+
+/// Score damp for a CO-MENTION association — two distinct Persons NAMED IN THE SAME
+/// SOURCE document (one result page, record, or article). The document-level analog
+/// of co-residence: where co-residence links people a shared ADDRESS names together,
+/// this links people a shared SOURCE names together — relatives and associates a
+/// single page lists side by side (an obituary, a family notice, co-owners on a
+/// title) that neither a surname nor an address would connect. A shared source is
+/// real but more circumstantial than a shared dwelling, so it is damped below
+/// co-residence ([`CO_RESIDENCE_DAMP`]) and a declared link; a same-surname
+/// co-mentioned pair keeps its stronger kinship edge on the same pair, so the two
+/// angles corroborate rather than double-count.
+const CO_MENTION_DAMP: f64 = 0.45;
+
+/// A source naming MORE than this many distinct Persons is a directory / news
+/// round-up / list page, not a relationship document — co-mention would mint O(n²)
+/// spurious edges from it, so such a source is skipped entirely. A source naming a
+/// handful (2–5) is exactly the obituary / family-notice document this exists to mine.
+const CO_MENTION_MAX_PERSONS_PER_SOURCE: usize = 5;
+
+/// Evidence attribute keys that identify the SOURCE document a finding came from —
+/// the join key for co-mention. `url` is canonical (search results, scraped pages);
+/// `source_url` / `page` are module variants.
+const CO_MENTION_SOURCE_ATTRS: &[&str] = &["url", "source_url", "page"];
+
+/// Distinctive owner / infrastructure SELECTOR attributes the modules actually emit
+/// and that genuinely individuate an affiliation — a registrant identity, a crypto
+/// fingerprint, an email's gravatar. Deliberately EXCLUDES generic fields shared by
+/// the masses (registrar, country, provider, ASN), which would mint false ties. This
+/// curated allowlist is the precision floor for [`derive_shared_selector`]; every
+/// entry is a real key emitted somewhere in the module layer (no speculative
+/// selectors), keeping the pivot grounded in data the engine actually produces.
+const AFFILIATION_SELECTOR_ATTRS: &[&str] = &[
+    "registrant_email",
+    "registrant_org",
+    "admin_org",
+    "cert_serial",
+    "key_fingerprint",
+    "gravatar_hash",
+];
+
+/// Score damp for a shared-selector affiliation edge. An individuating selector is a
+/// strong tie but still circumstantial (a registrant can be a shared agent), so it is
+/// damped like co-mention — a lead for the analyst to confirm, not an assertion.
+const AFFILIATION_DAMP: f64 = 0.45;
+
+/// A selector value shared by MORE than this many distinct entities is not
+/// individuating — a privacy-proxy registrant, a default TLS fingerprint, a shared
+/// host — so it links nothing. A genuine owner selector is shared by a few affiliates.
+const AFFILIATION_CROWD_CAP: usize = 6;
+
+/// Evidence attribute keys whose value names a real person — the owner /
+/// registrant / account holder a module recorded alongside an identifier or a
+/// place. Matched case-insensitively against present Person entities, so an
+/// owner-named address (`qld_unclaimed`'s `owner`) or a profile's `full_name`
+/// becomes a graph edge rather than a buried attribute.
+const PERSON_NAME_ATTRS: &[&str] = &[
+    "owner",
+    "full_name",
+    "name",
+    "person",
+    "account_name",
+    "source_name",
+    "registrant_name",
+    "holder",
+    "resident",
+    "contact_name",
+    "display_name",
+];
+
+/// The normalised identity fingerprint of an Email/Username, for detecting a
+/// shared persona across platforms. Emails key on the local-part (handled by
+/// [`crate::core::scan::identity_norm`], which splits on `@`); usernames on the
+/// whole value. `None` for a handle too short or all-digits to be a reliable
+/// persona key, so generic noise can't fan out into a false alias clique.
+fn persona_key(e: &Entity) -> Option<String> {
+    if !matches!(e.kind, EntityKind::Email | EntityKind::Username) {
+        return None;
+    }
+    let key = crate::core::scan::identity_norm(&e.value);
+    // 4 = IDENTITY_OVERLAP_MIN: shorter handles alias too readily.
+    (key.len() >= 4 && !key.bytes().all(|b| b.is_ascii_digit())).then_some(key)
+}
+
+/// The folded last whitespace token of a Person value — a family key. `None` when
+/// it's < 4 chars (initials / very short surnames alias too readily).
+fn surname_key(value: &str) -> Option<String> {
+    let last = value.split_whitespace().next_back()?;
+    let key = crate::core::scan::identity_norm(last);
+    (key.len() >= 4).then_some(key)
+}
+
+/// Index present Person entities by their folded full name, resolving collisions
+/// deterministically (higher confidence, then smaller uid) so the chosen target
+/// never depends on the caller's entity order — the determinism invariant the
+/// whole module holds to.
+fn persons_by_name(entities: &[Entity]) -> std::collections::HashMap<String, &Entity> {
+    let mut persons = std::collections::HashMap::new();
+    for p in entities.iter().filter(|e| e.kind == EntityKind::Person) {
+        persons
+            .entry(p.value.trim().to_lowercase())
+            .and_modify(|cur: &mut &Entity| {
+                if p.confidence > cur.confidence
+                    || (p.confidence == cur.confidence && p.uid < cur.uid)
+                {
+                    *cur = p;
+                }
+            })
+            .or_insert(p);
+    }
+    persons
+}
+
+/// The subject Person(s): those carrying the engine's seed-anchor tag (`subject`
+/// or `seed`). The fingerprint/`exact-name-match` paths bind only to these, so an
+/// incidental Person never accretes the subject's handles or places.
+fn subject_persons(entities: &[Entity]) -> Vec<&Entity> {
+    entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person && (e.has_tag("subject") || e.has_tag("seed")))
+        .collect()
+}
+
+/// Stable output order (by endpoints) so a builder whose internal grouping uses a
+/// `HashMap` still returns a deterministic `Vec` — matching the module contract.
+fn sort_edges(edges: &mut [Relation]) {
+    edges.sort_by(|a, b| {
+        (a.from_uid.as_str(), a.to_uid.as_str()).cmp(&(b.from_uid.as_str(), b.to_uid.as_str()))
+    });
+}
+
+/// Derive `AliasOf` edges between Email/Username entities that share one
+/// normalised persona key — the cross-platform "same handle" pivot
+/// (`jsmith@gmail.com` ↔ `jsmith@outlook.com` ↔ username `jsmith`). Purely
+/// structural (exact normalised-handle match), so precision is high; generic /
+/// numeric handles are excluded by [`persona_key`]. Symmetric edges are emitted
+/// once in canonical direction (smaller UID → larger) and deduped, then sorted —
+/// deterministic regardless of entity order.
+pub fn derive_handles(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut by_key: HashMap<String, Vec<&Entity>> = HashMap::new();
+    for e in entities {
+        if let Some(k) = persona_key(e) {
+            by_key.entry(k).or_default().push(e);
+        }
+    }
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for group in by_key.values() {
+        for i in 0..group.len() {
+            for j in (i + 1)..group.len() {
+                let (a, b) = (group[i], group[j]);
+                // Same entity, or two spellings that normalise identically — not
+                // an alias between *distinct* identifiers.
+                if a.uid == b.uid || a.value == b.value {
+                    continue;
+                }
+                let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
+                if seen.insert((from.uid.clone(), to.uid.clone())) {
+                    out.push(Relation::new(
+                        from.uid.as_str(),
+                        to.uid.as_str(),
+                        RelationKind::AliasOf,
+                        from.confidence.min(to.confidence),
+                        scan_id,
+                    ));
+                }
+            }
+        }
+    }
+    sort_edges(&mut out);
+    out
+}
+
+/// Derive `IdentifiedBy` edges (Person → Email/Username/Phone) binding the subject
+/// to their identifiers. Two grounded paths, evidence preferred:
+///   * **evidence** — the identifier's evidence carries an owner/name attribute
+///     ([`PERSON_NAME_ATTRS`]) matching a present Person (any Person; the module
+///     itself attributed it). High confidence (min of endpoints).
+///   * **fingerprint** — an Email-local/Username whose identity fingerprint
+///     overlaps the *subject*'s name ([`crate::core::scan::identity_overlaps`],
+///     the same primitive the engine uses to gate wrong-identity pivots). A
+///     candidate, so damped by [`IDENTITY_CANDIDATE_DAMP`]; bound only to the
+///     subject so it can't mis-attach to an incidental Person. Phones have no
+///     fingerprint, so they link by evidence only.
 ///
-/// **Source A — Shared WHOIS registrant** (`RegisteredBy` edges, grouped by
-/// registrant uid): ≥2 domains sharing one genuine registrant are very likely
-/// co-owned. Privacy-proxy / redaction registrants (see
-/// [`crate::util::domains::is_proxy_registrant`]) are excluded — a shared proxy
-/// spans millions of unrelated domains and would cause mass false positives.
-/// Mirrors the AU-061 correlator gate.
+/// Deduped per (person, identifier); deterministic output order.
+pub fn derive_identity_ownership(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::HashSet;
+
+    let person_by_name = persons_by_name(entities);
+    if person_by_name.is_empty() {
+        return Vec::new();
+    }
+    let subjects = subject_persons(entities);
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for h in entities.iter().filter(|e| {
+        matches!(
+            e.kind,
+            EntityKind::Email | EntityKind::Username | EntityKind::Phone
+        )
+    }) {
+        // Evidence-grounded ownership (any attributed Person).
+        let mut linked = false;
+        for ev in &h.evidence {
+            for (k, v) in &ev.attributes {
+                if !PERSON_NAME_ATTRS.iter().any(|a| k.eq_ignore_ascii_case(a)) {
+                    continue;
+                }
+                if let Some(&p) = person_by_name.get(v.trim().to_lowercase().as_str())
+                    && p.uid != h.uid
+                    && seen.insert((p.uid.clone(), h.uid.clone()))
+                {
+                    out.push(Relation::new(
+                        p.uid.as_str(),
+                        h.uid.as_str(),
+                        RelationKind::IdentifiedBy,
+                        p.confidence.min(h.confidence),
+                        scan_id,
+                    ));
+                    linked = true;
+                }
+            }
+        }
+        if linked || !matches!(h.kind, EntityKind::Email | EntityKind::Username) {
+            continue;
+        }
+        // Fingerprint-grounded ownership, subject-only and damped.
+        for s in &subjects {
+            if s.uid != h.uid
+                && crate::core::scan::identity_overlaps(&s.value, &h.value)
+                && seen.insert((s.uid.clone(), h.uid.clone()))
+            {
+                out.push(Relation::new(
+                    s.uid.as_str(),
+                    h.uid.as_str(),
+                    RelationKind::IdentifiedBy,
+                    s.confidence.min(h.confidence) * IDENTITY_CANDIDATE_DAMP,
+                    scan_id,
+                ));
+            }
+        }
+    }
+    sort_edges(&mut out);
+    out
+}
+
+/// Derive `LocatedAt` edges (Person → Address/Coordinates). Evidence-grounded: a
+/// place whose evidence carries an owner/resident attribute ([`PERSON_NAME_ATTRS`])
+/// matching a present Person (`qld_unclaimed`'s `owner = ERIK DIEGMANN`). Failing
+/// that, a place the scan already flagged as the subject's via the geo
+/// correlator's `exact-name-match` tag binds to the subject(s) — reusing that
+/// vetted decision rather than re-deriving it. Deduped per (person, place);
+/// deterministic output order.
+pub fn derive_residency(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::HashSet;
+
+    let person_by_name = persons_by_name(entities);
+    if person_by_name.is_empty() {
+        return Vec::new();
+    }
+    let subjects = subject_persons(entities);
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for place in entities
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::Address | EntityKind::Coordinates))
+    {
+        let mut linked = false;
+        for ev in &place.evidence {
+            for (k, v) in &ev.attributes {
+                if !PERSON_NAME_ATTRS.iter().any(|a| k.eq_ignore_ascii_case(a)) {
+                    continue;
+                }
+                if let Some(&p) = person_by_name.get(v.trim().to_lowercase().as_str())
+                    && seen.insert((p.uid.clone(), place.uid.clone()))
+                {
+                    out.push(Relation::new(
+                        p.uid.as_str(),
+                        place.uid.as_str(),
+                        RelationKind::LocatedAt,
+                        p.confidence.min(place.confidence),
+                        scan_id,
+                    ));
+                    linked = true;
+                }
+            }
+        }
+        if linked || !place.has_tag("exact-name-match") {
+            continue;
+        }
+        for s in &subjects {
+            if seen.insert((s.uid.clone(), place.uid.clone())) {
+                out.push(Relation::new(
+                    s.uid.as_str(),
+                    place.uid.as_str(),
+                    RelationKind::LocatedAt,
+                    s.confidence.min(place.confidence),
+                    scan_id,
+                ));
+            }
+        }
+    }
+    sort_edges(&mut out);
+    out
+}
+
+/// Derive `AssociatedWith` kinship-candidate edges between Person entities that
+/// share a surname ([`surname_key`]) but are distinct people. People surface in a
+/// scan because they're relevant to the subject, so a shared surname is a strong
+/// associate lead — but coincidental, so the edge is damped by [`KINSHIP_DAMP`]
+/// and clearly typed as a candidate. Symmetric, canonically directed, deduped,
+/// deterministic.
+pub fn derive_kinship(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut by_surname: HashMap<String, Vec<&Entity>> = HashMap::new();
+    for p in entities.iter().filter(|e| e.kind == EntityKind::Person) {
+        if let Some(k) = surname_key(&p.value) {
+            by_surname.entry(k).or_default().push(p);
+        }
+    }
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for (surname, group) in &by_surname {
+        // A COMMON surname (Smith, Jones, Nguyen, Wang…) is shared by countless
+        // unrelated strangers; pairing everyone who happens to carry one would
+        // manufacture O(n²) false "associate" edges from a single popular name.
+        // Only a DISTINCTIVE surname is itself evidence of likely kinship — mirror
+        // the commonness discount the leads/engine paths already apply. (A genuine
+        // relative of a common-surname subject still surfaces through the
+        // evidence-grounded co-residence / declared-association passes.)
+        if crate::util::surnames::is_common(surname) {
+            continue;
+        }
+        for i in 0..group.len() {
+            for j in (i + 1)..group.len() {
+                let (a, b) = (group[i], group[j]);
+                // Distinct people only — not the same Person surfaced twice, and
+                // not two spellings of one full name.
+                if a.uid == b.uid
+                    || crate::core::scan::identity_norm(&a.value)
+                        == crate::core::scan::identity_norm(&b.value)
+                {
+                    continue;
+                }
+                let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
+                if seen.insert((from.uid.clone(), to.uid.clone())) {
+                    out.push(Relation::new(
+                        from.uid.as_str(),
+                        to.uid.as_str(),
+                        RelationKind::AssociatedWith,
+                        from.confidence.min(to.confidence) * KINSHIP_DAMP,
+                        scan_id,
+                    ));
+                }
+            }
+        }
+    }
+    sort_edges(&mut out);
+    out
+}
+
+/// Evidence attribute keys whose value names another person this entity is
+/// explicitly related/associated to — a people-search relative (`related_to`), a
+/// joint register owner (`co_owner` / `joint_owner`), etc. A DECLARED link, so
+/// the resulting edge is evidence-grounded (full endpoint trust), unlike the
+/// surname kinship heuristic.
+const ASSOCIATION_ATTRS: &[&str] = &[
+    "related_to",
+    "relative_of",
+    "associate_of",
+    "associated_with",
+    "related_person",
+    "relation_to",
+    "co_owner",
+    "joint_owner",
+];
+
+/// Derive `AssociatedWith` edges from a DECLARED relationship: a Person whose
+/// evidence names another present Person via an association attribute
+/// ([`ASSOCIATION_ATTRS`]) — a SeekNow relative carrying `related_to = <subject>`,
+/// or a joint unclaimed-money record's `co_owner`. Evidence-grounded, so it
+/// carries full endpoint trust (a declared link, not a surname guess) — the
+/// high-precision complement to [`derive_kinship`]. The two can emit the same
+/// `(from, kind, to)` edge; that is deliberate (one upserts over the other by id)
+/// and is how a surname guess gets *upgraded* to a declared certainty when both
+/// fire. Symmetric, canonically directed, deduped, deterministic.
+pub fn derive_declared_associations(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::HashSet;
+
+    let person_by_name = persons_by_name(entities);
+    if person_by_name.is_empty() {
+        return Vec::new();
+    }
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for e in entities.iter().filter(|e| e.kind == EntityKind::Person) {
+        for ev in &e.evidence {
+            for (k, v) in &ev.attributes {
+                if !ASSOCIATION_ATTRS.iter().any(|a| k.eq_ignore_ascii_case(a)) {
+                    continue;
+                }
+                if let Some(&other) = person_by_name.get(v.trim().to_lowercase().as_str())
+                    && other.uid != e.uid
+                {
+                    let (from, to) = if e.uid <= other.uid {
+                        (e, other)
+                    } else {
+                        (other, e)
+                    };
+                    if seen.insert((from.uid.clone(), to.uid.clone())) {
+                        out.push(Relation::new(
+                            from.uid.as_str(),
+                            to.uid.as_str(),
+                            RelationKind::AssociatedWith,
+                            e.confidence.min(other.confidence),
+                            scan_id,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    sort_edges(&mut out);
+    out
+}
+
+/// Distinct Persons explicitly NAMED at a place via [`PERSON_NAME_ATTRS`] evidence,
+/// in stable (evidence, attribute) order, de-duplicated by uid. The shared
+/// person-at-place resolution behind both residency and co-residence.
+fn residents_of<'a>(
+    place: &Entity,
+    person_by_name: &std::collections::HashMap<String, &'a Entity>,
+) -> Vec<&'a Entity> {
+    use std::collections::HashSet;
+
+    let mut found: Vec<&Entity> = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+    for ev in &place.evidence {
+        for (k, v) in &ev.attributes {
+            if !PERSON_NAME_ATTRS.iter().any(|a| k.eq_ignore_ascii_case(a)) {
+                continue;
+            }
+            if let Some(&p) = person_by_name.get(v.trim().to_lowercase().as_str())
+                && seen.insert(p.uid.as_str())
+            {
+                found.push(p);
+            }
+        }
+    }
+    found
+}
+
+/// Derive `AssociatedWith` co-residence edges between distinct Persons NAMED at the
+/// SAME specific `Address` — household members (separate owner records, co-residents
+/// on a register / roll) the surname kinship can't link because they need share no
+/// name. This is the free, offline angle for DIFFERENT-surname family: a partner, an
+/// in-law, a married child, a flatmate — exactly the relatives a same-surname scan
+/// structurally misses.
 ///
-/// **Source B — Shared dedicated IP** (`ResolvesTo` edges, grouped by IP uid):
-/// ≥2 DISTINCT registrable domains on one non-CDN, non-anycast IP with ≤
-/// [`MAX_CO_HOSTED_REGISTRABLE`] members are probably co-hosted by the same
-/// operator. Mirrors the three AU-062 guards: CDN/non-routable exclusion, eTLD+1
-/// dedup, fan-out cap.
-///
-/// **Source C — Shared web-analytics ID** (`TrackingId` entity evidence): a
-/// `TrackingId` entity whose `source_domain` attributes name ≥2 present Domain
-/// entities. A shared GA/GTM/pixel ID is an intentional operator-level
-/// configuration tag. Mirrors the AU-044 gate.
-///
-/// Edge direction: canonical `min_uid → max_uid` (same as `CoLocatedWith`) so
-/// re-scans upsert idempotently and there is exactly one edge per pair.
-/// Confidence = `min(a.confidence, b.confidence)`, consistent with every other
-/// builder. Deduped: the same pair can qualify under multiple sources; only one
-/// edge is emitted.
-pub fn derive_co_ownership(
-    entities: &[Entity],
-    relations: &[Relation],
+/// Precision-gated to a real dwelling: a COARSE postcode/suburb centroid
+/// ([`COARSE_ADDRESS_TAGS`]) never links a household (thousands share a postcode),
+/// and both people must be evidence-named at the place — so the edge outranks a bare
+/// surname guess ([`KINSHIP_DAMP`]) yet is damped below a DECLARED relationship
+/// ([`CO_RESIDENCE_DAMP`], since one address can occasionally be a shared building).
+/// Bounded per place ([`CO_RESIDENCE_MAX_PER_PLACE`]), symmetric, canonically
+/// directed, deduped, deterministic. A co-resident who ALSO shares the surname gets
+/// this edge AND the kinship one (same `(from, to)`, this the stronger) — two
+/// independent angles agreeing.
+pub fn derive_co_residence(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    let person_by_name = persons_by_name(entities);
+    if person_by_name.is_empty() {
+        return Vec::new();
+    }
+    // Each specific dwelling's named residents (≥2, capped to a household) is a
+    // co-residence group; `emit_pairwise` links the household.
+    let groups = entities
+        .iter()
+        .filter(|e| {
+            e.kind == EntityKind::Address && !COARSE_ADDRESS_TAGS.iter().any(|t| e.has_tag(t))
+        })
+        .filter_map(|place| {
+            let mut residents = residents_of(place, &person_by_name);
+            (residents.len() >= 2).then(|| {
+                residents.truncate(CO_RESIDENCE_MAX_PER_PLACE);
+                residents
+            })
+        });
+    emit_pairwise(groups, RelationKind::AssociatedWith, scan_id, |a, b| {
+        a.confidence.min(b.confidence) * CO_RESIDENCE_DAMP
+    })
+}
+
+/// Emit one canonically-directed (`smaller-uid → larger`), deduplicated `kind` edge
+/// per distinct pair within each group, the confidence from `conf(from, to)`. The
+/// shared "clique → symmetric pairwise edges" core every group-based builder needs
+/// (co-residence, co-mention, shared-selector, canonical identities): each assembles
+/// the entity groups it judges related — already filtered / capped to its own rules —
+/// and this performs the pairing, canonical direction, cross-group dedup, and
+/// deterministic final ordering ONCE, instead of every builder re-implementing the
+/// same nested loop. Members are sorted by UID, so the edge set is independent of how
+/// a caller ordered each group.
+fn emit_pairwise<'a>(
+    groups: impl IntoIterator<Item = Vec<&'a Entity>>,
+    kind: RelationKind,
     scan_id: &str,
+    conf: impl Fn(&Entity, &Entity) -> f64,
+) -> Vec<Relation> {
+    use std::collections::HashSet;
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for mut members in groups {
+        members.sort_by(|a, b| a.uid.cmp(&b.uid));
+        for i in 0..members.len() {
+            for j in (i + 1)..members.len() {
+                let (a, b) = (members[i], members[j]);
+                let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
+                if from.uid != to.uid && seen.insert((from.uid.clone(), to.uid.clone())) {
+                    out.push(Relation::new(
+                        from.uid.as_str(),
+                        to.uid.as_str(),
+                        kind,
+                        conf(from, to),
+                        scan_id,
+                    ));
+                }
+            }
+        }
+    }
+    sort_edges(&mut out);
+    out
+}
+
+/// Universal shared-selector affiliation engine — the general "pivot on a shared
+/// selector" OSINT primitive that powers BOTH co-mention and infrastructure
+/// affiliation. Links distinct entities (of `kind`, or any kind if `None`) whose
+/// evidence carries the SAME value for one of the DISTINCTIVE `attrs` selectors.
+///
+/// A value shared by MORE than `crowd_cap` distinct entities is not individuating —
+/// a privacy-proxy registrant, a default fingerprint, a directory page shared by a
+/// crowd — so it mints NO edges (it would otherwise produce O(n²) noise). A value
+/// shared by a handful is the genuine tie this exists to surface. Emits one
+/// `damp`-scaled, canonically-directed `AssociatedWith` edge per affiliated pair;
+/// symmetric, deduped, bounded, and deterministic (sorted values and members). The
+/// abstraction is deliberate: a future selector pivot is a one-line config, not a new
+/// loop.
+fn link_by_shared_attribute(
+    entities: &[Entity],
+    scan_id: &str,
+    attrs: &[&str],
+    kind: Option<EntityKind>,
+    damp: f64,
+    crowd_cap: usize,
 ) -> Vec<Relation> {
     use std::collections::{HashMap, HashSet};
 
-    if entities.is_empty() {
+    // selector value -> the distinct entities whose evidence carries it.
+    let mut by_value: HashMap<String, Vec<&Entity>> = HashMap::new();
+    for e in entities
+        .iter()
+        .filter(|e| kind.as_ref().is_none_or(|k| k == &e.kind))
+    {
+        let mut seen_vals: HashSet<String> = HashSet::new();
+        for ev in &e.evidence {
+            for (key, val) in &ev.attributes {
+                if !attrs.iter().any(|a| key.eq_ignore_ascii_case(a)) {
+                    continue;
+                }
+                let v = val.trim().to_lowercase();
+                if !v.is_empty() && seen_vals.insert(v.clone()) {
+                    by_value.entry(v).or_default().push(e);
+                }
+            }
+        }
+    }
+    if by_value.is_empty() {
         return Vec::new();
     }
-
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
-    let mut out: Vec<Relation> = Vec::new();
-    // Global dedup so the same pair emitted by A, B, or C produces one edge.
-    let mut emitted: HashSet<(String, String)> = HashSet::new();
-
-    let mut push_pair = |a_uid: &str, b_uid: &str, out: &mut Vec<Relation>| {
-        let (from, to) = if a_uid <= b_uid {
-            (a_uid, b_uid)
-        } else {
-            (b_uid, a_uid)
-        };
-        let key = (from.to_string(), to.to_string());
-        if emitted.contains(&key) {
-            return;
-        }
-        emitted.insert(key);
-        let conf = by_uid
-            .get(from)
-            .map_or(0.5, |e| e.confidence)
-            .min(by_uid.get(to).map_or(0.5, |e| e.confidence));
-        out.push(Relation::new(
-            from,
-            to,
-            RelationKind::SameOperator,
-            conf,
-            scan_id,
-        ));
-    };
-
-    // ── Source A: shared registrant ──────────────────────────────────────────
-    {
-        let mut groups: HashMap<&str, Vec<&str>> = HashMap::new();
-        for r in relations
-            .iter()
-            .filter(|r| r.kind == RelationKind::RegisteredBy)
-        {
-            let (Some(dom), Some(reg)) = (
-                by_uid.get(r.from_uid.as_str()),
-                by_uid.get(r.to_uid.as_str()),
-            ) else {
-                continue;
-            };
-            if dom.kind != EntityKind::Domain
-                || !matches!(reg.kind, EntityKind::Organisation | EntityKind::Email)
-            {
-                continue;
-            }
-            if crate::util::domains::is_proxy_registrant(&reg.value, reg.kind == EntityKind::Email)
-            {
-                continue;
-            }
-            let members = groups.entry(r.to_uid.as_str()).or_default();
-            if !members.contains(&r.from_uid.as_str()) {
-                members.push(r.from_uid.as_str());
-            }
-        }
-        for (_, mut domains) in groups {
-            // Cap at 20 to avoid O(N²) explosion when a registrant or
-            // tracking ID is shared across hundreds of CDN-hosted domains.
-            if domains.len() < 2 || domains.len() > 20 {
-                continue;
-            }
-            domains.sort_unstable();
-            for i in 0..domains.len() {
-                for j in (i + 1)..domains.len() {
-                    push_pair(domains[i], domains[j], &mut out);
-                }
-            }
-        }
-    }
-
-    // ── Source B: shared dedicated IP ────────────────────────────────────────
-    {
-        let mut groups: HashMap<&str, Vec<&str>> = HashMap::new();
-        for r in relations
-            .iter()
-            .filter(|r| r.kind == RelationKind::ResolvesTo)
-        {
-            let (Some(dom), Some(ip)) = (
-                by_uid.get(r.from_uid.as_str()),
-                by_uid.get(r.to_uid.as_str()),
-            ) else {
-                continue;
-            };
-            if dom.kind != EntityKind::Domain || ip.kind != EntityKind::IpAddress {
-                continue;
-            }
-            if crate::core::validation::is_cdn_edge_ip(&ip.value)
-                || crate::core::validation::is_non_routable_ip(&ip.value)
-            {
-                continue;
-            }
-            let members = groups.entry(r.to_uid.as_str()).or_default();
-            if !members.contains(&r.from_uid.as_str()) {
-                members.push(r.from_uid.as_str());
-            }
-        }
-        for (_, mut domains) in groups {
-            if domains.len() < 2 {
-                continue;
-            }
-            domains.sort_unstable();
-            let mut registrables: Vec<String> = domains
-                .iter()
-                .filter_map(|u| by_uid.get(u))
-                .filter_map(|e| crate::util::domains::registrable_domain(&e.value))
-                .collect();
-            registrables.sort_unstable();
-            registrables.dedup();
-            if registrables.len() < 2 || registrables.len() > MAX_CO_HOSTED_REGISTRABLE {
-                continue;
-            }
-            for i in 0..domains.len() {
-                for j in (i + 1)..domains.len() {
-                    push_pair(domains[i], domains[j], &mut out);
-                }
-            }
-        }
-    }
-
-    // ── Source C: shared web-analytics ID ────────────────────────────────────
-    {
-        let domain_by_value: HashMap<&str, &Entity> = entities
-            .iter()
-            .filter(|e| e.kind == EntityKind::Domain)
-            .map(|e| (e.value.as_str(), e))
-            .collect();
-        for tid in entities.iter().filter(|e| e.kind == EntityKind::TrackingId) {
-            let mut sources: Vec<&str> = tid
-                .evidence
-                .iter()
-                .filter_map(|ev| ev.attributes.get("source_domain").map(String::as_str))
-                .collect();
-            sources.sort_unstable();
-            sources.dedup();
-            let matching: Vec<&str> = sources
-                .iter()
-                .filter_map(|s| domain_by_value.get(s).map(|e| e.uid.as_str()))
-                .collect();
-            if matching.len() < 2 {
-                continue;
-            }
-            for i in 0..matching.len() {
-                for j in (i + 1)..matching.len() {
-                    push_pair(matching[i], matching[j], &mut out);
-                }
-            }
-        }
-    }
-
-    out
+    // Keep only individuating groups (a handful share a real selector; a crowd shares a
+    // generic one); `emit_pairwise` handles direction, dedup, and deterministic order.
+    let groups = by_value
+        .into_values()
+        .filter(|members| (2..=crowd_cap).contains(&members.len()));
+    emit_pairwise(groups, RelationKind::AssociatedWith, scan_id, |a, b| {
+        a.confidence.min(b.confidence) * damp
+    })
 }
 
-// ── Social platform URL → username extraction (R14) ────────────────────────
-
-/// How to extract the embedded username from a known social platform URL.
-#[derive(Debug, Clone, Copy)]
-enum ExtractKind {
-    /// Take the `index`-th non-empty path segment (0-based after filtering).
-    /// `strip_at` removes a leading `'@'`; `strip_suffix` removes a known
-    /// trailing suffix (e.g. `".bsky.social"` in Bluesky profile URLs).
-    Segment {
-        index: usize,
-        strip_at: bool,
-        strip_suffix: Option<&'static str>,
-    },
-    /// The username is the value of query parameter `name` (e.g. HN `?id=`).
-    QueryParam { name: &'static str },
-}
-
-struct SocialMatcher {
-    host: &'static str,
-    extract: ExtractKind,
-}
-
-/// Static table mapping social-platform hosts to their username extraction rule.
-/// Must stay aligned with `modules::social_probe::USERNAME_PLATFORMS` — if a
-/// new platform is added there its host should appear here too, otherwise
-/// profiles from that platform won't generate `SameIdentity` edges.
-static SOCIAL_MATCHERS: &[SocialMatcher] = &[
-    // /{username} — segment 0, no prefix
-    SocialMatcher {
-        host: "www.facebook.com",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "twitter.com",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "x.com",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "www.instagram.com",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "github.com",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "gitlab.com",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "www.pinterest.com",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "dev.to",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "keybase.io",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "www.twitch.tv",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "vimeo.com",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "soundcloud.com",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "bitbucket.org",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "myspace.com",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "linktr.ee",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "about.me",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "www.behance.net",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "dribbble.com",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "www.imlive.com",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "www.mydirtyhobby.com",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "www.sextpanther.com",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "stripchat.com",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "www.loyalfans.com",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    // /@{username} — segment 0, strip leading '@'
-    SocialMatcher {
-        host: "www.tiktok.com",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: true,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "medium.com",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: true,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "mastodon.social",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: true,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "www.threads.net",
-        extract: ExtractKind::Segment {
-            index: 0,
-            strip_at: true,
-            strip_suffix: None,
-        },
-    },
-    // /{prefix}/{username} — segment 1 (skip one named prefix segment)
-    SocialMatcher {
-        host: "steamcommunity.com",
-        extract: ExtractKind::Segment {
-            index: 1,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "www.flickr.com",
-        extract: ExtractKind::Segment {
-            index: 1,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "open.spotify.com",
-        extract: ExtractKind::Segment {
-            index: 1,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "www.reddit.com",
-        extract: ExtractKind::Segment {
-            index: 1,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    SocialMatcher {
-        host: "www.livejasmin.com",
-        extract: ExtractKind::Segment {
-            index: 1,
-            strip_at: false,
-            strip_suffix: None,
-        },
-    },
-    // /profile/{username}.bsky.social — segment 1, strip domain suffix
-    SocialMatcher {
-        host: "bsky.app",
-        extract: ExtractKind::Segment {
-            index: 1,
-            strip_at: false,
-            strip_suffix: Some(".bsky.social"),
-        },
-    },
-    // query-param: ?id={username}
-    SocialMatcher {
-        host: "news.ycombinator.com",
-        extract: ExtractKind::QueryParam { name: "id" },
-    },
-];
-
-/// Extract the embedded username from a known social-platform profile URL.
-/// Returns `None` if the URL's host is not in `SOCIAL_MATCHERS`, the path
-/// segment is missing, or the extracted string is empty.
-fn extract_username_from_profile_url(url: &str) -> Option<String> {
-    let parsed = url::Url::parse(url).ok()?;
-    let host = parsed.host_str()?;
-    // Strip `www.` from both sides so `www.twitter.com` matches `twitter.com`
-    // and vice versa regardless of how the platform entry is keyed.
-    let canonical_host = host.strip_prefix("www.").unwrap_or(host);
-    let matcher = SOCIAL_MATCHERS.iter().find(|m| {
-        m.host
-            .strip_prefix("www.")
-            .unwrap_or(m.host)
-            .eq_ignore_ascii_case(canonical_host)
-    })?;
-
-    let username = match matcher.extract {
-        ExtractKind::Segment {
-            index,
-            strip_at,
-            strip_suffix,
-        } => {
-            let path = parsed.path();
-            let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-            let seg = segments.get(index).copied()?;
-            let seg = if strip_at {
-                seg.strip_prefix('@').unwrap_or(seg)
-            } else {
-                seg
-            };
-            let seg = if let Some(suffix) = strip_suffix {
-                seg.strip_suffix(suffix).unwrap_or(seg)
-            } else {
-                seg
-            };
-            if seg.is_empty() {
-                return None;
-            }
-            seg.to_ascii_lowercase()
-        }
-        ExtractKind::QueryParam { name } => parsed.query_pairs().find_map(|(k, v)| {
-            if k.as_ref() == name {
-                Some(v.to_ascii_lowercase())
-            } else {
-                None
-            }
-        })?,
-    };
-
-    if username.is_empty() {
-        None
-    } else {
-        Some(username)
-    }
-}
-
-/// Link `Username` entities to the social-platform `Url` entities whose
-/// embedded handle matches — making the identity hub explicit in the graph.
+/// Derive `AssociatedWith` CO-MENTION edges between distinct Persons NAMED IN THE
+/// SAME SOURCE document — the document-level complement of [`derive_co_residence`].
 ///
-/// Matching is case-insensitive: `"Rhino-Ryno23"` matches
-/// `"https://github.com/rhino-ryno23"`. The edge is directed
-/// `Username → Url` (from the abstract identity node to each of its confirmed
-/// platform manifestations). Confidence = `min(username.conf, url.conf)`,
-/// consistent with every other builder. No fan-out cap — a username may have
-/// arbitrarily many confirmed profiles across platforms.
-pub fn derive_profile_links(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
-    let usernames: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Username)
-        .collect();
-    if usernames.is_empty() {
+/// Reverse-engineered from how real relatives are actually linked: a single public
+/// source (an obituary, a family notice, a property title, one search result) names
+/// both, but the engine extracts each as a SEPARATE Person and discards the "same
+/// source" tie. This recovers it via the universal [`link_by_shared_attribute`]
+/// engine over the source selectors — the free, offline angle for relatives and
+/// associates a shared surname or address can't reach. Precision-gated
+/// ([`CO_MENTION_MAX_PERSONS_PER_SOURCE`]: a crowded source is a directory, skipped)
+/// and damped ([`CO_MENTION_DAMP`]) below co-residence and a declared link, so a
+/// same-surname co-mentioned pair keeps its stronger kinship edge.
+pub fn derive_co_mention(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    link_by_shared_attribute(
+        entities,
+        scan_id,
+        CO_MENTION_SOURCE_ATTRS,
+        Some(EntityKind::Person),
+        CO_MENTION_DAMP,
+        CO_MENTION_MAX_PERSONS_PER_SOURCE,
+    )
+}
+
+/// Derive `AssociatedWith` AFFILIATION edges between entities that share a DISTINCTIVE
+/// owner / infrastructure SELECTOR — the universal reverse-WHOIS / fingerprint pivot,
+/// domain-agnostic and forward-operating on any scan.
+///
+/// Real-world archetype it generalises: a corporate seed and its hidden subsidiary are
+/// linked because their domains share a registrant; two servers are one operator's
+/// because they share a TLS certificate or SSH key; two profiles are one person's
+/// because they share a gravatar. The engine extracts each as a separate entity but
+/// the SHARED SELECTOR — already in their evidence ([`AFFILIATION_SELECTOR_ATTRS`]) —
+/// is the tie. This materialises it as a direct affiliation edge via
+/// [`link_by_shared_attribute`], so a single seed reaches the affiliate it was never
+/// explicitly named with.
+///
+/// Precision is the curated, individuating selector set (registrant identity, crypto
+/// fingerprint, gravatar — never a generic registrar / country / provider) plus the
+/// [`AFFILIATION_CROWD_CAP`]: a value shared by a crowd is a privacy proxy or a default
+/// fingerprint, not an owner, and is skipped. Damped ([`AFFILIATION_DAMP`]), symmetric,
+/// deduped, bounded, deterministic. Any kind qualifies (domains, hosts, orgs, emails),
+/// so it improves every scan that surfaces these selectors, regardless of subject.
+pub fn derive_shared_selector(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    link_by_shared_attribute(
+        entities,
+        scan_id,
+        AFFILIATION_SELECTOR_ATTRS,
+        None,
+        AFFILIATION_DAMP,
+        AFFILIATION_CROWD_CAP,
+    )
+}
+
+/// Derive `SameAs` edges between distinct entities the canonical resolver proves are
+/// the SAME real-world identity wearing two contexts — the reflexive self-pairing
+/// pivot ([`crate::core::resolve`]).
+///
+/// The resolver folds provider-specific representations to one canonical form (Gmail
+/// dot / `+tag` blindness, phone digit-only, order-insensitive names), so two entities
+/// the engine extracted SEPARATELY — `j.ohn+work@gmail.com` and `john@gmail.com`, a
+/// phone in national and E.164 form, "Jane Citizen" and "Citizen, Jane" — are revealed
+/// as one identity in two contexts. This wires that previously analysis-only signal
+/// into the graph: a single seed and every contextual variant of it collapse to one
+/// connected node for traversal, so the variant is a valid state-mutating self-pairing,
+/// not a new stranger. Strong by construction (the resolver only groups EXACT canonical
+/// collisions, never fuzzy guesses), so it carries full endpoint trust rather than a
+/// damp. Symmetric, canonically directed (smaller-uid → larger), deduped, deterministic.
+pub fn derive_canonical_identities(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::HashMap;
+
+    let groups = crate::core::resolve::suggest_merges(entities);
+    if groups.is_empty() {
         return Vec::new();
     }
-
-    // Build a lowercase-keyed index for O(1) lookup per URL entity.
-    let username_index: std::collections::HashMap<String, &Entity> = usernames
-        .iter()
-        .map(|e| (e.value.to_ascii_lowercase(), *e))
-        .collect();
-
-    let mut out = Vec::new();
-    for url_entity in entities.iter().filter(|e| e.kind == EntityKind::Url) {
-        let Some(extracted) = extract_username_from_profile_url(&url_entity.value) else {
-            continue;
-        };
-        let Some(&uname_entity) = username_index.get(&extracted) else {
-            continue;
-        };
-        let conf = uname_entity.confidence.min(url_entity.confidence);
-        out.push(Relation::new(
-            uname_entity.uid.as_str(),
-            url_entity.uid.as_str(),
-            RelationKind::SameIdentity,
-            conf,
-            scan_id,
-        ));
-    }
-    out
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    // Resolve each canonical group's member UIDs back to entities; `emit_pairwise`
+    // links every distinct variant pair as the same node.
+    let entity_groups = groups.iter().map(|group| {
+        group
+            .members
+            .iter()
+            .filter_map(|uid| by_uid.get(uid.as_str()).copied())
+            .collect::<Vec<&Entity>>()
+    });
+    emit_pairwise(entity_groups, RelationKind::SameAs, scan_id, |a, b| {
+        a.confidence.min(b.confidence)
+    })
 }
 
 /// Derive every deterministic, evidence-grounded relation the engine knows how
-/// to reconstruct from a persisted entity set alone — structural ownership, geo
-/// co-location, DNS resolution, WHOIS registration, name lineage, operator
-/// co-ownership, and identity-profile links — in a single stable order. This is the lineage-free counterpart
-/// to the live scan's relation pass: the import paths (CLI `hse import` and the
-/// web `scan_import` upload) have no in-flight expansion edges, but every edge
-/// derivable from the entities + their evidence still applies, so an imported
-/// dossier gets the same graph a live scan would. One definition so the live and
-/// import paths can't drift on which relations a finished scan carries.
+/// to reconstruct from a persisted entity set alone — the infrastructure layer
+/// (structural ownership, geo co-location, DNS resolution, WHOIS registration,
+/// name lineage) and the identity layer (handle aliases, identifier ownership,
+/// residency, kinship, co-residence) — in a single stable order. This is the
+/// lineage-free
+/// counterpart to the live scan's relation pass: the import paths (CLI `hse
+/// import` and the web `scan_import` upload) have no in-flight expansion edges,
+/// but every edge derivable from the entities + their evidence still applies, so
+/// an imported dossier gets the same graph a live scan would. One definition so
+/// the live and import paths can't drift on which relations a finished scan
+/// carries.
 pub fn derive_all(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     let mut out = derive_structural(entities, scan_id);
     out.extend(derive_colocation(entities, scan_id));
     out.extend(derive_resolution(entities, scan_id));
     out.extend(derive_registration(entities, scan_id));
     out.extend(derive_name_lineage(entities, scan_id));
-    // Co-ownership — needs RegisteredBy and ResolvesTo edges built above.
-    let co = derive_co_ownership(entities, &out, scan_id);
-    out.extend(co);
-    // Identity-profile links — Username → social profile Url (R14).
-    out.extend(derive_profile_links(entities, scan_id));
+    out.extend(derive_handles(entities, scan_id));
+    out.extend(derive_identity_ownership(entities, scan_id));
+    out.extend(derive_residency(entities, scan_id));
+    out.extend(derive_kinship(entities, scan_id));
+    // Co-residence after kinship: an evidence-grounded household edge (×0.8)
+    // outranks a surname guess (×0.5) on the same pair, and links the
+    // DIFFERENT-surname household members kinship can't reach.
+    out.extend(derive_co_residence(entities, scan_id));
+    // Co-mention after co-residence: the document-level association analog — people a
+    // single SOURCE names together (an obituary, a family notice, one result page).
+    // Damped below co-residence; a same-surname co-mentioned pair keeps its stronger
+    // kinship edge, so independent angles corroborate rather than double-count.
+    out.extend(derive_co_mention(entities, scan_id));
+    // Shared-selector affiliation: entities sharing a DISTINCTIVE owner / infra
+    // selector (registrant, TLS/SSH fingerprint, gravatar) — the universal
+    // reverse-WHOIS / fingerprint pivot, domain-agnostic across every scan.
+    out.extend(derive_shared_selector(entities, scan_id));
+    // Canonical identities: collapse contextual VARIANTS of one entity (Gmail dot/+tag,
+    // phone formats, name reorderings) into SameAs edges via the canonical resolver —
+    // the reflexive self-pairing that makes a seed and its variants one traversable node.
+    out.extend(derive_canonical_identities(entities, scan_id));
+    // Declared associations LAST so a `(from, kind, to)` edge a surname guess or a
+    // co-residence inference already emitted is re-emitted here at full (declared)
+    // confidence — the later, higher-trust edge wins on idempotent upsert.
+    out.extend(derive_declared_associations(entities, scan_id));
     out
 }

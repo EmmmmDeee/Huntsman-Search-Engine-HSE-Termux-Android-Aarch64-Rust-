@@ -38,6 +38,13 @@ pub(super) fn parse_dossier(
     let mut section = DossierSection::None;
     let mut entry: Vec<(String, String)> = Vec::new();
 
+    // A UTF-8 BOM (the "UTF-8 with BOM" default of Excel / Notepad / many
+    // exporters) is U+FEFF, which is NOT whitespace — `str::trim` leaves it on the
+    // first line, turning `EMAILS:` into `\u{feff}EMAILS:`. That matches no section
+    // header, so the ENTIRE first section (and its `-> value` items) was silently
+    // dropped. Strip a single leading BOM once at ingest.
+    let body = body.strip_prefix('\u{feff}').unwrap_or(body);
+
     for raw in body.lines() {
         let line = raw.trim();
         if line.is_empty() {
@@ -110,6 +117,60 @@ pub(super) fn parse_dossier(
                 "password",
                 "cookie",
                 "session",
+                // Breach-PII correlator join-keys (AU-073/074/075): date of
+                // birth (the namesake disambiguator), Australian government
+                // identifiers (the critical identity-theft exposure), and stated
+                // relationships. Normalised to the canonical key each rule scans.
+                "date_of_birth",
+                "dob",
+                "tfn",
+                "tax_file_number",
+                "medicare",
+                "medicare_number",
+                "crn",
+                "centrelink_crn",
+                "licence",
+                "license",
+                "drivers_licence",
+                "drivers_license",
+                "passport",
+                "passport_number",
+                "spouse",
+                "partner",
+                "next_of_kin",
+                "emergency_contact",
+                "father",
+                "mother",
+                "owner_name",
+                // Common spelling/aliasing variants of the above that the
+                // AU-073/074/075 rules ALSO scan — without them a dump that uses
+                // e.g. `birthday`, `centrelink`, or `wife` would be silently
+                // dropped and the rule could never fire. Keep the parser's
+                // preserve-set aligned with the rules' scan-set.
+                "birth_date",
+                "birthday",
+                "dateofbirth",
+                "born",
+                "taxfilenumber",
+                "tax_file_no",
+                "medicare_no",
+                "medicarecard",
+                "centrelink",
+                "customer_reference_number",
+                "driver_licence",
+                "driver_license",
+                "licence_number",
+                "license_number",
+                "dl_number",
+                "passport_no",
+                "husband",
+                "wife",
+                "nextofkin",
+                "emergency_contact_name",
+                "parent",
+                "guardian",
+                "dependent",
+                "relationship",
             ];
             if !val.is_empty() && FIELDS.contains(&key.as_str()) {
                 entry.push((key, val.to_string()));

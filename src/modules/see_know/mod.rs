@@ -87,15 +87,15 @@ impl Module for SeekNow {
     }
 
     fn priority(&self) -> u8 {
-        // Runs BEFORE oathnet_pro (127). Operator directive: SeekNow is always
-        // prioritised above OathNet — its corpus already incorporates OathNet's
-        // and supersedes it in most ways, so it must query first and seed the
-        // graph (and the per-target dispatch cache) ahead of OathNet, which then
-        // only adds whatever marginal records SeekNow didn't already return.
-        // Both are Multiplier-tier Paid modules in Phase 1 of concurrent
-        // dispatch; Phase 1 runs Paid modules in priority order, so 128 > 127
-        // guarantees SeekNow goes first.
-        128
+        // Operator directive: SeekNow is the HIGHEST-PRIORITY API at all times —
+        // its corpus incorporates OathNet's and supersedes it, and it is the one
+        // paid source that returns relatives/associates (the family graph). So it
+        // is pinned to `u8::MAX`: it queries first in Phase 1 (Paid modules run in
+        // priority order), seeding the graph and the per-target dispatch cache
+        // ahead of every other module, and gets first claim on the per-round paid
+        // budget. No other module should out-rank it; 255 leaves headroom above
+        // the next-highest (200) so this holds even as priorities are retuned.
+        u8::MAX
     }
 
     fn cost(&self) -> ModuleCost {
@@ -169,6 +169,16 @@ impl Module for SeekNow {
         // abort see_know before the upstream responds. 80s gives headroom while
         // staying bounded.
         80_000
+    }
+
+    fn termux_timeout_cap_exempt(&self) -> bool {
+        // see_know's /search has a ~55s server-side cap and answers in 50–60s.
+        // The 45s Termux module cap would kill EVERY phone scan with a
+        // timeout-exit and zero data — silently wasting the operator's highest-
+        // priority paid source on the very platform HSE targets. As the operator
+        // explicitly enabled this key, keep its full (still-bounded) 80s budget
+        // on Termux too so the upstream response is actually awaited.
+        true
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

@@ -16,10 +16,7 @@
 //! correlator's AU-045 "multi-service identity confirmation" (rather than echoing
 //! a single source). Official, stable, and rate-limit-free.
 
-use std::sync::OnceLock;
-
 use async_trait::async_trait;
-use regex::Regex;
 use serde::Deserialize;
 
 use crate::core::{
@@ -28,6 +25,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::extract::{EMAIL_RE, URL_RE};
 use crate::util::http::fetch_json;
 
 const SRC: &str = "hacker_news";
@@ -45,18 +43,6 @@ pub(super) struct HnUser {
     pub(super) about: Option<String>,
     #[serde(default)]
     pub(super) submitted: Option<Vec<i64>>,
-}
-
-/// Email + http(s) URL extractors for the free-text `about` bio. Compiled once
-/// (codebase convention) — the bio is small but the module runs per scan.
-fn bio_patterns() -> &'static (Regex, Regex) {
-    static RES: OnceLock<(Regex, Regex)> = OnceLock::new();
-    RES.get_or_init(|| {
-        (
-            Regex::new(r"[\w.+-]+@[\w-]+\.[\w.-]+").expect("constant bio email regex"),
-            Regex::new(r#"https?://[^\s"'<>)]+"#).expect("constant bio url regex"),
-        )
-    })
 }
 
 #[async_trait]
@@ -107,12 +93,7 @@ impl Module for HackerNews {
         let handle = target.value.trim();
         // HN handles are 2–15 chars of [A-Za-z0-9_-]. Reject anything else
         // before spending an HTTP round-trip.
-        if handle.len() < 2
-            || handle.len() > 15
-            || !handle
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        {
+        if !crate::util::str_util::is_handle(handle, 2, 15) {
             return Ok(ModuleResult::new());
         }
 
@@ -162,8 +143,7 @@ pub(super) fn build_entities(user: HnUser, scan_id: &str) -> Vec<Entity> {
     result.push(u);
 
     if let Some(about) = user.about.as_deref() {
-        let (email_re, url_re) = bio_patterns();
-        if let Some(m) = email_re.find(about) {
+        if let Some(m) = EMAIL_RE.find(about) {
             let email = m.as_str().to_lowercase();
             let mut e = Entity::new(EntityKind::Email, &email, 0.78, scan_id);
             e.tag("hacker-news");
@@ -174,7 +154,7 @@ pub(super) fn build_entities(user: HnUser, scan_id: &str) -> Vec<Entity> {
             );
             result.push(e);
         }
-        if let Some(m) = url_re.find(about) {
+        if let Some(m) = URL_RE.find(about) {
             let link = m.as_str().trim_end_matches(['.', ',', ')']);
             let mut url_e = Entity::new(EntityKind::Url, link, 0.72, scan_id);
             url_e.tag("hacker-news");
@@ -201,7 +181,7 @@ async fn fetch_algolia_submissions(
     );
     let Ok(resp) = http
         .get(&url)
-        .header("User-Agent", "HSE/1.0 OSINT research tool")
+        .header("User-Agent", crate::util::http::UA_OSINT)
         .send()
         .await
     else {
@@ -210,24 +190,20 @@ async fn fetch_algolia_submissions(
     if !resp.status().is_success() {
         return Vec::new();
     }
-    let Ok(body) = resp.text().await else {
+    // Capped read (32 MiB) for the needle scan below — an uncapped `text()`
+    // would buffer an unbounded body on the low-RAM Termux target.
+    let Some(body) =
+        crate::util::http::read_body_capped(resp, crate::util::http::JSON_BODY_CAP).await
+    else {
         return Vec::new();
     };
 
-    let mut domains: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut remaining = body.as_str();
-    // Extract URLs from "url":"..." fields
-    while let Some(pos) = remaining.find("\"url\":\"") {
-        remaining = &remaining[pos + 7..];
-        let Some(end) = remaining.find('"') else {
-            break;
-        };
-        let url_str = &remaining[..end];
-        if let Some(domain) = extract_domain_from_url(url_str) {
-            domains.insert(domain);
-        }
-        remaining = &remaining[end..];
-    }
+    // Extract URLs from "url":"..." fields, then reduce to deduped domains.
+    let domains: std::collections::HashSet<String> =
+        crate::util::json::scan_string_field(&body, "url")
+            .iter()
+            .filter_map(|url_str| extract_domain_from_url(url_str))
+            .collect();
 
     domains
         .into_iter()

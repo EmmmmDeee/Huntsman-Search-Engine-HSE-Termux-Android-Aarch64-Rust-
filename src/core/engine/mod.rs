@@ -32,12 +32,17 @@ mod circuit;
 mod dispatch;
 mod enrich;
 mod expansion;
+mod history;
 mod ledger;
 mod passes;
 mod timeout;
 mod writer;
 pub use ledger::DispatchLog;
-use passes::{consolidate_address_localities, hot_inject_keys};
+use passes::{
+    consolidate_address_localities, flag_geo_discordant_namesakes, hot_inject_keys,
+    promote_cross_scan_corroborated, promote_geo_corroborated_family,
+    promote_multipath_corroborated,
+};
 use writer::DbWriter;
 // The per-target dispatch context (`DispatchCx`) and the mutable accumulator
 // bundle (`DispatchState`) are constructed here — at the seed-round and
@@ -50,7 +55,10 @@ use dispatch::{
     dispatch_key, log_module_dispatch, module_skip_reason, run_module_guarded,
     target_distinct_sources,
 };
-use enrich::{address_to_coords_pass, enrich_geospatial, scan_entity_for_keys, seed_anchor_entity};
+use enrich::{
+    address_to_coords_pass, enrich_geospatial, scan_entity_for_keys, seed_anchor_entity,
+    tag_breach_sector,
+};
 use expansion::{
     apply_roi_cutoff, budget_check, cmp_expansion_candidates, correlation_key, visit_key,
 };
@@ -383,7 +391,8 @@ impl ScanEngine {
         // (default on); `hse config feature.recall off` for a leave-no-memory
         // session. Skipped on a pre-cancelled scan (clean no-op invariant).
         if !ctx.cancel.is_cancelled() && crate::util::settings::get_bool("feature.recall", true) {
-            let recalled = self.recall_prior_entities(&target, &scan.id);
+            let recalled =
+                self.recall_prior_entities(&target, &scan.id, scan.options.allow_live_sensors);
             let n = recalled.len();
             for entity in recalled {
                 if let Some(existing) = entity_map.get_mut(&entity.uid) {
@@ -416,6 +425,7 @@ impl ScanEngine {
                 target: &target,
                 opts: &opts,
                 is_expansion: false,
+                seed_kind: target.kind,
             };
             let mut dstate = DispatchState {
                 entity_map: &mut entity_map,
@@ -458,6 +468,26 @@ impl ScanEngine {
             };
             let _ = self
                 .run_expansion(&scan.id, &target, &mut ctx, &opts, started, est)
+                .await;
+
+            // Active gap-fill (last leg of the recursive-linking program): for any
+            // single-route link the expansion gates left fragile, run the missing
+            // orthogonal family's modules on the gap endpoints to pursue the
+            // corroborating pathway AU-063 names. Bounded + toggle-gated; any new
+            // entities flow into finalise below.
+            let _ = self
+                .run_gap_fill(
+                    &scan.id,
+                    &target,
+                    &mut ctx,
+                    &opts,
+                    started,
+                    &mut entity_map,
+                    &mut visited,
+                    &mut stats,
+                    &mut *dispatched,
+                    &mut lineage,
+                )
                 .await;
         }
 
@@ -533,6 +563,37 @@ impl ScanEngine {
             // contributed, folding such variants into the most-specific one. It is
             // the engine-level backstop to the per-module dedup in `search_engines`.
             consolidate_address_localities(&mut entities);
+            // Free, offline cross-angle confirmation: a shared-surname
+            // family-candidate whose postcode resolves into the subject's confirmed
+            // area is corroborated by a SECOND independent signal (the subject's
+            // own GPS fix) and promoted from a lone candidate to a reliable
+            // relative — so every scan's geo-confirmed family reads as reliable,
+            // not 0.3 noise. Runs after consolidation so it sees the final set.
+            promote_geo_corroborated_family(&mut entities);
+            // Precision complement (free, offline): a same-surname family-candidate
+            // a whole region away from the subject's confirmed fix shares only the
+            // name, so it is tagged `geo-discordant` to demote it in the leads —
+            // telling the real local family from interstate look-alikes. Tag-only,
+            // so it never inflates confidence; runs after promotion (the two bands
+            // are disjoint, but a corroborated relative is then never re-examined).
+            flag_geo_discordant_namesakes(&mut entities);
+            // Local intelligence flywheel: tag any specific personal identifier
+            // (phone/email/handle/named person/precise address) that ALSO appears
+            // in an earlier scan in the store — a cross-investigation bridge recall
+            // (seed-centric) never makes. Runs before persist so a hit is genuinely
+            // prior; provenance only, so it never inflates confidence.
+            history::link_cross_scan_history(store.as_ref(), &mut entities, &scan.id);
+            // Co-occurrence flywheel: when two specific identifiers that appeared TOGETHER
+            // in an earlier scan both reappear now, tag the recurring association — a
+            // stronger, data-driven historical link than single-value recurrence. Same
+            // contract: before persist, provenance-only, never inflates confidence.
+            history::link_cross_scan_cooccurrence(store.as_ref(), &mut entities, &scan.id);
+            // Relation recall: when a reappearing identifier was SEMANTICALLY linked
+            // (located_at / identified_by / alias_of / associated_with / registered_by)
+            // to something in a prior scan, surface that known connection now — pulling
+            // a past conclusion forward as a lead, often to an entity not even present
+            // this scan. Same contract: before persist, provenance-only, never inflates.
+            history::link_cross_scan_relations(store.as_ref(), &mut entities, &scan.id);
             // Determinism: normalise each entity's evidence/tags ordering before
             // persist, so concurrent dispatch's completion-order merging can't leak
             // into the stored/exported result (see `Entity::canonicalize_order`).
@@ -667,6 +728,155 @@ impl ScanEngine {
                 Err(e) => warn!(scan_id = %scan.id, error = %e, "correlator failed"),
             }
 
+            // ── Cross-scan pathway-template learning (C1 universal linking) ──
+            // Generalise this scan's confirmed connections into direction-
+            // canonical routes. A route a *prior* scan already proved is credited
+            // here as historically corroborated (the engine-level AU-065 finding —
+            // it is storage-dependent, so it can't be a pure correlator rule);
+            // then every route this scan produced is recorded, so a link learned
+            // once lifts every later scan. A *fragile* single-pathway link (the
+            // AU-063 gap) whose route shape is proven in ≥2 prior scans is the
+            // engine-level AU-066 finding: accumulated cross-scan knowledge is the
+            // orthogonal pathway that fills the gap, and its endpoints are queued
+            // (`xscan_boost`) for the conservative boost below. Best-effort: a
+            // storage hiccup never aborts a finalised scan.
+            let mut xscan_boost: HashMap<String, String> = HashMap::new();
+            if let (Ok(ents), Ok(rels)) = (
+                store.entities_for_scan(&scan.id),
+                store.relations_for_scan(&scan.id),
+            ) {
+                // The fragile single-route identity pairs (a<b) — exactly AU-063's
+                // notion of an uncorroborated link, via the shared detector so the
+                // gap the lead flags is the gap the engine fills.
+                let fragile: HashSet<(String, String)> =
+                    crate::core::correlator::single_route_identity_links(&ents, &rels)
+                        .into_iter()
+                        .map(|l| (l.a_uid, l.b_uid))
+                        .collect();
+                for ct in crate::core::relation::connection_templates(&ents, &rels, 4) {
+                    let prior = store.pathway_template_count(&ct.template).unwrap_or(0);
+                    if prior >= 1 {
+                        let mut uids: std::collections::BTreeSet<String> =
+                            std::collections::BTreeSet::new();
+                        for (f, t) in &ct.pairs {
+                            uids.insert(f.clone());
+                            uids.insert(t.clone());
+                        }
+                        let c = crate::core::correlator::Correlation::new(
+                            "AU-065",
+                            "Cross-scan corroborated route",
+                            crate::core::correlator::Severity::Medium,
+                            format!(
+                                "the route [{}] connecting {} identity pair(s) here was \
+                                 confirmed in {} prior scan(s) — a historically proven \
+                                 attribution pattern, not a one-off",
+                                ct.template,
+                                ct.pairs.len(),
+                                prior,
+                            ),
+                            uids.into_iter().collect::<Vec<_>>(),
+                            scan.id.as_str(),
+                            crate::core::entity::unix_now(),
+                        );
+                        if store.upsert_correlation(&c).is_ok()
+                            && emitted_corr.insert(correlation_key(&c))
+                        {
+                            emitter.emit(
+                                &scan.id,
+                                EventKind::CorrelationFound { correlation: c },
+                            );
+                        }
+                    }
+                    // AU-066 — cross-scan route fills a single-pathway gap. A
+                    // fragile link whose route shape is proven in ≥2 PRIOR scans
+                    // (stricter than AU-065's ≥1, to keep the gap-fill conservative)
+                    // is corroborated by the proven attribution method itself: the
+                    // accumulated cross-scan pathway is the orthogonal route the
+                    // AU-063 gap was missing. Its endpoints are queued for the boost.
+                    if prior >= 2 {
+                        for (f, t) in &ct.pairs {
+                            if !fragile.contains(&(f.clone(), t.clone())) {
+                                continue; // only fragile (single-route) links are gaps to fill
+                            }
+                            let reason = format!(
+                                "the single-pathway link's route shape [{}] was independently \
+                                 confirmed in {prior} prior scans — the proven attribution method \
+                                 is the orthogonal pathway that fills the single-route gap",
+                                ct.template,
+                            );
+                            let c = crate::core::correlator::Correlation::new(
+                                "AU-066",
+                                "Cross-scan route fills single-pathway gap",
+                                crate::core::correlator::Severity::Medium,
+                                reason.clone(),
+                                vec![f.clone(), t.clone()],
+                                scan.id.as_str(),
+                                crate::core::entity::unix_now(),
+                            );
+                            if store.upsert_correlation(&c).is_ok()
+                                && emitted_corr.insert(correlation_key(&c))
+                            {
+                                emitter.emit(
+                                    &scan.id,
+                                    EventKind::CorrelationFound { correlation: c },
+                                );
+                            }
+                            xscan_boost
+                                .entry(f.clone())
+                                .or_insert_with(|| reason.clone());
+                            xscan_boost.entry(t.clone()).or_insert(reason);
+                        }
+                    }
+                    let _ = store.record_pathway_template(&ct.template);
+                }
+            }
+
+            // ── Corroboration boosts: confirmed links strengthen the entities ──
+            // Two orthogonal corroboration signals feed back into the entity set so
+            // the scan's OUTPUT reflects what its own analysis established:
+            //   • multipath (C2): a link AU-062 proved via ≥2 edge-disjoint,
+            //     source-orthogonal IN-SCAN routes — robust to any one source going
+            //     dark (built on the SAME detector the rule uses).
+            //   • cross-scan (AU-066): a fragile single-route link whose route shape
+            //     is proven in ≥2 PRIOR scans — accumulated knowledge fills the gap.
+            // Both tag + evidence-stamp only the identity ENDPOINTS, are idempotent
+            // via their tags, and use unscored ("other") evidence sources so they
+            // never feed back to inflate the in-scan orthogonality measure.
+            // Best-effort and conditional: the single re-persist runs only when a
+            // boost actually fires and never aborts a finalised scan.
+            {
+                let mut boosted_any = false;
+                if let Ok(rels) = store.relations_for_scan(&scan.id) {
+                    boosted_any |= promote_multipath_corroborated(&mut entities, &rels) > 0;
+                }
+                boosted_any |= promote_cross_scan_corroborated(&mut entities, &xscan_boost) > 0;
+                if boosted_any {
+                    let boosted: Vec<Entity> = entities
+                        .iter_mut()
+                        .filter(|e| {
+                            e.has_tag("multipath-corroborated")
+                                || e.has_tag("cross-scan-corroborated")
+                        })
+                        .map(|e| {
+                            e.canonicalize_order();
+                            e.clone()
+                        })
+                        .collect();
+                    match store.upsert_entities_batch(&boosted) {
+                        Ok(n) => info!(
+                            scan_id = %scan.id,
+                            boosted = n,
+                            "corroboration-boosted identities re-persisted (confirmed links strengthened the scan)"
+                        ),
+                        Err(e) => warn!(
+                            scan_id = %scan.id,
+                            error = %e,
+                            "corroboration boost re-persist failed (non-fatal)"
+                        ),
+                    }
+                }
+            }
+
             // Persist the key pool to disk after every scan. Keys discovered
             // during this scan (from breach data, page bodies, entity values)
             // are permanently stored with full provenance metadata.
@@ -796,7 +1006,12 @@ impl ScanEngine {
     /// so the caps drop the weakest leads first) to keep the working set sane on
     /// a 4 GB device. Best-effort: storage errors log and yield nothing rather
     /// than failing the scan.
-    fn recall_prior_entities(&self, target: &Target, scan_id: &str) -> Vec<Entity> {
+    fn recall_prior_entities(
+        &self,
+        target: &Target,
+        scan_id: &str,
+        allow_live_sensors: bool,
+    ) -> Vec<Entity> {
         use crate::core::entity::{EntityKind, Evidence, derive_uid, normalise};
         const MAX_PRIOR_SCANS: usize = 8;
         const MAX_ENTITIES: usize = 300;
@@ -891,6 +1106,25 @@ impl ScanEngine {
                 }
             };
             for mut e in ents {
+                // Noise gate: a purely live-sensor-derived entity (the operator's
+                // own RF/network environment — Wi-Fi APs, ARP hosts, the device
+                // GPS fix) must not be recalled into a scan that hasn't activated
+                // the sensors. That would re-inject, from cache, exactly the
+                // contamination the dispatch gate keeps out of fresh runs. A prior
+                // recall may have stamped its own `recall` source onto the stored
+                // node, so that pseudo-source is ignored: the entity is dropped
+                // when EVERY remaining (real) source is a live-sensor module.
+                if !allow_live_sensors {
+                    let mut real = e
+                        .evidence
+                        .iter()
+                        .map(|ev| ev.source.as_str())
+                        .filter(|s| *s != "recall")
+                        .peekable();
+                    if real.peek().is_some() && real.all(|s| LOCAL_PASSIVE_MODULES.contains(&s)) {
+                        continue;
+                    }
+                }
                 e.scan_id = scan_id.to_string();
                 e.tag(crate::core::tags::RECALLED);
                 e.add_evidence(Evidence::new(
@@ -923,6 +1157,141 @@ impl ScanEngine {
         });
         out.truncate(MAX_ENTITIES);
         out
+    }
+
+    /// Active gap-fill — pursue the corroborating pathway AU-063 only names.
+    ///
+    /// After expansion, a single-route (fragile) identity link is a connection no
+    /// independent pathway corroborates. AU-063 reports *which* orthogonal source
+    /// family would confirm it; this runs the modules of that family on the gap
+    /// endpoints to actually go and find the link. Confined to the missing
+    /// families (not the endpoint's whole module graph), it seeks corroboration of
+    /// an already-confirmed connection rather than chasing a graph-adjacent
+    /// stranger's footprint — and it is bounded (a small probe cap, budget- and
+    /// cancel-gated) and honours passive/free/exclude exactly as expansion does.
+    /// New entities flow into finalise normally. Toggle: `feature.gap_fill` (ON).
+    /// Returns the number of endpoints probed.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_gap_fill(
+        &self,
+        scan_id: &str,
+        seed: &Target,
+        ctx: &mut ModuleContext,
+        opts: &ScanOptions,
+        started: Instant,
+        entity_map: &mut HashMap<String, Entity>,
+        visited: &mut HashSet<(TargetKind, String)>,
+        stats: &mut ModuleStats,
+        dispatched: &mut DispatchLog,
+        relations: &mut Vec<Relation>,
+    ) -> usize {
+        const MAX_PROBES: usize = 8;
+
+        if !crate::util::settings::get_bool(crate::util::settings::GAP_FILL_FEATURE, true) {
+            return 0;
+        }
+
+        // The gap analysis needs the full relation graph the finaliser will build:
+        // the in-flight lineage edges plus the structural edges derivable from the
+        // current entity set. Derive once, off a snapshot.
+        let ents: Vec<Entity> = entity_map.values().cloned().collect();
+        let mut rels = relations.clone();
+        rels.extend(crate::core::relation::derive_all(&ents, scan_id));
+
+        let probes = crate::core::correlator::gap_fill_probes(&ents, &rels);
+        if probes.is_empty() {
+            return 0;
+        }
+
+        let by_uid: HashMap<&str, &Entity> = ents.iter().map(|e| (e.uid.as_str(), e)).collect();
+        let mut before: HashSet<String> = HashSet::new();
+        let mut probed = 0usize;
+
+        for probe in probes {
+            if probed >= MAX_PROBES
+                || ctx.cancel.is_cancelled()
+                || budget_check(opts, started, entity_map.len()).is_some()
+            {
+                break;
+            }
+            let Some(&ep) = by_uid.get(probe.endpoint_uid.as_str()) else {
+                continue;
+            };
+            let Some(tk) = TargetKind::from_entity_kind(&ep.kind) else {
+                continue;
+            };
+            let target = Target::new(tk, ep.value.clone());
+            // Endpoints already expanded ran their whole module graph; the value is
+            // in the gap endpoints the expansion gates held back.
+            if visited.contains(&visit_key(&target)) {
+                continue;
+            }
+            // Only the modules in the MISSING orthogonal families the operator
+            // hasn't excluded — the corroboration-seeking set, classified by the
+            // same `source_family` the gap analysis uses.
+            let mut allow: Vec<String> = self
+                .modules
+                .iter()
+                .filter(|m| {
+                    let fam = crate::core::correlator::source_family(m.name());
+                    probe.missing_families.contains(&fam)
+                })
+                .map(|m| m.name().to_string())
+                .collect();
+            if let Some(user_allow) = &opts.modules {
+                allow.retain(|m| user_allow.contains(m));
+            }
+            if allow.is_empty() {
+                continue;
+            }
+
+            let gap_opts = ScanOptions {
+                modules: Some(allow),
+                ..opts.clone()
+            };
+
+            before.clear();
+            before.extend(entity_map.keys().cloned());
+            {
+                let cx = DispatchCx {
+                    scan_id,
+                    target: &target,
+                    opts: &gap_opts,
+                    is_expansion: true,
+                    seed_kind: seed.kind,
+                };
+                let mut dstate = DispatchState {
+                    entity_map: &mut *entity_map,
+                    stats: &mut *stats,
+                    dispatched: &mut *dispatched,
+                };
+                if let Err(e) = self.dispatch_target(&cx, ctx, &mut dstate).await {
+                    warn!(scan_id, error = %e, "gap-fill dispatch failed (continuing)");
+                }
+            }
+            // New entities this probe surfaced are derived from the gap endpoint.
+            for (uid, child) in entity_map.iter() {
+                if !before.contains(uid) {
+                    relations.push(Relation::new(
+                        uid.as_str(),
+                        probe.endpoint_uid.as_str(),
+                        RelationKind::DerivedFrom,
+                        child.confidence,
+                        scan_id,
+                    ));
+                }
+            }
+            visited.insert(visit_key(&target));
+            probed += 1;
+        }
+
+        if probed > 0 {
+            info!(
+                scan_id,
+                probed, "active gap-fill: probed gap endpoints for missing-family corroboration"
+            );
+        }
+        probed
     }
 
     /// Drive the expansion loop. Returns the stop reason for diagnostics.
@@ -1272,6 +1641,7 @@ impl ScanEngine {
                         target: nt,
                         opts,
                         is_expansion: true,
+                        seed_kind: seed.kind,
                     };
                     let mut dstate = DispatchState {
                         entity_map: &mut *entity_map,
@@ -1388,6 +1758,69 @@ pub(crate) const LOCAL_PASSIVE_MODULES: &[&str] = &[
     "local_net",
     "signal_radar",
 ];
+
+/// One retained identifier ranked by its realised cross-investigation leverage —
+/// the output of [`rank_enrichment_leverage`]. The enrichment-priority asset
+/// `docs/data_retention_design.md` (§3–4.1) names: an identifier observed across
+/// many distinct investigations is the one that most empowers the rest, because
+/// each recurrence is a join that connects two otherwise-separate dossiers.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct LeverageRanked {
+    /// SHA-256 UID of the identifier.
+    pub entity_uid: String,
+    /// The identifier kind (the join-key class).
+    pub kind: crate::core::entity::EntityKind,
+    /// The identifier value.
+    pub value: String,
+    /// Distinct scans in the local intelligence database that observed this value —
+    /// the cross-investigation degree. `>= 1` for every returned entry.
+    pub cross_scan_degree: usize,
+}
+
+/// Rank the high-leverage identifiers in `entities` by how many distinct
+/// investigations each one bridges — the "which of my retained data most empowers
+/// the rest" query (`docs/data_retention_design.md` §4.1), and the read-only
+/// counterpart to [`history::link_cross_scan_history`], which writes the same
+/// bridge as evidence.
+///
+/// Only [`history::is_cross_scan_candidate`] identifiers are scored — the strong
+/// join keys (email / phone / crypto / distinctive username / full-name person /
+/// specific address), never infrastructure, coarse geo, speculative permutations
+/// or already-recalled nodes — so the ranking can never be topped by noise.
+/// Leverage is the *realised* cross-scan degree
+/// ([`StoragePort::observation_count`] — the count of distinct scans that recorded
+/// the value); there is no invented weighting, so the score is exactly "how many
+/// separate dossiers this identifier already connects". Sorted strongest-first,
+/// ties broken by UID for determinism, truncated to `limit`. A store error on an
+/// entity skips it (never fails). Pure and offline — indexed point lookups only.
+#[must_use]
+pub fn rank_enrichment_leverage(
+    store: &dyn StoragePort,
+    entities: &[Entity],
+    limit: usize,
+) -> Vec<LeverageRanked> {
+    let mut out: Vec<LeverageRanked> = entities
+        .iter()
+        .filter(|e| history::is_cross_scan_candidate(e))
+        .filter_map(|e| {
+            let degree = store.observation_count(&e.uid).ok()?;
+            (degree > 0).then(|| LeverageRanked {
+                entity_uid: e.uid.clone(),
+                kind: e.kind.clone(),
+                value: e.value.clone(),
+                cross_scan_degree: degree,
+            })
+        })
+        .collect();
+    // Strongest-first; deterministic UID tie-break so the ranking is stable.
+    out.sort_by(|a, b| {
+        b.cross_scan_degree
+            .cmp(&a.cross_scan_degree)
+            .then_with(|| a.entity_uid.cmp(&b.entity_uid))
+    });
+    out.truncate(limit);
+    out
+}
 
 #[cfg(test)]
 mod tests;

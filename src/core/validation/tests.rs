@@ -30,6 +30,14 @@ fn specific_residence_accepts_streets_and_rejects_regions() {
     // No street-number signal, or too short — rejected.
     assert!(!is_specific_residence("Main Street"));
     assert!(!is_specific_residence("12 A"));
+    // A PO box / locked bag is a mail drop, not a dwelling — rejected in every
+    // punctuation variant so it never clusters a false household (AU-049/051).
+    assert!(!is_specific_residence("PO Box 123, Sydney NSW 2000"));
+    assert!(!is_specific_residence("P.O. Box 4567, Melbourne"));
+    assert!(!is_specific_residence("po box 99 brisbane")); // normalised form
+    assert!(!is_specific_residence("Locked Bag 12, Parramatta NSW"));
+    // A real street whose suburb merely contains "box" (Box Hill) is unaffected.
+    assert!(is_specific_residence("42 Station St, Box Hill VIC 3128"));
     // Invariant under the household rule's punctuation-stripping normalisation.
     assert_eq!(
         is_specific_residence("123 Main St., Apt #4"),
@@ -68,6 +76,28 @@ fn fragment_value_rejects_truncated_and_keeps_complete() {
         &K::Address,
         "327 Main St, Brisbane QLD 4125"
     ));
+
+    // A BARE ISO country code is a COUNTRY, not an address. Breach `country`
+    // fields emit it, and the shared 2-letter code corroborates across hundreds
+    // of unrelated co-occurrence rows into a VERIFIED phantom address (a live
+    // scan produced "US" at corroboration=106 for a QLD subject). Reject it; a
+    // real locality that merely names a country is still kept.
+    assert!(is_fragment_value(&K::Address, "AU"));
+    assert!(is_fragment_value(&K::Address, "US"));
+    assert!(is_fragment_value(&K::Address, "br")); // case-insensitive
+    // Codes ABSENT from the country display-name table must reject too — the table
+    // names only ~54 countries, but breach corpora carry every ISO alpha-2 code.
+    // Gating on the table left these reproducing the "US" phantom unblocked.
+    for code in [
+        "PK", "BD", "VE", "IR", "BG", "HR", "LT", "LV", "EE", "LK", "QA", "wa",
+    ] {
+        assert!(
+            is_fragment_value(&K::Address, code),
+            "bare 2-letter code {code} must be a fragment, not a phantom address"
+        );
+    }
+    assert!(!is_fragment_value(&K::Address, "Sydney, Australia"));
+    assert!(!is_fragment_value(&K::Address, "Perth, WA")); // locality present, kept
 
     // Inherently-unique secrets are never fragments even if oddly shaped.
     assert!(!is_fragment_value(&K::Password, "@p"));
@@ -126,13 +156,23 @@ fn placeholder_entity_filters_artifacts_but_keeps_secrets() {
     assert!(is_placeholder_entity(&Email, "first.last@outlook.com"));
     assert!(is_placeholder_entity(&Email, "your.email@company.com"));
     assert!(is_placeholder_entity(&Email, "john.doe@gmail.com"));
-    // Real values pass through — including real mailboxes that merely START
-    // with a template-ish token.
+    // Test / redaction / placeholder local-parts an admission gate must drop (these
+    // are not caught by the role-mailbox gate, which `is_placeholder_entity` does
+    // not consult). The separator-stripped form matches too (`re.dacted`).
+    assert!(is_placeholder_entity(&Email, "test@gmail.com"));
+    assert!(is_placeholder_entity(&Email, "redacted@gmail.com"));
+    assert!(is_placeholder_entity(&Email, "placeholder@gmail.com"));
+    assert!(is_placeholder_entity(&Username, "redacted"));
+    assert!(is_placeholder_entity(&Username, "placeholder"));
+    // Real values pass through — including real mailboxes that merely START WITH or
+    // CONTAIN a template-ish token (exact match only).
     assert!(!is_placeholder_entity(&Domain, "cloudflare.com"));
     assert!(!is_placeholder_entity(&Email, "jordanavery@gmail.com"));
     assert!(!is_placeholder_entity(&Email, "matt@gmail.com"));
     assert!(!is_placeholder_entity(&Email, "john.smith@gmail.com"));
     assert!(!is_placeholder_entity(&Email, "firstnations@gmail.com"));
+    assert!(!is_placeholder_entity(&Email, "tester@gmail.com")); // contains "test", not equal
+    assert!(!is_placeholder_entity(&Username, "redactedtruth")); // contains "redacted"
     assert!(!is_placeholder_entity(&Person, "Jordan Avery"));
     // Inherently-unique secrets are NEVER filtered, even containing "example".
     assert!(!is_placeholder_entity(&Password, "example.com"));
@@ -197,6 +237,42 @@ fn email_syntax_rejects_invalid() {
         validate_email_syntax("a..b@c.com").reason,
         "email.consecutive_dots"
     );
+}
+
+#[test]
+fn role_mailbox_flags_infrastructure_desks() {
+    // Generic registrar / DNS / CDN desks — on an identity scan these are never
+    // the subject, so the engine drops them at admission.
+    for e in [
+        "abuse@cloudflare.com",
+        "dns@jomax.net",
+        "hostmaster@example.com",
+        "postmaster@example.org",
+        "noreply@sendgrid.net",
+        "registry@verisign.com",
+        "soa@example.net",
+    ] {
+        assert!(is_role_mailbox(e), "{e} should be a role mailbox");
+    }
+    // Separator and plus-tag variants normalise to the same base.
+    assert!(is_role_mailbox("no-reply@x.com"));
+    assert!(is_role_mailbox("no_reply@x.com"));
+    assert!(is_role_mailbox("abuse+spam@x.com"));
+}
+
+#[test]
+fn role_mailbox_keeps_personal_addresses() {
+    // A person's address — including freemail — must NOT be flagged: it is the
+    // prime finding of an identity scan, never noise.
+    for e in [
+        "haigen@gmail.com",
+        "haigen.bamford@goatlegal.com.au",
+        "jsmith2000@outlook.com",
+        "becky@example.com",
+        "not-an-email",
+    ] {
+        assert!(!is_role_mailbox(e), "{e} must not be a role mailbox");
+    }
 }
 
 #[test]
@@ -406,4 +482,77 @@ fn validate_for_kind_dispatches() {
     assert!(!validate_for_kind("coordinates", "junk").valid);
     // Unknown kind passes through OK (validators are opt-in)
     assert!(validate_for_kind("anything-else", "value").valid);
+}
+
+mod confusable_tests {
+    use super::super::{
+        confusable_report, is_confusable_mixed_script, looks_like_gibberish_name, skeleton,
+        strip_invisible,
+    };
+    use std::borrow::Cow;
+
+    #[test]
+    fn strip_invisible_removes_zero_width_and_borrows_clean() {
+        // A zero-width joiner padded into a value is removed (so the two spellings
+        // of "john" collapse to one and finally deduplicate).
+        assert_eq!(strip_invisible("jo\u{200D}hn"), "john");
+        // Already-clean input is returned borrowed — no allocation on the hot path.
+        let clean = strip_invisible("john");
+        assert!(matches!(clean, Cow::Borrowed("john")));
+        // A bidi override (the "Trojan Source" vector) is stripped.
+        assert_eq!(strip_invisible("a\u{202E}b"), "ab");
+        // Soft hyphen, word joiner and BOM all go too.
+        assert_eq!(strip_invisible("ab\u{00AD}cd\u{2060}ef\u{FEFF}"), "abcdef");
+    }
+
+    #[test]
+    fn skeleton_folds_cyrillic_homograph_to_ascii() {
+        // The Cyrillic-`а` paypal collapses to the ASCII skeleton.
+        assert_eq!(skeleton("p\u{0430}ypal.com"), "paypal.com");
+        // Clean ASCII is unchanged (modulo lowercasing).
+        assert_eq!(skeleton("PayPal.com"), "paypal.com");
+        // Full-width ASCII folds to plain ASCII.
+        assert_eq!(skeleton("\u{FF41}\u{FF42}\u{FF43}"), "abc");
+    }
+
+    #[test]
+    fn mixed_script_flags_only_the_deceptive_mix() {
+        // Cyrillic-`а` mixed with ASCII letters — flagged.
+        assert!(is_confusable_mixed_script("p\u{0430}ypal.com"));
+        // Pure ASCII — not flagged.
+        assert!(!is_confusable_mixed_script("paypal.com"));
+        // A legitimate all-Cyrillic string (no ASCII Latin letters) — not flagged.
+        assert!(!is_confusable_mixed_script(
+            "\u{043F}\u{0440}\u{0438}\u{0432}\u{0435}\u{0442}"
+        ));
+    }
+
+    #[test]
+    fn confusable_report_fails_homograph_and_passes_clean() {
+        let bad = confusable_report("p\u{0430}ypal.com");
+        assert!(!bad.valid);
+        assert_eq!(bad.reason, "seed.confusable");
+        assert!(bad.detail.contains("paypal.com"));
+        assert!(confusable_report("paypal.com").valid);
+    }
+
+    #[test]
+    fn gibberish_name_flags_random_strings_but_spares_real_names() {
+        // L5: the breach-dump junk "names" — caught.
+        assert!(looks_like_gibberish_name("ZonJZRJHHWD GvkJCJRWHWD"));
+        assert!(looks_like_gibberish_name("GvkJCJRWHWD")); // all-consonant token
+        assert!(looks_like_gibberish_name("ZonJZRJHHWD")); // 6+ consonant run
+
+        // Real names — never flagged, including the hard cases:
+        assert!(!looks_like_gibberish_name("Cindy Haynes"));
+        assert!(!looks_like_gibberish_name("Jordan Avery"));
+        assert!(!looks_like_gibberish_name("Müller")); // accented (non-ASCII)
+        assert!(!looks_like_gibberish_name("Nguyễn")); // accented vowels
+        assert!(!looks_like_gibberish_name("Krzysztof")); // Slavic, max run < 6
+        assert!(!looks_like_gibberish_name("Vrkljan")); // 5-consonant run, under bar
+        assert!(!looks_like_gibberish_name("Ng")); // short token, ignored
+        assert!(!looks_like_gibberish_name("Strzelecki"));
+        // A real surname next to a short particle stays safe.
+        assert!(!looks_like_gibberish_name("Le Guin"));
+    }
 }

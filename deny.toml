@@ -47,6 +47,18 @@ version = 2
 # second, config-versioned view over the same RustSec DB. A yanked release in
 # the locked graph is a concrete, actionable supply-chain signal — fail on it.
 yanked = "deny"
+# Acknowledged, no-fix-available transitive advisories. Each entry is an
+# *unmaintained* (informational) notice — NOT a vulnerability — on a crate we do
+# not depend on directly and cannot drop without un-pinning a deliberately
+# pinned root. Reviewed and accepted; revisit when the upstream root migrates.
+ignore = [
+    # rustls-pemfile is unmaintained (repo archived 2025-08; its PEM parsing now
+    # lives in rustls-pki-types). Pulled in only transitively by reqwest 0.12,
+    # which the project pins by policy (Termux aarch64 TLS); there is no safe
+    # upgrade until reqwest migrates upstream. No code path of ours uses it
+    # directly. https://rustsec.org/advisories/RUSTSEC-2025-0134
+    "RUSTSEC-2025-0134",
+]
 
 [sources]
 # Only the public crates.io registry may supply dependencies. Blocks an

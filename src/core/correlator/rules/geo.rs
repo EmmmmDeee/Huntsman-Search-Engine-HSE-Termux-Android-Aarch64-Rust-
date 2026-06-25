@@ -384,6 +384,10 @@ pub(in crate::core::correlator) fn rule_au_018_email_address_colocation(
             emails.push(e);
         } else if matches!(e.kind, EntityKind::Address | EntityKind::Coordinates)
             && e.confidence >= 0.50
+            // Infrastructure geo (a WHOIS registrant filing address, a CDN/host
+            // location, an IP-only fix) is not the subject's home — it must not
+            // forge an identity↔location linkage with the email.
+            && !is_infrastructure_geo(e)
         {
             addresses.push(e);
         }
@@ -427,10 +431,11 @@ pub(in crate::core::correlator) fn rule_au_026_validated_address(
         "geo_intel",
         "wigle",
         "overpass",
-        "ip_geo",
-        "ip2location",
-        "ipapi",
-        "ipinfo",
+        // NB: IP-geo sources (`ip_geo` / `ip2location` / `ip_whois_geo` /
+        // `ipinfo`) are deliberately excluded — they locate the IP's
+        // datacentre/ISP, not the subject's street address, so counting two of
+        // them as "independent validation" geolocated the subject to a hosting
+        // region (H5). Street-address validation needs geocoders / registries.
         "opencorporates",
         "epieos",
         "proxycurl",
@@ -542,8 +547,12 @@ pub(in crate::core::correlator) fn rule_au_027_address_coordinates_chain(
         .expect("parsed is non-empty, so at least one cluster exists");
     let (anchor_lat, anchor_lon) = dominant[0].1;
 
-    let mut uids: Vec<String> = addresses.iter().take(3).map(|a| a.uid.clone()).collect();
-    uids.extend(dominant.iter().take(3).map(|(c, _)| c.uid.clone()));
+    // Full member set (no `take` cap): the live/finalise passes must yield the same
+    // uid SET so containment-dedup folds them — a `take(3)` of the HashMap-ordered
+    // address list gave disjoint samples that persisted as duplicate AU-027 rows
+    // (the AU-018 defect/fix). The described counts are already the full counts.
+    let mut uids: Vec<String> = addresses.iter().map(|a| a.uid.clone()).collect();
+    uids.extend(dominant.iter().map(|(c, _)| c.uid.clone()));
     vec![Correlation::new(
         "AU-027",
         "Address-coordinates geolocation chain",
@@ -576,7 +585,14 @@ pub(in crate::core::correlator) fn rule_au_030_geo_convergence_score(
     let geo_entities: Vec<&Entity> = entities
         .iter()
         .filter(|e| {
-            matches!(e.kind, EntityKind::Address | EntityKind::Coordinates) && e.confidence >= 0.40
+            matches!(e.kind, EntityKind::Address | EntityKind::Coordinates)
+                && e.confidence >= 0.40
+                // Exclude infrastructure geo (registrant/hosting/IP-only fixes):
+                // otherwise a domain's registrant address + its hosting country
+                // manufacture two of the three "independent sources" this
+                // convergence score escalates to Critical on, geolocating the
+                // subject to their domain's datacentre.
+                && !is_infrastructure_geo(e)
         })
         .collect();
 
@@ -838,56 +854,110 @@ fn extract_ratemyagent_suburb(url: &str) -> Option<String> {
     }
 }
 
-/// AU-063 — Dual-source cell tower corroboration (live sensor × crowdsourced database).
+/// AU-061 — Family geo-corroboration (surname kin in the subject's confirmed area).
 ///
-/// Fires when one or more `DeviceId` entities tagged `cell-tower` are independently
-/// confirmed by both `cell_intel` (live Termux telephony sensor — hardware observation
-/// via `termux-telephony-cellinfo`) and `opencellid` (crowdsourced tower database —
-/// OpenCelliD API). Two orthogonal sources agreeing on the same `mcc-mnc-lac-cid`
-/// key upgrades the tower from a single-source report to a cross-validated sighting:
-/// the radio signal was physically detected AND the database independently records it.
-///
-/// Severity scales with corroborated tower count: Low for 1–2 towers (data-quality
-/// upgrade), Medium for ≥3 (a multi-tower radio environment narrows the subject's
-/// position to within a cell footprint). The Coordinates entities spawned by these
-/// towers are the primary geoint leads; this rule surfaces the corroboration quality.
-pub(in crate::core::correlator) fn rule_au_063_cell_tower_dual_source(
+/// The free, offline SECOND ANGLE on family — the *finding* counterpart to the
+/// engine's promotion pass, both built on the one shared detector
+/// [`crate::core::geo_family`]. A name scan surfaces `family-candidate`
+/// people/addresses (shared surname) at postcode grain, while `signal_radar` /
+/// geo give the SUBJECT a confirmed coordinate fix; this keeps the
+/// family-candidates within [`crate::core::geo_family::FAMILY_GEO_KM`] of that
+/// fix, so "shared surname" and "same area as the subject" independently agree —
+/// turning a lone candidate into a reliable relative. Nothing fires without both
+/// a confirmed subject coordinate and ≥1 in-area family-candidate.
+pub(in crate::core::correlator) fn rule_au_061_family_geo_corroboration(
     entities: &[Entity],
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let corroborated: Vec<&Entity> = entities_of_kind(entities, EntityKind::DeviceId)
-        .into_iter()
-        .filter(|e| {
-            if !e.has_tag("cell-tower") {
-                return false;
-            }
-            let sources = e.evidence_sources();
-            sources.contains("cell_intel") && sources.contains("opencellid")
-        })
-        .collect();
+    use crate::core::geo_family::{FAMILY_GEO_KM, distance_to_subject, subject_fixes};
 
-    if corroborated.is_empty() {
+    // The subject's confirmed location(s) — the one shared anchor (a GPS fix OR
+    // the subject's own name-matched address), so the correlator and the engine
+    // passes agree on where the subject is. Keeps each fix's uid for the edge.
+    let subject = subject_fixes(entities);
+    if subject.is_empty() {
         return Vec::new();
     }
+    let coords: Vec<(f64, f64)> = subject.iter().map(|f| f.coord).collect();
 
-    let severity = if corroborated.len() >= 3 {
-        Severity::Medium
+    // Family-candidates within FAMILY_GEO_KM of the subject — nearest first for a
+    // deterministic, readable description.
+    let mut in_area: Vec<(&Entity, f64)> = entities
+        .iter()
+        .filter(|e| e.has_tag("family-candidate"))
+        .filter_map(|e| {
+            distance_to_subject(e, &coords)
+                .filter(|&km| km <= FAMILY_GEO_KM)
+                .map(|km| (e, km))
+        })
+        .collect();
+    // Accuracy of the "shared surname" claim: the `family-candidate` tag is ALSO
+    // applied by the see_know household path to co-located people who do NOT share
+    // the subject's surname. When the subject's surname is known, drop such Person
+    // candidates — being in the same 150 km region without the shared surname is not
+    // a finding (millions share a metro), and asserting "shared surname relative"
+    // for them would be a FALSE evidentiary basis. Address family-candidates are
+    // surname-matched by their producing module (qld_unclaimed/au_people) and a bare
+    // Address carries no surname to re-check, so they are kept.
+    let subject_sn = crate::core::geo_family::subject_surname(entities);
+    if let Some(sn) = subject_sn.as_deref() {
+        in_area.retain(|(e, _)| {
+            e.kind != EntityKind::Person
+                || crate::util::surnames::surname_of(&e.value).as_deref() == Some(sn)
+        });
+    }
+    if in_area.is_empty() {
+        return Vec::new();
+    }
+    in_area.sort_by(|a, b| {
+        a.1.partial_cmp(&b.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.uid.cmp(&b.0.uid))
+    });
+
+    let shown: Vec<String> = in_area
+        .iter()
+        .take(8)
+        .map(|(e, km)| format!("{} (~{km:.0} km)", e.value))
+        .collect();
+    let extra = in_area.len().saturating_sub(shown.len());
+    let mut uids: Vec<String> = subject.iter().map(|f| f.uid.clone()).collect();
+    uids.extend(in_area.iter().map(|(e, _)| e.uid.clone()));
+
+    // Commonness gate (mirrors AU-051 / the kinship builder): within FAMILY_GEO_KM
+    // the namesake pass doesn't fire (it guards only beyond NAMESAKE_GEO_KM), so a
+    // COMMON subject surname would otherwise escalate to Critical on three unrelated
+    // same-surname people sharing one metro catchment — a confident false "household
+    // of relatives". A common surname makes shared-region co-location weak evidence,
+    // so it never reaches Critical (stays a High lead) and the wording is softened;
+    // a DISTINCTIVE surname keeps the strong "independently corroborate" reading.
+    let surname_common = subject_sn
+        .as_deref()
+        .is_some_and(crate::util::surnames::is_common);
+    let severity = if in_area.len() >= 3 && !surname_common {
+        Severity::Critical
     } else {
-        Severity::Low
+        Severity::High
     };
-    let mut uids: Vec<String> = corroborated.iter().map(|e| e.uid.clone()).collect();
-    uids.sort_unstable();
-    uids.dedup();
-
+    let basis = if surname_common {
+        "a COMMON surname, so shared region is weak corroboration — verify before treating as kin"
+    } else {
+        "shared surname AND same area as the subject independently corroborate them as relatives"
+    };
     vec![Correlation::new(
-        "AU-063",
-        "Dual-source cell tower corroboration",
+        "AU-061",
+        "Family geo-corroborated (surname kin in subject's area)",
         severity,
         format!(
-            "{} cell tower(s) independently confirmed by live telephony sensor (cell_intel) \
-             and crowdsourced database (opencellid) — MITRE T1592 (Gather Victim Host Information)",
-            corroborated.len(),
+            "{} family-candidate(s) resolve to the subject's confirmed area (within {FAMILY_GEO_KM:.0} km): {}{} — {basis}",
+            in_area.len(),
+            shown.join(", "),
+            if extra > 0 {
+                format!(", +{extra} more")
+            } else {
+                String::new()
+            },
         ),
         uids,
         scan_id,
@@ -898,6 +968,142 @@ pub(in crate::core::correlator) fn rule_au_063_cell_tower_dual_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── AU-061 family geo-corroboration ───────────────────────────────────────
+
+    #[test]
+    fn au_061_corroborates_only_family_in_the_subjects_area() {
+        use crate::core::entity::Evidence;
+        // Subject's confirmed GPS fix near Woodford, QLD.
+        let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
+        gps.tag("geoint");
+        // Same-surname family, all `family-candidate`, postcode in value or evidence.
+        let mut near_addr = Entity::new(EntityKind::Address, "QLD 4518, Australia", 0.32, "s");
+        near_addr.tag("family-candidate"); // Beerwah (45xx) — ~40 km
+        let mut near_person = Entity::new(EntityKind::Person, "Stephen Moreau", 0.35, "s");
+        near_person.tag("family-candidate");
+        near_person
+            .add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "4169"));
+        let mut far = Entity::new(EntityKind::Address, "QLD 4870, Australia", 0.32, "s");
+        far.tag("family-candidate"); // Cairns (48xx) — ~1000 km, must be excluded
+        // Not family-candidate → ignored even though it's in the area.
+        let other = Entity::new(EntityKind::Address, "QLD 4000, Australia", 0.5, "s");
+
+        let ents = vec![
+            gps.clone(),
+            near_addr.clone(),
+            near_person.clone(),
+            far.clone(),
+            other,
+        ];
+        let out = rule_au_061_family_geo_corroboration(&ents, "s", 0);
+        assert_eq!(out.len(), 1, "one geo-corroboration correlation");
+        let c = &out[0];
+        assert_eq!(c.rule_id, "AU-061");
+        assert!(matches!(c.severity, Severity::High), "2 in-area → High");
+        assert!(c.description.contains("Stephen Moreau") && c.description.contains("4518"));
+        assert!(!c.description.contains("4870"), "Cairns is excluded as far");
+        // Links the subject coordinate + the two in-area relatives, not the far one.
+        assert!(c.entity_uids.contains(&gps.uid));
+        assert!(c.entity_uids.contains(&near_addr.uid) && c.entity_uids.contains(&near_person.uid));
+        assert!(!c.entity_uids.contains(&far.uid));
+
+        // No confirmed subject coordinate → nothing fires (no anchor to compare to).
+        let no_gps = vec![near_addr];
+        assert!(rule_au_061_family_geo_corroboration(&no_gps, "s", 0).is_empty());
+    }
+
+    // Build a GPS fix + a named subject + 3 same-surname family-candidates all in
+    // the Brisbane catchment (≤150 km), to exercise the 3-candidate escalation.
+    fn three_same_surname_in_area(subject_full_name: &str, surname: &str) -> Vec<Entity> {
+        use crate::core::entity::Evidence;
+        let mut gps = Entity::new(EntityKind::Coordinates, "-27.47,153.02", 0.9, "s"); // Brisbane
+        gps.tag("geoint");
+        let mut subject = Entity::new(EntityKind::Person, subject_full_name, 0.8, "s");
+        subject.tag("subject");
+        let cand = |given: &str, pc: &str| {
+            let mut p = Entity::new(EntityKind::Person, format!("{given} {surname}"), 0.35, "s");
+            p.tag("family-candidate");
+            p.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", pc));
+            p
+        };
+        vec![
+            gps,
+            subject,
+            cand("Erik", "4000"),
+            cand("Jane", "4169"),
+            cand("Paul", "4101"),
+        ]
+    }
+
+    #[test]
+    fn au_061_common_surname_caps_at_high_not_critical() {
+        // Three "Smith"s in one metro catchment is coincidence, not a 3-relative
+        // household — a COMMON subject surname must not reach Critical.
+        let out = rule_au_061_family_geo_corroboration(
+            &three_same_surname_in_area("Dana Smith", "Smith"),
+            "s",
+            0,
+        );
+        assert_eq!(out.len(), 1);
+        assert!(
+            matches!(out[0].severity, Severity::High),
+            "common surname must cap at High, got {:?}",
+            out[0].severity
+        );
+        assert!(out[0].description.to_lowercase().contains("common surname"));
+    }
+
+    #[test]
+    fn au_061_distinctive_surname_reaches_critical_at_three() {
+        // A distinctive surname keeps the strong 3-relative Critical signal.
+        let out = rule_au_061_family_geo_corroboration(
+            &three_same_surname_in_area("Dana Bamford", "Bamford"),
+            "s",
+            0,
+        );
+        assert_eq!(out.len(), 1);
+        assert!(
+            matches!(out[0].severity, Severity::Critical),
+            "distinctive surname → Critical at 3, got {:?}",
+            out[0].severity
+        );
+        assert!(out[0].description.contains("independently corroborate"));
+    }
+
+    #[test]
+    fn au_061_excludes_different_surname_household_candidates() {
+        use crate::core::entity::Evidence;
+        // A see_know-style household member with a DIFFERENT surname is tagged
+        // `family-candidate` but is NOT a shared-surname relative — it must not be
+        // counted toward AU-061's "shared surname" claim (a false evidentiary basis).
+        let mut gps = Entity::new(EntityKind::Coordinates, "-27.47,153.02", 0.9, "s");
+        gps.tag("geoint");
+        let mut subject = Entity::new(EntityKind::Person, "Dana Bamford", 0.8, "s");
+        subject.tag("subject");
+        let cand = |name: &str, pc: &str| {
+            let mut p = Entity::new(EntityKind::Person, name, 0.35, "s");
+            p.tag("family-candidate");
+            p.add_evidence(Evidence::new("see_know", "household").with_attr("postcode", pc));
+            p
+        };
+        let ents = vec![
+            gps,
+            subject,
+            cand("Erik Bamford", "4000"),
+            cand("Jane Bamford", "4169"),
+            cand("Bob Jones", "4101"), // co-resident, DIFFERENT surname → excluded
+        ];
+        let out = rule_au_061_family_geo_corroboration(&ents, "s", 0);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].description.contains("Bamford"));
+        assert!(
+            !out[0].description.contains("Jones"),
+            "different-surname household member must be excluded from the shared-surname finding"
+        );
+        // Two shared-surname relatives remain → High (not Critical).
+        assert!(matches!(out[0].severity, Severity::High));
+    }
 
     // ── coord_state ───────────────────────────────────────────────────────────
 
@@ -921,6 +1127,74 @@ mod tests {
         assert_eq!(coord_state(&weak), None);
         let email = Entity::new(EntityKind::Email, "a@b.com", 0.9, "s");
         assert_eq!(coord_state(&email), None);
+    }
+
+    // ── H5: infrastructure geo must not vote the subject's location ────────────
+
+    #[test]
+    fn infrastructure_geo_excluded_from_address_rollup_rules() {
+        use crate::core::entity::Evidence;
+        let email = {
+            let mut e = Entity::new(EntityKind::Email, "subject@example.com", 0.8, "s");
+            e.add_evidence(Evidence::new("hibp", "breach"));
+            e
+        };
+        // A WHOIS registrant filing address and a hosting-country address — both
+        // infrastructure geo, not the subject's home.
+        let registrant = {
+            let mut a = Entity::new(EntityKind::Address, "California, US", 0.50, "s");
+            a.tag(crate::core::tags::REGISTRANT);
+            a.add_evidence(Evidence::new("whois", "Registrant location"));
+            a
+        };
+        let hosting = {
+            let mut a = Entity::new(EntityKind::Address, "Sydney NSW, AU", 0.50, "s");
+            a.tag(crate::core::tags::HOSTING);
+            a.add_evidence(Evidence::new("urlscan", "Hosting country"));
+            a
+        };
+        let infra = vec![email.clone(), registrant, hosting];
+
+        // AU-018: no genuine subject address → no identity↔location linkage.
+        assert!(
+            rule_au_018_email_address_colocation(&infra, "s", 0).is_empty(),
+            "infra geo must not forge an email↔location linkage"
+        );
+        // AU-030: two infra-geo addresses are not multi-source convergence.
+        assert!(
+            rule_au_030_geo_convergence_score(&infra, "s", 0).is_empty(),
+            "infra geo must not manufacture geo convergence"
+        );
+
+        // AU-026: an address "validated" only by two IP-geo lookups is the host's
+        // location, not a street address — IP-geo is no longer an allowed source.
+        let ip_only = {
+            let mut a = Entity::new(EntityKind::Address, "Ashburn, Virginia, US", 0.6, "s");
+            a.add_evidence(Evidence::new("ip_geo", "IP city"));
+            a.add_evidence(Evidence::new("ipinfo", "IP city"));
+            a
+        };
+        assert!(
+            rule_au_026_validated_address(&[ip_only], "s", 0).is_empty(),
+            "two IP-geo lookups are not street-address validation"
+        );
+
+        // Control: a genuine geocoded home address STILL co-locates with the
+        // email — the fix targets infrastructure geo, not real fixes.
+        let home = {
+            let mut a = Entity::new(
+                EntityKind::Address,
+                "12 Smith St, Brisbane QLD 4000",
+                0.7,
+                "s",
+            );
+            a.add_evidence(Evidence::new("geocode", "geocoded"));
+            a
+        };
+        assert!(
+            !rule_au_018_email_address_colocation(&[email, home], "s", 0).is_empty(),
+            "a real geocoded address still co-locates with the email"
+        );
     }
 
     // ── extract_ratemyagent_suburb ────────────────────────────────────────────

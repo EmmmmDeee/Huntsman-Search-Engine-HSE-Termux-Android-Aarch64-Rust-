@@ -62,19 +62,29 @@ pub struct ScanOptions {
     /// Recursive expansion depth. 0 = no expansion (single round, v0.1 behaviour).
     /// Each round picks high-confidence entities from prior rounds, converts
     /// them to scan targets, and runs all accepting modules on them. Deserialises
-    /// to the product default ([`DEFAULT_SCAN_DEPTH`] = 2) when omitted, so an
-    /// API/web scan recurses two hops by default just like `hse scan`.
+    /// to the product default ([`DEFAULT_SCAN_DEPTH`] = 3) when omitted, so an
+    /// API/web scan recurses to the comprehensive depth by default just like
+    /// `hse scan`.
     #[serde(default = "default_scan_depth")]
     pub depth: u32,
 
-    /// Only expand entities whose `c_effective()` is at least this. Default 0.50
-    /// (Probable tier) — keeps expansion focused on the data the engine itself
-    /// rates as solid. Stronger filter than `min_confidence`, which gates the
-    /// base confidence at first encounter.
+    /// Only expand entities whose `c_effective()` is at least this. The serde
+    /// field default is the comprehensive product floor
+    /// ([`DEFAULT_MIN_EXPAND_CONFIDENCE`] = 0.20), so an API/web scan that omits
+    /// the field expands as widely as `hse scan`. The library
+    /// [`ScanOptions::default()`] deliberately stays at the conservative `0.50`
+    /// (Probable tier) for programmatic/test determinism. Stronger filter than
+    /// `min_confidence`, which gates the base confidence at first encounter.
     #[serde(default = "default_min_expand_confidence")]
     pub min_expand_confidence: f64,
 
     /// Hard cap on total entities. Stops expansion once reached. `None` = no cap.
+    /// The serde field default is the comprehensive product cap
+    /// ([`DEFAULT_MAX_ENTITIES`] = 2500), so an API/web scan that omits the field
+    /// gets the same Termux on-device safety bound as `hse scan`. The library
+    /// [`ScanOptions::default()`] stays `None` (uncapped) so programmatic/API
+    /// callers manage their own bounds.
+    #[serde(default = "default_request_max_entities")]
     pub max_entities: Option<usize>,
 
     /// Hard cap on total wall-time, in seconds. Stops expansion once exceeded. `None` = no cap.
@@ -165,6 +175,23 @@ pub struct ScanOptions {
     /// either way.
     #[serde(default)]
     pub expand_all_identities: bool,
+
+    // ── Live-sensor activation (radar-only) ────────────────────────────────
+    /// Permit the live device-sensor modules (`signal_radar`, `device_sensors`,
+    /// `wifi_intel`, `cell_intel`, `local_net`) to run.
+    ///
+    /// These read the **operator's own** real-time RF/network environment — the
+    /// GPS fix, visible Wi-Fi APs, serving cell towers, the LAN ARP table — so on
+    /// an ordinary scan they would attribute the operator's location and
+    /// surroundings to the scanned *subject* (contamination, and pure noise on a
+    /// remote target). They are therefore an **entirely separate activation**:
+    /// this stays `false` on every `hse scan` / API scan / `hse live` run, and is
+    /// set `true` ONLY by the dedicated radar entry points — the `hse radar` CLI
+    /// command and the web UI's Live Signal Radar button (`POST /api/v1/radar`) —
+    /// each of which sweeps the device's own sensors with no target seed. The gate
+    /// is enforced in `engine::dispatch::module_skip_reason` on every round.
+    #[serde(default)]
+    pub allow_live_sensors: bool,
 }
 
 /// How the engine orders expansion candidates within a round.
@@ -243,16 +270,44 @@ pub const MAX_DEPTH: u32 = 3;
 
 /// Default recursive-expansion depth for the `hse scan` product surface when
 /// the operator gives neither an explicit `--depth` nor `--auto`/`--recursive`.
-/// Two hops balances coverage (seed → directly-discovered entities → their
-/// first-order pivots) against runtime on a phone. The library [`ScanOptions`]
-/// default stays `0` (single round) so programmatic/API callers and the test
-/// suite remain deterministic; this product default is applied at the CLI
-/// boundary in `cli::scan`.
-pub const DEFAULT_SCAN_DEPTH: u32 = 2;
+/// Defaults to the full [`MAX_DEPTH`] so the standard scan is **comprehensive by
+/// default** — the seed → discovered identifiers → their pivots → infrastructure
+/// chain runs to completion, giving every module a target of a kind it accepts
+/// (e.g. the Email→Domain→IP pipeline only reaches the IP modules at the third
+/// hop). The library [`ScanOptions`] default stays `0` (single round) so
+/// programmatic/API callers and the test suite remain deterministic; this product
+/// default is applied at the CLI boundary in `cli::scan`. Operators who want a
+/// faster, shallower sweep set `--depth` explicitly.
+pub const DEFAULT_SCAN_DEPTH: u32 = MAX_DEPTH;
 
 // Compile-time guard: the product default must never exceed the clamp ceiling,
 // or a bare `hse scan` would emit the "clamped to MAX_DEPTH" warning on every run.
 const _: () = assert!(DEFAULT_SCAN_DEPTH <= MAX_DEPTH);
+
+/// Default hard cap on total entities for the `hse scan` product surface, applied
+/// at the CLI boundary when the operator gives no explicit `--max-entities`. Now
+/// that the default scan is comprehensive (depth [`MAX_DEPTH`], a 0.20 expansion
+/// floor), a common-name seed could otherwise fan the frontier out without bound —
+/// hundreds of breach/permutation identifiers, each re-expanded — and exhaust RAM
+/// on a 4 GB no-root Termux device. This generous ceiling (≈4× a typical scan's
+/// entity count) keeps the comprehensive sweep thorough while making runaway
+/// impossible on-device; `--max-entities <N>` overrides it for power users, and the
+/// library [`ScanOptions`] default stays `None` (uncapped) so programmatic/API
+/// callers manage their own bounds.
+pub const DEFAULT_MAX_ENTITIES: usize = 2500;
+
+/// The comprehensive product expansion floor applied to CLI / API / web scans
+/// when the operator gives no explicit `--min-expand-confidence`: expand any
+/// entity whose effective confidence is at least 0.20, so the seed's own derived
+/// identifiers (name → email / username / handle permutations, emitted at
+/// 0.20–0.30) feed every downstream module instead of starving the pipeline
+/// after the seed round. Correlation still applies its own strict floors, so
+/// recall stays wide while resolved findings stay precise. Single-sourced here
+/// for the CLI flag default ([`crate::cli`]) and the serde field default
+/// ([`default_min_expand_confidence`]). The library [`ScanOptions::default()`]
+/// deliberately stays at the conservative `0.50` (Probable tier) so programmatic
+/// callers and the test suite remain deterministic.
+pub const DEFAULT_MIN_EXPAND_CONFIDENCE: f64 = 0.20;
 
 impl ScanOptions {
     /// Clamp `depth` to [`MAX_DEPTH`], warning once if it actually clamps.
@@ -290,7 +345,15 @@ impl Default for ScanOptions {
             free_only: false,
             passive_only: false,
             depth: 0,
-            min_expand_confidence: default_min_expand_confidence(),
+            // Conservative library default, DECOUPLED from the serde field
+            // default: a programmatic/test `ScanOptions::default()` stays at the
+            // Probable floor (0.50) for determinism, while an API/web request
+            // that omits the field deserialises to the comprehensive product
+            // floor via `default_min_expand_confidence()` (0.20).
+            min_expand_confidence: 0.50,
+            // Library default stays uncapped (programmatic callers manage their
+            // own bounds); the serde field default applies the product cap
+            // (`default_request_max_entities()` = Some(2500)).
             max_entities: None,
             max_wall_time_secs: None,
             scan_tags: Vec::new(),
@@ -308,12 +371,29 @@ impl Default for ScanOptions {
             expansion_strategy: ExpansionStrategy::default(),
             seeknow_scan_cap: None,
             expand_all_identities: false,
+            // Live device sensors are radar-only: never on a default/manual scan.
+            allow_live_sensors: false,
         }
     }
 }
 
+/// Serde default for [`ScanOptions::min_expand_confidence`] — the comprehensive
+/// product floor ([`DEFAULT_MIN_EXPAND_CONFIDENCE`] = 0.20) applied to API/web
+/// requests that omit the field, so they expand as widely as `hse scan`.
+/// DECOUPLED from [`ScanOptions::default()`], which stays at the conservative
+/// `0.50` literal for programmatic/test determinism.
 fn default_min_expand_confidence() -> f64 {
-    0.50
+    DEFAULT_MIN_EXPAND_CONFIDENCE
+}
+
+/// Serde default for [`ScanOptions::max_entities`] — the comprehensive product
+/// entity cap ([`DEFAULT_MAX_ENTITIES`] = 2500) applied to API/web requests that
+/// omit the field, so the comprehensive depth-3 / floor-0.20 default sweep can't
+/// run the frontier out without bound on a low-RAM Termux device. DECOUPLED from
+/// [`ScanOptions::default()`], which stays `None` (uncapped) so programmatic
+/// callers manage their own bounds.
+fn default_request_max_entities() -> Option<usize> {
+    Some(DEFAULT_MAX_ENTITIES)
 }
 
 /// Serde default for [`ScanOptions::max_concurrent`] — the product's gentle
@@ -338,13 +418,20 @@ fn default_scan_depth() -> u32 {
 }
 
 /// Serde default for [`ScanRequest::options`] — used when a request omits the
-/// whole `options` object, so it still gets the product default depth (2)
-/// rather than the inert library `ScanOptions::default()` (depth 0).
+/// whole `options` object, so it still gets the **comprehensive** product
+/// defaults (depth [`DEFAULT_SCAN_DEPTH`] = 3, expansion floor
+/// [`DEFAULT_MIN_EXPAND_CONFIDENCE`] = 0.20, entity cap
+/// [`DEFAULT_MAX_ENTITIES`] = 2500) — matching `hse scan` — rather than the inert
+/// library `ScanOptions::default()` (depth 0, floor 0.50, uncapped). These three
+/// fields are also the per-field serde defaults, so an `options` object that
+/// omits any of them resolves identically to omitting `options` entirely.
 /// `pub(crate)` because [`crate::core::live::LiveRequest`] shares it: a live
 /// request that omits `options` must behave like a scan request that does.
 pub(crate) fn default_scan_options() -> ScanOptions {
     ScanOptions {
         depth: DEFAULT_SCAN_DEPTH,
+        min_expand_confidence: DEFAULT_MIN_EXPAND_CONFIDENCE,
+        max_entities: Some(DEFAULT_MAX_ENTITIES),
         ..Default::default()
     }
 }

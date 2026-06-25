@@ -14,7 +14,7 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -129,10 +129,7 @@ impl Module for DisposableCheck {
             return Ok(ModuleResult::new());
         }
 
-        let data: Resp = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
+        let data: Resp = crate::util::http::json_decode(SRC, resp).await?;
 
         let mut result = ModuleResult::new();
         result.push(build_email_entity(

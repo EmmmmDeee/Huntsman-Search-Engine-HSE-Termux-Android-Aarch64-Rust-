@@ -1,37 +1,37 @@
-//! Typosquat / domain-permutation discovery (dnstwist-style, pure-Rust).
+//! Typosquat / domain-permutation discovery (dnstwist-grade, pure-Rust).
 //!
-//! Generates lookalike variants of a target domain across nine technique
-//! classes, then resolves each via DNS and emits a `Domain` entity **only
-//! for the ones that actually resolve** (i.e. are registered). A registered
-//! lookalike is a phishing / brand-abuse signal; the expansion loop then runs
-//! the full domain-enrichment stack (WHOIS, certs, web-crawl) over each.
+//! Generates lookalike variants of a target domain across the full fuzzer set —
+//! **IDN homoglyph** (non-ASCII Cyrillic/Greek confusables emitted as their
+//! registrable `xn--` Punycode form), ASCII homoglyph, omission, transposition,
+//! repetition, vowel swap, keyboard-adjacent replacement, keyboard insertion,
+//! bitsquatting, hyphenation, character addition, and TLD swap (with an
+//! Australian `.com.au`/`.net.au`/`.org.au` focus) — ranks them most-similar
+//! first by Levenshtein distance, then resolves each via the shared DNS resolver
+//! and emits a `Domain` entity **only for the ones that actually resolve** (i.e.
+//! are registered). A registered lookalike of a brand domain is a phishing /
+//! brand-abuse signal; the expansion loop then runs the full domain-enrichment
+//! stack (WHOIS, certs, web-crawl) over each.
 //!
-//! ## Techniques (ordered by threat signal — cap keeps the highest-value set)
+//! The IDN-homoglyph class is the differentiator: a resolving `xn--` lookalike
+//! is the near-invisible spoof real attacks use, and the [`punycode`] encoder
+//! produces exactly the on-the-wire label a registrar accepts — no `idna`
+//! dependency, just RFC 3492.
 //!
-//! | technique        | example (on "paypal.com")           | threat |
-//! |------------------|-------------------------------------|--------|
-//! | `combo-squat`    | paypallogin.com, loginpaypal.com    | HIGH   |
-//! | `homoglyph`      | paypa1.com                          | HIGH   |
-//! | `keyboard`       | oaypal.com (p→o adjacent)           | MED    |
-//! | `vowel-swap`     | peypal.com (a→e)                    | MED    |
-//! | `transposition`  | paypla.com                          | MED    |
-//! | `omission`       | aypal.com                           | MED    |
-//! | `repetition`     | ppaypal.com                         | LOW    |
-//! | `addition`       | pazpal.com (insert z)               | LOW    |
-//! | `hyphenation`    | pay-pal.com                         | LOW    |
-//! | `bitsquat`       | raypal.com (p bit-flipped)          | LOW    |
-//! | `tld-swap`       | paypal.net, paypal.com.au           | VAR    |
-//!
-//! For each DNS hit, an MX record lookup determines whether the squatted
-//! domain can send email — a strong phishing-infrastructure indicator.
-//!
-//! Pure permutation core (no I/O, unit-tested) + bounded concurrent
-//! DNS/MX resolution. No API, no native deps — Termux-clean.
+//! Pure permutation core (no I/O, unit-tested incl. canonical Punycode vectors)
+//! + bounded concurrent resolution. No API, no native deps — Termux-clean.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use tokio::sync::Semaphore;
+
+/// Session-level dedup: tracks registrable domains already fully processed by
+/// this module within one `hse` invocation. Real scan data showed `behindthename.com`
+/// dispatched 30 times (once per subdomain discovered), each triggering up to
+/// MAX_CANDIDATES DNS lookups for the same typosquat candidates. A second run
+/// on the same registrable domain produces zero new findings.
+static SEEN_REGISTRABLE: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -41,34 +41,24 @@ use crate::core::{
 };
 use crate::util::dns::shared_resolver;
 
+mod punycode;
+
 const SRC: &str = "typosquat";
 
-/// Cap on candidate permutations resolved per scan. Combo-squat and the
-/// high-signal techniques sort first so the cap retains the most dangerous
-/// variants even when the domain generates a large permutation space.
-const MAX_CANDIDATES: usize = 512;
+/// Cap on candidate permutations resolved per scan. Bounds the DNS work a long
+/// domain would otherwise generate; the highest-signal techniques are produced
+/// first so the cap keeps the most useful candidates.
+const MAX_CANDIDATES: usize = 128;
 
-/// Concurrent DNS A/AAAA lookups. Higher than before — typosquat is the
-/// primary phishing-infrastructure detector and latency matters.
-const MAX_DNS_CONCURRENT: usize = 48;
-
-/// Concurrent MX lookups for resolved DNS hits (confirm mail-capable infra).
-/// Kept lower: MX is a secondary check, only run on confirmed registrations.
-const MAX_MX_CONCURRENT: usize = 16;
-
-/// Combo-squatting keywords (highest-threat class — ordered by prevalence in
-/// real phishing campaigns). Prepended and appended to the brand label.
-const COMBO_WORDS: &[&str] = &[
-    "login", "signin", "secure", "account", "verify", "auth", "access", "update", "support",
-    "help", "official", "service", "portal", "pay", "checkout", "bank", "online", "customer",
-    "admin", "user", "my", "app", "web", "get", "now",
-];
+/// Concurrent DNS lookups (matches `dns_intel`'s brute-force budget — polite on
+/// a mobile link while keeping the resolve phase a few seconds).
+const MAX_CONCURRENT: usize = 12;
 
 /// TLDs to swap the registered name into — common gTLDs plus the Australian
-/// second-levels and popular ccTLDs used by impersonators.
+/// second-levels (a `.com.au` brand's lookalikes frequently sit on `.net.au` /
+/// `.com` / `.co`).
 const SWAP_TLDS: &[&str] = &[
-    "com", "net", "org", "co", "io", "app", "online", "site", "xyz", "club", "info", "biz",
-    "co.nz", "com.au", "net.au", "org.au",
+    "com", "net", "org", "co", "io", "app", "online", "site", "xyz", "com.au", "net.au", "org.au",
 ];
 
 pub struct Typosquat;
@@ -80,7 +70,7 @@ impl Module for Typosquat {
     }
 
     fn description(&self) -> &'static str {
-        "Generate and resolve typosquat/lookalike domain permutations with MX-based phishing-infrastructure detection"
+        "Generate and resolve typosquat/lookalike domain permutations (registered ones only)"
     }
 
     fn priority(&self) -> u8 {
@@ -106,31 +96,43 @@ impl Module for Typosquat {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        // MAX_CANDIDATES / MAX_DNS_CONCURRENT rounds × 3s per round +
-        // MX followup round + headroom = ~45s.
-        45_000
+        // Up to MAX_CANDIDATES DNS lookups at MAX_CONCURRENT width.
+        15_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let original = target.value.trim().trim_end_matches('.').to_lowercase();
+
+        // Skip if we already fully processed this registrable domain in this scan —
+        // repeated subdomains of the same apex (e.g. api.behindthename.com,
+        // admin.behindthename.com) reduce to the same permutation set.
+        let reg =
+            crate::util::domains::registrable_domain(&original).unwrap_or_else(|| original.clone());
+        {
+            let mut seen = SEEN_REGISTRABLE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !seen.insert(reg.clone()) {
+                return Ok(result);
+            }
+        }
+
         let candidates = permutations(&original, MAX_CANDIDATES);
         if candidates.is_empty() {
             return Ok(result);
         }
 
-        // ── Phase 1: parallel DNS A/AAAA resolution ───────────────────────────
         let resolver = shared_resolver();
-        let sem = Arc::new(Semaphore::new(MAX_DNS_CONCURRENT));
-        let mut dns_set = tokio::task::JoinSet::new();
+        let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
+        let mut set = tokio::task::JoinSet::new();
         for (candidate, technique) in candidates {
             let sem = Arc::clone(&sem);
-            let res = resolver.clone();
-            dns_set.spawn(async move {
+            set.spawn(async move {
                 let _permit = sem.acquire_owned().await.ok()?;
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(3),
-                    res.lookup_ip(candidate.as_str()),
+                    resolver.lookup_ip(candidate.as_str()),
                 )
                 .await
                 {
@@ -143,117 +145,52 @@ impl Module for Typosquat {
             });
         }
 
-        let mut dns_hits: Vec<(String, &'static str, String)> = Vec::new();
-        while let Some(joined) = dns_set.join_next().await {
+        // Collect, then sort for deterministic output (JoinSet completes in
+        // network order). Candidates are unique, so the ordering is total.
+        let mut hits: Vec<(String, &'static str, String)> = Vec::new();
+        while let Some(joined) = set.join_next().await {
             if let Ok(Some(hit)) = joined {
-                dns_hits.push(hit);
+                hits.push(hit);
             }
         }
-        // Deterministic output regardless of network completion order.
-        dns_hits.sort_by(|a, b| a.0.cmp(&b.0));
+        hits.sort_by(|a, b| a.0.cmp(&b.0));
 
-        if dns_hits.is_empty() {
-            return Ok(result);
-        }
-
-        // ── Phase 2: MX lookup on DNS hits (phishing mail-capability check) ───
-        let sem_mx = Arc::new(Semaphore::new(MAX_MX_CONCURRENT));
-        let mut mx_set = tokio::task::JoinSet::new();
-        for (candidate, _, _) in &dns_hits {
-            let candidate = candidate.clone();
-            let sem_mx = Arc::clone(&sem_mx);
-            let res = resolver.clone();
-            mx_set.spawn(async move {
-                let _permit = sem_mx.acquire_owned().await.ok()?;
-                let has_mx = tokio::time::timeout(
-                    std::time::Duration::from_secs(2),
-                    res.mx_lookup(candidate.as_str()),
-                )
-                .await
-                .map(|r| r.is_ok())
-                .unwrap_or(false);
-                has_mx.then_some(candidate)
-            });
-        }
-
-        let mut mx_domains: std::collections::HashSet<String> = std::collections::HashSet::new();
-        while let Some(joined) = mx_set.join_next().await {
-            if let Ok(Some(domain)) = joined {
-                mx_domains.insert(domain);
-            }
-        }
-
-        // ── Phase 3: emit entities ────────────────────────────────────────────
-        for (candidate, technique, ips) in dns_hits {
-            let conf = technique_confidence(technique);
-            let mut e = Entity::new(EntityKind::Domain, &candidate, conf, &ctx.scan_id);
+        for (candidate, technique, ips) in hits {
+            let mut e = Entity::new(EntityKind::Domain, &candidate, 0.55, &ctx.scan_id);
             e.tag("typosquat");
             e.tag(format!("typosquat:{technique}"));
-
-            let has_mx = mx_domains.contains(&candidate);
-            if has_mx {
-                e.tag("typosquat:has-mx");
-            }
-            if technique == "combo-squat" {
-                e.tag("phishing-indicator");
-            }
-            if technique == "combo-squat" && has_mx {
-                // Combo-squat + live mail = highest-threat phishing infrastructure.
-                e.tag("phishing-mail-capable");
-            }
-
-            let desc = if has_mx {
-                format!(
-                    "Registered lookalike of {original} via {technique} → {ips} (MX: live mail)"
-                )
-            } else {
-                format!("Registered lookalike of {original} via {technique} → {ips}")
-            };
-
             e.add_evidence(
-                Evidence::new(SRC, desc)
-                    .with_attr("original", &original)
-                    .with_attr("technique", technique)
-                    .with_attr("resolved_ips", &ips)
-                    .with_attr("has_mx", if has_mx { "true" } else { "false" }),
+                Evidence::new(
+                    SRC,
+                    format!(
+                        "Registered lookalike of {original} via {technique} → resolves to {ips}"
+                    ),
+                )
+                .with_attr("original", &original)
+                .with_attr("technique", technique)
+                .with_attr("resolved_ips", &ips),
             );
             result.push(e);
         }
-
         Ok(result)
     }
 }
-
-// ── Confidence tiering by technique ─────────────────────────────────────────
-
-/// Map technique → base confidence for the emitted Domain entity. Combo-squat
-/// is highest (deliberate brand abuse), bitsquat lowest (probabilistic HW fault).
-fn technique_confidence(technique: &str) -> f64 {
-    match technique {
-        "combo-squat" => 0.75,
-        "homoglyph" => 0.68,
-        "keyboard" => 0.62,
-        "vowel-swap" => 0.60,
-        "transposition" | "omission" => 0.58,
-        "repetition" | "addition" | "hyphenation" => 0.55,
-        "tld-swap" => 0.52,
-        "bitsquat" => 0.50,
-        _ => 0.55,
-    }
-}
-
-// ── Core permutation engine ──────────────────────────────────────────────────
 
 /// Generate up to `cap` registered-domain-shaped lookalike permutations of
 /// `domain`, paired with the technique that produced each. **Pure** (no I/O).
 ///
 /// Splits the domain into its leading label and public-suffix tail (e.g.
-/// `example` + `com.au`), permutes the label by the eleven typo classes
-/// (ordered highest-threat first), and adds TLD swaps. Deduplicated,
-/// deterministic order, capped.
+/// `example` + `com.au`), permutes the label across the full fuzzer set
+/// (IDN/ASCII homoglyph, omission, transposition, repetition, vowel swap,
+/// keyboard replacement/insertion, bitsquat, hyphenation, addition), and adds
+/// TLD swaps; the original is never returned and every candidate is a
+/// syntactically valid hostname (IDN variants in their `xn--` form). Ranked
+/// most-similar-first by edit distance, deduplicated, deterministic, and capped.
 pub(crate) fn permutations(domain: &str, cap: usize) -> Vec<(String, &'static str)> {
     let domain = domain.trim().trim_end_matches('.').to_lowercase();
-    let registrable = crate::util::domains::registrable_domain(&domain).unwrap_or(domain.clone());
+    // Reduce to the registrable domain, then split label | suffix on the first dot.
+    let registrable =
+        crate::util::domains::registrable_domain(&domain).unwrap_or_else(|| domain.clone());
     let Some((label, suffix)) = registrable.split_once('.') else {
         return Vec::new();
     };
@@ -262,93 +199,89 @@ pub(crate) fn permutations(domain: &str, cap: usize) -> Vec<(String, &'static st
     }
     let chars: Vec<char> = label.chars().collect();
 
-    // All (technique, variant-label) pairs — ordered most-useful first so the
-    // cap retains the highest-signal candidates.
-    let mut variants: Vec<(&'static str, String)> = Vec::new();
-    let mut push = |tech: &'static str, s: String| variants.push((tech, s));
+    // (technique, emitted-label, visual-label). Collected in **signal priority**
+    // order so that, after the stable Levenshtein sort below, the highest-value
+    // candidates survive the cap when equally similar. For ASCII techniques the
+    // emitted and visual labels are identical; an IDN-homoglyph emits its `xn--`
+    // ACE form while keeping the Unicode spelling as the visual for ranking, so
+    // it scores as the single-character swap a human sees, not the long ACE.
+    let mut cands: Vec<(&'static str, String, String)> = Vec::new();
 
-    // 1. Combo-squatting — highest-threat class; deliberate brand abuse.
-    //    Produces {label}{word} and {word}{label}, with and without hyphen.
-    for word in COMBO_WORDS {
-        push("combo-squat", format!("{label}{word}"));
-        push("combo-squat", format!("{word}{label}"));
-        push("combo-squat", format!("{label}-{word}"));
-        push("combo-squat", format!("{word}-{label}"));
-    }
-
-    // 2. Homoglyph substitution (ASCII look-alikes).
+    // IDN homoglyph — a non-ASCII confusable (Cyrillic/Greek lookalike), emitted
+    // as its registrable `xn--` Punycode form. The highest-signal class: a
+    // resolving `xn--` lookalike is a deliberate, near-invisible spoof.
     for (i, &c) in chars.iter().enumerate() {
-        for &n in homoglyphs(c) {
+        for &g in confusables(c) {
             let mut v = chars.clone();
-            v[i] = n;
-            push("homoglyph", v.into_iter().collect());
+            v[i] = g;
+            let visual: String = v.iter().collect();
+            if let Some(ace) = punycode::to_ascii_label(&visual) {
+                cands.push(("homoglyph-idn", ace, visual));
+            }
         }
     }
-
-    // 3. Keyboard-adjacent replacement.
+    // ASCII homoglyph — digit/letter look-alikes (o→0, e→3, l→1).
+    for (i, &c) in chars.iter().enumerate() {
+        for &g in homoglyphs(c) {
+            let mut v = chars.clone();
+            v[i] = g;
+            let s: String = v.iter().collect();
+            cands.push(("homoglyph", s.clone(), s));
+        }
+    }
+    // Omission — drop one char.
+    for i in 0..chars.len() {
+        let mut v = chars.clone();
+        v.remove(i);
+        let s: String = v.into_iter().collect();
+        cands.push(("omission", s.clone(), s));
+    }
+    // Transposition — swap adjacent chars.
+    for i in 0..chars.len().saturating_sub(1) {
+        let mut v = chars.clone();
+        v.swap(i, i + 1);
+        let s: String = v.into_iter().collect();
+        cands.push(("transposition", s.clone(), s));
+    }
+    // Repetition — double one char.
+    for i in 0..chars.len() {
+        let mut v = chars.clone();
+        v.insert(i, chars[i]);
+        let s: String = v.into_iter().collect();
+        cands.push(("repetition", s.clone(), s));
+    }
+    // Vowel swap — replace a vowel with another (the most common real mistype).
+    const VOWELS: &[char] = &['a', 'e', 'i', 'o', 'u'];
+    for (i, &c) in chars.iter().enumerate() {
+        if VOWELS.contains(&c) {
+            for &v2 in VOWELS.iter().filter(|&&w| w != c) {
+                let mut v = chars.clone();
+                v[i] = v2;
+                let s: String = v.into_iter().collect();
+                cands.push(("vowel-swap", s.clone(), s));
+            }
+        }
+    }
+    // Keyboard-adjacent replacement.
     for (i, &c) in chars.iter().enumerate() {
         for n in keyboard_neighbors(c).chars() {
             let mut v = chars.clone();
             v[i] = n;
-            push("keyboard", v.into_iter().collect());
+            let s: String = v.into_iter().collect();
+            cands.push(("keyboard", s.clone(), s));
         }
     }
-
-    // 4. Vowel-swap — replace each vowel with every other vowel.
-    //    Catches subtle confusion like "google" → "goegle" or "gaogle".
-    const VOWELS: &[char] = &['a', 'e', 'i', 'o', 'u'];
+    // Insertion — slip a keyboard-adjacent key in beside the one it neighbours.
     for (i, &c) in chars.iter().enumerate() {
-        if VOWELS.contains(&c) {
-            for &v_char in VOWELS {
-                if v_char != c {
-                    let mut v = chars.clone();
-                    v[i] = v_char;
-                    push("vowel-swap", v.into_iter().collect());
-                }
-            }
-        }
-    }
-
-    // 5. Transposition — swap adjacent chars.
-    for i in 0..chars.len().saturating_sub(1) {
-        let mut v = chars.clone();
-        v.swap(i, i + 1);
-        push("transposition", v.into_iter().collect());
-    }
-
-    // 6. Omission — drop one char.
-    for i in 0..chars.len() {
-        let mut v = chars.clone();
-        v.remove(i);
-        push("omission", v.into_iter().collect());
-    }
-
-    // 7. Repetition — double one char.
-    for i in 0..chars.len() {
-        let mut v = chars.clone();
-        v.insert(i, chars[i]);
-        push("repetition", v.into_iter().collect());
-    }
-
-    // 8. Addition — insert a keyboard-adjacent character at each position.
-    //    Bounded: only inserts the direct keyboard neighbours of the char at i
-    //    (not all 26) to keep the candidate count tractable.
-    for i in 0..chars.len() {
-        for n in keyboard_neighbors(chars[i]).chars() {
+        for n in keyboard_neighbors(c).chars() {
             let mut v = chars.clone();
             v.insert(i, n);
-            push("addition", v.into_iter().collect());
+            let s: String = v.into_iter().collect();
+            cands.push(("insertion", s.clone(), s));
         }
     }
-
-    // 9. Hyphenation — insert a hyphen between two chars.
-    for i in 1..chars.len() {
-        let mut v = chars.clone();
-        v.insert(i, '-');
-        push("hyphenation", v.into_iter().collect());
-    }
-
-    // 10. Bitsquatting — flip one bit of an ASCII letter/digit.
+    // Bitsquatting — flip one bit of an ASCII letter/digit (DRAM/cosmic-ray
+    // bit-flips routed to an attacker-registered neighbour).
     for (i, &c) in chars.iter().enumerate() {
         if !c.is_ascii_alphanumeric() {
             continue;
@@ -358,47 +291,96 @@ pub(crate) fn permutations(domain: &str, cap: usize) -> Vec<(String, &'static st
             if flipped.is_ascii_lowercase() || flipped.is_ascii_digit() {
                 let mut v = chars.clone();
                 v[i] = flipped as char;
-                push("bitsquat", v.into_iter().collect());
+                let s: String = v.into_iter().collect();
+                cands.push(("bitsquat", s.clone(), s));
             }
         }
     }
+    // Hyphenation — insert a hyphen between two chars.
+    for i in 1..chars.len() {
+        let mut v = chars.clone();
+        v.insert(i, '-');
+        let s: String = v.into_iter().collect();
+        cands.push(("hyphenation", s.clone(), s));
+    }
+    // Addition — append a single letter or digit.
+    for b in (b'a'..=b'z').chain(b'0'..=b'9') {
+        let s = format!("{label}{}", b as char);
+        cands.push(("addition", s.clone(), s));
+    }
 
-    // ── Dedup + cap ──────────────────────────────────────────────────────────
-    let mut out: Vec<(String, &'static str)> = Vec::new();
+    let mut out: Vec<(String, &'static str, usize)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     seen.insert(registrable.clone());
 
-    // Label permutations against the original suffix (preserve technique order).
-    out.extend(
-        variants
-            .iter()
-            .filter(|(_, lbl)| is_valid_label(lbl))
-            .filter_map(|(tech, lbl)| {
-                let fqdn = format!("{lbl}.{suffix}");
-                seen.insert(fqdn.clone()).then_some((fqdn, *tech))
-            }),
-    );
-
+    // Label permutations on the original suffix. An emitted label is kept when it
+    // is a valid LDH label, or an `xn--` ACE label (whose internal `--` the
+    // generator's stricter `is_valid_label` rejects but the punycode layer has
+    // already validated). Distance is measured on the *visual* form so an IDN
+    // swap scores as the one-character spoof a human sees.
+    for (tech, emit_label, visual_label) in &cands {
+        if !(is_valid_label(emit_label) || emit_label.starts_with("xn--")) {
+            continue;
+        }
+        let fqdn = format!("{emit_label}.{suffix}");
+        if !seen.insert(fqdn.clone()) {
+            continue;
+        }
+        let dist = levenshtein(&format!("{visual_label}.{suffix}"), &registrable);
+        out.push((fqdn, tech, dist));
+    }
     // TLD swaps on the original label.
-    out.extend(
-        SWAP_TLDS
-            .iter()
-            .filter(|&&tld| tld != suffix)
-            .filter_map(|&tld| {
-                let fqdn = format!("{label}.{tld}");
-                seen.insert(fqdn.clone()).then_some((fqdn, "tld-swap"))
-            }),
-    );
+    for &tld in SWAP_TLDS {
+        if tld == suffix {
+            continue;
+        }
+        let fqdn = format!("{label}.{tld}");
+        if seen.insert(fqdn.clone()) {
+            let dist = levenshtein(&fqdn, &registrable);
+            out.push((fqdn, "tld-swap", dist));
+        }
+    }
 
+    // Stable sort by edit distance — most-similar first — keeping the priority
+    // collection order within an equal distance, so the cap retains the
+    // highest-signal candidates.
+    out.sort_by_key(|&(_, _, dist)| dist);
     out.truncate(cap);
-    out
+    out.into_iter()
+        .map(|(fqdn, tech, _)| (fqdn, tech))
+        .collect()
 }
 
-// ── Label validation ─────────────────────────────────────────────────────────
+/// Levenshtein (edit) distance between two strings, over Unicode scalar values.
+/// Two rolling rows, so `O(min·max)` time and `O(max)` space. Used to rank
+/// candidates most-similar-first; comparing scalars (not bytes) keeps a single
+/// Cyrillic-for-Latin swap at distance 1.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (m, n) = (a.len(), b.len());
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr = vec![0usize; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
+}
 
 /// A syntactically valid DNS label: 1–63 chars of `[a-z0-9-]`, not
-/// leading/trailing/double hyphen, and not empty.
-pub(crate) fn is_valid_label(s: &str) -> bool {
+/// leading/trailing/double hyphen.
+fn is_valid_label(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 63
         && !s.starts_with('-')
@@ -408,11 +390,8 @@ pub(crate) fn is_valid_label(s: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-// ── Keyboard adjacency (QWERTY) ──────────────────────────────────────────────
-
-/// QWERTY-adjacent lowercase keys for the keyboard-substitution and
-/// addition technique classes.
-pub(crate) fn keyboard_neighbors(c: char) -> &'static str {
+/// QWERTY-adjacent lowercase keys for the common typo-substitution class.
+fn keyboard_neighbors(c: char) -> &'static str {
     match c {
         'a' => "qwsz",
         'b' => "vghn",
@@ -444,11 +423,8 @@ pub(crate) fn keyboard_neighbors(c: char) -> &'static str {
     }
 }
 
-// ── ASCII homoglyphs ─────────────────────────────────────────────────────────
-
-/// ASCII homoglyphs — characters commonly swapped to look near-identical in
-/// fonts used by browsers and email clients.
-pub(crate) fn homoglyphs(c: char) -> &'static [char] {
+/// ASCII homoglyphs — characters commonly swapped to look near-identical.
+fn homoglyphs(c: char) -> &'static [char] {
     match c {
         'o' => &['0'],
         '0' => &['o'],
@@ -461,6 +437,38 @@ pub(crate) fn homoglyphs(c: char) -> &'static [char] {
         'b' => &['8'],
         'g' => &['9'],
         'z' => &['2'],
+        _ => &[],
+    }
+}
+
+/// Non-ASCII confusables — curated, high-confidence Unicode lookalikes (Cyrillic,
+/// Greek, and a few Latin/Armenian) for each ASCII letter, deduplicated. These
+/// drive the IDN-homoglyph fuzzer: each is substituted in, then the label is
+/// Punycode-encoded to the `xn--` form a registrar and resolver see. Only the
+/// genuinely deceptive swaps are listed — a noisy table would bury the signal.
+fn confusables(c: char) -> &'static [char] {
+    match c {
+        'a' => &['\u{0430}', '\u{03B1}'], // Cyrillic а, Greek α
+        'c' => &['\u{0441}', '\u{03F2}'], // Cyrillic с, Greek lunate ϲ
+        'd' => &['\u{0501}'],             // Cyrillic ԁ
+        'e' => &['\u{0435}'],             // Cyrillic е
+        'g' => &['\u{0261}'],             // Latin script ɡ
+        'h' => &['\u{04BB}'],             // Cyrillic һ
+        'i' => &['\u{0456}', '\u{0131}'], // Cyrillic і, dotless ı
+        'j' => &['\u{0458}'],             // Cyrillic ј
+        'k' => &['\u{043A}'],             // Cyrillic к
+        'l' => &['\u{04CF}'],             // Cyrillic palochka ӏ
+        'm' => &['\u{043C}'],             // Cyrillic м
+        'n' => &['\u{0578}'],             // Armenian ո
+        'o' => &['\u{043E}', '\u{03BF}'], // Cyrillic о, Greek ο
+        'p' => &['\u{0440}', '\u{03C1}'], // Cyrillic р, Greek ρ
+        's' => &['\u{0455}'],             // Cyrillic ѕ
+        't' => &['\u{03C4}'],             // Greek τ
+        'u' => &['\u{03C5}'],             // Greek υ
+        'v' => &['\u{03BD}', '\u{0475}'], // Greek ν, Cyrillic ѵ
+        'w' => &['\u{051D}'],             // Cyrillic ԝ
+        'x' => &['\u{0445}', '\u{03C7}'], // Cyrillic х, Greek χ
+        'y' => &['\u{0443}', '\u{03B3}'], // Cyrillic у, Greek γ
         _ => &[],
     }
 }

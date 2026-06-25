@@ -20,6 +20,7 @@ use huntsman_search_engine::{
         error::Result,
         live::LiveScanner,
         module::{Module, ModuleContext, ModuleResult},
+        relation::{Relation, RelationKind},
         scan::{Scan, Target, TargetKind},
     },
     storage::Store,
@@ -468,6 +469,82 @@ async fn scan_create_rejects_invalid_target() {
     assert!(json.get("error").is_some(), "response must contain error");
 }
 
+// ── 5b. Live Signal Radar (button activation) ─────────────────────────────
+
+#[tokio::test]
+async fn radar_sweep_is_refused_until_live_radar_is_enabled() {
+    // The live-sensor radar is completely disabled by default and walled off from
+    // seed scans: the radar button (`POST /api/v1/radar`) is refused until the
+    // operator deliberately turns on `feature.live_radar` in the separate
+    // settings surface — never via a scan. (What a *permitted* sweep queues —
+    // sensors only, a non-target seed, `allow_live_sensors` set — is covered by
+    // the `radar_scan_spec_activates_only_the_live_sensors` unit test.)
+    let app = test_app("radar");
+    let resp = app.oneshot(post_json("/api/v1/radar", "")).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        http::StatusCode::FORBIDDEN,
+        "live radar must be refused until manually enabled, separate from scans"
+    );
+}
+
+// ── 5c. Subject network synthesis ─────────────────────────────────────────
+
+#[tokio::test]
+async fn scan_network_synthesises_subject_graph() {
+    // Unknown scan → 404, matching the other `/scans/{id}/...` sub-resources.
+    let app = test_app("network_nf");
+    let resp = app
+        .oneshot(get("/api/v1/scans/nope/network"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    // A known scan → 200 with the synthesis envelope. The async engine may not
+    // have produced entities yet, but the shape is always present and well-formed.
+    let (app, sid) = create_scan("network_ok").await;
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}/network")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let net = body_json(resp).await;
+    assert!(
+        net.get("groups").is_some_and(serde_json::Value::is_array),
+        "network carries a groups array"
+    );
+    for k in ["direct_count", "reachable_count", "edge_count"] {
+        assert!(
+            net.get(k).is_some_and(serde_json::Value::is_u64),
+            "network carries a {k} count"
+        );
+    }
+}
+
+// ── 5d. Proactive leads ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn scan_leads_returns_ranked_actions() {
+    // Unknown scan → 404, matching the other `/scans/{id}/...` sub-resources.
+    let app = test_app("leads_nf");
+    let resp = app.oneshot(get("/api/v1/scans/nope/leads")).await.unwrap();
+    assert_eq!(resp.status(), 404);
+
+    // A known scan → 200 with a `leads` array (possibly empty until the engine
+    // has produced connected, untapped entities).
+    let (app, sid) = create_scan("leads_ok").await;
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}/leads")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = body_json(resp).await;
+    assert!(
+        body.get("leads").is_some_and(serde_json::Value::is_array),
+        "leads response carries a leads array"
+    );
+}
+
 // ── 6. Scan list ──────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -657,6 +734,7 @@ async fn dossier_upload_creates_a_complete_scan_with_entities() {
         .method("POST")
         .uri("/api/v1/scans/import")
         .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
         .body(Body::from(dossier))
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -695,6 +773,7 @@ async fn dossier_upload_derives_and_persists_entity_relations() {
         .method("POST")
         .uri("/api/v1/scans/import")
         .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
         .body(Body::from(dossier))
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
@@ -717,6 +796,7 @@ async fn dossier_upload_rejects_unrecognised_format() {
         .method("POST")
         .uri("/api/v1/scans/import")
         .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
         .body(Body::from(
             "just some random prose with no dossier structure",
         ))
@@ -753,6 +833,7 @@ async fn dossier_upload_accepts_body_larger_than_axum_default_limit() {
         .method("POST")
         .uri("/api/v1/scans/import")
         .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
         .body(Body::from(dossier))
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
@@ -1456,9 +1537,6 @@ async fn spa_references_only_registered_api_endpoints() {
         }
         // A representative, parameter-free URL for this endpoint family.
         let url = match base.as_str() {
-            // Static ATT&CK capability assessment — scan-independent and
-            // parameter-free, so a bare GET exercises the registered route.
-            "attack" => "/api/v1/attack/capability.json".to_string(),
             "health" => "/api/v1/health".to_string(),
             "version" => "/api/v1/version".to_string(),
             "keys" => "/api/v1/keys/pool".to_string(),
@@ -1472,6 +1550,13 @@ async fn spa_references_only_registered_api_endpoints() {
             "logs" => "/api/v1/logs".to_string(),
             "live" => "/api/v1/live".to_string(),
             "update" => "/api/v1/update/status".to_string(),
+            // Live Signal Radar — POST-only, so a bare GET returns 405 (Method
+            // Not Allowed), not the fallback's 404; the assertion below only
+            // requires "not 404", which confirms the route is registered.
+            "radar" => "/api/v1/radar".to_string(),
+            // Forward-only scan-plan preview — parameter-driven; a bare value
+            // exercises the registered route (returns 200, never the fallback 404).
+            "plan" => "/api/v1/plan?value=example.com".to_string(),
             other => panic!(
                 "SPA references /api/v1/{other} but this test has no probe for it — \
                  add one and confirm the route is registered in src/api/routes.rs"
@@ -1673,11 +1758,11 @@ async fn spa_is_gzip_compressed_for_a_gzip_capable_client() {
     let bytes = axum::body::to_bytes(resp.into_body(), 2_000_000)
         .await
         .unwrap();
-    // The uncompressed SPA is ~118 KB; gzip should bring the wire body well
+    // The uncompressed SPA is ~212 KB; gzip should bring the wire body well
     // under half that. (Generous bound so a future SPA edit doesn't flake.)
     assert!(
-        bytes.len() < 60_000,
-        "gzipped SPA should be much smaller than the ~118 KB source, got {} bytes",
+        bytes.len() < 80_000,
+        "gzipped SPA should be much smaller than the ~212 KB source, got {} bytes",
         bytes.len()
     );
 }
@@ -1879,4 +1964,428 @@ async fn keys_pool_rotate_is_write_gated() {
         .insert(axum::extract::ConnectInfo(loopback));
     let resp = app.oneshot(post).await.unwrap();
     assert_eq!(resp.status(), http::StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn plan_preview_lists_engaged_modules_for_a_seed() {
+    let app = test_app("plan");
+    // A two-word name seed detects as a full name and engages real registry modules,
+    // WITHOUT running a scan.
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/plan?value=Kyle%20Diegmann"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["kind"].as_str().unwrap(), "full_name");
+    assert!(
+        json["module_count"].as_u64().unwrap() > 0,
+        "a name seed engages at least one module"
+    );
+    assert!(json["modules"].is_array());
+    assert!(json["categories"].is_array());
+
+    // An empty value is rejected cleanly, not a panic.
+    let resp = app.oneshot(get("/api/v1/plan?value=")).await.unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn scan_benchmark_returns_a_scorecard() {
+    let (app, store) = test_app_with_store("benchmark");
+    let scan = Scan::new(
+        "s-bench",
+        Target::new(TargetKind::FullName, "Subject Person"),
+    );
+    store.upsert_scan(&scan).unwrap();
+    for v in ["a@example.com", "b@example.com"] {
+        store
+            .upsert_entity(&Entity::new(EntityKind::Email, v, 0.8, "s-bench"))
+            .unwrap();
+    }
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/scans/s-bench/benchmark"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["scan_id"].as_str().unwrap(), "s-bench");
+    assert_eq!(
+        json["scorecard"]["total_entities"].as_u64().unwrap(),
+        2,
+        "the scorecard reflects the seeded entities"
+    );
+    assert!(
+        json["metrics"].is_object(),
+        "the full metrics are embedded for traceability"
+    );
+
+    // Unknown scan -> 404.
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/benchmark"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn scan_pivots_reports_cut_vertices_and_bridges() {
+    let (app, store) = test_app_with_store("pivots");
+    let scan = Scan::new("s-piv", Target::new(TargetKind::FullName, "Subject Person"));
+    store.upsert_scan(&scan).unwrap();
+
+    // A path a—b—c—d: the interior nodes b and c are cut vertices, and all three
+    // edges are bridges (single points of failure for connectivity).
+    let a = Entity::new(EntityKind::Person, "Aa Person", 0.8, "s-piv");
+    let b = Entity::new(EntityKind::Email, "b@example.com", 0.8, "s-piv");
+    let c = Entity::new(EntityKind::Phone, "+15551230000", 0.8, "s-piv");
+    let d = Entity::new(EntityKind::Domain, "d.example.com", 0.8, "s-piv");
+    for e in [&a, &b, &c, &d] {
+        store.upsert_entity(e).unwrap();
+    }
+    for (x, y) in [(&a, &b), (&b, &c), (&c, &d)] {
+        store
+            .upsert_relation(&Relation::new(
+                x.uid.as_str(),
+                y.uid.as_str(),
+                RelationKind::AssociatedWith,
+                0.7,
+                "s-piv",
+            ))
+            .unwrap();
+    }
+
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/scans/s-piv/pivots"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+
+    let pivots = json["pivots"].as_array().expect("pivots is a list");
+    assert!(!pivots.is_empty(), "the path's interior nodes are pivots");
+    assert!(
+        pivots
+            .iter()
+            .any(|p| p["is_cut_vertex"].as_bool() == Some(true)),
+        "at least one pivot is flagged a cut vertex (single point of failure)"
+    );
+
+    let bridges = json["bridges"].as_array().expect("bridges is a list");
+    assert_eq!(bridges.len(), 3, "every edge on the path is a bridge");
+    for br in bridges {
+        assert!(br["from_uid"].is_string() && br["to_uid"].is_string());
+    }
+
+    // Unknown scan -> 404, matching the other sub-resources.
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/pivots"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn scan_gaps_reports_isolated_seeds_with_corrective_modules() {
+    let (app, store) = test_app_with_store("gaps");
+    let scan = Scan::new("s-gap", Target::new(TargetKind::FullName, "Subject Person"));
+    store.upsert_scan(&scan).unwrap();
+
+    // A linked pair (email—domain) plus an isolated phone (no relation).
+    let a = Entity::new(EntityKind::Email, "a@example.test", 0.8, "s-gap");
+    let b = Entity::new(EntityKind::Domain, "example.test", 0.8, "s-gap");
+    let orphan = Entity::new(EntityKind::Phone, "+15551230000", 0.8, "s-gap");
+    for e in [&a, &b, &orphan] {
+        store.upsert_entity(e).unwrap();
+    }
+    store
+        .upsert_relation(&Relation::new(
+            a.uid.as_str(),
+            b.uid.as_str(),
+            RelationKind::BelongsToDomain,
+            0.7,
+            "s-gap",
+        ))
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/scans/s-gap/gaps"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+
+    assert_eq!(json["total_seeds"].as_u64().unwrap(), 3);
+    assert_eq!(json["linked_seeds"].as_u64().unwrap(), 2);
+    assert_eq!(json["isolated_seeds"].as_u64().unwrap(), 1);
+    let orphans = json["orphans"].as_array().expect("orphans is a list");
+    assert_eq!(orphans.len(), 1, "the isolated phone is the only orphan");
+    let o = &orphans[0];
+    assert_eq!(o["kind"].as_str().unwrap(), "phone");
+    assert_eq!(o["isolation"].as_str().unwrap(), "unexpanded");
+    assert_eq!(o["reinjection_target"].as_str().unwrap(), "phone");
+    assert!(
+        !o["corrective_modules"].as_array().unwrap().is_empty(),
+        "the orphan phone has registered modules that would query it"
+    );
+
+    // Unknown scan -> 404.
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/gaps"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+// ── Regression tests derived from real execution: 6 routes with zero prior ──
+// coverage, detected by cross-referencing the live route table against the    ──
+// test file. Each test verifies: 404 for unknown scan + 200 with the correct  ──
+// JSON shape for a known scan, grounding the contract in real handler output.  ──
+
+#[tokio::test]
+async fn scan_audit_404_unknown_and_200_with_score_for_known() {
+    let (app, sid) = create_scan("audit-cov").await;
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/audit")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "audit must 200 for a known scan");
+    let json = body_json(resp).await;
+    // Audit report must have the canonical top-level keys.
+    assert!(
+        json["score"].is_number(),
+        "audit must include a numeric score"
+    );
+    assert!(
+        json["grade"].is_string(),
+        "audit must include a grade string"
+    );
+    assert!(
+        json["entity_total"].is_number(),
+        "audit must include entity_total"
+    );
+    assert!(
+        json["findings"].is_array(),
+        "audit must include a findings array"
+    );
+    assert!(
+        json["tiers"].is_object(),
+        "audit must include a tiers object"
+    );
+
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/audit"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404, "audit must 404 for an unknown scan");
+}
+
+#[tokio::test]
+async fn scan_timeline_404_unknown_and_200_list_for_known() {
+    let (app, sid) = create_scan("timeline-cov").await;
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/timeline")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "timeline must 200 for a known scan");
+    let json = body_json(resp).await;
+    assert!(
+        json["events"].is_array(),
+        "timeline must return an 'events' array"
+    );
+    assert!(json["count"].is_number(), "timeline must include a count");
+
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/timeline"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404, "timeline must 404 for an unknown scan");
+}
+
+#[tokio::test]
+async fn scan_communities_404_unknown_and_200_list_for_known() {
+    let (app, sid) = create_scan("communities-cov").await;
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/communities")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "communities must 200 for a known scan");
+    let json = body_json(resp).await;
+    assert!(
+        json["communities"].is_array(),
+        "communities must return a 'communities' array"
+    );
+    assert!(
+        json["count"].is_number(),
+        "communities must include a count"
+    );
+
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/communities"))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "communities must 404 for an unknown scan"
+    );
+}
+
+#[tokio::test]
+async fn scan_trust_404_unknown_and_200_list_for_known() {
+    let (app, sid) = create_scan("trust-cov").await;
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/trust")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "trust must 200 for a known scan");
+    let json = body_json(resp).await;
+    assert!(
+        json["trust"].is_array(),
+        "trust must return a 'trust' array"
+    );
+    assert!(json["count"].is_number(), "trust must include a count");
+
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/trust"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404, "trust must 404 for an unknown scan");
+}
+
+#[tokio::test]
+async fn scan_duplicates_404_unknown_and_200_list_for_known() {
+    let (app, sid) = create_scan("dupes-cov").await;
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/duplicates")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "duplicates must 200 for a known scan");
+    let json = body_json(resp).await;
+    assert!(
+        json["duplicates"].is_array(),
+        "duplicates must return a 'duplicates' array"
+    );
+    assert!(json["count"].is_number(), "duplicates must include a count");
+
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/duplicates"))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "duplicates must 404 for an unknown scan"
+    );
+}
+
+#[tokio::test]
+async fn scan_debug_bundle_404_unknown_and_text_attachment_for_known() {
+    let (app, sid) = create_scan("debug-cov").await;
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/debug.txt")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "debug.txt must 200 for a known scan");
+    let ct = resp
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        ct.starts_with("text/plain"),
+        "debug.txt must be text/plain, got {ct:?}"
+    );
+    let cd = resp
+        .headers()
+        .get(http::header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        cd.contains("attachment") && cd.contains(".txt"),
+        "debug.txt must carry a download Content-Disposition, got {cd:?}"
+    );
+
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/debug.txt"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404, "debug.txt must 404 for an unknown scan");
+}
+
+// ── Security: DNS-rebind Host guard + scan-import CSRF ──────────────────────
+
+#[tokio::test]
+async fn dns_rebind_host_header_is_rejected() {
+    let app = test_app("rebind");
+    // A mismatched Host (the DNS-rebind attacker's domain) is refused with 403
+    // before any handler — even though the socket peer is loopback.
+    let req = Request::builder()
+        .uri("/api/v1/health")
+        .header("host", "evil.example.com")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 403, "a rebind Host must be rejected");
+
+    // A loopback Host the user legitimately types is allowed through.
+    let ok = Request::builder()
+        .uri("/api/v1/health")
+        .header("host", "localhost:8080")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(ok).await.unwrap();
+    assert_eq!(resp.status(), 200, "a legitimate loopback Host passes");
+}
+
+#[tokio::test]
+async fn scan_import_requires_csrf_header() {
+    let app = test_app("csrf");
+    let dossier = "Entry #1:\nEMAILS: a@b.com\n";
+    // A text/plain POST WITHOUT the custom header is a CORS simple request — the
+    // CSRF vector — and must be blocked with 403.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import")
+        .header("content-type", "text/plain")
+        .body(Body::from(dossier))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "import without X-HSE-CSRF must be blocked"
+    );
+
+    // WITH the header the request is no longer CSRF-blocked (it proceeds to parse).
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import")
+        .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
+        .header("x-hse-csrf", "1")
+        .body(Body::from(dossier))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        403,
+        "with X-HSE-CSRF the import is not CSRF-blocked"
+    );
 }

@@ -16,7 +16,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use futures::future::join_all;
 
 use super::engines::{ENGINES, EngineSpec};
-use super::fetch::{external_link_count, parse_results, try_fetch};
+use super::fetch::{MAX_FETCH_MS, external_link_count, parse_results, try_fetch};
 use super::helpers::FetchOutcome;
 
 /// Benign, region-neutral probe query — a reserved example domain, so a probe
@@ -159,7 +159,12 @@ async fn probe_one(engine: &'static EngineSpec) -> EngineHealth {
     let url = (engine.build_url)(PROBE_QUERY);
     let post = engine.build_post.map(|f| f(PROBE_QUERY));
     let start = Instant::now();
-    let outcome = try_fetch(&url, engine.ua, post.as_deref()).await;
+    // The liveness probe uses the full per-request ceiling, capped by any
+    // per-engine override (e.g. DDG at 4 s vs global 8 s).
+    let probe_timeout = engine
+        .max_fetch_ms
+        .map_or(MAX_FETCH_MS, |cap| cap.min(MAX_FETCH_MS));
+    let outcome = try_fetch(&url, engine.ua, post.as_deref(), probe_timeout).await;
     let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
     let (results, links) = match &outcome {
         FetchOutcome::Body(b) => (

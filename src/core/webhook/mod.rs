@@ -46,7 +46,15 @@ pub async fn notify_scan_complete(
             );
         }
         Err(e) => {
-            tracing::warn!(scan_id = payload.scan_id, url = webhook_url, error = %e, "webhook notification failed");
+            // Log only the host, never the full URL: a Slack/Discord-style
+            // webhook carries its secret in the PATH, so `url = webhook_url`
+            // would leak it into the loopback `/api/v1/logs` ring buffer.
+            let host = webhook_url
+                .split("://")
+                .nth(1)
+                .and_then(|rest| rest.split('/').next())
+                .unwrap_or("<webhook>");
+            tracing::warn!(scan_id = payload.scan_id, webhook_host = host, error = %e, "webhook notification failed");
         }
     }
 }

@@ -97,7 +97,7 @@ pub fn classify(service: &str) -> KeyRoi {
 
         // ── TERMINAL ────────────────────────────────────────────────
         // Single-shot scoring or geolocation
-        "abuseipdb" | "greynoise" | "ipqs" | "ipinfo" | "ipapi"
+        "abuseipdb" | "greynoise" | "ipqs" | "ipinfo"
         | "ip2location" | "ipregistry" | "ipquery" | "numverify"
         | "pulsedive" | "threatfox" | "sunrise_sunset" | "c99"
         => KeyRoi::Terminal,

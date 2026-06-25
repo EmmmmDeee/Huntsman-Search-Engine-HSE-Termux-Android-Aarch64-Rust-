@@ -66,7 +66,6 @@ pub mod ip_geo;
 pub mod ip_registry;
 pub mod ip_reputation;
 pub mod ip_whois_geo;
-pub mod ipapi;
 pub mod ipinfo;
 pub mod ipqs;
 pub mod ipquery;
@@ -87,9 +86,9 @@ pub mod opencellid;
 pub mod opencorporates;
 pub mod osintcat;
 pub mod overpass;
+pub mod payid;
 pub mod pgp;
-pub mod phone_area_geo;
-pub mod phone_carrier_geo;
+pub mod phone_geo;
 pub mod phone_intl;
 pub mod photon;
 pub mod portscan;
@@ -97,7 +96,6 @@ pub mod proxycurl;
 pub mod psbdmp;
 pub mod pwned_passwords;
 pub mod qld_cadastre;
-pub mod qld_unclaimed;
 pub mod rdap_domain;
 pub mod reddit_user;
 pub mod ripestat;
@@ -233,6 +231,10 @@ fn install_core_hooks() {
 pub fn registry() -> Vec<Arc<dyn Module>> {
     install_core_hooks();
     vec![
+        // Priority 200 — runs first: types any value and extracts embedded entities from
+        // unstructured text so every output (including the system's own) is re-injectable
+        // as a seed. Pure/offline; lives in `core` (implements the core Module trait).
+        Arc::new(crate::core::classify_module::ClassifyModule),
         Arc::new(hibp::Hibp),
         Arc::new(hudsonrock::HudsonRock),
         Arc::new(xposed_or_not::XposedOrNot),
@@ -272,7 +274,6 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(ip_geo::IpGeo),
         Arc::new(ipinfo::IpInfo),
         Arc::new(domainsdb::DomainsDb),
-        Arc::new(ipapi::IpApi),
         Arc::new(ipquery::IpQuery),
         Arc::new(ip_whois_geo::IpWhois),
         Arc::new(geo_intel::GeoIntel),
@@ -299,6 +300,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(crates_io::CratesIo),
         Arc::new(reddit_user::RedditUser),
         Arc::new(gravatar::Gravatar),
+        Arc::new(payid::PayId),
         Arc::new(pgp::Pgp),
         Arc::new(psbdmp::Psbdmp),
         Arc::new(phone_intl::PhoneIntl),
@@ -331,8 +333,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         // Geolocation enrichment (passive, zero-API)
         Arc::new(geo_domain_classifier::GeoDomainClassifier),
         Arc::new(email_header_geo::EmailHeaderGeo),
-        Arc::new(phone_area_geo::PhoneAreaGeo),
-        Arc::new(phone_carrier_geo::PhoneCarrierGeo),
+        Arc::new(phone_geo::PhoneGeo),
         Arc::new(email_locale::EmailLocale),
         Arc::new(breach_timezone::BreachTimezone),
         // Threat intel & infrastructure
@@ -351,7 +352,6 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(wikidata::Wikidata),
         // Australian + global public-records / corporate registries
         Arc::new(opencorporates::OpenCorporates),
-        Arc::new(qld_unclaimed::QldUnclaimed),
         Arc::new(au_unclaimed::AuUnclaimed),
         Arc::new(au_people::AuPeople),
         Arc::new(asic_director::AsicDirector),
@@ -368,21 +368,10 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
     ]
 }
 
-/// The MITRE ATT&CK Reconnaissance (TA0043) techniques *exercised* by a set of
-/// evidence-source names — i.e. the collection coverage of an actual scan,
-/// resolved from the modules that produced its findings. Sources that are not
-/// registered module names (`seed`, `geo_normalize`, `import:dossier`, …)
-/// contribute nothing. Deduped and sorted via [`crate::core::attack::coverage`],
-/// so the per-scan view and the catalogue view (`hse modules`) agree.
-///
-/// Lives here, not in `core::attack`, because resolving a source name to its
-/// techniques needs the module registry — and `core` may not depend on
-/// `modules`. `core::attack` owns the pure technique data; this owns the
-/// registry-backed lookup.
 /// Module name → its ATT&CK technique IDs. The mapping is constant (the registry
 /// and each module's `attack_techniques()` are `'static`), so it is built once
-/// and reused — every per-scan / per-request coverage lookup avoids
-/// reconstructing the whole 130-module registry.
+/// and reused — every per-request technique lookup avoids reconstructing the
+/// whole 130-module registry. Backs the reverse [`technique_module_index`].
 static MODULE_TECHNIQUES: std::sync::LazyLock<
     std::collections::HashMap<&'static str, &'static [&'static str]>,
 > = std::sync::LazyLock::new(|| {
@@ -414,44 +403,15 @@ static TECHNIQUE_MODULES: std::sync::LazyLock<
     index
 });
 
-#[must_use]
-pub fn reconnaissance_coverage<'a>(
-    sources: impl IntoIterator<Item = &'a str>,
-) -> Vec<&'static crate::core::attack::Technique> {
-    let ids: Vec<&'static str> = sources
-        .into_iter()
-        .filter_map(|s| MODULE_TECHNIQUES.get(s).copied())
-        .flat_map(|slice| slice.iter().copied())
-        .collect();
-    crate::core::attack::coverage(ids)
-}
-
-/// HSE's **static** ATT&CK Reconnaissance capability: the catalogued techniques
-/// at least one registered module can exercise (`covered`) versus those the
-/// catalogue lists that **no** module covers (`gaps`) — the tool's own
-/// collection ceiling, where a new module would extend reach.
-///
-/// This is distinct from a per-scan [`reconnaissance_coverage`] assessment
-/// (what a scan *did* exercise): this is what the tool *can* do, independent of
-/// any scan. Cheap — reads the cached module⇆technique map.
-#[must_use]
-pub fn capability_assessment() -> crate::core::attack::Assessment {
-    let ids = MODULE_TECHNIQUES
-        .values()
-        .flat_map(|slice| slice.iter().copied());
-    crate::core::attack::Assessment::from_covered(crate::core::attack::coverage(ids))
-}
-
 /// Reverse index of the module ⇆ technique map: each ATT&CK Reconnaissance
 /// technique ID → the registered module names that implement it. Only
 /// catalogued technique IDs are keyed (unknown IDs are dropped), and the module
 /// lists are sorted + deduplicated, so the output is deterministic.
 ///
-/// This is the single source the coverage assessment uses to answer two
-/// questions from one structure: which modules *would close* a gap technique,
-/// and which modules in a given scan *exercised* a covered one (intersect the
-/// list with the scan's evidence sources). Returns the process-wide cached
-/// index ([`TECHNIQUE_MODULES`]) — built once, not per call.
+/// One structure answers two questions: which modules implement a given
+/// technique, and (intersected with a scan's evidence sources) which of them a
+/// scan actually exercised. Returns the process-wide cached index
+/// ([`TECHNIQUE_MODULES`]) — built once, not per call.
 #[must_use]
 pub fn technique_module_index()
 -> &'static std::collections::BTreeMap<&'static str, Vec<&'static str>> {

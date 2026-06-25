@@ -68,12 +68,15 @@ pub enum Command {
         timeout: Option<u64>,
         /// Recursive expansion depth. 0 = single round; 1+ auto-feeds discovered
         /// entities back as new scan targets, up to N rounds deep. Omit to use
-        /// the product default (2); `--auto`/`--recursive` override an omitted
-        /// value.
+        /// the comprehensive product default (MAX_DEPTH = 3); `--auto` overrides an
+        /// omitted value.
         #[arg(short, long)]
         depth: Option<u32>,
-        /// Shorthand for deep recursive expansion: sets depth to MAX_DEPTH (3)
-        /// and min_expand_confidence=0.40. Overridden by an explicit --depth.
+        /// Shorthand for deep recursive expansion: pins depth to MAX_DEPTH (3) and
+        /// clamps the expansion floor to ≤0.40. With the comprehensive default
+        /// (depth 3, floor 0.20) this now matches the default; kept for explicitness
+        /// and for use alongside a raised `--min-expand-confidence`. Overridden by
+        /// an explicit --depth.
         #[arg(short = 'R', long)]
         recursive: bool,
         /// COMPLETE scan — the no-compromise preset. Auto-detects the seed kind,
@@ -92,11 +95,19 @@ pub enum Command {
         /// the depth where marginal yield justifies the cost.
         #[arg(short = 'A', long)]
         auto: bool,
-        /// Only expand entities whose C_eff is at least this. Default 0.50
-        /// (Probable tier and above). Set 0.75 for strict Verified-only expansion.
-        #[arg(long, default_value_t = 0.50)]
+        /// Only expand entities whose C_eff is at least this. Default 0.20 so the
+        /// scan is comprehensive — the seed's own derived identifiers (name → email
+        /// / username / handle permutations, emitted at 0.20–0.30) expand and feed
+        /// every downstream module, instead of starving the pipeline after the seed
+        /// round. Correlation still applies its own strict floors, so recall is wide
+        /// while the resolved findings stay precise. Raise it (e.g. 0.50 Probable,
+        /// 0.75 Verified-only) for a tighter, faster sweep.
+        #[arg(long, default_value_t = crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE)]
         min_expand_confidence: f64,
-        /// Hard cap on total entities. Stops expansion when reached.
+        /// Hard cap on total entities; stops expansion when reached. Omitted ⇒ the
+        /// product default (2500) — a generous Termux on-device safety bound for the
+        /// comprehensive depth-3 default sweep. Pass a larger value (or use a
+        /// profile) to go further.
         #[arg(long)]
         max_entities: Option<usize>,
         /// Hard cap on total wall-time in seconds. Stops expansion when exceeded.
@@ -230,6 +241,27 @@ pub enum Command {
         #[arg(long)]
         log: Option<String>,
         /// Emit the machine-readable JSON report instead of the text scorecard.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Benchmark a scan: a consolidated scorecard of the measurable OSINT dimensions
+    /// (discovery depth, graph coverage, corroboration, density, throughput, pivots)
+    /// for a reproducible, auditable comparison against another tool on the same seed.
+    Benchmark {
+        /// Stored scan id to benchmark (`latest` for the most recent completed scan).
+        #[arg(long)]
+        scan_id: Option<String>,
+        /// Emit the machine-readable JSON report instead of the text scorecard.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Discovery gaps: the validated seeds with no evidence-backed link, why each is
+    /// isolated, and the corrective scans that would connect it — the gap-resolution loop.
+    Gaps {
+        /// Stored scan id to analyse (`latest` for the most recent completed scan).
+        #[arg(long)]
+        scan_id: Option<String>,
+        /// Emit the machine-readable JSON report instead of the text summary.
         #[arg(long)]
         json: bool,
     },
@@ -398,9 +430,7 @@ pub enum Command {
         /// Scan ID (or `latest` for the most-recent completed scan).
         #[arg(short, long)]
         scan_id: String,
-        /// Output format: json | csv | gexf | report | full | navigator.
-        /// `navigator` emits a MITRE ATT&CK Navigator layer of the
-        /// Reconnaissance techniques the scan exercised. Default `json`.
+        /// Output format: json | csv | gexf | report | full | debug. Default `json`.
         #[arg(short, long, default_value = "json")]
         format: String,
         /// File path to write to. Omit for stdout.

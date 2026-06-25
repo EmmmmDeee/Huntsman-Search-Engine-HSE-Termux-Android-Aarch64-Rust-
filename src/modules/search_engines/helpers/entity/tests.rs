@@ -41,6 +41,44 @@ use super::*;
         );
     }
 
+    #[test]
+    fn extract_addresses_strips_bled_over_state_from_run_on_cities() {
+        // Real SERP bio that produced a bogus geolocation fix: a run-on listing
+        // two cities. `rfind` grabbed "California Dallas" as the city for Texas
+        // (the leading "California" is the STATE of "Los Angeles, California").
+        // The extractor must yield "Los Angeles, California" and "Dallas, Texas",
+        // never the phantom "California Dallas, Texas".
+        let addrs = extract_addresses_from_text(
+            "Graduate '13 Los Angeles, California Dallas, Texas Contact: x@y.com",
+        );
+        assert!(
+            addrs.iter().any(|a| a == "Los Angeles, California"),
+            "first address intact: {addrs:?}"
+        );
+        assert!(
+            addrs.iter().any(|a| a == "Dallas, Texas"),
+            "bled-over state stripped → real city recovered: {addrs:?}"
+        );
+        assert!(
+            !addrs.iter().any(|a| a.contains("California Dallas")),
+            "phantom 'California Dallas' city must not survive: {addrs:?}"
+        );
+
+        // Safety: a genuine city that BEGINS with its own state name keeps it —
+        // the bled token must DIFFER from the address's state to be stripped.
+        let vb = extract_addresses_from_text("Studio in Virginia Beach, Virginia today");
+        assert!(
+            vb.iter().any(|a| a == "Virginia Beach, Virginia"),
+            "state-named city preserved when token matches its state: {vb:?}"
+        );
+        // Safety: word-path cities (no preceding comma) are untouched.
+        let kc = extract_addresses_from_text("She lives in Kansas City, Missouri now");
+        assert!(
+            kc.iter().any(|a| a == "Kansas City, Missouri"),
+            "word-path state-named city preserved: {kc:?}"
+        );
+    }
+
     // ── score_username ───────────────────────────────────────────────────────
 
     #[test]
@@ -50,6 +88,65 @@ use super::*;
         let terms = vec!["jordan".to_string(), "meyers".to_string()];
         let (score, conf) = score_username("jordanmeyers", "x.com", &terms, &r);
         assert!(score >= 3, "term overlap must reach probable threshold: {score}");
+        assert_eq!(conf, 0.55);
+    }
+
+    #[test]
+    fn address_state_detection_is_whole_word_not_substring() {
+        // Ordinary words must not be mis-read as a state abbreviation — the free
+        // prose around an AU place name routinely contains "ser{vic}e", "{act}ed",
+        // which a bare substring scan turned into VIC / ACT and fabricated a wrong
+        // jurisdiction. (`Logan`/`Ipswich` are known AU suburbs so the place gate
+        // fires; only the state refinement is on trial.)
+        let acted = extract_addresses_from_text(
+            "Logan is a suburb in australia. the council acted quickly",
+        );
+        assert!(
+            !acted.iter().any(|a| a.contains("ACT")),
+            "\"acted\" must not be read as the ACT: {acted:?}"
+        );
+        let service =
+            extract_addresses_from_text("Ipswich in australia, the service desk was great");
+        assert!(
+            !service.iter().any(|a| a.contains("VIC")),
+            "\"service\" must not be read as VIC: {service:?}"
+        );
+        // A genuine whole-word state token still classifies correctly.
+        let real = extract_addresses_from_text("Logan QLD is home");
+        assert!(
+            real.iter().any(|a| a.contains("QLD")),
+            "a real QLD token must still classify: {real:?}"
+        );
+    }
+
+    #[test]
+    fn score_username_first_name_only_match_stays_candidate() {
+        // A DIFFERENT person who shares only the target's GIVEN name must not be
+        // promoted to PROBABLE: target "Jordan Meyers", SERP result for a stranger
+        // "jordan_blake" on a non-people-search host. Even with first-name
+        // co-occurrence (Signal 3) and a "jordan" stem (Signal 5) stacking, the
+        // surname-anchor cap holds it at CANDIDATE (0.30) — the wrong-attribution
+        // class `url_matches_target` already guards for paths.
+        let terms = vec!["jordan".to_string(), "meyers".to_string()];
+        let stranger = sr(
+            "Jordan Blake (@jordan_blake)",
+            "Jordan Blake's profile",
+            "https://x.com/jordan_blake",
+            "jordan meyers",
+        );
+        let (score, conf) = score_username("jordan_blake", "x.com", &terms, &stranger);
+        assert!(score < 3, "first-name-only stranger must not reach PROBABLE: {score}");
+        assert_eq!(conf, 0.30);
+
+        // The real subject's surname-anchored handle DOES reach PROBABLE.
+        let subject = sr(
+            "Jordan Meyers",
+            "profile",
+            "https://x.com/jmeyers",
+            "jordan meyers",
+        );
+        let (score, conf) = score_username("jmeyers", "x.com", &terms, &subject);
+        assert!(score >= 3, "surname-anchored handle must reach PROBABLE: {score}");
         assert_eq!(conf, 0.55);
     }
 

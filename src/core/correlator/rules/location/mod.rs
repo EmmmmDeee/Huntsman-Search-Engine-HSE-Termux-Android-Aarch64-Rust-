@@ -36,7 +36,9 @@ use super::*;
 ///   returns a home or work address for the *subject*
 /// - `qld_unclaimed` — Queensland register postcode (coarse but person-linked)
 /// - `github_user` / `keybase` — self-reported location on confirmed social profiles
-/// - `phone_area_geo` / `phone_carrier_geo` — phone number → city/carrier inference
+/// - `phone_area_geo` / `phone_carrier_geo` — phone number → city/carrier
+///   inference (both source strings are now emitted by the merged `phone_geo`
+///   module's two passes; the needles are retained here)
 /// - `fullcontact` — structured location from person-enrichment data-broker API
 /// - `breach_timezone` — timezone inferred from breach timestamp activity clustering
 const ANCHORING_GEO_SOURCES: &[&str] = &[
@@ -55,6 +57,9 @@ const ANCHORING_GEO_SOURCES: &[&str] = &[
     "github_user",
     "keybase",
     // Phone area-code and carrier inference — narrows person to city/region.
+    // Both needles are emitted by the merged `phone_geo` module: its area-code
+    // pass stamps `phone_area_geo`, its carrier pass `phone_carrier_geo`, so the
+    // per-strategy geo-source classification below is preserved.
     "phone_area_geo",
     "phone_carrier_geo",
     // Business registry addresses (legal registered location of subject/employer)
@@ -66,10 +71,11 @@ const ANCHORING_GEO_SOURCES: &[&str] = &[
     "epieos",
     "contact_enrich",
     "proxycurl",
-    // AU public register (coarse postcode, person-linked)
+    // AU unclaimed-money registers — postcode-level, surname-anchored to the
+    // subject. `au_unclaimed` covers all states; its Queensland pass (folded in
+    // from the former `qld_unclaimed` module) still tags its evidence with the
+    // `qld_unclaimed` source, so both needles are retained.
     "qld_unclaimed",
-    // Multi-state AU unclaimed-money registers (NSW/VIC/WA/SA) — postcode-level,
-    // surname-anchored to the subject (same class as qld_unclaimed).
     "au_unclaimed",
     // AU residential people-finder directories (White Pages AU, True People
     // Search AU) — suburb/state/postcode for a confirmed name.
@@ -97,25 +103,39 @@ pub(crate) fn is_anchoring_geo_source(source: &str) -> bool {
     ANCHORING_GEO_SOURCES.contains(&source)
 }
 
-/// True when a `Coordinates` entity does **not** locate the subject and must be
-/// kept out of their footprint: it is `hosting`-tagged (a CDN/cloud edge), it
-/// carries an `infra:` map-feature tag (an Overpass POI — a camera, a cell tower
-/// — scraped near a geolocated point), or it has no person-anchoring
-/// corroborating source at all ([`ANCHORING_GEO_SOURCES`]) — i.e. it rests purely
-/// on IP/WHOIS geo, chronolocation, or POI enrichment. See AU-052.
-fn is_infrastructure_geo(e: &Entity) -> bool {
-    // Single tag pass: detect the HOSTING tag and any `infra:` map-feature tag
-    // together instead of two separate `.iter()` scans.
+/// True when a geo entity (`Coordinates` **or** `Address`) does **not** locate
+/// the subject and must be kept out of their footprint: it is `hosting`-tagged
+/// (a CDN/cloud edge), it carries an `infra:` map-feature tag (an Overpass POI —
+/// a camera, a cell tower — scraped near a geolocated point), it is a WHOIS
+/// `registrant` location (the domain owner's filing/privacy address, not the
+/// subject's home), or — **for `Coordinates` only** — it has no person-anchoring
+/// corroborating source at all ([`ANCHORING_GEO_SOURCES`]), i.e. a bare lat/lon
+/// resting purely on IP/WHOIS geo, chronolocation, or POI enrichment. Used by
+/// the `Coordinates` rules (AU-052/053/059) and the `Address` rollup rules
+/// (AU-018/026/030) so neither lets a registrant/hosting/IP-geo location vote
+/// the subject's physical position.
+pub(in crate::core::correlator) fn is_infrastructure_geo(e: &Entity) -> bool {
+    // Single tag pass: detect the HOSTING tag, a WHOIS `registrant` location, and
+    // any `infra:` map-feature tag together instead of separate `.iter()` scans.
     for t in &e.tags {
-        if t == crate::core::tags::HOSTING || t.starts_with("infra:") {
+        if t == crate::core::tags::HOSTING
+            || t == crate::core::tags::REGISTRANT
+            || t.starts_with("infra:")
+        {
             return true;
         }
     }
-    // Anchor check straight off the evidence iterator — no intermediate HashSet
-    // allocation, and short-circuits on the first anchoring source.
-    !e.corroborating_sources()
-        .iter()
-        .any(|s| ANCHORING_GEO_SOURCES.contains(s))
+    // The "no person-anchoring source" heuristic only holds for `Coordinates`: a
+    // bare lat/lon with no anchoring source is almost always an IP/WHOIS-derived
+    // point. A street `Address` legitimately comes from registry sources
+    // (au_property, au_electoral, qld_unclaimed, opencorporates) that are NOT in
+    // ANCHORING_GEO_SOURCES, so applying the anchoring test to an address would
+    // discard a real home — addresses are gated by the infra TAGS above only.
+    e.kind == EntityKind::Coordinates
+        && !e
+            .corroborating_sources()
+            .iter()
+            .any(|s| ANCHORING_GEO_SOURCES.contains(s))
 }
 
 /// The coordinates admissible to a *person's* geo footprint: confirmed
@@ -443,24 +463,70 @@ fn is_australian_coord(e: &Entity, (lat, lon): (f64, f64)) -> bool {
 /// collection methods agreeing is the strongest geo evidence short of a warrant);
 /// exactly 2 ⇒ `Medium`. The dominant AU state is reported for jurisdictional
 /// context (feeds AU-056).
-pub(in crate::core::correlator) fn rule_au_059_cross_seed_geo_synergy(
-    entities: &[Entity],
-    scan_id: &str,
-    ts: u64,
-) -> Vec<Correlation> {
+/// The structured AU-059 cross-seed geo-synergy fix — the **single source** of
+/// the synthesised location, so the rule's prose and the API's `best_location`
+/// fields can never disagree (the API used to recover these by string-splitting
+/// the finding description, which drift-broke on any reword — Rule 3).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SynergyFix {
+    /// Contributing AU person-anchored coordinates.
+    pub count: usize,
+    /// Distinct orthogonal source-class names, sorted.
+    pub class_names: Vec<&'static str>,
+    pub lat: f64,
+    pub lon: f64,
+    /// Robust confidence radius (km): the median great-circle distance from the
+    /// fix point to the contributing coordinates — half the sightings fall
+    /// within it, so it degrades gracefully under outliers (0.5 breakdown point).
+    pub radius_km: f64,
+    pub geohash: String,
+    pub state: &'static str,
+    pub synergy_confidence: f64,
+    pub severity: Severity,
+    /// UIDs of the contributing coordinate entities (sorted, deduped).
+    pub uids: Vec<String>,
+}
+
+impl SynergyFix {
+    /// The canonical AU-059 finding description, formatted from the structured
+    /// fix so the prose and the fields are one and the same.
+    pub(crate) fn description(&self) -> String {
+        format!(
+            "{} AU coordinate(s) from {} orthogonal source class(es) [{}] converge on \
+             {lat:.4},{lon:.4} ± {radius:.1} km (geohash={gh}, state={state}); synergy \
+             confidence {conf:.2} — MITRE T1591.001",
+            self.count,
+            self.class_names.len(),
+            self.class_names.join(", "),
+            lat = self.lat,
+            lon = self.lon,
+            radius = self.radius_km,
+            gh = self.geohash,
+            state = self.state,
+            conf = self.synergy_confidence,
+        )
+    }
+}
+
+/// Compute the AU-059 cross-seed geo-synergy fix for a scan's entities, or `None`
+/// when the synergy gate isn't met (fewer than two AU person-anchored
+/// coordinates, or fewer than two distinct orthogonal source classes). Pure and
+/// deterministic. Shared by the rule (which formats its finding from it) and the
+/// API export (which reads its fields directly).
+pub(crate) fn au059_synergy_fix(entities: &[Entity]) -> Option<SynergyFix> {
     // Australian person-anchored coordinates only.
     let parsed: Vec<(&Entity, (f64, f64))> = person_anchored_coords(entities)
         .into_iter()
         .filter(|(e, ll)| is_australian_coord(e, *ll))
         .collect();
     if parsed.len() < 2 {
-        return Vec::new();
+        return None;
     }
 
     // The synergy gate: ≥2 *distinct orthogonal source classes* must agree.
     let classes = distinct_geo_classes(&parsed);
     if classes.len() < 2 {
-        return Vec::new();
+        return None;
     }
 
     // Confidence-weighted centroid, each weight boosted by class diversity so a
@@ -470,9 +536,7 @@ pub(in crate::core::correlator) fn rule_au_059_cross_seed_geo_synergy(
         .iter()
         .map(|(e, ll)| (*ll, e.c_effective() * class_bonus))
         .collect();
-    let Some((lat, lon)) = crate::util::geometry::weighted_centroid(&weighted) else {
-        return Vec::new();
-    };
+    let (lat, lon) = crate::util::geometry::weighted_centroid(&weighted)?;
 
     // Dominant AU state across the contributing coordinates (for AU-056 context).
     let state = au_state_majority(&parsed).unwrap_or("AU");
@@ -483,7 +547,7 @@ pub(in crate::core::correlator) fn rule_au_059_cross_seed_geo_synergy(
         .iter()
         .map(|(e, _)| e.c_effective())
         .fold(0.0_f64, f64::max);
-    let synergy_conf = (peak + (classes.len() as f64 - 1.0) * 0.08).min(0.97);
+    let synergy_confidence = (peak + (classes.len() as f64 - 1.0) * 0.08).min(0.97);
 
     let severity = if classes.len() >= 3 {
         Severity::High
@@ -491,27 +555,45 @@ pub(in crate::core::correlator) fn rule_au_059_cross_seed_geo_synergy(
         Severity::Medium
     };
 
-    let mut class_names: Vec<&str> = classes.iter().map(geo_class_name).collect();
+    let mut class_names: Vec<&'static str> = classes.iter().map(geo_class_name).collect();
     class_names.sort_unstable();
-    let gh = crate::util::geohash::geohash(lat, lon, 6);
 
     let mut uids: Vec<String> = parsed.iter().map(|(e, _)| e.uid.clone()).collect();
     uids.sort_unstable();
     uids.dedup();
 
+    // Robust spread: median distance from the fix to the contributing points.
+    let points: Vec<(f64, f64)> = parsed.iter().map(|(_, ll)| *ll).collect();
+    let radius_km = crate::util::geometry::median_distance_km((lat, lon), &points);
+
+    Some(SynergyFix {
+        count: parsed.len(),
+        class_names,
+        lat,
+        lon,
+        radius_km,
+        geohash: crate::util::geohash::geohash(lat, lon, 6),
+        state,
+        synergy_confidence,
+        severity,
+        uids,
+    })
+}
+
+pub(in crate::core::correlator) fn rule_au_059_cross_seed_geo_synergy(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let Some(fix) = au059_synergy_fix(entities) else {
+        return Vec::new();
+    };
     vec![Correlation::new(
         "AU-059",
         "Cross-seed geographic synergy (orthogonal-class fix)",
-        severity,
-        format!(
-            "{} AU coordinate(s) from {} orthogonal source class(es) [{}] converge on \
-             {lat:.4},{lon:.4} (geohash={gh}, state={state}); synergy confidence {synergy_conf:.2} \
-             — MITRE T1591.001",
-            parsed.len(),
-            classes.len(),
-            class_names.join(", "),
-        ),
-        uids,
+        fix.severity,
+        fix.description(),
+        fix.uids.clone(),
         scan_id,
         ts,
     )]

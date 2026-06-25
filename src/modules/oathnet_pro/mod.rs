@@ -15,10 +15,21 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::oathnet::{self, paths, val_str, val_str_or};
+use crate::util::oathnet::{self, paths, val_str, val_str_coerce, val_str_or, val_str_or_coerce};
+// The target-identity matcher is shared with see_know via `util::target_match`
+// (one definition for both breach pools); reached by bare name in `breach.rs`
+// through its `use super::*`. The non-match demotion itself is
+// `Entity::demote_to_candidate` (core) — matching stays orthogonal to tiering.
+use crate::util::target_match::TargetMatch;
 
 pub mod key_harvest;
+mod validate;
 pub use key_harvest::store_api_credential_from_item;
+use validate::*;
+mod stealer;
+use stealer::*;
+mod breach;
+use breach::*;
 
 /// Re-export the budget reset so `core/engine.rs` can call it without
 /// importing `util::oathnet` directly (which violates the architecture rule).
@@ -29,12 +40,17 @@ use key_harvest::{extract_api_keys_from_item, store_api_credential};
 
 const SRC: &str = "oathnet_pro";
 
-/// Confidence ceiling for an entity sourced from a breach row that does NOT
-/// match the scan target's identity. A broad search (especially a `full_name`)
-/// returns rows for many different people; those rows are preserved as
-/// quarantined `candidate` leads at this strength rather than discarded, but
-/// must never reach the full-confidence, correlated, default-view tier.
-const CANDIDATE_CONF: f64 = 0.25;
+/// Maximum number of NON-matching (candidate) breach rows extracted into
+/// entities per page. A broad search — above all a `full_name` — routinely
+/// returns a whole page of strangers (the "Ali Kareem" scan got 100
+/// pureincubation.com rows, none of them Ali), and each stranger row mints
+/// several quarantined `candidate` entities (~5 per row), so an unbounded page
+/// floods a memory-constrained device with hundreds of low-value entities.
+/// Target-matching rows are always extracted in full; non-matching rows are
+/// only SAMPLED up to this bound, so a genuine-but-unmatchable lead still
+/// survives without the flood. Sized to keep a useful spot-check sample while
+/// cutting the worst-case candidate count by ~5×.
+const MAX_CANDIDATE_ROWS: usize = 20;
 
 pub struct OathnetPro;
 
@@ -155,61 +171,44 @@ impl Module for OathnetPro {
             return Ok(result);
         }
 
-        let total = items.len();
-        let top_dbs = oathnet::top_dbnames(&items, 5);
-
-        let mut parent = target.to_entity(0.85, &ctx.scan_id);
-        parent.tag(tags::BREACH);
-        parent.tag("oathnet-pro");
-        // Aggregate identity attributes ADDITIVELY across every breach record:
-        // each record contributes its distinct country / name / gender / DOB so
-        // multiple hits (and aliases) are all retained and cross-correlatable,
-        // never overwritten to the last record. Order-preserving, deduplicated.
-        let countries = oathnet::distinct_field(&items, "country");
-        let names = oathnet::distinct_field(&items, "full_name");
-        let genders = oathnet::distinct_field(&items, "gender");
-        let dobs = oathnet::distinct_field(&items, "date_birth");
-
-        let mut ev = Evidence::new(
-            SRC,
-            format!("OathNet: {total} breach record(s) — {}", top_dbs.join(", ")),
-        )
-        .with_attr("hits", total.to_string())
-        .with_attr("top_dbnames", top_dbs.join(", "));
-        if !countries.is_empty() {
-            ev = ev.with_attr("countries", countries.join(", "));
-        }
-        if !names.is_empty() {
-            ev = ev.with_attr("names", names.join("; "));
-        }
-        if !genders.is_empty() {
-            ev = ev.with_attr("genders", genders.join(", "));
-        }
-        if !dobs.is_empty() {
-            ev = ev.with_attr("dates_of_birth", dobs.join(", "));
-        }
-        parent.add_evidence(ev);
-        result.push(parent);
-
-        // Hoist the per-target match context out of the per-record loop:
-        // `target_lower` and the significant-term split depend only on the
-        // target value, not the row, so computing them once (instead of once
-        // per breach record) eliminates a `to_lowercase()` allocation and a
-        // term-`Vec` build for every item on large breach pages.
+        // Classify every row against the target identity ONCE. This single pass
+        // drives all three downstream decisions — the honest parent dossier
+        // entity, the per-row `candidate` quarantine, and the candidate-flood
+        // cap — so the match is never recomputed.
         let match_ctx = TargetMatch::new(&target.value);
-        result.entities.reserve(items.len());
-        for item in &items {
-            extract_breach_entities_with(
-                item,
-                &match_ctx,
-                &ctx.scan_id,
-                &key_fp,
-                &mut seen,
-                &mut result,
-            );
-            store_api_credential(item);
-            extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
+        let row_matches: Vec<bool> = items.iter().map(|i| match_ctx.matches(i)).collect();
+
+        // Parent dossier entity — emitted ONLY when the subject actually appears
+        // in the records. The engine pre-seeds a subject anchor, so a broad
+        // `full_name` search that returns a page of strangers used to merge a
+        // false 0.85 `breach` hit — plus an aggregate dump of 100 strangers'
+        // names/countries — straight onto that anchor. `breach_parent_entity`
+        // returns `None` on a zero-match page and aggregates the subject's
+        // attributes over the MATCHING rows only.
+        let matching: Vec<Value> = items
+            .iter()
+            .zip(row_matches.iter().copied())
+            .filter(|(_, keep)| *keep)
+            .map(|(i, _)| i.clone())
+            .collect();
+        if let Some(parent) = breach_parent_entity(target, &ctx.scan_id, &matching, items.len()) {
+            result.push(parent);
         }
+
+        // Extract every breach row into entities, applying the candidate-flood
+        // cap (see `extract_breach_page`): target-matching rows are kept in full
+        // while non-matching strangers are only sampled, so a broad name search
+        // can't drown a memory-constrained device in low-value `candidate`
+        // noise. API-key harvesting runs unconditionally for every row inside
+        // the page pass.
+        extract_breach_page(
+            &items,
+            &row_matches,
+            &ctx.scan_id,
+            &key_fp,
+            &mut seen,
+            &mut result,
+        );
 
         // ── Query 2: Stealer search (Email/Username only) ───────────────
         // Stealer logs are indexed by login credentials (username/email +
@@ -245,7 +244,6 @@ impl Module for OathnetPro {
 // `is_local_domain`) live in `crate::util::preflight` — both
 // oathnet_pro and see_know share the policy so a target rejected
 // by one provider is rejected by the other.
-use crate::core::validation::is_username_derived_name;
 use crate::util::preflight::{is_local_domain, is_placeholder_username, is_private_ip};
 
 /// True for inputs that empirically waste an OathNet lookup for `kind` — junk
@@ -327,521 +325,6 @@ fn is_social_platform(domain: &str) -> bool {
         .iter()
         .any(|p| crate::util::domains::is_or_subdomain_of(&lower, p))
 }
-
-// ─── Entity extraction ─────────────────────────────────────────────────────
-
-fn breach_evidence(item: &Value) -> Evidence {
-    let db = val_str(item, "dbname").unwrap_or_else(|| "unknown".to_string());
-    let mut ev = Evidence::new(SRC, format!("Breach on {db}")).with_attr("dbname", &db);
-    for (field, attr) in [
-        ("country", "country"),
-        ("gender", "gender"),
-        ("date_birth", "date_of_birth"),
-        ("created_at", "account_created"),
-        ("language", "language"),
-        ("account_id", "account_id"),
-        ("password", "password"),
-        ("password_hash", "password_hash"),
-        ("salt", "salt"),
-        ("ip", "ip"),
-        ("city", "city"),
-        ("state", "state"),
-        ("postal_code", "postal_code"),
-        ("bio", "bio"),
-        ("location", "location"),
-        ("discordid", "discord_id"),
-        ("instagram", "instagram"),
-        ("linkedin", "linkedin"),
-        ("iban", "iban"),
-    ] {
-        if let Some(v) = val_str(item, field) {
-            ev = ev.with_attr(attr, &v);
-        }
-    }
-    if let Some(age) = item.get("age") {
-        let s = if age.is_number() {
-            age.to_string()
-        } else {
-            age.as_str().unwrap_or("").to_string()
-        };
-        if !s.is_empty() {
-            ev = ev.with_attr("age", &s);
-        }
-    }
-    if let Some(f) = val_str(item, "followers") {
-        ev = ev.with_attr("followers", &f);
-    }
-    ev
-}
-
-/// Apply oathnet_pro's standard breach tags (`breach`, `oathnet-pro`, plus any
-/// record-specific `extra_tags` in order) and a cloned evidence record to `e`,
-/// then push it. Centralises the tag+evidence+push tail shared by every
-/// breach-derived entity kind; `extra_tags` preserves the exact serialised tag
-/// order (e.g. `candidate`, `geolocation-lead`, `discord`).
-fn push_oathnet_entity(
-    result: &mut ModuleResult,
-    mut e: Entity,
-    ev: &Evidence,
-    extra_tags: &[&str],
-    is_target_row: bool,
-) {
-    e.tag(tags::BREACH);
-    e.tag("oathnet-pro");
-    for t in extra_tags {
-        e.tag(*t);
-    }
-    // Quarantine policy, enforced in ONE place: a row that doesn't match the
-    // target identity yields CANDIDATE-strength, `candidate`-tagged entities.
-    // Demotion happens here (not at each call site) so EVERY breach-derived
-    // kind — email, username, domain, social handle — is gated uniformly. The
-    // prior code gated only phone/person/ip, letting a name search emit
-    // hundreds of strangers' emails/domains at full 0.70 confidence.
-    if !is_target_row {
-        e.confidence = e.confidence.min(CANDIDATE_CONF);
-        e.tag(tags::CANDIDATE);
-    }
-    e.add_evidence(ev.clone());
-    result.push(e);
-}
-
-/// Pre-computed, row-independent matching context for a single scan target.
-///
-/// Built once per `process` call (not per breach record) and reused across
-/// every row, so the `to_lowercase()` allocation and the significant-term
-/// split happen exactly once instead of once per item on large breach pages.
-struct TargetMatch {
-    /// Lowercased target value, used both for the exact-equality short-circuit
-    /// and as the backing store the borrowed `terms` slice into.
-    lower: String,
-    /// Significant (`len >= 3`) alphanumeric terms of `lower`.
-    terms: Vec<(usize, usize)>,
-    /// Multi-term targets must match EVERY term within a single field.
-    require_all_terms: bool,
-}
-
-impl TargetMatch {
-    fn new(target_value: &str) -> Self {
-        let lower = target_value.to_lowercase();
-        // Store term spans (byte ranges) rather than `&str` to sidestep the
-        // self-referential borrow of `lower`; resolved on demand in `matches`.
-        let terms: Vec<(usize, usize)> = lower
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|w| w.len() >= 3)
-            .map(|w| {
-                let start = w.as_ptr() as usize - lower.as_ptr() as usize;
-                (start, start + w.len())
-            })
-            .collect();
-        let require_all_terms = terms.len() >= 2;
-        Self {
-            lower,
-            terms,
-            require_all_terms,
-        }
-    }
-
-    /// True if any matchable field of `item` identifies the target.
-    fn matches(&self, item: &Value) -> bool {
-        for field in ["email", "username", "phone_number", "full_name"] {
-            if let Some(v) = val_str(item, field) {
-                let vl = v.to_lowercase();
-                if vl == self.lower {
-                    return true;
-                }
-                if self.terms.is_empty() {
-                    continue;
-                }
-                let mut terms = self.terms.iter().map(|&(s, e)| &self.lower[s..e]);
-                // Multi-term targets (a full name like "Jordan Avery", or an
-                // email) must match EVERY significant term within a single
-                // field — not just one — so a row for "Jordan Parker" no longer
-                // counts as the target on the shared first name (the dominant
-                // junk source on name scans). Single-term targets keep
-                // substring-contains matching.
-                let hit = if self.require_all_terms {
-                    terms.all(|t| vl.contains(t))
-                } else {
-                    terms.any(|t| vl.contains(t))
-                };
-                if hit {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-}
-
-#[cfg(test)]
-fn extract_breach_entities(
-    item: &Value,
-    target_value: &str,
-    scan_id: &str,
-    key_fp: &str,
-    seen: &mut HashSet<String>,
-    result: &mut ModuleResult,
-) {
-    extract_breach_entities_with(
-        item,
-        &TargetMatch::new(target_value),
-        scan_id,
-        key_fp,
-        seen,
-        result,
-    );
-}
-
-fn extract_breach_entities_with(
-    item: &Value,
-    match_ctx: &TargetMatch,
-    scan_id: &str,
-    key_fp: &str,
-    seen: &mut HashSet<String>,
-    result: &mut ModuleResult,
-) {
-    // Provenance: which provider + which exact API key returned this record
-    // (the source database/website is already on the evidence per row).
-    let ev = breach_evidence(item)
-        .with_attr("provider", "oathnet.org")
-        .with_attr("api_key_origin", key_fp);
-
-    // Decide whether this breach row actually belongs to the target. Breach
-    // databases hold millions of records and a broad search (especially a
-    // `full_name`) returns rows for many different people. A non-matching row
-    // is NOT discarded — `push_oathnet_entity` demotes it to a quarantined
-    // `candidate` (out of the default view and the correlator) so genuine
-    // leads survive without flooding the result with strangers.
-    let is_target_row = match_ctx.matches(item);
-
-    if let Some(email) = val_str(item, "email") {
-        let lower = email.to_lowercase();
-        if lower.contains('@') && seen.insert(lower) {
-            push_oathnet_entity(
-                result,
-                Entity::new(EntityKind::Email, &email, 0.70, scan_id),
-                &ev,
-                &[],
-                is_target_row,
-            );
-        }
-    }
-
-    if let Some(uname) = val_str(item, "username") {
-        let lower = uname.to_lowercase();
-        if lower.len() >= 3 && seen.insert(lower) {
-            push_oathnet_entity(
-                result,
-                Entity::new(EntityKind::Username, &uname, 0.65, scan_id),
-                &ev,
-                &[],
-                is_target_row,
-            );
-        }
-    }
-
-    if let Some(ph) = val_str_or(item, &["phone_number", "phone_national", "phone"])
-        && ph.len() >= 7
-        && seen.insert(ph.to_lowercase())
-    {
-        push_oathnet_entity(
-            result,
-            Entity::new(EntityKind::Phone, &ph, 0.70, scan_id),
-            &ev,
-            &[],
-            is_target_row,
-        );
-    }
-
-    if let Some(n) = val_str_or(item, &["full_name", "display_name", "name"]) {
-        let t = n.trim();
-        if t.len() >= 4
-            && t.contains(' ')
-            && !is_username_derived_name(t, &match_ctx.lower)
-            && seen.insert(t.to_lowercase())
-        {
-            push_oathnet_entity(
-                result,
-                Entity::new(EntityKind::Person, t, 0.70, scan_id),
-                &ev,
-                &[],
-                is_target_row,
-            );
-        }
-    }
-
-    if let Some(ip) = val_str(item, "ip")
-        && ip.len() >= 7
-        && seen.insert(ip.clone())
-    {
-        push_oathnet_entity(
-            result,
-            Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id),
-            &ev,
-            &["geolocation-lead"],
-            is_target_row,
-        );
-    }
-
-    if let Some(country) = val_str(item, "country")
-        && seen.insert(format!("@country:{country}"))
-    {
-        push_oathnet_entity(
-            result,
-            Entity::new(EntityKind::Address, &country, 0.55, scan_id),
-            &ev,
-            &[],
-            is_target_row,
-        );
-    }
-
-    let street = val_str(item, "address_street");
-    let city = val_str(item, "city");
-    let state = val_str(item, "state");
-    if city.is_some() || street.is_some() {
-        let addr = [street.as_deref(), city.as_deref(), state.as_deref()]
-            .iter()
-            .flatten()
-            .copied()
-            .collect::<Vec<&str>>()
-            .join(", ");
-        if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {
-            push_oathnet_entity(
-                result,
-                Entity::new(EntityKind::Address, &addr, 0.65, scan_id),
-                &ev,
-                &[],
-                is_target_row,
-            );
-        }
-    }
-
-    if let Some(did) = val_str(item, "discordid")
-        && seen.insert(format!("@discord:{did}"))
-    {
-        push_oathnet_entity(
-            result,
-            Entity::new(
-                EntityKind::Username,
-                format!("discord:{did}"),
-                0.55,
-                scan_id,
-            ),
-            &ev,
-            &["discord"],
-            is_target_row,
-        );
-    }
-
-    if let Some(ig) = val_str(item, "instagram")
-        && seen.insert(format!("@ig:{}", ig.to_lowercase()))
-    {
-        push_oathnet_entity(
-            result,
-            Entity::new(EntityKind::Username, &ig, 0.55, scan_id),
-            &ev,
-            &["instagram"],
-            is_target_row,
-        );
-    }
-
-    // LinkedIn handle — unlocks proxycurl (paid LinkedIn enrichment).
-    // The field may contain a URL or a bare handle. Emit as Url if it
-    // looks like a URL, else as Username with a linkedin: prefix.
-    if let Some(li) = val_str(item, "linkedin") {
-        let lower = li.to_lowercase();
-        if lower.contains("linkedin.com") {
-            if seen.insert(format!("@li:{lower}")) {
-                let url_val = if lower.starts_with("http") {
-                    li
-                } else {
-                    format!("https://{li}")
-                };
-                push_oathnet_entity(
-                    result,
-                    Entity::new(EntityKind::Url, &url_val, 0.60, scan_id),
-                    &ev,
-                    &["linkedin"],
-                    is_target_row,
-                );
-            }
-        } else if seen.insert(format!("@li-handle:{lower}")) {
-            push_oathnet_entity(
-                result,
-                Entity::new(
-                    EntityKind::Username,
-                    format!("linkedin:{li}"),
-                    0.55,
-                    scan_id,
-                ),
-                &ev,
-                &["linkedin"],
-                is_target_row,
-            );
-        }
-    }
-
-    // Email-domain → Domain entity. The breach record carries the
-    // sender/account email's host as a dedicated field. Emitting it
-    // unlocks dns_intel/cert_intel/securitytrails/wayback/cloud_storage
-    // — all free modules — for that domain without further cost.
-    if let Some(ed) = val_str(item, "email_domain") {
-        let lower = ed.to_lowercase();
-        if lower.contains('.') && !lower.contains('@') && seen.insert(format!("@edomain:{lower}")) {
-            push_oathnet_entity(
-                result,
-                Entity::new(EntityKind::Domain, &lower, 0.55, scan_id),
-                &ev,
-                &["email-domain"],
-                is_target_row,
-            );
-        }
-    }
-
-    // Password hash → seed for pwned_passwords (free k-anonymity lookup
-    // confirms whether the hash is in known breach corpora). Emit as a
-    // low-confidence ApiKey entity tagged for that module.
-    if let Some(ph) = val_str(item, "password_hash")
-        && ph.len() >= 32
-        && seen.insert(format!(
-            "@pwhash:{}",
-            crate::util::str_util::truncate_safe(&ph, 16)
-        ))
-    {
-        push_oathnet_entity(
-            result,
-            Entity::new(EntityKind::Password, &ph, 0.50, scan_id),
-            &ev,
-            &["password-hash"],
-            is_target_row,
-        );
-    }
-}
-
-/// Apply the stealer-context tags (`oathnet-pro`, `stealer`, plus any
-/// `extra_tags` in order) and a cloned evidence record to `e`, then push it.
-/// Unlike [`push_oathnet_entity`] this does NOT add the `breach` tag — stealer
-/// login/domain/credential context is not leaked PII per se.
-fn push_stealer_entity(
-    result: &mut ModuleResult,
-    mut e: Entity,
-    ev: &Evidence,
-    extra_tags: &[&str],
-) {
-    e.tag("oathnet-pro");
-    e.tag("stealer");
-    for t in extra_tags {
-        e.tag(*t);
-    }
-    e.add_evidence(ev.clone());
-    result.push(e);
-}
-
-fn extract_stealer_entities(
-    item: &Value,
-    scan_id: &str,
-    key_fp: &str,
-    seen: &mut HashSet<String>,
-    result: &mut ModuleResult,
-) {
-    let mut ev = Evidence::new(SRC, "Stealer log entry".to_string())
-        .with_attr("source", "stealer")
-        .with_attr("provider", "oathnet.org")
-        .with_attr("api_key_origin", key_fp);
-    if let Some(url) = val_str(item, "url").or_else(|| val_str(item, "url_str")) {
-        ev = ev.with_attr("url", &url);
-    }
-    if let Some(lid) = val_str(item, "log_id").or_else(|| val_str(item, "log")) {
-        ev = ev.with_attr("log_id", &lid);
-    }
-    if let Some(pw) = val_str(item, "password") {
-        ev = ev.with_attr("password", &pw);
-        if pw.contains("UPGRADE_TO_SEE") && pw.len() >= 3 {
-            // `pw` is untrusted: take the first/last CHAR (not byte) so a
-            // multi-byte boundary can't panic the slice.
-            let first = pw.chars().next().map(String::from).unwrap_or_default();
-            let last = pw.chars().next_back().map(String::from).unwrap_or_default();
-            ev = ev
-                .with_attr("password_hint_first", first)
-                .with_attr("password_hint_last", last)
-                .with_attr("password_redacted", "true");
-        }
-    }
-    if let Some(uname) = val_str(item, "username") {
-        ev = ev.with_attr("username", &uname);
-    }
-
-    if let Some(emails) = item.get("email").and_then(|v| v.as_array()) {
-        for email_val in emails {
-            if let Some(email) = email_val.as_str() {
-                let lower = email.to_lowercase();
-                if lower.contains('@') && seen.insert(lower) {
-                    push_oathnet_entity(
-                        result,
-                        Entity::new(EntityKind::Email, email, 0.65, scan_id),
-                        &ev,
-                        &["stealer"],
-                        // Stealer hits come from a search on the target's own
-                        // identity — the row IS the target.
-                        true,
-                    );
-                }
-            }
-        }
-    }
-
-    // Username field often contains an email address (stealer logs use the
-    // login email as "username"). Emit it so it expands through the email
-    // pipeline — HIBP, emailrep, epieos, etc. can then cross-reference.
-    if let Some(uname) = val_str(item, "username") {
-        let lower = uname.to_lowercase();
-        if lower.contains('@')
-            && lower.contains('.')
-            && seen.insert(format!("@stealer-user:{lower}"))
-        {
-            push_stealer_entity(
-                result,
-                Entity::new(EntityKind::Email, &uname, 0.60, scan_id),
-                &Evidence::new(SRC, "Stealer login email (username field)")
-                    .with_attr("source", "stealer"),
-                &["stealer-login"],
-            );
-        }
-    }
-
-    if let Some(domains) = item.get("domain").and_then(|v| v.as_array()) {
-        for d in domains {
-            if let Some(dom) = d.as_str()
-                && dom.contains('.')
-                && seen.insert(dom.to_lowercase())
-            {
-                push_stealer_entity(
-                    result,
-                    Entity::new(EntityKind::Domain, dom, 0.50, scan_id),
-                    &Evidence::new(SRC, format!("Stealer credential for {dom}"))
-                        .with_attr("source", "stealer"),
-                    &[],
-                );
-            }
-        }
-    }
-
-    if let Some(uname) = val_str(item, "username")
-        && let Some(url_str) = val_str(item, "url").or_else(|| val_str(item, "url_str"))
-    {
-        let cred_val = format!("{uname}@{url_str}");
-        if seen.insert(format!("@cred:{}", cred_val.to_lowercase())) {
-            push_stealer_entity(
-                result,
-                Entity::new(EntityKind::Credential, &cred_val, 0.60, scan_id),
-                &ev,
-                &[],
-            );
-        }
-    }
-}
-
-// ─── API key pattern recognition ─────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

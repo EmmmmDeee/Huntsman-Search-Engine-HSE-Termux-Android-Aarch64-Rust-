@@ -3,181 +3,104 @@
 //! Finds pairs of identity entities (Person, Username, Email, Phone) that are
 //! linked through 2–4 relation-graph hops but have no direct single-edge
 //! connection. These multi-hop chains surface the "identity thread" hidden in
-//! the attribution graph — e.g. an email linked to a domain via DerivedFrom,
+//! the attribution graph — e.g. an email linked to a domain via BelongsToDomain,
 //! the domain to a registrant Person via RegisteredBy, the person to a second
-//! username via SubdomainOf — four nodes, three hops, one hidden identity link.
+//! username via DerivedFrom — four nodes, three hops, one hidden identity link.
+//!
+//! The shortest-path search itself is the canonical
+//! [`crate::core::relation::identity_paths`] primitive — the *same* finder the
+//! dossier's CONNECTIONS section renders, so the rule's verdict and the chain
+//! shown to the operator can never drift (Rule 4: delegate, never copy). This
+//! rule keeps only the *transitive* cases (≥2 hops); a 1-hop direct link is
+//! another rule's job.
 //!
 //! Severity decays with path length: Medium at 2–3 hops (a tight chain with
 //! few intermediate nodes), Low at 4 hops (longer, noisier path). Every node
 //! on the shortest path is included in the correlation's `entity_uids` so the
 //! SPA Correlations view can render the chain.
 
-use super::*;
+use std::collections::HashMap;
 
-fn is_identity_kind(kind: &EntityKind) -> bool {
-    matches!(
-        kind,
-        EntityKind::Person | EntityKind::Email | EntityKind::Phone | EntityKind::Username
-    )
-}
+use super::*;
+use crate::core::relation::identity_paths;
 
 /// AU-060 — Transitive identity closure.
 ///
-/// BFS from each confirmed identity entity; fires for every other identity
-/// entity reachable in 2–4 hops with no direct single-edge shortcut. Emits
-/// one correlation per unique pair (deduplicated across BFS roots).
+/// Delegates the shortest-path search to [`identity_paths`], then emits one
+/// correlation per identity pair connected through 2–4 hops (a 1-hop direct
+/// link is filtered — it is covered by the direct-edge rules). Pair
+/// deduplication and deterministic ordering come from the primitive.
 pub(in crate::core::correlator) fn rule_au_060_transitive_identity_closure(
     entities: &[Entity],
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
-    use std::collections::{HashMap, HashSet, VecDeque};
-
     const MAX_HOPS: usize = 4;
+    // Weakest-link confidence floor, mirroring AU-067's `MIN_CONF`. A transitive
+    // chain is only as trustworthy as its weakest edge, so a path that routes
+    // through a DELIBERATELY-DAMPED lead-grade edge — a bare surname `derive_kinship`
+    // link (`min(conf) * 0.5`), a co-mention/affiliation lead — must not surface as
+    // an ASSERTED identity link. Without this floor AU-060 ignored the damps the
+    // relation builders apply, cross-linking same-surname strangers through a kin
+    // hop. `identity_paths` already computes the minimum edge confidence along each
+    // path (`IdentityPath::min_confidence`, the same field AU-067 floors on), so the
+    // check is a single comparison — no per-edge lookup, no drift from the primitive.
+    const MIN_CONF: f64 = 0.50;
 
-    if entities
-        .iter()
-        .filter(|e| is_identity_kind(&e.kind))
-        .count()
-        < 2
-        || relations.is_empty()
-    {
-        return Vec::new();
-    }
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
 
-    // Index confirmed entities by uid (String keys to unify lifetimes).
-    let by_uid: HashMap<String, &Entity> = entities.iter().map(|e| (e.uid.clone(), e)).collect();
-
-    // Undirected adjacency list: only edges where both endpoints are confirmed.
-    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
-    for r in relations {
-        if !by_uid.contains_key(&r.from_uid) || !by_uid.contains_key(&r.to_uid) {
+    let mut out = Vec::new();
+    for path in identity_paths(entities, relations, MAX_HOPS) {
+        // Transitive only: a 1-hop direct edge is covered by the direct-link rules.
+        if path.hops < 2 {
             continue;
         }
-        adj.entry(r.from_uid.clone())
-            .or_default()
-            .push(r.to_uid.clone());
-        adj.entry(r.to_uid.clone())
-            .or_default()
-            .push(r.from_uid.clone());
-    }
-
-    let identity_uid_set: HashSet<String> = entities
-        .iter()
-        .filter(|e| is_identity_kind(&e.kind))
-        .map(|e| e.uid.clone())
-        .collect();
-
-    // Direct identity↔identity edges: skip these in AU-060 (covered by other rules).
-    let mut direct_pairs: HashSet<[String; 2]> = HashSet::new();
-    for r in relations {
-        if identity_uid_set.contains(&r.from_uid) && identity_uid_set.contains(&r.to_uid) {
-            let mut p = [r.from_uid.clone(), r.to_uid.clone()];
-            p.sort_unstable();
-            direct_pairs.insert(p);
+        // A chain is only as strong as its weakest edge (see `MIN_CONF` above).
+        if path.min_confidence < MIN_CONF {
+            continue;
         }
-    }
+        let (Some(src_e), Some(dst_e)) = (
+            by_uid.get(path.from_uid.as_str()),
+            by_uid.get(path.to_uid.as_str()),
+        ) else {
+            continue;
+        };
 
-    let identity_uids: Vec<String> = entities
-        .iter()
-        .filter(|e| is_identity_kind(&e.kind))
-        .map(|e| e.uid.clone())
-        .collect();
+        // Every node on the path (both endpoints + each intermediate), sorted so
+        // the correlation's entity set is order-stable.
+        let mut entity_uids: Vec<String> = Vec::with_capacity(path.hops + 1);
+        entity_uids.push(path.from_uid.clone());
+        entity_uids.extend(path.steps.iter().map(|s| s.to_uid.clone()));
+        entity_uids.sort_unstable();
+        entity_uids.dedup();
 
-    let mut emitted: HashSet<[String; 2]> = HashSet::new();
-    let mut out = Vec::new();
+        let intermediates = path.hops - 1;
+        let severity = if path.hops <= 3 {
+            Severity::Medium
+        } else {
+            Severity::Low
+        };
 
-    for start in &identity_uids {
-        // BFS up to MAX_HOPS from `start`, recording shortest-path predecessors.
-        let mut dist: HashMap<String, usize> = HashMap::new();
-        let mut prev: HashMap<String, String> = HashMap::new();
-        dist.insert(start.clone(), 0);
-        let mut queue: VecDeque<String> = VecDeque::new();
-        queue.push_back(start.clone());
-
-        while let Some(uid) = queue.pop_front() {
-            let d = dist[&uid];
-            if d >= MAX_HOPS {
-                continue;
-            }
-            for nbr in adj.get(&uid).into_iter().flatten() {
-                if !dist.contains_key(nbr) {
-                    dist.insert(nbr.clone(), d + 1);
-                    prev.insert(nbr.clone(), uid.clone());
-                    queue.push_back(nbr.clone());
-                }
-            }
-        }
-
-        for dest in &identity_uids {
-            if dest == start {
-                continue;
-            }
-            let Some(&hops) = dist.get(dest) else {
-                continue;
-            };
-            if hops < 2 {
-                continue; // directly linked (1 hop) — not a transitive chain
-            }
-
-            // Skip pairs with a direct single-edge shortcut.
-            let mut direct_key = [start.clone(), dest.clone()];
-            direct_key.sort_unstable();
-            if direct_pairs.contains(&direct_key) {
-                continue;
-            }
-
-            // Emit each pair once regardless of which BFS root finds it first.
-            let mut pair_key = [start.clone(), dest.clone()];
-            pair_key.sort_unstable();
-            if !emitted.insert(pair_key) {
-                continue;
-            }
-
-            // Reconstruct the shortest path: dest ← … ← start, then reverse.
-            let mut path: Vec<String> = Vec::new();
-            let mut cur = dest.clone();
-            path.push(cur.clone());
-            while &cur != start {
-                let p = prev[&cur].clone();
-                path.push(p.clone());
-                cur = p;
-            }
-            path.reverse();
-
-            let severity = if hops <= 3 {
-                Severity::Medium
-            } else {
-                Severity::Low
-            };
-            let src_e = by_uid[start];
-            let dst_e = by_uid[dest];
-            let intermediates = hops - 1;
-
-            let mut entity_uids = path;
-            entity_uids.sort_unstable();
-
-            out.push(Correlation::new(
-                "AU-060",
-                "Transitive identity closure",
-                severity,
-                format!(
-                    "{} ({}) linked to {} ({}) via {} intermediate node{} — \
-                     transitive identity path ({} hops)",
-                    src_e.value,
-                    src_e.kind,
-                    dst_e.value,
-                    dst_e.kind,
-                    intermediates,
-                    if intermediates == 1 { "" } else { "s" },
-                    hops,
-                ),
-                entity_uids,
-                scan_id,
-                now,
-            ));
-        }
+        out.push(Correlation::new(
+            "AU-060",
+            "Transitive identity closure",
+            severity,
+            format!(
+                "{} ({}) linked to {} ({}) via {} intermediate node{} — \
+                 transitive identity path ({} hops)",
+                src_e.value,
+                src_e.kind,
+                dst_e.value,
+                dst_e.kind,
+                intermediates,
+                if intermediates == 1 { "" } else { "s" },
+                path.hops,
+            ),
+            entity_uids,
+            scan_id,
+            now,
+        ));
     }
 
     out
@@ -194,6 +117,51 @@ mod tests {
 
     fn rel(from: &Entity, to: &Entity, kind: RelationKind) -> Relation {
         Relation::new(from.uid.clone(), to.uid.clone(), kind, 0.8, "s")
+    }
+
+    fn rel_conf(from: &Entity, to: &Entity, kind: RelationKind, conf: f64) -> Relation {
+        Relation::new(from.uid.clone(), to.uid.clone(), kind, conf, "s")
+    }
+
+    #[test]
+    fn au060_suppresses_chain_through_a_damped_lead_edge() {
+        // email → person (strong 0.8) → person2 via a DAMPED kinship edge (0.40,
+        // what `derive_kinship` emits for a 0.8 surname pair: 0.8 * 0.5). The 2-hop
+        // path email→person2 has weakest-link confidence 0.40 < 0.50, so AU-060 must
+        // NOT assert the stranger person2 as a transitively-linked identity.
+        let email = mk(EntityKind::Email, "alice@example.com");
+        let person = mk(EntityKind::Person, "Alice Smith");
+        let person2 = mk(EntityKind::Person, "Bob Smith");
+        let rels = [
+            rel(&email, &person, RelationKind::DerivedFrom),
+            rel_conf(&person, &person2, RelationKind::AssociatedWith, 0.40),
+        ];
+        let entities = [email, person, person2];
+        assert!(
+            rule_au_060_transitive_identity_closure(&entities, &rels, "s", 0).is_empty(),
+            "a chain through a sub-0.50 damped edge must be suppressed"
+        );
+    }
+
+    #[test]
+    fn au060_still_fires_when_every_edge_clears_the_floor() {
+        // The same shape but the second edge is a strong 0.6 link (≥ 0.50): the
+        // transitive pair is legitimate and still fires — the floor gates only the
+        // damped leads, not honest mid-confidence structural edges.
+        let email = mk(EntityKind::Email, "alice@example.com");
+        let person = mk(EntityKind::Person, "Alice Smith");
+        let username = mk(EntityKind::Username, "asmith");
+        let rels = [
+            rel(&email, &person, RelationKind::DerivedFrom),
+            rel_conf(&person, &username, RelationKind::AssociatedWith, 0.60),
+        ];
+        let entities = [email, person, username];
+        let r = rule_au_060_transitive_identity_closure(&entities, &rels, "s", 0);
+        assert_eq!(
+            r.len(),
+            1,
+            "a chain whose weakest edge is ≥ 0.50 still fires"
+        );
     }
 
     #[test]

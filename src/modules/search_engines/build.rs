@@ -13,6 +13,7 @@ pub(super) fn build_entities(
     target: &Target,
     scan_id: &str,
     results: &[SearchResult],
+    url_engine_count: &std::collections::HashMap<String, u32>,
 ) -> ModuleResult {
     let mut result = ModuleResult::new();
     if results.is_empty() {
@@ -21,16 +22,17 @@ pub(super) fn build_entities(
 
     let terms = target_terms(target);
 
-    // Pre-scan: count how many independent engines confirmed each URL.
-    // Multi-engine corroboration boosts entity confidence because
-    // different engines have different indexes — an independent match
-    // is strong evidence of relevance.
-    let mut url_engine_count: std::collections::HashMap<String, HashSet<&str>> =
-        std::collections::HashMap::new();
-    for r in results {
-        let key = canonicalize_url(&r.url);
-        url_engine_count.entry(key).or_default().insert(r.engine);
-    }
+    // Multi-engine corroboration boosts entity confidence because different
+    // engines have different indexes — an independent match is strong evidence
+    // of relevance. The count of how many engines confirmed each URL is supplied
+    // by the caller, computed from the PRE-dedup results via `url_engine_counts`.
+    // It MUST NOT be recomputed from `results` here: by the time the module
+    // reaches entity construction `results` has been deduped to one
+    // `SearchResult` per canonical URL, so every URL would map to a single
+    // engine and the corroboration boost would silently collapse to 1. We still
+    // iterate the deduped `results` for entity EMISSION (one entity per URL, and
+    // so per-result snippet emails/phones are not double-counted) — only the
+    // corroboration count comes from the wider pre-dedup map.
 
     let mut seen_domains: HashSet<String> = HashSet::new();
     let mut seen_emails: HashSet<String> = HashSet::new();
@@ -79,7 +81,8 @@ pub(super) fn build_entities(
 
         let n_engines = url_engine_count
             .get(&canonicalize_url(&r.url))
-            .map_or(1, |s| s.len() as u32);
+            .copied()
+            .unwrap_or(1);
 
         if is_subdomain && seen_domains.insert(host.clone()) {
             let mut e = Entity::new(EntityKind::Domain, &host, 0.70, scan_id);
@@ -232,7 +235,30 @@ pub(super) fn build_entities(
         //   AU place contextual     → 0.42 (context-inferred, no explicit state)
         // Corroboration cap for postcode-only / bare addresses is 0.60 to prevent
         // pure suburb mentions reaching Probable (0.75+) via repetition alone.
-        for addr in extract_addresses_from_text(&combined_text) {
+        //
+        // Subject-relevance gate: a name search returns fuzzy namesakes (a live
+        // "Cindy Haynes" scan surfaced a "Cindy He" UNSW staff page); trusting
+        // THEIR address injects a false location — here a "Sydney, NSW" fix that
+        // contradicted the QLD evidence and drove a wrong-state AU-056
+        // jurisdiction plus a 700 km geo-divergence. For a multi-part name,
+        // require the distinctive surname (the last name token) somewhere in this
+        // result's snippet or URL before extracting its address. Single-token
+        // targets (email handle / username) are not prone to this first-name
+        // collision and are unaffected.
+        let location_on_subject = if terms.len() >= 2 {
+            let hay = format!("{combined_text} {}", r.url).to_lowercase();
+            terms
+                .last()
+                .is_some_and(|surname| hay.contains(surname.as_str()))
+        } else {
+            true
+        };
+        let snippet_addresses = if location_on_subject {
+            extract_addresses_from_text(&combined_text)
+        } else {
+            Vec::new()
+        };
+        for addr in snippet_addresses {
             let addr_key = format!("@addr:{}", normalise_address_key(&addr));
             let has_postcode = addr
                 .split_whitespace()

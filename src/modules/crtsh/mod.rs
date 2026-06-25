@@ -178,7 +178,10 @@ impl Module for CrtSh {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        15_000
+        // Live scan: 62 transport errors (connection refused/TLS) from DC IPs —
+        // these fail fast (<1 s). 8 s is enough for a healthy JSON response
+        // and cuts the concurrency-slot ceiling by 7 s vs the old 15 s.
+        8_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -201,10 +204,7 @@ impl Module for CrtSh {
             return Err(Error::module(SRC, format!("HTTP {status}")));
         }
 
-        let entries: Vec<CrtEntry> = resp
-            .json()
-            .await
-            .map_err(|e| Error::module(SRC, format!("JSON: {e}")))?;
+        let entries: Vec<CrtEntry> = crate::util::http::json_decode(SRC, resp).await?;
 
         let mut result = ModuleResult::new();
         result.entities = build_entities(&entries, &target.value, &ctx.scan_id);

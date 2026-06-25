@@ -11,6 +11,7 @@ use crate::core::{
 
 mod archive; // `impl Store`: inter-scan entity cache (`raw_archive`)
 mod entities; // `impl Store`: entity persistence + FTS query
+mod templates; // `impl Store`: cross-scan pathway-template learning
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -108,6 +109,18 @@ const SCHEMA_DDL: &str = "
                 archived_at INTEGER NOT NULL,
                 ttl_secs    INTEGER NOT NULL,
                 result_json TEXT NOT NULL
+            );
+
+            -- Cross-scan pathway-template learning (C1 universal linking). Each
+            -- row is a direction-canonical attribution route confirmed by one or
+            -- more scans; `seen_count` is the number of scans that produced it. A
+            -- route learned in one scan thus lifts every later scan: when a new
+            -- scan reproduces a known template, the engine credits the connection
+            -- as historically corroborated.
+            CREATE TABLE IF NOT EXISTS pathway_templates (
+                template    TEXT PRIMARY KEY,
+                seen_count  INTEGER NOT NULL,
+                last_seen   INTEGER NOT NULL
             );
 
             -- Full-text index over entity values. Contentless-external FTS5
@@ -752,6 +765,14 @@ impl crate::core::port::StoragePort for Store {
 
     fn lookup_module_result_fresh(&self, key: &str) -> Result<Option<Vec<Entity>>> {
         Store::lookup_module_result_fresh(self, key)
+    }
+
+    fn record_pathway_template(&self, template: &str) -> Result<()> {
+        Store::record_pathway_template(self, template)
+    }
+
+    fn pathway_template_count(&self, template: &str) -> Result<u32> {
+        Store::pathway_template_count(self, template)
     }
 }
 

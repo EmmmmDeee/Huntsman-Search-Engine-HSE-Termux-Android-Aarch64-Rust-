@@ -4,10 +4,12 @@
 //! Behaviour-preserving extraction from `mod.rs` (same names/signatures/logic).
 //! `mod.rs` re-imports the three entry points it (and `build`) dispatch.
 
+use futures::StreamExt;
+
 use super::engines::reliable_engines;
-use super::fetch::fetch_and_parse;
+use super::fetch::fetch_one;
 use super::helpers::*;
-use super::{INTER_ENGINE_MS, engine_enabled, is_social_host};
+use super::{ENGINE_CONCURRENCY, engine_enabled, is_social_host};
 use crate::core::module::{ModuleContext, ModuleResult};
 use crate::util::str_util::truncate_safe;
 
@@ -16,6 +18,7 @@ pub(super) async fn recycle_entities(
     result: &mut ModuleResult,
     dead_engines: &HashSet<&str>,
     _primary_results: &[SearchResult],
+    deadline: std::time::Instant,
 ) {
     let reliable = reliable_engines();
 
@@ -72,33 +75,39 @@ pub(super) async fn recycle_entities(
         .map(|e| e.scan_id.clone())
         .unwrap_or_default();
 
-    let mut recycled_results: Vec<SearchResult> = Vec::new();
-
-    for query in recycle_queries.iter().take(12) {
-        if ctx.cancel.is_cancelled() {
-            break;
-        }
-        for engine in &reliable {
-            if !engine_enabled(engine.name) {
-                continue;
-            }
-            if ctx.cancel.is_cancelled() {
-                break;
-            }
-            if dead_engines.contains(engine.name) {
-                continue;
-            }
-            let url = (engine.build_url)(query);
-            if let Some(mut results) = fetch_and_parse(&url, engine, query, None).await {
-                recycled_results.append(&mut results);
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(INTER_ENGINE_MS)).await;
-        }
-    }
+    // Flatten the (recycle query × reliable engine) grid into one batch fetched
+    // with bounded concurrency — each request self-clamps to the deadline (so the
+    // recycler can never overrun the kill timeout, which would discard the whole
+    // result, primary findings included), and the batch reaches every job within
+    // the reserve budget instead of crawling them serially.
+    let mut recycled_results: Vec<SearchResult> = if ctx.cancel.is_cancelled() {
+        Vec::new()
+    } else {
+        let jobs: Vec<_> = recycle_queries
+            .iter()
+            .take(12)
+            .flat_map(|q| {
+                reliable
+                    .iter()
+                    .filter(|e| engine_enabled(e.name) && !dead_engines.contains(e.name))
+                    .map(move |e| fetch_one(e, (e.build_url)(q), q.clone(), deadline))
+            })
+            .collect();
+        futures::stream::iter(jobs)
+            .buffer_unordered(ENGINE_CONCURRENCY)
+            .collect::<Vec<Option<Vec<SearchResult>>>>()
+            .await
+            .into_iter()
+            .flatten()
+            .flatten()
+            .collect()
+    };
 
     if recycled_results.is_empty() {
         return;
     }
+    // Determinism: racy completion order → sort before the dedup/merge.
+    recycled_results.sort_by(|a, b| a.engine.cmp(b.engine).then_with(|| a.url.cmp(&b.url)));
 
     let recycled_results = dedup_results(recycled_results);
     let mut seen_addrs: HashSet<String> = HashSet::new();

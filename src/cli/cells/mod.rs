@@ -9,7 +9,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::time::Instant;
 
 use clap::Subcommand;
@@ -18,6 +18,14 @@ use crate::{
     core::error::{Error, Result},
     util::cell_db::{self, CellRow},
 };
+
+/// Hard cap on the COMPRESSED OpenCelliD download (4 GiB) — generous headroom
+/// over the real ~1-2 GB `.csv.gz`, so a spoofed/compromised host can't stream
+/// until the device's disk fills.
+const MAX_DOWNLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+/// Hard cap on the DECOMPRESSED stream (16 GiB) — far above the real ~3 GB CSV,
+/// but finite, so a gzip bomb can't expand without bound during import.
+const MAX_DECOMPRESSED_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
 // ── CLI struct ──────────────────────────────────────────────────────────────
 
@@ -209,20 +217,32 @@ async fn download_and_import(url: &str, filename: &str, mcc: Option<i64>) -> Res
         )));
     }
 
-    // Stream body to a temp file
+    // Stream the body to a temp file in bounded chunks. A plain `resp.bytes()`
+    // buffered the whole (self-described 1-2 GB) download into RAM — an OOM on a
+    // phone — and was uncapped, so a spoofed/compromised `opencellid.org` could
+    // stream until the device died. Chunked write + a hard byte cap fixes both.
     let tmp = tempfile_path();
     {
+        use futures::StreamExt as _;
         use tokio::io::AsyncWriteExt;
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| Error::Other(format!("Download error: {e}")))?;
         let mut f = tokio::fs::File::create(&tmp)
             .await
             .map_err(|e| Error::Other(format!("Temp file create: {e}")))?;
-        f.write_all(&bytes)
-            .await
-            .map_err(|e| Error::Other(format!("Temp file write: {e}")))?;
+        let mut stream = resp.bytes_stream();
+        let mut total: u64 = 0;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| Error::Other(format!("Download error: {e}")))?;
+            total += chunk.len() as u64;
+            if total > MAX_DOWNLOAD_BYTES {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(Error::Other(format!(
+                    "download exceeds the {MAX_DOWNLOAD_BYTES}-byte cap — refusing (host may be compromised)"
+                )));
+            }
+            f.write_all(&chunk)
+                .await
+                .map_err(|e| Error::Other(format!("Temp file write: {e}")))?;
+        }
     }
 
     let result = import_from_file(tmp.to_str().unwrap_or(filename), mcc);
@@ -254,7 +274,13 @@ fn import_from_file(path: &str, mcc_hint: Option<i64>) -> Result<()> {
     let file = std::fs::File::open(p).map_err(|e| Error::Other(e.to_string()))?;
 
     let total_rows = if is_gz {
-        import_reader(BufReader::new(flate2::read::GzDecoder::new(file)), &conn)?
+        // Cap the DECOMPRESSED stream: a gzip bomb (tiny `.gz` → petabytes) from a
+        // spoofed host would otherwise fill the disk during import. `Read::take`
+        // bounds it; the limit is far above the real OpenCelliD CSV (~3 GB).
+        import_reader(
+            BufReader::new(flate2::read::GzDecoder::new(file).take(MAX_DECOMPRESSED_BYTES)),
+            &conn,
+        )?
     } else {
         import_reader(BufReader::new(file), &conn)?
     };

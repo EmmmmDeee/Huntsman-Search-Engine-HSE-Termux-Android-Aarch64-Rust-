@@ -1,7 +1,7 @@
 # Fault Tree Analysis — Huntsman Search Engine (HSE)
 
 **Scope:** the whole `hse` binary + `huntsman_search_engine` library (CLI, HTTP
-API, embedded SPA, scan engine, 118 modules, SQLite store, Termux/aarch64
+API, embedded SPA, scan engine, 125 modules, SQLite store, Termux/aarch64
 deployment).
 **Method:** top-down Fault Tree Analysis. Gates: `[OR]`, `[AND]`, `[PAND]`
 (priority-AND, left-to-right ordered), `[INHIBIT]` (fires only while a

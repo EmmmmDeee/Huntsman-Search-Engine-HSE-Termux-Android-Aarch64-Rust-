@@ -102,8 +102,7 @@ impl Module for AuProperty {
         let sname = surname(full_name);
         let encoded_full = crate::util::http::urlencode(full_name);
         let encoded_sname = crate::util::http::urlencode(sname);
-        let ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
-                  (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+        let ua = crate::util::http::UA_BROWSER;
 
         let mut all_entities: Vec<Entity> = Vec::new();
 

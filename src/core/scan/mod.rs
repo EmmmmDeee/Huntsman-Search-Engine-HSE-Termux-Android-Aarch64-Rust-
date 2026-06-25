@@ -9,24 +9,28 @@ mod classify;
 // `crate::core::scan::is_mega_domain` etc.; `domain_expansion_factor` is bridged
 // privately because the scoring submodule reaches it via `super::`.
 use classify::domain_expansion_factor;
+// `identity_norm` / `identity_overlaps` are the dictionary-free identity-matching
+// primitives; `core::relation` reuses them to bind a subject to their identifiers
+// and associates (rather than re-deriving a second, drift-prone copy).
 pub(crate) use classify::{
-    is_mega_domain, is_noncentral_domain, is_wrong_identity_pivot, should_tag_platform_infra,
+    identity_norm, identity_overlaps, is_infra_domain, is_mega_domain, is_noncentral_domain,
+    is_wrong_identity_pivot,
 };
-// Reached only by the classification tests retained in this file.
-#[cfg(test)]
-use classify::{identity_norm, identity_overlaps, is_infra_domain};
 
 mod detect;
 use detect::{
     has_company_suffix, is_address_shaped, is_cidr_shaped, is_domain_shaped, is_mac_shaped,
-    is_phone_shaped, is_tracking_id_shaped,
+    is_phone_shaped,
 };
 
 mod scoring;
 
 mod options;
 pub(crate) use options::default_scan_options;
-pub use options::{DEFAULT_SCAN_DEPTH, ExpansionStrategy, MAX_DEPTH, ScanOptions};
+pub use options::{
+    DEFAULT_MAX_ENTITIES, DEFAULT_MIN_EXPAND_CONFIDENCE, DEFAULT_SCAN_DEPTH, ExpansionStrategy,
+    MAX_DEPTH, ScanOptions,
+};
 // Re-exported so external callers keep using `crate::core::scan::expansion_weight`
 // etc. unchanged after the expansion-economics model moved to `scoring`.
 pub use scoring::{
@@ -57,10 +61,6 @@ pub enum TargetKind {
     ApiKey,
     CryptoAddress,
     DeviceId,
-    /// Google Analytics / Google Tag Manager / GA4 tracking identifier.
-    /// Pattern: `UA-XXXXXXX-X`, `GTM-XXXXXXX`, `G-XXXXXXXXXX`, `AW-XXXXXXXXX`.
-    /// Emitted by `web_crawler`; queued back for cross-domain co-ownership search.
-    TrackingId,
 }
 
 impl TargetKind {
@@ -88,8 +88,10 @@ impl TargetKind {
             EntityKind::MacAddress => Some(Self::MacAddress),
             EntityKind::CryptoAddress => Some(Self::CryptoAddress),
             EntityKind::DeviceId => Some(Self::DeviceId),
-            EntityKind::TrackingId => Some(Self::TrackingId),
-            EntityKind::Credential | EntityKind::Password | EntityKind::Other(_) => None,
+            EntityKind::Credential
+            | EntityKind::TrackingId
+            | EntityKind::Password
+            | EntityKind::Other(_) => None,
         }
     }
 
@@ -113,7 +115,6 @@ impl TargetKind {
             Self::MacAddress => EntityKind::MacAddress,
             Self::CryptoAddress => EntityKind::CryptoAddress,
             Self::DeviceId => EntityKind::DeviceId,
-            Self::TrackingId => EntityKind::TrackingId,
         }
     }
 
@@ -147,7 +148,6 @@ impl TargetKind {
             Self::MacAddress => "mac_address",
             Self::CryptoAddress => "crypto_address",
             Self::DeviceId => "device_id",
-            Self::TrackingId => "tracking_id",
         }
     }
 
@@ -204,10 +204,16 @@ impl TargetKind {
         if is_mac_shaped(v) {
             return Self::MacAddress;
         }
-        // 5. Coordinates — "lat,lon", both numeric and in range. Delegate to the
-        //    canonical, range-validating parser so this classifier and the geo
-        //    pipeline agree on exactly what counts as a coordinate pair.
-        if crate::util::geohash::parse_coords(v).is_some() {
+        // 5. Coordinates — a plain decimal "lat,lon" (the canonical, range-
+        //    validating parser the geo pipeline shares), or any *self-evident*
+        //    notation that carries an unambiguous marker: degrees-minutes-seconds
+        //    with °/′/″ glyphs or N/S/E/W letters, a `geo:` URI, or a Plus Code.
+        //    Handle-shaped notations (Maidenhead locators, bare space-separated
+        //    decimals) are deliberately NOT auto-detected — they are accepted
+        //    only via an explicit `--kind coordinates`, which normalises them.
+        if crate::util::geohash::parse_coords(v).is_some()
+            || crate::util::geo::coords::parse(v).is_some_and(|c| c.format.is_self_evident())
+        {
             return Self::Coordinates;
         }
         // 6. ASN — "AS" + digits.
@@ -242,13 +248,7 @@ impl TargetKind {
         if crate::core::crypto::classify_crypto_address(v).is_some() {
             return Self::CryptoAddress;
         }
-        // 9c. Tracking ID — Google Analytics (UA-XXXXXXX-X / G-XXXXXXXXXX),
-        //     Google Tag Manager (GTM-XXXXXXX), Google Ads (AW-XXXXXXXXX).
-        //     Must be checked before the general Username fallback.
-        if is_tracking_id_shaped(v) {
-            return Self::TrackingId;
-        }
-        // 9d. Cell tower ID: mcc-mnc-lac-cid (all-numeric, 4 segments, MCC in 200-999).
+        // 9c. Cell tower ID: mcc-mnc-lac-cid (all-numeric, 4 segments, MCC in 200-999).
         {
             let parts: Vec<&str> = v.split('-').collect();
             if parts.len() == 4
@@ -321,7 +321,12 @@ fn sanitise_target_input(raw: &str) -> String {
             break;
         }
     }
-    s.to_string()
+    // Drop invisible/format characters (zero-width, bidi controls, soft hyphen,
+    // word joiner) that have no place in a seed value: two seeds a human reads
+    // as identical but that differ only by such a character would otherwise
+    // never deduplicate. `strip_invisible` borrows (no allocation) for the
+    // common clean input, so this is free when there is nothing to strip.
+    crate::core::validation::strip_invisible(s).into_owned()
 }
 
 /// Detect a [`TargetKind`] from a **raw**, user-supplied value — sanitising
@@ -389,6 +394,13 @@ impl Target {
         }
         if v.chars().any(char::is_control) {
             return Err("value contains control characters");
+        }
+        // Reject only the clear homograph spoof: a value that mixes genuine
+        // ASCII letters with ASCII-lookalike foreign-script letters (e.g. a
+        // Cyrillic-`а` in `paypal.com`). A legitimate all-one-script non-ASCII
+        // value has no ASCII letters to mix, so it is not flagged.
+        if crate::core::validation::is_confusable_mixed_script(v) {
+            return Err("value contains a mixed-script homograph (possible spoof)");
         }
         match self.kind {
             TargetKind::Email => {
@@ -517,13 +529,6 @@ impl Target {
             | TargetKind::FullName
             | TargetKind::Address
             | TargetKind::Organisation => {}
-            TargetKind::TrackingId => {
-                if !is_tracking_id_shaped(v) {
-                    return Err(
-                        "not a recognised tracking ID (UA-XXXXXXX-X, G-XXXXXXXXXX, GTM-XXXXXXX, AW-XXXXXXXXX)",
-                    );
-                }
-            }
         }
 
         // Never scan our own egress infrastructure: a host/IP configured as a
@@ -655,9 +660,12 @@ pub struct ScanRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<TargetKind>,
     pub value: String,
-    /// Per-scan options. Defaults to [`default_scan_options`] (product default
-    /// depth 2) when omitted, so a bare `{"value": "..."}` request recurses two
-    /// hops just like the CLI and web UI.
+    /// Per-scan options. Defaults to [`default_scan_options`] — the
+    /// **comprehensive** product defaults (depth 3, expansion floor 0.20, entity
+    /// cap 2500), matching `hse scan` — when omitted, so a bare
+    /// `{"value": "..."}` request is as thorough as the CLI and web UI. The same
+    /// values are the per-field serde defaults, so an `options` object that omits
+    /// any of these fields behaves identically to omitting `options` entirely.
     #[serde(default = "default_scan_options")]
     pub options: ScanOptions,
 }

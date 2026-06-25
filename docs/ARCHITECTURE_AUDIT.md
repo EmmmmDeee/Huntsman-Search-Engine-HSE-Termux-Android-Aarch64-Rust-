@@ -6,16 +6,15 @@
 > plan live in [`PROBLEM_TREE.md`](PROBLEM_TREE.md) (the living problem +
 > capability tree), which is the single source of truth for what to change.
 
-## Facts (verified against the tree, 2026-06-25)
+## Facts (verified against the tree, 2026-06-17)
 
 | Metric | Value |
 |---|---|
-| Version / edition / MSRV | 1.4.0 · edition 2024 · 1.88 |
+| Version / edition / MSRV | 1.9.0 · edition 2024 · 1.88 |
 | Source | ~137k LOC · 602 `.rs` files |
 | Modules | **118** registered — 89 Free · 24 KeyGated · 5 Paid · 14 categories |
-| Correlation rules | **63** deterministic (AU-001 … AU-063) |
-| Relation kinds | **9** — `SubdomainOf` · `BelongsToDomain` · `HostedOn` · `ResolvesTo` · `RegisteredBy` · `CoLocatedWith` · `DerivedFrom` · `SameOperator` (R13) · `SameIdentity` (R14) |
-| Tests | ~3,216 lib + API/integration + architecture guards |
+| Correlation rules | **69** deterministic (AU-001 … AU-064, AU-067/068/069/070/071) + 2 engine-emitted (AU-065/066) |
+| Tests | ~2,995 lib + API/integration + architecture guards |
 | Unsafe | **0** — `#![forbid(unsafe_code)]` (`src/lib.rs:22`) |
 | Panic strategy | `panic = "unwind"` (`Cargo.toml:125`) + per-module `catch_unwind` at the dispatch boundary |
 | Dependencies | 311 locked packages (`Cargo.lock`) · **0** AI/ML/LLM/vector (guard-enforced) · 100% permissive licences (`cargo deny`) · 0 unused (`cargo machete`) |
@@ -33,9 +32,9 @@ Threat 3 · Search 2 · Phone 2 · Other 2.
  bin (main.rs) ─▶ cli ─┐
                        ├─▶ core ─▶ util (http, keys, geo, datasets, …)
  http (api/axum) ──────┘    │
- web (embedded SPA) ◀─ api  ├─▶ correlator (59 rules)
+ web (embedded SPA) ◀─ api  ├─▶ correlator (69 rules)
                             └─▶ storage (rusqlite WAL + FTS5, via StoragePort)
- modules (118) ─▶ core types + core::hooks (fn-ptr registry, installed at startup)
+ modules (124) ─▶ core types + core::hooks (fn-ptr registry, installed at startup)
 ```
 
 **Invariant (enforced):** `core` is module-agnostic — the engine drives modules
@@ -64,29 +63,57 @@ allowlist remains.
   `circuit`/`timeout`, `enrich` (geo + key harvest), `ledger` (dedup/lineage). A
   panicking module is caught at the dispatch boundary (`run_module_guarded`), so
   it degrades to zero results rather than aborting the process.
-- **`core::correlator`** (`src/core/correlator/rules/`) — 59 deterministic rules
-  across `assoc`/`breach`/`crypto`/`geo`/`infra`/`org`/`identity`/`location`,
-  synthesising entities into findings; candidate-quarantine before correlation.
+- **`core::correlator`** (`src/core/correlator/rules/`) — 69 deterministic rules
+  across `assoc`/`breach`/`broker`/`crypto`/`gap`/`geo`/`infra`/`identity`/
+  `integrity`/`location`/`multipath`/`org`/`resolved`/`sim`/`template`/`transitive`,
+  synthesising entities into findings; candidate-quarantine before correlation. The
+  recursive-linking family — `transitive` (AU-060), `multipath` (AU-062), `gap`
+  (AU-063), `template` (AU-064), `resolved` (AU-067), `integrity` (AU-069), `broker`
+  (AU-070), `robust` (AU-071) — all delegate to the shared `core::relation::graph`
+  link-analysis
+  primitives (`identity_paths`, `disjoint_pathways`, `resolve_identity_clusters`,
+  `strongest_path`, `connection_brokers`) that also back the dossier CONNECTIONS
+  section, so rule verdicts and the rendered chains can't drift: `multipath` rewards
+  a link confirmed by independent routes, `gap` names the orthogonal source family
+  that would corroborate a single-route link, `template` generalises a repeated route
+  into a reusable attribution pattern, `resolved` collapses every
+  transitively-linked identity into one resolved identity (the equivalence-class
+  capstone, weakest-link confidence), `integrity` rewards the max-bottleneck route —
+  a connection reliable at every hop, not merely present — `broker` names the
+  identity articulation point: the single node whose removal would fragment ≥3
+  otherwise-linked identities (node criticality, the analyst's prime pivot) — and
+  `robust` reports the complement: a resolved cluster that NO broker can split, so
+  its identities stay bound after removing any one connector (cluster-level
+  redundancy, the highest-confidence single-identity conclusion).
 - **`core::{scan,entity,relation,timeline}`** — the typed domain model:
   `Entity::c_effective` noisy-OR/multiplicative confidence fusion (clamped,
   monotone, contract-tested), SHA-256 deterministic UIDs, GREATEST-semantics
-  merge. `core::relation` carries **9** `RelationKind` variants and corresponding
-  builder functions that derive edges from entity evidence + the prior edge set:
-  `derive_structural` (SubdomainOf / BelongsToDomain / HostedOn), `derive_colocation`
-  (CoLocatedWith), `derive_resolution` (ResolvesTo), `derive_registration`
-  (RegisteredBy), `derive_name_lineage` (DerivedFrom), `derive_co_ownership`
-  (SameOperator — R13, from shared registrant / shared dedicated IP / shared
-  analytics ID), `derive_profile_links` (SameIdentity — R14, Username → social
-  platform profile Url by embedded handle extraction). All seven run in
-  `finalise_scan` via `derive_all`.
-- **`modules`** (118) — OSINT sources, each `Module: accepts/produces/process`,
+  merge.
+- **`modules`** (124) — OSINT sources, each `Module: accepts/produces/process`,
   registered in `modules::registry()`; every module is mapped to MITRE ATT&CK
   Reconnaissance (TA0043) — by a per-category default (`techniques_for_category`),
   overridden where the category is too coarse (the two `Other`-category modules,
   `api_key_probe`/`chain_intel`, must override, their default being empty). A
-  guard rejects any unmapped module or out-of-register technique ID.
+  guard rejects any unmapped module or out-of-register technique ID. The mapping
+  is woven into the data, not a side report: at the single admission point
+  (`engine::finalise_module_result`) **every admitted entity is stamped inline
+  with the producing module's technique(s)** as `attack:<TECHNIQUE_ID>` tags
+  (e.g. `attack:T1589.002`), so the technique that collected each datum travels
+  with it through JSON output, the full dossier, and the DB. Cross-module merges
+  union the tags (`Entity::merge`), so an entity reached via several modules
+  carries all their techniques. The engine sources the IDs from the dispatched
+  `Module` trait object (`Module::attack_techniques`), never `crate::modules` —
+  the `core ↛ modules` guard stays green.
 - **`storage`** (`src/storage/`) — the single `StoragePort` implementation over
-  rusqlite (WAL + FTS5): events, entities, correlations, relations.
+  rusqlite (WAL + FTS5): events, entities, correlations, relations, the
+  inter-scan entity cache (`raw_archive`), and the cross-scan
+  `pathway_templates` store (C1 universal linking — a route confirmed in one
+  scan is credited in every later scan via the engine-emitted **AU-065**
+  cross-scan finding, and a fragile single-pathway link whose route shape is
+  proven in ≥2 prior scans is resolved by the engine-emitted **AU-066** cross-scan
+  gap-fill, which also boosts its endpoints; both are storage-dependent so they
+  are emitted by the engine at finalise, not by pure correlator rules, and are
+  therefore distinct from the 69 correlator rules).
 - **`api`** (axum 0.8) — versioned `/api/v1`, SSE live stream, embedded SPA +
   vendor bundle; CSP + `127.0.0.1`-only bind (architecture invariant).
 - **`util`** — HTTP client (rustls + SSRF-guarded resolver), key pool, atomic
@@ -98,6 +125,15 @@ allowlist remains.
 priority-ordered guarded dispatch → entities persisted (FTS-indexed) + events
 broadcast (SSE) → expansion rounds → `correlator.run` → diagnostics → CLI
 table / dossier / JSON, or the SPA.
+
+All three entry points apply the **same comprehensive scan defaults**: a
+`POST /api/v1/scans` with `options` omitted (or any field omitted), and the
+Chrome-SPA "New Scan" wizard, both default to depth 3 / expansion floor 0.20 /
+entity cap 2500 — exactly what `hse scan` uses. The API defaults flow from
+`ScanRequest`'s serde field defaults (`core::scan::options`); the SPA submits the
+same values from `buildWizardOptions()`. The library `ScanOptions::default()` is
+deliberately decoupled and stays conservative (depth 0, floor 0.50, uncapped) so
+programmatic callers and the test suite remain deterministic.
 
 ## CI / supply chain
 

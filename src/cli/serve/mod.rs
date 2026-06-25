@@ -120,6 +120,10 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
                     info.last_checked = now_secs;
                     info.phase = UpdatePhase::Idle;
                 }
+                // Share the check timestamp with the CLI auto-update gate so a
+                // recent server-side check throttles the CLI path too (one device,
+                // one cadence) — and vice-versa.
+                crate::cli::update::record_check_stamp(now_secs);
                 if behind.unwrap_or(0) > 0
                     && crate::util::settings::get_bool("feature.auto_update", true)
                 {

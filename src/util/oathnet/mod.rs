@@ -254,7 +254,7 @@ pub async fn search(
 /// Extract a string field from a JSON Value.
 // Shared JSON helpers — single definition in `util::json`, re-exported here so
 // existing `crate::util::oathnet::val_str{,_or}` call sites are unchanged.
-pub use crate::util::json::{val_str, val_str_or};
+pub use crate::util::json::{val_str, val_str_coerce, val_str_or, val_str_or_coerce};
 
 /// Count top N database names by frequency.
 pub fn top_dbnames(items: &[Value], n: usize) -> Vec<String> {

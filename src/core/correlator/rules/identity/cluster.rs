@@ -4,6 +4,19 @@
 
 use super::*;
 
+/// True when a Username value is a usable identity anchor: long enough and not a
+/// generic / role / extraction-noise token. Mirrors the AU-034 handle gate
+/// (`account.rs`) so the whole identity-cluster family treats junk handles
+/// (`from`, `dns`, role mailboxes) consistently — they must never seed a
+/// "confirmed identity" correlation. A live person-scan fired AU-045 on `from`
+/// and `dns` (mis-extracted as usernames, "confirmed" across two source
+/// families); those are parser artifacts, not aliases.
+fn is_anchorable_handle(value: &str) -> bool {
+    const MIN_HANDLE_LEN: usize = 4;
+    let handle = canonical_handle(value);
+    handle.len() >= MIN_HANDLE_LEN && !is_generic_handle(&handle)
+}
+
 pub(in crate::core::correlator) fn rule_au_002_identity_cluster(
     entities: &[Entity],
     scan_id: &str,
@@ -80,11 +93,15 @@ pub(in crate::core::correlator) fn rule_au_045_multi_service_identity(
     const MIN_FAMILIES: usize = 2;
     entities
         .iter()
-        .filter(|e| {
-            matches!(
-                e.kind,
-                EntityKind::Email | EntityKind::Username | EntityKind::Person
-            )
+        .filter(|e| match e.kind {
+            // Only a real handle anchors an identity. Junk handles (`from`,
+            // `dns`) and role desks (`abuse@…`) are confirmed across families as
+            // a matter of course and must not be promoted to "confirmed
+            // identity" — the exact false signal a live person-scan produced.
+            EntityKind::Username => is_anchorable_handle(&e.value),
+            EntityKind::Email => !crate::core::validation::is_role_mailbox(&e.value),
+            EntityKind::Person => true,
+            _ => false,
         })
         .filter_map(|e| {
             // Distinct provider families across this entity's corroborating
@@ -157,7 +174,7 @@ pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolutio
     // a second time in the emit loop below.
     let aliases: Vec<(&Entity, BTreeSet<&'static str>)> = entities
         .iter()
-        .filter(|e| e.kind == EntityKind::Username)
+        .filter(|e| e.kind == EntityKind::Username && is_anchorable_handle(&e.value))
         .filter_map(|e| {
             let fams = platform_families(e);
             (fams.len() >= 2).then_some((e, fams))

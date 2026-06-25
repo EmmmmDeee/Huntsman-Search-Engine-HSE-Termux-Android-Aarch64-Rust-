@@ -9,8 +9,15 @@ use crate::util::oathnet::val_str;
 
 use super::SRC;
 
+mod crypto;
+mod osint_keys;
 mod patterns;
 mod service_domains;
+use crypto::*;
+mod emit;
+use emit::{emit_key, emit_key_with};
+pub use emit::{store_api_credential, store_api_credential_from_item};
+use osint_keys::match_osint_provider;
 use patterns::KEY_PATTERNS;
 use service_domains::identify_service_from_url;
 
@@ -206,7 +213,10 @@ pub fn key_value_tier(service: &str) -> KeyValue {
         | "railway"
         | "flyio"
         | "databricks"
-        | "aptible" => KeyValue::High,
+        | "aptible"
+        | "tailscale"
+        | "digitalocean_oauth"
+        | "google_oauth_secret" => KeyValue::High,
 
         // ── Low: public/publishable identifiers, webhook URLs, geocoding. ──
         "discord_webhook_url"
@@ -226,6 +236,62 @@ pub fn key_value_tier(service: &str) -> KeyValue {
         // ── Everything else (test/restricted/scoped, monitoring, SaaS data, and
         //    any unlisted vendor key) → Medium. ──
         _ => KeyValue::Medium,
+    }
+}
+
+/// How *certain* the detector is that a harvested string is the key it was
+/// labelled — a provenance axis **orthogonal** to [`KeyValue`]'s blast-radius.
+/// One asks "how sure are we this is real and is what we said", the other "how
+/// bad if it is". Surfaced as a `detection:` tag and evidence attribute so triage
+/// can separate "we saw the provider's name beside this key" from "this merely
+/// has a high-entropy shape". (A JWT is `Probable` detection yet `Low` impact;
+/// a context-attributed Shodan key is `Proven` detection yet `Medium` impact —
+/// the two axes genuinely differ.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum DetectionConfidence {
+    /// An objective vendor schema **corroborated by context**: a prefix-less
+    /// OSINT/threat-intel key whose surrounding identifier or URL named its
+    /// provider (a `<32 alnum>` blob under `shodan_api_key=`). Assigned only by
+    /// the context-attribution path ([`identify_with_context`]); the strongest
+    /// signal, since the value matched a known shape *and* the provider was named.
+    Proven,
+    /// An objective vendor schema **alone**: a distinctive prefix (`AKIA…`,
+    /// `sk-ant-…`), a JWT's `eyJ` structure, a PEM private-key block, or a crypto
+    /// address. The format itself is provider-specific, so no surrounding context
+    /// is needed to trust it.
+    Probable,
+    /// A structural/entropy match with **no** vendor identity — a `generic_hex`
+    /// blob or a bare URL-parameter value. Plausibly a real key of an unknown
+    /// vendor (or a stray hash the gates let through); the weakest signal.
+    Potential,
+}
+
+impl DetectionConfidence {
+    /// Stable lower-case label (entity tag / evidence attr / API).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Proven => "proven",
+            Self::Probable => "probable",
+            Self::Potential => "potential",
+        }
+    }
+
+    /// The **baseline** provenance for a key identified *without* context
+    /// corroboration — i.e. straight off [`identify_api_key`]'s prefix/shape
+    /// result. **Pure**, mirroring how [`key_value_tier`] reads everything from
+    /// the service tag. Identity-less results (`generic_hex`, `url_param_key`) are
+    /// [`Self::Potential`]; every concrete vendor/PEM/crypto schema is
+    /// [`Self::Probable`]. It never returns [`Self::Proven`] — that requires the
+    /// extra context signal that only [`identify_with_context`] holds, so a key
+    /// matched by a *prefix* (even a Shodan/Censys one, which also has a prefix
+    /// entry) is correctly `Probable`, not over-claimed as `Proven`.
+    #[must_use]
+    pub fn for_service(service: &str) -> Self {
+        match service {
+            "generic_hex" | "url_param_key" => Self::Potential,
+            _ => Self::Probable,
+        }
     }
 }
 
@@ -398,6 +464,144 @@ pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {
 /// well under 4 KiB).
 const EXTRACTED_VALUE_MAX: usize = 4096;
 
+/// Identify a key `value` given the `context` it was found under (an env-var
+/// name, a JSON object key, or the URL it was passed to). Layers
+/// context-attribution on top of the prefix/shape detector:
+///
+/// * a vendor-prefixed key (`sk-…`, `AKIA…`) is returned as-is — context is not
+///   needed and never overrides a concrete prefix match;
+/// * a bare hex blob the shape detector can only call `generic_hex` is **upgraded**
+///   to the specific OSINT/threat-intel provider when `context` names one
+///   (`api.virustotal.com/?apikey=<64 hex>` ⇒ `virustotal`, not `generic_hex`);
+/// * a prefix-less, non-hex key the shape detector cannot see at all (Shodan's
+///   32-char alphanumeric key) is **rescued** purely from context — and since this
+///   path never went through the `generic_hex` gate, the shared
+///   [`is_likely_real_key`] false-positive filter is re-applied here so a
+///   placeholder / UUID / low-entropy value under a provider-named field is
+///   dropped.
+///
+/// Returns the resolved service tag, the (trimmed) key slice, and the
+/// [`DetectionConfidence`]: [`DetectionConfidence::Proven`] whenever the result
+/// came from context attribution (the two `match_osint_provider` arms), otherwise
+/// the schema/shape baseline from [`DetectionConfidence::for_service`].
+fn identify_with_context<'a>(
+    context: &str,
+    value: &'a str,
+) -> Option<(&'static str, &'a str, DetectionConfidence)> {
+    let v = value.trim();
+    match identify_api_key(v) {
+        // A bare hex blob the context names as a specific provider is that
+        // provider's key, not an anonymous `generic_hex` finding. The value
+        // already cleared the FP gate inside `identify_api_key`'s hex path.
+        // Attribution is `Proven` (shape + named provider); the plain fallback
+        // keeps the `generic_hex` baseline (`Potential`).
+        Some(("generic_hex", hit)) => Some(match match_osint_provider(context, v) {
+            Some(svc) => (svc, hit, DetectionConfidence::Proven),
+            None => ("generic_hex", hit, DetectionConfidence::Potential),
+        }),
+        // A concrete prefix/shape match (`Probable` baseline). When the context
+        // ALSO names this provider, two independent objective signals — the key's
+        // format and its surrounding identifier/host — agree, so the detection is
+        // corroborated → `Proven`. An *uncorroborated* prefix match (incl. a
+        // Shodan/Censys key matched by its prefix under a neutral field) stays
+        // `Probable`, never over-claimed.
+        Some((svc, hit)) => {
+            let base = DetectionConfidence::for_service(svc);
+            let conf =
+                if base == DetectionConfidence::Probable && context_corroborates(context, svc) {
+                    DetectionConfidence::Proven
+                } else {
+                    base
+                };
+            Some((svc, hit, conf))
+        }
+        // Prefix-less, non-hex OSINT keys are invisible to the shape table;
+        // context is the only signal, so re-apply the FP gate before trusting it.
+        // A hit here is necessarily context-attributed → `Proven`.
+        None => match_osint_provider(context, v)
+            .filter(|_| is_likely_real_key(v))
+            .map(|svc| (svc, v, DetectionConfidence::Proven)),
+    }
+}
+
+/// The authoritative host of a URL-shaped context, else the context unchanged.
+///
+/// Provider attribution from a URL must key off the **host** (`api.shodan.io`),
+/// not text anywhere in the URL: otherwise a provider name dropped into a path or
+/// query — `https://evil.example/?ref=shodan&key=…` — would spoof a `Proven`
+/// attribution to a key served by an unrelated host. Identifier contexts (env-var
+/// and object-key names carry no `://`) pass through untouched, so this is a
+/// no-op for every non-URL caller.
+fn context_host(context: &str) -> &str {
+    match context.split_once("://") {
+        Some((_, rest)) => {
+            let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+            &rest[..end]
+        }
+        None => context,
+    }
+}
+
+/// True if `word` occurs in `haystack` as a whole word — bounded on both sides by
+/// a non-alphanumeric character or a string edge. Precision over recall: a missed
+/// boundary (e.g. camelCase `awsKey`) merely leaves a finding at its baseline
+/// provenance, whereas a loose substring (`aws` inside `lawsuit`) would
+/// over-claim. `haystack` is assumed already lowercased.
+fn contains_word(haystack: &str, word: &str) -> bool {
+    if word.is_empty() {
+        return false;
+    }
+    haystack.match_indices(word).any(|(i, m)| {
+        let before_ok = haystack[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_ascii_alphanumeric());
+        let after_ok = haystack[i + m.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphanumeric());
+        before_ok && after_ok
+    })
+}
+
+/// True if `context` independently names the provider behind `service` — the
+/// service tag's provider stem (`github_app` → `github`, `shodan` → `shodan`)
+/// occurs in the lowercased context as a whole word. Corroborates a prefix/schema
+/// match: when the key's format AND its surrounding identifier/host agree on the
+/// provider, the detection rests on two independent objective signals. The stem
+/// must be ≥ 3 chars so a tiny token can't corroborate on noise.
+fn context_corroborates(context: &str, service: &str) -> bool {
+    let stem = service.split('_').next().unwrap_or(service);
+    stem.len() >= 3 && contains_word(&context.to_ascii_lowercase(), stem)
+}
+
+/// Structurally validate a JWS/JWT compact token **offline** and return its
+/// `alg`, or `None` if it is not a real JWT.
+///
+/// Practical, objective validation with no network and no secret: the first
+/// dot-separated segment must base64url-decode to a JSON object carrying a string
+/// `alg`. It separates a genuine token from an `eyJ`-shaped high-entropy blob, and
+/// surfaces the algorithm — notably `alg: "none"`, an unsigned token that is the
+/// classic JWT authentication-bypass. The signature is **not** verified (that
+/// needs the issuer's secret); this is structure + header inspection only.
+fn validate_jwt_alg(token: &str) -> Option<String> {
+    use base64::Engine as _;
+    let header_b64 = token.split('.').next()?;
+    // A real JWT header (`{"alg":…}`) is at least a handful of base64url chars;
+    // the gate keeps a stray short segment from reaching the JSON parser.
+    if header_b64.len() < 8 {
+        return None;
+    }
+    // JWT segments are base64url; tokens in the wild appear with and without
+    // padding, so try the unpadded alphabet first, then the padded one.
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(header_b64)
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(header_b64))
+        .ok()?;
+    let header: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    header.get("alg")?.as_str().map(str::to_string)
+}
+
 /// Scan a JSON record for API key patterns in password / URL-param / extra
 /// fields. Public so peer modules like `see_know` can use the same harvest
 /// pipeline against their own response schemas.
@@ -516,16 +720,28 @@ pub fn extract_api_keys_from_item(
         {
             for line in blob.lines() {
                 let trimmed = line.trim().trim_start_matches("export ");
-                if let Some((_, raw_val)) = trimmed.split_once('=') {
+                if let Some((raw_key, raw_val)) = trimmed.split_once('=') {
                     let val = raw_val
                         .trim()
                         .trim_matches('"')
                         .trim_matches('\'')
                         .trim_matches('`');
+                    // The `KEY` half is provider context: `SHODAN_API_KEY=<32
+                    // alnum>` is a prefix-less Shodan key the shape detector alone
+                    // would miss, attributed via `identify_with_context`.
                     if val.len() >= 16
-                        && let Some((service, key_val)) = identify_api_key(val)
+                        && let Some((service, key_val, detection)) =
+                            identify_with_context(raw_key, val)
                     {
-                        emit_key(service, key_val, "dotenv line", scan_id, seen, result);
+                        emit_key_with(
+                            service,
+                            key_val,
+                            "dotenv line",
+                            detection,
+                            scan_id,
+                            seen,
+                            result,
+                        );
                     }
                 }
             }
@@ -546,14 +762,21 @@ pub fn extract_api_keys_from_item(
             && let Some(qmark) = url.find('?')
         {
             for param in url[qmark + 1..].split('&') {
+                // The URL *host* is the provider context: a bare `?key=<32 alnum>`
+                // on `api.shodan.io` is attributed to Shodan rather than missed,
+                // and a 64-hex key on an OSINT host is upgraded from `generic_hex`
+                // to the named provider. Only the host counts (`context_host`), so
+                // a provider name in the path/query cannot spoof the attribution.
                 if let Some((_, pval)) = param.split_once('=')
                     && pval.len() >= 16
-                    && let Some((service, key_val)) = identify_api_key(pval)
+                    && let Some((service, key_val, detection)) =
+                        identify_with_context(context_host(&url), pval)
                 {
-                    emit_key(
+                    emit_key_with(
                         service,
                         key_val,
                         "URL query parameter",
+                        detection,
                         scan_id,
                         seen,
                         result,
@@ -564,12 +787,22 @@ pub fn extract_api_keys_from_item(
     }
 
     if let Some(extra) = item.get("extra").and_then(|v| v.as_object()) {
-        for (_, eval) in extra {
+        for (ekey, eval) in extra {
+            // The object key names the secret (`{"securitytrails_key": "<32
+            // alnum>"}`), so it is provider context for `identify_with_context`.
             if let Some(s) = eval.as_str()
                 && s.len() >= 16
-                && let Some((service, key_val)) = identify_api_key(s)
+                && let Some((service, key_val, detection)) = identify_with_context(ekey, s)
             {
-                emit_key(service, key_val, "extra field", scan_id, seen, result);
+                emit_key_with(
+                    service,
+                    key_val,
+                    "extra field",
+                    detection,
+                    scan_id,
+                    seen,
+                    result,
+                );
             }
         }
     }
@@ -733,358 +966,6 @@ fn is_uuid(value: &str) -> bool {
 // verbatim into the `app_data` / `notes` / `extras` payloads.
 // Detection is shape-anchored on the BEGIN header — strict enough
 // that a base64 blob in the body alone won't false-positive.
-
-/// Try to classify `s` as a PEM-encoded private-key block. Returns
-/// `Some(service_tag)` when the BEGIN header matches a known class.
-/// The trailing block (`-----END ... PRIVATE KEY-----`) is not
-/// required — partial-paste in stealer dumps is common, and the
-/// header alone is high-signal.
-fn identify_pem_private_key(s: &str) -> Option<&'static str> {
-    // Header layout: `-----BEGIN <class> [PRIVATE KEY]-----`.
-    // Examples:
-    //   -----BEGIN RSA PRIVATE KEY-----
-    //   -----BEGIN OPENSSH PRIVATE KEY-----
-    //   -----BEGIN EC PRIVATE KEY-----
-    //   -----BEGIN DSA PRIVATE KEY-----
-    //   -----BEGIN PRIVATE KEY-----      (PKCS#8 generic)
-    //   -----BEGIN ENCRYPTED PRIVATE KEY-----  (PKCS#8 encrypted)
-    //   -----BEGIN PGP PRIVATE KEY BLOCK-----
-    //   -----BEGIN PGP MESSAGE-----      (often wraps a key body)
-    if !s.starts_with("-----BEGIN ") {
-        return None;
-    }
-    // Sanity check on length — a real PEM body is at least 100 chars
-    // of base64 even for the smallest key. This keeps a bare header
-    // string with no body from being mis-classified.
-    if s.len() < 80 {
-        return None;
-    }
-    let header_line = s.lines().next().unwrap_or("");
-    if header_line.starts_with("-----BEGIN RSA PRIVATE KEY") {
-        return Some("pem_rsa_private");
-    }
-    if header_line.starts_with("-----BEGIN OPENSSH PRIVATE KEY") {
-        return Some("pem_openssh_private");
-    }
-    if header_line.starts_with("-----BEGIN EC PRIVATE KEY") {
-        return Some("pem_ec_private");
-    }
-    if header_line.starts_with("-----BEGIN DSA PRIVATE KEY") {
-        return Some("pem_dsa_private");
-    }
-    if header_line.starts_with("-----BEGIN ENCRYPTED PRIVATE KEY") {
-        return Some("pem_pkcs8_encrypted");
-    }
-    if header_line.starts_with("-----BEGIN PRIVATE KEY") {
-        return Some("pem_pkcs8_private");
-    }
-    if header_line.starts_with("-----BEGIN PGP PRIVATE KEY BLOCK") {
-        return Some("pem_pgp_private");
-    }
-    if header_line.starts_with("-----BEGIN PGP MESSAGE") {
-        return Some("pem_pgp_message");
-    }
-    // Header was `-----BEGIN ` but didn't match a known class.
-    // Don't tag as a specific service — return None and let the
-    // caller fall through to other detectors.
-    None
-}
-
-// ── Cryptocurrency wallet-address classifier ──────────────────────
-//
-// Stealer logs from clipboard-hijacker malware families
-// (RedLine "ClipBanker" stage, Vidar "wallet stealer" module,
-// AgentTesla "crypto-clipper" plugin) routinely carry these
-// addresses in their `app_data` / `notes` / `extras` fields
-// alongside the cracked credentials we already harvest.
-//
-// Each detection returns a `"crypto_<chain>"` service tag so
-// downstream lookups can pivot to the right free public API:
-//
-//   * BTC      → blockchain.info / blockstream.info
-//   * ETH      → blockscout.com / etherscan.io
-//   * SOL      → solana.fm (free tier)
-//   * XMR      → no public chain lookup; tag-only emission
-//   * LTC      → blockchain.info LTC endpoint
-//   * DOGE     → blockchain.info DOGE endpoint
-//
-// Address formats sourced from each chain's public docs +
-// Wikipedia. Length + alphabet checks tight enough to avoid
-// false-positives against random alphanumeric strings (which
-// otherwise drift into the generic-hex catch-all). Real
-// addresses pass entropy ≥ 3.5 trivially.
-
-/// True if `c` is a Base58 character (Bitcoin-style; excludes
-/// Try to classify a string as a cryptocurrency wallet address. Delegates to
-/// the canonical, shared classifier in `core::crypto` (the same one the target
-/// auto-detector uses) so the shape rules live in exactly one place.
-fn identify_crypto_address(s: &str) -> Option<&'static str> {
-    crate::core::crypto::classify_crypto_address(s)
-}
-
-// ── Base64 decode-through scanning (keyhog port) ──────────────────
-//
-// Stealer logs, ad-hoc credential dumps and CI-pipeline leaks often
-// wrap the raw secret in a single layer of base64 — sometimes to
-// fit it into a JSON-string field with awkward chars, sometimes to
-// hide it from the most superficial grep-based scanners. keyhog's
-// contribution to the corpus is treating every harvested string as
-// also-maybe-base64 and recursing through one or two layers of
-// decode before giving up.
-//
-// Bounded recursion: a layered-base64 payload is fair game, but
-// runaway recursion against a hostile blob isn't. Depth cap at 2
-// covers the realistic encode-twice case without enabling a DoS.
-
-const BASE64_DECODE_MAX_DEPTH: u8 = 2;
-const BASE64_MIN_ENCODED_LEN: usize = 24;
-const BASE64_MAX_ENCODED_LEN: usize = 8192;
-
-/// Cheap pre-check before attempting base64 decode. Filters obvious
-/// non-candidates (too short, too long, contains chars outside the
-/// unified standard + URL-safe alphabet) so the hot path doesn't
-/// run `base64::decode` against every harvested field.
-fn looks_like_base64(s: &str) -> bool {
-    if s.len() < BASE64_MIN_ENCODED_LEN || s.len() > BASE64_MAX_ENCODED_LEN {
-        return false;
-    }
-    let stripped = s.trim_end_matches('=');
-    if stripped.is_empty() {
-        return false;
-    }
-    // Reject anything that doesn't sit inside the union of the
-    // standard + URL-safe base64 alphabets. A single space, dot,
-    // colon or slash-with-protocol stem disqualifies — that's
-    // intentional: those characters reliably indicate the input
-    // is something else (URL, sentence, path) and not a raw blob.
-    stripped
-        .as_bytes()
-        .iter()
-        .all(|&b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'-' || b == b'_')
-}
-
-/// Attempt to decode `input` as base64 and recursively scan the
-/// decoded UTF-8 form for an API key. Returns the detected service,
-/// the decoded key value (owned, since the decode buffer doesn't
-/// outlive the call) and the depth at which the hit was found.
-///
-/// Bounded by [`BASE64_DECODE_MAX_DEPTH`] to prevent layered-base64
-/// DoS. Tries standard + URL-safe alphabets, with and without
-/// padding — covers every conformant encoding variant.
-fn try_decode_through_scan(input: &str) -> Option<(&'static str, String, u8)> {
-    decode_through_inner(input.trim(), 0)
-}
-
-fn decode_through_inner(input: &str, depth: u8) -> Option<(&'static str, String, u8)> {
-    use base64::Engine as _;
-    if depth >= BASE64_DECODE_MAX_DEPTH {
-        return None;
-    }
-    if !looks_like_base64(input) {
-        return None;
-    }
-    // Padding state determines which engine succeeds. Try each in
-    // sequence — they're cheap and short-circuit on first valid
-    // decode. URL-safe alphabet is a strict superset of the chars
-    // we admit, so the standard engine's first attempt covers
-    // 99%+ of stealer-log dumps; URL-safe is reserved for tokens
-    // copied out of OAuth callback URLs.
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(input)
-        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(input))
-        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(input))
-        .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(input))
-        .ok()?;
-    // The decode-through pipeline only chases UTF-8 payloads. A
-    // raw binary blob (compiled program, image, encrypted bytes)
-    // isn't going to round-trip back through identify_api_key.
-    let decoded_str = std::str::from_utf8(&decoded).ok()?;
-    let trimmed = decoded_str.trim();
-    if trimmed.len() < 16 {
-        return None;
-    }
-    if let Some((svc, key_val)) = identify_api_key(trimmed) {
-        return Some((svc, key_val.to_string(), depth + 1));
-    }
-    // Layered base64 — recurse once. Beyond depth 2 is
-    // pathological and we cap to keep the worst-case bounded.
-    decode_through_inner(trimmed, depth + 1)
-}
-
-/// Shannon entropy in bits per character. Empty input returns 0.
-/// Used as a coarse randomness check — real credentials sit at
-/// ≥ 3.5 bits/char on alphanumeric-and-symbol charsets; English
-/// prose sits around 1.5–2.0; padding/placeholder strings sit
-/// even lower.
-fn shannon_entropy(value: &str) -> f64 {
-    if value.is_empty() {
-        return 0.0;
-    }
-    let mut counts = std::collections::HashMap::<char, u32>::new();
-    let len = value.chars().count() as f64;
-    for c in value.chars() {
-        *counts.entry(c).or_insert(0) += 1;
-    }
-    let mut h = 0.0_f64;
-    for &n in counts.values() {
-        let p = f64::from(n) / len;
-        h -= p * p.log2();
-    }
-    h
-}
-
-fn emit_key(
-    service: &'static str,
-    key_val: &str,
-    source: &str,
-    scan_id: &str,
-    seen: &mut HashSet<String>,
-    result: &mut ModuleResult,
-) {
-    // A cryptocurrency wallet address is NOT an API key — `identify_*` groups
-    // it here only because both are high-entropy tokens. Emit it as a
-    // first-class CryptoAddress (chain-tagged) and skip the API-key/ROI/key-pool
-    // machinery entirely: it can't authenticate anything.
-    if let Some(chain) = service.strip_prefix("crypto_") {
-        if seen.insert(format!("@crypto:{key_val}")) {
-            let mut e = Entity::new(EntityKind::CryptoAddress, key_val, 0.80, scan_id);
-            e.tag("crypto-address");
-            e.tag(format!("chain:{chain}"));
-            e.add_evidence(
-                Evidence::new(SRC, format!("{chain} wallet address from {source}"))
-                    .with_attr("chain", chain),
-            );
-            result.push(e);
-        }
-        return;
-    }
-    let dedup = format!(
-        "@apikey:{service}:{}",
-        crate::util::str_util::truncate_safe(key_val, 16)
-    );
-    if !seen.insert(dedup) {
-        return;
-    }
-    let mut entity = Entity::new(EntityKind::ApiKey, key_val, 0.80, scan_id);
-    entity.tag("api-key");
-    entity.tag(format!("service:{service}"));
-    entity.tag("oathnet-pro");
-    entity.tag("auto-discovered");
-    // Tag with ROI tier so operators can prioritise multiplier keys.
-    // Multiplier-tier keys discover infrastructure/identities that
-    // cascade into MORE keys via web_crawler and search_engines.
-    let roi = crate::util::key_roi::classify(service);
-    entity.tag(format!("roi:{}", roi.label()));
-    if roi == crate::util::key_roi::KeyRoi::Multiplier {
-        entity.tag("force-multiplier");
-    }
-    entity.add_evidence(
-        Evidence::new(SRC, format!("API key ({service}) from {source}"))
-            .with_attr("service", service)
-            .with_attr("roi_tier", roi.label())
-            .with_attr(
-                "key_prefix",
-                crate::util::str_util::truncate_safe(key_val, 8),
-            )
-            .with_attr("key_length", key_val.len().to_string()),
-    );
-    result.push(entity);
-
-    // Skip the global key-pool side-effect when called from unit
-    // tests. The pool is persisted to `~/.huntsman/key_pool.json`,
-    // so unconditionally writing in tests pollutes state across
-    // test binaries (`cargo test` runs each crate in its own
-    // process, but the on-disk pool is shared). Conservatively
-    // gate on a scan_id `"test"` / `"scan"` prefix — both used by
-    // the test orchestrators in this module and the smoke crate.
-    if scan_id == "test" || scan_id.starts_with("test-") || scan_id == "scan" {
-        return;
-    }
-
-    // Pool ONLY a recognised keyed provider's key — one the cascade can reuse.
-    // The `generic_hex` catch-all (and `jwt_token`, `crypto_*`, foreign logins)
-    // is surfaced as the ApiKey entity above but is never injected by
-    // `hot_inject_keys`, so pooling it just grew key_pool.json without bound
-    // (a live run accumulated 8668 `generic_hex` blobs → a 4 MB pool).
-    if !crate::util::service_defs::is_poolable_service(service) {
-        return;
-    }
-
-    let pool = crate::util::key_pool::global_pool();
-    let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
-    entry.notes = Some(format!(
-        "Auto-discovered {service} key from {source} ({} tier)",
-        roi.label()
-    ));
-    pool.add(service, entry);
-    crate::util::key_pool::save_pool_best_effort(&pool);
-}
-
-pub fn store_api_credential_from_item(item: &Value) {
-    store_api_credential(item);
-}
-
-/// Same as `store_api_credential_from_item` but pub for peer-module use.
-/// Routes a stealer/breach record to the key pool when the URL matches
-/// a known service domain.
-pub fn store_api_credential(item: &Value) {
-    let url = val_str(item, "url")
-        .or_else(|| val_str(item, "url_str"))
-        .or_else(|| val_str(item, "domain"))
-        .unwrap_or_default();
-    let username = val_str(item, "username")
-        .or_else(|| val_str(item, "email"))
-        .or_else(|| val_str(item, "login"))
-        .unwrap_or_default();
-    let password = val_str(item, "password")
-        .or_else(|| val_str(item, "pass"))
-        .or_else(|| val_str(item, "pwd"))
-        .or_else(|| val_str(item, "passwd"))
-        .or_else(|| val_str(item, "credential"))
-        .or_else(|| val_str(item, "api_key"))
-        .or_else(|| val_str(item, "token"))
-        .or_else(|| val_str(item, "secret"))
-        .unwrap_or_default();
-
-    if password.is_empty() || password.contains("***") || password.contains("UPGRADE") {
-        return;
-    }
-
-    let service = if !url.is_empty() {
-        let svc = identify_service_from_url(&url);
-        if svc != "unknown" {
-            svc
-        } else {
-            return;
-        }
-    } else if !username.is_empty() && username.contains('@') {
-        let domain = username.split('@').nth(1).unwrap_or("");
-        let svc = identify_service_from_url(domain);
-        if svc != "unknown" {
-            svc
-        } else {
-            return;
-        }
-    } else {
-        return;
-    };
-
-    let pool = crate::util::key_pool::global_pool();
-
-    let mut entry = crate::util::key_pool::KeyEntry::new(&password);
-    entry.notes = Some(format!(
-        "OathNet stealer: user={} url={}",
-        &crate::util::str_util::truncate_safe(&username, 30),
-        &crate::util::str_util::truncate_safe(&url, 60)
-    ));
-    if pool.add(service, entry) {
-        crate::util::key_pool::save_pool_best_effort(&pool);
-    }
-
-    let user_entry = crate::util::key_pool::KeyEntry::new(format!("{username}:{password}"));
-    pool.add(&format!("{service}_login"), user_entry);
-    crate::util::key_pool::save_pool_best_effort(&pool);
-}
 
 #[cfg(test)]
 mod tests;

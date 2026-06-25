@@ -119,8 +119,9 @@ use super::*;
         use crate::core::scan::Target;
         let q = build_queries_base(&Target::new(TargetKind::Domain, "example.com"));
         assert!(!q.is_empty());
-        // The bare `site:` dork and the backlink `link:` dork are both present.
-        assert!(q.iter().any(|s| s == "site:example.com"));
+        // Bare `site:example.com` removed — 50% block rate / 27% hit rate in live
+        // scans; the operator-enriched site: patterns below carry 99-100% hit rate.
+        assert!(!q.iter().any(|s| s == "site:example.com"), "bare site: dork must be absent");
         assert!(q.iter().any(|s| s == "link:example.com"));
         // Subdomain-discovery dork (negative site).
         assert!(

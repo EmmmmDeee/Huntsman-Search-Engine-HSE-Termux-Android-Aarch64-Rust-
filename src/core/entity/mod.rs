@@ -30,6 +30,17 @@ pub const CORROBORATION_DOUBT_DECAY: f64 = 0.65;
 /// Confidence decay constant per hour (γ = 0.85).
 pub const GAMMA_PER_HOUR: f64 = 0.85;
 
+/// Confidence ceiling a **quarantined** entity is capped to: a finding sourced
+/// from a record that does NOT match the scan target's identity (a stranger
+/// from a broad breach/stealer search) is preserved as a lead at this strength
+/// rather than discarded, but must never reach the correlated, default-view
+/// tier. Deliberately below [`Classification::PROBABLE_MIN`] (0.40) so a demoted
+/// entity always classifies as `Candidate`. The demotion itself is
+/// [`Entity::demote_to_candidate`] — one definition shared by every breach pool
+/// (the matcher that DECIDES a non-match lives separately in
+/// `util::target_match`, keeping "does this match?" orthogonal to "tier it").
+pub const CANDIDATE_CONF: f64 = 0.25;
+
 /// Evidence "sources" that are deterministic self-enrichment passes the engine
 /// runs over every entity of a given kind — NOT independent intelligence.
 ///
@@ -44,13 +55,59 @@ pub const GAMMA_PER_HOUR: f64 = 0.85;
 /// the evidence chain (their attributes are real and useful) and still appear
 /// in [`Entity::evidence_sources`] for display; they are only excluded from the
 /// *corroboration* count — see [`Entity::corroborating_sources`].
-pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &["geo_normalize"];
+///
+/// `name_intel` is the name-derivation pass: it deterministically permutes the
+/// seed display name into speculative handles and `name × freemail` email
+/// guesses (`cindy.haynes@gmail.com`, …). Like `geo_normalize` these are
+/// *derivations of the input*, not independent sightings, so counting one as a
+/// corroborating source let a pure guess reach the cross-source rules — a
+/// permuted `…@gmail.com` presented as "corroborated by 2 independent sources"
+/// and fired AU-003 / AU-034. Excluding it means a permutation needs two
+/// *genuine* sources to corroborate, while the derived entity still appears as a
+/// lead in the dossier (its evidence is kept and shown).
+pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &["geo_normalize", "name_intel", "payid"];
 
 /// True if `source` is a deterministic self-enrichment pass rather than an
 /// independent intelligence source (see [`ENRICHMENT_ONLY_SOURCES`]).
 #[inline]
 pub fn is_enrichment_source(source: &str) -> bool {
     ENRICHMENT_ONLY_SOURCES.contains(&source)
+}
+
+/// Evidence source name of the recall pass — the local-database replay that
+/// re-injects a prior scan's entity into the working set.
+///
+/// Recall is a SECOND look at the SAME prior observation, not a new independent
+/// one, so it must never count toward cross-source corroboration. Counting it
+/// did exactly that: a single-source finding (a name-permuted handle, a breach
+/// co-occurrence row) gained a phantom "2nd source" on every re-scan and was
+/// promoted a whole confidence tier (CANDIDATE → PROBABLE) — so a recalled scan
+/// graded a tier higher than the identical fresh scan. The recall evidence is
+/// still attached (and shown in [`Entity::evidence_sources`]) for provenance; it
+/// just can't inflate [`Entity::source_count`] / `c_effective`.
+pub const RECALL_SOURCE: &str = "recall";
+
+/// Evidence source name of the cross-scan history link — the finalize pass that
+/// notes a finding ALSO appears in an earlier scan in the local intelligence
+/// database (the investigation flywheel).
+///
+/// Like [`RECALL_SOURCE`] this is provenance, not an independent observation: a
+/// recurrence can't tell a re-scan of the same subject from a genuinely separate
+/// sighting, so counting it would re-introduce exactly the recall over-credit
+/// (a single-source value graded a tier higher merely for having been seen
+/// before). The `cross_scan_history` evidence is kept and shown for the analyst —
+/// it is what SURFACES the link between two investigations — but it must never
+/// inflate [`Entity::source_count`] / `c_effective`.
+pub const CROSS_SCAN_SOURCE: &str = "cross_scan_history";
+
+/// True if `source` must NOT count toward cross-source corroboration — a
+/// deterministic self-enrichment pass ([`ENRICHMENT_ONLY_SOURCES`]), the recall
+/// replay ([`RECALL_SOURCE`]), or the cross-scan history link ([`CROSS_SCAN_SOURCE`]).
+/// All attach genuine, useful evidence, but none is an independent observation, so
+/// none may inflate the corroboration count.
+#[inline]
+pub fn is_non_corroborating_source(source: &str) -> bool {
+    is_enrichment_source(source) || source == RECALL_SOURCE || source == CROSS_SCAN_SOURCE
 }
 
 // ─── EntityKind ──────────────────────────────────────────────────────────────
@@ -387,7 +444,7 @@ impl Entity {
         let mut distinct: u32 = 0;
         for (i, ev) in self.evidence.iter().enumerate() {
             let s = ev.source.as_str();
-            if is_enrichment_source(s) {
+            if is_non_corroborating_source(s) {
                 continue;
             }
             if !self.evidence[..i]
@@ -404,11 +461,22 @@ impl Entity {
             // original bug), and deterministic self-enrichment passes
             // (`geo_normalize`) are excluded so they can't fabricate agreement.
             distinct
-        } else {
-            // No evidence (synthetic/test entity, or constructed pre-evidence):
-            // fall back to the explicitly-set field so a deliberate strength
-            // value is still honoured.
+        } else if self.evidence.is_empty() {
+            // No evidence at all (synthetic/test entity, or constructed
+            // pre-evidence): fall back to the explicitly-set field so a
+            // deliberate strength value is still honoured.
             self.corroboration.max(1)
+        } else {
+            // Evidence EXISTS but every record is non-corroborating — a
+            // deterministic enrichment pass (`geo_normalize`/`name_intel`) and/or
+            // a `recall` replay. Such an entity is NOT cross-corroborated, so it
+            // counts as ONE source. The stored `corroboration` magnitude must NOT
+            // resurrect it: recall ratchets that field up by one every re-scan,
+            // and a live scan was using it to lift a speculative name-permuted
+            // email (`cindy.haynes@gmail.com`, only `name_intel` + `recall`) to
+            // VERIFIED (C_eff 0.81) with zero real-world confirmation. A genuine
+            // hit attaches a corroborating source and takes the `distinct` branch.
+            1
         }
     }
 
@@ -514,6 +582,19 @@ impl Entity {
         }
     }
 
+    /// Quarantine this entity into the `Candidate` tier: cap its confidence at
+    /// [`CANDIDATE_CONF`] and stamp the `candidate` tag. Idempotent (the tag
+    /// de-dupes; the cap is a `min`). The single, orthogonal definition of "this
+    /// finding doesn't identify the subject, keep it but out of the
+    /// full-confidence view" — applied by every breach/stealer pool
+    /// (`oathnet_pro`, `see_know`) to rows a `util::target_match::TargetMatch`
+    /// classified as a non-match, so the demotion semantics can never drift
+    /// between them.
+    pub fn demote_to_candidate(&mut self) {
+        self.confidence = self.confidence.min(CANDIDATE_CONF);
+        self.tag(crate::core::tags::CANDIDATE);
+    }
+
     pub fn has_tag(&self, t: &str) -> bool {
         self.tags.iter().any(|x| x == t)
     }
@@ -538,16 +619,18 @@ impl Entity {
     }
 
     /// Distinct evidence sources that represent *independent* intelligence —
-    /// [`Self::evidence_sources`] minus the deterministic self-enrichment passes in
-    /// [`ENRICHMENT_ONLY_SOURCES`]. This is the honest cross-correlation set
-    /// that drives [`Self::source_count`]/[`Self::c_effective`] and the corroboration
+    /// [`Self::evidence_sources`] minus the non-corroborating passes (the
+    /// deterministic self-enrichment ones in [`ENRICHMENT_ONLY_SOURCES`] and the
+    /// [`RECALL_SOURCE`] memory replay; see [`is_non_corroborating_source`]). This
+    /// is the honest cross-correlation set that drives
+    /// [`Self::source_count`]/[`Self::c_effective`] and the corroboration
     /// correlator rules; the full [`Self::evidence_sources`] set is retained for
     /// display and attribute access.
     pub fn corroborating_sources(&self) -> std::collections::HashSet<&str> {
         self.evidence
             .iter()
             .map(|ev| ev.source.as_str())
-            .filter(|&s| !is_enrichment_source(s))
+            .filter(|&s| !is_non_corroborating_source(s))
             .collect()
     }
 
@@ -656,48 +739,83 @@ impl Entity {
             .max(1);
         self.observed_at = u64::max(self.observed_at, other.observed_at);
         // Deduplicate evidence by (source, summary) to prevent accumulation
-        // across live mode iterations or re-scans. A linear `Vec::any` scan per
-        // incoming record is O(n×m); build a membership set of the existing
-        // `(source, summary)` keys once and keep it in sync as we push, so the
-        // fold stays linear even when an entity accumulates many evidence rows
-        // (re-scans / live mode). Push order and idempotence are unchanged.
-        // Small inputs (the overwhelming common case — a handful of rows on
-        // each side) stay on the original linear scan: building a hash set with
-        // owned keys would allocate more than the scan saves. Only when both
-        // sides are large enough for the O(n×m) scan to bite do we switch to a
-        // membership set, keeping the fold linear for re-scan / live-mode
-        // accumulation. Either branch yields identical results (first-wins,
-        // idempotent dedup by `(source, summary)`, push order preserved).
+        // across live mode iterations or re-scans — a repeated observation by the
+        // SAME source with the SAME summary is the same record, not new
+        // corroboration. BUT it may carry attributes the existing record lacks
+        // (an updated breach dump, a richer re-scan), so on a match MERGE the new
+        // attributes in rather than dropping the record: dropping it silently
+        // loses newly-discovered fields (a live re-import that gained a
+        // `date_of_birth`/`tfn` between scans, exactly the case the breach-PII
+        // rules depend on). [`merge_evidence_attrs`] keeps the fold deterministic
+        // (smaller value wins a key conflict) and idempotent. Small inputs (the
+        // overwhelming common case — a handful of rows) use a linear find; large
+        // ones use a `(source, summary)→index` map so the fold stays linear under
+        // re-scan / live-mode accumulation. Both branches yield identical results.
         if self.evidence.len() * other.evidence.len() <= 256 {
             for ev in other.evidence {
-                let dominated = self
+                match self
                     .evidence
-                    .iter()
-                    .any(|e| e.source == ev.source && e.summary == ev.summary);
-                if !dominated {
-                    self.evidence.push(ev);
+                    .iter_mut()
+                    .find(|e| e.source == ev.source && e.summary == ev.summary)
+                {
+                    Some(existing) => merge_evidence_attrs(existing, ev),
+                    None => self.evidence.push(ev),
                 }
             }
         } else {
-            // Owned membership keys: a borrowed `&str` set would alias
-            // `self.evidence`, which we mutate by pushing. Seed it with the
-            // existing rows; `insert` then returns false for any incoming row
-            // duplicating either an existing record OR an earlier incoming one
-            // (so duplicates within `other` are folded too — matching the scan).
-            let mut seen: std::collections::HashSet<(String, String)> = self
+            // Owned keys: a borrowed `&str` map would alias `self.evidence`, which
+            // we mutate. Seed it with the existing rows; a later incoming row
+            // duplicating an existing record OR an earlier incoming one merges
+            // into it (so duplicates within `other` are folded too).
+            let mut index: std::collections::HashMap<(String, String), usize> = self
                 .evidence
                 .iter()
-                .map(|e| (e.source.clone(), e.summary.clone()))
+                .enumerate()
+                .map(|(i, e)| ((e.source.clone(), e.summary.clone()), i))
                 .collect();
             self.evidence.reserve(other.evidence.len());
             for ev in other.evidence {
-                if seen.insert((ev.source.clone(), ev.summary.clone())) {
-                    self.evidence.push(ev);
+                let key = (ev.source.clone(), ev.summary.clone());
+                match index.get(&key) {
+                    Some(&i) => merge_evidence_attrs(&mut self.evidence[i], ev),
+                    None => {
+                        index.insert(key, self.evidence.len());
+                        self.evidence.push(ev);
+                    }
                 }
             }
         }
         for t in other.tags {
             self.tag(t);
+        }
+    }
+}
+
+/// Merge `incoming`'s attributes into `existing` — they are the same evidence
+/// record (matching `(source, summary)`), so add the keys `existing` lacks and,
+/// on a key both set with DIFFERING values, accumulate the distinct observations
+/// as `"a; b"` rather than dropping one. A conflicting re-observation (a corrected
+/// value, or a namesake's differing `date_of_birth` on the same breach source) is
+/// itself evidence and must survive for the disambiguation rules to see it. This
+/// matches [`Evidence::with_attr`]'s in-record accumulation — eliminating the
+/// inconsistency where the public builder kept both and this absorb path kept one
+/// — but the values are SORTED (via the set) rather than appended in arrival
+/// order, so the fold stays independent of merge order (the Determinism
+/// Requirement) where `with_attr`'s append would not be.
+fn merge_evidence_attrs(existing: &mut Evidence, incoming: Evidence) {
+    for (k, v) in incoming.attributes {
+        match existing.attributes.get_mut(&k) {
+            Some(cur) => {
+                if cur != &v {
+                    let mut parts: std::collections::BTreeSet<String> =
+                        cur.split("; ").map(String::from).collect();
+                    parts.extend(v.split("; ").map(String::from));
+                    *cur = parts.into_iter().collect::<Vec<_>>().join("; ");
+                }
+            }
+            None => {
+                existing.attributes.insert(k, v);
+            }
         }
     }
 }
@@ -753,96 +871,24 @@ pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
     hex::encode(h.finalize())
 }
 
-/// Query-string parameters that are pure click/campaign tracking and never
-/// identify the underlying resource. Stripping them lets the *same* page found
-/// by two engines — each appending its own tracking suffix — collapse to one
-/// UID, so the corroboration boost in [`Entity::c_effective`] actually fires
-/// instead of the find fragmenting into two single-source entities.
-///
-/// Curated conservatively from the widely-used ClearURLs / Brave / Firefox
-/// strip-lists: only params that are *unambiguously* tracking are listed.
-/// Resource-identifying params (YouTube `v`, generic `id`/`p`/`q`/`page`) are
-/// deliberately ABSENT and always preserved — dropping one would alias two
-/// genuinely different pages into one UID (a false merge), the opposite and
-/// worse failure. The `utm_*` family is matched by prefix in
-/// [`is_tracking_param_key`] rather than enumerated here.
-const URL_TRACKING_PARAMS: &[&str] = &[
-    // Google / Ads
-    "gclid",
-    "gclsrc",
-    "dclid",
-    "gbraid",
-    "wbraid",
-    "_ga",
-    "_gl",
-    // Facebook / Instagram / Meta
-    "fbclid",
-    "fb_action_ids",
-    "fb_action_types",
-    "fb_ref",
-    "fb_source",
-    "igshid",
-    "igsh",
-    "mibextid",
-    // Microsoft / Bing, Twitter/X, Yandex
-    "msclkid",
-    "twclid",
-    "ref_src",
-    "ref_url",
-    "yclid",
-    // Email / marketing automation
-    "mc_cid",
-    "mc_eid",
-    "mkt_tok",
-    "_hsenc",
-    "_hsmi",
-    "hsctatracking",
-    "vero_id",
-    "vero_conv",
-    "oly_anon_id",
-    "oly_enc_id",
-    "wickedid",
-    // Misc analytics
-    "spm",
-    "scm",
-    "s_kwcid",
-    "_openstat",
-    "icid",
-];
+/// Invisible format / zero-width characters that are never part of a real
+/// identifier: BOM `U+FEFF`, zero-width space `U+200B`, ZWNJ/ZWJ `U+200C`/`U+200D`,
+/// word-joiner `U+2060`.
+const FORMAT_NOISE: [char; 5] = ['\u{feff}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{2060}'];
 
-/// True when a query-parameter key is pure tracking and safe to drop during URL
-/// normalisation: the `utm_*` family (case-insensitive prefix) or an exact
-/// (case-insensitive) match in [`URL_TRACKING_PARAMS`]. Uses `get(..4)` rather
-/// than slicing so a non-ASCII key can never panic on a char boundary.
-fn is_tracking_param_key(key: &str) -> bool {
-    if key.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("utm_")) {
-        return true;
+/// Strip [`FORMAT_NOISE`] from an identifier value. Being non-whitespace, these
+/// chars survive `trim` and silently fork one value's SHA-256 UID — a BOM an
+/// exporter prepended (`\u{feff}alice@x.com`), a zero-width space in a scraped
+/// handle — fragmenting one identity across two nodes. They never occur in a real
+/// email / username / domain, so removal is loss-free. Borrows when the input is
+/// clean (the overwhelmingly common case), so the hot normalize path allocates
+/// only for the rare dirty value.
+fn strip_format_noise(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.contains(FORMAT_NOISE) {
+        std::borrow::Cow::Owned(s.chars().filter(|c| !FORMAT_NOISE.contains(c)).collect())
+    } else {
+        std::borrow::Cow::Borrowed(s)
     }
-    URL_TRACKING_PARAMS
-        .iter()
-        .any(|p| key.eq_ignore_ascii_case(p))
-}
-
-/// Canonicalise a URL query string for dedup: drop pure-tracking params
-/// (see [`is_tracking_param_key`]) and sort the survivors so that
-/// `?a=1&b=2` and `?b=2&a=1` — the same resource in a different order — key to
-/// one UID. Empty segments are dropped. Returns `""` when every param was
-/// tracking (the caller then omits the `?` entirely).
-///
-/// Parameter *values* are preserved byte-for-byte (only keys are matched
-/// case-insensitively): a value like `?v=AbC123` on YouTube is case-significant
-/// and must never be folded.
-fn normalise_url_query(query: &str) -> String {
-    let mut kept: Vec<&str> = query
-        .split('&')
-        .filter(|seg| !seg.is_empty())
-        .filter(|seg| {
-            let key = seg.split('=').next().unwrap_or(seg);
-            !is_tracking_param_key(key)
-        })
-        .collect();
-    kept.sort_unstable();
-    kept.join("&")
 }
 
 /// Normalise a value for a given kind.
@@ -856,14 +902,30 @@ fn normalise_url_query(query: &str) -> String {
 pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
     match kind {
         EntityKind::Email => {
+            // Breach dumps sometimes append a literal escape tail
+            // (`…@gmail.com\r\n` — the four characters `\ r \ n`, NOT real
+            // whitespace that `trim` would catch) or embed stray whitespace. A
+            // real address contains neither a backslash nor internal whitespace,
+            // so cut at the first of either before folding — otherwise the junk
+            // tail fragments one address across two UIDs and leaks a malformed
+            // value into the bundle. Valid emails have no such char, so their
+            // UID is unchanged.
+            // Strip invisible format / zero-width noise first (a BOM an exporter
+            // prepended, a zero-width space mid-value) — removal, not the cut
+            // below, because the noise can sit *before* the `@`, where cutting
+            // would truncate the local part. See [`strip_format_noise`].
+            let cleaned = strip_format_noise(value.trim());
+            // Cut at the first backslash / whitespace / control char: the breach
+            // escape tail, stray internal whitespace, or a NUL-separated junk
+            // suffix (`…@x.com\0junk`) all mark the end of the real address.
+            let cut = cleaned
+                .find(|c: char| c == '\\' || c.is_whitespace() || c.is_control())
+                .unwrap_or(cleaned.len());
             // Total Unicode case-fold for dedup. `str::to_lowercase` maps every
             // char through `char::to_lowercase`, so a value whose only capital is
             // non-ASCII (`Ölaf`, a Cyrillic/Greek handle, Turkish `İ`) folds the
-            // same as its all-caps spelling — they must share a UID. (A previous
-            // ASCII-only "fast path" returned such values unfolded, fragmenting
-            // one identity across two UIDs; it also still allocated, so it bought
-            // nothing.)
-            value.trim().to_lowercase()
+            // same as its all-caps spelling — they must share a UID.
+            cleaned[..cut].to_lowercase()
         }
         EntityKind::Username => {
             // Same total Unicode case-fold as Email, plus stripping a leading `@`
@@ -871,12 +933,30 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             // as `jordanavery` are the SAME account and must dedup to one UID.
             // Without this they fragmented into two identities, and the `@`-prefixed
             // copy also looked like a truncated value to the fragment auditor.
-            value.trim().trim_start_matches('@').trim().to_lowercase()
+            // Invisible format noise is removed first (see [`strip_format_noise`])
+            // so a BOM/zero-width char can neither fork the UID nor hide the
+            // leading `@` from the sigil strip.
+            strip_format_noise(value.trim())
+                .trim()
+                .trim_start_matches('@')
+                .trim()
+                .to_lowercase()
         }
         EntityKind::Domain => {
-            let trimmed = value.trim();
-            let mut s = String::with_capacity(trimmed.len());
-            for c in trimmed.chars() {
+            // Invisible format noise removed first (see [`strip_format_noise`]) so a
+            // BOM/zero-width char can't fork the host's UID.
+            let cleaned = strip_format_noise(value.trim());
+            // Re-trim AFTER stripping: a leading BOM/zero-width char is NOT
+            // whitespace, so the `value.trim()` above stops at it and leaves any
+            // whitespace/control byte sitting BEHIND it (`\u{feff}\u{b}host`) in
+            // place. Removing the format noise then exposes that byte at the edge;
+            // without this second trim it survives into the result, but a
+            // re-normalise (no BOM left to block `trim`) would strip it — so one
+            // host would key to two UIDs and `normalise` would not be idempotent.
+            // Mirrors the Username arm's post-strip `.trim()`.
+            let cleaned = cleaned.trim();
+            let mut s = String::with_capacity(cleaned.len());
+            for c in cleaned.chars() {
                 s.extend(c.to_lowercase());
             }
             // Trim trailing dots and any whitespace exposed by dot-stripping
@@ -985,6 +1065,17 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
                 let lon = (lon * 1e6).round() / 1e6 + 0.0;
                 return format!("{lat:.6},{lon:.6}");
             }
+            // Richer notations the bare decimal fast-path above doesn't catch —
+            // DMS/DDM, `geo:` URIs, Plus Codes, Maidenhead locators, space-
+            // separated decimals — canonicalise to the same 6-dp "lat,lon" so
+            // every downstream consumer (geocoders, the geo correlator) sees one
+            // decimal shape. Non-finite / unparseable input still falls through
+            // untouched.
+            if let Some(p) = crate::util::geo::coords::parse(trimmed) {
+                let lat = (p.lat * 1e6).round() / 1e6 + 0.0;
+                let lon = (p.lon * 1e6).round() / 1e6 + 0.0;
+                return format!("{lat:.6},{lon:.6}");
+            }
             trimmed.to_string()
         }
         EntityKind::Url => {
@@ -1013,14 +1104,8 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             if let Some(q) = query
                 && !q.is_empty()
             {
-                // Drop tracking params and order-normalise the rest so the same
-                // page discovered by two engines (each appending its own
-                // `?utm_*`/`?fbclid`/`?ref_src`) shares one UID and corroborates.
-                let cleaned = normalise_url_query(q);
-                if !cleaned.is_empty() {
-                    out.push('?');
-                    out.push_str(&cleaned);
-                }
+                out.push('?');
+                out.push_str(q);
             }
             out
         }

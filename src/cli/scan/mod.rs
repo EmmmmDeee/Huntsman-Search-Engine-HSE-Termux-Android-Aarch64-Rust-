@@ -45,7 +45,6 @@ pub(super) struct ScanCmd {
     pub expand_all_identities: bool,
     pub profile: Option<String>,
     pub output: String,
-    pub include_infra: bool,
 }
 
 pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
@@ -80,7 +79,10 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
 
     // Depth resolution. `--auto`/`--recursive` only kick in when the operator
     // gave no explicit `--depth` (sentinel: `cmd.depth.is_none()`); otherwise an
-    // omitted `--depth` falls back to the product default (DEFAULT_SCAN_DEPTH=2).
+    // omitted `--depth` falls back to the comprehensive product default
+    // (DEFAULT_SCAN_DEPTH = MAX_DEPTH). `--recursive`'s `.min(0.40)` never raises
+    // the floor above the operator's value, so with the comprehensive default it
+    // stays at the 0.20 expansion floor.
     let (depth, min_expand_confidence, max_concurrent) = if cmd.auto && cmd.depth.is_none() {
         let has_paid = keys::load().contains_key("HUNTSMAN_OATHNET_KEY");
         let (auto_depth, auto_conf) = crate::core::scan::optimal_depth(target_kind, has_paid);
@@ -140,8 +142,23 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         cmd.expansion_strategy.parse().map_err(|e: String| {
             crate::core::error::Error::Other(format!("--expansion-strategy: {e}"))
         })?;
+    // Validate the requested / excluded module names against the live registry.
+    // A typo, or a name removed in an upgrade, was silently ignored — a real run
+    // of `--modules <removed-name>` dispatched ZERO modules with no warning,
+    // leaving the operator with an empty scan and no idea why. Surface it:
+    // "nothing is a black box".
+    let include_modules = split_csv(cmd.modules);
+    let unknown = unknown_module_names(&include_modules, &exclude_modules);
+    if !unknown.is_empty() {
+        eprintln!(
+            "warning: ignoring {} unrecognised module name(s) in --modules/--exclude: {} \
+             — run `hse modules` for the catalogue",
+            unknown.len(),
+            unknown.join(", ")
+        );
+    }
     let options = ScanOptions {
-        modules: split_csv(cmd.modules),
+        modules: include_modules,
         exclude_modules,
         // No CLI flag yet; a category focus is supplied by a profile (e.g.
         // `--profile skiptrace`) and overlaid below.
@@ -154,7 +171,13 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         passive_only: cmd.passive_only,
         depth,
         min_expand_confidence,
-        max_entities: cmd.max_entities,
+        // Comprehensive-but-bounded: apply the product-default entity ceiling when
+        // the operator gave none, so the deep (MAX_DEPTH) low-floor default sweep
+        // can't run the frontier away and OOM a Termux device. `--max-entities`
+        // overrides; a profile's own cap wins via the overlay below.
+        max_entities: cmd
+            .max_entities
+            .or(Some(crate::core::scan::DEFAULT_MAX_ENTITIES)),
         max_wall_time_secs: cmd.max_wall_time_secs,
         scan_tags: Vec::new(),
         notes: None,
@@ -167,6 +190,9 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         expansion_strategy,
         seeknow_scan_cap: cmd.seeknow_scan_cap,
         expand_all_identities: cmd.expand_all_identities,
+        // `hse scan` is a manual scan: the live device sensors stay off (they are
+        // `hse radar`-only). No CLI flag enables them here by design.
+        allow_live_sensors: false,
     }
     .clamp_depth();
 
@@ -228,10 +254,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     };
 
     let scan = engine.run(scan, target, ctx).await?;
-    let mut entities = store.entities_for_scan(&sid)?;
-    if !cmd.include_infra {
-        entities.retain(|e| !e.has_tag("platform-infra"));
-    }
+    let entities = store.entities_for_scan(&sid)?;
     let correlations = store.correlations_for_scan(&sid)?;
     let relations = store.relations_for_scan(&sid)?;
 
@@ -243,36 +266,6 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         Ok(path) => eprintln!("full dossier: {}", path.display()),
         Err(e) => eprintln!("warning: could not write full dossier: {e}"),
     }
-
-    // MITRE ATT&CK Reconnaissance (TA0043) techniques this scan's collection
-    // actually exercised — resolved from the modules that produced the findings
-    // (each evidence record cites its source module). Lets an investigation be
-    // reported in the framework's vocabulary, not just per-module metadata.
-    let attack_cov = {
-        let sources = crate::core::entity::evidence_sources(&entities);
-        crate::modules::reconnaissance_coverage(sources.iter().copied())
-    };
-
-    // Per-module skip reasons — derived from the event log so the operator
-    // can diagnose "why was oathnet_pro in modules_skipped?" without
-    // needing --log-level debug. Grouped as { module: { reason: count } }
-    // using BTreeMap for stable JSON key order. Computed once; shared by
-    // the json, dossier, and table output paths.
-    let module_skip_reasons: std::collections::BTreeMap<
-        String,
-        std::collections::BTreeMap<String, usize>,
-    > = {
-        use crate::core::event::EventKind;
-        let events = store.events_for_scan(&sid).unwrap_or_default();
-        let mut acc: std::collections::BTreeMap<String, std::collections::BTreeMap<String, usize>> =
-            std::collections::BTreeMap::new();
-        for ev in events {
-            if let EventKind::ModuleSkipped { module, reason } = ev.kind {
-                *acc.entry(module).or_default().entry(reason).or_insert(0) += 1;
-            }
-        }
-        acc
-    };
 
     if cmd.output == "json" {
         // Full self-optimization payload — scan + entities + correlations
@@ -286,7 +279,6 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             .saturating_mul(1000);
         let diag =
             crate::util::diagnostics::analyse(&sid, kind_str, &cmd.value, wall_ms, &entities);
-
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -295,11 +287,22 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
                 "correlations": correlations,
                 "relations": relations,
                 "diagnostics": diag,
-                "attack_reconnaissance": attack_cov,
-                "module_skip_reasons": module_skip_reasons,
+                "exposure": crate::core::exposure::assess(&entities, &correlations),
+                // Which of this scan's identifiers most bridge to the local
+                // intelligence base (data_retention_design §4.1) — ranked by
+                // realised cross-scan degree. A live cross-scan view (it grows as
+                // investigations accumulate), so it belongs in this live output, NOT
+                // the byte-deterministic debug bundle.
+                "enrichment_leverage":
+                    crate::core::engine::rank_enrichment_leverage(store.as_ref(), &entities, entities.len()),
             }))?
         );
     } else if cmd.output == "dossier" {
+        let leverage = crate::core::engine::rank_enrichment_leverage(
+            store.as_ref(),
+            &entities,
+            entities.len(),
+        );
         dossier::print_dossier(
             &scan,
             &entities,
@@ -307,8 +310,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             &relations,
             kind_str,
             &cmd.value,
-            &sid,
-            &module_skip_reasons,
+            &leverage,
         );
     } else {
         let color = use_color();
@@ -325,19 +327,13 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             // (`hse config module.<name> off`) moves it out of `run` and into
             // `skipped` here, without needing `--output json`.
             println!(
-                "  modules: {} run, {} errored, {} timed out, {} deduped, {} skipped{}",
+                "  modules: {} run, {} errored, {} timed out, {} deduped, {} skipped\n",
                 scan.modules_run,
                 scan.modules_errored,
                 scan.modules_timed_out,
                 scan.modules_deduped,
-                scan.modules_skipped,
-                if !module_skip_reasons.is_empty() {
-                    " (--output json for skip details)"
-                } else {
-                    ""
-                },
+                scan.modules_skipped
             );
-            println!();
         } else {
             println!();
         }
@@ -380,19 +376,28 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
                 );
             }
         }
-        if !attack_cov.is_empty() {
-            println!(
-                "\nMITRE ATT&CK {} ({}) exercised — {} technique(s):",
-                crate::core::attack::TACTIC_NAME,
-                crate::core::attack::TACTIC_ID,
-                attack_cov.len()
-            );
-            for t in &attack_cov {
-                println!("  {:<11} {}", t.id, t.name);
-            }
-        }
     }
     Ok(())
+}
+
+/// The `--modules` / `--exclude` names that are not registered modules
+/// (deduplicated, sorted), checked against the live registry. A typo, or a name
+/// removed in an upgrade, was silently dropped from the filter; surfacing it
+/// lets the operator see why a scan ran fewer modules than they requested.
+fn unknown_module_names(requested: &Option<Vec<String>>, excluded: &[String]) -> Vec<String> {
+    let known: std::collections::HashSet<&str> = crate::modules::registry()
+        .iter()
+        .map(|m| m.name())
+        .collect();
+    requested
+        .iter()
+        .flatten()
+        .chain(excluded.iter())
+        .filter(|m| !known.contains(m.as_str()))
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 /// Resolve the effective `(depth, min_expand_confidence, max_concurrent)` from
@@ -477,6 +482,38 @@ mod tests {
     use super::*;
     use crate::core::entity::{Entity, EntityKind, Evidence};
     use std::cell::Cell;
+
+    #[test]
+    fn unknown_module_names_flags_typos_and_removed_modules() {
+        // Derived from a real run: `--modules ipapi` — a name removed when that
+        // module was consolidated into ip_whois_geo — dispatched ZERO modules
+        // with no warning. Pin that an unregistered name is flagged while a real
+        // one is not, against the LIVE registry (so it tracks real renames).
+        let req = Some(vec![
+            "ip_geo".to_string(),        // registered → must NOT be flagged
+            "ipapi".to_string(),         // removed     → must be flagged
+            "totally_bogus".to_string(), // typo        → must be flagged
+        ]);
+        let unknown = unknown_module_names(&req, &[]);
+        assert!(
+            !unknown.iter().any(|m| m == "ip_geo"),
+            "a registered module must not be flagged"
+        );
+        assert!(
+            unknown.iter().any(|m| m == "ipapi"),
+            "a removed module name must be flagged"
+        );
+        assert!(
+            unknown.iter().any(|m| m == "totally_bogus"),
+            "a typo'd name must be flagged"
+        );
+        // Excluded names are validated too; output is sorted + deduplicated.
+        let unknown_ex =
+            unknown_module_names(&None, &["whois".to_string(), "no_such_excl".to_string()]);
+        assert_eq!(unknown_ex, vec!["no_such_excl".to_string()]);
+        // An all-valid request flags nothing.
+        assert!(unknown_module_names(&Some(vec!["ip_geo".to_string()]), &[]).is_empty());
+    }
 
     #[test]
     fn tuning_explicit_depth_overrides_modes_and_keeps_optimal_lazy() {

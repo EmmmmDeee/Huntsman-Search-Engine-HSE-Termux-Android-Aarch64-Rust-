@@ -30,6 +30,19 @@ fn extract_serial_from_short_der() {
 }
 
 #[test]
+fn extract_serial_hex_wrapper_at_buffer_tail_does_not_panic() {
+    // Regression: a remote (attacker-controlled) certificate whose only
+    // `A0 03 02 01 <=02` version-wrapper sits at the final six bytes settled the
+    // serial `start` one past the buffer, so the unguarded `der[start + 1]` read
+    // panicked (index 15 in a 15-byte slice). The bounds-checked read must now
+    // return "" cleanly. The `der_scanners_never_panic` proptest never produces
+    // this exact tail sentinel, so it's pinned explicitly here.
+    let mut der = vec![0x00u8; 9];
+    der.extend_from_slice(&[0xA0, 0x03, 0x02, 0x01, 0x00, 0x02]); // 15 bytes total
+    assert_eq!(extract_serial_hex(&der), "");
+}
+
+#[test]
 fn extract_field_from_empty() {
     assert!(extract_field_from_der(&[], &[0x55, 0x04, 0x03], true).is_none());
 }

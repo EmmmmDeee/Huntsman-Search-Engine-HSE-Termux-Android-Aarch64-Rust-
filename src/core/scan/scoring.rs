@@ -152,7 +152,7 @@ pub fn optimal_depth(kind: TargetKind, has_paid_keys: bool) -> (u32, f64) {
 ///
 /// v2.0 recalibration for 79-module pipeline. New geo paths:
 ///   Email: +email_header_geo, +email_locale, +seon, +epieos, +contact_enrich
-///   Phone: +phone_area_geo, +phone_carrier_geo
+///   Phone: +phone_geo (area-code city/region + mobile-carrier regional geo)
 ///   Username: +social_location (GitHub/Reddit profile location extraction)
 ///   Domain: +geo_domain_classifier (ccTLD/service → country)
 ///   Organisation: +cloud_storage exposure scanning → domain → geo
@@ -291,7 +291,7 @@ fn geo_proximity_boost(kind: TargetKind) -> f64 {
         // restoring ASN(1.2) < Cidr(1.5) < IP(1.8). Consistent with geo_npv /
         // seed_marginal_yield, which already group IpAddress | Cidr as geo-rich.
         TargetKind::Cidr => 1.5,
-        // Phone → phone_area_geo/phone_carrier_geo → Country/State. Two hops.
+        // Phone → phone_geo (area-code + carrier passes) → Country/State. Two hops.
         TargetKind::Phone => 1.5,
         // Organisation → opencorporates → registered address → Coords. Two hops.
         TargetKind::Organisation => 1.3,

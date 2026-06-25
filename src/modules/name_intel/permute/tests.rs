@@ -26,6 +26,86 @@ use super::*;
     }
 
     #[test]
+    fn parse_reorders_last_comma_first() {
+        // Records / bibliographic "Last, First" order is the common failure case:
+        // without reordering, every derived handle, email and pivot is reversed.
+        let n = p("Kareem, Ali");
+        assert_eq!(n.first, "ali");
+        assert_eq!(n.last, "kareem");
+        assert_eq!(n.middle, None);
+        assert_eq!(n.display_full(), "Ali Kareem");
+        // The whole derivation now matches the natural-order spelling.
+        let u: Vec<_> = usernames(&n).into_iter().map(|h| h.handle).collect();
+        assert!(u.contains(&"ali.kareem".to_string()), "{u:?}");
+        assert!(!u.contains(&"kareem.ali".to_string()) || u.contains(&"ali.kareem".to_string()));
+        assert_eq!(parse("Kareem, Ali"), parse("Ali Kareem"));
+    }
+
+    #[test]
+    fn parse_reorders_last_comma_first_middle() {
+        // "Smith, John Michael" → John (first) Michael (middle) Smith (last).
+        let n = p("Smith, John Michael");
+        assert_eq!(n.first, "john");
+        assert_eq!(n.middle.as_deref(), Some("michael"));
+        assert_eq!(n.last, "smith");
+        assert_eq!(n.display_full(), "John Michael Smith");
+    }
+
+    #[test]
+    fn parse_comma_suffix_is_not_a_reorder() {
+        // A trailing title after the comma is a suffix, not a surname-first split.
+        let n = p("Ali Kareem, PhD");
+        assert_eq!(n.first, "ali");
+        assert_eq!(n.last, "kareem");
+        assert_eq!(n.display_full(), "Ali Kareem");
+    }
+
+    #[test]
+    fn parse_comma_strips_honorific_and_suffix_around_the_reorder() {
+        // Honorific on the surname side, generational suffix on the forename side.
+        assert_eq!(p("Dr. Kareem, Ali").display_full(), "Ali Kareem");
+        assert_eq!(p("Kareem, Ali Jr").display_full(), "Ali Kareem");
+        assert_eq!(p("Kareem, Dr Ali").display_full(), "Ali Kareem");
+    }
+
+    #[test]
+    fn parse_comma_reorder_preserves_hyphenated_surname() {
+        let n = p("Smith-Jones, Anna");
+        assert_eq!(n.first, "anna");
+        assert_eq!(n.last, "smithjones");
+        assert_eq!(
+            n.last_parts.as_deref(),
+            Some(["smith".to_string(), "jones".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn parse_strips_parenthetical_nickname_annotation() {
+        // "(Ali)" must not become a third name token (which made middle="kareem",
+        // last="ali"). Display names and records routinely carry such notes.
+        let n = p("Ali Kareem (Ali)");
+        assert_eq!(n.first, "ali");
+        assert_eq!(n.middle, None);
+        assert_eq!(n.last, "kareem");
+
+        // A bracketed maiden name is dropped from the handle tokens too.
+        let m = p("Jane Smith (Jones)");
+        assert_eq!(m.first, "jane");
+        assert_eq!(m.last, "smith");
+
+        // A bracketed year is still captured as the trailing number.
+        assert_eq!(p("Ali Kareem (1990)").number.as_deref(), Some("1990"));
+    }
+
+    #[test]
+    fn parse_handles_bracket_and_comma_together() {
+        // Records form: "Last, First (note)" → natural order, note dropped.
+        let n = p("Kareem, Ali (deceased)");
+        assert_eq!(n.first, "ali");
+        assert_eq!(n.last, "kareem");
+    }
+
+    #[test]
     fn single_token_is_rejected() {
         assert!(parse("Jordan").is_none());
         assert!(parse("   1987   ").is_none());
@@ -112,9 +192,12 @@ use super::*;
 
     #[test]
     fn handles_comma_separator() {
+        // "Last, First" records order resolves to natural order. (Previously the
+        // comma was a bare separator, so this kept "Meyers" as the first name and
+        // reversed the whole derivation — see parse_reorders_last_comma_first.)
         let n = p("Meyers, Jordan");
-        assert_eq!(n.first, "meyers");
-        assert_eq!(n.last, "jordan");
+        assert_eq!(n.first, "jordan");
+        assert_eq!(n.last, "meyers");
     }
 
     #[test]
@@ -546,4 +629,73 @@ use super::*;
         // first.M.last and first_M_last formal shapes
         assert!(u.contains(&"john.f.kennedy".to_string()), "missing john.f.kennedy: {u:?}");
         assert!(u.contains(&"john_f_kennedy".to_string()), "missing john_f_kennedy: {u:?}");
+    }
+
+    // ── Onur Ada seed ────────────────────────────────────────────────────────
+    // Live seed: "Onur Ada" — two-token Turkish name, short last name (3 chars),
+    // all ASCII after fold. Validates the NAMINT pipeline on a real, named subject.
+
+    #[test]
+    fn onur_ada_parses_correctly() {
+        let n = p("Onur Ada");
+        assert_eq!(n.first, "onur");
+        assert_eq!(n.last, "ada");
+        assert_eq!(n.middle, None);
+        assert_eq!(n.display_full(), "Onur Ada");
+        assert_eq!(n.display_first(), "Onur");
+        assert_eq!(n.display_last(), "Ada");
+    }
+
+    #[test]
+    fn onur_ada_core_namint_handles_present() {
+        let u: Vec<String> = usernames(&p("Onur Ada"))
+            .into_iter()
+            .map(|s| s.handle)
+            .collect();
+        // Primary shapes (f=onur, l=ada, fi=o, li=a)
+        for want in ["onur.ada", "onurada", "oada", "onur_ada", "onura"] {
+            assert!(u.contains(&want.to_string()), "missing primary handle '{want}': {u:?}");
+        }
+        // Secondary shapes
+        for want in ["ada.onur", "adaonur", "onur-ada", "o.ada", "ada_onur"] {
+            assert!(u.contains(&want.to_string()), "missing secondary handle '{want}': {u:?}");
+        }
+    }
+
+    #[test]
+    fn onur_ada_primary_emails_have_expected_shape() {
+        let domains = vec!["gmail.com".to_string(), "outlook.com".to_string()];
+        let e = emails(&p("Onur Ada"), &domains);
+        assert!(
+            e.contains(&"onur.ada@gmail.com".to_string()),
+            "top gmail shape missing: {e:?}"
+        );
+        assert!(
+            e.iter().any(|a| a.ends_with("@outlook.com")),
+            "outlook variant missing: {e:?}"
+        );
+        assert_eq!(e.first().map(String::as_str), Some("onur.ada@gmail.com"));
+    }
+
+    #[test]
+    fn onur_ada_pivots_cover_key_platforms() {
+        let n = p("Onur Ada");
+        let pv = pivots(&n, Some("onur.ada@gmail.com"));
+        let platforms: Vec<&str> = pv.iter().map(|p| p.platform).collect();
+        assert!(
+            platforms.iter().any(|pl| pl.starts_with("Google")),
+            "Google pivot missing: {platforms:?}"
+        );
+        assert!(
+            platforms.iter().any(|pl| pl.starts_with("LinkedIn")),
+            "LinkedIn pivot missing: {platforms:?}"
+        );
+        assert!(
+            platforms.iter().any(|pl| pl.starts_with("GitHub")),
+            "GitHub pivot missing: {platforms:?}"
+        );
+        assert!(
+            platforms.iter().any(|pl| pl.starts_with("Epieos")),
+            "Epieos pivot missing: {platforms:?}"
+        );
     }

@@ -111,6 +111,13 @@ pub(super) fn is_placeholder_email_local(local: &str) -> bool {
         "janedoe",
         "example",
         "sample",
+        // Test / redaction / placeholder markers an admission gate must not promote
+        // to a real mailbox. Exact local-part match (also via the separator-stripped
+        // form), so a real handle that merely CONTAINS one (`tester`, `firstnations`)
+        // is untouched. `noreply`/`donotreply` are handled on the role-mailbox path.
+        "test",
+        "redacted",
+        "placeholder",
     ];
     TEMPLATE.contains(&l.as_str()) || TEMPLATE.contains(&stripped.as_str())
 }
@@ -154,6 +161,23 @@ pub fn is_placeholder_entity(kind: &EntityKind, value: &str) -> bool {
 /// comma/whitespace split and the digit/length checks are invariant under the
 /// punctuation-stripping the household rule applies first.
 pub fn is_specific_residence(s: &str) -> bool {
+    // A PO box / locked bag / private bag is a MAIL DROP, not a dwelling — many
+    // unrelated people and businesses share one, so clustering "co-residents" on it
+    // (AU-049/051) fuses strangers into a false household. Match the alphanumerics
+    // only, so every punctuation/spacing variant collapses ("P.O. Box", "PO Box",
+    // the normalised "po box") — and so does the raw-vs-normalised input the two
+    // callers pass. ("Box Hill", a real suburb, folds to "boxhill" and is unaffected.)
+    let compact: String = s
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    if ["pobox", "gpobox", "lockedbag", "privatebag"]
+        .iter()
+        .any(|m| compact.contains(m))
+    {
+        return false;
+    }
     let tokens = s
         .split(|c: char| c == ',' || c.is_whitespace())
         .filter(|t| !t.is_empty())
@@ -210,7 +234,27 @@ pub fn is_fragment_value(kind: &EntityKind, value: &str) -> bool {
         // street name. A value with NO alphabetic character is a breach record's
         // numeric `city` field (a postcode) glued to a street number, e.g.
         // "4125, 327" (seen from an ashleymadison `city=4125` row); not a place.
-        EntityKind::Address => !v.chars().any(char::is_alphabetic),
+        //
+        // A BARE 2-letter code ("AU", "US", "PK", "WA") is likewise not an address
+        // — it is a COUNTRY (ISO 3166-1 alpha-2, what breach `country` fields emit)
+        // or a region/state abbreviation. Because the 2-letter code is shared across
+        // hundreds of unrelated co-occurrence rows it corroborates into a VERIFIED
+        // phantom address (a live QLD-subject scan produced "US" at
+        // corroboration=106). A genuine address carries locality beyond the
+        // country/region; the country itself survives on the `country:XX` tag and
+        // evidence attributes, so nothing is lost by refusing the entity.
+        //
+        // Reject EVERY bare 2-letter alpha token, not only the ~54 codes the
+        // `country_name_for_iso` display table happens to name: that table is a
+        // deliberately-partial human-readable list, and breach corpora carry codes
+        // from every country (PK, BD, VE, IR, BG, HR, LT, LV, EE, LK, QA, …). Gating
+        // on the display table left every unlisted code reproducing the exact "US"
+        // phantom-address pathology unblocked.
+        EntityKind::Address => {
+            let t = v.trim();
+            !t.chars().any(char::is_alphabetic)
+                || (t.len() == 2 && t.bytes().all(|b| b.is_ascii_alphabetic()))
+        }
         _ => false,
     }
 }

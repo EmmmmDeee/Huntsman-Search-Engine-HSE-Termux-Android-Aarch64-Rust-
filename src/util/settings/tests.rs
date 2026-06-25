@@ -26,6 +26,19 @@ fn default_for_feature_keys_matches_registration() {
 }
 
 #[test]
+fn live_radar_is_registered_and_completely_off_by_default() {
+    // The live-sensor radar must be a known feature toggle that defaults OFF —
+    // the "completely disabled until manually enabled, separate from scans"
+    // guarantee. The helper and the key constant must agree (single source).
+    assert_eq!(LIVE_RADAR_FEATURE, "feature.live_radar");
+    assert!(is_feature_key(LIVE_RADAR_FEATURE), "must be in FEATURE_TOGGLES");
+    assert!(
+        !default_for(LIVE_RADAR_FEATURE),
+        "live radar must be OFF by default"
+    );
+}
+
+#[test]
 fn resolve_uses_map_value_over_default() {
     let mut map = BTreeMap::new();
     map.insert("k".to_string(), false);

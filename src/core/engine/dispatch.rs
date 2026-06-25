@@ -33,6 +33,51 @@ pub(super) fn dispatch_key(
     (module_name, target.kind, normalised)
 }
 
+/// True if `entity` is *incidental infrastructure* noise on a scan with this
+/// `seed_kind` — a shared CDN edge IP, a provider / registrar / DNS / mega
+/// domain, or a role / provider mailbox (`abuse@`, `dns@`) that surfaces while
+/// hunting an identity but never belongs to the subject, so the engine drops it
+/// at admission (it never reaches the graph, correlator, or view). Exempt when
+/// the seed itself IS infrastructure (`Domain` / `IpAddress` / `Cidr` / `Asn` /
+/// `Url`): there the provider estate is the subject, so nothing is incidental.
+///
+/// Note the asymmetry between `Domain` and `Email`. A bare `Domain` node is gated
+/// on [`is_noncentral_domain`](crate::core::scan::is_noncentral_domain) (mega +
+/// infra) — `facebook.com` / `gmail.com` as a standalone node is noise on a
+/// person scan. An `Email` is gated only on shared mail *infrastructure*
+/// ([`is_infra_domain`](crate::core::scan::is_infra_domain), plus the role-local
+/// check), because a subject's personal freemail address (`…@gmail.com`) is a
+/// prime finding, never noise.
+///
+/// Kept pure (no engine state) so the seed-aware decision is unit-testable in
+/// isolation — mirroring [`is_wrong_identity_pivot`](crate::core::scan::is_wrong_identity_pivot).
+pub(super) fn is_incidental_infra_entity(seed_kind: TargetKind, entity: &Entity) -> bool {
+    use crate::core::entity::EntityKind;
+    if matches!(
+        seed_kind,
+        TargetKind::Domain
+            | TargetKind::IpAddress
+            | TargetKind::Cidr
+            | TargetKind::Asn
+            | TargetKind::Url
+    ) {
+        return false;
+    }
+    match &entity.kind {
+        EntityKind::IpAddress => crate::core::validation::is_cdn_edge_ip(&entity.value),
+        EntityKind::Domain => crate::core::scan::is_noncentral_domain(&entity.value),
+        EntityKind::Email => {
+            crate::core::validation::is_role_mailbox(&entity.value)
+                || entity
+                    .value
+                    .rsplit('@')
+                    .next()
+                    .is_some_and(crate::core::scan::is_infra_domain)
+        }
+        _ => false,
+    }
+}
+
 /// Emit the uniform per-module dispatch trace, paired with the `ModuleStart` bus
 /// event at every dispatch site (sequential + both concurrent phases). Without it
 /// the raw debug log showed a module's outcome (done/skipped/errored/timeout) but
@@ -92,6 +137,11 @@ pub(super) struct DispatchOutcome {
     /// (the module and target are no longer available at join time). Empty
     /// when `ttl_secs == 0`.
     pub(super) cache_key: String,
+    /// The producing module's ATT&CK Reconnaissance technique IDs
+    /// (`module.attack_techniques()`), captured before spawning because the
+    /// `Module` object is gone by join time. `finalise_module_result` stamps
+    /// each admitted entity with an `attack:<ID>` tag per technique.
+    pub(super) attack_techniques: &'static [&'static str],
 }
 
 /// Stable archive key for the inter-scan entity cache: `module:kind:value`
@@ -150,6 +200,15 @@ pub(super) fn module_skip_reason(
     }
     if opts.exclude_modules.iter().any(|n| n == name) {
         return Some("excluded");
+    }
+    // Live device-sensor modules read the OPERATOR's own real-time RF/network
+    // environment (GPS fix, visible Wi-Fi APs, serving cell towers, LAN ARP) — so
+    // attributing them to a scanned subject is contamination, and pure noise on a
+    // remote target. They are an ENTIRELY SEPARATE activation: they run ONLY when
+    // `hse radar` opts in via `allow_live_sensors`, never on an ordinary
+    // `hse scan` / API / `hse live` run, on any round (seed or expansion).
+    if super::LOCAL_PASSIVE_MODULES.contains(&name) && !opts.allow_live_sensors {
+        return Some("live sensor — radar-only activation");
     }
     // Category focus: when a profile restricts the scan to a set of functional
     // categories (e.g. `skiptrace` → person-locating: People/Phone/Geo/Email/
@@ -244,7 +303,7 @@ pub(super) fn module_skip_reason(
             // (shodan, censys, RDAP, abuseipdb, etc. all support v6).
             // `should_skip_external_ipv4` rejects ANY `:`-containing
             // string and is reserved for the small set of IPv4-only
-            // modules (ipapi, ip-api.com, ipinfo.io, ipquery.io)
+            // modules (ip-api.com, ipinfo.io, ipquery.io)
             // that route through it inside their own `process`.
             TargetKind::IpAddress if preflight::should_skip_external_ip(&target.value) => {
                 return Some("private/reserved IP — external API would reject");
@@ -286,6 +345,11 @@ pub(super) struct DispatchCx<'a> {
     pub(super) target: &'a Target,
     pub(super) opts: &'a ScanOptions,
     pub(super) is_expansion: bool,
+    /// The kind of the scan's ORIGINAL seed (not the current dispatch target).
+    /// Drives the incidental-infrastructure admission gate: a CDN/registrar/DNS
+    /// artifact is the legitimate subject only when the scan itself targets
+    /// infrastructure (Domain/IP/CIDR/ASN/URL), and is noise on an identity scan.
+    pub(super) seed_kind: TargetKind,
 }
 
 /// Mutable per-scan dispatch accumulators threaded through every module run: the
@@ -306,12 +370,21 @@ impl super::ScanEngine {
     /// emitted entities into the per-scan `entity_map`. Shared by
     /// `dispatch_target_sequential` and `dispatch_target_concurrent`
     /// so the event payload shape is identical between the two paths.
+    ///
+    /// `attack_techniques` is the producing module's
+    /// [`Module::attack_techniques`] —
+    /// every admitted entity is stamped with an `attack:<ID>` tag per technique,
+    /// so the ATT&CK Reconnaissance technique that collected each datum travels
+    /// with the finding. Sourced from the dispatched `Module` object at the call
+    /// site (never `crate::modules`, which `core` may not name), so the engine
+    /// stays module-agnostic.
     fn finalise_module_result(
         &self,
         cx: &DispatchCx,
         name: &'static str,
         result: TimeoutResult,
         state: &mut DispatchState,
+        attack_techniques: &'static [&'static str],
     ) {
         state.stats.run += 1;
         match result {
@@ -377,7 +450,7 @@ impl super::ScanEngine {
                 // trusted again immediately.
                 super::circuit::record_success(name);
                 let mut found = 0usize;
-                for entity in mr.entities.drain(..) {
+                for mut entity in mr.entities.drain(..) {
                     if let Some(min) = cx.opts.min_confidence
                         && entity.confidence < min
                     {
@@ -432,18 +505,62 @@ impl super::ScanEngine {
                         self.emit_excluded(cx.scan_id, &entity, "implausible_phone");
                         continue;
                     }
-                    // Tag entities as `platform-infra` only when EVERY
-                    // evidence record that carries a `source_domain` attribute
-                    // points to a mega/shared-infra domain. Mixed-provenance
-                    // entities — discovered from both a platform page AND a
-                    // subject-controlled domain — are NOT tagged, so they
-                    // remain in default output. Direct-probe results
-                    // (social_probe, oathnet_pro, …) never set `source_domain`
-                    // and are always exempt.
-                    let mut entity = entity;
-                    if crate::core::scan::should_tag_platform_infra(&entity) {
-                        entity.tag("platform-infra");
+                    // Incidental-infrastructure / role-mailbox noise gate: a
+                    // CDN-edge IP, shared provider / registrar / DNS / mega domain,
+                    // or role/provider mailbox surfacing on an identity-seeded scan
+                    // maps a provider's estate, not the subject. Dropped at
+                    // admission (never enters the graph, correlator, or view), like
+                    // the other admission filters. The seed-aware decision lives in
+                    // `is_incidental_infra_entity` (infrastructure-seeded scans are
+                    // exempt — there the infrastructure IS the subject).
+                    if is_incidental_infra_entity(cx.seed_kind, &entity) {
+                        self.emit_excluded(cx.scan_id, &entity, "incidental_infra");
+                        continue;
                     }
+                    // Spam / homoglyph content gate. A breach co-occurrence dump
+                    // mints junk: scam Address text and "names" built from
+                    // Cyrillic/Greek glyphs that spoof ASCII (`Bеcоme а bitcоin
+                    // milliоnairе`), or random consonant strings (`ZonJZRJHHWD`).
+                    // Drop a cross-script homograph for any human-text kind, and a
+                    // gibberish random string for Person, at admission — neither is
+                    // ever the subject. Both gates are conservative (a real
+                    // accented name never trips them — see the validators).
+                    if matches!(
+                        entity.kind,
+                        crate::core::entity::EntityKind::Person
+                            | crate::core::entity::EntityKind::Address
+                            | crate::core::entity::EntityKind::Username
+                            | crate::core::entity::EntityKind::Organisation
+                    ) && crate::core::validation::is_confusable_mixed_script(&entity.value)
+                    {
+                        self.emit_excluded(cx.scan_id, &entity, "confusable_homoglyph");
+                        continue;
+                    }
+                    if entity.kind == crate::core::entity::EntityKind::Person
+                        && crate::core::validation::looks_like_gibberish_name(&entity.value)
+                    {
+                        self.emit_excluded(cx.scan_id, &entity, "gibberish_value");
+                        continue;
+                    }
+                    // Universal MITRE ATT&CK provenance: stamp every ADMITTED
+                    // entity with the Reconnaissance technique(s) of the module
+                    // that produced it, as inline `attack:<ID>` tags. This makes
+                    // the technique that collected each datum travel with the data
+                    // (JSON `tags`, the full dossier, the DB) — MITRE alignment
+                    // lives in the findings themselves, not a separate coverage
+                    // report. `Entity::tag` de-dupes and `Entity::merge` unions
+                    // tags, so an entity collected via several modules carries all
+                    // of their techniques. Done at the single admission point AFTER
+                    // every drop filter so only surviving findings are stamped.
+                    for id in attack_techniques {
+                        entity.tag(format!("attack:{id}"));
+                    }
+                    // Universal breach-sector wiring: stamp the source's sector
+                    // (`sector:real-estate`, …) on every breach finding — one
+                    // chokepoint connects EVERY pool to `util::breach_sector`.
+                    // Before the emit so the event log (and the recovery rebuild)
+                    // carries it too.
+                    super::tag_breach_sector(&mut entity);
                     self.emit(
                         cx.scan_id,
                         EventKind::EntityFound {
@@ -507,16 +624,6 @@ impl super::ScanEngine {
             module_skip_reason(module, cx.target, cx.opts, cx.is_expansion, target_sources)
         {
             stats.skipped += 1;
-            tracing::debug!(
-                module = module.name(),
-                target_kind = cx.target.kind.canonical_str(),
-                target_value = %cx.target.value,
-                is_expansion = cx.is_expansion,
-                depth = cx.opts.depth,
-                corroborating_sources = target_sources,
-                skip_reason = reason,
-                "module skipped"
-            );
             self.emit_skipped(cx.scan_id, module.name(), reason);
             true
         } else {
@@ -583,7 +690,13 @@ impl super::ScanEngine {
                 state.stats.cached += 1;
                 debug!(module = name, "cache hit — replaying archived entities");
                 let mr = ModuleResult { entities: cached };
-                self.finalise_module_result(cx, name, Ok(Ok(mr)), state);
+                self.finalise_module_result(
+                    cx,
+                    name,
+                    Ok(Ok(mr)),
+                    state,
+                    module.attack_techniques(),
+                );
                 super::hot_inject_keys(&mut ctx.keys);
                 if ctx.cancel.is_cancelled() {
                     return Ok(());
@@ -628,7 +741,7 @@ impl super::ScanEngine {
                 let _ = self.store.archive_module_result(key, ttl, &mr.entities);
             }
 
-            self.finalise_module_result(cx, name, result, state);
+            self.finalise_module_result(cx, name, result, state, module.attack_techniques());
 
             super::hot_inject_keys(&mut ctx.keys);
 
@@ -714,7 +827,13 @@ impl super::ScanEngine {
                 state.stats.cached += 1;
                 debug!(module = name, "cache hit — replaying archived entities");
                 let mr = ModuleResult { entities: cached };
-                self.finalise_module_result(cx, name, Ok(Ok(mr)), state);
+                self.finalise_module_result(
+                    cx,
+                    name,
+                    Ok(Ok(mr)),
+                    state,
+                    module.attack_techniques(),
+                );
                 super::hot_inject_keys(&mut ctx.keys);
                 continue;
             }
@@ -745,7 +864,7 @@ impl super::ScanEngine {
             {
                 let _ = self.store.archive_module_result(key, ttl, &mr.entities);
             }
-            self.finalise_module_result(cx, name, result, state);
+            self.finalise_module_result(cx, name, result, state, module.attack_techniques());
             // Hot-inject discovered keys so Phase 2 modules can use them.
             // Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl etc.)
             // cascade — their outputs feed web_crawler/search_engines, which
@@ -818,7 +937,13 @@ impl super::ScanEngine {
                 state.stats.cached += 1;
                 debug!(module = name, "cache hit — replaying archived entities");
                 let mr = ModuleResult { entities: cached };
-                self.finalise_module_result(cx, name, Ok(Ok(mr)), state);
+                self.finalise_module_result(
+                    cx,
+                    name,
+                    Ok(Ok(mr)),
+                    state,
+                    module.attack_techniques(),
+                );
                 continue;
             }
 
@@ -833,6 +958,12 @@ impl super::ScanEngine {
             let sid = Arc::clone(&scan_id_arc);
             let throttle_ms = cx.opts.throttle_ms;
             let module_timeout_ms = super::resolve_timeout(cx.opts, &*module_arc);
+            // Capture the producing module's ATT&CK Reconnaissance techniques
+            // before the spawn: `module` is unavailable at the join site (only a
+            // `DispatchOutcome` is). `&'static [&'static str]` is Copy, so it
+            // moves into the task for free and rides back out in the outcome,
+            // where `finalise_module_result` stamps each admitted entity.
+            let attack_techniques = module.attack_techniques();
 
             // Re-set the foreign-key scan-scope ambient INSIDE the spawned task:
             // tokio task-locals do NOT propagate across `spawn`, so without this the
@@ -875,6 +1006,7 @@ impl super::ScanEngine {
                     result,
                     ttl_secs,
                     cache_key,
+                    attack_techniques,
                 }
             }));
         }
@@ -909,7 +1041,13 @@ impl super::ScanEngine {
                     &mr.entities,
                 );
             }
-            self.finalise_module_result(cx, outcome.name, outcome.result, state);
+            self.finalise_module_result(
+                cx,
+                outcome.name,
+                outcome.result,
+                state,
+                outcome.attack_techniques,
+            );
         }
         Ok(())
     }

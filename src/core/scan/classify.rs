@@ -169,14 +169,29 @@ const INFRA_DOMAINS: &[&str] = &[
     "akamai.net",
     "edgekey.net",
     "edgesuite.net",
+    "azure-dns.com", // Azure DNS nameservers (ns1-NN.azure-dns.*)
+    "azure-dns.net",
+    "azure-dns.org",
+    "azure-dns.info",
+    "googledomains.com", // Google Cloud DNS nameservers (ns-cloud-*.googledomains.com)
+    "cloudns.net",       // ClouDNS managed DNS
+    "dnsimple.com",      // DNSimple managed DNS
     // Registrar / hosting control-plane
     "secureserver.net",
     "domaincontrol.com",
     "registrar-servers.com",
+    "jomax.net", // GoDaddy registrar/abuse mail domain (dns@jomax.net)
+    "epik.com",  // Epik registrar / nameserver provider
+    "name.com",
+    "namecheap.com",
+    "gandi.net",
     // CDN apex roots (edge IPs are gated by validation::is_cdn_edge_ip)
     "cloudfront.net",
     "fastly.net",
     "fastlylb.net",
+    "azureedge.net",   // Azure CDN edge
+    "edgecastcdn.net", // Edgecast / Verizon Media CDN
+    "llnwd.net",       // Limelight Networks CDN
     // CDN / cloud / DNS *provider corporate domains* — discovered incidentally
     // via a WHOIS registrar/abuse/dns field, a nameserver, or a role mailbox
     // (`dns@cloudflare.com`). Never the subject's own infrastructure, so
@@ -200,6 +215,8 @@ const INFRA_DOMAINS: &[&str] = &[
     "azurewebsites.net",
     "windows.net",
     "azure.com",
+    "cloudapp.net",         // Azure cloud-service / VM endpoints
+    "elasticbeanstalk.com", // AWS Elastic Beanstalk app hosting
     // ESP / transactional mail
     "sendgrid.net",
     "sendgrid.com",
@@ -210,10 +227,17 @@ const INFRA_DOMAINS: &[&str] = &[
     "mcsv.net",
     "mcdlv.net",
     "rsgsv.net",
+    "list-manage.com", // Mailchimp campaign / click-tracking
+    "mailchimp.com",
+    "postmarkapp.com", // Postmark transactional mail
+    "mailjet.com",
     // Hosted-mail security gateways
     "mimecast.com",
     "pphosted.com",
     "messagelabs.com",
+    "protection.outlook.com", // Microsoft 365 Exchange Online Protection MX
+    "barracudanetworks.com",  // Barracuda mail security
+    "emailsrvr.com",          // Rackspace hosted email infra
 ];
 
 const MEGA_DOMAINS: &[&str] = &[
@@ -277,22 +301,38 @@ const MEGA_DOMAINS: &[&str] = &[
     "akamai.com",
     "cloudflare.com",
     "fastly.com",
-    // People-search / OSINT aggregators
+    // People-search / OSINT aggregators (they scrape and republish each other, so
+    // a person scan hits many at once as stranger co-occurrence noise).
+    "advancedbackgroundchecks.com",
     "anywho.com",
     "beenverified.com",
+    "checkpeople.com",
+    "clustrmaps.com",
+    "cyberbackgroundchecks.com",
+    "fastbackgroundcheck.com",
+    "fastpeoplesearch.com",
     "idcrawl.com",
+    "instantcheckmate.com",
     "intelius.com",
     "mylife.com",
     "nuwber.com",
     "peekyou.com",
+    "peoplefinders.com",
     "pipl.com",
     "radaris.com",
+    "rocketreach.co",
+    "searchpeoplefree.com",
+    "smartbackgroundchecks.com",
     "socialcatfish.com",
     "spokeo.com",
+    "thatsthem.com",
     "truepeoplesearch.com",
+    "truthfinder.com",
     "usphonebook.com",
+    "ussearch.com",
     "whitepages.com",
     "zabasearch.com",
+    "zoominfo.com",
     // Email providers (freemail) — never the subject's own infrastructure, so a
     // discovered freemail domain must not be deep-expanded.
     "gmail.com",

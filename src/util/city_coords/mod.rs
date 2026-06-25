@@ -19,9 +19,11 @@ pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
             return Some((lat, lon));
         }
     }
-    // Last-resort: treat a bare 4-digit string as a postcode.
+    // Last-resort: treat a bare 4-digit string as a postcode — the exact suburb
+    // centroid when tabulated, else the region centroid by leading digits so the
+    // whole AU postcode space resolves offline.
     if trimmed.len() == 4 && trimmed.bytes().all(|b| b.is_ascii_digit()) {
-        return postcode_coords(trimmed);
+        return postcode_coords(trimmed).or_else(|| au_postcode_region(trimmed));
     }
     None
 }
@@ -63,6 +65,89 @@ pub fn postcode_coords(postcode: &str) -> Option<(f64, f64)> {
         }
     }
     None
+}
+
+/// Coarse REGION centroid for *any* AU postcode, by its leading two digits.
+///
+/// AU postcodes are allocated geographically and contiguously, so the first two
+/// digits localise a postcode to a region (state + part of state) even when its
+/// exact centroid isn't tabulated in [`postcode_coords`]. This gives offline,
+/// keyless geocoding for the whole AU postcode space at region grain — enough to
+/// answer "is this relative's postcode in the subject's area?" for the free
+/// family geo-corroboration. Prefer [`postcode_coords`] (exact suburb) when it
+/// has the postcode; fall back to this for the long tail. `None` for a non-AU or
+/// malformed postcode.
+#[must_use]
+pub fn au_postcode_region(postcode: &str) -> Option<(f64, f64)> {
+    let pc = postcode.trim();
+    if pc.len() != 4 || !pc.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    // (leading two digits) -> approximate region centroid.
+    const REGIONS: &[(&str, f64, f64)] = &[
+        // QLD (4xxx) — finest grain: the AU family-finding use case.
+        ("40", -27.47, 153.03), // Brisbane
+        ("41", -27.70, 153.15), // Logan / Redland / GC hinterland
+        ("42", -28.01, 153.40), // Gold Coast
+        ("43", -27.60, 152.55), // Ipswich / Lockyer / eastern Downs
+        ("44", -26.30, 152.70), // Sunshine Coast north / Gympie
+        ("45", -26.45, 152.80), // Sunshine Coast / Moreton north / Wide Bay
+        ("46", -27.55, 151.90), // Toowoomba / Darling Downs
+        ("47", -22.50, 148.50), // Central QLD (Rockhampton / Mackay)
+        ("48", -18.50, 146.00), // North QLD (Townsville / Cairns)
+        ("49", -17.00, 144.50), // Far North / Gulf
+        // NSW + ACT (2xxx).
+        ("20", -33.87, 151.21),
+        ("21", -33.80, 151.00),
+        ("22", -34.00, 151.10),
+        ("23", -34.43, 150.89),
+        ("24", -32.50, 152.00),
+        ("25", -34.50, 149.50),
+        ("26", -35.28, 149.13), // ACT / south coast
+        ("27", -35.10, 147.37), // Riverina
+        ("28", -31.00, 150.90), // north-west
+        ("29", -29.00, 152.50), // northern rivers
+        // VIC (3xxx).
+        ("30", -37.81, 144.96),
+        ("31", -37.80, 145.10),
+        ("32", -38.15, 144.36),
+        ("33", -36.76, 144.28),
+        ("34", -38.10, 146.40),
+        ("35", -36.40, 145.40),
+        ("36", -36.40, 142.20),
+        ("38", -34.18, 142.16),
+        ("39", -37.50, 144.50),
+        // SA (5xxx).
+        ("50", -34.93, 138.60),
+        ("51", -34.90, 138.60),
+        ("52", -35.20, 138.60),
+        ("53", -34.20, 140.34),
+        ("54", -33.00, 137.50),
+        ("55", -32.49, 137.77),
+        ("56", -37.83, 140.78),
+        ("57", -34.70, 135.86),
+        // WA (6xxx).
+        ("60", -31.95, 115.86),
+        ("61", -31.90, 115.90),
+        ("62", -32.05, 115.74),
+        ("63", -33.33, 115.64),
+        ("64", -33.65, 115.34),
+        ("65", -28.77, 114.62),
+        ("66", -30.75, 121.47),
+        ("67", -17.96, 122.24),
+        // TAS (7xxx).
+        ("70", -42.88, 147.33),
+        ("72", -41.18, 146.35),
+        ("73", -41.44, 147.14),
+        // NT (08xx / 09xx).
+        ("08", -12.46, 130.84),
+        ("09", -19.65, 134.19),
+    ];
+    let prefix = &pc[..2];
+    REGIONS
+        .iter()
+        .find(|(pre, _, _)| *pre == prefix)
+        .map(|&(_, lat, lon)| (lat, lon))
 }
 
 const CITIES: &[(&str, f64, f64)] = &[

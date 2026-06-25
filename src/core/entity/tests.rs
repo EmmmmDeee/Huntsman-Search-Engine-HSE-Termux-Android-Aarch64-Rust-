@@ -26,6 +26,31 @@ fn uid_differs_across_kinds() {
     assert_ne!(e.uid, d.uid);
 }
 
+#[test]
+fn demote_to_candidate_caps_confidence_tags_and_is_idempotent() {
+    let mut e = Entity::new(EntityKind::Email, "stranger@example.com", 0.70, "s");
+    e.demote_to_candidate();
+    assert!((e.confidence - CANDIDATE_CONF).abs() < f64::EPSILON);
+    assert!(e.has_tag(crate::core::tags::CANDIDATE));
+    // Lands in the Candidate tier (the demotion's whole purpose).
+    assert_eq!(e.classify(), Classification::Candidate);
+    // Idempotent: a second call neither lowers confidence further nor
+    // duplicates the tag (min + de-duped tag).
+    e.demote_to_candidate();
+    assert!((e.confidence - CANDIDATE_CONF).abs() < f64::EPSILON);
+    assert_eq!(
+        e.tags
+            .iter()
+            .filter(|t| *t == crate::core::tags::CANDIDATE)
+            .count(),
+        1
+    );
+    // Never RAISES an already-lower confidence.
+    let mut low = Entity::new(EntityKind::Email, "x@y.com", 0.10, "s");
+    low.demote_to_candidate();
+    assert!((low.confidence - 0.10).abs() < f64::EPSILON);
+}
+
 // ── C_eff formula ────────────────────────────────────────────────────────
 
 #[test]
@@ -112,6 +137,68 @@ fn geo_normalize_does_not_count_as_corroboration() {
         suburb.c_effective() > 0.30,
         "real second source still boosts"
     );
+}
+
+#[test]
+fn name_intel_permutation_does_not_count_as_corroboration() {
+    // The H3 flaw: `name_intel` permutes the seed name into speculative
+    // `name × freemail` email guesses. Such a guess is a derivation of the
+    // input, not an independent sighting, so it must NOT self-corroborate into
+    // the cross-source rules (AU-003 fires at 2 sources). A pure permutation
+    // therefore has zero corroborating sources.
+    let mut email = Entity::new(EntityKind::Email, "cindy.haynes@gmail.com", 0.30, "s");
+    email.add_evidence(Evidence::new(
+        "name_intel",
+        "Speculative email permuted from name",
+    ));
+    // Display surfaces the derived lead…
+    assert_eq!(email.evidence_sources().len(), 1);
+    // …but corroboration credits no source, so AU-003/AU-034 cannot fire on it.
+    assert_eq!(email.corroborating_sources().len(), 0);
+
+    // One genuine observation = one source (still below the 2-source bar): the
+    // permutation does not contribute a phantom second source.
+    email.add_evidence(Evidence::new("search_engines", "found on a public page"));
+    assert_eq!(email.source_count(), 1, "only the real source counts");
+
+    // Two genuine sources DO corroborate — the speculation never blocked that.
+    email.add_evidence(Evidence::new("hibp", "appears in a breach"));
+    assert_eq!(email.source_count(), 2);
+}
+
+#[test]
+fn recall_does_not_count_as_corroboration() {
+    // The exact fresh-vs-recalled regression: a single-source finding (here a
+    // breach co-occurrence row) replayed from the local DB by the recall pass
+    // must NOT gain a phantom second source and be promoted CANDIDATE → PROBABLE.
+    // Recall is a second look at the SAME prior observation, not a new one.
+    let mut e = Entity::new(EntityKind::Person, "Андрей Кулябин Алексеевич", 0.25, "s");
+    e.add_evidence(Evidence::new("oathnet_pro", "Breach on fincup.ru"));
+    e.add_evidence(Evidence::new(
+        "recall",
+        "Recalled from the local intelligence database",
+    ));
+    // Provenance keeps both, but corroboration sees only the one real source.
+    assert_eq!(e.evidence_sources().len(), 2);
+    assert_eq!(e.source_count(), 1, "recall is not an independent source");
+    assert!(
+        (e.c_effective() - 0.25).abs() < 1e-9,
+        "a recalled-only entity keeps its true confidence (was inflated to 0.51)"
+    );
+    assert_eq!(
+        e.classify(),
+        Classification::Candidate,
+        "stays CANDIDATE on re-scan, not falsely promoted to PROBABLE"
+    );
+
+    // A genuinely independent live module discovered alongside recall DOES boost.
+    e.add_evidence(Evidence::new("hibp", "verified breach"));
+    assert_eq!(
+        e.source_count(),
+        2,
+        "a real second module still corroborates"
+    );
+    assert!(e.c_effective() > 0.25);
 }
 
 #[test]
@@ -213,6 +300,39 @@ fn source_count_no_evidence_uses_field() {
     let mut e = email("a@b.com");
     e.corroboration = 3;
     assert_eq!(e.source_count(), 3);
+}
+
+#[test]
+fn source_count_ignores_stored_field_when_all_evidence_is_noncorroborating() {
+    // Regression (live "Cindy Haynes" scan): a speculative name-permuted email
+    // whose ONLY evidence is the non-corroborating `name_intel` permutation plus
+    // a `recall` replay was lifted to VERIFIED — `source_count` fell back to the
+    // stored `corroboration` field, which recall ratchets up by one on every
+    // re-scan (the bundle showed C_eff 0.81 at corroboration=4). With evidence
+    // present but ALL non-corroborating, the count must be 1 (the stored
+    // magnitude is ignored), so the guess stays at its base confidence and the
+    // fallback is reserved for genuinely evidence-less synthetic entities.
+    let mut e = Entity::new(EntityKind::Email, "cindy.haynes@gmail.com", 0.30, "s");
+    e.corroboration = 4; // ratcheted up across recall cycles
+    e.add_evidence(Evidence::new(
+        "name_intel",
+        "Speculative email permuted from name",
+    ));
+    e.add_evidence(Evidence::new(
+        "recall",
+        "Recalled from the local intelligence database",
+    ));
+    assert_eq!(e.evidence_sources().len(), 2, "provenance keeps both");
+    assert_eq!(
+        e.source_count(),
+        1,
+        "all-non-corroborating evidence is one source; stored field ignored"
+    );
+    assert!(
+        (e.c_effective() - 0.30).abs() < 1e-9,
+        "stays at base confidence, not resurrected to VERIFIED"
+    );
+    assert_eq!(e.classify(), Classification::Candidate);
 }
 
 #[test]
@@ -388,6 +508,63 @@ fn normalise_email_lowercases() {
         normalise(&EntityKind::Email, " Matt@EXAMPLE.COM "),
         "matt@example.com"
     );
+}
+
+#[test]
+fn normalise_email_strips_breach_escape_tail() {
+    // Regression (live oathnet breach co-occurrence): a value carrying the
+    // literal escape tail `\r\n` (the chars `\ r \ n`, not real whitespace) must
+    // fold to the clean address so it shares one UID and never leaks malformed.
+    assert_eq!(
+        normalise(&EntityKind::Email, "user@gmail.com\\r\\n"),
+        "user@gmail.com"
+    );
+    // Internal whitespace (a glued-on second field) is also cut.
+    assert_eq!(
+        normalise(&EntityKind::Email, "user@gmail.com extra"),
+        "user@gmail.com"
+    );
+    // The clean and dirty forms must share a UID (the dedup point).
+    assert_eq!(
+        Entity::new(EntityKind::Email, "user@gmail.com\\r\\n", 0.3, "s").uid,
+        Entity::new(EntityKind::Email, "user@gmail.com", 0.3, "s").uid
+    );
+}
+
+#[test]
+fn normalise_email_strips_invisible_and_control_noise() {
+    let clean = "user@gmail.com";
+    // A UTF-8 BOM an exporter prepended is NOT whitespace, so it used to survive
+    // and key the same mailbox to a different UID (identity fragmentation).
+    assert_eq!(
+        normalise(&EntityKind::Email, "\u{feff}user@gmail.com"),
+        clean
+    );
+    // A zero-width space embedded mid-value is removed (not cut — the address
+    // before AND after it is real).
+    assert_eq!(
+        normalise(&EntityKind::Email, "user@gmail\u{200b}.com"),
+        clean
+    );
+    // A NUL-separated junk suffix is cut like the escape tail.
+    assert_eq!(
+        normalise(&EntityKind::Email, "user@gmail.com\u{0}junk"),
+        clean
+    );
+    // All three forms share the clean address's UID — the dedup point.
+    for dirty in [
+        "\u{feff}user@gmail.com",
+        "user@gmail\u{200b}.com",
+        "user@gmail.com\u{0}junk",
+    ] {
+        assert_eq!(
+            Entity::new(EntityKind::Email, dirty, 0.3, "s").uid,
+            Entity::new(EntityKind::Email, clean, 0.3, "s").uid,
+            "{dirty:?} must fold to the clean UID"
+        );
+    }
+    // A pristine address is untouched (no needless allocation path regression).
+    assert_eq!(normalise(&EntityKind::Email, clean), clean);
 }
 
 #[test]
@@ -836,6 +1013,34 @@ fn normalise_username_strips_leading_handle_sigil_for_dedup() {
 }
 
 #[test]
+fn normalise_username_and_domain_strip_invisible_noise() {
+    // Identity integrity across the identity kinds: a BOM/zero-width char must not
+    // fork the UID for a username or a domain any more than for an email.
+    // A BOM before the `@handle` must still be removed AND the `@` stripped.
+    assert_eq!(
+        normalise(&EntityKind::Username, "\u{feff}@JordanAvery"),
+        "jordanavery"
+    );
+    assert_eq!(
+        normalise(&EntityKind::Username, "jordan\u{200b}avery"),
+        "jordanavery"
+    );
+    assert_eq!(
+        normalise(&EntityKind::Domain, "\u{feff}Example.COM"),
+        "example.com"
+    );
+    // Each noisy form shares the clean UID.
+    assert_eq!(
+        Entity::new(EntityKind::Username, "\u{feff}@jordanavery", 0.3, "s").uid,
+        Entity::new(EntityKind::Username, "jordanavery", 0.3, "s").uid
+    );
+    assert_eq!(
+        Entity::new(EntityKind::Domain, "\u{feff}example.com", 0.3, "s").uid,
+        Entity::new(EntityKind::Domain, "example.com", 0.3, "s").uid
+    );
+}
+
+#[test]
 fn normalise_folds_non_ascii_uppercase_for_dedup() {
     // Regression: the old fast path returned early when a value had no ASCII
     // uppercase byte, so a value whose only capital is NON-ASCII (e.g. a
@@ -972,6 +1177,22 @@ fn normalise_domain_collapses_repeated_www_to_a_fixed_point() {
     // `www.www.` → trailing dot stripped → `www.www` → strip leading labels
     // down to the last non-`www.` label, which is itself `www`.
     assert_eq!(normalise(&EntityKind::Domain, "www.www."), "www");
+}
+
+#[test]
+fn normalise_domain_is_idempotent_when_a_bom_shields_a_control_byte() {
+    // Regression (proptest minimal case): a leading BOM is not whitespace, so it
+    // shields a following control/whitespace byte from `value.trim()`. Stripping
+    // the BOM exposes that byte at the edge — it must be re-trimmed in the SAME
+    // pass, or the first normalise keeps it (`\u{b}¡`) while a second strips it
+    // (`¡`), forking one host into two UIDs.
+    let once = normalise(&EntityKind::Domain, "\u{feff}\u{b}¡");
+    let twice = normalise(&EntityKind::Domain, &once);
+    assert_eq!(once, twice, "normalise must be a fixed point");
+    assert_eq!(
+        once, "¡",
+        "the shielded control byte is trimmed in one pass"
+    );
 }
 
 // ── Classification::as_str round-trips ──────────────────────────────────
@@ -1169,6 +1390,66 @@ fn absorb_folds_signal_and_preserves_identity() {
     assert!(a.has_tag("alpha") && a.has_tag("beta"));
     assert_eq!(a.uid, original_uid);
     assert_eq!(a.value, "X, NSW");
+}
+
+#[test]
+fn absorb_merges_new_attributes_on_same_source_summary() {
+    // Regression (breach-PII proof): re-observing an entity from the SAME source
+    // with the SAME summary but NEW attributes (an updated breach dump) must NOT
+    // drop them — they merge into the one deduped record. Previously the whole
+    // record was discarded, so a re-import that gained a date_of_birth/tfn lost
+    // it and the AU-073/074 rules never fired.
+    let mut a = Entity::new(EntityKind::Email, "x@contoso.com", 0.6, "s");
+    a.add_evidence(
+        Evidence::new("import:dossier", "Breach entry").with_attr("email", "x@contoso.com"),
+    );
+    let mut b = Entity::new(EntityKind::Email, "x@contoso.com", 0.6, "s");
+    b.add_evidence(
+        Evidence::new("import:dossier", "Breach entry")
+            .with_attr("email", "x@contoso.com")
+            .with_attr("date_of_birth", "1980-11-08")
+            .with_attr("tfn", "123456782"),
+    );
+    a.merge(b);
+
+    assert_eq!(
+        a.evidence.len(),
+        1,
+        "still one record (deduped by source+summary)"
+    );
+    let attrs = &a.evidence[0].attributes;
+    assert_eq!(
+        attrs.get("date_of_birth").map(String::as_str),
+        Some("1980-11-08")
+    );
+    assert_eq!(attrs.get("tfn").map(String::as_str), Some("123456782"));
+}
+
+#[test]
+fn absorb_attribute_merge_is_order_independent() {
+    // A key both records set with DIFFERING values accumulates BOTH distinct
+    // observations (the conflict is evidence — e.g. a namesake's other DOB),
+    // sorted so the result is identical regardless of merge order (the Determinism
+    // Requirement). Matches `with_attr`'s in-record accumulation.
+    let mk = |v: &str| {
+        let mut e = Entity::new(EntityKind::Email, "x@contoso.com", 0.6, "s");
+        e.add_evidence(Evidence::new("src", "sum").with_attr("k", v));
+        e
+    };
+    let mut ab = mk("alpha");
+    ab.merge(mk("beta"));
+    let mut ba = mk("beta");
+    ba.merge(mk("alpha"));
+    assert_eq!(
+        ab.evidence[0].attributes.get("k"),
+        ba.evidence[0].attributes.get("k"),
+        "merge order must not change the accumulated value"
+    );
+    assert_eq!(
+        ab.evidence[0].attributes.get("k").map(String::as_str),
+        Some("alpha; beta"),
+        "both distinct observations are kept (sorted), not one dropped"
+    );
 }
 
 #[test]

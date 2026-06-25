@@ -135,6 +135,13 @@ fn core_does_not_import_util_directly() {
                 // restrict the cross-seed geo-synergy fix to Australian
                 // coordinates when the `au-state:`/`country:AU` tag is absent.
                 && !line.contains("util::geo::is_in_australia")
+                // Pure, dependency-free offline coordinate parser (no I/O, no
+                // network), same leaf category as `geohash`/`geometry`. The
+                // target auto-detector (`core::scan`) uses it to recognise
+                // self-evident coordinate notations (DMS, geo: URI, Plus Code),
+                // and entity normalisation (`core::entity`) to canonicalise them
+                // to the one decimal "lat,lon" shape the geo pipeline speaks.
+                && !line.contains("util::geo::coords::parse")
                 // Pure, dependency-free digit-only normaliser — the same leaf
                 // category as the ABN checksums above; `core::scan` uses it in
                 // the target auto-detector to strip separators from a candidate
@@ -144,25 +151,28 @@ fn core_does_not_import_util_directly() {
                 // (no I/O, no network). The engine's address_to_coords_pass uses
                 // it to convert Address entities into Coordinates for geo correlation.
                 && !line.contains("util::city_coords::city_coords")
-                // Pure, dependency-free email classifier (role local-part + a
-                // static CDN/registrar/proxy mail-domain set; no I/O, no deps) —
-                // same leaf category as `address_au::state_code`. AU-061 uses it
-                // to exclude privacy-proxy / registrar registrant mailboxes
-                // (`abuse@godaddy.com`, `*@whoisguard.com`) from shared-registrant
-                // co-ownership, so a shared proxy can't mass-link unrelated domains.
-                && !line.contains("util::domains::is_infrastructure_email")
-                // Pure, dependency-free eTLD+1 reducer (label split + a static
-                // multi-label-suffix table; no I/O) — same leaf category as
-                // `is_infrastructure_email`. AU-062 uses it to require ≥2 DISTINCT
-                // registrable domains on a shared IP, so a single site's own
-                // subdomains (co-residence) don't read as cross-site co-ownership.
-                && !line.contains("util::domains::registrable_domain")
-                // Pure privacy-proxy / WHOIS-redaction guard (marker table +
-                // `is_infrastructure_email`; no I/O). Extracted from AU-061's
-                // local definition into util so `core::relation::builders::
-                // derive_co_ownership` (R13) can share the exclusion logic
-                // without duplicating it: one definition, two callers, no drift.
-                && !line.contains("util::domains::is_proxy_registrant")
+                // Pure, dependency-free offline surname-distinctiveness heuristic
+                // (a small embedded common-surname set; no state, no I/O), same leaf
+                // category as `address_au::locality_key`. `core::leads` uses it to
+                // treat a shared rare surname as corroborating and a shared common
+                // one with caution, so the family signal is weighted by how
+                // distinctive the name actually is.
+                && !line.contains("util::surnames::is_common")
+                && !line.contains("util::surnames::surname_of")
+                // Pure, dependency-free offline SIM-anonymity classifier (a curated
+                // carrier→tier table; no state, no I/O), same leaf category as
+                // `surnames`/`address_au`. AU-068 reads the tier from a phone's tag
+                // (via `tier_for_tag` / `ANONYMITY_TAGS`) to surface a likely burner
+                // SIM, weighting how much attribution a phone-based link deserves.
+                && !line.contains("util::sim_anonymity")
+                // Pure, dependency-free offline breach-source → sector classifier
+                // (a curated brand/category table + string parse; no state, no
+                // I/O, no upward deps), same leaf category as `sim_anonymity` /
+                // `surnames`. The engine's admission pass (`tag_breach_sector`)
+                // uses it to stamp every breach finding with its source's sector
+                // (`sector:real-estate`, …), so a hit is filterable by sector at
+                // one chokepoint regardless of which pool surfaced it.
+                && !line.contains("util::breach_sector")
         })
         .collect();
     assert!(
@@ -416,16 +426,16 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "censys → scan-db + IP info + physical location"
     );
 
-    // ipapi is a passive geolocation API identical in surface to the geo-5 above:
-    // IP address info + physical location + ISP/operator organisation.
+    // ip_whois_geo is a passive geolocation API identical in surface to the
+    // geo-5 above: IP address info + physical location + ISP/operator org.
     assert_eq!(
-        techniques("ipapi"),
+        techniques("ip_whois_geo"),
         vec!["T1590.005", "T1591.001", "T1591.002"],
-        "ipapi → IP Addresses + Physical Locations + Business Relationships"
+        "ip_whois_geo → IP Addresses + Physical Locations + Business Relationships"
     );
     assert!(
-        !techniques("ipapi").contains(&"T1596.005"),
-        "ipapi is a passive geo API, not a scan database (T1596.005)"
+        !techniques("ip_whois_geo").contains(&"T1596.005"),
+        "ip_whois_geo is a passive geo API, not a scan database (T1596.005)"
     );
 
     // Keybase: Social category but profiles include a user-declared location
@@ -688,7 +698,6 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "ip_geo",
         "ip2location",
         "ip_whois_geo",
-        "ipapi",
         "keybase",
         "numverify",
         "abuseipdb",
@@ -729,7 +738,7 @@ fn attack_overrides_attribute_collection_modules_precisely() {
 fn skiptrace_focus_maps_to_the_right_real_modules() {
     // The `skiptrace` profile restricts dispatch by category. This guard pins
     // that the focus resolves to a healthy, correct set of REAL modules — so a
-    // future category change (or a regression of the hudsonrock/qld_unclaimed
+    // future category change (or a regression of the hudsonrock/au_unclaimed
     // categorisations) can't silently gut or pollute debtor-location scans.
     use huntsman_search_engine::core::module::ModuleCategory;
     use huntsman_search_engine::core::profiles::SKIPTRACE_CATEGORIES;
@@ -754,11 +763,10 @@ fn skiptrace_focus_maps_to_the_right_real_modules() {
         );
     }
 
-    // The core person-locators MUST be in focus (incl. the two whose categories
-    // were corrected: hudsonrock → Breach, qld_unclaimed → People).
+    // The core person-locators MUST be in focus (incl. hudsonrock → Breach).
     for name in [
         "employer_pivot",  // People — where they work / ability to pay
-        "qld_unclaimed",   // People — name → government register + address
+        "au_unclaimed",    // Corporate — name → government register + address (incl. QLD)
         "geocode",         // Geo — address → coordinates
         "geo_intel",       // Geo
         "phone_intl",      // Phone — contactability + country
@@ -1300,7 +1308,6 @@ fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
     const COARSE_PROVIDERS: &[&str] = &[
         "ip_geo",
         "ipinfo",
-        "ipapi",
         "ip2location",
         "ipquery",
         "ip_whois_geo",
@@ -1354,7 +1361,7 @@ fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
         let prod = src.split("mod tests").next().unwrap_or(&src);
         // The gate is satisfied either by calling `is_plausible_provider_coord`
         // directly OR by building the entity through `coarse_provider_coords`,
-        // which applies that exact gate internally (ipinfo/ipapi/ip2location/
+        // which applies that exact gate internally (ipinfo/ip2location/
         // ipquery were consolidated onto the helper).
         let gated =
             prod.contains("is_plausible_provider_coord") || prod.contains("coarse_provider_coords");

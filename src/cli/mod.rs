@@ -8,6 +8,7 @@
 //! full reference.
 
 mod audit;
+mod benchmark;
 mod cells;
 mod config;
 mod diagnostics;
@@ -15,6 +16,7 @@ mod diff;
 mod doctor;
 mod engines;
 pub(crate) mod export;
+mod gap;
 mod keys_cmd;
 mod live;
 mod modules;
@@ -144,6 +146,10 @@ pub async fn run() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    // Opportunistic, throttled, non-blocking self-update: any routine CLI use
+    // keeps the binary current with GitHub main (the server has its own loop).
+    // Best-effort and time-boxed — never delays or fails the command below.
+    update::maybe_auto_update_cli(&cli.command).await;
     match cli.command {
         Command::Scan {
             kind,
@@ -224,6 +230,8 @@ pub async fn run() -> Result<()> {
             log,
             json,
         } => audit::cmd_audit(csv, scan_id, log, json).await,
+        Command::Benchmark { scan_id, json } => benchmark::cmd_benchmark(scan_id, json),
+        Command::Gaps { scan_id, json } => gap::cmd_gaps(scan_id, json),
         Command::Doctor => doctor::cmd_doctor().await,
         Command::Selftest { json } => selftest::cmd_selftest(json).await,
         Command::Provision {

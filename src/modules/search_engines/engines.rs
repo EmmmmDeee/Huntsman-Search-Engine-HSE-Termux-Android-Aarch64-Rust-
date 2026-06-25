@@ -5,6 +5,12 @@ pub(super) struct EngineSpec {
     pub(super) paginate: Option<fn(&str, usize) -> String>,
     pub(super) ua: &'static str,
     pub(super) ua_alt: &'static str,
+    /// Per-engine fetch ceiling (ms). Overrides the global `MAX_FETCH_MS` when
+    /// set. Use for engines whose real-world latency distribution makes the
+    /// global 8 s cap wasteful (e.g. DDG: 6.6 s avg / 56% unreachable from
+    /// datacenter IPs — a 4 s cap fails fast without sacrificing recall from
+    /// the 1/41 ok case).
+    pub(super) max_fetch_ms: Option<u64>,
 }
 
 // All 17 engines are always tried. Blocked engines are detected and
@@ -38,6 +44,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         }),
         ua: crate::util::curl::UA_MOBILE,
         ua_alt: crate::util::curl::UA_DESKTOP,
+        max_fetch_ms: None,
     },
     EngineSpec {
         name: "bing",
@@ -57,6 +64,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         }),
         ua: crate::util::curl::UA_MOBILE,
         ua_alt: crate::util::curl::UA_DESKTOP,
+        max_fetch_ms: None,
     },
     EngineSpec {
         name: "aol",
@@ -76,6 +84,9 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         }),
         ua: crate::util::curl::UA_MOBILE,
         ua_alt: crate::util::curl::UA_DESKTOP,
+        // Live scan: 0/203 ok, 591 ms avg — fails at network layer consistently.
+        // 800 ms cap cuts p95 outliers without sacrificing the near-zero hit rate.
+        max_fetch_ms: Some(800),
     },
     EngineSpec {
         name: "duckduckgo",
@@ -87,6 +98,9 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_FIREFOX,
         ua_alt: crate::util::curl::UA_DESKTOP,
+        // Live scans: 6.6 s avg / 56% unreachable from datacenter IPs.
+        // 4 s cap fails fast without sacrificing the occasional ok result.
+        max_fetch_ms: Some(4_000),
     },
     EngineSpec {
         name: "google",
@@ -106,6 +120,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         }),
         ua: crate::util::curl::UA_MOBILE,
         ua_alt: crate::util::curl::UA_DESKTOP,
+        max_fetch_ms: None,
     },
     EngineSpec {
         name: "brave",
@@ -125,6 +140,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         }),
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_SAFARI,
+        max_fetch_ms: None,
     },
     EngineSpec {
         name: "mojeek",
@@ -144,6 +160,8 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         }),
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_MOBILE,
+        // Live scan: 0/203 ok, 576 ms avg — consistently unreachable from DC IPs.
+        max_fetch_ms: Some(800),
     },
     // ── New engines (2026) ──────────────────────────────────────────
     EngineSpec {
@@ -158,6 +176,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_FIREFOX,
         ua_alt: crate::util::curl::UA_DESKTOP,
+        max_fetch_ms: None,
     },
     EngineSpec {
         name: "yandex",
@@ -173,6 +192,10 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_MOBILE,
+        // Live scan: 0/203 ok, 938 ms avg — Russian CDN blocks DC IPs at TLS layer.
+        // 1 s cap saves ~(938-1000 clamped → 938) ms per dispatch on average;
+        // cuts p95 outliers meaningfully.
+        max_fetch_ms: Some(1_000),
     },
     EngineSpec {
         name: "ecosia",
@@ -186,6 +209,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_FIREFOX,
         ua_alt: crate::util::curl::UA_SAFARI,
+        max_fetch_ms: None,
     },
     EngineSpec {
         name: "qwant",
@@ -199,6 +223,10 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_FIREFOX,
         ua_alt: crate::util::curl::UA_DESKTOP,
+        // Live scan: 0/203 ok, 1780 ms avg, 3585 ms p95 — consistently blocked.
+        // 1.5 s cap cuts the long tail (p95 at 3.6 s) and saves ~460 ms per
+        // dispatch on average vs the global 8 s ceiling.
+        max_fetch_ms: Some(1_500),
     },
     EngineSpec {
         name: "dogpile",
@@ -212,6 +240,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_SAFARI,
+        max_fetch_ms: None,
     },
     EngineSpec {
         name: "swisscows",
@@ -225,6 +254,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_FIREFOX,
+        max_fetch_ms: None,
     },
     // ── Extended engines (2026 batch 2) ─────────────────────────────
     // you.com is conversational but exposes a classic /search HTML view
@@ -242,6 +272,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_FIREFOX,
+        max_fetch_ms: None,
     },
     // Presearch is a decentralised privacy engine that proxies to a
     // configurable backend. The HTML view is parsable like DDG/Brave.
@@ -257,6 +288,8 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_FIREFOX,
+        // Live scan: 0/203 ok, 794 ms avg — anti-bot blocks DC IPs consistently.
+        max_fetch_ms: Some(1_000),
     },
     // MetaGer (German non-profit) federates 50+ underlying engines and
     // returns clean HTML; rarely CAPTCHA-blocked.
@@ -272,6 +305,7 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_FIREFOX,
         ua_alt: crate::util::curl::UA_DESKTOP,
+        max_fetch_ms: None,
     },
     // SearXNG public instances aggregate dozens of engines. We point
     // at the well-known etsi.org instance; if blocked, the engine
@@ -288,16 +322,23 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         paginate: None,
         ua: crate::util::curl::UA_DESKTOP,
         ua_alt: crate::util::curl::UA_FIREFOX,
+        max_fetch_ms: None,
     },
 ];
 
 /// Engines used for the secondary pivot + entity-recycler passes — the most
-/// reliable from Termux residential IPs (Yahoo/Bing are stable; Brave works
-/// well off-CAPTCHA). Resolved by NAME via [`reliable_engines`] rather than by
-/// array index, so reordering or inserting into [`ENGINES`] can never silently
-/// repoint those passes at the wrong engines (the prior `ENGINES[0/1/5]`
-/// indexing was a latent drift bug). Order here is the order they're tried.
-pub(super) const RELIABLE_ENGINE_NAMES: [&str; 3] = ["yahoo", "bing", "brave"];
+/// reliable from both Termux residential and DC IPs. Resolved by NAME via
+/// [`reliable_engines`] rather than by array index, so reordering or inserting
+/// into [`ENGINES`] can never silently repoint those passes at the wrong
+/// engines (the prior `ENGINES[0/1/5]` indexing was a latent drift bug).
+/// Order here is the order they're tried.
+///
+/// Live scan evidence (depth-2 "Onur Ada", 6,688 engine dispatches each):
+///   metager:   100% hit, 0% blocked, 20 results/call (DC + residential)
+///   swisscows: 100% hit, 0% blocked,  4 results/call (DC + residential)
+///   dogpile:    97% hit, 0% blocked,  1 result/call  (DC + residential)
+///   yahoo/bing/brave: killed by SESSION_DEAD after <400 dispatches from DC IPs
+pub(super) const RELIABLE_ENGINE_NAMES: [&str; 3] = ["metager", "swisscows", "dogpile"];
 
 /// Resolve [`RELIABLE_ENGINE_NAMES`] to their [`EngineSpec`]s, preserving that
 /// order. A name absent from [`ENGINES`] is skipped; the

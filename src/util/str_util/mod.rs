@@ -15,6 +15,40 @@ pub fn nonempty(o: &Option<String>) -> Option<&str> {
     o.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
 
+/// Title-case a personal name into a canonical, merge-stable `Person` value:
+/// each whitespace token is lower-cased then its first character upper-cased,
+/// and runs of whitespace collapse to one space. `Person` values are NOT
+/// case-folded at UID normalisation, so a register's `ERIK DIEGMANN`, a scraped
+/// `erik diegmann`, and `name_intel`'s parsed anchor would otherwise fragment
+/// into three separate people; routing every module-minted name through this
+/// converges them onto one node (matching `name_intel`'s own lower-then-cap
+/// casing, so the subject anchor and discovered relatives share UIDs).
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::title_case;
+///
+/// assert_eq!(title_case("ERIK DIEGMANN"), "Erik Diegmann");
+/// assert_eq!(title_case("  kyle   diegmann "), "Kyle Diegmann");
+/// assert_eq!(title_case(""), "");
+/// ```
+#[must_use]
+pub fn title_case(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for word in s.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        let mut chars = word.chars();
+        if let Some(first) = chars.next() {
+            out.extend(first.to_uppercase());
+            for c in chars {
+                out.extend(c.to_lowercase());
+            }
+        }
+    }
+    out
+}
+
 /// The ASCII digits of `s`, in order, with every other character dropped.
 /// One definition of "keep only the digits" for phone / ABN / ACN / LEI
 /// normalisation (was re-derived inline in ~9 places).
@@ -28,6 +62,61 @@ pub fn nonempty(o: &Option<String>) -> Option<&str> {
 #[must_use]
 pub fn ascii_digits(s: &str) -> String {
     s.chars().filter(char::is_ascii_digit).collect()
+}
+
+/// Parse an autonomous-system identifier to its numeric form, accepting an
+/// optional case-insensitive `AS` prefix and surrounding whitespace:
+/// `"AS13335"`, `"as13335"`, `"13335"`, `" 13335 "` all yield `Some(13335)`.
+/// Returns `None` for anything that isn't `AS?<ascii-digits>`, so callers reject
+/// malformed ASNs instead of building a garbage URL from them.
+///
+/// Single definition for the `bgpview` / `ip_registry` / `zoomeye` modules,
+/// which each open-coded the prefix-strip-and-validate and drifted on case
+/// handling. Re-add a textual prefix at the call site when needed
+/// (`format!("AS{n}")`).
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::parse_asn;
+///
+/// assert_eq!(parse_asn("AS13335"), Some(13335));
+/// assert_eq!(parse_asn("as13335"), Some(13335));
+/// assert_eq!(parse_asn("  13335 "), Some(13335));
+/// assert_eq!(parse_asn("ASN13335"), None); // only a bare `AS` prefix is shed
+/// assert_eq!(parse_asn("13335x"), None);
+/// ```
+#[must_use]
+pub fn parse_asn(s: &str) -> Option<u64> {
+    let t = s.trim();
+    let digits = match t.get(..2) {
+        Some(p) if p.eq_ignore_ascii_case("AS") => t[2..].trim(),
+        _ => t,
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// True if `s` is a plausible platform handle: its length is in `min..=max` and
+/// every character is ASCII-alphanumeric or `-`/`_`. The shared pre-flight
+/// `reddit_user` and `hacker_news` gate on before spending an HTTP round-trip —
+/// pass each platform's own length bounds. (Byte length equals char count here:
+/// the charset test rejects any non-ASCII character.)
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::is_handle;
+///
+/// assert!(is_handle("spez", 3, 20));
+/// assert!(is_handle("pg", 2, 15));
+/// assert!(!is_handle("a", 2, 15)); // too short
+/// assert!(!is_handle("has space", 2, 15)); // bad charset
+/// assert!(!is_handle("toolongggg", 2, 8)); // too long
+/// ```
+#[must_use]
+pub fn is_handle(s: &str, min: usize, max: usize) -> bool {
+    (min..=max).contains(&s.len())
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Round `i` **down** to the nearest UTF-8 character boundary of `s` (the start

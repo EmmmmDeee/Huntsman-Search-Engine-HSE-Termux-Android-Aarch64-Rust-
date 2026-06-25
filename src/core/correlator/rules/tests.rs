@@ -36,7 +36,7 @@ use crate::core::entity::Evidence;
         // The sibling providers of the already-listed ipinfo/ipquery/wigle —
         // these fell through to "other" and were excluded from cross-family
         // diversity counts, contrary to the classifier's stated intent.
-        assert_eq!(source_family("ipapi"), "infra");
+        assert_eq!(source_family("ip_whois_geo"), "infra");
         assert_eq!(source_family("ip2location"), "infra");
         assert_eq!(source_family("mylnikov"), "infra");
     }
@@ -62,6 +62,60 @@ use crate::core::entity::Evidence;
         assert_eq!(source_family("shodan"), "infra");
         assert_eq!(source_family("dns_intel"), "infra");
         assert_eq!(source_family("some_unknown_module"), "other");
+    }
+
+    #[test]
+    fn source_family_covers_registry_scanners_and_registries() {
+        // Real registry module names that used to fall to `other` (their forms
+        // contain no earlier needle) and so silently under-counted family
+        // diversity. Each is now classified to its genuine family.
+        for m in [
+            "abuseipdb",
+            "bgpview",
+            "criminal_ip",
+            "ipqs",
+            "netblock",
+            "netlas",
+            "onyphe",
+            "portscan",
+            "ripestat",
+            "securitytrails",
+            "zoomeye",
+            "domainsdb",
+        ] {
+            assert_eq!(source_family(m), "infra", "{m} is network infrastructure");
+        }
+        for m in [
+            "fullcontact",
+            "contact_enrich",
+            "gleif_lei",
+            "asic_director",
+            "au_electoral",
+            "au_people",
+            "ahpra",
+            "acnc_charities",
+        ] {
+            assert_eq!(
+                source_family(m),
+                "identity_registry",
+                "{m} is an identity/business registry"
+            );
+        }
+        assert_eq!(source_family("hudsonrock"), "breach");
+        assert_eq!(source_family("crates_io"), "code");
+        assert_eq!(source_family("exa_search"), "search");
+
+        // Deliberately left `other`: genuinely ambiguous or non-family sources —
+        // crediting them as a distinct family would be over-credit, not coverage.
+        for m in [
+            "chain_intel",     // blockchain — no crypto family exists
+            "virustotal",      // threat intel, not infra resolution
+            "threatfox",       // threat-IOC feed
+            "device_sensors",  // local on-device sensor
+            "username_variants", // a derivation pass, not an observation
+        ] {
+            assert_eq!(source_family(m), "other", "{m} must stay unclassified");
+        }
     }
 
     #[test]

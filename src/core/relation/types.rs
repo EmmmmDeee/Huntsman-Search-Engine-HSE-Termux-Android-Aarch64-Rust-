@@ -25,16 +25,34 @@ pub enum RelationKind {
     CoLocatedWith,
     /// `from` was discovered by pivoting on `to` during expansion (lineage).
     DerivedFrom,
-    /// `from` and `to` are probably controlled by the same operator — inferred
-    /// from a shared WHOIS registrant (contractual), a shared dedicated IP, or
-    /// a shared web-analytics tag. Directed canonically: smaller UID → larger
-    /// UID so there is exactly one edge per pair and upserts are idempotent.
-    SameOperator,
-    /// `from` (a Username) is the identity behind `to` (a social-platform
-    /// profile Url) — inferred by matching the username value against the
-    /// embedded handle in the profile URL. Directed: identity hub → profile
-    /// manifestation (Username → Url). One edge per confirmed platform profile.
-    SameIdentity,
+    /// `from` (a Person) is identified by `to` (an Email / Username / Phone) — an
+    /// identifier bound to the person either by an owner/name field in the
+    /// identifier's own evidence, or by an identity-fingerprint match to the
+    /// subject. The edge that turns a pile of orphan handles into *one person's*
+    /// account footprint.
+    IdentifiedBy,
+    /// `from` and `to` are the same online persona — an Email and a Username, or
+    /// two Emails, sharing one normalised handle / local-part. The cross-platform
+    /// "same username everywhere" pivot. Symmetric; emitted smaller-UID → larger.
+    AliasOf,
+    /// `from` (a Person) is located at `to` (an Address or Coordinates) — bound by
+    /// an owner / resident field in the place's evidence, or because the place
+    /// exactly matched the subject's name during the scan (`exact-name-match`).
+    LocatedAt,
+    /// `from` and `to` are associated people — a kinship / associate *candidate*
+    /// bound by a shared surname. Symmetric; emitted smaller-UID → larger. A lead
+    /// (carries a damped confidence) for the operator to confirm, surfacing the
+    /// subject's human network the way the infra builders surface their estate.
+    AssociatedWith,
+    /// `from` and `to` are the SAME real-world entity observed in two disparate
+    /// contexts — a reflexive self-pairing the canonical resolver
+    /// ([`crate::core::resolve`]) proved: a Gmail address and its dotted / `+tag`
+    /// variant, one phone in two formats, a name and its reordering. Distinct from
+    /// [`AliasOf`](RelationKind::AliasOf) (a shared persona across DIFFERENT
+    /// identifiers): `SameAs` asserts ONE identity in two representations, the
+    /// edge that collapses contextual variants of a seed into a single node for
+    /// traversal. Symmetric; emitted smaller-UID → larger.
+    SameAs,
 }
 
 impl RelationKind {
@@ -47,8 +65,11 @@ impl RelationKind {
             Self::RegisteredBy => "registered_by",
             Self::CoLocatedWith => "co_located_with",
             Self::DerivedFrom => "derived_from",
-            Self::SameOperator => "same_operator",
-            Self::SameIdentity => "same_identity",
+            Self::IdentifiedBy => "identified_by",
+            Self::AliasOf => "alias_of",
+            Self::LocatedAt => "located_at",
+            Self::AssociatedWith => "associated_with",
+            Self::SameAs => "same_as",
         }
     }
 }

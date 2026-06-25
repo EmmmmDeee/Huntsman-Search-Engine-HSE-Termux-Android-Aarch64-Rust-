@@ -16,7 +16,7 @@ mod renderers;
 mod tests;
 
 pub(crate) use dossier::write_full_dossier;
-pub(crate) use renderers::{render_attack_layer, render_debug_bundle, render_full};
+pub(crate) use renderers::{render_debug_bundle, render_full};
 
 use crate::core::error::{Error, Result};
 use crate::default_db_path;
@@ -42,11 +42,9 @@ pub(super) async fn cmd_export(
         // `full` always includes infra — it is the maximum-detail format.
         "full" => render_full(&store, &sid)?,
         "debug" => render_debug_bundle(&store, &sid)?,
-        // MITRE ATT&CK Navigator layer (TA0043 Reconnaissance coverage).
-        "navigator" | "attack" => renderers::render_attack_layer(&store, &sid)?,
         other => {
             return Err(Error::Other(format!(
-                "unknown --format '{other}'. Valid: json, csv, gexf, report, full, debug, navigator"
+                "unknown --format '{other}'. Valid: json, csv, gexf, report, full, debug"
             )));
         }
     };

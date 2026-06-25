@@ -170,7 +170,7 @@ use super::*;
             "fixture must produce an AU-059 firing"
         );
 
-        let fix = extract_au_location_fix(&corrs);
+        let fix = extract_au_location_fix(&corrs, &ents);
         assert!(fix.is_object(), "fix must be a structured object, got {fix}");
         assert_eq!(fix["state"], "NSW");
         assert_eq!(fix["rule_id"], "AU-059");
@@ -190,6 +190,10 @@ use super::*;
         assert_eq!(fix["class_count"], 2);
         assert!(fix["source_count"].as_u64().unwrap() >= 2);
         assert_eq!(fix["severity"], "medium", "2 classes ⇒ medium");
+        // Confidence radius: present, finite, non-negative, and tight for two
+        // coordinates ~150 m apart.
+        let radius = fix["radius_km"].as_f64().expect("radius_km present");
+        assert!(radius.is_finite() && (0.0..5.0).contains(&radius), "radius: {radius}");
     }
 
     #[test]
@@ -199,45 +203,39 @@ use super::*;
             au_sighting("-33.8700,151.2100", 0.75, "acnc_charities", "NSW"),
         ];
         let corrs = crate::core::correlator::correlate_entities(&ents, "s");
-        assert_eq!(extract_au_location_fix(&corrs), serde_json::Value::Null);
-        assert_eq!(extract_au_location_fix(&[]), serde_json::Value::Null);
+        assert_eq!(extract_au_location_fix(&corrs, &ents), serde_json::Value::Null);
+        assert_eq!(extract_au_location_fix(&[], &ents), serde_json::Value::Null);
     }
 
+    /// The structured fields come from the **entities**, not the finding prose —
+    /// so a reworded (or, here, deliberately corrupted) AU-059 description cannot
+    /// drift `best_location`. This is the whole point of reading the fix
+    /// structurally instead of string-splitting the description.
     #[test]
-    fn extract_au_location_fix_picks_highest_rank_when_several() {
-        use crate::core::correlator::{Correlation, Severity};
-        let mut low = Correlation::new(
-            "AU-059",
-            "Cross-seed geographic synergy (orthogonal-class fix)",
-            Severity::Medium,
-            "2 AU coordinate(s) from 2 orthogonal source class(es) [Registry, Social] \
-             converge on -37.8136,144.9631 (geohash=r1r0fs, state=VIC); synergy confidence \
-             0.55 — MITRE T1591.001"
-                .into(),
-            vec!["a".into(), "b".into()],
-            "s",
-            0,
-        );
-        low.rank = 1.1;
-        let mut high = Correlation::new(
-            "AU-059",
-            "Cross-seed geographic synergy (orthogonal-class fix)",
-            Severity::High,
-            "3 AU coordinate(s) from 3 orthogonal source class(es) [PhotoGps, Registry, \
-             Directory] converge on -33.8688,151.2093 (geohash=r3gx2f, state=NSW); synergy \
-             confidence 0.81 — MITRE T1591.001"
-                .into(),
-            vec!["c".into(), "d".into(), "e".into()],
-            "s",
-            0,
-        );
-        high.rank = 2.7;
+    fn extract_au_location_fix_reads_entities_not_prose() {
+        let ents = vec![
+            au_sighting("-33.8688,151.2093", 0.80, "abn_lookup", "NSW"),
+            au_sighting("-33.8700,151.2100", 0.70, "exif_geo", "NSW"),
+        ];
+        let mut corrs = crate::core::correlator::correlate_entities(&ents, "s");
+        let au059 = corrs
+            .iter_mut()
+            .find(|c| c.rule_id == "AU-059")
+            .expect("fixture must produce an AU-059 firing");
+        // Corrupt the prose the old parser depended on — the fields must survive.
+        au059.description = "garbage — no parseable coordinates here".into();
 
-        let fix = extract_au_location_fix(&[low, high]);
-        assert_eq!(fix["state"], "NSW", "must pick the higher-rank firing");
-        assert_eq!(fix["class_count"], 3);
-        assert_eq!(fix["source_count"], 3);
-        assert_eq!(fix["severity"], "high");
-        assert!((fix["synergy_confidence"].as_f64().unwrap() - 0.81).abs() < 1e-9);
-        assert!((fix["lat"].as_f64().unwrap() - -33.8688).abs() < 1e-4);
+        let fix = extract_au_location_fix(&corrs, &ents);
+        assert!(fix.is_object(), "fix must survive a corrupted description");
+        assert_eq!(fix["state"], "NSW");
+        assert_eq!(fix["class_count"], 2);
+        let lat = fix["lat"].as_f64().unwrap();
+        let lon = fix["lon"].as_f64().unwrap();
+        assert!((-34.0..-33.0).contains(&lat) && (150.0..152.0).contains(&lon));
+
+        // It is exactly the canonical helper — the single source of truth.
+        let direct = crate::core::correlator::au059_synergy_fix(&ents).unwrap();
+        assert!((lat - direct.lat).abs() < 1e-9);
+        assert!((lon - direct.lon).abs() < 1e-9);
+        assert_eq!(fix["geohash"].as_str().unwrap(), direct.geohash);
     }

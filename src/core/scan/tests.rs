@@ -324,6 +324,13 @@ fn is_mega_domain_matches_roots_subdomains_and_www() {
         "PINTEREST.COM",
         "api.twitter.com",
         "github.com",
+        // People-search aggregators — the stranger co-occurrence noise this list
+        // exists to dampen.
+        "fastpeoplesearch.com",
+        "thatsthem.com",
+        "clustrmaps.com",
+        "zoominfo.com",
+        "rocketreach.co",
     ] {
         assert!(is_mega_domain(d), "{d} should be a mega-domain");
     }
@@ -349,6 +356,23 @@ fn is_infra_domain_matches_shared_providers() {
         "ns-664.awsdns-19.net",    // AWS Route 53 (varying shard root)
         "ns-1778.awsdns-30.co.uk", // …including the co.uk shard
         "MIMECAST.COM",
+        "jomax.net",     // GoDaddy registrar/abuse mail (dns@jomax.net)
+        "ns1.jomax.net", // …and its nameservers
+        "epik.com",      // registrar / nameserver provider
+        "ns3.epik.com",
+        "registrar-servers.com", // Namecheap control-plane
+        // Cloud DNS / CDN / cloud-app / ESP / mail-gateway infra (suffix-matched
+        // on the realistic NS / CNAME / MX forms they surface as).
+        "ns1-05.azure-dns.com",
+        "ns2-09.azure-dns.net",
+        "ns-cloud-a1.googledomains.com",
+        "ns1.cloudns.net",
+        "myapp.azureedge.net",
+        "myservice.cloudapp.net",
+        "django-env.elasticbeanstalk.com",
+        "us5.list-manage.com",
+        "target-com.mail.protection.outlook.com", // M365 EOP MX
+        "mx.emailsrvr.com",
     ] {
         assert!(is_infra_domain(d), "{d} should be shared infra");
         assert!(is_noncentral_domain(d), "{d} should be non-central");
@@ -357,6 +381,12 @@ fn is_infra_domain_matches_shared_providers() {
     for d in ["target-company.com.au", "johndoe.org", "acme-widgets.com"] {
         assert!(!is_infra_domain(d), "{d} must NOT be shared infra");
     }
+    // The M365 gateway suffix must NOT swallow `outlook.com` freemail itself —
+    // a subject's `…@outlook.com` is a prime finding, never infra.
+    assert!(
+        !is_infra_domain("outlook.com"),
+        "outlook.com freemail is not infra"
+    );
 }
 
 #[test]
@@ -594,6 +624,11 @@ fn detect_classifies_structured_kinds() {
         ("aabb.ccdd.eeff", MacAddress),
         ("AB12.CD34.EF56", MacAddress),
         ("-33.8688,151.2093", Coordinates),
+        // Self-evident rich coordinate notations now auto-detect too (the
+        // handle-shaped Maidenhead and bare space-separated decimals do not).
+        ("27°28'35.8\"S 153°00'59.8\"E", Coordinates), // degrees-minutes-seconds
+        ("geo:-27.4766,153.0166", Coordinates),        // RFC 5870 geo: URI
+        ("8FVC9G8F+6X", Coordinates),                  // Plus Code / Open Location Code
         ("AS13335", Asn),
         ("as15169", Asn),
         ("51824753556", AbnAcn),    // valid ABN (ATO worked example)
@@ -614,6 +649,25 @@ fn detect_classifies_structured_kinds() {
     for (value, want) in cases {
         assert_eq!(TargetKind::detect(value), want, "detect({value:?})");
     }
+}
+
+#[test]
+fn rich_coordinate_notations_normalise_to_canonical_decimal() {
+    // A self-evident notation auto-detects AND its value is canonicalised to the
+    // 6-dp "lat,lon" every downstream geo consumer already speaks.
+    let dms = Target::detect("27°28'35.8\"S 153°00'59.8\"E");
+    assert_eq!(dms.kind, TargetKind::Coordinates);
+    assert_eq!(dms.value, "-27.476611,153.016611");
+
+    let geo = Target::detect("geo:-27.4766,153.0166");
+    assert_eq!(geo.kind, TargetKind::Coordinates);
+    assert_eq!(geo.value, "-27.476600,153.016600");
+
+    // A Maidenhead locator is handle-shaped, so it is NOT auto-detected …
+    assert_ne!(TargetKind::detect("QG62kn"), TargetKind::Coordinates);
+    // … yet an explicit `--kind coordinates` accepts and normalises it.
+    let grid = Target::new(TargetKind::Coordinates, "QG62kn");
+    assert_eq!(grid.value, "-27.437500,152.875000");
 }
 
 #[test]
@@ -738,6 +792,32 @@ fn validate_rejects_control_chars() {
             .validate()
             .is_err()
     );
+}
+
+#[test]
+fn validate_rejects_mixed_script_homograph() {
+    // A Cyrillic-`а` `pаypal.com` reads as the ASCII brand but is a distinct
+    // entity — the classic homograph spoof — and must be rejected.
+    assert!(
+        Target::new(TargetKind::Domain, "p\u{0430}ypal.com")
+            .validate()
+            .is_err()
+    );
+    // The clean ASCII seed passes (no behavioural change for legitimate input).
+    assert!(
+        Target::new(TargetKind::Domain, "paypal.com")
+            .validate()
+            .is_ok()
+    );
+}
+
+#[test]
+fn sanitise_strips_invisible_unicode() {
+    // A zero-width joiner padded into a value is removed at the ingestion
+    // boundary so the two spellings finally normalise to one (fixes silent
+    // non-dedup); clean input is unchanged.
+    assert_eq!(sanitise_target_input("jo\u{200D}hn"), "john");
+    assert_eq!(sanitise_target_input("john"), "john");
 }
 
 #[test]
@@ -1120,15 +1200,68 @@ fn empty_options_object_matches_product_defaults() {
         from_empty.max_concurrent, product.max_concurrent,
         "omitted max_concurrent must deserialise to the product default"
     );
-    assert_eq!(
-        from_empty.min_expand_confidence,
-        product.min_expand_confidence
-    );
     assert_eq!(from_empty.regional_search, product.regional_search);
-    // depth is the one DOCUMENTED divergence: library Default is 0 (inert,
-    // deterministic for programmatic callers), serde default is the product 2.
+    // depth, min_expand_confidence and max_entities are the DOCUMENTED
+    // divergences: the library `Default` stays inert/deterministic for
+    // programmatic callers (depth 0, floor 0.50, uncapped) while the serde field
+    // defaults apply the COMPREHENSIVE product values so an API/web request that
+    // omits them is as thorough as `hse scan`.
     assert_eq!(from_empty.depth, DEFAULT_SCAN_DEPTH);
+    assert!((from_empty.min_expand_confidence - DEFAULT_MIN_EXPAND_CONFIDENCE).abs() < 1e-9);
+    assert_eq!(from_empty.max_entities, Some(DEFAULT_MAX_ENTITIES));
     // An explicit 0 is still honoured as fully-sequential.
     let explicit: ScanOptions = serde_json::from_str(r#"{"max_concurrent":0}"#).unwrap();
     assert_eq!(explicit.max_concurrent, 0);
+}
+
+/// Locks the DECOUPLING of the library default from the serde field defaults.
+/// The library `ScanOptions::default()` — used by programmatic callers and the
+/// test suite — must STAY conservative (depth 0 single-round, expansion floor
+/// 0.50 Probable, uncapped) for determinism, even though the CLI/API/web product
+/// surface now defaults to the comprehensive depth 3 / floor 0.20 / cap 2500.
+#[test]
+fn library_default_stays_conservative_and_decoupled_from_serde() {
+    let d = ScanOptions::default();
+    assert_eq!(d.depth, 0, "library default is single-round");
+    assert!(
+        (d.min_expand_confidence - 0.50).abs() < 1e-9,
+        "library default expansion floor stays at the conservative 0.50"
+    );
+    assert_eq!(d.max_entities, None, "library default stays uncapped");
+    // …and these MUST differ from the comprehensive product/serde defaults,
+    // i.e. the decoupling is real, not an accidental equality.
+    assert_ne!(d.depth, DEFAULT_SCAN_DEPTH);
+    assert!((d.min_expand_confidence - DEFAULT_MIN_EXPAND_CONFIDENCE).abs() > 1e-9);
+    assert_ne!(d.max_entities, Some(DEFAULT_MAX_ENTITIES));
+}
+
+/// A `ScanRequest` deserialised either with the whole `options` object omitted
+/// or with a present-but-empty `options:{}` must yield the SAME comprehensive
+/// product defaults as `hse scan`: depth 3, expansion floor 0.20, entity cap
+/// 2500. This is the API/SPA-thoroughness guarantee.
+#[test]
+fn scan_request_defaults_to_comprehensive_options() {
+    for body in [r#"{"value":"x"}"#, r#"{"value":"x","options":{}}"#] {
+        let req: ScanRequest = serde_json::from_str(body).unwrap();
+        assert_eq!(req.options.depth, DEFAULT_SCAN_DEPTH, "depth for {body}");
+        assert_eq!(req.options.depth, 3, "depth literal for {body}");
+        assert!(
+            (req.options.min_expand_confidence - DEFAULT_MIN_EXPAND_CONFIDENCE).abs() < 1e-9,
+            "expansion floor for {body}"
+        );
+        assert!(
+            (req.options.min_expand_confidence - 0.20).abs() < 1e-9,
+            "expansion floor literal for {body}"
+        );
+        assert_eq!(
+            req.options.max_entities,
+            Some(DEFAULT_MAX_ENTITIES),
+            "entity cap for {body}"
+        );
+        assert_eq!(
+            req.options.max_entities,
+            Some(2500),
+            "entity cap literal for {body}"
+        );
+    }
 }

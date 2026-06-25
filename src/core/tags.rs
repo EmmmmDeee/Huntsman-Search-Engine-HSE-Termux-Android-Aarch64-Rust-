@@ -24,6 +24,12 @@ pub const COARSE: &str = "coarse";
 /// coordinates that geolocate a hosting IP (e.g. a Cloudflare edge), so the
 /// area-of-operation rule (AU-052) can exclude them from a person's footprint.
 pub const HOSTING: &str = "hosting";
+/// A WHOIS/RDAP **registrant** location — the domain owner's filing or privacy
+/// address (often a registrar's privacy service), not the scan subject's home.
+/// Carried by the address/coordinates a WHOIS record yields so the geo rules
+/// can keep it out of the subject's physical footprint (see
+/// `is_infrastructure_geo`, AU-018/026/030).
+pub const REGISTRANT: &str = "registrant";
 
 // Device / local
 pub const WIFI_AP: &str = "wifi-ap";

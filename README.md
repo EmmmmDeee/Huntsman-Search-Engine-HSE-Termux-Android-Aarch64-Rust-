@@ -5,7 +5,7 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
 
-Pure-Rust OSINT / GEOINT platform with **127 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **126 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 SpiderFoot-style Web UI, zero native dependencies.
 
@@ -71,6 +71,12 @@ so keys never leave the device).
 > That's the whole install: **one command, then `hse serve`, then open
 > `http://127.0.0.1:8080` in Chrome.** Everything below is reference detail.
 
+> **Web & API scans are as thorough as the CLI.** A scan launched from the
+> Chrome SPA's **New Scan** wizard, or via `POST /api/v1/scans` with `options`
+> omitted, uses the same comprehensive defaults as `hse scan` — depth 3,
+> expansion floor 0.20, entity cap 2500 — so you get the full seed → identifiers
+> → pivots → infrastructure sweep without tuning anything.
+
 > **Termux battery & background (required for long scans):** Android → Settings → Apps → Termux → Battery → set to **Unrestricted** and enable "Allow background data". Without this Android kills Termux mid-scan.
 
 ### Manual build (advanced — the installer already does this)
@@ -105,7 +111,7 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 127 modules
+hse modules                                                 # list all 126 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
@@ -136,7 +142,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 |------|------|---------|---------|
 | Email | `--kind email` | `user@example.com` | 35 |
 | Username | `--kind username` | `johndoe` | 14 |
-| Phone | `--kind phone` | `+61400000000` | 8 |
+| Phone | `--kind phone` | `+61400000000` | 7 |
 | Full Name | `--kind name` | `Jordan Leigh Meyers` | 6 |
 | IP Address | `--kind ip` | `1.1.1.1` | 33 |
 | Domain | `--kind domain` | `example.com` | 39 |
@@ -153,21 +159,21 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ---
 
-## Module Overview (127 modules — 94 free, 33 key-gated/paid)
+## Module Overview (126 modules — 93 free, 33 key-gated/paid)
 
-> Grouped highlights below (all 127). The **complete** catalogue with target
+> Grouped highlights below (all 126). The **complete** catalogue with target
 > kinds and output entities — kept exhaustive by the
 > `modules_md_lists_every_registered_module` CI guard — lives in
 > [`docs/MODULES.md`](docs/MODULES.md). The headline count is swept against
 > `registry()` in CI; run `hse modules` for the live list.
 
-**API-Free (no keys required) — 93:**
+**API-Free (no keys required) — 92:**
 - **Breach/identity**: `psbdmp`, `pwned_passwords`, `xposed_or_not`
 - **Social**: `crates_io`, `github_code_search`, `github_user`, `hacker_news`, `keybase`, `npm_author`, `reddit_user`, `social_probe`, `streaming_probe`, `username_search`, `username_variants`
-- **People**: `ahpra`, `au_electoral`, `au_people`, `au_property`, `contact_enrich`, `employer_pivot`, `gravatar`, `name_intel`, `pgp`, `wikidata`
+- **People**: `ahpra`, `au_electoral`, `au_people`, `au_property`, `contact_enrich`, `employer_pivot`, `gravatar`, `name_intel`, `payid`, `pgp`, `wikidata`
 - **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `rdap_domain`, `subdomain_takeover`, `typosquat`, `whois`
-- **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipapi`, `ipinfo`, `ipquery`, `netblock`, `portscan`, `ripestat`, `shodan`, `urlscan`
-- **Geolocation**: `breach_timezone`, `cell_local`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `overpass`, `phone_area_geo`, `phone_carrier_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
+- **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipinfo`, `ipquery`, `netblock`, `portscan`, `ripestat`, `shodan`, `urlscan`
+- **Geolocation**: `breach_timezone`, `cell_local`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `overpass`, `phone_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
 - **Threat intel**: `urlhaus`
 - **Email**: `disposable_check`, `email_canonical`, `email_parse`, `smtp_vrfy`
 - **Phone**: `phone_intl`
@@ -175,7 +181,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 - **Search**: `search_engines`
 - **Web analysis**: `cloud_storage`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
 - **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`, `signal_radar`
-- **Other**: `api_key_probe`, `chain_intel`, `qld_unclaimed`
+- **Other**: `api_key_probe`, `chain_intel`
 
 **Key-gated / Paid — 33 (28 key-gated · 5 paid):**
 - `abn_lookup`, `abuseipdb`, `censys`, `criminal_ip`, `dehashed`, `emailrep`
@@ -183,6 +189,19 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 - `leakix`, `netlas`, `niamonx`, `numverify`, `oathnet_pro`, `onyphe`, `opencellid`, `osintcat`, `proxycurl`
 - `securitytrails`, `see_know`, `seon`, `threatfox`, `trove_au`, `virustotal`, `whoisxml`
 - `wifi_intel`, `wigle`, `zoomeye`
+
+### MITRE ATT&CK alignment (in the data, not a side report)
+
+Every module is mapped to the MITRE ATT&CK **Reconnaissance** tactic (TA0043)
+technique(s) it implements. That mapping is **woven into every scan**: as each
+finding is admitted, the engine stamps it inline with its producing module's
+technique(s) as `attack:<TECHNIQUE_ID>` tags (e.g. `attack:T1589.002` "Email
+Addresses"). So the technique that collected a datum travels with the datum —
+visible in the entity's `tags` in JSON output, on each entity in the full
+dossier (`hse export <id> --format full`) and `hse scan --output dossier`, and
+in the database — with no separate coverage report to reconcile. A finding
+corroborated by several modules carries all of their techniques (merges union
+the tags).
 
 
 ## Web UI (SpiderFoot-style)
@@ -307,7 +326,7 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 - rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
 - 3,100+ tests (unit + API integration + architecture boundary enforcement)
-- 63 correlator rules (AU-001 through AU-063), incl. graph-aware edge rules
+- 69 correlator rules (AU-001 through AU-064 plus AU-067/AU-068/AU-069/AU-070/AU-071), incl. graph-aware edge, transitive, multi-pathway corroboration, gap-analysis, pathway-template, resolved-identity-cluster, anonymous-SIM, high-integrity-connection (max-bottleneck route), connection-broker (identity articulation-point), and robustly-corroborated-identity-cluster (no-single-point-of-failure k-redundant cluster) rules (plus engine-emitted cross-scan findings AU-065/AU-066)
 - 2 tokio worker threads (tuned for Termux low-power devices)
 - Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)
 

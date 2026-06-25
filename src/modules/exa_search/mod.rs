@@ -31,6 +31,7 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
+use crate::util::extract::EMAIL_RE;
 
 const SRC: &str = "exa_search";
 const KEY_ENV: &str = "HUNTSMAN_EXA_KEY";
@@ -297,10 +298,6 @@ fn mine_snippet(text: &str, scan_id: &str, source_url: &str, result: &mut Module
     }
 }
 
-static EMAIL_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
-        .expect("constant email regex")
-});
 static PHONE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(r"\+?\d[\d\s\-().]{6,18}\d").expect("constant phone regex")
 });

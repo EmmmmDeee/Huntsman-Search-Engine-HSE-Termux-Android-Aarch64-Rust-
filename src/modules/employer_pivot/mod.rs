@@ -122,7 +122,16 @@ impl Module for EmployerPivot {
 
         let mut all_text = String::new();
         let mut visited: Vec<String> = Vec::new();
+        // Track whether the base homepage is reachable — if the root path fails
+        // (DC IP blocked, domain dead, etc.) no sub-path will succeed either.
+        // Live scan: 136 employer_pivot dispatches at 12 s each = 27 min wasted
+        // on unreachable domains; bail after the first failure.
+        let mut homepage_ok = false;
         for path in paths {
+            // Sub-paths are only useful when the homepage was reachable.
+            if path != "/" && !homepage_ok {
+                break;
+            }
             let url = format!("https://{domain}{path}");
             // The host is an attacker-influenceable discovered domain, so fetch
             // through the SSRF-guarded reqwest client (private-IP-filtering DNS
@@ -137,6 +146,9 @@ impl Module for EmployerPivot {
                 .await
             {
                 Ok(resp) if resp.status().is_success() => {
+                    if path == "/" {
+                        homepage_ok = true;
+                    }
                     crate::util::http::read_body_capped(resp, 512 * 1024).await
                 }
                 _ => None,
@@ -274,12 +286,10 @@ fn domain_for_target(t: &Target) -> Option<String> {
 }
 
 fn extract_emails(text: &str, employer_domain: &str) -> Vec<String> {
-    static R: OnceLock<Regex> = OnceLock::new();
-    let re = R.get_or_init(|| {
-        Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
-            .expect("constant employer email regex")
-    });
-    re.find_iter(text)
+    // Canonical email matcher (util::extract::EMAIL_RE) — same pattern this
+    // module open-coded; keep the per-call domain filter (no dedup here).
+    crate::util::extract::EMAIL_RE
+        .find_iter(text)
         .map(|m| m.as_str().to_lowercase())
         .filter(|s| {
             s.rsplit_once('@')

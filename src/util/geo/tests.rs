@@ -115,6 +115,24 @@ use super::*;
     }
 
     #[test]
+    fn ip_asn_entity_is_the_shared_provider_birth() {
+        use crate::core::entity::EntityKind;
+        // The identical Asn entity the five IP-geo providers emit: kind Asn,
+        // confidence 0.80, value = the caller's already-formatted ASN string,
+        // and a single "ASN for {ip}" evidence stamped with the caller's source.
+        let e = ip_asn_entity("AS1221", "ip2location", "101.169.42.148", "scan-x");
+        assert_eq!(e.kind, EntityKind::Asn);
+        assert_eq!(e.value, "AS1221");
+        assert!((e.confidence - 0.80).abs() < 1e-9);
+        assert_eq!(e.evidence.len(), 1);
+        assert_eq!(e.evidence[0].summary, "ASN for 101.169.42.148");
+        assert_eq!(e.evidence[0].source, "ip2location");
+        // No tag is added by the helper — the provider tag is the caller's job,
+        // so a freshly-built entity carries none of them.
+        assert!(!e.has_tag("ip2location"));
+    }
+
+    #[test]
     fn plausible_provider_coord_rejects_out_of_range_and_nonfinite() {
         // The gap the bare `abs() > 0.01` idiom left open: these used to pass
         // straight through into a high-confidence Coordinates entity.

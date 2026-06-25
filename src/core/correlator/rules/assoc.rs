@@ -65,9 +65,16 @@ fn entity_residences(e: &Entity) -> Vec<String> {
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for ev in &e.evidence {
         if let Some(raw) = ev.attributes.get("address") {
-            let key = normalise_address(raw);
-            if is_residence_address(&key) && seen.insert(key.clone()) {
-                out.push(key);
+            // A value may carry several distinct observations accumulated as
+            // "a; b" (the `with_attr` / `merge_evidence_attrs` convention, also
+            // split by `breach_pii::scan_evidence`), so judge each candidate
+            // residence on its own — a multi-value string normalised whole would
+            // garble into one non-matching key.
+            for part in raw.split("; ") {
+                let key = normalise_address(part.trim());
+                if is_residence_address(&key) && seen.insert(key.clone()) {
+                    out.push(key);
+                }
             }
         }
     }
@@ -100,11 +107,18 @@ fn entity_phones(e: &Entity) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for ev in &e.evidence {
-        if let Some(raw) = ev.attributes.get("phone")
-            && let Some(key) = normalise_phone(raw)
-            && seen.insert(key.clone())
-        {
-            out.push(key);
+        let Some(raw) = ev.attributes.get("phone") else {
+            continue;
+        };
+        // Split the multi-value "a; b" accumulation convention so two distinct
+        // numbers aren't concatenated into one bogus digit-run key (the same
+        // handling `breach_pii::scan_evidence` already applies).
+        for part in raw.split("; ") {
+            if let Some(key) = normalise_phone(part)
+                && seen.insert(key.clone())
+            {
+                out.push(key);
+            }
         }
     }
     out
@@ -186,7 +200,9 @@ fn residence_groups(entities: &[Entity]) -> std::collections::BTreeMap<String, G
                 .entry(key)
                 .or_default()
                 .anchor_uid
-                .get_or_insert(a.uid.clone());
+                // Lazy: only the FIRST entity in each residence group sets the
+                // anchor, so clone the uid only when the slot is still empty.
+                .get_or_insert_with(|| a.uid.clone());
         }
     }
     for e in entities {
@@ -287,7 +303,8 @@ pub(in crate::core::correlator) fn rule_au_050_shared_phone_association(
                 .entry(key)
                 .or_default()
                 .anchor_uid
-                .get_or_insert(ph.uid.clone());
+                // Lazy: clone the uid only for the first phone in each group.
+                .get_or_insert_with(|| ph.uid.clone());
         }
     }
     for e in entities {
@@ -374,17 +391,39 @@ pub(in crate::core::correlator) fn rule_au_051_shared_surname_kin(
             let mut kin_uids: Vec<String> = members.iter().map(|(_, u)| u.to_string()).collect();
             kin_uids.sort_unstable();
             uids.extend(kin_uids);
+            // A COMMON surname (Smith, Nguyen, …) shared at one address is far
+            // weaker kin evidence: an apartment tower or share-house whose unit
+            // numbers are absent from the data collapses unrelated same-surname
+            // co-residents onto one residence key, and a popular name makes that
+            // coincidence likely. Asserting "likely relatives; kin pivot" at
+            // Critical there is a confident false claim — surface it as a High LEAD
+            // to verify instead. A distinctive surname at one residence stays the
+            // Critical kin signal it has always been. (Same `is_common` discount the
+            // kinship/leads/engine paths already apply.)
+            let common = crate::util::surnames::is_common(&sn);
+            let (severity, qualifier) = if common {
+                (
+                    Severity::High,
+                    "possibly relatives (common surname — verify before treating as a kin pivot)",
+                )
+            } else {
+                (
+                    Severity::Critical,
+                    "likely relatives; kin pivot to reach the subject",
+                )
+            };
             out.push(Correlation::new(
                 "AU-051",
                 "Shared-surname kin (likely relatives)",
-                Severity::Critical,
+                severity,
                 format!(
                     "{} people sharing the family name '{}' co-located at one residence ('{}'): \
-                     {} — likely relatives; kin pivot to reach the subject",
+                     {} — {}",
                     names.len(),
                     sn,
                     addr,
-                    names.join(", ")
+                    names.join(", "),
+                    qualifier
                 ),
                 uids,
                 scan_id,
@@ -466,5 +505,35 @@ mod tests {
         e.add_evidence(Evidence::new("see_know", "hit").with_attr("phone", "911"));
         let phones = entity_phones(&e);
         assert_eq!(phones, vec!["14155550100".to_string()]);
+    }
+
+    #[test]
+    fn entity_phones_and_residences_split_multi_value_observations() {
+        // When two distinct observations are accumulated under one key as "a; b"
+        // (the with_attr / absorb convention), each must be judged on its own — a
+        // whole-string normalise would concatenate the two phones' digits into one
+        // bogus key and garble the two addresses into one non-matching key.
+        let mut e = Entity::new(EntityKind::Person, "Jane Doe", 0.6, "s");
+        e.add_evidence(
+            Evidence::new("oathnet", "hit")
+                .with_attr("phone", "+1 (415) 555-0100")
+                .with_attr("phone", "+61 400 000 001"),
+        );
+        let mut phones = entity_phones(&e);
+        phones.sort();
+        assert_eq!(
+            phones,
+            vec!["14155550100".to_string(), "61400000001".to_string()],
+            "both numbers recovered, not a concatenated digit-run"
+        );
+
+        let mut h = Entity::new(EntityKind::Person, "Jane Doe", 0.6, "s");
+        h.add_evidence(
+            Evidence::new("oathnet", "hit")
+                .with_attr("address", "12 Wattle St, Logan QLD 4114")
+                .with_attr("address", "99 Oak Ave, Ipswich QLD 4305"),
+        );
+        let res = entity_residences(&h);
+        assert_eq!(res.len(), 2, "both residences recovered: {res:?}");
     }
 }

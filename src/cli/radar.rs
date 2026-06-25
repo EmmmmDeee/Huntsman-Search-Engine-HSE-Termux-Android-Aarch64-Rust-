@@ -30,6 +30,22 @@ pub(super) async fn cmd_radar(
 ) -> Result<()> {
     use std::collections::HashSet;
 
+    // Live radar is completely disabled until deliberately enabled in a place
+    // wholly separate from seed scans (the `feature.live_radar` toggle). It
+    // sweeps the operator's OWN device/surroundings — never a seed target — so a
+    // seed scan can neither reach nor accidentally activate it; only this manual
+    // opt-in can.
+    if !crate::util::settings::live_radar_enabled() {
+        return Err(crate::core::error::Error::Other(
+            "live radar is disabled. It sweeps this device's own surroundings (WiFi / \
+             Bluetooth / cell / GPS / LAN), not a seed target, so it is off by default and \
+             kept separate from scans. Enable it deliberately:\n    \
+             hse config feature.live_radar on\nthen re-run `hse radar`  (disable again: \
+             hse config feature.live_radar off)."
+                .to_string(),
+        ));
+    }
+
     let color = use_color();
     eprintln!(
         "{}",
@@ -59,12 +75,20 @@ pub(super) async fn cmd_radar(
 
         // Phase 1: Sensor sweep (passive modules only, any target, depth=0)
         let sweep_sid = scan_id("radar", &format!("sweep-{sweep_num}"));
-        let sweep_target = Target::new(crate::core::scan::TargetKind::Domain, "radar.local");
+        // The live sensors gate on a local-point seed (Coordinates/MAC) and ignore
+        // its VALUE — they scan the device, not the point — so the sweep is seeded
+        // with a sentinel coordinate. (A `Domain` seed is NOT accepted by the
+        // sensors, so the sweep would dispatch nothing.) The seed is tagged `seed`
+        // and excluded from the pivot phase below, so it contributes no noise.
+        let sweep_target = Target::new(crate::core::scan::TargetKind::Coordinates, "0,0");
         let sweep_opts = ScanOptions {
             modules: Some(SENSOR_MODULES.iter().map(|s| (*s).to_string()).collect()),
             passive_only: true,
             depth: 0,
             max_concurrent: 4,
+            // `hse radar` IS the dedicated, separate activation for the live
+            // device sensors — the one place they are permitted to run.
+            allow_live_sensors: true,
             ..Default::default()
         };
         let sweep_scan =
@@ -85,6 +109,10 @@ pub(super) async fn cmd_radar(
         // Phase 2: Identify NEW entities (not seen in previous sweeps)
         let mut new_targets: Vec<(crate::core::scan::TargetKind, String)> = Vec::new();
         for entity in &sweep_entities {
+            // The synthetic sweep seed is not a real signal — never pivot it.
+            if entity.has_tag("seed") {
+                continue;
+            }
             if seen_entities.insert(entity.uid.clone())
                 && let Some(tk) = crate::core::scan::TargetKind::from_entity_kind(&entity.kind)
             {

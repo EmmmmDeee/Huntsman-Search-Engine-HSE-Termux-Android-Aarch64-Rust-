@@ -177,6 +177,72 @@
     .empty-state{padding:32px 20px;text-align:center;color:#888}
     .empty-state h3{color:#555;font-weight:500;font-size:16px;margin-bottom:6px}
     .empty-state p{font-size:13px;max-width:480px;margin:0 auto 12px;line-height:1.5}
+    /* Network tab — subject hub + grouped, ranked connection cards (mobile-first) */
+    .net-hero{display:flex;flex-wrap:wrap;align-items:center;gap:12px;justify-content:space-between;
+      background:linear-gradient(135deg,#eaf7fd,#f7f7f7);border:1px solid #cfe8f5;border-radius:6px;
+      padding:12px 16px;margin-bottom:12px}
+    .net-hero-name{font-size:20px;font-weight:600;color:#222;word-break:break-word}
+    .net-hero-meta{margin-top:3px}
+    .net-hero-stats{display:flex;gap:14px}
+    .net-stat{text-align:center;min-width:54px}
+    .net-stat .v{font-size:20px;font-weight:600;color:#07aef1;line-height:1.1}
+    .net-stat .l{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:.04em}
+    .net-group{border:1px solid #e3e3e3;border-radius:5px;margin-bottom:10px;overflow:hidden}
+    .net-group-head{background:#f7f7f7;border-bottom:1px solid #e3e3e3;padding:7px 12px;font-weight:600;color:#333;font-size:13px}
+    .net-conn{display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid #f0f0f0;flex-wrap:wrap}
+    .net-conn:last-child{border-bottom:none}
+    .net-conn:hover{background:#f5fbff}
+    .net-rel{flex-shrink:0;min-width:76px;font-size:10px;text-transform:uppercase;letter-spacing:.03em;
+      color:#31708f;background:#e7f3fb;border-radius:8px;padding:2px 8px;text-align:center;font-weight:600}
+    .net-conn-val{flex:1;min-width:120px;font-family:monospace;font-size:12.5px;color:#222;word-break:break-all}
+    .net-conf{flex-shrink:0;width:54px;height:6px;background:#eee;border-radius:3px;overflow:hidden}
+    .net-conf-bar{display:block;height:100%;background:#07aef1}
+    /* Leads tab — ranked next-action cards with a one-click Scan button */
+    .lead-card{display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap;
+      border:1px solid #e3e3e3;border-left:3px solid #07aef1;border-radius:5px;padding:9px 13px;margin-bottom:8px;background:#fff}
+    .lead-card:hover{background:#f5fbff}
+    .lead-main{flex:1;min-width:180px}
+    .lead-val{font-size:14px;font-weight:600;color:#222;word-break:break-word}
+    .lead-reason{font-size:11.5px;color:#777;margin-top:2px}
+    .lead-scan{flex-shrink:0}
+    /* Confirmed leads (an independent second signal corroborates them) get a
+       green accent + badge so the reliable pivots stand out; geo-discordant
+       namesakes are dimmed with an amber caution badge so they're easy to skip. */
+    .lead-card.confirmed{border-left-color:#2bbf6a}
+    .lead-card.discordant{border-left-color:#c9a23a;opacity:.72}
+    .lead-card.discordant:hover{opacity:1}
+    .lead-badge{display:inline-block;font-size:10px;font-weight:700;color:#1a8f4e;background:#e6f7ee;
+      border:1px solid #bfe8d0;border-radius:3px;padding:0 5px;margin-left:6px;vertical-align:middle;letter-spacing:.3px}
+    .lead-badge.namesake{color:#8a6d1a;background:#fdf6e3;border-color:#ecd9a0}
+    body.dark-theme .lead-card{background:#1f1f1f;border-color:#333;border-left-color:#07aef1}
+    body.dark-theme .lead-card.confirmed{border-left-color:#2bbf6a}
+    body.dark-theme .lead-card.discordant{border-left-color:#c9a23a}
+    body.dark-theme .lead-card:hover{background:#243240}
+    body.dark-theme .lead-val{color:#eee}
+    body.dark-theme .lead-reason{color:#999}
+    body.dark-theme .lead-badge{color:#7fe0a8;background:#173726;border-color:#2c5d40}
+    body.dark-theme .lead-badge.namesake{color:#e6c878;background:#332a12;border-color:#5d4f2c}
+    /* Timeline — the subject's footprint reconstructed as one vertical chronology */
+    .tl{position:relative;margin:4px 0 0 6px;padding-left:18px;border-left:2px solid #e3e3e3}
+    .tl-item{position:relative;margin-bottom:11px}
+    .tl-date{font-size:11px;font-weight:600;color:#555;font-variant-numeric:tabular-nums}
+    .tl-dot{position:absolute;left:-25px;top:2px;width:10px;height:10px;border-radius:50%;border:2px solid #fff}
+    .tl-body{font-size:13px;color:#222;margin-top:1px;word-break:break-word}
+    .tl-badge{display:inline-block;font-size:10px;font-weight:700;color:#fff;border-radius:3px;padding:0 5px;margin-right:5px;vertical-align:middle;letter-spacing:.2px}
+    .tl-src{font-size:10.5px;margin-top:1px}
+    body.dark-theme .tl{border-left-color:#333}
+    body.dark-theme .tl-date{color:#aaa}
+    body.dark-theme .tl-dot{border-color:#1f1f1f}
+    body.dark-theme .tl-body{color:#eee}
+    body.dark-theme .net-hero{background:linear-gradient(135deg,#16222c,#1f1f1f);border-color:#2d4a5a}
+    body.dark-theme .net-hero-name{color:#eee}
+    body.dark-theme .net-group{border-color:#333}
+    body.dark-theme .net-group-head{background:#2a2a2a;border-color:#333;color:#ddd}
+    body.dark-theme .net-conn{border-bottom-color:#2a2a2a}
+    body.dark-theme .net-conn:hover{background:#243240}
+    body.dark-theme .net-conn-val{color:#ddd}
+    body.dark-theme .net-rel{background:#1e2a30;color:#5aa0cf}
+    body.dark-theme .net-conf{background:#333}
     /* Dark mode (Spiderfoot-compatible — toggled via #theme-toggler) */
     body.dark-theme{background:#1a1a1a;color:#ddd}
     body.dark-theme .navbar-inverse{background:#111;border-color:#000}
@@ -369,9 +435,9 @@ const TARGET_KINDS = [
 const USE_CASES = {
   all: {
     label:'Complete (All)',
-    desc:'<b>Get anything and everything about the target — the no-compromise scan.</b><br><br>Every Huntsman module is enabled (slow), expansion runs to maximum depth (3) at the Probable floor, and ROI pruning is disabled so nothing is skipped. The seed kind is auto-detected. Equivalent to the CLI <code>hse scan --full</code>.',
+    desc:'<b>Get anything and everything about the target — the no-compromise scan.</b><br><br>Every Huntsman module is enabled (slow), expansion runs to maximum depth (3) at the comprehensive 0.20 floor (so even the seed\'s own derived identifiers expand), and ROI pruning is disabled so nothing is skipped. The seed kind is auto-detected. Equivalent to the CLI <code>hse scan --full</code>.',
     pick:_m=>true,
-    options:()=>({depth:3, min_expand_confidence:0.40, max_roi:false})
+    options:()=>({depth:3, min_expand_confidence:0.20, max_roi:false})
   },
   footprint: {
     label:'Footprint',
@@ -427,8 +493,12 @@ const S = {
     usecase:'all', modules:null,
     activeTab:'usecase', dataType:null,
     showAdv:false,
-    options:{ exclude_modules:[], throttle_ms:250, module_timeout_ms:null, depth:2,
-              min_expand_confidence:0.50, max_entities:null, max_wall_time_secs:null,
+    // Comprehensive standard-scan defaults, matching `hse scan` and the API's
+    // default_scan_options: depth 3 / expansion floor 0.20 / entity cap 2500.
+    // buildWizardOptions() submits these, and the Advanced-options form displays
+    // them, so a web scan is as thorough as the CLI out of the box.
+    options:{ exclude_modules:[], throttle_ms:250, module_timeout_ms:null, depth:3,
+              min_expand_confidence:0.20, max_entities:2500, max_wall_time_secs:null,
               max_concurrent:2, min_confidence:null, free_only:false }
   }
 };
@@ -470,11 +540,13 @@ function kindToStr(k){
   return String(k);
 }
 function kindPill(k){const s=kindToStr(k);return `<span class="kind-pill k-${attr(s)}">${esc(s)}</span>`;}
-// Deterministic self-enrichment passes are NOT independent intelligence and
-// must not be counted as corroboration — mirror the backend's
-// ENRICHMENT_ONLY_SOURCES so a coarse geo guess the geospatial pass touched
-// isn't lifted out of the Candidate tier on the dashboard.
-const ENRICHMENT_SOURCES = new Set(['geo_normalize']);
+// Non-corroborating evidence sources — NOT independent intelligence, so they
+// must not count toward the C_eff boost. Mirrors the backend's
+// is_non_corroborating_source(): the deterministic self-enrichment pass
+// ('geo_normalize') and the recall replay ('recall'). Without 'recall' here a
+// re-scan's recalled rows would render a tier higher in Browse than the server
+// grades them (CANDIDATE shown as PROBABLE).
+const ENRICHMENT_SOURCES = new Set(['geo_normalize', 'recall']);
 // Distinct corroborating sources drive the C_eff boost — must match the
 // backend's Entity::source_count()/corroborating_sources(): count distinct
 // non-enrichment evidence.source strings; when none are present, fall back to
@@ -541,19 +613,44 @@ const API = {
   entities:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/entities'),
   correlations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/correlations'),
   relations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/relations'),
+  // Subject network: the seed hub + its connections grouped/ranked server-side
+  // (people, identifiers, aliases, locations, infrastructure) — the analyst view.
+  network:   id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/network'),
+  // Proactive leads: ranked untapped pivots the scan surfaced but didn't pursue,
+  // each a one-click follow-up scan.
+  leads:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/leads'),
+  // Footprint timeline: every dated event the evidence implies, oldest-first.
+  timeline:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/timeline'),
+  // Graph communities: relationship sub-clusters via label propagation.
+  communities: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/communities'),
+  // Network trust: entities ranked by graph-corroborated trust propagation.
+  trust:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/trust'),
+  // Connection path: how two named entities are linked through the relation graph.
+  // `cross` extends the search across every scan in the local intelligence database.
+  path: (id,from,to,n,cross)=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/path?from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to)+(n?'&paths='+n:'')+(cross?'&cross=true':'')),
+  // Per-scan quality / telemetry measures (the empirical scan-quality dashboard).
+  metrics:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/metrics'),
+  // Near-duplicate entity-resolution suggestions (probable same-identity groups).
+  duplicates: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/duplicates'),
+  // Pivot nodes: the graph's high-connectivity intermediaries (betweenness centrality).
+  pivots:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/pivots'),
+  gaps:       id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/gaps'),
   auditScan: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/audit'),
   create:    body=>API._req('/api/v1/scans',{method:'POST',body}),
+  // Forward-only scan-plan preview: which modules a seed engages, before scanning.
+  plan:      value=>API._req('/api/v1/plan?value='+encodeURIComponent(value)),
   // Raw-text upload (not JSON): POST a dossier file's contents to be parsed and
   // ingested as a scan. Bypasses _req's JSON envelope.
-  importDossier: text=>fetch('/api/v1/scans/import',{method:'POST',headers:{'Content-Type':'text/plain'},body:text}).then(async r=>{ if(!r.ok){ let e='HTTP '+r.status; try{ e=(await r.json()).error||e; }catch{} throw new Error(e); } return r.json(); }),
+  // The X-HSE-CSRF header makes this a non-simple request: same-origin (here) it
+  // sends straight through, but a cross-site caller must preflight, which CORS
+  // rejects — so a hostile page can't POST a forged dossier into the local DB.
+  importDossier: text=>fetch('/api/v1/scans/import',{method:'POST',headers:{'Content-Type':'text/plain','X-HSE-CSRF':'1'},body:text}).then(async r=>{ if(!r.ok){ let e='HTTP '+r.status; try{ e=(await r.json()).error||e; }catch{} throw new Error(e); } return r.json(); }),
   rerun:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/rerun',{method:'POST'}),
   cancel:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/cancel',{method:'POST'}),
   remove:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id),{method:'DELETE'}),
   csvUrl:    id=>'/api/v1/scans/'+encodeURIComponent(id)+'/entities.csv',
   reportUrl: id=>'/api/v1/scans/'+encodeURIComponent(id)+'/report.json',
   gexfUrl:   id=>'/api/v1/scans/'+encodeURIComponent(id)+'/graph.gexf',
-  attackUrl: id=>'/api/v1/scans/'+encodeURIComponent(id)+'/attack-navigator.json',
-  attackCov: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/attack-coverage.json'),
   debugUrl:  id=>'/api/v1/scans/'+encodeURIComponent(id)+'/debug.txt',
   keysGet:   ()=>API._req('/api/v1/settings/keys'),
   keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body}),
@@ -570,6 +667,11 @@ const API = {
   liveList:   ()=>API._req('/api/v1/live'),
   liveCreate: body=>API._req('/api/v1/live',{method:'POST',body}),
   liveStop:   id=>API._req('/api/v1/live/'+encodeURIComponent(id),{method:'DELETE'}),
+  // Live Signal Radar: ONE autonomous on-device sensor sweep, NO target. This is
+  // the sole activation path for the live sensors (signal_radar, device_sensors,
+  // wifi_intel, cell_intel, local_net) — an ordinary scan never runs them. The
+  // only input is an optional seed *type* (coordinates|mac_address).
+  radarSweep: seed=>API._req('/api/v1/radar'+(seed?('?seed='+encodeURIComponent(seed)):''),{method:'POST'}),
   selftest:     ()=>API._req('/api/v1/selftest'),
   logsUrl:      ()=>'/api/v1/logs',
   updateStatus: ()=>API._req('/api/v1/update/status'),
@@ -580,14 +682,8 @@ const API = {
   // Temporal diff of two stored scans of the same subject → what the later run
   // added/removed/re-scored. {added,removed,common,confidence_shifts}.
   diff:       (a,b)=>API._req('/api/v1/scans/'+encodeURIComponent(a)+'/diff/'+encodeURIComponent(b)),
-  // MITRE ATT&CK Reconnaissance coverage delta between two scans:
-  // {gained,lost,shared} technique lists + counts.
-  attackDiff: (a,b)=>API._req('/api/v1/scans/'+encodeURIComponent(a)+'/attack-coverage-diff/'+encodeURIComponent(b)),
   // Module capability graph: which input kinds flow to which produced kinds.
   modulesGraph: ()=>API._req('/api/v1/modules/graph'),
-  // HSE's static MITRE ATT&CK capability: which Reconnaissance techniques the
-  // tool can exercise (covered, with modules) vs the catalogue gaps.
-  attackCapability: ()=>API._req('/api/v1/attack/capability.json'),
   // Cross-scan entity pivot: everywhere an identifier appears, across every
   // scan. {entity, scan_ids:[…], observation_count}.
   entityGet:  uid=>API._req('/api/v1/entities/'+encodeURIComponent(uid))
@@ -610,7 +706,7 @@ function parseHash(){
   if (segs[0]==='live')                     return {name:'live', params:{}, query};
   if (segs[0]==='engines')                  return {name:'engines', params:{}, query};
   if (segs[0]==='diff')                     return {name:'diff', params:{a:query.a||'', b:query.b||''}, query};
-  if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'status'}, query};
+  if (segs[0]==='scaninfo' && query.id)     return {name:'scaninfo', params:{id:query.id, tab:query.tab||'report'}, query};
   return {name:'dash', params:{}, query};
 }
 function nav(href){ location.hash = href; }
@@ -721,8 +817,6 @@ async function renderDash(v){
 
     ${apiBudgetsPanel(s)}
 
-    <div id="attack-cap" style="margin-top:12px"></div>
-
     <div class="panel panel-default" style="margin-top:12px">
       <div class="panel-heading"><b>Recent Scans</b>
         <a href="#/scans" class="pull-right" style="font-size:12px">View all &rarr;</a>
@@ -731,34 +825,6 @@ async function renderDash(v){
         : '<div class="panel-body text-center text-muted">No scans yet — start one from <a href="#/newscan">New Scan</a>.</div>'}
     </div>`;
   if (recent.length) wireScansTable();
-  renderAttackCapability();
-}
-
-// Fill #attack-cap with HSE's STATIC MITRE ATT&CK Reconnaissance capability:
-// the techniques the tool can collect (covered, each chip tooltipping its
-// modules) vs the catalogue gaps. Answers "what can HSE collect?" up front.
-// Self-contained, inline-styled, silent on failure.
-async function renderAttackCapability(){
-  const el = $('#attack-cap'); if(!el) return;
-  try {
-    const a = await API.attackCapability();
-    if(!a || !a.total){ el.innerHTML=''; return; }
-    const pct = Math.round(a.coverage_pct||0);
-    const chip = (t,fg,bg)=>{
-      const m = (t.modules||[]).join(', ');
-      return `<span title="${attr(t.id+'  '+(t.name||'')+(m?' — '+m:''))}" style="display:inline-block;margin:2px;padding:1px 6px;border-radius:3px;font-size:11px;font-family:monospace;cursor:help;background:${bg};color:${fg}">${esc(t.id)}</span>`;
-    };
-    const covered = (a.covered||[]).map(t=>chip(t,'#fff','#096dd9')).join('');
-    const gaps = (a.gaps||[]).map(t=>chip(t,'#999','#eee')).join('');
-    el.innerHTML =
-      `<div class="panel panel-default"><div class="panel-heading"><b>MITRE ATT&amp;CK ${esc(a.tactic)} (${esc(a.tactic_id)}) capability</b>`
-      + ` <span class="text-muted" style="font-weight:400">— ${a.covered_count}/${a.total} techniques collectable (${pct}%)</span></div>`
-      + `<div class="panel-body" style="padding:8px 12px">`
-      + `<div style="height:6px;background:#eee;border-radius:3px;overflow:hidden;margin-bottom:6px"><div style="height:100%;width:${pct}%;background:#096dd9"></div></div>`
-      + `<div>${covered}${gaps}</div>`
-      + (gaps ? `<div class="text-muted" style="font-size:11px;margin-top:4px">Dimmed = no module collects this technique (a capability gap).</div>` : '')
-      + `</div></div>`;
-  } catch(_){ el.innerHTML=''; }
 }
 
 /* ═══════════ Page: SCANLIST (#/scans) ═══════════ */
@@ -968,10 +1034,7 @@ async function renderDiff(v){
     host.innerHTML = '<p class="text-muted">Computing diff…</p>';
     try {
       const d = await API.diff(av, bv);
-      // Entity diff first, then the MITRE ATT&CK coverage delta (filled async
-      // so a slow coverage compute never blocks the entity diff render).
-      host.innerHTML = renderDiffResult(d) + '<div id="attack-diff" style="margin-top:12px"></div>';
-      renderAttackDiff(av, bv);
+      host.innerHTML = renderDiffResult(d);
     } catch(e){ host.innerHTML = `<div class="alert alert-danger">${esc(e.message)}</div>`; }
   };
   $('#d-go').addEventListener('click', run);
@@ -1004,37 +1067,27 @@ function renderDiffResult(d){
     ${tbl('Re-scored','#8a6d3b',shifts,shiftRow)}`;
 }
 
-// Fill #attack-diff with the MITRE ATT&CK Reconnaissance coverage delta between
-// two scans: techniques GAINED (the later run widened collection), LOST
-// (narrowed), and SHARED. Each chip's tooltip names the implementing modules.
-// Self-contained, inline-styled, silent on failure.
-async function renderAttackDiff(a, b){
-  const el = $('#attack-diff'); if(!el) return;
-  try {
-    const d = await API.attackDiff(a, b);
-    if(!d || !d.tactic_id){ el.innerHTML=''; return; }
-    const chip = (t,fg,bg)=>{
-      const m = (t.modules||[]).join(', ');
-      return `<span title="${attr(t.id+'  '+(t.name||'')+(m?' — '+m:''))}" style="display:inline-block;margin:2px;padding:1px 6px;border-radius:3px;font-size:11px;font-family:monospace;cursor:help;background:${bg};color:${fg}">${esc(t.id)}</span>`;
-    };
-    const sec = (label,arr,fg,bg)=> arr.length
-      ? `<div style="margin-top:4px"><span class="text-muted" style="font-size:11px">${label} (${arr.length}):</span> ${arr.map(t=>chip(t,fg,bg)).join('')}</div>`
-      : '';
-    const body = d.unchanged
-      ? '<span class="text-muted">No change in ATT&CK technique coverage between these scans.</span>'
-      : sec('Gained', d.gained||[], '#fff', '#3c763d') + sec('Lost', d.lost||[], '#fff', '#a94442');
-    el.innerHTML =
-      `<div class="panel panel-default"><div class="panel-heading" style="font-weight:600">`
-      + `MITRE ATT&amp;CK ${esc(d.tactic)} (${esc(d.tactic_id)}) coverage delta `
-      + `<span class="text-muted" style="font-weight:400">— +${d.gained_count} gained / −${d.lost_count} lost / ${d.shared_count} shared</span>`
-      + `</div><div class="panel-body" style="padding:8px 12px">`
-      + body
-      + sec('Shared', d.shared||[], '#777', '#eee')
-      + `</div></div>`;
-  } catch(_){ el.innerHTML=''; }
+/* ═══════════ Page: NEWSCAN (#/newscan) ═══════════ */
+/* ── Forward-only scan-plan preview: which modules a seed engages, before spending
+   battery/time on a scan. GET /api/v1/plan?value=. Pure, offline, no scan run. ── */
+async function previewPlan(){
+  const value = ($('#scantarget').value || '').trim();
+  const out = $('#plan-preview');
+  if (!value){ out.innerHTML = '<span class="text-muted" style="font-size:12px">Enter a target above to preview.</span>'; return; }
+  out.innerHTML = '<span class="text-muted" style="font-size:12px">Resolving plan…</span>';
+  let p;
+  try { p = await API.plan(value); }
+  catch(e){ out.innerHTML = `<div class="alert alert-danger" style="margin:0;padding:6px 10px">${esc(e.message)}</div>`; return; }
+  const cats = (p.categories || []).map(c=>`<span class="tag" style="margin:0 4px 2px 0;display:inline-block">${esc(c.category)}&nbsp;${c.count}</span>`).join('');
+  const shown = (p.modules || []).slice(0, 40);
+  const mods = shown.map(m=>`<code style="margin:0 4px 2px 0;display:inline-block" title="${attr(m.description||'')}">${esc(m.name)}</code>`).join('');
+  out.innerHTML = `<div style="padding:8px 10px;border-left:3px solid #5bc0de;background:rgba(91,192,222,0.07)">
+    <div>Detected type: <span class="tag">${esc(p.kind)}</span> &middot; <b>${p.module_count}</b> module${p.module_count===1?'':'s'} will run</div>
+    <div style="margin-top:5px">${cats}</div>
+    <div style="margin-top:6px;line-height:1.9">${mods}${(p.modules||[]).length>40?' <span class="text-muted">…</span>':''}</div>
+  </div>`;
 }
 
-/* ═══════════ Page: NEWSCAN (#/newscan) ═══════════ */
 async function renderNewScan(v){
   if (!S.modules){ const m = await API.modules(); S.modules = m.modules || []; }
   const W = S.wizard;
@@ -1080,8 +1133,13 @@ async function renderNewScan(v){
             <input class="form-control" type="text" id="scanname" value="${attr(W.name)}" placeholder="The name of this scan.">
           </div>
           <label for="scantarget">Scan Target</label>
-          <div class="input-group" style="padding-bottom:10px">
+          <div class="input-group" style="padding-bottom:6px">
             <input class="form-control" type="text" id="scantarget" value="${attr(W.value)}" placeholder="The target of your scan." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          </div>
+          <div style="padding-bottom:10px">
+            <button class="btn btn-default btn-xs" type="button" onclick="previewPlan()"><i class="glyphicon glyphicon-eye-open"></i>&nbsp;Preview plan</button>
+            <span class="text-muted" style="font-size:11px;margin-left:6px">see which modules run, before scanning</span>
+            <div id="plan-preview" style="margin-top:8px"></div>
           </div>
           <label for="scankind">Target Type</label>
           <select id="scankind" class="form-control">
@@ -1406,7 +1464,7 @@ function buildWizardOptions(){
     throttle_ms: Number(W.options.throttle_ms)||0,
     max_concurrent: Number(W.options.max_concurrent)||0,
     depth: Number(W.options.depth)||0,
-    min_expand_confidence: Number(W.options.min_expand_confidence)||0.75,
+    min_expand_confidence: Number(W.options.min_expand_confidence)||0.20,
     free_only: !!W.options.free_only
   };
   if (W.options.module_timeout_ms!=null && W.options.module_timeout_ms!=='') opts.module_timeout_ms = Number(W.options.module_timeout_ms);
@@ -1513,7 +1571,6 @@ async function renderScanInfo(v){
           <button class="btn btn-default btn-sm" data-rerun="${attr(id)}" title="Rescan"><i class="glyphicon glyphicon-repeat"></i>&nbsp;Rescan</button>
           <a class="btn btn-default btn-sm" href="${API.csvUrl(id)}" title="Export entities as CSV"><i class="glyphicon glyphicon-download-alt"></i>&nbsp;CSV</a>
           <a class="btn btn-default btn-sm" href="${API.reportUrl(id)}" title="Export full report as JSON"><i class="glyphicon glyphicon-save"></i>&nbsp;JSON</a>
-          <a class="btn btn-default btn-sm" href="${API.attackUrl(id)}" download title="MITRE ATT&CK Navigator layer: the Reconnaissance (TA0043) techniques this scan exercised. Import the .json at mitre-attack.github.io/attack-navigator to visualise coverage."><i class="glyphicon glyphicon-th"></i>&nbsp;ATT&amp;CK layer</a>
           <a class="btn btn-primary btn-sm" href="${API.debugUrl(id)}" download title="One-click debug bundle: every entity, the full event sequence, correlations, and the scored self-audit with every weakness — one file for complete offline debugging"><i class="glyphicon glyphicon-list-alt"></i>&nbsp;Debug bundle</a>
           <button class="btn btn-danger btn-sm" data-delete="${attr(id)}" title="Delete"><i class="glyphicon glyphicon-trash"></i></button>
         </div>
@@ -1527,17 +1584,11 @@ async function renderScanInfo(v){
       <div class="col-sm-3 col-xs-6"><div class="stat-card"><div class="lab">Duration</div><div class="val dim">${esc(fmtDuration(dur))}</div></div></div>
     </div>
 
-    <div id="attack-cov" style="margin:2px 0 12px 0"></div>
-
     <ul class="nav nav-tabs">
-      ${subTab('status',  'Status',       null,                tab)}
-      ${subTab('browse',  'Browse',       S.entities.length,   tab)}
-      ${subTab('graph',   'Graph',        null,                tab)}
-      ${subTab('rels',    'Relations',    S.relations.length,  tab)}
-      ${subTab('audit',   'Audit',        null,                tab)}
-      ${subTab('log',     'Scan Log',     null,                tab)}
-      ${subTab('corr',    'Correlations', S.correlations.length, tab)}
-      ${subTab('info',    'Scan Settings',null,                tab)}
+      ${subTab('report', 'Report',   null,              tab)}
+      ${subTab('browse', 'Browse',   S.entities.length, tab)}
+      ${subTab('graph',  'Graph',    null,              tab)}
+      ${subTab('log',    'Scan Log', null,              tab)}
     </ul>
     <div id="scan-body" style="padding-top:14px"></div>
   `;
@@ -1572,43 +1623,11 @@ async function renderScanInfo(v){
     e.preventDefault(); nav(`#/scaninfo?id=${id}&tab=${a.dataset.sub}`);
   }));
 
-  // MITRE ATT&CK Reconnaissance coverage + gaps — fetched inline so the panel
-  // appears under the stat cards without blocking the scan render. Covered
-  // techniques are filled, gaps dimmed; the "layer" link downloads the
-  // Navigator file. Failure is silent (the panel just stays empty).
-  (async()=>{
-    const el = $('#attack-cov'); if(!el) return;
-    try{
-      const a = await API.attackCov(id);
-      if(!a || !a.total){ el.innerHTML=''; return; }
-      const pct = Math.round(a.coverage_pct||0);
-      const chip = (t,on)=>{
-        const mods = (t.modules||[]).join(', ');
-        const tip = (t.name||'') + (on
-          ? (mods ? ' — covered by: '+mods : ' — covered')
-          : (mods ? ' — gap; enable: '+mods : ' — gap (no module implements this)'));
-        return `<span title="${attr(t.id+'  '+tip)}" style="display:inline-block;margin:2px;padding:1px 6px;border-radius:3px;font-size:11px;font-family:monospace;cursor:help;background:${on?'#096dd9':'#eee'};color:${on?'#fff':'#999'}">${esc(t.id)}</span>`;
-      };
-      const chips = (a.covered||[]).map(t=>chip(t,true)).join('') + (a.gaps||[]).map(t=>chip(t,false)).join('');
-      el.innerHTML =
-        `<div style="font-size:12px;margin-bottom:3px"><b>MITRE ATT&CK ${esc(a.tactic)} (${esc(a.tactic_id)})</b>`
-        + ` <span class="text-muted">— ${a.covered_count}/${a.total} techniques, ${pct}% coverage</span>`
-        + ` <a href="${API.attackUrl(id)}" download style="margin-left:6px;font-size:11px" title="Download the ATT&CK Navigator layer">&#x2913; layer</a></div>`
-        + `<div style="height:6px;background:#eee;border-radius:3px;overflow:hidden;margin-bottom:5px"><div style="height:100%;width:${pct}%;background:#096dd9"></div></div>`
-        + `<div>${chips}</div>`;
-    }catch(_){ el.innerHTML=''; }
-  })();
-
   const body = $('#scan-body');
-  if (tab==='status')      renderStatus(body, scan);
-  else if (tab==='browse') renderBrowse(body);
+  if (tab==='browse')      renderBrowse(body);
   else if (tab==='graph')  renderGraph(body);
-  else if (tab==='rels')   renderRelations(body);
-  else if (tab==='audit')  renderAudit(body, id);
   else if (tab==='log')    renderLog(body, scan);
-  else if (tab==='corr')   renderCorrelations(body);
-  else if (tab==='info')   renderInfo(body, scan);
-  else                     renderStatus(body, scan);
+  else                     renderReport(body, id, scan);
 
   // SpiderFoot-style live refresh: while the scan is still running, re-pull and
   // re-render every 8s so entity/correlation counts and duration climb on their
@@ -1625,14 +1644,456 @@ function subTab(name, label, count, active){
   </a></li>`;
 }
 
+/* ── Report tab — the ONE digestible scan view. Stacks, in priority order, the
+   subject's network (who/what the seed connects to), the recommended next
+   pivots, cross-entity correlations, and the scored self-audit (incl. how much
+   breach co-occurrence was quarantined out of the result). Consolidates what
+   were ten tabs (Network / Leads / Status / Relations / Correlations / Audit /
+   Settings) into one — the rest live under Browse / Graph / Scan Log. ── */
+async function renderReport(host, id, scan){
+  host.innerHTML = `
+    <div id="rpt-metrics"></div>
+    <div id="rpt-network"  style="margin-top:18px"></div>
+    <div id="rpt-leads"    style="margin-top:18px"></div>
+    <div id="rpt-timeline" style="margin-top:18px"></div>
+    <div id="rpt-communities" style="margin-top:18px"></div>
+    <div id="rpt-trust"    style="margin-top:18px"></div>
+    <div id="rpt-pivots"   style="margin-top:18px"></div>
+    <div id="rpt-gaps"     style="margin-top:18px"></div>
+    <div id="rpt-path"     style="margin-top:18px"></div>
+    <div id="rpt-duplicates" style="margin-top:18px"></div>
+    <div id="rpt-corr"     style="margin-top:18px"></div>
+    <div id="rpt-audit"    style="margin-top:18px"></div>`;
+  // Each renderer owns its sub-section (and its own async fetch); composing them
+  // reuses the synthesis already built rather than duplicating any logic.
+  renderMetrics($('#rpt-metrics'), id);
+  renderNetwork($('#rpt-network'), id);
+  renderLeads($('#rpt-leads'), id);
+  renderTimeline($('#rpt-timeline'), id);
+  renderCommunities($('#rpt-communities'), id);
+  renderTrust($('#rpt-trust'), id);
+  renderPivots($('#rpt-pivots'), id);
+  renderGaps($('#rpt-gaps'), id);
+  renderPathTool($('#rpt-path'), id);
+  renderDuplicates($('#rpt-duplicates'), id);
+  renderCorrelations($('#rpt-corr'));
+  renderAudit($('#rpt-audit'), id);
+}
+
+/* ── Network section — the subject-centric relationship synthesis (the analyst's
+   "so what": who/what the seed connects to, grouped + ranked server-side). ── */
+const NET_GROUP_ICON = {people:'glyphicon-user', identifiers:'glyphicon-envelope',
+  aliases:'glyphicon-random', locations:'glyphicon-map-marker', infrastructure:'glyphicon-cloud'};
+async function renderNetwork(host, id){
+  host.innerHTML = '<div class="empty-state"><h3>Building the subject network…</h3></div>';
+  let net;
+  try { net = await API.network(id); }
+  catch(e){ host.innerHTML = `<div class="alert alert-danger"><b>Error.</b> ${esc(e.message)}</div>`; return; }
+  const browseLink = `#/scaninfo?id=${attr(id)}&tab=browse`;
+  if (!net || !net.subject){
+    host.innerHTML = `<div class="empty-state"><h3>No subject network yet</h3>
+      <p>Connections appear once the scan derives relations — people, accounts, aliases and locations
+      bound to the subject. Run a deeper scan (<code>--depth ≥ 1</code>) or open
+      <a href="${browseLink}">Browse</a> for the raw entities.</p></div>`;
+    return;
+  }
+  const s = net.subject;
+  let html = `<div class="net-hero">
+    <div class="net-hero-main">
+      <div class="net-hero-name">${esc(s.value)}</div>
+      <div class="net-hero-meta">${kindPill(s.kind)}
+        <span class="cls c-${attr(s.classification)}">${esc(s.classification)}</span>
+        <span class="text-muted" style="font-size:11px">C_eff ${(s.confidence||0).toFixed(2)}</span></div>
+    </div>
+    <div class="net-hero-stats">
+      <div class="net-stat"><div class="v">${net.direct_count}</div><div class="l">direct</div></div>
+      <div class="net-stat"><div class="v">${net.reachable_count}</div><div class="l">reachable</div></div>
+      <div class="net-stat"><div class="v">${net.edge_count}</div><div class="l">edges</div></div>
+    </div>
+  </div>`;
+  if (!net.groups || !net.groups.length){
+    html += `<div class="empty-state"><p>The subject has no derived connections yet —
+      <a href="${browseLink}">Browse</a> the raw entities, or run a deeper scan to map the network.</p></div>`;
+  }
+  for (const g of (net.groups||[])){
+    const icon = NET_GROUP_ICON[g.key] || 'glyphicon-link';
+    const more = g.total > g.items.length
+      ? ` <span class="text-muted" style="font-weight:400;font-size:11px">top ${g.items.length} of ${g.total}</span>` : '';
+    html += `<div class="net-group">
+      <div class="net-group-head"><i class="glyphicon ${icon}"></i>&nbsp;${esc(g.label)}
+        <span class="badge">${g.total}</span>${more}</div>`;
+    for (const c of g.items){
+      const conf = Math.max(0, Math.min(100, Math.round((c.edge_confidence||0)*100)));
+      html += `<div class="net-conn">
+        <span class="net-rel">${esc(c.label)}</span>
+        <span class="net-conn-val">${extLink(c.value, 72)}</span>
+        ${kindPill(c.kind)}
+        <span class="net-conf" title="link confidence ${conf}%"><span class="net-conf-bar" style="width:${conf}%"></span></span>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+  host.innerHTML = html;
+}
+
+/* ── Leads tab — proactive next-best-actions: ranked untapped pivots the scan
+   surfaced but didn't pursue (relatives/associates held below the auto-pivot
+   floor most of all), each a one-click follow-up scan. ── */
+async function renderLeads(host, id){
+  host.innerHTML = '<div class="empty-state"><h3>Finding leads…</h3></div>';
+  let data;
+  try { data = await API.leads(id); }
+  catch(e){ host.innerHTML = `<div class="alert alert-danger"><b>Error.</b> ${esc(e.message)}</div>`; return; }
+  const leads = (data && data.leads) || [];
+  if (!leads.length){
+    host.innerHTML = `<div class="empty-state"><h3>No open leads</h3>
+      <p>Leads appear when a scan surfaces people, aliases or identifiers it didn't pursue —
+      most often relatives and associates kept below the auto-pivot floor. Check the
+      <a href="#/scaninfo?id=${attr(id)}&tab=network">Network</a>, or run a deeper scan.</p></div>`;
+    return;
+  }
+  const confirmedN = leads.filter(l=>l.confirmed).length;
+  let html = `<p class="text-muted" style="font-size:12px;margin-bottom:10px">
+    <i class="glyphicon glyphicon-flag"></i>&nbsp;<b>${leads.length}</b> recommended next step${leads.length===1?'':'s'}
+    — untapped pivots ranked by value, the${confirmedN?` <b>${confirmedN}</b> corroborated`:''} reliable ones first.
+    Click <b>Scan</b> to launch a focused follow-up.</p>`;
+  for (const l of leads){
+    const icon = NET_GROUP_ICON[l.group] || 'glyphicon-flag';
+    const badge = l.confirmed
+      ? '<span class="lead-badge" title="An independent second signal corroborates this lead">✓ CONFIRMED</span>'
+      : l.discordant
+      ? '<span class="lead-badge namesake" title="Shares the surname but a whole region from the subject — likely a different person">⚠ NAMESAKE?</span>'
+      : '';
+    const cls = l.confirmed ? ' confirmed' : l.discordant ? ' discordant' : '';
+    html += `<div class="lead-card${cls}">
+      <div class="lead-main">
+        <div class="lead-val"><i class="glyphicon ${icon}"></i>&nbsp;${esc(l.value)} ${kindPill(l.kind)}${badge}</div>
+        <div class="lead-reason">${esc(l.reason)}</div>
+      </div>
+      <button class="btn btn-info btn-sm lead-scan" data-kind="${attr(l.target_kind)}" data-value="${attr(l.value)}"
+        title="Launch a focused scan seeded on this lead">
+        <i class="glyphicon glyphicon-search"></i>&nbsp;Scan</button>
+    </div>`;
+  }
+  host.innerHTML = html;
+  $$('.lead-scan').forEach(b=>b.addEventListener('click', async ()=>{
+    const kind = b.dataset.kind, value = b.dataset.value;
+    b.disabled = true; b.innerHTML = '<i class="glyphicon glyphicon-refresh glyphicon-spin"></i>';
+    try {
+      const r = await API.create({kind, value, options:{}});
+      toast('Lead scan queued');
+      nav(`#/scaninfo?id=${r.scan_id}&tab=log`);
+    } catch(e){
+      b.disabled = false; b.innerHTML = '<i class="glyphicon glyphicon-search"></i>&nbsp;Scan';
+      if (typeof alertify !== 'undefined') alertify.error('Scan failed: '+e.message);
+    }
+  }));
+}
+
+/* ── Timeline section — the subject's footprint reconstructed as one chronology
+   (when each breach/registration/account/expiry happened), oldest first. The
+   server already parses every dated evidence attribute into typed events. ── */
+const TL_KIND = {
+  breach_exposure:{ic:'glyphicon-alert',cl:'#d9534f',lbl:'Breach'},
+  registered:{ic:'glyphicon-globe',cl:'#337ab7',lbl:'Registered'},
+  expiry:{ic:'glyphicon-time',cl:'#f0ad4e',lbl:'Expiry'},
+  account_created:{ic:'glyphicon-user',cl:'#5cb85c',lbl:'Account'},
+  incorporation:{ic:'glyphicon-briefcase',cl:'#337ab7',lbl:'Incorporated'},
+  dissolution:{ic:'glyphicon-briefcase',cl:'#777',lbl:'Dissolved'},
+  first_seen:{ic:'glyphicon-eye-open',cl:'#5bc0de',lbl:'First seen'},
+  last_seen:{ic:'glyphicon-eye-close',cl:'#777',lbl:'Last seen'},
+  date_of_birth:{ic:'glyphicon-gift',cl:'#777',lbl:'Born'},
+  event:{ic:'glyphicon-calendar',cl:'#777',lbl:'Event'},
+};
+async function renderTimeline(host, id){
+  host.innerHTML = '<div class="empty-state"><h3>Reconstructing the timeline…</h3></div>';
+  let data;
+  try { data = await API.timeline(id); }
+  catch(e){ host.innerHTML = `<div class="alert alert-danger"><b>Error.</b> ${esc(e.message)}</div>`; return; }
+  const events = (data && data.events) || [];
+  if (!events.length){
+    host.innerHTML = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-time"></i>&nbsp;Footprint timeline</h4>
+      <div class="empty-state"><h3>No dated events</h3>
+      <p>The timeline appears when the scan surfaces dated facts — a breach date, a domain
+      registration, an account-created date. None were found in this scan's evidence.</p></div>`;
+    return;
+  }
+  const day = s => esc((s||'').slice(0,10));
+  const span = events.length>1 ? ` · ${day(events[0].iso)} → ${day(events[events.length-1].iso)}` : '';
+  let html = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-time"></i>&nbsp;Footprint timeline</h4>
+    <p class="text-muted" style="font-size:12px;margin-bottom:10px"><b>${events.length}</b> dated event${events.length===1?'':'s'}, oldest first${span}.</p>
+    <div class="tl">`;
+  for (const ev of events){
+    const k = TL_KIND[ev.kind] || TL_KIND.event;
+    html += `<div class="tl-item">
+      <div class="tl-dot" style="background:${k.cl}"></div>
+      <div class="tl-date">${day(ev.iso)}</div>
+      <div class="tl-body">
+        <span class="tl-badge" style="background:${k.cl}"><i class="glyphicon ${k.ic}"></i>&nbsp;${k.lbl}</span>
+        ${esc(ev.entity_value)} ${kindPill(ev.entity_kind)}
+        <div class="tl-src">${esc(ev.source)}</div>
+      </div>
+    </div>`;
+  }
+  host.innerHTML = html + '</div>';
+}
+
+/* ── Communities section — the relationship graph partitioned into sub-clusters by
+   label propagation (the family cluster vs the infrastructure estate, …), each
+   with its members and a derived label. GET /scans/{id}/communities. ── */
+async function renderCommunities(host, id){
+  host.innerHTML = '<div class="empty-state"><h3>Detecting communities…</h3></div>';
+  let data;
+  try { data = await API.communities(id); }
+  catch(e){ host.innerHTML = `<div class="alert alert-danger"><b>Error.</b> ${esc(e.message)}</div>`; return; }
+  const comms = (data && data.communities) || [];
+  if (!comms.length){
+    host.innerHTML = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-th-large"></i>&nbsp;Communities</h4>
+      <div class="empty-state"><h3>No communities yet</h3>
+      <p>Sub-clusters appear once the scan derives a connected relationship graph —
+      run a deeper scan (<code>--depth ≥ 1</code>) so people, accounts and infrastructure link up.</p></div>`;
+    return;
+  }
+  const byUid = {};
+  (S.entities||[]).forEach(e=>{ byUid[e.uid] = e; });
+  const val = uid => { const e = byUid[uid]; return e ? esc(e.raw_value||e.value) : esc(String(uid).slice(0,12))+'…'; };
+  let html = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-th-large"></i>&nbsp;Communities</h4>
+    <p class="text-muted" style="font-size:12px;margin-bottom:10px"><b>${comms.length}</b> sub-cluster${comms.length===1?'':'s'} in the relationship graph, largest first.</p>`;
+  for (const c of comms){
+    const n = c.size || (c.uids||[]).length;
+    const members = (c.uids||[]).slice(0,8).map(u=>`<code>${val(u)}</code>`).join(' ');
+    const more = n > 8 ? ` <span class="text-muted">+${n-8} more</span>` : '';
+    html += `<div style="margin-bottom:8px;padding:8px 10px;border-left:3px solid #5bc0de;background:rgba(91,192,222,0.07)">
+      <div><span class="tag">${esc(c.label||('community '+c.id))}</span> <span class="text-muted">· ${n} member${n===1?'':'s'}</span></div>
+      <div style="margin-top:4px;line-height:1.9">${members}${more}</div>
+    </div>`;
+  }
+  host.innerHTML = html;
+}
+
+/* ── Trust section — entities ranked by how strongly the relationship graph
+   corroborates them (damped trust propagation from high-confidence anchors,
+   attenuating with distance). GET /scans/{id}/trust. Read-only; never alters
+   stored confidence — it is the network's vote, not raw per-entity confidence. ── */
+async function renderTrust(host, id){
+  host.innerHTML = '<div class="empty-state"><h3>Propagating network trust…</h3></div>';
+  let data;
+  try { data = await API.trust(id); }
+  catch(e){ host.innerHTML = `<div class="alert alert-danger"><b>Error.</b> ${esc(e.message)}</div>`; return; }
+  const scores = (data && data.trust) || [];
+  if (!scores.length){
+    host.innerHTML = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-stats"></i>&nbsp;Network trust</h4>
+      <div class="empty-state"><h3>No trust ranking yet</h3>
+      <p>Trust radiates across the relationship graph from high-confidence anchors.
+      It appears once the scan derives relations — run a deeper scan to populate it.</p></div>`;
+    return;
+  }
+  const byUid = {};
+  (S.entities||[]).forEach(e=>{ byUid[e.uid] = e; });
+  const top = scores.slice(0,12);
+  let html = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-stats"></i>&nbsp;Network trust</h4>
+    <p class="text-muted" style="font-size:12px;margin-bottom:10px">Top ${top.length} entit${top.length===1?'y':'ies'} by graph-corroborated trust — how strongly the network supports each, not raw confidence.</p>`;
+  for (const t of top){
+    const e = byUid[t.uid];
+    const label = e ? `${kindPill(e.kind)} <code>${esc(e.raw_value||e.value)}</code>`
+                    : `<code class="text-muted" style="font-size:10px">${esc(String(t.uid).slice(0,16))}…</code>`;
+    const score = Number(t.score) || 0;
+    const pct = Math.max(0, Math.min(100, Math.round(score*100)));
+    html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+      <div style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${label}</div>
+      <div style="flex:0 0 120px;background:rgba(127,127,127,0.2);border-radius:3px;height:10px;overflow:hidden">
+        <div style="width:${pct}%;height:100%;background:#5cb85c"></div></div>
+      <div style="flex:0 0 38px;text-align:right"><code>${score.toFixed(2)}</code></div>
+    </div>`;
+  }
+  host.innerHTML = html;
+}
+
+/* ── Pivot nodes — the high-connectivity intermediaries most of the graph routes
+   through (betweenness + degree centrality). GET /scans/{id}/pivots. The
+   highest-leverage entities to pivot on next; read-only, structural. ── */
+async function renderPivots(host, id){
+  let data;
+  try { data = await API.pivots(id); }
+  catch(e){ host.innerHTML = ''; return; }
+  const pivots = (data && data.pivots) || [];
+  const bridges = (data && data.bridges) || [];
+  if (!pivots.length && !bridges.length){ host.innerHTML = ''; return; }
+  const byUid = {};
+  (S.entities||[]).forEach(e=>{ byUid[e.uid] = e; });
+  const labelFor = (uid) => {
+    const e = byUid[uid];
+    return e ? `${kindPill(e.kind)} <code>${esc(e.raw_value||e.value)}</code>`
+             : `<code class="text-muted" style="font-size:10px">${esc(String(uid).slice(0,16))}…</code>`;
+  };
+  const top = pivots.slice(0, 12);
+  let html = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-screenshot"></i>&nbsp;Pivot nodes</h4>
+    <p class="text-muted" style="font-size:12px;margin-bottom:10px">The high-connectivity intermediaries most of the graph routes through — the highest-leverage entities to pivot on next. A <span class="label label-warning">critical</span> node is a single point of failure: remove it and the network fragments.</p>`;
+  for (const p of top){
+    const pctw = Math.max(0, Math.min(100, Math.round((Number(p.score)||0)*100)));
+    const cut = p.is_cut_vertex ? ` <span class="label label-warning" title="Cut vertex — removing this entity fragments the network into disconnected pieces">critical</span>` : '';
+    html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+      <div style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${labelFor(p.uid)}${cut}</div>
+      <div class="text-muted" style="flex:0 0 auto;font-size:11px">${p.degree} link${p.degree===1?'':'s'}</div>
+      <div style="flex:0 0 110px;background:rgba(127,127,127,0.2);border-radius:3px;height:10px;overflow:hidden">
+        <div style="width:${pctw}%;height:100%;background:#9b59b6"></div></div>
+    </div>`;
+  }
+  if (bridges.length){
+    html += `<h5 style="margin:14px 0 4px"><i class="glyphicon glyphicon-resize-horizontal"></i>&nbsp;Critical links <span class="text-muted" style="font-weight:normal;font-size:11px">(${bridges.length} bridge${bridges.length===1?'':'s'})</span></h5>
+      <p class="text-muted" style="font-size:12px;margin-bottom:6px">Single relationships whose removal would split the graph in two — irreplaceable connections to corroborate first.</p>`;
+    for (const br of bridges.slice(0, 12)){
+      html += `<div style="font-size:12px;margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${labelFor(br.from_uid)} <span class="text-muted">—</span> ${labelFor(br.to_uid)}</div>`;
+    }
+    if (bridges.length > 12){ html += `<div class="text-muted" style="font-size:11px">…and ${bridges.length-12} more.</div>`; }
+  }
+  host.innerHTML = html;
+}
+
+/* ── Discovery gaps — validated seeds with no evidence-backed link, why they're
+   isolated, and the corrective scans that would connect them. GET /scans/{id}/gaps.
+   The gap-resolution loop made legible: turns "no links" into "run these next". ── */
+async function renderGaps(host, id){
+  let data;
+  try { data = await API.gaps(id); }
+  catch(e){ host.innerHTML = ''; return; }
+  if (!data || data.null_state){ host.innerHTML = ''; return; }
+  const orphans = data.orphans || [];
+  const linkedPct = Math.round((Number(data.linked_fraction)||0)*100);
+  let html = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-unchecked"></i>&nbsp;Discovery gaps</h4>
+    <p class="text-muted" style="font-size:12px;margin-bottom:8px">${data.linked_seeds}/${data.total_seeds} seeds linked (${linkedPct}%). Isolated seeds below are discovery blind spots — each shows the corrective scan that would connect it.</p>`;
+  if (!orphans.length){
+    html += `<p class="text-success" style="font-size:12px"><i class="glyphicon glyphicon-ok"></i> Every validated seed is linked into the graph.</p>`;
+    host.innerHTML = html; return;
+  }
+  const badge = { unexpanded:'label-warning', below_expand_floor:'label-default', terminal:'label-info' };
+  const nonTerminal = orphans.filter(o=>o.isolation!=='terminal');
+  const terminalCount = orphans.length - nonTerminal.length;
+  for (const o of nonTerminal.slice(0,15)){
+    const mods = (o.corrective_modules||[]);
+    const modStr = mods.length ? `<span class="text-muted" style="font-size:11px"> → run: ${mods.slice(0,6).map(esc).join(', ')}${mods.length>6?'…':''}</span>` : '';
+    html += `<div style="margin-bottom:6px;font-size:12px">
+      <span class="label ${badge[o.isolation]||'label-default'}">${esc(String(o.isolation).replace(/_/g,' '))}</span>
+      <code>${esc(o.value||o.uid)}</code> <span class="text-muted">(${esc(o.kind)})</span>
+      <div class="text-muted" style="font-size:11px;margin-left:4px">${esc(o.action)}${modStr}</div>
+    </div>`;
+  }
+  if (nonTerminal.length>15){ html += `<div class="text-muted" style="font-size:11px">…and ${nonTerminal.length-15} more actionable gaps.</div>`; }
+  if (terminalCount>0){ html += `<div class="text-muted" style="font-size:11px">+ ${terminalCount} terminal leaf/leaves (non-scannable; expected isolation).</div>`; }
+  host.innerHTML = html;
+}
+
+/* ── Connection-path tool — link analysis between two named entities. Enter two
+   discovered values and find the shortest relationship chain linking them (plus
+   alternative routes). GET /scans/{id}/path. The deeper the scan recursed, the more
+   of the graph there is to connect across. ── */
+async function renderPathTool(host, id){
+  host.innerHTML = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-share-alt"></i>&nbsp;Connection path</h4>
+    <p class="text-muted" style="font-size:12px;margin-bottom:8px">Find how two discovered entities are linked through the relationship graph — the shortest chain plus alternative routes.</p>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <input id="path-from" class="form-control" style="flex:1;min-width:140px" placeholder="From — e.g. Kyle Diegmann">
+      <span class="text-muted">→</span>
+      <input id="path-to" class="form-control" style="flex:1;min-width:140px" placeholder="To — e.g. Erik Diegmann">
+      <button id="path-go" class="btn btn-primary">Find connection</button>
+    </div>
+    <label style="font-weight:normal;font-size:12px;margin-top:6px"><input type="checkbox" id="path-cross">&nbsp;Search across all scans (reaches entities found in other investigations)</label>
+    <div id="path-result" style="margin-top:10px"></div>`;
+  const out = $('#path-result');
+  const run = async () => {
+    const from = $('#path-from').value.trim(), to = $('#path-to').value.trim();
+    if (!from || !to){ out.innerHTML = '<span class="text-muted">Enter two entity values to connect.</span>'; return; }
+    const cross = $('#path-cross').checked;
+    out.innerHTML = '<span class="text-muted">Searching the graph…</span>';
+    let data;
+    try { data = await API.path(id, from, to, null, cross); }
+    catch(e){ out.innerHTML = `<div class="alert alert-danger" style="margin-bottom:0"><b>Error.</b> ${esc(e.message)}</div>`; return; }
+    const paths = (data && data.paths) || [];
+    const nodes = (data && data.nodes) || {};
+    const label = uid => { const n = nodes[uid]; return n ? `${kindPill(n.kind)} <code>${esc(n.value)}</code>` : `<code class="text-muted" style="font-size:10px">${esc(String(uid).slice(0,12))}…</code>`; };
+    if (!paths.length){
+      out.innerHTML = `<div class="alert alert-warning" style="margin-bottom:0"><b>No connection found</b> between <code>${esc(from)}</code> and <code>${esc(to)}</code> in this scan's graph (within 6 hops). Run a deeper scan so the recursion draws in the linking entities.</div>`;
+      return;
+    }
+    let html = `<p class="text-muted" style="font-size:12px;margin-bottom:8px"><b>${paths.length}</b> route${paths.length===1?'':'s'} found — shortest first.</p>`;
+    paths.forEach((p, i) => {
+      let chain = label(p.nodes[0]);
+      for (let k=0; k<p.edges.length; k++){
+        chain += ` <span class="text-muted">—<span class="tag" style="margin:0 3px">${esc(p.edges[k].kind)}</span>→</span> ${label(p.nodes[k+1])}`;
+      }
+      html += `<div style="margin-bottom:8px;padding:8px 10px;border-left:3px solid ${i===0?'#5cb85c':'#5bc0de'};background:rgba(127,127,127,0.06)">
+        <div style="margin-bottom:4px"><span class="badge">${p.hops} hop${p.hops===1?'':'s'}</span> <span class="text-muted">· strength ${Number(p.strength).toFixed(2)}</span></div>
+        <div style="line-height:2">${chain}</div>
+      </div>`;
+    });
+    out.innerHTML = html;
+  };
+  $('#path-go').onclick = run;
+  $('#path-from').onkeydown = e => { if (e.key === 'Enter') run(); };
+  $('#path-to').onkeydown = e => { if (e.key === 'Enter') run(); };
+}
+
+/* ── Scan-quality dashboard — objective per-scan telemetry (GET /scans/{id}/metrics):
+   how much corroborated intelligence the scan formed. A nicety, so it fails quietly. ── */
+async function renderMetrics(host, id){
+  let m;
+  try { m = await API.metrics(id); }
+  catch(e){ host.innerHTML = ''; return; }
+  if (!m || !m.total_entities){ host.innerHTML = ''; return; }
+  const pct = x => Math.round((Number(x)||0)*100);
+  const t = m.tier_counts || {verified:0, probable:0, candidate:0};
+  const stat = (lab, val) => `<div style="flex:0 0 auto;min-width:80px;padding:6px 10px;background:rgba(127,127,127,0.07);border-radius:4px;text-align:center">`
+    + `<div style="font-size:18px;font-weight:600;line-height:1.1">${val}</div>`
+    + `<div class="text-muted" style="font-size:11px">${lab}</div></div>`;
+  host.innerHTML = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-dashboard"></i>&nbsp;Scan quality</h4>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">`
+    + stat('Entities', m.total_entities)
+    + stat('Verified', t.verified)
+    + stat('Relations', m.total_relations)
+    + stat('Corroborated', pct(m.corroborated_fraction)+'%')
+    + stat('Linked', pct(m.linked_entity_fraction)+'%')
+    + ((m.seed_reach && m.seed_reach.anchored) ? stat('Reach', m.seed_reach.reachable_total) + stat('Max depth', m.seed_reach.max_depth+' hop'+(m.seed_reach.max_depth===1?'':'s')) : '')
+    + stat('Graph density', pct(m.graph_density)+'%')
+    + stat('Cross-scan', m.cross_scan_bridges)
+    + stat('Mean conf', (Number(m.mean_confidence)||0).toFixed(2))
+    + stat('Sources', m.distinct_evidence_sources)
+    + `</div>`;
+}
+
+/* ── Likely-duplicates aid — near-duplicate entity-resolution suggestions
+   (GET /scans/{id}/duplicates): probable same-identity groups the exact matcher
+   missed (Gmail variants, phone formats, reordered names). Fails quietly. ── */
+async function renderDuplicates(host, id){
+  let data;
+  try { data = await API.duplicates(id); }
+  catch(e){ host.innerHTML = ''; return; }
+  const groups = (data && data.duplicates) || [];
+  if (!groups.length){ host.innerHTML = ''; return; }
+  const byUid = {};
+  (S.entities||[]).forEach(e=>{ byUid[e.uid] = e; });
+  const val = uid => { const e = byUid[uid]; return e ? esc(e.raw_value||e.value) : esc(String(uid).slice(0,12))+'…'; };
+  let html = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-duplicate"></i>&nbsp;Likely duplicates</h4>
+    <p class="text-muted" style="font-size:12px;margin-bottom:8px">${groups.length} group${groups.length===1?'':'s'} that are probably one identity in different contexts — confirm before treating as the same.</p>`;
+  for (const g of groups){
+    const members = (g.members||[]).map(u=>`<code>${val(u)}</code>`).join(' ');
+    html += `<div style="margin-bottom:6px;padding:6px 10px;border-left:3px solid #f0ad4e;background:rgba(240,173,78,0.07)">
+      <div>${kindPill(g.kind)} ${members}</div>
+      <div class="text-muted" style="font-size:11px;margin-top:2px">${esc(g.reason||'')}</div>
+    </div>`;
+  }
+  host.innerHTML = html;
+}
+
 /* ── Relations tab — typed edges from the recursive crawl (provenance) ── */
 function renderRelations(host){
   const rels = S.relations||[];
   if (!rels.length){
     host.innerHTML = '<div class="empty-state"><h3>No relations yet</h3>'
-      + '<p>Typed edges (<code>derived_from</code>, <code>subdomain_of</code>, '
-      + '<code>hosted_on</code>, …) appear here as the recursive crawl links entities. '
-      + 'Run a deeper scan (<code>--depth ≥ 1</code>) to populate them.</p></div>';
+      + '<p>Typed edges appear here — both infrastructure '
+      + '(<code>subdomain_of</code>, <code>hosted_on</code>, <code>resolves_to</code>) '
+      + 'and identity (<code>identified_by</code>, <code>alias_of</code>, '
+      + '<code>located_at</code>, <code>associated_with</code>) — binding the subject to '
+      + 'their accounts, places and associates. Run a deeper scan (<code>--depth ≥ 1</code>) '
+      + 'to populate them.</p></div>';
     return;
   }
   const byUid = {};
@@ -2338,7 +2799,7 @@ function renderInfo(host, scan){
     ['Max concurrent', String(opts.max_concurrent??0)],
     ['Min confidence', opts.min_confidence!=null?opts.min_confidence.toFixed(2):'<span class="text-muted">no filter</span>'],
     ['Depth', String(opts.depth??0)],
-    ['Min expand C_eff', String(opts.min_expand_confidence??0.75)],
+    ['Min expand C_eff', String(opts.min_expand_confidence??0.20)],
     ['Max entities', opts.max_entities!=null?String(opts.max_entities):'<span class="text-muted">unlimited</span>'],
     ['Max wall time (s)', opts.max_wall_time_secs!=null?String(opts.max_wall_time_secs):'<span class="text-muted">unlimited</span>'],
     ['Tags', (opts.scan_tags||[]).length ? opts.scan_tags.map(t=>`<span class="tag">${esc(t)}</span>`).join(' ') : '<span class="text-muted">none</span>'],
@@ -2991,6 +3452,27 @@ async function renderLive(v){
       <div class="pull-right"><button class="btn btn-default btn-sm" onclick="render()" title="Refresh"><i class="glyphicon glyphicon-refresh"></i></button></div>
     </h2>
     <hr style="margin:8px 0 14px 0">
+    <div class="panel panel-default" style="border-color:#07aef1">
+      <div class="panel-heading" style="background:#eaf7fd"><b><i class="glyphicon glyphicon-record" style="color:#07aef1"></i>&nbsp;Live Signal Radar</b>
+        <span class="text-muted" style="font-weight:400">— autonomous ambient-signal sweep of <i>this device</i></span></div>
+      <div class="panel-body">
+        <p class="text-muted" style="margin:0 0 10px 0;font-size:12px">
+          Surveys the signals <b>around the device</b> — Wi-Fi access points, Bluetooth, cell towers, a GPS fix and the local network —
+          using only the on-device live sensors (<code>signal_radar</code>, <code>device_sensors</code>, <code>wifi_intel</code>,
+          <code>cell_intel</code>, <code>local_net</code>). It takes <b>no target</b> and is entirely separate from target seed scanning:
+          these sensors run on <i>no other scan</i>, so this button is their only activation.
+        </p>
+        <div class="form-inline">
+          <label class="text-muted" style="font-weight:normal;margin-right:6px" title="The sensors survey the device regardless of value; the seed type only chooses the survey anchor.">Seed type</label>
+          <select id="radar-kind" class="form-control input-sm" style="margin-right:8px">
+            <option value="coordinates" selected>GPS / RF survey (ambient)</option>
+            <option value="mac_address">BSSID-anchored (local network)</option>
+          </select>
+          <button id="radar-go" class="btn btn-info"><i class="glyphicon glyphicon-record"></i>&nbsp;Activate Radar Sweep</button>
+          <span id="radar-status" class="text-muted" style="margin-left:10px"></span>
+        </div>
+      </div>
+    </div>
     <div class="panel panel-default">
       <div class="panel-heading"><b>Start a live session</b></div>
       <div class="panel-body">
@@ -3030,6 +3512,24 @@ async function renderLive(v){
       if (typeof alertify !== 'undefined') alertify.success('Live session started');
       render();
     } catch(e){ if (typeof alertify !== 'undefined') alertify.error('Start failed: '+e.message); }
+  });
+  // Live Signal Radar — the single, deliberate button that activates the on-device
+  // sensors. No target value; the only input is the seed *type*. Navigates to the
+  // resulting sweep's live log so the operator watches the ambient signals stream.
+  $('#radar-go').addEventListener('click', async ()=>{
+    const btn = $('#radar-go'), st = $('#radar-status');
+    const seed = (($('#radar-kind')||{}).value) || 'coordinates';
+    btn.disabled = true; btn.innerHTML = '<i class="glyphicon glyphicon-refresh glyphicon-spin"></i>&nbsp;Sweeping…';
+    if (st) st.textContent = 'Activating live sensors…';
+    try {
+      const r = await API.radarSweep(seed);
+      toast('Radar sweep queued');
+      nav(`#/scaninfo?id=${encodeURIComponent(r.scan_id)}&tab=log`);
+    } catch(e){
+      btn.disabled = false; btn.innerHTML = '<i class="glyphicon glyphicon-record"></i>&nbsp;Activate Radar Sweep';
+      if (st) st.textContent = '';
+      if (typeof alertify !== 'undefined') alertify.error('Radar failed: '+e.message);
+    }
   });
   wireLiveStops();
   // Poll the session list while this page is open so iteration counts climb live.

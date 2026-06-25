@@ -158,3 +158,79 @@ use super::*;
         let m = NameIntel;
         assert!(!m.attack_techniques().is_empty());
     }
+
+    // ── Onur Ada seed ────────────────────────────────────────────────────────
+    // Validate the full module pipeline with "Onur Ada" as the live starting seed.
+    // This is a pure offline derivation test — no network, no I/O, byte-identical.
+
+    #[tokio::test]
+    async fn onur_ada_full_pipeline_produces_person_handles_emails_and_pivots() {
+        let m = NameIntel;
+        let out = m
+            .process(&Target::new(TargetKind::FullName, "Onur Ada"), &ctx("scan-onur-ada"))
+            .await
+            .unwrap();
+
+        let person = out
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Person)
+            .expect("Person anchor must be emitted for 'Onur Ada'");
+        assert_eq!(
+            person.classify(),
+            crate::core::entity::Classification::Probable,
+            "Person anchor must be Probable-tier"
+        );
+        assert!(person.has_tag("subject") && person.has_tag("seed"));
+
+        let usernames: Vec<_> = out.entities.iter().filter(|e| e.kind == EntityKind::Username).collect();
+        let emails: Vec<_> = out.entities.iter().filter(|e| e.kind == EntityKind::Email).collect();
+        let pivots: Vec<_> = out.entities.iter().filter(|e| e.kind == EntityKind::Url).collect();
+        assert!(usernames.len() > 5, "expected several derived handles, got {}", usernames.len());
+        assert!(!emails.is_empty(), "expected email candidates for 'Onur Ada'");
+        assert!(pivots.len() > 5, "expected search pivots for 'Onur Ada'");
+
+        // Core handle shapes must be present in the derived set.
+        let handles: Vec<&str> = usernames.iter().map(|e| e.value.as_str()).collect();
+        for want in ["onur.ada", "onurada", "onur_ada", "ada.onur"] {
+            assert!(handles.contains(&want), "missing handle '{want}': {handles:?}");
+        }
+
+        // Top email must be the primary Gmail shape.
+        let first_email = emails.first().expect("at least one email").value.as_str();
+        assert_eq!(first_email, "onur.ada@gmail.com", "first email must be onur.ada@gmail.com");
+    }
+
+    #[tokio::test]
+    async fn onur_ada_seed_is_unexpanded_in_gap_report_until_linked() {
+        // A fresh "Onur Ada" Person entity with no relations is an Unexpanded
+        // orphan — the gap analysis names it, classifies it, and points at the
+        // corrective scan. This test exercises the full seed→gap pipeline.
+        use crate::core::{entity::EntityKind, gap};
+
+        let mut entity = crate::core::entity::Entity::new(
+            EntityKind::Person,
+            "Onur Ada",
+            0.65,
+            "scan-onur-ada",
+        );
+        entity.tag("seed");
+        entity.tag("subject");
+
+        let report = gap::analyze(&[entity], &[]);
+        assert!(!report.null_state, "a seeded scan is not null state");
+        assert_eq!(report.total_seeds, 1);
+        assert_eq!(report.isolated_seeds, 1);
+        assert_eq!(report.linked_seeds, 0);
+        assert_eq!(report.orphans.len(), 1);
+
+        let orphan = &report.orphans[0];
+        assert_eq!(orphan.value, "Onur Ada");
+        assert_eq!(orphan.isolation, gap::Isolation::Unexpanded,
+            "confidence 0.65 is above EXPAND_FLOOR — must be Unexpanded, not {:?}", orphan.isolation);
+        assert_eq!(
+            orphan.reinjection_target.as_deref(),
+            Some("full_name"),
+            "Person entity must re-inject as full_name"
+        );
+    }

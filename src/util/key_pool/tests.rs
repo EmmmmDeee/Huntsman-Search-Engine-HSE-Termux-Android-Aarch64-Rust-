@@ -260,6 +260,70 @@ fn next_key_avoids_error_prone_key() {
 }
 
 #[test]
+fn next_key_spreads_load_rather_than_hammering_the_single_best() {
+    // Two healthy, same-tier keys differing only by a single past error (below the
+    // back-off threshold, so both stay healthy). The old selector always returned
+    // the zero-error key — hammering it to its rate limit; the load-balancer fans
+    // requests out evenly so neither key is over-used.
+    let pool = KeyPool::new();
+    let mut a = KeyEntry::new("key-a");
+    a.status = KeyStatus::Active;
+    a.error_count = 1;
+    let mut b = KeyEntry::new("key-b");
+    b.status = KeyStatus::Active;
+    pool.add("shodan", a);
+    pool.add("shodan", b);
+
+    let picks: Vec<String> = (0..4).filter_map(|_| pool.next_key("shodan")).collect();
+    assert_eq!(
+        picks.iter().filter(|k| *k == "key-a").count(),
+        2,
+        "load is split, not hammered: {picks:?}"
+    );
+    assert_eq!(
+        picks.iter().filter(|k| *k == "key-b").count(),
+        2,
+        "{picks:?}"
+    );
+}
+
+#[test]
+fn just_recovered_key_yields_to_a_healthy_peer() {
+    // A key that came back from a rate-limit one second ago is still usable, but is
+    // held one band lower during the grace window so the pool leans on the fresh
+    // key — easing the throttled credential back in instead of re-hammering it.
+    let pool = KeyPool::new();
+    let mut fresh = KeyEntry::new("fresh");
+    fresh.status = KeyStatus::Active;
+    let mut recovered = KeyEntry::new("recovered");
+    recovered.status = KeyStatus::RateLimited;
+    recovered.rate_limit_reset = Some(crate::core::entity::unix_now().saturating_sub(1));
+    pool.add("shodan", fresh);
+    pool.add("shodan", recovered);
+
+    assert_eq!(pool.next_key("shodan").as_deref(), Some("fresh"));
+}
+
+#[test]
+fn selecting_a_recovered_key_flips_it_back_to_active() {
+    // When a rate-limited key's cooldown has well elapsed and it's the only one
+    // usable, the pool serves it AND updates its status to Active so the telemetry
+    // reflects reality (no more perpetual "rate_limited" on a recovered key).
+    let pool = KeyPool::new();
+    let mut k = KeyEntry::new("k");
+    k.status = KeyStatus::RateLimited;
+    k.rate_limit_reset = Some(crate::core::entity::unix_now().saturating_sub(60));
+    pool.add("shodan", k);
+
+    assert_eq!(pool.next_key("shodan").as_deref(), Some("k"));
+    assert_eq!(
+        pool.snapshot().services["shodan"][0].status,
+        KeyStatus::Active,
+        "a recovered key is marked Active on use"
+    );
+}
+
+#[test]
 fn add_rejects_non_poolable_services() {
     // The pool only holds reusable provider keys; the harvest catch-alls
     // (generic_hex, crypto_*, jwt_token, <svc>_login) must never enter it,
@@ -391,6 +455,188 @@ fn prune_degraded_still_drops_unused_low_value_keys_only_when_degraded() {
     let pruned = pool.prune_degraded(0.5, 5);
     assert_eq!(pruned, 0);
     assert!(pool.entry_status("shodan", "fresh").is_some());
+}
+
+#[test]
+fn health_score_fresh_active_key_scores_near_one() {
+    // A brand-new key that has never failed: success_rate() is the optimistic
+    // 1.0 prior and nothing is throttled, so health is at (or essentially at) the
+    // top of the band. Untested and Active both qualify as live, non-terminal.
+    let now = crate::core::entity::unix_now();
+    for status in [KeyStatus::Untested, KeyStatus::Active] {
+        let mut k = KeyEntry::new("fresh");
+        k.status = status;
+        k.tier = KeyTier::Premium; // top tier → full capacity bonus
+        let h = k.health_score(now);
+        assert!(
+            (h - 1.0).abs() < 1e-9,
+            "fresh top-tier {status:?} key should score ~1.0, got {h}"
+        );
+    }
+    // Even a fresh BASIC key (smaller tier bonus) should still read as very
+    // healthy — comfortably in the top fraction of the range.
+    let mut basic = KeyEntry::new("fresh-basic");
+    basic.status = KeyStatus::Active;
+    basic.tier = KeyTier::Basic;
+    let h = basic.health_score(now);
+    assert!(
+        h > 0.9,
+        "a fresh Active Basic key should be very healthy: {h}"
+    );
+}
+
+#[test]
+fn health_score_terminal_states_score_zero() {
+    // Revoked / Invalid / Exhausted are dead credentials: zero health regardless
+    // of an otherwise spotless history (never used → success_rate 1.0, top tier).
+    let now = crate::core::entity::unix_now();
+    for status in [KeyStatus::Revoked, KeyStatus::Invalid, KeyStatus::Exhausted] {
+        let mut k = KeyEntry::new("dead");
+        k.status = status;
+        k.tier = KeyTier::Premium;
+        let h = k.health_score(now);
+        assert!(
+            h.abs() < 1e-9,
+            "terminal {status:?} key must score ~0.0, got {h}"
+        );
+    }
+}
+
+#[test]
+fn health_score_rate_limited_in_cooldown_scores_low() {
+    // Anchor `now` away from the epoch so we can place a reset both in the future
+    // (still cooling) and far in the past (fully recovered) without underflow.
+    let now = 1_000_000u64;
+
+    // A key still inside its rate-limit cooldown is long-run healthy but useless
+    // right now: the availability multiplier pulls its score well down — far below
+    // an otherwise-identical fresh key, yet strictly above a terminal 0.0 so an
+    // operator can still distinguish "throttled" from "dead".
+    let mut limited = KeyEntry::new("throttled");
+    limited.status = KeyStatus::RateLimited;
+    limited.rate_limit_reset = Some(now + 300); // 5 min left on the clock
+    let limited_h = limited.health_score(now);
+
+    let mut healthy = KeyEntry::new("ok");
+    healthy.status = KeyStatus::Active;
+    let healthy_h = healthy.health_score(now);
+
+    assert!(limited_h > 0.0, "throttled key is not dead: {limited_h}");
+    assert!(
+        limited_h < 0.25,
+        "in-cooldown key should score low, got {limited_h}"
+    );
+    assert!(
+        limited_h < healthy_h,
+        "throttled ({limited_h}) must be worse than fresh ({healthy_h})"
+    );
+
+    // With the reset far in the past (cooldown AND grace window well elapsed) the
+    // same key is fully available again and recovers a high score.
+    let mut recovered = limited.clone();
+    recovered.rate_limit_reset = Some(now - 10_000);
+    let recovered_h = recovered.health_score(now);
+    assert!(
+        recovered_h > limited_h,
+        "a recovered key should out-score its in-cooldown self: {recovered_h} vs {limited_h}"
+    );
+    assert!(
+        recovered_h > 0.9,
+        "fully past the grace window it is healthy again: {recovered_h}"
+    );
+}
+
+#[test]
+fn health_score_error_prone_key_lands_between() {
+    // A key with a poor success rate but no throttle sits between a fresh key and
+    // a dead one: reliability is the dominant term, so a high error rate drags the
+    // score down without zeroing it.
+    let now = crate::core::entity::unix_now();
+    let mut bad = KeyEntry::new("flaky");
+    bad.status = KeyStatus::Active;
+    bad.use_count = 10;
+    bad.error_count = 8; // 20% success
+    let h = bad.health_score(now);
+    assert!(
+        h > 0.0 && h < 0.5,
+        "an error-prone Active key should land in between, got {h}"
+    );
+}
+
+#[test]
+fn health_report_aggregates_per_service_and_is_ordered() {
+    let pool = KeyPool::new();
+
+    // shodan: one healthy Active key + one Revoked (dead) key.
+    let mut good = KeyEntry::new("shodan-good");
+    good.status = KeyStatus::Active;
+    pool.add("shodan", good);
+    let mut revoked = KeyEntry::new("shodan-revoked");
+    revoked.status = KeyStatus::Active;
+    pool.add("shodan", revoked);
+    assert!(pool.revoke("shodan", "shodan-revoked"));
+
+    // intelx: a single fresh Active key.
+    let mut solo = KeyEntry::new("intelx-key");
+    solo.status = KeyStatus::Active;
+    pool.add("intelx", solo);
+
+    let report = pool.health_report();
+
+    // Deterministically ordered by service name: intelx before shodan.
+    let services: Vec<&str> = report.iter().map(|s| s.service.as_str()).collect();
+    assert_eq!(services, vec!["intelx", "shodan"], "sorted by service name");
+
+    let intelx = &report[0];
+    assert_eq!(intelx.total, 1);
+    assert_eq!(intelx.usable, 1);
+    assert_eq!(intelx.breakdown.active, 1);
+    assert!(
+        (intelx.avg_health - intelx.min_health).abs() < 1e-9,
+        "single-key service: avg equals min"
+    );
+    assert!(intelx.min_health > 0.9, "lone fresh key is healthy");
+
+    let shodan = &report[1];
+    assert_eq!(shodan.total, 2);
+    assert_eq!(shodan.usable, 1, "only the non-revoked key is usable");
+    assert_eq!(shodan.breakdown.active, 1);
+    assert_eq!(shodan.breakdown.revoked, 1);
+    // One key ~1.0 and one ~0.0 → average ~0.5, minimum ~0.0 (the revoked floor
+    // the average alone would hide).
+    assert!(
+        (shodan.avg_health - 0.5).abs() < 0.1,
+        "avg of one healthy + one dead key ~= 0.5, got {}",
+        shodan.avg_health
+    );
+    assert!(
+        shodan.min_health.abs() < 1e-9,
+        "the revoked key sets the floor at ~0.0, got {}",
+        shodan.min_health
+    );
+
+    // Empty pool → empty report (no panics on the 0/0 path).
+    assert!(KeyPool::new().health_report().is_empty());
+}
+
+#[test]
+fn health_report_is_value_free_and_serializable() {
+    // The report must never carry key plaintext and must serialise cleanly for the
+    // dashboard/API.
+    let pool = KeyPool::new();
+    let mut k = KeyEntry::new("super-secret-value");
+    k.status = KeyStatus::Active;
+    pool.add("shodan", k);
+
+    let report = pool.health_report();
+    let json = serde_json::to_string(&report).expect("ServiceHealth serialises");
+    assert!(
+        !json.contains("super-secret-value"),
+        "health report must not leak key plaintext"
+    );
+    assert!(json.contains("\"avg_health\""));
+    assert!(json.contains("\"min_health\""));
+    assert!(json.contains("\"breakdown\""));
 }
 
 #[test]

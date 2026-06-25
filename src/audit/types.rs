@@ -136,8 +136,10 @@ pub struct AuditReport {
     /// 0.0–1.0 — excludes deliberately-quarantined breach co-occurrence.
     pub noise_ratio: f64,
     /// Breach co-occurrence rows the breach modules deliberately quarantined
-    /// (already excluded from the scan view, export, and correlator). Reported
-    /// for visibility; NOT counted in `entity_total`, `tiers`, or `noise_ratio`.
+    /// (excluded from the scan view, the correlator/grade, and the default
+    /// structured exports — report/json/csv/gexf; present only in the
+    /// nothing-hidden `full`/`debug` bundle). Reported for visibility; NOT
+    /// counted in `entity_total`, `tiers`, or `noise_ratio`.
     pub quarantined: usize,
     pub findings: Vec<Finding>,
     /// 0–100 — 100 is a clean, individualised, well-sourced scan.

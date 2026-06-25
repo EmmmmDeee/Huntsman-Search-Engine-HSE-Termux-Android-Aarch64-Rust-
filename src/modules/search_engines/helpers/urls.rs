@@ -487,10 +487,52 @@ pub(in crate::modules::search_engines) fn url_matches_target(url: &str, terms: &
     if path.len() < 4 {
         return false;
     }
-    terms
+    let significant: Vec<&str> = terms
         .iter()
+        .map(String::as_str)
         .filter(|w| w.len() >= 4)
-        .any(|w| path.contains(w.as_str()))
+        .collect();
+    match significant.split_last() {
+        None => false,
+        // A single distinctive token (email handle, username, one-word name): a
+        // path hit is sufficient — that token IS the identity.
+        Some((only, [])) => path.contains(only),
+        // A multi-part name: the LAST significant token is the surname — the
+        // distinctive anchor. A common FIRST name alone cross-attributes
+        // different people (a "Cindy He" UNSW staff page matched "Cindy
+        // Haynes"), so require the surname in the path; given names corroborate
+        // but cannot stand in for it.
+        Some((surname, _given)) => path.contains(surname),
+    }
+}
+
+/// Count how many DISTINCT engines returned each canonical URL, keyed by the
+/// same [`canonicalize_url`] key `dedup_results` uses.
+///
+/// This MUST be computed from the PRE-dedup results: `dedup_results` keeps only
+/// the first `SearchResult` per canonical URL, so counting engines from the
+/// deduped slice always yields 1 and silently defeats the multi-engine
+/// corroboration boost (a URL independently returned by N engines should credit
+/// N, not 1). `build_entities` takes the resulting map and reads it for each
+/// emitted entity's `corroboration`, while still iterating the deduped slice for
+/// entity emission (so per-result snippet text isn't double-counted).
+///
+/// The inner per-key `HashSet<&str>` deduplicates the engine names (the same
+/// engine returning a URL twice — e.g. across paginated queries — counts once);
+/// the returned `u32` is its cardinality, capped well within range.
+pub(in crate::modules::search_engines) fn url_engine_counts(
+    results: &[SearchResult],
+) -> std::collections::HashMap<String, u32> {
+    let mut sets: std::collections::HashMap<String, HashSet<&str>> =
+        std::collections::HashMap::new();
+    for r in results {
+        sets.entry(canonicalize_url(&r.url))
+            .or_default()
+            .insert(r.engine);
+    }
+    sets.into_iter()
+        .map(|(url, engines)| (url, engines.len() as u32))
+        .collect()
 }
 
 pub(in crate::modules::search_engines) fn dedup_results(

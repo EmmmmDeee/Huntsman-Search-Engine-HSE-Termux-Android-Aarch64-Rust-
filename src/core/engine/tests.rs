@@ -43,6 +43,305 @@ fn consolidate_address_localities_folds_postcode_variants_codebase_wide() {
     assert!(entities.iter().any(|e| e.kind == EntityKind::Email));
 }
 
+/// Free, offline cross-angle confirmation: a lone single-source family-candidate
+/// near the subject's confirmed location is promoted (tagged + corroborated) into
+/// a reliable relative, while a far namesake is left alone — and the pass is
+/// idempotent across re-runs.
+#[test]
+fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
+    use crate::core::entity::{Classification, Entity, EntityKind, Evidence};
+
+    // Subject's confirmed GPS near Woodford, QLD.
+    let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
+    gps.tag("geoint");
+    // A single-source (QLD register) family-candidate near the subject.
+    let mut erik = Entity::new(EntityKind::Person, "Erik Moreau", 0.32, "s");
+    erik.tag("family-candidate");
+    erik.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "4518"));
+    assert_eq!(
+        erik.classify(),
+        Classification::Candidate,
+        "starts as a lone candidate"
+    );
+    // A far relative (Cairns) — same surname, but not the subject's area.
+    let mut far = Entity::new(EntityKind::Address, "QLD 4870, Australia", 0.32, "s");
+    far.tag("family-candidate");
+    far.add_evidence(Evidence::new("qld_unclaimed", "owner"));
+
+    let mut ents = vec![gps, erik, far];
+    assert_eq!(
+        promote_geo_corroborated_family(&mut ents),
+        1,
+        "only the in-area relative is promoted"
+    );
+
+    let erik = ents.iter().find(|e| e.value == "Erik Moreau").unwrap();
+    assert!(erik.has_tag("geo-corroborated"));
+    assert!(
+        erik.evidence
+            .iter()
+            .any(|ev| ev.source == "geo_corroboration")
+    );
+    assert_eq!(
+        erik.source_count(),
+        2,
+        "qld register + geo confirmation = two independent signals"
+    );
+    assert!(
+        erik.c_effective() > 0.50,
+        "lifted above candidate → reliable"
+    );
+    assert_eq!(erik.classify(), Classification::Probable);
+
+    let far = ents.iter().find(|e| e.value.contains("4870")).unwrap();
+    assert!(
+        !far.has_tag("geo-corroborated"),
+        "a far namesake stays a candidate"
+    );
+
+    // Idempotent: a second pass (or a recall on a re-scan) promotes nothing new.
+    assert_eq!(promote_geo_corroborated_family(&mut ents), 0);
+
+    // No confirmed subject fix → nothing is promoted.
+    let mut lone = vec![{
+        let mut e = Entity::new(EntityKind::Address, "QLD 4518, Australia", 0.32, "s");
+        e.tag("family-candidate");
+        e
+    }];
+    assert_eq!(promote_geo_corroborated_family(&mut lone), 0);
+}
+
+/// Free, offline: an identity pair joined by two orthogonal pathways has BOTH
+/// its endpoints promoted (tagged + corroborated) so the confirmed connection
+/// strengthens the scan output — while the conduit intermediates are left alone
+/// and the pass is idempotent across re-runs. Shares the AU-062 detector, so
+/// this is the boost side of the same finding the correlator reports.
+#[test]
+fn promote_multipath_corroborated_lifts_only_orthogonally_linked_endpoints() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::relation::{Relation, RelationKind};
+
+    let sourced = |kind: EntityKind, value: &str, source: &str| {
+        let mut e = Entity::new(kind, value, 0.8, "s");
+        e.add_evidence(Evidence::new(source, "ev"));
+        e
+    };
+    let rel = |from: &Entity, to: &Entity, kind: RelationKind| {
+        Relation::new(from.uid.clone(), to.uid.clone(), kind, 0.8, "s")
+    };
+
+    // Two identity endpoints linked by two edge-disjoint routes through
+    // NON-identity intermediates of DIFFERENT source families (infra + registry)
+    // — the AU-062 criterion. The only identity pair is (email, username).
+    let email = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
+    let user = Entity::new(EntityKind::Username, "bob", 0.8, "s");
+    let dom = sourced(EntityKind::Domain, "x.com", "dns_intel"); // infra
+    let org = sourced(EntityKind::Organisation, "Acme Pty", "opencorporates"); // registry
+    let rels = [
+        rel(&email, &dom, RelationKind::BelongsToDomain),
+        rel(&dom, &user, RelationKind::DerivedFrom),
+        rel(&email, &org, RelationKind::RegisteredBy),
+        rel(&org, &user, RelationKind::DerivedFrom),
+    ];
+    let mut ents = vec![email.clone(), user.clone(), dom.clone(), org.clone()];
+
+    assert_eq!(
+        promote_multipath_corroborated(&mut ents, &rels),
+        2,
+        "both identity endpoints are promoted"
+    );
+    for v in ["a@x.com", "bob"] {
+        let e = ents.iter().find(|e| e.value == v).unwrap();
+        assert!(e.has_tag("multipath-corroborated"), "{v} must be tagged");
+        assert!(
+            e.evidence
+                .iter()
+                .any(|ev| ev.source == "multipath_corroboration"),
+            "{v} must carry corroboration evidence"
+        );
+    }
+    // The conduit intermediates are NOT themselves corroborated.
+    for v in ["x.com", "Acme Pty"] {
+        let e = ents.iter().find(|e| e.value == v).unwrap();
+        assert!(
+            !e.has_tag("multipath-corroborated"),
+            "{v} is a conduit, not a corroborated endpoint"
+        );
+    }
+
+    // Idempotent: a second pass (or a recall on a re-scan) promotes nothing new.
+    assert_eq!(promote_multipath_corroborated(&mut ents, &rels), 0);
+
+    // A single route is not multi-pathway corroboration → nothing promoted.
+    let e2 = Entity::new(EntityKind::Email, "c@z.com", 0.8, "s");
+    let u2 = Entity::new(EntityKind::Username, "carol", 0.8, "s");
+    let d2 = sourced(EntityKind::Domain, "z.com", "dns_intel");
+    let single = [
+        rel(&e2, &d2, RelationKind::BelongsToDomain),
+        rel(&d2, &u2, RelationKind::DerivedFrom),
+    ];
+    let mut one_route = vec![e2, u2, d2];
+    assert_eq!(
+        promote_multipath_corroborated(&mut one_route, &single),
+        0,
+        "a single pathway is not corroboration"
+    );
+}
+
+/// Free, offline: the cross-scan gap boost lifts exactly the endpoints the engine
+/// queued (a fragile link whose route shape is proven in prior scans) — the
+/// accumulated-knowledge counterpart to the multipath boost — and is idempotent.
+#[test]
+fn promote_cross_scan_corroborated_lifts_queued_endpoints_idempotently() {
+    use crate::core::entity::{Entity, EntityKind};
+    use std::collections::HashMap;
+
+    let a = Entity::new(EntityKind::Email, "a@x.com", 0.4, "s");
+    let b = Entity::new(EntityKind::Username, "bob", 0.4, "s");
+    let other = Entity::new(EntityKind::Domain, "x.com", 0.4, "s");
+    let (ua, ub) = (a.uid.clone(), b.uid.clone());
+    let mut ents = vec![a, b, other];
+
+    let reason = "route shape proven in 2 prior scans".to_string();
+    let mut boost: HashMap<String, String> = HashMap::new();
+    boost.insert(ua.clone(), reason.clone());
+    boost.insert(ub.clone(), reason);
+
+    assert_eq!(
+        promote_cross_scan_corroborated(&mut ents, &boost),
+        2,
+        "both queued endpoints are promoted"
+    );
+    for uid in [&ua, &ub] {
+        let e = ents.iter().find(|e| &e.uid == uid).unwrap();
+        assert!(
+            e.has_tag("cross-scan-corroborated"),
+            "endpoint must be tagged"
+        );
+        assert!(
+            e.evidence
+                .iter()
+                .any(|ev| ev.source == "cross_scan_corroboration"),
+            "endpoint must carry cross-scan evidence"
+        );
+    }
+    // An entity not in the boost set is untouched.
+    let other = ents.iter().find(|e| e.value == "x.com").unwrap();
+    assert!(!other.has_tag("cross-scan-corroborated"));
+
+    // Idempotent, and an empty boost set is a no-op.
+    assert_eq!(promote_cross_scan_corroborated(&mut ents, &boost), 0);
+    assert_eq!(
+        promote_cross_scan_corroborated(&mut ents, &HashMap::new()),
+        0
+    );
+}
+
+/// The precision complement, surname-aware: a far same-surname candidate is tagged
+/// `geo-discordant` (a likely namesake) ONLY when the shared surname is common — a
+/// distinctive surname carries kinship across any distance, so a rare-surname
+/// subject's interstate kin are left alone. Tag-only (no confidence change), an
+/// in-area relative is untouched, and the flag is idempotent.
+#[test]
+fn flag_geo_discordant_namesakes_is_surname_aware_and_tag_only() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    // Subject's confirmed GPS near Woodford, QLD (Brisbane catchment).
+    let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
+    gps.tag("geoint");
+    // Far (Perth, ~3600 km) COMMON-surname candidate → a likely namesake.
+    let mut common = Entity::new(EntityKind::Person, "Curt Smith", 0.32, "s");
+    common.tag("family-candidate");
+    common.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "6000"));
+    let conf_before = common.c_effective();
+    let sources_before = common.source_count();
+    // Far DISTINCTIVE-surname candidate (same distance) → distant kin, NOT a namesake.
+    let mut rare = Entity::new(EntityKind::Person, "Curt Moreau", 0.32, "s");
+    rare.tag("family-candidate");
+    rare.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "6000"));
+    // In-area relative (Beerwah) — the positive pass's job, not this one.
+    let mut near = Entity::new(EntityKind::Address, "QLD 4519, Australia", 0.32, "s");
+    near.tag("family-candidate");
+
+    let mut ents = vec![gps, common, rare, near];
+    assert_eq!(
+        flag_geo_discordant_namesakes(&mut ents),
+        1,
+        "only the far COMMON-surname namesake is flagged"
+    );
+
+    let common = ents.iter().find(|e| e.value == "Curt Smith").unwrap();
+    assert!(common.has_tag("geo-discordant"));
+    // Tag-only: confidence and the corroboration count are untouched, so a
+    // negative signal can never PROMOTE the namesake it means to demote.
+    assert!((common.c_effective() - conf_before).abs() < 1e-9);
+    assert_eq!(common.source_count(), sources_before);
+    assert!(
+        !common.evidence.iter().any(|ev| ev.source == "geo_discord"),
+        "discord adds no evidence record"
+    );
+
+    // A far DISTINCTIVE surname is distant kin, not a namesake.
+    let rare = ents.iter().find(|e| e.value == "Curt Moreau").unwrap();
+    assert!(
+        !rare.has_tag("geo-discordant"),
+        "a far distinctive surname is kin, never a namesake"
+    );
+    let near = ents.iter().find(|e| e.value.contains("4519")).unwrap();
+    assert!(
+        !near.has_tag("geo-discordant"),
+        "an in-area relative is never a namesake"
+    );
+
+    // Idempotent, and nothing to judge without a confirmed subject fix.
+    assert_eq!(flag_geo_discordant_namesakes(&mut ents), 0);
+    let mut lone = vec![{
+        let mut e = Entity::new(EntityKind::Person, "Curt Smith", 0.32, "s");
+        e.tag("family-candidate");
+        e
+    }];
+    assert_eq!(
+        flag_geo_discordant_namesakes(&mut lone),
+        0,
+        "no subject fix → nothing flagged"
+    );
+}
+
+/// The subject's surname gates the whole pass: with a named subject present, a
+/// candidate is judged by the SUBJECT's surname — which every family-candidate
+/// shares — not its own. So a rare-surname subject's kin are protected even when
+/// the candidate is a bare Address that carries no name of its own to fall back on.
+#[test]
+fn namesake_flagging_uses_the_subject_surname() {
+    use crate::core::entity::{Entity, EntityKind};
+
+    let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
+    gps.tag("geoint");
+    // A far family-candidate Address (no name of its own) in Perth, WA.
+    let mut far = Entity::new(EntityKind::Address, "WA 6000, Australia", 0.32, "s");
+    far.tag("family-candidate");
+
+    // A rare-surname subject protects the far candidate.
+    let mut rare_subject = Entity::new(EntityKind::Person, "Pat Moreau", 0.9, "s");
+    rare_subject.tag("subject");
+    let mut ents = vec![gps.clone(), rare_subject, far.clone()];
+    assert_eq!(
+        flag_geo_discordant_namesakes(&mut ents),
+        0,
+        "a distinctive subject surname leaves even a far address-only candidate alone"
+    );
+
+    // A common-surname subject makes the same far candidate a namesake.
+    let mut common_subject = Entity::new(EntityKind::Person, "Pat Smith", 0.9, "s");
+    common_subject.tag("subject");
+    let mut ents = vec![gps, common_subject, far];
+    assert_eq!(flag_geo_discordant_namesakes(&mut ents), 1);
+    assert!(
+        ents.iter()
+            .any(|e| e.value.contains("6000") && e.has_tag("geo-discordant"))
+    );
+}
+
 /// FTA invariant (cuts MCS-A): the local/environmental sensor modules read
 /// the OPERATOR's own device/network, so they must never engage on a
 /// remote-subject seed — otherwise the operator's GPS/Wi-Fi/cell/LAN data is
@@ -521,6 +820,51 @@ fn skip_reason_in_allowlist_passes() {
 }
 
 #[test]
+fn skip_reason_gates_live_sensors_to_radar_only() {
+    // A live device-sensor module (name in LOCAL_PASSIVE_MODULES) reads the
+    // OPERATOR's own environment, so it must NEVER run on a manual scan — only
+    // under `hse radar`'s `allow_live_sensors` activation.
+    let sensor = StubModule {
+        name: "signal_radar",
+        cost: ModuleCost::Free,
+        passive: true,
+    };
+    // Default manual scan → skipped.
+    assert_eq!(
+        module_skip_reason(&sensor, &pub_target(), &ScanOptions::default(), false, 0),
+        Some("live sensor — radar-only activation"),
+    );
+    // Even an explicit `hse scan --modules signal_radar` keeps it off: the
+    // activation is `hse radar`, not an allowlist on an ordinary scan.
+    let allowlisted = ScanOptions {
+        modules: Some(vec!["signal_radar".into()]),
+        ..Default::default()
+    };
+    assert_eq!(
+        module_skip_reason(&sensor, &pub_target(), &allowlisted, false, 0),
+        Some("live sensor — radar-only activation"),
+    );
+    // Radar activation → the sensor passes the gate.
+    let radar = ScanOptions {
+        modules: Some(vec!["signal_radar".into()]),
+        allow_live_sensors: true,
+        ..Default::default()
+    };
+    assert!(module_skip_reason(&sensor, &pub_target(), &radar, false, 0).is_none());
+    // A non-sensor module is unaffected by the gate.
+    assert!(
+        module_skip_reason(
+            &free_active(),
+            &pub_target(),
+            &ScanOptions::default(),
+            false,
+            0
+        )
+        .is_none()
+    );
+}
+
+#[test]
 fn skip_reason_excluded() {
     let m = free_active();
     let opts = ScanOptions {
@@ -809,7 +1153,12 @@ fn skip_reason_lets_local_passive_module_see_private_ip() {
         passive: true,
     };
     let private = Target::new(TargetKind::IpAddress, "192.168.1.1");
-    let opts = ScanOptions::default();
+    // The private-IP preflight bypass only matters when the sensor is actually
+    // active (`hse radar`); on a manual scan the radar-only gate skips it first.
+    let opts = ScanOptions {
+        allow_live_sensors: true,
+        ..Default::default()
+    };
     assert!(module_skip_reason(&m, &private, &opts, false, 0).is_none());
 }
 
@@ -1145,7 +1494,7 @@ async fn recall_prior_entities_pulls_and_tags_prior_scan_findings() {
     let target = Target::new(TargetKind::Username, "recallsubject");
 
     // Recall for a NEW scan id surfaces the prior email, re-stamped + tagged.
-    let recalled = engine.recall_prior_entities(&target, "current-scan");
+    let recalled = engine.recall_prior_entities(&target, "current-scan", true);
     let got = recalled
         .iter()
         .find(|e| e.value == "plantedlead@gmail.com")
@@ -1170,7 +1519,7 @@ async fn recall_prior_entities_pulls_and_tags_prior_scan_findings() {
     // that observed the seed) excludes itself ⇒ nothing to recall.
     assert!(
         engine
-            .recall_prior_entities(&target, "prior-scan")
+            .recall_prior_entities(&target, "prior-scan", true)
             .is_empty(),
         "the sole prior scan is the requesting scan ⇒ empty recall"
     );
@@ -1222,7 +1571,7 @@ async fn recall_resolves_a_fullname_seed_despite_reformatting() {
     // on the token-set fallback: lower-case, "Last, First" order, trailing year.
     for input in ["jordan meyers", "Meyers, Jordan", "Jordan Meyers 1987"] {
         let target = Target::new(TargetKind::FullName, input);
-        let recalled = engine.recall_prior_entities(&target, "current");
+        let recalled = engine.recall_prior_entities(&target, "current", true);
         assert!(
             recalled
                 .iter()
@@ -1232,4 +1581,239 @@ async fn recall_resolves_a_fullname_seed_despite_reformatting() {
     }
 
     cleanup(&path);
+}
+
+/// The seed-aware incidental-infrastructure admission gate
+/// ([`dispatch::is_incidental_infra_entity`]): on an identity-seeded scan, shared
+/// provider/CDN/registrar/DNS estate and role mailboxes are dropped as noise,
+/// while the subject's own findings (freemail address, own domain, residential
+/// IP) survive — and an infrastructure-seeded scan keeps everything, because
+/// there the infrastructure IS the subject.
+#[test]
+fn incidental_infra_is_dropped_only_on_identity_seeds() {
+    use crate::core::entity::{Entity, EntityKind};
+    use dispatch::is_incidental_infra_entity;
+
+    let ip_cdn = Entity::new(EntityKind::IpAddress, "104.20.37.187", 0.6, "dns"); // Cloudflare edge
+    let ip_home = Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.6, "dns"); // routable, not edge
+    let dom_infra = Entity::new(EntityKind::Domain, "ns1.jomax.net", 0.6, "dns");
+    let dom_mega = Entity::new(EntityKind::Domain, "facebook.com", 0.6, "se");
+    let dom_subject = Entity::new(EntityKind::Domain, "goatlegal.com.au", 0.6, "whois");
+    let mail_role = Entity::new(EntityKind::Email, "abuse@cloudflare.com", 0.6, "whois");
+    let mail_infra = Entity::new(EntityKind::Email, "bounce@jomax.net", 0.6, "soa");
+    let mail_subject = Entity::new(EntityKind::Email, "haigen@gmail.com", 0.6, "hibp");
+
+    // ── Identity seed (Username): provider estate + role mailboxes are noise. ──
+    let seed = TargetKind::Username;
+    for noise in [&ip_cdn, &dom_infra, &dom_mega, &mail_role, &mail_infra] {
+        assert!(
+            is_incidental_infra_entity(seed, noise),
+            "{} should be dropped as incidental infra on an identity seed",
+            noise.value
+        );
+    }
+    // The subject's own findings must SURVIVE — they are the point of the scan.
+    for keep in [&ip_home, &dom_subject, &mail_subject] {
+        assert!(
+            !is_incidental_infra_entity(seed, keep),
+            "{} is a subject finding and must NOT be dropped",
+            keep.value
+        );
+    }
+    // Freemail vs role-mailbox asymmetry holds for other identity seeds too.
+    assert!(!is_incidental_infra_entity(
+        TargetKind::Email,
+        &mail_subject
+    ));
+    assert!(is_incidental_infra_entity(TargetKind::Phone, &mail_role));
+
+    // ── Infrastructure seed: the estate IS the subject ⇒ nothing is incidental. ─
+    for seed in [
+        TargetKind::Domain,
+        TargetKind::IpAddress,
+        TargetKind::Cidr,
+        TargetKind::Asn,
+        TargetKind::Url,
+    ] {
+        for e in [&ip_cdn, &dom_infra, &dom_mega, &mail_role, &mail_infra] {
+            assert!(
+                !is_incidental_infra_entity(seed, e),
+                "{} must be kept on an infrastructure ({seed:?}) seed",
+                e.value
+            );
+        }
+    }
+}
+
+/// A module that emits one subject finding and declares a known, distinctive
+/// ATT&CK Reconnaissance technique. Used to prove the engine stamps that
+/// technique onto the admitted entity — overriding `attack_techniques()`
+/// directly (the `ModuleCategory::Other` default maps to an empty set) so the
+/// expected tag is deterministic and independent of the live registry.
+struct AttackStampModule;
+
+#[async_trait::async_trait]
+impl Module for AttackStampModule {
+    fn name(&self) -> &'static str {
+        "attack_stamp_probe"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        t.kind == TargetKind::Email
+    }
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // "Email Addresses" — a real catalogued Reconnaissance sub-technique.
+        &["T1589.002"]
+    }
+    async fn process(
+        &self,
+        _: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        // A subject freemail address: survives every admission filter (not a
+        // placeholder, not infra, freemail is exempt from the incidental-infra
+        // gate) so the only thing that can be asserted is the ATT&CK stamping.
+        let mut e = Entity::new(
+            EntityKind::Email,
+            "foundsubject@gmail.com",
+            0.9,
+            &ctx.scan_id,
+        );
+        e.add_evidence(Evidence::new("attack_stamp_probe", "synthetic finding"));
+        let mut r = crate::core::module::ModuleResult::new();
+        r.push(e);
+        Ok(r)
+    }
+}
+
+/// Universal MITRE ATT&CK provenance: EVERY admitted entity must carry an
+/// `attack:<ID>` tag for each Reconnaissance technique its producing module
+/// declares, so the technique that collected a datum travels with the scan data
+/// (the entity's `tags`, hence JSON output, the dossier, and the DB). Drives the
+/// real admission path (`dispatch_target` → `finalise_module_result`) on BOTH the
+/// sequential (`max_concurrent == 0`) and concurrent (`max_concurrent > 0`, which
+/// carries the techniques through `DispatchOutcome` to the join site) codepaths,
+/// then inspects the merged working set. Exercises `dispatch_target` directly
+/// rather than the full `run` so the process-global search-regional toggle the
+/// engine sets is left untouched (it would race the `search_engines` query tests).
+#[tokio::test]
+async fn admitted_entities_are_stamped_with_their_modules_attack_techniques() {
+    use crate::core::test_support::InMemoryStore;
+
+    for max_concurrent in [0usize, 4] {
+        let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+        let (bus, _rx) = tokio::sync::broadcast::channel(64);
+        let engine = ScanEngine::new(vec![Arc::new(AttackStampModule)], store, bus.clone());
+
+        let target = Target::new(TargetKind::Email, "seed@gmail.com");
+        let opts = ScanOptions {
+            max_concurrent,
+            ..Default::default()
+        };
+        let mut ctx = ModuleContext {
+            scan_id: "stamp-scan".to_string(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+        };
+
+        let cx = DispatchCx {
+            scan_id: "stamp-scan",
+            target: &target,
+            opts: &opts,
+            is_expansion: false,
+            seed_kind: TargetKind::Email,
+        };
+        let mut entity_map: HashMap<String, Entity> = HashMap::new();
+        let mut stats = ModuleStats::default();
+        let mut dispatched: DispatchLog = DispatchLog::new();
+        let mut state = DispatchState {
+            entity_map: &mut entity_map,
+            stats: &mut stats,
+            dispatched: &mut dispatched,
+        };
+
+        engine
+            .dispatch_target(&cx, &mut ctx, &mut state)
+            .await
+            .expect("dispatch runs");
+
+        let found = entity_map
+            .values()
+            .find(|e| e.value == "foundsubject@gmail.com")
+            .unwrap_or_else(|| {
+                panic!("the probe's finding must be admitted (max_concurrent={max_concurrent})")
+            });
+        assert!(
+            found.has_tag("attack:T1589.002"),
+            "the admitted entity must carry its module's ATT&CK technique as an \
+             inline tag (max_concurrent={max_concurrent}); tags were {:?}",
+            found.tags
+        );
+        // Exactly the producing module's technique(s) — none invented, none dropped.
+        let attack_tags: Vec<&str> = found
+            .tags
+            .iter()
+            .filter(|t| t.starts_with("attack:"))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            attack_tags,
+            vec!["attack:T1589.002"],
+            "exactly the producing module's technique(s) are stamped \
+             (max_concurrent={max_concurrent})"
+        );
+    }
+}
+
+#[test]
+fn rank_enrichment_leverage_orders_join_keys_by_cross_scan_degree() {
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::test_support::InMemoryStore;
+
+    let store = InMemoryStore::new();
+    let up = |k, v, s| store.upsert_entity(&Entity::new(k, v, 0.7, s)).unwrap();
+
+    // An email observed across THREE investigations — in the in-memory store the
+    // accumulated corroboration is the observation_count, i.e. cross-scan degree 3.
+    for s in ["scan-a", "scan-b", "scan-c"] {
+        up(EntityKind::Email, "jane@example.com", s);
+    }
+    // A phone seen in ONE scan → degree 1.
+    up(EntityKind::Phone, "+61400111222", "scan-a");
+    // A mega/infra domain seen across FIVE scans — high degree, but NOT a join key,
+    // so it must never rank (the gate, not the degree, decides inclusion).
+    for s in ["s1", "s2", "s3", "s4", "s5"] {
+        up(EntityKind::Domain, "google.com", s);
+    }
+
+    let candidates = vec![
+        Entity::new(EntityKind::Email, "jane@example.com", 0.7, "now"),
+        Entity::new(EntityKind::Phone, "+61400111222", 0.7, "now"),
+        Entity::new(EntityKind::Domain, "google.com", 0.9, "now"),
+    ];
+
+    let ranked = rank_enrichment_leverage(&store, &candidates, 10);
+    assert_eq!(ranked.len(), 2, "the non-join-key domain is excluded");
+    assert_eq!(ranked[0].value, "jane@example.com");
+    assert_eq!(
+        ranked[0].cross_scan_degree, 3,
+        "email bridges 3 investigations"
+    );
+    assert_eq!(ranked[1].value, "+61400111222");
+    assert_eq!(ranked[1].cross_scan_degree, 1);
+    assert!(
+        ranked.iter().all(|r| r.kind != EntityKind::Domain),
+        "infrastructure is never an enrichment join key, whatever its degree"
+    );
+
+    // `limit` caps the result to the strongest-leverage identifiers.
+    let top1 = rank_enrichment_leverage(&store, &candidates, 1);
+    assert_eq!(top1.len(), 1);
+    assert_eq!(top1[0].value, "jane@example.com");
 }

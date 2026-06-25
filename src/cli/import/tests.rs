@@ -149,6 +149,22 @@ fn dossier_is_detected_and_oathnet_txt_is_not() {
 }
 
 #[test]
+fn dossier_parse_strips_leading_utf8_bom() {
+    // An exporter that writes "UTF-8 with BOM" (Excel / Notepad default) prefixes
+    // the file with U+FEFF, which `str::trim` does NOT strip — so the first section
+    // header `EMAILS:` became `\u{feff}EMAILS:`, matched no section, and the whole
+    // first section was silently dropped.
+    let bom_dossier = "\u{feff}EMAILS:\n  -> betocastillo097@gmail.com\n";
+    let (ents, _) = parse_dossier(bom_dossier, "sid");
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "betocastillo097@gmail.com"),
+        "the first section must parse despite a leading BOM: {:?}",
+        ents.iter().map(|e| (&e.kind, &e.value)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn dossier_parse_yields_correlated_individualised_entities() {
     let (mut ents, stats) = parse_dossier(DOSSIER, "sid");
     deduplicate_by_uid(&mut ents);
@@ -298,6 +314,29 @@ fn import_txt_parses_victim_section_in_normal_order() {
         ents.iter()
             .any(|e| e.kind == EntityKind::IpAddress && e.value == "8.8.8.8")
     );
+}
+
+#[test]
+fn import_txt_keeps_ipv6_victim_addresses() {
+    // The old `contains('.')` gate dropped every IPv6 victim IP. A mixed IPs line
+    // must keep both families and skip only the unspecified/`0.x` "no address" junk.
+    let body = "=== INFECTED MACHINES ===\nIPs: 10.0.0.5, 2001:db8::1, 0.0.0.0, ::, 203.0.113.9\n";
+    let (ents, _) = super::parse_oathnet_txt(body, "sid");
+    let ips: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        ips.contains(&"2001:db8::1"),
+        "IPv6 victim IP must be kept: {ips:?}"
+    );
+    assert!(
+        ips.contains(&"10.0.0.5"),
+        "IPv4 victim IP still kept: {ips:?}"
+    );
+    assert!(!ips.contains(&"0.0.0.0"), "0.x junk skipped: {ips:?}");
+    assert!(!ips.contains(&"::"), "unspecified IPv6 skipped: {ips:?}");
 }
 
 #[test]

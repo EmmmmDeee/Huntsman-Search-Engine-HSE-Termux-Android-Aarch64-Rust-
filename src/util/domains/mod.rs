@@ -113,6 +113,83 @@ pub fn registrable_domain(host: &str) -> Option<String> {
     Some(labels[labels.len() - take..].join("."))
 }
 
+/// True if `s` looks like an Android / iOS **reverse-DNS application identifier**
+/// (`com.facebook.katana`, `com.google.android.gms`, `org.mozilla.firefox`)
+/// rather than a registrable web domain. Stealer logs record the app a credential
+/// was captured in using this reverse-DNS form, and its dotted shape otherwise
+/// sails through a bare `contains('.')` check — minting a bogus `Domain` entity
+/// whose final label (`katana`, `gms`, `firefox`) is not a real TLD, which then
+/// wastes DNS/cert/wayback expansion budget and pollutes the graph.
+///
+/// Discriminator (dependency-free — no Public Suffix List): a real registrable
+/// domain never *begins* with a generic top-level label; `com`/`org`/`net`/… are
+/// suffixes and appear *last*. A string with three or more labels whose *first*
+/// label is one of those generic TLDs is therefore reverse-DNS, i.e. an app id.
+/// Requiring 3+ labels keeps ordinary two-label domains (`net.au` is a suffix,
+/// not a candidate here) and apex domains safe. **Pure.**
+#[must_use]
+pub fn is_app_package_id(s: &str) -> bool {
+    let s = s.trim().trim_end_matches('.').to_ascii_lowercase();
+    let labels: Vec<&str> = s.split('.').filter(|l| !l.is_empty()).collect();
+    if labels.len() < 3 {
+        return false;
+    }
+    // Reverse-DNS package ids lead with a generic gTLD-style label. A genuine
+    // hostname can technically have a subdomain literally named `com`, but in the
+    // breach/stealer domain feeds this gates, that is vanishingly rare next to the
+    // flood of `com.*`/`org.*` Android package ids.
+    const RDNS_PREFIXES: &[&str] = &["com", "org", "net", "io", "app", "dev"];
+    RDNS_PREFIXES.contains(&labels[0])
+}
+
+/// True when `s` is structurally a registrable DNS domain worth minting as a
+/// `Domain` entity — as opposed to the noise breach/stealer `domain` fields
+/// routinely carry. The single gate every module's provider-`domain`-field →
+/// `Domain` path shares, so the same junk can't slip in through one parser. It
+/// rejects, in order:
+///   * empty values, or any with embedded whitespace or an `@`;
+///   * a bare IP literal (`192.168.0.1`, `79.98.132.222`) — a router / C2 / panel
+///     host, not a registrable domain, and a false lead that sends
+///     `dns_intel`/`cert_intel`/`wayback` chasing a non-host;
+///   * a reverse-DNS app package id (`com.facebook.katana`) — [`is_app_package_id`].
+///
+/// What survives needs ≥ 2 non-empty dot-separated labels and a final label (TLD)
+/// of ≥ 2 chars bearing at least one letter (so `1.2.3` and other numeric junk are
+/// rejected while `co.uk`, `xn--p1ai` pass). **Pure**, offline.
+///
+/// ```
+/// use huntsman_search_engine::util::domains::looks_like_domain;
+///
+/// assert!(looks_like_domain("discord.com"));
+/// assert!(looks_like_domain("a-zfastfitcentre.co.uk"));
+/// assert!(!looks_like_domain("192.168.0.1"));        // private IP, not a domain
+/// assert!(!looks_like_domain("79.98.132.222"));      // public IP, not a domain
+/// assert!(!looks_like_domain("com.facebook.katana")); // android app package
+/// assert!(!looks_like_domain("1.2.3"));               // numeric junk, no real TLD
+/// assert!(!looks_like_domain("localhost"));           // single label, no dot
+/// ```
+#[must_use]
+pub fn looks_like_domain(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() || s.contains('@') || s.contains(char::is_whitespace) {
+        return false;
+    }
+    // An IP literal is a host, not a registrable domain (IPv6 has no dots, so the
+    // dotted-label check below would already drop it; the parse also rejects v4).
+    if s.parse::<std::net::IpAddr>().is_ok() {
+        return false;
+    }
+    if is_app_package_id(s) {
+        return false;
+    }
+    let labels: Vec<&str> = s.trim_end_matches('.').split('.').collect();
+    labels.len() >= 2
+        && labels.iter().all(|l| !l.is_empty())
+        && labels
+            .last()
+            .is_some_and(|tld| tld.len() >= 2 && tld.chars().any(|c| c.is_ascii_alphabetic()))
+}
+
 /// True if `host` is `domain` itself or a subdomain of it — the host-label-safe
 /// "belongs to this domain" test. **Pure**, and allocation-free: it replaces the
 /// `host == d || host.ends_with(&format!(".{d}"))` idiom that was hand-rolled
@@ -199,12 +276,25 @@ pub fn is_role_localpart(local: &str) -> bool {
         "daemon",
         "feedback",
         "enquiries",
+        "enquiry",
+        "generalenquiry",
+        "generalenquiries",
         "inquiries",
+        "inquiry",
         "careers",
         "jobs",
         "press",
         "media",
         "webmail",
+        // Registrar / DNS provider system mailboxes seen in live WHOIS records
+        // (Network Solutions `namehost@`, copyright `dmca@`, generic `domains@`).
+        "namehost",
+        "dmca",
+        "domains",
+        "domain",
+        "registrar",
+        "whois",
+        "nic",
     ];
     ROLE.contains(&base.as_str())
 }
@@ -224,10 +314,19 @@ pub fn is_infrastructure_email(email: &str) -> bool {
     if is_role_localpart(local) {
         return true;
     }
+    // A consumer freemail mailbox (gmail / googlemail / yahoo / outlook / …) is
+    // personal PII, never provider infrastructure — only its automated desks (an
+    // `abuse@`/`postmaster@` role local-part, caught above) are. Without this guard
+    // a freemail domain that also reads provider-ish — `googlemail.com` is literally
+    // Gmail — would mislabel every personal mailbox on it as infrastructure and
+    // suppress real subject emails from SERP/WHOIS/RIPE discovery.
+    let registrable = registrable_domain(domain).unwrap_or_else(|| domain.to_string());
+    if is_freemail(domain) || is_freemail(&registrable) {
+        return false;
+    }
     // Provider/infra mail domains: any registrable-domain match against the
     // curated infra set. Kept here (util) so both whois and ripestat can gate
     // emission without depending on `core`.
-    let registrable = registrable_domain(domain).unwrap_or_else(|| domain.to_string());
     INFRA_MAIL
         .iter()
         .any(|d| registrable == *d || domain == *d || domain.ends_with(&format!(".{d}")))
@@ -241,8 +340,10 @@ const INFRA_MAIL: &[&str] = &[
     "cloudflare.com",
     "amazonaws.com",
     "amazon.com",
+    // NB: googlemail.com is NOT here — it is consumer freemail (Gmail's alias),
+    // handled by the is_freemail short-circuit above. google.com stays: it is
+    // Google's corporate/infra domain (noc@, dns-admin@, …), not a user mailbox.
     "google.com",
-    "googlemail.com",
     "azure.com",
     "microsoft.com",
     "fastly.com",
@@ -271,6 +372,21 @@ const INFRA_MAIL: &[&str] = &[
     "ripe.net",
     "arin.net",
     "apnic.net",
+    // Registrars / registry operators whose contact mailboxes surface from
+    // WHOIS/RDAP (live scan: namehost@worldnic.com — Network Solutions).
+    "worldnic.com",
+    "networksolutions.com",
+    "web.com",
+    "tucows.com",
+    "enom.com",
+    "name.com",
+    "domaincontrol.com",
+    "wildwestdomains.com",
+    "publicdomainregistry.com",
+    "key-systems.net",
+    "ascio.com",
+    "nominet.uk",
+    "verisign.com",
 ];
 
 /// True if `domain` is a social platform or one of its country

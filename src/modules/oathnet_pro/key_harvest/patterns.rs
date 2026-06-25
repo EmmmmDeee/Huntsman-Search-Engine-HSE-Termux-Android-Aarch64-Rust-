@@ -929,4 +929,42 @@ pub(super) const KEY_PATTERNS: &[KeyPattern] = &[
         service: "clerk_pub_live",
         min_len: 30,
     },
+    // ── Additional high-value providers (precise, prefix-anchored; distinct
+    //    stems, so order vs the generic entries above doesn't matter). ──
+    // Fly.io's current macaroon format (`fo1_`/`fly_` cover the older tokens).
+    KeyPattern {
+        prefix: "fm2_",
+        service: "flyio",
+        min_len: 40,
+    },
+    // Grafana service-account token (`glsa_<base62>_<8 hex>`).
+    KeyPattern {
+        prefix: "glsa_",
+        service: "grafana",
+        min_len: 40,
+    },
+    // Tailscale auth/API key (`tskey-auth-…` / `tskey-api-…`).
+    KeyPattern {
+        prefix: "tskey-",
+        service: "tailscale",
+        min_len: 36,
+    },
+    // Google OAuth 2.0 client secret.
+    KeyPattern {
+        prefix: "GOCSPX-",
+        service: "google_oauth_secret",
+        min_len: 28,
+    },
+    // Sourcegraph access token (`sgp_<40 hex>` / `sgp_<instance>_<40 hex>`).
+    KeyPattern {
+        prefix: "sgp_",
+        service: "sourcegraph",
+        min_len: 40,
+    },
+    // DigitalOcean OAuth token (`dop_v1_` above is the personal access token).
+    KeyPattern {
+        prefix: "doo_v1_",
+        service: "digitalocean_oauth",
+        min_len: 70,
+    },
 ];

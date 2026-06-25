@@ -5,7 +5,6 @@
 
 use crate::core::{correlator::Correlation, entity::Entity, relation::Relation, scan::Scan};
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn print_dossier(
     scan: &Scan,
     entities: &[Entity],
@@ -13,8 +12,7 @@ pub(super) fn print_dossier(
     relations: &[Relation],
     kind: &str,
     value: &str,
-    sid: &str,
-    skip_reasons: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, usize>>,
+    leverage: &[crate::core::engine::LeverageRanked],
 ) {
     use std::collections::BTreeMap;
 
@@ -23,29 +21,43 @@ pub(super) fn print_dossier(
     println!("╚══════════════════════════════════════════════════════════════╝");
     println!();
     println!("  Target:    {kind} = {value}");
-    println!("  Scan ID:   {}", &sid[..16]);
+    println!("  Scan ID:   {}", &scan.id[..16]);
     println!("  Status:    {}", scan.status.as_str());
     println!("  Entities:  {}", scan.entity_count);
     println!(
         "  Modules:   {} run, {} errored, {} deduped",
         scan.modules_run, scan.modules_errored, scan.modules_deduped
     );
+
+    // Exposure Index — the calibrated 0–100 headline (with its transparent
+    // breakdown) an operator reads first, aggregated from the breach/sensitive-PII/
+    // identifier/correlation signals already computed below.
+    let exposure = crate::core::exposure::assess(entities, correlations);
+    println!("  {}", exposure.summary_line());
+    for c in &exposure.components {
+        println!(
+            "    · {:<22} {:>2}/{:<2}  {}",
+            c.name, c.score, c.max, c.detail
+        );
+    }
     println!();
 
-    // Confidence histogram — five equal-width bands of c_effective().
-    if !entities.is_empty() {
-        let mut bins = [0usize; 5]; // [0-20), [20-40), [40-60), [60-80), [80-100]
-        for e in entities {
-            let band = ((e.c_effective() * 5.0).floor() as usize).min(4);
-            bins[band] += 1;
-        }
-        let labels = ["0–20%", "20–40%", "40–60%", "60–80%", "80–100%"];
-        println!("  Confidence distribution (c_effective):");
-        for (label, &count) in labels.iter().zip(bins.iter()) {
-            if count > 0 {
-                let bar = "█".repeat((count * 20 / entities.len()).max(1));
-                println!("    {label:<8}  {bar} {count}");
-            }
+    // Cross-scan enrichment leverage — this scan's identifiers that also appear in
+    // earlier investigations in the local intelligence base, ranked by how many
+    // they bridge (data_retention_design §4.1). Only genuine bridges (degree ≥ 2)
+    // are shown here; the complete ranking is in `--output json`. Absent on a
+    // first-ever scan, where nothing bridges yet — that is correct, not a gap.
+    let bridges: Vec<&crate::core::engine::LeverageRanked> = leverage
+        .iter()
+        .filter(|l| l.cross_scan_degree >= 2)
+        .collect();
+    if !bridges.is_empty() {
+        println!("  Cross-scan leverage (identifiers bridging prior investigations):");
+        for l in bridges.iter().take(8) {
+            println!(
+                "    · {} {} — bridges {} investigations",
+                l.kind, l.value, l.cross_scan_degree
+            );
         }
         println!();
     }
@@ -121,6 +133,24 @@ pub(super) fn print_dossier(
                 println!("    tags: {}", e.tags.join(", "));
             }
 
+            // Compact MITRE ATT&CK provenance: the inline `attack:<ID>` tags the
+            // engine stamps onto every admitted entity, resolved to their
+            // Reconnaissance technique names. Surfaces, per finding, exactly which
+            // collection technique(s) produced it — the alignment lives in the
+            // data, not a separate coverage report. (CLI may import core::attack.)
+            let mitre: Vec<String> = e
+                .tags
+                .iter()
+                .filter_map(|t| t.strip_prefix("attack:"))
+                .map(|id| {
+                    crate::core::attack::technique(id)
+                        .map_or_else(|| id.to_string(), |t| format!("{} {}", t.id, t.name))
+                })
+                .collect();
+            if !mitre.is_empty() {
+                println!("    MITRE ATT&CK: {}", mitre.join("; "));
+            }
+
             for ev in &e.evidence {
                 println!(
                     "    ├─ {src} — {summary}",
@@ -176,17 +206,210 @@ pub(super) fn print_dossier(
         println!();
     }
 
-    print_diagnostics(scan, entities, kind, value, sid, skip_reasons);
+    print_connections(entities, relations);
+    print_resolved_identities(entities, relations);
+    print_connection_brokers(entities, relations);
+
+    print_diagnostics(scan, entities, kind, value, &scan.id);
 }
 
-fn print_diagnostics(
-    scan: &Scan,
-    entities: &[Entity],
-    kind: &str,
-    value: &str,
-    sid: &str,
-    skip_reasons: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, usize>>,
-) {
+/// CONNECTIONS — graph-free link analysis (PROBLEM_TREE C1, the
+/// "Maltego-without-graphs" play). Renders the shortest typed *thread* tying
+/// each discovered identity back through the graph — the analytic conclusion an
+/// analyst would otherwise pivot a canvas to find. Reuses the very
+/// [`crate::core::relation::identity_paths`] primitive AU-060 fires on, so the
+/// rendered chain and the correlation can never disagree.
+fn print_connections(entities: &[Entity], relations: &[Relation]) {
+    use std::collections::HashMap;
+
+    let connections = crate::core::relation::identity_paths(entities, relations, 4);
+    if connections.is_empty() {
+        return;
+    }
+
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    // A uid label: the entity's (truncated) value + its kind, or a short uid
+    // stub if the node is somehow absent. UIDs are hex (ASCII) — byte-safe slice.
+    let label = |uid: &str| -> (String, String) {
+        by_uid.get(uid).map_or_else(
+            || (format!("{}…", &uid[..uid.len().min(8)]), "?".to_string()),
+            |e| (super::super::truncate(&e.value, 36), e.kind.to_string()),
+        )
+    };
+
+    const SHOWN: usize = 25;
+    println!(
+        "━━━ CONNECTIONS ({}) — identity link analysis ━━━",
+        connections.len()
+    );
+    println!();
+    println!("  The shortest typed path tying each identity back through the graph");
+    println!("  (a chain is only as strong as its weakest edge):");
+    println!();
+    // Build the traversal graph ONCE and reuse it for every connection's
+    // corroboration-multiplicity lookup below.
+    let adj = crate::core::relation::sorted_confined_adjacency(entities, relations);
+    for c in connections.iter().take(SHOWN) {
+        let (fv, fk) = label(&c.from_uid);
+        let mut line = format!("  {fv} ({fk})");
+        let last = c.steps.len().saturating_sub(1);
+        for (i, step) in c.steps.iter().enumerate() {
+            let (sv, sk) = label(&step.to_uid);
+            if i == last {
+                // Annotate the destination identity with its kind.
+                line.push_str(&format!("  ──{}──▶  {sv} ({sk})", step.kind));
+            } else {
+                line.push_str(&format!("  ──{}──▶  {sv}", step.kind));
+            }
+        }
+        println!("{line}");
+        // Corroboration multiplicity: how many edge-disjoint routes confirm this
+        // link (AU-062's signal). >1 means the connection survives any single
+        // pathway going dark — the orthogonal-route robustness.
+        let routes =
+            crate::core::relation::disjoint_pathways_in(&adj, &c.from_uid, &c.to_uid, 5, 4).len();
+        let corroboration = if routes >= 2 {
+            format!(" · corroborated via {routes} independent pathways")
+        } else {
+            String::new()
+        };
+        // Best-achievable reliability: the widest (max-bottleneck) route's weakest
+        // link, shown when it beats the shortest path's — the most-trustworthy way
+        // these two connect may be stronger than the shortest chain suggests
+        // (AU-069's signal). Reuses the adjacency already built above.
+        let best = crate::core::relation::strongest_path_in(&adj, &c.from_uid, &c.to_uid, 5)
+            .map_or(c.min_confidence, |p| p.min_confidence);
+        let best_route = if best > c.min_confidence + 1e-9 {
+            format!(" · strongest route conf {best:.2}")
+        } else {
+            String::new()
+        };
+        println!(
+            "    {} hop{}, weakest edge conf={:.2}{}{}",
+            c.hops,
+            if c.hops == 1 { "" } else { "s" },
+            c.min_confidence,
+            best_route,
+            corroboration
+        );
+        println!();
+    }
+    if connections.len() > SHOWN {
+        println!("  … {} more connection(s)", connections.len() - SHOWN);
+        println!();
+    }
+}
+
+/// RESOLVED IDENTITIES — the cluster-level synthesis of CONNECTIONS (AU-067).
+/// Where the link analysis above ties identities together pairwise, this collapses
+/// every transitively-connected identity into one *resolved identity* — the
+/// connected component of the identity graph — held together only as firmly as its
+/// weakest link. Reuses [`crate::core::relation::resolve_identity_clusters`], so
+/// the grouping can't disagree with the pairwise threads above or the AU-067
+/// correlation. Shows only ≥3-member resolutions; a 2-member cluster is a single
+/// link already rendered under CONNECTIONS.
+fn print_resolved_identities(entities: &[Entity], relations: &[Relation]) {
+    use std::collections::HashMap;
+
+    // Same weakest-link floor AU-067 resolves under (Probable tier): a link below
+    // it is too weak to *bind* two identities, so a single tenuous edge can't fuse
+    // dozens of unrelated namesakes into "one person" in this section.
+    const MIN_CONF: f64 = 0.50;
+
+    let clusters: Vec<_> =
+        crate::core::relation::resolve_identity_clusters(entities, relations, 4, MIN_CONF)
+            .into_iter()
+            .filter(|c| c.members.len() >= 3)
+            .collect();
+    if clusters.is_empty() {
+        return;
+    }
+
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let label = |uid: &str| -> String {
+        by_uid.get(uid).map_or_else(
+            || format!("{}…", &uid[..uid.len().min(8)]),
+            |e| format!("{} ({})", super::super::truncate(&e.value, 36), e.kind),
+        )
+    };
+
+    println!(
+        "━━━ RESOLVED IDENTITIES ({}) — distinct identifiers that are one person ━━━",
+        clusters.len()
+    );
+    println!();
+    println!("  Every identity transitively linked into one (weakest-link confidence):");
+    println!();
+    for (i, c) in clusters.iter().enumerate() {
+        println!(
+            "  #{} — {} identifiers, weakest link conf={:.2}:",
+            i + 1,
+            c.members.len(),
+            c.min_confidence
+        );
+        for uid in &c.members {
+            println!("      • {}", label(uid));
+        }
+        println!();
+    }
+}
+
+/// CONNECTION BROKERS — the node-criticality synthesis (AU-070). Where CONNECTIONS
+/// ties identities pairwise and RESOLVED IDENTITIES collapses them into clusters,
+/// this names the **single nodes the network hangs on**: an entity whose removal
+/// would fragment ≥3 otherwise-linked identities (the graph's articulation points,
+/// in identity terms). Reuses [`crate::core::relation::connection_brokers`] over the
+/// same confined adjacency the threads above traverse, so it can't disagree with
+/// them or the AU-070 correlation. These are the prime pivots: corroborating a
+/// broker hardens every connection that runs through it.
+fn print_connection_brokers(entities: &[Entity], relations: &[Relation]) {
+    use std::collections::HashMap;
+
+    // Same Probable confidence floor and ≥3-identity floor AU-070 fires under: a
+    // weak link can't make a node a broker (no fusing strangers), and a 2-identity
+    // bridge is a single fragile pair already rendered under CONNECTIONS.
+    const MIN_CONF: f64 = 0.50;
+    let adj = crate::core::relation::sorted_confined_adjacency(entities, relations);
+    let ids = crate::core::relation::identity_uids(entities);
+    let brokers: Vec<_> = crate::core::relation::connection_brokers(&adj, &ids, MIN_CONF)
+        .into_iter()
+        .filter(|b| b.brokered.len() >= 3)
+        .collect();
+    if brokers.is_empty() {
+        return;
+    }
+
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let label = |uid: &str| -> String {
+        by_uid.get(uid).map_or_else(
+            || format!("{}…", &uid[..uid.len().min(8)]),
+            |e| format!("{} ({})", super::super::truncate(&e.value, 36), e.kind),
+        )
+    };
+
+    println!(
+        "━━━ CONNECTION BROKERS ({}) — single points that hold the network together ━━━",
+        brokers.len()
+    );
+    println!();
+    println!("  Remove one of these and the identities beneath it fall apart — the prime");
+    println!("  pivots to corroborate (hardening a broker hardens every link through it):");
+    println!();
+    for (i, b) in brokers.iter().enumerate() {
+        println!(
+            "  #{} — {} brokers {} identities:",
+            i + 1,
+            label(&b.uid),
+            b.brokered.len()
+        );
+        for uid in &b.brokered {
+            println!("      • {}", label(uid));
+        }
+        println!();
+    }
+}
+
+fn print_diagnostics(scan: &Scan, entities: &[Entity], kind: &str, value: &str, sid: &str) {
     let wall_ms = scan
         .finished_at
         .and_then(|f| f.checked_sub(scan.started_at))
@@ -258,6 +481,24 @@ fn print_diagnostics(
     let g = &diag.geo_precision;
     println!("━━━ GEO INTELLIGENCE ━━━");
     println!();
+    // Headline answer first: the single best location estimate when AU-059's
+    // cross-seed synergy gate fires (≥2 AU coordinates across ≥2 orthogonal
+    // source classes). Same structured fix the API export and the AU-059 finding
+    // carry — one computation, three renderings.
+    if let Some(fix) = crate::core::correlator::au059_synergy_fix(entities) {
+        println!(
+            "  Best location estimate: {:.4},{:.4} ± {:.1} km  (geohash={}, state={})",
+            fix.lat, fix.lon, fix.radius_km, fix.geohash, fix.state
+        );
+        println!(
+            "    cross-seed synergy: {} AU coordinate(s) across {} orthogonal source class(es) [{}], confidence {:.2}",
+            fix.count,
+            fix.class_names.len(),
+            fix.class_names.join(", "),
+            fix.synergy_confidence
+        );
+        println!();
+    }
     println!(
         "  Coordinates: {} total ({} with geohash, {} with timezone)",
         g.coordinates_count, g.coords_with_geohash, g.coords_with_timezone
@@ -311,34 +552,6 @@ fn print_diagnostics(
         println!();
     }
 
-    if !diag.coordinate_clusters.is_empty() {
-        println!(
-            "  Coordinate clusters ({} place{}):",
-            diag.coordinate_clusters.len(),
-            if diag.coordinate_clusters.len() == 1 {
-                ""
-            } else {
-                "s"
-            }
-        );
-        for (i, cl) in diag.coordinate_clusters.iter().take(10).enumerate() {
-            let country = cl.country_iso.as_deref().unwrap_or("?");
-            println!(
-                "    [{i}] {:.5},{:.5}  ±{:.2} km (robust)  / {:.2} km (worst-case)  [{country}]  \
-                 {n} pts, {d:.2} km diam, {s} source(s)  ({gh})",
-                cl.centroid_lat,
-                cl.centroid_lon,
-                cl.median_radius_km,
-                cl.enclosing_radius_km,
-                n = cl.member_count,
-                d = cl.diameter_km,
-                s = cl.source_diversity,
-                gh = cl.centroid_geohash,
-            );
-        }
-        println!();
-    }
-
     let timeline = crate::core::timeline::reconstruct(entities);
     println!("━━━ TIMELINE ({} events) ━━━", timeline.len());
     println!();
@@ -379,17 +592,6 @@ fn print_diagnostics(
         println!("  • {hint}");
     }
     println!();
-
-    if !skip_reasons.is_empty() {
-        println!("━━━ MODULE SKIP REASONS ━━━");
-        println!();
-        for (module, reasons) in skip_reasons {
-            for (reason, count) in reasons {
-                println!("  {module:<26} ×{count:<4} {reason}");
-            }
-        }
-        println!();
-    }
 
     println!("━━━ END OF DOSSIER ━━━");
 }

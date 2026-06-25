@@ -27,19 +27,33 @@ pub(in crate::modules::search_engines) fn score_username(
 ) -> (u8, f64) {
     let mut score: u8 = 0;
 
-    // Signal 1: direct term overlap (strongest). Lowercase once and borrow the
-    // resulting `&str` parts — they are only compared/substring-tested, never
-    // retained, so no per-part `String` allocation is needed.
+    // Signal 1: direct overlap on the DISTINCTIVE token (strongest). Lowercase
+    // once and borrow the resulting `&str` parts — they are only
+    // compared/substring-tested, never retained, so no per-part `String`
+    // allocation is needed.
+    //
+    // For a multi-part NAME the surname (last significant term) is the identity
+    // anchor: a shared FIRST name alone cross-attributes different people (target
+    // "Jordan Meyers" must not claim a stranger's "jordan_blake"), the same reason
+    // `url_matches_target` requires the surname in a path. A single-token target
+    // (email handle, one-word name, bare username) IS its own anchor, so any
+    // overlap counts. Given names still corroborate through the weaker signals
+    // below — landing a first-name-only hit at CANDIDATE, not PROBABLE.
     let username_lower = username.to_lowercase();
     let parts: Vec<&str> = username_lower
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.len() >= 3)
         .collect();
-    if terms.iter().any(|t| {
+    let part_matches = |t: &str| {
         parts
             .iter()
-            .any(|p| *p == t.as_str() || p.contains(t.as_str()) || t.contains(*p))
-    }) {
+            .any(|p| *p == t || p.contains(t) || t.contains(*p))
+    };
+    let signal1 = match terms.split_last() {
+        None => false,
+        Some((anchor, _given)) => part_matches(anchor.as_str()),
+    };
+    if signal1 {
         score += 3;
     }
 
@@ -60,10 +74,10 @@ pub(in crate::modules::search_engines) fn score_username(
     // Match the host itself or a subdomain of it — `host.ends_with(ps)` alone
     // would also fire on `myspokeo.com` / `notwhitepages.com`. Same dot-boundary
     // predicate used for the aggregator check above.
-    if people_search
+    let people_search_hit = people_search
         .iter()
-        .any(|ps| crate::util::domains::is_or_subdomain_of(host, ps))
-    {
+        .any(|ps| crate::util::domains::is_or_subdomain_of(host, ps));
+    if people_search_hit {
         score += 3;
     }
 
@@ -112,6 +126,22 @@ pub(in crate::modules::search_engines) fn score_username(
     if stem_match || bigram_similarity(cand, seed) >= 0.25 {
         score += 2;
     }
+
+    // Precision gate (mirrors `url_matches_target`): for a multi-part NAME the
+    // surname is the identity anchor. A handle that matches only the GIVEN name —
+    // however much it co-occurs (Signal 3) or resembles the seed stem (Signal 5) —
+    // is a stranger risk ("jordan_blake" for "Jordan Meyers"), so first-name
+    // evidence alone cannot reach the PROBABLE tier: only a surname-anchor hit
+    // (Signal 1) or people-search provenance (Signal 2, where the site itself
+    // asserts the identity) clears the cap. Single-token targets are their own
+    // anchor and are never capped.
+    let multi_part_name = terms.len() >= 2;
+    let anchored = signal1 || people_search_hit;
+    let score = if multi_part_name && !anchored {
+        score.min(2)
+    } else {
+        score
+    };
 
     let confidence = if score >= 3 { 0.55 } else { 0.30 };
     (score, confidence)

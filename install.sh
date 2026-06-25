@@ -822,7 +822,7 @@ if [[ ! -f "$KEYS_PATH" ]]; then
 # Uncomment and paste a value to enable the corresponding key-gated module.
 # File is chmod 0600 — never commit this file.
 #
-# Free modules (93 of 126) need no keys at all.
+# Free modules (95 of 128) need no keys at all.
 # The Settings page (hse serve → http://127.0.0.1:8080/settings) lets you
 # paste and save any key directly from Chrome on the device.
 #
@@ -903,6 +903,12 @@ fi
 } > "$KEYS_PATH.tmp" \
     && chmod 0600 "$KEYS_PATH.tmp" \
     && mv -f "$KEYS_PATH.tmp" "$KEYS_PATH"
+
+# Seed the auto-update throttle stamp so the freshly-installed binary (which is,
+# by definition, current with main right now) doesn't immediately re-check on its
+# first CLI invocation. The CLI gate reads this file (~/.cache/hse-autoupdate.stamp).
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+date +%s > "$LOG_DIR/hse-autoupdate.stamp" 2>/dev/null || true
 
 # ─── Verify ──────────────────────────────────────────────────────────────────
 step "Verifying installation"

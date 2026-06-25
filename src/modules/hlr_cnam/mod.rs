@@ -134,6 +134,15 @@ impl Module for HlrCnam {
         }
         if let Some(net) = &hlr.current_network_name {
             ev = ev.with_attr("network", net);
+            // Classify the SIM's anonymity tier from the carrier name: a VoIP /
+            // virtual number or an anonymity-friendly prepaid MVNO is a weak
+            // identity anchor (a likely burner), which AU-068 surfaces and the
+            // linker weighs. Deterministic, offline; unknown/major carriers are
+            // left unclassified.
+            if let Some(tier) = crate::util::sim_anonymity::classify_carrier(net) {
+                phone.tag(tier.tag());
+                ev = ev.with_attr("sim_anonymity", tier.label());
+            }
         }
         if let Some(orig) = &hlr.original_network_name {
             ev = ev.with_attr("ported_from_carrier", orig);

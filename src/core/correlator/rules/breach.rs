@@ -467,6 +467,15 @@ pub(in crate::core::correlator) fn rule_au_001_multi_breach(
     ];
     let mut out = Vec::new();
     for e in entities_of_kind(entities, EntityKind::Email) {
+        // A role / provider mailbox (abuse@, noreply@, dns@, …) appears in breach
+        // corpora as a matter of course — it is a shared registrar/provider desk,
+        // not the subject's address — so its breach presence is NOT the subject's
+        // exposure and must never raise a Critical. A live person-scan fired AU-001
+        // CRITICAL on `abuse@godaddy.com` (hibp + xposed_or_not), a false positive
+        // surfaced from a WHOIS/RDAP registrar-contact emitter.
+        if crate::core::validation::is_role_mailbox(&e.value) {
+            continue;
+        }
         let sources = tagged_matching_sources(e, BREACH_SOURCES);
         if sources.len() >= 2 {
             let mut names: Vec<&str> = sources.into_iter().collect();
@@ -633,23 +642,28 @@ pub(in crate::core::correlator) fn rule_au_037_credential_exposure(
             EntityKind::Credential => credentials += 1,
             _ => continue,
         }
-        if secret_uids.len() < 20 {
-            secret_uids.push(e.uid.clone());
-        }
+        secret_uids.push(e.uid.clone());
     }
     if passwords == 0 && credentials == 0 {
         return Vec::new();
     }
 
-    // Affected secrets first (capped), then the identity they pertain to.
+    // Affected secrets first (capped), then the identity they pertain to. Both
+    // samples are sorted by uid BEFORE the cap so the same members are chosen
+    // every run — a HashMap-ordered `take(N)` picked a different slice per run,
+    // persisting as duplicate AU-037 rows. The caps stay so a huge credential
+    // dump can't bloat one correlation's entity list.
+    secret_uids.sort_unstable();
+    secret_uids.truncate(20);
+    let mut identity_uids: Vec<String> = entities
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::Email | EntityKind::Username))
+        .map(|e| e.uid.clone())
+        .collect();
+    identity_uids.sort_unstable();
+    identity_uids.truncate(5);
     let mut uids = secret_uids;
-    uids.extend(
-        entities
-            .iter()
-            .filter(|e| matches!(e.kind, EntityKind::Email | EntityKind::Username))
-            .take(5)
-            .map(|e| e.uid.clone()),
-    );
+    uids.extend(identity_uids);
 
     let mut parts = Vec::new();
     if passwords > 0 {

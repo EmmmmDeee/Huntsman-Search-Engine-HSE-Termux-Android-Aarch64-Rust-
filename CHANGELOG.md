@@ -10,6 +10,277 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-06-23
+
+### Added
+
+- **Target Exposure Index** — a calibrated `0–100` rollup of how exposed a subject
+  is, with a transparent per-component breakdown. Competitors (SpiderFoot) flag risk
+  per finding; HSE already computes the inputs, so the new `core::exposure` module
+  *aggregates* them — breach-corpus breadth, sensitive-PII disclosure
+  (government ID / DOB / financial / cleartext credential), confirmed-identifier
+  spread, and the correlator's own Critical/High verdicts — into one explainable
+  number (`MINIMAL`…`CRITICAL`). It counts only corroborated findings
+  (`c_effective ≥ 0.5`), so the speculative name-permutation guesses a name scan
+  emits by the dozen never inflate it. Surfaced as the dossier headline and in the
+  `hse scan --output json` payload (`"exposure"`). Pure, deterministic, core-only.
+
+### Fixed
+
+- **IPv6 stealer-log victim addresses are no longer dropped.** The TXT importer
+  gated victim IPs on `contains('.')`, discarding every IPv6 address; it now parses
+  each token as an `IpAddr` (keeping both families, including a victim's private LAN
+  IP) and skips only the unspecified / `0.x` placeholder.
+- **A PO box is no longer treated as a residence.** `is_specific_residence` accepted
+  `PO Box 123, …` as a dwelling, so the household/kin correlators (AU-049/051) could
+  fuse the unrelated people who share one mail drop into a false household. The
+  PO-box / GPO-box / locked-bag / private-bag forms are now rejected (matched on
+  alphanumerics so every punctuation variant collapses); a real street in a suburb
+  that merely contains "box" (Box Hill) is unaffected.
+
+## [1.8.4] — 2026-06-23
+
+### Fixed
+
+- **Shared-surname kin (AU-051) is a High lead, not a Critical assertion, for common
+  surnames.** The rule reported Critical "likely relatives; kin pivot to reach the
+  subject" for *any* two same-surname people at one residence. But an apartment tower
+  or share-house whose unit numbers are absent from the data collapses unrelated
+  co-residents onto one residence key, and a common surname (Smith, Nguyen, …) makes
+  that coincidence likely — so the confident "relatives" claim was often false. A
+  common surname now fires as a **High lead to verify**; a distinctive surname keeps
+  the Critical kin signal. (Same `is_common` discount the kinship/leads/engine paths
+  apply.)
+- **Dossier import no longer drops the first section of a "UTF-8 with BOM" file.** The
+  BOM (U+FEFF, the Excel/Notepad default encoding) is not whitespace, so `str::trim`
+  left it on the first line — turning the `EMAILS:` section header into
+  `\u{feff}EMAILS:`, which matched no section, silently discarding the entire first
+  section and its entries. A single leading BOM is now stripped at ingest.
+
+## [1.8.3] — 2026-06-23
+
+### Fixed
+
+- **Transitive identity closure (AU-060) honours the relation builders' damps.** The
+  rule asserted an identity link for any 2–4 hop path with no confidence floor, so a
+  chain routed through a deliberately-damped lead-grade edge — a bare-surname
+  `derive_kinship` link (`min(conf) × 0.5`), a co-mention/affiliation lead — surfaced
+  as a confirmed transitive identity, cross-linking same-surname strangers to the
+  subject. It now applies a weakest-link `>= 0.50` floor (mirroring AU-067, reusing
+  the `min_confidence` the path finder already computes): a chain through a sub-0.50
+  lead is suppressed; an all-strong-edge chain still fires.
+- **Common surnames no longer manufacture kinship edges.** `derive_kinship` paired
+  every two Persons sharing a surname with no commonness gate, producing O(n²) false
+  "associate" edges from a single popular name (ten "Smith"s → 45 edges). It now skips
+  a common surname (Smith, Jones, Nguyen, …) — mirroring the `is_common` discount the
+  leads/engine paths already apply — while a distinctive surname still links. Genuine
+  relatives of a common-surname subject still surface through the evidence-grounded
+  co-residence and declared-association passes.
+
+## [1.8.2] — 2026-06-23
+
+### Fixed
+
+- **Bare non-display ISO country codes no longer become phantom addresses.** The
+  `Address` fragment gate rejected a bare 2-letter country code only when it was
+  one of the ~54 countries in the human-readable `country_name_for_iso` table, so
+  every *other* ISO 3166-1 alpha-2 code (`PK`, `BD`, `VE`, `IR`, `BG`, `HR`, `LT`,
+  `LV`, `EE`, `LK`, `QA`, …) still slipped through and corroborated across hundreds
+  of unrelated breach co-occurrence rows into a VERIFIED phantom address — the exact
+  `US`-at-corroboration-106 pathology the gate was added to close. It now rejects
+  *every* bare 2-letter alpha token; the country still survives on the `country:XX`
+  tag and evidence attributes.
+- **Search-discovered usernames require the surname, not just a given name.**
+  `score_username` granted the PROBABLE tier (0.55) on *any* term overlap, so a
+  stranger sharing only the target's first name (`jordan_blake` for a "Jordan
+  Meyers" scan) was emitted as a confirmed handle and fed to the correlator. A
+  multi-part-name target now needs its surname (the distinctive anchor) — or
+  people-search provenance — to reach PROBABLE, mirroring `url_matches_target`;
+  first-name-only evidence stays a quarantined CANDIDATE.
+- **AU state classification is whole-word, not substring.** Prose around an
+  Australian place name routinely contains `ser{vic}e`, `{act}ed`, `fan{tas}tic`,
+  which a bare substring scan read as VIC / ACT / TAS and stamped a wrong
+  jurisdiction onto the address (feeding the AU-056 cross-check and geo-divergence
+  logic). The 2–3 letter abbreviations are now matched as whole tokens.
+- **Numeric breach fields are no longer silently dropped.** The shared JSON reader
+  accepted only string values, so a breach row encoding `discordid` (always a
+  64-bit int), `phone_number` or `postal_code` as a JSON *number* lost the Discord
+  pivot, the phone lead, and the postcode entirely. A coercing reader
+  (`val_str_coerce`) now recovers numeric scalars on the breach extraction paths.
+- **Household / associate correlators fire on live breach scans.** AU-049
+  (household), AU-050 (shared phone line) and AU-051 (same-surname kin) cluster
+  Persons by an `address` / `phone` attribute on their evidence, but the live
+  `oathnet_pro` breach module never stamped those attributes (it emitted standalone
+  Address/Phone entities and split `city`/`state`/`postal_code` attrs instead) — so
+  the three pivots fired only on hand-imported text dossiers, never on a real scan.
+  Breach evidence now carries a `phone` attr and a street-anchored `address` attr
+  (gated to a specific residence so a shared city can't fuse strangers into a false
+  household).
+
+## [1.8.1] — 2026-06-23
+
+### Fixed
+
+- **Re-observed evidence no longer loses newly-discovered attributes.**
+  `Entity::absorb`'s `(source, summary)` evidence dedup was first-wins *drop*, so
+  when the same source re-observed an entity with the same summary but NEW
+  attributes (an updated breach dump, a richer re-scan), the new record was
+  discarded and its fields silently lost — across both the in-memory scan merge
+  and the recall/persist path (both use `merge`). It now MERGES the incoming
+  attributes into the matching record (keys it lacks are added; a key both set
+  resolves to the lexicographically smaller value, so the fold stays
+  merge-order-independent and idempotent). The dedup — no phantom corroboration
+  from a repeat observation — is otherwise unchanged.
+- **Dossier import parser aligned with the breach-PII rules' field variants.** The
+  AU-073/074/075 rules each scan several field-name variants (e.g. `birthday`,
+  `centrelink`, `husband`/`wife`); the parser only preserved a subset, so a dump
+  using a common variant had its field dropped and the rule never fired. The
+  parser's preserve-set now covers every key the three rules scan.
+
+## [1.8.0] — 2026-06-23
+
+### Added
+
+Breach/stealer PII intelligence — three people-centric correlator rules that mine
+the structured fields breach, stealer-log and other leak modules already store as
+evidence attributes but never surfaced as findings. All run on the confirmed
+(candidate-filtered, quarantine-excluded) view, so breach co-occurrence strangers
+can't leak in. Proven end-to-end: an imported breach dossier fires all three.
+
+- **AU-073 Subject date of birth** — extracts and normalises DOB from breach
+  records and reports each distinct value with its independent-source count
+  (≥2 agree → High; single → Medium). DOB is the strongest disambiguator between
+  same-name people, so conflicting DOBs surface separately rather than being
+  silently merged — directly attacking the namesake failure class.
+- **AU-074 Australian government-ID exposure** — detects a leaked TFN / Medicare
+  / Centrelink CRN / driver-licence / passport by breach field key, confirmed by
+  format+checksum (TFN mod-11, Medicare mod-10) so a mislabelled number can't
+  fabricate a CRITICAL finding. The value is masked in the finding; the full
+  value stays in evidence (operator full-fidelity). The most serious
+  identity-theft signal (the Optus/Medibank exposure class).
+- **AU-075 Named associate** — surfaces a relative/associate stated in a breach or
+  stealer record (spouse, next-of-kin, emergency contact, the stealer-log owner)
+  — a declared tie the geo/surname family rules (AU-049/051/061) can't reach.
+
+To feed these on every source, the breach-PII fields are now preserved through
+the **oathnet_pro** allowlist and the **dossier import parser** (both previously
+dropped unmapped fields); `see_know` and the JSON import already preserved them.
+
+## [1.7.0] — 2026-06-22
+
+### Added
+
+- **AU-072 — Consolidated PayID payment-identity surface.** The v1.6.0 `payid`
+  module tags each PayID-eligible identifier (email/phone/ABN) individually; this
+  correlator rule consolidates them. Once a subject carries two or more PayID
+  handles it fires a finding, because the aggregate is the signal — each handle
+  is an independent NPP confirm-payee route to the **same** registered
+  account-holder name, so multiple handles both widen the de-anonymisation
+  surface and cross-confirm the name. A register-resolvable ABN among them lifts
+  the severity to High (its holder name is resolvable from the public register
+  now). Runs on the confirmed view, so speculative name-permuted addresses never
+  inflate the count; `entity_uids` are the full member set sorted by uid (the
+  AU-039 determinism discipline). This completes the "use PayID for OSINT pivots"
+  capability — recognition (v1.6.0) plus the actionable correlation.
+
+## [1.6.0] — 2026-06-22
+
+### Added
+
+- **PayID OSINT pivots** (`payid` module, #126 — free, passive, People category).
+  PayID (Australia's NPP) maps a memorable identifier — email, mobile/phone, ABN,
+  or Org ID — to a bank account, and the *confirm-payee* step returns the
+  registered **account-holder name**, so a lone phone or email pivots to a real
+  legal name. The module recognises which discovered identifiers are
+  PayID-eligible, normalises them to canonical NPP form (lower-cased email,
+  `+61…` E.164 phone, 11-digit ABN), and annotates them as confirm-payee pivots
+  with the operator step that reveals the name. The **ABN** PayID is flagged
+  `payid:registry-resolvable` — its holder name equals the ABN's registered
+  entity name, which `abn_lookup`/`opencorporates` already resolve lawfully from
+  the public register (the one PayID type whose name needs no banking app).
+  Deliberately **offline**: there is no public PayID resolution API, so the module
+  never contacts a bank/NPP endpoint and never auto-resolves a name from a
+  phone/email (that appears only inside the operator's own banking app). `payid`
+  is enrichment-only, so PayID-shape annotates an identifier without ever
+  inflating its confidence tier.
+
+### Fixed
+
+- **`dns_intel` SOA admin email treated as the subject.** The SOA RNAME admin
+  contact — always a role/zone mailbox (`hostmaster@`, `dns@`, an infra-domain
+  desk) — was emitted as a discrete Email entity and identity-clustered as the
+  subject's PII (a live domain-heavy scan surfaced dozens). It is now gated
+  through `is_infrastructure_email`, mirroring whois/ripestat/search_engines; a
+  genuine personal admin on a non-infra domain is still kept.
+
+## [1.5.1] — 2026-06-22
+
+Accuracy and robustness fixes from an adversarial review of a live v1.5.0
+`full_name = Cindy Haynes` scan (plus dedicated panic-safety and determinism
+sweeps). Three corrected flaws were producing **materially wrong intelligence**;
+all are gate-verified (fmt, clippy `-D warnings`, full suite, MSRV 1.88, rustdoc).
+
+### Fixed
+
+- **Namesake location false-attribution.** A name search returns fuzzy
+  namesakes, and the per-result snippet extractors trusted every result's text
+  with no subject gate — a "Dr Cindy **He**" UNSW staff page was attributed to
+  "Cindy Haynes", injecting a false "Sydney, NSW" address + coordinate that drove
+  a wrong-state AU-056 jurisdiction and a 700 km geo-divergence. `url_matches_target`
+  now requires the distinctive **surname** for a multi-part name (not any term),
+  and snippet address extraction is gated on the surname appearing in the result.
+- **Phantom VERIFIED country "address".** A bare ISO country code ("US") reached
+  corroboration=106 by aggregating the shared `country` field across hundreds of
+  unrelated breach co-occurrence rows, surfacing as a confirmed US address for a
+  QLD subject. A bare country code is now refused at admission (the country
+  survives on its tag/attributes).
+- **Speculative permutations resurrected by recall.** Name-permuted emails
+  (`cindy.haynes@{gmail,hotmail,…}`) were shown VERIFIED with no real
+  confirmation: `source_count`'s stored-field fallback (meant for evidence-less
+  synthetic entities) also fired for entities whose evidence was all
+  non-corroborating, and `recall` ratchets that field up every re-scan. The
+  fallback is now reserved for genuinely evidence-less entities; an all-`recall`/
+  enrichment entity counts as one source and stays at its base tier.
+- **Correlator determinism** — every `entity_uids` `take(N)` over a HashMap-ordered
+  collection (AU-022/025/027/037) now uses the full member set or a
+  sort-before-cap, so the live and finalise passes agree and containment-dedup
+  folds them instead of persisting duplicate rows.
+- **`cert_intel` out-of-bounds panic** on an attacker-controlled leaf certificate
+  whose version-wrapper sits at the buffer tail — the serial-length read is now
+  bounds-checked.
+- **Email value normalisation** strips a literal breach-escape tail
+  (`…@gmail.com\r\n`) so the clean and dirty forms share one UID.
+
+## [1.5.0] — 2026-06-22
+
+Unifies two parallel development lines and ships the combined result as one
+install-ready release (**125 modules — 92 free · 28 key-gated · 5 paid**;
+3,492 lib tests):
+
+- the **module-consolidation refactor** (127 → 124 modules with no capability
+  lost — `phone_area_geo`+`phone_carrier_geo` → `phone_geo`, `qld_unclaimed`
+  folded into `au_unclaimed`, IP-geo/ASN unified into `util::geo::ip_asn_entity`,
+  seven JSON holdouts routed through the shared `json_decode`), and
+- the **graph-analytics / cross-scan intelligence suite** — a shared `Graph`
+  primitive with community detection (deterministic label propagation),
+  cut-vertex/bridge detection, betweenness-centrality **pivot-node** detection,
+  connection-/path-discovery between entities and **across separate scans**,
+  damped **trust propagation**, near-duplicate **entity resolution**,
+  **discovery-gap** analysis, the universal entity **classifier** (every output
+  re-injectable as a seed), a consolidated **`hse benchmark`** scorecard (+ its
+  HTTP twin and a forward-only scan-plan preview), and history-aware lead
+  prioritisation.
+
+Plus a **dependency refresh** (tower-http 0.6 → 0.7; 26 transitive crates to
+their latest Rust-1.88-compatible versions) and **five data-quality fixes**
+verified against real-scan debug bundles: structured exports (CSV/JSON/GEXF) now
+honour the breach-co-occurrence quarantine (H1); `name_intel` name-permutations
+no longer self-corroborate into AU-003/AU-034 (H3); WHOIS-registrant / hosting /
+IP-geo locations no longer vote the subject's address in AU-018/026/030 (H5);
+`rdap_domain` reduces a host to its registrable domain before querying (M5); and
+a confusable-homograph / gibberish admission gate drops breach-dump spam
+"names" (L5).
+
 ### Added
 
 - **Test-coverage & proof-infrastructure expansion (~2,995 lib tests passing).**
