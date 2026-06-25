@@ -313,10 +313,12 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "reddit",
         "hacker_news",
         "lobsters",
+        "devto",
         "stackoverflow",
         "stackexchange",
     ]) {
-        // Discussion forums — independent of both code-hosting and social media.
+        // Discussion forums / developer community blogs — independent of both
+        // code-hosting and social media.
         "forum"
     } else if has(&[
         "social_probe",
