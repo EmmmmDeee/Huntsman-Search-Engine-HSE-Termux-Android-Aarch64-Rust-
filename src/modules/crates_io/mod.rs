@@ -145,6 +145,7 @@ fn github_username_from_url(url: &str) -> Option<&str> {
     let path = url
         .strip_prefix("https://github.com/")
         .or_else(|| url.strip_prefix("http://github.com/"))?;
+    let path = path.trim_end_matches('/');
     // Must be a bare username — no slashes (would be a repo/path), no query.
     if path.is_empty() || path.contains('/') || path.contains('?') || path.contains('#') {
         return None;

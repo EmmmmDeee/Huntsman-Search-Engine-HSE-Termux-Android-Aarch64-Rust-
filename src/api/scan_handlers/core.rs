@@ -66,10 +66,7 @@ pub async fn scan_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     }
 }
 
-pub async fn scan_get(
-    State(s): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
+pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {
     match s.store.get_scan(&id) {
         Ok(Some(scan)) => (
             StatusCode::OK,
@@ -134,9 +131,9 @@ pub async fn scan_import(
     headers: axum::http::HeaderMap,
     body: String,
 ) -> impl IntoResponse {
+    use super::super::handlers::forbidden;
     use crate::core::entity::{EntityKind, unix_now};
     use crate::core::scan::{ScanStatus, TargetKind};
-    use super::super::handlers::forbidden;
 
     // CSRF guard. The body is `text/plain`, which is a CORS *simple request*
     // (no preflight) — so without this, any website the operator has open could
@@ -366,7 +363,6 @@ pub async fn plan_preview(
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     use crate::core::module::Module;
-
 
     let value = params.get("value").map_or("", |v| v.trim());
     if value.is_empty() {

@@ -50,6 +50,12 @@ pub fn vault_path() -> PathBuf {
         |home| {
             let dir = PathBuf::from(&home).join(".huntsman");
             let _ = std::fs::create_dir_all(&dir);
+            // Restrict to owner-only on Unix so harvested keys are not world-readable.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+            }
             dir.join("key_vault.db")
         },
     )
@@ -124,15 +130,18 @@ fn write_batch(
              VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1, ?6, ?6)",
             params![fk.key, fk.service, fk.provider, fk.query, scan_id, now_i],
         )?;
-        // Subsequent touch: increment count + update last_seen.
+        // Subsequent touch: update provenance + increment count + update last_seen.
         conn.execute(
             "UPDATE found_keys
              SET last_scan_id     = ?1,
+                 service          = ?2,
+                 provider         = ?3,
+                 query            = ?4,
                  discovery_count  = discovery_count + 1,
-                 last_seen_at     = ?2
-             WHERE key_value = ?3
+                 last_seen_at     = ?5
+             WHERE key_value = ?6
                AND last_scan_id != ?1",
-            params![scan_id, now_i, fk.key],
+            params![scan_id, fk.service, fk.provider, fk.query, now_i, fk.key],
         )?;
     }
     Ok(keys.len())

@@ -1,4 +1,4 @@
-//! Extract the registrable domain from a `Url` seed — pure offline, zero
+//! Extract the host (full hostname including subdomains) from a `Url` seed — pure offline, zero
 //! network. Discovered URLs (from Gravatar, Wikidata, contact profiles, code
 //! repos, breach records) are first-class entities that expand to `TargetKind::Url`,
 //! but several downstream modules (`doh_resolver`, `wayback`, `cert_intel`,
@@ -43,17 +43,19 @@ pub struct UrlExtract;
 /// single-label hosts, malformed input).
 fn extract_host(url: &str) -> Option<(String, bool)> {
     let host = crate::util::url_util::host_from_url(url)?;
-    // IPv6 literal — brackets already stripped by host_from_url.
-    if host.starts_with('[') && host.ends_with(']') {
-        let inner = host.trim_start_matches('[').trim_end_matches(']');
-        return Some((inner.to_string(), true));
-    }
-    // Bare IPv4: four dotted octets, all numeric.
-    let is_ip = host
-        .split('.')
-        .all(|seg| !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_digit()))
-        && host.split('.').count() == 4;
-    Some((host, is_ip))
+    // IPv6 literals may or may not have brackets stripped by host_from_url;
+    // use the presence of `:` as the canonical signal.
+    let clean = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
+    let is_ipv6 = host.contains(':');
+    let is_ipv4 = !is_ipv6
+        && clean.split('.').count() == 4
+        && clean
+            .split('.')
+            .all(|seg| !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_digit()));
+    Some((clean, is_ipv6 || is_ipv4))
 }
 
 #[async_trait]
@@ -92,6 +94,10 @@ impl Module for UrlExtract {
         let Some((host, is_ip)) = extract_host(&target.value) else {
             return Ok(result);
         };
+        // Skip known platform/hosting domains — they are not the subject's infrastructure.
+        if !is_ip && super::profile_kit::PLATFORM_HOSTS.contains(&host.as_str()) {
+            return Ok(result);
+        }
         let kind = if is_ip {
             EntityKind::IpAddress
         } else {

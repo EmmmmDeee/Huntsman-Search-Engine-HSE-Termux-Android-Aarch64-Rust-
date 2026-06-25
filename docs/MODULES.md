@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (143 modules: 110 free · 28 key-gated · 5 paid)
+## Catalogue (145 modules: 112 free · 28 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -33,6 +33,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `sourceforge_user` | username | free | no | 94 | username, person, email, url, address |
 | `cpan_user` | username | free | no | 55 | username, person, email, url, domain, address |
 | `rubygems_user` | username | free | no | 54 | username, person, url, domain |
+| `pypi_user` | username | free | no | 56 | username, person, email, url, domain |
 | `reddit_user` | username | free | no | 105 | username, email, url |
 | `stackoverflow_user` | username | free | no | 105 | username, person, url, domain, address |
 | `bluesky_user` | username | free | no | 104 | username, person, email, url, domain |

@@ -40,6 +40,7 @@ pub(in crate::core::correlator) fn rule_au_011_cross_platform_username(
         "sourceforge_user",
         "cpan_user",
         "rubygems_user",
+        "pypi_user",
         "crates_io",
         "npm_author",
     ];
@@ -749,10 +750,13 @@ pub(in crate::core::correlator) fn rule_au_076_email_username_localpart_bridge(
     let mut out: Vec<Correlation> = Vec::new();
 
     for email_e in entities.iter().filter(|e| e.kind == EntityKind::Email) {
-        let local = match email_e.value.split('@').next() {
+        let local_raw = match email_e.value.split('@').next() {
             Some(l) if !l.is_empty() => l,
             _ => continue,
         };
+        // Strip plus-addressing (e.g. `haigen+tag@example.com` → `haigen`)
+        // before canonicalising so tagged emails still bridge correctly.
+        let local = local_raw.split('+').next().unwrap_or(local_raw);
         let canon_local = canonical_handle(local);
         if canon_local.len() < 4 || is_generic_handle(&canon_local) {
             continue;

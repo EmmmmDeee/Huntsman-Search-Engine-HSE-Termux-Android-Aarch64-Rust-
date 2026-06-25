@@ -113,6 +113,7 @@ pub(crate) mod profile_kit;
 pub mod proxycurl;
 pub mod psbdmp;
 pub mod pwned_passwords;
+pub mod pypi_user;
 pub mod qld_cadastre;
 pub mod rdap_domain;
 pub mod reddit_user;
@@ -342,6 +343,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(launchpad_user::LaunchpadUser),
         Arc::new(cpan_user::CpanUser),
         Arc::new(rubygems_user::RubygemsUser),
+        Arc::new(pypi_user::PypiUser),
         Arc::new(npm_author::NpmAuthor),
         Arc::new(crates_io::CratesIo),
         Arc::new(reddit_user::RedditUser),
