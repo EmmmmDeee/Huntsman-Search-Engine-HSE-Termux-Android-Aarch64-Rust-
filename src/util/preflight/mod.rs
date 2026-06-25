@@ -6,6 +6,19 @@
 //! consistent across providers — a value that's a "placeholder
 //! username" for SeekNow must be one for OathNet too.
 
+/// Strip the brackets that `url` 2.5 wraps around IPv6 literals in `host_str()`
+/// (`[::1]` → `::1`). A non-bracketed string is returned unchanged.
+///
+/// This is the single source-of-truth for IPv6-bracket removal: any caller that
+/// parses `Url::host_str()` into an `IpAddr` needs this or every IPv6-literal
+/// target fails to parse, silently returning a "not-private" verdict — an SSRF
+/// bypass.
+pub fn unbracket_host(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
 /// True if `ip` should be skipped for an external IPv4-only lookup
 /// (rate-limited public APIs that don't yet support IPv6 — ip-api.com,
 /// ipinfo.io, ipquery.io etc.).
@@ -229,10 +242,7 @@ pub fn url_host_is_private(url: &str) -> bool {
     };
     // `url` 2.5 returns IPv6 `host_str` WITH brackets (`[::1]`); strip them so
     // the `IpAddr` parse inside `is_private_ip` fires.
-    let bare = host
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(host);
+    let bare = unbracket_host(host);
     is_private_ip(bare) || is_local_domain(bare)
 }
 
