@@ -295,6 +295,16 @@ pub(super) fn extract_rich_detail(
         }
         let composed = addr_parts.join(", ");
         if seen.insert(format!("@addr:{}", composed.to_lowercase())) {
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&composed) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.tag("breach");
+                c.tag("see-know");
+                c.add_evidence(ev.clone());
+                result.push(c);
+            }
             push_breach_entity(
                 result,
                 Entity::new(EntityKind::Address, &composed, 0.55, scan_id),

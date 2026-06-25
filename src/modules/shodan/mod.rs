@@ -117,6 +117,7 @@ impl Module for Shodan {
             EntityKind::Asn,
             EntityKind::Organisation,
             EntityKind::Address,
+            EntityKind::Coordinates,
             EntityKind::IpAddress,
         ];
         KINDS
@@ -414,6 +415,15 @@ impl Shodan {
         if let Some(country) = &body.country_name
             && !country.is_empty()
         {
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(country) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, &ctx.scan_id);
+                c.tag("shodan");
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.add_evidence(Evidence::new(SRC, format!("Geocode of country for {ip}")));
+                result.push(c);
+            }
             let mut addr = Entity::new(EntityKind::Address, country, 0.55, &ctx.scan_id);
             addr.tag("shodan");
             addr.tag("geoint");
