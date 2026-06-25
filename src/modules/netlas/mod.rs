@@ -392,11 +392,8 @@ impl Module for Netlas {
                 de.tag("netlas");
                 de.tag("ssl-san");
                 de.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("SSL/TLS SAN domain for {ip_str}"),
-                    )
-                    .with_attr("ip", ip_str),
+                    Evidence::new(SRC, format!("SSL/TLS SAN domain for {ip_str}"))
+                        .with_attr("ip", ip_str),
                 );
                 result.push(de);
             }

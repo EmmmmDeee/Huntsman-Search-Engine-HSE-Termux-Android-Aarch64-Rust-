@@ -296,8 +296,7 @@ impl Module for IpQs {
                 let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, &ctx.scan_id);
                 ae.tag("ipqs");
                 ae.add_evidence(
-                    Evidence::new(SRC, format!("ASN for {value} via IPQS"))
-                        .with_attr("ip", value),
+                    Evidence::new(SRC, format!("ASN for {value} via IPQS")).with_attr("ip", value),
                 );
                 result.push(ae);
             }

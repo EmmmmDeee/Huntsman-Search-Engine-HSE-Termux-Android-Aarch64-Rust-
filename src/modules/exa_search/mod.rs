@@ -232,16 +232,22 @@ impl Module for ExaSearch {
 
             // Author name → Person lead (multi-word names only, low confidence
             // since byline attribution is often a pen name or org).
-            if let Some(author) = r.author.as_deref().map(str::trim).filter(|a| {
-                a.chars().count() >= 4 && a.contains(' ') && !a.contains('@')
-            }) {
+            if let Some(author) = r
+                .author
+                .as_deref()
+                .map(str::trim)
+                .filter(|a| a.chars().count() >= 4 && a.contains(' ') && !a.contains('@'))
+            {
                 let mut pe = Entity::new(EntityKind::Person, author, 0.35, &ctx.scan_id);
                 pe.tag("exa-search");
                 pe.tag("byline");
                 pe.tag("derived");
                 pe.add_evidence(
-                    Evidence::new(SRC, format!("Author byline from Exa result for {}", target.value))
-                        .with_attr("source_url", &r.url),
+                    Evidence::new(
+                        SRC,
+                        format!("Author byline from Exa result for {}", target.value),
+                    )
+                    .with_attr("source_url", &r.url),
                 );
                 result.push(pe);
             }

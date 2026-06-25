@@ -259,16 +259,12 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
                                 | "npmjs.org"
                         );
                         if !skip && seen_domains.insert(host.clone()) {
-                            let mut de =
-                                Entity::new(EntityKind::Domain, &host, 0.58, scan_id);
+                            let mut de = Entity::new(EntityKind::Domain, &host, 0.58, scan_id);
                             de.tag("npm");
                             de.tag("derived");
                             de.add_evidence(
-                                Evidence::new(
-                                    SRC,
-                                    format!("npm package link domain ({pkg_name})"),
-                                )
-                                .with_attr("package", pkg_name),
+                                Evidence::new(SRC, format!("npm package link domain ({pkg_name})"))
+                                    .with_attr("package", pkg_name),
                             );
                             result.push(de);
                         }
