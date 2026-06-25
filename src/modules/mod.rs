@@ -13,6 +13,7 @@ pub mod ahpra;
 pub mod api_key_probe;
 pub mod app_links;
 pub mod asic_director;
+pub mod asic_persons;
 pub mod au_electoral;
 pub mod au_geo;
 pub mod au_people;
@@ -423,6 +424,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(au_unclaimed::AuUnclaimed),
         Arc::new(au_people::AuPeople),
         Arc::new(asic_director::AsicDirector),
+        Arc::new(asic_persons::AsicPersons),
         Arc::new(au_electoral::AuElectoral),
         Arc::new(au_property::AuProperty),
         Arc::new(au_geo::AuGeo),
