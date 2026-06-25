@@ -16,8 +16,9 @@
 //! profile surfaces `displayName`, `description` (bio), and the `handle`
 //! itself (which may be a personal domain — a rare direct domain pivot). As
 //! an independent `social`-family source it contributes a distinct
-//! corroboration pathway for AU-045 multi-service identity confirmation.
-//! Official, stable, keyless, CORS-open.
+//! corroboration pathway for AU-045 multi-service identity confirmation. The
+//! profile's `createdAt` further dates the account (an `account-age` signal the
+//! keyed stacks rarely expose). Official, stable, keyless, CORS-open.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -47,6 +48,10 @@ pub(super) struct BskyProfile {
     /// Canonical decentralised identifier, e.g. `did:plc:…`.
     #[serde(default)]
     pub(super) did: Option<String>,
+    /// Account creation timestamp (ISO-8601), e.g. `2023-04-01T00:00:00.000Z`.
+    /// Dates the account — an age signal the keyed stacks rarely expose.
+    #[serde(rename = "createdAt", default)]
+    pub(super) created_at: Option<String>,
 }
 
 #[async_trait]
@@ -137,11 +142,25 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
     if let Some(ref did) = profile.did {
         ev = ev.with_attr("did", did);
     }
+    // The `createdAt` field dates the account — a creation-age signal carried as
+    // its UTC date (the leading `YYYY-MM-DD` of the ISO-8601 timestamp).
+    let created_date = profile
+        .created_at
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|ts| ts.get(..10).unwrap_or(ts).to_string());
+    if let Some(ref date) = created_date {
+        ev = ev.with_attr("created_at", date);
+    }
 
     // Confirmed-on-Bluesky username.
     let mut u = Entity::new(EntityKind::Username, bare_handle, 0.85, scan_id);
     u.tag("bluesky");
     u.tag("social");
+    if created_date.is_some() {
+        u.tag("account-age");
+    }
     u.add_evidence(ev.clone());
     result.push(u);
 
@@ -264,6 +283,7 @@ mod tests {
             display_name: display_name.map(str::to_string),
             description: description.map(str::to_string),
             did: Some("did:plc:abc123".to_string()),
+            created_at: None,
         }
     }
 
@@ -364,6 +384,44 @@ mod tests {
             ents.len(),
             2,
             "username + profile URL only when no optional fields"
+        );
+    }
+
+    #[test]
+    fn created_at_dates_the_account_as_age_evidence() {
+        let mut p = make_profile("alice.bsky.social", None, None);
+        p.created_at = Some("2023-04-01T00:00:00.000Z".to_string());
+        let ents = build_entities(p, "scan-bsky-008");
+        let u = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.value == "alice")
+            .expect("username entity");
+        // The account-age tag flags it as a creation-date signal,
+        assert!(
+            u.has_tag("account-age"),
+            "created account must be tagged account-age"
+        );
+        // and the ISO timestamp is reduced to its UTC date in evidence.
+        assert!(
+            u.evidence.iter().any(|ev| ev
+                .attributes
+                .get("created_at")
+                .is_some_and(|v| v.as_str() == "2023-04-01")),
+            "creation date must be carried as `created_at` evidence (YYYY-MM-DD)"
+        );
+    }
+
+    #[test]
+    fn no_account_age_tag_without_created_at() {
+        let p = make_profile("alice.bsky.social", None, None);
+        let ents = build_entities(p, "scan-bsky-009");
+        let u = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.value == "alice")
+            .expect("username entity");
+        assert!(
+            !u.has_tag("account-age"),
+            "no account-age tag when createdAt is absent"
         );
     }
 }
