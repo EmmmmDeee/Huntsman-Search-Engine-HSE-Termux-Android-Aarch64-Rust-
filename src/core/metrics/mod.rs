@@ -165,6 +165,24 @@ pub struct ScanMetrics {
     /// Normalises edge count by scan size so a dense small graph and a sparse
     /// large one are comparable.
     pub graph_density: f64,
+    /// Graph **degeneracy** — the largest `k` for which a non-empty `k`-core exists (see
+    /// [`Graph::degeneracy`](crate::core::graph::Graph::degeneracy)). The structural
+    /// *cohesion* axis, distinct from the two density-style measures above: where
+    /// [`graph_density`](ScanMetrics::graph_density) averages edges over the whole graph
+    /// (one dense pocket is diluted by a large sparse periphery) and
+    /// [`seed_reach`](ScanMetrics::seed_reach) measures depth from the origin, degeneracy
+    /// reports whether the footprint has a *redundantly-corroborated heart* at all: `0`/`1`
+    /// is a tree of one-off leads, `≥2` means a cluster of entities each held by multiple
+    /// mutually-reinforcing links. `0` for a graph with no edges.
+    pub graph_degeneracy: usize,
+    /// Size of the **main core** — the number of entities whose
+    /// [`coreness`](crate::core::graph::Graph::coreness) equals
+    /// [`graph_degeneracy`](ScanMetrics::graph_degeneracy), i.e. the membership of the
+    /// densest `k`-core. The count of entities forming the cohesive, most-redundantly-
+    /// corroborated core of the footprint — the structural heart an analyst should trust
+    /// most, complementing the *fragility* (cut-vertex / bridge) counts the benchmark
+    /// already reports. `0` for an edgeless graph (degeneracy `0`, no core to size).
+    pub main_core_size: usize,
     /// Number of entities tagged as a cross-scan bridge — carrying any of
     /// `"cross-scan"`, `"cross-scan-cooccurrence"`, or `"cross-scan-relation"`.
     /// These are the historical-flywheel links: findings this scan shares with
@@ -328,6 +346,19 @@ pub fn compute(entities: &[Entity], relations: &[Relation]) -> ScanMetrics {
     let linked_entity_fraction = fraction(linked, total_entities);
     let graph_density = density(total_relations, total_entities);
 
+    // ── Structural cohesion: degeneracy + main-core size ────────────────────
+    // One k-core decomposition over the same undirected graph (O(V+E)). Degeneracy is
+    // the max coreness; the main core is the set of nodes at that max. An edgeless graph
+    // has degeneracy 0 and an empty main core — guard so the all-isolated case (every
+    // node coreness 0) reports `0`, not "all nodes", as its core size.
+    let coreness = Graph::build(entities, relations).coreness();
+    let graph_degeneracy = coreness.iter().copied().max().unwrap_or(0);
+    let main_core_size = if graph_degeneracy == 0 {
+        0
+    } else {
+        coreness.iter().filter(|&&c| c == graph_degeneracy).count()
+    };
+
     // ── Cross-scan bridges + distinct evidence sources ──────────────────────
     let cross_scan_bridges = entities
         .iter()
@@ -359,6 +390,8 @@ pub fn compute(entities: &[Entity], relations: &[Relation]) -> ScanMetrics {
         relations_by_kind,
         linked_entity_fraction,
         graph_density,
+        graph_degeneracy,
+        main_core_size,
         cross_scan_bridges,
         distinct_evidence_sources,
         seed_reach,

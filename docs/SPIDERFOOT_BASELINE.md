@@ -69,13 +69,17 @@ Each HSE claim links to the code that makes it true.
   **cut-vertex & bridge analysis** (`core::graph`, one iterative Hopcroft–Tarjan pass)
   that names the network's *single points of failure* — the entities and the lone links
   whose removal fragments the graph, the sharp binary question betweenness only
-  approximates — **community detection** (`core::community`, label propagation), **trust
-  propagation** (`core::trust`, damped personalized-PageRank), **near-duplicate
-  resolution** (`core::resolve`), and **discovery-gap analysis** (`core::gap`) that names
-  the validated seeds with *no* evidence-backed link and the corrective scan to connect
-  each — closing discovery blind spots rather than leaving them silent. All read
-  structural intelligence off one shared, deterministic graph primitive (`core::graph`).
-  SpiderFoot ships no equivalent.
+  approximates — **k-core cohesion** (`core::graph`, an O(V+E) Batagelj–Zaversnik
+  degeneracy/coreness decomposition) that names the *opposite*: the redundantly-
+  corroborated core that holds when fragility names what breaks — distinguishing a
+  fragile high-degree hub (a star centre, coreness 1) from a robust clique member
+  (coreness 3) that degree and betweenness cannot tell apart — **community detection**
+  (`core::community`, label propagation), **trust propagation** (`core::trust`, damped
+  personalized-PageRank), **near-duplicate resolution** (`core::resolve`), and
+  **discovery-gap analysis** (`core::gap`) that names the validated seeds with *no*
+  evidence-backed link and the corrective scan to connect each — closing discovery blind
+  spots rather than leaving them silent. All read structural intelligence off one shared,
+  deterministic graph primitive (`core::graph`). SpiderFoot ships no equivalent.
 
 ### 2.5 Scan speed / efficiency & 2.6 Resource usage — **HSE supersedes (structural; figure pending A/B)**
 - *SpiderFoot:* Python interpreter + dependency tree.
@@ -108,7 +112,8 @@ guarantees. This gap is tracked here precisely so HSE's superiority claim stays 
 HSE ships the reproducible instrument: **`hse benchmark [--scan-id <id|latest>] [--json]`**
 (and `GET /api/v1/scans/{id}/benchmark`) emits a consolidated scorecard — discovery depth,
 graph coverage, corroboration, density, structural fragility (cut vertices / bridges),
-throughput, module reliability, pivot count — across the axes above.
+structural cohesion (degeneracy / main core), throughput, module reliability, pivot count
+— across the axes above.
 
 A formal A/B is: run SpiderFoot and HSE on an **identical seed under identical network
 conditions**, capture each tool's scorecard, and diff field-by-field
