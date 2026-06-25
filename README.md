@@ -1,7 +1,7 @@
 # Huntsman Search Engine (HSE)
 
 [![CI](https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/actions/workflows/ci.yml/badge.svg)](https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/actions/workflows/ci.yml)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#licence)
+[![License: Proprietary](https://img.shields.io/badge/license-Proprietary%20%C2%B7%20All%20Rights%20Reserved-red.svg)](#licence)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
 
@@ -349,5 +349,8 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 
 ## Licence
 
-Dual-licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE)
-at your option.
+**Proprietary — © 2026 Huntsman Search Engine. All rights reserved.** See
+[`LICENSE`](LICENSE). The source is published for reference and evaluation
+only; it may **not** be used, copied, modified, redistributed, **resold**, or
+otherwise commercialised — in whole or in part — without the copyright
+holder's prior written permission.

@@ -5,7 +5,8 @@ edition     = "2024"
 rust-version = "1.88"
 description = "Huntsman Search Engine — prototype OSINT/GEOINT platform for Termux aarch64 (no root)"
 authors     = ["Huntsman OSINT"]
-license     = "MIT OR Apache-2.0"
+license-file = "LICENSE"        # proprietary — all rights reserved
+publish      = false            # never publish to crates.io (would redistribute)
 default-run = "hse"
 
 [[bin]]
