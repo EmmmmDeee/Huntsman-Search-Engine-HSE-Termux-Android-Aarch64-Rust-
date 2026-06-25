@@ -2,6 +2,7 @@ use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     module::{ModuleContext, ModuleResult},
 };
+use crate::util::http::RequestBuilderExt;
 
 use super::helpers::{ssh_fingerprint, top_event_types, usable_commit_email};
 
@@ -156,6 +157,79 @@ pub(super) async fn fetch_gists(
         .into_iter()
         .filter(|id| id.len() == 32)
         .collect()
+}
+
+/// Fetch up to `max_gists` gist details and scan their file content for emails
+/// and domains.  Each gist detail call goes through `send_tagged` so the
+/// `found_keys` scanner automatically processes every response body for leaked
+/// API keys — satisfying the "preserve every API key" vault policy with no
+/// extra code.
+///
+/// Cap: 3 gists × ≤1 API call each = 3 extra calls per user lookup.  Small
+/// enough to stay well within the 60 req/hr unauthenticated cap.
+pub(super) async fn fetch_gist_content(
+    gist_ids: &[String],
+    login: &str,
+    ctx: &ModuleContext,
+    result: &mut ModuleResult,
+) {
+    const MAX_GISTS: usize = 3;
+    let mut seen_emails: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for gist_id in gist_ids.iter().take(MAX_GISTS) {
+        let url = format!("https://api.github.com/gists/{gist_id}");
+        let resp = match ctx
+            .http
+            .get(&url)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send_tagged(SRC)
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        // Body is capped to avoid RAM exhaustion on Termux; a 512 KiB cap is
+        // generous for gist content (typical source files are well under 10 KiB)
+        // while bounding worst-case allocations.
+        let Some(body) =
+            crate::util::http::read_body_capped(resp, 512 * 1024).await
+        else {
+            continue;
+        };
+
+        // Extract emails from the full gist JSON (includes file content inline
+        // for files ≤1 MB).  Skip noreply placeholders.
+        for email in crate::util::extract::emails(&body) {
+            if email.ends_with("@users.noreply.github.com") {
+                continue;
+            }
+            if !seen_emails.insert(email.clone()) {
+                continue;
+            }
+            let mut e = crate::core::entity::Entity::new(
+                crate::core::entity::EntityKind::Email,
+                &email,
+                0.72,
+                &ctx.scan_id,
+            );
+            e.tag("github");
+            e.tag("gist-content");
+            e.add_evidence(
+                crate::core::entity::Evidence::new(
+                    SRC,
+                    format!("Email extracted from @{login}'s public gist {gist_id}"),
+                )
+                .with_attr("github_login", login)
+                .with_attr("gist_id", gist_id)
+                .with_attr("source", "gist_content"),
+            );
+            result.push(e);
+        }
+    }
 }
 
 pub(super) async fn fetch_events(login: &str, ctx: &ModuleContext, result: &mut ModuleResult) {
