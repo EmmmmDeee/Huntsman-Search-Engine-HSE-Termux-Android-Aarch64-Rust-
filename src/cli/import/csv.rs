@@ -9,6 +9,10 @@
 //! The DeHashed CSV header is `id,email,username,hashed_password.1..N,name,
 //! database_name,highlights.*,url,password,address,phone`; columns are matched
 //! by name, so a column being absent or reordered is handled gracefully.
+//!
+//! This module also round-trips **HSE's own** entity CSV export
+//! (`kind,value,raw_value,confidence,…`) so a prior scan can be re-ingested —
+//! merge two scans, share a scan, or re-import after editing.
 
 use super::*;
 
@@ -236,6 +240,148 @@ pub(super) async fn cmd_import_csv(body: &str, output: &str) -> Result<()> {
     note(output, "Importing DeHashed CSV export...");
     let sid = format!("import-dehashed-{}", crate::core::entity::unix_now());
     let (mut entities, stats) = parse_dehashed_csv(body, &sid);
+    deduplicate_by_uid(&mut entities);
+    print_import_stats(&stats, entities.len(), output);
+    persist_and_report(&sid, &entities, output).await;
+    render_import_entities(&entities, output);
+    Ok(())
+}
+
+// ─── HSE's own CSV export (round-trip) ────────────────────────────────────────
+
+/// Detect HSE's own entity CSV export by its exact, unambiguous header — so a
+/// prior scan's `hse export … --format csv` can be re-ingested (merge two scans,
+/// share a scan, re-import after editing) without being mistaken for a DeHashed
+/// breach table.
+pub(crate) fn looks_like_hse_csv(body: &str) -> bool {
+    body.lines().next().is_some_and(|h| {
+        h.trim_start()
+            .starts_with("kind,value,raw_value,confidence,c_effective")
+    })
+}
+
+/// Inverse of [`crate::core::entity::EntityKind`]'s `Display` — the exact
+/// lower-case tokens HSE writes in the CSV's `kind` column.
+fn kind_from_str(s: &str) -> Option<EntityKind> {
+    use EntityKind::*;
+    Some(match s.trim() {
+        "person" => Person,
+        "email" => Email,
+        "phone" => Phone,
+        "username" => Username,
+        "credential" => Credential,
+        "api_key" => ApiKey,
+        "password" => Password,
+        "ip_address" => IpAddress,
+        "domain" => Domain,
+        "url" => Url,
+        "asn" => Asn,
+        "cidr" => Cidr,
+        "address" => Address,
+        "coordinates" => Coordinates,
+        "organisation" => Organisation,
+        "abn_acn" => AbnAcn,
+        "mac_address" => MacAddress,
+        "device_id" => DeviceId,
+        "tracking_id" => TrackingId,
+        "crypto_address" => CryptoAddress,
+        other => Other(other.strip_prefix("other:")?.to_string()),
+    })
+}
+
+/// Reconstruct entities from HSE's own CSV export, faithfully restoring each
+/// row's kind, value, confidence, tags, and evidence (the `[source] summary`
+/// trail). Pure — unit-tested. The `import`/`hse-csv` tags mark the provenance
+/// without erasing the original tags.
+pub(super) fn parse_hse_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportStats) {
+    let mut entities = Vec::new();
+    let mut stats = ImportStats::default();
+
+    let rows = parse_csv(body);
+    let Some((header, data)) = rows.split_first() else {
+        return (entities, stats);
+    };
+    let col = |name: &str| header.iter().position(|h| h.trim() == name);
+    let (k_i, v_i) = (col("kind"), col("value"));
+    let (conf_i, ev_i, tags_i) = (col("confidence"), col("evidence"), col("tags"));
+
+    for row in data {
+        let get = |i: Option<usize>| i.and_then(|i| row.get(i)).map(String::as_str);
+        let (Some(kind_s), Some(value)) = (get(k_i), get(v_i)) else {
+            continue;
+        };
+        let value = value.trim();
+        let Some(kind) = kind_from_str(kind_s) else {
+            continue;
+        };
+        if value.is_empty() {
+            continue;
+        }
+        let conf = get(conf_i)
+            .and_then(|c| c.trim().parse::<f64>().ok())
+            .unwrap_or(0.55);
+
+        let mut e = Entity::new(kind.clone(), value, conf, sid);
+        e.tag("import");
+        e.tag("hse-csv");
+        if let Some(tags) = get(tags_i) {
+            for t in tags.split('|').map(str::trim).filter(|t| !t.is_empty()) {
+                e.tag(t);
+            }
+        }
+        // Rebuild the `[source] summary || …` evidence trail.
+        let mut had_ev = false;
+        if let Some(ev_blob) = get(ev_i) {
+            for chunk in ev_blob
+                .split(" || ")
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+            {
+                let (source, summary) = chunk
+                    .strip_prefix('[')
+                    .and_then(|r| r.split_once(']'))
+                    .map_or(("import:hse-csv", chunk), |(s, rest)| (s, rest.trim()));
+                e.add_evidence(Evidence::new(source.to_string(), summary.to_string()));
+                had_ev = true;
+            }
+        }
+        if !had_ev {
+            e.add_evidence(Evidence::new(
+                "import:hse-csv",
+                format!("Re-imported {kind_s} from an HSE CSV export"),
+            ));
+        }
+
+        tally(&kind, &mut stats);
+        entities.push(e);
+    }
+
+    (entities, stats)
+}
+
+/// Increment the per-kind import counters used by the summary line.
+fn tally(kind: &EntityKind, stats: &mut ImportStats) {
+    match kind {
+        EntityKind::Email => stats.emails += 1,
+        EntityKind::Phone => stats.phones += 1,
+        EntityKind::Username => stats.usernames += 1,
+        EntityKind::Person => stats.persons += 1,
+        EntityKind::IpAddress => stats.ips += 1,
+        EntityKind::Domain => stats.domains += 1,
+        EntityKind::Url => stats.urls += 1,
+        EntityKind::Address => stats.addresses += 1,
+        EntityKind::Coordinates => stats.coordinates += 1,
+        EntityKind::Credential | EntityKind::Password => stats.credentials += 1,
+        EntityKind::ApiKey => stats.api_keys += 1,
+        _ => {}
+    }
+}
+
+/// CLI entry: re-ingest an HSE CSV export as a completed scan.
+pub(super) async fn cmd_import_hse_csv(body: &str, output: &str) -> Result<()> {
+    note(output, "Re-importing HSE CSV export...");
+    let sid = format!("import-hsecsv-{}", crate::core::entity::unix_now());
+    let (mut entities, stats) = parse_hse_csv(body, &sid);
     deduplicate_by_uid(&mut entities);
     print_import_stats(&stats, entities.len(), output);
     persist_and_report(&sid, &entities, output).await;

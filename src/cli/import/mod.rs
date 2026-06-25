@@ -18,7 +18,10 @@ mod txt;
 // Format parsers live in the per-format submodules; pull their entry points
 // into scope for the dispatcher, the web-upload router and the tests.
 use combined::{cmd_import_combined, looks_like_combined_search, parse_combined_search};
-use csv::{cmd_import_csv, looks_like_dehashed_csv, parse_dehashed_csv};
+use csv::{
+    cmd_import_csv, cmd_import_hse_csv, looks_like_dehashed_csv, looks_like_hse_csv,
+    parse_dehashed_csv, parse_hse_csv,
+};
 use dossier::{cmd_import_dossier, parse_dossier};
 use html::{cmd_import_html, parse_oathnet_html};
 use json::{import_json_output, parse_oathnet_json};
@@ -64,6 +67,11 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
         return cmd_import_txt(&body, output).await;
     }
 
+    // HSE's own CSV export (round-trip) — checked first, before the generic
+    // `.csv` → DeHashed routing, by its exact header.
+    if looks_like_hse_csv(&body) {
+        return cmd_import_hse_csv(&body, output).await;
+    }
     // A DeHashed CSV export (by extension or by its header columns) — a breach
     // table, not OathNet JSON.
     if path.ends_with(".csv") || looks_like_dehashed_csv(&body) {
@@ -154,6 +162,8 @@ pub(crate) async fn entities_from_upload(
         (parse_combined_search(body, sid).0, "combined-search")
     } else if looks_like_dossier(body) {
         (parse_dossier(body, sid).0, "dossier")
+    } else if looks_like_hse_csv(body) {
+        (parse_hse_csv(body, sid).0, "hse-csv")
     } else if looks_like_dehashed_csv(body) {
         (parse_dehashed_csv(body, sid).0, "dehashed-csv")
     } else {

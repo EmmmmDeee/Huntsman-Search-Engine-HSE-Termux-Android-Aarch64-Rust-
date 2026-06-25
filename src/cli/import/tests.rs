@@ -113,6 +113,13 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     assert!(has(&comb, EntityKind::Email, "jordanavery@gmail.com"));
     assert!(has(&comb, EntityKind::Person, "Jordan Avery"));
 
+    // HSE's own CSV export → round-trip branch (not the DeHashed table).
+    let hse = "kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,evidence_urls,evidence,tags\n\
+        person,Jordan Avery,Jordan Avery,0.850,1.000,3,VERIFIED,1,name_intel,,[name_intel] x,au\n";
+    let (hents, label) = entities_from_upload(hse, "s").await.unwrap();
+    assert_eq!(label, "hse-csv");
+    assert!(has(&hents, EntityKind::Person, "Jordan Avery"));
+
     // JSON API export → parsed (and the label proves the branch).
     let (_json, label) =
         entities_from_upload(r#"{"exportInfo":{"query":"x"},"searchResults":{}}"#, "s")
@@ -167,7 +174,45 @@ fn dossier_is_detected_and_oathnet_txt_is_not() {
 }
 
 use super::combined::{looks_like_combined_search, parse_combined_search};
-use super::csv::{looks_like_dehashed_csv, parse_dehashed_csv};
+use super::csv::{looks_like_dehashed_csv, looks_like_hse_csv, parse_dehashed_csv, parse_hse_csv};
+
+// A synthetic HSE entity CSV export (the exact column order HSE writes).
+const HSE_CSV: &str = "kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,evidence_urls,evidence,tags\n\
+person,Jordan Avery,Jordan Avery,0.850,1.000,3,VERIFIED,1782117614,au_people|name_intel,,\"[name_intel] Name found || [au_people] Residential match, Carlton\",au|verified\n\
+email,jordanavery@gmail.com,jordanavery@gmail.com,0.720,0.800,2,PROBABLE,1782117614,dehashed,,[dehashed] Breach record,breach\n\
+other:au-postcode,2000,2000,0.900,0.900,1,VERIFIED,1782117614,au_geo,,[au_geo] ASGS postcode,au\n";
+
+#[test]
+fn hse_csv_is_detected_and_distinct_from_dehashed() {
+    assert!(looks_like_hse_csv(HSE_CSV));
+    assert!(!looks_like_dehashed_csv(HSE_CSV)); // no email/db columns in HSE's header
+    assert!(!looks_like_hse_csv(
+        "id,email,username,database_name\n1,a@b.com,x,Y\n"
+    ));
+}
+
+#[test]
+fn hse_csv_round_trips_kind_value_confidence_tags_and_evidence() {
+    let (ents, _stats) = parse_hse_csv(HSE_CSV, "s");
+    // Person row: kind, value, confidence, tags (original + provenance), and the
+    // two-source evidence trail are all restored.
+    let p = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Person && e.value == "Jordan Avery")
+        .expect("person row");
+    assert!((p.confidence - 0.85).abs() < 0.01);
+    assert!(p.has_tag("au") && p.has_tag("verified") && p.has_tag("hse-csv"));
+    let srcs: Vec<&str> = p.evidence.iter().map(|ev| ev.source.as_str()).collect();
+    assert!(srcs.contains(&"name_intel") && srcs.contains(&"au_people"));
+    // The quoted summary with an internal comma survived the RFC-4180 reader.
+    assert!(p.evidence.iter().any(|ev| ev.summary.contains("Carlton")));
+    // The Other("au-postcode") kind round-trips.
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Other("au-postcode".into()) && e.value == "2000")
+    );
+    assert!(ents.iter().any(|e| e.kind == EntityKind::Email));
+}
 
 // Synthetic Combined Search export (no real PII): a module-metadata block plus
 // two result records, exercising inline header values AND next-line values.
