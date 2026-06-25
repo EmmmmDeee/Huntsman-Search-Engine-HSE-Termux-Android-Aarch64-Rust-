@@ -106,6 +106,23 @@ const VOIP_VIRTUAL: &[&str] = &[
     "vonage",
     "freedompop",
     "ring4",
+    "burner",
+    "hushed",
+    "grasshopper",
+    "openphone",
+    "dialpad",
+    "ringcentral",
+    "8x8",
+    "ooma",
+    "nextiva",
+    "line2",
+    "2ndline",
+    "numbrix",
+    "flyp",
+    "vumber",
+    "callcentric",
+    "sipgate",
+    "rebtel",
 ];
 
 /// Anonymity-friendly prepaid MVNOs (AU-focused, plus common US resellers) —
@@ -126,6 +143,13 @@ const PREPAID_MVNO: &[&str] = &[
     "belong",
     "spintel",
     "dodo",
+    "woolworths mobile",
+    "coles mobile",
+    "vaya",
+    "ovo mobile",
+    "numobile",
+    "live connected",
+    "hello mobile",
     // US
     "mint mobile",
     "cricket",
@@ -137,6 +161,25 @@ const PREPAID_MVNO: &[&str] = &[
     "total wireless",
     "us mobile",
     "consumer cellular",
+    "boost mobile",
+    "republic wireless",
+    "ting",
+    "h2o wireless",
+    "net10",
+    "pageplus",
+    "red pocket",
+    "twigby",
+    "visible",
+    // UK
+    "lebara uk",
+    "giffgaff",
+    "tesco mobile",
+    "id mobile",
+    "smarty",
+    "voxi",
+    // Other common mvnos
+    "freedompop",
+    "lycamobile",
 ];
 
 #[cfg(test)]
