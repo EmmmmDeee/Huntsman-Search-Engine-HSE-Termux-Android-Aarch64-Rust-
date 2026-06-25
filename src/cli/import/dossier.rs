@@ -197,9 +197,10 @@ pub(super) fn parse_dossier(
     // Flush the final entry.
     emit_dossier_entry(&mut entry, sid, &mut entities, &mut stats, &mut seen);
 
-    // Any WiFi BSSID / MAC → a geolocation seed; any wallet → a chain seed.
+    // BSSID → geo seed; wallet → chain seed; leaked API key → first-class finding.
     push_macs(body, sid, "dossier", &mut entities);
     push_crypto(body, sid, "dossier", &mut entities);
+    push_api_keys(body, sid, "dossier", &mut entities);
     (entities, stats)
 }
 

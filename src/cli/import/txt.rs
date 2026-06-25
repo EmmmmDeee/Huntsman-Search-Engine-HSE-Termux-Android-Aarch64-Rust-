@@ -259,6 +259,8 @@ pub(super) fn parse_oathnet_txt(
     // crypto wallet the log captured as a chain-analysis seed.
     push_macs(body, &sid, "stealer", &mut entities);
     push_crypto(body, &sid, "stealer", &mut entities);
+    // Leaked API keys/tokens anywhere in the log, not just `service: key` lines.
+    push_api_keys(body, &sid, "stealer", &mut entities);
     (entities, stats)
 }
 

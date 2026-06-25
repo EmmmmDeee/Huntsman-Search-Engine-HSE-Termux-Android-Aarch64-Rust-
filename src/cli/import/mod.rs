@@ -443,6 +443,44 @@ fn push_crypto(
     n
 }
 
+/// Scan `text` for leaked API keys / tokens anywhere in a breach or stealer
+/// dump — not just in a recognised `service: key` field — and emit each as an
+/// `ApiKey` entity (masked display, full key stashed in the key pool for
+/// reuse/validation). Every candidate is gated by the canonical
+/// `identify_api_key`, so only real vendor-key shapes (AWS `AKIA…`, GitHub
+/// `ghp_…`, Slack `xox…`, Stripe `sk_live_…`, Google `AIza…`, …) are kept.
+/// Capped at 50/import. Returns the number emitted.
+fn push_api_keys(
+    text: &str,
+    sid: &str,
+    source_tag: &str,
+    entities: &mut Vec<crate::core::entity::Entity>,
+) -> usize {
+    let label = format!("import:{source_tag}");
+    let mut seen = std::collections::HashSet::new();
+    let mut n = 0;
+    for raw in text.split(|c: char| c.is_whitespace() || "\"',;|<>(){}[]".contains(c)) {
+        let tok = raw.trim_matches(|c: char| matches!(c, '\'' | '"' | '`' | '='));
+        if !(16..=240).contains(&tok.len()) || !seen.insert(tok.to_string()) {
+            continue;
+        }
+        if let Some((service, mut e)) = detect_and_create_api_key_entity(tok, sid, &label) {
+            e.tag(source_tag);
+            entities.push(e);
+            store_key_in_pool(
+                service,
+                tok,
+                format!("{source_tag} import: leaked {service} key"),
+            );
+            n += 1;
+            if n >= 50 {
+                break;
+            }
+        }
+    }
+    n
+}
+
 fn store_key_in_pool(service: &str, key: &str, notes: String) {
     let pool = crate::util::key_pool::global_pool();
     let mut entry = crate::util::key_pool::KeyEntry::new(key);

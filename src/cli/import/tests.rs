@@ -169,6 +169,24 @@ async fn import_extracts_crypto_wallet_as_chain_seed() {
         "the wallet must become a CryptoAddress chain seed"
     );
 }
+
+#[tokio::test]
+async fn import_extracts_leaked_api_key_from_body() {
+    use crate::core::entity::EntityKind;
+    // An AWS access-key ID sitting loose in the log (not a `service: key` line).
+    let (ents, label) = entities_from_upload(
+        "URL: https://x.com\nleftover config had AKIAZ3XK7P2QWERT5YBN in it\n",
+        "s",
+    )
+    .await
+    .unwrap();
+    assert_eq!(label, "oathnet-txt");
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::ApiKey && e.has_tag("api-key") && e.has_tag("stealer")),
+        "the loose AWS key must be recovered as an ApiKey finding"
+    );
+}
 use crate::core::entity::{Entity, EntityKind};
 
 // The exact shape of the user-provided "Isaac Frost.txt" dossier upload.
