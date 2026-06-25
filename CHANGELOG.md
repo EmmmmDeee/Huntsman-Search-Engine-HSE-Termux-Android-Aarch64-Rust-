@@ -12,6 +12,36 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Cycle 33 (S→P) — SeekNow quota maximisation and 3-phase Free→Paid→KeyGated dispatch ordering.**
+
+  **(1) `src/util/see_know/budget.rs`: SeekNow scan_cap 160→500, session_cap 500→5000.**
+  Operator directive: "Do not restrict Seek-EU API queries." Previous caps left 97% of the
+  5,000 daily quota unreachable and capped discovery at ~10 pivot chains per round. New caps:
+  - `default_scan_cap` 160 → 500 (env `HUNTSMAN_SEEKNOW_SCAN_CAP`): full 18-endpoint matrix
+    fires across ~27 recursively-discovered pivots per round.
+  - `default_session_cap` 500 → 5000 (env `HUNTSMAN_SEEKNOW_SESSION_CAP`): full daily quota
+    available per session; ~10 full scans possible before the ceiling.
+  Test `default_scan_cap_is_higher_than_legacy_eight` assertion updated to `(400..=600)`.
+
+  **(2) `src/core/engine/dispatch.rs`: 2-phase restructured to 3-phase Free→Paid→KeyGated.**
+  Operator directive: "Every single scan should begin with free modules first."
+  Previous 2-phase (Paid sequential, then Free+KeyGated concurrent) had two failure modes:
+  the high-value-API cross-correlation gate read 0 corroboration sources on fresh expansion
+  targets (free modules hadn't run yet), and KeyGated modules launched without keys discovered
+  by the current target's Paid modules. New 3-phase structure:
+  - **Phase 1 (Free, concurrent)**: all zero-cost modules fan out first via JoinSet; phase
+    is fully drained before Phase 2. `hot_inject_keys` called once after drain so any
+    credentials found in breach data are available to the Paid chain.
+  - **Phase 2 (Paid, sequential)**: `target_sources` recomputed after Phase 1 — free-module
+    discoveries now raise corroboration counts, enabling the high-value-API gate to fire on
+    genuinely on-target pivots. oathnet_pro / see_know / dehashed / intelx run sequentially;
+    `hot_inject_keys` called after each.
+  - **Phase 3 (KeyGated, concurrent)**: `ctx` re-snapshotted AFTER Phase 2 so Shodan,
+    Censys, Hunter, HIBP, Proxycurl, and all operator-key modules fan out with the complete
+    discovered-key set. Dedup preserved.
+
+  Gate green: fmt/clippy/doc clean, 3,352 total tests, 0 failures.
+
 - **Cycle 32 (execution-driven) — two statistically-validated performance improvements.**
 
   **(1) `typosquat` permutation engine: 1 allocation per candidate variant (was 2).**

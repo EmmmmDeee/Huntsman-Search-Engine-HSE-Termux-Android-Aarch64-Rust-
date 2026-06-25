@@ -1484,3 +1484,83 @@ SOL-TYPOSQUAT-PERF: `[x]` cycle 32. SOL-TEST-PERF: `[x]` cycle 32.
 
 Gate green: fmt/clippy/doc clean, 3 154+ total tests, 0 failures.
 Paired: `PROBLEM_TREE` §8 cycle 32 — same commit.
+
+### §5 · Maintained log — cycle 33 (S→P direction)
+
+**2026-06-25 · S→P · SOL-SEEKNOW-BUDGET + SOL-DISPATCH-PHASE — quota maximisation and optimal scan ordering**
+
+*Primitive 1 — `src/util/see_know/budget.rs` + `src/util/see_know/tests.rs`: SeekNow quota maximisation*
+
+Operator directive: "Do not restrict Seek-EU API queries or fail to enumerate potentially
+relevant seeds before they are proven to be irrelevant via recursion and further enumeration."
+
+Previous caps (scan=160, session=500) left 97% of the 5,000 daily quota unused on a typical
+session and allowed only ~10 recursively-discovered pivot chains before the per-round cap
+cut off further discovery. The 160-query envelope was set conservatively when the full
+18-endpoint matrix was first deployed; with confident session data showing multi-round scans
+rarely exceed 10 targets per subject, the constraint was purely theoretical risk.
+
+Changes:
+- `BUDGET`: `default_scan_cap` 160 → 500 (per-round; env `HUNTSMAN_SEEKNOW_SCAN_CAP`)
+- `BUDGET`: `default_session_cap` 500 → 5000 (full daily quota; env `HUNTSMAN_SEEKNOW_SESSION_CAP`)
+- Doc comment updated: "~10 pivots per round" → "~27 pivots per round", session ceiling restated
+- `KEY_INVALID` doc: "~160 doomed lookups" → "~500 doomed lookups"
+- Test `default_scan_cap_is_higher_than_legacy_eight`: assertion band `(120..=200)` → `(400..=600)`;
+  error message updated to "exhaustive-use band [400, 600]"; comment updated to describe the 500 cap
+
+Effect: the full 18-endpoint pool now fires across ~27 recursively-discovered pivots per round
+(up from ~10), while keeping ~10 full scans possible before the daily 5,000 ceiling. The
+per-session ceiling 5,000 = the daily quota, ensuring no artificial throttle on any session.
+
+*Primitive 2 — `src/core/engine/dispatch.rs`: 3-phase Free→Paid→KeyGated dispatch ordering*
+
+Operator directive: "Every single scan should begin with free modules first and follow the
+absolute most effective order ensuring that no beneficial process is skipped."
+
+Previous 2-phase structure: Phase 1 = Paid (sequential), Phase 2 = Free+KeyGated (concurrent).
+Problem: KeyGated modules launched with a ctx snapshot that lacked any API keys discovered
+by FREE modules (e.g. credentials extracted from breach data by a free breach-search module).
+More critically: the high-value-API cross-correlation gate (which requires ≥2 distinct
+evidence sources before oathnet_pro fires) was evaluated BEFORE free modules ran, so on a
+fresh target with no existing corroboration the gate always read 0 sources and triggered the
+"awaiting cross-correlation" skip — even if the free modules would have provided that
+corroboration moments later.
+
+New 3-phase structure:
+- **Phase 1 (Free, concurrent)**: All `ModuleCost::Free` modules fan out via JoinSet with a
+  semaphore-bounded concurrency cap. No dedup — free modules re-run each round by design.
+  `ctx_free` snapshotted ONCE across the pool (Arc bump per spawn, not N HashMap clones).
+  Phase 1 is fully drained before Phase 2 starts.
+  After drain: `hot_inject_keys(&mut ctx.keys)` transfers any API keys found in free-module
+  results (e.g. credentials in breach data) into ctx for the Paid chain.
+
+- **Phase 2 (Paid, sequential)**: `target_sources` RECOMPUTED after Phase 1 drain — entities
+  added by free modules now raise corroboration counts, so the high-value-API gate fires on
+  genuinely on-target pivots. oathnet_pro, see_know, dehashed, intelx run one-at-a-time;
+  `hot_inject_keys` called after each module so discovered operator API keys cascade forward.
+
+- **Phase 3 (KeyGated, concurrent)**: `ctx_shared` built from `ctx.clone()` AFTER Phase 2 —
+  includes ALL keys discovered by both free modules (via Phase 1 hot_inject) and Paid modules
+  (via Phase 2 hot_inject cascade). Shodan, Censys, Hunter, HIBP, Proxycurl, and the full
+  operator-key pool fan out concurrently with the complete key set. Dedup applies: each
+  (module, normalised target) fires at most once.
+
+Impact: for any scan where a free module (e.g. breach search, WHOIS, DNS) discovers a
+subject's corroborating entity before oathnet_pro fires, the cross-correlation gate now has
+real evidence to evaluate — eliminating the systematic false-negative where the gate read 0
+sources on the first expansion round and silently skipped the most powerful OSINT query.
+KeyGated modules now receive all keys including those discovered in the current target's
+breach data, maximising the hot-inject cascade's value.
+
+*§4d update:*
+| ID                  | Description                                           | Status          |
+|---------------------|------------------------------------------------------|-----------------|
+| SOL-ENGINE-LOOP     | Expansion loop micro-optimisation                     | `[x]` cycle 30 |
+| SOL-TYPOSQUAT       | Typosquat 15-technique world-class rewrite            | `[x]` cycle 31 |
+| SOL-TYPOSQUAT-PERF  | Permutation engine: 1 alloc/variant (was 2)           | `[x]` cycle 32 |
+| SOL-TEST-PERF       | Smoke suite: poll loops replace static sleeps         | `[x]` cycle 32 |
+| SOL-SEEKNOW-BUDGET  | SeekNow quota: scan 160→500, session 500→5000         | `[x]` cycle 33 |
+| SOL-DISPATCH-PHASE  | Dispatch reorder: Free→Paid→KeyGated (3-phase)        | `[x]` cycle 33 |
+
+Gate green: fmt/clippy/doc clean, 3,352 total tests, 0 failures.
+Paired: `PROBLEM_TREE` §8 cycle 33 — same commit.

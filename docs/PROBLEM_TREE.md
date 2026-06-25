@@ -2142,3 +2142,40 @@ Parallel wall-clock was 5.4–5.7s with theoretical minimum (driven by
 
 Gate green: fmt/clippy/doc clean, 3 154+ total tests, 0 failures.
 **Paired:** `SOLUTION_TREE` §5 cycle 32 — same commit.
+
+### §8 · Maintained log — cycle 33 (S→P direction)
+
+**2026-06-25 · S→P · Two structural gaps in scan ordering and SeekNow quota addressed**
+
+*Problem 1 (SeekNow quota artificially capped far below daily allowance):*
+The `see_know::BUDGET` static used `scan_cap=160` and `session_cap=500`, leaving
+97% of the 5,000-query daily quota unreachable. A typical multi-round subject scan
+across 10–15 entities consumed ≤160 queries per round — the cross-session ceiling
+of 500 enforced artificial throttling that contradicted the operator directive to
+use see-know.eu *maximally*. The test `default_scan_cap_is_higher_than_legacy_eight`
+enforced the range `[120, 200]`, making the budget increase fail the test suite.
+
+*Problem 2 (dispatch order places Free modules after Paid, breaking corroboration gate):*
+The 2-phase concurrent dispatch ran Paid modules FIRST (sequential) then Free+KeyGated
+(concurrent). Two concrete failure modes resulted:
+- The high-value-API cross-correlation gate (`target_distinct_sources`) was evaluated
+  before free modules ran. On a fresh expansion target, the corroboration count was 0;
+  oathnet_pro and wigle would skip with "awaiting cross-correlation (>=2 sources)" even
+  though the free modules (DNS, WHOIS, breach search) about to run would have provided
+  that corroboration.
+- KeyGated modules received a ctx snapshot built before Paid modules ran — they missed
+  any operator API keys discovered in this target's Paid phase results.
+- Free modules received a ctx snapshot that correctly contained keys from the previous
+  target's Paid phase, but this happened accidentally — the ordering was not intentional.
+
+*Solutions delivered (see `SOLUTION_TREE` §5 cycle 33):*
+1. `src/util/see_know/budget.rs`: scan_cap 160→500, session_cap 500→5000. Doc updated.
+   `src/util/see_know/tests.rs`: test assertion band `(120..=200)` → `(400..=600)`.
+2. `src/core/engine/dispatch.rs`: 2-phase (Paid→Free+KeyGated) restructured to
+   3-phase (Free concurrent → Paid sequential → KeyGated concurrent). `target_sources`
+   recomputed after Phase 1 drain; `ctx_shared` rebuilt after Phase 2 to include all
+   discovered keys; `hot_inject_keys` called once after Phase 1 drain + after each
+   Paid module as before.
+
+Gate green: fmt/clippy/doc clean, 3,352 total tests, 0 failures.
+**Paired:** `SOLUTION_TREE` §5 cycle 33 — same commit.

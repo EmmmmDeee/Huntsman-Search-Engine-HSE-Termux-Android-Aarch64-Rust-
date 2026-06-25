@@ -234,18 +234,18 @@ fn budget_snapshot_reports_active_caps() {
 
 #[test]
 fn default_scan_cap_is_higher_than_legacy_eight() {
-    // Regression guard for the operator's "use see-know.eu extensively"
+    // Regression guard for the operator's "use see-know.eu exhaustively"
     // directive. The legacy cap was 8 lookups (99.84% of quota unused);
-    // it was raised to 120 and then to 160 so the full endpoint matrix
-    // fires across ~10 recursively-discovered pivots per round. Lock the
-    // floor at 120 so coverage can't silently regress below "extensive"
-    // (the per-round cap; the per-session ceiling is separate, now 500).
+    // raised through 120 → 160 → 500 so the full 18-endpoint matrix fires
+    // across ~27 recursively-discovered pivots per round. Lock the floor at
+    // 400 so coverage can't silently regress below "exhaustive"
+    // (the per-round cap; the per-session ceiling is separate, now 5000).
     let _guard = BUDGET_TEST_LOCK.lock();
     reset_budget();
     let cap = budget_snapshot().scan_cap;
     assert!(
-        (120..=200).contains(&cap),
-        "scan cap {cap} outside the extensive-use band [120, 200]"
+        (400..=600).contains(&cap),
+        "scan cap {cap} outside the exhaustive-use band [400, 600]"
     );
 }
 

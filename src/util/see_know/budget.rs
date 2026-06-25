@@ -11,27 +11,27 @@ pub use crate::util::budget::BudgetSnapshot;
 /// Per-scan + per-session quota budget for SeekNow API calls.
 ///
 /// SeekNow's premiumhq plan grants 5,000 daily lookups. The operator's
-/// standing directive is to use see-know.eu *maximally* — extensively, within
-/// reason, on every remotely promising seed — to maximise cross-correlation
-/// and the confidence of recursive searching. So each scan gets a 160-query
-/// envelope (env-tunable via `HUNTSMAN_SEEKNOW_SCAN_CAP`, runtime-overridable
-/// via `ScanOptions::seeknow_scan_cap`). A single Username seed alone plans up
-/// to 11 specialised endpoints (social aggregate, github, twitter, reddit,
-/// tiktok, history, roblox, xbox, minecraft, + discord/steam pivots)
-/// on top of the universal `/search`; with depth expansion every discovered
-/// username/email/phone/domain consumes its own matrix, so a cap of 160 lets
-/// the full 18-endpoint pool fire across ~10 recursively-discovered pivots in
-/// one scan — corroborating far more of the graph — while still allowing many
-/// full scans before the daily 5,000 ceiling. The cap is refreshed at each
-/// expansion-round boundary ([`refresh_round_budget`]) so SeekNow participates
-/// in EVERY iteration; the 500-query session ceiling (env-tunable via
-/// `HUNTSMAN_SEEKNOW_SESSION_CAP`, hard-clamped to 500 by the engine) bounds the
-/// total across all rounds of a deep scan — the "bound everything" invariant for
-/// a 4 GB device — while leaving room for ~3 full rounds at the per-round cap.
+/// standing directive is to use see-know.eu *maximally* — exhaustively, on
+/// every remotely promising seed — to maximise cross-correlation and the
+/// confidence of recursive searching. Each scan gets a 500-query envelope
+/// (env-tunable via `HUNTSMAN_SEEKNOW_SCAN_CAP`, runtime-overridable via
+/// `ScanOptions::seeknow_scan_cap`). A single Username seed alone plans up to
+/// 11 specialised endpoints (social aggregate, github, twitter, reddit,
+/// tiktok, history, roblox, xbox, minecraft, + discord/steam pivots) on top
+/// of the universal `/search`; with depth expansion every discovered
+/// username/email/phone/domain consumes its own matrix, so a cap of 500 lets
+/// the full 18-endpoint pool fire across ~27 recursively-discovered pivots per
+/// round — corroborating far more of the graph — while keeping ~10 full scans
+/// possible before hitting the daily 5,000 ceiling. The cap is refreshed at
+/// each expansion-round boundary ([`refresh_round_budget`]) so SeekNow
+/// participates in EVERY iteration; the 5,000-query session ceiling
+/// (env-tunable via `HUNTSMAN_SEEKNOW_SESSION_CAP`) bounds the total across
+/// all rounds of a deep scan — the "bound everything" invariant for a 4 GB
+/// device — while leaving room for ~10 full rounds at the per-round cap.
 pub(super) static BUDGET: QuotaBudget = QuotaBudget::new(
     "seeknow",
-    160,
     500,
+    5000,
     "HUNTSMAN_SEEKNOW_SCAN_CAP",
     "HUNTSMAN_SEEKNOW_SESSION_CAP",
 );
@@ -42,7 +42,7 @@ pub(super) static BUDGET: QuotaBudget = QuotaBudget::new(
 /// reports success and the `{"error":"invalid_api_key"}` body parses to zero
 /// items — which previously made SeekNow look like it "found nothing" on every
 /// seed instead of "the key is bad". This latch makes the failure explicit and
-/// fast-fails the remaining ~160 doomed lookups for the rest of the scan. It is
+/// fast-fails the remaining ~500 doomed lookups for the rest of the scan. It is
 /// cleared by [`reset_budget`] at the start of each scan so a corrected key
 /// (UI Settings / `HUNTSMAN_SEEKNOW_KEY`) recovers without a process restart.
 pub(super) static KEY_INVALID: std::sync::atomic::AtomicBool =
