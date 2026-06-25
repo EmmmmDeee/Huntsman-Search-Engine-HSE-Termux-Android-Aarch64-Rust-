@@ -177,18 +177,19 @@ pub(super) fn build_entities(
     // Enrich from the first owned package's JSON info.
     if let Some(info) = info {
         // author_email and maintainer_email carry RFC 5322 Name <email> entries.
-        for raw in [info.author_email.as_deref(), info.maintainer_email.as_deref()]
-            .into_iter()
-            .flatten()
+        for raw in [
+            info.author_email.as_deref(),
+            info.maintainer_email.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
         {
             for (name_opt, email) in parse_rfc5322_contact(raw) {
                 if seen_emails.insert(email.clone()) {
                     let mut em = Entity::new(EntityKind::Email, &email, 0.72, scan_id);
                     em.tag("pypi");
                     em.tag("public-profile");
-                    em.add_evidence(
-                        ev_base().with_attr("source_field", "author_email"),
-                    );
+                    em.add_evidence(ev_base().with_attr("source_field", "author_email"));
                     result.push(em);
 
                     // Real name from the "Name" part.
@@ -197,9 +198,7 @@ pub(super) fn build_entities(
                     {
                         p.tag("pypi");
                         p.tag("derived");
-                        p.add_evidence(
-                            ev_base().with_attr("source_field", "author_email"),
-                        );
+                        p.add_evidence(ev_base().with_attr("source_field", "author_email"));
                         result.push(p);
                     }
                 }
@@ -333,10 +332,7 @@ impl Module for PypiUser {
             .map(|(_, pkg)| pkg.as_str());
 
         let info: Option<PypiPackageInfo> = if let Some(pkg) = first_pkg {
-            let pkg_url = format!(
-                "https://pypi.org/pypi/{}/json",
-                urlencode(pkg)
-            );
+            let pkg_url = format!("https://pypi.org/pypi/{}/json", urlencode(pkg));
             fetch_json_or_404::<PypiPackageResp>(&ctx.http, SRC, &pkg_url)
                 .await?
                 .map(|r| r.info)

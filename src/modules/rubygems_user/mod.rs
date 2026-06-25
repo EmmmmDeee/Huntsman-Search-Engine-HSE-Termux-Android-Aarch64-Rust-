@@ -98,13 +98,20 @@ pub(super) fn build_entities(gems: Vec<RgGem>, handle: &str, scan_id: &str) -> V
         }
 
         let gem_ev = || {
-            Evidence::new(SRC, format!("RubyGems gem '{gem_name}' owned by '{handle}'"))
-                .with_attr("gem", &gem_name)
+            Evidence::new(
+                SRC,
+                format!("RubyGems gem '{gem_name}' owned by '{handle}'"),
+            )
+            .with_attr("gem", &gem_name)
         };
 
         // Real names from `authors` (comma-separated).
         if let Some(authors_str) = gem.authors.as_deref() {
-            for name in authors_str.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+            for name in authors_str
+                .split(',')
+                .map(str::trim)
+                .filter(|n| !n.is_empty())
+            {
                 let key = name.to_ascii_lowercase();
                 if seen_names.insert(key)
                     && let Some(mut p) = profile_kit::person_from_name(name, 0.60, scan_id)
@@ -127,17 +134,11 @@ pub(super) fn build_entities(gems: Vec<RgGem>, handle: &str, scan_id: &str) -> V
                 match e.kind {
                     EntityKind::Domain => {
                         e.tag("derived");
-                        e.add_evidence(
-                            gem_ev()
-                                .with_attr("source_field", "homepage_uri"),
-                        );
+                        e.add_evidence(gem_ev().with_attr("source_field", "homepage_uri"));
                     }
                     _ => {
                         e.tag("personal-site");
-                        e.add_evidence(
-                            gem_ev()
-                                .with_attr("source_field", "homepage_uri"),
-                        );
+                        e.add_evidence(gem_ev().with_attr("source_field", "homepage_uri"));
                     }
                 }
                 result.push(e);
@@ -164,7 +165,12 @@ pub(super) fn build_entities(gems: Vec<RgGem>, handle: &str, scan_id: &str) -> V
 
     // Append the gem-list coverage to the username entity evidence.
     if !gem_names.is_empty() && !result.entities.is_empty() {
-        let coverage = gem_names.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+        let coverage = gem_names
+            .iter()
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
         let summary = if gem_names.len() > 5 {
             format!("{coverage}, … ({} gems)", gem_names.len())
         } else {

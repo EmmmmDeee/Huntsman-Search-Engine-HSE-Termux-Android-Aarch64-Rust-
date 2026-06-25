@@ -16,16 +16,16 @@ fn gem(
 
 #[test]
 fn emits_username_and_profile_url() {
-    let ents = build_entities(
-        vec![gem("mygem", None, None, None)],
-        "alice",
-        "scan-rg-001",
-    );
+    let ents = build_entities(vec![gem("mygem", None, None, None)], "alice", "scan-rg-001");
     assert!(
-        ents.iter().any(|e| e.kind == EntityKind::Username && e.value == "alice"),
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Username && e.value == "alice"),
         "must emit Username entity"
     );
-    let u = ents.iter().find(|e| e.kind == EntityKind::Username && e.value == "alice").unwrap();
+    let u = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Username && e.value == "alice")
+        .unwrap();
     assert!(u.has_tag("rubygems") && u.has_tag("public-profile"));
     assert!(
         ents.iter()
@@ -69,8 +69,15 @@ fn deduplicates_authors_across_gems() {
         "alice",
         "scan-rg-004",
     );
-    let persons: Vec<_> = ents.iter().filter(|e| e.kind == EntityKind::Person).collect();
-    assert_eq!(persons.len(), 1, "duplicate author names must not produce duplicate Person entities");
+    let persons: Vec<_> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .collect();
+    assert_eq!(
+        persons.len(),
+        1,
+        "duplicate author names must not produce duplicate Person entities"
+    );
 }
 
 #[test]
@@ -81,11 +88,13 @@ fn emits_homepage_url_and_domain() {
         "scan-rg-005",
     );
     assert!(
-        ents.iter().any(|e| e.kind == EntityKind::Url && e.value == "https://alice.dev"),
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Url && e.value == "https://alice.dev"),
         "must emit homepage URL"
     );
     assert!(
-        ents.iter().any(|e| e.kind == EntityKind::Domain && e.value == "alice.dev"),
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Domain && e.value == "alice.dev"),
         "must emit domain from homepage"
     );
 }
@@ -105,7 +114,10 @@ fn extracts_github_username_from_source_code_uri() {
     let gh = ents
         .iter()
         .find(|e| e.kind == EntityKind::Username && e.value == "alicedev");
-    assert!(gh.is_some(), "must emit GitHub username from source_code_uri");
+    assert!(
+        gh.is_some(),
+        "must emit GitHub username from source_code_uri"
+    );
     assert!(gh.unwrap().has_tag("github") && gh.unwrap().has_tag("rubygems-pivot"));
 }
 
@@ -123,7 +135,10 @@ fn deduplicates_github_pivots_across_gems() {
         .iter()
         .filter(|e| e.kind == EntityKind::Username && e.value == "alicedev")
         .count();
-    assert_eq!(gh_count, 1, "same GitHub user from multiple gems must be emitted once");
+    assert_eq!(
+        gh_count, 1,
+        "same GitHub user from multiple gems must be emitted once"
+    );
 }
 
 #[test]
@@ -133,7 +148,8 @@ fn empty_gem_list_produces_only_header_entities() {
     // this path is unreachable in practice but the helper itself is correct.
     let ents = build_entities(vec![], "ghost", "scan-rg-008");
     assert!(
-        ents.iter().any(|e| e.kind == EntityKind::Username && e.value == "ghost"),
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Username && e.value == "ghost"),
         "must emit Username even with no gems"
     );
     assert!(
@@ -145,7 +161,12 @@ fn empty_gem_list_produces_only_header_entities() {
 #[test]
 fn skips_platform_host_in_homepage() {
     let ents = build_entities(
-        vec![gem("mygem", None, Some("https://github.com/alice/mygem"), None)],
+        vec![gem(
+            "mygem",
+            None,
+            Some("https://github.com/alice/mygem"),
+            None,
+        )],
         "alice",
         "scan-rg-009",
     );

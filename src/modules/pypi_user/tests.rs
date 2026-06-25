@@ -50,9 +50,8 @@ fn parses_plain_email() {
 
 #[test]
 fn parses_multiple_contacts() {
-    let pairs = parse_rfc5322_contact(
-        "Alice Smith <alice@example.com>, Bob Jones <bob@example.com>",
-    );
+    let pairs =
+        parse_rfc5322_contact("Alice Smith <alice@example.com>, Bob Jones <bob@example.com>");
     assert_eq!(pairs.len(), 2);
     assert_eq!(pairs[0].0.as_deref(), Some("Alice Smith"));
     assert_eq!(pairs[1].0.as_deref(), Some("Bob Jones"));
