@@ -43,7 +43,7 @@ impl Module for EmailLocale {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Address];
+        const KINDS: &[EntityKind] = &[EntityKind::Address, EntityKind::Coordinates];
         KINDS
     }
 
@@ -59,6 +59,13 @@ impl Module for EmailLocale {
         }
 
         if let Some(geo) = detect_locale_from_local_part(local) {
+            let ev = Evidence::new(
+                SRC,
+                format!("Email local part matches {} naming pattern", geo.locale),
+            )
+            .with_attr("locale", geo.locale)
+            .with_attr("pattern", geo.pattern);
+
             let mut e = Entity::new(
                 EntityKind::Address,
                 geo.region,
@@ -68,15 +75,27 @@ impl Module for EmailLocale {
             e.tag("geoint");
             e.tag("coarse");
             e.tag("locale-inferred");
-            e.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Email local part matches {} naming pattern", geo.locale),
-                )
-                .with_attr("locale", geo.locale)
-                .with_attr("pattern", geo.pattern),
-            );
+            e.add_evidence(ev.clone());
             result.push(e);
+
+            // Emit a coarse Coordinates entity (country/region centroid) so the
+            // geospatial layer can plot the inferred locale. Confidence is kept
+            // well below the Address confidence — the centroid is an approximation
+            // of a country-level inference, not a confirmed location.
+            if let Some((lat, lon)) = locale_centroid(geo.locale) {
+                let coords = format!("{lat},{lon}");
+                let mut ce = Entity::new(
+                    EntityKind::Coordinates,
+                    &coords,
+                    geo.confidence - 0.10,
+                    &ctx.scan_id,
+                );
+                ce.tag("geoint");
+                ce.tag("coarse");
+                ce.tag("locale-inferred");
+                ce.add_evidence(ev);
+                result.push(ce);
+            }
         }
 
         Ok(result)
@@ -130,6 +149,30 @@ fn detect_locale_from_local_part(local: &str) -> Option<LocaleGeo> {
                 pattern: "given_name",
                 confidence: 0.30,
             })
+    })
+}
+
+/// Map a locale code (as emitted by the pattern tables) to an approximate
+/// country/region centroid `(lat, lon)`. Returns `None` for ambiguous regions
+/// that span multiple countries with no single representative point (e.g. `pt`
+/// covers both Portugal and Latin America — a centroid would be misleading).
+fn locale_centroid(locale: &str) -> Option<(f64, f64)> {
+    // Centroids are national capitals or geographic midpoints — clearly coarse.
+    Some(match locale {
+        "sv" => (59.334_6, 18.063_2),  // Stockholm, Sweden
+        "ru" => (55.751_2, 37.618_4),  // Moscow, Russia
+        "pl" => (52.229_7, 21.011_2),  // Warsaw, Poland
+        "fi" => (60.169_9, 24.938_4),  // Helsinki, Finland
+        "ro" => (44.436_9, 26.102_8),  // Bucharest, Romania
+        "tr" => (39.925_5, 32.866_3),  // Ankara, Turkey
+        "el" => (37.983_9, 23.729_4),  // Athens, Greece
+        "it" => (41.902_8, 12.496_4),  // Rome, Italy
+        "fr" => (48.856_6, 2.352_2),   // Paris, France
+        "de" => (52.520_0, 13.404_9),  // Berlin, Germany
+        "ja" => (35.689_5, 139.691_7), // Tokyo, Japan
+        "zh" => (39.904_2, 116.407_4), // Beijing, China
+        // "pt" spans Portugal + Latin America — no representative centroid.
+        _ => return None,
     })
 }
 
