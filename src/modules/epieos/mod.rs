@@ -148,7 +148,7 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
     entity.add_evidence(ev);
     out.push(entity);
 
-    // ── Person leads from each DISTINCT real name (Google + Skype) ────────
+    // ── Person leads from each DISTINCT real name (Google + Skype + Calendar) ─
     let mut seen_names = HashSet::new();
     for (label, conf, name) in [
         ("google", 0.75, nonempty(&body.name)),
@@ -156,6 +156,11 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
             "platform:skype",
             0.70,
             skype.and_then(|s| nonempty(&s.name)),
+        ),
+        (
+            "google-calendar",
+            0.68,
+            body.calendar.as_ref().and_then(|c| nonempty(&c.name)),
         ),
     ] {
         if let Some(name) = name.filter(|n| is_person_name(n))
