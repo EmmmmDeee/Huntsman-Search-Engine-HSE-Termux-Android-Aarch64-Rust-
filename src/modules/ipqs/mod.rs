@@ -211,7 +211,13 @@ impl Module for IpQs {
 
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
         use crate::core::entity::EntityKind;
-        const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Email, EntityKind::Phone];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::IpAddress,
+            EntityKind::Email,
+            EntityKind::Phone,
+            EntityKind::Organisation,
+            EntityKind::Asn,
+        ];
         KINDS
     }
 
@@ -266,6 +272,37 @@ impl Module for IpQs {
             &body,
             &ctx.scan_id,
         ));
+
+        // For IP targets, emit Organisation and Asn as pivot entities — consistent
+        // with shodan/abuseipdb/greynoise which extract the same provider context.
+        if target.kind == TargetKind::IpAddress {
+            // Prefer organization over isp (more specific); fall back to isp.
+            let org_name = body
+                .organization
+                .as_deref()
+                .filter(|o| o.len() >= 2)
+                .or_else(|| body.isp.as_deref().filter(|i| i.len() >= 2));
+            if let Some(org) = org_name {
+                let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, &ctx.scan_id);
+                oe.tag("ipqs");
+                oe.add_evidence(
+                    Evidence::new(SRC, format!("IP operator for {value} via IPQS"))
+                        .with_attr("ip", value),
+                );
+                result.push(oe);
+            }
+            if let Some(asn_n) = body.asn.filter(|n| *n > 0) {
+                let asn_str = format!("AS{asn_n}");
+                let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, &ctx.scan_id);
+                ae.tag("ipqs");
+                ae.add_evidence(
+                    Evidence::new(SRC, format!("ASN for {value} via IPQS"))
+                        .with_attr("ip", value),
+                );
+                result.push(ae);
+            }
+        }
+
         Ok(result)
     }
 }
