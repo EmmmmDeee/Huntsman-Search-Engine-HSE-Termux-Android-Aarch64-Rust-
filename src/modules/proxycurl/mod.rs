@@ -98,6 +98,7 @@ impl Module for Proxycurl {
             EntityKind::Domain,
             EntityKind::Phone,
             EntityKind::Organisation,
+            EntityKind::Url,
         ];
         KINDS
     }
