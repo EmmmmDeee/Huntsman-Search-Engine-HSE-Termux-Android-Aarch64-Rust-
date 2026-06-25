@@ -482,18 +482,12 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
             circuit_breaker::record_success(h);
         }
     }
-    if status.as_u16() == 404 {
+    // Status classification (404 -> miss, 401/403/429 -> burn key, other non-2xx
+    // -> error) is single-sourced in `keyed_ok_or_404`; the breaker outcome above
+    // is recorded separately, so there is no double-count.
+    let Some(resp) = keyed_ok_or_404(module, key, ctx, resp).await? else {
         return Ok(None);
-    }
-    if !status.is_success() {
-        if matches!(status.as_u16(), 401 | 403 | 429) {
-            ctx.report_key_exhausted(module, key, status.as_u16());
-        }
-        return Err(Error::module(
-            module,
-            format!("HTTP {status}: {}", error_snippet(resp).await),
-        ));
-    }
+    };
     let text = read_json_text(resp, module).await?;
     scan_for_api_keys(&text);
     let data = serde_json::from_str::<T>(&text)
