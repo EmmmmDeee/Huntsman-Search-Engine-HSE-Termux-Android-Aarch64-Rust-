@@ -136,6 +136,7 @@ pub mod sourceforge_user;
 pub mod stackoverflow_user;
 pub mod steam_profile;
 pub mod streaming_probe;
+pub mod structured_id;
 pub mod subdomain_takeover;
 pub mod sunrise_sunset;
 pub mod threatfox;
@@ -335,6 +336,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(github_commits::GithubCommits),
         Arc::new(gaming_profile::GamingProfile),
         Arc::new(steam_profile::SteamProfile),
+        Arc::new(structured_id::StructuredId),
         Arc::new(hacker_news::HackerNews),
         Arc::new(lobsters::Lobsters),
         Arc::new(devto::DevTo),
