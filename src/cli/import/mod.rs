@@ -11,6 +11,8 @@ mod csv;
 mod dossier;
 mod html;
 mod json;
+mod oathnet_report;
+mod stealer;
 #[cfg(test)]
 mod tests;
 mod txt;
@@ -25,6 +27,8 @@ use csv::{
 use dossier::{cmd_import_dossier, parse_dossier};
 use html::{cmd_import_html, parse_oathnet_html};
 use json::{import_json_output, parse_oathnet_json};
+use oathnet_report::{cmd_import_oathnet_report, looks_like_oathnet_report, parse_oathnet_report};
+use stealer::{cmd_import_stealerlogs, looks_like_stealerlogs, parse_stealerlogs};
 use txt::{cmd_import_txt, parse_oathnet_txt};
 
 pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
@@ -63,6 +67,20 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
         // entities carrying the full record (name, birthdate, country, hash, …).
         if looks_like_dossier(&body) {
             return cmd_import_dossier(&body, output).await;
+        }
+        // A Stealerlogs victim export (`Module: Stealerlogs` / `Victims:` / `[N]`
+        // blocks of `Credentials:` + `Domains:`) — the victim-centric stealer
+        // format, routed before the catch-all TXT which can't parse its nested
+        // `[N]` structure.
+        if looks_like_stealerlogs(&body) {
+            return cmd_import_stealerlogs(&body, output).await;
+        }
+        // An OathNet SEARCH REPORT (`=== DATABASE LOGS ===` of `Entry N:` plain
+        // `key: value` blocks) — distinct from the OathNet stealer-log TXT, and
+        // routed before it because both carry the `=== OSINT ENRICHMENT` marker
+        // the TXT catch-all keys on.
+        if looks_like_oathnet_report(&body) {
+            return cmd_import_oathnet_report(&body, output).await;
         }
         return cmd_import_txt(&body, output).await;
     }
@@ -162,6 +180,10 @@ pub(crate) async fn entities_from_upload(
         (parse_combined_search(body, sid).0, "combined-search")
     } else if looks_like_dossier(body) {
         (parse_dossier(body, sid).0, "dossier")
+    } else if looks_like_stealerlogs(body) {
+        (parse_stealerlogs(body, sid).0, "stealerlogs")
+    } else if looks_like_oathnet_report(body) {
+        (parse_oathnet_report(body, sid).0, "oathnet-report")
     } else if looks_like_hse_csv(body) {
         (parse_hse_csv(body, sid).0, "hse-csv")
     } else if looks_like_dehashed_csv(body) {
@@ -593,6 +615,88 @@ fn create_geolocation_entities(
         ae.tag("import");
         entities.push(ae);
         stats.addresses += 1;
+    }
+}
+
+/// Parse the `=== OSINT ENRICHMENT ===` IP-geolocation section that the OathNet
+/// stealer-log TXT and the OathNet SEARCH REPORT both carry — a run of `IP:` /
+/// `lat:` / `lon:` / `city:` / `regionName:` / `country:` / `isp:` blocks — into
+/// `Coordinates` + `Address` entities. Shared by `txt.rs` and
+/// `oathnet_report.rs` so the two formats geolocate identically and the block
+/// can never drift between them. A no-op when the section is absent.
+fn parse_osint_enrichment(
+    body: &str,
+    sid: &str,
+    entities: &mut Vec<crate::core::entity::Entity>,
+    stats: &mut ImportStats,
+) {
+    let Some(os) = body.find("=== OSINT ENRICHMENT") else {
+        return;
+    };
+    let osint_section = &body[os..];
+    let mut current_ip = String::new();
+    let mut lat: Option<f64> = None;
+    let mut lon: Option<f64> = None;
+    let mut city = String::new();
+    let mut region = String::new();
+    let mut country = String::new();
+    let mut isp = String::new();
+
+    for line in osint_section.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("IP: ") {
+            if !current_ip.is_empty() {
+                create_geolocation_entities(
+                    &GeoFields {
+                        ip: &current_ip,
+                        lat,
+                        lon,
+                        city: &city,
+                        region: &region,
+                        country: &country,
+                        isp: &isp,
+                    },
+                    sid,
+                    entities,
+                    stats,
+                );
+            }
+            current_ip = rest.trim().to_string();
+            lat = None;
+            lon = None;
+            city.clear();
+            region.clear();
+            country.clear();
+            isp.clear();
+        } else if let Some(rest) = trimmed.strip_prefix("lat: ") {
+            lat = rest.trim().parse().ok();
+        } else if let Some(rest) = trimmed.strip_prefix("lon: ") {
+            lon = rest.trim().parse().ok();
+        } else if let Some(rest) = trimmed.strip_prefix("city: ") {
+            city = rest.trim().to_string();
+        } else if let Some(rest) = trimmed.strip_prefix("regionName: ") {
+            region = rest.trim().to_string();
+        } else if let Some(rest) = trimmed.strip_prefix("country: ") {
+            country = rest.trim().to_string();
+        } else if let Some(rest) = trimmed.strip_prefix("isp: ") {
+            isp = rest.trim().to_string();
+        }
+    }
+    if !current_ip.is_empty() {
+        create_geolocation_entities(
+            &GeoFields {
+                ip: &current_ip,
+                lat,
+                lon,
+                city: &city,
+                region: &region,
+                country: &country,
+                isp: &isp,
+            },
+            sid,
+            entities,
+            stats,
+        );
     }
 }
 

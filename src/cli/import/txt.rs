@@ -184,75 +184,8 @@ pub(super) fn parse_oathnet_txt(
         }
     }
 
-    // ── OSINT section: IP geolocation ──
-    let osint_start = body.find("=== OSINT ENRICHMENT");
-    if let Some(os) = osint_start {
-        let osint_section = &body[os..];
-        let mut current_ip = String::new();
-        let mut lat: Option<f64> = None;
-        let mut lon: Option<f64> = None;
-        let mut city = String::new();
-        let mut region = String::new();
-        let mut country = String::new();
-        let mut isp = String::new();
-
-        for line in osint_section.lines() {
-            let trimmed = line.trim();
-            if let Some(rest) = trimmed.strip_prefix("IP: ") {
-                if !current_ip.is_empty() {
-                    create_geolocation_entities(
-                        &GeoFields {
-                            ip: &current_ip,
-                            lat,
-                            lon,
-                            city: &city,
-                            region: &region,
-                            country: &country,
-                            isp: &isp,
-                        },
-                        &sid,
-                        &mut entities,
-                        &mut stats,
-                    );
-                }
-                current_ip = rest.trim().to_string();
-                lat = None;
-                lon = None;
-                city.clear();
-                region.clear();
-                country.clear();
-                isp.clear();
-            } else if let Some(rest) = trimmed.strip_prefix("lat: ") {
-                lat = rest.trim().parse().ok();
-            } else if let Some(rest) = trimmed.strip_prefix("lon: ") {
-                lon = rest.trim().parse().ok();
-            } else if let Some(rest) = trimmed.strip_prefix("city: ") {
-                city = rest.trim().to_string();
-            } else if let Some(rest) = trimmed.strip_prefix("regionName: ") {
-                region = rest.trim().to_string();
-            } else if let Some(rest) = trimmed.strip_prefix("country: ") {
-                country = rest.trim().to_string();
-            } else if let Some(rest) = trimmed.strip_prefix("isp: ") {
-                isp = rest.trim().to_string();
-            }
-        }
-        if !current_ip.is_empty() {
-            create_geolocation_entities(
-                &GeoFields {
-                    ip: &current_ip,
-                    lat,
-                    lon,
-                    city: &city,
-                    region: &region,
-                    country: &country,
-                    isp: &isp,
-                },
-                &sid,
-                &mut entities,
-                &mut stats,
-            );
-        }
-    }
+    // ── OSINT section: IP geolocation ── (shared with the OathNet report parser)
+    parse_osint_enrichment(body, &sid, &mut entities, &mut stats);
 
     // A stealer log's network section often lists the victim's router BSSID —
     // pull every MAC out as a geolocation seed (mylnikov / wigle) — and any

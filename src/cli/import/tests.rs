@@ -40,6 +40,12 @@ async fn upload_dispatcher_never_panics_on_adversarial_input() {
             // Section markers butted against multibyte text.
             format!("PASSWORDS:é\n-> é{bomb}"),
             "Entry #1:\n   \u{2022} name: é\n   \u{2022} hash: $2a$".into(),
+            // Truncated Stealerlogs block: a victim with a dangling Password key,
+            // and a `[N]` marker with a multibyte value where a domain belongs.
+            format!("Module: Stealerlogs\nVictims:\n  [1]\n    Credentials:\n      [1]\n        Password:\n    Domains:\n      [1]\n        é{bomb}"),
+            // Truncated OathNet report: a header, an entry with a dangling field
+            // and a multibyte name butted against the OSINT marker.
+            format!("=== DATABASE LOGS ===\nEntry 1:\nemail:\nfull name: é{bomb}\n=== OSINT ENRICHMENT\nIP: \nlat: x"),
         ];
     for (i, input) in cases.iter().enumerate() {
         // The await completing at all is the assertion — a panic would unwind
@@ -288,6 +294,8 @@ fn dossier_is_detected_and_oathnet_txt_is_not() {
 
 use super::combined::{looks_like_combined_search, parse_combined_search};
 use super::csv::{looks_like_dehashed_csv, looks_like_hse_csv, parse_dehashed_csv, parse_hse_csv};
+use super::oathnet_report::{looks_like_oathnet_report, parse_oathnet_report};
+use super::stealer::{looks_like_stealerlogs, parse_stealerlogs};
 
 // A synthetic HSE entity CSV export (the exact column order HSE writes).
 const HSE_CSV: &str = "kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,evidence_urls,evidence,tags\n\
@@ -826,6 +834,298 @@ fn parse_oathnet_html_empty_body_yields_nothing() {
     assert!(parse_oathnet_html("", "sid").is_empty());
 }
 
+// ── Stealerlogs victim-export parser ──────────────────────────────────────────
+
+// Synthetic Stealerlogs export (no real PII): two victims sharing one reused
+// password, a corporate domain, a freemail domain and an infrastructure IP.
+const STEALER: &str = "Module: Stealerlogs
+Query: javery
+Search Type: Auto Detect
+Results: 0
+
+Success:
+  true
+Query:
+  javery
+Victims:
+  [1]
+    Log Id:
+      ea0621568ccd7fee2bd78e16f637727612aca78d4b3d1f6bf8175cf2ca8de831
+    Credentials:
+      [1]
+        Username:
+          jordanavery@gmail.com
+        Password:
+          Hunter2pass
+        Pwned At:
+          2026-05-20T21:00:00Z
+      [2]
+        Username:
+          javery
+        Password:
+          Hunter2pass
+        Pwned At:
+          2026-05-20T21:00:00Z
+    Domains:
+      [1]
+        acme-corp.com
+      [2]
+        79.98.132.222
+      [3]
+        gmail.com
+    Newest:
+      2026-05-20T21:00:00Z
+    Oldest:
+      2026-05-19T10:00:00Z
+    Credential Count:
+      2
+    Domain Count:
+      3
+  [2]
+    Log Id:
+      8c815a3dd9c0954797f060577d8fb72690ac7d8cb142eab4c87856062ab8f067
+    Credentials:
+      [1]
+        Username:
+          bob
+        Password:
+          Hunter2pass
+        Pwned At:
+          2026-05-20T21:00:00Z
+    Domains:
+      [1]
+        derbyrock.com
+    Credential Count:
+      1
+    Domain Count:
+      1
+";
+
+#[test]
+fn stealerlogs_is_detected_and_others_are_not() {
+    assert!(looks_like_stealerlogs(STEALER));
+    // A renamed banner still parses via the structural fingerprint.
+    assert!(looks_like_stealerlogs(
+        "Victims:\n  [1]\n    Log Id:\n      abc\n    Credentials:\n"
+    ));
+    // The other formats are not swallowed.
+    assert!(!looks_like_stealerlogs(DOSSIER));
+    assert!(!looks_like_stealerlogs(COMBINED));
+    assert!(!looks_like_stealerlogs(
+        "URL: https://x.com/login\nUsername: bob\n"
+    ));
+    // And the stealer export is NOT mistaken for the aggregator/dossier formats.
+    assert!(!looks_like_combined_search(STEALER));
+    assert!(!looks_like_dossier(STEALER));
+}
+
+#[test]
+fn stealerlogs_parses_victims_creds_and_domains() {
+    let (mut ents, stats) = parse_stealerlogs(STEALER, "s");
+    deduplicate_by_uid(&mut ents);
+    let has = |k: EntityKind, v: &str| ents.iter().any(|e| e.kind == k && e.value == v);
+
+    // Two victims, each one stealer doc.
+    assert_eq!(stats.victim_records, 2);
+    assert_eq!(stats.stealer_docs, 2);
+
+    // Credential username shapes: an email username and two plain usernames.
+    assert!(has(EntityKind::Email, "jordanavery@gmail.com"));
+    assert!(has(EntityKind::Username, "javery"));
+    assert!(has(EntityKind::Username, "bob"));
+
+    // The reused plaintext password is present and — crucially — NOT collapsed
+    // away: it appears under three credential lines across two victims, so after
+    // the uid-merge the single Credential entity must carry evidence from every
+    // victim it implicates (the AU-047 reuse signal).
+    let cred = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Credential && e.value == "Hunter2pass")
+        .expect("the reused password must survive as a Credential");
+    assert!(
+        cred.evidence.len() >= 2,
+        "a password reused across victims must retain every victim's evidence, got {}",
+        cred.evidence.len()
+    );
+
+    // Domains: the corporate domain and the infrastructure IP are kept as pivots;
+    // the freemail domain is gated out (expanding gmail.com maps a platform).
+    assert!(has(EntityKind::Domain, "acme-corp.com"));
+    assert!(has(EntityKind::Domain, "derbyrock.com"));
+    assert!(has(EntityKind::IpAddress, "79.98.132.222"));
+    assert!(
+        !has(EntityKind::Domain, "gmail.com"),
+        "a freemail domain must not become a pivot seed"
+    );
+
+    // The infected-machine log id becomes a DeviceId pivot.
+    assert!(ents.iter().any(|e| e.kind == EntityKind::DeviceId
+        && e.value == "ea0621568ccd7fee2bd78e16f637727612aca78d4b3d1f6bf8175cf2ca8de831"
+        && e.has_tag("log-id")));
+
+    // Every emitted entity is tagged as stealer-victim import data.
+    assert!(
+        ents.iter()
+            .filter(|e| e.kind == EntityKind::Username)
+            .all(|e| e.has_tag("stealer-victim"))
+    );
+}
+
+#[tokio::test]
+async fn upload_dispatcher_routes_stealerlogs() {
+    let (ents, label) = entities_from_upload(STEALER, "s").await.unwrap();
+    assert_eq!(label, "stealerlogs");
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Credential && e.value == "Hunter2pass")
+    );
+}
+
+// ── OathNet SEARCH REPORT parser ──────────────────────────────────────────────
+
+// Synthetic OathNet SEARCH REPORT (no real PII): one fully-populated AU breach
+// entry, one noise entry whose name is a doubled query token, and an OSINT IP
+// enrichment block.
+const OATHNET_REPORT: &str = "============================================================
+OATHNET SEARCH REPORT
+Generated via oathnet.org
+Report Date: 2026-06-24T07:03:47.997Z
+Search Query: \"javery\"
+============================================================
+
+=== SEARCH RESULTS ===
+Query: javery
+Count: 2
+
+=== DATABASE LOGS ===
+
+[Breach Logs] (2 entries)
+
+Entry 1:
+country: AU
+dbname: examplebreach.com
+email: jordanavery@gmail.com
+email domain: gmail.com
+first name: Jordan
+full name: Jordan Avery
+id: b8ed0df81e91044e7ba2
+last name: Avery
+password hash: 2e4cc0d58868c0ea4c89b799bc8fd41a087009e067a171d823368cb517d6b3be
+phone number: 0412345678
+service: breach
+username: javery
+address street: 12 Smith Street
+city: Carlton
+state: VIC
+postal code: 3053
+
+Entry 2:
+full name: Rhino Rhino
+dbname: noise.com
+service: breach
+
+=== OSINT ENRICHMENT DATA ===
+
+--- IP INFORMATION ---
+
+IP: 1.128.0.50
+status: success
+country: Australia
+regionName: Victoria
+city: Melbourne
+lat: -37.8136
+lon: 144.9631
+isp: Telstra
+query: 1.128.0.50
+";
+
+#[test]
+fn oathnet_report_is_detected_and_others_are_not() {
+    assert!(looks_like_oathnet_report(OATHNET_REPORT));
+    assert!(looks_like_oathnet_report(
+        "=== DATABASE LOGS ===\nEntry 1:\nemail: a@b.com\n"
+    ));
+    // Not confused with the dossier (`Entry #N`) or the stealer-log TXT.
+    assert!(!looks_like_oathnet_report(DOSSIER));
+    assert!(!looks_like_oathnet_report(
+        "URL: https://x.com/login\nUsername: bob\n"
+    ));
+    // And the report is not mistaken for the dossier/combined shapes.
+    assert!(!looks_like_dossier(OATHNET_REPORT));
+    assert!(!looks_like_combined_search(OATHNET_REPORT));
+}
+
+#[test]
+fn oathnet_report_parses_entries_and_osint_geolocation() {
+    let (mut ents, stats) = parse_oathnet_report(OATHNET_REPORT, "s");
+    deduplicate_by_uid(&mut ents);
+    let has = |k: EntityKind, v: &str| ents.iter().any(|e| e.kind == k && e.value == v);
+
+    // Entry 1's correlated identity cluster.
+    assert!(has(EntityKind::Email, "jordanavery@gmail.com"));
+    assert!(has(EntityKind::Username, "javery"));
+    assert!(has(EntityKind::Person, "Jordan Avery"));
+    // AU local phone canonicalised to E.164.
+    assert!(has(EntityKind::Phone, "+61412345678"));
+    // The hash credential.
+    assert!(ents.iter().any(|e| e.kind == EntityKind::Credential
+        && e.value.len() == 64
+        && e.has_tag("password-hash")));
+    // Residential address (real street number present).
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Address
+                && e.value.to_ascii_lowercase().contains("carlton"))
+    );
+
+    // The doubled-token noise name ("Rhino Rhino") is NOT promoted to a Person.
+    assert!(
+        !has(EntityKind::Person, "Rhino Rhino"),
+        "a query-echo name must not become a Person"
+    );
+
+    // The OSINT enrichment block geolocates the IP to coordinates + a place.
+    // (The Coordinates kind canonicalises to 6 decimal places, so match by prefix
+    // rather than the raw 4-place emit string.)
+    assert!(
+        ents.iter().any(|e| e.kind == EntityKind::Coordinates
+            && e.value.starts_with("-37.8136")
+            && e.value.contains("144.9631")),
+        "the OSINT IP must geolocate to coordinates"
+    );
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Address && e.value.contains("Melbourne"))
+    );
+
+    // Only the real entry counts as a breach record (the noise block emits a
+    // Person-free record but still carries an identity-less... actually it has a
+    // name field, so it is a record); assert at least the populated one parsed.
+    assert!(stats.breach_records >= 1);
+    // The source database rides on the email's evidence.
+    let em = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("email");
+    assert!(em.evidence.iter().any(|ev| {
+        ev.attributes
+            .get("source")
+            .is_some_and(|v| v == "examplebreach.com")
+    }));
+}
+
+#[tokio::test]
+async fn upload_dispatcher_routes_oathnet_report() {
+    let (ents, label) = entities_from_upload(OATHNET_REPORT, "s").await.unwrap();
+    assert_eq!(label, "oathnet-report");
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Person && e.value == "Jordan Avery")
+    );
+    // The shared OSINT helper ran on the report path too.
+    assert!(ents.iter().any(|e| e.kind == EntityKind::Coordinates));
+}
+
 // ── Property tests (proptest) — no-panic contract for untrusted import ────────
 //
 // These parsers consume untrusted bytes supplied by the operator or uploaded via
@@ -838,7 +1138,10 @@ fn parse_oathnet_html_empty_body_yields_nothing() {
 mod prop {
     use proptest::prelude::*;
 
-    use super::super::{parse_dossier, parse_oathnet_html, parse_oathnet_txt};
+    use super::super::{
+        parse_dossier, parse_oathnet_html, parse_oathnet_report, parse_oathnet_txt,
+        parse_stealerlogs,
+    };
 
     proptest! {
         /// `parse_dossier` must never panic on any input string and must only
@@ -846,6 +1149,27 @@ mod prop {
         #[test]
         fn parse_dossier_never_panics(s in ".{0,512}") {
             let (ents, _) = parse_dossier(&s, "s");
+            for e in &ents {
+                prop_assert!(!e.value.is_empty(), "empty value in entity: {e:?}");
+            }
+        }
+
+        /// `parse_stealerlogs` must never panic on any input string — its nested
+        /// `[N]` / indentation grammar consumes untrusted bytes — and must only
+        /// emit non-empty entity values.
+        #[test]
+        fn parse_stealerlogs_never_panics(s in ".{0,512}") {
+            let (ents, _) = parse_stealerlogs(&s, "s");
+            for e in &ents {
+                prop_assert!(!e.value.is_empty(), "empty value in entity: {e:?}");
+            }
+        }
+
+        /// `parse_oathnet_report` must never panic on any input string and must
+        /// only emit non-empty entity values.
+        #[test]
+        fn parse_oathnet_report_never_panics(s in ".{0,512}") {
+            let (ents, _) = parse_oathnet_report(&s, "s");
             for e in &ents {
                 prop_assert!(!e.value.is_empty(), "empty value in entity: {e:?}");
             }
