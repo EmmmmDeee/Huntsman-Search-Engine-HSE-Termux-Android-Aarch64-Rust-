@@ -61,11 +61,25 @@ pub(crate) fn resolve_scan_id(store: &Store, raw: &str) -> Result<String> {
     }
     match store.get_scan(raw)? {
         None => Err(Error::Other(format!("scan {raw} not found"))),
-        Some(scan) if scan.status != ScanStatus::Complete => Err(Error::Other(format!(
-            "scan {raw} is {status} — only complete scans can be exported, diffed, or audited",
-            status = scan.status.as_str()
-        ))),
-        Some(_) => Ok(raw.to_string()),
+        Some(scan) => {
+            // A scan interrupted before finalise — a hang, a kill, an OOM, a power
+            // loss — still CHECKPOINTED its enumerated/validated entities to the
+            // store; its status simply never flipped to Complete. Refusing to read
+            // it (the old behaviour) silently lost every collected identifier: a
+            // breach-confirmed email, a SeekNow-enumerated handle, gone because the
+            // run didn't reach the end. Never discard collected data: surface the
+            // partial scan with a loud warning instead, so the findings are always
+            // recoverable. (`latest` still resolves to the most-recent COMPLETE
+            // scan, so routine reads are unaffected.)
+            if scan.status != ScanStatus::Complete {
+                eprintln!(
+                    "⚠ scan {raw} is {status}, not complete — recovering its checkpointed \
+                     (partial) entities; results may be incomplete",
+                    status = scan.status.as_str()
+                );
+            }
+            Ok(raw.to_string())
+        }
     }
 }
 

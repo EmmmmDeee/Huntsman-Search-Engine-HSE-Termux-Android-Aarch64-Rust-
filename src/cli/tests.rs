@@ -183,7 +183,7 @@ use super::*;
     // ── resolve_scan_id ─────────────────────────────────────────────────────
 
     #[test]
-    fn resolve_scan_id_rejects_incomplete_scans() {
+    fn resolve_scan_id_recovers_incomplete_scans() {
         use crate::core::scan::{Scan, ScanStatus, Target};
         use crate::storage::Store;
 
@@ -193,7 +193,10 @@ use super::*;
         scan.status = ScanStatus::Running;
         store.upsert_scan(&scan).unwrap();
 
-        let err = resolve_scan_id(&store, "abc123").unwrap_err().to_string();
-        assert!(err.contains("abc123"), "{err}");
-        assert!(err.contains("running"), "{err}");
+        // An interrupted (non-complete) scan's checkpointed data must be
+        // RECOVERABLE — resolve returns Ok so export/audit can read its partial
+        // entities, never discarding collected findings (warning goes to stderr).
+        assert_eq!(resolve_scan_id(&store, "abc123").unwrap(), "abc123");
+        // A genuinely-absent scan still errors loudly.
+        assert!(resolve_scan_id(&store, "no-such-scan").is_err());
     }
