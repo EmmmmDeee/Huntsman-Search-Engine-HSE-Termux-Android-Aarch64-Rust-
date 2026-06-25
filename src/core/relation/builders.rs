@@ -298,6 +298,203 @@ pub fn derive_name_lineage(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
     out
 }
 
+/// Upper bound on distinct registrable domains sharing a single dedicated IP for
+/// `derive_co_ownership` to emit a `SameOperator` edge — mirrors the AU-062
+/// correlator cap (`MAX_CO_HOSTED_REGISTRABLE`). Both must stay in sync: the
+/// correlator fires when ≤N sites share an IP; the builder emits the structural
+/// edge for the same membership set.
+const MAX_CO_HOSTED_REGISTRABLE: usize = 5;
+
+/// Derive `SameOperator` edges between domain/site entities that share an operator
+/// — inferred from three complementary evidence classes, each with appropriate
+/// false-positive guards. Runs AFTER the other builders so it can read the
+/// `RegisteredBy` and `ResolvesTo` edges they produced (passed as `relations`).
+///
+/// **Source A — Shared WHOIS registrant** (`RegisteredBy` edges, grouped by
+/// registrant uid): ≥2 domains sharing one genuine registrant are very likely
+/// co-owned. Privacy-proxy / redaction registrants (see
+/// [`crate::util::domains::is_proxy_registrant`]) are excluded — a shared proxy
+/// spans millions of unrelated domains and would cause mass false positives.
+/// Mirrors the AU-061 correlator gate.
+///
+/// **Source B — Shared dedicated IP** (`ResolvesTo` edges, grouped by IP uid):
+/// ≥2 DISTINCT registrable domains on one non-CDN, non-anycast IP with ≤
+/// [`MAX_CO_HOSTED_REGISTRABLE`] members are probably co-hosted by the same
+/// operator. Mirrors the three AU-062 guards: CDN/non-routable exclusion, eTLD+1
+/// dedup, fan-out cap.
+///
+/// **Source C — Shared web-analytics ID** (`TrackingId` entity evidence): a
+/// `TrackingId` entity whose `source_domain` attributes name ≥2 present Domain
+/// entities. A shared GA/GTM/pixel ID is an intentional operator-level
+/// configuration tag. Mirrors the AU-044 gate.
+///
+/// Edge direction: canonical `min_uid → max_uid` (same as `CoLocatedWith`) so
+/// re-scans upsert idempotently and there is exactly one edge per pair.
+/// Confidence = `min(a.confidence, b.confidence)`, consistent with every other
+/// builder. Deduped: the same pair can qualify under multiple sources; only one
+/// edge is emitted.
+pub fn derive_co_ownership(
+    entities: &[Entity],
+    relations: &[Relation],
+    scan_id: &str,
+) -> Vec<Relation> {
+    use std::collections::{HashMap, HashSet};
+
+    if entities.is_empty() {
+        return Vec::new();
+    }
+
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let mut out: Vec<Relation> = Vec::new();
+    // Global dedup so the same pair emitted by A, B, or C produces one edge.
+    let mut emitted: HashSet<(String, String)> = HashSet::new();
+
+    let mut push_pair = |a_uid: &str, b_uid: &str, out: &mut Vec<Relation>| {
+        let (from, to) = if a_uid <= b_uid {
+            (a_uid, b_uid)
+        } else {
+            (b_uid, a_uid)
+        };
+        let key = (from.to_string(), to.to_string());
+        if emitted.contains(&key) {
+            return;
+        }
+        emitted.insert(key);
+        let conf = by_uid
+            .get(from)
+            .map_or(0.5, |e| e.confidence)
+            .min(by_uid.get(to).map_or(0.5, |e| e.confidence));
+        out.push(Relation::new(
+            from,
+            to,
+            RelationKind::SameOperator,
+            conf,
+            scan_id,
+        ));
+    };
+
+    // ── Source A: shared registrant ──────────────────────────────────────────
+    {
+        let mut groups: HashMap<&str, Vec<&str>> = HashMap::new();
+        for r in relations
+            .iter()
+            .filter(|r| r.kind == RelationKind::RegisteredBy)
+        {
+            let (Some(dom), Some(reg)) = (
+                by_uid.get(r.from_uid.as_str()),
+                by_uid.get(r.to_uid.as_str()),
+            ) else {
+                continue;
+            };
+            if dom.kind != EntityKind::Domain
+                || !matches!(reg.kind, EntityKind::Organisation | EntityKind::Email)
+            {
+                continue;
+            }
+            if crate::util::domains::is_proxy_registrant(&reg.value, reg.kind == EntityKind::Email)
+            {
+                continue;
+            }
+            let members = groups.entry(r.to_uid.as_str()).or_default();
+            if !members.contains(&r.from_uid.as_str()) {
+                members.push(r.from_uid.as_str());
+            }
+        }
+        for (_, mut domains) in groups {
+            if domains.len() < 2 || domains.len() > 20 {
+                continue;
+            }
+            domains.sort_unstable();
+            for i in 0..domains.len() {
+                for j in (i + 1)..domains.len() {
+                    push_pair(domains[i], domains[j], &mut out);
+                }
+            }
+        }
+    }
+
+    // ── Source B: shared dedicated IP ────────────────────────────────────────
+    {
+        let mut groups: HashMap<&str, Vec<&str>> = HashMap::new();
+        for r in relations
+            .iter()
+            .filter(|r| r.kind == RelationKind::ResolvesTo)
+        {
+            let (Some(dom), Some(ip)) = (
+                by_uid.get(r.from_uid.as_str()),
+                by_uid.get(r.to_uid.as_str()),
+            ) else {
+                continue;
+            };
+            if dom.kind != EntityKind::Domain || ip.kind != EntityKind::IpAddress {
+                continue;
+            }
+            if crate::core::validation::is_cdn_edge_ip(&ip.value)
+                || crate::core::validation::is_non_routable_ip(&ip.value)
+            {
+                continue;
+            }
+            let members = groups.entry(r.to_uid.as_str()).or_default();
+            if !members.contains(&r.from_uid.as_str()) {
+                members.push(r.from_uid.as_str());
+            }
+        }
+        for (_, mut domains) in groups {
+            if domains.len() < 2 {
+                continue;
+            }
+            domains.sort_unstable();
+            let mut registrables: Vec<String> = domains
+                .iter()
+                .filter_map(|u| by_uid.get(u))
+                .filter_map(|e| crate::util::domains::registrable_domain(&e.value))
+                .collect();
+            registrables.sort_unstable();
+            registrables.dedup();
+            if registrables.len() < 2 || registrables.len() > MAX_CO_HOSTED_REGISTRABLE {
+                continue;
+            }
+            for i in 0..domains.len() {
+                for j in (i + 1)..domains.len() {
+                    push_pair(domains[i], domains[j], &mut out);
+                }
+            }
+        }
+    }
+
+    // ── Source C: shared web-analytics ID ────────────────────────────────────
+    {
+        let domain_by_value: HashMap<&str, &Entity> = entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Domain)
+            .map(|e| (e.value.as_str(), e))
+            .collect();
+        for tid in entities.iter().filter(|e| e.kind == EntityKind::TrackingId) {
+            let mut sources: Vec<&str> = tid
+                .evidence
+                .iter()
+                .filter_map(|ev| ev.attributes.get("source_domain").map(String::as_str))
+                .collect();
+            sources.sort_unstable();
+            sources.dedup();
+            let matching: Vec<&str> = sources
+                .iter()
+                .filter_map(|s| domain_by_value.get(s).map(|e| e.uid.as_str()))
+                .collect();
+            if matching.len() < 2 {
+                continue;
+            }
+            for i in 0..matching.len() {
+                for j in (i + 1)..matching.len() {
+                    push_pair(matching[i], matching[j], &mut out);
+                }
+            }
+        }
+    }
+
+    out
+}
+
 // ── Identity relations ───────────────────────────────────────────────────────
 //
 // The builders above reconstruct the *infrastructure* graph (subdomains, hosting,
@@ -1023,6 +1220,393 @@ pub fn derive_canonical_identities(entities: &[Entity], scan_id: &str) -> Vec<Re
     })
 }
 
+// ── Social platform URL → username extraction ───────────────────────────────
+
+/// How to extract the embedded username from a known social platform URL.
+#[derive(Debug, Clone, Copy)]
+enum ExtractKind {
+    /// Take the `index`-th non-empty path segment (0-based after filtering).
+    /// `strip_at` removes a leading `'@'`; `strip_suffix` removes a known
+    /// trailing suffix (e.g. `".bsky.social"` in Bluesky profile URLs).
+    Segment {
+        index: usize,
+        strip_at: bool,
+        strip_suffix: Option<&'static str>,
+    },
+    /// The username is the value of query parameter `name` (e.g. HN `?id=`).
+    QueryParam { name: &'static str },
+}
+
+struct SocialMatcher {
+    host: &'static str,
+    extract: ExtractKind,
+}
+
+/// Static table mapping social-platform hosts to their username extraction rule.
+static SOCIAL_MATCHERS: &[SocialMatcher] = &[
+    SocialMatcher {
+        host: "www.facebook.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "twitter.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "x.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.instagram.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "github.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "gitlab.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.pinterest.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "dev.to",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "keybase.io",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.twitch.tv",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "vimeo.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "soundcloud.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "bitbucket.org",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "myspace.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "linktr.ee",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "about.me",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.behance.net",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "dribbble.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.imlive.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.mydirtyhobby.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.sextpanther.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "stripchat.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.loyalfans.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.tiktok.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: true,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "medium.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: true,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "mastodon.social",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: true,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.threads.net",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: true,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "steamcommunity.com",
+        extract: ExtractKind::Segment {
+            index: 1,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.flickr.com",
+        extract: ExtractKind::Segment {
+            index: 1,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "open.spotify.com",
+        extract: ExtractKind::Segment {
+            index: 1,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.reddit.com",
+        extract: ExtractKind::Segment {
+            index: 1,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.livejasmin.com",
+        extract: ExtractKind::Segment {
+            index: 1,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "bsky.app",
+        extract: ExtractKind::Segment {
+            index: 1,
+            strip_at: false,
+            strip_suffix: Some(".bsky.social"),
+        },
+    },
+    SocialMatcher {
+        host: "news.ycombinator.com",
+        extract: ExtractKind::QueryParam { name: "id" },
+    },
+];
+
+/// Extract the embedded username from a known social-platform profile URL.
+/// Returns `None` if the URL's host is not in `SOCIAL_MATCHERS`, the path
+/// segment is missing, or the extracted string is empty.
+fn extract_username_from_profile_url(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    let canonical_host = host.strip_prefix("www.").unwrap_or(host);
+    let matcher = SOCIAL_MATCHERS.iter().find(|m| {
+        m.host
+            .strip_prefix("www.")
+            .unwrap_or(m.host)
+            .eq_ignore_ascii_case(canonical_host)
+    })?;
+
+    let username = match matcher.extract {
+        ExtractKind::Segment {
+            index,
+            strip_at,
+            strip_suffix,
+        } => {
+            let path = parsed.path();
+            let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+            let seg = segments.get(index).copied()?;
+            let seg = if strip_at {
+                seg.strip_prefix('@').unwrap_or(seg)
+            } else {
+                seg
+            };
+            let seg = if let Some(suffix) = strip_suffix {
+                seg.strip_suffix(suffix).unwrap_or(seg)
+            } else {
+                seg
+            };
+            if seg.is_empty() {
+                return None;
+            }
+            seg.to_ascii_lowercase()
+        }
+        ExtractKind::QueryParam { name } => parsed.query_pairs().find_map(|(k, v)| {
+            if k.as_ref() == name {
+                Some(v.to_ascii_lowercase())
+            } else {
+                None
+            }
+        })?,
+    };
+
+    if username.is_empty() {
+        None
+    } else {
+        Some(username)
+    }
+}
+
+/// Link `Username` entities to the social-platform `Url` entities whose
+/// embedded handle matches — making the identity hub explicit in the graph.
+///
+/// Matching is case-insensitive. The edge is directed `Username → Url`.
+/// Confidence = `min(username.conf, url.conf)`.
+pub fn derive_profile_links(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    let usernames: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username)
+        .collect();
+    if usernames.is_empty() {
+        return Vec::new();
+    }
+
+    let username_index: std::collections::HashMap<String, &Entity> = usernames
+        .iter()
+        .map(|e| (e.value.to_ascii_lowercase(), *e))
+        .collect();
+
+    let mut out = Vec::new();
+    for url_entity in entities.iter().filter(|e| e.kind == EntityKind::Url) {
+        let Some(extracted) = extract_username_from_profile_url(&url_entity.value) else {
+            continue;
+        };
+        let Some(&uname_entity) = username_index.get(&extracted) else {
+            continue;
+        };
+        let conf = uname_entity.confidence.min(url_entity.confidence);
+        out.push(Relation::new(
+            uname_entity.uid.as_str(),
+            url_entity.uid.as_str(),
+            RelationKind::SameIdentity,
+            conf,
+            scan_id,
+        ));
+    }
+    out
+}
+
 /// Derive every deterministic, evidence-grounded relation the engine knows how
 /// to reconstruct from a persisted entity set alone — the infrastructure layer
 /// (structural ownership, geo co-location, DNS resolution, WHOIS registration,
@@ -1041,6 +1625,11 @@ pub fn derive_all(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     out.extend(derive_resolution(entities, scan_id));
     out.extend(derive_registration(entities, scan_id));
     out.extend(derive_name_lineage(entities, scan_id));
+    // Co-ownership — needs RegisteredBy and ResolvesTo edges built above.
+    let co = derive_co_ownership(entities, &out, scan_id);
+    out.extend(co);
+    // Identity-profile links — Username → social profile Url.
+    out.extend(derive_profile_links(entities, scan_id));
     out.extend(derive_handles(entities, scan_id));
     out.extend(derive_identity_ownership(entities, scan_id));
     out.extend(derive_residency(entities, scan_id));

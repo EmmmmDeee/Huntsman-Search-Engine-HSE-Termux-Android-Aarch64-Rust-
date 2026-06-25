@@ -486,6 +486,47 @@ pub fn is_social_platform(domain: &str) -> bool {
     SOCIAL.iter().any(|s| is_or_subdomain_of(domain, s))
 }
 
+/// WHOIS privacy-proxy / redaction service markers. A registrant whose org name
+/// or email contains one of these is a shared placeholder used across millions of
+/// unrelated domains — linking domains through it is a mass false positive.
+/// Stored lowercase; matched as case-insensitive substrings.
+const REGISTRANT_PROXY_MARKERS: &[&str] = &[
+    "privacy",
+    "redacted",
+    "withheld",
+    "domains by proxy",
+    "domainsbyproxy",
+    "whoisguard",
+    "data protected",
+    "identity protection",
+    "private registration",
+    "registration private",
+    "not disclosed",
+    "non-public data",
+    "perfect privacy",
+    "contact privacy",
+    "super privacy",
+    "domain protection services",
+    "protecteddomainservices",
+];
+
+/// True when a WHOIS registrant value (org name or email address) is a privacy
+/// proxy / redaction placeholder rather than the genuine domain owner. Matched
+/// case-insensitively against [`REGISTRANT_PROXY_MARKERS`]; an email registrant
+/// is additionally tested with [`is_infrastructure_email`] so a registrar/proxy
+/// mailbox (`*@secureserver.net`, `abuse@godaddy.com`) is caught even without a
+/// name marker. Called by both the `core::correlator` (AU-061) and
+/// `core::relation` builders (`derive_co_ownership`) so the exclusion logic is
+/// defined exactly once.
+#[must_use]
+pub fn is_proxy_registrant(value: &str, is_email: bool) -> bool {
+    let v = value.to_ascii_lowercase();
+    if REGISTRANT_PROXY_MARKERS.iter().any(|m| v.contains(m)) {
+        return true;
+    }
+    is_email && is_infrastructure_email(value)
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

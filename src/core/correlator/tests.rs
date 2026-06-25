@@ -783,10 +783,29 @@ fn au003_uses_distinct_sources_not_summed_corroboration() {
 
 #[test]
 fn au004_fires_on_malicious_domain() {
-    let e = tagged(EntityKind::Domain, "evil.example", &["malicious"]);
+    // Requires two independent sources to reach CRITICAL — shared infra appears
+    // in single blocklists without being subject-owned.
+    let mut e = tagged(EntityKind::Domain, "evil.example", &["malicious"]);
+    e.add_evidence(Evidence::new(
+        "ip_reputation",
+        "flagged malicious".to_string(),
+    ));
+    e.add_evidence(Evidence::new("threatfox", "c2 domain".to_string()));
     let r = rule_au_004_malicious_infrastructure(&[e], "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, Severity::Critical);
+}
+
+#[test]
+fn au004_no_fire_single_source() {
+    // Single-source malicious tag must NOT produce a CRITICAL — insufficient
+    // corroboration to distinguish CDN/ESP blocklist noise from real malice.
+    let mut e = tagged(EntityKind::Domain, "evil.example", &["malicious"]);
+    e.add_evidence(Evidence::new(
+        "ip_reputation",
+        "flagged malicious".to_string(),
+    ));
+    assert!(rule_au_004_malicious_infrastructure(&[e], "s", 0).is_empty());
 }
 
 #[test]
@@ -1233,11 +1252,16 @@ fn evaluate_rules_fires_expected_subset() {
     email.add_evidence(Evidence::new("hudsonrock", "t"));
     email.add_evidence(Evidence::new("xposed_or_not", "t"));
     email.tag("stealer-log");
-    let domain = tagged(
+    let mut domain = tagged(
         EntityKind::Domain,
         "evil.example",
         &["malicious", "vulnerable", "threat-intel"],
     );
+    domain.add_evidence(Evidence::new(
+        "ip_reputation",
+        "flagged malicious".to_string(),
+    ));
+    domain.add_evidence(Evidence::new("threatfox", "c2 domain".to_string()));
     let ip = tagged(EntityKind::IpAddress, "1.1.1.1", &["tor-exit"]);
     let firings = evaluate_rules(&[email, domain, ip], "s");
     let ids: HashSet<&str> = firings.iter().map(|c| c.rule_id.as_str()).collect();
@@ -4489,6 +4513,323 @@ fn au071_robust_identity_cluster_fires_on_a_redundantly_bound_cluster() {
     let out = rule_au_071_robust_identity_cluster(&[email, uname, person, d1, d2], &rels, "s", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-071");
+}
+
+// ── AU-076 — shared-registrant domain co-ownership (relation rule) ──────────
+
+#[test]
+fn au076_fires_on_shared_registrant_org() {
+    use crate::core::relation::{Relation, RelationKind};
+    // Two distinct domains both RegisteredBy the same genuine Organisation →
+    // one High co-ownership finding naming both domains and the registrant.
+    let d1 = Entity::new(EntityKind::Domain, "alpha-co.example", 0.8, "s");
+    let d2 = Entity::new(EntityKind::Domain, "beta-co.example", 0.8, "s");
+    let org = Entity::new(EntityKind::Organisation, "Acme Holdings Pty Ltd", 0.8, "s");
+    let rels = vec![
+        Relation::new(
+            d1.uid.clone(),
+            org.uid.clone(),
+            RelationKind::RegisteredBy,
+            0.8,
+            "s",
+        ),
+        Relation::new(
+            d2.uid.clone(),
+            org.uid.clone(),
+            RelationKind::RegisteredBy,
+            0.8,
+            "s",
+        ),
+    ];
+    let r = rule_au_076_shared_registrant(&[d1.clone(), d2.clone(), org.clone()], &rels, "s", 0);
+    assert_eq!(r.len(), 1, "shared registrant must fire one correlation");
+    assert_eq!(r[0].rule_id, "AU-076");
+    assert_eq!(r[0].severity, Severity::High);
+    assert!(r[0].entity_uids.contains(&org.uid));
+    assert!(r[0].entity_uids.contains(&d1.uid));
+    assert!(r[0].entity_uids.contains(&d2.uid));
+    assert!(r[0].description.contains("alpha-co.example"));
+    assert!(r[0].description.contains("beta-co.example"));
+    assert!(r[0].description.contains("Acme Holdings Pty Ltd"));
+}
+
+#[test]
+fn au076_fires_on_shared_registrant_email() {
+    use crate::core::relation::{Relation, RelationKind};
+    // A personal (freemail) registrant email shared across two domains is a
+    // genuine co-ownership signal — only infra/proxy mailboxes are excluded.
+    let d1 = Entity::new(EntityKind::Domain, "one.example", 0.8, "s");
+    let d2 = Entity::new(EntityKind::Domain, "two.example", 0.8, "s");
+    let email = Entity::new(EntityKind::Email, "owner.person@protonmail.com", 0.8, "s");
+    let rels = vec![
+        Relation::new(
+            d1.uid.clone(),
+            email.uid.clone(),
+            RelationKind::RegisteredBy,
+            0.8,
+            "s",
+        ),
+        Relation::new(
+            d2.uid.clone(),
+            email.uid.clone(),
+            RelationKind::RegisteredBy,
+            0.8,
+            "s",
+        ),
+    ];
+    let r = rule_au_076_shared_registrant(&[d1, d2, email.clone()], &rels, "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-076");
+    assert!(r[0].description.contains("registrant email"));
+    assert!(r[0].entity_uids.contains(&email.uid));
+}
+
+#[test]
+fn au076_no_fire_on_privacy_proxy_registrant() {
+    use crate::core::relation::{Relation, RelationKind};
+    // The critical false-positive guard: domains sharing a WHOIS privacy proxy
+    // (Domains By Proxy / WhoisGuard / an `abuse@` registrar role) must NOT be
+    // linked — millions of unrelated domains share these.
+    let d1 = Entity::new(EntityKind::Domain, "p1.example", 0.8, "s");
+    let d2 = Entity::new(EntityKind::Domain, "p2.example", 0.8, "s");
+    let proxy_org = Entity::new(EntityKind::Organisation, "Domains By Proxy, LLC", 0.8, "s");
+    let proxy_email = Entity::new(EntityKind::Email, "abuse@whoisguard.com", 0.8, "s");
+    for who in [&proxy_org, &proxy_email] {
+        let rels = vec![
+            Relation::new(
+                d1.uid.clone(),
+                who.uid.clone(),
+                RelationKind::RegisteredBy,
+                0.8,
+                "s",
+            ),
+            Relation::new(
+                d2.uid.clone(),
+                who.uid.clone(),
+                RelationKind::RegisteredBy,
+                0.8,
+                "s",
+            ),
+        ];
+        let r =
+            rule_au_076_shared_registrant(&[d1.clone(), d2.clone(), who.clone()], &rels, "s", 0);
+        assert!(
+            r.is_empty(),
+            "privacy-proxy registrant '{}' must not link domains, got {r:?}",
+            who.value
+        );
+    }
+}
+
+#[test]
+fn au076_no_fire_on_single_domain_or_redacted() {
+    use crate::core::relation::{Relation, RelationKind};
+    let d1 = Entity::new(EntityKind::Domain, "solo.example", 0.8, "s");
+    let org = Entity::new(EntityKind::Organisation, "Solo Trader", 0.8, "s");
+    // One domain → no co-ownership.
+    let rels = vec![Relation::new(
+        d1.uid.clone(),
+        org.uid.clone(),
+        RelationKind::RegisteredBy,
+        0.8,
+        "s",
+    )];
+    assert!(rule_au_076_shared_registrant(&[d1.clone(), org], &rels, "s", 0).is_empty());
+    // A "REDACTED FOR PRIVACY" placeholder registrant is excluded even with two
+    // domains (substring marker `redacted`/`privacy`).
+    let d2 = Entity::new(EntityKind::Domain, "solo2.example", 0.8, "s");
+    let redacted = Entity::new(EntityKind::Organisation, "REDACTED FOR PRIVACY", 0.8, "s");
+    let rels2 = vec![
+        Relation::new(
+            d1.uid.clone(),
+            redacted.uid.clone(),
+            RelationKind::RegisteredBy,
+            0.8,
+            "s",
+        ),
+        Relation::new(
+            d2.uid.clone(),
+            redacted.uid.clone(),
+            RelationKind::RegisteredBy,
+            0.8,
+            "s",
+        ),
+    ];
+    assert!(rule_au_076_shared_registrant(&[d1, d2, redacted], &rels2, "s", 0).is_empty());
+}
+
+#[test]
+fn au076_deterministic_across_edge_order() {
+    use crate::core::relation::{Relation, RelationKind};
+    let d1 = Entity::new(EntityKind::Domain, "x.example", 0.8, "s");
+    let d2 = Entity::new(EntityKind::Domain, "y.example", 0.8, "s");
+    let org = Entity::new(EntityKind::Organisation, "Shared Owner Inc", 0.8, "s");
+    let mk = |a: &Entity, b: &Entity| {
+        Relation::new(
+            a.uid.clone(),
+            b.uid.clone(),
+            RelationKind::RegisteredBy,
+            0.8,
+            "s",
+        )
+    };
+    let ents = [d1.clone(), d2.clone(), org.clone()];
+    let r1 = rule_au_076_shared_registrant(&ents, &[mk(&d1, &org), mk(&d2, &org)], "s", 0);
+    let r2 = rule_au_076_shared_registrant(&ents, &[mk(&d2, &org), mk(&d1, &org)], "s", 0);
+    assert_eq!(r1.len(), 1);
+    assert_eq!(
+        r1[0].description, r2[0].description,
+        "member-domain ordering must be edge-order-independent"
+    );
+    assert_eq!(r1[0].entity_uids, r2[0].entity_uids);
+}
+
+// ── AU-077 — shared dedicated-IP co-hosting (relation rule) ─────────────────
+
+/// Build a Domain→IpAddress `ResolvesTo` edge for the AU-077 fixtures.
+fn resolves(d: &Entity, ip: &Entity) -> crate::core::relation::Relation {
+    use crate::core::relation::{Relation, RelationKind};
+    Relation::new(
+        d.uid.clone(),
+        ip.uid.clone(),
+        RelationKind::ResolvesTo,
+        0.8,
+        "s",
+    )
+}
+
+#[test]
+fn au077_fires_on_two_distinct_sites_one_dedicated_ip() {
+    // Two DIFFERENT sites on one non-CDN, routable IP → Medium co-hosting lead.
+    let d1 = Entity::new(EntityKind::Domain, "alpha-site.com", 0.8, "s");
+    let d2 = Entity::new(EntityKind::Domain, "beta-site.org", 0.8, "s");
+    let ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
+    let rels = vec![resolves(&d1, &ip), resolves(&d2, &ip)];
+    let r = rule_au_077_shared_hosting_ip(&[d1.clone(), d2.clone(), ip.clone()], &rels, "s", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "two distinct sites on one dedicated IP must fire"
+    );
+    assert_eq!(r[0].rule_id, "AU-077");
+    assert_eq!(r[0].severity, Severity::Medium);
+    assert!(r[0].entity_uids.contains(&ip.uid));
+    assert!(r[0].entity_uids.contains(&d1.uid));
+    assert!(r[0].entity_uids.contains(&d2.uid));
+    assert!(r[0].description.contains("45.33.32.156"));
+    assert!(r[0].description.contains("alpha-site.com"));
+    assert!(r[0].description.contains("beta-site.org"));
+}
+
+#[test]
+fn au077_no_fire_on_subdomains_of_one_site() {
+    // Co-RESIDENCE, not co-ownership: www/api/blog of ONE site share its origin
+    // IP. All reduce to one registrable domain → must NOT fire.
+    let d1 = Entity::new(EntityKind::Domain, "www.example.com", 0.8, "s");
+    let d2 = Entity::new(EntityKind::Domain, "api.example.com", 0.8, "s");
+    let d3 = Entity::new(EntityKind::Domain, "blog.example.com", 0.8, "s");
+    let ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
+    let rels = vec![resolves(&d1, &ip), resolves(&d2, &ip), resolves(&d3, &ip)];
+    let r = rule_au_077_shared_hosting_ip(&[d1, d2, d3, ip], &rels, "s", 0);
+    assert!(
+        r.is_empty(),
+        "one site's own subdomains are co-residence, not co-ownership: {r:?}"
+    );
+}
+
+#[test]
+fn au077_no_fire_on_cdn_or_nonroutable_ip() {
+    // Guard 1: a Cloudflare edge (104.16/13) and non-routable IPs each front
+    // unrelated sites — co-tenancy, never co-ownership.
+    let d1 = Entity::new(EntityKind::Domain, "alpha-site.com", 0.8, "s");
+    let d2 = Entity::new(EntityKind::Domain, "beta-site.org", 0.8, "s");
+    for ip_val in ["104.16.5.5", "192.168.1.10", "203.0.113.7"] {
+        let ip = Entity::new(EntityKind::IpAddress, ip_val, 0.8, "s");
+        let rels = vec![resolves(&d1, &ip), resolves(&d2, &ip)];
+        let r = rule_au_077_shared_hosting_ip(&[d1.clone(), d2.clone(), ip.clone()], &rels, "s", 0);
+        assert!(
+            r.is_empty(),
+            "{ip_val}: CDN/non-routable IP must not link, got {r:?}"
+        );
+    }
+}
+
+#[test]
+fn au077_no_fire_on_shared_hosting_fanout() {
+    // Guard 3: many distinct sites on one IP → shared hosting, skipped.
+    let ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
+    let mut ents = vec![ip.clone()];
+    let mut rels = Vec::new();
+    for i in 0..8 {
+        let d = Entity::new(
+            EntityKind::Domain,
+            format!("site{i}-distinct.com"),
+            0.8,
+            "s",
+        );
+        rels.push(resolves(&d, &ip));
+        ents.push(d);
+    }
+    let r = rule_au_077_shared_hosting_ip(&ents, &rels, "s", 0);
+    assert!(
+        r.is_empty(),
+        "8 distinct sites on one IP is shared hosting, not co-ownership: {r:?}"
+    );
+}
+
+// ─── AU-084 tests (cell tower dual-source) ────────────────────────────────────
+
+fn cell_tower(tower_id: &str, sources: &[&str]) -> Entity {
+    let mut e = Entity::new(EntityKind::DeviceId, tower_id, 0.78, "s");
+    e.tag("cell-tower");
+    for src in sources {
+        e.add_evidence(Evidence::new(*src, format!("tower {tower_id}")));
+    }
+    e
+}
+
+#[test]
+fn au084_fires_when_both_sources_present() {
+    use super::rules::rule_au_084_cell_tower_dual_source;
+    let ents = vec![cell_tower(
+        "505-1-1234-56789",
+        &["cell_intel", "opencellid"],
+    )];
+    let r = rule_au_084_cell_tower_dual_source(&ents, "s", 0);
+    assert_eq!(r.len(), 1, "dual-source cell tower must fire AU-084");
+    assert_eq!(r[0].rule_id, "AU-084");
+}
+
+#[test]
+fn au084_does_not_fire_on_single_source() {
+    use super::rules::rule_au_084_cell_tower_dual_source;
+    let ents = vec![cell_tower("505-1-1234-56789", &["cell_intel"])];
+    let r = rule_au_084_cell_tower_dual_source(&ents, "s", 0);
+    assert!(r.is_empty(), "single-source tower must not fire AU-084");
+}
+
+#[test]
+fn au084_medium_severity_for_three_or_more_towers() {
+    use super::rules::rule_au_084_cell_tower_dual_source;
+    let ents = vec![
+        cell_tower("505-1-1234-11111", &["cell_intel", "opencellid"]),
+        cell_tower("505-1-1234-22222", &["cell_intel", "opencellid"]),
+        cell_tower("505-1-1234-33333", &["cell_intel", "opencellid"]),
+    ];
+    let r = rule_au_084_cell_tower_dual_source(&ents, "s", 0);
+    assert_eq!(r.len(), 1, "three dual-source towers must fire one AU-084");
+    assert_eq!(r[0].severity, Severity::Medium);
+}
+
+#[test]
+fn au084_ignores_non_cell_tower_device_ids() {
+    use super::rules::rule_au_084_cell_tower_dual_source;
+    let mut e = Entity::new(EntityKind::DeviceId, "aa:bb:cc:dd:ee:ff", 0.8, "s");
+    e.add_evidence(Evidence::new("cell_intel", "mac addr"));
+    e.add_evidence(Evidence::new("opencellid", "mac addr"));
+    // No cell-tower tag → must not fire.
+    let r = rule_au_084_cell_tower_dual_source(&[e], "s", 0);
+    assert!(r.is_empty(), "non-cell-tower DeviceId must not fire AU-084");
 }
 
 #[test]

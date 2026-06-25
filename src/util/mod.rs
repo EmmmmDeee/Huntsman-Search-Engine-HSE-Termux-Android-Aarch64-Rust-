@@ -33,6 +33,7 @@ pub mod netrotate;
 pub mod oathnet;
 pub mod oathnet_batch;
 pub mod oui;
+pub mod phone;
 pub mod postcode_au;
 pub mod preflight;
 pub mod proxy;

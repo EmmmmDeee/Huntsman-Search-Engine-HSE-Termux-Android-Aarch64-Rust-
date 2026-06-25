@@ -624,6 +624,16 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
                 Vec::new()
             }
         }
+        TargetKind::TrackingId => {
+            // A tracking ID in quotes finds pages that embed the same ID —
+            // the canonical cross-domain co-ownership pivot.
+            let base = v.to_ascii_uppercase();
+            vec![
+                format!("\"{base}\""),
+                format!("\"{base}\" site:github.com OR site:gitlab.com"),
+                format!("\"{base}\" -site:google.com -site:googletagmanager.com"),
+            ]
+        }
         _ => Vec::new(),
     }
 }

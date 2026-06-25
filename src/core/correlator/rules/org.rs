@@ -213,3 +213,232 @@ pub(in crate::core::correlator) fn rule_au_033_abn_organisation_link(
         ts,
     )]
 }
+
+/// Delegates to [`crate::util::domains::is_proxy_registrant`] — single source
+/// of truth for the privacy-proxy / WHOIS-redaction exclusion used by both
+/// AU-076 and `core::relation::builders::derive_co_ownership`.
+fn is_proxy_registrant(value: &str, is_email: bool) -> bool {
+    crate::util::domains::is_proxy_registrant(value, is_email)
+}
+
+/// AU-076 — Shared-registrant domain co-ownership.
+///
+/// Groups the `RegisteredBy` edges (Domain → registrant Organisation/Email,
+/// derived from WHOIS/RDAP by `relation::builders::derive_registration`) by
+/// registrant. When ≥2 DISTINCT domains share one genuine registrant they are
+/// very likely controlled by a single operator — the canonical WHOIS pivot for
+/// mapping an actor's domain estate.
+///
+/// This is the ownership counterpart to AU-044 (shared web-analytics id): both
+/// assert "different web properties, one operator". Unlike a shared hosting IP
+/// (millions of unrelated sites behind one CDN edge — AU-031 treats that as
+/// noise to *suppress*), a shared registrant is a strong ownership signal
+/// because the registrant is the party that contractually holds the domains.
+///
+/// False-positive guard: privacy-proxy / redacted registrants (see
+/// [`is_proxy_registrant`]) are shared across millions of domains and are
+/// EXCLUDED — only a real registrant identity links the estate. Severity High,
+/// matching AU-044's shared-ownership tier. Deterministic: registrants iterated
+/// in uid order, member domains sorted by uid.
+pub(in crate::core::correlator) fn rule_au_076_shared_registrant(
+    entities: &[Entity],
+    relations: &[Relation],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // uid → entity, for endpoint lookup.
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+
+    // registrant uid → distinct domain uids registered by it (insertion order
+    // preserved for determinism; sorted before emission).
+    let mut groups: HashMap<&str, Vec<&str>> = HashMap::new();
+    for r in relations
+        .iter()
+        .filter(|r| r.kind == RelationKind::RegisteredBy)
+    {
+        let (Some(dom), Some(reg)) = (
+            by_uid.get(r.from_uid.as_str()),
+            by_uid.get(r.to_uid.as_str()),
+        ) else {
+            continue;
+        };
+        // `RegisteredBy` is Domain → Organisation/Email by construction; assert
+        // the endpoint kinds so a malformed edge can't group non-domains.
+        if dom.kind != EntityKind::Domain
+            || !matches!(reg.kind, EntityKind::Organisation | EntityKind::Email)
+        {
+            continue;
+        }
+        if is_proxy_registrant(&reg.value, reg.kind == EntityKind::Email) {
+            continue;
+        }
+        let members = groups.entry(r.to_uid.as_str()).or_default();
+        if !members.contains(&r.from_uid.as_str()) {
+            members.push(r.from_uid.as_str());
+        }
+    }
+
+    // Stable iteration order: registrants by uid.
+    let mut registrant_uids: Vec<&str> = groups.keys().copied().collect();
+    registrant_uids.sort_unstable();
+
+    let mut out = Vec::new();
+    for reg_uid in registrant_uids {
+        let Some(mut domains) = groups.remove(reg_uid) else {
+            continue;
+        };
+        if domains.len() < 2 {
+            continue;
+        }
+        domains.sort_unstable();
+        let reg = by_uid.get(reg_uid).copied();
+        let reg_label = reg.map_or("registrant", |e| e.value.as_str());
+        let reg_kind = match reg.map(|e| &e.kind) {
+            Some(EntityKind::Email) => "registrant email",
+            _ => "registrant organisation",
+        };
+        let domain_values: Vec<&str> = domains
+            .iter()
+            .filter_map(|u| by_uid.get(u).map(|e| e.value.as_str()))
+            .collect();
+
+        let mut uids: Vec<String> = Vec::with_capacity(domains.len() + 1);
+        uids.push(reg_uid.to_string());
+        uids.extend(domains.iter().map(|u| (*u).to_string()));
+
+        out.push(Correlation::new(
+            "AU-076",
+            "Shared registrant (domain co-ownership)",
+            Severity::High,
+            format!(
+                "{} domains share the {} '{}' — a common WHOIS registrant indicates \
+                 the domains are controlled by one operator: {}",
+                domains.len(),
+                reg_kind,
+                reg_label,
+                domain_values.join(", ")
+            ),
+            uids,
+            scan_id,
+            ts,
+        ));
+    }
+    out
+}
+
+/// Upper bound on DISTINCT registrable domains sharing one dedicated IP for
+/// AU-077 to read the co-tenancy as probable co-ownership rather than shared
+/// hosting. A real operator estate is a handful of sites; a single IP serving
+/// many *distinct* sites is a reseller / shared-hosting box — the high-fan-out
+/// shared-infra case AU-031 already aggregates as noise.
+const MAX_CO_HOSTED_REGISTRABLE: usize = 5;
+
+/// AU-077 — Shared dedicated-IP domain co-hosting (probable co-ownership).
+///
+/// Groups the `ResolvesTo` edges (Domain → IpAddress, from DNS) by IP. When a
+/// SMALL set of ≥2 DISTINCT registrable domains resolve to one DEDICATED IP they
+/// are probably co-owned — the reverse-IP clustering pivot for an actor's estate.
+///
+/// This is the IP counterpart to AU-076 (shared registrant) at LOWER severity
+/// (Medium vs High): a dedicated IP can still host a few unrelated small sites,
+/// whereas a registrant contractually holds the domains. The finding is framed
+/// as a lead to verify (against registrant / page content), not a conclusion.
+///
+/// Three false-positive guards, each removing a distinct noise class:
+/// 1. **CDN / anycast edges** (`is_cdn_edge_ip`) and **non-routable** IPs
+///    (`is_non_routable_ip`) are excluded — a Cloudflare edge fronting millions
+///    of unrelated sites is co-tenancy, not co-ownership (the class AU-031
+///    suppresses).
+/// 2. **Distinct registrable domains** (`registrable_domain`) — the membership
+///    must span ≥2 different eTLD+1s, so a single site's own subdomains
+///    (`www`/`api`/`blog.example.com` all on its origin IP) is co-*residence*,
+///    not co-ownership, and does NOT fire.
+/// 3. **Fan-out cap** (`MAX_CO_HOSTED_REGISTRABLE`) — many distinct sites on one
+///    IP reads as shared hosting and is skipped.
+///
+/// Severity Medium. Deterministic: IPs iterated in uid order, member domains and
+/// the named registrable set sorted.
+pub(in crate::core::correlator) fn rule_au_077_shared_hosting_ip(
+    entities: &[Entity],
+    relations: &[Relation],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+
+    // IP uid → distinct domain uids resolving to it (insertion order preserved).
+    let mut groups: HashMap<&str, Vec<&str>> = HashMap::new();
+    for r in relations
+        .iter()
+        .filter(|r| r.kind == RelationKind::ResolvesTo)
+    {
+        let (Some(dom), Some(ip)) = (
+            by_uid.get(r.from_uid.as_str()),
+            by_uid.get(r.to_uid.as_str()),
+        ) else {
+            continue;
+        };
+        if dom.kind != EntityKind::Domain || ip.kind != EntityKind::IpAddress {
+            continue;
+        }
+        // Guard 1: exclude CDN/anycast edges and non-routable IPs.
+        if crate::core::validation::is_cdn_edge_ip(&ip.value)
+            || crate::core::validation::is_non_routable_ip(&ip.value)
+        {
+            continue;
+        }
+        let members = groups.entry(r.to_uid.as_str()).or_default();
+        if !members.contains(&r.from_uid.as_str()) {
+            members.push(r.from_uid.as_str());
+        }
+    }
+
+    let mut ip_uids: Vec<&str> = groups.keys().copied().collect();
+    ip_uids.sort_unstable();
+
+    let mut out = Vec::new();
+    for ip_uid in ip_uids {
+        let Some(mut domains) = groups.remove(ip_uid) else {
+            continue;
+        };
+        domains.sort_unstable();
+
+        // Guard 2: count DISTINCT registrable domains; a single site's own
+        // subdomains collapse to one eTLD+1 and must not fire.
+        let mut registrables: Vec<String> = domains
+            .iter()
+            .filter_map(|u| by_uid.get(u))
+            .filter_map(|e| crate::util::domains::registrable_domain(&e.value))
+            .collect();
+        registrables.sort_unstable();
+        registrables.dedup();
+
+        // Guard 3: ≥2 distinct sites, but skip shared-hosting fan-out.
+        if registrables.len() < 2 || registrables.len() > MAX_CO_HOSTED_REGISTRABLE {
+            continue;
+        }
+
+        let ip_label = by_uid.get(ip_uid).map_or("ip", |e| e.value.as_str());
+        let mut uids: Vec<String> = Vec::with_capacity(domains.len() + 1);
+        uids.push(ip_uid.to_string());
+        uids.extend(domains.iter().map(|u| (*u).to_string()));
+
+        out.push(Correlation::new(
+            "AU-077",
+            "Co-hosted on dedicated IP (probable co-ownership)",
+            Severity::Medium,
+            format!(
+                "{} distinct sites resolve to the same dedicated IP {} — small-set \
+                 co-hosting on a non-CDN address is a lead that the domains share an \
+                 operator (verify against registrant / content): {}",
+                registrables.len(),
+                ip_label,
+                registrables.join(", ")
+            ),
+            uids,
+            scan_id,
+            ts,
+        ));
+    }
+    out
+}

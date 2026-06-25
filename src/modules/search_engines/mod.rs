@@ -51,7 +51,10 @@ mod queries;
 
 use build::build_entities;
 use engines::{ENGINES, EngineSpec, reliable_engines};
-use extract::{extract_family_names, extract_username_pivots, recycle_entities};
+use extract::{
+    extract_bio_aggregator_urls, extract_display_names_from_titles, extract_family_names,
+    extract_username_pivots, recycle_entities,
+};
 use fetch::*;
 pub(crate) use helpers::SearchResult;
 use helpers::*;
@@ -265,6 +268,7 @@ impl Module for SearchEngines {
                 | TargetKind::AbnAcn
                 | TargetKind::Url
                 | TargetKind::Coordinates
+                | TargetKind::TrackingId
         )
     }
 
@@ -501,6 +505,16 @@ impl Module for SearchEngines {
 
         let mut module_result =
             build_entities(target, &ctx.scan_id, &all_results, &url_engine_count);
+
+        // ── R9: social title display names + bio aggregator URLs ──────────
+        // Run before the recycler so the new Person/Url entities can seed
+        // additional geo/cross-platform queries in the recycler pass.
+        for e in extract_display_names_from_titles(&all_results, target, &ctx.scan_id) {
+            module_result.push(e);
+        }
+        for e in extract_bio_aggregator_urls(&all_results, target, &ctx.scan_id) {
+            module_result.push(e);
+        }
 
         // ── Recursive entity recycler: re-search high-confidence
         //    discovered entities for geolocation and cross-linking ─────

@@ -198,6 +198,81 @@ fn reverse_invalid_returns_none() {
     assert_eq!(reverse_ip(""), None);
 }
 
+// -- Subdomain dictionary coverage -------------------------------------------
+
+#[test]
+fn dictionary_covers_modern_infrastructure_labels() {
+    // Spot-check that the cycle-30 additions are present and correctly formatted.
+    let set: std::collections::HashSet<&&str> = SUBDOMAINS.iter().collect();
+    // Large-org / SaaS platform patterns
+    assert!(set.contains(&"gist"), "missing: gist");
+    assert!(set.contains(&"pages"), "missing: pages");
+    assert!(set.contains(&"education"), "missing: education");
+    assert!(set.contains(&"enterprise"), "missing: enterprise");
+    assert!(set.contains(&"marketplace"), "missing: marketplace");
+    // Modern API
+    assert!(set.contains(&"graphql"), "missing: graphql");
+    assert!(set.contains(&"webhooks"), "missing: webhooks");
+    assert!(set.contains(&"ws"), "missing: ws");
+    // Customer account infra
+    assert!(set.contains(&"dashboard"), "missing: dashboard");
+    assert!(set.contains(&"billing"), "missing: billing");
+    assert!(set.contains(&"accounts"), "missing: accounts");
+    // Health / readiness
+    assert!(set.contains(&"health"), "missing: health");
+    assert!(set.contains(&"healthz"), "missing: healthz");
+    assert!(set.contains(&"ping"), "missing: ping");
+    // Build / deploy
+    assert!(set.contains(&"build"), "missing: build");
+    assert!(set.contains(&"deploy"), "missing: deploy");
+    assert!(set.contains(&"artifacts"), "missing: artifacts");
+    // Regional shards
+    assert!(set.contains(&"us1"), "missing: us1");
+    assert!(set.contains(&"eu1"), "missing: eu1");
+    assert!(set.contains(&"ap1"), "missing: ap1");
+    // Security / secrets
+    assert!(set.contains(&"vault"), "missing: vault");
+    assert!(set.contains(&"security"), "missing: security");
+}
+
+#[test]
+fn dictionary_size_is_146() {
+    assert_eq!(SUBDOMAINS.len(), 146, "expected 146 subdomain labels");
+}
+
+// -- Verification vendor expansion (cycle 30) --------------------------------
+
+#[test]
+fn verification_vendor_detects_new_vendors() {
+    assert_eq!(
+        verification_vendor("hubspot-developer-verification=abc"),
+        Some("hubspot")
+    );
+    assert_eq!(
+        verification_vendor("salesforce-authorization-verification=xyz"),
+        Some("salesforce")
+    );
+    assert_eq!(verification_vendor("loaderio=token123"), Some("loaderio"));
+    assert_eq!(
+        verification_vendor("twilio-domain-verification=abc123"),
+        Some("twilio")
+    );
+    assert_eq!(
+        verification_vendor("yandex-verification:abc123"),
+        Some("yandex")
+    );
+    assert_eq!(
+        verification_vendor("shopify-domain-verification=abc"),
+        Some("shopify")
+    );
+    // Existing entries still work after the expansion
+    assert_eq!(
+        verification_vendor("google-site-verification=abc"),
+        Some("google")
+    );
+    assert_eq!(verification_vendor("MS=ms12345678"), Some("microsoft"));
+}
+
 // -- module metadata ---------------------------------------------------
 
 #[test]

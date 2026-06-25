@@ -15,6 +15,8 @@ fn relation_kind_as_str_matches_serde() {
         RelationKind::RegisteredBy,
         RelationKind::CoLocatedWith,
         RelationKind::DerivedFrom,
+        RelationKind::SameOperator,
+        RelationKind::SameIdentity,
         RelationKind::IdentifiedBy,
         RelationKind::AliasOf,
         RelationKind::LocatedAt,
@@ -370,11 +372,16 @@ fn derive_all_aggregates_every_structural_derivation() {
 
     let ents = vec![parent, sub, person, handle];
     let all = derive_all(&ents, "s");
-    let expected = derive_structural(&ents, "s").len()
-        + derive_colocation(&ents, "s").len()
-        + derive_resolution(&ents, "s").len()
-        + derive_registration(&ents, "s").len()
-        + derive_name_lineage(&ents, "s").len()
+    // Rebuild the expected count exactly as derive_all does internally:
+    // base passes first, co-ownership over those, then profile links, then identity passes.
+    let mut base = derive_structural(&ents, "s");
+    base.extend(derive_colocation(&ents, "s"));
+    base.extend(derive_resolution(&ents, "s"));
+    base.extend(derive_registration(&ents, "s"));
+    base.extend(derive_name_lineage(&ents, "s"));
+    let expected = base.len()
+        + derive_co_ownership(&ents, &base, "s").len()
+        + derive_profile_links(&ents, "s").len()
         + derive_handles(&ents, "s").len()
         + derive_identity_ownership(&ents, "s").len()
         + derive_residency(&ents, "s").len()
@@ -1116,4 +1123,289 @@ fn diegmann_family_connects_from_any_seed_angle() {
             );
         }
     }
+}
+
+// ── derive_co_ownership (SameOperator structural edges) ─────────────────────
+
+fn reg_edge(dom: &Entity, who: &Entity) -> crate::core::relation::Relation {
+    Relation::new(
+        dom.uid.as_str(),
+        who.uid.as_str(),
+        RelationKind::RegisteredBy,
+        dom.confidence.min(who.confidence),
+        "s",
+    )
+}
+
+fn resolves_edge(dom: &Entity, ip: &Entity) -> Relation {
+    Relation::new(
+        dom.uid.as_str(),
+        ip.uid.as_str(),
+        RelationKind::ResolvesTo,
+        dom.confidence.min(ip.confidence),
+        "s",
+    )
+}
+
+#[test]
+fn co_ownership_shared_registrant_links_two_domains() {
+    let dom_a = ent(EntityKind::Domain, "alpha-site.com", 0.8);
+    let dom_b = ent(EntityKind::Domain, "beta-site.org", 0.8);
+    let registrant = ent(EntityKind::Organisation, "Haigen Enterprises Pty Ltd", 0.9);
+    let relations = vec![reg_edge(&dom_a, &registrant), reg_edge(&dom_b, &registrant)];
+    let rels = derive_co_ownership(&[dom_a.clone(), dom_b.clone(), registrant], &relations, "s");
+    assert_eq!(rels.len(), 1, "one SameOperator edge for the pair");
+    assert_eq!(rels[0].kind, RelationKind::SameOperator);
+    // Canonical direction: smaller uid → larger uid.
+    let (exp_from, exp_to) = if dom_a.uid <= dom_b.uid {
+        (&dom_a.uid, &dom_b.uid)
+    } else {
+        (&dom_b.uid, &dom_a.uid)
+    };
+    assert_eq!(&rels[0].from_uid, exp_from);
+    assert_eq!(&rels[0].to_uid, exp_to);
+    assert!((rels[0].confidence - 0.8).abs() < 1e-9);
+}
+
+#[test]
+fn co_ownership_proxy_registrant_excluded() {
+    let dom_a = ent(EntityKind::Domain, "alpha-site.com", 0.8);
+    let dom_b = ent(EntityKind::Domain, "beta-site.org", 0.8);
+    // "Domains By Proxy" contains "domains by proxy" — a known proxy marker.
+    let proxy = ent(EntityKind::Organisation, "Domains By Proxy, LLC", 0.9);
+    let relations = vec![reg_edge(&dom_a, &proxy), reg_edge(&dom_b, &proxy)];
+    let rels = derive_co_ownership(&[dom_a, dom_b, proxy], &relations, "s");
+    assert!(rels.is_empty(), "privacy-proxy registrant must be excluded");
+}
+
+#[test]
+fn co_ownership_shared_dedicated_ip_links_two_distinct_sites() {
+    // 45.33.32.156 — Linode/Akamai static IP; not in CDN prefix table, routable.
+    let dom_a = ent(EntityKind::Domain, "alpha-site.com", 0.8);
+    let dom_b = ent(EntityKind::Domain, "beta-site.org", 0.8);
+    let ip = ent(EntityKind::IpAddress, "45.33.32.156", 0.9);
+    let relations = vec![resolves_edge(&dom_a, &ip), resolves_edge(&dom_b, &ip)];
+    let rels = derive_co_ownership(&[dom_a.clone(), dom_b.clone(), ip], &relations, "s");
+    assert_eq!(rels.len(), 1, "one SameOperator edge for co-hosted pair");
+    assert_eq!(rels[0].kind, RelationKind::SameOperator);
+}
+
+#[test]
+fn co_ownership_cdn_ip_excluded() {
+    // 104.16.5.5 — Cloudflare CDN prefix (is_cdn_edge_ip returns true).
+    let dom_a = ent(EntityKind::Domain, "alpha-site.com", 0.8);
+    let dom_b = ent(EntityKind::Domain, "beta-site.org", 0.8);
+    let cdn_ip = ent(EntityKind::IpAddress, "104.16.5.5", 0.9);
+    let relations = vec![
+        resolves_edge(&dom_a, &cdn_ip),
+        resolves_edge(&dom_b, &cdn_ip),
+    ];
+    let rels = derive_co_ownership(&[dom_a, dom_b, cdn_ip], &relations, "s");
+    assert!(rels.is_empty(), "CDN/anycast IP must be excluded");
+}
+
+#[test]
+fn co_ownership_single_site_subdomains_not_co_owned() {
+    // www.example.com and api.example.com on the same IP collapse to one
+    // registrable domain (example.com) — must NOT fire.
+    let dom_a = ent(EntityKind::Domain, "www.example.com", 0.8);
+    let dom_b = ent(EntityKind::Domain, "api.example.com", 0.8);
+    let ip = ent(EntityKind::IpAddress, "45.33.32.156", 0.9);
+    let relations = vec![resolves_edge(&dom_a, &ip), resolves_edge(&dom_b, &ip)];
+    let rels = derive_co_ownership(&[dom_a, dom_b, ip], &relations, "s");
+    assert!(
+        rels.is_empty(),
+        "subdomains of the same registrable domain must not fire as co-ownership"
+    );
+}
+
+#[test]
+fn co_ownership_shared_tracking_id_links_carrying_domains() {
+    use crate::core::entity::Evidence;
+    let dom_a = ent(EntityKind::Domain, "alpha-site.com", 0.8);
+    let dom_b = ent(EntityKind::Domain, "beta-site.org", 0.8);
+    let mut tid = ent(EntityKind::TrackingId, "UA-12345678-1", 0.85);
+    // Both domains carried the same Google Analytics ID.
+    tid.add_evidence(
+        Evidence::new("web_crawler", "GA tag on alpha-site.com")
+            .with_attr("source_domain", "alpha-site.com"),
+    );
+    tid.add_evidence(
+        Evidence::new("web_crawler", "GA tag on beta-site.org")
+            .with_attr("source_domain", "beta-site.org"),
+    );
+    let rels = derive_co_ownership(&[dom_a.clone(), dom_b.clone(), tid], &[], "s");
+    assert_eq!(
+        rels.len(),
+        1,
+        "shared analytics ID links the carrying domains"
+    );
+    assert_eq!(rels[0].kind, RelationKind::SameOperator);
+    let (exp_from, exp_to) = if dom_a.uid <= dom_b.uid {
+        (&dom_a.uid, &dom_b.uid)
+    } else {
+        (&dom_b.uid, &dom_a.uid)
+    };
+    assert_eq!(&rels[0].from_uid, exp_from);
+    assert_eq!(&rels[0].to_uid, exp_to);
+}
+
+#[test]
+fn co_ownership_same_pair_from_two_sources_emits_one_edge() {
+    use crate::core::entity::Evidence;
+    // Domains share BOTH a registrant AND a tracking ID — only one SameOperator
+    // edge should be produced (the global dedup guard).
+    let dom_a = ent(EntityKind::Domain, "alpha-site.com", 0.8);
+    let dom_b = ent(EntityKind::Domain, "beta-site.org", 0.8);
+    let registrant = ent(EntityKind::Organisation, "Haigen Enterprises Pty Ltd", 0.9);
+    let mut tid = ent(EntityKind::TrackingId, "GTM-ABC123", 0.85);
+    tid.add_evidence(
+        Evidence::new("web_crawler", "GTM on alpha-site.com")
+            .with_attr("source_domain", "alpha-site.com"),
+    );
+    tid.add_evidence(
+        Evidence::new("web_crawler", "GTM on beta-site.org")
+            .with_attr("source_domain", "beta-site.org"),
+    );
+    let relations = vec![reg_edge(&dom_a, &registrant), reg_edge(&dom_b, &registrant)];
+    let rels = derive_co_ownership(&[dom_a, dom_b, registrant, tid], &relations, "s");
+    assert_eq!(
+        rels.len(),
+        1,
+        "same pair from registrant + tracking ID must deduplicate to one edge"
+    );
+}
+
+// ── derive_profile_links (SameIdentity structural edges) ────────────────────
+
+#[test]
+fn profile_links_github_matches_username() {
+    let uname = ent(EntityKind::Username, "rhino-ryno23", 0.9);
+    let url = ent(EntityKind::Url, "https://github.com/rhino-ryno23", 0.80);
+    let rels = derive_profile_links(&[uname.clone(), url.clone()], "s");
+    assert_eq!(rels.len(), 1, "one SameIdentity edge");
+    assert_eq!(rels[0].kind, RelationKind::SameIdentity);
+    assert_eq!(rels[0].from_uid, uname.uid, "directed Username → Url");
+    assert_eq!(rels[0].to_uid, url.uid);
+    assert!(
+        (rels[0].confidence - 0.80).abs() < 1e-9,
+        "min(0.9, 0.8)=0.8"
+    );
+}
+
+#[test]
+fn profile_links_direction_is_username_to_url() {
+    let uname = ent(EntityKind::Username, "haigenbamford", 0.85);
+    let url = ent(EntityKind::Url, "https://twitter.com/haigenbamford", 0.75);
+    let rels = derive_profile_links(&[uname.clone(), url.clone()], "s");
+    assert_eq!(rels.len(), 1);
+    assert_eq!(rels[0].from_uid, uname.uid);
+    assert_eq!(rels[0].to_uid, url.uid);
+}
+
+#[test]
+fn profile_links_case_insensitive_match() {
+    // Username stored as mixed case; URL always lowercased by platform.
+    let uname = ent(EntityKind::Username, "Rhino-Ryno23", 0.9);
+    let url = ent(EntityKind::Url, "https://github.com/rhino-ryno23", 0.80);
+    let rels = derive_profile_links(&[uname.clone(), url.clone()], "s");
+    assert_eq!(rels.len(), 1, "case-insensitive match must fire");
+    assert_eq!(rels[0].from_uid, uname.uid);
+}
+
+#[test]
+fn profile_links_tiktok_at_prefix_stripped() {
+    let uname = ent(EntityKind::Username, "dancequeen", 0.85);
+    let url = ent(EntityKind::Url, "https://www.tiktok.com/@dancequeen", 0.80);
+    let rels = derive_profile_links(&[uname.clone(), url.clone()], "s");
+    assert_eq!(rels.len(), 1, "@ prefix stripped correctly");
+    assert_eq!(rels[0].from_uid, uname.uid);
+}
+
+#[test]
+fn profile_links_reddit_user_prefix_skipped() {
+    // Reddit URL: /user/{username}/about.json — segment index 1.
+    let uname = ent(EntityKind::Username, "rhino-ryno23", 0.88);
+    let url = ent(
+        EntityKind::Url,
+        "https://www.reddit.com/user/rhino-ryno23/about.json",
+        0.75,
+    );
+    let rels = derive_profile_links(&[uname.clone(), url.clone()], "s");
+    assert_eq!(
+        rels.len(),
+        1,
+        "user/ prefix skipped, about.json segment ignored"
+    );
+}
+
+#[test]
+fn profile_links_bluesky_suffix_stripped() {
+    let uname = ent(EntityKind::Username, "haigen", 0.85);
+    let url = ent(
+        EntityKind::Url,
+        "https://bsky.app/profile/haigen.bsky.social",
+        0.80,
+    );
+    let rels = derive_profile_links(&[uname.clone(), url.clone()], "s");
+    assert_eq!(rels.len(), 1, ".bsky.social suffix stripped");
+    assert_eq!(rels[0].from_uid, uname.uid);
+}
+
+#[test]
+fn profile_links_hackernews_query_param() {
+    let uname = ent(EntityKind::Username, "pg", 0.90);
+    let url = ent(
+        EntityKind::Url,
+        "https://news.ycombinator.com/user?id=pg",
+        0.85,
+    );
+    let rels = derive_profile_links(&[uname.clone(), url.clone()], "s");
+    assert_eq!(rels.len(), 1, "?id= query param extracted");
+    assert_eq!(rels[0].from_uid, uname.uid);
+}
+
+#[test]
+fn profile_links_unknown_host_no_edge() {
+    let uname = ent(EntityKind::Username, "rhino-ryno23", 0.9);
+    let url = ent(
+        EntityKind::Url,
+        "https://unknownplatform.example.com/rhino-ryno23",
+        0.80,
+    );
+    let rels = derive_profile_links(&[uname, url], "s");
+    assert!(rels.is_empty(), "unknown host must produce no edge");
+}
+
+#[test]
+fn profile_links_no_matching_username_entity_no_edge() {
+    // URL matches a known platform but no Username entity with that handle exists.
+    let other_uname = ent(EntityKind::Username, "someone_else", 0.9);
+    let url = ent(EntityKind::Url, "https://github.com/rhino-ryno23", 0.80);
+    let rels = derive_profile_links(&[other_uname, url], "s");
+    assert!(
+        rels.is_empty(),
+        "non-matching username must produce no edge"
+    );
+}
+
+#[test]
+fn profile_links_no_username_entities_returns_empty() {
+    // No Username entity at all → early return, no panic.
+    let url = ent(EntityKind::Url, "https://github.com/rhino-ryno23", 0.80);
+    assert!(derive_profile_links(&[url], "s").is_empty());
+    assert!(derive_profile_links(&[], "s").is_empty());
+}
+
+#[test]
+fn profile_links_multiple_platforms_same_username() {
+    // Same username confirmed on three platforms → three SameIdentity edges.
+    let uname = ent(EntityKind::Username, "hacker", 0.90);
+    let gh = ent(EntityKind::Url, "https://github.com/hacker", 0.80);
+    let tw = ent(EntityKind::Url, "https://twitter.com/hacker", 0.75);
+    let gl = ent(EntityKind::Url, "https://gitlab.com/hacker", 0.70);
+    let rels = derive_profile_links(&[uname.clone(), gh, tw, gl], "s");
+    assert_eq!(rels.len(), 3, "one edge per confirmed platform profile");
+    assert!(rels.iter().all(|r| r.kind == RelationKind::SameIdentity));
+    assert!(rels.iter().all(|r| r.from_uid == uname.uid));
 }

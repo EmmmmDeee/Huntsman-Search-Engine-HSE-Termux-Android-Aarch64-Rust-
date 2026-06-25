@@ -22,7 +22,12 @@ use crate::core::error::{Error, Result};
 use crate::default_db_path;
 use crate::storage::Store;
 
-pub(super) async fn cmd_export(scan_id: String, format: String, out: Option<String>) -> Result<()> {
+pub(super) async fn cmd_export(
+    scan_id: String,
+    format: String,
+    out: Option<String>,
+    include_infra: bool,
+) -> Result<()> {
     let store = Store::open(&default_db_path())?;
     // `latest` → most-recent Complete scan; an explicit id is existence-checked so
     // a typo fails loudly instead of emitting an empty CSV/JSON/GEXF (which is
@@ -33,7 +38,8 @@ pub(super) async fn cmd_export(scan_id: String, format: String, out: Option<Stri
         "json" => renderers::render_json(&store, &sid)?,
         "csv" => renderers::render_csv(&store, &sid)?,
         "gexf" => renderers::render_gexf(&store, &sid)?,
-        "report" => renderers::render_report(&store, &sid)?,
+        "report" => renderers::render_report(&store, &sid, include_infra)?,
+        // `full` always includes infra — it is the maximum-detail format.
         "full" => render_full(&store, &sid)?,
         "debug" => render_debug_bundle(&store, &sid)?,
         other => {

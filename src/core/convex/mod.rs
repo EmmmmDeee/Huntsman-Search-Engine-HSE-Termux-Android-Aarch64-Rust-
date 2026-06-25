@@ -71,6 +71,8 @@ fn dispatch_cost(kind: TargetKind) -> f64 {
         TargetKind::Cidr => 2.0,
         TargetKind::Domain => 2.2,
         TargetKind::Asn => 2.5,
+        // Tracking IDs fan out to co-owned domains — bounded, terminal pivot.
+        TargetKind::TrackingId => 1.0,
     }
 }
 

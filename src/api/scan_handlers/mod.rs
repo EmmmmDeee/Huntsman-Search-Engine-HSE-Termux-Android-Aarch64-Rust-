@@ -84,6 +84,16 @@ pub(crate) fn wants_candidates(params: &std::collections::HashMap<String, String
         .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
 }
 
+/// True when the query string contains `?include_infra=1|true|yes|on`.
+/// Default is to suppress `platform-infra`-tagged entities (cloud buckets,
+/// CDN IPs, analytics IDs sourced from third-party pages) so the report
+/// shows only subject-owned entities.
+pub(crate) fn wants_infra(params: &std::collections::HashMap<String, String>) -> bool {
+    params
+        .get("include_infra")
+        .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+}
+
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

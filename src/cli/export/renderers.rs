@@ -482,11 +482,11 @@ pub(crate) fn render_debug_bundle(
     Ok(s)
 }
 
-pub(super) fn render_report(store: &Store, sid: &str) -> Result<String> {
+pub(super) fn render_report(store: &Store, sid: &str, include_infra: bool) -> Result<String> {
     // Default dossier hides quarantined `candidate` entities (non-target
     // breach-dump rows) — the confirmed-footprint view. They remain available
     // over HTTP via `report.json?include_candidates=1`.
-    let report = crate::api::scan_export::build_scan_report(store as _, sid, false)?
+    let report = crate::api::scan_export::build_scan_report(store as _, sid, false, include_infra)?
         .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
     serde_json::to_string_pretty(&report)
         .map_err(|e| Error::Other(format!("report serialise: {e}")))

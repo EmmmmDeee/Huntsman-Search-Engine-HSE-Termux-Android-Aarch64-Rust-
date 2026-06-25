@@ -179,6 +179,7 @@ pub async fn run() -> Result<()> {
             expand_all_identities,
             profile,
             output,
+            include_infra: _,
         } => {
             let value = resolve_seed(value, keys::default_seed())?;
             // `--full` is the no-compromise preset: force every module on (drop
@@ -278,7 +279,8 @@ pub async fn run() -> Result<()> {
             scan_id,
             format,
             out,
-        } => export::cmd_export(scan_id, format, out).await,
+            include_infra,
+        } => export::cmd_export(scan_id, format, out, include_infra).await,
         Command::Diff { from, to, format } => diff::cmd_diff(from, to, format),
         Command::Update { check, r#ref } => update::cmd_update(check, r#ref).await,
         Command::OathnetBatch {
@@ -380,8 +382,9 @@ pub(super) fn parse_target_kind(s: &str) -> Result<TargetKind> {
         "mac" | "bssid" | "mac_address" => Ok(TargetKind::MacAddress),
         "crypto" | "crypto_address" | "wallet" | "btc" | "eth" => Ok(TargetKind::CryptoAddress),
         "device_id" | "deviceid" | "tower" | "cell" => Ok(TargetKind::DeviceId),
+        "tracking_id" | "trackingid" | "ga" | "gtm" => Ok(TargetKind::TrackingId),
         other => Err(Error::InvalidTarget(format!(
-            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, cidr, domain, url, asn, coords, address, org, abn, apikey, mac, crypto, tower"
+            "unknown target kind '{other}'. Valid: email, username, phone, name, ip, cidr, domain, url, asn, coords, address, org, abn, apikey, mac, crypto, tower, tracking_id"
         ))),
     }
 }

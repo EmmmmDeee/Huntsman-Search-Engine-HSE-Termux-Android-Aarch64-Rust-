@@ -97,6 +97,12 @@ pub(super) const VERIFICATION_VENDORS: &[(&str, &str)] = &[
     ("globalsign-domain-verification=", "globalsign"),
     ("pinterest-site-verification=", "pinterest"),
     ("cisco-ci-domain-verification=", "cisco"),
+    ("hubspot-developer-verification=", "hubspot"),
+    ("salesforce-authorization-verification=", "salesforce"),
+    ("loaderio=", "loaderio"),
+    ("twilio-domain-verification=", "twilio"),
+    ("yandex-verification:", "yandex"),
+    ("shopify-domain-verification=", "shopify"),
     // Microsoft 365 tenant verification — short and generic, so it is matched
     // last (nothing else in the table shares this prefix).
     ("ms=", "microsoft"),

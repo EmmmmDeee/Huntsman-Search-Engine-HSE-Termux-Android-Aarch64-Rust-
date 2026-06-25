@@ -44,6 +44,25 @@ pub(super) fn url_host_is_placeholder(u: &str) -> bool {
     !host.is_empty() && is_placeholder_domain(host)
 }
 
+/// True if a name string looks like a username masquerading as a real name.
+/// Breach databases sometimes store `full_name = "{username} {username}"` when
+/// only a username is available.  These patterns are detected by:
+/// - Doubled-token pattern where both space-separated words are identical
+///   (e.g. `"rhino-ryno23 rhino-ryno23"`)
+/// - A slug-style token that contains **both** a hyphen and a digit
+///   (e.g. `"rhino-ryno23"`).  Legitimate hyphenated surnames like
+///   `"Smith-Jones"` never contain digits.
+pub fn is_username_derived_name(name: &str, _query_value: &str) -> bool {
+    let parts: Vec<&str> = name.split_whitespace().collect();
+    if parts.len() == 2 && parts[0].eq_ignore_ascii_case(parts[1]) {
+        return true;
+    }
+    // Slug token: hyphen + digit in the same word ⟹ almost certainly a username.
+    parts
+        .iter()
+        .any(|t| t.contains('-') && t.chars().any(|c| c.is_ascii_digit()))
+}
+
 /// Canonical placeholder person names (synthetic "John Doe"-style values that
 /// breach/permutation modules surface). Kept tight to avoid rejecting real
 /// people who happen to share a common name.

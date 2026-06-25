@@ -144,3 +144,186 @@ use super::*;
         let pivots = extract_username_pivots(&results, &target);
         assert!(pivots.is_empty(), "non-social host must be skipped: {pivots:?}");
     }
+
+    // ── extract_display_names_from_titles ────────────────────────────────────
+
+    fn instagram_sr(username: &str, display: &str, query: &str) -> SearchResult {
+        SearchResult {
+            url: format!("https://instagram.com/{username}"),
+            title: format!("{display} (@{username}) \u{2022} Instagram Photos and Videos"),
+            snippet: format!("{username} photos"),
+            engine: "test",
+            query: query.to_string(),
+        }
+    }
+
+    #[test]
+    fn display_name_extracted_from_instagram_title() {
+        let target = Target::new(TargetKind::Username, "ryno23_");
+        let results = [instagram_sr("ryno23_", "Ryne Manka", "ryno23_")];
+        let entities = extract_display_names_from_titles(&results, &target, "s");
+        assert_eq!(entities.len(), 1, "should extract one Person entity");
+        let e = &entities[0];
+        assert_eq!(e.kind, EntityKind::Person);
+        assert_eq!(e.value, "Ryne Manka");
+        assert!((e.confidence - 0.65).abs() < 1e-9);
+        assert!(e.has_tag("social-name"));
+        assert!(e.has_tag("search-discovered"));
+        assert!(e.has_tag("derived"));
+    }
+
+    #[test]
+    fn display_name_rejects_non_social_host() {
+        let target = Target::new(TargetKind::Username, "ryno23_");
+        let results = [SearchResult {
+            url: "https://example.com/ryno23_".to_string(),
+            title: "Ryne Manka (@ryno23_) \u{2022} Photos".to_string(),
+            snippet: "ryno23_".to_string(),
+            engine: "test",
+            query: "ryno23_".to_string(),
+        }];
+        let entities = extract_display_names_from_titles(&results, &target, "s");
+        assert!(
+            entities.is_empty(),
+            "non-social host must not produce Person entities"
+        );
+    }
+
+    #[test]
+    fn display_name_rejects_allcaps_name() {
+        // "ZMKCR (@ZMKCR)" — all-uppercase display name is a gamertag, not a real name.
+        let target = Target::new(TargetKind::Username, "zmkcr");
+        let results = [SearchResult {
+            url: "https://x.com/ZMKCR".to_string(),
+            title: "ZMKCR (@ZMKCR) / X Posts".to_string(),
+            snippet: "zmkcr tweets".to_string(),
+            engine: "test",
+            query: "zmkcr".to_string(),
+        }];
+        let entities = extract_display_names_from_titles(&results, &target, "s");
+        assert!(
+            entities.is_empty(),
+            "all-caps display name must be rejected: got {entities:?}"
+        );
+    }
+
+    #[test]
+    fn display_name_deduplicates_across_results() {
+        let target = Target::new(TargetKind::Username, "ryno23_");
+        let results = [
+            instagram_sr("ryno23_", "Ryne Manka", "ryno23_"),
+            instagram_sr("ryno23_", "Ryne Manka", "ryno23_"),
+        ];
+        let entities = extract_display_names_from_titles(&results, &target, "s");
+        assert_eq!(entities.len(), 1, "duplicate display name must be collapsed to one entity");
+    }
+
+    #[test]
+    fn display_name_requires_seed_term_in_title() {
+        // Title mentions a real name + handle but the seed term "alice" is absent.
+        let target = Target::new(TargetKind::Username, "alice");
+        let results = [SearchResult {
+            url: "https://instagram.com/ryno23_".to_string(),
+            title: "Ryne Manka (@ryno23_) \u{2022} Instagram Photos".to_string(),
+            snippet: "photos".to_string(),
+            engine: "test",
+            query: "alice".to_string(),
+        }];
+        let entities = extract_display_names_from_titles(&results, &target, "s");
+        assert!(
+            entities.is_empty(),
+            "no seed term match → should emit nothing"
+        );
+    }
+
+    // ── extract_bio_aggregator_urls ──────────────────────────────────────────
+
+    #[test]
+    fn bio_aggregator_signal1_url_is_linktr_ee() {
+        let target = Target::new(TargetKind::Username, "ryno23");
+        let results = [SearchResult {
+            url: "https://linktr.ee/ryno23".to_string(),
+            title: "ryno23 | linktree".to_string(),
+            snippet: "all links for ryno23".to_string(),
+            engine: "test",
+            query: "ryno23".to_string(),
+        }];
+        let entities = extract_bio_aggregator_urls(&results, &target, "s");
+        assert_eq!(entities.len(), 1);
+        let e = &entities[0];
+        assert_eq!(e.kind, EntityKind::Url);
+        assert_eq!(e.value, "https://linktr.ee/ryno23");
+        assert!((e.confidence - 0.70).abs() < 1e-9, "bio aggregator conf should be 0.70");
+        assert!(e.has_tag("bio-aggregator"));
+        assert!(e.has_tag("social-profile"));
+        assert!(e.has_tag("search-discovered"));
+    }
+
+    #[test]
+    fn bio_aggregator_signal1_telegram_link() {
+        let target = Target::new(TargetKind::Username, "ryno23");
+        let results = [SearchResult {
+            url: "https://t.me/ryno23".to_string(),
+            title: "ryno23 Telegram channel".to_string(),
+            snippet: "join ryno23 on telegram".to_string(),
+            engine: "test",
+            query: "ryno23".to_string(),
+        }];
+        let entities = extract_bio_aggregator_urls(&results, &target, "s");
+        assert_eq!(entities.len(), 1);
+        let e = &entities[0];
+        assert!((e.confidence - 0.65).abs() < 1e-9, "messaging conf should be 0.65");
+        assert!(e.has_tag("messaging-profile"));
+        assert!(!e.has_tag("bio-aggregator"));
+    }
+
+    #[test]
+    fn bio_aggregator_signal2_url_in_snippet_text() {
+        let target = Target::new(TargetKind::Username, "ryno23");
+        let results = [SearchResult {
+            url: "https://reddit.com/r/gaming/comments/abc".to_string(),
+            title: "Ryno23 gaming links".to_string(),
+            snippet: "ryno23 posts all links at linktr.ee/ryno23 for easy access".to_string(),
+            engine: "test",
+            query: "ryno23".to_string(),
+        }];
+        let entities = extract_bio_aggregator_urls(&results, &target, "s");
+        assert_eq!(entities.len(), 1, "bio URL from snippet text should be emitted");
+        let e = &entities[0];
+        assert_eq!(e.value, "https://linktr.ee/ryno23");
+        assert!((e.confidence - 0.65).abs() < 1e-9, "text signal conf should be 0.65");
+        assert!(e.has_tag("bio-aggregator"));
+    }
+
+    #[test]
+    fn bio_aggregator_deduplicates_signal1_and_signal2() {
+        // URL is both the result URL (signal 1) and appears in its own snippet (signal 2).
+        let target = Target::new(TargetKind::Username, "ryno23");
+        let results = [SearchResult {
+            url: "https://linktr.ee/ryno23".to_string(),
+            title: "ryno23 | linktree".to_string(),
+            snippet: "linktr.ee/ryno23 — all social links".to_string(),
+            engine: "test",
+            query: "ryno23".to_string(),
+        }];
+        let entities = extract_bio_aggregator_urls(&results, &target, "s");
+        assert_eq!(entities.len(), 1, "same URL from both signals must collapse to one entity");
+    }
+
+    #[test]
+    fn bio_aggregator_requires_seed_term() {
+        // Bio aggregator URL present but seed term absent from title+snippet → skipped.
+        let target = Target::new(TargetKind::Username, "xyzuniquexyz");
+        let results = [SearchResult {
+            url: "https://linktr.ee/someoneelse".to_string(),
+            title: "someoneelse links".to_string(),
+            snippet: "random unrelated content here".to_string(),
+            engine: "test",
+            query: "xyzuniquexyz".to_string(),
+        }];
+        let entities = extract_bio_aggregator_urls(&results, &target, "s");
+        assert!(
+            entities.is_empty(),
+            "no seed term match → should emit nothing"
+        );
+    }

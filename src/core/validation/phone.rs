@@ -18,10 +18,14 @@ pub fn validate_phone_e164(s: &str) -> ValidationReport {
     if digits.starts_with('0') {
         return ValidationReport::fail("e164.cc_leading_zero", "country code cannot start with 0");
     }
-    if !(8..=15).contains(&digits.len()) {
+    // Practical minimum: the shortest real subscriber numbers in any inhabited country
+    // are 10 digits total (e.g. Niue +683 XXXXXXX, Nauru +674 XXXXXXX).
+    // 8- and 9-digit strings are overwhelmingly web-scrape noise (version numbers,
+    // IDs, port numbers) that happen to start with '+'.
+    if !(10..=15).contains(&digits.len()) {
         return ValidationReport::fail(
             "e164.length",
-            format!("expected 8..=15 digits, got {}", digits.len()),
+            format!("expected 10..=15 digits, got {}", digits.len()),
         );
     }
     ValidationReport::ok()

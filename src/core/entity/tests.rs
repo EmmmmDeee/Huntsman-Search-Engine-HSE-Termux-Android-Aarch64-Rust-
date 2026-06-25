@@ -639,6 +639,80 @@ fn normalise_url_lowercases_host_strips_fragment() {
     );
 }
 
+#[test]
+fn normalise_url_strips_tracking_params() {
+    // A bare X/Twitter share URL with the platform's own ref tracking and one
+    // appended by a SERP must reduce to the bare profile so the two engines'
+    // copies corroborate instead of fragmenting.
+    assert_eq!(
+        normalise(
+            &EntityKind::Url,
+            "https://x.com/ryno23?ref_src=twsrc%5Etfw&utm_source=google"
+        ),
+        "https://x.com/ryno23"
+    );
+    // utm_* family (any suffix) + fbclid are dropped; nothing remains → no `?`.
+    assert_eq!(
+        normalise(
+            &EntityKind::Url,
+            "https://example.com/page?utm_medium=email&utm_campaign=x&fbclid=abc123"
+        ),
+        "https://example.com/page"
+    );
+    // Instagram igshid tracking stripped, leaving the bare profile.
+    assert_eq!(
+        normalise(
+            &EntityKind::Url,
+            "https://instagram.com/ryne.manka?igshid=YmMyMTA2M2Y="
+        ),
+        "https://instagram.com/ryne.manka"
+    );
+}
+
+#[test]
+fn normalise_url_preserves_meaningful_params_and_sorts() {
+    // A resource-identifying param (YouTube `v`) is kept; only tracking (`si`
+    // is NOT in the denylist so it stays, but utm_* goes) is removed, and the
+    // survivors are order-normalised so param order can't fragment the UID.
+    assert_eq!(
+        normalise(
+            &EntityKind::Url,
+            "https://youtube.com/watch?v=AbC123&utm_source=x"
+        ),
+        "https://youtube.com/watch?v=AbC123"
+    );
+    // Same params in different order → identical UID after sorting.
+    let a = normalise(&EntityKind::Url, "https://e.com/p?b=2&a=1");
+    let b = normalise(&EntityKind::Url, "https://e.com/p?a=1&b=2");
+    assert_eq!(a, b);
+    assert_eq!(a, "https://e.com/p?a=1&b=2");
+    // The value's case is preserved (only keys are matched case-insensitively).
+    assert_eq!(
+        normalise(&EntityKind::Url, "https://e.com/p?Token=AbC"),
+        "https://e.com/p?Token=AbC"
+    );
+}
+
+#[test]
+fn url_tracking_variants_share_one_uid() {
+    // The end-to-end invariant the change exists for: two discoveries of the
+    // same profile, differently tracked, produce one UID → one corroborated
+    // entity rather than two single-source ones.
+    let e1 = Entity::new(
+        EntityKind::Url,
+        "https://x.com/ryno23?ref_src=twsrc%5Etfw",
+        0.6,
+        "s",
+    );
+    let e2 = Entity::new(
+        EntityKind::Url,
+        "https://x.com/ryno23?utm_source=bing&utm_medium=organic",
+        0.6,
+        "s",
+    );
+    assert_eq!(e1.uid, e2.uid, "tracked variants must share a UID");
+}
+
 // ── Tags ─────────────────────────────────────────────────────────────────
 
 #[test]

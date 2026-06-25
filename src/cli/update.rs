@@ -31,7 +31,12 @@ pub async fn cmd_update(check: bool, ref_: Option<String>) -> Result<()> {
                 print!("Source: {}  ", dir.display());
                 match commits_behind(dir) {
                     Some(0) => println!("Already up to date."),
-                    Some(n) => println!("{n} commit(s) available — run `hse update` to install."),
+                    Some(n) => {
+                        println!("{n} commit(s) available — run `hse update` to install.");
+                        for line in changelog_lines(dir).iter().take(20) {
+                            println!("  {line}");
+                        }
+                    }
                     None => println!("(could not reach remote — offline?)"),
                 }
             }
@@ -112,6 +117,20 @@ pub(crate) fn commits_behind(dir: &Path) -> Option<u64> {
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .and_then(|s| s.trim().parse().ok())
+}
+
+/// One-line subjects for commits on `@{u}` not in `HEAD`.
+/// Returns an empty `Vec` when git is absent, the remote is unreachable, or
+/// there are no new commits.
+fn changelog_lines(dir: &Path) -> Vec<String> {
+    std::process::Command::new("git")
+        .args(["log", "--oneline", "HEAD..@{u}"])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.lines().map(str::to_owned).collect())
+        .unwrap_or_default()
 }
 
 /// Convenience wrapper: find the install dir and return how many commits behind

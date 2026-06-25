@@ -40,22 +40,28 @@ pub enum Member<'a> {
     /// dotted. Delegates the whole SPF policy to another domain (RFC 7208 §6),
     /// so for OSINT it is a related-domain pivot just like an `include:`.
     Redirect(&'a str),
+    /// An `a:domain` mechanism target — whose A records authorise sending.
+    /// Bare `a` (no colon) is skipped; only explicit cross-domain references
+    /// are surfaced as new OSINT pivots.
+    A(&'a str),
+    /// An `mx:domain` mechanism target — whose MX records authorise sending.
+    /// Bare `mx` (no colon) is skipped for the same reason as bare `a`.
+    Mx(&'a str),
 }
 
-/// Iterate the `ip4:`/`ip6:`/`include:`/`redirect=` members of an SPF record.
-/// Bare/blank IP mechanisms and empty/dotless or macro-bearing
-/// include/redirect domains are skipped (they would only normalise to junk
-/// entities). Other mechanisms (`a`, `mx`, `ptr`, `exists`, `all`, the `exp=`
-/// modifier) and qualifier prefixes are not interpreted here — callers tag the
-/// domain itself.
+/// Iterate the `ip4:`/`ip6:`/`include:`/`redirect=`/`a:`/`mx:` members of an
+/// SPF record. Bare/blank IP mechanisms and empty/dotless or macro-bearing
+/// domain targets are skipped (they would only normalise to junk entities).
+/// Bare `a` and `mx` (no explicit domain target), `ptr`, `exists`, `all`, and
+/// the `exp=` modifier are not interpreted — callers tag the domain itself.
 pub fn members(txt: &str) -> impl Iterator<Item = Member<'_>> {
-    // A usable include/redirect target is non-empty, dotted, and free of SPF
-    // macros (`%{…}`) which don't resolve to a literal domain.
+    // A usable include/redirect/a/mx target is non-empty, dotted, and free of
+    // SPF macros (`%{…}`) which don't resolve to a literal domain.
     fn usable_domain(d: &str) -> bool {
         d.contains('.') && !d.contains('%')
     }
     txt.split_whitespace().filter_map(|part| {
-        // A *mechanism* (ip4/ip6/include) may carry an optional leading
+        // A *mechanism* (ip4/ip6/include/a/mx) may carry an optional leading
         // qualifier — `+`/`-`/`~`/`?` (RFC 7208 §4.6.1) — e.g. `-ip4:…` or
         // `?include:…`. Strip it before matching, or a qualified member is
         // silently dropped. A *modifier* (`redirect=`) takes no qualifier, so
@@ -71,6 +77,10 @@ pub fn members(txt: &str) -> impl Iterator<Item = Member<'_>> {
             usable_domain(inc).then_some(Member::Include(inc))
         } else if let Some(red) = part.strip_prefix("redirect=") {
             usable_domain(red).then_some(Member::Redirect(red))
+        } else if let Some(a_dom) = mech.strip_prefix("a:") {
+            usable_domain(a_dom).then_some(Member::A(a_dom))
+        } else if let Some(mx_dom) = mech.strip_prefix("mx:") {
+            usable_domain(mx_dom).then_some(Member::Mx(mx_dom))
         } else {
             None
         }

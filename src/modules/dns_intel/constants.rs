@@ -1,8 +1,10 @@
-/// Subdomain brute-force dictionary — covers ~99 % of the public-facing
-/// subdomains operators actually want to discover. Ordered roughly by
-/// frequency so cancellation during a partial run still surfaces the
-/// highest-value names first.
+/// Subdomain brute-force dictionary — covers the most common public-facing
+/// subdomains operators want to discover. Ordered roughly by frequency so
+/// cancellation during a partial run still surfaces the highest-value names
+/// first. 146 labels spanning core web, mail, API, DevOps, cloud, and modern
+/// SaaS/org infrastructure.
 pub(super) const SUBDOMAINS: &[&str] = &[
+    // Core web & mail
     "www",
     "mail",
     "smtp",
@@ -10,13 +12,16 @@ pub(super) const SUBDOMAINS: &[&str] = &[
     "pop",
     "pop3",
     "webmail",
+    // DNS name-servers
     "ns",
     "ns1",
     "ns2",
     "ns3",
+    // Legacy protocols
     "mx",
     "mx1",
     "ftp",
+    // Web application infrastructure
     "admin",
     "blog",
     "api",
@@ -39,6 +44,7 @@ pub(super) const SUBDOMAINS: &[&str] = &[
     "support",
     "help",
     "status",
+    // Applications & portals
     "shop",
     "store",
     "portal",
@@ -52,6 +58,7 @@ pub(super) const SUBDOMAINS: &[&str] = &[
     "upload",
     "download",
     "backup",
+    // Source control & collaboration
     "git",
     "gitlab",
     "github",
@@ -59,6 +66,7 @@ pub(super) const SUBDOMAINS: &[&str] = &[
     "wiki",
     "forum",
     "community",
+    // Environment qualifiers
     "old",
     "new",
     "m",
@@ -66,6 +74,7 @@ pub(super) const SUBDOMAINS: &[&str] = &[
     "internal",
     "prod",
     "production",
+    // cPanel / email-client autodiscovery
     "cpanel",
     "autodiscover",
     "autoconfig",
@@ -94,7 +103,7 @@ pub(super) const SUBDOMAINS: &[&str] = &[
     "redis",
     "mongo",
     "elastic",
-    // Cloud & remote
+    // Cloud & remote access
     "cloud",
     "remote",
     "demo",
@@ -102,6 +111,66 @@ pub(super) const SUBDOMAINS: &[&str] = &[
     "uat",
     "preview",
     "intranet",
+    // Modern API & real-time transport
+    "graphql",
+    "webhooks",
+    "webhook",
+    "ws",
+    "socket",
+    // Large-org / SaaS platform subdomains (GitHub, GitLab, Atlassian, etc.)
+    "gist",
+    "pages",
+    "raw",
+    "education",
+    "enterprise",
+    "classroom",
+    "lab",
+    "copilot",
+    "avatars",
+    "objects",
+    "alive",
+    "collector",
+    "resources",
+    "developer",
+    "developers",
+    "explore",
+    "marketplace",
+    // Customer account & billing infrastructure
+    "account",
+    "accounts",
+    "billing",
+    "payment",
+    "checkout",
+    "dashboard",
+    "console",
+    // Build, deploy & artefact management
+    "build",
+    "deploy",
+    "release",
+    "packages",
+    "npm",
+    "charts",
+    "artifacts",
+    "artifact",
+    // Health & readiness probes (Kubernetes et al.)
+    "health",
+    "healthz",
+    "ping",
+    "ready",
+    // Security & secrets management
+    "vault",
+    "security",
+    "trust",
+    // Data & analytics
+    "data",
+    "analytics",
+    // Geographic / regional shards
+    "us",
+    "eu",
+    "ap",
+    "us1",
+    "eu1",
+    "ap1",
 ];
 
 /// DNS-based blocklists — zone + human label.

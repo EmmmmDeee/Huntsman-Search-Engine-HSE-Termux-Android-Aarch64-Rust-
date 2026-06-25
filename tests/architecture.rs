@@ -173,6 +173,15 @@ fn core_does_not_import_util_directly() {
                 // (`sector:real-estate`, …), so a hit is filterable by sector at
                 // one chokepoint regardless of which pool surfaced it.
                 && !line.contains("util::breach_sector")
+                // Pure, dependency-free offline domain utilities (no state, no
+                // I/O, no network): the proxy-registrant allowlist check
+                // (`is_proxy_registrant`) and the public-suffix-based
+                // registrable-domain extractor (`registrable_domain`). Used by
+                // `core::relation::builders` (derive_co_ownership) and
+                // `core::correlator::rules::org` (AU-076/AU-077) to collapse
+                // same-site subdomains and exclude privacy-proxy registrants.
+                && !line.contains("util::domains::is_proxy_registrant")
+                && !line.contains("util::domains::registrable_domain")
         })
         .collect();
     assert!(

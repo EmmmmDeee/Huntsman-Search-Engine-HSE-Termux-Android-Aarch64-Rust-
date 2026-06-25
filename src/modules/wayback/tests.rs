@@ -89,12 +89,38 @@ use super::*;
     }
 
     #[test]
+    fn is_contact_path_matches_keywords() {
+        assert!(is_contact_path("https://example.com/contact-us"));
+        assert!(is_contact_path("https://example.com/about"));
+        assert!(is_contact_path("https://example.com/team/"));
+        assert!(is_contact_path("https://example.com/our-staff"));
+        assert!(is_contact_path("https://example.com/impressum"));
+        assert!(!is_contact_path("https://example.com/blog/post-1"));
+        assert!(!is_contact_path("https://example.com/products"));
+        assert!(!is_contact_path("https://example.com/"));
+    }
+
+    #[test]
+    fn archive_url_format() {
+        assert_eq!(
+            archive_url("20140912153012", "http://example.com/contact"),
+            "https://web.archive.org/web/20140912153012id_/http://example.com/contact"
+        );
+    }
+
+    #[test]
     fn module_metadata() {
         let m = Wayback;
         assert_eq!(m.name(), "wayback");
         assert!(!m.description().is_empty());
         assert_eq!(m.priority(), 38);
-        assert_eq!(m.max_timeout_ms(), 10_000);
+        assert_eq!(m.max_timeout_ms(), 30_000);
         assert!(m.produces().contains(&EntityKind::Domain));
         assert!(m.produces().contains(&EntityKind::Url));
+        assert!(m.produces().contains(&EntityKind::Email));
+        assert!(m.produces().contains(&EntityKind::Phone));
+        // MITRE override covers T1596 (web archive) and T1589.002 (email extraction).
+        let techniques = m.attack_techniques();
+        assert!(techniques.contains(&"T1596"));
+        assert!(techniques.contains(&"T1589.002"));
     }

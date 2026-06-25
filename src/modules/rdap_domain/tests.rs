@@ -120,6 +120,42 @@ fn unsigned_dnssec_and_empty_record_degrade_cleanly() {
 }
 
 #[test]
+fn ns_ip_entities_extracted_from_glue_records() {
+    let body = resp(
+        r#"{
+          "nameservers":[{
+            "ldhName":"ns1.example.net",
+            "ipAddresses":{"v4":["192.0.2.1"],"v6":["2001:db8::1"]}
+          }]
+        }"#,
+    );
+    let ns = &body.nameservers[0];
+    let ips = build_ns_ip_entities("example.com", ns, "s");
+    assert_eq!(ips.len(), 2);
+    assert_eq!(ips[0].kind, EntityKind::IpAddress);
+    assert_eq!(ips[0].value, "192.0.2.1");
+    assert!(ips[0].has_tag("rdap-ns-glue"));
+    assert_eq!(attr(&ips[0], "nameserver"), Some("ns1.example.net"));
+    assert_eq!(ips[1].value, "2001:db8::1");
+}
+
+#[test]
+fn ns_ip_entities_skips_invalid_and_empty() {
+    let body = resp(
+        r#"{"nameservers":[{"ldhName":"ns.example.net","ipAddresses":{"v4":["not-an-ip",""]}}]}"#,
+    );
+    let ips = build_ns_ip_entities("example.com", &body.nameservers[0], "s");
+    assert!(ips.is_empty());
+}
+
+#[test]
+fn ns_ip_entities_absent_yields_empty() {
+    let body = resp(r#"{"nameservers":[{"ldhName":"ns.example.net"}]}"#);
+    let ips = build_ns_ip_entities("example.com", &body.nameservers[0], "s");
+    assert!(ips.is_empty());
+}
+
+#[test]
 fn ns_entity_tags_and_rejects_blank() {
     let ns = build_ns_entity("example.com", "NS1.Example.COM.", "s").unwrap();
     assert_eq!(ns.kind, EntityKind::Domain);

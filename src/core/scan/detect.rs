@@ -127,3 +127,44 @@ pub(super) fn is_address_shaped(v: &str) -> bool {
     let rest = v[house..].trim_start();
     rest.chars().next().is_some_and(char::is_alphabetic) && v.contains(' ')
 }
+
+/// Google tracking identifier shape.
+///
+/// Matches:
+/// - Universal Analytics: `UA-XXXXXXX-X` (UA- + 4–10 digits + dash + 1–4 digits)
+/// - GA4:                  `G-XXXXXXXXXX` (G- + 2–12 alphanumeric)
+/// - Google Tag Manager:   `GTM-XXXXXXX`  (GTM- + 4–10 alphanumeric)
+/// - Google Ads:           `AW-XXXXXXXXX` (AW- + 9–12 digits)
+pub(super) fn is_tracking_id_shaped(v: &str) -> bool {
+    let u = v.trim().to_ascii_uppercase();
+    // UA-XXXXXXX-X
+    if let Some(rest) = u.strip_prefix("UA-") {
+        let parts: Vec<&str> = rest.splitn(2, '-').collect();
+        if parts.len() == 2 {
+            let (a, b) = (parts[0], parts[1]);
+            return a.len() >= 4
+                && a.len() <= 10
+                && a.chars().all(|c| c.is_ascii_digit())
+                && !b.is_empty()
+                && b.len() <= 4
+                && b.chars().all(|c| c.is_ascii_digit());
+        }
+    }
+    // G-XXXXXXXXXX (GA4)
+    if let Some(rest) = u.strip_prefix("G-") {
+        return rest.len() >= 2
+            && rest.len() <= 12
+            && rest.chars().all(|c| c.is_ascii_alphanumeric());
+    }
+    // GTM-XXXXXXX
+    if let Some(rest) = u.strip_prefix("GTM-") {
+        return rest.len() >= 4
+            && rest.len() <= 10
+            && rest.chars().all(|c| c.is_ascii_alphanumeric());
+    }
+    // AW-XXXXXXXXX (Google Ads)
+    if let Some(rest) = u.strip_prefix("AW-") {
+        return rest.len() >= 9 && rest.len() <= 12 && rest.chars().all(|c| c.is_ascii_digit());
+    }
+    false
+}

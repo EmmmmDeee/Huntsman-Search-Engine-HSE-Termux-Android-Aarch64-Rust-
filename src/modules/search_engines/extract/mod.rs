@@ -349,9 +349,61 @@ pub(super) fn extract_family_names(
 
 // ─── Secondary pivot: extract usernames from discovered URLs ──────────────────
 
+/// Matches `(@handle)` in page titles — the canonical form X/Twitter and
+/// Instagram use to show "DisplayName (@handle)" in SERP snippets. Compiled
+/// once; the capture group is the handle without the `@`.
+static TITLE_MENTION_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"\(@([A-Za-z0-9_]{2,25})\)").expect("title mention regex")
+});
+
+/// Matches a real-name display name before `(@handle)` in social SERP titles —
+/// e.g. `"Ryne Manka (@ryno23_) • Instagram Photos and Videos"`. Capture group 1
+/// is the name (trailing space included; call `.trim()` on it). Requires each
+/// word to start with an uppercase letter so gamertag-only titles like
+/// `"Ryno23 (@ZMKCR) / X Posts"` are rejected by the `.is_lowercase()` guard
+/// in the caller. Anchored to `^` because the display name is always first.
+static TITLE_NAME_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"^((?:[A-Z][A-Za-z'.]{0,20} ){1,4})\(@[A-Za-z0-9_]{2,25}\)")
+        .expect("title name regex")
+});
+
+/// Bio-aggregator hosts: one-page link hubs that people embed in social bios.
+/// A search result URL on one of these (or a slug of one in SERP text) is a
+/// high-signal cross-platform profile pivot — the same slug typically equals
+/// the person's primary username.
+const BIO_AGGREGATOR_HOSTS: &[&str] = &[
+    "linktr.ee",
+    "bio.link",
+    "beacons.ai",
+    "allmylinks.com",
+    "msha.ke",
+    "solo.to",
+    "bento.me",
+    "carrd.co",
+    "lnk.bio",
+    "campsite.bio",
+];
+
+/// Direct-link messaging / community hosts. Sharing a Discord server or
+/// Telegram channel in a social bio is a strong identity signal.
+const MESSAGING_DIRECT_HOSTS: &[&str] = &["t.me", "discord.gg"];
+
+/// Matches bio aggregator and messaging direct URLs in free text (SERP
+/// snippets, page titles) with or without an `https://` prefix.
+static BIO_AGGREGATOR_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)(?:https?://)?(?:www\.)?(?P<host>linktr\.ee|bio\.link|beacons\.ai|allmylinks\.com|msha\.ke|solo\.to|bento\.me|carrd\.co|lnk\.bio|campsite\.bio|t\.me|discord\.gg)/(?P<slug>[A-Za-z0-9_.\-]{2,50})"
+    )
+    .expect("bio aggregator regex")
+});
+
 /// Extract potential username pivots from search results. Social
 /// profile URLs contain usernames in their path that can be used
 /// as secondary search seeds to find cross-platform identity links.
+///
+/// Also mines `(@handle)` patterns from result titles — the standard
+/// format platforms use to disclose the real account handle separately
+/// from the display name (e.g. `Ryno23 (@ZMKCR) / Posts / X`).
 pub(super) fn extract_username_pivots(results: &[SearchResult], target: &Target) -> Vec<String> {
     let terms = target_terms(target);
     let mut seen = HashSet::new();
@@ -363,6 +415,8 @@ pub(super) fn extract_username_pivots(results: &[SearchResult], target: &Target)
         if !is_social_host(&host) {
             continue;
         }
+
+        // ── Path-segment pivot ───────────────────────────────────────
         if let Some(username) = extract_path_username(&r.url) {
             let lower = username.to_lowercase();
             if lower.len() >= 3
@@ -377,8 +431,199 @@ pub(super) fn extract_username_pivots(results: &[SearchResult], target: &Target)
                 }
             }
         }
+
+        // ── @mention pivot from title ────────────────────────────────
+        // Platforms show "DisplayName (@handle)" in page titles; extract
+        // the parenthesised handle when the title is confirmed to be about
+        // the target (at least one seed term ≥4 chars appears in it).
+        // No score gate — title @-mention on a confirmed-target social
+        // result is a near-certain cross-platform handle disclosure.
+        let title_lower = r.title.to_lowercase();
+        if terms
+            .iter()
+            .filter(|t| t.len() >= 4)
+            .any(|t| title_lower.contains(t.as_str()))
+        {
+            for cap in TITLE_MENTION_RE.captures_iter(&r.title) {
+                let handle = &cap[1];
+                let lower = handle.to_lowercase();
+                if lower.len() >= 2
+                    && lower != target_lower
+                    && !is_navigation_path(&lower)
+                    && seen.insert(lower.clone())
+                {
+                    pivots.push(format!("\"{handle}\""));
+                }
+            }
+        }
     }
     pivots
+}
+
+/// Extract Person entities from social SERP titles in the form
+/// `"Name Surname (@handle) • Platform"` (Instagram, X, TikTok, GitHub).
+///
+/// Guards:
+/// - Result URL must be on a social host (rejects ads, blogs, aggregators).
+/// - At least one seed term ≥4 chars must appear in the title (confirms the
+///   page is about the target, not an incidental mention).
+/// - The captured name must contain a lowercase letter (rejects ALL-CAPS
+///   banners and gamertag-only display names like `ZMKCR (@ZMKCR)`).
+/// - Duplicates are deduplicated by lowercase key within one call.
+///
+/// Confidence: 0.65 — social title is a near-certain identity disclosure, but
+/// display names are not always real names (gamertags, aliases).
+pub(super) fn extract_display_names_from_titles(
+    results: &[SearchResult],
+    target: &Target,
+    scan_id: &str,
+) -> Vec<Entity> {
+    let terms = target_terms(target);
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out: Vec<Entity> = Vec::new();
+
+    for r in results {
+        let host = extract_host(&r.url);
+        if !is_social_host(&host) {
+            continue;
+        }
+        let title_lower = r.title.to_lowercase();
+        if !terms
+            .iter()
+            .filter(|t| t.len() >= 4)
+            .any(|t| title_lower.contains(t.as_str()))
+        {
+            continue;
+        }
+        let Some(cap) = TITLE_NAME_RE.captures(&r.title) else {
+            continue;
+        };
+        let raw_name = cap[1].trim().to_string();
+        // Reject all-caps / no-lowercase names — gamertags, not real names.
+        if !raw_name.chars().any(char::is_lowercase) {
+            continue;
+        }
+        let key = raw_name.to_lowercase();
+        if seen.insert(key) {
+            let mut e = Entity::new(EntityKind::Person, &raw_name, 0.65, scan_id);
+            e.tag("derived");
+            e.tag("social-name");
+            e.tag("search-discovered");
+            let ev = Evidence::new(
+                SRC,
+                format!("[search] display name `{raw_name}` from social SERP title"),
+            )
+            .with_attr("source_title", &r.title)
+            .with_attr("source_url", &r.url)
+            .with_attr("engine", r.engine);
+            e.add_evidence(ev);
+            out.push(e);
+        }
+    }
+    out
+}
+
+/// Extract bio-aggregator and direct-messaging URLs from search results.
+///
+/// Two signals are combined:
+///
+/// **Signal 1 — result URL is a bio aggregator or messaging host** (0.70 / 0.65
+/// conf): a search engine returned `https://linktr.ee/slug` as a top result.
+/// Only emitted when at least one seed term appears in the title+snippet to
+/// confirm the page is about the target.
+///
+/// **Signal 2 — bio URL appears in SERP text** (0.65 / 0.60 conf): the SERP
+/// snippet or title contains text like `linktr.ee/slug` (with or without
+/// `https://`). The URL is reconstructed with an `https://` prefix.
+///
+/// Both signals deduplicate against the same `seen` set within one call.
+pub(super) fn extract_bio_aggregator_urls(
+    results: &[SearchResult],
+    target: &Target,
+    scan_id: &str,
+) -> Vec<Entity> {
+    let terms = target_terms(target);
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out: Vec<Entity> = Vec::new();
+
+    for r in results {
+        let host = extract_host(&r.url);
+        let canonical_host = host.strip_prefix("www.").unwrap_or(&host);
+        let combined = format!("{} {}", r.title, r.snippet);
+        let combined_lower = combined.to_lowercase();
+
+        // Both signals require at least one seed term present in result context.
+        if !terms.iter().any(|t| combined_lower.contains(t.as_str())) {
+            continue;
+        }
+
+        // Signal 1: the result URL itself is a bio aggregator or messaging link.
+        let is_bio = BIO_AGGREGATOR_HOSTS.contains(&canonical_host);
+        let is_msg = MESSAGING_DIRECT_HOSTS.contains(&canonical_host);
+        if is_bio || is_msg {
+            let url_str = r.url.trim_end_matches('/').to_string();
+            if seen.insert(url_str.to_lowercase()) {
+                let conf = if is_msg { 0.65 } else { 0.70 };
+                let tag = if is_msg {
+                    "messaging-profile"
+                } else {
+                    "bio-aggregator"
+                };
+                let mut e = Entity::new(EntityKind::Url, &url_str, conf, scan_id);
+                e.tag("social-profile");
+                e.tag("search-discovered");
+                e.tag(tag);
+                let ev = Evidence::new(
+                    SRC,
+                    format!("[search] bio link `{url_str}` from SERP result"),
+                )
+                .with_attr("source_title", &r.title)
+                .with_attr("source_url", &r.url)
+                .with_attr("engine", r.engine);
+                e.add_evidence(ev);
+                out.push(e);
+            }
+        }
+
+        // Signal 2: bio URL mentioned in title or snippet text.
+        for cap in BIO_AGGREGATOR_RE.captures_iter(&combined) {
+            let slug_host = match cap.name("host") {
+                Some(m) => m.as_str(),
+                None => continue,
+            };
+            let slug = match cap.name("slug") {
+                Some(m) => m.as_str(),
+                None => continue,
+            };
+            if slug.is_empty() {
+                continue;
+            }
+            let reconstructed = format!("https://{slug_host}/{slug}");
+            if seen.insert(reconstructed.to_lowercase()) {
+                let is_messaging = MESSAGING_DIRECT_HOSTS.contains(&slug_host);
+                let conf = if is_messaging { 0.60 } else { 0.65 };
+                let tag = if is_messaging {
+                    "messaging-profile"
+                } else {
+                    "bio-aggregator"
+                };
+                let mut e = Entity::new(EntityKind::Url, &reconstructed, conf, scan_id);
+                e.tag("social-profile");
+                e.tag("search-discovered");
+                e.tag(tag);
+                let ev = Evidence::new(
+                    SRC,
+                    format!("[search] bio link `{reconstructed}` found in SERP text"),
+                )
+                .with_attr("source_title", &r.title)
+                .with_attr("source_url", &r.url)
+                .with_attr("engine", r.engine);
+                e.add_evidence(ev);
+                out.push(e);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]

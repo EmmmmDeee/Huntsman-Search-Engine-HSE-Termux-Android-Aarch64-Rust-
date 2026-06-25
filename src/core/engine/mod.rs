@@ -1547,6 +1547,14 @@ impl ScanEngine {
                     if anchoring_geo_count > 0 {
                         weight *= 1.0 + (anchoring_geo_count as f64 * 0.02).min(0.10);
                     }
+                    // Social-profile URL priority boost: a confirmed social-profile
+                    // URL crawl can complete the tracking-ID co-ownership pivot.
+                    // +15% nudges these above generic domain/IP targets at equal
+                    // confidence so the crawl fires within the wall-clock budget.
+                    // Sub-dominant to confidence and corroboration factors.
+                    if tk == TargetKind::Url && entity.has_tag("social-profile") {
+                        weight *= 1.15;
+                    }
                     next.push((new_target, weight, entity.uid.clone()));
                 } else {
                     // This exact target was already dispatched (or queued) this

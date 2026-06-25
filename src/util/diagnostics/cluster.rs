@@ -172,8 +172,12 @@ pub(super) fn cluster_entities_fuzzy(entities: &[Entity]) -> Vec<EntityCluster> 
 }
 
 /// Cluster coordinates by ~5km proximity using single-linkage.
+///
+/// Each entry is `(lat, lon, value_string, source_set, confidence)`.
+/// The confidence is the entity's `c_effective()` and drives the
+/// Weiszfeld confidence-weighted geometric median for the cluster centre.
 pub(super) fn cluster_coordinates(
-    coords: &[(f64, f64, String, std::collections::HashSet<String>)],
+    coords: &[(f64, f64, String, std::collections::HashSet<String>, f64)],
 ) -> Vec<CoordinateCluster> {
     const THRESHOLD_KM: f64 = 5.0;
     let mut parent: Vec<usize> = (0..coords.len()).collect();
@@ -214,13 +218,32 @@ pub(super) fn cluster_coordinates(
             let lats: Vec<f64> = indices.iter().map(|&i| coords[i].0).collect();
             let lons: Vec<f64> = indices.iter().map(|&i| coords[i].1).collect();
             let n = lats.len();
-            let mut lat_sorted = lats.clone();
-            lat_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let mut lon_sorted = lons.clone();
-            lon_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let centroid_lat = lat_sorted[n / 2];
-            let centroid_lon = lon_sorted[n / 2];
-            // Diameter
+
+            // Confidence-weighted geometric median (Weiszfeld) — the headline estimate.
+            // Falls back to weighted centroid on degenerate Weiszfeld input (e.g. all
+            // zero weights). `weighted_centroid` is infallible for non-empty point sets.
+            let weighted_points: Vec<((f64, f64), f64)> = indices
+                .iter()
+                .map(|&i| ((coords[i].0, coords[i].1), coords[i].4))
+                .collect();
+            let (centroid_lat, centroid_lon) =
+                crate::util::geometry::weighted_geometric_median(&weighted_points)
+                    .or_else(|| crate::util::geometry::weighted_centroid(&weighted_points))
+                    .expect("weighted_centroid is infallible for non-empty point sets");
+
+            // Robust uncertainty radius and Welzl worst-case bounding circle.
+            let points_only: Vec<(f64, f64)> = weighted_points.iter().map(|&(p, _)| p).collect();
+            let median_radius_km = crate::util::geometry::median_distance_km(
+                (centroid_lat, centroid_lon),
+                &points_only,
+            );
+            let enclosing = crate::util::geometry::min_enclosing_circle(&points_only);
+            let enclosing_radius_km = enclosing
+                .map_or((median_radius_km * 1000.0).round() / 1000.0, |c| {
+                    (c.radius_km * 1000.0).round() / 1000.0
+                });
+
+            // Diameter (max pairwise distance — worst-case span).
             let mut diameter = 0.0f64;
             for i in 0..n {
                 for j in (i + 1)..n {
@@ -249,6 +272,8 @@ pub(super) fn cluster_coordinates(
                 timezone: crate::util::geohash::timezone_for(centroid_lat, centroid_lon)
                     .to_string(),
                 source_diversity: all_sources.len(),
+                median_radius_km: (median_radius_km * 1000.0).round() / 1000.0,
+                enclosing_radius_km,
             }
         })
         .collect();

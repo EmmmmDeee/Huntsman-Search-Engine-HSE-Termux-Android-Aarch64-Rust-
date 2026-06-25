@@ -20,7 +20,7 @@ pub(crate) use classify::{
 mod detect;
 use detect::{
     has_company_suffix, is_address_shaped, is_cidr_shaped, is_domain_shaped, is_mac_shaped,
-    is_phone_shaped,
+    is_phone_shaped, is_tracking_id_shaped,
 };
 
 mod scoring;
@@ -61,6 +61,10 @@ pub enum TargetKind {
     ApiKey,
     CryptoAddress,
     DeviceId,
+    /// Google Analytics / Google Tag Manager / GA4 tracking identifier.
+    /// Pattern: `UA-XXXXXXX-X`, `GTM-XXXXXXX`, `G-XXXXXXXXXX`, `AW-XXXXXXXXX`.
+    /// Emitted by `web_crawler`; queued back for cross-domain co-ownership search.
+    TrackingId,
 }
 
 impl TargetKind {
@@ -88,10 +92,8 @@ impl TargetKind {
             EntityKind::MacAddress => Some(Self::MacAddress),
             EntityKind::CryptoAddress => Some(Self::CryptoAddress),
             EntityKind::DeviceId => Some(Self::DeviceId),
-            EntityKind::Credential
-            | EntityKind::TrackingId
-            | EntityKind::Password
-            | EntityKind::Other(_) => None,
+            EntityKind::TrackingId => Some(Self::TrackingId),
+            EntityKind::Credential | EntityKind::Password | EntityKind::Other(_) => None,
         }
     }
 
@@ -115,6 +117,7 @@ impl TargetKind {
             Self::MacAddress => EntityKind::MacAddress,
             Self::CryptoAddress => EntityKind::CryptoAddress,
             Self::DeviceId => EntityKind::DeviceId,
+            Self::TrackingId => EntityKind::TrackingId,
         }
     }
 
@@ -148,6 +151,7 @@ impl TargetKind {
             Self::MacAddress => "mac_address",
             Self::CryptoAddress => "crypto_address",
             Self::DeviceId => "device_id",
+            Self::TrackingId => "tracking_id",
         }
     }
 
@@ -261,6 +265,12 @@ impl TargetKind {
             {
                 return Self::DeviceId;
             }
+        }
+        // 9d. Tracking ID — Google Analytics (UA-XXXXXXX-X / G-XXXXXXXXXX),
+        //     Google Tag Manager (GTM-XXXXXXX), Google Ads (AW-XXXXXXXXX).
+        //     Must be checked before the general Username fallback.
+        if is_tracking_id_shaped(v) {
+            return Self::TrackingId;
         }
         // 10. Free text → Organisation / Address / FullName / Username.
         if has_company_suffix(&lower) {
@@ -523,6 +533,11 @@ impl Target {
                     .map_err(|_| "DeviceId MCC is not a number")?;
                 if !(200..=999).contains(&mcc) {
                     return Err("DeviceId MCC must be in 200–999");
+                }
+            }
+            TargetKind::TrackingId => {
+                if !is_tracking_id_shaped(v) {
+                    return Err("not a recognised tracking ID shape (UA-/GTM-/G-/AW-)");
                 }
             }
             TargetKind::Username

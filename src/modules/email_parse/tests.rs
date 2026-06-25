@@ -172,13 +172,11 @@ async fn role_localpart_yields_domain_but_no_username_or_person() {
 }
 
 #[tokio::test]
-async fn isp_freemail_outside_inline_list_infers_no_person() {
-    // Regression: the username/Person step once used a stale 8-domain inline
-    // freemail list, so an ISP/consumer mailbox absent from it (bigpond,
-    // comcast, gmx, yandex.ru) was treated as corporate — inferring a Person
-    // "John Doe" from `john.doe@…` and scoring usernames at the corporate
-    // 0.70. These ARE freemail per the shared list, so: no Person, and
-    // usernames at the freemail confidence (0.55).
+async fn isp_freemail_infers_person_at_lower_confidence() {
+    // R9-1: freemail firstname.lastname now infers a Person at 0.45 (lower than
+    // corporate 0.55) tagged `freemail-inferred`. This enables candidates like
+    // ryne.manka@gmail.com → Person "Ryne Manka" to be surfaced for corroboration.
+    // Usernames remain at 0.55 for freemail; corporate stays at 0.70.
     for addr in [
         "john.doe@bigpond.com",
         "john.doe@comcast.net",
@@ -189,9 +187,25 @@ async fn isp_freemail_outside_inline_list_infers_no_person() {
             .process(&Target::new(TargetKind::Email, addr), &ctx())
             .await
             .unwrap();
+        let persons: Vec<&Entity> = r
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Person)
+            .collect();
+        assert_eq!(
+            persons.len(),
+            1,
+            "{addr}: freemail firstname.lastname should infer a Person"
+        );
+        assert_eq!(persons[0].value, "John Doe", "{addr}: wrong person name");
         assert!(
-            !r.entities.iter().any(|e| e.kind == EntityKind::Person),
-            "{addr}: consumer mailbox must not infer a Person"
+            (persons[0].confidence - 0.45).abs() < 1e-9,
+            "{addr}: freemail Person confidence should be 0.45, got {}",
+            persons[0].confidence
+        );
+        assert!(
+            persons[0].has_tag("freemail-inferred"),
+            "{addr}: Person should carry freemail-inferred tag"
         );
         for e in r.entities.iter().filter(|e| e.kind == EntityKind::Username) {
             assert!(
@@ -202,7 +216,7 @@ async fn isp_freemail_outside_inline_list_infers_no_person() {
         }
     }
 
-    // A genuine corporate domain still infers the Person at 0.70 usernames.
+    // A genuine corporate domain still infers the Person at 0.55 (no freemail tag).
     let r = EmailParse
         .process(
             &Target::new(TargetKind::Email, "john.doe@acme-corp.com"),
@@ -210,11 +224,19 @@ async fn isp_freemail_outside_inline_list_infers_no_person() {
         )
         .await
         .unwrap();
+    let corp_person = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("corporate address should infer a Person");
+    assert_eq!(corp_person.value, "John Doe");
     assert!(
-        r.entities
-            .iter()
-            .any(|e| e.kind == EntityKind::Person && e.value == "John Doe"),
-        "corporate address should still infer the Person"
+        (corp_person.confidence - 0.55).abs() < 1e-9,
+        "corporate Person confidence should be 0.55"
+    );
+    assert!(
+        !corp_person.has_tag("freemail-inferred"),
+        "corporate Person must not carry freemail-inferred tag"
     );
     assert!(
         r.entities

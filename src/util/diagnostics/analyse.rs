@@ -83,7 +83,8 @@ pub fn analyse(
     let mut geo = GeoPrecisionReport::default();
     let mut tz_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut iso_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut coord_pairs: Vec<(f64, f64, String, std::collections::HashSet<String>)> = Vec::new();
+    let mut coord_pairs: Vec<(f64, f64, String, std::collections::HashSet<String>, f64)> =
+        Vec::new();
 
     for e in entities {
         *kind_counts.entry(e.kind.to_string()).or_insert(0) += 1;
@@ -160,7 +161,7 @@ pub fn analyse(
                     for ev in &e.evidence {
                         srcs.insert(ev.source.clone());
                     }
-                    coord_pairs.push((lat, lon, e.value.clone(), srcs));
+                    coord_pairs.push((lat, lon, e.value.clone(), srcs, e.c_effective()));
                 }
             }
             "address" => {
@@ -189,8 +190,8 @@ pub fn analyse(
 
     // Pairwise Haversine distances — proximity graph (top-25 closest).
     let mut proximity_graph: Vec<ProximityEdge> = Vec::new();
-    for (i, (la1, lo1, v1, _)) in coord_pairs.iter().enumerate() {
-        for (la2, lo2, v2, _) in coord_pairs.iter().skip(i + 1) {
+    for (i, (la1, lo1, v1, _, _)) in coord_pairs.iter().enumerate() {
+        for (la2, lo2, v2, _, _) in coord_pairs.iter().skip(i + 1) {
             let d = crate::util::geohash::haversine_km(*la1, *lo1, *la2, *lo2);
             let from_country =
                 crate::util::geohash::reverse_country_iso(*la1, *lo1).map(str::to_string);

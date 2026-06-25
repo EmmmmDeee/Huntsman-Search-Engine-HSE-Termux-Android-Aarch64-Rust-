@@ -2,6 +2,23 @@ use super::*;
 use crate::core::entity::EntityKind;
 
 #[test]
+fn phone_e164_rejects_short_numbers_and_accepts_real_ones() {
+    // 8-digit and 9-digit strings — web-scrape noise, must be rejected.
+    assert!(!validate_phone_e164("+21002112").valid); // 8 digits
+    assert!(!validate_phone_e164("+219421994").valid); // 9 digits
+    // 10-digit minimum (Niue +683 XXXXXXX, Australia +61 XXXXXXXXX, etc.).
+    assert!(validate_phone_e164("+6569504420").valid); // 10 digits, Singapore
+    assert!(validate_phone_e164("+61412345678").valid); // 11 digits, AU mobile
+    assert!(validate_phone_e164("+14155552671").valid); // 11 digits, US
+    // Leading zero in country code — always invalid.
+    assert!(!validate_phone_e164("+0612345678").valid);
+    // Missing plus — invalid.
+    assert!(!validate_phone_e164("61412345678").valid);
+    // 16 digits — too long.
+    assert!(!validate_phone_e164("+1234567890123456").valid);
+}
+
+#[test]
 fn specific_residence_accepts_streets_and_rejects_regions() {
     // Real residences (a street number + locality) — accepted.
     assert!(is_specific_residence("123 Main St, Springfield, IL"));

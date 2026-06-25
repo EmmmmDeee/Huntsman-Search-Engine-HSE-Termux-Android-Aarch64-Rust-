@@ -176,6 +176,11 @@ pub enum Command {
         /// Output format: table | json | dossier. "dossier" shows full intel grouped by category.
         #[arg(short, long, default_value = "table")]
         output: String,
+        /// Include platform-infrastructure entities (cloud buckets, CDN IPs,
+        /// analytics tracking IDs from platforms) in scan output. Excluded by
+        /// default; implied by `--full`.
+        #[arg(long)]
+        include_infra: bool,
     },
     /// List registered modules with their cost tier and accepted target kinds.
     ///
@@ -431,6 +436,12 @@ pub enum Command {
         /// File path to write to. Omit for stdout.
         #[arg(short, long)]
         out: Option<String>,
+        /// Include platform/shared-infrastructure entities (cloud buckets, CDN
+        /// IPs, analytics IDs sourced from third-party platform pages) that are
+        /// hidden by default. Equivalent to `--format full` for the report
+        /// format but scoped only to the infra filter.
+        #[arg(long, default_value_t = false)]
+        include_infra: bool,
     },
 
     /// Compare two completed scans: entities added / removed / re-scored.

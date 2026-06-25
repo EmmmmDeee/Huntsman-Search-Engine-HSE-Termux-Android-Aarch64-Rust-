@@ -102,7 +102,9 @@ fn group_for(kind: RelationKind) -> (&'static str, &'static str) {
         | RelationKind::HostedOn
         | RelationKind::ResolvesTo
         | RelationKind::RegisteredBy
-        | RelationKind::DerivedFrom => ("infrastructure", "Infrastructure & lineage"),
+        | RelationKind::DerivedFrom
+        | RelationKind::SameOperator => ("infrastructure", "Infrastructure & lineage"),
+        RelationKind::SameIdentity => ("aliases", "Aliases — the same persona"),
     }
 }
 
@@ -129,6 +131,8 @@ fn label_for(kind: RelationKind, other: &Entity) -> String {
         RelationKind::ResolvesTo => "resolves to".to_string(),
         RelationKind::RegisteredBy => "registered by".to_string(),
         RelationKind::DerivedFrom => "derived from".to_string(),
+        RelationKind::SameOperator => "same operator".to_string(),
+        RelationKind::SameIdentity => "profile".to_string(),
     }
 }
 
