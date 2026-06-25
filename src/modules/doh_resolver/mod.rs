@@ -5,7 +5,9 @@
 //!   `GET https://dns.google/resolve?name={domain}&type={type}`
 //!
 //! Queries A, AAAA, MX, TXT, NS, CNAME records. Extracts IPs from A/AAAA,
-//! mail servers from MX, nameservers from NS, SPF/DKIM/DMARC from TXT.
+//! mail servers from MX, nameservers from NS, SPF from apex TXT. DMARC is
+//! queried separately at `_dmarc.{domain}` (RFC 7489 §6.6.3) and yields
+//! policy tags, issue flags, and report-address [`crate::core::entity::EntityKind::Email`] entities.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -273,7 +275,8 @@ impl Module for DohResolver {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Domain];
+        const KINDS: &[EntityKind] =
+            &[EntityKind::IpAddress, EntityKind::Domain, EntityKind::Email];
         KINDS
     }
 
@@ -285,6 +288,7 @@ impl Module for DohResolver {
         let mut result = ModuleResult::new();
         let mut seen: HashSet<String> = HashSet::new();
         let mut empty_count = 0usize;
+        let mut doh_reachable = true;
 
         for (i, rtype) in RECORD_TYPES.iter().enumerate() {
             if ctx.cancel.is_cancelled() {
@@ -298,6 +302,7 @@ impl Module for DohResolver {
             // Cloudflare and Google DoH are unreachable from this IP — skip
             // remaining record types to free the concurrency slot immediately.
             if i == 1 && empty_count == 2 {
+                doh_reachable = false;
                 break;
             }
             result.entities.extend(records_for_type(
@@ -308,6 +313,100 @@ impl Module for DohResolver {
                 &ctx.scan_id,
             ));
         }
+
+        // DMARC: published at `_dmarc.{domain}` (RFC 7489 §6.6.3), never at the
+        // apex. Skip if DoH endpoints proved unreachable during the main loop.
+        if doh_reachable && !ctx.cancel.is_cancelled() {
+            let dmarc_records = query_doh(&format!("_dmarc.{domain}"), "TXT", &ctx.http).await;
+            'dmarc: for rec in &dmarc_records {
+                let txt = unquote_txt(rec.data.trim());
+                let Some(dmarc) = crate::util::dmarc::parse(&txt) else {
+                    continue;
+                };
+                let policy_str = dmarc
+                    .policy
+                    .map_or("dmarc:missing-policy", crate::util::dmarc::DmarcPolicy::tag);
+                let sp_str = dmarc
+                    .sp
+                    .map_or("(inherited)", crate::util::dmarc::DmarcPolicy::tag);
+                let mut dom = Entity::new(EntityKind::Domain, &domain, 0.85, &ctx.scan_id);
+                dom.tag("dns");
+                dom.tag("dmarc");
+                if let Some(p) = dmarc.policy {
+                    dom.tag(p.tag());
+                }
+                let issues = dmarc.issues();
+                for issue in &issues {
+                    dom.tag(issue.tag());
+                }
+                let mut ev = Evidence::new(
+                    SRC,
+                    format!(
+                        "DMARC policy: {policy_str}; sp={sp_str}; pct={pct}",
+                        pct = dmarc.pct
+                    ),
+                )
+                .with_attr("record_type", "DMARC")
+                .with_attr("policy", policy_str)
+                .with_attr("subdomain_policy", sp_str)
+                .with_attr("pct", dmarc.pct.to_string())
+                .with_attr(
+                    "adkim",
+                    if dmarc.adkim == crate::util::dmarc::AlignmentMode::Strict {
+                        "s"
+                    } else {
+                        "r"
+                    },
+                )
+                .with_attr(
+                    "aspf",
+                    if dmarc.aspf == crate::util::dmarc::AlignmentMode::Strict {
+                        "s"
+                    } else {
+                        "r"
+                    },
+                );
+                if !issues.is_empty() {
+                    let flags = issues
+                        .iter()
+                        .map(crate::util::dmarc::DmarcIssue::tag)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    ev = ev.with_attr("issues", flags);
+                }
+                if !dmarc.rua.is_empty() {
+                    ev = ev.with_attr("rua", dmarc.rua.join(", "));
+                }
+                if !dmarc.ruf.is_empty() {
+                    ev = ev.with_attr("ruf", dmarc.ruf.join(", "));
+                }
+                dom.add_evidence(ev);
+                if seen.insert(format!("dom:{domain}")) {
+                    result.entities.push(dom);
+                }
+                // `rua=`/`ruf=` report addresses reveal where the organisation
+                // receives DMARC failure reports — high-value OSINT pivot.
+                // Skip known third-party infrastructure addresses (e.g.
+                // reports@dmarcanalyzer.com) so only org-specific addresses survive.
+                for addr in dmarc.report_addresses() {
+                    if crate::util::domains::is_infrastructure_email(addr) {
+                        continue;
+                    }
+                    if seen.insert(format!("email:{addr}")) {
+                        let mut ee = Entity::new(EntityKind::Email, addr, 0.72, &ctx.scan_id);
+                        ee.tag("dmarc-report");
+                        ee.tag("dns");
+                        ee.add_evidence(Evidence::new(
+                            SRC,
+                            format!("DMARC report address for {domain}"),
+                        ));
+                        result.entities.push(ee);
+                    }
+                }
+                break 'dmarc; // RFC 7489 §6.6.3: one DMARC record per name
+            }
+        }
+
         Ok(result)
     }
 }

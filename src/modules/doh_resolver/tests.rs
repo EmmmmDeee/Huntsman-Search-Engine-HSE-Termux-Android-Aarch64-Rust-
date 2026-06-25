@@ -258,3 +258,48 @@ fn untyped_record_falls_back_to_queried_type() {
             .any(|e| e.kind == EntityKind::IpAddress && e.value == "5.6.7.8")
     );
 }
+
+// --- DMARC parsing (via util::dmarc) ---
+
+#[test]
+fn dmarc_parse_reject_policy_produces_correct_tags() {
+    // Verify the util::dmarc helpers that doh_resolver calls at runtime.
+    let rec = "v=DMARC1; p=reject; rua=mailto:dmarc@example.org; pct=100";
+    let dmarc = crate::util::dmarc::parse(rec).expect("valid DMARC record");
+    assert_eq!(dmarc.policy, Some(crate::util::dmarc::DmarcPolicy::Reject));
+    assert_eq!(
+        dmarc
+            .policy
+            .map_or("dmarc:missing-policy", crate::util::dmarc::DmarcPolicy::tag),
+        "dmarc:reject"
+    );
+    assert!(dmarc.issues().is_empty(), "reject + rua + pct=100 is clean");
+    assert_eq!(dmarc.report_addresses(), vec!["dmarc@example.org"]);
+}
+
+#[test]
+fn dmarc_parse_none_policy_issues_and_rua() {
+    let rec = "v=DMARC1; p=none; rua=mailto:reports@example.com";
+    let dmarc = crate::util::dmarc::parse(rec).unwrap();
+    let issues = dmarc.issues();
+    assert!(issues.iter().any(|i| i.tag() == "dmarc:no-enforcement"));
+    // rua is present → NoAggregateReports must NOT fire.
+    assert!(
+        !issues
+            .iter()
+            .any(|i| i.tag() == "dmarc:no-aggregate-reports")
+    );
+}
+
+#[test]
+fn dmarc_rua_infrastructure_gate() {
+    // An rua= pointing at a known third-party reporting service should be
+    // filtered out by is_infrastructure_email; an org-specific address survives.
+    // (The filter is applied in process() at runtime; here we verify the
+    // predicate itself behaves correctly for DMARC report addresses.)
+    // "dmarc@example.org" is NOT in the infrastructure provider set → survives.
+    assert!(
+        !crate::util::domains::is_infrastructure_email("dmarc@example.org"),
+        "org-specific DMARC report address should not be classified as infrastructure"
+    );
+}
