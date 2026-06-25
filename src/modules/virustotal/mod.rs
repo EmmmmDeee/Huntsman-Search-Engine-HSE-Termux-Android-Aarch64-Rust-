@@ -133,6 +133,11 @@ impl Module for VirusTotal {
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }
+
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         10_000
     }

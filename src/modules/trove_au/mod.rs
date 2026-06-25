@@ -78,6 +78,10 @@ impl Module for TroveAu {
         ModuleCost::KeyGated
     }
 
+    fn cache_ttl_secs(&self) -> u64 {
+        604_800
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Organisation | TargetKind::AbnAcn)
     }

@@ -1564,3 +1564,66 @@ breach data, maximising the hot-inject cascade's value.
 
 Gate green: fmt/clippy/doc clean, 3,352 total tests, 0 failures.
 Paired: `PROBLEM_TREE` §8 cycle 33 — same commit.
+
+---
+
+### §5 · Maintained log — cycle 34 (P→S direction)
+
+**2026-06-25 · P→S · SOL-CACHE-TTL — inter-scan caching for 27 paid/keygated modules**
+
+*Problem:* 27 of 30 paid/keygated modules returned `cache_ttl_secs() = 0`, preventing
+the dispatch layer from storing results in the SQLite `raw_archive`. Every scan re-queried
+the same paid APIs for identical targets, discarding all prior results on process restart.
+
+*Primitive — `fn cache_ttl_secs` overrides added to 27 modules:*
+
+TTL selection calibrated to data stability:
+
+| Module | Cost | TTL | Rationale |
+|--------|------|-----|-----------|
+| `hibp` | KeyGated | 604 800 (7d) | Breach notifications; DB updates infrequently |
+| `dehashed` | Paid | 604 800 (7d) | Breach DB snapshot; stable |
+| `intelx` | Paid | 604 800 (7d) | Archive intelligence; does not change daily |
+| `abn_lookup` | KeyGated | 604 800 (7d) | Australian Business Register; near-static |
+| `trove_au` | KeyGated | 604 800 (7d) | National Library archive; historical |
+| `see_know` | Paid | 86 400 (24h) | OSINT/breach pool; daily provider refresh |
+| `oathnet_pro` | Paid | 86 400 (24h) | Identity/breach enrichment; daily refresh |
+| `proxycurl` | Paid | 86 400 (24h) | LinkedIn profiles; low daily churn |
+| `leakix` | KeyGated | 86 400 (24h) | IP/host exposure events; daily |
+| `ipqs` | KeyGated | 86 400 (24h) | IP quality score; daily aggregation |
+| `criminal_ip` | KeyGated | 86 400 (24h) | IP threat intel; daily |
+| `whoisxml` | KeyGated | 86 400 (24h) | WHOIS data; daily |
+| `abuseipdb` | KeyGated | 86 400 (24h) | IP abuse report aggregation; daily |
+| `virustotal` | KeyGated | 86 400 (24h) | AV/URL scan results; stable within a day |
+| `fullcontact` | KeyGated | 86 400 (24h) | Identity aggregation; daily |
+| `hunter_io` | KeyGated | 86 400 (24h) | Domain email finder; stable |
+| `niamonx` | KeyGated | 86 400 (24h) | Phone intelligence; daily |
+| `securitytrails` | KeyGated | 86 400 (24h) | DNS/subdomain history; daily |
+| `onyphe` | KeyGated | 86 400 (24h) | Threat intelligence scan data; daily |
+| `censys` | KeyGated | 86 400 (24h) | Internet census; daily |
+| `numverify` | KeyGated | 86 400 (24h) | Phone validation; stable |
+| `zoomeye` | KeyGated | 86 400 (24h) | Internet scan exposure; daily |
+| `wifi_intel` | KeyGated | 86 400 (24h) | WiFi geolocation DB; daily updates |
+| `wigle` | KeyGated | 86 400 (24h) | WiFi wardrive DB; daily |
+| `osintcat` | KeyGated | 86 400 (24h) | OSINT catalog data; daily |
+| `emailrep` | KeyGated | 43 200 (12h) | Email reputation; updated twice daily |
+| `seon` | KeyGated | 43 200 (12h) | Fraud/identity score; sub-daily churn |
+| `epieos` | KeyGated | 43 200 (12h) | Email-to-account pivot; account state changes |
+| `threatfox` | KeyGated | 21 600 (6h) | IOC sharing platform; high update velocity |
+| `exa_search` | KeyGated | 21 600 (6h) | Web search results; content changes rapidly |
+
+Also fixed: `src/modules/see_know/mod.rs` line 33: "default 160" → "default 500".
+
+*§4d update:*
+| ID                  | Description                                           | Status          |
+|---------------------|-------------------------------------------------------|-----------------|
+| SOL-ENGINE-LOOP     | Expansion loop micro-optimisation                     | `[x]` cycle 30 |
+| SOL-TYPOSQUAT       | Typosquat 15-technique world-class rewrite            | `[x]` cycle 31 |
+| SOL-TYPOSQUAT-PERF  | Permutation engine: 1 alloc/variant (was 2)           | `[x]` cycle 32 |
+| SOL-TEST-PERF       | Smoke suite: poll loops replace static sleeps         | `[x]` cycle 32 |
+| SOL-SEEKNOW-BUDGET  | SeekNow quota: scan 160→500, session 500→5000         | `[x]` cycle 33 |
+| SOL-DISPATCH-PHASE  | Dispatch reorder: Free→Paid→KeyGated (3-phase)        | `[x]` cycle 33 |
+| SOL-CACHE-TTL       | Inter-scan TTL caching for 27 paid/keygated modules   | `[x]` cycle 34 |
+
+Gate green: fmt/clippy/doc clean, 3,352 total tests, 0 failures.
+Paired: `PROBLEM_TREE` §8 cycle 34 — same commit.

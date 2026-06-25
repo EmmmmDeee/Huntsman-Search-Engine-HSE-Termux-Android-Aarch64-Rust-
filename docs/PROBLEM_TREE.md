@@ -2179,3 +2179,34 @@ The 2-phase concurrent dispatch ran Paid modules FIRST (sequential) then Free+Ke
 
 Gate green: fmt/clippy/doc clean, 3,352 total tests, 0 failures.
 **Paired:** `SOLUTION_TREE` §5 cycle 33 — same commit.
+
+---
+
+### §8 · Maintained log — cycle 34 (P→S direction)
+
+**2026-06-25 · P→S · Data retention gap: 97% of paid API results not persisted between scans**
+
+*Problem 1 (missing inter-scan caching in 27 of 30 paid/keygated modules):*
+The `Module` trait's `cache_ttl_secs()` method defaults to 0 (no caching). Only 3 modules
+overrode it: `hlr_cnam`, `netlas`, `opencellid` (all = 86 400s). The remaining 27 paid and
+key-gated modules — including `see_know`, `oathnet_pro`, `dehashed`, `hibp`, `intelx`,
+`censys`, `virustotal`, `hunter_io`, `leakix`, and 17 more — returned 0, meaning the dispatch
+layer never wrote their results to the SQLite `raw_archive` table. Each new scan re-queried
+every paid API for every target, even if the identical query had been answered in the previous
+scan. This violated the operator directive: "Retain all retrieved API data, metadata,
+relationships, and analytical artifacts for future use unless explicitly identified as
+invalid, corrupted, or redundant."
+
+*Problem 2 (stale see_know module doc comment):*
+`src/modules/see_know/mod.rs` line 33 still read "default 160" after cycle 33 raised the
+scan cap to 500. A regression in accuracy introduced by the budget change not propagated
+to the module documentation.
+
+*Solutions delivered (see `SOLUTION_TREE` §5 cycle 34):*
+1. Added `fn cache_ttl_secs(&self) -> u64 { TTL }` overrides to all 27 modules lacking them.
+   TTLs calibrated by data stability class (7-day for breach DBs, 24h for IP intel/identity,
+   12h for reputation scores, 6h for live threat indicators and search results).
+2. `src/modules/see_know/mod.rs` line 33: "default 160" → "default 500".
+
+Gate green: fmt/clippy/doc clean, 3,352 total tests, 0 failures.
+**Paired:** `SOLUTION_TREE` §5 cycle 34 — same commit.

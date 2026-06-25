@@ -58,6 +58,11 @@ impl Module for Seon {
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }
+
+    fn cache_ttl_secs(&self) -> u64 {
+        43_200
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email | TargetKind::Phone)
     }

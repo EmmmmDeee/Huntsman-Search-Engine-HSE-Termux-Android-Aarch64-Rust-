@@ -185,6 +185,11 @@ impl Module for IntelX {
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
     }
+
+    fn cache_ttl_secs(&self) -> u64 {
+        604_800
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         // Derived from the single-sourced selector map so coverage stays in one
         // place. IntelX has dedicated selectors for URL / CIDR / MAC / crypto

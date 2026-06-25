@@ -12,6 +12,24 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ### Changed
 
+- **Cycle 34 (P→S) — Inter-scan TTL caching for 27 paid/keygated modules; see_know doc fix.**
+
+  **(1) `fn cache_ttl_secs()` overrides added to 27 `Paid` and `KeyGated` modules.**
+  Operator directive: "Retain all retrieved API data, metadata, relationships, and analytical
+  artifacts for future use." Previously only 3 modules overrode the trait default (0), meaning
+  the dispatch layer never wrote paid-API results to the SQLite `raw_archive`. Every scan
+  re-queried the same providers for identical targets. TTLs calibrated by data stability class:
+  - **7 days** (604 800s): `hibp`, `dehashed`, `intelx`, `abn_lookup`, `trove_au`
+  - **24h** (86 400s): `see_know`, `oathnet_pro`, `proxycurl`, `leakix`, `ipqs`, `criminal_ip`,
+    `whoisxml`, `abuseipdb`, `virustotal`, `fullcontact`, `hunter_io`, `niamonx`,
+    `securitytrails`, `onyphe`, `censys`, `numverify`, `zoomeye`, `wifi_intel`, `wigle`, `osintcat`
+  - **12h** (43 200s): `emailrep`, `seon`, `epieos`
+  - **6h** (21 600s): `threatfox`, `exa_search`
+
+  **(2) `src/modules/see_know/mod.rs` doc comment corrected: "default 160" → "default 500".**
+
+  Gate green: fmt/clippy/doc clean, 3,352 total tests, 0 failures.
+
 - **Cycle 33 (S→P) — SeekNow quota maximisation and 3-phase Free→Paid→KeyGated dispatch ordering.**
 
   **(1) `src/util/see_know/budget.rs`: SeekNow scan_cap 160→500, session_cap 500→5000.**

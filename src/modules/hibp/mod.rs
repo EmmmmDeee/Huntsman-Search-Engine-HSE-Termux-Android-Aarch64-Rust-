@@ -169,6 +169,10 @@ impl Module for Hibp {
         ModuleCost::KeyGated
     }
 
+    fn cache_ttl_secs(&self) -> u64 {
+        604_800
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email | TargetKind::Domain)
     }

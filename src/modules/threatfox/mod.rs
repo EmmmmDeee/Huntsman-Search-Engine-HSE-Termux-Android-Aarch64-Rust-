@@ -224,6 +224,10 @@ impl Module for ThreatFox {
         ModuleCost::KeyGated
     }
 
+    fn cache_ttl_secs(&self) -> u64 {
+        21_600
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress)
     }

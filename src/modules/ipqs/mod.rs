@@ -186,6 +186,11 @@ impl Module for IpQs {
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }
+
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,

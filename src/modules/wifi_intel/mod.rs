@@ -72,6 +72,10 @@ impl Module for WifiIntel {
         ModuleCost::KeyGated
     }
 
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         // Surveys the operator's OWN Wi-Fi radios (local APs), so it must not run
         // on a remote-subject scan — engage only on a deliberately-local seed

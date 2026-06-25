@@ -29,7 +29,7 @@
 //! username-history aggregation, and cross-platform ID resolution. See the
 //! `endpoints` submodule (`FREE_COVERED_SINGLE_ORIGIN` / `effective_plan`).
 //!
-//! Each scan spends up to HUNTSMAN_SEEKNOW_SCAN_CAP lookups (default 160).
+//! Each scan spends up to HUNTSMAN_SEEKNOW_SCAN_CAP lookups (default 500).
 //! Discovered credentials feed the same key-harvest pipeline as oathnet_pro
 //! — extract_api_keys_from_item recognises the same 80+ prefix patterns.
 
@@ -100,6 +100,10 @@ impl Module for SeekNow {
 
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
+    }
+
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
     }
 
     fn category(&self) -> ModuleCategory {

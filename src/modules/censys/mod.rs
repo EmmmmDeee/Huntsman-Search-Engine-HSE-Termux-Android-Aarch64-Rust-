@@ -46,6 +46,11 @@ impl Module for Censys {
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }
+
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
     fn category(&self) -> ModuleCategory {
         ModuleCategory::Infrastructure
     }

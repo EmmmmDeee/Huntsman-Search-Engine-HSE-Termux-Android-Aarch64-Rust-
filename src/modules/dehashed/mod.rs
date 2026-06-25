@@ -63,6 +63,11 @@ impl Module for DeHashed {
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
     }
+
+    fn cache_ttl_secs(&self) -> u64 {
+        604_800
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,

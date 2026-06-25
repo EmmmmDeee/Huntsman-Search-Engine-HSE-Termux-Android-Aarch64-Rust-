@@ -67,6 +67,11 @@ impl Module for Proxycurl {
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
     }
+
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,
