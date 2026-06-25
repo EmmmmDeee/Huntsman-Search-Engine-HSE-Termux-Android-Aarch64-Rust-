@@ -512,10 +512,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   manual trigger and a BYO OpenCelliD key; no auto-scheduled re-sync exists. A
   recurring `hse cells import --country world` cron/daemon path would keep the local
   DB fresh without user intervention. No solution node yet.
-- **hse update --check changelog (new, cycle 22 S→P gap):** `--check` reports only
-  the number of commits available — no commit subject lines or diff summary. A future
-  pass could run `git log --oneline HEAD..@{u}` and surface the messages so the user
-  can decide whether to update without manually `git log`-ing. No solution node yet.
+- **hse update --check changelog (new, cycle 22 S→P gap → delivered cycle 43, 2026-06-25):**
+  `--check` previously reported only the commit count. Now also runs
+  `git log --oneline HEAD..@{u}` and prints up to 20 subject lines so the operator
+  can assess whether to update without a separate `git log` invocation. Closed —
+  `changelog_lines()` helper added to `src/cli/update.rs`.
 - **P12 — `waf_detect` consistent connection error (new, cycle 27 S→P gap):**
   All 3 statistical-baseline scan runs against `github.com` recorded `waf_detect` →
   `module_error: connection error`. Code inspection confirms the module correctly uses
@@ -1703,6 +1704,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 - **2026-06-25** — **Cycle 40 (S→P): SOL-TRACKING-PIVOT-C delivered — social-profile URL priority boost in expansion heap.**
   S→P pass on cycle 37: the gap was explicit — "add a priority boost for `Url` entities tagged `social-profile` so they rank above generic domains." Delivered: `+15%` weight multiplier in `src/core/engine/mod.rs` expansion loop for `TargetKind::Url && entity.has_tag("social-profile")`. Added after the existing geo-corroboration bonus block so the two sub-dominant boosts compose cleanly. The fix ensures `web_crawler` is dispatched against confirmed social profile pages early in each expansion round rather than being pre-empted by generic domain/IP targets. **Gap refresh:** SOL-TRACKING-PIVOT-C is now delivered; the S→P gap for cycle 37 is closed. §4a gains no new items. Gate green: fmt/clippy/doc/test --locked all clean, 3216 lib tests, 0 failures.
+
+- **2026-06-25** — **Cycle 43 (P→S): `hse update --check` changelog surface — commit subjects now printed.**
+  P→S pass on the cycle-22 S→P gap: `--check` previously reported only the numeric count of commits behind the upstream tracking branch. Delivered: `changelog_lines(dir: &Path) -> Vec<String>` helper in `src/cli/update.rs` runs `git log --oneline HEAD..@{u}` and returns each subject line. `cmd_update()` now prints up to 20 lines when `commits_behind > 0`, letting the operator judge whether to update without a separate `git log` invocation. Zero breaking change: the helper is infallible (returns `Vec::new()` when git is absent or the remote is unreachable). **Gap refresh:** §4a loses `hse update --check changelog` — now closed. Gate green: fmt/clippy/doc/test --locked clean, 3220 lib tests, 0 failures.
+  Paired: `PROBLEM_TREE` — same commit.
 
 - **2026-06-25** — **Cycle 42 (P→S): cycle-38 skip-reason gaps (a) and (c) closed — dossier + table output improvements.**
   P→S pass on the cycle-38 S→P gaps: (a) `--output dossier` lacked skip reasons; (c) table output showed a bare `modules_skipped=N` count with no pointer to `--output json`. Delivered:
