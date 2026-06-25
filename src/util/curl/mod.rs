@@ -32,11 +32,6 @@ pub const UA_SAFARI: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) App
 /// All available User-Agent strings for rotation.
 pub const UA_POOL: &[&str] = &[UA_MOBILE, UA_DESKTOP, UA_FIREFOX, UA_SAFARI];
 
-/// Pick a UA from the pool by index (wraps around).
-pub fn pick_ua(idx: usize) -> &'static str {
-    UA_POOL[idx % UA_POOL.len()]
-}
-
 /// Hard ceiling on a curl download, in bytes (32 MiB), passed as
 /// `--max-filesize`. Bounds the common (Content-Length-bearing) case of a
 /// hostile/misconfigured upstream returning a multi-GB body that `cmd.output()`
@@ -258,37 +253,6 @@ pub async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str, timeout_ms: u
             None
         }
     }
-}
-
-/// Fetch with proxy fallback: a direct attempt (which itself honours
-/// `HUNTSMAN_SEARCH_PROXY` inside [`curl_exec`]) → free proxy-pool rotation.
-/// Returns the response body, or None if all paths fail. Modules that want free
-/// proxy rotation call this instead of plain [`fetch`].
-pub async fn fetch_pooled(
-    url: &str,
-    timeout_ms: u64,
-    ua: &str,
-    pool: &super::proxy::ProxyPool,
-) -> Option<String> {
-    // Tier 1 — direct (or via HUNTSMAN_SEARCH_PROXY, applied inside curl_exec).
-    if let Some(body) = fetch_with_ua(url, timeout_ms, ua).await
-        && !body.is_empty()
-    {
-        return Some(body);
-    }
-    // Tier 2 — rotate a free pool proxy. An empty body counts as a miss, the
-    // same as the direct tier (previously the proxy tiers leaked an empty
-    // `Some("")`). The old `HUNTSMAN_PROXY` env tier is removed: that variable
-    // was a typo of `HUNTSMAN_SEARCH_PROXY` (used nowhere else in the codebase),
-    // so the tier never fired — and the env-proxy intent is already covered by
-    // tier 1.
-    if let Some(proxy) = pool.next()
-        && let Some(body) = fetch_via_proxy(url, timeout_ms, ua, &proxy.url()).await
-        && !body.is_empty()
-    {
-        return Some(body);
-    }
-    None
 }
 
 #[cfg(test)]

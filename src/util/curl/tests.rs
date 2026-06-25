@@ -37,13 +37,6 @@ use super::*;
         );
     }
 
-    #[test]
-    fn pick_ua_wraps_around() {
-        assert_eq!(pick_ua(0), UA_MOBILE);
-        assert_eq!(pick_ua(1), UA_DESKTOP);
-        assert_eq!(pick_ua(4), UA_MOBILE);
-    }
-
     // ── SSRF pin (B8: the security-critical path was untested) ─────────
 
     #[tokio::test]
