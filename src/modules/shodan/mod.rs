@@ -374,6 +374,11 @@ impl Shodan {
                 }),
         );
 
+        let org_lc = body
+            .org
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty());
         if let Some(org) = &body.org
             && !org.is_empty()
         {
@@ -381,6 +386,19 @@ impl Shodan {
             oe.tag("shodan");
             oe.add_evidence(Evidence::new(SRC, format!("Organisation for {ip}")));
             result.push(oe);
+        }
+        // ISP is a distinct OSINT pivot when it differs from org (e.g. org="AWS
+        // EC2", isp="Amazon.com" — the provider layer above the customer org).
+        if let Some(isp) = &body.isp {
+            let isp = isp.trim();
+            let isp_lc = isp.to_ascii_lowercase();
+            if !isp.is_empty() && org_lc.as_deref() != Some(isp_lc.as_str()) {
+                let mut ie = Entity::new(EntityKind::Organisation, isp, 0.65, &ctx.scan_id);
+                ie.tag("shodan");
+                ie.tag("isp");
+                ie.add_evidence(Evidence::new(SRC, format!("ISP for {ip}")));
+                result.push(ie);
+            }
         }
         if let Some(asn) = &body.asn
             && !asn.is_empty()

@@ -249,7 +249,7 @@ impl Module for DohResolver {
         "doh_resolver"
     }
     fn description(&self) -> &'static str {
-        "DNS-over-HTTPS via Cloudflare + Google (A/MX/TXT/NS — free, unlimited)"
+        "DNS-over-HTTPS via Cloudflare + Google (A/AAAA/MX/TXT/NS/CNAME + DMARC — free, unlimited)"
     }
     fn priority(&self) -> u8 {
         34
