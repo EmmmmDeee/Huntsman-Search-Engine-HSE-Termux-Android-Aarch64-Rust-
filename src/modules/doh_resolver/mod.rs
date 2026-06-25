@@ -221,6 +221,44 @@ fn records_for_type(
                             }
                         }
                     }
+                } else if txt.to_ascii_lowercase().starts_with("v=dmarc1") {
+                    // DMARC record: extract rua/ruf reporting mailto: URIs.
+                    // These reveal the organization's DMARC monitoring addresses —
+                    // often a third-party service or internal security team inbox.
+                    for field in ["rua=", "ruf="] {
+                        if let Some(val_start) = txt.to_ascii_lowercase().find(field) {
+                            let after = &txt[val_start + field.len()..];
+                            // Values may be comma-separated lists of URIs.
+                            for uri in after.split(',').map(str::trim) {
+                                // Strip trailing `;` or whitespace.
+                                let uri = uri.trim_end_matches(';').trim();
+                                if let Some(addr) = uri.strip_prefix("mailto:") {
+                                    let addr = addr.trim();
+                                    // May have `!size` suffix: `dmarc@example.com!10m`.
+                                    let addr = addr.split('!').next().unwrap_or(addr).trim();
+                                    if addr.contains('@') && seen.insert(format!("dmarc:{addr}")) {
+                                        let mut e = Entity::new(
+                                            EntityKind::Email,
+                                            addr,
+                                            0.60,
+                                            scan_id,
+                                        );
+                                        e.tag("dns");
+                                        e.tag("dmarc-reporting");
+                                        e.add_evidence(
+                                            Evidence::new(
+                                                SRC,
+                                                format!("DMARC {} reporting address for {domain}", &field[..3]),
+                                            )
+                                            .with_attr("dmarc_field", &field[..3])
+                                            .with_attr("domain", domain),
+                                        );
+                                        out.push(e);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             "CNAME" => {
@@ -273,7 +311,8 @@ impl Module for DohResolver {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Domain];
+        const KINDS: &[EntityKind] =
+            &[EntityKind::IpAddress, EntityKind::Domain, EntityKind::Email];
         KINDS
     }
 
