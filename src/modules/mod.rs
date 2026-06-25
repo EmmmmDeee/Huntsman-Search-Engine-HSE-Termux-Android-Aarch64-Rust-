@@ -30,6 +30,7 @@ pub mod crates_io;
 pub mod criminal_ip;
 pub mod crtsh;
 pub mod dehashed;
+pub mod devto;
 pub mod device_sensors;
 pub mod disposable_check;
 pub mod dns_axfr;
@@ -305,6 +306,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(github_code_search::GithubCodeSearch),
         Arc::new(hacker_news::HackerNews),
         Arc::new(lobsters::Lobsters),
+        Arc::new(devto::DevTo),
         Arc::new(npm_author::NpmAuthor),
         Arc::new(crates_io::CratesIo),
         Arc::new(reddit_user::RedditUser),
