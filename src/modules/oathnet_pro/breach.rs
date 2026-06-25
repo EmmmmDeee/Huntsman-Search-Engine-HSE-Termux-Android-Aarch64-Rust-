@@ -500,6 +500,28 @@ pub(super) fn extract_breach_entities_with(
         }
     }
 
+    // Employer / company → Organisation entity. Breach dumps from LinkedIn,
+    // dating apps, and e-commerce platforms frequently carry an employer or
+    // company field. Emitting it as Organisation feeds the employer_pivot and
+    // opencorporates chains — mirroring the see_know extractor.
+    for k in [
+        "employer",
+        "company",
+        "organization",
+        "organisation",
+        "workplace",
+    ] {
+        if let Some(org) = val_str(item, k) {
+            let org = org.trim();
+            if org.len() >= 2 && seen.insert(format!("@org:{}", org.to_ascii_lowercase())) {
+                let mut oe = Entity::new(EntityKind::Organisation, org, 0.50, scan_id);
+                oe.tag("oathnet");
+                oe.tag("employer-field");
+                push_oathnet_entity(result, oe, &ev, &[], is_target_row);
+            }
+        }
+    }
+
     // Email-domain → Domain entity. The breach record carries the
     // sender/account email's host as a dedicated field. Emitting it
     // unlocks dns_intel/cert_intel/securitytrails/wayback/cloud_storage
