@@ -124,6 +124,12 @@ fn core_does_not_import_util_directly() {
                 // jurisdiction an Address asserts, to cross-check it against the
                 // `au-state:` tag a Coordinates entity carries.
                 && !line.contains("util::address_au::state_code")
+                // Pure, dependency-free AU fixed-line area-code → geographic
+                // region/state resolver (no I/O), same leaf category as
+                // `state_code`. AU-085 uses it to derive the jurisdiction a
+                // landline's area code physically implies, to cross-check it
+                // against the subject's address/coordinate state.
+                && !line.contains("util::address_au::au_phone_region")
                 // Pure, dependency-free coordinate -> AU state/territory
                 // bounding-box classifier (no I/O). AU-056 uses it to derive a
                 // coordinate's jurisdiction when the `au-state:` tag is absent

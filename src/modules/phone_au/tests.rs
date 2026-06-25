@@ -15,23 +15,23 @@ fn classifies_fixed_line_regions() {
     let nsw = classify_au_phone("298765432").unwrap();
     assert_eq!(nsw.line_type, LineType::FixedLine);
     assert_eq!(nsw.region, Some("central-east"));
-    assert_eq!(nsw.states, Some("NSW, ACT"));
+    assert_eq!(nsw.states, Some(&["NSW", "ACT"][..]));
     assert_eq!(nsw.area_code, Some('2'));
 
     // 03 → South East (VIC, TAS)
     let vic = classify_au_phone("398765432").unwrap();
     assert_eq!(vic.region, Some("south-east"));
-    assert_eq!(vic.states, Some("VIC, TAS"));
+    assert_eq!(vic.states, Some(&["VIC", "TAS"][..]));
 
     // 07 → North East (QLD)
     let qld = classify_au_phone("730001234").unwrap();
     assert_eq!(qld.region, Some("north-east"));
-    assert_eq!(qld.states, Some("QLD"));
+    assert_eq!(qld.states, Some(&["QLD"][..]));
 
     // 08 → Central and West (SA, WA, NT)
     let saw = classify_au_phone("881234567").unwrap();
     assert_eq!(saw.region, Some("central-west"));
-    assert_eq!(saw.states, Some("SA, WA, NT"));
+    assert_eq!(saw.states, Some(&["SA", "WA", "NT"][..]));
 }
 
 #[test]

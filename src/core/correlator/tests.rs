@@ -3547,6 +3547,99 @@ fn au_056_silent_without_both_signal_classes() {
     assert!(rule_au_056_jurisdiction_cross_check(&addr_only, "scan", 0).is_empty());
 }
 
+// ─── AU-085 tests (phone-region jurisdiction cross-check) ─────────────────────
+
+#[test]
+fn au_085_corroborates_when_phone_region_matches_address_state() {
+    use super::rules::rule_au_085_phone_region_jurisdiction;
+
+    // A NSW landline (02 → Central East: NSW/ACT) and a NSW address agree.
+    let ents = vec![
+        mk_tagged(EntityKind::Phone, "+61 2 9876 5432", "phone_au", &[]),
+        mk_tagged(
+            EntityKind::Address,
+            "12 Smith Street, Sydney NSW 2000",
+            "see_know",
+            &[],
+        ),
+    ];
+    let out = rule_au_085_phone_region_jurisdiction(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-085");
+    assert!(out[0].rule_name.contains("corroborates"));
+    assert!(out[0].description.contains("NSW"));
+    assert_eq!(out[0].entity_uids.len(), 2);
+}
+
+#[test]
+fn au_085_corroborates_against_a_tagless_coordinate_state() {
+    use super::rules::rule_au_085_phone_region_jurisdiction;
+
+    // A QLD landline (07) and a Brisbane coordinate with NO au-state tag — the
+    // state is still derived from the lat/long, so the cross-check fires.
+    let ents = vec![
+        mk_tagged(EntityKind::Phone, "(07) 3000 1234", "import", &[]),
+        mk_tagged(
+            EntityKind::Coordinates,
+            "-27.4698,153.0251",
+            "geo_normalize",
+            &["geoint"],
+        ),
+    ];
+    let out = rule_au_085_phone_region_jurisdiction(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-085");
+    assert!(out[0].description.contains("QLD"));
+}
+
+#[test]
+fn au_085_flags_conflict_when_region_disagrees_with_address() {
+    use super::rules::rule_au_085_phone_region_jurisdiction;
+
+    // A VIC/TAS landline (03 → South East) but the only known address is in WA
+    // (Central & West) → disjoint → a conflict worth surfacing.
+    let ents = vec![
+        mk_tagged(EntityKind::Phone, "+61 3 9876 5432", "phone_au", &[]),
+        mk_tagged(
+            EntityKind::Address,
+            "5 Hay Street, Perth WA 6000",
+            "see_know",
+            &[],
+        ),
+    ];
+    let out = rule_au_085_phone_region_jurisdiction(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-085");
+    assert!(out[0].rule_name.contains("conflicts"));
+    assert!(out[0].description.contains("WA"));
+}
+
+#[test]
+fn au_085_silent_for_mobile_or_missing_class() {
+    use super::rules::rule_au_085_phone_region_jurisdiction;
+
+    // A mobile has no geographic region — even with an address, nothing fires.
+    let mobile = vec![
+        mk_tagged(EntityKind::Phone, "+61 412 345 678", "phone_au", &[]),
+        mk_tagged(
+            EntityKind::Address,
+            "12 Smith Street, Sydney NSW 2000",
+            "x",
+            &[],
+        ),
+    ];
+    assert!(rule_au_085_phone_region_jurisdiction(&mobile, "scan", 0).is_empty());
+
+    // A geographic landline but no address/coordinate → nothing to cross-check.
+    let phone_only = vec![mk_tagged(
+        EntityKind::Phone,
+        "+61 2 9876 5432",
+        "phone_au",
+        &[],
+    )];
+    assert!(rule_au_085_phone_region_jurisdiction(&phone_only, "scan", 0).is_empty());
+}
+
 // ─── AU-057 tests ─────────────────────────────────────────────────────────────
 
 #[test]

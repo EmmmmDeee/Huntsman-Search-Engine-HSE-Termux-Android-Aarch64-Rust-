@@ -132,3 +132,33 @@ use super::*;
             Some("+611300846637")
         );
     }
+
+    #[test]
+    fn au_phone_region_maps_geographic_area_codes() {
+        // The four geographic area codes → region + member states.
+        assert_eq!(
+            au_phone_region("+61 2 9876 5432"),
+            Some(("central-east", "Central East", &["NSW", "ACT"][..]))
+        );
+        assert_eq!(
+            au_phone_region("(03) 9876 5432"),
+            Some(("south-east", "South East", &["VIC", "TAS"][..]))
+        );
+        assert_eq!(
+            au_phone_region("0730001234"),
+            Some(("north-east", "North East", &["QLD"][..]))
+        );
+        assert_eq!(
+            au_phone_region("+61881234567"),
+            Some(("central-west", "Central and West", &["SA", "WA", "NT"][..]))
+        );
+    }
+
+    #[test]
+    fn au_phone_region_is_none_for_non_geographic_and_non_au() {
+        assert!(au_phone_region("0412 345 678").is_none()); // mobile
+        assert!(au_phone_region("1800 123 456").is_none()); // freephone
+        assert!(au_phone_region("1300 846 637").is_none()); // local-rate
+        assert!(au_phone_region("+1 555 123 4567").is_none()); // US
+        assert!(au_phone_region("not a phone").is_none());
+    }

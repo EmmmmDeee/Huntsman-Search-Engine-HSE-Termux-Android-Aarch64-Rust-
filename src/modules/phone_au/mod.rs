@@ -97,8 +97,9 @@ pub struct AuLine {
     pub region: Option<&'static str>,
     /// Human region name, e.g. `Central East` (fixed lines only).
     pub region_name: Option<&'static str>,
-    /// State(s)/territory the region spans, e.g. `NSW, ACT` (fixed lines only).
-    pub states: Option<&'static str>,
+    /// State(s)/territory the region spans, e.g. `["NSW", "ACT"]` (fixed lines
+    /// only).
+    pub states: Option<&'static [&'static str]>,
     /// The leading area-code digit, e.g. `2` (fixed lines only).
     pub area_code: Option<char>,
 }
@@ -115,14 +116,10 @@ impl AuLine {
     }
 
     fn geographic(area: char) -> Self {
-        // (slug, name, states) per the four AU geographic area codes.
-        let (region, region_name, states) = match area {
-            '2' => ("central-east", "Central East", "NSW, ACT"),
-            '3' => ("south-east", "South East", "VIC, TAS"),
-            '7' => ("north-east", "North East", "QLD"),
-            '8' => ("central-west", "Central and West", "SA, WA, NT"),
-            _ => unreachable!("geographic() called with non-area-code digit"),
-        };
+        // Single-sourced from `util::address_au` so the module's region tags and
+        // the correlator's AU-085 jurisdiction check read one mapping.
+        let (region, region_name, states) = crate::util::address_au::au_area_code_region(area)
+            .expect("geographic() called with a non-geographic area-code digit");
         Self {
             line_type: LineType::FixedLine,
             region: Some(region),
@@ -258,7 +255,7 @@ impl Module for PhoneAu {
             entity.tag("geographic");
             ev = ev
                 .with_attr("au_region", region_name)
-                .with_attr("au_region_states", states)
+                .with_attr("au_region_states", states.join(", "))
                 .with_attr("area_code", format!("0{area}"));
         } else if line.line_type == LineType::Mobile {
             entity.tag("mobile");

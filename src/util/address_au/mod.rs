@@ -281,6 +281,54 @@ pub fn normalise_phone(s: &str) -> Option<String> {
     None
 }
 
+/// The AU geographic region a fixed-line **area code** digit names: its slug,
+/// human name, and the state/territory codes it spans. `None` for the
+/// non-geographic leading digits (mobile `4`, VoIP `5`, the service prefixes
+/// under `1`). The four geographic area codes are fixed by the ACMA Numbering
+/// Plan and never reassigned. The single source of this mapping — `phone_au`
+/// (module enrichment) and `core::correlator` (AU-085 jurisdiction cross-check)
+/// both read it here so the two can't drift. Pure; no I/O.
+#[must_use]
+pub fn au_area_code_region(
+    area_code: char,
+) -> Option<(&'static str, &'static str, &'static [&'static str])> {
+    match area_code {
+        '2' => Some(("central-east", "Central East", &["NSW", "ACT"])),
+        '3' => Some(("south-east", "South East", &["VIC", "TAS"])),
+        '7' => Some(("north-east", "North East", &["QLD"])),
+        '8' => Some(("central-west", "Central and West", &["SA", "WA", "NT"])),
+        _ => None,
+    }
+}
+
+/// The AU geographic region (slug, name, member states) implied by a phone
+/// number's fixed-line area code, or `None` when the number is not an Australian
+/// *geographic* fixed line — a mobile (`04`), a non-geographic service number
+/// (`1300`/`1800`/…), a VoIP line (`05`) or a non-AU number. A geographic number
+/// cannot port across regions, so its area code physically locates the line —
+/// an independent jurisdiction signal. Derived from the value itself (via
+/// [`normalise_phone`]), so it works on any AU phone, tagged or not. Pure; no I/O.
+///
+/// ```
+/// use huntsman_search_engine::util::address_au::au_phone_region;
+///
+/// let (_slug, name, states) = au_phone_region("+61 2 9876 5432").unwrap();
+/// assert_eq!(name, "Central East");
+/// assert_eq!(states, &["NSW", "ACT"]);
+/// assert!(au_phone_region("+61 412 345 678").is_none()); // mobile — no region
+/// assert!(au_phone_region("+1 555 123 4567").is_none()); // not Australian
+/// ```
+#[must_use]
+pub fn au_phone_region(
+    value: &str,
+) -> Option<(&'static str, &'static str, &'static [&'static str])> {
+    let e164 = normalise_phone(value)?;
+    // Strip the country code, then a stray leading trunk `0` a malformed
+    // `+610…` source might keep, leaving the bare national number.
+    let national = e164.strip_prefix("+61")?.trim_start_matches('0');
+    au_area_code_region(national.chars().next()?)
+}
+
 /// A **locality dedup key** for an address value: lowercased, punctuation
 /// folded to spaces, a trailing 4-(AU)/5-(US) digit postcode dropped, whitespace
 /// collapsed. So `"Murrumbateman, NSW"` and `"Murrumbateman, NSW 2582"` — one
