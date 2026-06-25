@@ -30,6 +30,7 @@ pub mod cloud_storage;
 pub mod codeberg_user;
 pub mod codewars_user;
 pub mod contact_enrich;
+pub mod cpan_user;
 pub mod crates_io;
 pub mod criminal_ip;
 pub mod crtsh;
@@ -121,6 +122,7 @@ pub mod signal_radar;
 pub mod smtp_vrfy;
 pub mod social_location;
 pub mod social_probe;
+pub mod sourceforge_user;
 pub mod stackoverflow_user;
 pub mod streaming_probe;
 pub mod subdomain_takeover;
@@ -325,6 +327,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(mastodon_user::MastodonUser),
         Arc::new(gitlab_user::GitlabUser),
         Arc::new(gitea_user::GiteaUser),
+        Arc::new(sourceforge_user::SourceforgeUser),
         Arc::new(bitbucket_user::BitbucketUser),
         Arc::new(codeberg_user::CodebergUser),
         Arc::new(codewars_user::CodewarsUser),
@@ -332,6 +335,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(dockerhub_user::DockerhubUser),
         Arc::new(hexpm_user::HexpmUser),
         Arc::new(launchpad_user::LaunchpadUser),
+        Arc::new(cpan_user::CpanUser),
         Arc::new(npm_author::NpmAuthor),
         Arc::new(crates_io::CratesIo),
         Arc::new(reddit_user::RedditUser),

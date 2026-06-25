@@ -37,6 +37,8 @@ pub(in crate::core::correlator) fn rule_au_011_cross_platform_username(
         "codewars_user",
         "launchpad_user",
         "gitea_user",
+        "sourceforge_user",
+        "cpan_user",
         "crates_io",
         "npm_author",
     ];

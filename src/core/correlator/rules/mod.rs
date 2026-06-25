@@ -309,6 +309,7 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "codewars",    // Codewars kata platform (exact module: codewars_user)
         "launchpad",   // Launchpad Ubuntu/Debian dev platform (exact module: launchpad_user)
         "gitea",       // Gitea.com hosted git service (exact module: gitea_user)
+        "cpan",        // CPAN/MetaCPAN Perl package registry (exact module: cpan_user)
     ]) {
         // Code-hosting is its own provider family: a handle present here is an
         // independent signal from a forum or social account (different platforms,
