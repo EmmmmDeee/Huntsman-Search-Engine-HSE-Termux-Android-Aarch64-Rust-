@@ -9,8 +9,11 @@
 //! * **Postcode** (POA) and **suburb / locality** (SAL) — the human-meaningful
 //!   "where",
 //! * **Local Government Area** (LGA) — the council,
-//! * **Commonwealth electoral division** (CED) — the federal electorate, and
+//! * **Commonwealth electoral division** (CED) — the federal electorate,
 //! * **State electoral division** (SED) — the state electorate,
+//! * **Remoteness Area** (RA) — the Major-Cities…Very-Remote classification, and
+//! * **Statistical Areas** (SA2 / SA4) — the ABS census small area and the
+//!   labour-market region it sits in,
 //!
 //! plus the state/territory. This is foundational GEOINT that applies to
 //! essentially every Australian address: it turns a bare lat/lon (e.g. the
@@ -21,6 +24,7 @@
 //! queried live from the ABS's own service.
 
 use async_trait::async_trait;
+use futures::future::join_all;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -103,6 +107,33 @@ const LAYERS: &[LayerSpec] = &[
         label: "state electoral division",
         conf: 0.88,
     },
+    LayerSpec {
+        path: "RA",
+        name_field: "ra_name_2021",
+        code_field: "ra_code_2021",
+        kind: "au-remoteness",
+        attr_key: "au_remoteness",
+        label: "remoteness area",
+        conf: 0.88,
+    },
+    LayerSpec {
+        path: "SA2",
+        name_field: "sa2_name_2021",
+        code_field: "sa2_code_2021",
+        kind: "au-sa2",
+        attr_key: "au_sa2",
+        label: "statistical area level 2",
+        conf: 0.85,
+    },
+    LayerSpec {
+        path: "SA4",
+        name_field: "sa4_name_2021",
+        code_field: "sa4_code_2021",
+        kind: "au-sa4",
+        attr_key: "au_sa4",
+        label: "statistical area level 4",
+        conf: 0.85,
+    },
 ];
 
 pub struct AuGeo;
@@ -168,15 +199,8 @@ impl Module for AuGeo {
 
         // ArcGIS points are x,y = lon,lat.
         let geom = urlencode(&format!("{lon},{lat}"));
-        // Resolve all layers concurrently (the tuple order matches LAYERS).
-        let (poa, sal, lga, ced, sed) = tokio::join!(
-            query_layer(ctx, &geom, &LAYERS[0]),
-            query_layer(ctx, &geom, &LAYERS[1]),
-            query_layer(ctx, &geom, &LAYERS[2]),
-            query_layer(ctx, &geom, &LAYERS[3]),
-            query_layer(ctx, &geom, &LAYERS[4]),
-        );
-        let resolved = [poa, sal, lga, ced, sed];
+        // Resolve every layer concurrently (join_all preserves LAYERS order).
+        let resolved = join_all(LAYERS.iter().map(|spec| query_layer(ctx, &geom, spec))).await;
 
         assemble(&target.value, &resolved, &ctx.scan_id, &mut result);
         Ok(result)

@@ -27,7 +27,8 @@ fn parse_feature_reads_name_code_and_state() {
     assert_eq!(parse_feature("not json", "x", "y"), None);
 }
 
-/// A fully-resolved point (aligned with LAYERS: POA, SAL, LGA, CED, SED).
+/// A fully-resolved point (aligned with LAYERS: POA, SAL, LGA, CED, SED, RA,
+/// SA2, SA4).
 fn full_resolution() -> Vec<Option<(String, String, Option<String>)>> {
     let nsw = Some("New South Wales".to_string());
     vec![
@@ -35,7 +36,10 @@ fn full_resolution() -> Vec<Option<(String, String, Option<String>)>> {
         Some(("Sydney".into(), "13730".into(), nsw.clone())),
         Some(("Sydney".into(), "17200".into(), nsw.clone())),
         Some(("Sydney".into(), "142".into(), nsw.clone())),
-        Some(("Sydney (NSW)".into(), "10142".into(), nsw)),
+        Some(("Sydney (NSW)".into(), "10142".into(), nsw.clone())),
+        Some(("Major Cities of Australia".into(), "10".into(), nsw.clone())),
+        Some(("Sydney (North) - Millers Point".into(), "117031644".into(), nsw.clone())),
+        Some(("Sydney - City and Inner South".into(), "117".into(), nsw)),
     ]
 }
 
@@ -55,6 +59,13 @@ fn assemble_emits_regions_and_enriches_coordinate() {
         && x.value == "Sydney"));
     assert!(e.iter().any(|x| x.kind == EntityKind::Other("au-state-electorate".into())
         && x.value == "Sydney (NSW)"));
+    // Remoteness classification + ABS statistical areas.
+    assert!(e.iter().any(|x| x.kind == EntityKind::Other("au-remoteness".into())
+        && x.value == "Major Cities of Australia"));
+    assert!(e.iter().any(|x| x.kind == EntityKind::Other("au-sa2".into())
+        && x.value.contains("Millers Point")));
+    assert!(e.iter().any(|x| x.kind == EntityKind::Other("au-sa4".into())
+        && x.value == "Sydney - City and Inner South"));
 
     // The coordinate is enriched with the full administrative roll-up + state.
     let coord = e
@@ -70,7 +81,7 @@ fn assemble_emits_regions_and_enriches_coordinate() {
 #[test]
 fn assemble_skips_absent_layers_and_empty_resolution() {
     // Only the federal electorate resolved (e.g. a point with no SAL/SED cover).
-    let mut partial = vec![None, None, None, None, None];
+    let mut partial: Vec<Option<(String, String, Option<String>)>> = vec![None; 8];
     partial[3] = Some(("Canberra".to_string(), "801".to_string(), Some("ACT".to_string())));
     let mut r = ModuleResult::new();
     assemble("-35.3081,149.1245", &partial, "scan", &mut r);
@@ -79,8 +90,9 @@ fn assemble_skips_absent_layers_and_empty_resolution() {
     assert!(r.entities.iter().all(|x| x.kind != EntityKind::Other("au-postcode".into())));
 
     // Nothing resolved → no entities at all (not even an empty coordinate).
+    let empty_in: Vec<Option<(String, String, Option<String>)>> = vec![None; 8];
     let mut empty = ModuleResult::new();
-    assemble("-35.0,149.0", &[None, None, None, None, None], "scan", &mut empty);
+    assemble("-35.0,149.0", &empty_in, "scan", &mut empty);
     assert!(empty.entities.is_empty());
 }
 
