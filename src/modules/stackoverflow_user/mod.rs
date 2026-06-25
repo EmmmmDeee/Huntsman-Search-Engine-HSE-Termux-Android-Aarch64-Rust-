@@ -135,7 +135,10 @@ pub(super) fn build_entities(user: SoUser, scan_id: &str) -> Vec<Entity> {
     let mut u = Entity::new(EntityKind::Username, &user.display_name, 0.82, scan_id);
     u.tag("stackoverflow");
     u.tag("forum");
-    let mut ev = Evidence::new(SRC, format!("Stack Overflow account '{}'", user.display_name));
+    let mut ev = Evidence::new(
+        SRC,
+        format!("Stack Overflow account '{}'", user.display_name),
+    );
     if let Some(ref link) = user.link {
         ev = ev.with_attr("profile_url", link);
     }
@@ -147,10 +150,7 @@ pub(super) fn build_entities(user: SoUser, scan_id: &str) -> Vec<Entity> {
 
     // Display name → Person when it looks like a real name (≥2 words).
     if user.display_name.split_whitespace().count() >= 2
-        && !crate::core::validation::is_placeholder_entity(
-            &EntityKind::Person,
-            &user.display_name,
-        )
+        && !crate::core::validation::is_placeholder_entity(&EntityKind::Person, &user.display_name)
     {
         let mut p = Entity::new(EntityKind::Person, user.display_name.trim(), 0.55, scan_id);
         p.tag("stackoverflow");
@@ -176,10 +176,7 @@ pub(super) fn build_entities(user: SoUser, scan_id: &str) -> Vec<Entity> {
         url_e.tag("stackoverflow");
         url_e.add_evidence(Evidence::new(
             SRC,
-            format!(
-                "Stack Overflow profile URL for '{}'",
-                user.display_name
-            ),
+            format!("Stack Overflow profile URL for '{}'", user.display_name),
         ));
         result.push(url_e);
     }
@@ -194,7 +191,10 @@ pub(super) fn build_entities(user: SoUser, scan_id: &str) -> Vec<Entity> {
         url_e.add_evidence(
             Evidence::new(
                 SRC,
-                format!("Personal site from Stack Overflow profile of '{}'", user.display_name),
+                format!(
+                    "Personal site from Stack Overflow profile of '{}'",
+                    user.display_name
+                ),
             )
             .with_attr("source_field", "website_url"),
         );

@@ -274,9 +274,12 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
                         d.tag("npm");
                         d.tag("derived");
                         d.add_evidence(
-                            Evidence::new(SRC, format!("Domain from npm package link ({pkg_name})"))
-                                .with_attr("source_url", link)
-                                .with_attr("package", pkg_name),
+                            Evidence::new(
+                                SRC,
+                                format!("Domain from npm package link ({pkg_name})"),
+                            )
+                            .with_attr("source_url", link)
+                            .with_attr("package", pkg_name),
                         );
                         result.push(d);
                     }
@@ -285,10 +288,10 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
                     // (https://github.com/{user}/{repo} → emit the user part).
                     if is_repo
                         && let Some(gh_user) = github_username_from_repo_url(link)
-                        && seen_emails.insert(format!("gh:{gh_user}")) // reuse seen set as dedup
+                        && seen_emails.insert(format!("gh:{gh_user}"))
+                    // reuse seen set as dedup
                     {
-                        let mut g =
-                            Entity::new(EntityKind::Username, gh_user, 0.72, scan_id);
+                        let mut g = Entity::new(EntityKind::Username, gh_user, 0.72, scan_id);
                         g.tag("github");
                         g.tag("npm-pivot");
                         g.add_evidence(

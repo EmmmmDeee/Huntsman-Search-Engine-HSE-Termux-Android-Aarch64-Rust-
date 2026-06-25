@@ -124,21 +124,16 @@ impl Module for CodebergUser {
 pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
-    let profile_url = user
-        .html_url
-        .as_deref()
-        .unwrap_or_default()
-        .to_string();
+    let profile_url = user.html_url.as_deref().unwrap_or_default().to_string();
 
-    let mut ev = Evidence::new(SRC, format!("Codeberg account '{}'", user.login))
-        .with_attr(
-            "profile_url",
-            if profile_url.is_empty() {
-                format!("https://codeberg.org/{}", user.login)
-            } else {
-                profile_url.clone()
-            },
-        );
+    let mut ev = Evidence::new(SRC, format!("Codeberg account '{}'", user.login)).with_attr(
+        "profile_url",
+        if profile_url.is_empty() {
+            format!("https://codeberg.org/{}", user.login)
+        } else {
+            profile_url.clone()
+        },
+    );
     if let Some(ref ts) = user.created {
         ev = ev.with_attr("created_at", ts);
     }
@@ -250,11 +245,8 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
             e.tag("codeberg");
             e.tag("public-profile");
             e.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Email in Codeberg bio of '{}'", user.login),
-                )
-                .with_attr("source", "codeberg_bio"),
+                Evidence::new(SRC, format!("Email in Codeberg bio of '{}'", user.login))
+                    .with_attr("source", "codeberg_bio"),
             );
             result.push(e);
         }

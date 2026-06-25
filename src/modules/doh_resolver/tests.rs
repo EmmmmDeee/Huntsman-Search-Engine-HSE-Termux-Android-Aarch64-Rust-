@@ -258,3 +258,82 @@ fn untyped_record_falls_back_to_queried_type() {
             .any(|e| e.kind == EntityKind::IpAddress && e.value == "5.6.7.8")
     );
 }
+
+#[test]
+fn rtype_name_includes_soa() {
+    assert_eq!(rtype_name(6), Some("SOA"));
+}
+
+#[test]
+fn soa_rname_standard_hostmaster() {
+    assert_eq!(
+        soa_rname_to_email("hostmaster.example.com"),
+        Some("hostmaster@example.com".to_string())
+    );
+}
+
+#[test]
+fn soa_rname_trailing_dot_stripped() {
+    // Wire-format RNAME commonly carries a trailing dot.
+    assert_eq!(
+        soa_rname_to_email("hostmaster.example.com."),
+        Some("hostmaster@example.com".to_string())
+    );
+}
+
+#[test]
+fn soa_rname_escaped_dot_in_local_part() {
+    // `john\.doe.example.com` → local-part is `john.doe`, domain is `example.com`.
+    assert_eq!(
+        soa_rname_to_email("john\\.doe.example.com"),
+        Some("john.doe@example.com".to_string())
+    );
+}
+
+#[test]
+fn soa_rname_single_label_returns_none() {
+    // No boundary dot found → domain part is absent → None.
+    assert_eq!(soa_rname_to_email("hostmaster"), None);
+}
+
+#[test]
+fn soa_record_extracts_primary_ns_and_zone_admin_email() {
+    // SOA RDATA: `mname rname serial refresh retry expire minimum`
+    let data = "ns1.example.com. hostmaster.example.com. 2024010101 3600 900 604800 300";
+    let records = vec![rec_typed(6, "example.com.", data)];
+    let mut seen = HashSet::new();
+    let out = records_for_type("SOA", &records, "example.com", &mut seen, "s");
+    assert_eq!(
+        out.len(),
+        2,
+        "SOA must emit nameserver domain + zone-admin email"
+    );
+    let ns = out.iter().find(|e| e.kind == EntityKind::Domain).unwrap();
+    assert_eq!(ns.value, "ns1.example.com");
+    assert!(ns.has_tag("soa") && ns.has_tag("nameserver"));
+    let email = out.iter().find(|e| e.kind == EntityKind::Email).unwrap();
+    assert_eq!(email.value, "hostmaster@example.com");
+    assert!(email.has_tag("soa") && email.has_tag("zone-admin"));
+}
+
+#[test]
+fn dmarc_txt_extracts_rua_and_ruf_reporting_addresses() {
+    let txt = "v=DMARC1; p=reject; rua=mailto:dmarc-rpts@example.com; ruf=mailto:dmarc-forensics@example.com";
+    let out = run("TXT", &[txt]);
+    let emails: Vec<&str> = out
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        emails.contains(&"dmarc-rpts@example.com"),
+        "rua must be extracted"
+    );
+    assert!(
+        emails.contains(&"dmarc-forensics@example.com"),
+        "ruf must be extracted"
+    );
+    for e in out.iter().filter(|e| e.kind == EntityKind::Email) {
+        assert!(e.has_tag("dmarc-reporting"));
+    }
+}

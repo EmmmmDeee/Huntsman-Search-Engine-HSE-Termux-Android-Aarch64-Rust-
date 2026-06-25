@@ -139,11 +139,10 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     let mut u = Entity::new(EntityKind::Username, &user.username, 0.90, scan_id);
     u.tag("gitlab");
     u.tag("code");
-    let mut ev = Evidence::new(SRC, format!("GitLab account '{}'", user.username))
-        .with_attr(
-            "profile_url",
-            format!("https://gitlab.com/{}", user.username),
-        );
+    let mut ev = Evidence::new(SRC, format!("GitLab account '{}'", user.username)).with_attr(
+        "profile_url",
+        format!("https://gitlab.com/{}", user.username),
+    );
     if let Some(ref ts) = user.created_at {
         ev = ev.with_attr("created_at", ts);
     }
@@ -217,7 +216,10 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
         let li_url = if li_val.starts_with("http://") || li_val.starts_with("https://") {
             li_val.to_string()
         } else {
-            format!("https://www.linkedin.com/in/{}", crate::util::http::urlencode(li_val))
+            format!(
+                "https://www.linkedin.com/in/{}",
+                crate::util::http::urlencode(li_val)
+            )
         };
         let mut url_e = Entity::new(EntityKind::Url, &li_url, 0.70, scan_id);
         url_e.tag("linkedin");
@@ -281,7 +283,10 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
         a.add_evidence(
             Evidence::new(
                 SRC,
-                format!("Self-reported location from GitLab profile of '{}'", user.username),
+                format!(
+                    "Self-reported location from GitLab profile of '{}'",
+                    user.username
+                ),
             )
             .with_attr("source_field", "location")
             .with_attr("gitlab_user", &user.username),
@@ -366,8 +371,14 @@ mod tests {
     fn emits_website_url_and_domain() {
         let user = make_user("gluser", None, None, Some("https://alice.dev"), None, None);
         let ents = build_entities(user, "scan-gl-004");
-        assert!(ents.iter().any(|e| e.kind == EntityKind::Url && e.value == "https://alice.dev"));
-        assert!(ents.iter().any(|e| e.kind == EntityKind::Domain && e.value == "alice.dev"));
+        assert!(
+            ents.iter()
+                .any(|e| e.kind == EntityKind::Url && e.value == "https://alice.dev")
+        );
+        assert!(
+            ents.iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "alice.dev")
+        );
     }
 
     #[test]

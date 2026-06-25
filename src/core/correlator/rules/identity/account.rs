@@ -14,10 +14,20 @@ pub(in crate::core::correlator) fn rule_au_011_cross_platform_username(
     // Username-keyed account modules: each one that independently confirms a
     // handle is a distinct PLATFORM, so three of them agreeing is a genuine
     // cross-platform footprint even when no single module reported a count.
+    // Every module that independently confirms a username on a specific
+    // platform — adding a new module here makes it count toward the ≥3
+    // corroboration threshold without any other changes required.
     const PLATFORM_SOURCES: &[&str] = &[
         "github_user",
+        "gitlab_user",
+        "codeberg_user",
         "reddit_user",
         "hacker_news",
+        "lobsters",
+        "devto",
+        "stackoverflow_user",
+        "bluesky_user",
+        "mastodon_user",
         "keybase",
         "gravatar",
     ];

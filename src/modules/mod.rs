@@ -26,14 +26,14 @@ pub mod censys;
 pub mod cert_intel;
 pub mod chain_intel;
 pub mod cloud_storage;
-pub mod contact_enrich;
 pub mod codeberg_user;
+pub mod contact_enrich;
 pub mod crates_io;
 pub mod criminal_ip;
 pub mod crtsh;
 pub mod dehashed;
-pub mod devto;
 pub mod device_sensors;
+pub mod devto;
 pub mod disposable_check;
 pub mod dns_axfr;
 pub mod dns_intel;
@@ -164,7 +164,8 @@ pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
     // never prevents entities from being emitted. Crypto wallet addresses are
     // included — the vault stores everything with full provenance.
     crate::util::key_vault::persist_batch(&found, scan_id);
-    found.into_iter()
+    found
+        .into_iter()
         .map(|fk| {
             // A crypto wallet address is identified alongside keys (both are
             // high-entropy tokens) but is a distinct artifact — emit it as a

@@ -195,9 +195,7 @@ pub(super) async fn fetch_gist_content(
         // Body is capped to avoid RAM exhaustion on Termux; a 512 KiB cap is
         // generous for gist content (typical source files are well under 10 KiB)
         // while bounding worst-case allocations.
-        let Some(body) =
-            crate::util::http::read_body_capped(resp, 512 * 1024).await
-        else {
+        let Some(body) = crate::util::http::read_body_capped(resp, 512 * 1024).await else {
             continue;
         };
 

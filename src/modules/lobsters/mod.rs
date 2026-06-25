@@ -151,7 +151,10 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
         g.add_evidence(
             Evidence::new(
                 SRC,
-                format!("GitHub username from Lobste.rs profile of '{}'", user.username),
+                format!(
+                    "GitHub username from Lobste.rs profile of '{}'",
+                    user.username
+                ),
             )
             .with_attr("source_field", "github_username")
             .with_attr("lobsters_user", &user.username),
@@ -170,7 +173,10 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
             t.add_evidence(
                 Evidence::new(
                     SRC,
-                    format!("Twitter/X username from Lobste.rs profile of '{}'", user.username),
+                    format!(
+                        "Twitter/X username from Lobste.rs profile of '{}'",
+                        user.username
+                    ),
                 )
                 .with_attr("source_field", "twitter_username")
                 .with_attr("lobsters_user", &user.username),
@@ -186,8 +192,11 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
             e.tag("lobsters");
             e.tag("public-profile");
             e.add_evidence(
-                Evidence::new(SRC, format!("Email in Lobste.rs bio of '{}'", user.username))
-                    .with_attr("source", "lobsters_bio"),
+                Evidence::new(
+                    SRC,
+                    format!("Email in Lobste.rs bio of '{}'", user.username),
+                )
+                .with_attr("source", "lobsters_bio"),
             );
             result.push(e);
         }
@@ -215,9 +224,12 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
                 d.tag("lobsters");
                 d.tag("derived");
                 d.add_evidence(
-                    Evidence::new(SRC, format!("Domain from Lobste.rs bio of '{}'", user.username))
-                        .with_attr("source_url", link)
-                        .with_attr("lobsters_user", &user.username),
+                    Evidence::new(
+                        SRC,
+                        format!("Domain from Lobste.rs bio of '{}'", user.username),
+                    )
+                    .with_attr("source_url", link)
+                    .with_attr("lobsters_user", &user.username),
                 );
                 result.push(d);
             }
@@ -231,7 +243,13 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
 mod tests {
     use super::*;
 
-    fn make_user(username: &str, karma: i64, github: Option<&str>, twitter: Option<&str>, about: Option<&str>) -> LobstersUser {
+    fn make_user(
+        username: &str,
+        karma: i64,
+        github: Option<&str>,
+        twitter: Option<&str>,
+        about: Option<&str>,
+    ) -> LobstersUser {
         LobstersUser {
             username: username.to_string(),
             created_at: Some("2015-03-01T00:00:00Z".to_string()),
@@ -248,7 +266,9 @@ mod tests {
     fn builds_username_entity_with_correct_confidence() {
         let user = make_user("devuser", 500, None, None, None);
         let entities = build_entities(user, "scan-lob-001");
-        let u = entities.iter().find(|e| e.kind == EntityKind::Username && e.value == "devuser");
+        let u = entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.value == "devuser");
         assert!(u.is_some(), "must emit Username entity for the account");
         assert!((u.unwrap().confidence - 0.90).abs() < 0.01);
     }
@@ -257,16 +277,23 @@ mod tests {
     fn emits_github_username_pivot() {
         let user = make_user("devuser", 500, Some("devuser-gh"), None, None);
         let entities = build_entities(user, "scan-lob-002");
-        let gh = entities.iter().find(|e| e.kind == EntityKind::Username && e.value == "devuser-gh");
+        let gh = entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.value == "devuser-gh");
         assert!(gh.is_some(), "must emit GitHub username pivot");
-        assert!(gh.unwrap().has_tag("github"), "pivot entity must carry 'github' tag");
+        assert!(
+            gh.unwrap().has_tag("github"),
+            "pivot entity must carry 'github' tag"
+        );
     }
 
     #[test]
     fn emits_twitter_username_pivot_stripping_at_prefix() {
         let user = make_user("devuser", 200, None, Some("@twitterhandle"), None);
         let entities = build_entities(user, "scan-lob-003");
-        let tw = entities.iter().find(|e| e.kind == EntityKind::Username && e.value == "twitterhandle");
+        let tw = entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.value == "twitterhandle");
         assert!(tw.is_some(), "must strip @ and emit Twitter username");
     }
 
@@ -275,19 +302,33 @@ mod tests {
         let about = "contact me at dev@example.com or visit https://example.com/about";
         let user = make_user("devuser", 100, None, None, Some(about));
         let entities = build_entities(user, "scan-lob-004");
-        assert!(entities.iter().any(|e| e.kind == EntityKind::Email && e.value == "dev@example.com"),
-            "must extract email from bio");
-        assert!(entities.iter().any(|e| e.kind == EntityKind::Url),
-            "must extract URL from bio");
-        assert!(entities.iter().any(|e| e.kind == EntityKind::Domain && e.value == "example.com"),
-            "must emit Domain entity from bio URL");
+        assert!(
+            entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == "dev@example.com"),
+            "must extract email from bio"
+        );
+        assert!(
+            entities.iter().any(|e| e.kind == EntityKind::Url),
+            "must extract URL from bio"
+        );
+        assert!(
+            entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "example.com"),
+            "must emit Domain entity from bio URL"
+        );
     }
 
     #[test]
     fn no_entities_for_empty_optional_fields() {
         let user = make_user("quietuser", 10, None, None, None);
         let entities = build_entities(user, "scan-lob-005");
-        assert_eq!(entities.len(), 1, "only the Username entity when no pivots or bio");
+        assert_eq!(
+            entities.len(),
+            1,
+            "only the Username entity when no pivots or bio"
+        );
         assert_eq!(entities[0].kind, EntityKind::Username);
     }
 }

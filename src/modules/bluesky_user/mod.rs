@@ -197,11 +197,8 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
             e.tag("bluesky");
             e.tag("public-profile");
             e.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Email in Bluesky bio of '{}'", profile.handle),
-                )
-                .with_attr("source", "bluesky_bio"),
+                Evidence::new(SRC, format!("Email in Bluesky bio of '{}'", profile.handle))
+                    .with_attr("source", "bluesky_bio"),
             );
             result.push(e);
         }
@@ -218,11 +215,8 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
             let mut url_e = Entity::new(EntityKind::Url, link, 0.62, scan_id);
             url_e.tag("bluesky");
             url_e.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Link in Bluesky bio of '{}'", profile.handle),
-                )
-                .with_attr("source", "bluesky_bio"),
+                Evidence::new(SRC, format!("Link in Bluesky bio of '{}'", profile.handle))
+                    .with_attr("source", "bluesky_bio"),
             );
             result.push(url_e);
 
@@ -281,7 +275,10 @@ mod tests {
         let u = ents
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "alice");
-        assert!(u.is_some(), "must strip .bsky.social and emit bare username");
+        assert!(
+            u.is_some(),
+            "must strip .bsky.social and emit bare username"
+        );
         assert!((u.unwrap().confidence - 0.85).abs() < 0.01);
         assert!(u.unwrap().has_tag("bluesky"));
     }
@@ -293,7 +290,10 @@ mod tests {
         let d = ents
             .iter()
             .find(|e| e.kind == EntityKind::Domain && e.value == "alice.dev");
-        assert!(d.is_some(), "custom-domain handle must emit a Domain entity");
+        assert!(
+            d.is_some(),
+            "custom-domain handle must emit a Domain entity"
+        );
         assert!(d.unwrap().has_tag("custom-handle"));
         // Confidence should be high (controls DNS TXT for AT Protocol)
         assert!(d.unwrap().confidence >= 0.80);
@@ -304,7 +304,10 @@ mod tests {
         let p = make_profile("alice.bsky.social", Some("Alice Example"), None);
         let ents = build_entities(p, "scan-bsky-003");
         let person = ents.iter().find(|e| e.kind == EntityKind::Person);
-        assert!(person.is_some(), "must emit Person from multi-word display name");
+        assert!(
+            person.is_some(),
+            "must emit Person from multi-word display name"
+        );
         assert_eq!(person.unwrap().value, "Alice Example");
     }
 
@@ -327,15 +330,18 @@ mod tests {
         );
         let ents = build_entities(p, "scan-bsky-005");
         assert!(
-            ents.iter().any(|e| e.kind == EntityKind::Email && e.value == "alice@example.com"),
+            ents.iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == "alice@example.com"),
             "must extract email from bio"
         );
         assert!(
-            ents.iter().any(|e| e.kind == EntityKind::Url && e.value.contains("alice.dev/blog")),
+            ents.iter()
+                .any(|e| e.kind == EntityKind::Url && e.value.contains("alice.dev/blog")),
             "must extract URL from bio"
         );
         assert!(
-            ents.iter().any(|e| e.kind == EntityKind::Domain && e.value == "alice.dev"),
+            ents.iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "alice.dev"),
             "must extract domain from bio URL"
         );
     }
@@ -345,9 +351,8 @@ mod tests {
         let p = make_profile("alice.bsky.social", None, None);
         let ents = build_entities(p, "scan-bsky-006");
         assert!(
-            ents.iter()
-                .any(|e| e.kind == EntityKind::Url
-                    && e.value == "https://bsky.app/profile/alice.bsky.social"),
+            ents.iter().any(|e| e.kind == EntityKind::Url
+                && e.value == "https://bsky.app/profile/alice.bsky.social"),
             "must emit canonical bsky.app profile URL"
         );
     }
@@ -356,6 +361,10 @@ mod tests {
     fn no_entities_beyond_username_and_profile_url_for_empty_profile() {
         let p = make_profile("quiet.bsky.social", None, None);
         let ents = build_entities(p, "scan-bsky-007");
-        assert_eq!(ents.len(), 2, "username + profile URL only when no optional fields");
+        assert_eq!(
+            ents.len(),
+            2,
+            "username + profile URL only when no optional fields"
+        );
     }
 }

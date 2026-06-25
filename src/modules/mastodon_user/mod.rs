@@ -134,14 +134,12 @@ impl Module for MastodonUser {
             if ctx.cancel.is_cancelled() {
                 break;
             }
-            let url = format!(
-                "https://{instance}/api/v1/accounts/lookup?acct={encoded}"
-            );
-            let acct: Option<MastodonAccount> =
-                match fetch_json_or_404(&ctx.http, SRC, &url).await {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
+            let url = format!("https://{instance}/api/v1/accounts/lookup?acct={encoded}");
+            let acct: Option<MastodonAccount> = match fetch_json_or_404(&ctx.http, SRC, &url).await
+            {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
             if let Some(acct) = acct {
                 // Confirm exact-match (API may return a prefix match on some servers).
                 if !acct.username.eq_ignore_ascii_case(handle) {
@@ -158,18 +156,10 @@ impl Module for MastodonUser {
 
 /// Pure account→entity mapping. `instance` is the Mastodon server that
 /// confirmed the account.
-pub(super) fn build_entities(
-    acct: MastodonAccount,
-    instance: &str,
-    scan_id: &str,
-) -> Vec<Entity> {
+pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &str) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
-    let profile_url = acct
-        .url
-        .as_deref()
-        .unwrap_or_default()
-        .to_string();
+    let profile_url = acct.url.as_deref().unwrap_or_default().to_string();
 
     let mut ev = Evidence::new(
         SRC,
@@ -197,10 +187,7 @@ pub(super) fn build_entities(
         url_e.tag("mastodon");
         url_e.add_evidence(Evidence::new(
             SRC,
-            format!(
-                "Mastodon profile URL for '@{}@{}'",
-                acct.username, instance
-            ),
+            format!("Mastodon profile URL for '@{}@{}'", acct.username, instance),
         ));
         result.push(url_e);
     }
@@ -237,10 +224,7 @@ pub(super) fn build_entities(
             e.add_evidence(
                 Evidence::new(
                     SRC,
-                    format!(
-                        "Email in Mastodon bio of '@{}@{}'",
-                        acct.username, instance
-                    ),
+                    format!("Email in Mastodon bio of '@{}@{}'", acct.username, instance),
                 )
                 .with_attr("source", "mastodon_bio"),
             );
@@ -260,10 +244,7 @@ pub(super) fn build_entities(
             url_e.add_evidence(
                 Evidence::new(
                     SRC,
-                    format!(
-                        "Link in Mastodon bio of '@{}@{}'",
-                        acct.username, instance
-                    ),
+                    format!("Link in Mastodon bio of '@{}@{}'", acct.username, instance),
                 )
                 .with_attr("source", "mastodon_bio"),
             );
@@ -292,8 +273,7 @@ pub(super) fn build_entities(
             if url_candidate.contains(instance) {
                 // Skip self-links to the mastodon instance.
             } else {
-                let mut url_e =
-                    Entity::new(EntityKind::Url, url_candidate, conf_url, scan_id);
+                let mut url_e = Entity::new(EntityKind::Url, url_candidate, conf_url, scan_id);
                 url_e.tag("mastodon");
                 url_e.tag("profile-field");
                 if verified {
@@ -313,8 +293,7 @@ pub(super) fn build_entities(
                     && host.contains('.')
                     && !is_common_platform(&host)
                 {
-                    let mut d =
-                        Entity::new(EntityKind::Domain, &host, conf_domain, scan_id);
+                    let mut d = Entity::new(EntityKind::Domain, &host, conf_domain, scan_id);
                     d.tag("mastodon");
                     d.tag("profile-field");
                     if verified {
@@ -537,7 +516,10 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Url && e.value.contains("alice.dev"));
         assert!(url_e.is_some());
-        assert!(url_e.unwrap().confidence < 0.75, "unverified field URL should be below 0.75");
+        assert!(
+            url_e.unwrap().confidence < 0.75,
+            "unverified field URL should be below 0.75"
+        );
         assert!(!url_e.unwrap().has_tag("rel-me-verified"));
     }
 

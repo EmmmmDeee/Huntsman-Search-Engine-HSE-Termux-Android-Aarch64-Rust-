@@ -128,10 +128,8 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
     // Confirmed-on-dev.to username.
     let mut u = Entity::new(EntityKind::Username, &user.username, 0.88, scan_id);
     u.tag("devto");
-    let mut ev = Evidence::new(SRC, format!("Dev.to account '{}'", user.username)).with_attr(
-        "profile_url",
-        format!("https://dev.to/{}", user.username),
-    );
+    let mut ev = Evidence::new(SRC, format!("Dev.to account '{}'", user.username))
+        .with_attr("profile_url", format!("https://dev.to/{}", user.username));
     if let Some(ref ts) = user.joined_at {
         ev = ev.with_attr("joined_at", ts);
     }
@@ -148,8 +146,11 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
         p.tag("devto");
         p.tag("derived");
         p.add_evidence(
-            Evidence::new(SRC, format!("Real name from Dev.to account '{}'", user.username))
-                .with_attr("devto_username", &user.username),
+            Evidence::new(
+                SRC,
+                format!("Real name from Dev.to account '{}'", user.username),
+            )
+            .with_attr("devto_username", &user.username),
         );
         result.push(p);
     }
@@ -183,7 +184,10 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
             t.add_evidence(
                 Evidence::new(
                     SRC,
-                    format!("Twitter/X username from Dev.to profile of '{}'", user.username),
+                    format!(
+                        "Twitter/X username from Dev.to profile of '{}'",
+                        user.username
+                    ),
                 )
                 .with_attr("source_field", "twitter_username")
                 .with_attr("devto_user", &user.username),
@@ -239,7 +243,10 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
         a.add_evidence(
             Evidence::new(
                 SRC,
-                format!("Self-reported location from Dev.to profile of '{}'", user.username),
+                format!(
+                    "Self-reported location from Dev.to profile of '{}'",
+                    user.username
+                ),
             )
             .with_attr("source_field", "location")
             .with_attr("devto_user", &user.username),
@@ -306,7 +313,9 @@ mod tests {
     fn builds_username_entity_confirmed_on_devto() {
         let user = make_user("devuser", None, None, None, None, None);
         let ents = build_entities(user, "scan-dt-001");
-        let u = ents.iter().find(|e| e.kind == EntityKind::Username && e.value == "devuser");
+        let u = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.value == "devuser");
         assert!(u.is_some(), "must emit Username entity");
         assert!((u.unwrap().confidence - 0.88).abs() < 0.01);
         assert!(u.unwrap().has_tag("devto"));
@@ -325,27 +334,59 @@ mod tests {
     fn no_person_from_single_word_name() {
         let user = make_user("devuser", Some("devuser"), None, None, None, None);
         let ents = build_entities(user, "scan-dt-003");
-        assert!(ents.iter().all(|e| e.kind != EntityKind::Person),
-            "single-token name must not produce a Person entity");
+        assert!(
+            ents.iter().all(|e| e.kind != EntityKind::Person),
+            "single-token name must not produce a Person entity"
+        );
     }
 
     #[test]
     fn emits_github_and_twitter_pivots() {
-        let user = make_user("devuser", None, Some("devuser-gh"), Some("devtw"), None, None);
+        let user = make_user(
+            "devuser",
+            None,
+            Some("devuser-gh"),
+            Some("devtw"),
+            None,
+            None,
+        );
         let ents = build_entities(user, "scan-dt-004");
-        let gh = ents.iter().find(|e| e.kind == EntityKind::Username && e.value == "devuser-gh");
-        assert!(gh.is_some() && gh.unwrap().has_tag("github"), "must emit GitHub pivot");
-        let tw = ents.iter().find(|e| e.kind == EntityKind::Username && e.value == "devtw");
-        assert!(tw.is_some() && tw.unwrap().has_tag("twitter"), "must emit Twitter pivot");
+        let gh = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.value == "devuser-gh");
+        assert!(
+            gh.is_some() && gh.unwrap().has_tag("github"),
+            "must emit GitHub pivot"
+        );
+        let tw = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.value == "devtw");
+        assert!(
+            tw.is_some() && tw.unwrap().has_tag("twitter"),
+            "must emit Twitter pivot"
+        );
     }
 
     #[test]
     fn emits_website_url_and_domain() {
-        let user = make_user("devuser", None, None, None, Some("https://devuser.io"), None);
+        let user = make_user(
+            "devuser",
+            None,
+            None,
+            None,
+            Some("https://devuser.io"),
+            None,
+        );
         let ents = build_entities(user, "scan-dt-005");
-        assert!(ents.iter().any(|e| e.kind == EntityKind::Url), "must emit website URL");
-        assert!(ents.iter().any(|e| e.kind == EntityKind::Domain && e.value == "devuser.io"),
-            "must emit domain from website");
+        assert!(
+            ents.iter().any(|e| e.kind == EntityKind::Url),
+            "must emit website URL"
+        );
+        assert!(
+            ents.iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "devuser.io"),
+            "must emit domain from website"
+        );
     }
 
     #[test]
@@ -361,8 +402,13 @@ mod tests {
     fn strips_at_from_twitter_username() {
         let user = make_user("devuser", None, None, Some("@twitterhandle"), None, None);
         let ents = build_entities(user, "scan-dt-007");
-        let tw = ents.iter().find(|e| e.kind == EntityKind::Username && e.has_tag("twitter"));
-        assert_eq!(tw.map(|e| e.value.as_str()), Some("twitterhandle"),
-            "must strip leading @ from twitter_username");
+        let tw = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.has_tag("twitter"));
+        assert_eq!(
+            tw.map(|e| e.value.as_str()),
+            Some("twitterhandle"),
+            "must strip leading @ from twitter_username"
+        );
     }
 }

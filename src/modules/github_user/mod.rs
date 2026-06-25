@@ -166,8 +166,12 @@ impl Module for GithubUser {
             // Emit the Twitter handle as a first-class Username so it becomes a
             // pivot target for username_search / social_probe in the next round.
             // Confidence 0.70: self-asserted on a confirmed GitHub profile.
-            let mut tw_entity =
-                Entity::new(EntityKind::Username, format!("twitter:{tw}"), 0.70, &ctx.scan_id);
+            let mut tw_entity = Entity::new(
+                EntityKind::Username,
+                format!("twitter:{tw}"),
+                0.70,
+                &ctx.scan_id,
+            );
             tw_entity.tag("twitter");
             tw_entity.tag("social-profile");
             tw_entity.add_evidence(

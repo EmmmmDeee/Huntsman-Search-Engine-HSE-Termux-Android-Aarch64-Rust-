@@ -4,8 +4,10 @@
 //!   `GET https://cloudflare-dns.com/dns-query?name={domain}&type={type}`
 //!   `GET https://dns.google/resolve?name={domain}&type={type}`
 //!
-//! Queries A, AAAA, MX, TXT, NS, CNAME records. Extracts IPs from A/AAAA,
-//! mail servers from MX, nameservers from NS, SPF/DKIM/DMARC from TXT.
+//! Queries A, AAAA, MX, TXT, NS, CNAME, SOA records. Extracts IPs from A/AAAA,
+//! mail servers from MX, nameservers from NS, SPF/DKIM from TXT, zone admin email
+//! and primary NS from SOA, and DMARC reporting addresses from a dedicated
+//! `_dmarc.{domain}` TXT query (RFC 7489 §6.6.3).
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -48,6 +50,7 @@ fn rtype_name(t: u16) -> Option<&'static str> {
         1 => Some("A"),
         2 => Some("NS"),
         5 => Some("CNAME"),
+        6 => Some("SOA"),
         15 => Some("MX"),
         16 => Some("TXT"),
         28 => Some("AAAA"),
@@ -55,8 +58,8 @@ fn rtype_name(t: u16) -> Option<&'static str> {
     }
 }
 
-/// The record types we query, in order.
-const RECORD_TYPES: &[&str] = &["A", "AAAA", "MX", "TXT", "NS", "CNAME"];
+/// The record types we query at the apex domain, in order.
+const RECORD_TYPES: &[&str] = &["A", "AAAA", "MX", "TXT", "NS", "CNAME", "SOA"];
 
 /// Reconstruct a TXT record's logical value from the DoH JSON presentation form.
 /// **Pure.** A TXT record is one or more character-strings; the resolvers return
@@ -228,8 +231,10 @@ fn records_for_type(
                     for field in ["rua=", "ruf="] {
                         if let Some(val_start) = txt.to_ascii_lowercase().find(field) {
                             let after = &txt[val_start + field.len()..];
-                            // Values may be comma-separated lists of URIs.
-                            for uri in after.split(',').map(str::trim) {
+                            // DMARC tag-value pairs are `;`-delimited (RFC 7489 §6.3):
+                            // clip the URI list before the next tag, then split on `,`.
+                            let value_part = after.split(';').next().unwrap_or(after).trim();
+                            for uri in value_part.split(',').map(str::trim) {
                                 // Strip trailing `;` or whitespace.
                                 let uri = uri.trim_end_matches(';').trim();
                                 if let Some(addr) = uri.strip_prefix("mailto:") {
@@ -237,18 +242,17 @@ fn records_for_type(
                                     // May have `!size` suffix: `dmarc@example.com!10m`.
                                     let addr = addr.split('!').next().unwrap_or(addr).trim();
                                     if addr.contains('@') && seen.insert(format!("dmarc:{addr}")) {
-                                        let mut e = Entity::new(
-                                            EntityKind::Email,
-                                            addr,
-                                            0.60,
-                                            scan_id,
-                                        );
+                                        let mut e =
+                                            Entity::new(EntityKind::Email, addr, 0.60, scan_id);
                                         e.tag("dns");
                                         e.tag("dmarc-reporting");
                                         e.add_evidence(
                                             Evidence::new(
                                                 SRC,
-                                                format!("DMARC {} reporting address for {domain}", &field[..3]),
+                                                format!(
+                                                    "DMARC {} reporting address for {domain}",
+                                                    &field[..3]
+                                                ),
                                             )
                                             .with_attr("dmarc_field", &field[..3])
                                             .with_attr("domain", domain),
@@ -271,10 +275,84 @@ fn records_for_type(
                     out.push(e);
                 }
             }
+            "SOA" => {
+                // SOA RDATA: `<mname> <rname> <serial> <refresh> <retry> <expire> <minimum>`
+                // `rname` is the zone admin's email with `@` encoded as `.`.
+                // Per RFC 1035 §3.3.13 the first unescaped `.` in the local-part
+                // marks the boundary: `hostmaster.example.com.` → `hostmaster@example.com`.
+                // We extract the email and the primary nameserver (mname).
+                let parts: Vec<&str> = rec.data.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    // Primary nameserver.
+                    let mname = parts[0].trim_end_matches('.');
+                    if mname.contains('.') && seen.insert(format!("soa-ns:{mname}")) {
+                        let mut e = Entity::new(EntityKind::Domain, mname, 0.72, scan_id);
+                        e.tag("dns");
+                        e.tag("soa");
+                        e.tag("nameserver");
+                        e.add_evidence(
+                            base(format!("SOA primary nameserver for {domain}"))
+                                .with_attr("record_type", "SOA")
+                                .with_attr("role", "mname"),
+                        );
+                        out.push(e);
+                    }
+                    // Zone admin email from RNAME.
+                    let rname = parts[1].trim_end_matches('.');
+                    if let Some(email) = soa_rname_to_email(rname)
+                        && email.contains('@')
+                        && seen.insert(format!("soa-email:{}", email.to_ascii_lowercase()))
+                    {
+                        let mut e = Entity::new(EntityKind::Email, &email, 0.62, scan_id);
+                        e.tag("dns");
+                        e.tag("soa");
+                        e.tag("zone-admin");
+                        e.add_evidence(
+                            base(format!("SOA zone admin email for {domain}"))
+                                .with_attr("record_type", "SOA")
+                                .with_attr("rname_raw", rname),
+                        );
+                        out.push(e);
+                    }
+                }
+            }
             _ => {}
         }
     }
     out
+}
+
+/// Convert an SOA RNAME field to an email address. Per RFC 1035 §3.3.13 the
+/// RNAME is a domain-name where the first unescaped `.` represents `@`.
+/// `hostmaster.example.com` → `hostmaster@example.com`.
+/// `john\.doe.example.com` → `john.doe@example.com` (escaped dot in local-part).
+/// Returns `None` when the result contains no `@` (single-label or malformed).
+fn soa_rname_to_email(rname: &str) -> Option<String> {
+    let mut local = String::new();
+    let mut bytes = rname.as_bytes().iter().copied().peekable();
+    loop {
+        match bytes.next()? {
+            b'\\' => {
+                // Escaped byte: include the literal next byte in the local-part.
+                if let Some(next) = bytes.next() {
+                    local.push(next as char);
+                } else {
+                    break;
+                }
+            }
+            b'.' => break, // First unescaped dot → the `@` boundary.
+            c => local.push(c as char),
+        }
+    }
+    if local.is_empty() {
+        return None;
+    }
+    let rest: String = bytes.map(|b| b as char).collect();
+    let domain = rest.trim_end_matches('.');
+    if domain.is_empty() || !domain.contains('.') {
+        return None;
+    }
+    Some(format!("{local}@{domain}"))
 }
 
 pub struct DohResolver;
@@ -285,7 +363,7 @@ impl Module for DohResolver {
         "doh_resolver"
     }
     fn description(&self) -> &'static str {
-        "DNS-over-HTTPS via Cloudflare + Google (A/MX/TXT/NS — free, unlimited)"
+        "DNS-over-HTTPS via Cloudflare + Google (A/AAAA/MX/TXT/NS/CNAME/SOA + DMARC — free)"
     }
     fn priority(&self) -> u8 {
         34
@@ -342,6 +420,20 @@ impl Module for DohResolver {
             result.entities.extend(records_for_type(
                 rtype,
                 &records,
+                &domain,
+                &mut seen,
+                &ctx.scan_id,
+            ));
+        }
+
+        // DMARC lives at `_dmarc.{domain}` (RFC 7489 §6.6.3), not at the apex.
+        // Query it separately so the parser sees the correct subdomain context.
+        if !ctx.cancel.is_cancelled() {
+            let dmarc_domain = format!("_dmarc.{domain}");
+            let dmarc_records = query_doh(&dmarc_domain, "TXT", &ctx.http).await;
+            result.entities.extend(records_for_type(
+                "TXT",
+                &dmarc_records,
                 &domain,
                 &mut seen,
                 &ctx.scan_id,

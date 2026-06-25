@@ -223,7 +223,9 @@ mod tests {
     #[test]
     fn vault_path_contains_huntsman() {
         let p = vault_path();
-        assert!(p.to_string_lossy().contains("huntsman") || p.to_string_lossy().contains("key_vault"));
+        assert!(
+            p.to_string_lossy().contains("huntsman") || p.to_string_lossy().contains("key_vault")
+        );
     }
 
     #[test]

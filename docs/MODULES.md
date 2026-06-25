@@ -126,7 +126,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `whoisxml` | domain | key_gated | no | 58 | email, person, organisation, domain |
 | `securitytrails` | ip_address, domain | key_gated | no | 45 | domain |
 | `subdomain_takeover` | domain | free | no | 40 | domain |
-| `doh_resolver` | domain, url | free | no | 34 | ip_address, domain |
+| `doh_resolver` | domain, url | free | no | 34 | ip_address, domain, email |
 | `cert_intel` | ip_address, domain | free | no | 33 | domain |
 | `whois` | ip_address, domain, url | free | no | 32 | domain, email, person, organisation, address |
 | `dns_intel` | ip_address, domain, url | free | no | 31 | ip_address, domain, email |

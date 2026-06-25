@@ -51,9 +51,7 @@ pub(in crate::core::correlator) fn rule_au_083_locale_multi_email_corroboration(
                     "{} independent email addresses share the '{}' locale naming pattern \
                      \u{2192} consistent geographic area: {} \
                      (coarse, self-asserted \u{2014} not a fixed address)",
-                    locale_count,
-                    locale_code,
-                    e.value,
+                    locale_count, locale_code, e.value,
                 ),
                 vec![e.uid.clone()],
                 scan_id,
@@ -88,7 +86,11 @@ mod tests {
                 .with_attr("pattern", "surname_suffix"),
         );
         let results = rule_au_083_locale_multi_email_corroboration(&[a], "scan-au083", 0);
-        assert_eq!(results.len(), 1, "AU-083 must fire when >=2 email_locale evidence entries share the same locale");
+        assert_eq!(
+            results.len(),
+            1,
+            "AU-083 must fire when >=2 email_locale evidence entries share the same locale"
+        );
         assert_eq!(results[0].rule_id, "AU-083");
     }
 
