@@ -232,9 +232,21 @@ fn subject_uid(entities: &[Entity]) -> Option<&str> {
 #[must_use]
 pub fn reachability(entities: &[Entity], relations: &[Relation], anchor_uid: &str) -> SeedReach {
     // The denominator is the RAW entity count (the coverage the operator sees), even if
-    // duplicate UIDs collapse to one node in the graph.
-    let total = entities.len();
-    let g = Graph::build(entities, relations);
+    // duplicate UIDs collapse to one node in the graph. Builds the graph and delegates to
+    // the shared body so the public entry point stays a one-line convenience.
+    reachability_on(
+        &Graph::build(entities, relations),
+        entities.len(),
+        anchor_uid,
+    )
+}
+
+/// [`reachability`] over a PREBUILT [`Graph`] — the shared body. A caller that already
+/// holds the undirected graph computes the seed reach without rebuilding it: [`compute`]
+/// builds the graph once for the k-core cohesion measures and reuses it here, halving the
+/// per-scan graph construction. `total` is the raw entity count for the coverage
+/// denominator (passed in, since a prebuilt graph has collapsed any duplicate UIDs).
+fn reachability_on(g: &Graph, total: usize, anchor_uid: &str) -> SeedReach {
     let Some(src) = g.index_of(anchor_uid) else {
         return SeedReach::unanchored();
     };
@@ -347,11 +359,15 @@ pub fn compute(entities: &[Entity], relations: &[Relation]) -> ScanMetrics {
     let graph_density = density(total_relations, total_entities);
 
     // ── Structural cohesion: degeneracy + main-core size ────────────────────
-    // One k-core decomposition over the same undirected graph (O(V+E)). Degeneracy is
-    // the max coreness; the main core is the set of nodes at that max. An edgeless graph
-    // has degeneracy 0 and an empty main core — guard so the all-isolated case (every
-    // node coreness 0) reports `0`, not "all nodes", as its core size.
-    let coreness = Graph::build(entities, relations).coreness();
+    // Build the undirected graph ONCE here and reuse it for both the k-core decomposition
+    // below and the seed-anchored reach further down — `Graph::build` clones+sorts every
+    // UID and allocates the adjacency, so doing it once instead of per-measure halves the
+    // graph construction on the per-scan finalisation path (a real win on Termux).
+    // Degeneracy is the max coreness; the main core is the set of nodes at that max. An
+    // edgeless graph has degeneracy 0 and an empty main core — guard so the all-isolated
+    // case (every node coreness 0) reports `0`, not "all nodes", as its core size.
+    let graph = Graph::build(entities, relations);
+    let coreness = graph.coreness();
     let graph_degeneracy = coreness.iter().copied().max().unwrap_or(0);
     let main_core_size = if graph_degeneracy == 0 {
         0
@@ -374,8 +390,10 @@ pub fn compute(entities: &[Entity], relations: &[Relation]) -> ScanMetrics {
     let distinct_evidence_sources = sources.len();
 
     // ── Seed-anchored multi-hop reach (depth + coverage from the subject) ────────
+    // Reuses the `graph` already built above for the cohesion measures, rather than
+    // rebuilding it inside `reachability`.
     let seed_reach = match subject_uid(entities) {
-        Some(anchor) => reachability(entities, relations, anchor),
+        Some(anchor) => reachability_on(&graph, total_entities, anchor),
         None => SeedReach::unanchored(),
     };
 
