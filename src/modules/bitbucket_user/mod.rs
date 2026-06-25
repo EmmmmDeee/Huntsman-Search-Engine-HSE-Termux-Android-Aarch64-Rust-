@@ -17,6 +17,7 @@ mod tests;
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::profile_kit;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -73,22 +74,15 @@ pub(super) fn build_entities(user: BbUser, scan_id: &str) -> Vec<Entity> {
     {
         return out;
     }
-    // Normalize: strip trailing slashes for canonical entity deduplication.
-    let profile_url = user
-        .links
-        .as_ref()
-        .and_then(|l| l.html.as_ref())
-        .and_then(|h| h.href.as_deref())
-        .map(str::trim)
-        .map(|u| u.trim_end_matches('/'))
-        .filter(|u| u.starts_with("http"))
-        .unwrap_or("")
-        .to_string();
-    let profile_url = if profile_url.is_empty() {
-        format!("https://bitbucket.org/{handle}")
-    } else {
-        profile_url
-    };
+    // Resolve the canonical profile URL from the nested `links.html.href`
+    // (trailing slash trimmed for dedup), falling back to the constructed form.
+    let profile_url = profile_kit::profile_url(
+        user.links
+            .as_ref()
+            .and_then(|l| l.html.as_ref())
+            .and_then(|h| h.href.as_deref()),
+        || format!("https://bitbucket.org/{handle}"),
+    );
 
     let ev = || {
         Evidence::new(SRC, format!("Bitbucket Cloud profile of '{handle}'"))
@@ -110,44 +104,29 @@ pub(super) fn build_entities(user: BbUser, scan_id: &str) -> Vec<Entity> {
 
     // Display name → Person (multi-word only; single-token is likely a handle).
     if let Some(name) = user.display_name.as_deref()
-        && name.trim().contains(' ')
+        && let Some(mut p) = profile_kit::person_from_name(name, 0.70, scan_id)
     {
-        let mut p = Entity::new(EntityKind::Person, name.trim(), 0.70, scan_id);
         p.tag("bitbucket");
         p.add_evidence(ev().with_attr("source_field", "display_name"));
         out.push(p);
     }
 
     // Personal website URL and derived domain.
-    if let Some(site) = user.website.as_deref()
-        && (site.starts_with("http://") || site.starts_with("https://"))
-    {
-        let site = site.trim();
-        let mut wu = Entity::new(EntityKind::Url, site, 0.70, scan_id);
-        wu.tag("bitbucket");
-        wu.add_evidence(ev().with_attr("source_field", "website"));
-        out.push(wu);
-        if let Some(host) = crate::util::url_util::host_from_url(site)
-            && host.contains('.')
-            && !matches!(
-                host.as_str(),
-                "bitbucket.org" | "github.com" | "gitlab.com" | "linkedin.com"
-            )
-        {
-            let mut d = Entity::new(EntityKind::Domain, &host, 0.63, scan_id);
-            d.tag("bitbucket");
-            d.tag("derived");
-            d.add_evidence(ev().with_attr("source_field", "website"));
-            out.push(d);
+    if let Some(site) = user.website.as_deref() {
+        for mut e in profile_kit::website_url_and_domain(site, 0.70, 0.63, scan_id) {
+            e.tag("bitbucket");
+            if e.kind == EntityKind::Domain {
+                e.tag("derived");
+            }
+            e.add_evidence(ev().with_attr("source_field", "website"));
+            out.push(e);
         }
     }
 
     // Location → Address (self-asserted, low confidence).
     if let Some(loc) = user.location.as_deref()
-        && !loc.trim().is_empty()
-        && loc.len() <= 100
+        && let Some(mut a) = profile_kit::location_address(loc, 0.36, scan_id)
     {
-        let mut a = Entity::new(EntityKind::Address, loc.trim(), 0.36, scan_id);
         a.tag("bitbucket");
         a.tag("self-asserted");
         a.add_evidence(ev().with_attr("source_field", "location"));

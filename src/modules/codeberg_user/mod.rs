@@ -24,6 +24,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::profile_kit;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -160,11 +161,9 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
     result.push(url_e);
 
     // Real name → Person (≥2 tokens, non-placeholder).
-    if let Some(ref name) = user.full_name
-        && name.split_whitespace().count() >= 2
-        && !crate::core::validation::is_placeholder_entity(&EntityKind::Person, name)
+    if let Some(name) = user.full_name.as_deref()
+        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
     {
-        let mut p = Entity::new(EntityKind::Person, name.trim(), 0.72, scan_id);
         p.tag("codeberg");
         p.tag("derived");
         p.add_evidence(
@@ -177,50 +176,43 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
         result.push(p);
     }
 
-    // Personal website URL + Domain.
-    if let Some(ref site) = user.website
-        && (site.starts_with("http://") || site.starts_with("https://"))
-    {
-        let mut site_e = Entity::new(EntityKind::Url, site, 0.72, scan_id);
-        site_e.tag("codeberg");
-        site_e.tag("personal-site");
-        site_e.add_evidence(
-            Evidence::new(
-                SRC,
-                format!("Personal site from Codeberg profile of '{}'", user.login),
-            )
-            .with_attr("source_field", "website"),
-        );
-        result.push(site_e);
-
-        if let Some(host) = crate::util::url_util::host_from_url(site)
-            && host.contains('.')
-            && !matches!(
-                host.as_str(),
-                "codeberg.org" | "github.com" | "gitlab.com" | "linkedin.com"
-            )
-        {
-            let mut d = Entity::new(EntityKind::Domain, &host, 0.65, scan_id);
-            d.tag("codeberg");
-            d.tag("derived");
-            d.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Domain from Codeberg profile of '{}'", user.login),
-                )
-                .with_attr("source_url", site)
-                .with_attr("codeberg_user", &user.login),
-            );
-            result.push(d);
+    // Personal website URL + Domain. The Url and Domain carry distinct evidence,
+    // so the kit's stable [Url, Domain] ordering is decorated per-kind.
+    if let Some(site) = user.website.as_deref() {
+        for mut e in profile_kit::website_url_and_domain(site, 0.72, 0.65, scan_id) {
+            match e.kind {
+                EntityKind::Domain => {
+                    e.tag("codeberg");
+                    e.tag("derived");
+                    e.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!("Domain from Codeberg profile of '{}'", user.login),
+                        )
+                        .with_attr("source_url", site)
+                        .with_attr("codeberg_user", &user.login),
+                    );
+                }
+                _ => {
+                    e.tag("codeberg");
+                    e.tag("personal-site");
+                    e.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!("Personal site from Codeberg profile of '{}'", user.login),
+                        )
+                        .with_attr("source_field", "website"),
+                    );
+                }
+            }
+            result.push(e);
         }
     }
 
     // Location → Address.
-    if let Some(ref loc) = user.location
-        && !loc.trim().is_empty()
-        && loc.len() <= 100
+    if let Some(loc) = user.location.as_deref()
+        && let Some(mut a) = profile_kit::location_address(loc, 0.38, scan_id)
     {
-        let mut a = Entity::new(EntityKind::Address, loc.trim(), 0.38, scan_id);
         a.tag("codeberg");
         a.tag("self-asserted");
         a.tag("geo-hint");
@@ -240,8 +232,7 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
 
     // Bio/description — extract emails.
     if let Some(bio) = user.description.as_deref() {
-        for email in crate::util::extract::emails(bio).into_iter().take(5) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
+        for mut e in profile_kit::bio_emails(bio, 0.70, scan_id, 5) {
             e.tag("codeberg");
             e.tag("public-profile");
             e.add_evidence(

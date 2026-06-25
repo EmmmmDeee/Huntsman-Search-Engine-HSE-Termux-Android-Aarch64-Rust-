@@ -15,6 +15,7 @@ mod tests;
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::profile_kit;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -69,9 +70,8 @@ pub(super) fn build_entities(user: DhUser, scan_id: &str) -> Vec<Entity> {
 
     // Full name → Person (multi-word only).
     if let Some(name) = user.full_name.as_deref()
-        && name.trim().contains(' ')
+        && let Some(mut p) = profile_kit::person_from_name(name, 0.70, scan_id)
     {
-        let mut p = Entity::new(EntityKind::Person, name.trim(), 0.70, scan_id);
         p.tag("dockerhub");
         p.add_evidence(ev().with_attr("source_field", "full_name"));
         out.push(p);
@@ -90,9 +90,8 @@ pub(super) fn build_entities(user: DhUser, scan_id: &str) -> Vec<Entity> {
 
     // Location → Address (self-asserted, low confidence).
     if let Some(loc) = user.location.as_deref()
-        && !loc.trim().is_empty()
+        && let Some(mut a) = profile_kit::location_address(loc, 0.35, scan_id)
     {
-        let mut a = Entity::new(EntityKind::Address, loc.trim(), 0.35, scan_id);
         a.tag("dockerhub");
         a.tag("self-asserted");
         a.add_evidence(ev().with_attr("source_field", "location"));
@@ -100,20 +99,14 @@ pub(super) fn build_entities(user: DhUser, scan_id: &str) -> Vec<Entity> {
     }
 
     // Personal website from profile_url (distinct from the canonical hub.docker.com URL).
-    if let Some(site) = user.profile_url.as_deref()
-        && site.starts_with("http")
-    {
-        let site = site.trim();
-        let mut wu = Entity::new(EntityKind::Url, site, 0.68, scan_id);
-        wu.tag("dockerhub");
-        wu.add_evidence(ev().with_attr("source_field", "profile_url"));
-        out.push(wu);
-        if let Some(host) = crate::util::url_util::host_from_url(site) {
-            let mut d = Entity::new(EntityKind::Domain, &host, 0.62, scan_id);
-            d.tag("dockerhub");
-            d.tag("derived");
-            d.add_evidence(ev().with_attr("source_field", "profile_url"));
-            out.push(d);
+    if let Some(site) = user.profile_url.as_deref() {
+        for mut e in profile_kit::website_url_and_domain(site, 0.68, 0.62, scan_id) {
+            e.tag("dockerhub");
+            if e.kind == EntityKind::Domain {
+                e.tag("derived");
+            }
+            e.add_evidence(ev().with_attr("source_field", "profile_url"));
+            out.push(e);
         }
     }
 

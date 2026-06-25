@@ -21,6 +21,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::profile_kit;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -150,11 +151,9 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     result.push(u);
 
     // Real name → Person (non-placeholder, ≥ 2 tokens).
-    if let Some(ref name) = user.name
-        && name.split_whitespace().count() >= 2
-        && !crate::core::validation::is_placeholder_entity(&EntityKind::Person, name)
+    if let Some(name) = user.name.as_deref()
+        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
     {
-        let mut p = Entity::new(EntityKind::Person, name.trim(), 0.72, scan_id);
         p.tag("gitlab");
         p.tag("derived");
         p.add_evidence(
@@ -235,48 +234,43 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
         result.push(url_e);
     }
 
-    // Website URL + Domain.
-    if let Some(ref site) = user.website_url
-        && !site.is_empty()
-        && (site.starts_with("http://") || site.starts_with("https://"))
-    {
-        let mut url_e = Entity::new(EntityKind::Url, site, 0.72, scan_id);
-        url_e.tag("gitlab");
-        url_e.tag("personal-site");
-        url_e.add_evidence(
-            Evidence::new(
-                SRC,
-                format!("Personal site from GitLab profile of '{}'", user.username),
-            )
-            .with_attr("source_field", "website_url"),
-        );
-        result.push(url_e);
-
-        if let Some(host) = crate::util::url_util::host_from_url(site)
-            && host.contains('.')
-            && !matches!(host.as_str(), "gitlab.com" | "github.com" | "linkedin.com")
-        {
-            let mut d = Entity::new(EntityKind::Domain, &host, 0.65, scan_id);
-            d.tag("gitlab");
-            d.tag("derived");
-            d.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Domain from GitLab profile of '{}'", user.username),
-                )
-                .with_attr("source_url", site)
-                .with_attr("gitlab_user", &user.username),
-            );
-            result.push(d);
+    // Website URL + Domain. The Url and Domain carry distinct evidence, so the
+    // kit's stable [Url, Domain] ordering is decorated per-kind.
+    if let Some(site) = user.website_url.as_deref() {
+        for mut e in profile_kit::website_url_and_domain(site, 0.72, 0.65, scan_id) {
+            match e.kind {
+                EntityKind::Domain => {
+                    e.tag("gitlab");
+                    e.tag("derived");
+                    e.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!("Domain from GitLab profile of '{}'", user.username),
+                        )
+                        .with_attr("source_url", site)
+                        .with_attr("gitlab_user", &user.username),
+                    );
+                }
+                _ => {
+                    e.tag("gitlab");
+                    e.tag("personal-site");
+                    e.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!("Personal site from GitLab profile of '{}'", user.username),
+                        )
+                        .with_attr("source_field", "website_url"),
+                    );
+                }
+            }
+            result.push(e);
         }
     }
 
     // Location → coarse Address.
-    if let Some(ref loc) = user.location
-        && !loc.trim().is_empty()
-        && loc.len() <= 100
+    if let Some(loc) = user.location.as_deref()
+        && let Some(mut a) = profile_kit::location_address(loc, 0.38, scan_id)
     {
-        let mut a = Entity::new(EntityKind::Address, loc.trim(), 0.38, scan_id);
         a.tag("gitlab");
         a.tag("self-asserted");
         a.tag("geo-hint");
@@ -296,8 +290,7 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
 
     // Bio: extract emails.
     if let Some(bio) = user.bio.as_deref() {
-        for email in crate::util::extract::emails(bio).into_iter().take(5) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.72, scan_id);
+        for mut e in profile_kit::bio_emails(bio, 0.72, scan_id, 5) {
             e.tag("gitlab");
             e.tag("public-profile");
             e.add_evidence(

@@ -16,6 +16,7 @@ mod tests;
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::profile_kit;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -75,11 +76,10 @@ pub(super) fn build_entities(user: HfUser, scan_id: &str) -> Vec<Entity> {
     u.add_evidence(ev());
     out.push(u);
 
-    // Full name → Person (require at least one space to avoid single-word handles).
+    // Full name → Person (require at least two tokens to avoid single-word handles).
     if let Some(name) = user.fullname.as_deref()
-        && name.trim().contains(' ')
+        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
     {
-        let mut p = Entity::new(EntityKind::Person, name.trim(), 0.72, scan_id);
         p.tag("huggingface");
         p.add_evidence(ev().with_attr("source_field", "fullname"));
         out.push(p);
@@ -96,20 +96,14 @@ pub(super) fn build_entities(user: HfUser, scan_id: &str) -> Vec<Entity> {
     }
 
     // Website URL and derived domain.
-    if let Some(site) = user.website.as_deref()
-        && site.starts_with("http")
-    {
-        let site = site.trim();
-        let mut wu = Entity::new(EntityKind::Url, site, 0.72, scan_id);
-        wu.tag("huggingface");
-        wu.add_evidence(ev().with_attr("source_field", "website"));
-        out.push(wu);
-        if let Some(host) = crate::util::url_util::host_from_url(site) {
-            let mut d = Entity::new(EntityKind::Domain, &host, 0.65, scan_id);
-            d.tag("huggingface");
-            d.tag("derived");
-            d.add_evidence(ev().with_attr("source_field", "website"));
-            out.push(d);
+    if let Some(site) = user.website.as_deref() {
+        for mut e in profile_kit::website_url_and_domain(site, 0.72, 0.65, scan_id) {
+            e.tag("huggingface");
+            if e.kind == EntityKind::Domain {
+                e.tag("derived");
+            }
+            e.add_evidence(ev().with_attr("source_field", "website"));
+            out.push(e);
         }
     }
 
