@@ -11,9 +11,11 @@
 //! * **Local Government Area** (LGA) — the council,
 //! * **Commonwealth electoral division** (CED) — the federal electorate,
 //! * **State electoral division** (SED) — the state electorate,
-//! * **Remoteness Area** (RA) — the Major-Cities…Very-Remote classification, and
+//! * **Remoteness Area** (RA) — the Major-Cities…Very-Remote classification,
 //! * **Statistical Areas** (SA2 / SA4) — the ABS census small area and the
-//!   labour-market region it sits in,
+//!   labour-market region it sits in, and
+//! * **Mesh-block land use** — the finest ASGS unit's category (Residential /
+//!   Commercial / Industrial / …): is this coordinate a home or a business?
 //!
 //! plus the state/territory. This is foundational GEOINT that applies to
 //! essentially every Australian address: it turns a bare lat/lon (e.g. the
@@ -132,6 +134,18 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-sa4",
         attr_key: "au_sa4",
         label: "statistical area level 4",
+        conf: 0.85,
+    },
+    LayerSpec {
+        // The finest ASGS unit carries a land-use category (Residential /
+        // Commercial / Industrial / Parkland / …) — a "what kind of place is
+        // this coordinate" signal: is an address a home or a business?
+        path: "MB",
+        name_field: "mb_category_2021",
+        code_field: "mb_code_2021",
+        kind: "au-land-use",
+        attr_key: "au_land_use",
+        label: "mesh-block land use",
         conf: 0.85,
     },
 ];

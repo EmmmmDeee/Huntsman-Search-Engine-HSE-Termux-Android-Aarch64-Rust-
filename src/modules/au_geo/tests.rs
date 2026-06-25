@@ -39,7 +39,8 @@ fn full_resolution() -> Vec<Option<(String, String, Option<String>)>> {
         Some(("Sydney (NSW)".into(), "10142".into(), nsw.clone())),
         Some(("Major Cities of Australia".into(), "10".into(), nsw.clone())),
         Some(("Sydney (North) - Millers Point".into(), "117031644".into(), nsw.clone())),
-        Some(("Sydney - City and Inner South".into(), "117".into(), nsw)),
+        Some(("Sydney - City and Inner South".into(), "117".into(), nsw.clone())),
+        Some(("Commercial".into(), "10741860000".into(), nsw)),
     ]
 }
 
@@ -66,6 +67,9 @@ fn assemble_emits_regions_and_enriches_coordinate() {
         && x.value.contains("Millers Point")));
     assert!(e.iter().any(|x| x.kind == EntityKind::Other("au-sa4".into())
         && x.value == "Sydney - City and Inner South"));
+    // Mesh-block land use — is this a home or a business?
+    assert!(e.iter().any(|x| x.kind == EntityKind::Other("au-land-use".into())
+        && x.value == "Commercial"));
 
     // The coordinate is enriched with the full administrative roll-up + state.
     let coord = e
@@ -81,7 +85,7 @@ fn assemble_emits_regions_and_enriches_coordinate() {
 #[test]
 fn assemble_skips_absent_layers_and_empty_resolution() {
     // Only the federal electorate resolved (e.g. a point with no SAL/SED cover).
-    let mut partial: Vec<Option<(String, String, Option<String>)>> = vec![None; 8];
+    let mut partial: Vec<Option<(String, String, Option<String>)>> = vec![None; 9];
     partial[3] = Some(("Canberra".to_string(), "801".to_string(), Some("ACT".to_string())));
     let mut r = ModuleResult::new();
     assemble("-35.3081,149.1245", &partial, "scan", &mut r);
@@ -90,7 +94,7 @@ fn assemble_skips_absent_layers_and_empty_resolution() {
     assert!(r.entities.iter().all(|x| x.kind != EntityKind::Other("au-postcode".into())));
 
     // Nothing resolved → no entities at all (not even an empty coordinate).
-    let empty_in: Vec<Option<(String, String, Option<String>)>> = vec![None; 8];
+    let empty_in: Vec<Option<(String, String, Option<String>)>> = vec![None; 9];
     let mut empty = ModuleResult::new();
     assemble("-35.0,149.0", &empty_in, "scan", &mut empty);
     assert!(empty.entities.is_empty());
