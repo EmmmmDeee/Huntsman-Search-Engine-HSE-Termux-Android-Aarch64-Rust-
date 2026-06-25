@@ -146,6 +146,7 @@ impl Module for WhoisXml {
             EntityKind::Domain,
             // Registrant/admin/tech WHOIS location (state, country) as a geo lead.
             EntityKind::Address,
+            EntityKind::Coordinates,
         ]
     }
 
@@ -337,6 +338,15 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
             e.tag("geo-hint");
             e.add_evidence(base_ev.clone().with_attr("contact_role", role));
             out.push(e);
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&loc) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.35, scan_id);
+                c.tag("whoisxml");
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.add_evidence(base_ev.clone().with_attr("contact_role", role));
+                out.push(c);
+            }
         }
     }
 

@@ -50,7 +50,7 @@ impl Module for BreachTimezone {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Address];
+        const KINDS: &[EntityKind] = &[EntityKind::Address, EntityKind::Coordinates];
         KINDS
     }
 
@@ -98,6 +98,26 @@ impl Module for BreachTimezone {
                 .with_attr("sample_count", hours.len().to_string())
                 .with_attr("concentration", format!("{:.0}%", tz.concentration * 100.0)),
             );
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(tz.region) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    tz.confidence - 0.10,
+                    &ctx.scan_id,
+                );
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.tag("timezone-inferred");
+                c.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("Geocode of timezone-inferred region '{}'", tz.region),
+                    )
+                    .with_attr("utc_offset", tz.utc_offset.to_string()),
+                );
+                result.push(c);
+            }
             result.push(e);
         }
 

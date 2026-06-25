@@ -81,6 +81,7 @@ impl Module for EmployerPivot {
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::Address,
+            EntityKind::Coordinates,
             EntityKind::Phone,
             EntityKind::Email,
             EntityKind::Url,
@@ -206,7 +207,30 @@ impl Module for EmployerPivot {
                     ev = ev.with_attr("employer_domain", &domain);
                     ev = ev.with_attr("source_urls", visited.join(" | "));
                     e.add_evidence(ev);
-                    Some(e)
+                    let coord = crate::util::city_coords::city_coords(&canon).map(|(lat, lon)| {
+                        let coord_val = format!("{lat:.4},{lon:.4}");
+                        let mut c = Entity::new(
+                            EntityKind::Coordinates,
+                            &coord_val,
+                            addr.confidence() - 0.10,
+                            &ctx.scan_id,
+                        );
+                        c.tag("addr-derived");
+                        c.tag("geoint");
+                        c.tag("country:AU");
+                        c.tag("employer-pivot");
+                        c.add_evidence(Evidence::new(
+                            SRC,
+                            format!("Geocode of business address from {domain}"),
+                        ));
+                        c
+                    });
+                    Some((e, coord))
+                })
+                .flat_map(|(e, coord)| {
+                    let mut v = vec![e];
+                    v.extend(coord);
+                    v
                 }),
         );
 

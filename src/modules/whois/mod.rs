@@ -74,6 +74,7 @@ impl Module for Whois {
             EntityKind::Person,
             EntityKind::Organisation,
             EntityKind::Address,
+            EntityKind::Coordinates,
         ];
         KINDS
     }
@@ -315,6 +316,22 @@ impl Module for Whois {
                     Evidence::new(SRC, format!("Registrant location for {}", target.value))
                         .with_attr("parent_target", target.value.as_str()),
                 );
+                if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
+                    let coord_val = format!("{lat:.4},{lon:.4}");
+                    let mut c =
+                        Entity::new(EntityKind::Coordinates, &coord_val, 0.40, &_ctx.scan_id);
+                    c.tag("whois");
+                    c.tag("addr-derived");
+                    c.tag("geoint");
+                    c.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!("Geocode of registrant address for {}", target.value),
+                        )
+                        .with_attr("parent_target", target.value.as_str()),
+                    );
+                    result.push(c);
+                }
                 result.push(ae);
             }
         }

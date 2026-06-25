@@ -161,6 +161,7 @@ impl Module for ContactEnrich {
             EntityKind::Person,
             EntityKind::Username,
             EntityKind::Address,
+            EntityKind::Coordinates,
             EntityKind::Url,
         ];
         KINDS
@@ -462,6 +463,18 @@ pub(super) fn build_email_entities(
             SRC,
             format!("Gravatar location for {normalised}"),
         ));
+        if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+            c.tag("gravatar");
+            c.tag("addr-derived");
+            c.tag("geoint");
+            c.add_evidence(Evidence::new(
+                SRC,
+                format!("Geocode of Gravatar location for {normalised}"),
+            ));
+            result.push(c);
+        }
         result.push(ae);
     }
     result.extend(entry.urls.iter().filter_map(|url_entry| {

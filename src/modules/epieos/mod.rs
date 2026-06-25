@@ -197,6 +197,18 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
                 ae.tag("country:AU");
             }
             ae.add_evidence(Evidence::new(SRC, format!("Skype location for {email}")));
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&location) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.42, scan_id);
+                c.tag("epieos");
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Geocode of Skype location for {email}"),
+                ));
+                out.push(c);
+            }
             out.push(ae);
         }
     }
@@ -228,6 +240,18 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
                 rev_ev = rev_ev.with_attr("review_date", d);
             }
             ae.add_evidence(rev_ev);
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(place) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.42, scan_id);
+                c.tag("epieos");
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Geocode of Maps review place '{place}' for {email}"),
+                ));
+                out.push(c);
+            }
             out.push(ae);
         }
     }
@@ -278,6 +302,7 @@ impl Module for Epieos {
             EntityKind::Person,
             EntityKind::Username,
             EntityKind::Address,
+            EntityKind::Coordinates,
         ];
         KINDS
     }

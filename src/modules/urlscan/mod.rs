@@ -106,6 +106,7 @@ impl Module for UrlScan {
         const KINDS: &[EntityKind] = &[
             EntityKind::IpAddress,
             EntityKind::Address,
+            EntityKind::Coordinates,
             // Domains/subdomains seen hosting the target + the scanned URLs —
             // attack-surface pivots the module used to discard.
             EntityKind::Domain,
@@ -245,8 +246,8 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
             }),
     );
 
-    // Hosting countries → geo-hint Address.
-    out.extend(intel.countries.iter().map(|country| {
+    // Hosting countries → geo-hint Address + optional Coordinates.
+    out.extend(intel.countries.iter().flat_map(|country| {
         let mut e = Entity::new(EntityKind::Address, country, 0.50, scan_id);
         e.tag("urlscan");
         e.tag("geoint");
@@ -254,7 +255,21 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
             SRC,
             format!("Hosting country from URLScan.io scans of {target_value}"),
         ));
-        e
+        let coord = crate::util::city_coords::city_coords(country).map(|(lat, lon)| {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.40, scan_id);
+            c.tag("urlscan");
+            c.tag("addr-derived");
+            c.tag("geoint");
+            c.add_evidence(Evidence::new(
+                SRC,
+                format!("Geocode of hosting country '{country}' for {target_value}"),
+            ));
+            c
+        });
+        let mut v = vec![e];
+        v.extend(coord);
+        v
     }));
 
     // Associated domains/subdomains (drop the seed echo + dotless junk).

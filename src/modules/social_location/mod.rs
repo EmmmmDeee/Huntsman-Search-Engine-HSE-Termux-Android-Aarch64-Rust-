@@ -50,7 +50,7 @@ impl Module for SocialLocation {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Address];
+        const KINDS: &[EntityKind] = &[EntityKind::Address, EntityKind::Coordinates];
         KINDS
     }
 
@@ -114,6 +114,24 @@ impl Module for SocialLocation {
                     .with_attr("url", url)
                     .with_attr("platform", &host),
                 );
+                if let Some((lat, lon)) = crate::util::city_coords::city_coords(trimmed) {
+                    let coord_val = format!("{lat:.4},{lon:.4}");
+                    let mut c = Entity::new(
+                        EntityKind::Coordinates,
+                        &coord_val,
+                        conf - 0.10,
+                        &ctx.scan_id,
+                    );
+                    c.tag("addr-derived");
+                    c.tag("geoint");
+                    c.tag("social-profile");
+                    c.add_evidence(
+                        Evidence::new(SRC, format!("Geocode of social location '{trimmed}'"))
+                            .with_attr("url", url)
+                            .with_attr("platform", &host),
+                    );
+                    result.push(c);
+                }
                 result.push(e);
             }
         }

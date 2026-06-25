@@ -55,7 +55,7 @@ impl Module for EmailHeaderGeo {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Address];
+        const KINDS: &[EntityKind] = &[EntityKind::Address, EntityKind::Coordinates];
         KINDS
     }
 
@@ -109,6 +109,23 @@ impl Module for EmailHeaderGeo {
                 .with_attr("domain", domain)
                 .with_attr("method", geo.reason),
             );
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(geo.region) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    geo.confidence - 0.10,
+                    &ctx.scan_id,
+                );
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.tag("email-infra-inferred");
+                c.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Geocode of email-domain region '{}'", geo.region),
+                ));
+                result.push(c);
+            }
             result.push(e);
         }
 
@@ -125,6 +142,18 @@ impl Module for EmailHeaderGeo {
                 .with_attr("domain", domain)
                 .with_attr("provider", provider),
             );
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(region) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.30, &ctx.scan_id);
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.tag("email-provider-inferred");
+                c.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Geocode of provider region '{region}'"),
+                ));
+                result.push(c);
+            }
             result.push(e);
         }
 
