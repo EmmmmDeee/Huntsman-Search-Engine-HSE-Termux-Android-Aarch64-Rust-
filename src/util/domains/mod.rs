@@ -329,7 +329,7 @@ pub fn is_infrastructure_email(email: &str) -> bool {
     // emission without depending on `core`.
     INFRA_MAIL
         .iter()
-        .any(|d| registrable == *d || domain == *d || domain.ends_with(&format!(".{d}")))
+        .any(|d| registrable == *d || is_or_subdomain_of(domain, d))
 }
 
 /// Registrable domains of CDN / cloud / registrar / DNS / ESP providers whose
