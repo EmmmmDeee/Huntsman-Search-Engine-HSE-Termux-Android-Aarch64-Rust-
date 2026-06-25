@@ -71,6 +71,7 @@ pub mod ipqs;
 pub mod ipquery;
 pub mod keybase;
 pub mod leakix;
+pub mod lobsters;
 pub mod local_net;
 pub mod mls;
 pub mod mylnikov;
@@ -303,6 +304,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(github_user::GithubUser),
         Arc::new(github_code_search::GithubCodeSearch),
         Arc::new(hacker_news::HackerNews),
+        Arc::new(lobsters::Lobsters),
         Arc::new(npm_author::NpmAuthor),
         Arc::new(crates_io::CratesIo),
         Arc::new(reddit_user::RedditUser),
