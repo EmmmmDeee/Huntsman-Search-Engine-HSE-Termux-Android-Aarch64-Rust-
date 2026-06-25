@@ -249,6 +249,27 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         crate::modules::reconnaissance_coverage(sources.iter().copied())
     };
 
+    // Per-module skip reasons — derived from the event log so the operator
+    // can diagnose "why was oathnet_pro in modules_skipped?" without
+    // needing --log-level debug. Grouped as { module: { reason: count } }
+    // using BTreeMap for stable JSON key order. Computed once; shared by
+    // the json, dossier, and table output paths.
+    let module_skip_reasons: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, usize>,
+    > = {
+        use crate::core::event::EventKind;
+        let events = store.events_for_scan(&sid).unwrap_or_default();
+        let mut acc: std::collections::BTreeMap<String, std::collections::BTreeMap<String, usize>> =
+            std::collections::BTreeMap::new();
+        for ev in events {
+            if let EventKind::ModuleSkipped { module, reason } = ev.kind {
+                *acc.entry(module).or_default().entry(reason).or_insert(0) += 1;
+            }
+        }
+        acc
+    };
+
     if cmd.output == "json" {
         // Full self-optimization payload — scan + entities + correlations
         // + diagnostics (module ranking, confidence calibration, geo
@@ -261,28 +282,6 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             .saturating_mul(1000);
         let diag =
             crate::util::diagnostics::analyse(&sid, kind_str, &cmd.value, wall_ms, &entities);
-
-        // Per-module skip reasons — derived from the event log so the operator
-        // can diagnose "why was oathnet_pro in modules_skipped?" without
-        // needing --log-level debug. Grouped as { module: { reason: count } }
-        // using BTreeMap for stable JSON key order.
-        let module_skip_reasons: std::collections::BTreeMap<
-            String,
-            std::collections::BTreeMap<String, usize>,
-        > = {
-            use crate::core::event::EventKind;
-            let events = store.events_for_scan(&sid).unwrap_or_default();
-            let mut acc: std::collections::BTreeMap<
-                String,
-                std::collections::BTreeMap<String, usize>,
-            > = std::collections::BTreeMap::new();
-            for ev in events {
-                if let EventKind::ModuleSkipped { module, reason } = ev.kind {
-                    *acc.entry(module).or_default().entry(reason).or_insert(0) += 1;
-                }
-            }
-            acc
-        };
 
         println!(
             "{}",
@@ -305,6 +304,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             kind_str,
             &cmd.value,
             &sid,
+            &module_skip_reasons,
         );
     } else {
         let color = use_color();
@@ -321,13 +321,19 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             // (`hse config module.<name> off`) moves it out of `run` and into
             // `skipped` here, without needing `--output json`.
             println!(
-                "  modules: {} run, {} errored, {} timed out, {} deduped, {} skipped\n",
+                "  modules: {} run, {} errored, {} timed out, {} deduped, {} skipped{}",
                 scan.modules_run,
                 scan.modules_errored,
                 scan.modules_timed_out,
                 scan.modules_deduped,
-                scan.modules_skipped
+                scan.modules_skipped,
+                if !module_skip_reasons.is_empty() {
+                    " (--output json for skip details)"
+                } else {
+                    ""
+                },
             );
+            println!();
         } else {
             println!();
         }

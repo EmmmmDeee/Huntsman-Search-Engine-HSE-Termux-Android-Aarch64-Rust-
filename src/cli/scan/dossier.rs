@@ -5,6 +5,7 @@
 
 use crate::core::{correlator::Correlation, entity::Entity, relation::Relation, scan::Scan};
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn print_dossier(
     scan: &Scan,
     entities: &[Entity],
@@ -13,6 +14,7 @@ pub(super) fn print_dossier(
     kind: &str,
     value: &str,
     sid: &str,
+    skip_reasons: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, usize>>,
 ) {
     use std::collections::BTreeMap;
 
@@ -156,10 +158,17 @@ pub(super) fn print_dossier(
         println!();
     }
 
-    print_diagnostics(scan, entities, kind, value, sid);
+    print_diagnostics(scan, entities, kind, value, sid, skip_reasons);
 }
 
-fn print_diagnostics(scan: &Scan, entities: &[Entity], kind: &str, value: &str, sid: &str) {
+fn print_diagnostics(
+    scan: &Scan,
+    entities: &[Entity],
+    kind: &str,
+    value: &str,
+    sid: &str,
+    skip_reasons: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, usize>>,
+) {
     let wall_ms = scan
         .finished_at
         .and_then(|f| f.checked_sub(scan.started_at))
@@ -324,6 +333,17 @@ fn print_diagnostics(scan: &Scan, entities: &[Entity], kind: &str, value: &str, 
         println!("  • {hint}");
     }
     println!();
+
+    if !skip_reasons.is_empty() {
+        println!("━━━ MODULE SKIP REASONS ━━━");
+        println!();
+        for (module, reasons) in skip_reasons {
+            for (reason, count) in reasons {
+                println!("  {module:<26} ×{count:<4} {reason}");
+            }
+        }
+        println!();
+    }
 
     println!("━━━ END OF DOSSIER ━━━");
 }
