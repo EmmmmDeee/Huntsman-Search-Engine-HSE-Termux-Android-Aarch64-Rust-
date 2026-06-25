@@ -166,6 +166,9 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 > `modules_md_lists_every_registered_module` CI guard — lives in
 > [`docs/MODULES.md`](docs/MODULES.md). The headline count is swept against
 > `registry()` in CI; run `hse modules` for the live list.
+>
+> **How HSE compares** to SpiderFoot, Maltego, Recon-ng, Shodan, and SEON:
+> see [`docs/COMPARISON.md`](docs/COMPARISON.md).
 
 **API-Free (no keys required) — 92:**
 - **Breach/identity**: `psbdmp`, `pwned_passwords`, `xposed_or_not`
