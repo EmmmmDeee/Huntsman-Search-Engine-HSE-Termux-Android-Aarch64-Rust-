@@ -95,6 +95,18 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     assert_eq!(label, "oathnet-txt");
     assert!(txt.iter().any(|e| e.kind == EntityKind::Url));
 
+    // DeHashed CSV export → the breach-table branch.
+    let (csvents, label) = entities_from_upload(
+        "id,email,username,name,database_name,password,phone\n\
+         1,jordanavery@gmail.com,javery,Jordan Avery,ExampleBreach,Hunter2pass,+61412345678\n",
+        "s",
+    )
+    .await
+    .unwrap();
+    assert_eq!(label, "dehashed-csv");
+    assert!(has(&csvents, EntityKind::Email, "jordanavery@gmail.com"));
+    assert!(has(&csvents, EntityKind::Person, "Jordan Avery"));
+
     // JSON API export → parsed (and the label proves the branch).
     let (_json, label) =
         entities_from_upload(r#"{"exportInfo":{"query":"x"},"searchResults":{}}"#, "s")
@@ -146,6 +158,57 @@ fn dossier_is_detected_and_oathnet_txt_is_not() {
     assert!(!looks_like_dossier(
         "URL: https://x.com/login\nUsername: bob\nPassword: hunter2\n"
     ));
+}
+
+use super::csv::{looks_like_dehashed_csv, parse_dehashed_csv};
+
+#[test]
+fn dehashed_csv_is_detected_strictly() {
+    assert!(looks_like_dehashed_csv(
+        "id,email,username,database_name,password\n1,a@b.com,x,Breach,pw\n"
+    ));
+    assert!(looks_like_dehashed_csv(
+        "email,hashed_password.1\nx@y.com,abc\n"
+    ));
+    // An arbitrary CSV without the DeHashed hallmark is not swallowed.
+    assert!(!looks_like_dehashed_csv("name,age\nBob,42\n"));
+    // Nor are the other import formats.
+    assert!(!looks_like_dehashed_csv(DOSSIER));
+}
+
+#[test]
+fn dehashed_csv_parses_quoted_fields_and_every_kind() {
+    // Synthetic placeholders only (no real PII). The address carries an internal
+    // comma, so it must be quoted — exercising the RFC-4180 field reader.
+    let csv = "id,email,username,hashed_password.1,name,database_name,url,password,address,phone\n\
+        1,jordanavery@gmail.com,javery,$2a$10$abcdefghijklmnopqrs,Jordan Avery,ExampleBreach2019,\
+https://site.example/u,Sup3rSecret!,\"12 Smith St, Carlton VIC 3053\",+61412345678\n";
+    let (ents, stats) = parse_dehashed_csv(csv, "s");
+    let has = |k: EntityKind, pred: &dyn Fn(&str) -> bool| {
+        ents.iter().any(|e| e.kind == k && pred(&e.value))
+    };
+    assert!(has(EntityKind::Email, &|v| v == "jordanavery@gmail.com"));
+    assert!(has(EntityKind::Username, &|v| v == "javery"));
+    assert!(has(EntityKind::Person, &|v| v == "Jordan Avery"));
+    assert!(has(EntityKind::Credential, &|v| v == "Sup3rSecret!")); // plaintext
+    assert!(has(EntityKind::Credential, &|v| v.starts_with("$2a$"))); // hash
+    // The quoted address (internal comma) parsed as ONE field.
+    assert!(has(EntityKind::Address, &|v| v
+        .to_ascii_lowercase()
+        .contains("carlton")));
+    assert!(ents.iter().any(|e| e.kind == EntityKind::Phone));
+    assert!(ents.iter().any(|e| e.kind == EntityKind::Url));
+    // Every breach entity carries its source database in evidence.
+    let em = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("email");
+    assert!(em.evidence.iter().any(|ev| {
+        ev.attributes
+            .get("database_name")
+            .is_some_and(|v| v == "ExampleBreach2019")
+    }));
+    assert_eq!(stats.breach_records, 1);
 }
 
 #[test]

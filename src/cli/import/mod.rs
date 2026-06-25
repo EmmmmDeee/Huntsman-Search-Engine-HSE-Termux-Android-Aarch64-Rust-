@@ -6,6 +6,7 @@
 
 use crate::core::error::{Error, Result};
 
+mod csv;
 mod dossier;
 mod html;
 mod json;
@@ -15,6 +16,7 @@ mod txt;
 
 // Format parsers live in the per-format submodules; pull their entry points
 // into scope for the dispatcher, the web-upload router and the tests.
+use csv::{cmd_import_csv, looks_like_dehashed_csv, parse_dehashed_csv};
 use dossier::{cmd_import_dossier, parse_dossier};
 use html::{cmd_import_html, parse_oathnet_html};
 use json::{import_json_output, parse_oathnet_json};
@@ -53,6 +55,12 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
             return cmd_import_dossier(&body, output).await;
         }
         return cmd_import_txt(&body, output).await;
+    }
+
+    // A DeHashed CSV export (by extension or by its header columns) — a breach
+    // table, not OathNet JSON.
+    if path.ends_with(".csv") || looks_like_dehashed_csv(&body) {
+        return cmd_import_csv(&body, output).await;
     }
 
     let doc: serde_json::Value =
@@ -137,6 +145,8 @@ pub(crate) async fn entities_from_upload(
         (parse_oathnet_json(&doc, sid).await.0, "oathnet-json")
     } else if looks_like_dossier(body) {
         (parse_dossier(body, sid).0, "dossier")
+    } else if looks_like_dehashed_csv(body) {
+        (parse_dehashed_csv(body, sid).0, "dehashed-csv")
     } else {
         // The catch-all text format: an OathNet stealer-log TXT.
         (parse_oathnet_txt(body, sid).0, "oathnet-txt")
