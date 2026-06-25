@@ -173,6 +173,7 @@ pub async fn run() -> Result<()> {
             expand_all_identities,
             profile,
             output,
+            include_infra,
         } => {
             let value = resolve_seed(value, keys::default_seed())?;
             // `--full` is the no-compromise preset: force every module on (drop
@@ -209,6 +210,7 @@ pub async fn run() -> Result<()> {
                 expand_all_identities: expand_all_identities || full,
                 profile,
                 output,
+                include_infra: include_infra || full,
             })
             .await
         }

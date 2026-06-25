@@ -512,6 +512,7 @@ impl super::ScanEngine {
                 target_kind = cx.target.kind.canonical_str(),
                 target_value = %cx.target.value,
                 is_expansion = cx.is_expansion,
+                depth = cx.opts.depth,
                 corroborating_sources = target_sources,
                 skip_reason = reason,
                 "module skipped"

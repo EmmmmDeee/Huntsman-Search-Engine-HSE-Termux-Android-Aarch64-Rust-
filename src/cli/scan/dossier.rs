@@ -32,6 +32,24 @@ pub(super) fn print_dossier(
     );
     println!();
 
+    // Confidence histogram — five equal-width bands of c_effective().
+    if !entities.is_empty() {
+        let mut bins = [0usize; 5]; // [0-20), [20-40), [40-60), [60-80), [80-100]
+        for e in entities {
+            let band = ((e.c_effective() * 5.0).floor() as usize).min(4);
+            bins[band] += 1;
+        }
+        let labels = ["0–20%", "20–40%", "40–60%", "60–80%", "80–100%"];
+        println!("  Confidence distribution (c_effective):");
+        for (label, &count) in labels.iter().zip(bins.iter()) {
+            if count > 0 {
+                let bar = "█".repeat((count * 20 / entities.len()).max(1));
+                println!("    {label:<8}  {bar} {count}");
+            }
+        }
+        println!();
+    }
+
     let mut by_kind: BTreeMap<String, Vec<&Entity>> = BTreeMap::new();
     for e in entities {
         by_kind.entry(e.kind.to_string()).or_default().push(e);

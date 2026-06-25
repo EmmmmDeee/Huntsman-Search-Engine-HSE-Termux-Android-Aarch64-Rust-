@@ -45,6 +45,7 @@ pub(super) struct ScanCmd {
     pub expand_all_identities: bool,
     pub profile: Option<String>,
     pub output: String,
+    pub include_infra: bool,
 }
 
 pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
@@ -227,7 +228,10 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     };
 
     let scan = engine.run(scan, target, ctx).await?;
-    let entities = store.entities_for_scan(&sid)?;
+    let mut entities = store.entities_for_scan(&sid)?;
+    if !cmd.include_infra {
+        entities.retain(|e| !e.has_tag("platform-infra"));
+    }
     let correlations = store.correlations_for_scan(&sid)?;
     let relations = store.relations_for_scan(&sid)?;
 
