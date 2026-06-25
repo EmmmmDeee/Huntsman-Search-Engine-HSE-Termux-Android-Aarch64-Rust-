@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (153 modules: 120 free · 28 key-gated · 5 paid)
+## Catalogue (154 modules: 121 free · 28 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -180,7 +180,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `urlscan` | ip_address, domain, url | free | no | 15 | ip_address |
 | `netlas` | ip_address, domain, email | key_gated | no | 79 | ip_address, email, domain, organisation, coordinates, address |
 
-### web (6)
+### web (7)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -190,6 +190,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `waf_detect` | domain, url | free | no | 30 | domain |
 | `cloud_storage` | domain, organisation | free | no | 25 | url |
 | `web_crawler` | domain, url | free | no | 20 | email, url, domain, phone, api_key |
+| `app_links` | domain | free | no | 90 | domain |
 
 ### geo (20)
 

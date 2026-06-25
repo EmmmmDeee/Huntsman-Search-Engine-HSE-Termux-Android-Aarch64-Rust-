@@ -11,6 +11,7 @@ pub mod acma_rrl;
 pub mod acnc_charities;
 pub mod ahpra;
 pub mod api_key_probe;
+pub mod app_links;
 pub mod asic_director;
 pub mod au_electoral;
 pub mod au_people;
@@ -324,6 +325,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(search_engines::SearchEngines),
         Arc::new(webserver_banner::WebserverBanner),
         Arc::new(web_crawler::WebCrawler),
+        Arc::new(app_links::AppLinks),
         Arc::new(url_extract::UrlExtract),
         Arc::new(urlscan::UrlScan),
         Arc::new(email_parse::EmailParse),
