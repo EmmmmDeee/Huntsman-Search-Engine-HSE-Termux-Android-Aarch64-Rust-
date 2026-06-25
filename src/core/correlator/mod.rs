@@ -323,6 +323,7 @@ const RELATION_RULES: &[RelationRuleFn] = &[
     rule_au_031_malicious_adjacency,
     rule_au_032_colocation_cluster,
     rule_au_060_transitive_identity_closure,
+    rule_au_061_shared_registrant,
 ];
 
 /// Run every relation-aware rule over an already quarantine-filtered, confirmed

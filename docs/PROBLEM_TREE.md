@@ -76,8 +76,8 @@ Each node: **ID · statement · location · impact · → optimal solution · pr
 Current baseline (grounded in the codebase, 2026-06-18): **126 modules** (93 free
 · 28 key-gated · 5 paid) across 14 categories (Infrastructure 21, Geo 20, People
 16, DnsRecon 13, Breach 11, Social 11, Email 6, Corporate 9, Phone 3, Web 5,
-Sensor 4, Threat 3, Search/Other 2 each); 59 native correlation rules
-(AU-001…AU-059); 0 `unsafe`; deterministic entity merge; SQLite store; SSE live;
+Sensor 4, Threat 3, Search/Other 2 each); 61 native correlation rules
+(AU-001…AU-061); 0 `unsafe`; deterministic entity merge; SQLite store; SSE live;
 axum SPA. Deps: `regex` in; **`proptest` 1.11 + `criterion` 0.8 direct (dev-only,
 zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
 `util::scan` + `util::html`); `bstr`, `fst`, `arbitrary` still NOT direct.**
@@ -2158,3 +2158,7 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
 - **2026-06-25** — **Cycle R10 (P→S): URL tracking-param fragmentation defeats corroboration.**
   - **(P-URL-QUERY-FRAGMENT)** `src/core/entity/mod.rs` `normalise()` Url arm (pre-cycle lines 898–928) lowercased scheme+host and stripped the fragment + trailing slash, but **preserved the query string verbatim**. SERP-discovered URLs are saturated with per-engine click/campaign tracking (`?utm_*`, `?fbclid`, Twitter's `?ref_src=twsrc%5Etfw`, Instagram `?igshid=…`), so the *same* profile/page returned by two engines produced two different normalised values → two different SHA-256 UIDs → two single-source entities instead of one. This directly defeats the corroboration boost the confidence model already computes: `c_effective()` (`entity/mod.rs:444-451`) rewards distinct corroborating sources via a noisy-OR + multiplicative term, but a fragmented URL is seen as `n=1` twice and never crosses the Probable/Verified tiers it should. It also inflates entity counts (duplicate findings) and query-param *order* alone (`?a=1&b=2` vs `?b=2&a=1`) produced distinct UIDs for one resource. Surfaced by the internal entity-resolution analysis (3-agent gap sweep, 2026-06-25); confirmed against real SERP URL shapes, not synthetic fixtures.
   **Paired:** `SOLUTION_TREE` SOL-R10 — same commit.
+
+- **2026-06-25** — **Cycle R11 (P→S): no shared-infrastructure co-ownership linkage.**
+  - **(P-SHARED-REGISTRANT-BLIND)** The correlator (`src/core/correlator/`) had 60 AU rules but none that links two DISTINCT subject Domains by a shared owner. `relation::builders::derive_registration` (`src/core/relation/builders.rs:191`) already emits `RegisteredBy` edges (Domain → registrant Organisation/Email) from WHOIS/RDAP, so two domains registered by one party already point at the same registrant node in the edge set — but no rule grouped those edges to assert "Domain A and Domain B are co-owned." The classic WHOIS pivot for mapping an actor's domain estate was therefore unavailable: AU-031 only *suppresses* shared infrastructure as noise (millions of unrelated sites behind one CDN edge), and AU-060 transitive closure only fires for identity-kind endpoints (Person/Email/Phone/Username), not Domain↔Domain. Surfaced by the internal correlator/linkage gap sweep (2026-06-25, Agent 2). Distinct from AU-044 (shared web-analytics ID): that is a copy-pasteable tag; a registrant is contractual ownership.
+  **Paired:** `SOLUTION_TREE` SOL-R11 — same commit.

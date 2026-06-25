@@ -144,6 +144,13 @@ fn core_does_not_import_util_directly() {
                 // (no I/O, no network). The engine's address_to_coords_pass uses
                 // it to convert Address entities into Coordinates for geo correlation.
                 && !line.contains("util::city_coords::city_coords")
+                // Pure, dependency-free email classifier (role local-part + a
+                // static CDN/registrar/proxy mail-domain set; no I/O, no deps) —
+                // same leaf category as `address_au::state_code`. AU-061 uses it
+                // to exclude privacy-proxy / registrar registrant mailboxes
+                // (`abuse@godaddy.com`, `*@whoisguard.com`) from shared-registrant
+                // co-ownership, so a shared proxy can't mass-link unrelated domains.
+                && !line.contains("util::domains::is_infrastructure_email")
         })
         .collect();
     assert!(

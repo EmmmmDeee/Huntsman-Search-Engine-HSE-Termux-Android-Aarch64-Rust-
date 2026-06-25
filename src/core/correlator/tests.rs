@@ -3957,3 +3957,172 @@ fn au030_fires_for_three_source_geo_cluster() {
     assert_eq!(r[0].rule_id, "AU-030");
     assert_eq!(r[0].severity, Severity::Medium);
 }
+
+// ── AU-061 — shared-registrant domain co-ownership (relation rule) ──────────
+
+#[test]
+fn au061_fires_on_shared_registrant_org() {
+    use crate::core::relation::{Relation, RelationKind};
+    // Two distinct domains both RegisteredBy the same genuine Organisation →
+    // one High co-ownership finding naming both domains and the registrant.
+    let d1 = Entity::new(EntityKind::Domain, "alpha-co.example", 0.8, "s");
+    let d2 = Entity::new(EntityKind::Domain, "beta-co.example", 0.8, "s");
+    let org = Entity::new(EntityKind::Organisation, "Acme Holdings Pty Ltd", 0.8, "s");
+    let rels = vec![
+        Relation::new(
+            d1.uid.clone(),
+            org.uid.clone(),
+            RelationKind::RegisteredBy,
+            0.8,
+            "s",
+        ),
+        Relation::new(
+            d2.uid.clone(),
+            org.uid.clone(),
+            RelationKind::RegisteredBy,
+            0.8,
+            "s",
+        ),
+    ];
+    let r = rule_au_061_shared_registrant(&[d1.clone(), d2.clone(), org.clone()], &rels, "s", 0);
+    assert_eq!(r.len(), 1, "shared registrant must fire one correlation");
+    assert_eq!(r[0].rule_id, "AU-061");
+    assert_eq!(r[0].severity, Severity::High);
+    assert!(r[0].entity_uids.contains(&org.uid));
+    assert!(r[0].entity_uids.contains(&d1.uid));
+    assert!(r[0].entity_uids.contains(&d2.uid));
+    assert!(r[0].description.contains("alpha-co.example"));
+    assert!(r[0].description.contains("beta-co.example"));
+    assert!(r[0].description.contains("Acme Holdings Pty Ltd"));
+}
+
+#[test]
+fn au061_fires_on_shared_registrant_email() {
+    use crate::core::relation::{Relation, RelationKind};
+    // A personal (freemail) registrant email shared across two domains is a
+    // genuine co-ownership signal — only infra/proxy mailboxes are excluded.
+    let d1 = Entity::new(EntityKind::Domain, "one.example", 0.8, "s");
+    let d2 = Entity::new(EntityKind::Domain, "two.example", 0.8, "s");
+    let email = Entity::new(EntityKind::Email, "owner.person@protonmail.com", 0.8, "s");
+    let rels = vec![
+        Relation::new(
+            d1.uid.clone(),
+            email.uid.clone(),
+            RelationKind::RegisteredBy,
+            0.8,
+            "s",
+        ),
+        Relation::new(
+            d2.uid.clone(),
+            email.uid.clone(),
+            RelationKind::RegisteredBy,
+            0.8,
+            "s",
+        ),
+    ];
+    let r = rule_au_061_shared_registrant(&[d1, d2, email.clone()], &rels, "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-061");
+    assert!(r[0].description.contains("registrant email"));
+    assert!(r[0].entity_uids.contains(&email.uid));
+}
+
+#[test]
+fn au061_no_fire_on_privacy_proxy_registrant() {
+    use crate::core::relation::{Relation, RelationKind};
+    // The critical false-positive guard: domains sharing a WHOIS privacy proxy
+    // (Domains By Proxy / WhoisGuard / an `abuse@` registrar role) must NOT be
+    // linked — millions of unrelated domains share these.
+    let d1 = Entity::new(EntityKind::Domain, "p1.example", 0.8, "s");
+    let d2 = Entity::new(EntityKind::Domain, "p2.example", 0.8, "s");
+    let proxy_org = Entity::new(EntityKind::Organisation, "Domains By Proxy, LLC", 0.8, "s");
+    let proxy_email = Entity::new(EntityKind::Email, "abuse@whoisguard.com", 0.8, "s");
+    for who in [&proxy_org, &proxy_email] {
+        let rels = vec![
+            Relation::new(
+                d1.uid.clone(),
+                who.uid.clone(),
+                RelationKind::RegisteredBy,
+                0.8,
+                "s",
+            ),
+            Relation::new(
+                d2.uid.clone(),
+                who.uid.clone(),
+                RelationKind::RegisteredBy,
+                0.8,
+                "s",
+            ),
+        ];
+        let r =
+            rule_au_061_shared_registrant(&[d1.clone(), d2.clone(), who.clone()], &rels, "s", 0);
+        assert!(
+            r.is_empty(),
+            "privacy-proxy registrant '{}' must not link domains, got {r:?}",
+            who.value
+        );
+    }
+}
+
+#[test]
+fn au061_no_fire_on_single_domain_or_redacted() {
+    use crate::core::relation::{Relation, RelationKind};
+    let d1 = Entity::new(EntityKind::Domain, "solo.example", 0.8, "s");
+    let org = Entity::new(EntityKind::Organisation, "Solo Trader", 0.8, "s");
+    // One domain → no co-ownership.
+    let rels = vec![Relation::new(
+        d1.uid.clone(),
+        org.uid.clone(),
+        RelationKind::RegisteredBy,
+        0.8,
+        "s",
+    )];
+    assert!(rule_au_061_shared_registrant(&[d1.clone(), org], &rels, "s", 0).is_empty());
+    // A "REDACTED FOR PRIVACY" placeholder registrant is excluded even with two
+    // domains (substring marker `redacted`/`privacy`).
+    let d2 = Entity::new(EntityKind::Domain, "solo2.example", 0.8, "s");
+    let redacted = Entity::new(EntityKind::Organisation, "REDACTED FOR PRIVACY", 0.8, "s");
+    let rels2 = vec![
+        Relation::new(
+            d1.uid.clone(),
+            redacted.uid.clone(),
+            RelationKind::RegisteredBy,
+            0.8,
+            "s",
+        ),
+        Relation::new(
+            d2.uid.clone(),
+            redacted.uid.clone(),
+            RelationKind::RegisteredBy,
+            0.8,
+            "s",
+        ),
+    ];
+    assert!(rule_au_061_shared_registrant(&[d1, d2, redacted], &rels2, "s", 0).is_empty());
+}
+
+#[test]
+fn au061_deterministic_across_edge_order() {
+    use crate::core::relation::{Relation, RelationKind};
+    let d1 = Entity::new(EntityKind::Domain, "x.example", 0.8, "s");
+    let d2 = Entity::new(EntityKind::Domain, "y.example", 0.8, "s");
+    let org = Entity::new(EntityKind::Organisation, "Shared Owner Inc", 0.8, "s");
+    let mk = |a: &Entity, b: &Entity| {
+        Relation::new(
+            a.uid.clone(),
+            b.uid.clone(),
+            RelationKind::RegisteredBy,
+            0.8,
+            "s",
+        )
+    };
+    let ents = [d1.clone(), d2.clone(), org.clone()];
+    let r1 = rule_au_061_shared_registrant(&ents, &[mk(&d1, &org), mk(&d2, &org)], "s", 0);
+    let r2 = rule_au_061_shared_registrant(&ents, &[mk(&d2, &org), mk(&d1, &org)], "s", 0);
+    assert_eq!(r1.len(), 1);
+    assert_eq!(
+        r1[0].description, r2[0].description,
+        "member-domain ordering must be edge-order-independent"
+    );
+    assert_eq!(r1[0].entity_uids, r2[0].entity_uids);
+}

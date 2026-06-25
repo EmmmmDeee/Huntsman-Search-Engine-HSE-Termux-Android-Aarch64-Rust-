@@ -206,3 +206,152 @@ pub(in crate::core::correlator) fn rule_au_033_abn_organisation_link(
         ts,
     )]
 }
+
+/// Privacy-proxy / WHOIS-redaction registrant markers. A registrant whose org
+/// name or email contains one of these is a shared proxy used by millions of
+/// unrelated domains — linking domains through it would be a mass false
+/// positive, so such registrants are EXCLUDED from AU-061.
+///
+/// Complements the `whois` module's own `privacy`/`redacted` org/name filter
+/// (`src/modules/whois/mod.rs`), which named proxies like "Domains By Proxy"
+/// and "WhoisGuard" slip past, and catches proxy registrants emitted by other
+/// sources (RDAP, `whoisxml`) that may not filter at all. Stored lowercase;
+/// matched as case-insensitive substrings.
+const REGISTRANT_PROXY_MARKERS: &[&str] = &[
+    "privacy",
+    "redacted",
+    "withheld",
+    "domains by proxy",
+    "domainsbyproxy",
+    "whoisguard",
+    "data protected",
+    "identity protection",
+    "private registration",
+    "registration private",
+    "not disclosed",
+    "non-public data",
+    "perfect privacy",
+    "contact privacy",
+    "super privacy",
+    "domain protection services",
+    "protecteddomainservices",
+];
+
+/// True when a registrant value (org name or email) is a privacy proxy / WHOIS
+/// redaction placeholder rather than a genuine owner identity. Matched
+/// case-insensitively against [`REGISTRANT_PROXY_MARKERS`]; an email registrant
+/// is additionally tested with `is_infrastructure_email`, so a registrar/proxy
+/// mailbox (`*@secureserver.net`, `*@godaddy.com`, an `abuse@` role) is caught
+/// even without a name marker.
+fn is_proxy_registrant(value: &str, is_email: bool) -> bool {
+    let v = value.to_ascii_lowercase();
+    if REGISTRANT_PROXY_MARKERS.iter().any(|m| v.contains(m)) {
+        return true;
+    }
+    is_email && crate::util::domains::is_infrastructure_email(value)
+}
+
+/// AU-061 — Shared-registrant domain co-ownership.
+///
+/// Groups the `RegisteredBy` edges (Domain → registrant Organisation/Email,
+/// derived from WHOIS/RDAP by `relation::builders::derive_registration`) by
+/// registrant. When ≥2 DISTINCT domains share one genuine registrant they are
+/// very likely controlled by a single operator — the canonical WHOIS pivot for
+/// mapping an actor's domain estate.
+///
+/// This is the ownership counterpart to AU-044 (shared web-analytics id): both
+/// assert "different web properties, one operator". Unlike a shared hosting IP
+/// (millions of unrelated sites behind one CDN edge — AU-031 treats that as
+/// noise to *suppress*), a shared registrant is a strong ownership signal
+/// because the registrant is the party that contractually holds the domains.
+///
+/// False-positive guard: privacy-proxy / redacted registrants (see
+/// [`is_proxy_registrant`]) are shared across millions of domains and are
+/// EXCLUDED — only a real registrant identity links the estate. Severity High,
+/// matching AU-044's shared-ownership tier. Deterministic: registrants iterated
+/// in uid order, member domains sorted by uid.
+pub(in crate::core::correlator) fn rule_au_061_shared_registrant(
+    entities: &[Entity],
+    relations: &[Relation],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // uid → entity, for endpoint lookup.
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+
+    // registrant uid → distinct domain uids registered by it (insertion order
+    // preserved for determinism; sorted before emission).
+    let mut groups: HashMap<&str, Vec<&str>> = HashMap::new();
+    for r in relations
+        .iter()
+        .filter(|r| r.kind == RelationKind::RegisteredBy)
+    {
+        let (Some(dom), Some(reg)) = (
+            by_uid.get(r.from_uid.as_str()),
+            by_uid.get(r.to_uid.as_str()),
+        ) else {
+            continue;
+        };
+        // `RegisteredBy` is Domain → Organisation/Email by construction; assert
+        // the endpoint kinds so a malformed edge can't group non-domains.
+        if dom.kind != EntityKind::Domain
+            || !matches!(reg.kind, EntityKind::Organisation | EntityKind::Email)
+        {
+            continue;
+        }
+        if is_proxy_registrant(&reg.value, reg.kind == EntityKind::Email) {
+            continue;
+        }
+        let members = groups.entry(r.to_uid.as_str()).or_default();
+        if !members.contains(&r.from_uid.as_str()) {
+            members.push(r.from_uid.as_str());
+        }
+    }
+
+    // Stable iteration order: registrants by uid.
+    let mut registrant_uids: Vec<&str> = groups.keys().copied().collect();
+    registrant_uids.sort_unstable();
+
+    let mut out = Vec::new();
+    for reg_uid in registrant_uids {
+        let Some(mut domains) = groups.remove(reg_uid) else {
+            continue;
+        };
+        if domains.len() < 2 {
+            continue;
+        }
+        domains.sort_unstable();
+        let reg = by_uid.get(reg_uid).copied();
+        let reg_label = reg.map_or("registrant", |e| e.value.as_str());
+        let reg_kind = match reg.map(|e| &e.kind) {
+            Some(EntityKind::Email) => "registrant email",
+            _ => "registrant organisation",
+        };
+        let domain_values: Vec<&str> = domains
+            .iter()
+            .filter_map(|u| by_uid.get(u).map(|e| e.value.as_str()))
+            .collect();
+
+        let mut uids: Vec<String> = Vec::with_capacity(domains.len() + 1);
+        uids.push(reg_uid.to_string());
+        uids.extend(domains.iter().map(|u| (*u).to_string()));
+
+        out.push(Correlation::new(
+            "AU-061",
+            "Shared registrant (domain co-ownership)",
+            Severity::High,
+            format!(
+                "{} domains share the {} '{}' — a common WHOIS registrant indicates \
+                 the domains are controlled by one operator: {}",
+                domains.len(),
+                reg_kind,
+                reg_label,
+                domain_values.join(", ")
+            ),
+            uids,
+            scan_id,
+            ts,
+        ));
+    }
+    out
+}
