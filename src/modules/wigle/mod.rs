@@ -34,8 +34,8 @@ use crate::core::{
 };
 use crate::util::budget::{BudgetSnapshot, QuotaBudget};
 
-use emit::{emit_bssid_entities, extract_bluetooth_intel, extract_cell_intel};
-use fetch::{fetch_detail, fetch_wigle, fetch_wigle_typed};
+use emit::{emit_bssid_entities, emit_ssid_entities, extract_bluetooth_intel, extract_cell_intel};
+use fetch::{fetch_detail, fetch_wigle, fetch_wigle_ssid, fetch_wigle_typed};
 
 // WiGLE credentials (env names + embedded fallbacks) are resolved by the
 // single-sourced `crate::util::keys::wigle_credentials`.
@@ -122,6 +122,13 @@ pub(super) static BLUETOOTH_BUDGET: QuotaBudget = QuotaBudget::new(
     "HUNTSMAN_WIGLE_BT_SCAN_CAP",
     "HUNTSMAN_WIGLE_BT_SESSION_CAP",
 );
+pub(super) static SSID_BUDGET: QuotaBudget = QuotaBudget::new(
+    "wigle_ssid",
+    3,
+    40,
+    "HUNTSMAN_WIGLE_SSID_SCAN_CAP",
+    "HUNTSMAN_WIGLE_SSID_SESSION_CAP",
+);
 
 /// Reset all WiGLE per-scan budgets. Called from `engine.rs` at
 /// scan start so each scan gets a fresh allowance for every
@@ -131,6 +138,7 @@ pub fn reset_budget() {
     BSSID_BUDGET.reset_scan();
     CELL_BUDGET.reset_scan();
     BLUETOOTH_BUDGET.reset_scan();
+    SSID_BUDGET.reset_scan();
 }
 
 /// Aggregate snapshot of every WiGLE sub-budget — surfaced on
@@ -196,7 +204,10 @@ impl Module for Wigle {
         KINDS
     }
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Coordinates | TargetKind::MacAddress)
+        matches!(
+            t.kind,
+            TargetKind::Coordinates | TargetKind::MacAddress | TargetKind::Ssid
+        )
     }
     fn max_timeout_ms(&self) -> u64 {
         20_000
@@ -210,6 +221,15 @@ impl Module for Wigle {
         // independent and env-tunable.
 
         let (user, token) = crate::util::keys::wigle_credentials(ctx);
+
+        if target.kind == TargetKind::Ssid {
+            if !SSID_BUDGET.try_increment() {
+                return Ok(ModuleResult::new());
+            }
+            return self
+                .ssid_search(user, token, target.value.trim(), ctx)
+                .await;
+        }
 
         if target.kind == TargetKind::MacAddress {
             if !BSSID_BUDGET.try_increment() {
@@ -548,7 +568,42 @@ impl Wigle {
         }
         Ok(ModuleResult::new())
     }
+
+    /// WiGLE SSID search. Only a *unique* SSID geolocates: a generic/default name
+    /// (`NETGEAR`, `iPhone`, …) is skipped, and a name with too many global
+    /// observations is treated as non-unique (its locations would be random
+    /// strangers' routers, not the subject's). A unique hit resolves to the GPS
+    /// points the network was observed at — placing its owner.
+    async fn ssid_search(
+        &self,
+        user: &str,
+        token: &str,
+        ssid: &str,
+        ctx: &ModuleContext,
+    ) -> Result<ModuleResult> {
+        if ssid.is_empty() || is_generic_ssid(ssid) {
+            return Ok(ModuleResult::new());
+        }
+        let body = fetch_wigle_ssid(&ctx.http, user, token, ssid).await?;
+        if body.success != Some(true) {
+            return Ok(ModuleResult::new());
+        }
+        let total = body
+            .total_results
+            .or(body.result_count)
+            .unwrap_or(body.results.len() as u64);
+        // 0 → not in WiGLE; a large count → the name isn't unique, so no single
+        // location places anyone. Only a small match set geolocates a network.
+        if total == 0 || total > SSID_UNIQUE_MAX {
+            return Ok(ModuleResult::new());
+        }
+        Ok(emit_ssid_entities(ssid, &body.results, &ctx.scan_id))
+    }
 }
+
+/// Above this global observation count an SSID is treated as non-unique — its
+/// locations are unrelated strangers' networks, not the subject's.
+const SSID_UNIQUE_MAX: u64 = 20;
 
 /// Statistical mode: most common value in a slice.
 ///

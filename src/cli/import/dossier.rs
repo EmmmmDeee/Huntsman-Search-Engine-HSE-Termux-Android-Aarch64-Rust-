@@ -202,6 +202,7 @@ pub(super) fn parse_dossier(
     push_crypto(body, sid, "dossier", &mut entities);
     push_api_keys(body, sid, "dossier", &mut entities);
     push_ibans(body, sid, "dossier", &mut entities);
+    push_ssids(body, sid, "dossier", &mut entities);
     (entities, stats)
 }
 

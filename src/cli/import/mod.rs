@@ -511,6 +511,39 @@ fn push_ibans(
     n
 }
 
+/// Extract labelled WiFi SSIDs from `text` and push them as `Ssid` entities —
+/// a victim's network names from a stealer log. A *unique* SSID then dispatches
+/// to `wigle`'s SSID search, which returns where the network was observed,
+/// placing the owner. Capped at 50/import.
+fn push_ssids(
+    text: &str,
+    sid: &str,
+    source_tag: &str,
+    entities: &mut Vec<crate::core::entity::Entity>,
+) -> usize {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let mut n = 0;
+    for ssid in crate::util::extract::labeled_ssids(text)
+        .into_iter()
+        .take(50)
+    {
+        let mut e = Entity::new(EntityKind::Ssid, &ssid, 0.60, sid);
+        e.tag("import");
+        e.tag(source_tag);
+        e.tag("wifi-network");
+        e.add_evidence(
+            Evidence::new(
+                "import:ssid",
+                format!("WiFi network `{ssid}` in {source_tag} data — geolocatable via WiGLE"),
+            )
+            .with_attr("ssid", &ssid),
+        );
+        entities.push(e);
+        n += 1;
+    }
+    n
+}
+
 fn store_key_in_pool(service: &str, key: &str, notes: String) {
     let pool = crate::util::key_pool::global_pool();
     let mut entry = crate::util::key_pool::KeyEntry::new(key);

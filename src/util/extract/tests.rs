@@ -139,6 +139,15 @@ use super::*;
     }
 
     #[test]
+    fn labeled_ssids_extracts_named_networks_only() {
+        let text = "SSID: Smith Home 5G\nWiFi Name = OfficeNet\nWireless Network: null\nrandom line";
+        let got = labeled_ssids(text);
+        assert_eq!(got, vec!["Smith Home 5G".to_string(), "OfficeNet".to_string()]);
+        // No labelled SSID → nothing (SSIDs can't be recognised free-text).
+        assert!(labeled_ssids("just a sentence with the word network in it").is_empty());
+    }
+
+    #[test]
     fn ibans_validates_mod97_checksum() {
         // The canonical valid example IBAN.
         assert_eq!(

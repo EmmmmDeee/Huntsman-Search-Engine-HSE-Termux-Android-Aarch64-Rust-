@@ -218,7 +218,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `overpass` | coordinates | free | no | 15 | coordinates |
 | `social_location` | — | free | no | 15 | address |
 | `mls` | mac_address | free | no | 12 | coordinates |
-| `wigle` | coordinates, mac_address | key_gated | no | 10 | coordinates, address, mac_address, organisation |
+| `wigle` | coordinates, mac_address, ssid | key_gated | no | 10 | coordinates, address, mac_address, organisation |
 | `sunrise_sunset` | coordinates | free | no | 10 | coordinates |
 | `breach_timezone` | email, username, phone | free | **yes** | 7 | address |
 

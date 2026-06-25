@@ -288,6 +288,7 @@ fn kind_from_str(s: &str) -> Option<EntityKind> {
         "organisation" => Organisation,
         "abn_acn" => AbnAcn,
         "mac_address" => MacAddress,
+        "ssid" => Ssid,
         "device_id" => DeviceId,
         "tracking_id" => TrackingId,
         "crypto_address" => CryptoAddress,

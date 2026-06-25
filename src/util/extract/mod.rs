@@ -59,6 +59,38 @@ pub fn emails(text: &str) -> Vec<String> {
     out
 }
 
+/// Matches a labelled WiFi SSID line — `SSID: Home`, `WiFi Name = Office`,
+/// `Wireless Network: …` — capturing the network name. SSIDs are arbitrary
+/// strings, so only a *labelled* one can be recognised (never free-text).
+pub static SSID_LABEL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?im)^\s*(?:ssid|wifi(?:\s*name)?|wireless\s*network|network\s*name)\s*[:=]\s*(.+?)\s*$",
+    )
+    .expect("constant ssid regex")
+});
+
+/// Every labelled WiFi SSID in `text`, de-duplicated. Bounded to the 802.11
+/// 1–32-octet length and stripped of obvious placeholders. Recovers a victim's
+/// network names from a stealer log so a *unique* one can be geolocated by WiGLE.
+#[must_use]
+pub fn labeled_ssids(text: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for cap in SSID_LABEL_RE.captures_iter(text) {
+        let ssid = cap.get(1).map_or("", |m| m.as_str()).trim();
+        let n = ssid.chars().count();
+        if (1..=32).contains(&n)
+            && !ssid.eq_ignore_ascii_case("null")
+            && !ssid.eq_ignore_ascii_case("n/a")
+            && !ssid.eq_ignore_ascii_case("none")
+            && seen.insert(ssid.to_string())
+        {
+            out.push(ssid.to_string());
+        }
+    }
+    out
+}
+
 /// Matches an IBAN-shaped token: a 2-letter country code, 2 check digits, then
 /// 10–30 alphanumerics (contiguous form, as breach dumps store it).
 pub static IBAN_RE: LazyLock<Regex> = LazyLock::new(|| {

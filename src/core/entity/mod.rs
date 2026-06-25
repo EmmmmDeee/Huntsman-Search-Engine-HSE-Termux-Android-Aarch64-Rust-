@@ -150,6 +150,11 @@ pub enum EntityKind {
     // Device
     MacAddress,
     DeviceId,
+    /// A WiFi network name (SSID) lifted from a stealer log or breach record. A
+    /// *unique* SSID is geolocatable — WiGLE's SSID search returns the GPS points
+    /// the network was observed at, placing the victim; generic/default names
+    /// (`NETGEAR`, `iPhone`, …) are not dispatched.
+    Ssid,
 
     // Web-analytics / tracking identifier (Google Analytics `UA-`/`G-`, GTM
     // `GTM-`, AdSense `ca-pub-`, Facebook Pixel, Yandex Metrica, Hotjar). A shared
@@ -187,6 +192,7 @@ impl fmt::Display for EntityKind {
             Self::AbnAcn => f.write_str("abn_acn"),
             Self::MacAddress => f.write_str("mac_address"),
             Self::DeviceId => f.write_str("device_id"),
+            Self::Ssid => f.write_str("ssid"),
             Self::TrackingId => f.write_str("tracking_id"),
             Self::CryptoAddress => f.write_str("crypto_address"),
             Self::Other(s) => write!(f, "other:{s}"),

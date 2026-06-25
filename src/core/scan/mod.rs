@@ -61,6 +61,9 @@ pub enum TargetKind {
     ApiKey,
     CryptoAddress,
     DeviceId,
+    /// A WiFi network name (SSID). A unique SSID is a WiGLE SSID-search seed that
+    /// geolocates where the network was observed.
+    Ssid,
     /// Google Analytics / Google Tag Manager / GA4 tracking identifier.
     /// Pattern: `UA-XXXXXXX-X`, `GTM-XXXXXXX`, `G-XXXXXXXXXX`, `AW-XXXXXXXXX`.
     /// Emitted by `web_crawler`; queued back for cross-domain co-ownership search.
@@ -92,6 +95,7 @@ impl TargetKind {
             EntityKind::MacAddress => Some(Self::MacAddress),
             EntityKind::CryptoAddress => Some(Self::CryptoAddress),
             EntityKind::DeviceId => Some(Self::DeviceId),
+            EntityKind::Ssid => Some(Self::Ssid),
             EntityKind::TrackingId => Some(Self::TrackingId),
             EntityKind::Credential | EntityKind::Password | EntityKind::Other(_) => None,
         }
@@ -117,6 +121,7 @@ impl TargetKind {
             Self::MacAddress => EntityKind::MacAddress,
             Self::CryptoAddress => EntityKind::CryptoAddress,
             Self::DeviceId => EntityKind::DeviceId,
+            Self::Ssid => EntityKind::Ssid,
             Self::TrackingId => EntityKind::TrackingId,
         }
     }
@@ -151,6 +156,7 @@ impl TargetKind {
             Self::MacAddress => "mac_address",
             Self::CryptoAddress => "crypto_address",
             Self::DeviceId => "device_id",
+            Self::Ssid => "ssid",
             Self::TrackingId => "tracking_id",
         }
     }
@@ -538,6 +544,12 @@ impl Target {
             TargetKind::TrackingId => {
                 if !is_tracking_id_shaped(v) {
                     return Err("not a recognised tracking ID shape (UA-/GTM-/G-/AW-)");
+                }
+            }
+            TargetKind::Ssid => {
+                // An 802.11 SSID is at most 32 octets; otherwise free-form.
+                if v.chars().count() > 32 {
+                    return Err("SSID exceeds 32 characters");
                 }
             }
             TargetKind::Username

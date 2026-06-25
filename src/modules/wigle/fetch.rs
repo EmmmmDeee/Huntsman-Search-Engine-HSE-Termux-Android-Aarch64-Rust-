@@ -65,6 +65,45 @@ pub(super) async fn fetch_wigle_typed(
         .map_err(|e| Error::module(SRC, e))
 }
 
+/// WiGLE SSID search: every observed network broadcasting `ssid`, each with its
+/// trilaterated location. A *unique* SSID (a personalised home/office network
+/// name) geolocates the network — and by extension its owner.
+pub(super) async fn fetch_wigle_ssid(
+    http: &reqwest::Client,
+    user: &str,
+    token: &str,
+    ssid: &str,
+) -> crate::core::error::Result<Resp> {
+    use crate::core::error::Error;
+    use crate::util::http::{RequestBuilderExt, urlencode};
+
+    let url = format!(
+        "https://api.wigle.net/api/v2/network/search?\
+         ssid={}&onlymine=false&freenet=false&paynet=false&resultsPerPage=100",
+        urlencode(ssid)
+    );
+    let resp = http
+        .get(&url)
+        .basic_auth(user, Some(token))
+        .header("Accept", "application/json")
+        .send_tagged(SRC)
+        .await?;
+
+    let status = resp.status();
+    if status.as_u16() == 429 {
+        let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 60, 120);
+        tracing::warn!("WiGLE 429 — rate-limited (server requested {retry_secs}s backoff)");
+        return Err(Error::module(SRC, "rate-limited (429)"));
+    }
+    if !status.is_success() {
+        return Err(crate::util::http::http_status_error(SRC, resp).await);
+    }
+
+    crate::util::http::json_scanned(resp, SRC)
+        .await
+        .map_err(|e| Error::module(SRC, e))
+}
+
 #[derive(serde::Deserialize)]
 pub(super) struct DetailResp {
     #[serde(default)]

@@ -128,6 +128,9 @@ fn score(tk: TargetKind) -> (f64, &'static str) {
         TargetKind::Domain => (0.75, "domain-shape"),
         TargetKind::DeviceId => (0.70, "cell-id-shape"),
         TargetKind::TrackingId => (0.70, "tracker-shape"),
+        // Not auto-detected from a bare value (indistinguishable from a username);
+        // only ever set explicitly by the stealer-log SSID extractor.
+        TargetKind::Ssid => (0.55, "wifi-ssid"),
         // Free-text fallbacks — recognised by weak heuristics, ranked below the floor or
         // just at it so they are still classified but expand cautiously.
         TargetKind::Organisation => (0.60, "company-suffix"),

@@ -210,3 +210,56 @@ pub(super) fn emit_bssid_entities(
     }
     result
 }
+
+/// Max matched networks surfaced for an SSID search — a unique SSID resolves to
+/// a handful of points (the victim's location(s)); more means it isn't unique.
+const SSID_RESULT_CAP: usize = 10;
+
+/// Emit geolocation entities for a unique SSID's matched networks: each
+/// network's coordinates (where WiGLE observed it) and its BSSID (tying the SSID
+/// to a concrete access point), so a personalised network name from a stealer
+/// log places its owner.
+pub(super) fn emit_ssid_entities(ssid: &str, results: &[Network], scan_id: &str) -> ModuleResult {
+    let mut result = ModuleResult::new();
+    for net in results.iter().take(SSID_RESULT_CAP) {
+        let (Some(lat), Some(lon)) = (net.trilat, net.trilong) else {
+            continue;
+        };
+        if !crate::util::geo::is_plausible_provider_coord(lat, lon) {
+            continue;
+        }
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            format!("{lat:.6},{lon:.6}"),
+            0.72,
+            scan_id,
+        );
+        e.tag("geoint");
+        e.tag("wigle");
+        e.tag("ssid-located");
+        crate::util::geo::tag_au_state(&mut e, lat, lon);
+        let mut ev = Evidence::new(SRC, format!("WiGLE SSID `{ssid}` observed → coordinates"))
+            .with_attr("ssid", ssid)
+            .with_attr("latitude", lat.to_string())
+            .with_attr("longitude", lon.to_string());
+        if let Some(bssid) = net.netid.as_deref().filter(|b| !b.is_empty()) {
+            ev = ev.with_attr("bssid", bssid);
+        }
+        e.add_evidence(ev);
+        result.push(e);
+
+        // The matched access point's BSSID — ties the SSID to a concrete AP.
+        if let Some(bssid) = net.netid.as_deref().filter(|b| !b.is_empty()) {
+            let mut m = Entity::new(EntityKind::MacAddress, bssid, 0.70, scan_id);
+            m.tag("wigle");
+            m.tag("ssid-match");
+            m.add_evidence(
+                Evidence::new(SRC, format!("BSSID broadcasting SSID `{ssid}`"))
+                    .with_attr("ssid", ssid)
+                    .with_attr("bssid", bssid),
+            );
+            result.push(m);
+        }
+    }
+    result
+}

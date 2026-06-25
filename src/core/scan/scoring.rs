@@ -38,6 +38,9 @@ pub(super) fn seed_marginal_yield(kind: TargetKind, has_paid_keys: bool) -> f64 
         TargetKind::Address => (1.9, 1.5),
         TargetKind::IpAddress | TargetKind::Cidr => (1.6, 1.25),
         TargetKind::MacAddress => (1.4, 1.4),
+        // A WiFi SSID resolves to observed locations via WiGLE — terminal,
+        // single-hop: network name → coordinates.
+        TargetKind::Ssid => (1.3, 1.3),
         // Mid fan-out — a handful of corroborating leads per round.
         TargetKind::Phone => (1.6, 1.15),
         TargetKind::Asn => (1.6, 1.2),
@@ -70,7 +73,7 @@ fn round_retention(kind: TargetKind) -> f64 {
         TargetKind::Email | TargetKind::FullName | TargetKind::Username | TargetKind::Domain => {
             0.60
         }
-        TargetKind::Address | TargetKind::MacAddress => 0.55,
+        TargetKind::Address | TargetKind::MacAddress | TargetKind::Ssid => 0.55,
         TargetKind::IpAddress | TargetKind::Cidr | TargetKind::Asn | TargetKind::Organisation => {
             0.52
         }
@@ -186,6 +189,8 @@ pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
         }
         TargetKind::Address => 24.0,
         TargetKind::MacAddress => 14.0,
+        // A unique SSID resolves to observed locations via WiGLE — single-hop geo.
+        TargetKind::Ssid => 14.0,
         TargetKind::Asn => 10.5,
         TargetKind::Url => 12.0,
         TargetKind::Organisation => 11.0,

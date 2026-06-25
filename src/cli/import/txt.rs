@@ -262,6 +262,8 @@ pub(super) fn parse_oathnet_txt(
     // Leaked API keys/tokens anywhere in the log, not just `service: key` lines.
     push_api_keys(body, &sid, "stealer", &mut entities);
     push_ibans(body, &sid, "stealer", &mut entities);
+    // A unique WiFi SSID from the log's network section → WiGLE geolocation.
+    push_ssids(body, &sid, "stealer", &mut entities);
     (entities, stats)
 }
 

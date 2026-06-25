@@ -225,6 +225,24 @@ async fn import_extracts_iban_as_financial_finding() {
         "a checksum-valid IBAN must become a financial finding"
     );
 }
+
+#[tokio::test]
+async fn import_extracts_labeled_ssid_for_wigle_geolocation() {
+    use crate::core::entity::EntityKind;
+    let (ents, label) = entities_from_upload(
+        "URL: https://x.com\nUsername: victim\nSSID: Smith Home 5G\n",
+        "s",
+    )
+    .await
+    .unwrap();
+    assert_eq!(label, "oathnet-txt");
+    assert!(
+        ents.iter().any(|e| e.kind == EntityKind::Ssid
+            && e.value == "Smith Home 5G"
+            && e.has_tag("wifi-network")),
+        "a labelled SSID must become an Ssid entity (a WiGLE geolocation seed)"
+    );
+}
 use crate::core::entity::{Entity, EntityKind};
 
 // The exact shape of the user-provided "Isaac Frost.txt" dossier upload.
