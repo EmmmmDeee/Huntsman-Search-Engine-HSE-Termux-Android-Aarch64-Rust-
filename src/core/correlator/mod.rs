@@ -281,6 +281,8 @@ const RULES: &[RuleFn] = &[
     rule_au_080_recurring_cooccurrence_link,
     rule_au_081_canonical_person_name_match,
     rule_au_082_api_key_dual_pathway,
+    // AU-083: ≥2 emails independently match the same locale naming pattern.
+    rule_au_083_locale_multi_email_corroboration,
     rule_au_046_cross_platform_identity_resolution,
     rule_au_068_anonymous_sim,
     rule_au_047_reused_secret_identity,
