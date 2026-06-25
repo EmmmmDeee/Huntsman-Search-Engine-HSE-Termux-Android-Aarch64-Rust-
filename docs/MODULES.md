@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (145 modules: 112 free · 28 key-gated · 5 paid)
+## Catalogue (148 modules: 115 free · 28 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -51,7 +51,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `keybase` | username | free | no | 100 | person, username, email, domain, address |
 | `username_variants` | username | free | **yes** | 98 | username |
 
-### people (16)
+### people (17)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -70,6 +70,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `au_electoral` | full_name | free | no | 85 | address, coordinates |
 | `au_property` | full_name | free | no | 84 | address, coordinates |
 | `ahpra` | full_name, organisation | free | no | 86 | person, organisation |
+| `seek_au` | full_name, organisation | free | no | 95 | organisation, address, email, url |
 | `payid` | email, phone, abn_acn | free | **yes** | 80 | email, phone, abn_acn |
 
 ### email (6)
@@ -115,7 +116,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `threatfox` | ip_address, domain | key_gated | no | 109 | domain, ip_address, url |
 | `virustotal` | ip_address, domain | key_gated | no | 55 | — |
 
-### corporate (9)
+### corporate (11)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -123,6 +124,8 @@ records. The engine knows nothing else — every module is a one-file change.
 | `au_unclaimed` | full_name, organisation | free | no | 114 | address, coordinates, organisation, person |
 | `abn_lookup` | full_name, organisation, abn_acn | key_gated | no | 118 | abn_acn, address, organisation, person |
 | `opencorporates` | full_name, organisation, abn_acn | free | no | 116 | organisation, abn_acn, address |
+| `afsa_insolvency` | full_name, organisation | free | no | 116 | person, address |
+| `ato_tax_agents` | full_name, organisation | free | no | 113 | person, organisation, address, abn_acn |
 | `acnc_charities` | organisation | free | no | 112 | organisation, abn_acn, address, domain |
 | `gleif_lei` | organisation | free | no | 111 | organisation, abn_acn, address |
 | `trove_au` | organisation, abn_acn | key_gated | no | 57 | organisation |

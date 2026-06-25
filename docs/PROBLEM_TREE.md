@@ -647,6 +647,19 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   *Delivered (cycle 20, 2026-06-18): `austlii` — free AustLII court/legislation
   scraper; `FullName`/`Organisation` → `Url` + `Organisation`; Corporate-9; 125→126
   modules, 92→93 free.*
+  *Delivered (2026-06-25):* `afsa_insolvency` (AFSA NPII HTML scraper — `FullName`/
+  `Organisation` → `Person` + `Address`; tags `insolvency:bankruptcy`,
+  `insolvency:debt-agreement`, etc. and `insolvency:current`/`insolvency:former`;
+  free, priority 116, People; 8 unit tests); `ato_tax_agents` (ATO Tax Practitioners
+  Board register — `FullName`/`Organisation` → `Person`, `Organisation`, `Address`,
+  `AbnAcn`; tags `tpb-registered`, `tpb:tax-agent`/`tpb:bas-agent`; free, priority
+  113, People; 9 unit tests); `seek_au` (Seek.com.au job-listings — `FullName`/
+  `Organisation` → `Organisation`, `Address`, `Email`, `Url`; JSON-LD email
+  extraction; free, priority 95, People; 7 unit tests). Five correlation rules added in
+  `au_registers.rs`: **AU-085** insolvency-director link; **AU-086** TPB-ABN chain;
+  **AU-087** employer-address corroboration; **AU-088** cross-register identity (3+
+  independent AU gov registers); **AU-089** TPB-professional dual-reg. Module count
+  145→148 (112→115 free).
   *Remaining:* GNAF/AusPost address validation; fuller ASIC/ABR graph; state
   cadastre/property.
 - **`[~]` C4 · NETINT depth** — *Current:* `dns_intel`, `cert_intel`, `crtsh`,
@@ -3017,3 +3030,23 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   local toolchain, exactly the CI/local skew CLAUDE.md warns about. Clippy reported "1 previous
   error", confirming it was the sole crate-wide violation. **Paired:** `SOLUTION_TREE` — same
   commit.
+
+- **2026-06-25** — **Three new AU people/employment modules and five AU-register correlation
+  rules (145→148 modules, rules AU-085–AU-089).** Delivered `afsa_insolvency` (AFSA NPII
+  insolvency/bankruptcy HTML scraper — `FullName`/`Organisation` → `Person` + `Address`;
+  insolvency type and status tags; deduplication across repeated records; free, priority 116,
+  People; 8 tests); `ato_tax_agents` (ATO Tax Practitioners Board register — `FullName`/
+  `Organisation` → `Person`, `Organisation`, `Address`, `AbnAcn`; `tpb-registered`/
+  `tpb:tax-agent`/`tpb:bas-agent` tags; ABN extraction; free, priority 113, People; 9 tests);
+  `seek_au` (Seek.com.au job-listings scraper — `FullName`/`Organisation` → `Organisation`,
+  `Address`, `Email`, `Url`; JSON-LD email extraction bypassing `strip_html` script-block
+  removal; free, priority 95, People; 7 tests). Five correlation rules in
+  `src/core/correlator/rules/au_registers.rs`: **AU-085** insolvency-director link (AFSA NPII
+  + ASIC director name overlap → HIGH); **AU-086** TPB-ABN chain (TPB entity + associated ABN
+  from `ato_tax_agents`); **AU-087** employer-address corroboration (Seek location + registered
+  address suburb+state token overlap); **AU-088** cross-register identity (same person in 3+
+  independent AU gov registers); **AU-089** TPB-professional dual-reg (TPB + AHPRA name
+  overlap). Firing tests for all five in `rules/tests.rs`; `every_dispatched_correlation_rule_
+  has_a_firing_test` architecture guard passes. Multiple clippy fixes (`find_map`→`find`,
+  `map_or`, `String::as_str`, let-chain collapsing). `docs/MODULES.md` + README updated
+  (145→148 across all module-count mentions). **Paired:** `SOLUTION_TREE` — same commit.

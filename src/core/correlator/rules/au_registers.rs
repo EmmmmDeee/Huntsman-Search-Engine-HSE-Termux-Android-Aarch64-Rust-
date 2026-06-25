@@ -1,0 +1,465 @@
+//! AU correlation rules — Australian multi-register cross-reference intelligence.
+//!
+//! These rules fire when a person or organisation appears in two or more
+//! independent Australian government registers in the same scan, producing
+//! high-confidence identity anchors that no single-source module can reach:
+//!
+//! * [`rule_au_085_insolvency_director_link`]   (AU-085) — AFSA NPII + ASIC director
+//! * [`rule_au_086_tpb_abn_chain`]              (AU-086) — TPB register + ABN/ACN
+//! * [`rule_au_087_employer_address_corroboration`] (AU-087) — Seek listing ↔ registered address
+//! * [`rule_au_088_cross_register_identity`]    (AU-088) — person in 3+ AU federal registers
+//! * [`rule_au_089_tpb_professional_dual_reg`]  (AU-089) — TPB agent + AHPRA/ASIC dual-registration
+
+use super::*;
+
+// ── AU-085 — AFSA insolvency × ASIC director link ────────────────────────────
+
+/// AU-085 — A person appears in both the AFSA National Personal Insolvency
+/// Index and the ASIC company directors register.
+///
+/// The CORPORATIONS ACT 2001 §206B bans undischarged bankrupts from managing
+/// corporations without court leave. When AFSA insolvency data and an ASIC
+/// directorship both resolve to the same person (canonical name overlap), the
+/// combination raises a CRITICAL compliance alert — either the person has
+/// obtained court leave (explain-or-deny), is managing in breach (serious
+/// offence), or the directorship predates the insolvency event (timeline
+/// intelligence). Either way this is the highest-priority finding an AU
+/// corporate due-diligence scan can produce.
+pub(in crate::core::correlator) fn rule_au_085_insolvency_director_link(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let afsa_persons: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person && e.has_tag("afsa-npii"))
+        .collect();
+
+    if afsa_persons.is_empty() {
+        return Vec::new();
+    }
+
+    let asic_persons: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| {
+            e.kind == EntityKind::Person
+                && e.evidence_sources().iter().any(|s| *s == "asic_director")
+        })
+        .collect();
+
+    if asic_persons.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+
+    for afsa in &afsa_persons {
+        let afsa_lc = afsa.value.to_ascii_lowercase();
+        let afsa_tokens: Vec<&str> = afsa_lc
+            .split_whitespace()
+            .filter(|t| t.len() >= 3)
+            .collect();
+
+        for asic in &asic_persons {
+            let asic_lc = asic.value.to_ascii_lowercase();
+            // Canonical name overlap: both surname and at least one given name
+            // token match (≥3 chars each). Prevents collisions on very short names.
+            let overlap = afsa_tokens
+                .iter()
+                .filter(|&&tok| asic_lc.contains(tok))
+                .count();
+            if overlap < 2 {
+                continue;
+            }
+
+            let admin_type = afsa
+                .tags
+                .iter()
+                .find(|t| t.starts_with("insolvency:"))
+                .map_or("insolvency:unknown", String::as_str);
+
+            let is_current = afsa.has_tag("insolvency:current");
+            let severity = if is_current {
+                Severity::Critical
+            } else {
+                Severity::High
+            };
+
+            let status_desc = if is_current { "CURRENT" } else { "former" };
+
+            out.push(Correlation {
+                rule_id: "AU-085".into(),
+                rule_name: "AFSA insolvency × ASIC directorship link".into(),
+                severity,
+                description: format!(
+                    "'{}' appears in both the AFSA NPII ({admin_type}, {status_desc}) and the \
+                     ASIC company directors register — potential Corporations Act §206B \
+                     breach; verify court leave or timeline",
+                    afsa.value
+                ),
+                entity_uids: vec![afsa.uid.clone(), asic.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            });
+        }
+    }
+
+    out
+}
+
+// ── AU-086 — TPB registration × ABN/ACN chain ────────────────────────────────
+
+/// AU-086 — A TPB-registered practitioner has an ABN/ACN entity in the same scan.
+///
+/// Tax agents and BAS agents are legally required to have an ABN. When an ABN
+/// entity is present alongside a TPB registration for the same name, the
+/// ABN can be confirmed as belonging to the practitioner's practice — and
+/// pivoted into `abn_lookup` (ABR) to surface the registered business address,
+/// trust structure, or company extract.
+pub(in crate::core::correlator) fn rule_au_086_tpb_abn_chain(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let tpb_entities: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| {
+            e.has_tag("tpb-registered")
+                && (e.kind == EntityKind::Person || e.kind == EntityKind::Organisation)
+        })
+        .collect();
+
+    if tpb_entities.is_empty() {
+        return Vec::new();
+    }
+
+    let abn_entities: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::AbnAcn)
+        .collect();
+
+    if abn_entities.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+
+    for tpb in &tpb_entities {
+        // Find an ABN that appears in the TPB entity's evidence (sourced by
+        // ato_tax_agents parsing the same record row).
+        let linked_abn = abn_entities.iter().find(|abn| {
+            abn.has_tag("tpb-registered")
+                || abn
+                    .evidence_sources()
+                    .iter()
+                    .any(|s| *s == "ato_tax_agents")
+        });
+
+        if let Some(abn) = linked_abn {
+            let reg_type = tpb
+                .tags
+                .iter()
+                .map(String::as_str)
+                .find(|t| t.starts_with("tpb:"))
+                .map_or("registered", |t| t.trim_start_matches("tpb:"));
+
+            out.push(Correlation {
+                rule_id: "AU-086".into(),
+                rule_name: "TPB practitioner × ABN chain".into(),
+                severity: Severity::Medium,
+                description: format!(
+                    "TPB-registered {} '{}' ({reg_type}) linked to ABN {} — \
+                     confirms the practice entity for ABR pivot",
+                    if tpb.kind == EntityKind::Organisation {
+                        "organisation"
+                    } else {
+                        "individual"
+                    },
+                    tpb.value,
+                    abn.value
+                ),
+                entity_uids: vec![tpb.uid.clone(), abn.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            });
+        }
+    }
+
+    out
+}
+
+// ── AU-087 — Seek employer address × registered address corroboration ─────────
+
+/// AU-087 — A Seek job listing address corroborates the subject's registered
+/// business address from ASIC, ABR, or the ACNC register.
+///
+/// An organisation's registered address (legal requirement) and its Seek
+/// hiring location converging independently is strong evidence of genuine
+/// physical presence — and rules out PO-box-only or nominee-address setups.
+/// The Seek address also reflects the CURRENT operating location regardless of
+/// when the ASIC/ABR address was last updated.
+pub(in crate::core::correlator) fn rule_au_087_employer_address_corroboration(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let seek_addrs: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address && e.has_tag("seek-location"))
+        .collect();
+
+    if seek_addrs.is_empty() {
+        return Vec::new();
+    }
+
+    // Registered-address sources: ASIC, ABN, ACNC, AHPRA, TPB — any address
+    // that came from an authoritative AU register (not social or people-search).
+    let reg_addr_sources = [
+        "asic_director",
+        "abn_lookup",
+        "acnc_charities",
+        "ahpra",
+        "ato_tax_agents",
+        "au_property",
+        "au_electoral",
+    ];
+
+    let registered_addrs: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| {
+            e.kind == EntityKind::Address
+                && e.evidence_sources()
+                    .iter()
+                    .any(|s| reg_addr_sources.contains(s))
+        })
+        .collect();
+
+    if registered_addrs.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+
+    for seek_addr in &seek_addrs {
+        let seek_lc = seek_addr.value.to_ascii_lowercase();
+        // Extract state abbreviation and suburb tokens from the Seek address.
+        let seek_tokens: Vec<&str> = seek_lc
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|t| t.len() >= 3)
+            .collect();
+
+        for reg_addr in &registered_addrs {
+            let reg_lc = reg_addr.value.to_ascii_lowercase();
+            // Count overlapping suburb/state tokens (at least 2 for a match —
+            // suburb + state, or suburb + postcode).
+            let overlap = seek_tokens
+                .iter()
+                .filter(|&&tok| reg_lc.contains(tok))
+                .count();
+            if overlap < 2 {
+                continue;
+            }
+
+            let reg_source = reg_addr
+                .evidence_sources()
+                .into_iter()
+                .find(|s| reg_addr_sources.contains(s))
+                .unwrap_or("register");
+
+            out.push(Correlation {
+                rule_id: "AU-087".into(),
+                rule_name: "Seek employer location × registered address".into(),
+                severity: Severity::Medium,
+                description: format!(
+                    "Seek job listing location '{}' corroborates registered address '{}' \
+                     (from {reg_source}) — confirms current physical operating location",
+                    seek_addr.value, reg_addr.value
+                ),
+                entity_uids: vec![seek_addr.uid.clone(), reg_addr.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            });
+        }
+    }
+
+    out
+}
+
+// ── AU-088 — Cross-register Australian federal identity ───────────────────────
+
+/// AU-088 — A person entity appears in three or more independent Australian
+/// government registers in the same scan.
+///
+/// Multi-register presence is the highest-confidence identity anchor available
+/// for Australian persons. Each register is maintained by a different federal
+/// agency with independent entry requirements; a matching name across three or
+/// more is effectively impossible to fake and rules out same-name namesake
+/// confusion in all but the most unusual cases.
+pub(in crate::core::correlator) fn rule_au_088_cross_register_identity(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // AU government register source names.
+    const AU_GOV_SOURCES: &[&str] = &[
+        "afsa_insolvency",
+        "ato_tax_agents",
+        "asic_director",
+        "ahpra",
+        "au_electoral",
+        "abn_lookup",
+        "acnc_charities",
+        "au_property",
+        "acma_rrl",
+        "austlii",
+    ];
+
+    let persons: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .collect();
+
+    let mut out = Vec::new();
+
+    for person in &persons {
+        let sources: Vec<&str> = person
+            .evidence_sources()
+            .into_iter()
+            .filter(|s| AU_GOV_SOURCES.contains(s))
+            .collect();
+
+        // Deduplicate source list (entity merge already aggregates — but
+        // belt-and-suspenders).
+        let mut unique_sources: Vec<&str> = sources.clone();
+        unique_sources.sort_unstable();
+        unique_sources.dedup();
+
+        if unique_sources.len() < 3 {
+            continue;
+        }
+
+        let n = unique_sources.len();
+        out.push(Correlation {
+            rule_id: "AU-088".into(),
+            rule_name: "Cross-register Australian federal identity".into(),
+            severity: Severity::High,
+            description: format!(
+                "'{}' independently confirmed in {} Australian government registers \
+                 ({}) — highest-confidence identity anchor; namesake confusion \
+                 effectively excluded",
+                person.value,
+                n,
+                unique_sources.join(", ")
+            ),
+            entity_uids: vec![person.uid.clone()],
+            scan_id: scan_id.into(),
+            ts,
+            rank: 0.0,
+        });
+    }
+
+    out
+}
+
+// ── AU-089 — TPB + AHPRA/ASIC professional dual-registration ─────────────────
+
+/// AU-089 — A person or organisation is registered in both the TPB (tax/BAS)
+/// and another Australian professional register (AHPRA or ASIC).
+///
+/// Dual professional registration is a high-value intelligence finding:
+/// a person who is both a registered tax agent and an AHPRA-regulated health
+/// practitioner, or both a tax agent and an ASIC-licensed financial adviser,
+/// has an unusually broad professional footprint. This cross-sector presence
+/// is a strong disambiguation signal (few namesakes share both registrations)
+/// and may reveal primary/secondary income streams, professional capacity
+/// conflicts, or a mixed-practice firm.
+pub(in crate::core::correlator) fn rule_au_089_tpb_professional_dual_reg(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let tpb_entities: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| {
+            e.has_tag("tpb-registered")
+                && (e.kind == EntityKind::Person || e.kind == EntityKind::Organisation)
+        })
+        .collect();
+
+    if tpb_entities.is_empty() {
+        return Vec::new();
+    }
+
+    // AHPRA-sourced persons.
+    let ahpra_persons: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| {
+            e.kind == EntityKind::Person && e.evidence_sources().iter().any(|s| *s == "ahpra")
+        })
+        .collect();
+
+    // ASIC-sourced persons.
+    let asic_persons: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| {
+            e.kind == EntityKind::Person
+                && e.evidence_sources().iter().any(|s| *s == "asic_director")
+        })
+        .collect();
+
+    let dual_register_persons: Vec<(&Entity, &str)> = ahpra_persons
+        .iter()
+        .map(|e| (*e, "AHPRA"))
+        .chain(asic_persons.iter().map(|e| (*e, "ASIC")))
+        .collect();
+
+    if dual_register_persons.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+
+    for tpb in &tpb_entities {
+        let tpb_lc = tpb.value.to_ascii_lowercase();
+        let tpb_tokens: Vec<&str> = tpb_lc.split_whitespace().filter(|t| t.len() >= 3).collect();
+
+        for (other, other_label) in &dual_register_persons {
+            let other_lc = other.value.to_ascii_lowercase();
+            let overlap = tpb_tokens
+                .iter()
+                .filter(|&&tok| other_lc.contains(tok))
+                .count();
+            if overlap < 2 {
+                continue;
+            }
+
+            let tpb_type = tpb
+                .tags
+                .iter()
+                .map(String::as_str)
+                .find(|t| t.starts_with("tpb:"))
+                .map_or("registered", |t| t.trim_start_matches("tpb:"));
+
+            out.push(Correlation {
+                rule_id: "AU-089".into(),
+                rule_name: "TPB practitioner × professional dual-registration".into(),
+                severity: Severity::Medium,
+                description: format!(
+                    "'{}' is registered with both the TPB ({tpb_type}) and {other_label} — \
+                     cross-sector professional dual-registration; strong identity anchor \
+                     and potential capacity-conflict signal",
+                    tpb.value
+                ),
+                entity_uids: vec![tpb.uid.clone(), other.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            });
+        }
+    }
+
+    out
+}

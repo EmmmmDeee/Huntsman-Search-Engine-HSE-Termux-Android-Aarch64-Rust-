@@ -304,8 +304,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (deterministic shortest typed paths between identity entities, order-independence
   proptested) now backs **both** AU-060 transitive identity closure (refactored to
   delegate — one finder, no drift) **and** a new dossier **CONNECTIONS** section
-  that renders the shortest typed thread between identities as text. *Remaining:*
-  first-class timeline output + further AU-0xx rule-gap fill.
+  that renders the shortest typed thread between identities as text.
+  *Delivered (2026-06-25):* **AU-085–AU-089** — five AU-register connectivity rules
+  in `src/core/correlator/rules/au_registers.rs` (insolvency-director link, TPB-ABN
+  chain, employer-address corroboration, cross-register identity, TPB-professional
+  dual-reg); firing tests for all five in `rules/tests.rs`; architecture guard passes.
+  *Remaining:* first-class timeline output; further AU-0xx rule-gap fill.
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -320,6 +324,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Delivered (cycle 20, 2026-06-18):* `austlii` — free AustLII court/legislation
   scraper; `FullName`/`Organisation` → `Url` (court-judgment) + `Organisation`
   (legal-footprint signal); Corporate-9; 125→126 modules, 93 free.
+  *Delivered (2026-06-25):* `afsa_insolvency` (AFSA NPII insolvency/bankruptcy
+  register, free, priority 116, People); `ato_tax_agents` (ATO Tax Practitioners
+  Board register, free, priority 113, People); `seek_au` (Seek.com.au job-listings
+  with JSON-LD email extraction, free, priority 95, People); five AU-register
+  correlation rules AU-085–AU-089. Module count 145→148 (115 free).
   *Remaining:* GNAF/AusPost; fuller ASIC/ABR graph; state cadastre/property.
 - **`[~]` SOL-NETINT · CDN-origin unmasking + asset depth** → **C4**: union subdomain
   discovery, ASN/BGP pivots, passive-DNS/cert-hash origin candidates; v4+**v6**
@@ -499,8 +508,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
 - **C9** — **delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18). Off the open queue.
 - **C3** — `[~]` (SOL-AU-MOAT). `austlii` delivered cycle 20 (courts/AustLII closed).
-  *Remaining:* GNAF/AusPost address validation; fuller ASIC/ABR graph; state
-  cadastre/property.
+  `afsa_insolvency` + `ato_tax_agents` + `seek_au` + AU-085–089 rules delivered
+  2026-06-25 (insolvency register, TPB tax-agent register, Seek employment, AU-register
+  correlation rules). *Remaining:* GNAF/AusPost address validation; fuller ASIC/ABR
+  graph; state cadastre/property.
 - **C4** — `[~]` (SOL-NETINT). S→P audit cycle 20: `securitytrails`, `bgpview`, and
   `ripestat` were stale "remaining" notes — all three modules already registered.
   *Remaining:* passive-DNS history; CDN cert-hash origin pivot.
@@ -2224,3 +2235,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   violation — no need to chase a toolchain install. A multiline scan for sibling
   `.map(…).unwrap_or(…)` shapes confirmed the rest are `.and_then`/`.or_else`/`.find_map`
   chains the lint does not target. Paired: `PROBLEM_TREE` — same commit.
+
+- **2026-06-25** — **SOL-AU-MOAT + SOL-CORR advance: three AU scrapers + five AU-register
+  rules.** Delivered `afsa_insolvency` (AFSA National Personal Insolvency Index, free,
+  People, priority 116; `Person` + `Address` + insolvency-type/status tags; dedup guard);
+  `ato_tax_agents` (ATO Tax Practitioners Board, free, People, priority 113; `Person`,
+  `Organisation`, `Address`, `AbnAcn` + TPB-status tags); `seek_au` (Seek.com.au
+  job-listings with JSON-LD email bypass of `strip_html` script-block removal, free,
+  People, priority 95) — all accepting `FullName`/`Organisation` seeds, clippy-clean,
+  doc-clean. Five correlation rules AU-085–AU-089 in
+  `src/core/correlator/rules/au_registers.rs` wire the AU-register graph: insolvency-
+  director link, TPB-ABN chain, employer-address corroboration, cross-register identity,
+  TPB-professional dual-reg. Architecture firing-test guard passes for all five.
+  `docs/MODULES.md` + README synced (145→148, 112→115 free). **S→P gap refresh:** §4 C3
+  remaining unchanged (GNAF/AusPost + fuller ASIC/ABR + state cadastre still open);
+  SOL-CORR rule-gap fill advanced (AU-085–089 delivered; first-class timeline + further
+  rules remain); SOL-AU-MOAT stays `[~]`. Gate green: 3,845 lib tests + 24 arch + 82
+  smoke, 0 failures. **Paired:** `PROBLEM_TREE` — same commit.

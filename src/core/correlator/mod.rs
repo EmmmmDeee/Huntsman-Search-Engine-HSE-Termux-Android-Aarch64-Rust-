@@ -301,6 +301,16 @@ const RULES: &[RuleFn] = &[
     rule_au_061_family_geo_corroboration,
     // AU-084: dual-source cell tower corroboration (live sensor × crowdsourced DB).
     rule_au_084_cell_tower_dual_source,
+    // AU-085: AFSA insolvency + ASIC directorship — Corporations Act §206B alert.
+    // AU-086: TPB registration + ABN/ACN chain — confirms practice entity for ABR pivot.
+    // AU-087: Seek employer listing location × registered address corroboration.
+    // AU-088: person in 3+ independent AU federal registers — highest-confidence anchor.
+    // AU-089: TPB + AHPRA/ASIC dual professional registration — cross-sector identity.
+    rule_au_085_insolvency_director_link,
+    rule_au_086_tpb_abn_chain,
+    rule_au_087_employer_address_corroboration,
+    rule_au_088_cross_register_identity,
+    rule_au_089_tpb_professional_dual_reg,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

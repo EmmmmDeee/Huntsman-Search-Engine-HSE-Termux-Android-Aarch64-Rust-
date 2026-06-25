@@ -195,3 +195,83 @@ use crate::core::entity::Evidence;
         let results = rule_au_083_locale_multi_email_corroboration(&[a], "scan-au083-arch", 0);
         assert_eq!(results.len(), 1, "locale rule must fire when >=2 email_locale evidence entries share a locale");
     }
+
+    // ── rule_au_085_insolvency_director_link ──────────────────────────────────
+
+    #[test]
+    fn au_085_insolvency_director_link_fires_on_afsa_and_asic_name_overlap() {
+        use super::au_registers::rule_au_085_insolvency_director_link;
+        use crate::core::entity::Evidence;
+        let mut afsa = Entity::new(EntityKind::Person, "John William Smith", 0.82, "scan-au085");
+        afsa.tags.push("afsa-npii".into());
+        afsa.tags.push("insolvency:bankruptcy".into());
+        afsa.tags.push("insolvency:current".into());
+        afsa.add_evidence(Evidence::new("afsa_insolvency", "NPII bankruptcy record"));
+        let mut asic = Entity::new(EntityKind::Person, "John William Smith", 0.85, "scan-au085");
+        asic.add_evidence(Evidence::new("asic_director", "ASIC director record"));
+        let results = rule_au_085_insolvency_director_link(&[afsa, asic], "scan-au085", 0);
+        assert_eq!(results.len(), 1, "insolvency director link must fire for AFSA + ASIC name overlap");
+    }
+
+    // ── rule_au_086_tpb_abn_chain ─────────────────────────────────────────────
+
+    #[test]
+    fn au_086_tpb_abn_chain_fires_on_tpb_person_with_associated_abn() {
+        use super::au_registers::rule_au_086_tpb_abn_chain;
+        use crate::core::entity::Evidence;
+        let mut tpb = Entity::new(EntityKind::Person, "Sarah Jane Brown", 0.83, "scan-au086");
+        tpb.tags.push("tpb-registered".into());
+        tpb.tags.push("tpb:tax-agent".into());
+        tpb.add_evidence(Evidence::new("ato_tax_agents", "TPB tax agent record"));
+        let mut abn = Entity::new(EntityKind::AbnAcn, "51 824 753 556", 0.90, "scan-au086");
+        abn.add_evidence(Evidence::new("ato_tax_agents", "ABN extracted from TPB record"));
+        let results = rule_au_086_tpb_abn_chain(&[tpb, abn], "scan-au086", 0);
+        assert_eq!(results.len(), 1, "tpb abn chain must fire when a TPB entity has an associated ABN from ato_tax_agents");
+    }
+
+    // ── rule_au_087_employer_address_corroboration ────────────────────────────
+
+    #[test]
+    fn au_087_employer_address_fires_on_seek_and_registered_address_token_overlap() {
+        use super::au_registers::rule_au_087_employer_address_corroboration;
+        use crate::core::entity::Evidence;
+        let mut seek_addr = Entity::new(EntityKind::Address, "Sydney, NSW", 0.60, "scan-au087");
+        seek_addr.tags.push("seek-location".into());
+        seek_addr.add_evidence(Evidence::new("seek_au", "Seek listing location"));
+        let mut reg_addr = Entity::new(EntityKind::Address, "Sydney NSW 2000", 0.75, "scan-au087");
+        reg_addr.add_evidence(Evidence::new("asic_director", "ASIC registered office address"));
+        let results =
+            rule_au_087_employer_address_corroboration(&[seek_addr, reg_addr], "scan-au087", 0);
+        assert_eq!(results.len(), 1, "employer address corroboration must fire when Seek and registered addresses share suburb+state tokens");
+    }
+
+    // ── rule_au_088_cross_register_identity ──────────────────────────────────
+
+    #[test]
+    fn au_088_cross_register_identity_fires_on_three_gov_sources() {
+        use super::au_registers::rule_au_088_cross_register_identity;
+        use crate::core::entity::Evidence;
+        let mut person =
+            Entity::new(EntityKind::Person, "David Anthony Wilson", 0.90, "scan-au088");
+        person.add_evidence(Evidence::new("afsa_insolvency", "NPII bankruptcy record"));
+        person.add_evidence(Evidence::new("ato_tax_agents", "TPB tax agent record"));
+        person.add_evidence(Evidence::new("asic_director", "ASIC director record"));
+        let results = rule_au_088_cross_register_identity(&[person], "scan-au088", 0);
+        assert_eq!(results.len(), 1, "cross register identity must fire when person appears in 3+ independent AU gov registers");
+    }
+
+    // ── rule_au_089_tpb_professional_dual_reg ────────────────────────────────
+
+    #[test]
+    fn au_089_tpb_professional_dual_reg_fires_on_tpb_and_ahpra_name_overlap() {
+        use super::au_registers::rule_au_089_tpb_professional_dual_reg;
+        use crate::core::entity::Evidence;
+        let mut tpb = Entity::new(EntityKind::Person, "Emma Louise Clark", 0.83, "scan-au089");
+        tpb.tags.push("tpb-registered".into());
+        tpb.tags.push("tpb:tax-agent".into());
+        tpb.add_evidence(Evidence::new("ato_tax_agents", "TPB tax agent record"));
+        let mut ahpra = Entity::new(EntityKind::Person, "Emma Louise Clark", 0.85, "scan-au089");
+        ahpra.add_evidence(Evidence::new("ahpra", "AHPRA health practitioner record"));
+        let results = rule_au_089_tpb_professional_dual_reg(&[tpb, ahpra], "scan-au089", 0);
+        assert_eq!(results.len(), 1, "tpb professional dual reg must fire when TPB registrant and AHPRA person share name tokens");
+    }

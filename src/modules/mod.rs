@@ -9,9 +9,11 @@ pub mod abn_lookup;
 pub mod abuseipdb;
 pub mod acma_rrl;
 pub mod acnc_charities;
+pub mod afsa_insolvency;
 pub mod ahpra;
 pub mod api_key_probe;
 pub mod asic_director;
+pub mod ato_tax_agents;
 pub mod au_electoral;
 pub mod au_people;
 pub mod au_property;
@@ -122,6 +124,7 @@ pub mod rubygems_user;
 pub mod search_engines;
 pub mod securitytrails;
 pub mod see_know;
+pub mod seek_au;
 pub mod seon;
 pub mod shodan;
 pub mod signal_radar;
@@ -400,6 +403,8 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(wikidata::Wikidata),
         // Australian + global public-records / corporate registries
         Arc::new(opencorporates::OpenCorporates),
+        Arc::new(afsa_insolvency::AfsaInsolvency),
+        Arc::new(ato_tax_agents::AtoTaxAgents),
         Arc::new(au_unclaimed::AuUnclaimed),
         Arc::new(au_people::AuPeople),
         Arc::new(asic_director::AsicDirector),
@@ -409,6 +414,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(gleif_lei::GleifLei),
         Arc::new(acma_rrl::AcmaRrl),
         Arc::new(ahpra::Ahpra),
+        Arc::new(seek_au::SeekAu),
         Arc::new(hlr_cnam::HlrCnam),
         Arc::new(netlas::Netlas),
         Arc::new(trove_au::TroveAu),
