@@ -199,6 +199,7 @@ impl Module for Netlas {
 
         let mut all_emails: Vec<String> = Vec::new();
         let mut all_cert_domains: Vec<String> = Vec::new();
+        let mut cert_orgs: Vec<String> = Vec::new();
         let mut port_list: Vec<String> = Vec::new();
         let mut jarm_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut cve_list: Vec<String> = Vec::new();
@@ -249,6 +250,11 @@ impl Module for Netlas {
                     }
                     if let Some(emails) = &subj.email {
                         all_emails.extend(emails.iter().cloned());
+                    }
+                    // OV/EV certificates carry the verified organisation name in
+                    // the Subject O field — a confirmed legal entity name.
+                    if let Some(orgs) = &subj.organization {
+                        cert_orgs.extend(orgs.iter().filter(|o| !o.is_empty()).cloned());
                     }
                 }
                 if let Some(emails) = &cert.emails {
@@ -341,6 +347,10 @@ impl Module for Netlas {
         result.push(ip_entity);
 
         // ISP → Organisation entity.
+        let isp_lc = isp_val
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty());
         if let Some(isp) = isp_val.as_deref().filter(|s| s.len() >= 3) {
             let mut org = Entity::new(EntityKind::Organisation, isp, 0.60, &ctx.scan_id);
             org.tag("netlas");
@@ -350,6 +360,34 @@ impl Module for Netlas {
                     .with_attr("source", "netlas"),
             );
             result.push(org);
+        }
+
+        // SSL Subject O field → Organisation entity (OV/EV certs only).
+        // Deduplicate and skip values that match the ISP already emitted.
+        cert_orgs.sort();
+        cert_orgs.dedup();
+        for cert_org in cert_orgs.iter().take(3) {
+            let org_lc = cert_org.trim().to_ascii_lowercase();
+            if org_lc.len() < 3 || isp_lc.as_deref() == Some(&org_lc) {
+                continue;
+            }
+            let mut oe = Entity::new(
+                EntityKind::Organisation,
+                cert_org.trim(),
+                0.70,
+                &ctx.scan_id,
+            );
+            oe.tag("netlas");
+            oe.tag("ssl-subject-org");
+            oe.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("SSL/TLS certificate Subject O for {ip_str}: {cert_org}"),
+                )
+                .with_attr("ip", ip_str)
+                .with_attr("cert_org", cert_org.as_str()),
+            );
+            result.push(oe);
         }
 
         // Geolocation → Coordinates + Address.
