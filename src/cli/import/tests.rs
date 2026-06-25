@@ -633,6 +633,36 @@ async fn upload_dispatcher_routes_seeknow_summary_to_dossier() {
 }
 
 #[test]
+fn dossier_list_address_carries_provenance_and_geocodes() {
+    use crate::core::engine::enrich_offline_geo;
+    // A CONTACT SUMMARY whose ADDRESSES section names a major AU city.
+    let body = "Entry #1:\n   \u{2022} email: a@example.com\n\
+                ADDRESSES:\n  -> address: 10 George Street, Sydney NSW 2000\n";
+    let (mut ents, _stats) = parse_dossier(body, "s");
+    deduplicate_by_uid(&mut ents);
+
+    // The list-section address now carries an `import:dossier` corroborating
+    // source (previously it had none, leaving it source-less and un-geocodable).
+    let addr = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("address");
+    assert!(
+        !addr.corroborating_sources().is_empty(),
+        "a list-section address must carry provenance"
+    );
+
+    // With provenance, the shared offline geocode derives a Sydney coordinate.
+    enrich_offline_geo(&mut ents, "s");
+    assert!(
+        ents.iter().any(|e| e.kind == EntityKind::Coordinates
+            && e.has_tag("addr-derived")
+            && e.value.starts_with("-33.8688")),
+        "the Sydney address must geocode once it carries a source"
+    );
+}
+
+#[test]
 fn finalize_drops_bogus_ips_keeps_real_and_private_and_dedups() {
     let sid = "import-test";
     let mut v = vec![

@@ -399,7 +399,7 @@ fn emit_dossier_list_item(
     stats: &mut ImportStats,
     seen: &mut std::collections::HashSet<String>,
 ) {
-    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::entity::{Entity, EntityKind, Evidence};
     use crate::core::validation::is_fragment_value;
     let mut push = |e: Entity, key: String| {
         if seen.insert(key) {
@@ -407,6 +407,18 @@ fn emit_dossier_list_item(
             e.tag("import");
             e.tag("dossier");
             e.tag("dossier-list");
+            // Provenance: every list item carries its origin as a corroborating
+            // source. Without it `corroborating_sources()` is empty, which (a)
+            // leaves the entity with no source trail in the dossier, and (b) bars
+            // an Address from the offline geocode pass (`address_to_coords_pass`
+            // skips source-less addresses), so a `CONTACT SUMMARY` residence never
+            // became a Coordinates. `import:dossier` is a real corroborating
+            // source (not enrichment), so this both records the origin and lets
+            // the address feed the geo-correlation stack.
+            e.add_evidence(Evidence::new(
+                "import:dossier",
+                format!("Aggregate {} from a breach key-data summary list", e.kind),
+            ));
             entities.push(e);
             return true;
         }
