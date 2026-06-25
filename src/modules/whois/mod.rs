@@ -70,6 +70,7 @@ impl Module for Whois {
         const KINDS: &[EntityKind] = &[
             EntityKind::Domain,
             EntityKind::Email,
+            EntityKind::Phone,
             EntityKind::Person,
             EntityKind::Organisation,
             EntityKind::Address,
@@ -127,6 +128,7 @@ impl Module for Whois {
             nameservers,
             statuses,
             dnssec,
+            phones,
         } = parse_whois(&response);
 
         // No actionable data parsed — skip the entity to avoid noise.
@@ -311,6 +313,18 @@ impl Module for Whois {
                 );
                 result.push(ae);
             }
+        }
+
+        // Contact phone numbers — redacted values are already excluded in
+        // parse_whois; each surviving number is in E.164 `+<digits>` form.
+        for phone in &phones {
+            let mut pe = Entity::new(EntityKind::Phone, phone, 0.68, &_ctx.scan_id);
+            pe.tag("whois");
+            pe.add_evidence(
+                Evidence::new(SRC, format!("WHOIS contact phone for {}", target.value))
+                    .with_attr("parent_target", target.value.as_str()),
+            );
+            result.push(pe);
         }
 
         // Surface nameservers as Domain entities too so DNS chaining

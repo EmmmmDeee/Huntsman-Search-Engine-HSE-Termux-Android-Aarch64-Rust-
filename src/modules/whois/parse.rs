@@ -62,6 +62,35 @@ pub(super) struct WhoisFields {
     pub(super) nameservers: Vec<String>,
     pub(super) statuses: Vec<String>,
     pub(super) dnssec: Option<String>,
+    /// Deduplicated phone numbers (E.164-style `+<digits>`) from registrant,
+    /// admin, and tech contact sections. Redacted/privacy values are excluded.
+    pub(super) phones: Vec<String>,
+}
+
+/// True if a WHOIS field value looks like a real phone number rather than a
+/// redaction placeholder. Requires a leading `+` and at least 7 total digits.
+fn is_real_phone(s: &str) -> bool {
+    if !s.contains('+') {
+        return false;
+    }
+    let lower = s.to_lowercase();
+    if lower.contains("redacted")
+        || lower.contains("privacy")
+        || lower.contains("not disclosed")
+        || lower.contains("data protected")
+        || lower.contains("unavailable")
+    {
+        return false;
+    }
+    let digits: usize = s.bytes().filter(u8::is_ascii_digit).count();
+    digits >= 7
+}
+
+/// Normalise a WHOIS phone value to `+<digits>` (stripping separators).
+fn normalise_phone(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_digit() || *c == '+')
+        .collect()
 }
 
 /// Parse a raw WHOIS response body into the [`WhoisFields`] we surface. Pure
@@ -123,5 +152,22 @@ pub(super) fn parse_whois(response: &str) -> WhoisFields {
         nameservers: all_fields(response, &["Name Server:", "nserver:"]),
         statuses: all_fields(response, &["Domain Status:", "status:"]),
         dnssec: field(response, &["DNSSEC:", "dnssec:"]),
+        phones: {
+            let mut seen = std::collections::HashSet::new();
+            all_fields(
+                response,
+                &[
+                    "Registrant Phone:",
+                    "Admin Phone:",
+                    "Tech Phone:",
+                    "Registrant Phone Ext:",
+                ],
+            )
+            .into_iter()
+            .filter(|p| is_real_phone(p))
+            .map(|p| normalise_phone(&p))
+            .filter(|p| seen.insert(p.clone()))
+            .collect()
+        },
     }
 }
