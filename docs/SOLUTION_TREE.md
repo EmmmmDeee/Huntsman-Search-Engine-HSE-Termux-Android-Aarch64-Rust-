@@ -258,8 +258,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   destination).
 - **`[x]` SOL-REDACT · Credential redaction** — `redact_credentials` (param + literal
   `HUNTSMAN_*` passes) on error bodies/URLs; only `key_tail` (last-4) is ever logged.
-  *Closes:* the key-in-URL **log** exposure (S4 mostly mitigated). *Gap:* the archived
-  **success body** isn't run through `redact_literal_secrets` — **§7 S4** residual. ◑
+  `redact_archive_body` (cycle 44, 2026-06-25) added as `pub(super)` wrapper in
+  `src/util/http/redact.rs`; applied in `read_json_text` before `raw_archive::record_http`
+  — literal `HUNTSMAN_*` values are now masked before any success body reaches the
+  `raw_archive` table. *Closes:* **§7 S4** residual. `[x]` fully delivered.
 - **`[x]` SOL-INSTALL-INTEGRITY · sha256 sidecar required for auto-discovered prebuilt** —
   `_validate_prebuilt` in `install.sh` accepts a second arg `require_sha` (default 1 for
   auto-discovered binaries, 0 for explicitly-set `HSE_PREBUILT`). When `require_sha=1`:
@@ -456,7 +458,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-ISOLATE | T2.11 found_keys | `[x]` |
 | SOL-SSRF / -WHOIS | §6 (HTTP) · §7 S2 | `[x]`/`[x]` |
 | SOL-SECRETS / -EXTEND | env/pool/archive · §7 S3 | `[x]`/`[x]` |
-| SOL-REDACT | §7 S4 | ◑ |
+| SOL-REDACT | §7 S4 | `[x]` |
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
@@ -486,10 +488,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
   ahpra/acma_rrl/trove_au/`austlii` widen the scraper surface; priority remains raised.
-- **§7 S4** — SOL-REDACT residual: archived success body not run through
-  `redact_literal_secrets` (LOW). Contained.
   *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
-  this queue. S2/SOL-SSRF-WHOIS + S3/SOL-SECRETS-EXTEND delivered 2026-06-17.)*
+  this queue. S2/SOL-SSRF-WHOIS + S3/SOL-SECRETS-EXTEND delivered 2026-06-17.
+  **§7 S4 — delivered cycle 44, 2026-06-25**: `redact_archive_body` in
+  `src/util/http/redact.rs` + `read_json_text` archival chokepoint. SOL-REDACT `[x]`.)*
 - **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
 - **C9** — **delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18). Off the open queue.
 - **C3** — `[~]` (SOL-AU-MOAT). `austlii` delivered cycle 20 (courts/AustLII closed).
@@ -585,8 +587,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
   appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
   data.
-- **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
-  (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
+- **§7 (security):** XSS + S2 + S3 + **S4 `[x]`** ✅ + S5 `[x]` — all §7 items
+  closed. S1 accepted (`[-]`). SOL-REDACT fully delivered (cycle 44, 2026-06-25).
 - **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); C1/C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 - **SOL-MODULE-TYPOSQUAT `[x]`** (cycle 26) — `typosquat` world-class rewrite:
   combo-squat (50 phishing terms, 4 patterns), MX probing (async, hickory-resolver),
@@ -1704,6 +1706,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 - **2026-06-25** — **Cycle 40 (S→P): SOL-TRACKING-PIVOT-C delivered — social-profile URL priority boost in expansion heap.**
   S→P pass on cycle 37: the gap was explicit — "add a priority boost for `Url` entities tagged `social-profile` so they rank above generic domains." Delivered: `+15%` weight multiplier in `src/core/engine/mod.rs` expansion loop for `TargetKind::Url && entity.has_tag("social-profile")`. Added after the existing geo-corroboration bonus block so the two sub-dominant boosts compose cleanly. The fix ensures `web_crawler` is dispatched against confirmed social profile pages early in each expansion round rather than being pre-empted by generic domain/IP targets. **Gap refresh:** SOL-TRACKING-PIVOT-C is now delivered; the S→P gap for cycle 37 is closed. §4a gains no new items. Gate green: fmt/clippy/doc/test --locked all clean, 3216 lib tests, 0 failures.
+
+- **2026-06-25** — **Cycle 44 (P→S): §7 S4 residual closed — archived success bodies now redacted.**
+  P→S pass on the long-standing §7 S4 residual: `read_json_text` (the single chokepoint in
+  `src/util/http/fetch.rs` for all JSON module responses) archived `text` verbatim via
+  `raw_archive::record_http` without first masking literal `HUNTSMAN_*` secret values. Some
+  upstream APIs echo the caller's key back inside their JSON body (e.g. `{"api_key":"<KEY>",…}`)
+  — the query-param `redact_credentials` pass handles `name=value` shapes in URLs but not body
+  verbatim occurrence. Delivered: `pub(super) fn redact_archive_body(text: &str) -> String` in
+  `src/util/http/redact.rs` — calls `redact_literal_secrets(text, env_secret_values())` — and
+  applied at the archive chokepoint before `record_http`. SOL-REDACT status: `◑` → `[x]`.
+  **§7 is now fully closed** (XSS/S2/S3/S4/S5 all `[x]`; S1 `[-]` accepted). Zero breaking
+  change: `redact_literal_secrets` is idempotent and no-ops when no `HUNTSMAN_*` keys are set.
+  Gate: fmt/clippy/doc/test --locked clean, 3220 tests, 0 failures.
+  Paired: `PROBLEM_TREE` — same commit.
 
 - **2026-06-25** — **Cycle 43 (P→S): `hse update --check` changelog surface — commit subjects now printed.**
   P→S pass on the cycle-22 S→P gap: `--check` previously reported only the numeric count of commits behind the upstream tracking branch. Delivered: `changelog_lines(dir: &Path) -> Vec<String>` helper in `src/cli/update.rs` runs `git log --oneline HEAD..@{u}` and returns each subject line. `cmd_update()` now prints up to 20 lines when `commits_behind > 0`, letting the operator judge whether to update without a separate `git log` invocation. Zero breaking change: the helper is infallible (returns `Vec::new()` when git is absent or the remote is unreachable). **Gap refresh:** §4a loses `hse update --check changelog` — now closed. Gate green: fmt/clippy/doc/test --locked clean, 3220 lib tests, 0 failures.

@@ -5,7 +5,7 @@ use serde::de::DeserializeOwned;
 use crate::core::error::{Error, Result};
 
 use super::keys::scan_for_api_keys;
-use super::redact::redact_credentials;
+use super::redact::{redact_archive_body, redact_credentials};
 
 /// Read up to 200 characters of a non-success response body, trim, and
 /// return a single-line string safe to embed in an error message.
@@ -121,11 +121,12 @@ pub(super) async fn read_json_text(resp: reqwest::Response, module: &str) -> Res
         buf.extend_from_slice(&bytes);
     }
     let text = String::from_utf8_lossy(&buf).into_owned();
-    // Universal raw retention: every module's JSON response is archived verbatim
-    // here — the single chokepoint shared by fetch_json, fetch_json_or_404,
-    // fetch_keyed_json and json_scanned — so the full dossier's RAW SOURCE
-    // RECORDS section is complete for ANY scan, not only the breach pools.
-    crate::util::raw_archive::record_http(module, &url, &text);
+    // Universal raw retention: every module's JSON response is archived here —
+    // the single chokepoint shared by fetch_json, fetch_json_or_404,
+    // fetch_keyed_json and json_scanned. Literal HUNTSMAN_* secret values are
+    // masked before storage so API keys never reach the raw_archive table
+    // even when an upstream echoes them back in its JSON body.
+    crate::util::raw_archive::record_http(module, &url, &redact_archive_body(&text));
     Ok(text)
 }
 

@@ -92,6 +92,14 @@ fn env_secret_values() -> impl Iterator<Item = String> {
         .map(|(_, v)| v)
 }
 
+/// Redact literal secret values from an archived response body before it is
+/// written to the `raw_archive` table. Applies the same `HUNTSMAN_*` env-value
+/// masking as [`redact_credentials`] (second pass) without the query-param
+/// structural parse — the archived body is already valid text, not a URL.
+pub(super) fn redact_archive_body(text: &str) -> String {
+    redact_literal_secrets(text, env_secret_values())
+}
+
 /// Mask every `secret` wherever it appears in `text`, regardless of position
 /// (path, query, header echo, body). Length-gated (>= 8) so short non-secret
 /// values aren't touched. Split out from [`redact_credentials`] so it is
