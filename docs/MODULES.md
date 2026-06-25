@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (157 modules: 124 free · 28 key-gated · 5 paid)
+## Catalogue (158 modules: 125 free · 28 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -123,12 +123,13 @@ records. The engine knows nothing else — every module is a one-file change.
 | `threatfox` | ip_address, domain | key_gated | no | 109 | domain, ip_address, url |
 | `virustotal` | ip_address, domain | key_gated | no | 55 | — |
 
-### corporate (10)
+### corporate (11)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `asic_director` | full_name | free | no | 89 | organisation, abn_acn, address |
 | `asic_persons` | full_name | free | no | 112 | person, organisation, abn_acn, address |
+| `asic_business_names` | organisation | free | no | 111 | organisation, abn_acn |
 | `au_unclaimed` | full_name, organisation | free | no | 114 | address, coordinates, organisation, person |
 | `abn_lookup` | full_name, organisation, abn_acn | key_gated | no | 118 | abn_acn, address, organisation, person |
 | `opencorporates` | full_name, organisation, abn_acn | free | no | 116 | organisation, abn_acn, address |
