@@ -354,3 +354,20 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 only; it may **not** be used, copied, modified, redistributed, **resold**, or
 otherwise commercialised — in whole or in part — without the copyright
 holder's prior written permission.
+
+### Commercial use & licensing
+
+A commercial licence — for internal business use, hosted/SaaS deployment,
+OEM/embedding, or redistribution — is available by separate written agreement.
+Contact the repository owner to discuss licensing, support, or a pilot.
+
+### Authorised & lawful use
+
+HSE is built for **authorised** security, fraud-prevention, due-diligence, and
+investigative work only. You are responsible for establishing a lawful basis
+for every scan. Do **not** use it to harass, stalk, or surveil individuals, or
+to process personal data without a lawful basis under the applicable privacy law
+(e.g. the Australian *Privacy Act 1988*, the EU GDPR, or your local equivalent).
+The software is provided for legitimate use; the maintainers disclaim
+responsibility for misuse. See [`SECURITY.md`](SECURITY.md) for vulnerability
+disclosure.

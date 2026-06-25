@@ -10,6 +10,32 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.11.0] — 2026-06-25
+
+### Added
+- `gaming_profile` module — free, keyless Roblox + Minecraft (Java) profile
+  resolution via each platform's own public API.
+- `comb_search` module — free, keyless leaked-credential search over the public
+  COMB index, with strict exact-match attribution (no substring over-claiming).
+- Dynamic SeekNow quota probe — the per-round scan cap auto-scales to the
+  operator's actual plan tier.
+- Integrated pipeline-quality work: social-probe body validation,
+  infrastructure-entity separation, controlled-subdomain tracking-ID pivot,
+  `hse doctor`, `--output json` diagnostics, raw-archive secret redaction, and
+  Weiszfeld/Welzl geo-centroid fusion.
+
+### Changed
+- **Relicensed** from `MIT OR Apache-2.0` to a proprietary "all rights reserved"
+  licence; `publish = false` blocks crates.io redistribution.
+- Foundation de-duplication onto single-source helpers (`keyed_ok_or_404`,
+  `looks_like_email` email-minting gate, `merge_pool_into_env`, allocation-free
+  subdomain check) and dead-code removal.
+- Registry grows to **147 modules (114 free)**.
+
+### Fixed
+- rust-1.96 `map_unwrap_or` clippy error in `key_vault::total_count` — restores
+  green CI on `main`.
+
 ## [1.9.0] — 2026-06-23
 
 ### Added
