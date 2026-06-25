@@ -67,3 +67,26 @@ use super::*;
         let legit = build_email_entity("x@outlook.com", false, "s");
         assert!(disp.confidence < legit.confidence);
     }
+
+    #[test]
+    fn produces_declares_domain() {
+        use crate::core::module::Module;
+        assert!(DisposableCheck
+            .produces()
+            .contains(&EntityKind::Domain));
+    }
+
+    #[test]
+    fn freemail_domain_not_emitted() {
+        // gmail/outlook are generic webmail — no pivot value; is_freemail returns
+        // true for them so they must never produce a Domain entity.
+        assert!(is_freemail("gmail.com"));
+        assert!(is_freemail("outlook.com"));
+    }
+
+    #[test]
+    fn non_freemail_domain_would_be_emitted() {
+        // A corporate / ISP domain is a valid pivot — must NOT be freemail.
+        assert!(!is_freemail("acmecorp.com"));
+        assert!(!is_freemail("university.edu"));
+    }

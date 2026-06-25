@@ -73,9 +73,12 @@ use super::*;
         let ents = build_entities(&body, "kylo4kylo", "s");
 
         // Confirmed-on-npm username is always present, with package coverage.
-        let user = of_kind(&ents, EntityKind::Username);
-        assert_eq!(user.len(), 1);
-        let user = user[0];
+        // May also have a GitHub username pivot from repository URL.
+        let user_ents = of_kind(&ents, EntityKind::Username);
+        let user = user_ents
+            .iter()
+            .find(|e| e.value == "kylo4kylo")
+            .expect("npm username entity");
         assert_eq!(user.value, "kylo4kylo");
         assert!(user.has_tag("npm") && user.has_tag("code"));
         let attr = |k: &str| user.evidence[0].attributes.get(k).map(String::as_str);

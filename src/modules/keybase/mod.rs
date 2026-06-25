@@ -121,6 +121,7 @@ impl Module for Keybase {
         const KINDS: &[EntityKind] = &[
             EntityKind::Person,
             EntityKind::Username,
+            EntityKind::Url,
             EntityKind::Email,
             EntityKind::Domain,
             EntityKind::Address,

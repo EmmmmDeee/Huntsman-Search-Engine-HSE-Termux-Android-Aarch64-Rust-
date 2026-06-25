@@ -48,6 +48,26 @@ pub(super) fn claim_entity_ids(entity: &Value, pid: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Time-valued claims for a property (e.g. P569 birth, P570 death).
+///
+/// Wikidata stores times as `"+YYYY-MM-DDT00:00:00Z"` (with a leading `+` or
+/// `-` signum). We strip the signum and return the calendar-date portion only
+/// (`YYYY-MM-DD`), which is what AU-073 and other date correlators expect.
+/// Precision < day (century/decade/year) is returned as-is up to the available
+/// digits rather than being silently dropped.
+pub(super) fn claim_time(entity: &Value, pid: &str) -> Option<String> {
+    let path = format!("/claims/{pid}/0/mainsnak/datavalue/value");
+    let val = entity.pointer(&path)?;
+    let time_str = val.get("time").and_then(Value::as_str)?;
+    // Strip leading sign character; take at most 10 chars (YYYY-MM-DD).
+    let stripped = time_str.trim_start_matches('+').trim_start_matches('-');
+    let date = stripped.get(..10).unwrap_or(stripped);
+    if date.is_empty() {
+        return None;
+    }
+    Some(date.to_string())
+}
+
 /// `labels`/`descriptions` English value for an entity body.
 pub(super) fn en_text(entity: &Value, section: &str) -> Option<String> {
     entity

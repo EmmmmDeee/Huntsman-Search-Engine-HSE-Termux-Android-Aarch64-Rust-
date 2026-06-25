@@ -39,7 +39,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::http::RequestBuilderExt;
-use crate::util::http::{handle_keyed_error, json_decode, urlencode};
+use crate::util::http::{handle_keyed_error, urlencode};
 
 const KEY_ENV: &str = "HUNTSMAN_ONYPHE_KEY";
 const SRC: &str = "onyphe";
@@ -136,6 +136,9 @@ impl Module for Onyphe {
 
         let mut retries = 2u8;
         let body: OnypheResp = loop {
+            if ctx.cancel.is_cancelled() {
+                return Ok(ModuleResult::new());
+            }
             let resp = ctx
                 .http
                 .get(&url)
@@ -157,7 +160,11 @@ impl Module for Onyphe {
                 }
                 return Err(crate::util::http::http_status_error(SRC, resp).await);
             }
-            break json_decode(SRC, resp).await?;
+            // json_scanned: onyphe search results may contain leaked credentials —
+            // scan the raw body for embedded API keys.
+            break crate::util::http::json_scanned(resp, SRC)
+                .await
+                .map_err(|e| crate::core::error::Error::module(SRC, e))?;
         };
 
         // error != 0 ⇒ no results / rate-limited / plan limit — treat as empty.

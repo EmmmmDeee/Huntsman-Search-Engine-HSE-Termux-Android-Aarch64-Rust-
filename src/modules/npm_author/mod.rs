@@ -166,6 +166,7 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
     let mut result = ModuleResult::new();
     let mut seen_emails: HashSet<String> = HashSet::new();
     let mut seen_urls: HashSet<String> = HashSet::new();
+    let mut seen_domains: HashSet<String> = HashSet::new();
     let mut package_names: Vec<String> = Vec::new();
 
     let push_email =
@@ -245,6 +246,29 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
                     }
                     url_e.add_evidence(ev);
                     result.push(url_e);
+
+                    // Also surface the host as a Domain pivot (excluding code
+                    // forges that would just produce noise).
+                    if let Some(host) = crate::util::url_util::host_from_url(link) {
+                        let skip = matches!(
+                            host.as_str(),
+                            "github.com"
+                                | "gitlab.com"
+                                | "bitbucket.org"
+                                | "npmjs.com"
+                                | "npmjs.org"
+                        );
+                        if !skip && seen_domains.insert(host.clone()) {
+                            let mut de = Entity::new(EntityKind::Domain, &host, 0.58, scan_id);
+                            de.tag("npm");
+                            de.tag("derived");
+                            de.add_evidence(
+                                Evidence::new(SRC, format!("npm package link domain ({pkg_name})"))
+                                    .with_attr("package", pkg_name),
+                            );
+                            result.push(de);
+                        }
+                    }
                 }
             }
         }

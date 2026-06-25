@@ -91,9 +91,10 @@ use super::*;
     }
 
     #[test]
-    fn accepts_username_only() {
+    fn accepts_username_and_email() {
         assert!(UsernameVariants.accepts(&Target::new(TargetKind::Username, "x")));
-        assert!(!UsernameVariants.accepts(&Target::new(TargetKind::Email, "x@y.com")));
+        // Email seeds are now accepted: local-part variants derived at depth=0.
+        assert!(UsernameVariants.accepts(&Target::new(TargetKind::Email, "x@y.com")));
         assert!(!UsernameVariants.accepts(&Target::new(TargetKind::Domain, "x.com")));
     }
 

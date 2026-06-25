@@ -77,7 +77,12 @@ impl Module for GithubCodeSearch {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Url, EntityKind::Username, EntityKind::Email];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Url,
+            EntityKind::Username,
+            EntityKind::Email,
+            EntityKind::Person,
+        ];
         KINDS
     }
 

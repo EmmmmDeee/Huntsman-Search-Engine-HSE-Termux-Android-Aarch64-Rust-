@@ -5,9 +5,11 @@
 //! serializes scan entities as nodes and evidence-based relationships as
 //! edges, enabling visual link analysis.
 
+use std::collections::HashMap;
 use std::fmt::Write;
 
 use crate::core::entity::Entity;
+use crate::core::graph::Graph;
 use crate::core::relation::Relation;
 
 /// Truncated node id — must match the form used when emitting `<node>`
@@ -18,14 +20,31 @@ fn short_uid(uid: &str) -> &str {
 
 /// Serialize a scan's entities (nodes) and edges (typed `Relation` edges +
 /// shared-evidence co-occurrence edges) as GEXF for Gephi / Cytoscape.
+///
+/// Each node carries a `coreness` attribute (k-core index, Batagelj–Zaversnik)
+/// so Gephi can distinguish the redundantly-corroborated main core from the
+/// fragile periphery — the structural complement to the `classification`
+/// attribute (which captures confidence-tier) and `c_effective` (which captures
+/// multi-source strength). Coreness is computed once from the same entity+relation
+/// graph, adding O(V+E) time to the GEXF serialization path (export is not hot).
 pub fn entities_to_gexf(entities: &[Entity], relations: &[Relation], scan_id: &str) -> String {
     let mut xml = String::with_capacity(entities.len() * 256);
+
+    // Build the coreness map: uid → k-core index. Zero for any entity absent
+    // from the graph (isolated entities with no relation edges have coreness 0
+    // even if the builder would omit them — Gephi reads 0 as "periphery").
+    let graph = Graph::build(entities, relations);
+    let raw_coreness = graph.coreness();
+    let coreness_map: HashMap<&str, usize> = (0..graph.node_count())
+        .map(|i| (graph.uid(i), raw_coreness[i]))
+        .collect();
 
     write_preamble(&mut xml, scan_id);
 
     let _ = writeln!(xml, r#"    <nodes>"#);
     for e in entities {
-        write_node(&mut xml, e);
+        let c = coreness_map.get(e.uid.as_str()).copied().unwrap_or(0);
+        write_node(&mut xml, e, c);
     }
     let _ = writeln!(xml, r#"    </nodes>"#);
 
@@ -83,12 +102,18 @@ fn write_preamble(xml: &mut String, scan_id: &str) {
         xml,
         r#"      <attribute id="4" title="corroboration" type="integer"/>"#
     );
+    let _ = writeln!(
+        xml,
+        r#"      <attribute id="5" title="coreness" type="integer"/>"#
+    );
     let _ = writeln!(xml, r#"    </attributes>"#);
 }
 
-/// One `<node>` element with its five `<attvalue>`s. The id is the truncated
+/// One `<node>` element with its six `<attvalue>`s. The id is the truncated
 /// uid (see [`short_uid`]) so relation/co-occurrence edges can reference it.
-fn write_node(xml: &mut String, e: &Entity) {
+/// `coreness` is the k-core index (0 = isolated periphery, higher = more
+/// deeply embedded in a densely-connected cluster).
+fn write_node(xml: &mut String, e: &Entity, coreness: usize) {
     let label = xml_escape(&e.value);
     let _ = writeln!(
         xml,
@@ -117,6 +142,7 @@ fn write_node(xml: &mut String, e: &Entity) {
         r#"          <attvalue for="4" value="{}"/>"#,
         e.corroboration
     );
+    let _ = writeln!(xml, r#"          <attvalue for="5" value="{coreness}"/>"#);
     let _ = writeln!(xml, r#"        </attvalues>"#);
     let _ = writeln!(xml, r#"      </node>"#);
 }

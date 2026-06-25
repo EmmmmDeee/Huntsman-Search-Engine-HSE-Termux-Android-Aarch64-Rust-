@@ -37,6 +37,9 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
     org.tag("australian");
     if status.to_lowercase().contains("active") {
         org.tag("active");
+    } else if !status.is_empty() {
+        org.tag("inactive");
+        org.confidence = (org.confidence - 0.10).max(0.10);
     }
 
     let mut ev = Evidence::new(SRC, format!("ABR: {entity_name} (ABN {abn})"))

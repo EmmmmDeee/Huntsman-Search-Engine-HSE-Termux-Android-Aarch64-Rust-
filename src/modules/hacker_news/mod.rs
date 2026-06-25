@@ -25,7 +25,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::extract::{EMAIL_RE, URL_RE};
+use crate::util::extract::URL_RE;
 use crate::util::http::fetch_json;
 
 const SRC: &str = "hacker_news";
@@ -143,8 +143,9 @@ pub(super) fn build_entities(user: HnUser, scan_id: &str) -> Vec<Entity> {
     result.push(u);
 
     if let Some(about) = user.about.as_deref() {
-        if let Some(m) = EMAIL_RE.find(about) {
-            let email = m.as_str().to_lowercase();
+        // Extract ALL emails and URLs from the bio (HN bios are HTML-escaped
+        // free text; both often appear multiple times in developer profiles).
+        for email in crate::util::extract::emails(about).into_iter().take(5) {
             let mut e = Entity::new(EntityKind::Email, &email, 0.78, scan_id);
             e.tag("hacker-news");
             e.tag("public-profile");
@@ -154,8 +155,12 @@ pub(super) fn build_entities(user: HnUser, scan_id: &str) -> Vec<Entity> {
             );
             result.push(e);
         }
-        if let Some(m) = URL_RE.find(about) {
+        let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for m in URL_RE.find_iter(about).take(5) {
             let link = m.as_str().trim_end_matches(['.', ',', ')']);
+            if !seen_urls.insert(link.to_string()) {
+                continue;
+            }
             let mut url_e = Entity::new(EntityKind::Url, link, 0.72, scan_id);
             url_e.tag("hacker-news");
             url_e.tag("personal-site");
@@ -164,6 +169,21 @@ pub(super) fn build_entities(user: HnUser, scan_id: &str) -> Vec<Entity> {
                     .with_attr("source", "hn_bio"),
             );
             result.push(url_e);
+            if let Some(host) = crate::util::url_util::host_from_url(link)
+                && host.contains('.')
+                && host != "ycombinator.com"
+                && host != "news.ycombinator.com"
+            {
+                let mut d = Entity::new(EntityKind::Domain, &host, 0.65, scan_id);
+                d.tag("hacker-news");
+                d.tag("derived");
+                d.add_evidence(
+                    Evidence::new(SRC, format!("Domain from HN bio of '{}'", user.id))
+                        .with_attr("source_url", link)
+                        .with_attr("hn_username", &user.id),
+                );
+                result.push(d);
+            }
         }
     }
 

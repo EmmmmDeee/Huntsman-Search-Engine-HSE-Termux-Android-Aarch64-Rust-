@@ -266,6 +266,23 @@ const RULES: &[RuleFn] = &[
     rule_au_073_subject_date_of_birth,
     rule_au_074_au_government_id_exposure,
     rule_au_075_named_associate,
+    // Free, offline identity-resolution rules — require no API keys.
+    // AU-076: email local-part ↔ username canonical match (zero-API bridge).
+    // AU-077: name-derived username independently confirmed on a platform.
+    // AU-078: hub entity observed in 3+ distinct prior investigations.
+    // AU-079: profile bio / twitter attr names another username in the graph.
+    // AU-080: recurring co-occurrence pair from cross-scan history now active.
+    // AU-081: two Person records from different sources share a canonical name.
+    // AU-082: same API key found in 2+ independent source families (dual-pathway).
+    rule_au_076_email_username_localpart_bridge,
+    rule_au_077_name_derived_username_confirmed,
+    rule_au_078_hub_entity,
+    rule_au_079_bio_cross_mention,
+    rule_au_080_recurring_cooccurrence_link,
+    rule_au_081_canonical_person_name_match,
+    rule_au_082_api_key_dual_pathway,
+    // AU-083: ≥2 emails independently match the same locale naming pattern.
+    rule_au_083_locale_multi_email_corroboration,
     rule_au_046_cross_platform_identity_resolution,
     rule_au_068_anonymous_sim,
     rule_au_047_reused_secret_identity,
@@ -282,7 +299,8 @@ const RULES: &[RuleFn] = &[
     rule_au_058_professional_profile_geo,
     rule_au_059_cross_seed_geo_synergy,
     rule_au_061_family_geo_corroboration,
-    rule_au_078_cell_tower_dual_source,
+    // AU-084: dual-source cell tower corroboration (live sensor × crowdsourced DB).
+    rule_au_084_cell_tower_dual_source,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

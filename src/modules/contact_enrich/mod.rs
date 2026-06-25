@@ -156,6 +156,8 @@ impl Module for ContactEnrich {
 
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
+            EntityKind::Phone,
+            EntityKind::Email,
             EntityKind::Person,
             EntityKind::Username,
             EntityKind::Address,
@@ -217,7 +219,11 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         }
         if !status.is_success() {
             let code = status.as_u16();
-            crate::util::http::note_keyed_error(code, "numverify", key, ctx);
+            // Only mark the key exhausted for 401/403/429 — a 500 server error
+            // must not evict the key from the pool.
+            if crate::util::http::is_keyed_error_status(code) {
+                crate::util::http::note_keyed_error(code, "numverify", key, ctx);
+            }
             return Err(crate::util::http::http_status_error("contact_enrich", resp).await);
         }
         let data: NumverifyResp = crate::util::http::json_decode(SRC, resp).await?;

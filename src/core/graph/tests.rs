@@ -236,3 +236,134 @@ fn empty_graph_has_no_cut_structure() {
     assert!(cuts.is_empty(), "no nodes ⇒ no cut vertices");
     assert!(bridges.is_empty(), "no edges ⇒ no bridges");
 }
+
+/// Coreness keyed by UID, for readable assertions independent of the content-hash
+/// node order.
+fn coreness_by_uid(g: &Graph) -> std::collections::HashMap<String, usize> {
+    let core = g.coreness();
+    (0..g.node_count())
+        .map(|i| (g.uid(i).to_string(), core[i]))
+        .collect()
+}
+
+#[test]
+fn empty_and_edgeless_graphs_have_zero_degeneracy() {
+    let empty = Graph::build(&[], &[]);
+    assert!(empty.coreness().is_empty(), "no nodes ⇒ no core numbers");
+    assert_eq!(empty.degeneracy(), 0);
+
+    // Two entities, no relation: both isolated, coreness 0, degeneracy 0.
+    let g = Graph::build(&[ent("a"), ent("b")], &[]);
+    assert_eq!(g.coreness(), vec![0, 0], "an isolated node belongs to no k-core");
+    assert_eq!(g.degeneracy(), 0);
+}
+
+#[test]
+fn a_path_is_one_degenerate() {
+    // a — b — c — d: a tree, so every connected node has coreness 1 and the
+    // graph degeneracy is 1 (no redundant/cyclic structure anywhere).
+    let (a, b, c, d) = (ent("a"), ent("b"), ent("c"), ent("d"));
+    let rels = vec![rel(&a, &b), rel(&b, &c), rel(&c, &d)];
+    let g = Graph::build(&[a.clone(), b.clone(), c.clone(), d.clone()], &rels);
+    let core = coreness_by_uid(&g);
+    for u in [&a, &b, &c, &d] {
+        assert_eq!(core[&u.uid], 1, "every node of a path sits in the 1-core only");
+    }
+    assert_eq!(g.degeneracy(), 1, "a path/tree is 1-degenerate");
+}
+
+#[test]
+fn a_triangle_is_two_degenerate() {
+    // A 3-cycle: every node has two neighbours inside the cycle, so the whole
+    // triangle is a 2-core and nothing reaches a 3-core.
+    let (a, b, c) = (ent("a"), ent("b"), ent("c"));
+    let rels = vec![rel(&a, &b), rel(&b, &c), rel(&a, &c)];
+    let g = Graph::build(&[a.clone(), b.clone(), c.clone()], &rels);
+    let core = coreness_by_uid(&g);
+    for u in [&a, &b, &c] {
+        assert_eq!(core[&u.uid], 2, "each triangle node is in the 2-core");
+    }
+    assert_eq!(g.degeneracy(), 2, "a cycle is 2-degenerate");
+}
+
+#[test]
+fn a_four_clique_is_three_degenerate() {
+    // K4: every node is adjacent to the other three, so all four sit in a 3-core —
+    // the densest, most redundantly-corroborated structure of this size.
+    let nodes: Vec<Entity> = (0..4).map(|i| ent(&format!("k{i}"))).collect();
+    let mut rels = Vec::new();
+    for i in 0..4 {
+        for j in (i + 1)..4 {
+            rels.push(rel(&nodes[i], &nodes[j]));
+        }
+    }
+    let g = Graph::build(&nodes, &rels);
+    let core = coreness_by_uid(&g);
+    for u in &nodes {
+        assert_eq!(core[&u.uid], 3, "every K4 node is in the 3-core");
+    }
+    assert_eq!(g.degeneracy(), 3, "K4 is 3-degenerate");
+}
+
+#[test]
+fn star_centre_has_low_coreness_despite_high_degree() {
+    // The defining case for *why* coreness is not degree/betweenness: a star's centre
+    // has the highest degree and carries every path (max betweenness, and it is a cut
+    // vertex), yet its coreness is 1 — a star is a tree, with no redundant structure.
+    // This is exactly the fragile-hub-vs-cohesive-core distinction coreness adds.
+    let centre = ent("centre");
+    let leaves: Vec<Entity> = (0..5).map(|i| ent(&format!("leaf{i}"))).collect();
+    let mut entities = vec![centre.clone()];
+    entities.extend(leaves.iter().cloned());
+    let rels: Vec<Relation> = leaves.iter().map(|l| rel(&centre, l)).collect();
+    let g = Graph::build(&entities, &rels);
+    let core = coreness_by_uid(&g);
+    assert_eq!(core[&centre.uid], 1, "a high-degree hub in a tree still has coreness 1");
+    for l in &leaves {
+        assert_eq!(core[&l.uid], 1);
+    }
+    assert_eq!(g.degeneracy(), 1, "a star is 1-degenerate");
+}
+
+#[test]
+fn coreness_separates_a_dense_core_from_its_pendant_periphery() {
+    // A 2-connected triangle core (a-b-c) with a pendant tail c — d — e hanging off it.
+    // The triangle is a 2-core; the tail is fragile periphery in the 1-core. Coreness
+    // pinpoints the cohesive heart that degree alone (c has degree 3, like a tail node
+    // pair) would blur.
+    let (a, b, c, d, e) = (ent("a"), ent("b"), ent("c"), ent("d"), ent("e"));
+    let rels = vec![
+        rel(&a, &b),
+        rel(&b, &c),
+        rel(&a, &c), // triangle core
+        rel(&c, &d),
+        rel(&d, &e), // pendant tail
+    ];
+    let g = Graph::build(&[a.clone(), b.clone(), c.clone(), d.clone(), e.clone()], &rels);
+    let core = coreness_by_uid(&g);
+    assert_eq!(core[&a.uid], 2, "triangle members form the 2-core");
+    assert_eq!(core[&b.uid], 2);
+    assert_eq!(core[&c.uid], 2, "the hinge is part of the dense core");
+    assert_eq!(core[&d.uid], 1, "the tail is fragile 1-core periphery");
+    assert_eq!(core[&e.uid], 1);
+    assert_eq!(g.degeneracy(), 2);
+}
+
+#[test]
+fn coreness_is_deterministic_under_input_shuffling() {
+    // Triangle core a-b-c plus a pendant tail c-d-e; coreness is a graph invariant, so
+    // shuffling the entity/relation order must yield an identical per-UID result.
+    let (a, b, c, d, e) = (ent("a"), ent("b"), ent("c"), ent("d"), ent("e"));
+    let entities = vec![a.clone(), b.clone(), c.clone(), d.clone(), e.clone()];
+    let rels = vec![rel(&a, &b), rel(&b, &c), rel(&a, &c), rel(&c, &d), rel(&d, &e)];
+    let g1 = Graph::build(&entities, &rels);
+
+    let mut e2 = entities.clone();
+    e2.reverse();
+    let mut r2 = rels.clone();
+    r2.reverse();
+    let g2 = Graph::build(&e2, &r2);
+
+    assert_eq!(coreness_by_uid(&g1), coreness_by_uid(&g2), "coreness is input-order-independent");
+    assert_eq!(g1.degeneracy(), g2.degeneracy());
+}

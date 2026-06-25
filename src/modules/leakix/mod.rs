@@ -191,6 +191,9 @@ impl Module for LeakIx {
         let url = format!("https://leakix.net/{path}/{value}");
         let mut retries = 2u8;
         let body: HostResp = loop {
+            if ctx.cancel.is_cancelled() {
+                return Ok(ModuleResult::new());
+            }
             let resp = ctx
                 .http
                 .get(&url)
@@ -209,7 +212,11 @@ impl Module for LeakIx {
                 }
                 return Err(crate::util::http::http_status_error(SRC, resp).await);
             }
-            break crate::util::http::json_decode(SRC, resp).await?;
+            // json_scanned: leakix responses contain exposure/credential data —
+            // scan the raw body for embedded API keys.
+            break crate::util::http::json_scanned(resp, SRC)
+                .await
+                .map_err(|e| crate::core::error::Error::module(SRC, e))?;
         };
         if body.services.is_empty() && body.leaks.is_empty() {
             return Ok(ModuleResult::new());

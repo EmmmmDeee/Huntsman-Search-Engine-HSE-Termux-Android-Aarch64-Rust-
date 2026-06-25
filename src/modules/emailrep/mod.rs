@@ -235,6 +235,14 @@ pub(super) fn build_email_entity(target: &Target, body: &RepResp, scan_id: &str)
             ev = ev
                 .with_attr("profiles", csv)
                 .with_attr("profile_count", d.profiles.len().to_string());
+            // Tag each confirmed platform so graph rules can pivot on them
+            // without needing to parse the CSV attribute.
+            for platform in d.profiles.iter().take(MAX_PROFILES) {
+                let p = platform.trim().to_lowercase();
+                if !p.is_empty() {
+                    entity.tag(format!("has:{p}"));
+                }
+            }
         }
     }
 

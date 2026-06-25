@@ -8,7 +8,7 @@
 //!   2. **Link discovery** — extracts internal links (same domain), external
 //!      links (other domains), and subdomain links. Each discovered subdomain
 //!      becomes a Domain entity for expansion.
-//!   3. **Content extraction** — emails, phones, and usernames found in page
+//!   3. **Content extraction** — emails, phones, and API keys found in page
 //!      bodies are emitted as entities with source provenance.
 //!   4. **Page classification** — login forms, admin panels, file upload
 //!      forms, and password fields are detected and tagged.

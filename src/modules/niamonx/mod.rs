@@ -286,10 +286,11 @@ async fn fetch_pbs_v1(
         .json(&PbsV1Body { query })
         .send_tagged(SRC)
         .await?;
-    if !resp.status().is_success() {
-        crate::util::http::note_keyed_error(resp.status().as_u16(), SRC, key, ctx);
-        return Err(crate::util::http::http_status_error(SRC, resp).await);
-    }
+    // 401/403/429 → note_keyed_error + Err; other non-2xx → Err. 404 is
+    // unexpected (empty results arrive as 200+body) so treat it as an error.
+    let resp = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp)
+        .await?
+        .ok_or_else(|| Error::module(SRC, "HTTP 404 from breaches_search"))?;
     crate::util::http::json_scanned(resp, SRC)
         .await
         .map_err(|e| Error::module(SRC, e))
@@ -310,10 +311,11 @@ async fn fetch_pbs_v2(
         })
         .send_tagged(SRC)
         .await?;
-    if !resp.status().is_success() {
-        crate::util::http::note_keyed_error(resp.status().as_u16(), SRC, key, ctx);
-        return Err(crate::util::http::http_status_error(SRC, resp).await);
-    }
+    // 401/403/429 → note_keyed_error + Err; other non-2xx → Err. 404 is
+    // unexpected (empty results arrive as 200+body) so treat it as an error.
+    let resp = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp)
+        .await?
+        .ok_or_else(|| Error::module(SRC, "HTTP 404 from breaches_s_v2"))?;
     crate::util::http::json_scanned(resp, SRC)
         .await
         .map_err(|e| Error::module(SRC, e))
@@ -338,10 +340,11 @@ async fn fetch_ulp(
         })
         .send_tagged(SRC)
         .await?;
-    if !resp.status().is_success() {
-        crate::util::http::note_keyed_error(resp.status().as_u16(), SRC, key, ctx);
-        return Err(crate::util::http::http_status_error(SRC, resp).await);
-    }
+    // 401/403/429 → note_keyed_error + Err; other non-2xx → Err. 404 is
+    // unexpected (empty results arrive as 200+body) so treat it as an error.
+    let resp = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp)
+        .await?
+        .ok_or_else(|| Error::module(SRC, "HTTP 404 from ulp_search"))?;
     crate::util::http::json_scanned(resp, SRC)
         .await
         .map_err(|e| Error::module(SRC, e))

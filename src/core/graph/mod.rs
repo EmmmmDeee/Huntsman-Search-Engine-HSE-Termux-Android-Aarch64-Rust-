@@ -237,6 +237,130 @@ impl Graph {
         bridges.sort_unstable();
         (articulation_points, bridges)
     }
+
+    /// Each node's **coreness** (core number): the largest `k` for which the node belongs
+    /// to a `k`-core — the maximal subgraph in which *every* node has at least `k`
+    /// neighbours that are themselves in the subgraph.
+    ///
+    /// Coreness is the **embeddedness / robustness** axis of the graph, the exact
+    /// structural *complement* to the fragility that
+    /// [`cut_vertices_and_bridges`](Graph::cut_vertices_and_bridges) and
+    /// [`crate::core::pivot`]'s betweenness measure. A bridge/cut-vertex/high-betweenness
+    /// node is *load-bearing because it is the only route* — disprove it and the footprint
+    /// fragments. A high-coreness node is the opposite: it sits inside a densely,
+    /// *redundantly* interconnected cluster where many independent paths reinforce one
+    /// another, so it survives the loss of any single link. For an OSINT footprint the two
+    /// answer different questions an analyst must keep apart — *which entity is a fragile
+    /// single point of failure?* (low coreness, often a cut vertex) versus *which entities
+    /// form the cohesive, mutually-corroborated core that holds together no matter which
+    /// one link you doubt?* (high coreness). A hub-in-a-tree (a star centre) has high
+    /// degree yet coreness 1; a member of a 4-clique has coreness 3. Degree and
+    /// betweenness cannot tell those apart — coreness can.
+    ///
+    /// Returns a vector of length [`node_count`](Graph::node_count) indexed by node, so
+    /// `coreness()[i]` is node `i`'s core number. An isolated node (degree 0) has coreness
+    /// `0`; an empty graph yields an empty vector.
+    ///
+    /// # Algorithm — Batagelj–Zaversnik bucket peeling, O(V+E)
+    /// Repeatedly remove a node of minimum *current* degree; a node's coreness is its
+    /// degree at the instant it is removed. The classic linear-time realisation (Batagelj
+    /// & Zaversnik, 2003) keeps the nodes bucket-sorted by current degree in a flat array
+    /// and, on each removal, decrements each still-present higher-degree neighbour by
+    /// sliding it one bucket down in O(1) — so the whole decomposition is a single O(V+E)
+    /// sweep with O(V) integer working arrays, **no recursion** and no allocation inside
+    /// the peel loop. That keeps it cheap and stack-safe on a low-RAM, no-root Termux
+    /// aarch64 device, in the same spirit as the iterative Hopcroft–Tarjan pass above.
+    ///
+    /// # Determinism
+    /// The coreness of a node is a graph **invariant** — it does not depend on the order
+    /// equal-degree ties are peeled in — so the result is reproducible by construction,
+    /// independent of the order entities/relations were supplied in (the [`Graph`] already
+    /// canonicalises node and neighbour ordering). The bucket sort below is itself stable
+    /// in ascending-UID (index) order, so even the transient internal state is fixed.
+    #[must_use]
+    pub fn coreness(&self) -> Vec<usize> {
+        let n = self.uids.len();
+        if n == 0 {
+            return Vec::new();
+        }
+
+        // `deg[v]` is v's *current* degree — it starts at the full degree and is
+        // decremented as neighbours are peeled. Its value at v's own removal is v's core.
+        let mut deg: Vec<usize> = (0..n).map(|i| self.adj[i].len()).collect();
+        let max_deg = deg.iter().copied().max().unwrap_or(0);
+
+        // Bucket-sort the nodes by degree. `bin[d]` becomes the start index, in the
+        // degree-sorted `vert` array, of the block of nodes whose current degree is `d`.
+        let mut bin = vec![0usize; max_deg + 1];
+        for &d in &deg {
+            bin[d] += 1;
+        }
+        let mut start = 0usize;
+        for slot in &mut bin {
+            let count = *slot;
+            *slot = start;
+            start += count;
+        }
+        // `vert` lists nodes in ascending-degree order; `pos[v]` is v's index within it.
+        // Filled in ascending node order within each degree block, so ties are ordered by
+        // node index (ascending UID) — fixing the transient layout deterministically.
+        let mut vert = vec![0usize; n];
+        let mut pos = vec![0usize; n];
+        {
+            let mut cursor = bin.clone();
+            for (v, &d) in deg.iter().enumerate() {
+                let p = cursor[d];
+                vert[p] = v;
+                pos[v] = p;
+                cursor[d] += 1;
+            }
+        }
+
+        // Peel in ascending-degree order. When `v` is removed its core number is fixed at
+        // its current degree; each still-present neighbour with a strictly higher current
+        // degree loses one degree, realised by sliding it to the front of its degree block
+        // (a single swap) and shrinking that block — the O(1) Batagelj–Zaversnik update.
+        // An already-peeled neighbour `u` has `deg[u] ≤ deg[v]` (it was removed no later),
+        // so the `>` guard skips it without a separate "removed" flag.
+        let mut core = vec![0usize; n];
+        for i in 0..n {
+            let v = vert[i];
+            core[v] = deg[v];
+            for &u in &self.adj[v] {
+                if deg[u] > deg[v] {
+                    let du = deg[u];
+                    let pu = pos[u];
+                    let pw = bin[du]; // first position of u's current degree block
+                    let w = vert[pw]; // node at that block start
+                    if u != w {
+                        // Swap u to the front of its block (positions pu ↔ pw).
+                        vert[pu] = w;
+                        vert[pw] = u;
+                        pos[u] = pw;
+                        pos[w] = pu;
+                    }
+                    bin[du] += 1; // the degree-du block now starts one later
+                    deg[u] -= 1; // u drops into the degree-(du-1) block it now heads
+                }
+            }
+        }
+        core
+    }
+
+    /// The graph's **degeneracy**: the largest `k` for which a non-empty `k`-core exists,
+    /// equivalently `max` over every node's [`coreness`](Graph::coreness) (`0` for an empty
+    /// or edgeless graph).
+    ///
+    /// A single-number measure of how cohesive the whole footprint is: degeneracy `1` is a
+    /// tree/forest (no redundant structure), `2` means every core node sits on a cycle, and
+    /// a degeneracy-`k` graph contains a subgraph where everyone has `k`+ mutually
+    /// reinforcing links. It is the headline companion to the per-node coreness and to the
+    /// fragility counts (cut vertices / bridges) — high degeneracy says the footprint has a
+    /// densely corroborated heart, not just a sprawl of one-off leads. O(V+E).
+    #[must_use]
+    pub fn degeneracy(&self) -> usize {
+        self.coreness().into_iter().max().unwrap_or(0)
+    }
 }
 
 #[cfg(test)]

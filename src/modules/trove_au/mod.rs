@@ -114,11 +114,10 @@ impl Module for TroveAu {
             .send_tagged(SRC)
             .await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            crate::util::http::note_keyed_error(status.as_u16(), SRC, key, ctx);
+        // 401/403/429 → note_keyed_error + Err; 404 → clean miss; other non-2xx → Err.
+        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         let body: TroveResp = crate::util::http::json_decode(SRC, resp).await?;
         let mut result = ModuleResult::new();

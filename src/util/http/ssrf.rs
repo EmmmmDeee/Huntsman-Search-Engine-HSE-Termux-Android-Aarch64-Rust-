@@ -25,12 +25,8 @@ pub(super) const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// returns `false`, and is followed — an SSRF bypass. Mirrors the bracket
 /// handling in [`crate::util::preflight::url_host_is_private`].
 pub(super) fn redirect_to_private_ip(host: Option<&str>) -> bool {
-    host.map(|h| {
-        h.strip_prefix('[')
-            .and_then(|s| s.strip_suffix(']'))
-            .unwrap_or(h)
-    })
-    .is_some_and(crate::util::preflight::is_private_ip)
+    host.map(crate::util::preflight::unbracket_host)
+        .is_some_and(crate::util::preflight::is_private_ip)
 }
 
 /// Drop private/reserved IPs from a resolved address set — the SSRF DNS filter.

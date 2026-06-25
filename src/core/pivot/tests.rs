@@ -171,6 +171,35 @@ fn bridges_are_the_cut_edges_of_the_graph() {
 }
 
 #[test]
+fn coreness_separates_the_fragile_hub_from_the_robust_core() {
+    // A star hub and a triangle, joined so the hub is also the bridge into the triangle:
+    //   leaf0..leaf2 — hub — t0, and triangle t0-t1-t2.
+    // The hub has the highest degree and is a cut vertex (fragile broker, coreness 1),
+    // while the triangle members are the robust 2-core. Coreness reports that contrast
+    // that betweenness/degree alone cannot — surfaced per-pivot for the analyst.
+    let hub = ent("hub");
+    let leaves: Vec<Entity> = (0..3).map(|i| ent(&format!("leaf{i}"))).collect();
+    let tri: Vec<Entity> = (0..3).map(|i| ent(&format!("t{i}"))).collect();
+    let mut entities = vec![hub.clone()];
+    entities.extend(leaves.iter().cloned());
+    entities.extend(tri.iter().cloned());
+    let mut relations: Vec<Relation> = leaves.iter().map(|l| rel(&hub, l)).collect();
+    relations.push(rel(&hub, &tri[0]));
+    relations.push(rel(&tri[0], &tri[1]));
+    relations.push(rel(&tri[1], &tri[2]));
+    relations.push(rel(&tri[0], &tri[2]));
+
+    let pivots = detect(&entities, &relations);
+    let ph = pivots.iter().find(|p| p.uid == hub.uid).unwrap();
+    assert!(ph.is_cut_vertex, "the hub is a single point of failure");
+    assert_eq!(ph.coreness, 1, "a fragile hub-in-a-tree has coreness 1 despite its degree");
+    for t in &tri {
+        let pt = pivots.iter().find(|p| p.uid == t.uid).unwrap();
+        assert_eq!(pt.coreness, 2, "triangle members are the robust 2-core");
+    }
+}
+
+#[test]
 fn detection_is_deterministic_under_input_shuffling() {
     let centre = ent("centre");
     let leaves: Vec<Entity> = (0..5).map(|i| ent(&format!("leaf{i}"))).collect();

@@ -123,6 +123,9 @@ impl Module for DeHashed {
 
         let mut retries = 2u8;
         let body: DehashedResp = loop {
+            if ctx.cancel.is_cancelled() {
+                return Ok(ModuleResult::new());
+            }
             let resp = ctx
                 .http
                 .post(V2_SEARCH_URL)
@@ -145,7 +148,11 @@ impl Module for DeHashed {
                 // so surface it verbatim for the operator.
                 return Err(crate::util::http::http_status_error(build::SRC, resp).await);
             }
-            break crate::util::http::json_decode(build::SRC, resp).await?;
+            // json_scanned: dehashed responses contain breach data including
+            // leaked credentials — scan the raw body for API keys.
+            break crate::util::http::json_scanned(resp, build::SRC)
+                .await
+                .map_err(|e| crate::core::error::Error::module(build::SRC, e))?;
         };
 
         let entries = body.entries.unwrap_or_default();

@@ -153,6 +153,8 @@ use super::*;
             "s",
         );
         let xml = entities_to_gexf(&[a, b], &[rel], "scan-1");
+        // Both entities are connected by the relation edge — each has degree 1
+        // in the undirected view, so coreness = 1 for both.
         let expected = r#"<?xml version="1.0" encoding="UTF-8"?>
 <gexf xmlns="http://gexf.net/1.3" version="1.3">
   <meta>
@@ -166,6 +168,7 @@ use super::*;
       <attribute id="2" title="c_effective" type="float"/>
       <attribute id="3" title="classification" type="string"/>
       <attribute id="4" title="corroboration" type="integer"/>
+      <attribute id="5" title="coreness" type="integer"/>
     </attributes>
     <nodes>
       <node id="ed152b32b035" label="example.com">
@@ -175,6 +178,7 @@ use super::*;
           <attvalue for="2" value="0.900"/>
           <attvalue for="3" value="VERIFIED"/>
           <attvalue for="4" value="1"/>
+          <attvalue for="5" value="1"/>
         </attvalues>
       </node>
       <node id="df4bda23ac18" label="blog.example.com">
@@ -184,6 +188,7 @@ use super::*;
           <attvalue for="2" value="0.800"/>
           <attvalue for="3" value="VERIFIED"/>
           <attvalue for="4" value="1"/>
+          <attvalue for="5" value="1"/>
         </attvalues>
       </node>
     </nodes>
@@ -195,6 +200,56 @@ use super::*;
 </gexf>
 "#;
         assert_eq!(xml, expected);
+    }
+
+    /// Coreness is emitted in the GEXF output: an isolated entity gets 0,
+    /// entities in a connected pair (degree 1) get 1, and a triangle gets 2.
+    /// This distinguishes the fragile hub (star centre, coreness 1 despite high
+    /// degree) from the robust core (triangle member, coreness 2) — the key
+    /// insight surfaced in Gephi via the coreness attribute.
+    #[test]
+    fn gexf_coreness_attribute_is_emitted() {
+        use crate::core::relation::{Relation, RelationKind};
+        // Triangle: a — b — c — a. All members have coreness 2.
+        let a = Entity::new(EntityKind::Domain, "a.com", 0.9, "s");
+        let b = Entity::new(EntityKind::Domain, "b.com", 0.8, "s");
+        let c = Entity::new(EntityKind::Domain, "c.com", 0.8, "s");
+        let rel_ab = Relation::new(
+            a.uid.clone(),
+            b.uid.clone(),
+            RelationKind::SubdomainOf,
+            0.8,
+            "s",
+        );
+        let rel_bc = Relation::new(
+            b.uid.clone(),
+            c.uid.clone(),
+            RelationKind::SubdomainOf,
+            0.8,
+            "s",
+        );
+        let rel_ca = Relation::new(
+            c.uid.clone(),
+            a.uid.clone(),
+            RelationKind::SubdomainOf,
+            0.8,
+            "s",
+        );
+        let xml = entities_to_gexf(&[a, b, c], &[rel_ab, rel_bc, rel_ca], "s");
+        // All three triangle members must carry coreness 2.
+        let count_c2 = xml
+            .lines()
+            .filter(|l| l.contains(r#"for="5" value="2""#))
+            .count();
+        assert_eq!(count_c2, 3, "triangle: all three nodes have coreness 2\n{xml}");
+
+        // Isolated entity (no edges) gets coreness 0.
+        let iso = Entity::new(EntityKind::Email, "x@x.com", 0.5, "s");
+        let xml2 = entities_to_gexf(&[iso], &[], "s");
+        assert!(
+            xml2.contains(r#"for="5" value="0""#),
+            "isolated node must have coreness 0"
+        );
     }
 
     // ── short_uid ─────────────────────────────────────────────────────────────

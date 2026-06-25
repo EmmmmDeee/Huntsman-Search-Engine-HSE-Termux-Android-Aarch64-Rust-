@@ -109,6 +109,7 @@ impl Module for ExaSearch {
             EntityKind::Domain,
             EntityKind::Email,
             EntityKind::Phone,
+            EntityKind::Person,
         ];
         KINDS
     }
@@ -189,12 +190,12 @@ impl Module for ExaSearch {
             }
         };
 
-        let status = resp.status();
-        if !status.is_success() {
-            let code = status.as_u16();
-            crate::util::http::note_keyed_error(code, SRC, key, ctx);
+        // 401/403/429 → note_keyed_error + Err; 404 → clean miss; other
+        // non-2xx → Err via http_status_error. Previously a 500 (server error)
+        // would incorrectly mark the key exhausted — fixed by this helper.
+        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         let parsed: ExaResponse = match crate::util::http::json_scanned(resp, SRC).await {
             Ok(v) => v,
@@ -235,6 +236,28 @@ impl Module for ExaSearch {
             }
             url_entity.add_evidence(ev);
             result.push(url_entity);
+
+            // Author name → Person lead (multi-word names only, low confidence
+            // since byline attribution is often a pen name or org).
+            if let Some(author) = r
+                .author
+                .as_deref()
+                .map(str::trim)
+                .filter(|a| a.chars().count() >= 4 && a.contains(' ') && !a.contains('@'))
+            {
+                let mut pe = Entity::new(EntityKind::Person, author, 0.35, &ctx.scan_id);
+                pe.tag("exa-search");
+                pe.tag("byline");
+                pe.tag("derived");
+                pe.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("Author byline from Exa result for {}", target.value),
+                    )
+                    .with_attr("source_url", &r.url),
+                );
+                result.push(pe);
+            }
 
             // Extract the host as a Domain entity (feeds dns_intel,
             // cert_intel, web_crawler/probe_config_leaks chain).
