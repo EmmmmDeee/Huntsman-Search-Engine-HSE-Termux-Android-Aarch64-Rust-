@@ -4679,3 +4679,35 @@ fn au081_canonical_person_name_match_fires_on_cross_source_same_name() {
         "AU-081 must not fire for identical source sets"
     );
 }
+
+#[test]
+fn au082_api_key_dual_pathway_fires_on_code_plus_breach() {
+    use super::rules::rule_au_082_api_key_dual_pathway;
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    // Same API key found in a code repo (github_code_search → code family)
+    // and in a breach pool (oathnet_pro → breach family).
+    let mut e = Entity::new(EntityKind::ApiKey, "sk-realkey-abc123xyz", 0.85, "s");
+    e.add_evidence(Evidence::new(
+        "github_code_search",
+        "Found in public repository".to_string(),
+    ));
+    e.add_evidence(Evidence::new(
+        "oathnet_pro",
+        "Found in stealer log".to_string(),
+    ));
+    let r = rule_au_082_api_key_dual_pathway(&[e], "s", 0);
+    assert!(
+        !r.is_empty(),
+        "AU-082 must fire when same API key appears in code+breach families"
+    );
+    assert_eq!(r[0].rule_id, "AU-082");
+    assert_eq!(r[0].severity, super::Severity::Critical);
+    // Single-family key must NOT fire AU-082 (AU-021 handles that).
+    let mut single = Entity::new(EntityKind::ApiKey, "sk-only-breach", 0.85, "s");
+    single.add_evidence(Evidence::new("oathnet_pro", "Stealer".to_string()));
+    let r2 = rule_au_082_api_key_dual_pathway(&[single], "s", 0);
+    assert!(
+        r2.is_empty(),
+        "AU-082 must not fire for a single-family API key"
+    );
+}

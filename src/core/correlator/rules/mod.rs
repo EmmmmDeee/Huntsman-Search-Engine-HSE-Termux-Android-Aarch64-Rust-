@@ -191,7 +191,13 @@ fn is_generic_handle(handle: &str) -> bool {
 
 /// Modules that *derive* a username by inference — a name permutation, an email
 /// local-part, or a handle variant — rather than observing it on a platform.
-const USERNAME_DERIVATION_SOURCES: &[&str] = &["name_intel", "email_parse", "username_variants"];
+/// Sources that *derive* a candidate username from a seed without independently
+/// confirming the handle exists on a live platform.  `gravatar` is included
+/// because it maps a seed email to the owner's stated `preferredUsername` —
+/// derived from the account owner's own assertion, not an independent
+/// platform observation.
+const USERNAME_DERIVATION_SOURCES: &[&str] =
+    &["name_intel", "email_parse", "username_variants", "gravatar"];
 
 /// Modules that *discover* a username by observing it live on a real platform /
 /// corpus, confirming the handle exists.

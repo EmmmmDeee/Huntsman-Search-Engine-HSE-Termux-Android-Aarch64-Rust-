@@ -154,10 +154,11 @@ records. The engine knows nothing else — every module is a one-file change.
 | `urlscan` | ip_address, domain, url | free | no | 15 | ip_address |
 | `netlas` | ip_address, domain, email | key_gated | no | 79 | ip_address, email, domain, organisation, coordinates, address |
 
-### web (5)
+### web (6)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
+| `url_extract` | url | free | yes | 97 | domain, ip_address |
 | `wayback` | domain, url | free | no | 38 | — |
 | `webserver_banner` | ip_address, domain, url | free | no | 36 | domain, ip_address, url |
 | `waf_detect` | domain, url | free | no | 30 | domain |

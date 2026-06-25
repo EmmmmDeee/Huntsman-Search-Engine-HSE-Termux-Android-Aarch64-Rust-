@@ -114,6 +114,7 @@ pub mod sunrise_sunset;
 pub mod threatfox;
 pub mod trove_au;
 pub mod typosquat;
+pub mod url_extract;
 pub mod urlhaus;
 pub mod urlscan;
 pub mod username_search;
@@ -285,6 +286,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(search_engines::SearchEngines),
         Arc::new(webserver_banner::WebserverBanner),
         Arc::new(web_crawler::WebCrawler),
+        Arc::new(url_extract::UrlExtract),
         Arc::new(urlscan::UrlScan),
         Arc::new(email_parse::EmailParse),
         Arc::new(email_canonical::EmailCanonical),

@@ -719,6 +719,56 @@ pub(in crate::core::correlator) fn rule_au_043_paste_exposure(
     )]
 }
 
+/// AU-082 — API key exposed via two independent source families.
+///
+/// AU-021 fires whenever a single `ApiKey` entity is present; this rule
+/// fires specifically when the *same* key is independently found in two or
+/// more distinct source families (e.g. `code` via `github_code_search` AND
+/// `breach` via `oathnet_pro`).  The dual-pathway is the critical signal: it
+/// means the key was already circulating in criminal channels at the time it
+/// was leaked in source code — the window between exposure and exploitation
+/// has closed, and revocation is urgent.
+///
+/// Severity: **Critical** (same as AU-021) but the description explicitly
+/// names the dual-pathway, giving the operator an unambiguous remediation
+/// directive that AU-021 (single-source) cannot provide.
+pub(in crate::core::correlator) fn rule_au_082_api_key_dual_pathway(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::ApiKey)
+        .filter_map(|e| {
+            let families: std::collections::BTreeSet<&'static str> = e
+                .evidence
+                .iter()
+                .map(|ev| source_family(ev.source.as_str()))
+                .collect();
+            if families.len() < 2 {
+                return None;
+            }
+            let family_list: Vec<&str> = families.into_iter().collect();
+            Some(Correlation::new(
+                "AU-082",
+                "API key dual-pathway exposure",
+                Severity::Critical,
+                format!(
+                    "API key '{}' independently found across {} source families ({}): \
+                     key was already circulating outside the original leak — revoke immediately",
+                    e.value,
+                    family_list.len(),
+                    family_list.join(", "),
+                ),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            ))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

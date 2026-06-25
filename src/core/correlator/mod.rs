@@ -273,12 +273,14 @@ const RULES: &[RuleFn] = &[
     // AU-079: profile bio / twitter attr names another username in the graph.
     // AU-080: recurring co-occurrence pair from cross-scan history now active.
     // AU-081: two Person records from different sources share a canonical name.
+    // AU-082: same API key found in 2+ independent source families (dual-pathway).
     rule_au_076_email_username_localpart_bridge,
     rule_au_077_name_derived_username_confirmed,
     rule_au_078_hub_entity,
     rule_au_079_bio_cross_mention,
     rule_au_080_recurring_cooccurrence_link,
     rule_au_081_canonical_person_name_match,
+    rule_au_082_api_key_dual_pathway,
     rule_au_046_cross_platform_identity_resolution,
     rule_au_068_anonymous_sim,
     rule_au_047_reused_secret_identity,
