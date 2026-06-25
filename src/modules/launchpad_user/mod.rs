@@ -18,6 +18,7 @@ mod tests;
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::profile_kit;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -57,18 +58,9 @@ pub(super) fn build_entities(person: LpPerson, scan_id: &str) -> Vec<Entity> {
     if handle.is_empty() || !person.is_valid {
         return out;
     }
-    let profile_url = person
-        .web_link
-        .as_deref()
-        .map(str::trim)
-        .filter(|u| u.starts_with("http"))
-        .unwrap_or("")
-        .to_string();
-    let profile_url = if profile_url.is_empty() {
+    let profile_url = profile_kit::profile_url(person.web_link.as_deref(), || {
         format!("https://launchpad.net/~{handle}")
-    } else {
-        profile_url
-    };
+    });
 
     let ev = || {
         Evidence::new(SRC, format!("Launchpad profile of '{handle}'"))
@@ -90,9 +82,8 @@ pub(super) fn build_entities(person: LpPerson, scan_id: &str) -> Vec<Entity> {
 
     // Display name → Person (multi-word only).
     if let Some(name) = person.display_name.as_deref()
-        && name.trim().contains(' ')
+        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
     {
-        let mut p = Entity::new(EntityKind::Person, name.trim(), 0.72, scan_id);
         p.tag("launchpad");
         p.add_evidence(ev().with_attr("source_field", "display_name"));
         out.push(p);
@@ -100,8 +91,7 @@ pub(super) fn build_entities(person: LpPerson, scan_id: &str) -> Vec<Entity> {
 
     // Bio — extract email addresses mentioned in the free-text field.
     if let Some(bio) = person.homepage_content.as_deref() {
-        for email in crate::util::extract::emails(bio).into_iter().take(5) {
-            let mut em = Entity::new(EntityKind::Email, &email, 0.68, scan_id);
+        for mut em in profile_kit::bio_emails(bio, 0.68, scan_id, 5) {
             em.tag("launchpad");
             em.tag("public-profile");
             em.add_evidence(

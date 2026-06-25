@@ -16,6 +16,7 @@ mod tests;
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::profile_kit;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -60,18 +61,9 @@ pub(super) fn build_entities(user: GtUser, scan_id: &str) -> Vec<Entity> {
     if handle.is_empty() {
         return out;
     }
-    let profile_url = user
-        .html_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|u| u.starts_with("http"))
-        .unwrap_or("")
-        .to_string();
-    let profile_url = if profile_url.is_empty() {
+    let profile_url = profile_kit::profile_url(user.html_url.as_deref(), || {
         format!("https://gitea.com/{handle}")
-    } else {
-        profile_url
-    };
+    });
 
     let mut ev_base = Evidence::new(SRC, format!("Gitea.com profile of '{handle}'"))
         .with_attr("profile_url", &profile_url);
@@ -94,10 +86,9 @@ pub(super) fn build_entities(user: GtUser, scan_id: &str) -> Vec<Entity> {
     out.push(u);
 
     // Real name → Person (multi-word, ≥2 tokens).
-    if let Some(ref name) = user.full_name
-        && name.split_whitespace().count() >= 2
+    if let Some(name) = user.full_name.as_deref()
+        && let Some(mut p) = profile_kit::person_from_name(name, 0.70, scan_id)
     {
-        let mut p = Entity::new(EntityKind::Person, name.trim(), 0.70, scan_id);
         p.tag("gitea");
         p.tag("derived");
         p.add_evidence(
@@ -124,35 +115,21 @@ pub(super) fn build_entities(user: GtUser, scan_id: &str) -> Vec<Entity> {
     }
 
     // Personal website URL + Domain.
-    if let Some(ref site) = user.website
-        && (site.starts_with("http://") || site.starts_with("https://"))
-    {
-        let site = site.trim();
-        let mut wu = Entity::new(EntityKind::Url, site, 0.70, scan_id);
-        wu.tag("gitea");
-        wu.add_evidence(ev().with_attr("source_field", "website"));
-        out.push(wu);
-        if let Some(host) = crate::util::url_util::host_from_url(site)
-            && host.contains('.')
-            && !matches!(
-                host.as_str(),
-                "gitea.com" | "github.com" | "gitlab.com" | "codeberg.org"
-            )
-        {
-            let mut d = Entity::new(EntityKind::Domain, &host, 0.62, scan_id);
-            d.tag("gitea");
-            d.tag("derived");
-            d.add_evidence(ev().with_attr("source_field", "website"));
-            out.push(d);
+    if let Some(site) = user.website.as_deref() {
+        for mut e in profile_kit::website_url_and_domain(site, 0.70, 0.62, scan_id) {
+            e.tag("gitea");
+            if e.kind == EntityKind::Domain {
+                e.tag("derived");
+            }
+            e.add_evidence(ev().with_attr("source_field", "website"));
+            out.push(e);
         }
     }
 
     // Location → Address (self-asserted, low confidence).
-    if let Some(ref loc) = user.location
-        && !loc.trim().is_empty()
-        && loc.len() <= 100
+    if let Some(loc) = user.location.as_deref()
+        && let Some(mut a) = profile_kit::location_address(loc, 0.36, scan_id)
     {
-        let mut a = Entity::new(EntityKind::Address, loc.trim(), 0.36, scan_id);
         a.tag("gitea");
         a.tag("self-asserted");
         a.add_evidence(ev().with_attr("source_field", "location"));
@@ -161,8 +138,7 @@ pub(super) fn build_entities(user: GtUser, scan_id: &str) -> Vec<Entity> {
 
     // Bio/description — extract email addresses.
     if let Some(bio) = user.description.as_deref() {
-        for email in crate::util::extract::emails(bio).into_iter().take(5) {
-            let mut em = Entity::new(EntityKind::Email, &email, 0.68, scan_id);
+        for mut em in profile_kit::bio_emails(bio, 0.68, scan_id, 5) {
             em.tag("gitea");
             em.tag("public-profile");
             em.add_evidence(

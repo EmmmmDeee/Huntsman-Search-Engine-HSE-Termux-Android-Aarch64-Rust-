@@ -106,6 +106,10 @@ pub mod phone_geo;
 pub mod phone_intl;
 pub mod photon;
 pub mod portscan;
+// Shared entity-construction toolkit for developer-profile modules — a helper,
+// not a registered `Module`, so it is `pub(crate)` (the registry guard only
+// inspects `pub mod` declarations).
+pub(crate) mod profile_kit;
 pub mod proxycurl;
 pub mod psbdmp;
 pub mod pwned_passwords;

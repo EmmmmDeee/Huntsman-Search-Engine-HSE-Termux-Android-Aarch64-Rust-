@@ -61,22 +61,15 @@ fn emits_public_email() {
 
 #[test]
 fn emits_website_url_and_domain() {
-    let user = make_user(
-        "gdev",
-        None,
-        None,
-        Some("https://gdev.example.org"),
-        None,
-        None,
-    );
+    let user = make_user("gdev", None, None, Some("https://gdev.io"), None, None);
     let ents = build_entities(user, "scan-gt-004");
     assert!(
         ents.iter()
-            .any(|e| e.kind == EntityKind::Url && e.value == "https://gdev.example.org")
+            .any(|e| e.kind == EntityKind::Url && e.value == "https://gdev.io")
     );
     assert!(
         ents.iter()
-            .any(|e| e.kind == EntityKind::Domain && e.value == "gdev.example.org")
+            .any(|e| e.kind == EntityKind::Domain && e.value == "gdev.io")
     );
 }
 

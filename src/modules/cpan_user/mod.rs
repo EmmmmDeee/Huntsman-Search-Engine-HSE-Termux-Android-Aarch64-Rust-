@@ -18,6 +18,7 @@ mod tests;
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::profile_kit;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -88,10 +89,9 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
     out.push(u);
 
     // Real name → Person (multi-word only).
-    if let Some(ref name) = author.name
-        && name.split_whitespace().count() >= 2
+    if let Some(name) = author.name.as_deref()
+        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
     {
-        let mut p = Entity::new(EntityKind::Person, name.trim(), 0.72, scan_id);
         p.tag("cpan");
         p.add_evidence(
             Evidence::new(SRC, format!("Real name from CPAN profile of '{handle}'"))
@@ -111,42 +111,27 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
         out.push(em);
     }
 
-    // Personal websites → URL + Domain.
+    // Personal websites → URL + Domain (up to 3).
     for site in author
         .website
         .iter()
         .filter_map(|s| s.url.as_deref())
         .take(3)
     {
-        let site = site.trim();
-        if !site.starts_with("http://") && !site.starts_with("https://") {
-            continue;
-        }
-        let mut wu = Entity::new(EntityKind::Url, site, 0.70, scan_id);
-        wu.tag("cpan");
-        wu.add_evidence(ev().with_attr("source_field", "website"));
-        out.push(wu);
-        if let Some(host) = crate::util::url_util::host_from_url(site)
-            && host.contains('.')
-            && !matches!(
-                host.as_str(),
-                "metacpan.org" | "cpan.org" | "github.com" | "gitlab.com"
-            )
-        {
-            let mut d = Entity::new(EntityKind::Domain, &host, 0.62, scan_id);
-            d.tag("cpan");
-            d.tag("derived");
-            d.add_evidence(ev().with_attr("source_field", "website"));
-            out.push(d);
+        for mut e in profile_kit::website_url_and_domain(site, 0.70, 0.62, scan_id) {
+            e.tag("cpan");
+            if e.kind == EntityKind::Domain {
+                e.tag("derived");
+            }
+            e.add_evidence(ev().with_attr("source_field", "website"));
+            out.push(e);
         }
     }
 
     // Location → Address (self-asserted, low confidence).
-    if let Some(ref loc) = author.location
-        && !loc.trim().is_empty()
-        && loc.len() <= 100
+    if let Some(loc) = author.location.as_deref()
+        && let Some(mut a) = profile_kit::location_address(loc, 0.36, scan_id)
     {
-        let mut a = Entity::new(EntityKind::Address, loc.trim(), 0.36, scan_id);
         a.tag("cpan");
         a.tag("self-asserted");
         a.add_evidence(ev().with_attr("source_field", "location"));
@@ -155,8 +140,7 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
 
     // Biography — extract email addresses.
     if let Some(bio) = author.biography.as_deref() {
-        for email in crate::util::extract::emails(bio).into_iter().take(3) {
-            let mut em = Entity::new(EntityKind::Email, &email, 0.68, scan_id);
+        for mut em in profile_kit::bio_emails(bio, 0.68, scan_id, 3) {
             em.tag("cpan");
             em.tag("public-profile");
             em.add_evidence(

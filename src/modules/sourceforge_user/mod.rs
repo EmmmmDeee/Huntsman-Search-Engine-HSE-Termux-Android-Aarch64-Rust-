@@ -17,6 +17,7 @@ mod tests;
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::profile_kit;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -53,15 +54,9 @@ pub(super) fn build_entities(user: SfUser, scan_id: &str) -> Vec<Entity> {
         return out;
     }
 
-    let profile_url = user
-        .url
-        .as_deref()
-        .map(|u| u.trim_end_matches('/'))
-        .filter(|u| u.starts_with("http"))
-        .map_or_else(
-            || format!("https://sourceforge.net/u/{handle}"),
-            str::to_string,
-        );
+    let profile_url = profile_kit::profile_url(user.url.as_deref(), || {
+        format!("https://sourceforge.net/u/{handle}")
+    });
 
     let ev = || {
         Evidence::new(SRC, format!("SourceForge profile of '{handle}'"))
@@ -82,10 +77,9 @@ pub(super) fn build_entities(user: SfUser, scan_id: &str) -> Vec<Entity> {
     out.push(u);
 
     // Display name → Person (multi-word only).
-    if let Some(ref name) = user.display_name
-        && name.split_whitespace().count() >= 2
+    if let Some(name) = user.display_name.as_deref()
+        && let Some(mut p) = profile_kit::person_from_name(name, 0.70, scan_id)
     {
-        let mut p = Entity::new(EntityKind::Person, name.trim(), 0.70, scan_id);
         p.tag("sourceforge");
         p.tag("derived");
         p.add_evidence(
@@ -99,21 +93,18 @@ pub(super) fn build_entities(user: SfUser, scan_id: &str) -> Vec<Entity> {
     }
 
     // Location → Address (self-asserted, low confidence).
-    if let Some(ref loc) = user.location
-        && !loc.trim().is_empty()
-        && loc.len() <= 100
+    if let Some(loc) = user.location.as_deref()
+        && let Some(mut a) = profile_kit::location_address(loc, 0.35, scan_id)
     {
-        let mut a = Entity::new(EntityKind::Address, loc.trim(), 0.35, scan_id);
         a.tag("sourceforge");
         a.tag("self-asserted");
         a.add_evidence(ev().with_attr("source_field", "location"));
         out.push(a);
     }
 
-    // Bio — extract email addresses and URLs.
+    // Bio — extract email addresses.
     if let Some(bio) = user.about.as_deref() {
-        for email in crate::util::extract::emails(bio).into_iter().take(5) {
-            let mut em = Entity::new(EntityKind::Email, &email, 0.68, scan_id);
+        for mut em in profile_kit::bio_emails(bio, 0.68, scan_id, 5) {
             em.tag("sourceforge");
             em.tag("public-profile");
             em.add_evidence(

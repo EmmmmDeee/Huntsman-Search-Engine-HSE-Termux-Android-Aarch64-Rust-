@@ -94,18 +94,18 @@ fn emits_website_url_and_domain() {
         "perldev",
         None,
         vec![],
-        vec!["https://perldev.example.org"],
+        vec!["https://perldev.io"],
         None,
         None,
     );
     let ents = build_entities(author, "scan-cpan-005");
     assert!(
         ents.iter()
-            .any(|e| e.kind == EntityKind::Url && e.value == "https://perldev.example.org")
+            .any(|e| e.kind == EntityKind::Url && e.value == "https://perldev.io")
     );
     assert!(
         ents.iter()
-            .any(|e| e.kind == EntityKind::Domain && e.value == "perldev.example.org")
+            .any(|e| e.kind == EntityKind::Domain && e.value == "perldev.io")
     );
 }
 
