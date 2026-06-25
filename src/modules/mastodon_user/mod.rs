@@ -115,6 +115,7 @@ impl Module for MastodonUser {
             EntityKind::Url,
             EntityKind::Domain,
             EntityKind::Address,
+            EntityKind::Coordinates,
         ];
         KINDS
     }
@@ -315,6 +316,19 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
                         .with_attr("instance", instance),
                 );
                 result.push(a);
+                if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
+                    let coord_val = format!("{lat:.4},{lon:.4}");
+                    let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.28, scan_id);
+                    c.tag("mastodon");
+                    c.tag("addr-derived");
+                    c.tag("geoint");
+                    c.add_evidence(
+                        ev.clone()
+                            .with_attr("source_field", &field.name)
+                            .with_attr("instance", instance),
+                    );
+                    result.push(c);
+                }
             }
         }
     }

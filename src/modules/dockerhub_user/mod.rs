@@ -96,6 +96,11 @@ pub(super) fn build_entities(user: DhUser, scan_id: &str) -> Vec<Entity> {
         a.tag("self-asserted");
         a.add_evidence(ev().with_attr("source_field", "location"));
         out.push(a);
+        if let Some(mut c) = profile_kit::location_coordinates(loc, 0.25, scan_id) {
+            c.tag("dockerhub");
+            c.add_evidence(ev().with_attr("source_field", "location"));
+            out.push(c);
+        }
     }
 
     // Personal website from profile_url (distinct from the canonical hub.docker.com URL).
@@ -159,6 +164,7 @@ impl Module for DockerhubUser {
             EntityKind::Domain,
             EntityKind::Organisation,
             EntityKind::Address,
+            EntityKind::Coordinates,
         ];
         K
     }

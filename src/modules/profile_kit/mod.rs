@@ -138,6 +138,33 @@ pub(crate) fn location_address(loc: &str, confidence: f64, scan_id: &str) -> Opt
     ))
 }
 
+/// Attempt to geocode a self-reported location string to a `Coordinates`
+/// entity using the city-centroid lookup. Returns `None` when the string is
+/// unrecognised or the location guard rejects it. `coord_confidence` should
+/// be slightly below the companion Address confidence (typically −0.10).
+/// The caller tags and evidences the returned entity.
+pub(crate) fn location_coordinates(
+    loc: &str,
+    coord_confidence: f64,
+    scan_id: &str,
+) -> Option<Entity> {
+    let trimmed = loc.trim();
+    if trimmed.is_empty() || trimmed.len() > 100 {
+        return None;
+    }
+    let (lat, lon) = crate::util::city_coords::city_coords(trimmed)?;
+    let coord_val = format!("{lat:.4},{lon:.4}");
+    let mut c = Entity::new(
+        EntityKind::Coordinates,
+        &coord_val,
+        coord_confidence,
+        scan_id,
+    );
+    c.tag("addr-derived");
+    c.tag("geoint");
+    Some(c)
+}
+
 /// Extract up to `limit` `Email` entities mentioned in a free-text
 /// bio / description field, in first-seen order. The caller tags and evidences
 /// each returned entity.

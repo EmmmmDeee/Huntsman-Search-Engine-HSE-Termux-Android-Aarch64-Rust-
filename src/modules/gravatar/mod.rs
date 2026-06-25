@@ -142,6 +142,7 @@ impl Module for Gravatar {
             EntityKind::Username,
             EntityKind::Url,
             EntityKind::Address,
+            EntityKind::Coordinates,
         ];
         KINDS
     }
@@ -240,6 +241,16 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
         .filter(|l| l.len() >= 2)
     {
         push(result, EntityKind::Address, loc, 0.60, &["geo-hint"]);
+        if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            push(
+                result,
+                EntityKind::Coordinates,
+                &coord_val,
+                0.50,
+                &["addr-derived", "geoint"],
+            );
+        }
     }
 
     // Profile + avatar URLs, and any personal URLs the owner listed.

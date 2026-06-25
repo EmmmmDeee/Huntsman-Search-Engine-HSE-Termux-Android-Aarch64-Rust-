@@ -79,7 +79,11 @@ impl Module for NumVerify {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Address, EntityKind::Organisation];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Address,
+            EntityKind::Organisation,
+            EntityKind::Coordinates,
+        ];
         KINDS
     }
 
@@ -163,8 +167,18 @@ fn build_entities(r: &NvResp, scan_id: &str) -> Vec<Entity> {
     if let Some(intl) = &r.international_format {
         ev = ev.with_attr("international_format", intl);
     }
-    e.add_evidence(ev);
+    e.add_evidence(ev.clone());
     out.push(e);
+    if let Some((lat, lon)) = crate::util::city_coords::city_coords(&place) {
+        let coord_val = format!("{lat:.4},{lon:.4}");
+        let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+        c.tag(SRC);
+        c.tag("addr-derived");
+        c.tag("geoint");
+        c.tag("phone-region");
+        c.add_evidence(ev);
+        out.push(c);
+    }
 
     // Carrier → Organisation pivot (same pattern as ip2location ISP extraction).
     if let Some(carrier) = r.carrier.as_deref().map(str::trim).filter(|c| c.len() >= 2) {

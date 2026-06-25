@@ -311,6 +311,9 @@ impl Shodan {
         if let Some(c) = body.country_code.as_deref() {
             entity.tag(format!("country:{}", c.to_uppercase()));
         }
+        if let Some(os) = body.os.as_deref() {
+            entity.tag(format!("os:{os}"));
+        }
 
         let mut ev = [
             ("org", body.org.as_deref()),

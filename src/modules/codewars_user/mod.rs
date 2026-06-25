@@ -97,6 +97,11 @@ pub(super) fn build_entities(user: CwUser, scan_id: &str) -> Vec<Entity> {
         a.tag("self-asserted");
         a.add_evidence(ev().with_attr("source_field", "city"));
         out.push(a);
+        if let Some(mut c) = profile_kit::location_coordinates(city, 0.22, scan_id) {
+            c.tag("codewars");
+            c.add_evidence(ev().with_attr("source_field", "city"));
+            out.push(c);
+        }
     }
 
     out
@@ -135,6 +140,7 @@ impl Module for CodewarsUser {
             EntityKind::Url,
             EntityKind::Organisation,
             EntityKind::Address,
+            EntityKind::Coordinates,
         ];
         K
     }

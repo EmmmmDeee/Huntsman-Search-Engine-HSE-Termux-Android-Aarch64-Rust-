@@ -88,6 +88,7 @@ impl Module for StackoverflowUser {
             EntityKind::Url,
             EntityKind::Domain,
             EntityKind::Address,
+            EntityKind::Coordinates,
         ];
         KINDS
     }
@@ -235,6 +236,20 @@ pub(super) fn build_entities(user: SoUser, scan_id: &str) -> Vec<Entity> {
             .with_attr("so_username", &user.display_name),
         );
         result.push(a);
+        if let Some(mut c) = profile_kit::location_coordinates(loc, 0.28, scan_id) {
+            c.tag("stackoverflow");
+            c.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!(
+                        "Geocode of self-reported location for '{}'",
+                        user.display_name
+                    ),
+                )
+                .with_attr("source_field", "location"),
+            );
+            result.push(c);
+        }
     }
 
     result.entities

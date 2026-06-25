@@ -136,6 +136,11 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
         a.tag("self-asserted");
         a.add_evidence(ev().with_attr("source_field", "location"));
         out.push(a);
+        if let Some(mut c) = profile_kit::location_coordinates(loc, 0.26, scan_id) {
+            c.tag("cpan");
+            c.add_evidence(ev().with_attr("source_field", "location"));
+            out.push(c);
+        }
     }
 
     // Biography — extract email addresses.
@@ -188,6 +193,7 @@ impl Module for CpanUser {
             EntityKind::Url,
             EntityKind::Domain,
             EntityKind::Address,
+            EntityKind::Coordinates,
         ];
         K
     }

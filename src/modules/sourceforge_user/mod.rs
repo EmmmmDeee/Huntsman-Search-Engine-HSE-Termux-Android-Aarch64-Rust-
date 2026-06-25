@@ -100,6 +100,11 @@ pub(super) fn build_entities(user: SfUser, scan_id: &str) -> Vec<Entity> {
         a.tag("self-asserted");
         a.add_evidence(ev().with_attr("source_field", "location"));
         out.push(a);
+        if let Some(mut c) = profile_kit::location_coordinates(loc, 0.25, scan_id) {
+            c.tag("sourceforge");
+            c.add_evidence(ev().with_attr("source_field", "location"));
+            out.push(c);
+        }
     }
 
     // Bio — extract email addresses.
@@ -151,6 +156,7 @@ impl Module for SourceforgeUser {
             EntityKind::Email,
             EntityKind::Url,
             EntityKind::Address,
+            EntityKind::Coordinates,
         ];
         K
     }

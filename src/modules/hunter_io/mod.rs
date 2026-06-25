@@ -342,6 +342,9 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
             if let Some(p) = nonempty(&entry.position) {
                 pev = pev.with_attr("position", &p);
             }
+            if let Some(d) = nonempty(&entry.department) {
+                pev = pev.with_attr("department", &d);
+            }
             pe.add_evidence(pev);
             out.push(pe);
         }
