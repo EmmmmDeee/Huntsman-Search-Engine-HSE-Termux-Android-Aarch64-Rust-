@@ -349,7 +349,12 @@ pub fn au_phone_region(
 pub fn au_gov_domain_state(domain: &str) -> Option<&'static str> {
     let d = domain.trim().trim_end_matches('.').to_ascii_lowercase();
     // The label immediately before the `.gov.au` suffix.
-    let label = d.strip_suffix(".gov.au")?.rsplit('.').next()?;
+    au_state_label(d.strip_suffix(".gov.au")?.rsplit('.').next()?)
+}
+
+/// Map a canonical AU state/territory abbreviation label to its code (the single
+/// source the `*.gov.au` / `*.edu.au` jurisdiction resolvers share).
+fn au_state_label(label: &str) -> Option<&'static str> {
     match label {
         "nsw" => Some("NSW"),
         "vic" => Some("VIC"),
@@ -361,6 +366,33 @@ pub fn au_gov_domain_state(domain: &str) -> Option<&'static str> {
         "nt" => Some("NT"),
         _ => None,
     }
+}
+
+/// The Australian state/territory an `*.{state}.edu.au` education domain encodes
+/// — the state school-system domains (`schools.nsw.edu.au`, `det.nsw.edu.au`,
+/// `sa.edu.au`, `decd.tas.edu.au`, …) plus Education Queensland's `eq.edu.au`
+/// (which carries no state label). Returns `None` for a university domain
+/// (`uq.edu.au`, `anu.edu.au` — institution-named, no state code; those resolve
+/// to their city via the `geo_domain_classifier` table) or any non-edu domain.
+/// Pure; no I/O.
+///
+/// ```
+/// use huntsman_search_engine::util::address_au::au_edu_domain_state;
+///
+/// assert_eq!(au_edu_domain_state("schools.nsw.edu.au"), Some("NSW"));
+/// assert_eq!(au_edu_domain_state("eq.edu.au"), Some("QLD")); // Education Queensland
+/// assert_eq!(au_edu_domain_state("uq.edu.au"), None);        // a university → city, not state
+/// assert_eq!(au_edu_domain_state("acme.com.au"), None);      // not an edu domain
+/// ```
+#[must_use]
+pub fn au_edu_domain_state(domain: &str) -> Option<&'static str> {
+    let d = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+    let rest = d.strip_suffix(".edu.au")?;
+    // Education Queensland's school domain is `eq.edu.au` (no state-code label).
+    if rest == "eq" || rest.ends_with(".eq") {
+        return Some("QLD");
+    }
+    au_state_label(rest.rsplit('.').next()?)
 }
 
 /// A **locality dedup key** for an address value: lowercased, punctuation

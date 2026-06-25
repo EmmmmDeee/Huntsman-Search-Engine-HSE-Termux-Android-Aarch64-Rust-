@@ -140,20 +140,23 @@ struct GeoClassification {
 }
 
 fn classify_domain(domain: &str) -> Option<GeoClassification> {
-    // An AU state-government domain (`health.nsw.gov.au` → NSW) is a precise,
-    // official jurisdiction signal that must win over the generic `.au`
-    // country-grain classification below. Then a known service, then the ccTLD.
-    classify_au_gov_domain(domain)
+    // An AU state-government / state-education domain (`health.nsw.gov.au` → NSW,
+    // `schools.vic.edu.au` → VIC) is a precise, official jurisdiction signal that
+    // must win over the generic `.au` country-grain classification below. Then a
+    // known service (incl. universities → city), then the ccTLD.
+    classify_au_jurisdiction_domain(domain)
         .or_else(|| classify_by_known_service(domain))
         .or_else(|| classify_by_cctld(domain))
 }
 
-/// A `*.{state}.gov.au` domain → a state-grain `<State>, Australia` location with
-/// its canonical state code, so it feeds the jurisdiction cross-checks
-/// (AU-056 / AU-085) at state precision. Federal `*.gov.au` (no state) and
-/// non-gov domains return `None`.
-fn classify_au_gov_domain(domain: &str) -> Option<GeoClassification> {
-    let state = crate::util::address_au::au_gov_domain_state(domain)?;
+/// A `*.{state}.gov.au` government domain or `*.{state}.edu.au` state-education
+/// domain → a state-grain `<State>, Australia` location with its canonical state
+/// code, so it feeds the jurisdiction cross-checks (AU-056 / AU-085) at state
+/// precision. Federal `*.gov.au`, university `*.edu.au` (institution-named →
+/// a city via the service table) and non-AU-jurisdiction domains return `None`.
+fn classify_au_jurisdiction_domain(domain: &str) -> Option<GeoClassification> {
+    let state = crate::util::address_au::au_gov_domain_state(domain)
+        .or_else(|| crate::util::address_au::au_edu_domain_state(domain))?;
     let location = match state {
         "NSW" => "New South Wales, Australia",
         "VIC" => "Victoria, Australia",
@@ -220,6 +223,44 @@ const GEO_SERVICES: &[(&str, &str, &str)] = &[
     ("optus.com.au", "Australia", "AU"),
     ("centrelink.gov.au", "Australia", "AU"),
     ("myob.com", "Australia", "AU"),
+    // Australian universities → their home city (a `@uni.edu.au` address places a
+    // student / staff / alumnus in a specific city, finer than the `.edu.au`
+    // country fallback). Single-campus-city institutions only; the city must be
+    // in `util::city_coords` so it geocodes (→ coordinate → AU state). Matched as
+    // a subdomain too (`student.uq.edu.au` → uq.edu.au).
+    ("sydney.edu.au", "Sydney, Australia", "AU"),
+    ("unsw.edu.au", "Sydney, Australia", "AU"),
+    ("uts.edu.au", "Sydney, Australia", "AU"),
+    ("mq.edu.au", "Sydney, Australia", "AU"),
+    ("westernsydney.edu.au", "Sydney, Australia", "AU"),
+    ("unimelb.edu.au", "Melbourne, Australia", "AU"),
+    ("monash.edu", "Melbourne, Australia", "AU"),
+    ("rmit.edu.au", "Melbourne, Australia", "AU"),
+    ("latrobe.edu.au", "Melbourne, Australia", "AU"),
+    ("swinburne.edu.au", "Melbourne, Australia", "AU"),
+    ("deakin.edu.au", "Melbourne, Australia", "AU"),
+    ("vu.edu.au", "Melbourne, Australia", "AU"),
+    ("uq.edu.au", "Brisbane, Australia", "AU"),
+    ("qut.edu.au", "Brisbane, Australia", "AU"),
+    ("griffith.edu.au", "Brisbane, Australia", "AU"),
+    ("uwa.edu.au", "Perth, Australia", "AU"),
+    ("curtin.edu.au", "Perth, Australia", "AU"),
+    ("murdoch.edu.au", "Perth, Australia", "AU"),
+    ("ecu.edu.au", "Perth, Australia", "AU"),
+    ("adelaide.edu.au", "Adelaide, Australia", "AU"),
+    ("unisa.edu.au", "Adelaide, Australia", "AU"),
+    ("flinders.edu.au", "Adelaide, Australia", "AU"),
+    ("anu.edu.au", "Canberra, Australia", "AU"),
+    ("canberra.edu.au", "Canberra, Australia", "AU"),
+    ("utas.edu.au", "Hobart, Australia", "AU"),
+    ("cdu.edu.au", "Darwin, Australia", "AU"),
+    ("newcastle.edu.au", "Newcastle, Australia", "AU"),
+    ("uow.edu.au", "Wollongong, Australia", "AU"),
+    ("usc.edu.au", "Sunshine Coast, Australia", "AU"),
+    ("federation.edu.au", "Ballarat, Australia", "AU"),
+    ("csu.edu.au", "Bathurst, Australia", "AU"),
+    ("jcu.edu.au", "Townsville, Australia", "AU"),
+    ("bond.edu.au", "Gold Coast, Australia", "AU"),
     ("xero.com", "New Zealand", "NZ"),
     // United Kingdom
     ("hsbc.co.uk", "United Kingdom", "GB"),

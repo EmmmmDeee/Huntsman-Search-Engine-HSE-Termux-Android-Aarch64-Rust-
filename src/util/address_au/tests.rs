@@ -184,3 +184,25 @@ use super::*;
         assert_eq!(au_gov_domain_state("nsw.example.com"), None); // not gov.au
         assert_eq!(au_gov_domain_state(""), None);
     }
+
+    #[test]
+    fn au_edu_domain_state_maps_state_school_systems() {
+        assert_eq!(au_edu_domain_state("schools.nsw.edu.au"), Some("NSW"));
+        assert_eq!(au_edu_domain_state("DET.NSW.EDU.AU"), Some("NSW"));
+        assert_eq!(au_edu_domain_state("sa.edu.au"), Some("SA"));
+        assert_eq!(au_edu_domain_state("decd.tas.edu.au"), Some("TAS"));
+        // Education Queensland's `eq.edu.au` carries no state label.
+        assert_eq!(au_edu_domain_state("eq.edu.au"), Some("QLD"));
+        assert_eq!(au_edu_domain_state("myschool.eq.edu.au"), Some("QLD"));
+    }
+
+    #[test]
+    fn au_edu_domain_state_is_none_for_universities_and_non_edu() {
+        // Universities are institution-named (no state code) → resolved to their
+        // city elsewhere, not a state here.
+        assert_eq!(au_edu_domain_state("uq.edu.au"), None);
+        assert_eq!(au_edu_domain_state("anu.edu.au"), None);
+        assert_eq!(au_edu_domain_state("unimelb.edu.au"), None);
+        assert_eq!(au_edu_domain_state("monash.edu"), None); // not .edu.au
+        assert_eq!(au_edu_domain_state("acme.com.au"), None); // not edu
+    }

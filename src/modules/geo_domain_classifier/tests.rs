@@ -81,15 +81,20 @@ fn classifies_known_australian_service() {
             cc.len() == 2 && cc.bytes().all(|b| b.is_ascii_uppercase())
         }
         let mut iso_name: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
-        let mut check_iso = |cc: &'static str, name: &'static str| {
+        let mut check_iso = |cc: &'static str, location: &'static str| {
             assert!(
                 two_upper(cc),
                 "ISO code {cc:?} must be two uppercase ASCII letters"
             );
-            if let Some(prev) = iso_name.insert(cc, name) {
+            // A location is country-grain ("Australia") or city-grain ("Brisbane,
+            // Australia"); the invariant is that one ISO code names exactly one
+            // COUNTRY (the trailing comma segment), so "AU" can't drift across
+            // spellings while still allowing finer city locations.
+            let country = location.rsplit(',').next().unwrap_or(location).trim();
+            if let Some(prev) = iso_name.insert(cc, country) {
                 assert_eq!(
-                    prev, name,
-                    "ISO {cc} names two countries: {prev:?} vs {name:?}"
+                    prev, country,
+                    "ISO {cc} names two countries: {prev:?} vs {country:?}"
                 );
             }
         };
@@ -165,4 +170,29 @@ fn classifies_known_australian_service() {
         assert!(a.has_tag("au-state:NSW"));
         assert!(a.has_tag("gov-domain"));
         assert!(!r.entities.iter().any(|e| e.kind == EntityKind::Coordinates));
+    }
+
+    #[test]
+    fn classifies_au_university_to_its_city() {
+        // A university domain resolves to its home CITY (finer than the .edu.au
+        // country fallback), via the known-service table — matched as a subdomain.
+        let uq = classify_domain("student.uq.edu.au").unwrap();
+        assert_eq!(uq.country_code, "AU");
+        assert_eq!(uq.location, "Brisbane, Australia");
+        assert_eq!(uq.au_state, None); // city grain, not a whole-state jurisdiction
+
+        assert_eq!(classify_domain("unimelb.edu.au").unwrap().location, "Melbourne, Australia");
+        assert_eq!(classify_domain("anu.edu.au").unwrap().location, "Canberra, Australia");
+        assert_eq!(classify_domain("monash.edu").unwrap().location, "Melbourne, Australia");
+    }
+
+    #[test]
+    fn classifies_au_state_education_domain_to_jurisdiction() {
+        // A state school-system domain resolves to state grain (au_state set).
+        let nsw = classify_domain("schools.nsw.edu.au").unwrap();
+        assert_eq!(nsw.method, "au_gov_domain");
+        assert_eq!(nsw.au_state, Some("NSW"));
+        assert_eq!(nsw.location, "New South Wales, Australia");
+        // Education Queensland.
+        assert_eq!(classify_domain("eq.edu.au").unwrap().au_state, Some("QLD"));
     }
