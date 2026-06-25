@@ -42,7 +42,7 @@ pub use url::{json_decode, json_scanned, urldecode, urlencode};
 /// detection on those sites doesn't short-circuit the request. Single source of
 /// truth — bump the Chrome version once here, not in four modules. Distinct from
 /// [`crate::util::curl::UA_POOL`], which rotates UAs for the curl fallback.
-pub const UA_BROWSER: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+pub const UA_BROWSER: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
 /// Honest identifying User-Agent for keyed/polite APIs that ask callers to
 /// describe themselves (`github_user`, `reddit_user`, `hacker_news`).
