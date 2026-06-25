@@ -2201,3 +2201,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the pass stays idempotent without the old early-return. +1 brand test (real corpus names),
   +1 engine test (osintcat + multi-sector xposed). Gate green: lib 3,332, fmt/clippy
   (`--all-targets`)/doc clean on rustc 1.96.0. Paired: `PROBLEM_TREE` cycle 92 — same commit.
+
+- **2026-06-25** — **Resolved the `origin/main` merge as a union, preserving both sides.**
+  Migrated `rule_au_078_cell_tower_dual_source` into the new `geo/cluster.rs` and renumbered
+  it **AU-084** (AU-078 now belongs to main's `rule_au_078_hub_entity`), updating the
+  dispatcher in `correlator/mod.rs` and every test reference; `git rm`'d the flat `geo.rs`
+  whose other contents main had already split into `geo/`. Kept `wants_infra` in
+  `scan_handlers/mod.rs` (the moved handler bodies now live in main's submodules, so only the
+  helper `scan_export` depends on was retained). Took main's haversine
+  `multi_source_convergence` (`proximity_graph[0].distance_km <= 5.0`, consistent with
+  `cluster_coordinates`' `THRESHOLD_KM`) over HEAD's latitude-biased degree approximation.
+  Unioned both correlator test sets (HEAD's AU-076/077 shared-registrant/hosting +
+  main's AU-076–082). Ran `cargo fmt --all` to clear the stray blank line that broke CI.
+  Full gate green locally: ~4,048 tests 0 failed, `clippy --all-targets -D warnings` clean,
+  rustdoc lints clean, fmt clean. Paired: `PROBLEM_TREE` — same commit.

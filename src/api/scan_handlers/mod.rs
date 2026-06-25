@@ -94,7 +94,6 @@ pub(crate) fn wants_infra(params: &std::collections::HashMap<String, String>) ->
         .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
 }
 
-
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

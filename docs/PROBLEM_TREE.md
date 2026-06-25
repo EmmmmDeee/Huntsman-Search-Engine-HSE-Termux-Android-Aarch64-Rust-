@@ -2994,3 +2994,17 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `breach_<name>` keys or `xposed_or_not`'s comma-joined `breaches` list, so even a
   brand-aware classifier wouldn't have seen them. **Paired:** `SOLUTION_TREE` cycle 92 —
   same commit.
+
+- **2026-06-25** — **Merge divergence with `origin/main` (a second batch of commits landed
+  mid-flight).** While PR #207 ran cycles 1–45, `main` independently reshaped the same
+  regions: the flat `core/correlator/rules/geo.rs` was split into a `geo/` subdirectory
+  (`chain.rs`/`cluster.rs`/`jurisdiction.rs`/`profile.rs`), the rule id **AU-078 was
+  reassigned** to a new `rule_au_078_hub_entity` in `identity/account.rs`, the
+  `api/scan_handlers` god-module was broken into submodules, and
+  `util/diagnostics/analyse.rs` switched its multi-source convergence test to a haversine
+  distance. This branch had concurrently added `rule_au_078_cell_tower_dual_source` (a
+  now-colliding id), `wants_infra` in `scan_handlers`, and the co-ownership builder —
+  yielding 4 content/modify-delete conflicts. After the textual resolution, a single stray
+  blank line at `scan_handlers/mod.rs:94` failed `cargo fmt --check`, halting the `check`
+  CI job at its very first step before clippy/doc/test ever ran. **Paired:** `SOLUTION_TREE`
+  — same commit.
