@@ -270,7 +270,11 @@ impl Module for CriminalIp {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Organisation, EntityKind::Asn];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::IpAddress,
+            EntityKind::Organisation,
+            EntityKind::Asn,
+        ];
         KINDS
     }
 
