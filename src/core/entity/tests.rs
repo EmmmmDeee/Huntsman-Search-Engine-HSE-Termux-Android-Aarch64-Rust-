@@ -266,12 +266,21 @@ fn uncorroborated_name_permutation_is_gated_until_a_second_source_confirms() {
         "a name-permutation with no independent source must be gated from expansion"
     );
 
-    // A single real corroborating source (a breach hit on the same address)
-    // confirms the guess, so a permutation that turns out real expands.
+    // A bare search_engines snippet hit must NOT lift the gate: search is asked
+    // to look up the permutation it then "confirms" (circular), and the string
+    // is as likely a namesake/aggregator as the subject.
+    guess.add_evidence(Evidence::new("search_engines", "appears in 1 result"));
+    assert!(
+        guess.is_uncorroborated_name_permutation(),
+        "a search-only snippet must not lift the name-permutation gate"
+    );
+
+    // A reliable independent source (a breach hit) confirms the guess, so a
+    // permutation that turns out real expands.
     guess.add_evidence(Evidence::new("hibp", "found in a breach"));
     assert!(
         !guess.is_uncorroborated_name_permutation(),
-        "a permutation confirmed by one real source expands normally"
+        "a permutation confirmed by a reliable source expands normally"
     );
 
     // The gate is specific to the `name-derived` tag: a normally-discovered

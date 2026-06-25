@@ -631,24 +631,33 @@ impl Entity {
 
     /// True for a speculative identifier *permuted from the subject's name*
     /// (`name_intel`'s `name-derived` email/username guesses, e.g.
-    /// `firstname.lastname@provider`) that no independent source has yet
-    /// corroborated. Like a recycled search snippet
+    /// `firstname.lastname@provider`) that no *reliable* independent source has
+    /// yet corroborated. Like a recycled search snippet
     /// ([`Self::is_uncorroborated_recycled`]) it is a low-reliability lead: worth
     /// RECORDING (it pre-seeds the graph and feeds the email↔username
     /// correlation) but not worth PIVOTING on — auto-expanding the dozens of
     /// unconfirmed permutations one name generates fans a scan out across
-    /// strangers' footprints and, on a constrained link, never converges. A
-    /// A single independent source confirms it (any corroborating evidence
-    /// beyond `name_intel`'s own derivation) and the value then expands normally;
-    /// the exhaustive sweep stays available via `--expand-all-identities` /
-    /// `--full`. Cheap: short-circuits on the first corroborating source, no
-    /// allocation (unlike `corroborating_sources().is_empty()`).
+    /// strangers' footprints and, on a constrained link, never converges.
+    ///
+    /// A breach / registry / profile source lifts the gate and the value then
+    /// expands normally — but two source classes deliberately do NOT count, so
+    /// the gate can't be defeated trivially:
+    ///   * `name_intel`'s own derivation and `recall` (the enrichment /
+    ///     non-corroborating passes), and
+    ///   * a bare `search_engines` snippet hit — search is asked to look up the
+    ///     very permutation it then "confirms" (circular), and a guessed name
+    ///     string in a result page is as likely a namesake / people-search
+    ///     aggregator as the subject (the same low-reliability path the recycled
+    ///     gate already distrusts).
+    ///
+    /// The exhaustive sweep stays available via `--expand-all-identities` /
+    /// `--full`. Cheap: short-circuits on the first reliable source, no allocation.
     pub fn is_uncorroborated_name_permutation(&self) -> bool {
         self.has_tag("name-derived")
-            && !self
-                .evidence
-                .iter()
-                .any(|ev| !is_non_corroborating_source(&ev.source))
+            && !self.evidence.iter().any(|ev| {
+                let s = ev.source.as_str();
+                !is_non_corroborating_source(s) && s != "search_engines"
+            })
     }
 
     // ── Evidence helpers ────────────────────────────────────────────────────
