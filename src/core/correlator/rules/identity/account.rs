@@ -39,6 +39,7 @@ pub(in crate::core::correlator) fn rule_au_011_cross_platform_username(
         "gitea_user",
         "sourceforge_user",
         "cpan_user",
+        "rubygems_user",
         "crates_io",
         "npm_author",
     ];

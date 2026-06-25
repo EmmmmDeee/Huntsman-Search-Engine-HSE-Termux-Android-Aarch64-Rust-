@@ -32,6 +32,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `gitea_user` | username | free | no | 98 | username, person, email, url, domain, address |
 | `sourceforge_user` | username | free | no | 94 | username, person, email, url, address |
 | `cpan_user` | username | free | no | 55 | username, person, email, url, domain, address |
+| `rubygems_user` | username | free | no | 54 | username, person, url, domain |
 | `reddit_user` | username | free | no | 105 | username, email, url |
 | `stackoverflow_user` | username | free | no | 105 | username, person, url, domain, address |
 | `bluesky_user` | username | free | no | 104 | username, person, email, url, domain |

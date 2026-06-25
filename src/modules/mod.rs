@@ -117,6 +117,7 @@ pub mod qld_cadastre;
 pub mod rdap_domain;
 pub mod reddit_user;
 pub mod ripestat;
+pub mod rubygems_user;
 pub mod search_engines;
 pub mod securitytrails;
 pub mod see_know;
@@ -340,6 +341,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(hexpm_user::HexpmUser),
         Arc::new(launchpad_user::LaunchpadUser),
         Arc::new(cpan_user::CpanUser),
+        Arc::new(rubygems_user::RubygemsUser),
         Arc::new(npm_author::NpmAuthor),
         Arc::new(crates_io::CratesIo),
         Arc::new(reddit_user::RedditUser),
