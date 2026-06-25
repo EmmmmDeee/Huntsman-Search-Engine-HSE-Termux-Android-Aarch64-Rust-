@@ -286,6 +286,9 @@ impl Module for CriminalIp {
         let url = format!("https://api.criminalip.io/v1/asset/ip/report?ip={ip}");
         let mut retries = 2u8;
         let body: Resp = loop {
+            if ctx.cancel.is_cancelled() {
+                return Ok(ModuleResult::new());
+            }
             let resp = ctx
                 .http
                 .get(&url)

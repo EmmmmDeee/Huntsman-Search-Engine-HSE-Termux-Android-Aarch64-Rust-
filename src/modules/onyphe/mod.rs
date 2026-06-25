@@ -136,6 +136,9 @@ impl Module for Onyphe {
 
         let mut retries = 2u8;
         let body: OnypheResp = loop {
+            if ctx.cancel.is_cancelled() {
+                return Ok(ModuleResult::new());
+            }
             let resp = ctx
                 .http
                 .get(&url)

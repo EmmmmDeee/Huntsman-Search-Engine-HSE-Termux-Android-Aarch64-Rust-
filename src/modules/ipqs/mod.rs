@@ -237,6 +237,9 @@ impl Module for IpQs {
         );
         let mut retries = 2u8;
         let body: Common = loop {
+            if ctx.cancel.is_cancelled() {
+                return Ok(ModuleResult::new());
+            }
             let resp = ctx.http.get(&url).send_tagged(SRC).await?;
             let status = resp.status();
             if status.as_u16() == 404 {

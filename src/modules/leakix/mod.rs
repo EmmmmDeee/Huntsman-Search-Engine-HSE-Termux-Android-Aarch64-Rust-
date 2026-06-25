@@ -191,6 +191,9 @@ impl Module for LeakIx {
         let url = format!("https://leakix.net/{path}/{value}");
         let mut retries = 2u8;
         let body: HostResp = loop {
+            if ctx.cancel.is_cancelled() {
+                return Ok(ModuleResult::new());
+            }
             let resp = ctx
                 .http
                 .get(&url)
