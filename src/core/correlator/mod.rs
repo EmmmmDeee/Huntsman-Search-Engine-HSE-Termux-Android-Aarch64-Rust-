@@ -324,6 +324,7 @@ const RELATION_RULES: &[RelationRuleFn] = &[
     rule_au_032_colocation_cluster,
     rule_au_060_transitive_identity_closure,
     rule_au_061_shared_registrant,
+    rule_au_062_shared_hosting_ip,
 ];
 
 /// Run every relation-aware rule over an already quarantine-filtered, confirmed

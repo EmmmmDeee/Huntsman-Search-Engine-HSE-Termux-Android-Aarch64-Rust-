@@ -151,6 +151,12 @@ fn core_does_not_import_util_directly() {
                 // (`abuse@godaddy.com`, `*@whoisguard.com`) from shared-registrant
                 // co-ownership, so a shared proxy can't mass-link unrelated domains.
                 && !line.contains("util::domains::is_infrastructure_email")
+                // Pure, dependency-free eTLD+1 reducer (label split + a static
+                // multi-label-suffix table; no I/O) — same leaf category as
+                // `is_infrastructure_email`. AU-062 uses it to require ≥2 DISTINCT
+                // registrable domains on a shared IP, so a single site's own
+                // subdomains (co-residence) don't read as cross-site co-ownership.
+                && !line.contains("util::domains::registrable_domain")
         })
         .collect();
     assert!(

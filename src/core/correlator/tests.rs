@@ -4126,3 +4126,96 @@ fn au061_deterministic_across_edge_order() {
     );
     assert_eq!(r1[0].entity_uids, r2[0].entity_uids);
 }
+
+// ── AU-062 — shared dedicated-IP co-hosting (relation rule) ─────────────────
+
+/// Build a Domain→IpAddress `ResolvesTo` edge for the AU-062 fixtures.
+fn resolves(d: &Entity, ip: &Entity) -> crate::core::relation::Relation {
+    use crate::core::relation::{Relation, RelationKind};
+    Relation::new(
+        d.uid.clone(),
+        ip.uid.clone(),
+        RelationKind::ResolvesTo,
+        0.8,
+        "s",
+    )
+}
+
+#[test]
+fn au062_fires_on_two_distinct_sites_one_dedicated_ip() {
+    // Two DIFFERENT sites on one non-CDN, routable IP → Medium co-hosting lead.
+    let d1 = Entity::new(EntityKind::Domain, "alpha-site.com", 0.8, "s");
+    let d2 = Entity::new(EntityKind::Domain, "beta-site.org", 0.8, "s");
+    let ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
+    let rels = vec![resolves(&d1, &ip), resolves(&d2, &ip)];
+    let r = rule_au_062_shared_hosting_ip(&[d1.clone(), d2.clone(), ip.clone()], &rels, "s", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "two distinct sites on one dedicated IP must fire"
+    );
+    assert_eq!(r[0].rule_id, "AU-062");
+    assert_eq!(r[0].severity, Severity::Medium);
+    assert!(r[0].entity_uids.contains(&ip.uid));
+    assert!(r[0].entity_uids.contains(&d1.uid));
+    assert!(r[0].entity_uids.contains(&d2.uid));
+    assert!(r[0].description.contains("45.33.32.156"));
+    assert!(r[0].description.contains("alpha-site.com"));
+    assert!(r[0].description.contains("beta-site.org"));
+}
+
+#[test]
+fn au062_no_fire_on_subdomains_of_one_site() {
+    // Co-RESIDENCE, not co-ownership: www/api/blog of ONE site share its origin
+    // IP. All reduce to one registrable domain → must NOT fire.
+    let d1 = Entity::new(EntityKind::Domain, "www.example.com", 0.8, "s");
+    let d2 = Entity::new(EntityKind::Domain, "api.example.com", 0.8, "s");
+    let d3 = Entity::new(EntityKind::Domain, "blog.example.com", 0.8, "s");
+    let ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
+    let rels = vec![resolves(&d1, &ip), resolves(&d2, &ip), resolves(&d3, &ip)];
+    let r = rule_au_062_shared_hosting_ip(&[d1, d2, d3, ip], &rels, "s", 0);
+    assert!(
+        r.is_empty(),
+        "one site's own subdomains are co-residence, not co-ownership: {r:?}"
+    );
+}
+
+#[test]
+fn au062_no_fire_on_cdn_or_nonroutable_ip() {
+    // Guard 1: a Cloudflare edge (104.16/13) and non-routable IPs each front
+    // unrelated sites — co-tenancy, never co-ownership.
+    let d1 = Entity::new(EntityKind::Domain, "alpha-site.com", 0.8, "s");
+    let d2 = Entity::new(EntityKind::Domain, "beta-site.org", 0.8, "s");
+    for ip_val in ["104.16.5.5", "192.168.1.10", "203.0.113.7"] {
+        let ip = Entity::new(EntityKind::IpAddress, ip_val, 0.8, "s");
+        let rels = vec![resolves(&d1, &ip), resolves(&d2, &ip)];
+        let r = rule_au_062_shared_hosting_ip(&[d1.clone(), d2.clone(), ip.clone()], &rels, "s", 0);
+        assert!(
+            r.is_empty(),
+            "{ip_val}: CDN/non-routable IP must not link, got {r:?}"
+        );
+    }
+}
+
+#[test]
+fn au062_no_fire_on_shared_hosting_fanout() {
+    // Guard 3: many distinct sites on one IP → shared hosting, skipped.
+    let ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
+    let mut ents = vec![ip.clone()];
+    let mut rels = Vec::new();
+    for i in 0..8 {
+        let d = Entity::new(
+            EntityKind::Domain,
+            format!("site{i}-distinct.com"),
+            0.8,
+            "s",
+        );
+        rels.push(resolves(&d, &ip));
+        ents.push(d);
+    }
+    let r = rule_au_062_shared_hosting_ip(&ents, &rels, "s", 0);
+    assert!(
+        r.is_empty(),
+        "8 distinct sites on one IP is shared hosting, not co-ownership: {r:?}"
+    );
+}
