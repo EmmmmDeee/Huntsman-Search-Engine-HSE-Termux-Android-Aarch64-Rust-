@@ -245,6 +245,43 @@ fn uncorroborated_recycled_is_gated_until_a_second_source_confirms() {
 }
 
 #[test]
+fn uncorroborated_name_permutation_is_gated_until_a_second_source_confirms() {
+    // A `firstname.lastname@provider` email guessed by name_intel from the seed
+    // name (tagged `name-derived`) is a candidate, not a finding: recording it is
+    // fine, but auto-pivoting on the dozens one name generates fans the scan out
+    // across strangers and never converges. So a single-source permutation must
+    // be gated from expansion.
+    let mut guess = Entity::new(EntityKind::Email, "moale.mcknight@gmail.com", 0.30, "s");
+    guess.tag("derived");
+    guess.tag("name-derived");
+    guess.tag("permuted");
+    // name_intel is the derivation pass (non-corroborating), so the guess has
+    // zero independent sources — gated.
+    guess.add_evidence(Evidence::new(
+        "name_intel",
+        "Speculative email permuted from name",
+    ));
+    assert!(
+        guess.is_uncorroborated_name_permutation(),
+        "a name-permutation with no independent source must be gated from expansion"
+    );
+
+    // A single real corroborating source (a breach hit on the same address)
+    // confirms the guess, so a permutation that turns out real expands.
+    guess.add_evidence(Evidence::new("hibp", "found in a breach"));
+    assert!(
+        !guess.is_uncorroborated_name_permutation(),
+        "a permutation confirmed by one real source expands normally"
+    );
+
+    // The gate is specific to the `name-derived` tag: a normally-discovered
+    // single-source email is never suppressed by it.
+    let mut found = email("real@corp.com");
+    found.add_evidence(Evidence::new("comb_search", "breach record"));
+    assert!(!found.is_uncorroborated_name_permutation());
+}
+
+#[test]
 fn c_eff_independent_agreement_lifts_moderate_findings() {
     // The grunt: independent corroboration of a MODERATE finding drives
     // confidence toward certainty, where the multiplicative model alone

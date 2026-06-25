@@ -629,6 +629,28 @@ impl Entity {
         self.has_tag("recycled") && self.source_count() < 2
     }
 
+    /// True for a speculative identifier *permuted from the subject's name*
+    /// (`name_intel`'s `name-derived` email/username guesses, e.g.
+    /// `firstname.lastname@provider`) that no independent source has yet
+    /// corroborated. Like a recycled search snippet
+    /// ([`Self::is_uncorroborated_recycled`]) it is a low-reliability lead: worth
+    /// RECORDING (it pre-seeds the graph and feeds the email↔username
+    /// correlation) but not worth PIVOTING on — auto-expanding the dozens of
+    /// unconfirmed permutations one name generates fans a scan out across
+    /// strangers' footprints and, on a constrained link, never converges. A
+    /// A single independent source confirms it (any corroborating evidence
+    /// beyond `name_intel`'s own derivation) and the value then expands normally;
+    /// the exhaustive sweep stays available via `--expand-all-identities` /
+    /// `--full`. Cheap: short-circuits on the first corroborating source, no
+    /// allocation (unlike `corroborating_sources().is_empty()`).
+    pub fn is_uncorroborated_name_permutation(&self) -> bool {
+        self.has_tag("name-derived")
+            && !self
+                .evidence
+                .iter()
+                .any(|ev| !is_non_corroborating_source(&ev.source))
+    }
+
     // ── Evidence helpers ────────────────────────────────────────────────────
 
     pub fn evidence_sources(&self) -> std::collections::HashSet<&str> {

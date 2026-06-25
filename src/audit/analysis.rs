@@ -483,9 +483,11 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
             message: format!("{other_excluded} pivot(s) excluded for non-recall reasons"),
             examples: examples(ex),
             recommendation: "Informational: dedup (`already_dispatched_this_scan`), terminal \
-                kinds (`non_pivotable_kind`), saturation, infra gating, and \
-                uncorroborated search-snippet leads (`uncorroborated_recycled`) are \
-                expected. Review only if a specific expected pivot is missing."
+                kinds (`non_pivotable_kind`), saturation, infra gating, uncorroborated \
+                search-snippet leads (`uncorroborated_recycled`) and unconfirmed \
+                name-permutation guesses (`uncorroborated_speculative`) are expected. \
+                Review only if a specific expected pivot is missing (raise recall with \
+                `--expand-all-identities`)."
                 .into(),
         });
     }

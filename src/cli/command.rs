@@ -97,11 +97,14 @@ pub enum Command {
         auto: bool,
         /// Only expand entities whose C_eff is at least this. Default 0.20 so the
         /// scan is comprehensive — the seed's own derived identifiers (name → email
-        /// / username / handle permutations, emitted at 0.20–0.30) expand and feed
-        /// every downstream module, instead of starving the pipeline after the seed
-        /// round. Correlation still applies its own strict floors, so recall is wide
-        /// while the resolved findings stay precise. Raise it (e.g. 0.50 Probable,
-        /// 0.75 Verified-only) for a tighter, faster sweep.
+        /// / username / handle permutations, emitted at 0.20–0.30) are recorded and
+        /// feed correlation, instead of starving the pipeline after the seed round.
+        /// Note: an UNCORROBORATED name-permutation is recorded but not pivoted on
+        /// (it's a guess, not a finding) until a second source confirms it — pass
+        /// `--expand-all-identities` / `--full` to auto-pivot every permutation.
+        /// Correlation still applies its own strict floors, so recall is wide while
+        /// the resolved findings stay precise. Raise it (e.g. 0.50 Probable, 0.75
+        /// Verified-only) for a tighter, faster sweep.
         #[arg(long, default_value_t = crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE)]
         min_expand_confidence: f64,
         /// Hard cap on total entities; stops expansion when reached. Omitted ⇒ the
