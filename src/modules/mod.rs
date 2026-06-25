@@ -114,6 +114,7 @@ pub mod osintcat;
 pub mod overpass;
 pub mod payid;
 pub mod pgp;
+pub mod phone_au;
 pub mod phone_geo;
 pub mod phone_intl;
 pub mod photon;
@@ -375,6 +376,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(pgp::Pgp),
         Arc::new(psbdmp::Psbdmp),
         Arc::new(phone_intl::PhoneIntl),
+        Arc::new(phone_au::PhoneAu),
         Arc::new(wayback::Wayback),
         Arc::new(device_sensors::DeviceSensors),
         Arc::new(cell_intel::CellIntel),
