@@ -311,20 +311,221 @@ pub fn derive_name_lineage(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
     out
 }
 
+/// Upper bound on distinct registrable domains sharing a single dedicated IP for
+/// `derive_co_ownership` to emit a `SameOperator` edge — mirrors the AU-062
+/// correlator cap (`MAX_CO_HOSTED_REGISTRABLE`). Both must stay in sync: the
+/// correlator fires when ≤N sites share an IP; the builder emits the structural
+/// edge for the same membership set.
+const MAX_CO_HOSTED_REGISTRABLE: usize = 5;
+
+/// Derive `SameOperator` edges between domain/site entities that share an operator
+/// — inferred from three complementary evidence classes, each with appropriate
+/// false-positive guards. Runs AFTER the other builders so it can read the
+/// `RegisteredBy` and `ResolvesTo` edges they produced (passed as `relations`).
+///
+/// **Source A — Shared WHOIS registrant** (`RegisteredBy` edges, grouped by
+/// registrant uid): ≥2 domains sharing one genuine registrant are very likely
+/// co-owned. Privacy-proxy / redaction registrants (see
+/// [`crate::util::domains::is_proxy_registrant`]) are excluded — a shared proxy
+/// spans millions of unrelated domains and would cause mass false positives.
+/// Mirrors the AU-061 correlator gate.
+///
+/// **Source B — Shared dedicated IP** (`ResolvesTo` edges, grouped by IP uid):
+/// ≥2 DISTINCT registrable domains on one non-CDN, non-anycast IP with ≤
+/// [`MAX_CO_HOSTED_REGISTRABLE`] members are probably co-hosted by the same
+/// operator. Mirrors the three AU-062 guards: CDN/non-routable exclusion, eTLD+1
+/// dedup, fan-out cap.
+///
+/// **Source C — Shared web-analytics ID** (`TrackingId` entity evidence): a
+/// `TrackingId` entity whose `source_domain` attributes name ≥2 present Domain
+/// entities. A shared GA/GTM/pixel ID is an intentional operator-level
+/// configuration tag. Mirrors the AU-044 gate.
+///
+/// Edge direction: canonical `min_uid → max_uid` (same as `CoLocatedWith`) so
+/// re-scans upsert idempotently and there is exactly one edge per pair.
+/// Confidence = `min(a.confidence, b.confidence)`, consistent with every other
+/// builder. Deduped: the same pair can qualify under multiple sources; only one
+/// edge is emitted.
+pub fn derive_co_ownership(
+    entities: &[Entity],
+    relations: &[Relation],
+    scan_id: &str,
+) -> Vec<Relation> {
+    use std::collections::{HashMap, HashSet};
+
+    if entities.is_empty() {
+        return Vec::new();
+    }
+
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let mut out: Vec<Relation> = Vec::new();
+    // Global dedup so the same pair emitted by A, B, or C produces one edge.
+    let mut emitted: HashSet<(String, String)> = HashSet::new();
+
+    let mut push_pair = |a_uid: &str, b_uid: &str, out: &mut Vec<Relation>| {
+        let (from, to) = if a_uid <= b_uid {
+            (a_uid, b_uid)
+        } else {
+            (b_uid, a_uid)
+        };
+        let key = (from.to_string(), to.to_string());
+        if emitted.contains(&key) {
+            return;
+        }
+        emitted.insert(key);
+        let conf = by_uid
+            .get(from)
+            .map_or(0.5, |e| e.confidence)
+            .min(by_uid.get(to).map_or(0.5, |e| e.confidence));
+        out.push(Relation::new(
+            from,
+            to,
+            RelationKind::SameOperator,
+            conf,
+            scan_id,
+        ));
+    };
+
+    // ── Source A: shared registrant ──────────────────────────────────────────
+    {
+        let mut groups: HashMap<&str, Vec<&str>> = HashMap::new();
+        for r in relations
+            .iter()
+            .filter(|r| r.kind == RelationKind::RegisteredBy)
+        {
+            let (Some(dom), Some(reg)) = (
+                by_uid.get(r.from_uid.as_str()),
+                by_uid.get(r.to_uid.as_str()),
+            ) else {
+                continue;
+            };
+            if dom.kind != EntityKind::Domain
+                || !matches!(reg.kind, EntityKind::Organisation | EntityKind::Email)
+            {
+                continue;
+            }
+            if crate::util::domains::is_proxy_registrant(&reg.value, reg.kind == EntityKind::Email)
+            {
+                continue;
+            }
+            let members = groups.entry(r.to_uid.as_str()).or_default();
+            if !members.contains(&r.from_uid.as_str()) {
+                members.push(r.from_uid.as_str());
+            }
+        }
+        for (_, mut domains) in groups {
+            if domains.len() < 2 {
+                continue;
+            }
+            domains.sort_unstable();
+            for i in 0..domains.len() {
+                for j in (i + 1)..domains.len() {
+                    push_pair(domains[i], domains[j], &mut out);
+                }
+            }
+        }
+    }
+
+    // ── Source B: shared dedicated IP ────────────────────────────────────────
+    {
+        let mut groups: HashMap<&str, Vec<&str>> = HashMap::new();
+        for r in relations
+            .iter()
+            .filter(|r| r.kind == RelationKind::ResolvesTo)
+        {
+            let (Some(dom), Some(ip)) = (
+                by_uid.get(r.from_uid.as_str()),
+                by_uid.get(r.to_uid.as_str()),
+            ) else {
+                continue;
+            };
+            if dom.kind != EntityKind::Domain || ip.kind != EntityKind::IpAddress {
+                continue;
+            }
+            if crate::core::validation::is_cdn_edge_ip(&ip.value)
+                || crate::core::validation::is_non_routable_ip(&ip.value)
+            {
+                continue;
+            }
+            let members = groups.entry(r.to_uid.as_str()).or_default();
+            if !members.contains(&r.from_uid.as_str()) {
+                members.push(r.from_uid.as_str());
+            }
+        }
+        for (_, mut domains) in groups {
+            if domains.len() < 2 {
+                continue;
+            }
+            domains.sort_unstable();
+            let mut registrables: Vec<String> = domains
+                .iter()
+                .filter_map(|u| by_uid.get(u))
+                .filter_map(|e| crate::util::domains::registrable_domain(&e.value))
+                .collect();
+            registrables.sort_unstable();
+            registrables.dedup();
+            if registrables.len() < 2 || registrables.len() > MAX_CO_HOSTED_REGISTRABLE {
+                continue;
+            }
+            for i in 0..domains.len() {
+                for j in (i + 1)..domains.len() {
+                    push_pair(domains[i], domains[j], &mut out);
+                }
+            }
+        }
+    }
+
+    // ── Source C: shared web-analytics ID ────────────────────────────────────
+    {
+        let domain_by_value: HashMap<&str, &Entity> = entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Domain)
+            .map(|e| (e.value.as_str(), e))
+            .collect();
+        for tid in entities.iter().filter(|e| e.kind == EntityKind::TrackingId) {
+            let mut sources: Vec<&str> = tid
+                .evidence
+                .iter()
+                .filter_map(|ev| ev.attributes.get("source_domain").map(String::as_str))
+                .collect();
+            sources.sort_unstable();
+            sources.dedup();
+            let matching: Vec<&str> = sources
+                .iter()
+                .filter_map(|s| domain_by_value.get(s).map(|e| e.uid.as_str()))
+                .collect();
+            if matching.len() < 2 {
+                continue;
+            }
+            for i in 0..matching.len() {
+                for j in (i + 1)..matching.len() {
+                    push_pair(matching[i], matching[j], &mut out);
+                }
+            }
+        }
+    }
+
+    out
+}
+
 /// Derive every deterministic, evidence-grounded relation the engine knows how
 /// to reconstruct from a persisted entity set alone — structural ownership, geo
-/// co-location, DNS resolution, WHOIS registration and name lineage — in a
-/// single stable order. This is the lineage-free counterpart to the live scan's
-/// relation pass: the import paths (CLI `hse import` and the web `scan_import`
-/// upload) have no in-flight expansion edges, but every edge derivable from the
-/// entities + their evidence still applies, so an imported dossier gets the same
-/// graph a live scan would. One definition so the live and import paths can't
-/// drift on which relations a finished scan carries.
+/// co-location, DNS resolution, WHOIS registration, name lineage, and operator
+/// co-ownership — in a single stable order. This is the lineage-free counterpart
+/// to the live scan's relation pass: the import paths (CLI `hse import` and the
+/// web `scan_import` upload) have no in-flight expansion edges, but every edge
+/// derivable from the entities + their evidence still applies, so an imported
+/// dossier gets the same graph a live scan would. One definition so the live and
+/// import paths can't drift on which relations a finished scan carries.
 pub fn derive_all(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     let mut out = derive_structural(entities, scan_id);
     out.extend(derive_colocation(entities, scan_id));
     out.extend(derive_resolution(entities, scan_id));
     out.extend(derive_registration(entities, scan_id));
     out.extend(derive_name_lineage(entities, scan_id));
+    // Co-ownership edges — derived from the base relations built above so the
+    // RegisteredBy and ResolvesTo edges are available as inputs.
+    let co = derive_co_ownership(entities, &out, scan_id);
+    out.extend(co);
     out
 }

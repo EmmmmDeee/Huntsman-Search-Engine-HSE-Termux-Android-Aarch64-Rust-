@@ -25,6 +25,11 @@ pub enum RelationKind {
     CoLocatedWith,
     /// `from` was discovered by pivoting on `to` during expansion (lineage).
     DerivedFrom,
+    /// `from` and `to` are probably controlled by the same operator — inferred
+    /// from a shared WHOIS registrant (contractual), a shared dedicated IP, or
+    /// a shared web-analytics tag. Directed canonically: smaller UID → larger
+    /// UID so there is exactly one edge per pair and upserts are idempotent.
+    SameOperator,
 }
 
 impl RelationKind {
@@ -37,6 +42,7 @@ impl RelationKind {
             Self::RegisteredBy => "registered_by",
             Self::CoLocatedWith => "co_located_with",
             Self::DerivedFrom => "derived_from",
+            Self::SameOperator => "same_operator",
         }
     }
 }

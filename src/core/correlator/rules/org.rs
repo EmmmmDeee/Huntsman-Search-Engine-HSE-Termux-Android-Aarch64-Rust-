@@ -207,48 +207,11 @@ pub(in crate::core::correlator) fn rule_au_033_abn_organisation_link(
     )]
 }
 
-/// Privacy-proxy / WHOIS-redaction registrant markers. A registrant whose org
-/// name or email contains one of these is a shared proxy used by millions of
-/// unrelated domains — linking domains through it would be a mass false
-/// positive, so such registrants are EXCLUDED from AU-061.
-///
-/// Complements the `whois` module's own `privacy`/`redacted` org/name filter
-/// (`src/modules/whois/mod.rs`), which named proxies like "Domains By Proxy"
-/// and "WhoisGuard" slip past, and catches proxy registrants emitted by other
-/// sources (RDAP, `whoisxml`) that may not filter at all. Stored lowercase;
-/// matched as case-insensitive substrings.
-const REGISTRANT_PROXY_MARKERS: &[&str] = &[
-    "privacy",
-    "redacted",
-    "withheld",
-    "domains by proxy",
-    "domainsbyproxy",
-    "whoisguard",
-    "data protected",
-    "identity protection",
-    "private registration",
-    "registration private",
-    "not disclosed",
-    "non-public data",
-    "perfect privacy",
-    "contact privacy",
-    "super privacy",
-    "domain protection services",
-    "protecteddomainservices",
-];
-
-/// True when a registrant value (org name or email) is a privacy proxy / WHOIS
-/// redaction placeholder rather than a genuine owner identity. Matched
-/// case-insensitively against [`REGISTRANT_PROXY_MARKERS`]; an email registrant
-/// is additionally tested with `is_infrastructure_email`, so a registrar/proxy
-/// mailbox (`*@secureserver.net`, `*@godaddy.com`, an `abuse@` role) is caught
-/// even without a name marker.
+/// Delegates to [`crate::util::domains::is_proxy_registrant`] — single source
+/// of truth for the privacy-proxy / WHOIS-redaction exclusion used by both
+/// AU-061 and `core::relation::builders::derive_co_ownership`.
 fn is_proxy_registrant(value: &str, is_email: bool) -> bool {
-    let v = value.to_ascii_lowercase();
-    if REGISTRANT_PROXY_MARKERS.iter().any(|m| v.contains(m)) {
-        return true;
-    }
-    is_email && crate::util::domains::is_infrastructure_email(value)
+    crate::util::domains::is_proxy_registrant(value, is_email)
 }
 
 /// AU-061 — Shared-registrant domain co-ownership.

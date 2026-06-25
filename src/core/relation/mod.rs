@@ -16,7 +16,11 @@
 //! `derive_colocation` links `CoLocatedWith` between Coordinates within
 //! `CO_LOCATION_KM` (Haversine via `util::geohash`). `derive_resolution` links
 //! `ResolvesTo` (Domain → IpAddress) by matching an IP entity's DNS evidence
-//! against present Domain nodes. All three run in `finalise_scan`.
+//! against present Domain nodes. `derive_registration` links `RegisteredBy`
+//! (Domain → registrant Organisation/Email) from WHOIS evidence.
+//! `derive_co_ownership` links `SameOperator` (Domain ↔ Domain, canonical
+//! min-uid direction) from shared registrant, shared dedicated IP, or shared
+//! web-analytics ID evidence. All run in `finalise_scan` via `derive_all`.
 //!
 //! `DerivedFrom` (child → the entity whose expansion surfaced it) is **lineage**
 //! — recorded by the engine's `run_expansion` (not a post-scan builder) and
@@ -29,7 +33,7 @@ pub(crate) mod types;
 mod tests;
 
 pub use builders::{
-    CO_LOCATION_KM, derive_all, derive_colocation, derive_name_lineage, derive_registration,
-    derive_resolution, derive_structural,
+    CO_LOCATION_KM, derive_all, derive_co_ownership, derive_colocation, derive_name_lineage,
+    derive_registration, derive_resolution, derive_structural,
 };
 pub use types::{Relation, RelationKind};

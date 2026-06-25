@@ -157,6 +157,12 @@ fn core_does_not_import_util_directly() {
                 // registrable domains on a shared IP, so a single site's own
                 // subdomains (co-residence) don't read as cross-site co-ownership.
                 && !line.contains("util::domains::registrable_domain")
+                // Pure privacy-proxy / WHOIS-redaction guard (marker table +
+                // `is_infrastructure_email`; no I/O). Extracted from AU-061's
+                // local definition into util so `core::relation::builders::
+                // derive_co_ownership` (R13) can share the exclusion logic
+                // without duplicating it: one definition, two callers, no drift.
+                && !line.contains("util::domains::is_proxy_registrant")
         })
         .collect();
     assert!(

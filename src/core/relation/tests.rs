@@ -15,6 +15,7 @@ fn relation_kind_as_str_matches_serde() {
         RelationKind::RegisteredBy,
         RelationKind::CoLocatedWith,
         RelationKind::DerivedFrom,
+        RelationKind::SameOperator,
     ] {
         let json = serde_json::to_string(&k).unwrap();
         assert_eq!(json.trim_matches('"'), k.as_str(), "{k:?}");
@@ -83,17 +84,171 @@ fn derive_all_aggregates_every_structural_derivation() {
 
     let ents = vec![parent, sub, person, handle];
     let all = derive_all(&ents, "s");
-    let expected = derive_structural(&ents, "s").len()
-        + derive_colocation(&ents, "s").len()
-        + derive_resolution(&ents, "s").len()
-        + derive_registration(&ents, "s").len()
-        + derive_name_lineage(&ents, "s").len();
+    // Rebuild the expected count exactly as derive_all does internally:
+    // base passes first, then co-ownership over those base relations.
+    let mut base = derive_structural(&ents, "s");
+    base.extend(derive_colocation(&ents, "s"));
+    base.extend(derive_resolution(&ents, "s"));
+    base.extend(derive_registration(&ents, "s"));
+    base.extend(derive_name_lineage(&ents, "s"));
+    let expected = base.len() + derive_co_ownership(&ents, &base, "s").len();
     assert_eq!(all.len(), expected, "derive_all is the union of every pass");
     assert!(all.iter().any(|r| r.kind == RelationKind::SubdomainOf));
     assert!(all.iter().any(|r| r.kind == RelationKind::DerivedFrom));
 
     // No entities → no edges, no panic.
     assert!(derive_all(&[], "s").is_empty());
+}
+
+// ── derive_co_ownership (SameOperator structural edges) ─────────────────────
+
+fn reg_edge(dom: &Entity, who: &Entity) -> crate::core::relation::Relation {
+    Relation::new(
+        dom.uid.as_str(),
+        who.uid.as_str(),
+        RelationKind::RegisteredBy,
+        dom.confidence.min(who.confidence),
+        "s",
+    )
+}
+
+fn resolves_edge(dom: &Entity, ip: &Entity) -> Relation {
+    Relation::new(
+        dom.uid.as_str(),
+        ip.uid.as_str(),
+        RelationKind::ResolvesTo,
+        dom.confidence.min(ip.confidence),
+        "s",
+    )
+}
+
+#[test]
+fn co_ownership_shared_registrant_links_two_domains() {
+    let dom_a = ent(EntityKind::Domain, "alpha-site.com", 0.8);
+    let dom_b = ent(EntityKind::Domain, "beta-site.org", 0.8);
+    let registrant = ent(EntityKind::Organisation, "Haigen Enterprises Pty Ltd", 0.9);
+    let relations = vec![reg_edge(&dom_a, &registrant), reg_edge(&dom_b, &registrant)];
+    let rels = derive_co_ownership(&[dom_a.clone(), dom_b.clone(), registrant], &relations, "s");
+    assert_eq!(rels.len(), 1, "one SameOperator edge for the pair");
+    assert_eq!(rels[0].kind, RelationKind::SameOperator);
+    // Canonical direction: smaller uid → larger uid.
+    let (exp_from, exp_to) = if dom_a.uid <= dom_b.uid {
+        (&dom_a.uid, &dom_b.uid)
+    } else {
+        (&dom_b.uid, &dom_a.uid)
+    };
+    assert_eq!(&rels[0].from_uid, exp_from);
+    assert_eq!(&rels[0].to_uid, exp_to);
+    assert!((rels[0].confidence - 0.8).abs() < 1e-9);
+}
+
+#[test]
+fn co_ownership_proxy_registrant_excluded() {
+    let dom_a = ent(EntityKind::Domain, "alpha-site.com", 0.8);
+    let dom_b = ent(EntityKind::Domain, "beta-site.org", 0.8);
+    // "Domains By Proxy" contains "domains by proxy" — a known proxy marker.
+    let proxy = ent(EntityKind::Organisation, "Domains By Proxy, LLC", 0.9);
+    let relations = vec![reg_edge(&dom_a, &proxy), reg_edge(&dom_b, &proxy)];
+    let rels = derive_co_ownership(&[dom_a, dom_b, proxy], &relations, "s");
+    assert!(rels.is_empty(), "privacy-proxy registrant must be excluded");
+}
+
+#[test]
+fn co_ownership_shared_dedicated_ip_links_two_distinct_sites() {
+    // 45.33.32.156 — Linode/Akamai static IP; not in CDN prefix table, routable.
+    let dom_a = ent(EntityKind::Domain, "alpha-site.com", 0.8);
+    let dom_b = ent(EntityKind::Domain, "beta-site.org", 0.8);
+    let ip = ent(EntityKind::IpAddress, "45.33.32.156", 0.9);
+    let relations = vec![resolves_edge(&dom_a, &ip), resolves_edge(&dom_b, &ip)];
+    let rels = derive_co_ownership(&[dom_a.clone(), dom_b.clone(), ip], &relations, "s");
+    assert_eq!(rels.len(), 1, "one SameOperator edge for co-hosted pair");
+    assert_eq!(rels[0].kind, RelationKind::SameOperator);
+}
+
+#[test]
+fn co_ownership_cdn_ip_excluded() {
+    // 104.16.5.5 — Cloudflare CDN prefix (is_cdn_edge_ip returns true).
+    let dom_a = ent(EntityKind::Domain, "alpha-site.com", 0.8);
+    let dom_b = ent(EntityKind::Domain, "beta-site.org", 0.8);
+    let cdn_ip = ent(EntityKind::IpAddress, "104.16.5.5", 0.9);
+    let relations = vec![
+        resolves_edge(&dom_a, &cdn_ip),
+        resolves_edge(&dom_b, &cdn_ip),
+    ];
+    let rels = derive_co_ownership(&[dom_a, dom_b, cdn_ip], &relations, "s");
+    assert!(rels.is_empty(), "CDN/anycast IP must be excluded");
+}
+
+#[test]
+fn co_ownership_single_site_subdomains_not_co_owned() {
+    // www.example.com and api.example.com on the same IP collapse to one
+    // registrable domain (example.com) — must NOT fire.
+    let dom_a = ent(EntityKind::Domain, "www.example.com", 0.8);
+    let dom_b = ent(EntityKind::Domain, "api.example.com", 0.8);
+    let ip = ent(EntityKind::IpAddress, "45.33.32.156", 0.9);
+    let relations = vec![resolves_edge(&dom_a, &ip), resolves_edge(&dom_b, &ip)];
+    let rels = derive_co_ownership(&[dom_a, dom_b, ip], &relations, "s");
+    assert!(
+        rels.is_empty(),
+        "subdomains of the same registrable domain must not fire as co-ownership"
+    );
+}
+
+#[test]
+fn co_ownership_shared_tracking_id_links_carrying_domains() {
+    use crate::core::entity::Evidence;
+    let dom_a = ent(EntityKind::Domain, "alpha-site.com", 0.8);
+    let dom_b = ent(EntityKind::Domain, "beta-site.org", 0.8);
+    let mut tid = ent(EntityKind::TrackingId, "UA-12345678-1", 0.85);
+    // Both domains carried the same Google Analytics ID.
+    tid.add_evidence(
+        Evidence::new("web_crawler", "GA tag on alpha-site.com")
+            .with_attr("source_domain", "alpha-site.com"),
+    );
+    tid.add_evidence(
+        Evidence::new("web_crawler", "GA tag on beta-site.org")
+            .with_attr("source_domain", "beta-site.org"),
+    );
+    let rels = derive_co_ownership(&[dom_a.clone(), dom_b.clone(), tid], &[], "s");
+    assert_eq!(
+        rels.len(),
+        1,
+        "shared analytics ID links the carrying domains"
+    );
+    assert_eq!(rels[0].kind, RelationKind::SameOperator);
+    let (exp_from, exp_to) = if dom_a.uid <= dom_b.uid {
+        (&dom_a.uid, &dom_b.uid)
+    } else {
+        (&dom_b.uid, &dom_a.uid)
+    };
+    assert_eq!(&rels[0].from_uid, exp_from);
+    assert_eq!(&rels[0].to_uid, exp_to);
+}
+
+#[test]
+fn co_ownership_same_pair_from_two_sources_emits_one_edge() {
+    use crate::core::entity::Evidence;
+    // Domains share BOTH a registrant AND a tracking ID — only one SameOperator
+    // edge should be produced (the global dedup guard).
+    let dom_a = ent(EntityKind::Domain, "alpha-site.com", 0.8);
+    let dom_b = ent(EntityKind::Domain, "beta-site.org", 0.8);
+    let registrant = ent(EntityKind::Organisation, "Haigen Enterprises Pty Ltd", 0.9);
+    let mut tid = ent(EntityKind::TrackingId, "GTM-ABC123", 0.85);
+    tid.add_evidence(
+        Evidence::new("web_crawler", "GTM on alpha-site.com")
+            .with_attr("source_domain", "alpha-site.com"),
+    );
+    tid.add_evidence(
+        Evidence::new("web_crawler", "GTM on beta-site.org")
+            .with_attr("source_domain", "beta-site.org"),
+    );
+    let relations = vec![reg_edge(&dom_a, &registrant), reg_edge(&dom_b, &registrant)];
+    let rels = derive_co_ownership(&[dom_a, dom_b, registrant, tid], &relations, "s");
+    assert_eq!(
+        rels.len(),
+        1,
+        "same pair from registrant + tracking ID must deduplicate to one edge"
+    );
 }
 
 #[test]

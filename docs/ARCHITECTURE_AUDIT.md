@@ -6,7 +6,7 @@
 > plan live in [`PROBLEM_TREE.md`](PROBLEM_TREE.md) (the living problem +
 > capability tree), which is the single source of truth for what to change.
 
-## Facts (verified against the tree, 2026-06-17)
+## Facts (verified against the tree, 2026-06-25)
 
 | Metric | Value |
 |---|---|
@@ -14,7 +14,8 @@
 | Source | ~137k LOC · 602 `.rs` files |
 | Modules | **118** registered — 89 Free · 24 KeyGated · 5 Paid · 14 categories |
 | Correlation rules | **62** deterministic (AU-001 … AU-062) |
-| Tests | ~2,995 lib + API/integration + architecture guards |
+| Relation kinds | **8** — `SubdomainOf` · `BelongsToDomain` · `HostedOn` · `ResolvesTo` · `RegisteredBy` · `CoLocatedWith` · `DerivedFrom` · `SameOperator` (R13) |
+| Tests | ~3,205 lib + API/integration + architecture guards |
 | Unsafe | **0** — `#![forbid(unsafe_code)]` (`src/lib.rs:22`) |
 | Panic strategy | `panic = "unwind"` (`Cargo.toml:125`) + per-module `catch_unwind` at the dispatch boundary |
 | Dependencies | 311 locked packages (`Cargo.lock`) · **0** AI/ML/LLM/vector (guard-enforced) · 100% permissive licences (`cargo deny`) · 0 unused (`cargo machete`) |
@@ -69,7 +70,13 @@ allowlist remains.
 - **`core::{scan,entity,relation,timeline}`** — the typed domain model:
   `Entity::c_effective` noisy-OR/multiplicative confidence fusion (clamped,
   monotone, contract-tested), SHA-256 deterministic UIDs, GREATEST-semantics
-  merge.
+  merge. `core::relation` carries **8** `RelationKind` variants and corresponding
+  builder functions that derive edges from entity evidence + the prior edge set:
+  `derive_structural` (SubdomainOf / BelongsToDomain / HostedOn), `derive_colocation`
+  (CoLocatedWith), `derive_resolution` (ResolvesTo), `derive_registration`
+  (RegisteredBy), `derive_name_lineage` (DerivedFrom), `derive_co_ownership`
+  (SameOperator — R13, from shared registrant / shared dedicated IP / shared
+  analytics ID). All six run in `finalise_scan` via `derive_all`.
 - **`modules`** (118) — OSINT sources, each `Module: accepts/produces/process`,
   registered in `modules::registry()`; every module is mapped to MITRE ATT&CK
   Reconnaissance (TA0043) — by a per-category default (`techniques_for_category`),
