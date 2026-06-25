@@ -73,7 +73,11 @@ impl Module for HlrCnam {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Person, EntityKind::Phone];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Person,
+            EntityKind::Phone,
+            EntityKind::Organisation,
+        ];
         KINDS
     }
 
@@ -151,6 +155,23 @@ impl Module for HlrCnam {
         }
         phone.add_evidence(ev);
         result.push(phone);
+
+        // Current network/carrier → Organisation pivot (consistent with ip2location/ipquery).
+        if let Some(net) = hlr
+            .current_network_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| n.len() >= 2)
+        {
+            let mut oe = Entity::new(EntityKind::Organisation, net, 0.62, &ctx.scan_id);
+            oe.tag("hlr-cnam");
+            oe.tag("carrier");
+            oe.add_evidence(
+                Evidence::new(SRC, format!("Carrier/network for {number} per HLR"))
+                    .with_attr("phone", number),
+            );
+            result.push(oe);
+        }
 
         // Stage 2: OpenCNAM subscriber name.
         if let Some(cnam_key) = ctx.key_opt(CNAM_KEY_ENV) {

@@ -79,7 +79,7 @@ impl Module for NumVerify {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Address];
+        const KINDS: &[EntityKind] = &[EntityKind::Address, EntityKind::Organisation];
         KINDS
     }
 
@@ -108,19 +108,21 @@ impl Module for NumVerify {
             .map_err(|e| Error::module(SRC, e))?;
 
         let mut result = ModuleResult::new();
-        if let Some(e) = build_entity(&parsed, &ctx.scan_id) {
-            result.push(e);
-        }
+        result
+            .entities
+            .extend(build_entities(&parsed, &ctx.scan_id));
         Ok(result)
     }
 }
 
-/// Map a validation response to a geocodable region `Address` carrying carrier /
-/// line-type / country evidence. `None` when the number is invalid or carries no
-/// usable region. Pure of I/O (unit-tested).
-fn build_entity(r: &NvResp, scan_id: &str) -> Option<Entity> {
+/// Map a validation response to entities. **Pure** (no network/IO):
+/// emits an `Address` (geocodable region/country) and, when the carrier
+/// is present, an `Organisation` for the carrier — consistent with
+/// ip2location/ipquery which emit the ISP as an Organisation pivot.
+/// Returns an empty `Vec` when the number is invalid or carries no usable region.
+fn build_entities(r: &NvResp, scan_id: &str) -> Vec<Entity> {
     if !r.valid {
-        return None;
+        return Vec::new();
     }
     // A geocodable place string from region + country (either may be absent).
     let region = r
@@ -137,8 +139,10 @@ fn build_entity(r: &NvResp, scan_id: &str) -> Option<Entity> {
         (Some(reg), Some(c)) => format!("{reg}, {c}"),
         (Some(reg), None) => reg.to_string(),
         (None, Some(c)) => c.to_string(),
-        (None, None) => return None,
+        (None, None) => return Vec::new(),
     };
+
+    let mut out = Vec::new();
 
     let mut e = Entity::new(EntityKind::Address, &place, 0.55, scan_id);
     e.tag(SRC);
@@ -160,7 +164,18 @@ fn build_entity(r: &NvResp, scan_id: &str) -> Option<Entity> {
         ev = ev.with_attr("international_format", intl);
     }
     e.add_evidence(ev);
-    Some(e)
+    out.push(e);
+
+    // Carrier → Organisation pivot (same pattern as ip2location ISP extraction).
+    if let Some(carrier) = r.carrier.as_deref().map(str::trim).filter(|c| c.len() >= 2) {
+        let mut oe = Entity::new(EntityKind::Organisation, carrier, 0.60, scan_id);
+        oe.tag(SRC);
+        oe.tag("carrier");
+        oe.add_evidence(Evidence::new(SRC, format!("Phone carrier: {carrier}")));
+        out.push(oe);
+    }
+
+    out
 }
 
 #[cfg(test)]

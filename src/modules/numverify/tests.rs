@@ -11,8 +11,8 @@ use super::*;
             line_type: Some("mobile".into()),
             international_format: Some("+61400000000".into()),
         };
-        let e = build_entity(&r, "scan").unwrap();
-        assert_eq!(e.kind, EntityKind::Address);
+        let entities = build_entities(&r, "scan");
+        let e = entities.iter().find(|e| e.kind == EntityKind::Address).unwrap();
         assert_eq!(e.value, "Queensland, Australia");
         assert!(
             e.has_tag("phone-region") && e.has_tag("carrier-known") && e.has_tag("line:mobile")
@@ -21,6 +21,10 @@ use super::*;
         assert_eq!(attr("carrier"), "Telstra");
         assert_eq!(attr("line_type"), "mobile");
         assert_eq!(attr("country_code"), "AU");
+        // Carrier Organisation entity should also be emitted.
+        let org = entities.iter().find(|e| e.kind == EntityKind::Organisation).unwrap();
+        assert_eq!(org.value, "Telstra");
+        assert!(org.has_tag("carrier"));
     }
 
     #[test]
@@ -29,7 +33,7 @@ use super::*;
             valid: false,
             ..Default::default()
         };
-        assert!(build_entity(&r, "scan").is_none());
+        assert!(build_entities(&r, "scan").is_empty());
     }
 
     #[test]
@@ -39,7 +43,9 @@ use super::*;
             country_name: Some("Australia".into()),
             ..Default::default()
         };
-        assert_eq!(build_entity(&r, "scan").unwrap().value, "Australia");
+        let entities = build_entities(&r, "scan");
+        let e = entities.iter().find(|e| e.kind == EntityKind::Address).unwrap();
+        assert_eq!(e.value, "Australia");
     }
 
     #[test]
@@ -59,6 +65,7 @@ use super::*;
         assert_eq!(m.max_timeout_ms(), 8_000);
         assert!(!m.attack_techniques().is_empty());
         assert!(m.produces().contains(&EntityKind::Address));
+        assert!(m.produces().contains(&EntityKind::Organisation));
     }
 
     #[test]
@@ -71,7 +78,8 @@ use super::*;
                 line_type: Some(lt.to_string()),
                 ..Default::default()
             };
-            let e = build_entity(&r, "s").unwrap();
+            let entities = build_entities(&r, "s");
+            let e = entities.iter().find(|e| e.kind == EntityKind::Address).unwrap();
             assert!(e.has_tag(&format!("line:{lt}")), "missing line:{lt} tag");
         }
     }
