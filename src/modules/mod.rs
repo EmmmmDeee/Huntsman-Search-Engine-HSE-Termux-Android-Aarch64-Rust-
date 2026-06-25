@@ -52,6 +52,7 @@ pub mod geo_intel;
 pub mod geocode;
 pub mod github_code_search;
 pub mod github_user;
+pub mod gitlab_user;
 pub mod gleif_lei;
 pub mod gravatar;
 pub mod greynoise;
@@ -307,6 +308,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(hacker_news::HackerNews),
         Arc::new(lobsters::Lobsters),
         Arc::new(devto::DevTo),
+        Arc::new(gitlab_user::GitlabUser),
         Arc::new(npm_author::NpmAuthor),
         Arc::new(crates_io::CratesIo),
         Arc::new(reddit_user::RedditUser),
