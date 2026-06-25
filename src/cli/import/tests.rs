@@ -107,6 +107,12 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     assert!(has(&csvents, EntityKind::Email, "jordanavery@gmail.com"));
     assert!(has(&csvents, EntityKind::Person, "Jordan Avery"));
 
+    // Combined Search aggregator export → the breach-aggregator branch.
+    let (comb, label) = entities_from_upload(COMBINED, "s").await.unwrap();
+    assert_eq!(label, "combined-search");
+    assert!(has(&comb, EntityKind::Email, "jordanavery@gmail.com"));
+    assert!(has(&comb, EntityKind::Person, "Jordan Avery"));
+
     // JSON API export → parsed (and the label proves the branch).
     let (_json, label) =
         entities_from_upload(r#"{"exportInfo":{"query":"x"},"searchResults":{}}"#, "s")
@@ -160,7 +166,85 @@ fn dossier_is_detected_and_oathnet_txt_is_not() {
     ));
 }
 
+use super::combined::{looks_like_combined_search, parse_combined_search};
 use super::csv::{looks_like_dehashed_csv, parse_dehashed_csv};
+
+// Synthetic Combined Search export (no real PII): a module-metadata block plus
+// two result records, exercising inline header values AND next-line values.
+const COMBINED: &str = "Module: Combined Search
+Query: javery
+Search Type: Username
+Results: 2
+
+  [1]
+    Key:
+      snusbase
+    Source Type:
+      snusbase
+    Status:
+      results
+    Count:
+      2
+    Results:
+      [1]
+        Username:
+          javery
+        Email:
+          jordanavery@gmail.com
+        Name:
+          Jordan Avery
+        Password:
+          Hunter2pass
+        Source:
+          2089_EXAMPLE_BREACH_122025
+      [2]
+        Email:
+          jordan2@example.com
+        Hash:
+          e1436d06a8b5f6decbf31371d9da13fc
+        Lastip:
+          24.32.96.70
+        Source:
+          2042_EXAMPLE_TECH_012024
+";
+
+#[test]
+fn combined_search_is_detected() {
+    assert!(looks_like_combined_search(COMBINED));
+    assert!(!looks_like_combined_search(
+        "URL: https://x.com/login\nUsername: bob\n"
+    ));
+}
+
+#[test]
+fn combined_search_parses_records_and_skips_metadata() {
+    let (ents, stats) = parse_combined_search(COMBINED, "s");
+    let has = |k: EntityKind, v: &str| ents.iter().any(|e| e.kind == k && e.value == v);
+    // Record 1.
+    assert!(has(EntityKind::Email, "jordanavery@gmail.com"));
+    assert!(has(EntityKind::Username, "javery"));
+    assert!(has(EntityKind::Person, "Jordan Avery"));
+    assert!(has(EntityKind::Credential, "Hunter2pass"));
+    // Record 2: a hash credential and a last-login IP.
+    assert!(has(EntityKind::Email, "jordan2@example.com"));
+    assert!(has(
+        EntityKind::Credential,
+        "e1436d06a8b5f6decbf31371d9da13fc"
+    ));
+    assert!(has(EntityKind::IpAddress, "24.32.96.70"));
+    // Two result records; the module-metadata block emitted nothing.
+    assert_eq!(stats.breach_records, 2);
+    // The source database rides on the evidence.
+    let em = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Email && e.value == "jordanavery@gmail.com")
+        .unwrap();
+    assert!(em.evidence.iter().any(|ev| {
+        ev.attributes
+            .get("source")
+            .is_some_and(|v| v.contains("EXAMPLE_BREACH"))
+    }));
+}
 
 #[test]
 fn dehashed_csv_is_detected_strictly() {

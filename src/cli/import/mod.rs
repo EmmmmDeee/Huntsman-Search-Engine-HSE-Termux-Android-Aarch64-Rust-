@@ -6,6 +6,7 @@
 
 use crate::core::error::{Error, Result};
 
+mod combined;
 mod csv;
 mod dossier;
 mod html;
@@ -16,6 +17,7 @@ mod txt;
 
 // Format parsers live in the per-format submodules; pull their entry points
 // into scope for the dispatcher, the web-upload router and the tests.
+use combined::{cmd_import_combined, looks_like_combined_search, parse_combined_search};
 use csv::{cmd_import_csv, looks_like_dehashed_csv, parse_dehashed_csv};
 use dossier::{cmd_import_dossier, parse_dossier};
 use html::{cmd_import_html, parse_oathnet_html};
@@ -46,6 +48,11 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
         return cmd_import_html(&body, output).await;
     }
     if is_txt {
+        // A Combined Search breach-aggregator export (`[N]` records of
+        // `Label:`/value pairs) is its own shape — route it first.
+        if looks_like_combined_search(&body) {
+            return cmd_import_combined(&body, output).await;
+        }
         // A breach/dossier compilation (`Entry #N:` blocks of `• key: value`
         // fields, plus `USERNAMES:`/`EMAILS:`/`PASSWORDS:` `-> value` lists) is a
         // different shape from the OathNet stealer-log TXT — route it to the
@@ -143,6 +150,8 @@ pub(crate) async fn entities_from_upload(
         let doc: serde_json::Value =
             serde_json::from_str(body).map_err(|e| Error::Other(format!("invalid JSON: {e}")))?;
         (parse_oathnet_json(&doc, sid).await.0, "oathnet-json")
+    } else if looks_like_combined_search(body) {
+        (parse_combined_search(body, sid).0, "combined-search")
     } else if looks_like_dossier(body) {
         (parse_dossier(body, sid).0, "dossier")
     } else if looks_like_dehashed_csv(body) {
