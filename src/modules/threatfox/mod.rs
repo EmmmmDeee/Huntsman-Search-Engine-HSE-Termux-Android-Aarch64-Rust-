@@ -233,7 +233,9 @@ impl Module for ThreatFox {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress, EntityKind::Url];
+        // ThreatFox only accepts Domain/IpAddress targets and re-emits the seed
+        // with threat-intel tags. Url was previously listed but is never emitted.
+        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress];
         KINDS
     }
 
