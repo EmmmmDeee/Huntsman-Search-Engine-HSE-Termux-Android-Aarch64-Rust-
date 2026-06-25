@@ -9,7 +9,7 @@
 //! it returns validity, **carrier**, **line type** (mobile/landline/voip), and
 //! **region** — emitted as a geocodable `Address` plus carrier/line evidence.
 //!
-//! The response→entity mapping is the pure [`build_entity`] (unit-tested); the
+//! The response→entity mapping is the pure `build_entity` (unit-tested); the
 //! network shell owns only auth/transport.
 
 use async_trait::async_trait;
