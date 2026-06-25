@@ -254,6 +254,9 @@ pub(super) fn parse_oathnet_txt(
         }
     }
 
+    // A stealer log's network section often lists the victim's router BSSID —
+    // pull every MAC out as a geolocation seed (mylnikov / wigle).
+    push_macs(body, &sid, "stealer", &mut entities);
     (entities, stats)
 }
 

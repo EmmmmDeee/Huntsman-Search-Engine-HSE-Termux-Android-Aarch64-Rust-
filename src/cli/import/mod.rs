@@ -361,6 +361,37 @@ fn detect_and_create_api_key_entity(
     Some((service, e))
 }
 
+/// Extract WiFi BSSIDs / MAC addresses from `text` and push them as
+/// `MacAddress` entities — a victim's router BSSID lifted from a stealer log or
+/// breach record becomes a geolocation seed that `mylnikov` / `wigle` can turn
+/// into coordinates. Capped so a hostile blob can't flood the graph. Returns the
+/// number emitted.
+fn push_macs(
+    text: &str,
+    sid: &str,
+    source_tag: &str,
+    entities: &mut Vec<crate::core::entity::Entity>,
+) -> usize {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let mut n = 0;
+    for mac in crate::util::extract::macs(text).into_iter().take(50) {
+        let mut e = Entity::new(EntityKind::MacAddress, &mac, 0.55, sid);
+        e.tag("import");
+        e.tag(source_tag);
+        e.tag("bssid");
+        e.add_evidence(
+            Evidence::new(
+                "import:mac",
+                format!("WiFi BSSID / MAC `{mac}` — geolocatable via mylnikov/wigle"),
+            )
+            .with_attr("mac", &mac),
+        );
+        entities.push(e);
+        n += 1;
+    }
+    n
+}
+
 fn store_key_in_pool(service: &str, key: &str, notes: String) {
     let pool = crate::util::key_pool::global_pool();
     let mut entry = crate::util::key_pool::KeyEntry::new(key);

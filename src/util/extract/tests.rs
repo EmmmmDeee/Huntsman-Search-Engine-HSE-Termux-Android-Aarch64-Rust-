@@ -123,3 +123,17 @@ use super::*;
         assert_eq!(classify_credential_field("fail"), Secret);
         assert_eq!(classify_credential_field("null"), Secret);
     }
+
+    #[test]
+    fn macs_extracts_normalises_and_filters() {
+        let text = "BSSID: A4-B1-C2-00-11-22 connected; adapter aa:bb:cc:dd:ee:ff\n\
+                    broadcast ff:ff:ff:ff:ff:ff and null 00:00:00:00:00:00";
+        let got = macs(text);
+        // Both real MACs, normalised to lowercase colon form, in order; the
+        // broadcast and all-zero addresses are dropped.
+        assert_eq!(got, vec!["a4:b1:c2:00:11:22".to_string(), "aa:bb:cc:dd:ee:ff".to_string()]);
+        // De-duplicated.
+        assert_eq!(macs("x aa:bb:cc:dd:ee:ff y aa:bb:cc:dd:ee:ff").len(), 1);
+        // An IPv6 fragment (4-hex groups) is not a MAC.
+        assert!(macs("2606:2800:220:1:248:1893:25c8:1946").is_empty());
+    }

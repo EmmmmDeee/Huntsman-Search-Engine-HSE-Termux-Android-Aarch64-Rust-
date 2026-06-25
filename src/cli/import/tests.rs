@@ -130,6 +130,25 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     // Malformed JSON is a clean error, not a panic.
     assert!(entities_from_upload("{ not valid json", "s").await.is_err());
 }
+
+#[tokio::test]
+async fn import_extracts_wifi_bssid_as_geolocation_seed() {
+    use crate::core::entity::EntityKind;
+    // A stealer-log-shaped body carrying the victim's router BSSID.
+    let (ents, label) = entities_from_upload(
+        "URL: https://x.com/login\nUsername: victim\nRouter BSSID: A4:B1:C2:00:11:22\n",
+        "s",
+    )
+    .await
+    .unwrap();
+    assert_eq!(label, "oathnet-txt");
+    assert!(
+        ents.iter().any(|e| e.kind == EntityKind::MacAddress
+            && e.value == "a4:b1:c2:00:11:22"
+            && e.has_tag("bssid")),
+        "the BSSID must become a MacAddress geolocation seed"
+    );
+}
 use crate::core::entity::{Entity, EntityKind};
 
 // The exact shape of the user-provided "Isaac Frost.txt" dossier upload.

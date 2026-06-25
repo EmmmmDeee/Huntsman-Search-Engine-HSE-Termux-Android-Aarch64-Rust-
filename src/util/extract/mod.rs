@@ -35,6 +35,15 @@ pub static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
 pub static URL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"https?://[^\s"'<>)]+"#).expect("constant url regex"));
 
+/// Matches a 48-bit MAC address / WiFi BSSID in colon or hyphen form
+/// (`aa:bb:cc:dd:ee:ff` / `AA-BB-CC-DD-EE-FF`). Word-boundary-anchored so a
+/// 6-octet run is not carved out of a longer hex string. Rust's regex has no
+/// backreferences, so the two separators are separate alternatives.
+pub static MAC_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b|\b(?:[0-9a-f]{2}-){5}[0-9a-f]{2}\b")
+        .expect("constant mac regex")
+});
+
 /// Every email address in `text`, lowercased and de-duplicated with
 /// first-occurrence order preserved.
 #[must_use]
@@ -45,6 +54,41 @@ pub fn emails(text: &str) -> Vec<String> {
         let addr = m.as_str().to_lowercase();
         if seen.insert(addr.clone()) {
             out.push(addr);
+        }
+    }
+    out
+}
+
+/// Every plausible MAC address / WiFi BSSID in `text`, normalised to lowercase
+/// colon form and de-duplicated. The all-zero and broadcast addresses are
+/// dropped (never a real device/access-point). Pulls a victim's router BSSID
+/// out of a stealer log or breach record so it can be geolocated by
+/// [`crate::modules::mylnikov`] / `wigle`.
+#[must_use]
+pub fn macs(text: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for m in MAC_RE.find_iter(text) {
+        let hex: String = m
+            .as_str()
+            .chars()
+            .filter(char::is_ascii_hexdigit)
+            .flat_map(char::to_lowercase)
+            .collect();
+        if hex.len() != 12 || hex == "000000000000" || hex == "ffffffffffff" {
+            continue;
+        }
+        let norm = format!(
+            "{}:{}:{}:{}:{}:{}",
+            &hex[0..2],
+            &hex[2..4],
+            &hex[4..6],
+            &hex[6..8],
+            &hex[8..10],
+            &hex[10..12]
+        );
+        if seen.insert(norm.clone()) {
+            out.push(norm);
         }
     }
     out

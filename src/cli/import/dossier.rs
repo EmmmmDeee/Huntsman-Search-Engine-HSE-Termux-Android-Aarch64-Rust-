@@ -197,6 +197,8 @@ pub(super) fn parse_dossier(
     // Flush the final entry.
     emit_dossier_entry(&mut entry, sid, &mut entities, &mut stats, &mut seen);
 
+    // Any WiFi BSSID / MAC in the compilation → a geolocation seed.
+    push_macs(body, sid, "dossier", &mut entities);
     (entities, stats)
 }
 
