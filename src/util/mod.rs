@@ -12,6 +12,7 @@ pub mod ckan;
 pub mod curl;
 pub mod curl_client;
 pub mod diagnostics;
+pub mod dmarc;
 pub mod dns;
 pub mod domains;
 pub mod extract;

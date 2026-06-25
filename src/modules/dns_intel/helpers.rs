@@ -77,34 +77,6 @@ pub(super) fn unescape_dns_label(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Report-destination emails from a DMARC record's `rua=`/`ruf=` tags. **Pure**.
-/// Each tag is a comma-separated list of `mailto:` URIs, and each URI may carry
-/// an optional `!<size>` maximum-report-size suffix (RFC 7489 §6.2,
-/// e.g. `mailto:dmarc@x.com!10m`) which is stripped before the address is taken.
-/// Only syntactically plausible addresses (contain `@`, length ≥ 5) are returned.
-pub(super) fn dmarc_report_addresses(txt: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    for part in txt.split(';') {
-        let Some(uri_list) = part
-            .trim()
-            .strip_prefix("rua=")
-            .or_else(|| part.trim().strip_prefix("ruf="))
-        else {
-            continue;
-        };
-        for addr in uri_list.split(',') {
-            if let Some(email) = addr.trim().strip_prefix("mailto:") {
-                // Drop the optional "!size" report-size limit (RFC 7489 §6.2).
-                let email = email.split('!').next().unwrap_or(email).trim();
-                if email.contains('@') && email.len() >= 5 {
-                    out.push(email);
-                }
-            }
-        }
-    }
-    out
-}
-
 /// Domain-ownership verification TXT prefixes → the vendor they prove a
 /// relationship with. A published verification record discloses which SaaS the
 /// organisation has onboarded — real OSINT for mapping its vendor/tech stack.
