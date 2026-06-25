@@ -547,6 +547,91 @@ fn dossier_parse_yields_correlated_individualised_entities() {
     assert!(stats.persons >= 1 && stats.credentials >= 2 && stats.emails >= 3);
 }
 
+// A SeekNow `CONTACT SUMMARY (KEY DATA)` block (synthetic; AU + US mix). The
+// `NAMES:`/`PHONE NUMBERS:`/`ADDRESSES:`/`IP ADDRESSES:` aggregate lists were
+// previously dropped — only EMAILS/USERNAMES/PASSWORDS were recognised.
+const SEEKNOW: &str =
+    "================================================================================
+                           SEARCH RESULTS EXPORT
+================================================================================
+Query: Jordan Avery
+
+********************    CONTACT SUMMARY (KEY DATA)    ********************
+
+  [EMAILS: 1 | NAMES: 2 | PHONE NUMBERS: 2 | ADDRESSES: 3 | IP ADDRESSES: 1]
+
+  EMAILS:
+    -> jordanavery@gmail.com
+
+  NAMES:
+    -> Full Name: Jordan Avery
+    -> Company Name: Acme Corp Pty Ltd
+
+  PHONE NUMBERS:
+    -> 0412 345 678
+    -> (214) 473-9696
+
+  ADDRESSES:
+    -> address: 12 Smith Street, Carlton, VIC, 3053, Australia
+    -> city: Carlton
+    -> state: VIC
+
+  IP ADDRESSES:
+    -> 24.32.96.70
+
+Entry #1:
+   \u{2022} email: jordanavery@gmail.com
+   \u{2022} name: Jordan Avery
+";
+
+#[test]
+fn dossier_captures_seeknow_contact_summary_sections() {
+    assert!(looks_like_dossier(SEEKNOW));
+    let (mut ents, stats) = parse_dossier(SEEKNOW, "s");
+    deduplicate_by_uid(&mut ents);
+    let has = |k: EntityKind, v: &str| ents.iter().any(|e| e.kind == k && e.value == v);
+
+    // NAMES: full name → Person, company name → Organisation (employer pivot).
+    assert!(has(EntityKind::Person, "Jordan Avery"));
+    assert!(has(EntityKind::Organisation, "Acme Corp Pty Ltd"));
+    assert!(stats.organisations >= 1);
+
+    // PHONE NUMBERS: the AU local number is canonicalised to E.164; the bare US
+    // number (no recoverable country code) is correctly dropped.
+    assert!(has(EntityKind::Phone, "+61412345678"));
+    assert!(
+        !ents
+            .iter()
+            .any(|e| e.kind == EntityKind::Phone && e.value.contains("214")),
+        "a bare foreign-national number must not be emitted as a phone"
+    );
+
+    // ADDRESSES: the full `address:` line is a residence; the lone `city:`/
+    // `state:` fragments are too coarse and must be skipped.
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Address && e.value.contains("Carlton")),
+        "the full address line must become an Address"
+    );
+    assert!(
+        !has(EntityKind::Address, "Carlton"),
+        "a bare city fragment must not become an Address"
+    );
+
+    // IP ADDRESSES: a real public IP becomes a pivotable IpAddress.
+    assert!(has(EntityKind::IpAddress, "24.32.96.70"));
+}
+
+#[tokio::test]
+async fn upload_dispatcher_routes_seeknow_summary_to_dossier() {
+    let (ents, label) = entities_from_upload(SEEKNOW, "s").await.unwrap();
+    assert_eq!(label, "dossier");
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Phone && e.value == "+61412345678")
+    );
+}
+
 #[test]
 fn finalize_drops_bogus_ips_keeps_real_and_private_and_dedups() {
     let sid = "import-test";

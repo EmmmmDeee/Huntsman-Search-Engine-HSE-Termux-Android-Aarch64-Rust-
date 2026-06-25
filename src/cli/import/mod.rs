@@ -222,6 +222,7 @@ struct ImportStats {
     api_keys: usize,
     api_keys_valid: usize,
     persons: usize,
+    organisations: usize,
     credentials: usize,
     date_range: String,
 }
@@ -719,11 +720,12 @@ fn print_import_stats(stats: &ImportStats, entity_count: usize, output: &str) {
     }
     row!("Imported {} entities:", entity_count);
     row!(
-        "  Identity:  {} emails, {} phones, {} usernames, {} persons, {} device users, {} Discord IDs",
+        "  Identity:  {} emails, {} phones, {} usernames, {} persons, {} orgs, {} device users, {} Discord IDs",
         stats.emails,
         stats.phones,
         stats.usernames,
         stats.persons,
+        stats.organisations,
         stats.device_users,
         stats.discord_ids
     );

@@ -1098,13 +1098,14 @@ async function renderNewScan(v){
 
     <div class="alert alert-info" style="padding:10px 12px;margin-bottom:14px">
       <b><i class="glyphicon glyphicon-import"></i>&nbsp;Import a file</b>
-      — upload a breach/dossier compilation (<code>Entry #N</code> +
-      <code>USERNAMES:</code>/<code>EMAILS:</code>/<code>PASSWORDS:</code>), a
-      Combined&nbsp;Search or DeHashed CSV, a <code>Module:&nbsp;Stealerlogs</code>
-      victim export, an OathNet SEARCH&nbsp;REPORT (<code>Entry&nbsp;N:</code>
-      blocks), or an OathNet JSON/HTML/stealer-log export. The format is
-      auto-detected, parsed and ingested as a scan you can browse, correlate and
-      export.
+      — upload a breach/dossier compilation (<code>Entry #N</code> + a
+      <code>CONTACT&nbsp;SUMMARY</code> of <code>EMAILS:</code>/<code>NAMES:</code>/
+      <code>PHONE&nbsp;NUMBERS:</code>/<code>ADDRESSES:</code>/… lists, as SeekNow
+      exports), a Combined&nbsp;Search or DeHashed CSV, a
+      <code>Module:&nbsp;Stealerlogs</code> victim export, an OathNet
+      SEARCH&nbsp;REPORT (<code>Entry&nbsp;N:</code> blocks), or an OathNet
+      JSON/HTML/stealer-log export. The format is auto-detected, parsed and
+      ingested as a scan you can browse, correlate and export.
       <div style="margin-top:8px">
         <input type="file" id="dossier-file" accept=".txt,.json,.html,text/plain,application/json,text/html" style="display:inline-block;max-width:60%">
         <button class="btn btn-primary btn-sm" type="button" onclick="uploadDossier()">Import</button>

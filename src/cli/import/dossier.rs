@@ -11,6 +11,13 @@ enum DossierSection {
     Usernames,
     Emails,
     Passwords,
+    // SeekNow `CONTACT SUMMARY (KEY DATA)` aggregate sections — the deduplicated
+    // identity/network/geo lists the per-entry `• key: value` blocks don't always
+    // repeat. Without these the whole summary block was silently dropped.
+    Names,
+    Phones,
+    Addresses,
+    IpAddresses,
 }
 
 /// Parse a breach/dossier compilation into individualised, correlated entities.
@@ -57,6 +64,10 @@ pub(super) fn parse_dossier(
                 "USERNAMES" => Some(DossierSection::Usernames),
                 "EMAILS" => Some(DossierSection::Emails),
                 "PASSWORDS" | "HASHES" => Some(DossierSection::Passwords),
+                "NAMES" => Some(DossierSection::Names),
+                "PHONE NUMBERS" | "PHONES" => Some(DossierSection::Phones),
+                "ADDRESSES" => Some(DossierSection::Addresses),
+                "IP ADDRESSES" | "IPS" => Some(DossierSection::IpAddresses),
                 _ => None,
             };
             if let Some(s) = sect {
@@ -433,6 +444,71 @@ fn emit_dossier_list_item(
                 let e = Entity::new(EntityKind::Credential, val, 0.50, sid);
                 if push(e, format!("cr:{val}")) {
                     stats.credentials += 1;
+                }
+            }
+        }
+        DossierSection::Names => {
+            // Items are `Full Name: <person>` / `Company Name: <org>` (or a bare
+            // name). A company is the subject's employer — an org pivot
+            // (employer_pivot / ASIC); a full name is a Person.
+            let (key, name) = match val.split_once(':') {
+                Some((k, v)) => (k.trim().to_ascii_lowercase(), v.trim()),
+                None => (String::new(), val),
+            };
+            if name.len() < 2 {
+                return;
+            }
+            if key.contains("company")
+                || key.contains("organisation")
+                || key.contains("organization")
+            {
+                let e = Entity::new(EntityKind::Organisation, name, 0.50, sid);
+                if push(e, format!("org:{}", name.to_lowercase())) {
+                    stats.organisations += 1;
+                }
+            } else if name.split_whitespace().count() >= 2
+                && !crate::core::validation::is_placeholder_entity(&EntityKind::Person, name)
+            {
+                let e = Entity::new(EntityKind::Person, name, 0.55, sid);
+                if push(e, format!("pn:{}", name.to_lowercase())) {
+                    stats.persons += 1;
+                }
+            }
+        }
+        DossierSection::Phones => {
+            // AU-focused: keep only numbers `to_e164_au` can canonicalise — this
+            // drops the bare foreign-national numbers (no recoverable country
+            // code) while keeping every `+61`/`61…`/`0…` Australian number.
+            if let Some(ph) = crate::core::validation::to_e164_au(val) {
+                let e = Entity::new(EntityKind::Phone, &ph, 0.55, sid);
+                if push(e, format!("ph:{ph}")) {
+                    stats.phones += 1;
+                }
+            }
+        }
+        DossierSection::Addresses => {
+            // Items are `address: <full>` / `city:` / `state:` / `country:`.
+            // Only a full `address:` line (or a bare specific value) names a
+            // dwelling; a lone city/state/country is too coarse to pin one and
+            // would fabricate a household (AU-049), so it is skipped.
+            let candidate = match val.split_once(':') {
+                Some((k, v)) if k.trim().eq_ignore_ascii_case("address") => v.trim(),
+                Some(_) => "",
+                None => val,
+            };
+            if !candidate.is_empty() && crate::core::validation::is_specific_residence(candidate) {
+                let e = Entity::new(EntityKind::Address, candidate, 0.52, sid);
+                if push(e, format!("ad:{}", candidate.to_ascii_lowercase())) {
+                    stats.addresses += 1;
+                }
+            }
+        }
+        DossierSection::IpAddresses => {
+            if val.parse::<std::net::IpAddr>().is_ok() && !crate::core::validation::is_bogus_ip(val)
+            {
+                let e = Entity::new(EntityKind::IpAddress, val, 0.55, sid);
+                if push(e, format!("ip:{val}")) {
+                    stats.ips += 1;
                 }
             }
         }
