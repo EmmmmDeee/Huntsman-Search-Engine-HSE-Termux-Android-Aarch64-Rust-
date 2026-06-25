@@ -1793,6 +1793,41 @@ pub struct LeverageRanked {
 /// separate dossiers this identifier already connects". Sorted strongest-first,
 /// ties broken by UID for determinism, truncated to `limit`. A store error on an
 /// entity skips it (never fails). Pure and offline — indexed point lookups only.
+/// Run the deterministic, offline geospatial enrichment a live scan's finalise
+/// applies — over an arbitrary entity set, for callers outside the scan loop
+/// (the `hse import` / web-upload path). For each entity it parses an `Address`
+/// into its components and tags a `Coordinates` with geohash / timezone /
+/// country ([`enrich_geospatial`]); then it derives a `Coordinates` from every
+/// `Address` whose city resolves in the offline `city_coords` table
+/// ([`address_to_coords_pass`]) and enriches those new fixes too. New
+/// Coordinates are appended (deduped by uid; existing ones are never
+/// duplicated). No network — pure lookup — so an imported dossier's addresses
+/// feed the geo-correlation rules (AU-014/017/032/056/057/085) and co-location
+/// edges identically to a live scan, instead of sitting inert. One pass.
+pub fn enrich_offline_geo(entities: &mut Vec<Entity>, scan_id: &str) {
+    use std::collections::{HashMap, HashSet};
+
+    // 1) Per-entity deterministic enrichment: Address parse, Coordinates
+    //    geohash/timezone/country. Other kinds are untouched.
+    for e in entities.iter_mut() {
+        enrich_geospatial(e);
+    }
+
+    // 2) Address → Coordinates via the offline city table; enrich each new fix
+    //    and append it (the pass already skips coords that already exist).
+    let map: HashMap<String, Entity> = entities
+        .iter()
+        .map(|e| (e.uid.clone(), e.clone()))
+        .collect();
+    let mut seen: HashSet<String> = map.keys().cloned().collect();
+    for mut derived in address_to_coords_pass(&map, scan_id) {
+        enrich_geospatial(&mut derived);
+        if seen.insert(derived.uid.clone()) {
+            entities.push(derived);
+        }
+    }
+}
+
 #[must_use]
 pub fn rank_enrichment_leverage(
     store: &dyn StoragePort,

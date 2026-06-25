@@ -305,6 +305,17 @@ async fn persist_import(
         .or_else(|| entities.iter().find(|e| e.kind == EntityKind::Email))
         .map_or_else(|| "imported dossier".to_string(), |e| e.value.clone());
 
+    // Offline geospatial enrichment, exactly as the live scan finalise does:
+    // parse each Address, geohash/timezone/country-tag each Coordinates, and
+    // derive Coordinates from any Address whose city resolves offline — so an
+    // imported dossier's addresses feed the geo-correlation stack (AU-014/017/
+    // 032/056/057/085, co-location) instead of sitting inert. Deterministic, no
+    // network; runs before relations/correlations so the derived fixes are
+    // persisted, related and correlated in this same pass.
+    let mut entities = entities.to_vec();
+    crate::core::engine::enrich_offline_geo(&mut entities, sid);
+    let entities = &entities[..];
+
     let store: Arc<dyn StoragePort> =
         Arc::new(crate::storage::Store::open(&crate::default_db_path())?);
 

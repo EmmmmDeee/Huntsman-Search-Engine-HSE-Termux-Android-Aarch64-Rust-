@@ -1817,3 +1817,64 @@ fn rank_enrichment_leverage_orders_join_keys_by_cross_scan_degree() {
     assert_eq!(top1.len(), 1);
     assert_eq!(top1[0].value, "jane@example.com");
 }
+
+#[test]
+fn enrich_offline_geo_parses_addresses_and_derives_city_coordinates() {
+    use crate::core::engine::enrich_offline_geo;
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    // A sourced AU address whose city resolves in the offline table, plus an
+    // imported bare coordinate carrying no geohash yet.
+    let mut addr = Entity::new(
+        EntityKind::Address,
+        "12 Smith Street, Sydney NSW 2000",
+        0.60,
+        "s",
+    );
+    addr.add_evidence(Evidence::new("import:dossier", "breach record"));
+    let coord = Entity::new(EntityKind::Coordinates, "-37.8136,144.9631", 0.70, "s");
+
+    let mut ents = vec![addr, coord];
+    enrich_offline_geo(&mut ents, "s");
+
+    // The address gained a deterministic geo_normalize parse.
+    assert!(
+        ents.iter().any(|e| e.kind == EntityKind::Address
+            && e.evidence.iter().any(|ev| ev.source == "geo_normalize")),
+        "the address must be parsed/normalised"
+    );
+    // A Sydney coordinate was derived from the address (offline city lookup).
+    assert!(
+        ents.iter().any(|e| e.kind == EntityKind::Coordinates
+            && e.has_tag("addr-derived")
+            && e.value.starts_with("-33.8688")),
+        "a Coordinates fix must be derived from the Sydney address"
+    );
+    // Every coordinate (imported + derived) now carries a geohash tag, so the
+    // geo-proximity correlation can match them.
+    assert!(
+        ents.iter()
+            .filter(|e| e.kind == EntityKind::Coordinates)
+            .all(|e| e.tags.iter().any(|t| t.starts_with("geohash:"))),
+        "all coordinates must be geohash-enriched"
+    );
+}
+
+#[test]
+fn enrich_offline_geo_is_a_noop_without_geocodable_addresses() {
+    use crate::core::engine::enrich_offline_geo;
+    use crate::core::entity::{Entity, EntityKind};
+
+    // No Address/Coordinates → nothing to enrich, no new entities.
+    let mut ents = vec![
+        Entity::new(EntityKind::Email, "a@b.com", 0.8, "s"),
+        Entity::new(EntityKind::Username, "bob", 0.6, "s"),
+    ];
+    let before = ents.len();
+    enrich_offline_geo(&mut ents, "s");
+    assert_eq!(
+        ents.len(),
+        before,
+        "non-geo entities must not spawn coordinates"
+    );
+}
