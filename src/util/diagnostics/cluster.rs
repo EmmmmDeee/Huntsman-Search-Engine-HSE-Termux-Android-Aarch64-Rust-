@@ -220,8 +220,8 @@ pub(super) fn cluster_coordinates(
             let n = lats.len();
 
             // Confidence-weighted geometric median (Weiszfeld) — the headline estimate.
-            // Falls back to positional median on degenerate input (single point, zero
-            // weights) via weighted_geometric_median's own fallback chain.
+            // Falls back to weighted centroid on degenerate Weiszfeld input (e.g. all
+            // zero weights). `weighted_centroid` is infallible for non-empty point sets.
             let weighted_points: Vec<((f64, f64), f64)> = indices
                 .iter()
                 .map(|&i| ((coords[i].0, coords[i].1), coords[i].4))
@@ -229,7 +229,7 @@ pub(super) fn cluster_coordinates(
             let (centroid_lat, centroid_lon) =
                 crate::util::geometry::weighted_geometric_median(&weighted_points)
                     .or_else(|| crate::util::geometry::weighted_centroid(&weighted_points))
-                    .unwrap_or((lats[n / 2], lons[n / 2]));
+                    .expect("weighted_centroid is infallible for non-empty point sets");
 
             // Robust uncertainty radius and Welzl worst-case bounding circle.
             let points_only: Vec<(f64, f64)> = weighted_points.iter().map(|&(p, _)| p).collect();

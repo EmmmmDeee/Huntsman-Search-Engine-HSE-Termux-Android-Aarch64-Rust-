@@ -151,7 +151,24 @@ pub(crate) fn parse_soa_fields(data: &str) -> Option<(String, String)> {
     let mut parts = data.split_whitespace();
     let mname = parts.next()?.trim_end_matches('.').to_string();
     let rname_raw = parts.next()?.trim_end_matches('.');
-    let (local, dom) = rname_raw.split_once('.')?;
+    // DNS master files escape dots in the local-part with backslash
+    // (e.g. `john\.doe.example.com` → `john.doe@example.com`).
+    // Find the first *unescaped* dot to split local-part from domain.
+    let mut dot_pos = None;
+    let mut escaped = false;
+    for (idx, c) in rname_raw.char_indices() {
+        if c == '\\' {
+            escaped = !escaped;
+        } else if c == '.' && !escaped {
+            dot_pos = Some(idx);
+            break;
+        } else {
+            escaped = false;
+        }
+    }
+    let pos = dot_pos?;
+    let local = rname_raw[..pos].replace("\\.", ".");
+    let dom = &rname_raw[pos + 1..];
     if !dom.contains('.') {
         return None; // too short to be a real domain
     }
@@ -189,7 +206,7 @@ pub(crate) fn parse_caa_issuer(data: &str) -> Option<String> {
     } else {
         data.to_string()
     };
-    let mut parts = canonical.splitn(3, ' ');
+    let mut parts = canonical.splitn(3, |c: char| c.is_whitespace());
     let _flags = parts.next()?;
     let tag = parts.next()?.trim();
     if !matches!(tag, "issue" | "issuewild") {

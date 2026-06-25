@@ -67,7 +67,10 @@ impl Module for CloudStorage {
 
         let candidates = generate_bucket_candidates(&base);
 
-        // Spawn all probes concurrently — wall-clock ≈ max(individual latencies).
+        // Probe candidates concurrently but bounded — at most 10 in-flight at a
+        // time to stay within Termux socket/FD limits and avoid looking like a
+        // flood to cloud providers.
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(10));
         let mut set: tokio::task::JoinSet<(String, &'static str, String, Option<u16>)> =
             tokio::task::JoinSet::new();
         for (url, provider, bucket_name) in candidates {
@@ -75,7 +78,9 @@ impl Module for CloudStorage {
                 break;
             }
             let http = ctx.http.clone();
+            let sem = std::sync::Arc::clone(&sem);
             set.spawn(async move {
+                let _permit = sem.acquire_owned().await.expect("semaphore not closed");
                 let status = probe_url(&http, &url).await;
                 (url, provider, bucket_name, status)
             });

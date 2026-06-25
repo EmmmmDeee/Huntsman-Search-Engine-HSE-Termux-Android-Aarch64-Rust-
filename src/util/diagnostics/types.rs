@@ -58,8 +58,9 @@ pub struct CoordinateCluster {
     /// Robust uncertainty radius: median distance from the geometric median
     /// to all cluster members (same 0.5 breakdown point as the median).
     pub median_radius_km: f64,
-    /// Worst-case bounding radius: Welzl minimum-enclosing-circle radius
-    /// (Chebyshev / L∞). Every member lies within `centroid ± enclosing_radius_km`.
+    /// Worst-case bounding radius: Welzl minimum-enclosing-circle radius.
+    /// Every cluster member lies within `enclosing_radius_km` km of the centroid
+    /// by great-circle distance (radial bound, not a per-axis ± box bound).
     pub enclosing_radius_km: f64,
 }
 

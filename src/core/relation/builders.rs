@@ -414,7 +414,9 @@ pub fn derive_co_ownership(
             }
         }
         for (_, mut domains) in groups {
-            if domains.len() < 2 {
+            // Cap at 20 to avoid O(N²) explosion when a registrant or
+            // tracking ID is shared across hundreds of CDN-hosted domains.
+            if domains.len() < 2 || domains.len() > 20 {
                 continue;
             }
             domains.sort_unstable();
@@ -816,9 +818,15 @@ static SOCIAL_MATCHERS: &[SocialMatcher] = &[
 fn extract_username_from_profile_url(url: &str) -> Option<String> {
     let parsed = url::Url::parse(url).ok()?;
     let host = parsed.host_str()?;
-    let matcher = SOCIAL_MATCHERS
-        .iter()
-        .find(|m| m.host.eq_ignore_ascii_case(host))?;
+    // Strip `www.` from both sides so `www.twitter.com` matches `twitter.com`
+    // and vice versa regardless of how the platform entry is keyed.
+    let canonical_host = host.strip_prefix("www.").unwrap_or(host);
+    let matcher = SOCIAL_MATCHERS.iter().find(|m| {
+        m.host
+            .strip_prefix("www.")
+            .unwrap_or(m.host)
+            .eq_ignore_ascii_case(canonical_host)
+    })?;
 
     let username = match matcher.extract {
         ExtractKind::Segment {

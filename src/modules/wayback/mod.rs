@@ -124,7 +124,13 @@ fn build_entity(kind: EntityKind, value: &str, rows: &[Row], scan_id: &str) -> O
 /// information pages (case-insensitive).
 fn is_contact_path(url: &str) -> bool {
     let lower = url.to_lowercase();
-    CONTACT_PATH_KEYWORDS.iter().any(|kw| lower.contains(kw))
+    // Check only the path portion — not the domain — so a domain like
+    // `contact-center.com` does not match every URL on that host.
+    let path_start = lower.find("://").map_or(0, |p| p + 3);
+    let path = lower[path_start..]
+        .find('/')
+        .map_or(lower.as_str(), |p| &lower[path_start + p..]);
+    CONTACT_PATH_KEYWORDS.iter().any(|kw| path.contains(kw))
 }
 
 /// Construct the Wayback raw-content URL for a given snapshot. The `id_`
