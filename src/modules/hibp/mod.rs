@@ -220,6 +220,9 @@ impl Hibp {
     ) -> Result<Option<T>> {
         let mut retries = 0u8;
         loop {
+            if ctx.cancel.is_cancelled() {
+                return Ok(None);
+            }
             let resp = ctx
                 .http
                 .get(url)

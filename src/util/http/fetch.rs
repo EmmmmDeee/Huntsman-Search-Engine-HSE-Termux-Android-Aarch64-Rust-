@@ -211,19 +211,12 @@ pub async fn fetch_json_or_404<T: DeserializeOwned>(
     fetch_json_inner(client, module, url, true).await
 }
 
-async fn fetch_json_inner<T: DeserializeOwned>(
-    client: &reqwest::Client,
-    module: &'static str,
-    url: &str,
-    map_404_to_none: bool,
-) -> Result<Option<T>> {
-    // Per-host circuit breaker: a host that has failed repeatedly is
-    // short-circuited until its cooldown elapses, so a dead/flaky endpoint stops
-    // burning a connect/read budget on every fan-out target. `host` is `None`
-    // for an unparseable / host-less URL, which is simply left un-gated. A
-    // blocked request returns the same "request failed" error the un-gated path
-    // would on a transport failure — never `Ok(None)`, which `fetch_json_or_404`
-    // would misread as a definitive "not found".
+/// Per-host circuit-breaker pre-check shared by the JSON fetch helpers: returns the
+/// parsed host (so the caller can later record the round-trip outcome) when the request
+/// may proceed, or a short-circuit `Err` when the host is in its failure cooldown. A
+/// host-less / unparseable URL is left un-gated (`Ok(None)`). Centralises the gate that
+/// `fetch_json_inner` and `fetch_keyed_json` previously carried verbatim.
+fn breaker_gate(module: &str, url: &str) -> Result<Option<String>> {
     let host = circuit_breaker::host_of(url);
     if let Some(h) = host.as_deref()
         && !circuit_breaker::allow_host(h, crate::core::entity::unix_now())
@@ -236,33 +229,54 @@ async fn fetch_json_inner<T: DeserializeOwned>(
             ),
         ));
     }
+    Ok(host)
+}
+
+/// Record a completed round-trip's status against the host breaker: a server-side fault
+/// (5xx / 429, per [`is_breaker_failure_status`]) is a failure; any other answer —
+/// including a 404 or a key-rejection 401/403 — is a successful live round-trip. No-op
+/// for a host-less URL.
+fn record_breaker_outcome(host: Option<&str>, status: reqwest::StatusCode) {
+    if let Some(h) = host {
+        if is_breaker_failure_status(status) {
+            circuit_breaker::record_failure(h, crate::core::entity::unix_now());
+        } else {
+            circuit_breaker::record_success(h);
+        }
+    }
+}
+
+/// Read, scan for leaked API keys, and JSON-decode a successful response body — the
+/// shared success tail of the JSON fetch helpers.
+async fn decode_json_body<T: DeserializeOwned>(resp: reqwest::Response, module: &str) -> Result<T> {
+    let text = read_json_text(resp, module).await?;
+    scan_for_api_keys(&text);
+    serde_json::from_str::<T>(&text)
+        .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))
+}
+
+async fn fetch_json_inner<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    module: &'static str,
+    url: &str,
+    map_404_to_none: bool,
+) -> Result<Option<T>> {
+    // Per-host circuit breaker (see `breaker_gate`): short-circuit a host that has failed
+    // repeatedly so a dead/flaky endpoint stops burning budget on every fan-out target. A
+    // blocked request returns an `Err` (never `Ok(None)`, which `fetch_json_or_404` would
+    // misread as a definitive "not found").
+    let host = breaker_gate(module, url)?;
     match client.get(url).send().await {
         Ok(resp) => {
             let status = resp.status();
-            // Record the outcome against the host breaker: a server-side fault
-            // (5xx / 429) is a failure; any other answer — including a 404 — is a
-            // successful round-trip to a live host.
-            if let Some(h) = host.as_deref() {
-                if is_breaker_failure_status(status) {
-                    circuit_breaker::record_failure(h, crate::core::entity::unix_now());
-                } else {
-                    circuit_breaker::record_success(h);
-                }
-            }
+            record_breaker_outcome(host.as_deref(), status);
             if map_404_to_none && status.as_u16() == 404 {
                 return Ok(None);
             }
             if !status.is_success() {
-                return Err(Error::module(
-                    module,
-                    format!("HTTP {status}: {}", error_snippet(resp).await),
-                ));
+                return Err(http_status_error(module, resp).await);
             }
-            let text = read_json_text(resp, module).await?;
-            scan_for_api_keys(&text);
-            let data = serde_json::from_str::<T>(&text)
-                .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
-            Ok(Some(data))
+            Ok(Some(decode_json_body(resp, module).await?))
         }
         Err(transport) => {
             // Transport failure → count it against the host breaker before the
@@ -446,21 +460,12 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
     header_name: &str,
 ) -> Result<Option<T>> {
     let key = ctx.key(key_env)?;
-    // Per-host circuit breaker (see `fetch_json_inner`): short-circuit a host
-    // that has failed repeatedly, returning the same transport-style error this
-    // helper raises on a send failure. Host-less/unparseable URLs are un-gated.
-    let host = circuit_breaker::host_of(url);
-    if let Some(h) = host.as_deref()
-        && !circuit_breaker::allow_host(h, crate::core::entity::unix_now())
-    {
-        return Err(Error::module(
-            module,
-            format!(
-                "request short-circuited by circuit breaker for {}",
-                redact_credentials(url)
-            ),
-        ));
-    }
+    // Per-host circuit breaker (see `breaker_gate`): short-circuit a host that has failed
+    // repeatedly. Host-less/unparseable URLs are un-gated. Note the deliberate asymmetry
+    // with `fetch_json_inner`: a keyed request does NOT fall back to curl on a transport
+    // error (a key header can't be replayed through the curl path), so a send failure is
+    // surfaced directly after recording the breaker failure.
+    let host = breaker_gate(module, url)?;
     let resp = match ctx.http.get(url).header(header_name, key).send().await {
         Ok(resp) => resp,
         Err(e) => {
@@ -470,33 +475,13 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
             return Err(Error::module(module, redact_credentials(&e.to_string())));
         }
     };
-
-    let status = resp.status();
-    // Record the outcome against the host breaker: 5xx / 429 is a server-side
-    // fault; everything else (including 404 and a key-rejection 401/403) is a
-    // live round-trip, so the host stays closed.
-    if let Some(h) = host.as_deref() {
-        if is_breaker_failure_status(status) {
-            circuit_breaker::record_failure(h, crate::core::entity::unix_now());
-        } else {
-            circuit_breaker::record_success(h);
-        }
-    }
-    if status.as_u16() == 404 {
+    record_breaker_outcome(host.as_deref(), resp.status());
+    // Classify the keyed response via the shared policy: 404 -> Ok(None); 401/403/429 ->
+    // burn the key + Err; any other non-2xx -> Err; 2xx -> the response to decode. Reuses
+    // the same `keyed_ok_or_404` the other keyed modules use, so "which codes burn a key"
+    // lives in one tested place instead of an inline `matches!` here.
+    let Some(resp) = keyed_ok_or_404(module, key, ctx, resp).await? else {
         return Ok(None);
-    }
-    if !status.is_success() {
-        if matches!(status.as_u16(), 401 | 403 | 429) {
-            ctx.report_key_exhausted(module, key, status.as_u16());
-        }
-        return Err(Error::module(
-            module,
-            format!("HTTP {status}: {}", error_snippet(resp).await),
-        ));
-    }
-    let text = read_json_text(resp, module).await?;
-    scan_for_api_keys(&text);
-    let data = serde_json::from_str::<T>(&text)
-        .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
-    Ok(Some(data))
+    };
+    Ok(Some(decode_json_body(resp, module).await?))
 }

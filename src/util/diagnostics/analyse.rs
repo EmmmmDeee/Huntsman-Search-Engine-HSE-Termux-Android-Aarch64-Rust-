@@ -223,17 +223,16 @@ pub fn analyse(
     // Closed feedback loop: read the cross-scan ledger.
     let adaptive_routing = read_adaptive_routing();
 
-    // Multi-source convergence: any two coordinates within ~5km?
-    'outer: for (i, (la1, lo1, _, _)) in coord_pairs.iter().enumerate() {
-        for (la2, lo2, _, _) in coord_pairs.iter().skip(i + 1) {
-            let dist_deg = ((la1 - la2).powi(2) + (lo1 - lo2).powi(2)).sqrt();
-            // ~0.045° ≈ 5km at the equator (rough)
-            if dist_deg < 0.045 {
-                geo.multi_source_convergence = true;
-                break 'outer;
-            }
-        }
-    }
+    // Multi-source convergence: are any two coordinates within 5 km? The closest pair is
+    // already `proximity_graph[0]` (sorted ascending above) and was computed with the
+    // shared `haversine_km`, so read the answer off it instead of re-scanning with a
+    // separate latitude-biased degree metric (`0.045°` is ~5 km only at the equator; at
+    // AU latitudes a degree of longitude is ~20% shorter, so that test disagreed with the
+    // 5 km `coordinate_clusters` shown beside it in the dossier). `<= 5.0` matches
+    // `cluster_coordinates`' `THRESHOLD_KM` exactly, so the flag and the clusters agree.
+    geo.multi_source_convergence = proximity_graph
+        .first()
+        .is_some_and(|e| e.distance_km <= 5.0);
 
     // Confidence stats per source
     let source_confidence: std::collections::BTreeMap<String, ConfidenceStats> = source_conf

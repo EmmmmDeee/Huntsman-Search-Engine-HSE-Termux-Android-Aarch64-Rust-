@@ -92,6 +92,9 @@ impl Module for Censys {
         let url = format!("https://search.censys.io/api/v2/hosts/{}", urlencode(ip),);
         let mut retries = 2u8;
         let body: CensysResp = loop {
+            if ctx.cancel.is_cancelled() {
+                return Ok(ModuleResult::new());
+            }
             let resp = ctx
                 .http
                 .get(&url)

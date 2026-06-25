@@ -5,8 +5,8 @@ use super::{
     DnsIntel,
     constants::SUBDOMAINS,
     helpers::{
-        VERIFICATION_VENDORS, dmarc_report_addresses, reverse_ip, soa_rname_to_email,
-        unescape_dns_label, verification_vendor,
+        VERIFICATION_VENDORS, reverse_ip, soa_rname_to_email, unescape_dns_label,
+        verification_vendor,
     },
 };
 
@@ -94,24 +94,6 @@ fn unescape_dns_label_handles_literal_and_decimal_escapes() {
 }
 
 #[test]
-fn dmarc_report_addresses_extracts_rua_ruf_and_strips_size_suffix() {
-    // Both rua and ruf, comma-separated, with the RFC 7489 §6.2 "!size"
-    // suffix on one URI that must be stripped to a clean address.
-    let got = dmarc_report_addresses(
-        "v=DMARC1; p=reject; rua=mailto:agg@example.com!10m,mailto:agg2@example.net; \
-         ruf=mailto:forensic@example.com; pct=100",
-    );
-    assert_eq!(
-        got,
-        vec![
-            "agg@example.com",
-            "agg2@example.net",
-            "forensic@example.com"
-        ]
-    );
-}
-
-#[test]
 fn verification_vendor_maps_known_records_case_insensitively() {
     assert_eq!(
         verification_vendor("google-site-verification=abc123"),
@@ -172,15 +154,6 @@ fn verification_vendor_table_is_sound() {
          prefix above the generic stem:\n  {}",
         violations.join("\n  ")
     );
-}
-
-#[test]
-fn dmarc_report_addresses_skips_non_mailto_and_implausible() {
-    // https:// report URIs, a bare mailto:, and a too-short address are all
-    // skipped; no rua/ruf at all yields nothing.
-    assert!(dmarc_report_addresses("v=DMARC1; rua=https://dmarc.example.com/report").is_empty());
-    assert!(dmarc_report_addresses("v=DMARC1; rua=mailto:,mailto:a@b").is_empty());
-    assert!(dmarc_report_addresses("v=DMARC1; p=none").is_empty());
 }
 
 // -- Subdomain brute tests ----------------------------------------------------

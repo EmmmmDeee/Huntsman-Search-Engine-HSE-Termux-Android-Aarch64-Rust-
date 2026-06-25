@@ -109,11 +109,16 @@ pub(crate) const MAX_TOKEN: usize = 512;
 /// Shared by every body scanner so the two call sites cannot drift — the
 /// config-leak probe previously used a narrower set (no `, & { } [ ]`), missing
 /// keys followed by a query/array separator.
-fn is_key_delimiter(c: char) -> bool {
+///
+/// `?` is included because upstream endpoints frequently echo query parameters
+/// in response bodies (e.g. `{"url":"…?api_key=AKIA…&b=2"}`); without it the
+/// whole suffix `AKIA…&b=2` is one token, which fails the vendor-prefix check
+/// after the first `&`.
+pub(crate) fn is_key_delimiter(c: char) -> bool {
     c.is_whitespace()
         || matches!(
             c,
-            '"' | '\'' | '`' | '>' | '<' | '=' | ';' | ',' | '&' | '{' | '}' | '[' | ']'
+            '"' | '\'' | '`' | '>' | '<' | '=' | ';' | ',' | '&' | '?' | '{' | '}' | '[' | ']'
         )
 }
 

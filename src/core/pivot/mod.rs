@@ -57,6 +57,16 @@ pub struct PivotNode {
     /// a cut vertex (redundant routes exist), or be a modest-betweenness cut vertex that
     /// alone holds one pendant cluster onto the rest of the network.
     pub is_cut_vertex: bool,
+    /// The node's **coreness** (core number): the largest `k` for which it belongs to a
+    /// `k`-core (see [`Graph::coreness`](crate::core::graph::Graph::coreness)). The
+    /// *embeddedness / robustness* axis, the structural complement to the three fragility
+    /// signals above. High betweenness + cut-vertex + low coreness is a *fragile broker*
+    /// (a lone bridge — disprove it and the footprint splits); high coreness is a *robust
+    /// core member* woven into a redundantly-corroborated cluster that survives the loss
+    /// of any single link. Reported alongside — never folded into — the bridging
+    /// [`score`](PivotNode::score), so it adds a distinct dimension to read each pivot on
+    /// rather than perturbing the established ranking.
+    pub coreness: usize,
 }
 
 /// One **bridge** (cut edge) of the relationship graph: a single relationship whose
@@ -73,9 +83,12 @@ pub struct BridgeEdge {
 ///
 /// Builds the undirected graph over present entities (parallel edges and self-loops
 /// collapsed), then scores each connected node by Brandes betweenness (the bridge
-/// measure, weighted 0.7) and normalised degree (the hub measure, 0.3). Isolated nodes
-/// (degree 0) are omitted — they pivot nothing. Deterministic (sorted node and
-/// neighbour order), bounded ([`MAX_BETWEENNESS_NODES`] / [`PIVOT_CAP`]), read-only.
+/// measure, weighted 0.7) and normalised degree (the hub measure, 0.3). Each pivot also
+/// carries its [`is_cut_vertex`](PivotNode::is_cut_vertex) flag and its
+/// [`coreness`](PivotNode::coreness) — the fragility and the robustness reads on the same
+/// node — both lifted from one shared graph build. Isolated nodes (degree 0) are omitted
+/// — they pivot nothing. Deterministic (sorted node and neighbour order), bounded
+/// ([`MAX_BETWEENNESS_NODES`] / [`PIVOT_CAP`]), read-only.
 #[must_use]
 pub fn detect(entities: &[Entity], relations: &[Relation]) -> Vec<PivotNode> {
     // The shared primitive gives the deterministic, deduplicated, self-loop-free
@@ -102,6 +115,10 @@ pub fn detect(entities: &[Entity], relations: &[Relation]) -> Vec<PivotNode> {
         is_cut[c] = true;
     }
 
+    // Per-node coreness: the embeddedness/robustness complement to the fragility signals
+    // (betweenness, cut vertex). One extra O(V+E) bucket-peel over the same graph.
+    let coreness = g.coreness();
+
     // Combine: betweenness (the bridge) dominates, degree (the hub) is secondary; when
     // betweenness was skipped, degree carries the whole score.
     let max_degree = n.saturating_sub(1).max(1) as f64;
@@ -116,6 +133,7 @@ pub fn detect(entities: &[Entity], relations: &[Relation]) -> Vec<PivotNode> {
                 betweenness: betweenness[i],
                 score,
                 is_cut_vertex: is_cut[i],
+                coreness: coreness[i],
             }
         })
         .collect();

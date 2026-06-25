@@ -233,7 +233,9 @@ impl Module for ThreatFox {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress, EntityKind::Url];
+        // ThreatFox only accepts Domain/IpAddress targets and re-emits the seed
+        // with threat-intel tags. Url was previously listed but is never emitted.
+        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress];
         KINDS
     }
 
@@ -265,6 +267,9 @@ impl Module for ThreatFox {
         // override per-request to match this module's declared 12 s.
         let mut retries = 2u8;
         let parsed: Resp = loop {
+            if ctx.cancel.is_cancelled() {
+                return Ok(ModuleResult::new());
+            }
             let resp = ctx
                 .http
                 .post("https://threatfox-api.abuse.ch/api/v1/")
@@ -293,7 +298,9 @@ impl Module for ThreatFox {
             "ok" => {}
             "no_result" => return Ok(ModuleResult::new()),
             "rate_limited" => {
-                ctx.report_key_exhausted(SRC, key, 429);
+                // HTTP 200 with query_status=rate_limited is a transient
+                // per-request quota signal, not a key validity error — do not
+                // evict the key from the pool.
                 return Err(Error::module(SRC, "query_status=rate_limited".to_string()));
             }
             other => {

@@ -9,20 +9,26 @@ use crate::core::{
 use crate::util::dns::shared_resolver;
 
 use super::SRC;
-use super::helpers::{dmarc_report_addresses, soa_rname_to_email, verification_vendor};
+use super::helpers::{soa_rname_to_email, verification_vendor};
 
-/// A / AAAA / MX / NS / SOA / TXT — run concurrently via `tokio::join!`.
+/// A / AAAA / MX / NS / SOA / TXT / DMARC — run concurrently via `tokio::join!`.
+///
+/// DMARC records are published at `_dmarc.{domain}` (RFC 7489 §6.6.3), never at
+/// the apex. The `_dmarc` lookup runs concurrently with the other record types so
+/// it adds zero serial latency.
 pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Result<Vec<Entity>> {
     let resolver = shared_resolver();
     let domain = target.value.as_str();
+    let dmarc_name = format!("_dmarc.{domain}");
     let mut entities: Vec<Entity> = Vec::new();
 
-    let (ips, mxs, nss, soa, txts) = tokio::join!(
+    let (ips, mxs, nss, soa, txts, dmarc_txts) = tokio::join!(
         resolver.lookup_ip(domain),
         resolver.mx_lookup(domain),
         resolver.ns_lookup(domain),
         resolver.soa_lookup(domain),
         resolver.txt_lookup(domain),
+        resolver.txt_lookup(dmarc_name.as_str()),
     );
 
     // A + AAAA
@@ -158,7 +164,6 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
             })
             .collect();
         if !txts.is_empty() {
-            let mut dmarc_emails: Vec<Entity> = Vec::new();
             let mut dom = Entity::new(EntityKind::Domain, domain, 0.90, &ctx.scan_id);
             for t in &txts {
                 let t = t.trim_matches('"');
@@ -229,20 +234,10 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                         }
                     }
                 } else if b.len() >= 7 && b[..7].eq_ignore_ascii_case(b"v=dkim1") {
+                    // A DKIM public-key record published at the apex is unusual
+                    // (DKIM selector records live at `<selector>._domainkey.{domain}`)
+                    // but parseable — tag its presence.
                     dom.tag("dkim");
-                } else if b.len() >= 8 && b[..8].eq_ignore_ascii_case(b"v=dmarc1") {
-                    dom.tag("dmarc");
-                    let txt = String::from_utf8_lossy(b);
-                    for email in dmarc_report_addresses(&txt) {
-                        let mut ee = Entity::new(EntityKind::Email, email, 0.72, &ctx.scan_id);
-                        ee.tag("dmarc-report");
-                        ee.tag("dns");
-                        ee.add_evidence(
-                            Evidence::new(SRC, format!("DMARC report address for {domain}"))
-                                .with_attr("record_type", "DMARC"),
-                        );
-                        dmarc_emails.push(ee);
-                    }
                 } else if let Some(vendor) = verification_vendor(t) {
                     // Domain-ownership verification record → discloses a SaaS
                     // vendor relationship (`verified:google`, `verified:atlassian`, …).
@@ -260,7 +255,108 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
             }
             dom.add_evidence(txt_ev);
             entities.push(dom);
-            entities.extend(dmarc_emails);
+        }
+    }
+
+    // DMARC record at `_dmarc.{domain}` (RFC 7489 §6.6.3).
+    // The apex TXT lookup above never contains DMARC records — they are
+    // always published at the `_dmarc.` subdomain. This is the correct lookup.
+    if let Ok(lookup) = dmarc_txts {
+        for record in lookup.answers() {
+            let RData::TXT(txt_data) = &record.data else {
+                continue;
+            };
+            let txt = txt_data.to_string();
+            let txt = txt.trim_matches('"');
+            if !crate::util::dmarc::is_dmarc(txt) {
+                continue;
+            }
+            let Some(dmarc) = crate::util::dmarc::parse(txt) else {
+                continue;
+            };
+
+            // Tag the domain entity with the DMARC policy and any issues.
+            let mut dom = Entity::new(EntityKind::Domain, domain, 0.90, &ctx.scan_id);
+            dom.tag("dmarc");
+            if let Some(p) = dmarc.policy {
+                dom.tag(p.tag());
+            }
+            let issues = dmarc.issues();
+            for issue in &issues {
+                dom.tag(issue.tag());
+            }
+
+            let policy_str = dmarc
+                .policy
+                .map_or("dmarc:missing-policy", crate::util::dmarc::DmarcPolicy::tag);
+            let sp_str = dmarc
+                .sp
+                .map_or("(inherited)", crate::util::dmarc::DmarcPolicy::tag);
+            let mut ev = Evidence::new(
+                SRC,
+                format!(
+                    "DMARC policy: {policy_str}; sp={sp_str}; pct={pct}",
+                    pct = dmarc.pct
+                ),
+            )
+            .with_attr("record_type", "DMARC")
+            .with_attr("policy", policy_str)
+            .with_attr("subdomain_policy", sp_str)
+            .with_attr("pct", dmarc.pct.to_string())
+            .with_attr(
+                "adkim",
+                if dmarc.adkim == crate::util::dmarc::AlignmentMode::Strict {
+                    "s"
+                } else {
+                    "r"
+                },
+            )
+            .with_attr(
+                "aspf",
+                if dmarc.aspf == crate::util::dmarc::AlignmentMode::Strict {
+                    "s"
+                } else {
+                    "r"
+                },
+            )
+            .with_attr("ttl_secs", record.ttl.to_string());
+            if !issues.is_empty() {
+                let flags = issues
+                    .iter()
+                    .map(crate::util::dmarc::DmarcIssue::tag)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                ev = ev.with_attr("issues", flags);
+            }
+            if !dmarc.rua.is_empty() {
+                ev = ev.with_attr("rua", dmarc.rua.join(", "));
+            }
+            if !dmarc.ruf.is_empty() {
+                ev = ev.with_attr("ruf", dmarc.ruf.join(", "));
+            }
+            dom.add_evidence(ev);
+            entities.push(dom);
+
+            // `rua=` / `ruf=` report addresses are high-value OSINT: they
+            // reveal where the organisation receives DMARC failure reports,
+            // often exposing internal security-team inboxes or third-party
+            // DMARC reporting services.
+            for addr in dmarc.report_addresses() {
+                if crate::util::domains::is_infrastructure_email(addr) {
+                    continue;
+                }
+                let mut ee = Entity::new(EntityKind::Email, addr, 0.72, &ctx.scan_id);
+                ee.tag("dmarc-report");
+                ee.tag("dns");
+                ee.add_evidence(
+                    Evidence::new(SRC, format!("DMARC report address for {domain}"))
+                        .with_attr("record_type", "DMARC")
+                        .with_attr("parent_domain", domain),
+                );
+                entities.push(ee);
+            }
+            // Only one DMARC record is valid per domain (first `v=DMARC1` wins).
+            break;
         }
     }
 

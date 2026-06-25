@@ -109,7 +109,11 @@ impl Module for GithubUser {
             return Err(crate::util::http::http_status_error("github_user", resp).await);
         }
 
-        let user: GhUser = crate::util::http::json_decode(SRC, resp).await?;
+        // json_scanned: GitHub user profiles include bio and blog fields —
+        // free-form user text that may contain embedded API keys.
+        let user: GhUser = crate::util::http::json_scanned(resp, SRC)
+            .await
+            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
 
         let mut result = ModuleResult::new();
 
@@ -182,6 +186,29 @@ impl Module for GithubUser {
         }
         u_entity.add_evidence(ev);
         result.push(u_entity);
+
+        // Twitter username → separate Username entity for cross-platform correlation.
+        if let Some(tw) = user
+            .twitter_username
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            let handle = tw.trim_start_matches('@');
+            if !handle.is_empty() {
+                let mut tw_e = Entity::new(EntityKind::Username, handle, 0.70, &ctx.scan_id);
+                tw_e.tag("twitter");
+                tw_e.tag("derived");
+                tw_e.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("Twitter handle from GitHub profile @{}", user.login),
+                    )
+                    .with_attr("github_login", &user.login),
+                );
+                result.push(tw_e);
+            }
+        }
 
         // Real name → Person entity, when present.
         if let Some(name) = user.name.as_deref()

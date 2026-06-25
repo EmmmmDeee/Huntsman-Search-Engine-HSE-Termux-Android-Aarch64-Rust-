@@ -193,6 +193,16 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
 
     if let Some(name) = r.full_name.as_deref().filter(|n| n.contains(' ')) {
         push(&mut out, EntityKind::Person, name, 0.75, &[]);
+        // Attach the job title to the Person entity as a tag + evidence attribute.
+        if let Some(title) = r.title.as_deref().map(str::trim).filter(|t| !t.is_empty())
+            && let Some(e) = out.last_mut()
+        {
+            e.tag(format!("role:{}", title.to_lowercase().replace(' ', "-")));
+            e.add_evidence(
+                Evidence::new(SRC, format!("FullContact job title: {title}"))
+                    .with_attr("title", title),
+            );
+        }
     }
     // Employer(s): the top-level `organization` plus structured employment.
     let mut orgs: Vec<&str> = Vec::new();

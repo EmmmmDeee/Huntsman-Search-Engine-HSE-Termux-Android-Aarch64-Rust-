@@ -129,6 +129,9 @@ impl Module for ZoomEye {
 
         let mut retries = 2u8;
         let body: ZoomResp = loop {
+            if ctx.cancel.is_cancelled() {
+                return Ok(ModuleResult::new());
+            }
             let resp = ctx
                 .http
                 .get(&url)

@@ -167,21 +167,11 @@ impl Module for HunterIo {
             // as a query param) before formatting, so transport errors
             // don't leak the key into logs / events.
             .map_err(|e| Error::module(SRC, e.without_url().to_string()))?;
-        let status = resp.status();
-        if status.as_u16() == 401 || status.as_u16() == 403 {
-            ctx.report_key_exhausted(SRC, key, status.as_u16());
-            return Err(Error::module(
-                SRC,
-                format!("HTTP {status}: invalid or expired API key"),
-            ));
-        }
-        if status.as_u16() == 429 {
-            ctx.report_key_exhausted(SRC, key, 429);
-            return Err(Error::module(SRC, "rate-limited (429)"));
-        }
-        if !status.is_success() {
-            return Err(crate::util::http::http_status_error(SRC, resp).await);
-        }
+        // 401/403/429 → report_key_exhausted + Err; 404 → Ok(None) (domain
+        // absent from Hunter); other non-2xx → Err via http_status_error.
+        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
+            return Ok(ModuleResult::new());
+        };
 
         let wrap: Wrap = crate::util::http::json_decode(SRC, resp).await?;
         // HTTP-200-with-errors array: Hunter signals quota / scope /

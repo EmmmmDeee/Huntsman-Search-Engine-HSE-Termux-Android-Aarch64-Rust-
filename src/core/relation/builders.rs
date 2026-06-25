@@ -262,27 +262,14 @@ pub fn derive_registration(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
 /// confidence, so a guessed handle's lineage never inflates its weight.
 /// Deterministic: one edge per matching handle, emitted in entity order.
 pub fn derive_name_lineage(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
-    use std::collections::HashMap;
-
     // Person values are NOT case-folded at normalisation ("Jane Smith" and
     // "jane smith" are distinct entities), but this lookup folds them — so two
-    // Persons can collide on one key. A plain last-write-wins collect made the
-    // edge target depend on the caller's (HashMap-randomised) entity order,
-    // breaking this module's determinism invariant. Resolve collisions with a
-    // stable rule instead: highest confidence wins, ties broken by smaller uid.
-    let mut persons: HashMap<String, &Entity> = HashMap::new();
-    for e in entities.iter().filter(|e| e.kind == EntityKind::Person) {
-        persons
-            .entry(e.value.trim().to_lowercase())
-            .and_modify(|cur| {
-                let better = e.confidence > cur.confidence
-                    || (e.confidence == cur.confidence && e.uid < cur.uid);
-                if better {
-                    *cur = e;
-                }
-            })
-            .or_insert(e);
-    }
+    // Persons can collide on one key. Use the shared deterministic index (highest
+    // confidence wins, ties broken by smaller uid) so the chosen parent never
+    // depends on the caller's (HashMap-randomised) entity order — the same
+    // collision rule the other name-keyed builders bind to, kept in one place so
+    // it can never drift between them.
+    let persons = persons_by_name(entities);
     if persons.is_empty() {
         return Vec::new();
     }

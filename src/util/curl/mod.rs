@@ -105,10 +105,7 @@ async fn ssrf_resolve_pin(url: &str) -> Option<Vec<String>> {
     // brackets IPv6 literals (`[2606:…]`); strip them before the parse, or every
     // IPv6-literal target fails `lookup_host` below (getaddrinfo rejects the
     // brackets) and is wrongly refused — public ones included.
-    let bare = host
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(host);
+    let bare = crate::util::preflight::unbracket_host(host);
     if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
         return (!crate::util::preflight::is_private_addr(ip)).then(Vec::new);
     }

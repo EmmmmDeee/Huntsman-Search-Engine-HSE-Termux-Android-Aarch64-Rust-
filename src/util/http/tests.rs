@@ -2,11 +2,11 @@ use super::client::{build_client, build_client_with_trace};
 use super::fetch::{
     JSON_BODY_CAP, is_keyed_error_status, key_tail, keyed_ok_or_404, retry_after_secs,
 };
-use super::keys::is_key_token_separator;
 use super::redact::{redact_credentials, redact_literal_secrets};
 use super::ssrf::{filter_public, redirect_to_private_ip};
 use super::url::json_decode;
 use super::url::{RequestBuilderExt, urlencode};
+use crate::util::found_keys::{is_key_delimiter, key_tokens};
 
 #[test]
 fn keyed_error_status_classification() {
@@ -412,13 +412,15 @@ fn key_tail_is_char_boundary_safe() {
 #[test]
 fn key_scan_tokeniser_bounds_query_string_keys_cleanly() {
     let body = r#"error at https://api.example.com/v1?api_key=AKIAJK28SLQQV61MNG9X&b=2"#;
-    let tokens: Vec<&str> = body.split(is_key_token_separator).collect();
+    let tokens: Vec<&str> = body.split(is_key_delimiter).collect();
     assert!(
         tokens.contains(&"AKIAJK28SLQQV61MNG9X"),
         "bare key must be its own token: {tokens:?}"
     );
     assert!(
-        !tokens.iter().any(|t| t.contains('&') || t.contains('?')),
+        !tokens
+            .iter()
+            .any(|t: &&str| t.contains('&') || t.contains('?')),
         "no token may carry query separators: {tokens:?}"
     );
     use crate::modules::oathnet_pro::key_harvest::identify_api_key;
@@ -429,10 +431,10 @@ fn key_scan_tokeniser_bounds_query_string_keys_cleanly() {
         identify_api_key("AKIAJK28SLQQV61MNG9X&b=2").is_some_and(|(_, v)| v.contains('&')),
         "identifier passes tokens through verbatim — the tokeniser must pre-split"
     );
-    let csv: Vec<&str> = "AKIAJK28SLQQV61MNG9X,other"
-        .split(is_key_token_separator)
-        .collect();
-    assert_eq!(csv, vec!["AKIAJK28SLQQV61MNG9X", "other"]);
+    // key_tokens yields only the 20-char token, dropping the 5-char "other"
+    // (below MIN_TOKEN=16) and any empty slices from adjacent delimiters.
+    let csv_tokens: Vec<&str> = key_tokens("AKIAJK28SLQQV61MNG9X,other", 200).collect();
+    assert_eq!(csv_tokens, vec!["AKIAJK28SLQQV61MNG9X"]);
 }
 
 #[test]

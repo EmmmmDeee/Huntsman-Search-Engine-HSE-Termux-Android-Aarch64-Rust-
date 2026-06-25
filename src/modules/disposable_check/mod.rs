@@ -18,6 +18,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::domains::is_freemail;
 use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "disposable_check";
@@ -95,7 +96,7 @@ impl Module for DisposableCheck {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Email];
+        const KINDS: &[EntityKind] = &[EntityKind::Email, EntityKind::Domain];
         KINDS
     }
 
@@ -131,12 +132,29 @@ impl Module for DisposableCheck {
 
         let data: Resp = crate::util::http::json_decode(SRC, resp).await?;
 
+        let disposable = is_disposable(&data.disposable);
         let mut result = ModuleResult::new();
-        result.push(build_email_entity(
-            email,
-            is_disposable(&data.disposable),
-            &ctx.scan_id,
-        ));
+        result.push(build_email_entity(email, disposable, &ctx.scan_id));
+
+        // For a confirmed-legitimate, non-freemail address the provider domain
+        // is a real OSINT pivot (corporate mail server, ISP, university, etc.).
+        // Throwaway and generic webmail domains carry no such signal.
+        if !disposable && let Some(domain) = email.split('@').nth(1) {
+            let domain = domain.trim().to_ascii_lowercase();
+            if !domain.is_empty() && !is_freemail(&domain) {
+                let mut de = Entity::new(EntityKind::Domain, &domain, 0.70, &ctx.scan_id);
+                de.tag("email-domain");
+                de.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("Domain extracted from validated non-disposable email {email}"),
+                    )
+                    .with_attr("source_email", email),
+                );
+                result.push(de);
+            }
+        }
+
         Ok(result)
     }
 }
