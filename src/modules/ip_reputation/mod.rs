@@ -142,7 +142,11 @@ impl Module for IpReputation {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Organisation];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::IpAddress,
+            EntityKind::Domain,
+            EntityKind::Organisation,
+        ];
         KINDS
     }
 
