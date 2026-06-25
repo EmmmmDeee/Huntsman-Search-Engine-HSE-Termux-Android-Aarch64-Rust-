@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (147 modules: 114 free · 28 key-gated · 5 paid)
+## Catalogue (148 modules: 115 free · 28 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -17,7 +17,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `exa_search` | email, username, phone, full_name, domain, organisation | key_gated | no | 87 | url, domain, email, phone |
 | `search_engines` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn | free | no | 113 | url, domain, email, username, phone, address, coordinates, person, organisation, abn_acn |
 
-### social (28)
+### social (29)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -32,6 +32,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `gitlab_user` | username | free | no | 106 | username, person, email, url, domain, address, organisation |
 | `gitea_user` | username | free | no | 98 | username, person, email, url, domain, address |
 | `sourceforge_user` | username | free | no | 94 | username, person, email, url, address |
+| `discord_snowflake` | username | free | **yes** | 104 | username |
 | `cpan_user` | username | free | no | 55 | username, person, email, url, domain, address |
 | `rubygems_user` | username | free | no | 54 | username, person, url, domain |
 | `pypi_user` | username | free | no | 56 | username, person, email, url, domain |

@@ -38,6 +38,7 @@ pub mod crtsh;
 pub mod dehashed;
 pub mod device_sensors;
 pub mod devto;
+pub mod discord_snowflake;
 pub mod disposable_check;
 pub mod dns_axfr;
 pub mod dns_intel;
@@ -292,6 +293,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(contact_enrich::ContactEnrich),
         Arc::new(hunter_io::HunterIo),
         Arc::new(disposable_check::DisposableCheck),
+        Arc::new(discord_snowflake::DiscordSnowflake),
         Arc::new(wigle::Wigle),
         Arc::new(cert_intel::CertIntel),
         Arc::new(crtsh::CrtSh),
