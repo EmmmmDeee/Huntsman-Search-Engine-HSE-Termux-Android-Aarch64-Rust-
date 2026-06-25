@@ -12,9 +12,12 @@
 //!   random node, not a real MAC, so that case yields a time but no MAC.)
 //! * **MongoDB ObjectID** encodes its creation time in the leading 4 bytes, so
 //!   a leaked ObjectID dates the record/account it identifies.
+//! * **ULID** and **KSUID** (record IDs, tokens, request IDs) each embed a
+//!   creation timestamp, so a leaked one dates whatever it identifies.
 //!
-//! Both formats are unambiguous by shape (hyphenated 36-char UUID with a `1`
-//! version nibble; bare 24-hex ObjectID), so — unlike a bare decimal snowflake
+//! These formats are unambiguous by shape (hyphenated 36-char UUID with a `1`
+//! version nibble; bare 24-hex ObjectID; 26-char Crockford-base32 ULID; 27-char
+//! base62 KSUID), so — unlike a bare decimal snowflake
 //! — there is no platform ambiguity. Every decoded time is range-validated to
 //! `[2000-01-01, now]` so a random hex/UUID-v4 string yields nothing rather than
 //! a fabricated timestamp. No mock: the data is read straight out of the ID.
@@ -110,24 +113,24 @@ impl Module for StructuredId {
             return Ok(result);
         }
 
-        // MongoDB ObjectID — record creation time.
-        if let Some(secs) = decode_objectid(v)
-            && plausible(secs)
-        {
-            let date = utc_date(secs);
-            let mut e = target.to_entity(0.55, &ctx.scan_id);
-            e.tag("mongodb-objectid");
-            e.tag("derived");
-            e.tag("account-age");
-            e.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("MongoDB ObjectID created {date} (decoded offline)"),
-                )
-                .with_attr("objectid_created_date", date.as_str())
-                .with_attr("source", "objectid-decode"),
-            );
-            result.push(e);
+        // Other timestamp-embedding IDs, each unambiguous by shape: MongoDB
+        // ObjectID, ULID, and KSUID all carry their own creation time.
+        for (decode, tag, attr, label) in [
+            (
+                decode_objectid as fn(&str) -> Option<i64>,
+                "mongodb-objectid",
+                "objectid_created_date",
+                "MongoDB ObjectID",
+            ),
+            (decode_ulid, "ulid", "ulid_created_date", "ULID"),
+            (decode_ksuid, "ksuid", "ksuid_created_date", "KSUID"),
+        ] {
+            if let Some(secs) = decode(v)
+                && plausible(secs)
+            {
+                emit_creation(target, &ctx.scan_id, tag, attr, label, secs, &mut result);
+                break;
+            }
         }
 
         Ok(result)
@@ -181,6 +184,88 @@ fn decode_objectid(s: &str) -> Option<i64> {
         return None;
     }
     i64::from_str_radix(&s[0..8], 16).ok()
+}
+
+/// Crockford base32 alphabet (no `I`, `L`, `O`, `U`) — the ULID encoding.
+const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+/// Base62 alphabet — the KSUID encoding.
+const BASE62: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+/// KSUID epoch (2014-05-13T16:53:20Z) as a Unix-seconds offset.
+const KSUID_EPOCH_SECS: i64 = 1_400_000_000;
+
+/// One Crockford base32 digit → value (case-insensitive; the ambiguous letters
+/// `I`/`L` map to 1 and `O` to 0 per the spec). `None` for a non-base32 char.
+fn crockford_val(c: u8) -> Option<u64> {
+    match c.to_ascii_uppercase() {
+        b'O' => Some(0),
+        b'I' | b'L' => Some(1),
+        u => CROCKFORD.iter().position(|&x| x == u).map(|p| p as u64),
+    }
+}
+
+/// Decode a ULID's creation time. A ULID is 26 Crockford-base32 chars whose
+/// leading 10 chars encode a 48-bit millisecond timestamp. `None` if `s` is not
+/// a 26-char all-base32 ULID (so a random/non-ULID string is rejected).
+fn decode_ulid(s: &str) -> Option<i64> {
+    if s.len() != 26 {
+        return None;
+    }
+    let mut ms: u64 = 0;
+    for (i, &b) in s.as_bytes().iter().enumerate() {
+        let v = crockford_val(b)?;
+        if i < 10 {
+            ms = (ms << 5) | v;
+        }
+    }
+    Some(((ms & 0xFFFF_FFFF_FFFF) / 1000) as i64)
+}
+
+/// Decode a KSUID's creation time. A KSUID is 27 base62 chars decoding to a
+/// 20-byte value whose leading 4 bytes are a big-endian seconds offset from the
+/// KSUID epoch. `None` if `s` is not a valid 27-char base62 KSUID.
+fn decode_ksuid(s: &str) -> Option<i64> {
+    if s.len() != 27 {
+        return None;
+    }
+    // base62-decode into a 20-byte big-endian bignum.
+    let mut bytes = [0u8; 20];
+    for &c in s.as_bytes() {
+        let mut carry = BASE62.iter().position(|&x| x == c)? as u32;
+        for b in bytes.iter_mut().rev() {
+            let acc = u32::from(*b) * 62 + carry;
+            *b = (acc & 0xFF) as u8;
+            carry = acc >> 8;
+        }
+        if carry != 0 {
+            return None; // overflows 20 bytes — not a KSUID
+        }
+    }
+    let ts = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    Some(i64::from(ts) + KSUID_EPOCH_SECS)
+}
+
+/// Enrich the seed ID with its decoded creation date — shared by the
+/// ObjectID / ULID / KSUID timestamp-only decoders.
+fn emit_creation(
+    target: &Target,
+    scan_id: &str,
+    tag: &str,
+    date_attr: &str,
+    label: &str,
+    secs: i64,
+    result: &mut ModuleResult,
+) {
+    let date = utc_date(secs);
+    let mut e = target.to_entity(0.55, scan_id);
+    e.tag(tag);
+    e.tag("derived");
+    e.tag("account-age");
+    e.add_evidence(
+        Evidence::new(SRC, format!("{label} created {date} (decoded offline)"))
+            .with_attr(date_attr, date.as_str())
+            .with_attr("decoder", tag),
+    );
+    result.push(e);
 }
 
 /// UTC `YYYY-MM-DD` from Unix seconds — Hinnant's `civil_from_days`. Pure,

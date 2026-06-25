@@ -55,6 +55,69 @@ fn is_free_passive_module() {
     assert!(m.produces().contains(&EntityKind::MacAddress));
 }
 
+/// Crockford-base32-encode a 48-bit ms timestamp into the 10-char ULID prefix,
+/// padded with 16 `0` "random" chars, to round-trip the decoder.
+fn build_ulid(unix_ms: u64) -> String {
+    let mut ms = unix_ms & 0xFFFF_FFFF_FFFF;
+    let mut ts = [0u8; 10];
+    for slot in ts.iter_mut().rev() {
+        *slot = CROCKFORD[(ms & 0x1F) as usize];
+        ms >>= 5;
+    }
+    let mut s = String::from_utf8(ts.to_vec()).unwrap();
+    s.push_str("0000000000000000"); // 16 random chars (`0` is valid base32)
+    s
+}
+
+/// Base62-encode a KSUID for a known timestamp (zero randomness), to round-trip
+/// the decoder.
+fn build_ksuid(unix_secs: i64) -> String {
+    let ts = (unix_secs - KSUID_EPOCH_SECS) as u32;
+    let mut n = [0u8; 20];
+    n[0..4].copy_from_slice(&ts.to_be_bytes());
+    let mut out = Vec::new();
+    loop {
+        let mut rem = 0u32;
+        let mut nonzero = false;
+        for b in &mut n {
+            let acc = (rem << 8) | u32::from(*b);
+            *b = (acc / 62) as u8;
+            rem = acc % 62;
+            if *b != 0 {
+                nonzero = true;
+            }
+        }
+        out.push(BASE62[rem as usize]);
+        if !nonzero {
+            break;
+        }
+    }
+    out.reverse();
+    while out.len() < 27 {
+        out.insert(0, BASE62[0]);
+    }
+    String::from_utf8(out).unwrap()
+}
+
+#[test]
+fn ulid_round_trips_creation_time() {
+    let u = build_ulid(1_577_836_800_000); // 2020-01-01 in ms
+    assert_eq!(u.len(), 26);
+    assert_eq!(decode_ulid(&u), Some(1_577_836_800));
+    assert_eq!(utc_date(decode_ulid(&u).unwrap()), "2020-01-01");
+    assert!(decode_ulid("tooshort").is_none());
+    assert!(decode_ulid("0000000000000000000000000U").is_none()); // 'U' not base32
+}
+
+#[test]
+fn ksuid_round_trips_creation_time() {
+    let k = build_ksuid(1_577_836_800); // 2020-01-01
+    assert_eq!(k.len(), 27);
+    assert_eq!(decode_ksuid(&k), Some(1_577_836_800));
+    assert!(decode_ksuid("tooshort").is_none());
+    assert!(decode_ksuid("0000000000000000000000000+/").is_none()); // non-base62
+}
+
 #[tokio::test]
 async fn process_decodes_uuid_v1_to_mac_and_time() {
     // Fully offline + deterministic — runs in CI.
