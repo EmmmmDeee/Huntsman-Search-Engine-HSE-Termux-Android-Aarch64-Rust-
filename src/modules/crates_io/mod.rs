@@ -20,6 +20,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::profile_kit;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -84,10 +85,8 @@ fn build_entities(body: &UserResp, scan_id: &str) -> Vec<Entity> {
 
     // Real name → Person (handle→identity).
     if let Some(name) = user.name.as_deref()
-        && name.split_whitespace().count() >= 2
-        && !crate::core::validation::is_placeholder_entity(&EntityKind::Person, name)
+        && let Some(mut p) = profile_kit::person_from_name(name, 0.70, scan_id)
     {
-        let mut p = Entity::new(EntityKind::Person, name.trim(), 0.70, scan_id);
         p.tag("crates-io");
         p.tag("derived");
         p.add_evidence(

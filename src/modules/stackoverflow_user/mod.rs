@@ -18,6 +18,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::profile_kit;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -149,10 +150,7 @@ pub(super) fn build_entities(user: SoUser, scan_id: &str) -> Vec<Entity> {
     result.push(u);
 
     // Display name → Person when it looks like a real name (≥2 words).
-    if user.display_name.split_whitespace().count() >= 2
-        && !crate::core::validation::is_placeholder_entity(&EntityKind::Person, &user.display_name)
-    {
-        let mut p = Entity::new(EntityKind::Person, user.display_name.trim(), 0.55, scan_id);
+    if let Some(mut p) = profile_kit::person_from_name(&user.display_name, 0.55, scan_id) {
         p.tag("stackoverflow");
         p.tag("derived");
         p.add_evidence(
@@ -182,55 +180,46 @@ pub(super) fn build_entities(user: SoUser, scan_id: &str) -> Vec<Entity> {
     }
 
     // Personal website URL + Domain.
-    if let Some(ref site) = user.website_url
-        && (site.starts_with("http://") || site.starts_with("https://"))
-    {
-        let mut url_e = Entity::new(EntityKind::Url, site, 0.70, scan_id);
-        url_e.tag("stackoverflow");
-        url_e.tag("personal-site");
-        url_e.add_evidence(
-            Evidence::new(
-                SRC,
-                format!(
-                    "Personal site from Stack Overflow profile of '{}'",
-                    user.display_name
-                ),
-            )
-            .with_attr("source_field", "website_url"),
-        );
-        result.push(url_e);
-
-        if let Some(host) = crate::util::url_util::host_from_url(site)
-            && host.contains('.')
-            && !matches!(
-                host.as_str(),
-                "stackoverflow.com" | "github.com" | "twitter.com" | "linkedin.com"
-            )
-        {
-            let mut d = Entity::new(EntityKind::Domain, &host, 0.62, scan_id);
-            d.tag("stackoverflow");
-            d.tag("derived");
-            d.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!(
-                        "Domain from Stack Overflow profile of '{}'",
-                        user.display_name
-                    ),
-                )
-                .with_attr("source_url", site)
-                .with_attr("so_username", &user.display_name),
-            );
-            result.push(d);
+    if let Some(ref site) = user.website_url {
+        for mut e in profile_kit::website_url_and_domain(site, 0.70, 0.62, scan_id) {
+            e.tag("stackoverflow");
+            match e.kind {
+                EntityKind::Domain => {
+                    e.tag("derived");
+                    e.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!(
+                                "Domain from Stack Overflow profile of '{}'",
+                                user.display_name
+                            ),
+                        )
+                        .with_attr("source_url", site.as_str())
+                        .with_attr("so_username", &user.display_name),
+                    );
+                }
+                _ => {
+                    e.tag("personal-site");
+                    e.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!(
+                                "Personal site from Stack Overflow profile of '{}'",
+                                user.display_name
+                            ),
+                        )
+                        .with_attr("source_field", "website_url"),
+                    );
+                }
+            }
+            result.push(e);
         }
     }
 
     // Location → coarse Address.
     if let Some(ref loc) = user.location
-        && !loc.trim().is_empty()
-        && loc.len() <= 100
+        && let Some(mut a) = profile_kit::location_address(loc, 0.38, scan_id)
     {
-        let mut a = Entity::new(EntityKind::Address, loc.trim(), 0.38, scan_id);
         a.tag("stackoverflow");
         a.tag("self-asserted");
         a.tag("geo-hint");

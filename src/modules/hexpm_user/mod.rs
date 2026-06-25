@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::profile_kit;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -67,9 +68,8 @@ pub(super) fn build_entities(user: HexUser, scan_id: &str) -> Vec<Entity> {
 
     // Full name → Person (multi-word only).
     if let Some(name) = user.full_name.as_deref()
-        && name.trim().contains(' ')
+        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
     {
-        let mut p = Entity::new(EntityKind::Person, name.trim(), 0.72, scan_id);
         p.tag("hexpm");
         p.add_evidence(ev().with_attr("source_field", "full_name"));
         out.push(p);

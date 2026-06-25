@@ -17,6 +17,7 @@ mod tests;
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::profile_kit;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -70,9 +71,8 @@ pub(super) fn build_entities(user: CwUser, scan_id: &str) -> Vec<Entity> {
     // Real name → Person (multi-word only; single-token names are likely
     // pseudonyms or first-name-only entries).
     if let Some(name) = user.name.as_deref()
-        && name.trim().contains(' ')
+        && let Some(mut p) = profile_kit::person_from_name(name, 0.68, scan_id)
     {
-        let mut p = Entity::new(EntityKind::Person, name.trim(), 0.68, scan_id);
         p.tag("codewars");
         p.add_evidence(ev().with_attr("source_field", "name"));
         out.push(p);
@@ -91,9 +91,8 @@ pub(super) fn build_entities(user: CwUser, scan_id: &str) -> Vec<Entity> {
 
     // City → Address (self-asserted, very low confidence).
     if let Some(city) = user.city.as_deref()
-        && !city.trim().is_empty()
+        && let Some(mut a) = profile_kit::location_address(city, 0.32, scan_id)
     {
-        let mut a = Entity::new(EntityKind::Address, city.trim(), 0.32, scan_id);
         a.tag("codewars");
         a.tag("self-asserted");
         a.add_evidence(ev().with_attr("source_field", "city"));

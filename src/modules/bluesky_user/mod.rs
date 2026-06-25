@@ -22,6 +22,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::profile_kit;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -174,10 +175,8 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
 
     // Real name → Person (≥2 whitespace-separated tokens, non-placeholder).
     if let Some(ref name) = profile.display_name
-        && name.split_whitespace().count() >= 2
-        && !crate::core::validation::is_placeholder_entity(&EntityKind::Person, name)
+        && let Some(mut p) = profile_kit::person_from_name(name, 0.60, scan_id)
     {
-        let mut p = Entity::new(EntityKind::Person, name.trim(), 0.60, scan_id);
         p.tag("bluesky");
         p.tag("derived");
         p.add_evidence(

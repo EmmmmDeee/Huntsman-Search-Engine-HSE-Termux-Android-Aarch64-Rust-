@@ -22,6 +22,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::profile_kit;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -139,10 +140,8 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
     // Real name → Person (only when ≥ 2 whitespace-separated tokens and not a
     // placeholder handle-alike).
     if let Some(ref name) = user.name
-        && name.split_whitespace().count() >= 2
-        && !crate::core::validation::is_placeholder_entity(&EntityKind::Person, name)
+        && let Some(mut p) = profile_kit::person_from_name(name, 0.68, scan_id)
     {
-        let mut p = Entity::new(EntityKind::Person, name.trim(), 0.68, scan_id);
         p.tag("devto");
         p.tag("derived");
         p.add_evidence(
@@ -197,46 +196,40 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
     }
 
     // Personal website URL + Domain extraction.
-    if let Some(ref site) = user.website_url
-        && (site.starts_with("http://") || site.starts_with("https://"))
-    {
-        let mut url_e = Entity::new(EntityKind::Url, site, 0.72, scan_id);
-        url_e.tag("devto");
-        url_e.tag("personal-site");
-        url_e.add_evidence(
-            Evidence::new(
-                SRC,
-                format!("Personal site from Dev.to profile of '{}'", user.username),
-            )
-            .with_attr("source_field", "website_url"),
-        );
-        result.push(url_e);
-
-        if let Some(host) = crate::util::url_util::host_from_url(site)
-            && host.contains('.')
-            && !matches!(host.as_str(), "dev.to" | "github.com" | "twitter.com")
-        {
-            let mut d = Entity::new(EntityKind::Domain, &host, 0.65, scan_id);
-            d.tag("devto");
-            d.tag("derived");
-            d.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Domain from Dev.to profile of '{}'", user.username),
-                )
-                .with_attr("source_url", site)
-                .with_attr("devto_user", &user.username),
-            );
-            result.push(d);
+    if let Some(ref site) = user.website_url {
+        for mut e in profile_kit::website_url_and_domain(site, 0.72, 0.65, scan_id) {
+            e.tag("devto");
+            match e.kind {
+                EntityKind::Domain => {
+                    e.tag("derived");
+                    e.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!("Domain from Dev.to profile of '{}'", user.username),
+                        )
+                        .with_attr("source_url", site.as_str())
+                        .with_attr("devto_user", &user.username),
+                    );
+                }
+                _ => {
+                    e.tag("personal-site");
+                    e.add_evidence(
+                        Evidence::new(
+                            SRC,
+                            format!("Personal site from Dev.to profile of '{}'", user.username),
+                        )
+                        .with_attr("source_field", "website_url"),
+                    );
+                }
+            }
+            result.push(e);
         }
     }
 
     // Location → coarse Address (geo-hint, not a precise address).
     if let Some(ref loc) = user.location
-        && !loc.trim().is_empty()
-        && loc.len() <= 100
+        && let Some(mut a) = profile_kit::location_address(loc, 0.35, scan_id)
     {
-        let mut a = Entity::new(EntityKind::Address, loc.trim(), 0.35, scan_id);
         a.tag("devto");
         a.tag("self-asserted");
         a.tag("geo-hint");
