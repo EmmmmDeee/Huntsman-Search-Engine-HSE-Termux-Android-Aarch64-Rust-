@@ -1,11 +1,11 @@
 //! BGPView — ASN prefix enumeration and IP-to-ASN mapping.
 //!
 //! Queries the free `bgpview.io` API (no key) for two pivots:
-//! - **ASN** → the prefixes it announces (`/asn/{n}/prefixes`) → `IpAddress`
+//! - **ASN** → the prefixes it announces (`/asn/{n}/prefixes`) → `Cidr`
 //!   entities (the network blocks), each carrying the owning org name.
 //! - **IP** → its PTR records and the prefix/ASN it sits in (`/ip/{ip}`) →
-//!   `Domain` (reverse DNS) + `Asn` entities, the latter carrying the announced
-//!   CIDR block as context.
+//!   `Domain` (reverse DNS) + `Asn` + `Cidr` entities, the CIDR being the
+//!   announced network block the IP belongs to.
 //!
 //! The response → entity mapping lives in the pure [`asn_prefix_entities`] /
 //! [`ip_entities`] so it is unit-tested without a live API; `process` owns only
@@ -61,7 +61,7 @@ impl Module for BgpView {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Domain, EntityKind::Asn];
+        const KINDS: &[EntityKind] = &[EntityKind::Cidr, EntityKind::Domain, EntityKind::Asn];
         KINDS
     }
 
@@ -103,7 +103,7 @@ impl Module for BgpView {
 
 use crate::util::str_util::nonempty;
 
-/// `IpAddress` entities for the prefixes an ASN announces (the network blocks it
+/// `Cidr` entities for the prefixes an ASN announces (the network blocks it
 /// owns), each tagged `bgp-prefix` and carrying the owning org name when known.
 fn asn_prefix_entities(data: &BgpPrefixData, asn_num: &str, scan_id: &str) -> Vec<Entity> {
     data.ipv4_prefixes
@@ -111,10 +111,10 @@ fn asn_prefix_entities(data: &BgpPrefixData, asn_num: &str, scan_id: &str) -> Ve
         .take(MAX_ANNOUNCED_PREFIXES)
         .filter_map(|prefix| {
             let cidr = prefix.prefix.trim();
-            if cidr.is_empty() {
+            if cidr.is_empty() || !cidr.contains('/') {
                 return None;
             }
-            let mut e = Entity::new(EntityKind::IpAddress, cidr, 0.70, scan_id);
+            let mut e = Entity::new(EntityKind::Cidr, cidr, 0.70, scan_id);
             e.tag("bgp-prefix");
             let mut ev = Evidence::new(SRC, format!("AS{asn_num} announces {cidr}"))
                 .with_attr("asn", asn_num)
@@ -149,30 +149,32 @@ fn ip_entities(data: &BgpIpData, ip: &str, scan_id: &str) -> Vec<Entity> {
             Some(e)
         });
 
-    let asn_entities = data
-        .prefixes
-        .iter()
-        .take(MAX_IP_PREFIXES)
-        .filter_map(|prefix| {
-            let asn = prefix.asn.as_ref()?;
-            let asn_label = format!("AS{}", asn.asn);
-            let mut e = Entity::new(EntityKind::Asn, &asn_label, 0.80, scan_id);
-            let name = nonempty(&asn.name).unwrap_or("");
-            let mut ev = Evidence::new(SRC, format!("{ip} in AS{} ({name})", asn.asn))
-                .with_attr("asn", asn.asn.to_string());
-            if let Some(name) = nonempty(&asn.name) {
-                ev = ev.with_attr("name", name);
-            }
-            // The announced CIDR block the IP belongs to — the key network datum.
-            if let Some(cidr) = nonempty(&prefix.prefix) {
-                ev = ev.with_attr("prefix", cidr);
-                e.tag(format!("prefix:{cidr}"));
-            }
-            e.add_evidence(ev);
-            Some(e)
-        });
+    let mut asn_and_cidr: Vec<Entity> = Vec::new();
+    for prefix in data.prefixes.iter().take(MAX_IP_PREFIXES) {
+        let Some(asn) = prefix.asn.as_ref() else {
+            continue;
+        };
+        let asn_label = format!("AS{}", asn.asn);
+        let mut asn_e = Entity::new(EntityKind::Asn, &asn_label, 0.80, scan_id);
+        let name = nonempty(&asn.name).unwrap_or("");
+        let mut ev = Evidence::new(SRC, format!("{ip} in AS{} ({name})", asn.asn))
+            .with_attr("asn", asn.asn.to_string());
+        if let Some(name) = nonempty(&asn.name) {
+            ev = ev.with_attr("name", name);
+        }
+        if let Some(cidr) = nonempty(&prefix.prefix).filter(|c| c.contains('/')) {
+            ev = ev.with_attr("prefix", cidr);
+            // Emit the covering CIDR as a scannable entity, not just evidence.
+            let mut ce = Entity::new(EntityKind::Cidr, cidr, 0.75, scan_id);
+            ce.tag("bgp-prefix");
+            ce.add_evidence(Evidence::new(SRC, format!("Covering prefix for {ip}")));
+            asn_and_cidr.push(ce);
+        }
+        asn_e.add_evidence(ev);
+        asn_and_cidr.push(asn_e);
+    }
 
-    ptr_entities.chain(asn_entities).collect()
+    ptr_entities.chain(asn_and_cidr).collect()
 }
 
 #[derive(Deserialize)]

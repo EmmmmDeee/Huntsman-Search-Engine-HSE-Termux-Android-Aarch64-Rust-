@@ -41,7 +41,7 @@ fn asn_prefix_entities_map_blocks_with_org_name() {
     assert_eq!(es.len(), 2);
     assert!(
         es.iter()
-            .all(|e| e.kind == EntityKind::IpAddress && e.has_tag("bgp-prefix"))
+            .all(|e| e.kind == EntityKind::Cidr && e.has_tag("bgp-prefix"))
     );
     let cf = &es[0];
     assert_eq!(cf.value, "104.16.0.0/13");
@@ -91,7 +91,7 @@ fn ip_entities_map_ptr_and_asn_with_prefix() {
     assert_eq!(domains[0].value, "dns.google");
     assert!(domains[0].has_tag("ptr"));
 
-    // ASN entity carries the announced CIDR (the field the old code dropped).
+    // ASN entity carries the announced CIDR in evidence.
     let asn: Vec<&Entity> = es.iter().filter(|e| e.kind == EntityKind::Asn).collect();
     assert_eq!(asn.len(), 1);
     assert_eq!(asn[0].value, "AS15169");
@@ -104,7 +104,11 @@ fn ip_entities_map_ptr_and_asn_with_prefix() {
         ev.attributes.get("name").map(String::as_str),
         Some("GOOGLE")
     );
-    assert!(asn[0].has_tag("prefix:8.8.8.0/24"));
+    // Covering prefix is also a Cidr entity.
+    let cidrs: Vec<&Entity> = es.iter().filter(|e| e.kind == EntityKind::Cidr).collect();
+    assert_eq!(cidrs.len(), 1);
+    assert_eq!(cidrs[0].value, "8.8.8.0/24");
+    assert!(cidrs[0].has_tag("bgp-prefix"));
 }
 
 #[test]
