@@ -27,6 +27,7 @@ pub mod cert_intel;
 pub mod chain_intel;
 pub mod cloud_storage;
 pub mod contact_enrich;
+pub mod codeberg_user;
 pub mod crates_io;
 pub mod criminal_ip;
 pub mod crtsh;
@@ -315,6 +316,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(bluesky_user::BlueskyUser),
         Arc::new(mastodon_user::MastodonUser),
         Arc::new(gitlab_user::GitlabUser),
+        Arc::new(codeberg_user::CodebergUser),
         Arc::new(npm_author::NpmAuthor),
         Arc::new(crates_io::CratesIo),
         Arc::new(reddit_user::RedditUser),

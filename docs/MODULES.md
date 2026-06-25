@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (133 modules: 100 free · 28 key-gated · 5 paid)
+## Catalogue (134 modules: 101 free · 28 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -17,7 +17,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `exa_search` | email, username, phone, full_name, domain, organisation | key_gated | no | 87 | url, domain, email, phone |
 | `search_engines` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn | free | no | 113 | url, domain, email, username, phone, address, coordinates, person, organisation, abn_acn |
 
-### social (17)
+### social (18)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -32,6 +32,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `reddit_user` | username | free | no | 105 | username, email, url |
 | `stackoverflow_user` | username | free | no | 105 | username, person, url, domain, address |
 | `bluesky_user` | username | free | no | 104 | username, person, email, url, domain |
+| `codeberg_user` | username | free | no | 105 | username, person, email, url, domain, address |
 | `devto` | username | free | no | 103 | username, person, email, url, domain, address |
 | `mastodon_user` | username | free | no | 103 | username, person, email, url, domain, address |
 | `npm_author` | username | free | no | 104 | username, email, url, domain |

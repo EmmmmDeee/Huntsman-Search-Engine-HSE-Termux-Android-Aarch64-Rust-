@@ -79,6 +79,12 @@ pub(super) const HANDLE_PROPS: &[(&str, &str)] = &[
     ("P4033", "mastodon"),
     ("P2013", "facebook"),
     ("P11245", "tiktok"),
+    // P4479 = Reddit username (stable Wikidata property).
+    ("P4479", "reddit"),
+    // P2397 excluded (YouTube channel ID starts with "UC" — not a searchable handle).
+    // P7085 = TikTok creative profile ID (alternative to P11245).
+    // P3553 = YouTube channel (handle form "@alice") — worth extracting when present.
+    ("P3553", "youtube"),
 ];
 
 pub struct Wikidata;
