@@ -119,3 +119,50 @@ fn classifies_known_australian_service() {
             check_iso(cc, location);
         }
     }
+
+    #[test]
+    fn classifies_au_state_government_domain_to_jurisdiction() {
+        // A `*.{state}.gov.au` domain resolves to state grain (not just country).
+        let geo = classify_domain("health.nsw.gov.au").unwrap();
+        assert_eq!(geo.method, "au_gov_domain");
+        assert_eq!(geo.country_code, "AU");
+        assert_eq!(geo.location, "New South Wales, Australia");
+        assert_eq!(geo.au_state, Some("NSW"));
+
+        // Case-insensitive, deeper subdomain.
+        let vic = classify_domain("schools.education.VIC.gov.au").unwrap();
+        assert_eq!(vic.au_state, Some("VIC"));
+    }
+
+    #[test]
+    fn federal_gov_domain_falls_back_to_country_grain() {
+        // `ato.gov.au` has no state label → not jurisdiction-precise; it still
+        // classifies as Australia via the ccTLD, with no au_state.
+        let geo = classify_domain("ato.gov.au").unwrap();
+        assert_eq!(geo.au_state, None);
+        assert_eq!(geo.country_code, "AU");
+    }
+
+    #[tokio::test]
+    async fn gov_domain_emits_state_address_without_a_coordinate() {
+        let m = GeoDomainClassifier;
+        let target = Target::new(TargetKind::Domain, "transport.nsw.gov.au");
+        let (bus, _rx) = tokio::sync::broadcast::channel(8);
+        let ctx = ModuleContext {
+            scan_id: "test".into(),
+            bus,
+            http: reqwest::Client::new(),
+            keys: Default::default(),
+            cancel: Default::default(),
+            proxy_pool: Default::default(),
+        };
+        let r = m.process(&target, &ctx).await.unwrap();
+        // Exactly one Address (state grain), tagged with the jurisdiction; NO
+        // Coordinates (a whole state must not pin a point).
+        assert!(r.entities.iter().all(|e| e.kind == EntityKind::Address));
+        let a = &r.entities[0];
+        assert_eq!(a.value, "New South Wales, Australia");
+        assert!(a.has_tag("au-state:NSW"));
+        assert!(a.has_tag("gov-domain"));
+        assert!(!r.entities.iter().any(|e| e.kind == EntityKind::Coordinates));
+    }

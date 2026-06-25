@@ -78,6 +78,14 @@ impl Module for GeoDomainClassifier {
             e.tag("geoint");
             e.tag("coarse");
             e.tag("domain-inferred");
+            // A `*.{state}.gov.au` domain pins the jurisdiction: tag the state so
+            // the jurisdiction cross-checks (AU-056 / AU-085) read it, and mark it
+            // a government affiliation for filtering.
+            if let Some(state) = geo.au_state {
+                e.tag(format!("au-state:{state}"));
+                e.tag("gov-domain");
+                e.tag("au-relevant");
+            }
             e.add_evidence(
                 Evidence::new(
                     SRC,
@@ -87,7 +95,12 @@ impl Module for GeoDomainClassifier {
                 .with_attr("country_code", geo.country_code)
                 .with_attr("method", geo.method),
             );
-            if let Some((lat, lon)) = crate::util::city_coords::city_coords(geo.location) {
+            // A whole-state government classification must NOT pin a single
+            // coordinate (and a state-name string can spuriously substring-match a
+            // city); only point/country-grain classifications geocode.
+            if geo.au_state.is_none()
+                && let Some((lat, lon)) = crate::util::city_coords::city_coords(geo.location)
+            {
                 let coord_val = format!("{lat:.4},{lon:.4}");
                 let mut c = Entity::new(
                     EntityKind::Coordinates,
@@ -119,11 +132,46 @@ struct GeoClassification {
     country_code: &'static str,
     confidence: f64,
     method: &'static str,
+    /// The AU state/territory code when the classification is jurisdiction-precise
+    /// (a `*.{state}.gov.au` government domain) rather than country/city grain.
+    /// Drives an `au-state:` tag and suppresses the point-geocode (a whole state
+    /// must not pin a single coordinate).
+    au_state: Option<&'static str>,
 }
 
 fn classify_domain(domain: &str) -> Option<GeoClassification> {
-    // Known service first (higher confidence), falling back to the ccTLD table.
-    classify_by_known_service(domain).or_else(|| classify_by_cctld(domain))
+    // An AU state-government domain (`health.nsw.gov.au` → NSW) is a precise,
+    // official jurisdiction signal that must win over the generic `.au`
+    // country-grain classification below. Then a known service, then the ccTLD.
+    classify_au_gov_domain(domain)
+        .or_else(|| classify_by_known_service(domain))
+        .or_else(|| classify_by_cctld(domain))
+}
+
+/// A `*.{state}.gov.au` domain → a state-grain `<State>, Australia` location with
+/// its canonical state code, so it feeds the jurisdiction cross-checks
+/// (AU-056 / AU-085) at state precision. Federal `*.gov.au` (no state) and
+/// non-gov domains return `None`.
+fn classify_au_gov_domain(domain: &str) -> Option<GeoClassification> {
+    let state = crate::util::address_au::au_gov_domain_state(domain)?;
+    let location = match state {
+        "NSW" => "New South Wales, Australia",
+        "VIC" => "Victoria, Australia",
+        "QLD" => "Queensland, Australia",
+        "WA" => "Western Australia, Australia",
+        "SA" => "South Australia, Australia",
+        "TAS" => "Tasmania, Australia",
+        "ACT" => "Australian Capital Territory, Australia",
+        "NT" => "Northern Territory, Australia",
+        _ => return None,
+    };
+    Some(GeoClassification {
+        location,
+        country_code: "AU",
+        confidence: 0.62,
+        method: "au_gov_domain",
+        au_state: Some(state),
+    })
 }
 
 fn classify_by_known_service(domain: &str) -> Option<GeoClassification> {
@@ -136,6 +184,7 @@ fn classify_by_known_service(domain: &str) -> Option<GeoClassification> {
             country_code: cc,
             confidence: 0.60,
             method: "known_service",
+            au_state: None,
         })
 }
 
@@ -148,6 +197,7 @@ fn classify_by_cctld(domain: &str) -> Option<GeoClassification> {
             country_code: cc,
             confidence: 0.45,
             method: "cctld",
+            au_state: None,
         })
 }
 

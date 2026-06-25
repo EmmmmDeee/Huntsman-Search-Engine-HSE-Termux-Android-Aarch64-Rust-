@@ -162,3 +162,25 @@ use super::*;
         assert!(au_phone_region("+1 555 123 4567").is_none()); // US
         assert!(au_phone_region("not a phone").is_none());
     }
+
+    #[test]
+    fn au_gov_domain_state_maps_state_subdomains() {
+        assert_eq!(au_gov_domain_state("health.nsw.gov.au"), Some("NSW"));
+        assert_eq!(au_gov_domain_state("transport.nsw.gov.au"), Some("NSW"));
+        assert_eq!(au_gov_domain_state("TRANSPORT.VIC.GOV.AU"), Some("VIC"));
+        assert_eq!(
+            au_gov_domain_state("schools.education.qld.gov.au"),
+            Some("QLD")
+        );
+        assert_eq!(au_gov_domain_state("police.nt.gov.au"), Some("NT"));
+        assert_eq!(au_gov_domain_state("sa.gov.au"), Some("SA")); // bare state apex
+    }
+
+    #[test]
+    fn au_gov_domain_state_is_none_for_federal_and_non_gov() {
+        assert_eq!(au_gov_domain_state("ato.gov.au"), None); // federal, no state
+        assert_eq!(au_gov_domain_state("my.gov.au"), None); // federal
+        assert_eq!(au_gov_domain_state("acme.com.au"), None); // not gov
+        assert_eq!(au_gov_domain_state("nsw.example.com"), None); // not gov.au
+        assert_eq!(au_gov_domain_state(""), None);
+    }

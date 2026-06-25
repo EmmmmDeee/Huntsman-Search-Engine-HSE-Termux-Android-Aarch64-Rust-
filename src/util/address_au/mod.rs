@@ -329,6 +329,40 @@ pub fn au_phone_region(
     au_area_code_region(national.chars().next()?)
 }
 
+/// The Australian state/territory a `*.{state}.gov.au` government domain encodes,
+/// as a canonical code (`NSW`/`VIC`/`QLD`/`WA`/`SA`/`TAS`/`ACT`/`NT`). The AU
+/// government domain structure is official and fixed — every state-agency domain
+/// is `agency.<state>.gov.au` (e.g. `transport.nsw.gov.au`, `health.vic.gov.au`)
+/// — so the label immediately before `.gov.au` is an unambiguous jurisdiction
+/// signal. Returns `None` for a federal `*.gov.au` domain (no single state, e.g.
+/// `ato.gov.au`, `my.gov.au`) or any non-gov domain. Pure; no I/O.
+///
+/// ```
+/// use huntsman_search_engine::util::address_au::au_gov_domain_state;
+///
+/// assert_eq!(au_gov_domain_state("health.nsw.gov.au"), Some("NSW"));
+/// assert_eq!(au_gov_domain_state("TRANSPORT.VIC.GOV.AU"), Some("VIC"));
+/// assert_eq!(au_gov_domain_state("ato.gov.au"), None);       // federal — no state
+/// assert_eq!(au_gov_domain_state("acme.com.au"), None);      // not a gov domain
+/// ```
+#[must_use]
+pub fn au_gov_domain_state(domain: &str) -> Option<&'static str> {
+    let d = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+    // The label immediately before the `.gov.au` suffix.
+    let label = d.strip_suffix(".gov.au")?.rsplit('.').next()?;
+    match label {
+        "nsw" => Some("NSW"),
+        "vic" => Some("VIC"),
+        "qld" => Some("QLD"),
+        "wa" => Some("WA"),
+        "sa" => Some("SA"),
+        "tas" => Some("TAS"),
+        "act" => Some("ACT"),
+        "nt" => Some("NT"),
+        _ => None,
+    }
+}
+
 /// A **locality dedup key** for an address value: lowercased, punctuation
 /// folded to spaces, a trailing 4-(AU)/5-(US) digit postcode dropped, whitespace
 /// collapsed. So `"Murrumbateman, NSW"` and `"Murrumbateman, NSW 2582"` — one
