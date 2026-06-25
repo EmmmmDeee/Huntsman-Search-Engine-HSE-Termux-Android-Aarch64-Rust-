@@ -384,7 +384,7 @@ impl Module for Netlas {
         all_emails.dedup();
         for email in all_emails.iter().take(10) {
             let email = email.to_lowercase();
-            if email.contains('@') {
+            if crate::util::extract::looks_like_email(&email) {
                 let mut e = Entity::new(EntityKind::Email, &email, 0.65, &ctx.scan_id);
                 e.tag("netlas");
                 e.tag("ssl-extracted");

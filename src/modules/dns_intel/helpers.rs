@@ -96,7 +96,7 @@ pub(super) fn dmarc_report_addresses(txt: &str) -> Vec<&str> {
             if let Some(email) = addr.trim().strip_prefix("mailto:") {
                 // Drop the optional "!size" report-size limit (RFC 7489 §6.2).
                 let email = email.split('!').next().unwrap_or(email).trim();
-                if email.contains('@') && email.len() >= 5 {
+                if crate::util::extract::looks_like_email(email) {
                     out.push(email);
                 }
             }

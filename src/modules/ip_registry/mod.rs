@@ -321,7 +321,7 @@ fn contact_emails(
     emails
         .unwrap_or_default()
         .iter()
-        .filter(|email| email.contains('@'))
+        .filter(|email| crate::util::extract::looks_like_email(email))
         .map(|email| {
             let mut e = Entity::new(EntityKind::Email, email.as_str(), 0.78, scan_id);
             e.tag("asn-contact");

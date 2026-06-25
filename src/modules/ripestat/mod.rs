@@ -180,7 +180,7 @@ fn build_abuse(contacts: &[String], scan_id: &str) -> Vec<Entity> {
     contacts
         .iter()
         .map(|c| c.trim())
-        .filter(|c| c.contains('@') && c.len() >= 5)
+        .filter(|c| crate::util::extract::looks_like_email(c))
         // A network abuse desk on a CDN/cloud/registrar provider (the common
         // case — `abuse@cloudflare.com`) is infrastructure, never the subject;
         // suppress it so it can't pollute the identity cluster.

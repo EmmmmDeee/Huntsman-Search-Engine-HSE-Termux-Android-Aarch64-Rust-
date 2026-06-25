@@ -171,7 +171,7 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
     let push_email =
         |result: &mut ModuleResult, seen: &mut HashSet<String>, raw: &str, pkg: &str| {
             let email = raw.trim().to_lowercase();
-            if email.contains('@') && email.len() >= 5 && seen.insert(email.clone()) {
+            if crate::util::extract::looks_like_email(&email) && seen.insert(email.clone()) {
                 let mut e = Entity::new(EntityKind::Email, &email, 0.74, scan_id);
                 e.tag("npm");
                 e.tag("public-profile");

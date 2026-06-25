@@ -87,7 +87,7 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
             if name.is_empty() || name.starts_with('*') {
                 return None;
             }
-            if name.contains('@') {
+            if crate::util::extract::looks_like_email(&name) {
                 if name.len() < MIN_EMAIL_LEN || !seen_emails.insert(name.clone()) {
                     return None;
                 }

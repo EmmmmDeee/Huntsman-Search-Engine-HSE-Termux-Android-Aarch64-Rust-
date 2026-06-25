@@ -142,7 +142,7 @@ pub(super) fn build_entities(
         .personal_emails
         .iter()
         .map(|e| e.trim())
-        .filter(|e| e.contains('@'))
+        .filter(|e| crate::util::extract::looks_like_email(e))
     {
         // Dedup case-insensitively, then cap the DISTINCT addresses.
         if !seen_emails.insert(email.to_lowercase()) {

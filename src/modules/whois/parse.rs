@@ -66,7 +66,8 @@ pub(super) struct WhoisFields {
 
 /// Parse a raw WHOIS response body into the [`WhoisFields`] we surface. Pure
 /// (no I/O), so it is unit-testable against canned WHOIS text. Email fields are
-/// filtered to require an `@` (some registries return "REDACTED" placeholders).
+/// gated through `extract::looks_like_email` so registry placeholders
+/// ("REDACTED", a bare `@`, a half value) never reach the entity layer.
 pub(super) fn parse_whois(response: &str) -> WhoisFields {
     WhoisFields {
         registrar: field(response, &["Registrar:", "Sponsoring Registrar:"]),
@@ -95,7 +96,7 @@ pub(super) fn parse_whois(response: &str) -> WhoisFields {
             response,
             &["Registrant Email:", "Tech Email:", "Admin Email:"],
         )
-        .filter(|e| e.contains('@')),
+        .filter(|e| crate::util::extract::looks_like_email(e)),
         registrant_org: field(
             response,
             &[
@@ -109,8 +110,10 @@ pub(super) fn parse_whois(response: &str) -> WhoisFields {
             response,
             &["Registrant State/Province:", "Registrant State:"],
         ),
-        admin_email: field(response, &["Admin Email:"]).filter(|e| e.contains('@')),
-        tech_email: field(response, &["Tech Email:"]).filter(|e| e.contains('@')),
+        admin_email: field(response, &["Admin Email:"])
+            .filter(|e| crate::util::extract::looks_like_email(e)),
+        tech_email: field(response, &["Tech Email:"])
+            .filter(|e| crate::util::extract::looks_like_email(e)),
         abuse_email: field(
             response,
             &[
@@ -119,7 +122,7 @@ pub(super) fn parse_whois(response: &str) -> WhoisFields {
                 "OrgAbuseEmail:",
             ],
         )
-        .filter(|e| e.contains('@')),
+        .filter(|e| crate::util::extract::looks_like_email(e)),
         nameservers: all_fields(response, &["Name Server:", "nserver:"]),
         statuses: all_fields(response, &["Domain Status:", "status:"]),
         dnssec: field(response, &["DNSSEC:", "dnssec:"]),

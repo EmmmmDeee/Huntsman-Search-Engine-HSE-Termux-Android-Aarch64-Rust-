@@ -186,7 +186,7 @@ impl Module for GithubUser {
 
         // Public email → Email entity, when explicitly published.
         if let Some(email) = user.email.as_deref()
-            && email.contains('@')
+            && crate::util::extract::looks_like_email(email)
         {
             let mut e = Entity::new(EntityKind::Email, email, 0.90, &ctx.scan_id);
             e.tag("public-profile");
