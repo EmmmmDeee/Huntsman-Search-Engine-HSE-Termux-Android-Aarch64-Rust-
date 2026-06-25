@@ -298,15 +298,11 @@ impl Shodan {
             urlencode(key),
         );
         let resp = ctx.http.get(&url).send_tagged(SRC).await?;
-        let status = resp.status();
-        if status.as_u16() == 404 {
+        // 404 → host not in Shodan (clean miss); 401/403/429 → note_keyed_error + Err;
+        // other non-2xx → Err via http_status_error.
+        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
             return Ok(());
-        }
-        if !status.is_success() {
-            let code = status.as_u16();
-            crate::util::http::note_keyed_error(code, SRC, key, ctx);
-            return Err(crate::util::http::http_status_error(SRC, resp).await);
-        }
+        };
         let body: HostResp = crate::util::http::json_decode(SRC, resp).await?;
 
         let mut entity = target_entity(ip, &ctx.scan_id);

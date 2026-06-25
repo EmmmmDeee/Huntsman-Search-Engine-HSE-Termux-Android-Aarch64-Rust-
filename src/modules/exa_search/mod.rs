@@ -182,12 +182,12 @@ impl Module for ExaSearch {
             }
         };
 
-        let status = resp.status();
-        if !status.is_success() {
-            let code = status.as_u16();
-            crate::util::http::note_keyed_error(code, SRC, key, ctx);
+        // 401/403/429 → note_keyed_error + Err; 404 → clean miss; other
+        // non-2xx → Err via http_status_error. Previously a 500 (server error)
+        // would incorrectly mark the key exhausted — fixed by this helper.
+        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         let parsed: ExaResponse = match crate::util::http::json_scanned(resp, SRC).await {
             Ok(v) => v,
