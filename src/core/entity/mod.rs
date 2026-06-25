@@ -753,6 +753,98 @@ pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
     hex::encode(h.finalize())
 }
 
+/// Query-string parameters that are pure click/campaign tracking and never
+/// identify the underlying resource. Stripping them lets the *same* page found
+/// by two engines — each appending its own tracking suffix — collapse to one
+/// UID, so the corroboration boost in [`Entity::c_effective`] actually fires
+/// instead of the find fragmenting into two single-source entities.
+///
+/// Curated conservatively from the widely-used ClearURLs / Brave / Firefox
+/// strip-lists: only params that are *unambiguously* tracking are listed.
+/// Resource-identifying params (YouTube `v`, generic `id`/`p`/`q`/`page`) are
+/// deliberately ABSENT and always preserved — dropping one would alias two
+/// genuinely different pages into one UID (a false merge), the opposite and
+/// worse failure. The `utm_*` family is matched by prefix in
+/// [`is_tracking_param_key`] rather than enumerated here.
+const URL_TRACKING_PARAMS: &[&str] = &[
+    // Google / Ads
+    "gclid",
+    "gclsrc",
+    "dclid",
+    "gbraid",
+    "wbraid",
+    "_ga",
+    "_gl",
+    // Facebook / Instagram / Meta
+    "fbclid",
+    "fb_action_ids",
+    "fb_action_types",
+    "fb_ref",
+    "fb_source",
+    "igshid",
+    "igsh",
+    "mibextid",
+    // Microsoft / Bing, Twitter/X, Yandex
+    "msclkid",
+    "twclid",
+    "ref_src",
+    "ref_url",
+    "yclid",
+    // Email / marketing automation
+    "mc_cid",
+    "mc_eid",
+    "mkt_tok",
+    "_hsenc",
+    "_hsmi",
+    "hsctatracking",
+    "vero_id",
+    "vero_conv",
+    "oly_anon_id",
+    "oly_enc_id",
+    "wickedid",
+    // Misc analytics
+    "spm",
+    "scm",
+    "s_kwcid",
+    "_openstat",
+    "icid",
+];
+
+/// True when a query-parameter key is pure tracking and safe to drop during URL
+/// normalisation: the `utm_*` family (case-insensitive prefix) or an exact
+/// (case-insensitive) match in [`URL_TRACKING_PARAMS`]. Uses `get(..4)` rather
+/// than slicing so a non-ASCII key can never panic on a char boundary.
+fn is_tracking_param_key(key: &str) -> bool {
+    if key.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("utm_")) {
+        return true;
+    }
+    URL_TRACKING_PARAMS
+        .iter()
+        .any(|p| key.eq_ignore_ascii_case(p))
+}
+
+/// Canonicalise a URL query string for dedup: drop pure-tracking params
+/// (see [`is_tracking_param_key`]) and sort the survivors so that
+/// `?a=1&b=2` and `?b=2&a=1` — the same resource in a different order — key to
+/// one UID. Empty segments are dropped. Returns `""` when every param was
+/// tracking (the caller then omits the `?` entirely).
+///
+/// Parameter *values* are preserved byte-for-byte (only keys are matched
+/// case-insensitively): a value like `?v=AbC123` on YouTube is case-significant
+/// and must never be folded.
+fn normalise_url_query(query: &str) -> String {
+    let mut kept: Vec<&str> = query
+        .split('&')
+        .filter(|seg| !seg.is_empty())
+        .filter(|seg| {
+            let key = seg.split('=').next().unwrap_or(seg);
+            !is_tracking_param_key(key)
+        })
+        .collect();
+    kept.sort_unstable();
+    kept.join("&")
+}
+
 /// Normalise a value for a given kind.
 ///
 /// - Email → lowercase, trim
@@ -921,8 +1013,14 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             if let Some(q) = query
                 && !q.is_empty()
             {
-                out.push('?');
-                out.push_str(q);
+                // Drop tracking params and order-normalise the rest so the same
+                // page discovered by two engines (each appending its own
+                // `?utm_*`/`?fbclid`/`?ref_src`) shares one UID and corroborates.
+                let cleaned = normalise_url_query(q);
+                if !cleaned.is_empty() {
+                    out.push('?');
+                    out.push_str(&cleaned);
+                }
             }
             out
         }
