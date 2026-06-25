@@ -97,14 +97,13 @@ pub enum Command {
         auto: bool,
         /// Only expand entities whose C_eff is at least this. Default 0.20 so the
         /// scan is comprehensive — the seed's own derived identifiers (name → email
-        /// / username / handle permutations, emitted at 0.20–0.30) are recorded and
-        /// feed correlation, instead of starving the pipeline after the seed round.
-        /// Note: an UNCORROBORATED name-permutation is recorded but not pivoted on
-        /// (it's a guess, not a finding) until a second source confirms it — pass
-        /// `--expand-all-identities` / `--full` to auto-pivot every permutation.
-        /// Correlation still applies its own strict floors, so recall is wide while
-        /// the resolved findings stay precise. Raise it (e.g. 0.50 Probable, 0.75
-        /// Verified-only) for a tighter, faster sweep.
+        /// / username / handle permutations, emitted at 0.20–0.30) expand and feed
+        /// every downstream module, instead of starving the pipeline after the seed
+        /// round (those permutations are frequently the subject's real accounts, so
+        /// pivoting on them is what confirms which are real). Correlation still
+        /// applies its own strict floors, so recall is wide while the resolved
+        /// findings stay precise. Raise it (e.g. 0.50 Probable, 0.75 Verified-only),
+        /// or pass `--gate-speculative`, for a tighter, faster sweep.
         #[arg(long, default_value_t = crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE)]
         min_expand_confidence: f64,
         /// Hard cap on total entities; stops expansion when reached. Omitted ⇒ the
@@ -170,6 +169,15 @@ pub enum Command {
         /// `--full`. Default keeps the gate on; excluded aliases are logged.
         #[arg(long)]
         expand_all_identities: bool,
+        /// Tighter, faster sweep: gate uncorroborated name-permutation guesses
+        /// (`firstname.lastname@provider` / handle candidates) out of expansion
+        /// until a reliable source confirms them. OFF by default — those
+        /// permutations are often the subject's REAL accounts, so the default
+        /// expands and validates them (the point of a name scan); enable this only
+        /// when a name collides with many namesakes and you want to suppress the
+        /// speculative fan-out. Overridden by `--expand-all-identities` / `--full`.
+        #[arg(long)]
+        gate_speculative: bool,
         /// Preset bundle (recommended | passive | footprint | investigate | fast).
         /// `recommended` is the zero-setup out-of-box default: free/keyless sources,
         /// one expansion round for cross-service correlation, phone-safe budgets.

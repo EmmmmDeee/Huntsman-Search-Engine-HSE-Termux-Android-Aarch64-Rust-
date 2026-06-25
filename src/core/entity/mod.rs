@@ -632,16 +632,19 @@ impl Entity {
     /// True for a speculative identifier *permuted from the subject's name*
     /// (`name_intel`'s `name-derived` email/username guesses, e.g.
     /// `firstname.lastname@provider`) that no *reliable* independent source has
-    /// yet corroborated. Like a recycled search snippet
-    /// ([`Self::is_uncorroborated_recycled`]) it is a low-reliability lead: worth
-    /// RECORDING (it pre-seeds the graph and feeds the email↔username
-    /// correlation) but not worth PIVOTING on — auto-expanding the dozens of
-    /// unconfirmed permutations one name generates fans a scan out across
-    /// strangers' footprints and, on a constrained link, never converges.
+    /// yet corroborated.
     ///
-    /// A breach / registry / profile source lifts the gate and the value then
-    /// expands normally — but two source classes deliberately do NOT count, so
-    /// the gate can't be defeated trivially:
+    /// This is the predicate behind the **opt-in** `--gate-speculative` sweep —
+    /// it is NOT applied by default. By default these permutations expand and get
+    /// validated, because they are frequently the subject's REAL accounts and
+    /// pivoting is exactly what confirms which are real. The operator opts in only
+    /// when a name collides with many namesakes and the speculative fan-out (one
+    /// name → dozens of unconfirmed permutations, each searched) costs more than
+    /// it's worth; then the lead is recorded but not pivoted until confirmed.
+    ///
+    /// A breach / registry / profile source counts as corroboration — but two
+    /// source classes deliberately do NOT, so the gate can't be defeated trivially
+    /// when it is enabled:
     ///   * `name_intel`'s own derivation and `recall` (the enrichment /
     ///     non-corroborating passes), and
     ///   * a bare `search_engines` snippet hit — search is asked to look up the
@@ -650,8 +653,9 @@ impl Entity {
     ///     aggregator as the subject (the same low-reliability path the recycled
     ///     gate already distrusts).
     ///
-    /// The exhaustive sweep stays available via `--expand-all-identities` /
-    /// `--full`. Cheap: short-circuits on the first reliable source, no allocation.
+    /// (Even with the opt-in gate on, `--expand-all-identities` / `--full` force
+    /// the exhaustive sweep.) Cheap: short-circuits on the first reliable source,
+    /// no allocation.
     pub fn is_uncorroborated_name_permutation(&self) -> bool {
         self.has_tag("name-derived")
             && !self.evidence.iter().any(|ev| {

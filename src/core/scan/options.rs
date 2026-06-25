@@ -176,6 +176,19 @@ pub struct ScanOptions {
     #[serde(default)]
     pub expand_all_identities: bool,
 
+    /// Gate uncorroborated *name-permutation* guesses (name_intel's
+    /// `firstname.lastname@provider` / handle candidates) out of expansion until a
+    /// reliable source confirms them. **Off by default** — those permutations are
+    /// frequently the subject's REAL identifiers, so the default (and `--full`)
+    /// expand and VALIDATE them, which is the whole point of a name scan. Set this
+    /// `true` only for a faster, tighter sweep when you expect the name to collide
+    /// with many namesakes and want to suppress the speculative fan-out; every
+    /// suppressed guess is logged as `uncorroborated_speculative` so the trade-off
+    /// is visible. `--expand-all-identities` / `--full` force the exhaustive sweep
+    /// regardless.
+    #[serde(default)]
+    pub gate_speculative: bool,
+
     // ── Live-sensor activation (radar-only) ────────────────────────────────
     /// Permit the live device-sensor modules (`signal_radar`, `device_sensors`,
     /// `wifi_intel`, `cell_intel`, `local_net`) to run.
@@ -371,6 +384,9 @@ impl Default for ScanOptions {
             expansion_strategy: ExpansionStrategy::default(),
             seeknow_scan_cap: None,
             expand_all_identities: false,
+            // Off by default: name-permutations are often the subject's real
+            // identifiers, so the default scan expands and validates them.
+            gate_speculative: false,
             // Live device sensors are radar-only: never on a default/manual scan.
             allow_live_sensors: false,
         }

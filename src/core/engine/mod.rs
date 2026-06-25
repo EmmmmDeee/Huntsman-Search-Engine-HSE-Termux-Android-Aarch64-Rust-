@@ -1434,19 +1434,20 @@ impl ScanEngine {
                     self.emit_excluded(scan_id, entity, "non_pivotable_kind");
                     continue;
                 };
-                // Speculative name-permutation gate: an identifier permuted from
-                // the subject's NAME (name_intel's `firstname.lastname@provider`
-                // / handle guesses) that no independent source has corroborated is
-                // a guess, not a finding. Recording it is valuable (it pre-seeds
-                // the graph and feeds the email↔username correlation), but
-                // auto-pivoting on the dozens of unconfirmed permutations one name
-                // generates fans the scan across strangers' footprints and, on a
-                // constrained link, never converges (observed: a single bare-name
-                // seed spent 20+ min searching permutation after permutation).
-                // Like the recycled-snippet gate, record the lead but don't pivot
-                // until a second source confirms it — `--expand-all-identities` /
-                // `--full` still asks for the exhaustive sweep.
-                if !opts.expand_all_identities && entity.is_uncorroborated_name_permutation() {
+                // Speculative name-permutation gate — OPT-IN (`--gate-speculative`),
+                // OFF by default. name_intel's `firstname.lastname@provider` /
+                // handle guesses are frequently the subject's REAL identifiers, so
+                // by default the scan EXPANDS and validates them (the whole point of
+                // a name scan) — pivoting confirms which guesses are real. Only when
+                // the operator opts in (expecting heavy namesake collision and
+                // wanting a faster, tighter sweep) does an uncorroborated permutation
+                // stay a recorded-but-not-pivoted candidate until a reliable source
+                // confirms it. `--expand-all-identities` / `--full` force the
+                // exhaustive sweep regardless.
+                if opts.gate_speculative
+                    && !opts.expand_all_identities
+                    && entity.is_uncorroborated_name_permutation()
+                {
                     self.emit_excluded(scan_id, entity, "uncorroborated_speculative");
                     continue;
                 }

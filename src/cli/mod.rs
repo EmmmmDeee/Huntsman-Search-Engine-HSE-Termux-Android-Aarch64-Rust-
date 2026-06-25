@@ -177,6 +177,7 @@ pub async fn run() -> Result<()> {
             expansion_strategy,
             seeknow_scan_cap,
             expand_all_identities,
+            gate_speculative,
             profile,
             output,
             include_infra: _,
@@ -214,6 +215,7 @@ pub async fn run() -> Result<()> {
                 // wrong-identity gate is lifted alongside the other narrowing
                 // filters it already drops.
                 expand_all_identities: expand_all_identities || full,
+                gate_speculative,
                 profile,
                 output,
             })

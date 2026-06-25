@@ -43,6 +43,7 @@ pub(super) struct ScanCmd {
     pub expansion_strategy: String,
     pub seeknow_scan_cap: Option<u32>,
     pub expand_all_identities: bool,
+    pub gate_speculative: bool,
     pub profile: Option<String>,
     pub output: String,
 }
@@ -190,6 +191,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         expansion_strategy,
         seeknow_scan_cap: cmd.seeknow_scan_cap,
         expand_all_identities: cmd.expand_all_identities,
+        gate_speculative: cmd.gate_speculative,
         // `hse scan` is a manual scan: the live device sensors stay off (they are
         // `hse radar`-only). No CLI flag enables them here by design.
         allow_live_sensors: false,
