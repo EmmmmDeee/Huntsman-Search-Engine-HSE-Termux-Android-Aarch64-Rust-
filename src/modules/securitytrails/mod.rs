@@ -216,6 +216,9 @@ impl SecurityTrails {
     ) -> Result<T> {
         let mut retries = 2u8;
         loop {
+            if ctx.cancel.is_cancelled() {
+                return Err(Error::module(SRC, "cancelled"));
+            }
             let resp = ctx
                 .http
                 .get(url)
