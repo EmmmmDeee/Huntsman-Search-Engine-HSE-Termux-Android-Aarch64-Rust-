@@ -97,6 +97,7 @@ pub mod name_intel;
 pub mod netblock;
 pub mod netlas;
 pub mod niamonx;
+pub mod nostr;
 pub mod npm_author;
 pub mod numverify;
 pub mod oathnet_pro;
@@ -362,6 +363,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(reddit_user::RedditUser),
         Arc::new(gravatar::Gravatar),
         Arc::new(fediverse::Fediverse),
+        Arc::new(nostr::Nostr),
         Arc::new(payid::PayId),
         Arc::new(pgp::Pgp),
         Arc::new(psbdmp::Psbdmp),
