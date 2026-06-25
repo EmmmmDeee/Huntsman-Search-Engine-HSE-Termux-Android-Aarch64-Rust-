@@ -511,7 +511,18 @@ impl Entity {
     /// ```
     #[inline]
     pub fn c_effective(&self) -> f64 {
-        let n = f64::from(self.source_count());
+        self.c_effective_with_source_count(self.source_count())
+    }
+
+    /// [`Self::c_effective`] computed from an already-known distinct-corroborating
+    /// source count `n`. Callers that have already paid for [`Self::source_count`]
+    /// — itself an O(k²) scan of the evidence chain — pass it here instead of
+    /// forcing a recompute. `c_effective()` is exactly
+    /// `c_effective_with_source_count(self.source_count())`, so the C_eff formula
+    /// is single-sourced and the two can never drift apart.
+    #[inline]
+    pub fn c_effective_with_source_count(&self, n: u32) -> f64 {
+        let n = f64::from(n);
         let multiplicative = self.confidence * CORROBORATION_COEFF.mul_add(n.ln(), 1.0);
         let residual_doubt = (1.0 - self.confidence) * CORROBORATION_DOUBT_DECAY.powf(n - 1.0);
         let agreement = 1.0 - residual_doubt;

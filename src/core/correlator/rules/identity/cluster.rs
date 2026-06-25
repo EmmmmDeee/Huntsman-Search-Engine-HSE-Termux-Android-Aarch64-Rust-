@@ -246,10 +246,12 @@ pub(in crate::core::correlator) fn rule_au_003_high_corroboration(
     entities
         .iter()
         .filter_map(|e| {
-            // Compute the distinct-source count ONCE: `source_count()` rebuilds a
-            // `corroborating_sources` HashSet on every call, and the previous form
-            // invoked it twice (filter + description) for every matching entity.
-            // Reuse the single value for both the gate and the message.
+            // Compute the distinct-source count ONCE and reuse it for the gate,
+            // the message, AND the C_eff. `source_count()` re-scans the whole
+            // evidence chain (O(k²)) on every call; the prior form paid for it
+            // twice — the explicit count here plus a second scan inside
+            // `c_effective()` — so the C_eff now flows through
+            // `c_effective_with_source_count(sources)` to keep it to one scan.
             let sources = e.source_count();
             if sources < min_sources(&e.kind) {
                 return None;
@@ -263,7 +265,7 @@ pub(in crate::core::correlator) fn rule_au_003_high_corroboration(
                     e.kind,
                     e.value,
                     sources,
-                    e.c_effective()
+                    e.c_effective_with_source_count(sources)
                 ),
                 entity_uids: vec![e.uid.clone()],
                 scan_id: scan_id.into(),
