@@ -61,6 +61,7 @@ pub mod gravatar;
 pub mod greynoise;
 pub mod hacker_news;
 pub mod hackertarget;
+pub mod hexpm_user;
 pub mod hibp;
 pub mod hlr_cnam;
 pub mod hudsonrock;
@@ -322,6 +323,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(codeberg_user::CodebergUser),
         Arc::new(huggingface_user::HuggingfaceUser),
         Arc::new(dockerhub_user::DockerhubUser),
+        Arc::new(hexpm_user::HexpmUser),
         Arc::new(npm_author::NpmAuthor),
         Arc::new(crates_io::CratesIo),
         Arc::new(reddit_user::RedditUser),

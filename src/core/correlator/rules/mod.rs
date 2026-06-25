@@ -305,6 +305,7 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "npm",
         "crates",      // crates.io — Rust package registry (exact module: crates_io)
         "huggingface", // HuggingFace model/dataset registry (exact module: huggingface_user)
+        "hexpm",       // hex.pm Elixir/Erlang package registry (exact module: hexpm_user)
     ]) {
         // Code-hosting is its own provider family: a handle present here is an
         // independent signal from a forum or social account (different platforms,
