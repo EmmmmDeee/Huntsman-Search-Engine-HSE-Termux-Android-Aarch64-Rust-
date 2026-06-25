@@ -161,7 +161,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ## Module Overview (145 modules — 112 free, 33 key-gated/paid)
 
-> Grouped highlights below (all 131). The **complete** catalogue with target
+> Grouped highlights below (all 145). The **complete** catalogue with target
 > kinds and output entities — kept exhaustive by the
 > `modules_md_lists_every_registered_module` CI guard — lives in
 > [`docs/MODULES.md`](docs/MODULES.md). The headline count is swept against

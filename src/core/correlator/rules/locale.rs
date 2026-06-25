@@ -50,7 +50,7 @@ pub(in crate::core::correlator) fn rule_au_083_locale_multi_email_corroboration(
                 format!(
                     "{} independent email addresses share the '{}' locale naming pattern \
                      \u{2192} consistent geographic area: {} \
-                     (coarse, self-asserted \u{2014} not a fixed address)",
+                     (coarse, locale-inferred \u{2014} not a fixed address)",
                     locale_count, locale_code, e.value,
                 ),
                 vec![e.uid.clone()],

@@ -88,38 +88,38 @@ pub(super) fn parse_user_packages(xml: &str) -> Vec<(String, String)> {
 
 /// Parse RFC 5322 "Name \<email\>" or plain "email" contacts.
 /// Handles the PyPI `author_email` field (single or comma-separated list).
+/// Names may themselves contain commas (e.g. `"Doe, John" <j@example.com>`),
+/// so we scan for angle-bracket pairs rather than splitting on every comma.
 /// Returns (Option\<name\>, email) pairs, one per entry.
 pub(super) fn parse_rfc5322_contact(raw: &str) -> Vec<(Option<String>, String)> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Vec::new();
-    }
     let mut out = Vec::new();
-    for part in raw.split(',') {
-        let part = part.trim();
-        if part.is_empty() {
+    let mut rest = raw.trim();
+    while !rest.is_empty() {
+        if let Some(bracket_start) = rest.find('<')
+            && let Some(bracket_end) = rest[bracket_start..].find('>')
+        {
+            let actual_end = bracket_start + bracket_end;
+            let name_part = rest[..bracket_start].trim().trim_matches('"').trim();
+            let email = rest[bracket_start + 1..actual_end].trim().to_lowercase();
+            if email.contains('@') {
+                let name = if name_part.is_empty() {
+                    None
+                } else {
+                    Some(name_part.to_string())
+                };
+                out.push((name, email));
+            }
+            rest = rest[actual_end + 1..].trim().trim_start_matches(',').trim();
             continue;
         }
-        if let Some(bracket) = part.rfind('<') {
-            let name_part = part[..bracket].trim().trim_matches('"').trim();
-            let after = &part[bracket + 1..];
-            if let Some(close) = after.find('>') {
-                let email = after[..close].trim().to_lowercase();
-                if email.contains('@') {
-                    let name = if name_part.is_empty() {
-                        None
-                    } else {
-                        Some(name_part.to_string())
-                    };
-                    out.push((name, email));
-                    continue;
-                }
+        // No angle-bracket found — treat remaining text as plain email(s).
+        for part in rest.split(',') {
+            let part = part.trim();
+            if part.contains('@') {
+                out.push((None, part.to_lowercase()));
             }
         }
-        // Plain email fallback.
-        if part.contains('@') {
-            out.push((None, part.to_lowercase()));
-        }
+        break;
     }
     out
 }

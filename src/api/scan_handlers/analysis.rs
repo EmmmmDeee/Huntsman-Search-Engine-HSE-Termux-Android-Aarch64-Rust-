@@ -151,18 +151,24 @@ pub async fn scan_relations(
     // entity hadn't been paged into the browser's entity map — on a 397-entity
     // scan that was most of the graph. Joining here makes every edge verifiable
     // on its own: "jordanavery@gmail.com (email) → gmail.com (domain)".
-    let rels = match s.store.relations_for_scan(&id) {
-        Ok(rels) => rels,
-        Err(e) => return internal_error(&e),
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.relations_for_scan(&id2)?,
+            store.entities_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (rels, ents) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
-    let by_uid: std::collections::HashMap<String, (String, String)> =
-        match s.store.entities_for_scan(&id) {
-            Ok(ents) => ents
-                .into_iter()
-                .map(|e| (e.uid, (e.value, e.kind.to_string())))
-                .collect(),
-            Err(e) => return internal_error(&e),
-        };
+    let by_uid: std::collections::HashMap<String, (String, String)> = ents
+        .into_iter()
+        .map(|e| (e.uid, (e.value, e.kind.to_string())))
+        .collect();
     let resolved: Vec<serde_json::Value> = rels
         .into_iter()
         .map(|r| {
