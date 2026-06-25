@@ -326,6 +326,7 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "instagram",
         "tiktok",
         "mastodon",
+        "bluesky",
         "keybase",
         "gravatar",
     ]) {

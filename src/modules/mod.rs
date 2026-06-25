@@ -18,6 +18,7 @@ pub mod au_property;
 pub mod au_unclaimed;
 pub mod austlii;
 pub mod bgpview;
+pub mod bluesky_user;
 pub mod breach_timezone;
 pub mod cell_intel;
 pub mod cell_local;
@@ -75,6 +76,7 @@ pub mod keybase;
 pub mod leakix;
 pub mod lobsters;
 pub mod local_net;
+pub mod mastodon_user;
 pub mod mls;
 pub mod mylnikov;
 pub mod name_intel;
@@ -310,6 +312,8 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(lobsters::Lobsters),
         Arc::new(devto::DevTo),
         Arc::new(stackoverflow_user::StackoverflowUser),
+        Arc::new(bluesky_user::BlueskyUser),
+        Arc::new(mastodon_user::MastodonUser),
         Arc::new(gitlab_user::GitlabUser),
         Arc::new(npm_author::NpmAuthor),
         Arc::new(crates_io::CratesIo),
