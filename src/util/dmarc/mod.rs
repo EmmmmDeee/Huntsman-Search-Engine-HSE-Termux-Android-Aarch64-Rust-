@@ -268,9 +268,7 @@ impl DmarcRecord {
             Some(DmarcPolicy::None) => {
                 out.push(DmarcIssue::NoEnforcement);
                 // If `sp=` is also absent or none, subdomains are unprotected.
-                let sp_enforced = self
-                    .sp
-                    .is_some_and(|s| !matches!(s, DmarcPolicy::None));
+                let sp_enforced = self.sp.is_some_and(|s| !matches!(s, DmarcPolicy::None));
                 if !sp_enforced {
                     out.push(DmarcIssue::SubdomainUnprotected);
                 }
