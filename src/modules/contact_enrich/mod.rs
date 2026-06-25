@@ -156,6 +156,8 @@ impl Module for ContactEnrich {
 
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
+            EntityKind::Phone,
+            EntityKind::Email,
             EntityKind::Person,
             EntityKind::Username,
             EntityKind::Address,

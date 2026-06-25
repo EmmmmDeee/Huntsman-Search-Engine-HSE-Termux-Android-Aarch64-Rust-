@@ -113,7 +113,7 @@ impl Module for Ahpra {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Person, EntityKind::Organisation];
+        const KINDS: &[EntityKind] = &[EntityKind::Person];
         KINDS
     }
 
