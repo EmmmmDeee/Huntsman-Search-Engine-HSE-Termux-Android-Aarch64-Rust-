@@ -418,6 +418,23 @@ pub(super) fn extract_breach_entities_with(
         }
     }
 
+    // Free-text `location` field — emitted as an Address hint when no structured
+    // street/city/state address was found (or in addition to it if they differ).
+    // Requires ≥4 chars to filter out empty-string variants and single tokens like
+    // "US" that are already captured as the `country` evidence attribute.
+    if let Some(loc) = val_str(item, "location") {
+        let loc = loc.trim();
+        if loc.len() >= 4 && seen.insert(format!("@loc:{}", loc.to_lowercase())) {
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::Address, loc, 0.40, scan_id),
+                &ev,
+                &["geo-hint", "free-text-location"],
+                is_target_row,
+            );
+        }
+    }
+
     if let Some(did) = val_str_coerce(item, "discordid")
         && seen.insert(format!("@discord:{did}"))
     {
