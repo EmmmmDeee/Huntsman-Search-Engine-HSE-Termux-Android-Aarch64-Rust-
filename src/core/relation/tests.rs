@@ -16,6 +16,7 @@ fn relation_kind_as_str_matches_serde() {
         RelationKind::CoLocatedWith,
         RelationKind::DerivedFrom,
         RelationKind::SameOperator,
+        RelationKind::SameIdentity,
     ] {
         let json = serde_json::to_string(&k).unwrap();
         assert_eq!(json.trim_matches('"'), k.as_str(), "{k:?}");
@@ -85,13 +86,15 @@ fn derive_all_aggregates_every_structural_derivation() {
     let ents = vec![parent, sub, person, handle];
     let all = derive_all(&ents, "s");
     // Rebuild the expected count exactly as derive_all does internally:
-    // base passes first, then co-ownership over those base relations.
+    // base passes first, co-ownership over those, then profile links.
     let mut base = derive_structural(&ents, "s");
     base.extend(derive_colocation(&ents, "s"));
     base.extend(derive_resolution(&ents, "s"));
     base.extend(derive_registration(&ents, "s"));
     base.extend(derive_name_lineage(&ents, "s"));
-    let expected = base.len() + derive_co_ownership(&ents, &base, "s").len();
+    let expected = base.len()
+        + derive_co_ownership(&ents, &base, "s").len()
+        + derive_profile_links(&ents, "s").len();
     assert_eq!(all.len(), expected, "derive_all is the union of every pass");
     assert!(all.iter().any(|r| r.kind == RelationKind::SubdomainOf));
     assert!(all.iter().any(|r| r.kind == RelationKind::DerivedFrom));
@@ -624,4 +627,138 @@ fn registration_dedups_repeated_registrant() {
         1,
         "one edge per (domain, registrant)"
     );
+}
+
+// ── derive_profile_links (SameIdentity structural edges) ────────────────────
+
+#[test]
+fn profile_links_github_matches_username() {
+    let uname = ent(EntityKind::Username, "rhino-ryno23", 0.9);
+    let url = ent(EntityKind::Url, "https://github.com/rhino-ryno23", 0.80);
+    let rels = derive_profile_links(&[uname.clone(), url.clone()], "s");
+    assert_eq!(rels.len(), 1, "one SameIdentity edge");
+    assert_eq!(rels[0].kind, RelationKind::SameIdentity);
+    assert_eq!(rels[0].from_uid, uname.uid, "directed Username → Url");
+    assert_eq!(rels[0].to_uid, url.uid);
+    assert!(
+        (rels[0].confidence - 0.80).abs() < 1e-9,
+        "min(0.9, 0.8)=0.8"
+    );
+}
+
+#[test]
+fn profile_links_direction_is_username_to_url() {
+    let uname = ent(EntityKind::Username, "haigenbamford", 0.85);
+    let url = ent(EntityKind::Url, "https://twitter.com/haigenbamford", 0.75);
+    let rels = derive_profile_links(&[uname.clone(), url.clone()], "s");
+    assert_eq!(rels.len(), 1);
+    assert_eq!(rels[0].from_uid, uname.uid);
+    assert_eq!(rels[0].to_uid, url.uid);
+}
+
+#[test]
+fn profile_links_case_insensitive_match() {
+    // Username stored as mixed case; URL always lowercased by platform.
+    let uname = ent(EntityKind::Username, "Rhino-Ryno23", 0.9);
+    let url = ent(EntityKind::Url, "https://github.com/rhino-ryno23", 0.80);
+    let rels = derive_profile_links(&[uname.clone(), url.clone()], "s");
+    assert_eq!(rels.len(), 1, "case-insensitive match must fire");
+    assert_eq!(rels[0].from_uid, uname.uid);
+}
+
+#[test]
+fn profile_links_tiktok_at_prefix_stripped() {
+    let uname = ent(EntityKind::Username, "dancequeen", 0.85);
+    let url = ent(EntityKind::Url, "https://www.tiktok.com/@dancequeen", 0.80);
+    let rels = derive_profile_links(&[uname.clone(), url.clone()], "s");
+    assert_eq!(rels.len(), 1, "@ prefix stripped correctly");
+    assert_eq!(rels[0].from_uid, uname.uid);
+}
+
+#[test]
+fn profile_links_reddit_user_prefix_skipped() {
+    // Reddit URL: /user/{username}/about.json — segment index 1.
+    let uname = ent(EntityKind::Username, "rhino-ryno23", 0.88);
+    let url = ent(
+        EntityKind::Url,
+        "https://www.reddit.com/user/rhino-ryno23/about.json",
+        0.75,
+    );
+    let rels = derive_profile_links(&[uname.clone(), url.clone()], "s");
+    assert_eq!(
+        rels.len(),
+        1,
+        "user/ prefix skipped, about.json segment ignored"
+    );
+}
+
+#[test]
+fn profile_links_bluesky_suffix_stripped() {
+    let uname = ent(EntityKind::Username, "haigen", 0.85);
+    let url = ent(
+        EntityKind::Url,
+        "https://bsky.app/profile/haigen.bsky.social",
+        0.80,
+    );
+    let rels = derive_profile_links(&[uname.clone(), url.clone()], "s");
+    assert_eq!(rels.len(), 1, ".bsky.social suffix stripped");
+    assert_eq!(rels[0].from_uid, uname.uid);
+}
+
+#[test]
+fn profile_links_hackernews_query_param() {
+    let uname = ent(EntityKind::Username, "pg", 0.90);
+    let url = ent(
+        EntityKind::Url,
+        "https://news.ycombinator.com/user?id=pg",
+        0.85,
+    );
+    let rels = derive_profile_links(&[uname.clone(), url.clone()], "s");
+    assert_eq!(rels.len(), 1, "?id= query param extracted");
+    assert_eq!(rels[0].from_uid, uname.uid);
+}
+
+#[test]
+fn profile_links_unknown_host_no_edge() {
+    let uname = ent(EntityKind::Username, "rhino-ryno23", 0.9);
+    let url = ent(
+        EntityKind::Url,
+        "https://unknownplatform.example.com/rhino-ryno23",
+        0.80,
+    );
+    let rels = derive_profile_links(&[uname, url], "s");
+    assert!(rels.is_empty(), "unknown host must produce no edge");
+}
+
+#[test]
+fn profile_links_no_matching_username_entity_no_edge() {
+    // URL matches a known platform but no Username entity with that handle exists.
+    let other_uname = ent(EntityKind::Username, "someone_else", 0.9);
+    let url = ent(EntityKind::Url, "https://github.com/rhino-ryno23", 0.80);
+    let rels = derive_profile_links(&[other_uname, url], "s");
+    assert!(
+        rels.is_empty(),
+        "non-matching username must produce no edge"
+    );
+}
+
+#[test]
+fn profile_links_no_username_entities_returns_empty() {
+    // No Username entity at all → early return, no panic.
+    let url = ent(EntityKind::Url, "https://github.com/rhino-ryno23", 0.80);
+    assert!(derive_profile_links(&[url], "s").is_empty());
+    assert!(derive_profile_links(&[], "s").is_empty());
+}
+
+#[test]
+fn profile_links_multiple_platforms_same_username() {
+    // Same username confirmed on three platforms → three SameIdentity edges.
+    let uname = ent(EntityKind::Username, "hacker", 0.90);
+    let gh = ent(EntityKind::Url, "https://github.com/hacker", 0.80);
+    let tw = ent(EntityKind::Url, "https://twitter.com/hacker", 0.75);
+    let gl = ent(EntityKind::Url, "https://gitlab.com/hacker", 0.70);
+    let rels = derive_profile_links(&[uname.clone(), gh, tw, gl], "s");
+    assert_eq!(rels.len(), 3, "one edge per confirmed platform profile");
+    assert!(rels.iter().all(|r| r.kind == RelationKind::SameIdentity));
+    assert!(rels.iter().all(|r| r.from_uid == uname.uid));
 }

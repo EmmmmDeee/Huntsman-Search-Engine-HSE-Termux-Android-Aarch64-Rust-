@@ -30,6 +30,11 @@ pub enum RelationKind {
     /// a shared web-analytics tag. Directed canonically: smaller UID → larger
     /// UID so there is exactly one edge per pair and upserts are idempotent.
     SameOperator,
+    /// `from` (a Username) is the identity behind `to` (a social-platform
+    /// profile Url) — inferred by matching the username value against the
+    /// embedded handle in the profile URL. Directed: identity hub → profile
+    /// manifestation (Username → Url). One edge per confirmed platform profile.
+    SameIdentity,
 }
 
 impl RelationKind {
@@ -43,6 +48,7 @@ impl RelationKind {
             Self::CoLocatedWith => "co_located_with",
             Self::DerivedFrom => "derived_from",
             Self::SameOperator => "same_operator",
+            Self::SameIdentity => "same_identity",
         }
     }
 }

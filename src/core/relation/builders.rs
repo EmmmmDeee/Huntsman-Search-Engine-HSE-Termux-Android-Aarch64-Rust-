@@ -508,10 +508,406 @@ pub fn derive_co_ownership(
     out
 }
 
+// ── Social platform URL → username extraction (R14) ────────────────────────
+
+/// How to extract the embedded username from a known social platform URL.
+#[derive(Debug, Clone, Copy)]
+enum ExtractKind {
+    /// Take the `index`-th non-empty path segment (0-based after filtering).
+    /// `strip_at` removes a leading `'@'`; `strip_suffix` removes a known
+    /// trailing suffix (e.g. `".bsky.social"` in Bluesky profile URLs).
+    Segment {
+        index: usize,
+        strip_at: bool,
+        strip_suffix: Option<&'static str>,
+    },
+    /// The username is the value of query parameter `name` (e.g. HN `?id=`).
+    QueryParam { name: &'static str },
+}
+
+struct SocialMatcher {
+    host: &'static str,
+    extract: ExtractKind,
+}
+
+/// Static table mapping social-platform hosts to their username extraction rule.
+/// Must stay aligned with `modules::social_probe::USERNAME_PLATFORMS` — if a
+/// new platform is added there its host should appear here too, otherwise
+/// profiles from that platform won't generate `SameIdentity` edges.
+static SOCIAL_MATCHERS: &[SocialMatcher] = &[
+    // /{username} — segment 0, no prefix
+    SocialMatcher {
+        host: "www.facebook.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "twitter.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "x.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.instagram.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "github.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "gitlab.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.pinterest.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "dev.to",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "keybase.io",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.twitch.tv",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "vimeo.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "soundcloud.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "bitbucket.org",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "myspace.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "linktr.ee",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "about.me",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.behance.net",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "dribbble.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.imlive.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.mydirtyhobby.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.sextpanther.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "stripchat.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.loyalfans.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    // /@{username} — segment 0, strip leading '@'
+    SocialMatcher {
+        host: "www.tiktok.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: true,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "medium.com",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: true,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "mastodon.social",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: true,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.threads.net",
+        extract: ExtractKind::Segment {
+            index: 0,
+            strip_at: true,
+            strip_suffix: None,
+        },
+    },
+    // /{prefix}/{username} — segment 1 (skip one named prefix segment)
+    SocialMatcher {
+        host: "steamcommunity.com",
+        extract: ExtractKind::Segment {
+            index: 1,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.flickr.com",
+        extract: ExtractKind::Segment {
+            index: 1,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "open.spotify.com",
+        extract: ExtractKind::Segment {
+            index: 1,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.reddit.com",
+        extract: ExtractKind::Segment {
+            index: 1,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    SocialMatcher {
+        host: "www.livejasmin.com",
+        extract: ExtractKind::Segment {
+            index: 1,
+            strip_at: false,
+            strip_suffix: None,
+        },
+    },
+    // /profile/{username}.bsky.social — segment 1, strip domain suffix
+    SocialMatcher {
+        host: "bsky.app",
+        extract: ExtractKind::Segment {
+            index: 1,
+            strip_at: false,
+            strip_suffix: Some(".bsky.social"),
+        },
+    },
+    // query-param: ?id={username}
+    SocialMatcher {
+        host: "news.ycombinator.com",
+        extract: ExtractKind::QueryParam { name: "id" },
+    },
+];
+
+/// Extract the embedded username from a known social-platform profile URL.
+/// Returns `None` if the URL's host is not in `SOCIAL_MATCHERS`, the path
+/// segment is missing, or the extracted string is empty.
+fn extract_username_from_profile_url(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    let matcher = SOCIAL_MATCHERS
+        .iter()
+        .find(|m| m.host.eq_ignore_ascii_case(host))?;
+
+    let username = match matcher.extract {
+        ExtractKind::Segment {
+            index,
+            strip_at,
+            strip_suffix,
+        } => {
+            let path = parsed.path();
+            let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+            let seg = segments.get(index).copied()?;
+            let seg = if strip_at {
+                seg.strip_prefix('@').unwrap_or(seg)
+            } else {
+                seg
+            };
+            let seg = if let Some(suffix) = strip_suffix {
+                seg.strip_suffix(suffix).unwrap_or(seg)
+            } else {
+                seg
+            };
+            if seg.is_empty() {
+                return None;
+            }
+            seg.to_ascii_lowercase()
+        }
+        ExtractKind::QueryParam { name } => parsed.query_pairs().find_map(|(k, v)| {
+            if k.as_ref() == name {
+                Some(v.to_ascii_lowercase())
+            } else {
+                None
+            }
+        })?,
+    };
+
+    if username.is_empty() {
+        None
+    } else {
+        Some(username)
+    }
+}
+
+/// Link `Username` entities to the social-platform `Url` entities whose
+/// embedded handle matches — making the identity hub explicit in the graph.
+///
+/// Matching is case-insensitive: `"Rhino-Ryno23"` matches
+/// `"https://github.com/rhino-ryno23"`. The edge is directed
+/// `Username → Url` (from the abstract identity node to each of its confirmed
+/// platform manifestations). Confidence = `min(username.conf, url.conf)`,
+/// consistent with every other builder. No fan-out cap — a username may have
+/// arbitrarily many confirmed profiles across platforms.
+pub fn derive_profile_links(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    let usernames: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username)
+        .collect();
+    if usernames.is_empty() {
+        return Vec::new();
+    }
+
+    // Build a lowercase-keyed index for O(1) lookup per URL entity.
+    let username_index: std::collections::HashMap<String, &Entity> = usernames
+        .iter()
+        .map(|e| (e.value.to_ascii_lowercase(), *e))
+        .collect();
+
+    let mut out = Vec::new();
+    for url_entity in entities.iter().filter(|e| e.kind == EntityKind::Url) {
+        let Some(extracted) = extract_username_from_profile_url(&url_entity.value) else {
+            continue;
+        };
+        let Some(&uname_entity) = username_index.get(&extracted) else {
+            continue;
+        };
+        let conf = uname_entity.confidence.min(url_entity.confidence);
+        out.push(Relation::new(
+            uname_entity.uid.as_str(),
+            url_entity.uid.as_str(),
+            RelationKind::SameIdentity,
+            conf,
+            scan_id,
+        ));
+    }
+    out
+}
+
 /// Derive every deterministic, evidence-grounded relation the engine knows how
 /// to reconstruct from a persisted entity set alone — structural ownership, geo
-/// co-location, DNS resolution, WHOIS registration, name lineage, and operator
-/// co-ownership — in a single stable order. This is the lineage-free counterpart
+/// co-location, DNS resolution, WHOIS registration, name lineage, operator
+/// co-ownership, and identity-profile links — in a single stable order. This is the lineage-free counterpart
 /// to the live scan's relation pass: the import paths (CLI `hse import` and the
 /// web `scan_import` upload) have no in-flight expansion edges, but every edge
 /// derivable from the entities + their evidence still applies, so an imported
@@ -523,9 +919,10 @@ pub fn derive_all(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     out.extend(derive_resolution(entities, scan_id));
     out.extend(derive_registration(entities, scan_id));
     out.extend(derive_name_lineage(entities, scan_id));
-    // Co-ownership edges — derived from the base relations built above so the
-    // RegisteredBy and ResolvesTo edges are available as inputs.
+    // Co-ownership — needs RegisteredBy and ResolvesTo edges built above.
     let co = derive_co_ownership(entities, &out, scan_id);
     out.extend(co);
+    // Identity-profile links — Username → social profile Url (R14).
+    out.extend(derive_profile_links(entities, scan_id));
     out
 }

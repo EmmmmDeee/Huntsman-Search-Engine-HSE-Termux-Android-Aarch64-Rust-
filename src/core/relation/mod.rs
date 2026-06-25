@@ -20,7 +20,10 @@
 //! (Domain → registrant Organisation/Email) from WHOIS evidence.
 //! `derive_co_ownership` links `SameOperator` (Domain ↔ Domain, canonical
 //! min-uid direction) from shared registrant, shared dedicated IP, or shared
-//! web-analytics ID evidence. All run in `finalise_scan` via `derive_all`.
+//! web-analytics ID evidence. `derive_profile_links` links `SameIdentity`
+//! (Username → social-platform profile Url) by matching the embedded handle
+//! in the URL against present Username entities. All run in `finalise_scan`
+//! via `derive_all`.
 //!
 //! `DerivedFrom` (child → the entity whose expansion surfaced it) is **lineage**
 //! — recorded by the engine's `run_expansion` (not a post-scan builder) and
@@ -34,6 +37,6 @@ mod tests;
 
 pub use builders::{
     CO_LOCATION_KM, derive_all, derive_co_ownership, derive_colocation, derive_name_lineage,
-    derive_registration, derive_resolution, derive_structural,
+    derive_profile_links, derive_registration, derive_resolution, derive_structural,
 };
 pub use types::{Relation, RelationKind};
