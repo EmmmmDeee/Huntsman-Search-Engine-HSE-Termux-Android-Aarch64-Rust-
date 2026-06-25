@@ -91,6 +91,33 @@ fn adviser_with_disciplinary_action_is_flagged() {
     assert!(p.evidence.iter().any(|ev| ev.attributes.contains_key("disciplinary_action")));
 }
 
+/// Credit Representative record (mortgage/finance broker).
+const CREDIT: &str = r#"{
+  "CRED_REP_NAME":"SMITH, JOHN ANDREW","CRED_REP_NUM":"563552","CRED_LIC_NUM":"385487",
+  "CRED_REP_ABN_ACN":"12345678901","CRED_REP_START_DT":"30/10/2024",
+  "CRED_REP_LOCALITY":"BERWICK","CRED_REP_STATE":"VIC","CRED_REP_PCODE":"3806","CRED_REP_EDRS":"AFCA"}"#;
+
+#[test]
+fn credit_rep_emits_person_abn_and_address() {
+    let mut r = ModuleResult::new();
+    emit_credit_rep(&rec(CREDIT), "scan", &mut r);
+    let e = &r.entities;
+    let p = e
+        .iter()
+        .find(|x| x.kind == EntityKind::Person)
+        .expect("person");
+    assert_eq!(p.value, "John Andrew Smith");
+    assert!(p.has_tag("asic-credit-rep"));
+    assert!(p.evidence.iter().any(|ev| ev
+        .attributes
+        .get("credit_licence_no")
+        .is_some_and(|v| v == "385487")));
+    assert!(e.iter().any(|x| x.kind == EntityKind::AbnAcn
+        && x.value.chars().filter(char::is_ascii_digit).collect::<String>() == "12345678901"));
+    assert!(e.iter().any(|x| x.kind == EntityKind::Address
+        && x.value.eq_ignore_ascii_case("BERWICK VIC 3806")));
+}
+
 #[test]
 fn name_matching_is_order_independent_and_token_complete() {
     let tokens = name_tokens("Bill Abbott");

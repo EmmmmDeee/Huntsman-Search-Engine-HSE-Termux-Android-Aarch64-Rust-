@@ -1,8 +1,8 @@
-//! ASIC people registers — banned & disqualified persons and financial
-//! advisers. Free, **no API key** (the open data.gov.au datastore, unlike the
-//! key-gated [`crate::modules::abn_lookup`]).
+//! ASIC people registers — banned/disqualified persons, financial advisers, and
+//! credit/finance-broker representatives. Free, **no API key** (the open
+//! data.gov.au datastore, unlike the key-gated [`crate::modules::abn_lookup`]).
 //!
-//! For a personal name this queries two authoritative ASIC registers the
+//! For a personal name this queries three authoritative ASIC registers the
 //! corporate regulator publishes as open data:
 //!
 //! * **Banned & Disqualified Persons** — people ASIC has banned from providing
@@ -13,8 +13,12 @@
 //!   adviser: their role and registration status, the **licensee they operate
 //!   under** (employer), its AFS licence number and ABN, and any recorded
 //!   **disciplinary action**.
+//! * **Credit Representatives** — mortgage and finance brokers authorised under
+//!   a credit licence: the rep's ABN/ACN, the credit licence they act under, and
+//!   their authorisation period and registered locality — a distinct lending
+//!   industry the advisers register doesn't cover.
 //!
-//! Both are queried by name through the data.gov.au CKAN `datastore_search`
+//! Each is queried by name through the data.gov.au CKAN `datastore_search`
 //! API (full-text, keyless) and matched on all of the target's name tokens. The
 //! findings are synergistic: the licensee becomes an `Organisation`, its ABN an
 //! `AbnAcn`, and the registered address an `Address`, each a pivot into the rest
@@ -41,6 +45,8 @@ const CKAN: &str = "https://data.gov.au/data/api/3/action/datastore_search";
 const BANNED_RES: &str = "741da9e3-7e0c-458e-830c-c518698e1788";
 /// ASIC – Financial Advisers dataset (data.gov.au resource).
 const ADVISER_RES: &str = "91d80440-5787-46fc-99de-0c1d93e6cc9f";
+/// ASIC – Credit Representative dataset (mortgage/finance brokers).
+const CREDIT_RES: &str = "999d9e92-df2c-4d6d-b580-321dcd205292";
 /// Max matched records surfaced per register (name collisions on common names).
 const MAX_HITS: usize = 5;
 
@@ -65,7 +71,7 @@ impl Module for AsicPersons {
     }
 
     fn description(&self) -> &'static str {
-        "ASIC people registers (banned & disqualified persons, financial advisers) — name → regulatory status, licensee, disciplinary action, address (keyless)"
+        "ASIC people registers (banned & disqualified, financial advisers, credit/finance-broker representatives) — name → regulatory status, licensee, disciplinary action, address (keyless)"
     }
 
     fn priority(&self) -> u8 {
@@ -111,9 +117,10 @@ impl Module for AsicPersons {
             return Ok(result);
         }
 
-        let (banned, advisers) = tokio::join!(
+        let (banned, advisers, credit) = tokio::join!(
             ckan_query(ctx, BANNED_RES, &target.value),
             ckan_query(ctx, ADVISER_RES, &target.value),
+            ckan_query(ctx, CREDIT_RES, &target.value),
         );
 
         for rec in banned
@@ -129,6 +136,13 @@ impl Module for AsicPersons {
             .take(MAX_HITS)
         {
             emit_adviser(rec, &ctx.scan_id, &mut result);
+        }
+        for rec in credit
+            .iter()
+            .filter(|r| record_name_matches(r, "CRED_REP_NAME", &tokens))
+            .take(MAX_HITS)
+        {
+            emit_credit_rep(rec, &ctx.scan_id, &mut result);
         }
 
         Ok(result)
@@ -303,6 +317,68 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResu
         "ADV_ADD_PCODE",
         &person_name,
         "asic-financial-adviser",
+        scan_id,
+        result,
+    );
+}
+
+/// Emit a credit/finance-broker representative: the Person, an ABN/ACN pivot,
+/// and the registered address. The licensee they operate under (a credit
+/// licence number) and authorisation period ride on the evidence.
+fn emit_credit_rep(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResult) {
+    let Some(raw_name) = field(rec, "CRED_REP_NAME") else {
+        return;
+    };
+    let person_name = humanise_name(&raw_name);
+
+    let mut ev = Evidence::new(SRC, format!("ASIC credit representative: {person_name}"))
+        .with_attr("register", "ASIC Credit Representatives")
+        .with_attr("matched_name", &raw_name);
+    for (key, attr) in [
+        ("CRED_REP_NUM", "credit_rep_number"),
+        ("CRED_LIC_NUM", "credit_licence_no"),
+        ("CRED_REP_START_DT", "authorised_from"),
+        ("CRED_REP_END_DT", "authorised_to"),
+        ("CRED_REP_EDRS", "dispute_scheme"),
+    ] {
+        if let Some(v) = field(rec, key) {
+            ev = ev.with_attr(attr, v);
+        }
+    }
+
+    let mut p = Entity::new(EntityKind::Person, &person_name, 0.60, scan_id);
+    p.tag("au");
+    p.tag("asic");
+    p.tag("asic-credit-rep");
+    p.add_evidence(ev.clone());
+    result.push(p);
+
+    // The rep's own ABN/ACN (11- or 9-digit), when registered against the name.
+    if let Some(id) = field(rec, "CRED_REP_ABN_ACN").filter(|a| {
+        let n = a.chars().filter(char::is_ascii_digit).count();
+        n == 11 || n == 9
+    }) {
+        let mut e = Entity::new(EntityKind::AbnAcn, &id, 0.60, scan_id);
+        e.tag("au");
+        e.tag("asic");
+        e.tag("asic-credit-rep");
+        e.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("ABN/ACN of credit representative {person_name}"),
+            )
+            .with_attr("abn_acn", &id),
+        );
+        result.push(e);
+    }
+
+    push_address(
+        rec,
+        "CRED_REP_LOCALITY",
+        "CRED_REP_STATE",
+        "CRED_REP_PCODE",
+        &person_name,
+        "asic-credit-rep",
         scan_id,
         result,
     );
