@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (126 modules: 93 free · 28 key-gated · 5 paid)
+## Catalogue (143 modules: 110 free · 28 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -17,7 +17,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `exa_search` | email, username, phone, full_name, domain, organisation | key_gated | no | 87 | url, domain, email, phone |
 | `search_engines` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn | free | no | 113 | url, domain, email, username, phone, address, coordinates, person, organisation, abn_acn |
 
-### social (11)
+### social (27)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -27,7 +27,24 @@ records. The engine knows nothing else — every module is a one-file change.
 | `github_code_search` | email, username | free | no | 85 | url, username, email |
 | `github_user` | username | free | no | 107 | person, email, username, domain, url, organisation, address, credential |
 | `hacker_news` | username | free | no | 106 | username, email, url |
+| `lobsters` | username | free | no | 106 | username, email, url, domain |
+| `gitlab_user` | username | free | no | 106 | username, person, email, url, domain, address, organisation |
+| `gitea_user` | username | free | no | 98 | username, person, email, url, domain, address |
+| `sourceforge_user` | username | free | no | 94 | username, person, email, url, address |
+| `cpan_user` | username | free | no | 55 | username, person, email, url, domain, address |
+| `rubygems_user` | username | free | no | 54 | username, person, url, domain |
 | `reddit_user` | username | free | no | 105 | username, email, url |
+| `stackoverflow_user` | username | free | no | 105 | username, person, url, domain, address |
+| `bluesky_user` | username | free | no | 104 | username, person, email, url, domain |
+| `codeberg_user` | username | free | no | 105 | username, person, email, url, domain, address |
+| `devto` | username | free | no | 103 | username, person, email, url, domain, address |
+| `mastodon_user` | username | free | no | 103 | username, person, email, url, domain, address |
+| `huggingface_user` | username | free | no | 52 | username, person, email, url, domain, organisation |
+| `hexpm_user` | username | free | no | 51 | username, person, url |
+| `launchpad_user` | username | free | no | 53 | username, person, email, url |
+| `dockerhub_user` | username | free | no | 50 | username, person, email, url, domain, organisation, address |
+| `codewars_user` | username | free | no | 49 | username, person, url, organisation, address |
+| `bitbucket_user` | username | free | no | 97 | username, person, url, domain, address |
 | `npm_author` | username | free | no | 104 | username, email, url, domain |
 | `crates_io` | username | free | no | 103 | username, person, url |
 | `keybase` | username | free | no | 100 | person, username, email, domain, address |
@@ -119,7 +136,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `whoisxml` | domain | key_gated | no | 58 | email, person, organisation, domain |
 | `securitytrails` | ip_address, domain | key_gated | no | 45 | domain |
 | `subdomain_takeover` | domain | free | no | 40 | domain |
-| `doh_resolver` | domain, url | free | no | 34 | ip_address, domain |
+| `doh_resolver` | domain, url | free | no | 34 | ip_address, domain, email |
 | `cert_intel` | ip_address, domain | free | no | 33 | domain |
 | `whois` | ip_address, domain, url | free | no | 32 | domain, email, person, organisation, address |
 | `dns_intel` | ip_address, domain, url | free | no | 31 | ip_address, domain, email |
@@ -154,10 +171,11 @@ records. The engine knows nothing else — every module is a one-file change.
 | `urlscan` | ip_address, domain, url | free | no | 15 | ip_address |
 | `netlas` | ip_address, domain, email | key_gated | no | 79 | ip_address, email, domain, organisation, coordinates, address |
 
-### web (5)
+### web (6)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
+| `url_extract` | url | free | yes | 97 | domain, ip_address |
 | `wayback` | domain, url | free | no | 38 | — |
 | `webserver_banner` | ip_address, domain, url | free | no | 36 | domain, ip_address, url |
 | `waf_detect` | domain, url | free | no | 30 | domain |

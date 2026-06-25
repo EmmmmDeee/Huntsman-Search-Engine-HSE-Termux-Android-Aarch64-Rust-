@@ -1109,6 +1109,39 @@ pub(super) const SITES: &[Site] = &[
         200,
         "dev"
     ),
+    s!("JSFiddle", "https://jsfiddle.net/{}/", H, 200, "dev"),
+    s!("Figma", "https://www.figma.com/@{}", H, 200, "dev"),
+    s!("Netlify", "https://app.netlify.com/teams/{}/overview", H, 200, "dev"),
+    s!("Vercel", "https://vercel.com/{}", H, 200, "dev"),
+    s!("Railway", "https://railway.app/u/{}", H, 200, "dev"),
+    s!(
+        "Packagist",
+        "https://packagist.org/users/{}/",
+        H,
+        200,
+        "dev"
+    ),
+    s!(
+        "HackageHS",
+        "https://hackage.haskell.org/user/{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!(
+        "HexPm",
+        "https://hex.pm/users/{}",
+        H,
+        200,
+        "dev"
+    ),
+    s!(
+        "Clojars",
+        "https://clojars.org/users/{}",
+        H,
+        200,
+        "dev"
+    ),
     // ── Gaming (Sherlock) ──────────────────────────────────────────
     s!(
         "BoardGameGeek",

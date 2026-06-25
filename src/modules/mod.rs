@@ -18,6 +18,8 @@ pub mod au_property;
 pub mod au_unclaimed;
 pub mod austlii;
 pub mod bgpview;
+pub mod bitbucket_user;
+pub mod bluesky_user;
 pub mod breach_timezone;
 pub mod cell_intel;
 pub mod cell_local;
@@ -25,15 +27,20 @@ pub mod censys;
 pub mod cert_intel;
 pub mod chain_intel;
 pub mod cloud_storage;
+pub mod codeberg_user;
+pub mod codewars_user;
 pub mod contact_enrich;
+pub mod cpan_user;
 pub mod crates_io;
 pub mod criminal_ip;
 pub mod crtsh;
 pub mod dehashed;
 pub mod device_sensors;
+pub mod devto;
 pub mod disposable_check;
 pub mod dns_axfr;
 pub mod dns_intel;
+pub mod dockerhub_user;
 pub mod doh_resolver;
 pub mod domainsdb;
 pub mod email_canonical;
@@ -49,16 +56,20 @@ pub mod fullcontact;
 pub mod geo_domain_classifier;
 pub mod geo_intel;
 pub mod geocode;
+pub mod gitea_user;
 pub mod github_code_search;
 pub mod github_user;
+pub mod gitlab_user;
 pub mod gleif_lei;
 pub mod gravatar;
 pub mod greynoise;
 pub mod hacker_news;
 pub mod hackertarget;
+pub mod hexpm_user;
 pub mod hibp;
 pub mod hlr_cnam;
 pub mod hudsonrock;
+pub mod huggingface_user;
 pub mod hunter_io;
 pub mod intelx;
 pub mod ip2location;
@@ -70,8 +81,11 @@ pub mod ipinfo;
 pub mod ipqs;
 pub mod ipquery;
 pub mod keybase;
+pub mod launchpad_user;
 pub mod leakix;
+pub mod lobsters;
 pub mod local_net;
+pub mod mastodon_user;
 pub mod mls;
 pub mod mylnikov;
 pub mod name_intel;
@@ -92,6 +106,10 @@ pub mod phone_geo;
 pub mod phone_intl;
 pub mod photon;
 pub mod portscan;
+// Shared entity-construction toolkit for developer-profile modules — a helper,
+// not a registered `Module`, so it is `pub(crate)` (the registry guard only
+// inspects `pub mod` declarations).
+pub(crate) mod profile_kit;
 pub mod proxycurl;
 pub mod psbdmp;
 pub mod pwned_passwords;
@@ -99,6 +117,7 @@ pub mod qld_cadastre;
 pub mod rdap_domain;
 pub mod reddit_user;
 pub mod ripestat;
+pub mod rubygems_user;
 pub mod search_engines;
 pub mod securitytrails;
 pub mod see_know;
@@ -108,12 +127,15 @@ pub mod signal_radar;
 pub mod smtp_vrfy;
 pub mod social_location;
 pub mod social_probe;
+pub mod sourceforge_user;
+pub mod stackoverflow_user;
 pub mod streaming_probe;
 pub mod subdomain_takeover;
 pub mod sunrise_sunset;
 pub mod threatfox;
 pub mod trove_au;
 pub mod typosquat;
+pub mod url_extract;
 pub mod urlhaus;
 pub mod urlscan;
 pub mod username_search;
@@ -150,7 +172,13 @@ pub fn reset_found_keys(scan_id: &str) {
 /// import. Every entry is a recognised vendor key (the sink uses the
 /// vendor-only identifier), so all are high-confidence.
 pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
-    crate::util::found_keys::drain(scan_id)
+    let found = crate::util::found_keys::drain(scan_id);
+    // Persist every discovered key to the cross-scan permanent vault BEFORE
+    // mapping to entities, so a vault write failure (disk full, permissions)
+    // never prevents entities from being emitted. Crypto wallet addresses are
+    // included — the vault stores everything with full provenance.
+    crate::util::key_vault::persist_batch(&found, scan_id);
+    found
         .into_iter()
         .map(|fk| {
             // A crypto wallet address is identified alongside keys (both are
@@ -285,6 +313,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(search_engines::SearchEngines),
         Arc::new(webserver_banner::WebserverBanner),
         Arc::new(web_crawler::WebCrawler),
+        Arc::new(url_extract::UrlExtract),
         Arc::new(urlscan::UrlScan),
         Arc::new(email_parse::EmailParse),
         Arc::new(email_canonical::EmailCanonical),
@@ -296,6 +325,23 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(github_user::GithubUser),
         Arc::new(github_code_search::GithubCodeSearch),
         Arc::new(hacker_news::HackerNews),
+        Arc::new(lobsters::Lobsters),
+        Arc::new(devto::DevTo),
+        Arc::new(stackoverflow_user::StackoverflowUser),
+        Arc::new(bluesky_user::BlueskyUser),
+        Arc::new(mastodon_user::MastodonUser),
+        Arc::new(gitlab_user::GitlabUser),
+        Arc::new(gitea_user::GiteaUser),
+        Arc::new(sourceforge_user::SourceforgeUser),
+        Arc::new(bitbucket_user::BitbucketUser),
+        Arc::new(codeberg_user::CodebergUser),
+        Arc::new(codewars_user::CodewarsUser),
+        Arc::new(huggingface_user::HuggingfaceUser),
+        Arc::new(dockerhub_user::DockerhubUser),
+        Arc::new(hexpm_user::HexpmUser),
+        Arc::new(launchpad_user::LaunchpadUser),
+        Arc::new(cpan_user::CpanUser),
+        Arc::new(rubygems_user::RubygemsUser),
         Arc::new(npm_author::NpmAuthor),
         Arc::new(crates_io::CratesIo),
         Arc::new(reddit_user::RedditUser),

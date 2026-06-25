@@ -172,3 +172,26 @@ use crate::core::entity::Evidence;
         assert!(got.contains("github_user") && got.contains("keybase"));
         assert!(!got.contains("name_intel"), "outside the allowlist");
     }
+
+
+    // ── rule_au_083_locale_multi_email_corroboration ──────────────────────────
+
+    #[test]
+    fn locale_multi_email_corroboration_fires_on_two_locale_evidence_entries() {
+        use super::locale::rule_au_083_locale_multi_email_corroboration;
+        use crate::core::entity::Evidence;
+        let mut a = Entity::new(EntityKind::Address, "Scandinavia (Sweden/Iceland)", 0.35, "scan-au083-arch");
+        a.tags.push("locale-inferred".into());
+        a.add_evidence(
+            Evidence::new("email_locale", "locale match sv")
+                .with_attr("locale", "sv")
+                .with_attr("pattern", "surname_suffix"),
+        );
+        a.add_evidence(
+            Evidence::new("email_locale", "locale match sv")
+                .with_attr("locale", "sv")
+                .with_attr("pattern", "surname_suffix"),
+        );
+        let results = rule_au_083_locale_multi_email_corroboration(&[a], "scan-au083-arch", 0);
+        assert_eq!(results.len(), 1, "locale rule must fire when >=2 email_locale evidence entries share a locale");
+    }

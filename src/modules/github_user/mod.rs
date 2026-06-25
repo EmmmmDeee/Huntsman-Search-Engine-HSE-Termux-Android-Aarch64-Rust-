@@ -163,6 +163,27 @@ impl Module for GithubUser {
         {
             ev = ev.with_attr("twitter", tw);
             u_entity.tag(format!("twitter:{tw}"));
+            // Emit the Twitter handle as a first-class Username so it becomes a
+            // pivot target for username_search / social_probe in the next round.
+            // Confidence 0.70: self-asserted on a confirmed GitHub profile.
+            let mut tw_entity = Entity::new(
+                EntityKind::Username,
+                format!("twitter:{tw}"),
+                0.70,
+                &ctx.scan_id,
+            );
+            tw_entity.tag("twitter");
+            tw_entity.tag("social-profile");
+            tw_entity.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("Twitter handle from GitHub profile @{}", user.login),
+                )
+                .with_attr("twitter", tw)
+                .with_attr("github_login", &user.login)
+                .with_attr("source", "github_profile"),
+            );
+            result.push(tw_entity);
         }
         u_entity.add_evidence(ev);
         result.push(u_entity);
@@ -319,13 +340,16 @@ impl Module for GithubUser {
             result.push(org);
         }
 
-        // Public gists → tag profile entity with "has-gists" if any found.
+        // Public gists → tag profile entity, then scan content for emails and
+        // leaked API keys (send_tagged inside fetch_gist_content routes every
+        // response body through the found_keys scanner automatically).
         let gist_ids = fetch::fetch_gists(&ctx.http, login, token).await;
         if !gist_ids.is_empty()
             && let Some(first) = result.entities.first_mut()
         {
             first.tag("has-gists");
         }
+        fetch::fetch_gist_content(&gist_ids, login, ctx, &mut result).await;
 
         Ok(result)
     }

@@ -28,7 +28,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::extract::{EMAIL_RE, URL_RE};
+use crate::util::extract::URL_RE;
 use crate::util::http::fetch_json_or_404;
 
 const SRC: &str = "reddit_user";
@@ -101,6 +101,7 @@ impl Module for RedditUser {
             EntityKind::Username,
             EntityKind::Email,
             EntityKind::Url,
+            EntityKind::Domain,
             EntityKind::Organisation,
         ];
         KINDS
@@ -177,8 +178,8 @@ pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
             sr.public_description.as_deref().unwrap_or(""),
             sr.title.as_deref().unwrap_or("")
         );
-        if let Some(m) = EMAIL_RE.find(&bio) {
-            let email = m.as_str().to_lowercase();
+        // Extract ALL emails from the bio (not just the first).
+        for email in crate::util::extract::emails(&bio).into_iter().take(5) {
             let mut e = Entity::new(EntityKind::Email, &email, 0.76, scan_id);
             e.tag("reddit");
             e.tag("public-profile");
@@ -188,8 +189,13 @@ pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
             );
             result.push(e);
         }
-        if let Some(m) = URL_RE.find(&bio) {
+        // Extract ALL URLs from the bio; also emit the host as a Domain entity.
+        let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for m in URL_RE.find_iter(&bio).take(5) {
             let link = m.as_str().trim_end_matches(['.', ',', ')']);
+            if !seen_urls.insert(link.to_string()) {
+                continue;
+            }
             let mut url_e = Entity::new(EntityKind::Url, link, 0.70, scan_id);
             url_e.tag("reddit");
             url_e.tag("personal-site");
@@ -198,6 +204,22 @@ pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
                     .with_attr("source", "reddit_bio"),
             );
             result.push(url_e);
+            // Also emit the host domain as a pivot.
+            if let Some(host) = crate::util::url_util::host_from_url(link)
+                && host.contains('.')
+                && host != "reddit.com"
+            {
+                let mut d = Entity::new(EntityKind::Domain, &host, 0.65, scan_id);
+                d.tag("reddit");
+                d.tag("derived");
+                d.tag("personal-site");
+                d.add_evidence(
+                    Evidence::new(SRC, format!("Domain from Reddit bio of u/{}", data.name))
+                        .with_attr("source_url", link)
+                        .with_attr("reddit_handle", &data.name),
+                );
+                result.push(d);
+            }
         }
     }
 

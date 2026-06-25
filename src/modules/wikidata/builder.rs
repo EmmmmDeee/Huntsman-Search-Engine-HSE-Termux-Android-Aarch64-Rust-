@@ -9,7 +9,7 @@ use crate::util::url_util::host_from_url;
 use super::{
     CANDIDATE, DOMAIN_CONF, HANDLE_CONF, HANDLE_PROPS, IMAGE_CONF, MAX_HANDLES, ORG_PRIMARY,
     PERSON_PRIMARY, SRC,
-    claims::{claim_p625, claim_strings, en_text},
+    claims::{claim_entity_ids, claim_p625, claim_strings, claim_time, en_text},
     classify::{classify, seed_kind},
 };
 
@@ -41,6 +41,28 @@ pub(super) fn primary_entities(
     if let Some(d) = desc.as_deref() {
         ev = ev.with_attr("description", d);
     }
+
+    // Person-specific structured claims: birth/death dates, nationality, occupation.
+    // Emitted as evidence attributes so correlators (e.g. AU-073 dob match) can key on them.
+    if kind == EntityKind::Person {
+        if let Some(dob) = claim_time(entity, "P569") {
+            ev = ev.with_attr("birth_date", &dob);
+        }
+        if let Some(dod) = claim_time(entity, "P570") {
+            ev = ev.with_attr("death_date", &dod);
+        }
+        // P27: country of citizenship — entity-valued, store Q-IDs for downstream resolution.
+        let nat = claim_entity_ids(entity, "P27");
+        if !nat.is_empty() {
+            ev = ev.with_attr("nationality_qids", nat.join(","));
+        }
+        // P106: occupation — entity-valued, store Q-IDs.
+        let occ = claim_entity_ids(entity, "P106");
+        if !occ.is_empty() {
+            ev = ev.with_attr("occupation_qids", occ.join(","));
+        }
+    }
+
     head.add_evidence(ev);
     out.push(head);
 

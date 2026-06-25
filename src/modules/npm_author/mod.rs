@@ -83,6 +83,22 @@ struct Person {
     url: Option<String>,
 }
 
+/// Extract the GitHub user/org from a repository URL of the form
+/// `https://github.com/{user}/{repo}` (path depth exactly 2).
+/// Returns `None` for any other URL shape.
+fn github_username_from_repo_url(url: &str) -> Option<&str> {
+    let path = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))?;
+    // Must be exactly one slash separating user from repo — no deeper paths.
+    let slash = path.find('/')?;
+    let user = &path[..slash];
+    if user.is_empty() || user.contains('?') || user.contains('#') {
+        return None;
+    }
+    Some(user)
+}
+
 #[async_trait]
 impl Module for NpmAuthor {
     fn name(&self) -> &'static str {
@@ -229,9 +245,12 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
 
         // The package homepage/repository — a personal-site / code link.
         if let Some(links) = pkg.links.as_ref() {
-            for link in [links.homepage.as_deref(), links.repository.as_deref()]
-                .into_iter()
-                .flatten()
+            for (link, is_repo) in [
+                (links.homepage.as_deref(), false),
+                (links.repository.as_deref(), true),
+            ]
+            .into_iter()
+            .filter_map(|(l, r)| l.map(|u| (u, r)))
             {
                 if (link.starts_with("http://") || link.starts_with("https://"))
                     && seen_urls.insert(link.to_string())
@@ -245,6 +264,46 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
                     }
                     url_e.add_evidence(ev);
                     result.push(url_e);
+
+                    // Domain entity from the link host.
+                    if let Some(host) = crate::util::url_util::host_from_url(link)
+                        && host.contains('.')
+                        && !matches!(host.as_str(), "github.com" | "gitlab.com" | "npmjs.com")
+                    {
+                        let mut d = Entity::new(EntityKind::Domain, &host, 0.52, scan_id);
+                        d.tag("npm");
+                        d.tag("derived");
+                        d.add_evidence(
+                            Evidence::new(
+                                SRC,
+                                format!("Domain from npm package link ({pkg_name})"),
+                            )
+                            .with_attr("source_url", link)
+                            .with_attr("package", pkg_name),
+                        );
+                        result.push(d);
+                    }
+
+                    // GitHub username pivot from repository URL
+                    // (https://github.com/{user}/{repo} → emit the user part).
+                    if is_repo
+                        && let Some(gh_user) = github_username_from_repo_url(link)
+                        && seen_emails.insert(format!("gh:{gh_user}"))
+                    // reuse seen set as dedup
+                    {
+                        let mut g = Entity::new(EntityKind::Username, gh_user, 0.72, scan_id);
+                        g.tag("github");
+                        g.tag("npm-pivot");
+                        g.add_evidence(
+                            Evidence::new(
+                                SRC,
+                                format!("GitHub owner from npm package repo ({pkg_name})"),
+                            )
+                            .with_attr("source_url", link)
+                            .with_attr("package", pkg_name),
+                        );
+                        result.push(g);
+                    }
                 }
             }
         }

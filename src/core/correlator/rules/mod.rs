@@ -191,7 +191,13 @@ fn is_generic_handle(handle: &str) -> bool {
 
 /// Modules that *derive* a username by inference — a name permutation, an email
 /// local-part, or a handle variant — rather than observing it on a platform.
-const USERNAME_DERIVATION_SOURCES: &[&str] = &["name_intel", "email_parse", "username_variants"];
+/// Sources that *derive* a candidate username from a seed without independently
+/// confirming the handle exists on a live platform.  `gravatar` is included
+/// because it maps a seed email to the owner's stated `preferredUsername` —
+/// derived from the account owner's own assertion, not an independent
+/// platform observation.
+const USERNAME_DERIVATION_SOURCES: &[&str] =
+    &["name_intel", "email_parse", "username_variants", "gravatar"];
 
 /// Modules that *discover* a username by observing it live on a real platform /
 /// corpus, confirming the handle exists.
@@ -292,12 +298,19 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
     } else if has(&[
         "github",
         "gitlab",
-        "bitbucket",
+        "bitbucket", // Bitbucket Cloud (exact module: bitbucket_user)
         "sourceforge",
         "codeberg",
         "npm_author",
         "npm",
-        "crates", // crates.io — Rust package registry (exact module: crates_io)
+        "crates",      // crates.io — Rust package registry (exact module: crates_io)
+        "huggingface", // HuggingFace model/dataset registry (exact module: huggingface_user)
+        "hexpm",       // hex.pm Elixir/Erlang package registry (exact module: hexpm_user)
+        "codewars",    // Codewars kata platform (exact module: codewars_user)
+        "launchpad",   // Launchpad Ubuntu/Debian dev platform (exact module: launchpad_user)
+        "gitea",       // Gitea.com hosted git service (exact module: gitea_user)
+        "cpan",        // CPAN/MetaCPAN Perl package registry (exact module: cpan_user)
+        "rubygems",    // RubyGems package registry (exact module: rubygems_user)
     ]) {
         // Code-hosting is its own provider family: a handle present here is an
         // independent signal from a forum or social account (different platforms,
@@ -307,10 +320,12 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "reddit",
         "hacker_news",
         "lobsters",
+        "devto",
         "stackoverflow",
         "stackexchange",
     ]) {
-        // Discussion forums — independent of both code-hosting and social media.
+        // Discussion forums / developer community blogs — independent of both
+        // code-hosting and social media.
         "forum"
     } else if has(&[
         "social_probe",
@@ -318,6 +333,7 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "instagram",
         "tiktok",
         "mastodon",
+        "bluesky",
         "keybase",
         "gravatar",
     ]) {
@@ -416,6 +432,7 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "securitytrails",
         "zoomeye",
         "domainsdb",
+        "dockerhub", // Docker Hub container registry (exact module: dockerhub_user)
     ]) {
         "infra"
     } else {
@@ -433,6 +450,7 @@ mod geo;
 mod identity;
 mod infra;
 mod integrity;
+mod locale;
 pub(crate) mod location;
 pub(crate) mod multipath;
 mod org;
@@ -453,6 +471,7 @@ pub(super) use geo::*;
 pub(super) use identity::*;
 pub(super) use infra::*;
 pub(super) use integrity::*;
+pub(super) use locale::*;
 pub(super) use location::*;
 pub(super) use multipath::*;
 pub(super) use org::*;

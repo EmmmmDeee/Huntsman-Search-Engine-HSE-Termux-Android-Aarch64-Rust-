@@ -41,20 +41,20 @@ use super::*;
         assert!(has(EntityKind::Address, "Brisbane, QLD"));
         assert!(has(EntityKind::Url, "https://gravatar.com/matt"));
         assert!(has(EntityKind::Url, "https://javery.dev"));
-        // Platform-prefixed account usernames + their URLs.
-        assert!(has(EntityKind::Username, "github:javery"));
-        assert!(has(EntityKind::Username, "twitter:mattd"));
+        // Bare platform usernames (platform tag, not prefixed value) + their URLs.
+        assert!(has(EntityKind::Username, "javery"), "github username bare");
+        assert!(has(EntityKind::Username, "mattd"), "twitter username bare");
         assert!(has(EntityKind::Url, "https://github.com/javery"));
-        // Verified flag carried as a tag.
+        // Platform tag + gravatar-pivot tag carried on account usernames.
         assert!(
             r.entities
                 .iter()
-                .any(|e| e.value == "github:javery" && e.has_tag("verified"))
+                .any(|e| e.value == "javery" && e.has_tag("github") && e.has_tag("verified"))
         );
         assert!(
-            !r.entities
+            r.entities
                 .iter()
-                .any(|e| e.value == "twitter:mattd" && e.has_tag("verified"))
+                .any(|e| e.value == "mattd" && e.has_tag("twitter") && !e.has_tag("verified"))
         );
         // Every entity carries the gravatar source tag + the profile evidence.
         assert!(r.entities.iter().all(|e| e.has_tag("gravatar")));

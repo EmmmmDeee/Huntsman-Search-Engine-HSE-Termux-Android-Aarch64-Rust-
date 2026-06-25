@@ -14,12 +14,34 @@ pub(in crate::core::correlator) fn rule_au_011_cross_platform_username(
     // Username-keyed account modules: each one that independently confirms a
     // handle is a distinct PLATFORM, so three of them agreeing is a genuine
     // cross-platform footprint even when no single module reported a count.
+    // Every module that independently confirms a username on a specific
+    // platform — adding a new module here makes it count toward the ≥3
+    // corroboration threshold without any other changes required.
     const PLATFORM_SOURCES: &[&str] = &[
         "github_user",
+        "gitlab_user",
+        "bitbucket_user",
+        "codeberg_user",
         "reddit_user",
         "hacker_news",
+        "lobsters",
+        "devto",
+        "stackoverflow_user",
+        "bluesky_user",
+        "mastodon_user",
         "keybase",
         "gravatar",
+        "huggingface_user",
+        "dockerhub_user",
+        "hexpm_user",
+        "codewars_user",
+        "launchpad_user",
+        "gitea_user",
+        "sourceforge_user",
+        "cpan_user",
+        "rubygems_user",
+        "crates_io",
+        "npm_author",
     ];
     entities
         .iter()
@@ -684,4 +706,570 @@ pub(in crate::core::correlator) fn rule_au_055_primary_source_accounts(
         ts,
         rank: 0.0,
     }]
+}
+
+/// AU-076 — Email local-part ↔ Username canonical identity bridge.
+///
+/// When an Email entity's local part (text before the `@`) canonicalises to the
+/// same handle as a Username entity — where canonical means separator-stripped
+/// lowercase (`john.doe` = `john_doe` = `johndoe`) — both almost certainly belong
+/// to the same subject: the username *is* the email login. This is the strongest
+/// purely free, zero-API identity link the engine can derive, requiring no
+/// external service and no historical data.
+///
+/// Excludes generic/role handles (`info`, `support`, `dns`, …) that would create
+/// spurious links between unrelated entities. Severity: High because the
+/// conjunction is highly specific — the same canonical string appearing in two
+/// entity kinds from independent sources is not coincidental.
+pub(in crate::core::correlator) fn rule_au_076_email_username_localpart_bridge(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // Pre-build the username index: canonical_handle → (entity, original value).
+    // Filter generic handles up front so none of the inner loop even considers them.
+    let usernames: Vec<(String, &Entity)> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username)
+        .filter_map(|e| {
+            let ch = canonical_handle(&e.value);
+            // At least 4 chars and not a generic/role token.
+            if ch.len() >= 4 && !is_generic_handle(&ch) {
+                Some((ch, e))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if usernames.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out: Vec<Correlation> = Vec::new();
+
+    for email_e in entities.iter().filter(|e| e.kind == EntityKind::Email) {
+        let local = match email_e.value.split('@').next() {
+            Some(l) if !l.is_empty() => l,
+            _ => continue,
+        };
+        let canon_local = canonical_handle(local);
+        if canon_local.len() < 4 || is_generic_handle(&canon_local) {
+            continue;
+        }
+        for (canon_u, u_e) in &usernames {
+            if canon_u != &canon_local {
+                continue;
+            }
+            let mut uids = vec![email_e.uid.clone(), u_e.uid.clone()];
+            uids.sort_unstable();
+            out.push(Correlation {
+                rule_id: "AU-076".into(),
+                rule_name: "Email-username local-part identity bridge".into(),
+                severity: Severity::High,
+                description: format!(
+                    "Email '{}' local-part canonicalises to username '{}' — the handle is the \
+                     email login (free, offline, zero-API identity resolution)",
+                    email_e.value, u_e.value,
+                ),
+                entity_uids: uids,
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            });
+        }
+    }
+    out
+}
+
+/// AU-077 — Name-derived username independently confirmed on a platform.
+///
+/// When a username was *derived* from a name or email (via `name_intel`,
+/// `email_parse`, or `username_variants`) AND separately *confirmed* live by a
+/// platform-discovery module (`github_user`, `social_probe`, etc.), the
+/// conjunction is a high-confidence identity bridge: the name PREDICTED the
+/// handle, and the platform VERIFIED it exists. Purely free — requires no API
+/// keys beyond whichever discovery module ran (many of which are also free).
+///
+/// This is the engine's core "prediction confirmed" signal: a permutation that a
+/// name-intelligence pass emitted as a speculative candidate but that a live probe
+/// independently found in the wild is almost certainly the subject's actual handle.
+pub(in crate::core::correlator) fn rule_au_077_name_derived_username_confirmed(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username)
+        .filter(|e| {
+            // Must carry at least one derivation AND at least one discovery source.
+            let has_derived = e
+                .evidence
+                .iter()
+                .any(|ev| USERNAME_DERIVATION_SOURCES.contains(&ev.source.as_str()));
+            let has_confirmed = e
+                .evidence
+                .iter()
+                .any(|ev| USERNAME_DISCOVERY_SOURCES.contains(&ev.source.as_str()));
+            has_derived && has_confirmed
+        })
+        .map(|e| {
+            let confirmed_by: Vec<&str> = e
+                .evidence
+                .iter()
+                .filter(|ev| USERNAME_DISCOVERY_SOURCES.contains(&ev.source.as_str()))
+                .map(|ev| ev.source.as_str())
+                .collect::<std::collections::BTreeSet<&str>>()
+                .into_iter()
+                .collect();
+            let confirmed_by_str = confirmed_by.join(", ");
+            Correlation {
+                rule_id: "AU-077".into(),
+                rule_name: "Name-derived username confirmed on platform".into(),
+                severity: Severity::High,
+                description: format!(
+                    "Username '{}' was predicted by a name/email derivation pass and \
+                     independently confirmed live on: {} — prediction + verification is a \
+                     strong, free identity bridge requiring no breach data",
+                    e.value, confirmed_by_str,
+                ),
+                entity_uids: vec![e.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            }
+        })
+        .collect()
+}
+
+/// AU-078 — High-leverage cross-investigation hub entity.
+///
+/// An entity tagged `hub-entity` by the cross-scan history pass has been observed
+/// in three or more distinct prior investigations.
+/// Hub identifiers are the highest-value data points in the intelligence database:
+/// each recurrence is a join that connects two otherwise-separate dossiers, and a
+/// hub seen in many investigations often represents a shared address, phone number,
+/// email alias, or cryptocurrency address belonging to a prolific subject.
+///
+/// Surfaced as Medium — not High/Critical — because the hub classification is
+/// database-relative (only meaningful with prior scan history) and provenance-only
+/// (never inflates the entity's own confidence score).
+///
+/// Only fires when the `feature.recall` toggle is on (the same gate that enables
+/// the cross-scan history pass that produces the tag); when recall is off the tag
+/// is never written and this rule never fires.
+pub(in crate::core::correlator) fn rule_au_078_hub_entity(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    entities
+        .iter()
+        .filter(|e| e.has_tag("hub-entity"))
+        .map(|e| Correlation {
+            rule_id: "AU-078".into(),
+            rule_name: "High-leverage cross-investigation hub entity".into(),
+            severity: Severity::Medium,
+            description: format!(
+                "{} '{}' is a hub identifier recorded in 3+ prior investigations in the local \
+                 intelligence database — a high-leverage anchor for cross-case attribution; \
+                 prioritise for further enrichment",
+                e.kind, e.value,
+            ),
+            entity_uids: vec![e.uid.clone()],
+            scan_id: scan_id.into(),
+            ts,
+            rank: 0.0,
+        })
+        .collect()
+}
+
+// ── Free offline identity-resolution rules (AU-079 … AU-081) ─────────────────
+//
+// These three rules are zero-API, no-key, offline-capable and fire on every
+// scan that has the relevant entity types.  They extend the free scanning
+// identity-linking surface introduced by AU-076/077/078.
+
+/// Extract @-mentions (handles prefixed with `@`) from any freetext bio /
+/// profile-description string.  Returns lowercase strings stripped of the
+/// leading `@`; only those ≥ 4 chars are returned (shorter ones are
+/// initials / noise).  Pure, alloc-bounded (≤ MAX_AT_MENTIONS per call).
+fn extract_at_mentions(text: &str) -> Vec<String> {
+    const MAX_AT_MENTIONS: usize = 12;
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = text;
+    while let Some(pos) = rest.find('@') {
+        rest = &rest[pos + 1..];
+        let handle: String = rest
+            .chars()
+            .take_while(|&c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
+            .collect();
+        if handle.len() >= 4 {
+            out.push(handle.to_lowercase());
+        }
+        if out.len() >= MAX_AT_MENTIONS {
+            break;
+        }
+    }
+    out
+}
+
+/// AU-079 — Profile attribute cross-mention identity bridge.
+///
+/// A platform profile's bio / about-me / twitter-handle field that names a
+/// handle already in the entity graph is an explicit cross-platform self-
+/// attribution by the subject — higher specificity than handle-variant
+/// matching because the subject wrote it themselves.
+///
+/// Two classes of attribute are exploited:
+///   * `twitter` — GitHub/LinkedIn store the linked Twitter handle as a
+///     discrete structured attribute; no text parsing required.
+///   * `bio`, `about_me` — freetext profile descriptions; @-mentions are
+///     extracted and canonicalised.
+///
+/// Excludes generic/role handles (minimum 4 chars, `is_generic_handle` gate).
+/// Severity: High — explicit self-reference across platforms from independent
+/// sources is one of the strongest free identity links available.
+pub(in crate::core::correlator) fn rule_au_079_bio_cross_mention(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // Pre-build canonical username index so inner loop is O(1) per mention.
+    let username_index: HashMap<String, &Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username)
+        .filter_map(|e| {
+            let ch = canonical_handle(&e.value);
+            if ch.len() >= 4 && !is_generic_handle(&ch) {
+                Some((ch, e))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if username_index.is_empty() {
+        return Vec::new();
+    }
+
+    // Attributes that may carry cross-platform handle references.
+    const STRUCTURED_HANDLE_ATTRS: &[&str] = &["twitter", "instagram", "mastodon"];
+    const BIO_TEXT_ATTRS: &[&str] = &["bio", "about_me", "description", "website", "blog"];
+
+    let mut out: Vec<Correlation> = Vec::new();
+    // Deduplicate (source_uid, mentioned_uid) pairs so the same cross-mention
+    // from multiple evidence records doesn't produce duplicate correlations.
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+
+    for entity in entities.iter().filter(|e| e.kind == EntityKind::Username) {
+        let src_canon = canonical_handle(&entity.value);
+        if src_canon.len() < 4 || is_generic_handle(&src_canon) {
+            continue;
+        }
+
+        for ev in &entity.evidence {
+            // ── Structured handle attributes (no text parsing) ──────────────
+            for attr in STRUCTURED_HANDLE_ATTRS {
+                let Some(raw_handle) = ev.attributes.get(*attr) else {
+                    continue;
+                };
+                let handle = raw_handle.trim_start_matches('@');
+                let canon = canonical_handle(handle);
+                if canon.len() < 4 || is_generic_handle(&canon) || canon == src_canon {
+                    continue;
+                }
+                let Some(&mentioned_e) = username_index.get(&canon) else {
+                    continue;
+                };
+                let pair = (entity.uid.clone(), mentioned_e.uid.clone());
+                if seen.insert(pair) {
+                    let mut uids = vec![entity.uid.clone(), mentioned_e.uid.clone()];
+                    uids.sort_unstable();
+                    out.push(Correlation {
+                        rule_id: "AU-079".into(),
+                        rule_name: "Profile attribute cross-mention identity bridge".into(),
+                        severity: Severity::High,
+                        description: format!(
+                            "Username '{}' profile explicitly links to '{}' via the '{attr}' \
+                             attribute — cross-platform self-attribution confirmed in a \
+                             structured profile field (free, offline identity bridge)",
+                            entity.value, mentioned_e.value,
+                        ),
+                        entity_uids: uids,
+                        scan_id: scan_id.into(),
+                        ts,
+                        rank: 0.0,
+                    });
+                }
+            }
+
+            // ── Bio / freetext attributes (extract @-mentions) ──────────────
+            for attr in BIO_TEXT_ATTRS {
+                let Some(bio_text) = ev.attributes.get(*attr) else {
+                    continue;
+                };
+                for mentioned_handle in extract_at_mentions(bio_text) {
+                    let canon = canonical_handle(&mentioned_handle);
+                    if canon.len() < 4 || is_generic_handle(&canon) || canon == src_canon {
+                        continue;
+                    }
+                    let Some(&mentioned_e) = username_index.get(&canon) else {
+                        continue;
+                    };
+                    let pair = (entity.uid.clone(), mentioned_e.uid.clone());
+                    if seen.insert(pair) {
+                        let mut uids = vec![entity.uid.clone(), mentioned_e.uid.clone()];
+                        uids.sort_unstable();
+                        out.push(Correlation {
+                            rule_id: "AU-079".into(),
+                            rule_name: "Profile attribute cross-mention identity bridge".into(),
+                            severity: Severity::High,
+                            description: format!(
+                                "Username '{}' profile bio (@-mention) names '{}' — explicit \
+                                 cross-platform self-reference written by the subject in their \
+                                 '{attr}' field (free, offline identity bridge)",
+                                entity.value, mentioned_e.value,
+                            ),
+                            entity_uids: uids,
+                            scan_id: scan_id.into(),
+                            ts,
+                            rank: 0.0,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// AU-080 — Recurring co-occurrence identity association.
+///
+/// The cross-scan history pass tags entities that have appeared together in
+/// prior investigations with `cross-scan-cooccurrence` and records the
+/// partner's value in the evidence summary.  When both endpoints of a
+/// historical co-occurrence appear in the current scan, the recurring
+/// pairing is surfaced as an explicit correlation: two identifiers that
+/// co-occur across multiple independent investigations are almost certainly
+/// linked to the same subject.
+///
+/// Severity scales with frequency:
+///   * High when either endpoint carries `hub-cooccurrence` (≥ 3 prior
+///     scans) — a structurally significant, high-frequency association.
+///   * Medium for pairs seen in fewer than 3 prior scans (a recurring
+///     association, but not yet elevated to hub status).
+///
+/// Evidence is provenance-only (non-corroborating by design); this rule
+/// surfaces the association as a visible finding without inflating C_eff.
+pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // The co-occurrence evidence summary prefix written by the history pass.
+    const COOCCURRENCE_PREFIX: &str = "Co-occurred with `";
+
+    // Index entities by value for O(1) lookup of co-occurrence partners.
+    let entity_by_value: HashMap<&str, &Entity> =
+        entities.iter().map(|e| (e.value.as_str(), e)).collect();
+
+    let mut out: Vec<Correlation> = Vec::new();
+    // Deduplicate pairs (order-independent) so A→B and B→A don't both fire.
+    let mut seen: HashSet<[String; 2]> = HashSet::new();
+
+    for entity in entities
+        .iter()
+        .filter(|e| e.has_tag("cross-scan-cooccurrence"))
+    {
+        for ev in &entity.evidence {
+            // Only parse cross-scan-history co-occurrence records.
+            if ev.source != "cross_scan_history" {
+                continue;
+            }
+            let Some(after_prefix) = ev.summary.strip_prefix(COOCCURRENCE_PREFIX) else {
+                continue;
+            };
+            // Partner value is wrapped in backticks: `{value}` across ...
+            let Some(backtick_end) = after_prefix.find('`') else {
+                continue;
+            };
+            let partner_value = &after_prefix[..backtick_end];
+            let Some(&partner_e) = entity_by_value.get(partner_value) else {
+                continue;
+            };
+
+            // Deduplicate the pair (alphabetical order of UIDs).
+            let mut pair = [entity.uid.clone(), partner_e.uid.clone()];
+            pair.sort();
+            if !seen.insert(pair) {
+                continue;
+            }
+
+            // Parse shared scan count from "... across {n} earlier scan(s)..."
+            let shared: usize = after_prefix[backtick_end + 1..]
+                .trim_start()
+                .strip_prefix("across ")
+                .and_then(|s| s.split_whitespace().next())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1);
+
+            let is_hub =
+                entity.has_tag("hub-cooccurrence") || partner_e.has_tag("hub-cooccurrence");
+            let severity = if is_hub {
+                Severity::High
+            } else {
+                Severity::Medium
+            };
+
+            let mut uids = vec![entity.uid.clone(), partner_e.uid.clone()];
+            uids.sort_unstable();
+            out.push(Correlation {
+                rule_id: "AU-080".into(),
+                rule_name: "Recurring co-occurrence identity association".into(),
+                severity,
+                description: format!(
+                    "{} '{}' and {} '{}' have appeared together in {shared} prior \
+                     investigation(s) — a recurring structural association in the local \
+                     intelligence database that bridges cases{}",
+                    entity.kind,
+                    entity.value,
+                    partner_e.kind,
+                    partner_e.value,
+                    if is_hub { " (hub-level frequency)" } else { "" },
+                ),
+                entity_uids: uids,
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            });
+        }
+    }
+    out
+}
+
+/// AU-081 — Canonical person name match across independent sources.
+///
+/// Two `Person` entities that normalise to the same canonical name but were
+/// produced by different source families are almost certainly the same
+/// individual: the same real-world person recorded by two independent
+/// collection methods (e.g. name extracted from a breach record *and* from
+/// a public professional profile).
+///
+/// Canonical normalisation: lowercase all words, strip punctuation used in
+/// "Last, First" or hyphenated formats, sort tokens alphabetically.  This
+/// makes all of `"Haigen Bamford"`, `"HAIGEN BAMFORD"`, `"Bamford, Haigen"`,
+/// and `"Bamford-Haigen"` equivalent — the sort removes ordering ambiguity
+/// and the case-fold handles all-caps breach dumps.
+///
+/// Gates: both entities must have ≥ 2 non-trivial (len ≥ 2) name tokens
+/// after normalisation, and must come from at least one source family the
+/// other does not share (independence requirement).  Single-token names
+/// (initials only, or a known-common first name like "John") are too
+/// ambiguous to link — excluded by the token-count floor.
+pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // Normalise: lowercase → split on whitespace/comma/hyphen/period → filter
+    // ≥ 2-char tokens → sort → join with space.
+    fn normalise_name(s: &str) -> Option<String> {
+        let mut tokens: Vec<String> = s
+            .split(|c: char| c.is_whitespace() || c == ',' || c == '-' || c == '.')
+            .filter(|t| !t.is_empty())
+            .map(str::to_lowercase)
+            .filter(|t| t.len() >= 2)
+            .collect();
+        if tokens.len() < 2 {
+            return None; // too ambiguous
+        }
+        tokens.sort();
+        Some(tokens.join(" "))
+    }
+
+    let persons: Vec<(String, &Entity)> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .filter_map(|e| normalise_name(&e.value).map(|n| (n, e)))
+        .collect();
+
+    if persons.len() < 2 {
+        return Vec::new();
+    }
+
+    let mut out: Vec<Correlation> = Vec::new();
+    let mut seen: HashSet<[String; 2]> = HashSet::new();
+
+    for i in 0..persons.len() {
+        for j in (i + 1)..persons.len() {
+            if persons[i].0 != persons[j].0 {
+                continue;
+            }
+            let e1 = persons[i].1;
+            let e2 = persons[j].1;
+
+            // Independence: require at least one source family that differs.
+            let fam1: HashSet<&str> = e1
+                .evidence
+                .iter()
+                .map(|ev| source_family(ev.source.as_str()))
+                .collect();
+            let fam2: HashSet<&str> = e2
+                .evidence
+                .iter()
+                .map(|ev| source_family(ev.source.as_str()))
+                .collect();
+            // `is_disjoint` → no shared family at all (strongest independence).
+            // Relax to "not identical" so that e.g. two breach-derived records
+            // from different databases (both family "breach") still fire — the
+            // *database names* differ even if the family doesn't.  Gate instead
+            // on source identity: skip only when the full source sets are equal.
+            let src1: HashSet<&str> = e1.evidence.iter().map(|ev| ev.source.as_str()).collect();
+            let src2: HashSet<&str> = e2.evidence.iter().map(|ev| ev.source.as_str()).collect();
+            if src1 == src2 {
+                continue; // exactly the same source(s) — not independent
+            }
+            // Require at least one family from each entity is NOT shared, so
+            // purely co-derived records (e.g. two name_intel outputs) don't fire.
+            if fam1 == fam2 {
+                continue;
+            }
+
+            let mut pair = [e1.uid.clone(), e2.uid.clone()];
+            pair.sort();
+            if !seen.insert(pair) {
+                continue;
+            }
+
+            let src1_label = e1
+                .evidence
+                .first()
+                .map_or("unknown", |ev| ev.source.as_str());
+            let src2_label = e2
+                .evidence
+                .first()
+                .map_or("unknown", |ev| ev.source.as_str());
+
+            let mut uids = vec![e1.uid.clone(), e2.uid.clone()];
+            uids.sort_unstable();
+            out.push(Correlation {
+                rule_id: "AU-081".into(),
+                rule_name: "Canonical person name match".into(),
+                severity: Severity::High,
+                description: format!(
+                    "Person records '{}' (via {src1_label}) and '{}' (via {src2_label}) \
+                     normalise to the same canonical name — independently-sourced records \
+                     for the same individual (free, offline identity bridge)",
+                    e1.value, e2.value,
+                ),
+                entity_uids: uids,
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            });
+        }
+    }
+    out
 }

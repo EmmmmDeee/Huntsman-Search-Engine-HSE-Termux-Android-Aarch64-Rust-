@@ -25,6 +25,7 @@ pub mod http;
 pub mod json;
 pub mod key_pool;
 pub mod key_roi;
+pub mod key_vault;
 pub mod keys;
 pub mod log_capture;
 pub mod netrotate;
