@@ -197,8 +197,9 @@ pub(super) fn parse_dossier(
     // Flush the final entry.
     emit_dossier_entry(&mut entry, sid, &mut entities, &mut stats, &mut seen);
 
-    // Any WiFi BSSID / MAC in the compilation → a geolocation seed.
+    // Any WiFi BSSID / MAC → a geolocation seed; any wallet → a chain seed.
     push_macs(body, sid, "dossier", &mut entities);
+    push_crypto(body, sid, "dossier", &mut entities);
     (entities, stats)
 }
 

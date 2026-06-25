@@ -149,6 +149,26 @@ async fn import_extracts_wifi_bssid_as_geolocation_seed() {
         "the BSSID must become a MacAddress geolocation seed"
     );
 }
+
+#[tokio::test]
+async fn import_extracts_crypto_wallet_as_chain_seed() {
+    use crate::core::entity::EntityKind;
+    // The genesis Bitcoin address — checksum-valid, so it survives validation.
+    let (ents, label) = entities_from_upload(
+        "URL: https://x.com\nWallet: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa\n",
+        "s",
+    )
+    .await
+    .unwrap();
+    assert_eq!(label, "oathnet-txt");
+    assert!(
+        ents.iter().any(|e| e.kind == EntityKind::CryptoAddress
+            && e.value
+                .eq_ignore_ascii_case("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")
+            && e.has_tag("crypto-address")),
+        "the wallet must become a CryptoAddress chain seed"
+    );
+}
 use crate::core::entity::{Entity, EntityKind};
 
 // The exact shape of the user-provided "Isaac Frost.txt" dossier upload.

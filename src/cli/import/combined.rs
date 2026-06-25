@@ -230,8 +230,9 @@ pub(super) fn parse_combined_search(body: &str, sid: &str) -> (Vec<Entity>, Impo
         stats.breach_records += 1;
     }
 
-    // Any WiFi BSSID / MAC in the report → a geolocation seed.
+    // Any WiFi BSSID / MAC → a geolocation seed; any wallet → a chain seed.
     push_macs(body, sid, "combined-search", &mut entities);
+    push_crypto(body, sid, "combined-search", &mut entities);
     (entities, stats)
 }
 

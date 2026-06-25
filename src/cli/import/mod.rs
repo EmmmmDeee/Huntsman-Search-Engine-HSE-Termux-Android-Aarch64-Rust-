@@ -392,6 +392,57 @@ fn push_macs(
     n
 }
 
+/// Extract validated crypto wallet addresses from `text` and push them as
+/// `CryptoAddress` entities — stealer logs and breach dumps routinely carry a
+/// victim's BTC/ETH/… wallets, and a recovered address is a chain-analysis seed
+/// (`chain_intel`). Every candidate token is checksum-validated by
+/// [`crate::core::crypto::classify_crypto_address`], so noise (hashes, API keys)
+/// is rejected. Capped at 50/import. Returns the number emitted.
+fn push_crypto(
+    text: &str,
+    sid: &str,
+    source_tag: &str,
+    entities: &mut Vec<crate::core::entity::Entity>,
+) -> usize {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let mut seen = std::collections::HashSet::new();
+    let mut n = 0;
+    for raw in text.split(|c: char| c.is_whitespace() || "\"',;:|<>()[]{}=".contains(c)) {
+        let tok = raw.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+        if !(26..=64).contains(&tok.len()) {
+            continue;
+        }
+        let Some(chain) = crate::core::crypto::classify_crypto_address(tok) else {
+            continue;
+        };
+        if !seen.insert(tok.to_string()) {
+            continue;
+        }
+        let coin = chain.strip_prefix("crypto_").unwrap_or(chain);
+        let mut e = Entity::new(EntityKind::CryptoAddress, tok, 0.70, sid);
+        e.tag("import");
+        e.tag(source_tag);
+        e.tag("crypto-address");
+        e.tag(format!("chain:{coin}"));
+        e.add_evidence(
+            Evidence::new(
+                "import:crypto",
+                format!(
+                    "{} wallet address `{tok}` in {source_tag} data",
+                    crate::core::crypto::chain_label(chain)
+                ),
+            )
+            .with_attr("chain", chain),
+        );
+        entities.push(e);
+        n += 1;
+        if n >= 50 {
+            break;
+        }
+    }
+    n
+}
+
 fn store_key_in_pool(service: &str, key: &str, notes: String) {
     let pool = crate::util::key_pool::global_pool();
     let mut entry = crate::util::key_pool::KeyEntry::new(key);
