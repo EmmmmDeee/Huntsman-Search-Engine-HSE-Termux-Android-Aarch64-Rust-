@@ -198,6 +198,7 @@ impl Module for Netlas {
         let mut result = ModuleResult::new();
 
         let mut all_emails: Vec<String> = Vec::new();
+        let mut all_cert_domains: Vec<String> = Vec::new();
         let mut port_list: Vec<String> = Vec::new();
         let mut jarm_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut cve_list: Vec<String> = Vec::new();
@@ -252,6 +253,9 @@ impl Module for Netlas {
                 }
                 if let Some(emails) = &cert.emails {
                     all_emails.extend(emails.iter().cloned());
+                }
+                if let Some(doms) = &cert.domains {
+                    all_cert_domains.extend(doms.iter().cloned());
                 }
             }
             if let Some(http_data) = &data.http
@@ -375,6 +379,26 @@ impl Module for Netlas {
                 addr.tag("netlas");
                 addr.add_evidence(Evidence::new(SRC, format!("Netlas location for {ip_str}")));
                 result.push(addr);
+            }
+        }
+
+        // SSL/TLS SAN domains → Domain entities for BFS.
+        all_cert_domains.sort();
+        all_cert_domains.dedup();
+        for dom in all_cert_domains.iter().take(20) {
+            let dom = dom.trim().trim_start_matches('*').trim_start_matches('.');
+            if dom.len() >= 4 && dom.contains('.') && !dom.contains(char::is_whitespace) {
+                let mut de = Entity::new(EntityKind::Domain, dom, 0.70, &ctx.scan_id);
+                de.tag("netlas");
+                de.tag("ssl-san");
+                de.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("SSL/TLS SAN domain for {ip_str}"),
+                    )
+                    .with_attr("ip", ip_str),
+                );
+                result.push(de);
             }
         }
 
