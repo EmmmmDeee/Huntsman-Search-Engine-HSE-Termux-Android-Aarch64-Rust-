@@ -111,6 +111,7 @@ pub mod signal_radar;
 pub mod smtp_vrfy;
 pub mod social_location;
 pub mod social_probe;
+pub mod stackoverflow_user;
 pub mod streaming_probe;
 pub mod subdomain_takeover;
 pub mod sunrise_sunset;
@@ -308,6 +309,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(hacker_news::HackerNews),
         Arc::new(lobsters::Lobsters),
         Arc::new(devto::DevTo),
+        Arc::new(stackoverflow_user::StackoverflowUser),
         Arc::new(gitlab_user::GitlabUser),
         Arc::new(npm_author::NpmAuthor),
         Arc::new(crates_io::CratesIo),
