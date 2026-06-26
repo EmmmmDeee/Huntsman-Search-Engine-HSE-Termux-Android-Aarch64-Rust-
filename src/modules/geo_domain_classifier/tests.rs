@@ -274,3 +274,52 @@ fn classifies_known_australian_service() {
         // Education Queensland.
         assert_eq!(classify_domain("eq.edu.au").unwrap().au_state, Some("QLD"));
     }
+
+    #[test]
+    fn id_au_and_asn_au_now_classify_as_australia() {
+        // Previously these AU 2LDs fell through to no classification.
+        let id = classify_domain("haigen.id.au").unwrap();
+        assert_eq!(id.country_code, "AU");
+        assert_eq!(id.location, "Australia");
+        let asn = classify_domain("surfclub.asn.au").unwrap();
+        assert_eq!(asn.country_code, "AU");
+    }
+
+    #[tokio::test]
+    async fn individual_id_au_domain_is_tagged_people_centric() {
+        // A `.id.au` domain is a natural-person Australian registrant — the
+        // emitted location must carry the people-centric registrant tag.
+        let m = GeoDomainClassifier;
+        let r = m
+            .process(&Target::new(TargetKind::Domain, "haigen.id.au"), &test_ctx())
+            .await
+            .unwrap();
+        let addr = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Address)
+            .expect("a .id.au domain yields an AU location");
+        assert!(addr.has_tag("au-registrant:individual"));
+        assert!(addr.has_tag("au-relevant"));
+        assert!(
+            addr.evidence
+                .iter()
+                .any(|ev| ev.attributes.get("au_registrant").map(String::as_str) == Some("individual"))
+        );
+    }
+
+    #[tokio::test]
+    async fn commercial_com_au_domain_is_tagged_commercial() {
+        let m = GeoDomainClassifier;
+        let r = m
+            .process(&Target::new(TargetKind::Domain, "acme-widgets.com.au"), &test_ctx())
+            .await
+            .unwrap();
+        let addr = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Address)
+            .expect(".com.au yields an AU location");
+        assert!(addr.has_tag("au-registrant:commercial"));
+        assert!(addr.has_tag("au-relevant"));
+    }

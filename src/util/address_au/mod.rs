@@ -395,6 +395,82 @@ pub fn au_edu_domain_state(domain: &str) -> Option<&'static str> {
     au_state_label(rest.rsplit('.').next()?)
 }
 
+/// Classify an Australian domain by the **registrant category** its second-level
+/// label encodes under the `.au` licensing rules, returning a stable tag value
+/// and a human label. `None` for a non-`.au` domain, or a direct `.au`
+/// registration (allowed since 2022) that carries no 2LD category.
+///
+/// Each 2LD is eligibility-bound, so the category is a real entity-type signal,
+/// not a guess:
+/// * `id.au` → an **individual** — a natural-person Australian registrant, the
+///   single most people-centric domain signal there is.
+/// * `com.au` / `net.au` → a **commercial** registrant (an Australian presence —
+///   an ABN/ACN or registered trade mark — is required to hold one).
+/// * `org.au` → a **non-profit** / charity.
+/// * `asn.au` → an incorporated **association** / club.
+/// * `gov.au` → an Australian **government** body.
+/// * `edu.au` → an **education** institution.
+///
+/// Matching is on the registrable suffix, so a `www.` prefix or any number of
+/// sub-labels is irrelevant (`mail.acme.com.au` → commercial). Pure; no I/O.
+///
+/// ```
+/// use huntsman_search_engine::util::address_au::au_domain_registrant;
+///
+/// assert_eq!(au_domain_registrant("john.id.au").map(|c| c.0), Some("individual"));
+/// assert_eq!(au_domain_registrant("ACME.COM.AU").map(|c| c.0), Some("commercial"));
+/// assert_eq!(au_domain_registrant("club.asn.au").map(|c| c.0), Some("association"));
+/// assert_eq!(au_domain_registrant("example.com"), None);   // not .au
+/// assert_eq!(au_domain_registrant("direct.au"), None);     // direct rego, no 2LD category
+/// ```
+#[must_use]
+pub fn au_domain_registrant(domain: &str) -> Option<(&'static str, &'static str)> {
+    let d = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+    // Ordered most-specific-first; suffixes are disjoint so order is not load-
+    // bearing, only the longest-suffix intent.
+    const REGISTRANTS: &[(&str, &str, &str)] = &[
+        (
+            ".id.au",
+            "individual",
+            "a natural-person Australian registrant (id.au)",
+        ),
+        (
+            ".com.au",
+            "commercial",
+            "an Australian commercial registrant (com.au — Australian presence required)",
+        ),
+        (
+            ".net.au",
+            "commercial",
+            "an Australian commercial registrant (net.au — Australian presence required)",
+        ),
+        (
+            ".org.au",
+            "non-profit",
+            "an Australian non-profit / charity (org.au)",
+        ),
+        (
+            ".asn.au",
+            "association",
+            "an Australian incorporated association / club (asn.au)",
+        ),
+        (
+            ".gov.au",
+            "government",
+            "an Australian government body (gov.au)",
+        ),
+        (
+            ".edu.au",
+            "education",
+            "an Australian education institution (edu.au)",
+        ),
+    ];
+    REGISTRANTS
+        .iter()
+        .find(|(suffix, _, _)| d.ends_with(suffix))
+        .map(|&(_, tag, label)| (tag, label))
+}
+
 /// A **locality dedup key** for an address value: lowercased, punctuation
 /// folded to spaces, a trailing 4-(AU)/5-(US) digit postcode dropped, whitespace
 /// collapsed. So `"Murrumbateman, NSW"` and `"Murrumbateman, NSW 2582"` — one

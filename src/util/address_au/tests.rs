@@ -206,3 +206,30 @@ use super::*;
         assert_eq!(au_edu_domain_state("monash.edu"), None); // not .edu.au
         assert_eq!(au_edu_domain_state("acme.com.au"), None); // not edu
     }
+
+    #[test]
+    fn au_domain_registrant_classifies_each_2ld() {
+        let cat = |d| au_domain_registrant(d).map(|c| c.0);
+        assert_eq!(cat("john.id.au"), Some("individual"));
+        assert_eq!(cat("acme.com.au"), Some("commercial"));
+        assert_eq!(cat("mail.acme.net.au"), Some("commercial")); // sub-labels irrelevant
+        assert_eq!(cat("foundation.org.au"), Some("non-profit"));
+        assert_eq!(cat("club.asn.au"), Some("association"));
+        assert_eq!(cat("ato.gov.au"), Some("government"));
+        assert_eq!(cat("uq.edu.au"), Some("education"));
+        // Case-insensitive and trailing-dot tolerant.
+        assert_eq!(cat("JANE.ID.AU"), Some("individual"));
+        assert_eq!(cat("acme.com.au."), Some("commercial"));
+        // Each carries a human label distinct from the bare tag.
+        assert!(au_domain_registrant("john.id.au").unwrap().1.contains("natural-person"));
+    }
+
+    #[test]
+    fn au_domain_registrant_is_none_for_non_au_and_direct_rego() {
+        assert_eq!(au_domain_registrant("example.com"), None);
+        assert_eq!(au_domain_registrant("example.co.uk"), None);
+        assert_eq!(au_domain_registrant("direct.au"), None); // direct .au, no 2LD category
+        assert_eq!(au_domain_registrant(""), None);
+        // `.au` must be a real suffix, not a substring of another label.
+        assert_eq!(au_domain_registrant("acme.com.audata.io"), None);
+    }

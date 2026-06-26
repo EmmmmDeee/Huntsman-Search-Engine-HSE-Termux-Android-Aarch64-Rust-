@@ -128,6 +128,22 @@ impl Module for GeoDomainClassifier {
                 e.tag("gov-domain");
                 e.tag("au-relevant");
             }
+            // The `.au` second-level domain encodes the registrant's entity type
+            // under the licensing rules — `id.au` a natural person, `com.au`/
+            // `net.au` a commercial ABN/trademark holder, `org.au` a non-profit,
+            // `asn.au` an association, `gov.au`/`edu.au` government/education. Tag
+            // it so the people-vs-organisation and AU-jurisdiction signals are
+            // captured alongside the location (purely additive to the Address).
+            if let Some((category, label)) = crate::util::address_au::au_domain_registrant(&domain)
+            {
+                e.tag(format!("au-registrant:{category}"));
+                e.tag("au-relevant");
+                e.add_evidence(
+                    Evidence::new(SRC, format!("`.au` domain '{domain}' → {label}"))
+                        .with_attr("au_registrant", category)
+                        .with_attr("domain", &domain),
+                );
+            }
             e.add_evidence(
                 Evidence::new(
                     SRC,
@@ -378,6 +394,13 @@ const CCTLD_MAP: &[(&str, &str, &str)] = &[
     (".org.au", "Australia", "AU"),
     (".gov.au", "Australia", "AU"),
     (".edu.au", "Australia", "AU"),
+    // `.id.au` (a natural-person Australian registrant) and `.asn.au` (an
+    // incorporated association) are real AU 2LDs that previously fell through to
+    // no classification — so an individual's `.id.au` domain produced no AU
+    // jurisdiction signal at all. Country-grain here; the registrant category is
+    // tagged in `process` via `au_domain_registrant`.
+    (".id.au", "Australia", "AU"),
+    (".asn.au", "Australia", "AU"),
     (".co.uk", "United Kingdom", "GB"),
     (".org.uk", "United Kingdom", "GB"),
     (".ac.uk", "United Kingdom", "GB"),
