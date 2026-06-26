@@ -2922,6 +2922,75 @@ fn au098_appends_australian_isp_network_corroboration() {
 }
 
 #[test]
+fn au101_five_identity_facets_is_high_resolution() {
+    // Name + email + phone + username + address → 5 distinct facet classes.
+    let person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
+    let email = Entity::new(EntityKind::Email, "h@example.com", 0.8, "s");
+    let phone = Entity::new(EntityKind::Phone, "+61731234567", 0.8, "s");
+    let user = Entity::new(EntityKind::Username, "haigenb", 0.8, "s");
+    let addr = Entity::new(EntityKind::Address, "Spring Hill QLD 4000", 0.7, "s");
+    let r =
+        super::rules::rule_au_101_identity_resolution(&[person, email, phone, user, addr], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-101");
+    assert_eq!(r[0].severity, super::Severity::High);
+    assert!(r[0].description.contains("5 independent identity facets"));
+    assert!(r[0].description.contains("legal name"));
+    assert!(r[0].description.contains("physical address"));
+}
+
+#[test]
+fn au101_four_facets_is_medium_resolution() {
+    // Exactly four facet classes → Medium (n == 4).
+    let person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
+    let email = Entity::new(EntityKind::Email, "h@example.com", 0.8, "s");
+    let phone = Entity::new(EntityKind::Phone, "+61731234567", 0.8, "s");
+    let user = Entity::new(EntityKind::Username, "haigenb", 0.8, "s");
+    let r = super::rules::rule_au_101_identity_resolution(&[person, email, phone, user], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(r[0].description.contains("4 independent identity facets"));
+}
+
+#[test]
+fn au101_thin_footprint_and_low_confidence_do_not_fire() {
+    // Three facets is below the threshold — the single-facet rules' job.
+    let person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
+    let email = Entity::new(EntityKind::Email, "h@example.com", 0.8, "s");
+    let phone = Entity::new(EntityKind::Phone, "+61731234567", 0.8, "s");
+    // A low-confidence Person and Address are not counted as resolved facets, so
+    // adding them does not push a 3-facet footprint over the line.
+    let weak_name = Entity::new(EntityKind::Person, "J Bloggs", 0.30, "s");
+    let weak_addr = Entity::new(EntityKind::Address, "somewhere", 0.30, "s");
+    assert!(
+        super::rules::rule_au_101_identity_resolution(
+            &[person, email, phone, weak_name, weak_addr],
+            "s",
+            0
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn au101_breach_dob_and_gov_id_count_as_facets() {
+    // Name + email are two entity facets; a breach DOB field and a checksum-valid
+    // TFN add the "date of birth" and "government ID" facets → 4 classes, Medium.
+    let person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
+    let mut email = Entity::new(EntityKind::Email, "h@example.com", 0.8, "s");
+    email.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("date_of_birth", "1990-04-12")
+            .with_attr("tfn", "123456782"), // checksum-valid TFN
+    );
+    let r = super::rules::rule_au_101_identity_resolution(&[person, email], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(r[0].description.contains("date of birth"));
+    assert!(r[0].description.contains("government ID"));
+}
+
+#[test]
 fn au099_reverse_geocodes_coordinate_to_locality() {
     // A Brisbane fix → "Brisbane, QLD" with a small distance.
     let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");

@@ -359,6 +359,11 @@ const RULES: &[RuleFn] = &[
     // AU-100: the subject's employer/affiliation from their own AU organisational
     // email domain (.com.au/.gov.au/.edu.au/…), classified by registrant type.
     rule_au_100_au_employer_affiliation,
+    // AU-101: identity-resolution breadth — how many distinct identity facet
+    // classes (name, email, phone, username, address, business id, DOB, gov ID)
+    // are pinned to the subject. The people-centric analogue of AU-098's
+    // residency consensus, measuring breadth rather than single-value depth.
+    rule_au_101_identity_resolution,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

@@ -34,6 +34,10 @@
 //!   location class (coordinate, address, breach record, phone area code) into a
 //!   single jurisdiction verdict, scored by cross-class agreement — the
 //!   gold-standard, corroborated geolocation finding.
+//! * [`rule_au_101_identity_resolution`] — the people-centric analogue of
+//!   AU-098: fuses every independent identity facet class (name, email, phone,
+//!   username, address, business id, DOB, government ID) into a single
+//!   resolution-breadth verdict, the gold-standard subject-resolution finding.
 //!
 //! All run on the confirmed (candidate-filtered, quarantine-excluded)
 //! view, so breach co-occurrence strangers never leak in. See `super`
@@ -994,6 +998,106 @@ pub(in crate::core::correlator) fn rule_au_098_residency_consensus(
              location signal classes agree ({});{dissent}{network_note}. A cross-corroborated \
              jurisdiction verdict.",
             agreeing.join(", ")
+        ),
+        uids.into_iter().collect(),
+        scan_id,
+        ts,
+    )]
+}
+
+// ── AU-101 — Identity resolution (attribute breadth) ─────────────────────────
+
+/// AU-101 — identity-resolution breadth: how many distinct CLASSES of identity
+/// attribute are pinned to the subject.
+///
+/// The people-centric analogue of AU-098's residency consensus. Where AU-098
+/// fuses the *location* signals into one jurisdiction verdict, this fuses the
+/// *identity* signals into one resolution verdict — the breadth of the subject's
+/// confirmed footprint across independent attribute facets. It is deliberately a
+/// BREADTH measure (how many distinct kinds of identifier are nailed down),
+/// distinct from the DEPTH-corroboration of AU-002/003/088 (how many sources
+/// agree on one value): a subject with a name, an email, a phone, an address and
+/// a DOB is *resolved* even if each rests on a single source.
+///
+/// The eight facet classes, each counted at most once:
+/// legal name (a `Person` at confidence ≥ 0.50), email, phone, username, physical
+/// address, business identifier (`AbnAcn`), date of birth (a valid breach DOB
+/// field), and a government ID (a breach gov-ID field passing its validator).
+/// `n < 4` is left to the single-facet rules; `n == 4` is a Medium resolution;
+/// `n ≥ 5` is a High-confidence, cross-facet identity fix — Interpol-grade
+/// subject resolution from the data already collected.
+pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // Each facet class -> the entity uids that establish it, so the finding can
+    // point at the contributing entities and the class is counted at most once.
+    let mut facets: BTreeMap<&'static str, BTreeSet<String>> = BTreeMap::new();
+
+    for e in entities {
+        let label = match e.kind {
+            EntityKind::Person if e.confidence >= 0.50 => "legal name",
+            EntityKind::Email => "email",
+            EntityKind::Phone => "phone",
+            EntityKind::Username => "username",
+            EntityKind::Address if e.confidence >= 0.50 => "physical address",
+            EntityKind::AbnAcn => "business identifier",
+            _ => continue,
+        };
+        facets.entry(label).or_default().insert(e.uid.clone());
+    }
+
+    // Date of birth: a breach DOB field whose value normalises (the AU-073
+    // detector), counted as one facet regardless of how many records carry it.
+    for (raw, _src, uid) in scan_evidence(entities, DOB_KEYS) {
+        if normalise_dob(&raw).is_some() {
+            facets
+                .entry("date of birth")
+                .or_default()
+                .insert(uid.to_string());
+        }
+    }
+
+    // Government ID: any breach gov-ID field passing its validator (the AU-074
+    // detector), counted as a single "government ID" facet across all classes.
+    for gid in GOV_IDS {
+        for (raw, _src, uid) in scan_evidence(entities, gid.keys) {
+            if gid.validate.is_none_or(|v| v(&raw)) {
+                facets
+                    .entry("government ID")
+                    .or_default()
+                    .insert(uid.to_string());
+            }
+        }
+    }
+
+    let n = facets.len();
+    if n < 4 {
+        return Vec::new(); // a thin footprint is the single-facet rules' job
+    }
+
+    let severity = if n >= 5 {
+        Severity::High
+    } else {
+        Severity::Medium
+    };
+
+    let mut uids: BTreeSet<String> = BTreeSet::new();
+    for set in facets.values() {
+        uids.extend(set.iter().cloned());
+    }
+    let classes: Vec<&str> = facets.keys().copied().collect();
+
+    vec![Correlation::new(
+        "AU-101",
+        "Identity resolution breadth",
+        severity,
+        format!(
+            "Subject resolved across {n} independent identity facets ({}) — a cross-facet \
+             identity fix measuring the breadth of the confirmed footprint, distinct from the \
+             single-value corroboration of AU-002/003/088.",
+            classes.join(", ")
         ),
         uids.into_iter().collect(),
         scan_id,
