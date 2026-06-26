@@ -2666,6 +2666,66 @@ fn au090_non_au_or_missing_state_yields_nothing() {
 }
 
 #[test]
+fn au091_postcode_resolves_to_state_and_offline_coord() {
+    let mut e = Entity::new(EntityKind::Person, "Cindy Haynes", 0.9, "s");
+    e.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("postcode", "4000"));
+    e.add_evidence(Evidence::new("see_know", "breach").with_attr("post_code", "4000"));
+    let r = super::rules::rule_au_091_au_postcode_locality(&[e], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-091");
+    assert_eq!(r[0].severity, super::Severity::High); // two independent sources
+    assert!(r[0].description.contains("4000"));
+    assert!(
+        r[0].description.contains("QLD"),
+        "4000 is a Brisbane (QLD) postcode"
+    );
+    assert!(
+        r[0].description.contains("offline"),
+        "an offline coordinate is attached"
+    );
+}
+
+#[test]
+fn au091_single_source_is_medium_and_handles_leading_zero() {
+    // NT postcode 0800 (Darwin) — 4-digit with a leading zero must still resolve.
+    let mut e = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    e.add_evidence(Evidence::new("see_know", "breach").with_attr("postal_code", "0800"));
+    let r = super::rules::rule_au_091_au_postcode_locality(&[e], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(r[0].description.contains("0800"));
+    assert!(r[0].description.contains("NT"));
+}
+
+#[test]
+fn au091_two_postcodes_surface_separately_with_note() {
+    let mut e = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    e.add_evidence(Evidence::new("see_know", "breach").with_attr("postcode", "4000")); // QLD
+    e.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("postcode", "3000")); // VIC
+    let r = super::rules::rule_au_091_au_postcode_locality(&[e], "s", 0);
+    assert_eq!(r.len(), 2);
+    assert!(r.iter().all(|c| c.rule_id == "AU-091"));
+    assert!(
+        r.iter()
+            .any(|c| c.description.contains("4000") && c.description.contains("QLD"))
+    );
+    assert!(
+        r.iter()
+            .any(|c| c.description.contains("3000") && c.description.contains("VIC"))
+    );
+    assert!(r.iter().all(|c| c.description.contains("second residence")));
+}
+
+#[test]
+fn au091_non_au_and_noise_yield_nothing() {
+    let mut e = Entity::new(EntityKind::Person, "John Doe", 0.9, "s");
+    // A US 5-digit zip in a postal_code field, and a non-postcode 4-digit (year).
+    e.add_evidence(Evidence::new("dehashed", "breach").with_attr("postal_code", "90210"));
+    e.add_evidence(Evidence::new("dehashed", "breach").with_attr("postcode", "0001")); // unassigned
+    assert!(super::rules::rule_au_091_au_postcode_locality(&[e], "s", 0).is_empty());
+}
+
+#[test]
 fn au046_resolves_an_alias_to_platform_exposed_identifiers() {
     // The alias confirmed across two platform families (npm=code, reddit=forum),
     // plus an email its npm account exposed → AU-046 links handle to identity.

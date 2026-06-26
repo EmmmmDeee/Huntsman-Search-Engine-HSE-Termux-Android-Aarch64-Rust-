@@ -19,6 +19,9 @@
 //!   licence + address dumps carry it), resolved to a canonical AU jurisdiction
 //!   and cross-checked for agreement vs conflict — a people-centric geo anchor
 //!   that complements the entity-level cross-checks (AU-056/085).
+//! * [`rule_au_091_au_postcode_locality`] — the subject's residential postcode
+//!   mined from a breach `postcode` field, resolved offline to its state and a
+//!   gazetteer coordinate — a locality anchor finer than AU-090's state grain.
 //!
 //! All run on the confirmed (candidate-filtered, quarantine-excluded)
 //! view, so breach co-occurrence strangers never leak in. See `super`
@@ -422,6 +425,123 @@ pub(in crate::core::correlator) fn rule_au_090_au_jurisdiction(
                     "Subject's Australian jurisdiction {state} — asserted by {n} breach \
                      record source(s) ({}){note}; a residency/issuing-state geo anchor \
                      that cross-checks the address/coordinate footprint",
+                    sources.iter().cloned().collect::<Vec<_>>().join(", ")
+                ),
+                entity_uids: uids.into_iter().collect(),
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            }
+        })
+        .collect()
+}
+
+// ── AU-091 — Australian residential locality from a breach postcode field ─────
+
+/// Breach/record evidence keys that carry the subject's postal code. The US
+/// `zip*` keys are excluded — a 5-digit US zip never matches the 4-digit AU
+/// gate below anyway, and dropping them keeps the intent AU-specific.
+const POSTCODE_KEYS: &[&str] = &[
+    "postcode",
+    "post_code",
+    "postal_code",
+    "postalcode",
+    "postcode_au",
+    "pcode",
+];
+
+/// The first 4-digit run in `raw` that resolves to an *assigned* Australian
+/// postcode, with the state/territory it falls in. A 4-digit token is required
+/// (a 5-digit US zip is skipped) and it must land in a real AU postcode range
+/// (via [`crate::util::address_au::state_code`]), so incidental 4-digit noise —
+/// a year, a unit count — yields nothing. Pure.
+fn au_postcode_and_state(raw: &str) -> Option<(String, &'static str)> {
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            let run = &raw[start..i];
+            if run.len() == 4
+                && let Some(state) = crate::util::address_au::state_code(run)
+            {
+                return Some((run.to_string(), state));
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// AU-091 — the subject's Australian residential locality, mined from a breach
+/// `postcode` field and resolved offline.
+///
+/// A postcode is the finest free residential locator in the breach-field family:
+/// where AU-090 surfaces the state, this surfaces the postcode *within* it —
+/// resolved to its state and an offline gazetteer coordinate
+/// ([`crate::util::city_coords::city_coords`], whole-AU-postcode-space, no
+/// network) so the analyst gets a mappable point, not just a number. Two or more
+/// independent sources naming the same postcode is a Verified-grade locality
+/// anchor (High); a single source is a lead (Medium). Each distinct postcode
+/// emits its own finding, so a second residence — or a same-name namesake — is
+/// visible as a separate claim rather than averaged away.
+///
+/// Complements AU-090 (state grain) and the entity-level geo rules by reaching
+/// the raw `postcode` attribute directly, including the records whose postcode
+/// never became an `Address` entity. Runs on the confirmed view.
+///
+/// (AU postcodes overlap New Zealand's 4-digit range; consistent with the rest
+/// of the AU-focused engine, a 4-digit `postcode` in an assigned AU range is
+/// read as Australian.)
+pub(in crate::core::correlator) fn rule_au_091_au_postcode_locality(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // postcode → (state, distinct sources, uids).
+    let mut by_pc: BTreeMap<String, (&'static str, BTreeSet<String>, BTreeSet<String>)> =
+        BTreeMap::new();
+    for (raw, source, uid) in scan_evidence(entities, POSTCODE_KEYS) {
+        let Some((pc, state)) = au_postcode_and_state(&raw) else {
+            continue;
+        };
+        let entry = by_pc
+            .entry(pc)
+            .or_insert_with(|| (state, BTreeSet::new(), BTreeSet::new()));
+        entry.1.insert(source.to_string());
+        entry.2.insert(uid.to_string());
+    }
+
+    let multi = by_pc.len() > 1;
+    by_pc
+        .into_iter()
+        .map(|(pc, (state, sources, uids))| {
+            let n = sources.len();
+            let severity = if n >= 2 {
+                Severity::High
+            } else {
+                Severity::Medium
+            };
+            let coord = crate::util::city_coords::city_coords(&pc)
+                .map(|(lat, lon)| format!(" ≈ {lat:.3},{lon:.3} (offline)"))
+                .unwrap_or_default();
+            let note = if multi {
+                " (one of multiple postcode claims — second residence or same-name namesake)"
+            } else {
+                ""
+            };
+            Correlation {
+                rule_id: "AU-091".into(),
+                rule_name: "Australian postcode locality".into(),
+                severity,
+                description: format!(
+                    "Subject's Australian postcode {pc} ({state}){coord} — asserted by {n} \
+                     breach record source(s) ({}){note}; a residential locality anchor finer \
+                     than the state",
                     sources.iter().cloned().collect::<Vec<_>>().join(", ")
                 ),
                 entity_uids: uids.into_iter().collect(),

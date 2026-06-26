@@ -274,6 +274,10 @@ const RULES: &[RuleFn] = &[
     // state-of-issue field — a residency/jurisdiction geo anchor (sits with the
     // AU-073/074/075 breach-field family it shares breach_pii.rs with).
     rule_au_090_au_jurisdiction,
+    // AU-091: the subject's residential postcode mined from a breach `postcode`
+    // field, resolved offline to its state + gazetteer coordinate — finer than
+    // AU-090's state grain.
+    rule_au_091_au_postcode_locality,
     // Free, offline identity-resolution rules — require no API keys.
     // AU-076: email local-part ↔ username canonical match (zero-API bridge).
     // AU-077: name-derived username independently confirmed on a platform.
