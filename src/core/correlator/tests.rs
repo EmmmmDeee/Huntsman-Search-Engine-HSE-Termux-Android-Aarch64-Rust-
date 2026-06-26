@@ -2990,6 +2990,48 @@ fn au101_breach_dob_and_gov_id_count_as_facets() {
     assert!(r[0].description.contains("government ID"));
 }
 
+// ─── AU-104 tests (Australian bank account / institution exposure) ────────────
+
+#[test]
+fn au104_resolves_bsb_to_institution_medium() {
+    // A CBA BSB in a breach record, no account number → Medium attribution.
+    let mut person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
+    person.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("bsb", "062-000"));
+    let r = super::rules::rule_au_104_bank_account_exposure(&[person], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-104");
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(r[0].description.contains("Commonwealth Bank"));
+    assert!(r[0].description.contains("BSB only"));
+}
+
+#[test]
+fn au104_escalates_to_high_when_account_number_co_occurs() {
+    // BSB + account number = a full, directly-abusable account credential → High.
+    let mut person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
+    person.add_evidence(
+        Evidence::new("stealer_log", "stealer")
+            .with_attr("bank_state_branch", "012003") // ANZ
+            .with_attr("account_number", "123456789"),
+    );
+    let r = super::rules::rule_au_104_bank_account_exposure(&[person], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].severity, super::Severity::High);
+    assert!(r[0].description.contains("ANZ"));
+    assert!(r[0].description.contains("account number"));
+}
+
+#[test]
+fn au104_silent_for_unresolvable_or_absent_bsb() {
+    // An unallocated BSB resolves to no bank → no (potentially wrong) finding.
+    let mut p1 = Entity::new(EntityKind::Person, "X", 0.9, "s");
+    p1.add_evidence(Evidence::new("src", "breach").with_attr("bsb", "999-999"));
+    assert!(super::rules::rule_au_104_bank_account_exposure(&[p1], "s", 0).is_empty());
+    // No BSB field at all → nothing fires.
+    let p2 = Entity::new(EntityKind::Person, "Y", 0.9, "s");
+    assert!(super::rules::rule_au_104_bank_account_exposure(&[p2], "s", 0).is_empty());
+}
+
 #[test]
 fn au099_reverse_geocodes_coordinate_to_locality() {
     // A Brisbane fix → "Brisbane, QLD" with a small distance.

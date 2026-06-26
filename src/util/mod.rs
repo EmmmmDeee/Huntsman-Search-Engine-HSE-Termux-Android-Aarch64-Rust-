@@ -4,6 +4,7 @@ pub mod abn;
 pub mod address_au;
 pub mod atomic_file;
 pub mod breach_sector;
+pub mod bsb;
 pub mod budget;
 pub mod cell_db;
 pub mod circuit_breaker;

@@ -372,6 +372,10 @@ const RULES: &[RuleFn] = &[
     // are pinned to the subject. The people-centric analogue of AU-098's
     // residency consensus, measuring breadth rather than single-value depth.
     rule_au_101_identity_resolution,
+    // AU-104: resolves an exposed Australian BSB to its bank (AusPayNet
+    // allocation), escalating to a full account-credential finding when a bank
+    // account number co-occurs — financial attribution for almost every AU adult.
+    rule_au_104_bank_account_exposure,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

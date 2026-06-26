@@ -38,6 +38,10 @@
 //!   AU-098: fuses every independent identity facet class (name, email, phone,
 //!   username, address, business id, DOB, government ID) into a single
 //!   resolution-breadth verdict, the gold-standard subject-resolution finding.
+//! * [`rule_au_104_bank_account_exposure`] — resolves an exposed Australian BSB
+//!   to its financial institution (the AusPayNet allocation), escalating to a
+//!   full account-credential finding when a bank account number co-occurs — a
+//!   people-centric financial-attribution signal for almost every AU adult.
 //!
 //! All run on the confirmed (candidate-filtered, quarantine-excluded)
 //! view, so breach co-occurrence strangers never leak in. See `super`
@@ -1103,4 +1107,86 @@ pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
         scan_id,
         ts,
     )]
+}
+
+// ── AU-104 — Australian bank account / institution exposure ───────────────────
+
+/// Breach field keys that carry a Bank-State-Branch code.
+const BSB_KEYS: &[&str] = &["bsb", "bank_state_branch", "bsb_number", "bank_bsb"];
+
+/// Breach field keys that carry a bank account number (co-occurrence escalates a
+/// BSB exposure to a full, directly-abusable account credential).
+const BANK_ACCOUNT_KEYS: &[&str] = &[
+    "account_number",
+    "bank_account",
+    "account_no",
+    "acct_number",
+    "acct_no",
+];
+
+/// AU-104 — exposure of an Australian bank account, resolved to its institution.
+///
+/// A BSB is the 6-digit code prefixing every Australian bank account; its
+/// leading digits name the account-holding institution (the AusPayNet
+/// allocation). This mines the `bsb`/`bank_state_branch` fields breach and
+/// stealer records carry, resolves each to its bank via
+/// [`crate::util::bsb::bsb_institution`], and surfaces the financial-institution
+/// attribution — a people-centric signal that applies to almost every Australian
+/// adult. When a bank account NUMBER co-occurs in the same data, the BSB+number
+/// pair is a full, directly-abusable account credential (mandate-fraud /
+/// identity-theft grade), so the finding escalates from Medium to High. Only
+/// BSBs that resolve to a known institution are surfaced (accuracy over
+/// coverage), so the named bank is reliable.
+pub(in crate::core::correlator) fn rule_au_104_bank_account_exposure(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // institution -> (distinct sources, uids).
+    let mut by_bank: BTreeMap<&'static str, SourcesAndUids> = BTreeMap::new();
+    for (raw, source, uid) in scan_evidence(entities, BSB_KEYS) {
+        if let Some(bank) = crate::util::bsb::bsb_institution(&raw) {
+            let entry = by_bank.entry(bank).or_default();
+            entry.0.insert(source.to_string());
+            entry.1.insert(uid.to_string());
+        }
+    }
+    if by_bank.is_empty() {
+        return Vec::new();
+    }
+
+    // A bank account number co-occurring with the BSB is the difference between
+    // "we know their bank" and "we hold their account credential".
+    let has_account = !scan_evidence(entities, BANK_ACCOUNT_KEYS).is_empty();
+
+    by_bank
+        .into_iter()
+        .map(|(bank, (sources, uids))| {
+            let n = sources.len();
+            let (severity, exposure) = if has_account {
+                (
+                    Severity::High,
+                    "with an account number — a full, directly-abusable bank-account credential",
+                )
+            } else {
+                (
+                    Severity::Medium,
+                    "BSB only — financial-institution attribution",
+                )
+            };
+            Correlation::new(
+                "AU-104",
+                "Australian bank account exposure",
+                severity,
+                format!(
+                    "Subject banks with {bank} — an Australian BSB exposed across {n} source(s) \
+                     ({}); {exposure}.",
+                    sources.iter().cloned().collect::<Vec<_>>().join(", ")
+                ),
+                uids.into_iter().collect(),
+                scan_id,
+                ts,
+            )
+        })
+        .collect()
 }

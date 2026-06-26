@@ -225,6 +225,11 @@ fn core_does_not_import_util_directly() {
                 // classifier (no I/O), same leaf category as `state_code`. AU-100
                 // uses it to type the subject's organisational email domain.
                 && !line.contains("util::address_au::au_domain_registrant")
+                // Pure, dependency-free Australian BSB → financial-institution
+                // resolver (a curated AusPayNet prefix table; no state, no I/O),
+                // same leaf category as `state_code`. AU-104 uses it to name the
+                // bank behind an exposed BSB in breach/stealer data.
+                && !line.contains("util::bsb::bsb_institution")
         })
         .collect();
     assert!(
