@@ -75,3 +75,46 @@ use super::*;
         // matches before postcode fallback even fires.
         assert!(city_coords("Brisbane, QLD 4000").is_some());
     }
+
+    #[test]
+    fn embedded_postcode_resolves_when_suburb_is_untabulated() {
+        use crate::util::geohash::haversine_km;
+        // Maleny is NOT in CITIES, but its postcode 4552 IS in the exact table.
+        // A full address string must still earn the suburb centroid offline.
+        let (lat, lon) = city_coords("12 Smith St, Maleny QLD 4552")
+            .expect("a postcode-bearing AU address resolves offline");
+        // ~Maleny / Sunshine Coast hinterland (4552 centroid).
+        assert!(haversine_km(lat, lon, -26.729, 152.7554) < 5.0);
+    }
+
+    #[test]
+    fn trailing_street_number_is_not_mistaken_for_the_postcode() {
+        // A 4-digit STREET number leads, the postcode trails. The last valid
+        // token (4217 = Gold Coast) must win over the first (4000 = Brisbane).
+        // Suburb deliberately untabulated so the postcode path is exercised.
+        use crate::util::geohash::haversine_km;
+        let (lat, lon) = city_coords("4000 Pacific Hwy, Tugun-Vista QLD 4217")
+            .expect("address with a leading 4-digit street number still resolves");
+        // Gold Coast region (42xx ≈ -28.01,153.40), NOT Brisbane (40xx ≈ -27.47).
+        assert!(
+            haversine_km(lat, lon, -28.01, 153.40) < haversine_km(lat, lon, -27.47, 153.03),
+            "resolved to the trailing postcode 4217 (Gold Coast), not the street number 4000"
+        );
+    }
+
+    #[test]
+    fn embedded_long_tail_postcode_falls_back_to_region() {
+        // A NSW north-coast suburb absent from CITIES and from the exact postcode
+        // table still resolves to its REGION centroid via the leading two digits,
+        // so it never silently drops out of the geo footprint.
+        let (lat, _lon) = city_coords("3 Ocean Ave, Smalltown NSW 2470")
+            .expect("an untabulated AU address still resolves at region grain");
+        // 24xx → NSW north coast band (negative latitude, well south of the equator).
+        assert!(lat < 0.0, "an AU region centroid is in the southern hemisphere");
+    }
+
+    #[test]
+    fn non_au_address_with_no_postcode_still_none() {
+        // No AU postcode, no tabulated city → still a clean miss (no false fix).
+        assert!(city_coords("221B Baker Street, Clobberville").is_none());
+    }

@@ -25,6 +25,15 @@ pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
     if trimmed.len() == 4 && trimmed.bytes().all(|b| b.is_ascii_digit()) {
         return postcode_coords(trimmed).or_else(|| au_postcode_region(trimmed));
     }
+    // Full address string with no tabulated suburb: pull the embedded AU
+    // postcode (`"12 Smith St, Maleny QLD 4552"`) and resolve it offline. This
+    // closes the common gap where a real address carries a resolvable postcode
+    // but its suburb is in the long tail CITIES doesn't tabulate — the address
+    // still earns a coordinate (exact suburb centroid when known, else region
+    // grain) instead of silently dropping out of the geo footprint.
+    if let Some(pc) = au_postcode_in(trimmed) {
+        return postcode_coords(pc).or_else(|| au_postcode_region(pc));
+    }
     None
 }
 
@@ -148,6 +157,22 @@ pub fn au_postcode_region(postcode: &str) -> Option<(f64, f64)> {
         .iter()
         .find(|(pre, _, _)| *pre == prefix)
         .map(|&(_, lat, lon)| (lat, lon))
+}
+
+/// Extract the AU postcode embedded in a free-text address string.
+///
+/// An AU address places its 4-digit postcode LAST (`"… SUBURB STATE 4000"`), so
+/// this scans every run of consecutive digits and returns the last 4-digit token
+/// that is a real assigned AU postcode ([`crate::util::address_au::state_for_postcode`]).
+/// Taking the last *valid* token is what keeps a 4-digit STREET number (which
+/// comes first) from being mistaken for the postcode — `"4000 Gold Coast Hwy,
+/// … QLD 4217"` yields `4217`, not `4000` — and the assigned-range gate rejects
+/// incidental 4-digit noise (a year, a unit count) outside any postcode span.
+/// Returns `None` when the string carries no assigned AU postcode. Pure; no I/O.
+fn au_postcode_in(addr: &str) -> Option<&str> {
+    addr.split(|c: char| !c.is_ascii_digit())
+        .filter(|t| t.len() == 4)
+        .rfind(|t| crate::util::address_au::state_for_postcode(t).is_some())
 }
 
 const CITIES: &[(&str, f64, f64)] = &[
