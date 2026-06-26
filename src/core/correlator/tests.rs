@@ -3314,6 +3314,65 @@ fn au087_rides_along_named_person_and_covers_edu_domains() {
     );
 }
 
+// ─── Authoritative AU register confirmation (AU-088) ─────────────────────────
+
+#[cfg(test)]
+fn ent_from_source(kind: EntityKind, value: &str, source: &str) -> Entity {
+    let mut e = Entity::new(kind, value, 0.70, "s");
+    e.add_evidence(Evidence::new(source, "register record"));
+    e
+}
+
+#[test]
+fn au088_single_register_is_high_confirmation() {
+    // One authoritative register returning subject data is a High confirmation.
+    let p = ent_from_source(EntityKind::Person, "Jane Citizen", "ahpra");
+    let hits = super::rules::rule_au_088_authoritative_register_confirmation(&[p], "s", 0);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].rule_id, "AU-088");
+    assert_eq!(hits[0].severity, super::Severity::High);
+    assert!(hits[0].description.contains("AHPRA"));
+    assert!(hits[0].description.contains("1 authoritative"));
+}
+
+#[test]
+fn au088_two_distinct_registers_is_critical() {
+    // Two DIFFERENT authorities agreeing is the strongest identity signal → Critical.
+    let p = ent_from_source(EntityKind::Person, "Jane Citizen", "ahpra");
+    let o = ent_from_source(EntityKind::Person, "Jane Citizen", "au_electoral");
+    let hits = super::rules::rule_au_088_authoritative_register_confirmation(&[p, o], "s", 0);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].severity, super::Severity::Critical);
+    assert!(hits[0].description.contains("2 authoritative"));
+    assert!(hits[0].description.contains("AHPRA") && hits[0].description.contains("electoral"));
+}
+
+#[test]
+fn au088_asic_subfeeds_collapse_to_one_authority() {
+    // Three ASIC feeds are ONE issuing authority — High, not Critical.
+    let a = ent_from_source(EntityKind::Person, "Jo Director", "asic_persons");
+    let b = ent_from_source(EntityKind::Organisation, "Acme Pty Ltd", "asic_director");
+    let c = ent_from_source(EntityKind::Person, "Jo Director", "asic_banned_orgs");
+    let hits = super::rules::rule_au_088_authoritative_register_confirmation(&[a, b, c], "s", 0);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(
+        hits[0].severity,
+        super::Severity::High,
+        "3 ASIC feeds collapse to a single authority"
+    );
+    assert!(hits[0].description.contains("1 authoritative"));
+}
+
+#[test]
+fn au088_non_register_sources_do_not_fire() {
+    // Search-engine / name-derivation hits are not authoritative registers.
+    let p = ent_from_source(EntityKind::Person, "Jane Citizen", "search_engines");
+    let e = ent_from_source(EntityKind::Email, "jane@gmail.com", "name_intel");
+    assert!(
+        super::rules::rule_au_088_authoritative_register_confirmation(&[p, e], "s", 0).is_empty()
+    );
+}
+
 // ─── Geo convex footprint (AU-052) ───────────────────────────────────────────
 
 #[cfg(test)]

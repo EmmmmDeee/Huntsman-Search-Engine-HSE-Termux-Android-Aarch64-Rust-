@@ -1343,3 +1343,89 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
     }
     out
 }
+
+/// Authoritative Australian public registers — the `source` string each register
+/// module stamps on its evidence, mapped to the issuing AUTHORITY. The ASIC
+/// sub-modules deliberately collapse to one authority so three ASIC feeds count
+/// as a SINGLE independent confirmation, not three. Adding a new AU register
+/// module here makes it count toward AU-088 with no other change.
+const AUTHORITATIVE_AU_REGISTERS: &[(&str, &str)] = &[
+    ("ahpra", "AHPRA (health-practitioner register)"),
+    ("asic_persons", "ASIC"),
+    ("asic_director", "ASIC"),
+    ("asic_banned_orgs", "ASIC"),
+    ("au_electoral", "AU electoral roll"),
+    ("au_property", "AU property / title register"),
+    ("austlii", "AustLII (court & tribunal records)"),
+    ("acnc_charities", "ACNC (charities register)"),
+    ("abn_lookup", "Australian Business Register (ABN)"),
+];
+
+/// The issuing authority for an evidence `source`, or `None` when the source is
+/// not an authoritative AU register.
+fn au_register_authority(source: &str) -> Option<&'static str> {
+    AUTHORITATIVE_AU_REGISTERS
+        .iter()
+        .find(|(src, _)| *src == source)
+        .map(|(_, authority)| *authority)
+}
+
+/// AU-088 — Authoritative AU public-register confirmation.
+///
+/// The affirmative identity-verification finding for an Australian subject. Every
+/// entity carrying evidence from an authoritative AU public register — AHPRA,
+/// ASIC, the electoral roll, the property / title register, AustLII, the ACNC,
+/// the Australian Business Register — is government-grounded fact, not a scraped
+/// or brokered listing. This rule counts how many DISTINCT register authorities
+/// independently returned data on the subject and fires once per scan: a single
+/// register is a `High` confirmation, two or more is `Critical`. Multi-register
+/// agreement is the strongest identity corroboration HSE can assert, and the
+/// cleanest way to separate the real subject from the search-engine namesakes a
+/// broad name scan drags in — the affirmative complement to AU-054 (broker
+/// listings) and AU-075 (breach-stated associates).
+///
+/// Operates on the already-quarantine-filtered confirmed set (the caller drops
+/// `candidate`s), so a namesake's speculative register hit can't manufacture a
+/// false confirmation. The ASIC sub-feeds collapse to one authority (see
+/// [`AUTHORITATIVE_AU_REGISTERS`]). Deterministic: authorities and linked uids
+/// are emitted in sorted (`BTreeSet`) order.
+pub(in crate::core::correlator) fn rule_au_088_authoritative_register_confirmation(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::BTreeSet;
+    let mut authorities: BTreeSet<&'static str> = BTreeSet::new();
+    let mut uids: BTreeSet<String> = BTreeSet::new();
+    for e in entities {
+        for ev in &e.evidence {
+            if let Some(authority) = au_register_authority(ev.source.as_str()) {
+                authorities.insert(authority);
+                uids.insert(e.uid.clone());
+            }
+        }
+    }
+    if authorities.is_empty() {
+        return Vec::new();
+    }
+    let labels: Vec<&str> = authorities.iter().copied().collect();
+    let severity = if authorities.len() >= 2 {
+        Severity::Critical
+    } else {
+        Severity::High
+    };
+    vec![Correlation::new(
+        "AU-088",
+        "Authoritative AU register confirmation",
+        severity,
+        format!(
+            "Subject corroborated by {} authoritative Australian public register(s): {} — \
+             government-grounded identity, far stronger than any scraped or brokered listing",
+            authorities.len(),
+            labels.join(", ")
+        ),
+        uids.into_iter().collect(),
+        scan_id,
+        ts,
+    )]
+}

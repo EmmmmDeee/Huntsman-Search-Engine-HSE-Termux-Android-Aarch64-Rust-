@@ -312,6 +312,9 @@ const RULES: &[RuleFn] = &[
     // AU-087: ≥2 identities share a specific (non-freemail) organisational email
     // domain — an employer / university / agency affiliation surface.
     rule_au_087_shared_org_email_domain,
+    // AU-088: subject confirmed by N authoritative AU public registers (AHPRA,
+    // ASIC, electoral, property, AustLII, ACNC, ABR) — government-grounded ID.
+    rule_au_088_authoritative_register_confirmation,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
