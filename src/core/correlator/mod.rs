@@ -309,6 +309,9 @@ const RULES: &[RuleFn] = &[
     rule_au_085_phone_region_jurisdiction,
     // AU-086: a name-derived email guess independently confirmed in real data.
     rule_au_086_name_derived_email_confirmed,
+    // AU-087: ≥2 identities share a specific (non-freemail) organisational email
+    // domain — an employer / university / agency affiliation surface.
+    rule_au_087_shared_org_email_domain,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
@@ -328,7 +331,7 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
 }
 
 /// Wall-clock budget for the FINALISE correlator pass (entity rules + the
-/// graph-aware relation rules share it). The 74 rules are near-instant on a
+/// graph-aware relation rules share it). The rule set is near-instant on a
 /// normal scan, but a very large recalled entity/relation graph — a deep
 /// `--expand-all-identities` sweep that pulls a big prior graph in via recall —
 /// can push the graph-traversal rules (transitive closure, clustering) into

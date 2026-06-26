@@ -3243,6 +3243,77 @@ fn au051_common_surname_is_a_high_lead_not_critical_kin() {
     assert!(hits[0].description.contains("common surname"));
 }
 
+// ─── Shared organisational email domain (AU-087) ─────────────────────────────
+
+#[cfg(test)]
+fn org_email_ent(addr: &str) -> Entity {
+    Entity::new(EntityKind::Email, addr, 0.72, "s")
+}
+
+#[test]
+fn au087_fires_on_two_addresses_at_one_org_domain() {
+    // Two distinct addresses at a specific (non-freemail) organisational domain
+    // form an employer / institution affiliation surface.
+    let e1 = org_email_ent("john.smith@acme.com.au");
+    let e2 = org_email_ent("jane.doe@acme.com.au");
+    let (u1, u2) = (e1.uid.clone(), e2.uid.clone());
+    let hits = super::rules::rule_au_087_shared_org_email_domain(&[e1, e2], "s", 0);
+    assert_eq!(hits.len(), 1, "one org-domain affiliation cluster");
+    let c = &hits[0];
+    assert_eq!(c.rule_id, "AU-087");
+    assert_eq!(c.severity, super::Severity::Medium);
+    assert!(c.description.contains("acme.com.au"));
+    assert!(c.entity_uids.contains(&u1) && c.entity_uids.contains(&u2));
+}
+
+#[test]
+fn au087_excludes_freemail_and_isp_webmail() {
+    // Freemail (gmail) and ISP webmail (bigpond) are millions-strong shared
+    // services, not an organisation — two addresses on either never fire.
+    let gmail = vec![
+        org_email_ent("alice@gmail.com"),
+        org_email_ent("bob@gmail.com"),
+    ];
+    assert!(super::rules::rule_au_087_shared_org_email_domain(&gmail, "s", 0).is_empty());
+    let isp = vec![
+        org_email_ent("a@bigpond.com"),
+        org_email_ent("b@bigpond.com"),
+    ];
+    assert!(super::rules::rule_au_087_shared_org_email_domain(&isp, "s", 0).is_empty());
+}
+
+#[test]
+fn au087_needs_two_distinct_addresses() {
+    // A single address at an org domain is not a shared surface.
+    let one = vec![org_email_ent("solo@acme.com.au")];
+    assert!(super::rules::rule_au_087_shared_org_email_domain(&one, "s", 0).is_empty());
+    // The same address in different case (recalled + re-discovered) is ONE
+    // distinct address after normalisation, not a cluster of two.
+    let dup = vec![
+        org_email_ent("solo@acme.com.au"),
+        org_email_ent("SOLO@acme.com.au"),
+    ];
+    assert!(super::rules::rule_au_087_shared_org_email_domain(&dup, "s", 0).is_empty());
+}
+
+#[test]
+fn au087_rides_along_named_person_and_covers_edu_domains() {
+    // A university (.edu.au) domain fires, and a Person whose name derives one of
+    // the local-parts is linked — the affiliation names a real person.
+    let e1 = org_email_ent("j.citizen@uq.edu.au");
+    let e2 = org_email_ent("m.lee@uq.edu.au");
+    let mut person = Entity::new(EntityKind::Person, "Jane Citizen", 0.62, "s");
+    person.tag("au");
+    let puid = person.uid.clone();
+    let hits = super::rules::rule_au_087_shared_org_email_domain(&[e1, e2, person], "s", 0);
+    assert_eq!(hits.len(), 1);
+    assert!(hits[0].description.contains("uq.edu.au"));
+    assert!(
+        hits[0].entity_uids.contains(&puid),
+        "the named affiliate rides along in the firing"
+    );
+}
+
 // ─── Geo convex footprint (AU-052) ───────────────────────────────────────────
 
 #[cfg(test)]

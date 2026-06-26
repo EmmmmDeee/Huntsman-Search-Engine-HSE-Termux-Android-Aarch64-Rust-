@@ -442,3 +442,110 @@ pub(in crate::core::correlator) fn rule_au_077_shared_hosting_ip(
     }
     out
 }
+
+/// AU-087 — Shared organisational email domain (institutional / professional affiliation).
+///
+/// Groups confirmed `Email` entities by their domain and fires when two or more
+/// DISTINCT addresses share one SPECIFIC organisational domain — a company, a
+/// university (`*.edu.au`), or a government agency (`*.gov.au`). Freemail and ISP
+/// webmail (gmail / bigpond / …) and mega / shared infrastructure are excluded via
+/// [`crate::core::scan::is_noncentral_domain`], so the domain that survives is an
+/// actual organisation: the addresses on it are an employer / institution
+/// affiliation surface, and the people whose names derive those local-parts are
+/// professionally or institutionally linked.
+///
+/// This is the email-domain analogue of AU-049 (shared address) and AU-050 (shared
+/// phone): a different seam onto the subject's network — colleagues and
+/// co-affiliates the residence / phone rules never reach, and one that applies to
+/// the average employed or studying Australian. Medium severity, because a shared
+/// org domain is an *affiliation surface*, not a confirmed person-to-person tie:
+/// the two addresses may be one person's work aliases or two colleagues', and
+/// either reading is useful intelligence about where the subject is affiliated.
+///
+/// Precision: the domain must be specific (`!is_noncentral_domain`, contains a
+/// dot) and the cluster must hold ≥2 distinct addresses. Confirmed entities only
+/// (the caller quarantines `candidate`s), so a broad name search's namesake
+/// emails can't manufacture a false affiliation. Deterministic: domains and the
+/// displayed addresses are iterated in sorted (`BTreeMap`/`BTreeSet`) order.
+pub(in crate::core::correlator) fn rule_au_087_shared_org_email_domain(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::{BTreeMap, BTreeSet};
+    // Cheap precondition: a cluster needs ≥2 emails, so fewer than two Email
+    // entities anywhere means no shared domain can form.
+    if entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .count()
+        < 2
+    {
+        return Vec::new();
+    }
+    // domain → (distinct addresses, uids to link).
+    let mut by_domain: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)> = BTreeMap::new();
+    for e in entities.iter().filter(|e| e.kind == EntityKind::Email) {
+        let val = e.value.trim().to_ascii_lowercase();
+        let Some((local, domain)) = val.split_once('@') else {
+            continue;
+        };
+        // A real address needs a local-part and a dotted domain; the domain must
+        // be a specific organisation, not freemail / ISP webmail / shared infra.
+        if local.is_empty()
+            || !domain.contains('.')
+            || crate::core::scan::is_noncentral_domain(domain)
+        {
+            continue;
+        }
+        let entry = by_domain.entry(domain.to_string()).or_default();
+        entry.0.insert(val.clone());
+        entry.1.insert(e.uid.clone());
+    }
+
+    let mut out = Vec::new();
+    for (domain, (addresses, mut uids)) in by_domain {
+        if addresses.len() < 2 {
+            continue;
+        }
+        // Ride-along: link any Person whose name derives one of the local-parts —
+        // the actual people affiliated at this organisation (same dictionary-free
+        // identity overlap the engine's wrong-identity gate uses), so the firing
+        // names people, not just addresses.
+        for p in entities.iter().filter(|e| e.kind == EntityKind::Person) {
+            let matches = addresses.iter().any(|addr| {
+                let local = addr.split('@').next().unwrap_or(addr);
+                crate::core::scan::identity_overlaps(&p.value, local)
+            });
+            if matches {
+                uids.insert(p.uid.clone());
+            }
+        }
+        // Show a bounded, sorted sample so a company-wide breach dump doesn't emit
+        // a multi-kilobyte description; the link set still carries every uid.
+        let shown: Vec<&str> = addresses.iter().map(String::as_str).take(6).collect();
+        let more = addresses.len().saturating_sub(shown.len());
+        let suffix = if more > 0 {
+            format!(" (+{more} more)")
+        } else {
+            String::new()
+        };
+        out.push(Correlation::new(
+            "AU-087",
+            "Shared organisational email domain",
+            Severity::Medium,
+            format!(
+                "{} addresses share the organisational domain '{}': {}{} — an employer / \
+                 institution affiliation surface linking the people behind them",
+                addresses.len(),
+                domain,
+                shown.join(", "),
+                suffix
+            ),
+            uids.into_iter().collect(),
+            scan_id,
+            ts,
+        ));
+    }
+    out
+}
