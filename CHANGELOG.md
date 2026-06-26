@@ -10,6 +10,30 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+- **Scans no longer freeze at the seed→expansion boundary.** The live per-round
+  correlation pass was unbudgeted on the assumption the working set is "small";
+  with `feature.recall` injecting a large prior graph it ran for many seconds
+  every round and presented as a frozen scan stuck in `Running`. The per-round
+  pass now defers to the authoritative wall-clock-bounded finalise pass above a
+  working-set threshold, so a round can never stall. (Validated end-to-end: a
+  fresh `Matthew Diegmann` self-test now expands name→email/username/address and
+  reaches a terminal status instead of hanging.)
+
+### Changed
+- **`feature.recall` now defaults OFF — every scan is a fresh start.** Prior-scan
+  entities are no longer pre-loaded into a new scan's working set (the source of
+  "archaic data in current scans"); the store still fully RETAINS everything and
+  cross-scan corroboration still runs. `hse config feature.recall on` to opt in.
+
+### Added
+- **Per-round reconsideration — "return to old data when downstream adds
+  credibility".** The free/offline re-promotion passes (geo-corroborated family,
+  multi-pathway corroboration) now run at the start of every expansion round, not
+  only at finalise, so a lead the scan had set aside is lifted above the
+  expansion floor and expands as soon as later rounds make it credible —
+  autonomously, idempotently.
+
 ## [1.12.0] — 2026-06-26
 
 ### Added

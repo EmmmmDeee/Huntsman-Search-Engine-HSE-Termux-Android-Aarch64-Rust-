@@ -20,9 +20,10 @@ fn default_for_non_feature_key_is_true() {
 
 #[test]
 fn default_for_feature_keys_matches_registration() {
-    // feature.regional defaults OFF; feature.recall defaults ON.
+    // feature.regional and feature.recall both default OFF (recall off = every
+    // scan is a fresh start; no archaic prior-scan data injected).
     assert!(!default_for("feature.regional"));
-    assert!(default_for("feature.recall"));
+    assert!(!default_for("feature.recall"));
 }
 
 #[test]

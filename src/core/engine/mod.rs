@@ -26,7 +26,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 mod circuit;
 mod dispatch;
@@ -382,15 +382,17 @@ impl ScanEngine {
             entity_map.insert(anchor.uid.clone(), anchor);
         }
 
-        // ─── Recall: the persistent database as a source ────────────────────
-        // Pre-populate the working set with everything prior scans of this
-        // target already discovered, so the local store feeds the seed round,
-        // every expansion round, and cross-scan corroboration — the database is
-        // a SOURCE, not just a sink. Recalled nodes merge by uid with whatever
-        // live modules re-discover this scan. Universal toggle `feature.recall`
-        // (default on); `hse config feature.recall off` for a leave-no-memory
-        // session. Skipped on a pre-cancelled scan (clean no-op invariant).
-        if !ctx.cancel.is_cancelled() && crate::util::settings::get_bool("feature.recall", true) {
+        // ─── Recall: the persistent database as a source (opt-in) ───────────
+        // When enabled, pre-populate the working set with everything prior scans
+        // of this target already discovered, so the local store feeds the seed
+        // round and every expansion round. Universal toggle `feature.recall`,
+        // **default OFF**: every scan is a fresh start showing only what THIS run
+        // found — no archaic prior-scan entities injected (which also keeps the
+        // per-round correlation pass small). The store still RETAINS everything
+        // and cross-scan corroboration still runs at finalise; recall only
+        // controls pre-loading. `hse config feature.recall on` to opt in. Skipped
+        // on a pre-cancelled scan (clean no-op invariant).
+        if !ctx.cancel.is_cancelled() && crate::util::settings::get_bool("feature.recall", false) {
             let recalled =
                 self.recall_prior_entities(&target, &scan.id, scan.options.allow_live_sensors);
             let n = recalled.len();
@@ -926,6 +928,15 @@ impl ScanEngine {
         .map_err(|e| crate::core::error::Error::Other(e.to_string()))?
     }
 
+    /// Working-set ceiling for the LIVE incremental correlation pass. Above this,
+    /// the per-round streaming pass is deferred to the authoritative finalise pass
+    /// (which is wall-clock-bounded) so a large recalled / breach-heavy graph can't
+    /// make a single round run for seconds and present as a frozen scan. Generous:
+    /// a normal scan stays well under it and streams correlations live every round;
+    /// only a pathologically large set defers. Larger than a typical scan's entity
+    /// count so live streaming is the norm, not the exception.
+    const INCREMENTAL_CORRELATE_MAX_ENTITIES: usize = 400;
+
     /// Live cross-correlation during ingestion. Evaluates the entity rules
     /// against an in-memory snapshot of the working set (no store round-trip)
     /// and streams any newly-fired correlation immediately, persisting it as it
@@ -952,6 +963,24 @@ impl ScanEngine {
         // new correlations this round" rather than unwind through finalize and lose
         // the scan. Entities are already checkpointed and persisted, so nothing
         // discovered is lost — only this round's correlation pass is skipped.
+        // Bound the per-round live pass by working-set size. It is UNBUDGETED on
+        // the assumption the set is "small" (the streaming correlations must be
+        // reproducible, so a wall-clock cut-off is avoided here), but
+        // `feature.recall` (or a deep breach sweep) can make it large, and the
+        // unbounded entity-rule pass then runs for seconds EVERY round — between
+        // the seed round and the first expansion round — which reads to the
+        // operator as the scan freezing right where it should start enumerating.
+        // Above the threshold, defer this round's streaming pass; the
+        // authoritative, complete, `CORRELATOR_BUDGET`-bounded pass still runs at
+        // finalise, so nothing is lost — only the live preview is deferred.
+        if entities.len() > Self::INCREMENTAL_CORRELATE_MAX_ENTITIES {
+            debug!(
+                scan_id,
+                entities = entities.len(),
+                "live correlation deferred to finalise (working set above the live-pass threshold)"
+            );
+            return;
+        }
         let produced = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             crate::core::correlator::correlate_entities(entities, scan_id)
         }))
@@ -1362,6 +1391,36 @@ impl ScanEngine {
                     },
                 );
                 return stop;
+            }
+            // ── Reconsideration: "return to old data when downstream adds
+            // credibility" ──────────────────────────────────────────────────
+            // Before selecting this round's candidates, re-run the free/offline
+            // promotion passes over the WHOLE accumulated working set, so any
+            // prior entity that the evidence gathered since now corroborates is
+            // lifted in place (a corroboration tag + evidence → higher
+            // `c_effective`) ABOVE the expansion floor and is therefore picked up
+            // as a candidate THIS round — instead of that re-promotion only
+            // happening at finalise (too late to expand it). This is the
+            // autonomous mechanism that lets the scan come back to a lead it had
+            // set aside once later rounds make it credible. Idempotent
+            // (tag-guarded — a promotion never double-stamps across rounds) and
+            // bounded by working-set size exactly like the live correlation pass,
+            // so it can never itself stall a round.
+            if entity_map.len() <= Self::INCREMENTAL_CORRELATE_MAX_ENTITIES {
+                let mut snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+                let promoted = promote_geo_corroborated_family(&mut snapshot)
+                    + promote_multipath_corroborated(&mut snapshot, relations.as_slice());
+                if promoted > 0 {
+                    for e in snapshot {
+                        entity_map.insert(e.uid.clone(), e);
+                    }
+                    debug!(
+                        scan_id,
+                        promoted,
+                        round = depth,
+                        "reconsidered prior data — re-promoted candidates on new downstream corroboration"
+                    );
+                }
             }
             // Snapshot the entity set at round start — entities discovered
             // during this round will be expansion candidates in the next round,

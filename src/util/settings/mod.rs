@@ -104,11 +104,15 @@ pub const FEATURE_TOGGLES: &[(&str, bool)] = &[
     // scan; the per-scan `--regional` flag still forces it on for one scan.
     ("feature.regional", false),
     // Recall prior-scan findings from the local database at scan start, so the
-    // store acts as a SOURCE for every scan and expansion round (not just a
-    // sink). Default ON — total retention + reuse of collected intel. Turn off
-    // (`hse config feature.recall off`) for a leave-no-memory session that must
-    // ignore everything previously gathered.
-    ("feature.recall", true),
+    // store can act as a SOURCE for a scan (not just a sink). Default **OFF** —
+    // every scan is a FRESH START: it shows only what THIS run discovered, with
+    // no archaic prior-scan entities injected into the working set (which also
+    // kept the per-round correlation pass small and fast). The data is still
+    // fully RETAINED in the store and reused by cross-scan corroboration at
+    // finalise; recall only controls whether prior entities are *pre-loaded* into
+    // a new scan. Turn it on (`hse config feature.recall on`) for a session that
+    // should build on everything previously gathered.
+    ("feature.recall", false),
     // Autonomous self-update: background task checks for upstream commits every
     // 6 h and applies them automatically when ON. The binary restarts in-place
     // via exec(2). Turn off to manage updates manually (`hse update`).
