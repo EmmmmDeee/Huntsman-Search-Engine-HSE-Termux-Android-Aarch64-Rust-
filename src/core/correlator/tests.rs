@@ -5993,6 +5993,42 @@ fn au076_email_username_localpart_bridge_fires_on_canonical_match() {
 }
 
 #[test]
+fn au076_consolidates_permutation_flood_into_one_per_canonical_handle() {
+    use super::rules::rule_au_076_email_username_localpart_bridge;
+    // A name seed's flood: many email forms + many username forms that all
+    // canonicalise to the SAME handle "matthewdiegmann". A naive per-pair emission
+    // would fire len(emails)×len(usernames) High findings; consolidation must emit
+    // exactly ONE, listing every form, with no value lost.
+    let mut ents = Vec::new();
+    for host in ["yahoo.com", "msn.com", "gmail.com", "outlook.com"] {
+        ents.push(Entity::new(
+            EntityKind::Email,
+            format!("matthew.diegmann@{host}"),
+            0.3,
+            "s",
+        ));
+    }
+    for u in ["matthew.diegmann", "matthewdiegmann", "matthew_diegmann"] {
+        ents.push(Entity::new(EntityKind::Username, u, 0.3, "s"));
+    }
+    let r = rule_au_076_email_username_localpart_bridge(&ents, "s", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "the 4×3 permutation flood must consolidate to ONE finding, got {}",
+        r.len()
+    );
+    assert_eq!(r[0].rule_id, "AU-076");
+    assert_eq!(r[0].severity, super::Severity::High);
+    // No value is lost: the consolidated finding names every form and links them.
+    assert!(r[0].description.contains("matthewdiegmann"));
+    assert!(r[0].description.contains("4 email form"));
+    assert!(r[0].description.contains("3 username form"));
+    // All 7 contributing entities are referenced for pivoting.
+    assert_eq!(r[0].entity_uids.len(), 7);
+}
+
+#[test]
 fn au077_name_derived_username_confirmed_fires_on_predict_plus_confirm() {
     use super::rules::rule_au_077_name_derived_username_confirmed;
     // Username that was BOTH predicted by name_intel and confirmed by github_user.

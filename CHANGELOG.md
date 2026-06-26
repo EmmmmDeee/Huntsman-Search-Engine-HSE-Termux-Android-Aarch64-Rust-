@@ -11,6 +11,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Changed
+- **AU-076 (email↔username local-part bridge) is consolidated by canonical
+  handle.** A name seed derives many email permutations and many username forms
+  that all canonicalise to the same handle, so the per-pair emission produced an
+  N×M flood of identical High findings (observed: 80 rows for one subject). It now
+  emits ONE finding per canonical handle, listing every email form and every
+  username form it unifies — the full identity cluster in a single, more useful
+  row, no value lost. Validated: the same `Matthew Diegmann` scan dropped AU-076
+  from 80 → 2; combined with the AU-063 consolidation, total correlations fell
+  501 → 41 (≈92% noise removed) with every finding preserved.
 - **AU-063 (single-pathway corroboration gap) is consolidated — Interpol-grade
   signal-to-noise.** It emitted one Low finding per fragile link, so a broad name
   scan's dozens of low-confidence permutation links flooded the dossier (observed:

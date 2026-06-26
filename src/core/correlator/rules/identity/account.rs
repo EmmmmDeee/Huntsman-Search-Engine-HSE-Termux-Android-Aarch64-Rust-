@@ -724,68 +724,115 @@ pub(in crate::core::correlator) fn rule_au_055_primary_source_accounts(
 /// spurious links between unrelated entities. Severity: High because the
 /// conjunction is highly specific — the same canonical string appearing in two
 /// entity kinds from independent sources is not coincidental.
+///
+/// **Consolidated by canonical handle.** A name seed derives many email
+/// permutations (`x@gmail.com`, `x@yahoo.com`, …) and many username forms
+/// (`x`, `x.y`, `x_y`) that all canonicalise to the SAME handle, so a naive
+/// per-pair emission produced an N×M flood of identical High findings (observed:
+/// 80 rows for one subject). This emits ONE finding per canonical handle, listing
+/// every email form and every username form it unifies — the full identity
+/// cluster in a single row, with no value lost.
 pub(in crate::core::correlator) fn rule_au_076_email_username_localpart_bridge(
     entities: &[Entity],
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    // Pre-build the username index: canonical_handle → (entity, original value).
-    // Filter generic handles up front so none of the inner loop even considers them.
-    let usernames: Vec<(String, &Entity)> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Username)
-        .filter_map(|e| {
-            let ch = canonical_handle(&e.value);
-            // At least 4 chars and not a generic/role token.
-            if ch.len() >= 4 && !is_generic_handle(&ch) {
-                Some((ch, e))
-            } else {
-                None
-            }
-        })
-        .collect();
+    use std::collections::{BTreeMap, BTreeSet};
 
-    if usernames.is_empty() {
+    // Username index: canonical_handle → the Username entities sharing it.
+    // Filter generic handles up front so none is ever considered.
+    let mut usernames_by_canon: BTreeMap<String, Vec<&Entity>> = BTreeMap::new();
+    for e in entities.iter().filter(|e| e.kind == EntityKind::Username) {
+        let ch = canonical_handle(&e.value);
+        if ch.len() >= 4 && !is_generic_handle(&ch) {
+            usernames_by_canon.entry(ch).or_default().push(e);
+        }
+    }
+    if usernames_by_canon.is_empty() {
         return Vec::new();
     }
 
-    let mut out: Vec<Correlation> = Vec::new();
-
+    // Email side: bucket every Email whose canonical local-part matches a
+    // username handle under that canonical handle.
+    let mut emails_by_canon: BTreeMap<String, Vec<&Entity>> = BTreeMap::new();
     for email_e in entities.iter().filter(|e| e.kind == EntityKind::Email) {
-        let local_raw = match email_e.value.split('@').next() {
-            Some(l) if !l.is_empty() => l,
-            _ => continue,
+        let Some(local_raw) = email_e.value.split('@').next().filter(|l| !l.is_empty()) else {
+            continue;
         };
-        // Strip plus-addressing (e.g. `haigen+tag@example.com` → `haigen`)
-        // before canonicalising so tagged emails still bridge correctly.
+        // Strip plus-addressing (`haigen+tag@…` → `haigen`) before canonicalising.
         let local = local_raw.split('+').next().unwrap_or(local_raw);
         let canon_local = canonical_handle(local);
         if canon_local.len() < 4 || is_generic_handle(&canon_local) {
             continue;
         }
-        for (canon_u, u_e) in &usernames {
-            if canon_u != &canon_local {
-                continue;
-            }
-            let mut uids = vec![email_e.uid.clone(), u_e.uid.clone()];
-            uids.sort_unstable();
-            out.push(Correlation {
-                rule_id: "AU-076".into(),
-                rule_name: "Email-username local-part identity bridge".into(),
-                severity: Severity::High,
-                description: format!(
-                    "Email '{}' local-part canonicalises to username '{}' — the handle is the \
-                     email login (free, offline, zero-API identity resolution)",
-                    email_e.value, u_e.value,
-                ),
-                entity_uids: uids,
-                scan_id: scan_id.into(),
-                ts,
-                rank: 0.0,
-            });
+        if usernames_by_canon.contains_key(&canon_local) {
+            emails_by_canon
+                .entry(canon_local)
+                .or_default()
+                .push(email_e);
         }
     }
+
+    // One consolidated finding per canonical handle that bridges an email to a
+    // username (BTreeMap key order → deterministic output).
+    let mut out: Vec<Correlation> = Vec::new();
+    for (canon, emails) in &emails_by_canon {
+        let usernames = &usernames_by_canon[canon];
+        let email_vals: BTreeSet<&str> = emails.iter().map(|e| e.value.as_str()).collect();
+        let uname_vals: BTreeSet<&str> = usernames.iter().map(|e| e.value.as_str()).collect();
+
+        let mut uids: Vec<String> = emails
+            .iter()
+            .chain(usernames.iter())
+            .map(|e| e.uid.clone())
+            .collect();
+        uids.sort_unstable();
+        uids.dedup();
+
+        let description = if email_vals.len() == 1 && uname_vals.len() == 1 {
+            // Preserve the original single-pair wording (the common, exact case).
+            format!(
+                "Email '{}' local-part canonicalises to username '{}' — the handle is the \
+                 email login (free, offline, zero-API identity resolution)",
+                email_vals.iter().next().expect("one email"),
+                uname_vals.iter().next().expect("one username"),
+            )
+        } else {
+            format!(
+                "Handle '{canon}' is one identity's email login — it unifies {} email form(s) ({}) \
+                 and {} username form(s) ({}); the username is the email login (free, offline, \
+                 zero-API identity resolution)",
+                email_vals.len(),
+                join_capped(&email_vals, 8),
+                uname_vals.len(),
+                join_capped(&uname_vals, 8),
+            )
+        };
+
+        out.push(Correlation {
+            rule_id: "AU-076".into(),
+            rule_name: "Email-username local-part identity bridge".into(),
+            severity: Severity::High,
+            description,
+            entity_uids: uids,
+            scan_id: scan_id.into(),
+            ts,
+            rank: 0.0,
+        });
+    }
     out
+}
+
+/// Join up to `cap` comma-separated values from an ordered set, appending
+/// `(+N more)` when the set is larger — keeps a consolidated finding's text
+/// bounded while still naming the representative values.
+fn join_capped(values: &std::collections::BTreeSet<&str>, cap: usize) -> String {
+    let shown: Vec<&str> = values.iter().take(cap).copied().collect();
+    let mut s = shown.join(", ");
+    if values.len() > cap {
+        s.push_str(&format!(" (+{} more)", values.len() - cap));
+    }
+    s
 }
 
 /// AU-077 — Name-derived username independently confirmed on a platform.
