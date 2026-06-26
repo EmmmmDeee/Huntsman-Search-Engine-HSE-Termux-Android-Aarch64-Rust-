@@ -329,6 +329,133 @@ pub fn au_phone_region(
     au_area_code_region(national.chars().next()?)
 }
 
+/// The contactability / network class an Australian phone number's leading
+/// digits encode under the ACMA Numbering Plan — a robust signal that survives
+/// number portability (the *type* of a number never ports, only the carrier).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AuLineType {
+    /// A mobile service (`04…`) — a personal handset: a direct-contact and
+    /// SMS/2FA pivot, and the line most strongly tied to one individual.
+    Mobile,
+    /// A geographic fixed line (`02/03/07/08…`) — physically anchored to its
+    /// area-code region: a dwelling or premises location signal.
+    GeographicFixed,
+    /// A VoIP / digital service line (`05…`) — location-independent by design.
+    Voip,
+    /// A freephone number (`1800…`) — an inbound business/service line.
+    Freephone,
+    /// A local-rate number (`13` / `1300…`) — a business/service line.
+    LocalRate,
+    /// A premium-rate number (`190x`) — a charged service line.
+    Premium,
+}
+
+impl AuLineType {
+    /// A stable slug for tagging/serialisation (`mobile`, `geographic`, …).
+    #[must_use]
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Mobile => "mobile",
+            Self::GeographicFixed => "geographic",
+            Self::Voip => "voip",
+            Self::Freephone => "freephone",
+            Self::LocalRate => "local-rate",
+            Self::Premium => "premium-rate",
+        }
+    }
+
+    /// True for a line that names a person's personal device or premises (mobile
+    /// or geographic fixed line), as opposed to a business/service number.
+    #[must_use]
+    pub fn is_personal(self) -> bool {
+        matches!(self, Self::Mobile | Self::GeographicFixed)
+    }
+
+    /// True for an inbound business/service line (`1300`/`1800`/`13`/`190x`) —
+    /// a number that ties its holder to an organisation rather than a person.
+    #[must_use]
+    pub fn is_business_service(self) -> bool {
+        matches!(self, Self::Freephone | Self::LocalRate | Self::Premium)
+    }
+}
+
+/// Classify an Australian phone number by **line type** — the contactability /
+/// network class its leading digits encode (mobile, geographic fixed line, VoIP,
+/// freephone, local-rate, premium), with a human label. `None` for a non-AU or
+/// unrecognised number.
+///
+/// Complements [`au_phone_region`], which resolves only the *geographic* class
+/// to a region: this resolves *every* AU number to its line type, so a mobile
+/// (a personal device), a VoIP line, and the `1300`/`1800`/`190x` service lines
+/// — which `au_phone_region` returns `None` for — each yield their own
+/// people/network signal. The classification is by the ACMA-fixed leading
+/// digits, so it is portability-proof (only the carrier ports, never the type).
+/// The national significant number is read straight from the value's digits,
+/// stripping an `0061`/`+61` country code and a trunk `0`, so it covers the
+/// service forms (`190x`, the 6-digit `13xxxx`) the E.164 normaliser does not.
+/// Pure; no I/O.
+///
+/// ```
+/// use huntsman_search_engine::util::address_au::{au_phone_line_type, AuLineType};
+///
+/// assert_eq!(au_phone_line_type("0412 345 678").unwrap().0, AuLineType::Mobile);
+/// assert_eq!(au_phone_line_type("(07) 3739 4511").unwrap().0, AuLineType::GeographicFixed);
+/// assert_eq!(au_phone_line_type("1800 123 456").unwrap().0, AuLineType::Freephone);
+/// assert_eq!(au_phone_line_type("1300 975 707").unwrap().0, AuLineType::LocalRate);
+/// assert!(au_phone_line_type("+1 555 123 4567").is_none()); // not Australian
+/// ```
+#[must_use]
+pub fn au_phone_line_type(value: &str) -> Option<(AuLineType, &'static str)> {
+    // Read the national significant number directly: drop an `0061`/(`+`)`61`
+    // country code and any trunk `0`. No valid AU national number begins with a
+    // `6`, so a bare leading `61` is only stripped when a `+` marks it as a
+    // country code — a plain `61…` foreign number is left intact (→ `None`).
+    let plus = value.contains('+');
+    let digits: String = value.chars().filter(char::is_ascii_digit).collect();
+    let national = if let Some(rest) = digits.strip_prefix("0061") {
+        rest
+    } else if plus && let Some(rest) = digits.strip_prefix("61") {
+        rest
+    } else {
+        digits.as_str()
+    }
+    .trim_start_matches('0');
+    let nat = national;
+    if nat.starts_with("1800") {
+        return Some((
+            AuLineType::Freephone,
+            "freephone (1800) — an inbound business/service line",
+        ));
+    }
+    if nat.starts_with("1300") || (nat.len() == 6 && nat.starts_with("13")) {
+        return Some((
+            AuLineType::LocalRate,
+            "local-rate (13/1300) — a business/service line",
+        ));
+    }
+    if nat.starts_with("190") {
+        return Some((
+            AuLineType::Premium,
+            "premium-rate (190x) — a charged service line",
+        ));
+    }
+    match nat.chars().next()? {
+        '4' => Some((
+            AuLineType::Mobile,
+            "mobile (04) — a personal handset and SMS/2FA pivot",
+        )),
+        '5' => Some((
+            AuLineType::Voip,
+            "VoIP / digital service (05) — location-independent",
+        )),
+        '2' | '3' | '7' | '8' => Some((
+            AuLineType::GeographicFixed,
+            "geographic fixed line — premises-anchored to its area-code region",
+        )),
+        _ => None,
+    }
+}
+
 /// The Australian state/territory a `*.{state}.gov.au` government domain encodes,
 /// as a canonical code (`NSW`/`VIC`/`QLD`/`WA`/`SA`/`TAS`/`ACT`/`NT`). The AU
 /// government domain structure is official and fixed — every state-agency domain

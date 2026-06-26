@@ -4436,6 +4436,76 @@ fn au_085_silent_for_mobile_or_missing_class() {
     assert!(rule_au_085_phone_region_jurisdiction(&phone_only, "scan", 0).is_empty());
 }
 
+// ─── AU-102 tests (phone line-type profile) ──────────────────────────────────
+
+#[test]
+fn au_102_profiles_premises_mobile_and_business_lines() {
+    use super::rules::rule_au_102_phone_line_type_profile;
+
+    // A QLD landline (premises), a personal mobile, and a 1300 business line.
+    let ents = vec![
+        mk_tagged(EntityKind::Phone, "(07) 3000 1234", "phone_au", &[]),
+        mk_tagged(EntityKind::Phone, "+61 412 345 678", "phone_au", &[]),
+        mk_tagged(EntityKind::Phone, "1300 975 707", "import", &[]),
+    ];
+    let out = rule_au_102_phone_line_type_profile(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-102");
+    assert_eq!(out[0].severity, super::Severity::Medium);
+    assert!(out[0].description.contains("geographic fixed line"));
+    assert!(out[0].description.contains("North East")); // 07 → QLD region
+    assert!(out[0].description.contains("personal mobile"));
+    assert!(out[0].description.contains("business/service line"));
+    assert_eq!(out[0].entity_uids.len(), 3);
+}
+
+#[test]
+fn au_102_two_mobiles_only_is_low_and_fires() {
+    use super::rules::rule_au_102_phone_line_type_profile;
+
+    // Two distinct personal mobiles — no premises/business line → Low, but the
+    // multiple-handset signal is worth surfacing.
+    let ents = vec![
+        mk_tagged(EntityKind::Phone, "+61 412 345 678", "phone_au", &[]),
+        mk_tagged(EntityKind::Phone, "0413 222 333", "phone_au", &[]),
+    ];
+    let out = rule_au_102_phone_line_type_profile(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].severity, super::Severity::Low);
+    assert!(out[0].description.contains("2 personal mobiles"));
+    assert!(out[0].description.contains("multiple personal mobiles"));
+}
+
+#[test]
+fn au_102_silent_for_a_single_lone_mobile() {
+    use super::rules::rule_au_102_phone_line_type_profile;
+
+    // One mobile alone is left to the bare Phone entity — no finding.
+    let ents = vec![mk_tagged(
+        EntityKind::Phone,
+        "+61 412 345 678",
+        "phone_au",
+        &[],
+    )];
+    assert!(rule_au_102_phone_line_type_profile(&ents, "scan", 0).is_empty());
+}
+
+#[test]
+fn au_102_dedups_the_same_number_across_formats() {
+    use super::rules::rule_au_102_phone_line_type_profile;
+
+    // The same QLD landline in two formats normalises to one E.164 value → it is
+    // counted once, so the profile reads "1 geographic fixed line".
+    let ents = vec![
+        mk_tagged(EntityKind::Phone, "(07) 3000 1234", "phone_au", &[]),
+        mk_tagged(EntityKind::Phone, "0730001234", "import", &[]),
+    ];
+    let out = rule_au_102_phone_line_type_profile(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert!(out[0].description.contains("1 geographic fixed line"));
+    assert!(!out[0].description.contains("2 geographic"));
+}
+
 // ─── AU-057 tests ─────────────────────────────────────────────────────────────
 
 #[test]

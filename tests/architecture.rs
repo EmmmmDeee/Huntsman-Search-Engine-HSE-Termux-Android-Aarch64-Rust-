@@ -136,6 +136,17 @@ fn core_does_not_import_util_directly() {
                 // landline's area code physically implies, to cross-check it
                 // against the subject's address/coordinate state.
                 && !line.contains("util::address_au::au_phone_region")
+                // Pure, dependency-free AU phone line-type classifier (mobile /
+                // geographic / VoIP / business-service; no I/O), same leaf
+                // category as `au_phone_region`. AU-102 uses it to profile every
+                // number the subject carries into a contactability/premises/
+                // organisational picture; the type is portability-proof.
+                && !line.contains("util::address_au::au_phone_line_type")
+                && !line.contains("util::address_au::AuLineType")
+                // Pure, dependency-free AU phone E.164 normaliser (no I/O), same
+                // leaf category as `au_phone_region`. AU-102 uses it to dedup the
+                // subject's numbers by canonical form before profiling them.
+                && !line.contains("util::address_au::normalise_phone")
                 // Pure, dependency-free AU network-operator brand recogniser (no
                 // I/O): an isp/org/as string → the Australian ISP/AARNet it names.
                 // Same leaf category as `state_code`. AU-097 attributes the

@@ -164,6 +164,61 @@ use super::*;
     }
 
     #[test]
+    fn au_phone_line_type_classifies_every_au_number_class() {
+        // Mobile, geographic, VoIP, and the three service classes.
+        assert_eq!(
+            au_phone_line_type("0412 345 678").unwrap().0,
+            AuLineType::Mobile
+        );
+        assert_eq!(
+            au_phone_line_type("(07) 3739 4511").unwrap().0,
+            AuLineType::GeographicFixed
+        );
+        assert_eq!(
+            au_phone_line_type("+61 2 9876 5432").unwrap().0,
+            AuLineType::GeographicFixed
+        );
+        assert_eq!(
+            au_phone_line_type("0512 345 678").unwrap().0,
+            AuLineType::Voip
+        );
+        assert_eq!(
+            au_phone_line_type("1800 123 456").unwrap().0,
+            AuLineType::Freephone
+        );
+        assert_eq!(
+            au_phone_line_type("1300 975 707").unwrap().0,
+            AuLineType::LocalRate
+        );
+        // The 6-digit `13xxxx` short form the normaliser doesn't tabulate.
+        assert_eq!(
+            au_phone_line_type("13 11 14").unwrap().0,
+            AuLineType::LocalRate
+        );
+        assert_eq!(
+            au_phone_line_type("1902 123 456").unwrap().0,
+            AuLineType::Premium
+        );
+        // Not Australian / not a phone.
+        assert!(au_phone_line_type("+1 555 123 4567").is_none());
+        assert!(au_phone_line_type("not a phone").is_none());
+    }
+
+    #[test]
+    fn au_line_type_predicates_split_personal_from_business() {
+        assert!(AuLineType::Mobile.is_personal());
+        assert!(AuLineType::GeographicFixed.is_personal());
+        assert!(!AuLineType::Mobile.is_business_service());
+        assert!(AuLineType::Freephone.is_business_service());
+        assert!(AuLineType::LocalRate.is_business_service());
+        assert!(AuLineType::Premium.is_business_service());
+        assert!(!AuLineType::Freephone.is_personal());
+        // Slugs are stable.
+        assert_eq!(AuLineType::Mobile.slug(), "mobile");
+        assert_eq!(AuLineType::GeographicFixed.slug(), "geographic");
+    }
+
+    #[test]
     fn au_gov_domain_state_maps_state_subdomains() {
         assert_eq!(au_gov_domain_state("health.nsw.gov.au"), Some("NSW"));
         assert_eq!(au_gov_domain_state("transport.nsw.gov.au"), Some("NSW"));

@@ -341,6 +341,10 @@ const RULES: &[RuleFn] = &[
     rule_au_084_cell_tower_dual_source,
     // AU-085: AU fixed-line area code cross-checked against address/coordinate state.
     rule_au_085_phone_region_jurisdiction,
+    // AU-102: phone line-type profile — classifies every AU number the subject
+    // carries (mobile / geographic fixed line / VoIP / business-service) into a
+    // contactability, premises and organisational-tie picture; portability-proof.
+    rule_au_102_phone_line_type_profile,
     // AU-086: a name-derived email guess independently confirmed in real data.
     rule_au_086_name_derived_email_confirmed,
     // AU-087: ≥2 identities share a specific (non-freemail) organisational email

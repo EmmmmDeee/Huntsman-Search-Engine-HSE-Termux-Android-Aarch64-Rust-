@@ -270,3 +270,173 @@ pub(in crate::core::correlator) fn rule_au_085_phone_region_jurisdiction(
 
     vec![correlation]
 }
+
+/// Pluralising suffix for a count — `""` for one, `"s"` otherwise.
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+/// AU-102 — Phone line-type intelligence (contactability, premises &
+/// organisational ties).
+///
+/// Every AU phone the subject carries encodes a network/contactability class in
+/// its leading digits (the ACMA Numbering Plan), and that *type* is
+/// portability-proof — only the carrier ports, never the type. Where AU-085
+/// reads only the *geographic* class (an area-code region), this profiles
+/// *every* class the subject's numbers fall into, turning the phone set into a
+/// people + network picture:
+///
+/// * a **geographic fixed line** (02/03/07/08) physically anchors a dwelling or
+///   premises to its area-code region — a location signal;
+/// * a **personal mobile** (04) is a direct-contact and SMS/2FA pivot, the line
+///   most tightly bound to one individual; two or more is itself a signal;
+/// * a **business/service line** (1300/1800/13/190x) ties the subject to an
+///   organisation rather than a person — a people→business bridge.
+///
+/// Fires only when the set carries something beyond a single lone mobile (a
+/// premises line, a business/service line, or ≥2 mobiles), so a bare mobile —
+/// which the `Phone` entity already speaks for — never manufactures noise.
+/// Medium when a premises or organisational line is present; Low for a
+/// multiple-mobile-only profile. Phones are deduped by their canonical E.164
+/// form, so the same number from two modules counts once. Derived from the
+/// value itself (via [`crate::util::address_au::au_phone_line_type`]), so it
+/// fires on any AU `Phone` entity. Pure over the confirmed set.
+pub(in crate::core::correlator) fn rule_au_102_phone_line_type_profile(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use crate::util::address_au::AuLineType;
+    use crate::util::address_au::au_phone_line_type;
+    use crate::util::address_au::au_phone_region;
+    use crate::util::address_au::normalise_phone;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    // Dedup by canonical value so one number imported twice is counted once.
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut mobiles: Vec<String> = Vec::new();
+    let mut voip: Vec<String> = Vec::new();
+    let mut geo_uids: Vec<String> = Vec::new();
+    let mut geo_regions: BTreeSet<&'static str> = BTreeSet::new();
+    // Business/service line human label -> contributing phone uids.
+    let mut biz: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
+
+    for e in entities {
+        if e.kind != EntityKind::Phone || e.confidence < 0.50 {
+            continue;
+        }
+        let Some((lt, _label)) = au_phone_line_type(&e.value) else {
+            continue;
+        };
+        let key = normalise_phone(&e.value).unwrap_or_else(|| e.value.clone());
+        if !seen.insert(key) {
+            continue;
+        }
+        match lt {
+            AuLineType::Mobile => mobiles.push(e.uid.clone()),
+            AuLineType::Voip => voip.push(e.uid.clone()),
+            AuLineType::GeographicFixed => {
+                geo_uids.push(e.uid.clone());
+                if let Some((_slug, name, _states)) = au_phone_region(&e.value) {
+                    geo_regions.insert(name);
+                }
+            }
+            AuLineType::Freephone => biz
+                .entry("freephone (1800)")
+                .or_default()
+                .push(e.uid.clone()),
+            AuLineType::LocalRate => biz
+                .entry("local-rate (13/1300)")
+                .or_default()
+                .push(e.uid.clone()),
+            AuLineType::Premium => biz
+                .entry("premium-rate (190x)")
+                .or_default()
+                .push(e.uid.clone()),
+        }
+    }
+
+    let has_premises = !geo_uids.is_empty();
+    let has_business = !biz.is_empty();
+    // A single lone mobile is left to the bare Phone entity; only a richer
+    // profile (premises, business/service, or multiple mobiles) is a finding.
+    if !has_premises && !has_business && mobiles.len() < 2 {
+        return Vec::new();
+    }
+
+    let mut segs: Vec<String> = Vec::new();
+    if !mobiles.is_empty() {
+        segs.push(format!(
+            "{} personal mobile{}",
+            mobiles.len(),
+            plural(mobiles.len())
+        ));
+    }
+    if has_premises {
+        let region_note = if geo_regions.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " (premises-anchored to {})",
+                join_slash(geo_regions.iter().copied())
+            )
+        };
+        segs.push(format!(
+            "{} geographic fixed line{}{region_note}",
+            geo_uids.len(),
+            plural(geo_uids.len())
+        ));
+    }
+    if !voip.is_empty() {
+        segs.push(format!("{} VoIP line{}", voip.len(), plural(voip.len())));
+    }
+    for (label, uids) in &biz {
+        segs.push(format!(
+            "{} {label} business/service line{}",
+            uids.len(),
+            plural(uids.len())
+        ));
+    }
+
+    let mut notes: Vec<&str> = Vec::new();
+    if has_premises {
+        notes.push("the fixed line physically anchors a premises to its area-code region");
+    }
+    if has_business {
+        notes.push("the business/service line ties the subject to an organisation");
+    }
+    if mobiles.len() >= 2 {
+        notes.push("multiple personal mobiles indicate more than one handset/number");
+    }
+
+    let severity = if has_premises || has_business {
+        Severity::Medium
+    } else {
+        Severity::Low
+    };
+
+    // All contributing phone uids, deduplicated and ordered.
+    let mut uids: Vec<String> = Vec::new();
+    uids.extend(mobiles);
+    uids.extend(voip);
+    uids.extend(geo_uids);
+    for v in biz.values() {
+        uids.extend(v.iter().cloned());
+    }
+    uids.sort_unstable();
+    uids.dedup();
+
+    vec![Correlation::new(
+        "AU-102",
+        "Phone line-type profile",
+        severity,
+        format!(
+            "Phone line-type profile: {}. {}.",
+            segs.join("; "),
+            notes.join("; ")
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
