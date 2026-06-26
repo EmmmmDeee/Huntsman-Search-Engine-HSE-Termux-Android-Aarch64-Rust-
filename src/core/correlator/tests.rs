@@ -2904,6 +2904,24 @@ fn au098_single_class_does_not_fire() {
 }
 
 #[test]
+fn au098_appends_australian_isp_network_corroboration() {
+    // Coordinate + address agree on QLD (2 classes); an IP on Telstra adds a
+    // domestic-connection corroboration to the verdict.
+    let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
+    let addr = Entity::new(EntityKind::Address, "Spring Hill QLD 4000", 0.7, "s");
+    let mut ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.8, "s");
+    ip.add_evidence(Evidence::new("ip_geo", "geo").with_attr("isp", "Telstra"));
+    let r = super::rules::rule_au_098_residency_consensus(&[coord, addr, ip], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert!(r[0].description.contains("QLD"));
+    assert!(
+        r[0].description.contains("Australian ISP (Telstra)"),
+        "network corroboration appended: {}",
+        r[0].description
+    );
+}
+
+#[test]
 fn au099_reverse_geocodes_coordinate_to_locality() {
     // A Brisbane fix → "Brisbane, QLD" with a small distance.
     let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");

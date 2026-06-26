@@ -136,6 +136,12 @@ fn core_does_not_import_util_directly() {
                 // landline's area code physically implies, to cross-check it
                 // against the subject's address/coordinate state.
                 && !line.contains("util::address_au::au_phone_region")
+                // Pure, dependency-free AU network-operator brand recogniser (no
+                // I/O): an isp/org/as string → the Australian ISP/AARNet it names.
+                // Same leaf category as `state_code`. AU-097 attributes the
+                // network; AU-098 uses it as a domestic-connection corroboration.
+                && !line.contains("util::address_au::au_network_operator")
+                && !line.contains("util::address_au::AuNetworkKind")
                 // Pure, dependency-free coordinate -> AU state/territory
                 // bounding-box classifier (no I/O). AU-056 uses it to derive a
                 // coordinate's jurisdiction when the `au-state:` tag is absent

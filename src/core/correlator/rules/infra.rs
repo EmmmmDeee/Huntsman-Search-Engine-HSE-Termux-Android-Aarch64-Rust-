@@ -471,68 +471,16 @@ pub(in crate::core::correlator) fn rule_au_031_malicious_adjacency(
     out
 }
 
-/// Australian network operator: a brand token (lowercase) → its canonical name
-/// and connection class. Consumer ISPs anchor a person to a domestic Australian
-/// connection; AARNet (the academic & research network) marks a university /
-/// research / government user — a strong institutional affiliation. Only
-/// distinctive, unambiguously-Australian operator names are listed, so a token
-/// in an `isp`/`org`/`as` value is a reliable AU signal, not a coincidence.
-const AU_NETWORKS: &[(&str, &str, AuNetKind)] = &[
-    ("telstra", "Telstra", AuNetKind::Consumer),
-    ("optus", "Optus", AuNetKind::Consumer),
-    ("tpg", "TPG", AuNetKind::Consumer),
-    ("iinet", "iiNet", AuNetKind::Consumer),
-    ("internode", "Internode", AuNetKind::Consumer),
-    ("aussie broadband", "Aussie Broadband", AuNetKind::Consumer),
-    ("aussiebb", "Aussie Broadband", AuNetKind::Consumer),
-    ("vocus", "Vocus", AuNetKind::Consumer),
-    ("dodo", "Dodo", AuNetKind::Consumer),
-    ("iprimus", "iPrimus", AuNetKind::Consumer),
-    ("belong", "Belong", AuNetKind::Consumer),
-    ("superloop", "Superloop", AuNetKind::Consumer),
-    ("launtel", "Launtel", AuNetKind::Consumer),
-    ("exetel", "Exetel", AuNetKind::Consumer),
-    ("myrepublic", "MyRepublic", AuNetKind::Consumer),
-    ("spintel", "SpinTel", AuNetKind::Consumer),
-    ("aapt", "AAPT", AuNetKind::Consumer),
-    ("amaysim", "amaysim", AuNetKind::Consumer),
-    ("tangerine", "Tangerine", AuNetKind::Consumer),
-    ("aarnet", "AARNet", AuNetKind::Academic),
-];
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum AuNetKind {
-    /// A domestic consumer ISP / mobile carrier — a person on an Australian
-    /// connection.
-    Consumer,
-    /// AARNet — Australia's academic & research network.
-    Academic,
-}
-
-/// True if `token` occurs in `hay` (already lowercased) as a whole word — bounded
-/// by a non-alphanumeric byte or a string edge on each side, so a short brand
-/// (`tpg`) cannot match inside a longer word. Multi-word tokens are matched
-/// verbatim. Pure.
-fn au_net_word_in(hay: &str, token: &str) -> bool {
-    let bytes = hay.as_bytes();
-    let mut from = 0;
-    while let Some(rel) = hay[from..].find(token) {
-        let at = from + rel;
-        let end = at + token.len();
-        let left_ok = at == 0 || !bytes[at - 1].is_ascii_alphanumeric();
-        let right_ok = end == bytes.len() || !bytes[end].is_ascii_alphanumeric();
-        if left_ok && right_ok {
-            return true;
-        }
-        from = at + 1;
-    }
-    false
-}
+use crate::util::address_au::AuNetworkKind;
 
 /// The Australian network an `IpAddress`/`Asn` entity names, read from its value
-/// (`AS1221 Telstra`) and its network attributes (`isp`/`org`/`as`/`descr`/…).
-/// `None` for a non-AU / unrecognised network. Pure.
-fn au_network_of(e: &Entity) -> Option<(&'static str, AuNetKind)> {
+/// (`AS1221 Telstra`) and its network attributes (`isp`/`org`/`as`/`descr`/…),
+/// delegating the brand match to the shared [`crate::util::address_au::au_network_operator`]
+/// (the single source AU-097 and AU-098 both use). `None` for a non-AU /
+/// unrecognised network. Pure. `pub(in crate::core::correlator)` so AU-098 reuses it.
+pub(in crate::core::correlator) fn au_network_of(
+    e: &Entity,
+) -> Option<(&'static str, AuNetworkKind)> {
     const KEYS: &[&str] = &[
         "isp",
         "org",
@@ -548,19 +496,16 @@ fn au_network_of(e: &Entity) -> Option<(&'static str, AuNetKind)> {
         "carrier",
         "connection_org",
     ];
-    let mut hay = e.value.to_ascii_lowercase();
+    let mut hay = e.value.clone();
     for ev in &e.evidence {
         for (k, v) in &ev.attributes {
             if KEYS.iter().any(|key| k.eq_ignore_ascii_case(key)) {
                 hay.push(' ');
-                hay.push_str(&v.to_ascii_lowercase());
+                hay.push_str(v);
             }
         }
     }
-    AU_NETWORKS
-        .iter()
-        .find(|(tok, _, _)| au_net_word_in(&hay, tok))
-        .map(|(_, canon, kind)| (*canon, *kind))
+    crate::util::address_au::au_network_operator(&hay)
 }
 
 /// AU-097 — Australian ISP / network attribution.
@@ -582,7 +527,7 @@ pub(in crate::core::correlator) fn rule_au_097_au_isp_network(
 ) -> Vec<Correlation> {
     use std::collections::{BTreeMap, BTreeSet};
 
-    let mut found: BTreeMap<&'static str, (AuNetKind, BTreeSet<String>)> = BTreeMap::new();
+    let mut found: BTreeMap<&'static str, (AuNetworkKind, BTreeSet<String>)> = BTreeMap::new();
     for e in entities
         .iter()
         .filter(|e| matches!(e.kind, EntityKind::IpAddress | EntityKind::Asn))
@@ -600,7 +545,7 @@ pub(in crate::core::correlator) fn rule_au_097_au_isp_network(
         .into_iter()
         .map(|(name, (kind, uids))| {
             let (severity, description) = match kind {
-                AuNetKind::Academic => (
+                AuNetworkKind::Academic => (
                     Severity::High,
                     format!(
                         "Subject's IP/ASN is on {name} — Australia's academic & research network: \
@@ -608,7 +553,7 @@ pub(in crate::core::correlator) fn rule_au_097_au_isp_network(
                          affiliation"
                     ),
                 ),
-                AuNetKind::Consumer => (
+                AuNetworkKind::Consumer => (
                     Severity::Medium,
                     format!(
                         "Subject's IP/ASN belongs to {name}, an Australian consumer ISP — a \

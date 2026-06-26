@@ -233,3 +233,24 @@ use super::*;
         // `.au` must be a real suffix, not a substring of another label.
         assert_eq!(au_domain_registrant("acme.com.audata.io"), None);
     }
+
+    #[test]
+    fn au_network_operator_recognises_isps_and_rejects_noise() {
+        assert_eq!(
+            au_network_operator("AS1221 Telstra Corporation"),
+            Some(("Telstra", AuNetworkKind::Consumer))
+        );
+        assert_eq!(
+            au_network_operator("aussie broadband pty ltd"),
+            Some(("Aussie Broadband", AuNetworkKind::Consumer))
+        );
+        assert_eq!(
+            au_network_operator("AARNET"),
+            Some(("AARNet", AuNetworkKind::Academic))
+        );
+        // Foreign / unrelated providers must not match.
+        assert_eq!(au_network_operator("Google LLC"), None);
+        assert_eq!(au_network_operator("Amazon Data Services"), None);
+        // Short brand must be whole-word, not a substring.
+        assert_eq!(au_network_operator("ACMETPGENETICS LIMITED"), None);
+    }

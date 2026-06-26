@@ -858,9 +858,11 @@ pub(in crate::core::correlator) fn rule_au_093_au_address_from_breach(
 /// is a Verified-grade residency (High); two is strong (Medium). One class alone
 /// never fires here — the single-signal rules already cover it. When a
 /// consensus-state coordinate is present the verdict is sharpened from state to
-/// **locality** via the offline reverse geocoder (AU-099) — "QLD, near Brisbane".
-/// This is the gold-standard geolocation finding: a jurisdiction asserted by
-/// independent corroboration, with its confidence shown. Pure over the set.
+/// **locality** via the offline reverse geocoder (AU-099) — "QLD, near Brisbane"
+/// — and an IP/ASN on an Australian ISP (AU-097's signal) is appended as a
+/// domestic-connection corroboration, distinguishing genuine AU residency from a
+/// VPN/foreign exit. This is the gold-standard geolocation finding: a
+/// jurisdiction asserted by independent corroboration, confidence shown.
 pub(in crate::core::correlator) fn rule_au_098_residency_consensus(
     entities: &[Entity],
     scan_id: &str,
@@ -964,13 +966,33 @@ pub(in crate::core::correlator) fn rule_au_098_residency_consensus(
         .map(|(name, _, km)| format!(", near {name} (≈{km:.0} km)"))
         .unwrap_or_default();
 
+    // Network-layer corroboration (AU-097's signal): an IP/ASN on an Australian
+    // ISP confirms a real *domestic* connection — distinguishing genuine AU
+    // residency from a VPN / foreign exit node that the state signals can't see;
+    // AARNet additionally flags an academic/research user. Country-grain, so it
+    // corroborates the AU-ness of the verdict, it does not vote on the state.
+    let network_note = entities
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::IpAddress | EntityKind::Asn))
+        .find_map(|e| super::au_network_of(e))
+        .map(|(name, kind)| match kind {
+            crate::util::address_au::AuNetworkKind::Academic => {
+                format!("; network on {name} (academic/research) confirms an AU connection")
+            }
+            crate::util::address_au::AuNetworkKind::Consumer => {
+                format!("; network on an Australian ISP ({name}) confirms a domestic connection")
+            }
+        })
+        .unwrap_or_default();
+
     vec![Correlation::new(
         "AU-098",
         "Multi-source residency consensus",
         severity,
         format!(
             "Residency consensus: {consensus}{locality_note} — {n} of {active_classes} independent \
-             location signal classes agree ({});{dissent}. A cross-corroborated jurisdiction verdict.",
+             location signal classes agree ({});{dissent}{network_note}. A cross-corroborated \
+             jurisdiction verdict.",
             agreeing.join(", ")
         ),
         uids.into_iter().collect(),

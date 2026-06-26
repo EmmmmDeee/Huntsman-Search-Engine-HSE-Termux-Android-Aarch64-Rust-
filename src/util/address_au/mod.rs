@@ -554,6 +554,89 @@ pub fn extract_phones(text: &str) -> Vec<String> {
     out
 }
 
+/// Connection class of an Australian network operator. A consumer ISP places a
+/// person on a domestic connection; AARNet is the academic & research network.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AuNetworkKind {
+    /// A domestic consumer ISP / mobile carrier — a person on an AU connection.
+    Consumer,
+    /// AARNet — Australia's academic & research network (university/research/gov).
+    Academic,
+}
+
+/// Australian network operator brand tokens (lowercase) → canonical name + class.
+/// Only distinctive, unambiguously-Australian operator names are listed, so a
+/// token in an `isp`/`org`/`as` value is a reliable AU signal, not a coincidence.
+const AU_NETWORK_OPERATORS: &[(&str, &str, AuNetworkKind)] = &[
+    ("telstra", "Telstra", AuNetworkKind::Consumer),
+    ("optus", "Optus", AuNetworkKind::Consumer),
+    ("tpg", "TPG", AuNetworkKind::Consumer),
+    ("iinet", "iiNet", AuNetworkKind::Consumer),
+    ("internode", "Internode", AuNetworkKind::Consumer),
+    (
+        "aussie broadband",
+        "Aussie Broadband",
+        AuNetworkKind::Consumer,
+    ),
+    ("aussiebb", "Aussie Broadband", AuNetworkKind::Consumer),
+    ("vocus", "Vocus", AuNetworkKind::Consumer),
+    ("dodo", "Dodo", AuNetworkKind::Consumer),
+    ("iprimus", "iPrimus", AuNetworkKind::Consumer),
+    ("belong", "Belong", AuNetworkKind::Consumer),
+    ("superloop", "Superloop", AuNetworkKind::Consumer),
+    ("launtel", "Launtel", AuNetworkKind::Consumer),
+    ("exetel", "Exetel", AuNetworkKind::Consumer),
+    ("myrepublic", "MyRepublic", AuNetworkKind::Consumer),
+    ("spintel", "SpinTel", AuNetworkKind::Consumer),
+    ("aapt", "AAPT", AuNetworkKind::Consumer),
+    ("amaysim", "amaysim", AuNetworkKind::Consumer),
+    ("tangerine", "Tangerine", AuNetworkKind::Consumer),
+    ("aarnet", "AARNet", AuNetworkKind::Academic),
+];
+
+/// True if `token` occurs in `hay` (already lowercased) as a whole word — bounded
+/// by a non-alphanumeric byte or a string edge on each side, so a short brand
+/// (`tpg`) cannot match inside a longer word. Pure.
+fn au_network_word_in(hay: &str, token: &str) -> bool {
+    let bytes = hay.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = hay[from..].find(token) {
+        let at = from + rel;
+        let end = at + token.len();
+        let left_ok = at == 0 || !bytes[at - 1].is_ascii_alphanumeric();
+        let right_ok = end == bytes.len() || !bytes[end].is_ascii_alphanumeric();
+        if left_ok && right_ok {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
+}
+
+/// The Australian network operator named anywhere in `haystack` — typically an
+/// IP/ASN entity's `isp`/`org`/`as`/`descr` text — with its connection class, or
+/// `None`. Whole-word, case-insensitive, and limited to distinctive AU operator
+/// brands, so a foreign ISP or an incidental token never matches. The shared
+/// source of truth for AU-097 (network attribution) and AU-098 (which uses it as
+/// a domestic-connection corroboration of the residency consensus). Pure; no I/O.
+///
+/// ```
+/// use huntsman_search_engine::util::address_au::{au_network_operator, AuNetworkKind};
+///
+/// assert_eq!(au_network_operator("AS1221 Telstra"), Some(("Telstra", AuNetworkKind::Consumer)));
+/// assert_eq!(au_network_operator("AARNET"), Some(("AARNet", AuNetworkKind::Academic)));
+/// assert_eq!(au_network_operator("Google LLC"), None);          // foreign
+/// assert_eq!(au_network_operator("ACMETPGENETICS LIMITED"), None); // not a word match
+/// ```
+#[must_use]
+pub fn au_network_operator(haystack: &str) -> Option<(&'static str, AuNetworkKind)> {
+    let hay = haystack.to_ascii_lowercase();
+    AU_NETWORK_OPERATORS
+        .iter()
+        .find(|(tok, _, _)| au_network_word_in(&hay, tok))
+        .map(|(_, canon, kind)| (*canon, *kind))
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");
