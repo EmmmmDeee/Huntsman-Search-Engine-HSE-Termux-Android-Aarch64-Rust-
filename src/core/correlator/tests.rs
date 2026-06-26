@@ -5185,3 +5185,32 @@ fn au082_api_key_dual_pathway_fires_on_code_plus_breach() {
         "AU-082 must not fire for a single-family API key"
     );
 }
+
+#[test]
+fn correlator_budget_stops_starting_new_rules_past_the_deadline() {
+    use super::{evaluate_relation_rules_on, evaluate_rules_on};
+    // A confirmed entity that WOULD produce correlations under several rules.
+    let mut e = Entity::new(EntityKind::Email, "moale.mcknight@gmail.com", 0.72, "s");
+    e.tag("name-derived");
+    e.add_evidence(Evidence::new("name_intel", "permuted"));
+    e.add_evidence(Evidence::new("hibp", "breached"));
+    let ents = vec![e];
+
+    // No deadline → rules run normally (AU-086 fires for this predict+confirm email).
+    let full = evaluate_rules_on(&ents, "s", 0, None);
+    assert!(
+        full.iter().any(|c| c.rule_id == "AU-086"),
+        "without a budget the confirmed name-derived email must fire AU-086"
+    );
+
+    // A deadline already in the past → no rule is started, empty result, no hang.
+    let past = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    assert!(
+        evaluate_rules_on(&ents, "s", 0, past).is_empty(),
+        "an elapsed budget must stop the entity-rule pass immediately"
+    );
+    assert!(
+        evaluate_relation_rules_on(&ents, &[], "s", 0, past).is_empty(),
+        "an elapsed budget must stop the relation-rule pass immediately"
+    );
+}

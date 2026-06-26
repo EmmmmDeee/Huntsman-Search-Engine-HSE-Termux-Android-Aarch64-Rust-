@@ -19,7 +19,7 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::core::entity::Entity;
 use crate::core::error::Result;
@@ -167,7 +167,11 @@ impl Correlator {
         // set per scan.
         let confirmed = confirmed_only(&entities);
         let now = crate::core::entity::unix_now();
-        let mut firings = evaluate_rules_on(&confirmed, scan_id, now);
+        // One shared wall-clock deadline across the entity AND relation passes, so
+        // the WHOLE finalise correlator phase is bounded (a huge recalled graph
+        // can't hang the scan). Never reached by a normal scan.
+        let deadline = Some(std::time::Instant::now() + CORRELATOR_BUDGET);
+        let mut firings = evaluate_rules_on(&confirmed, scan_id, now, deadline);
 
         // Graph-aware pass: rules that need the typed relation edges (the
         // attribution graph), not just the flat entity list. Relations are
@@ -175,7 +179,7 @@ impl Correlator {
         let relations = self.store.relations_for_scan(scan_id)?;
         if !relations.is_empty() {
             firings.extend(evaluate_relation_rules_on(
-                &confirmed, &relations, scan_id, now,
+                &confirmed, &relations, scan_id, now, deadline,
             ));
         }
 
@@ -318,16 +322,50 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     // corroboration out of noise. The entities remain in the store and the
     // candidates view; they simply don't get to assert relationships.
     let confirmed = confirmed_only(entities);
-    evaluate_rules_on(&confirmed, scan_id, now)
+    // The live incremental pass is per-round and small — no budget, full
+    // determinism (its streaming correlations must be reproducible).
+    evaluate_rules_on(&confirmed, scan_id, now, None)
 }
+
+/// Wall-clock budget for the FINALISE correlator pass (entity rules + the
+/// graph-aware relation rules share it). The 74 rules are near-instant on a
+/// normal scan, but a very large recalled entity/relation graph — a deep
+/// `--expand-all-identities` sweep that pulls a big prior graph in via recall —
+/// can push the graph-traversal rules (transitive closure, clustering) into
+/// MINUTES. Observed at 20+ on a ~500-entity recalled set, which left scans hung
+/// at finalise and (before the recovery fix) lost everything. Cap it: run as
+/// many rules as fit, then finalise with the correlations computed so far — the
+/// full entity set and the partial correlations still persist and the scan
+/// COMPLETES instead of hanging. Only the pathological large-graph case ever
+/// reaches this deadline; a normal scan finishes in well under a second, so the
+/// finalise stays deterministic in every realistic case. Generous so legitimate
+/// scans keep every correlation.
+const CORRELATOR_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Run every entity-only rule over an already quarantine-filtered, confirmed
 /// entity slice. Split out from [`evaluate_rules`] so a caller that runs both
 /// the entity and the relation passes (`Correlator::run`) can filter once and
-/// share the confirmed view instead of cloning it per pass.
-fn evaluate_rules_on(confirmed: &[Entity], scan_id: &str, now: u64) -> Vec<Correlation> {
+/// share the confirmed view instead of cloning it per pass. `deadline` (set only
+/// on the finalise pass) caps total wall-time: once reached, no further rule is
+/// started and the pass returns what it has — a complete scan with partial
+/// correlations beats one hung forever.
+fn evaluate_rules_on(
+    confirmed: &[Entity],
+    scan_id: &str,
+    now: u64,
+    deadline: Option<std::time::Instant>,
+) -> Vec<Correlation> {
     let mut out = Vec::new();
-    for rule in RULES {
+    for (i, rule) in RULES.iter().enumerate() {
+        if deadline.is_some_and(|dl| std::time::Instant::now() >= dl) {
+            warn!(
+                scan_id,
+                ran = i,
+                total = RULES.len(),
+                "correlator entity-rule budget exceeded — finalising with partial correlations"
+            );
+            break;
+        }
         out.extend(rule(confirmed, scan_id, now));
     }
     out
@@ -386,9 +424,21 @@ fn evaluate_relation_rules_on(
     relations: &[Relation],
     scan_id: &str,
     now: u64,
+    deadline: Option<std::time::Instant>,
 ) -> Vec<Correlation> {
     let mut out = Vec::new();
-    for rule in RELATION_RULES {
+    for (i, rule) in RELATION_RULES.iter().enumerate() {
+        // The graph-aware rules are the costly ones on a large recalled graph, so
+        // the shared finalise deadline matters most here.
+        if deadline.is_some_and(|dl| std::time::Instant::now() >= dl) {
+            warn!(
+                scan_id,
+                ran = i,
+                total = RELATION_RULES.len(),
+                "correlator relation-rule budget exceeded — finalising with partial correlations"
+            );
+            break;
+        }
         out.extend(rule(confirmed, relations, scan_id, now));
     }
     out
