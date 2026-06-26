@@ -22,6 +22,10 @@
 //! * [`rule_au_091_au_postcode_locality`] — the subject's residential postcode
 //!   mined from a breach `postcode` field, resolved offline to its state and a
 //!   gazetteer coordinate — a locality anchor finer than AU-090's state grain.
+//! * [`rule_au_092_breach_locality_footprint_crosscheck`] — cross-checks the
+//!   state implied by the breach `state`/`postcode` fields (AU-090/091) against
+//!   the geolocated coordinate/address footprint: agreement corroborates
+//!   residency, disjoint states flag stale data / a move / a namesake.
 //!
 //! All run on the confirmed (candidate-filtered, quarantine-excluded)
 //! view, so breach co-occurrence strangers never leak in. See `super`
@@ -551,4 +555,137 @@ pub(in crate::core::correlator) fn rule_au_091_au_postcode_locality(
             }
         })
         .collect()
+}
+
+// ── AU-092 — Breach locality vs geolocated footprint cross-check ──────────────
+
+/// The state(s) the breach `state` / state-of-issue and `postcode` fields imply
+/// for the subject — the AU-090 + AU-091 signal, reduced to a `state → uids`
+/// map. Pure over the evidence attributes.
+fn breach_field_states(entities: &[Entity]) -> BTreeMap<&'static str, BTreeSet<String>> {
+    let mut states: BTreeMap<&'static str, BTreeSet<String>> = BTreeMap::new();
+    for (raw, _source, uid) in scan_evidence(entities, JURISDICTION_KEYS) {
+        if let Some(state) = crate::util::address_au::state_code(&raw) {
+            states.entry(state).or_default().insert(uid.to_string());
+        }
+    }
+    for (raw, _source, uid) in scan_evidence(entities, POSTCODE_KEYS) {
+        if let Some((_pc, state)) = au_postcode_and_state(&raw) {
+            states.entry(state).or_default().insert(uid.to_string());
+        }
+    }
+    states
+}
+
+/// The state(s) the **geolocated footprint** asserts: a `Coordinates` entity's
+/// state (its `au-state:` tag, else its lat/long via [`super::geo::coord_state`])
+/// and a confident `Address` entity's parsed state. `state → uids`.
+fn footprint_states(entities: &[Entity]) -> BTreeMap<&'static str, BTreeSet<String>> {
+    let mut states: BTreeMap<&'static str, BTreeSet<String>> = BTreeMap::new();
+    for e in entities {
+        if let Some(state) = super::geo::coord_state(e) {
+            states.entry(state).or_default().insert(e.uid.clone());
+        } else if e.kind == EntityKind::Address
+            && e.confidence >= 0.50
+            && let Some(state) = crate::util::address_au::state_code(&e.value)
+        {
+            states.entry(state).or_default().insert(e.uid.clone());
+        }
+    }
+    states
+}
+
+/// Render a state set as a `/`-joined string for a finding (`"NSW/VIC"`).
+fn join_states(set: &BTreeSet<&'static str>) -> String {
+    set.iter().copied().collect::<Vec<_>>().join("/")
+}
+
+/// AU-092 — does the locality the breach record *states* match where the subject
+/// is *geolocated*?
+///
+/// AU-090/091 read the subject's state/postcode straight out of breach fields;
+/// the geo layer independently places the subject by coordinate and address.
+/// This cross-checks the two — the breach-field analogue of AU-056
+/// (coordinate-vs-address):
+///
+/// * **Agreement** — a breach-stated state and the geolocated footprint name the
+///   *same* state → residency corroborated across two independent signal classes
+///   (High when each side speaks with one voice, Medium when one is mixed).
+/// * **Conflict** — the breach fields say one state, the footprint says a
+///   disjoint one → a Medium anomaly: stale breach data, a relocation, or a
+///   same-name namesake merged into the graph.
+///
+/// Requires at least one state from *each* side; a scan with only breach fields,
+/// or only a geo footprint, yields nothing. Pure over the confirmed entity set.
+pub(in crate::core::correlator) fn rule_au_092_breach_locality_footprint_crosscheck(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let breach = breach_field_states(entities);
+    if breach.is_empty() {
+        return Vec::new();
+    }
+    let footprint = footprint_states(entities);
+    if footprint.is_empty() {
+        return Vec::new();
+    }
+
+    let bset: BTreeSet<&'static str> = breach.keys().copied().collect();
+    let fset: BTreeSet<&'static str> = footprint.keys().copied().collect();
+    let shared: Vec<&'static str> = bset.intersection(&fset).copied().collect();
+
+    let mut uids: BTreeSet<String> = BTreeSet::new();
+    for s in breach.values().chain(footprint.values()) {
+        uids.extend(s.iter().cloned());
+    }
+    let uids: Vec<String> = uids.into_iter().collect();
+
+    let correlation = if let Some(&state) = shared.first() {
+        let unanimous = bset.len() == 1 && fset.len() == 1;
+        let severity = if unanimous {
+            Severity::High
+        } else {
+            Severity::Medium
+        };
+        Correlation {
+            rule_id: "AU-092".into(),
+            rule_name: "Breach locality corroborated by footprint".into(),
+            severity,
+            description: format!(
+                "Breach-record locality and the geolocated footprint independently place the \
+                 subject in {state} — residency corroborated across breach fields and geo signals{}",
+                if unanimous {
+                    String::new()
+                } else {
+                    format!(
+                        " (breach: {}; footprint: {})",
+                        join_states(&bset),
+                        join_states(&fset)
+                    )
+                }
+            ),
+            entity_uids: uids,
+            scan_id: scan_id.into(),
+            ts,
+            rank: 0.0,
+        }
+    } else {
+        Correlation {
+            rule_id: "AU-092".into(),
+            rule_name: "Breach locality conflicts with footprint".into(),
+            severity: Severity::Medium,
+            description: format!(
+                "Breach records place the subject in {} but the geolocated footprint is {} — \
+                 stale breach data, a relocation, or a same-name namesake",
+                join_states(&bset),
+                join_states(&fset)
+            ),
+            entity_uids: uids,
+            scan_id: scan_id.into(),
+            ts,
+            rank: 0.0,
+        }
+    };
+    vec![correlation]
 }

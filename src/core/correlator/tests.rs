@@ -2726,6 +2726,61 @@ fn au091_non_au_and_noise_yield_nothing() {
 }
 
 #[test]
+fn au092_breach_state_agrees_with_geocoded_footprint() {
+    // Breach says QLD; an independent Brisbane coordinate also resolves to QLD.
+    let mut p = Entity::new(EntityKind::Person, "Cindy Haynes", 0.9, "s");
+    p.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("state", "QLD"));
+    let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.6, "s"); // Brisbane
+    let r = super::rules::rule_au_092_breach_locality_footprint_crosscheck(&[p, coord], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-092");
+    assert_eq!(r[0].severity, super::Severity::High);
+    assert!(r[0].rule_name.contains("corroborated"));
+    assert!(r[0].description.contains("QLD"));
+}
+
+#[test]
+fn au092_breach_postcode_conflicts_with_footprint() {
+    // Breach postcode 3000 (VIC) vs a Brisbane (QLD) coordinate → conflict.
+    let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    p.add_evidence(Evidence::new("see_know", "breach").with_attr("postcode", "3000"));
+    let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.6, "s");
+    let r = super::rules::rule_au_092_breach_locality_footprint_crosscheck(&[p, coord], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(r[0].rule_name.contains("conflict"));
+    assert!(r[0].description.contains("VIC") && r[0].description.contains("QLD"));
+}
+
+#[test]
+fn au092_agrees_with_address_entity_footprint() {
+    // Footprint can also come from a confident Address entity, not just a coord.
+    let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    p.add_evidence(Evidence::new("see_know", "breach").with_attr("state", "New South Wales"));
+    let addr = Entity::new(EntityKind::Address, "Sydney NSW 2000", 0.7, "s");
+    let r = super::rules::rule_au_092_breach_locality_footprint_crosscheck(&[p, addr], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert!(r[0].rule_name.contains("corroborated"));
+    assert!(r[0].description.contains("NSW"));
+}
+
+#[test]
+fn au092_requires_both_sides() {
+    // Only a breach field, no footprint → nothing.
+    let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    p.add_evidence(Evidence::new("see_know", "breach").with_attr("state", "QLD"));
+    assert!(
+        super::rules::rule_au_092_breach_locality_footprint_crosscheck(&[p.clone()], "s", 0)
+            .is_empty()
+    );
+    // Only a footprint, no breach field → nothing.
+    let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.6, "s");
+    assert!(
+        super::rules::rule_au_092_breach_locality_footprint_crosscheck(&[coord], "s", 0).is_empty()
+    );
+}
+
+#[test]
 fn au046_resolves_an_alias_to_platform_exposed_identifiers() {
     // The alias confirmed across two platform families (npm=code, reddit=forum),
     // plus an email its npm account exposed → AU-046 links handle to identity.

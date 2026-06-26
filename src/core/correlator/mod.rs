@@ -278,6 +278,10 @@ const RULES: &[RuleFn] = &[
     // field, resolved offline to its state + gazetteer coordinate — finer than
     // AU-090's state grain.
     rule_au_091_au_postcode_locality,
+    // AU-092: cross-checks the breach-stated state/postcode (AU-090/091) against
+    // the geolocated coordinate/address footprint — agreement corroborates
+    // residency, a disjoint state flags stale data / a move / a namesake.
+    rule_au_092_breach_locality_footprint_crosscheck,
     // Free, offline identity-resolution rules — require no API keys.
     // AU-076: email local-part ↔ username canonical match (zero-API bridge).
     // AU-077: name-derived username independently confirmed on a platform.
