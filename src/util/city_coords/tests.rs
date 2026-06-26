@@ -118,3 +118,24 @@ use super::*;
         // No AU postcode, no tabulated city → still a clean miss (no false fix).
         assert!(city_coords("221B Baker Street, Clobberville").is_none());
     }
+
+    #[test]
+    fn consolidated_gazetteer_widens_exact_postcode_coverage() {
+        use crate::util::geohash::haversine_km;
+        // 7250 (Launceston) was NOT in the old 22-entry city_coords table, so it
+        // used to resolve only to the coarse 72xx region centroid (~70 km away).
+        // After delegating to the shared ground-truth gazetteer it resolves to
+        // the EXACT Launceston centroid — proving the wider table is now in use.
+        let (lat, lon) = postcode_coords("7250").expect("7250 is in the shared gazetteer");
+        assert!(
+            haversine_km(lat, lon, -41.4388, 147.1347) < 2.0,
+            "7250 resolves to exact Launceston, not the region centroid"
+        );
+        // And it is meaningfully tighter than the region fallback for 72xx.
+        let (rlat, rlon) = au_postcode_region("7250").unwrap();
+        assert!(
+            haversine_km(lat, lon, -41.4388, 147.1347)
+                < haversine_km(rlat, rlon, -41.4388, 147.1347),
+            "exact centroid beats the region centroid for a tabulated postcode"
+        );
+    }

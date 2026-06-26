@@ -38,42 +38,17 @@ pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
 }
 
 /// Resolve a bare 4-digit AU postcode to an approximate `(lat, lon)`.
-/// Uses the same offline fallback table as [`crate::util::postcode_au`] but
-/// returns a single centroid (the first locality) rather than all localities,
-/// so callers that want a single point can use this directly. Returns `None`
-/// for postcodes not in the table.
+///
+/// Delegates to the single source of truth — the ground-truth offline gazetteer
+/// in [`crate::util::postcode_au::offline_centroid`] (~100 AU postcodes: capital
+/// CBDs, capital-city suburbs across every state, and the high-traffic regional
+/// centres) — returning its principal-locality centroid. Previously this carried
+/// its own 22-entry subset that could drift from the gazetteer; sharing the one
+/// table both widens coverage and removes that risk. Returns `None` for a
+/// postcode the gazetteer doesn't tabulate (callers then fall back to the
+/// leading-digits region centroid via [`au_postcode_region`]).
 pub fn postcode_coords(postcode: &str) -> Option<(f64, f64)> {
-    // AU capital CBDs + common QLD postcodes (matches postcode_au offline_fallback).
-    const POSTCODES: &[(&str, f64, f64)] = &[
-        ("2000", -33.8688, 151.2093), // Sydney CBD
-        ("3000", -37.8136, 144.9631), // Melbourne CBD
-        ("4000", -27.4698, 153.0251), // Brisbane CBD
-        ("5000", -34.9285, 138.6007), // Adelaide CBD
-        ("6000", -31.9505, 115.8605), // Perth CBD
-        ("7000", -42.8821, 147.3272), // Hobart CBD
-        ("0800", -12.4634, 130.8456), // Darwin
-        ("0801", -12.4634, 130.8456), // Darwin
-        ("4552", -26.7290, 152.7554), // Maleny / Sunshine Coast hinterland
-        ("4551", -26.7986, 153.1319), // Caloundra
-        ("4556", -26.6532, 153.0640), // Maroochydore
-        ("4217", -28.0029, 153.4300), // Surfers Paradise
-        ("4218", -28.0264, 153.4307), // Broadbeach
-        ("4500", -27.3050, 152.9900), // Strathpine
-        ("4501", -27.2667, 152.9833), // Kallangur
-        ("4510", -27.0847, 152.9511), // Caboolture
-        ("4520", -27.3667, 152.8833), // Samford Valley
-        ("4300", -27.6667, 152.9167), // Springfield
-        ("4305", -27.6167, 152.7667), // Ipswich
-        ("4350", -27.5598, 151.9507), // Toowoomba
-        ("4810", -19.2590, 146.8169), // Townsville
-        ("4870", -16.9186, 145.7781), // Cairns
-    ];
-    for &(pc, lat, lon) in POSTCODES {
-        if postcode == pc {
-            return Some((lat, lon));
-        }
-    }
-    None
+    crate::util::postcode_au::offline_centroid(postcode)
 }
 
 /// Coarse REGION centroid for *any* AU postcode, by its leading two digits.

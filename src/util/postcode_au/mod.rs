@@ -168,6 +168,22 @@ fn offline_fallback(postcode: &str) -> Vec<Locality> {
     }
 }
 
+/// Single representative `(lat, lon)` centroid for an AU postcode from the
+/// offline gazetteer — the first (principal) locality of [`offline_fallback`].
+///
+/// The ground-truth gazetteer is the one source of truth for offline AU
+/// postcode geocoding; [`crate::util::city_coords::postcode_coords`] delegates
+/// here rather than carrying its own (smaller, drift-prone) copy, so every
+/// offline consumer resolves the same ~100 postcodes to the same point. Returns
+/// `None` for a postcode the gazetteer doesn't tabulate (callers then fall back
+/// to the leading-digits region centroid or degrade to the bare postcode).
+#[must_use]
+pub fn offline_centroid(postcode: &str) -> Option<(f64, f64)> {
+    offline_fallback(postcode)
+        .first()
+        .map(|loc| (loc.lat, loc.lon))
+}
+
 /// Resolve an AU postcode to its localities. Best-effort: a network/parse
 /// failure falls back to the offline gazetteer ([`offline_fallback`]) and, for
 /// postcodes outside it, to an empty list (so callers degrade to the bare
