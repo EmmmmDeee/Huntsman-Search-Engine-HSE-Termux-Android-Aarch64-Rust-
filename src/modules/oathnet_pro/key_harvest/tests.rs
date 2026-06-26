@@ -586,6 +586,53 @@ fn md5_password_hash_is_not_emitted_as_an_api_key() {
 }
 
 #[test]
+fn prefixless_osint_key_in_password_field_attributed_by_record_url() {
+    // A stealer record for an OSINT provider: a prefix-less Shodan key (32 alnum)
+    // saved as the password, with the provider's own URL on the record. Without
+    // the record-host context this is dropped (generic_hex in a password field);
+    // with it, the key is attributed to Shodan, banked, and flagged as
+    // OSINT-practitioner tooling — the exhaustive stealer-log sweep.
+    let item = serde_json::json!({
+        "url": "https://api.shodan.io/shodan/host/1.1.1.1",
+        "username": "operator@example.com",
+        "password": "kJ8mN2pQ7rT4vW9xZ1aB5cD3eF6gH0iL",
+    });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+    let shodan = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::ApiKey && e.has_tag("service:shodan"))
+        .expect("prefix-less Shodan key recovered via the record's URL host");
+    assert!(
+        shodan.has_tag("osint-practitioner"),
+        "an OSINT-provider key flags its holder as a practitioner: {:?}",
+        shodan.tags
+    );
+    assert!(shodan.has_tag("osint-category:attack-surface"));
+}
+
+#[test]
+fn random_password_without_osint_url_is_not_misattributed() {
+    // The same shaped value WITHOUT an OSINT-provider URL must NOT be attributed
+    // to any provider — no host context, so it degrades to plain detection and a
+    // generic value in a password field stays suppressed (no false OSINT key).
+    let item = serde_json::json!({
+        "url": "https://mail.example.com/login",
+        "password": "kJ8mN2pQ7rT4vW9xZ1aB5cD3eF6gH0iL",
+    });
+    let (mut seen, mut result) = empty_state();
+    extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+    assert!(
+        !result
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::ApiKey && e.has_tag("service:shodan")),
+        "a random password on a non-OSINT host must not become a Shodan key"
+    );
+}
+
+#[test]
 fn crypto_address_emits_as_crypto_address_not_api_key() {
     // Regression: a Bitcoin wallet address shares the high-entropy shape of
     // an API key, but it is NOT one. It must surface as a chain-tagged

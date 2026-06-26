@@ -616,6 +616,35 @@ fn is_password_field(field: &str) -> bool {
     )
 }
 
+/// The provider context a stealer/breach record carries **about itself**: the
+/// host of its `url`/`url_str` field, else its `domain` field, lowercased. Empty
+/// when the record names no host — then [`identify_with_context`] degrades to
+/// plain shape/prefix detection, so this never weakens existing attribution.
+///
+/// Only the HOST is used (scheme + path stripped), so a provider name dropped in
+/// a path/query can't spoof attribution — the same discipline as the URL-param
+/// scanner. This is what lets the per-field harvest attribute a *prefix-less*
+/// OSINT key (a 32-alnum Shodan / 64-hex VirusTotal key) sitting in an
+/// `api_key` / `password` field of a record whose URL is that provider, instead
+/// of dropping it as anonymous `generic_hex` — making the stealer-log sweep
+/// exhaustive for OSINT-practitioner keys.
+fn record_provider_context(item: &Value) -> String {
+    for f in ["url", "url_str"] {
+        if let Some(u) = val_str(item, f) {
+            let host = context_host(&u);
+            // Strip a leading path/query for scheme-less URLs (`context_host`
+            // only trims when a `://` scheme is present).
+            let host = host.split(['/', '?', '#']).next().unwrap_or(host);
+            if !host.is_empty() {
+                return host.to_ascii_lowercase();
+            }
+        }
+    }
+    val_str(item, "domain")
+        .map(|d| d.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
 pub fn extract_api_keys_from_item(
     item: &Value,
     scan_id: &str,
@@ -669,18 +698,27 @@ pub fn extract_api_keys_from_item(
         "dotenv",
     ];
 
+    // The record's own URL host / domain is provider context for every credential
+    // field below, so a prefix-less OSINT key in an `api_key` / `password` field
+    // of an OSINT-provider record is attributed (and banked + flagged
+    // `osint-practitioner`) rather than missed. Empty context degrades to plain
+    // shape/prefix detection — identical to the prior behaviour.
+    let record_context = record_provider_context(item);
+
     for field in &fields {
         if let Some(val) = val_str(item, field) {
-            if let Some((service, key_val)) = identify_api_key(&val) {
+            if let Some((service, key_val, detection)) =
+                identify_with_context(&record_context, &val)
+            {
                 // A bare 32/64-hex value in a password/hash field is a leaked
-                // password *hash* (MD5/SHA), not an API key — `identify_api_key`
-                // can only see the shape, not the field, so it returns the
-                // `generic_hex` fallback. Emitting it as a VERIFIED ApiKey is a
+                // password *hash* (MD5/SHA), not an API key — the shape alone is
+                // the `generic_hex` fallback. Emitting it as a VERIFIED ApiKey is a
                 // double error (wrong kind + inflated confidence); the value is
                 // already captured as a credential by `store_api_credential`. A
-                // *vendor-prefixed* key (sk-…, AKIA…) stored in a password field
-                // is still a genuine leaked key, so only the generic fallback is
-                // suppressed here. (Live email scan flooded with hex ApiKeys.)
+                // *vendor-prefixed* key (sk-…, AKIA…) — or one the record's own
+                // host attributes to a named provider — stored in a password field
+                // is still a genuine leaked key, so only the anonymous generic
+                // fallback is suppressed here. (Live email scan flooded with hex.)
                 if !(service == "generic_hex" && is_password_field(field)) {
                     let db = val_str(item, "dbname").unwrap_or_default();
                     let source = if db.is_empty() {
@@ -688,7 +726,7 @@ pub fn extract_api_keys_from_item(
                     } else {
                         format!("breach ({db})")
                     };
-                    emit_key(service, key_val, &source, scan_id, seen, result);
+                    emit_key_with(service, key_val, &source, detection, scan_id, seen, result);
                 }
             }
             // Decode-through pass: same field, treat the value as
