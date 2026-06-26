@@ -40,8 +40,8 @@ mod writer;
 pub use ledger::DispatchLog;
 use passes::{
     consolidate_address_localities, flag_geo_discordant_namesakes, hot_inject_keys,
-    promote_cross_scan_corroborated, promote_geo_corroborated_family,
-    promote_multipath_corroborated,
+    promote_breach_candidate_geo_corroborated, promote_cross_scan_corroborated,
+    promote_geo_corroborated_family, promote_multipath_corroborated,
 };
 use writer::DbWriter;
 // The per-target dispatch context (`DispatchCx`) and the mutable accumulator
@@ -572,6 +572,12 @@ impl ScanEngine {
             // relative — so every scan's geo-confirmed family reads as reliable,
             // not 0.3 noise. Runs after consolidation so it sees the final set.
             promote_geo_corroborated_family(&mut entities);
+            // People-centric companion (free, offline): a SAME-NAME breach/stealer
+            // candidate whose locality resolves to the subject's confirmed metro is
+            // the subject's own record (same name AND same place), so it is lifted
+            // out of namesake quarantine into the graded, correlatable set — the
+            // finalise application of the per-round reconsideration pass.
+            promote_breach_candidate_geo_corroborated(&mut entities);
             // Precision complement (free, offline): a same-surname family-candidate
             // a whole region away from the subject's confirmed fix shares only the
             // name, so it is tagged `geo-discordant` to demote it in the leads —
@@ -1409,7 +1415,8 @@ impl ScanEngine {
             if entity_map.len() <= Self::INCREMENTAL_CORRELATE_MAX_ENTITIES {
                 let mut snapshot: Vec<Entity> = entity_map.values().cloned().collect();
                 let promoted = promote_geo_corroborated_family(&mut snapshot)
-                    + promote_multipath_corroborated(&mut snapshot, relations.as_slice());
+                    + promote_multipath_corroborated(&mut snapshot, relations.as_slice())
+                    + promote_breach_candidate_geo_corroborated(&mut snapshot);
                 if promoted > 0 {
                     for e in snapshot {
                         entity_map.insert(e.uid.clone(), e);

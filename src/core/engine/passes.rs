@@ -129,6 +129,82 @@ pub(super) fn promote_geo_corroborated_family(entities: &mut [Entity]) -> usize 
     promoted
 }
 
+/// Tight radius (km) within which a same-name breach candidate's locality is
+/// taken to CONFIRM it is the subject — not a distant namesake. Deliberately far
+/// tighter than [`crate::core::geo_family::FAMILY_GEO_KM`] (a relative *somewhere*
+/// in the region): a breach/stealer row keyed on the subject's name that resolves
+/// to the SAME locality/metro as the subject's independently-confirmed location is
+/// almost certainly the subject's own record, so 25 km (one metropolitan area)
+/// keeps the re-promotion conservative.
+const BREACH_GEO_KM: f64 = 25.0;
+
+/// Re-promote a geo-corroborated **breach candidate** — the people-centric
+/// "return to old data when downstream adds credibility" pass.
+///
+/// A name search returns breach/stealer rows for EVERY same-name person, so each
+/// is quarantined as a `candidate` (it might be a namesake, not the subject). When
+/// a later round independently confirms the subject's own location (a name-matched
+/// register address or a GPS fix — [`crate::core::geo_family::subject_locations`]), a same-name breach
+/// candidate whose own locality resolves to within [`BREACH_GEO_KM`] of that fix
+/// is no longer ambiguous: the same name AND the same place is the subject. This
+/// lifts it out of quarantine (drops `candidate`, raises confidence to Probable,
+/// stamps `breach-corroborated` + a geo-corroboration evidence record) so its
+/// identifiers (the leaked email/phone/address) enter correlation, expansion and
+/// the graded views instead of staying a hidden candidate.
+///
+/// Conservative and non-circular by construction: the subject anchor comes ONLY
+/// from confirmed (non-candidate) locations, the radius is one metro, and
+/// `family-candidate` rows are left to [`promote_geo_corroborated_family`] /
+/// AU-061. Free, offline, idempotent (the `breach-corroborated` tag guards
+/// re-runs). Returns the number promoted.
+pub(super) fn promote_breach_candidate_geo_corroborated(entities: &mut [Entity]) -> usize {
+    use crate::core::entity::Evidence;
+    use crate::core::geo_family::{distance_to_subject, subject_locations};
+
+    let subject = subject_locations(entities);
+    if subject.is_empty() {
+        return 0; // no confirmed subject location → nothing to corroborate against
+    }
+    let mut promoted = 0usize;
+    for e in entities.iter_mut() {
+        // Only un-promoted BREACH candidates; family-candidates are AU-061's job.
+        if !e.has_tag(crate::core::tags::CANDIDATE)
+            || e.has_tag("breach-corroborated")
+            || e.has_tag("family-candidate")
+            || !e.has_tag("breach")
+        {
+            continue;
+        }
+        let Some(km) = distance_to_subject(e, &subject) else {
+            continue; // its locality doesn't resolve offline → cannot corroborate
+        };
+        if km > BREACH_GEO_KM {
+            continue; // a different metro → still a possible namesake, stay quarantined
+        }
+        // Same name AND same place: resolve the namesake doubt. Un-quarantine and
+        // lift to Probable so the record's identifiers become first-class findings.
+        e.tags.retain(|t| t != crate::core::tags::CANDIDATE);
+        e.tag("breach-corroborated");
+        e.confidence = e.confidence.max(0.50);
+        e.add_evidence(Evidence::new(
+            "geo_corroboration",
+            format!(
+                "Same-name breach record ~{km:.0} km from the subject's confirmed location \
+                 (within {BREACH_GEO_KM:.0} km) — same name AND same locality confirm this is the \
+                 subject's own record, not a namesake"
+            ),
+        ));
+        promoted += 1;
+    }
+    if promoted > 0 {
+        info!(
+            promoted,
+            "breach candidates geo-corroborated to the subject and re-promoted (free, offline)"
+        );
+    }
+    promoted
+}
+
 /// Promote multi-pathway-corroborated identities (free, offline, per scan).
 ///
 /// AU-062 proves which identity entities are joined by **≥2 edge-disjoint

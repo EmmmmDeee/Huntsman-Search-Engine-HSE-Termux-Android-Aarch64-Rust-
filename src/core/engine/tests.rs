@@ -111,6 +111,75 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
     assert_eq!(promote_geo_corroborated_family(&mut lone), 0);
 }
 
+/// People-centric "return to old data": a same-name breach candidate whose
+/// locality resolves to the subject's confirmed metro is re-promoted out of
+/// namesake quarantine, while a same-name record in a different state stays a
+/// candidate — and the pass is non-circular (no confirmed fix → no promotion)
+/// and idempotent.
+#[test]
+fn promote_breach_candidate_geo_corroborated_lifts_same_place_same_name_records() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    // Subject's confirmed GPS in Brisbane.
+    let mut gps = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    gps.tag("geoint");
+
+    // A same-name breach candidate in the same metro (South Brisbane 4101, ~2 km).
+    let mut near = Entity::new(EntityKind::Email, "matt@example.com", 0.25, "s");
+    near.tag(crate::core::tags::CANDIDATE);
+    near.tag("breach");
+    near.add_evidence(Evidence::new("oathnet_pro", "breach row").with_attr("postcode", "4101"));
+
+    // A same-name breach candidate in another state (Perth 6000) — a namesake.
+    let mut far = Entity::new(EntityKind::Email, "matt2@example.com", 0.25, "s");
+    far.tag(crate::core::tags::CANDIDATE);
+    far.tag("breach");
+    far.add_evidence(Evidence::new("oathnet_pro", "breach row").with_attr("postcode", "6000"));
+
+    let mut ents = vec![gps, near, far];
+    assert_eq!(
+        promote_breach_candidate_geo_corroborated(&mut ents),
+        1,
+        "only the same-metro breach record is re-promoted"
+    );
+
+    let near = ents.iter().find(|e| e.value == "matt@example.com").unwrap();
+    assert!(
+        !near.has_tag(crate::core::tags::CANDIDATE),
+        "un-quarantined out of candidate"
+    );
+    assert!(near.has_tag("breach-corroborated"));
+    assert!(near.confidence >= 0.50, "lifted to Probable");
+    assert!(
+        near.evidence
+            .iter()
+            .any(|ev| ev.source == "geo_corroboration")
+    );
+
+    let far = ents
+        .iter()
+        .find(|e| e.value == "matt2@example.com")
+        .unwrap();
+    assert!(
+        far.has_tag(crate::core::tags::CANDIDATE),
+        "an interstate same-name namesake stays quarantined"
+    );
+
+    // Idempotent: a second pass promotes nothing new.
+    assert_eq!(promote_breach_candidate_geo_corroborated(&mut ents), 0);
+
+    // Non-circular: with NO confirmed subject location, nothing is promoted even
+    // though the breach candidate carries a resolvable postcode.
+    let mut lone = vec![{
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.25, "s");
+        e.tag(crate::core::tags::CANDIDATE);
+        e.tag("breach");
+        e.add_evidence(Evidence::new("oathnet_pro", "row").with_attr("postcode", "4101"));
+        e
+    }];
+    assert_eq!(promote_breach_candidate_geo_corroborated(&mut lone), 0);
+}
+
 /// Free, offline: an identity pair joined by two orthogonal pathways has BOTH
 /// its endpoints promoted (tagged + corroborated) so the confirmed connection
 /// strengthens the scan output — while the conduit intermediates are left alone

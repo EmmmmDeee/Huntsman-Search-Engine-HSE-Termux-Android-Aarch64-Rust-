@@ -11,6 +11,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Breach-candidate geo re-promotion — "return to old data when downstream adds
+  credibility" for breach records.** A name search quarantines every same-name
+  breach/stealer row as a `candidate` (it may be a namesake). When a later round
+  independently confirms the subject's own location, a same-name breach candidate
+  whose locality resolves to within one metro (25 km) of that fix is lifted out of
+  quarantine (dropped `candidate`, raised to Probable, stamped `breach-corroborated`)
+  so the leaked email/phone/address become first-class, correlatable, graded
+  findings instead of hidden candidates. Conservative and non-circular: the anchor
+  is only a confirmed (non-candidate) location, the radius is tight, family
+  candidates are left to AU-061, and it is idempotent. Runs every expansion round
+  (the per-round reconsideration) and at finalise.
 - **Debug bundle: correlation rule histogram.** The CORRELATIONS section now opens
   with a `rule_id × count × share` histogram, sorted by frequency, so a single rule
   dominating the output (the permutation-flood failure mode) is visible at a glance
