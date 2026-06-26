@@ -11,6 +11,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Single-signal best-location estimate — a headline geolocation answer for
+  every scan.** The cross-class synergy fix (AU-059) only fires on ≥2 coordinates
+  across ≥2 source classes, so the COMMON single-signal scan got no headline
+  location. `best_au_location_estimate` now always returns the finest AU fix
+  available, by precedence: multi-source synergy → most-confident confirmed
+  coordinate → name-matched address postcode centroid → breach/register postcode
+  — each with its precision radius, nearest locality, state, and the basis it was
+  derived from. Surfaced in the dossier's GEO INTELLIGENCE as the single-signal
+  fallback so every located subject gets an Interpol-style "where, and how
+  precisely" answer. Pure and deterministic.
 - **Breach-candidate geo re-promotion — "return to old data when downstream adds
   credibility" for breach records.** A name search quarantines every same-name
   breach/stealer row as a `candidate` (it may be a namesake). When a later round

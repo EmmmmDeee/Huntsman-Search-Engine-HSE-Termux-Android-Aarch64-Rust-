@@ -498,6 +498,23 @@ fn print_diagnostics(scan: &Scan, entities: &[Entity], kind: &str, value: &str, 
             fix.synergy_confidence
         );
         println!();
+    } else if let Some(est) = crate::core::correlator::best_au_location_estimate(entities) {
+        // Single-signal fallback: the common scan has one location signal, not the
+        // ≥2-class synergy AU-059 requires. Surface the best available fix anyway —
+        // every located subject gets a headline answer with its precision + basis.
+        let near = est
+            .locality
+            .as_deref()
+            .map_or_else(String::new, |l| format!(", near {l}"));
+        println!(
+            "  Best location estimate: {:.4},{:.4} ± {:.1} km  (geohash={}, state={}{})",
+            est.lat, est.lon, est.radius_km, est.geohash, est.state, near
+        );
+        println!(
+            "    basis: {} (confidence {:.2}) — single-signal fix",
+            est.basis, est.confidence
+        );
+        println!();
     }
     println!(
         "  Coordinates: {} total ({} with geohash, {} with timezone)",

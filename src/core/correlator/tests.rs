@@ -3032,6 +3032,63 @@ fn au104_silent_for_unresolvable_or_absent_bsb() {
     assert!(super::rules::rule_au_104_bank_account_exposure(&[p2], "s", 0).is_empty());
 }
 
+// ─── best_au_location_estimate (single-signal headline geolocation) ──────────
+
+#[test]
+fn best_location_uses_a_single_confirmed_coordinate() {
+    use super::best_au_location_estimate;
+    // One person-anchored AU coordinate (geocode source makes it person-anchored).
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.7, "s");
+    coord.add_evidence(Evidence::new("geocode", "Brisbane fix"));
+    let est = best_au_location_estimate(&[coord]).expect("a single AU coord yields a fix");
+    assert_eq!(est.basis, "confirmed coordinate");
+    assert_eq!(est.state, "QLD");
+    assert_eq!(est.locality.as_deref(), Some("Brisbane"));
+    assert!(est.radius_km <= 2.0);
+}
+
+#[test]
+fn best_location_falls_back_to_name_matched_address_postcode() {
+    use super::best_au_location_estimate;
+    let mut addr = Entity::new(EntityKind::Address, "Spring Hill QLD 4000", 0.7, "s");
+    addr.tag("exact-name-match");
+    let est = best_au_location_estimate(&[addr]).expect("postcode 4000 resolves");
+    assert_eq!(est.basis, "name-matched address (postcode grain)");
+    assert_eq!(est.state, "QLD");
+    assert!((est.radius_km - 8.0).abs() < 1e-9, "postcode grain");
+}
+
+#[test]
+fn best_location_uses_a_breach_postcode_when_nothing_finer() {
+    use super::best_au_location_estimate;
+    let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.6, "s");
+    p.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("postcode", "4000"));
+    let est = best_au_location_estimate(&[p]).expect("breach postcode resolves");
+    assert_eq!(est.basis, "breach/register postcode");
+    assert_eq!(est.state, "QLD");
+}
+
+#[test]
+fn best_location_prefers_a_coordinate_over_an_address() {
+    use super::best_au_location_estimate;
+    // A Brisbane coordinate AND a Perth name-matched address: the finer coordinate
+    // wins (precedence), so the headline is the coordinate, not the postcode.
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.7, "s");
+    coord.add_evidence(Evidence::new("geocode", "Brisbane fix"));
+    let mut addr = Entity::new(EntityKind::Address, "Perth WA 6000", 0.7, "s");
+    addr.tag("exact-name-match");
+    let est = best_au_location_estimate(&[coord, addr]).unwrap();
+    assert_eq!(est.basis, "confirmed coordinate");
+    assert_eq!(est.state, "QLD");
+}
+
+#[test]
+fn best_location_is_none_without_any_location_signal() {
+    use super::best_au_location_estimate;
+    let e = Entity::new(EntityKind::Email, "x@y.com", 0.8, "s");
+    assert!(best_au_location_estimate(&[e]).is_none());
+}
+
 #[test]
 fn au099_reverse_geocodes_coordinate_to_locality() {
     // A Brisbane fix → "Brisbane, QLD" with a small distance.

@@ -580,6 +580,129 @@ pub(crate) fn au059_synergy_fix(entities: &[Entity]) -> Option<SynergyFix> {
     })
 }
 
+/// A single best-effort Australian location estimate for the subject, with the
+/// precision and provenance of whatever signal produced it. The headline "where
+/// is this person" answer that works for the COMMON single-signal scan, not only
+/// the multi-source synergy case [`au059_synergy_fix`] covers.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AuLocationEstimate {
+    pub lat: f64,
+    pub lon: f64,
+    /// Precision radius (km) — finer for a GPS fix, coarser for a postcode centroid.
+    pub radius_km: f64,
+    pub state: &'static str,
+    /// Nearest AU population centre (offline reverse geocode), if any.
+    pub locality: Option<String>,
+    /// How the estimate was derived (the precedence rung that produced it).
+    pub basis: &'static str,
+    pub confidence: f64,
+    pub geohash: String,
+    /// UID(s) of the contributing entity/entities.
+    pub uids: Vec<String>,
+}
+
+/// The `accuracy:<n>m` tag a device-sensor coordinate carries, in kilometres.
+fn coord_accuracy_km(e: &Entity) -> Option<f64> {
+    e.tags.iter().find_map(|t| {
+        t.strip_prefix("accuracy:")
+            .and_then(|s| s.strip_suffix('m'))
+            .and_then(|n| n.parse::<f64>().ok())
+            .map(|m| m / 1000.0)
+    })
+}
+
+/// The single best Australian location estimate for the subject, by a fixed
+/// precedence from finest to coarsest signal — so EVERY scan with any AU location
+/// data yields one headline fix (with its precision), not only the multi-source
+/// case. Pure and deterministic; the API export and the dossier read it directly.
+///
+/// Precedence:
+/// 1. the multi-source cross-class synergy fix ([`au059_synergy_fix`]) — strongest;
+/// 2. the most-confident single AU person-anchored coordinate (a GPS/sensor fix);
+/// 3. an `exact-name-match` address resolved to its postcode-region centroid;
+/// 4. any breach/register postcode resolved to its centroid.
+///
+/// `None` only when the scan has no resolvable AU location signal at all.
+pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocationEstimate> {
+    let locality_of = |lat: f64, lon: f64| {
+        crate::util::geo::nearest_au_locality(lat, lon).map(|(n, _, _)| n.to_string())
+    };
+
+    // 1. Multi-source synergy (delegates to the shared finder — no drift).
+    if let Some(fix) = au059_synergy_fix(entities) {
+        return Some(AuLocationEstimate {
+            lat: fix.lat,
+            lon: fix.lon,
+            radius_km: fix.radius_km,
+            state: fix.state,
+            locality: locality_of(fix.lat, fix.lon),
+            basis: "multi-source cross-class synergy",
+            confidence: fix.synergy_confidence,
+            geohash: fix.geohash,
+            uids: fix.uids,
+        });
+    }
+
+    // 2. The most-confident single AU person-anchored coordinate.
+    let best_coord = person_anchored_coords(entities)
+        .into_iter()
+        .filter(|(e, ll)| is_australian_coord(e, *ll))
+        .max_by(|a, b| {
+            a.0.c_effective()
+                .partial_cmp(&b.0.c_effective())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    if let Some((e, (lat, lon))) = best_coord {
+        return Some(AuLocationEstimate {
+            lat,
+            lon,
+            radius_km: coord_accuracy_km(e).unwrap_or(2.0),
+            state: crate::util::geo::au_state_for_coords(lat, lon).unwrap_or("AU"),
+            locality: locality_of(lat, lon),
+            basis: "confirmed coordinate",
+            confidence: e.c_effective(),
+            geohash: crate::util::geohash::geohash(lat, lon, 6),
+            uids: vec![e.uid.clone()],
+        });
+    }
+
+    // 3 & 4. Postcode-grain: a name-matched address outranks a bare breach/register
+    // postcode. Among equal-rank candidates the most-confident wins; deterministic.
+    let mut pc: Vec<(u8, f64, &Entity, f64, f64)> = entities
+        .iter()
+        .filter_map(|e| {
+            let pcode = crate::core::geo_family::au_postcode(e)?;
+            let (lat, lon) = crate::util::city_coords::city_coords(&pcode)?;
+            let rank = if e.has_tag("exact-name-match") { 1 } else { 0 };
+            Some((rank, e.c_effective(), e, lat, lon))
+        })
+        .collect();
+    pc.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| a.2.uid.cmp(&b.2.uid))
+    });
+    if let Some((rank, _, e, lat, lon)) = pc.first().copied() {
+        return Some(AuLocationEstimate {
+            lat,
+            lon,
+            radius_km: 8.0, // postcode / suburb grain
+            state: crate::util::geo::au_state_for_coords(lat, lon).unwrap_or("AU"),
+            locality: locality_of(lat, lon),
+            basis: if rank == 1 {
+                "name-matched address (postcode grain)"
+            } else {
+                "breach/register postcode"
+            },
+            confidence: e.c_effective(),
+            geohash: crate::util::geohash::geohash(lat, lon, 6),
+            uids: vec![e.uid.clone()],
+        });
+    }
+
+    None
+}
+
 pub(in crate::core::correlator) fn rule_au_059_cross_seed_geo_synergy(
     entities: &[Entity],
     scan_id: &str,
