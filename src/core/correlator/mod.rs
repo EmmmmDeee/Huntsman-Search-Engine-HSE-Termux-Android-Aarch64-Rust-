@@ -337,6 +337,10 @@ const RULES: &[RuleFn] = &[
     rule_au_058_professional_profile_geo,
     rule_au_059_cross_seed_geo_synergy,
     rule_au_061_family_geo_corroboration,
+    // AU-103: the radar's autonomous self-location — fuses the passively
+    // collected on-device signals (GPS/network fix + Wi-Fi/cell/Bluetooth/LAN
+    // presence) into the operator device's own position, with no seed input.
+    rule_au_103_device_self_location,
     // AU-084: dual-source cell tower corroboration (live sensor × crowdsourced DB).
     rule_au_084_cell_tower_dual_source,
     // AU-085: AU fixed-line area code cross-checked against address/coordinate state.

@@ -4506,6 +4506,139 @@ fn au_102_dedups_the_same_number_across_formats() {
     assert!(!out[0].description.contains("2 geographic"));
 }
 
+// ─── AU-103 tests (autonomous device self-location) ──────────────────────────
+
+#[test]
+fn au_103_gps_fix_with_corroboration_is_high_self_location() {
+    use super::rules::rule_au_103_device_self_location;
+
+    // A Brisbane GPS fix (device-sensor) + Wi-Fi APs + a serving AU cell.
+    let mut fix = mk_tagged(
+        EntityKind::Coordinates,
+        "-27.4705,153.0260",
+        "signal_radar",
+        &["device-sensor", "provider:gps", "accuracy:8m", "geoint"],
+    );
+    fix.confidence = 0.90;
+    let wifi1 = mk_tagged(
+        EntityKind::MacAddress,
+        "AA:BB:CC:DD:EE:01",
+        "signal_radar",
+        &["wifi-ap"],
+    );
+    let wifi2 = mk_tagged(
+        EntityKind::MacAddress,
+        "AA:BB:CC:DD:EE:02",
+        "signal_radar",
+        &["wifi-ap"],
+    );
+    let cell = mk_tagged(
+        EntityKind::DeviceId,
+        "505-1-100-200",
+        "signal_radar",
+        &["cell-tower"],
+    );
+    let out = rule_au_103_device_self_location(&[fix, wifi1, wifi2, cell], "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-103");
+    assert_eq!(out[0].severity, super::Severity::High);
+    assert!(out[0].description.contains("near Brisbane"));
+    assert!(out[0].description.contains("GPS fix"));
+    assert!(out[0].description.contains("±8 m"));
+    assert!(out[0].description.contains("2 Wi-Fi APs"));
+    assert!(out[0].description.contains("no seed input"));
+    assert_eq!(out[0].entity_uids.len(), 4);
+}
+
+#[test]
+fn au_103_network_fix_only_is_medium() {
+    use super::rules::rule_au_103_device_self_location;
+
+    // A network-grade fix (no provider:gps tag) → Medium.
+    let mut fix = mk_tagged(
+        EntityKind::Coordinates,
+        "-31.9523,115.8613",
+        "device_sensors",
+        &["device-sensor", "provider:network", "accuracy:450m"],
+    );
+    fix.confidence = 0.60;
+    let out = rule_au_103_device_self_location(&[fix], "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].severity, super::Severity::Medium);
+    assert!(out[0].description.contains("network fix"));
+    assert!(out[0].description.contains("Perth"));
+}
+
+#[test]
+fn au_103_presence_only_without_a_fix_is_low() {
+    use super::rules::rule_au_103_device_self_location;
+
+    // No coordinate fix, but Wi-Fi + cell + Bluetooth establish presence → Low.
+    let wifi = mk_tagged(
+        EntityKind::MacAddress,
+        "AA:BB:CC:DD:EE:01",
+        "signal_radar",
+        &["wifi-ap"],
+    );
+    let cell = mk_tagged(
+        EntityKind::DeviceId,
+        "505-2-1-2",
+        "signal_radar",
+        &["cell-tower"],
+    );
+    let bt = mk_tagged(
+        EntityKind::MacAddress,
+        "11:22:33:44:55:66",
+        "signal_radar",
+        &["bluetooth"],
+    );
+    let out = rule_au_103_device_self_location(&[wifi, cell, bt], "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].severity, super::Severity::Low);
+    assert!(out[0].description.contains("no precise fix"));
+    assert!(out[0].description.contains("1 Wi-Fi AP"));
+    assert!(out[0].description.contains("1 Bluetooth device"));
+}
+
+#[test]
+fn au_103_flags_foreign_cell_under_an_au_fix() {
+    use super::rules::rule_au_103_device_self_location;
+
+    // An AU GPS fix served by a non-AU cell (MCC 310, USA) → roaming/SIM note.
+    let mut fix = mk_tagged(
+        EntityKind::Coordinates,
+        "-27.4705,153.0260",
+        "signal_radar",
+        &["device-sensor", "provider:gps", "accuracy:10m"],
+    );
+    fix.confidence = 0.90;
+    let cell = mk_tagged(
+        EntityKind::DeviceId,
+        "310-260-1-2",
+        "signal_radar",
+        &["cell-tower"],
+    );
+    let out = rule_au_103_device_self_location(&[fix, cell], "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert!(out[0].description.contains("MCC 310 is non-Australian"));
+}
+
+#[test]
+fn au_103_silent_with_no_device_signals() {
+    use super::rules::rule_au_103_device_self_location;
+
+    // A remote subject's coordinate (NOT device-sensor tagged) must not fire — the
+    // rule concerns only the operator's own device.
+    let subject = mk_tagged(
+        EntityKind::Coordinates,
+        "-33.8688,151.2093",
+        "see_know",
+        &[],
+    );
+    assert!(rule_au_103_device_self_location(&[subject], "scan", 0).is_empty());
+    assert!(rule_au_103_device_self_location(&[], "scan", 0).is_empty());
+}
+
 // ─── AU-057 tests ─────────────────────────────────────────────────────────────
 
 #[test]

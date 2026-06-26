@@ -149,8 +149,11 @@ fn gps_provider_tag() {
 
 #[tokio::test]
 async fn fetch_fix_is_empty_off_device() {
-    let r = super::fetch_fix("gps", 1000, "test").await;
+    let r = super::fetch_fix("gps", "once", 1000, "test").await;
     assert!(r.entities.is_empty());
+    // The last-known fallback is likewise empty off-device (no location cache).
+    let last = super::fetch_fix("gps", "last", 1000, "test").await;
+    assert!(last.entities.is_empty());
 }
 
 #[test]

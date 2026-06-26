@@ -2,8 +2,11 @@
 //!
 //! Merges the former `wifi_connect` and `gps_fix` modules into a single
 //! passive sensor pass.  Invokes `termux-wifi-connectioninfo` (3 s ceiling),
-//! then a location fix: `termux-location -p gps` first (12 s), falling back to
-//! `-p network` (8 s) when GPS yields no valid fix.
+//! then a location fix that degrades from a fresh lock to the phone's
+//! passively-cached last-known position so a fix is established with no input:
+//! `-p gps -r once` (12 s) → `-p network -r once` (8 s) → `-p gps -r last` →
+//! `-p network -r last` (the last-known stages are near-instant and tagged
+//! `fix-age:last-known`).
 //!
 //! Off-device behaviour: termux-api binary missing → no-op (no error).
 
@@ -77,30 +80,54 @@ impl Module for DeviceSensors {
             result.extend(wifi::parse_conn(&stdout, &ctx.scan_id).entities);
         }
 
-        let gps = fetch_fix("gps", 12_000, &ctx.scan_id).await;
-        let fix = if gps.entities.is_empty() {
-            fetch_fix("network", 8_000, &ctx.scan_id).await
-        } else {
-            gps
-        };
-        result.extend(fix.entities);
+        result.extend(scan_location(&ctx.scan_id).await.entities);
 
         Ok(result)
     }
 }
 
-/// Run `termux-location -p <provider> -r once`, bounded by `timeout_ms`, and
-/// parse the result. Returns an empty `ModuleResult` off-device (binary
-/// missing), on timeout, or on an invalid/no-fix payload.
-async fn fetch_fix(provider: &str, timeout_ms: u64, scan_id: &str) -> ModuleResult {
+/// Run `termux-location -p <provider> -r <request>`, bounded by `timeout_ms`,
+/// and parse the result. Returns an empty `ModuleResult` off-device (binary
+/// missing), on timeout, or on an invalid/no-fix payload. A `last` request reads
+/// the OS's passively-cached last-known location and the entities are tagged
+/// `fix-age:last-known` so a cached position is never read as a fresh lock.
+async fn fetch_fix(provider: &str, request: &str, timeout_ms: u64, scan_id: &str) -> ModuleResult {
     match termux_cmd(
         "termux-location",
-        &["-p", provider, "-r", "once"],
+        &["-p", provider, "-r", request],
         timeout_ms,
     )
     .await
     {
-        Some(stdout) => gps::parse_fix(&stdout, scan_id),
+        Some(stdout) => {
+            let mut r = gps::parse_fix(&stdout, scan_id);
+            if request == "last" {
+                for e in &mut r.entities {
+                    e.tag("fix-age:last-known");
+                }
+            }
+            r
+        }
         None => ModuleResult::new(),
     }
+}
+
+/// Establish a device location fix from passive on-device signals, most precise
+/// first and degrading to the OS's passively-cached last-known location so a
+/// position is still established when no fresh lock is available — needs no
+/// input: fresh GPS → fresh network → last-known GPS → last-known network.
+async fn scan_location(scan_id: &str) -> ModuleResult {
+    const STAGES: &[(&str, &str, u64)] = &[
+        ("gps", "once", 12_000),
+        ("network", "once", 8_000),
+        ("gps", "last", 3_000),
+        ("network", "last", 3_000),
+    ];
+    for &(provider, request, timeout_ms) in STAGES {
+        let r = fetch_fix(provider, request, timeout_ms, scan_id).await;
+        if !r.is_empty() {
+            return r;
+        }
+    }
+    ModuleResult::new()
 }

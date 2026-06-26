@@ -91,27 +91,53 @@ fn parse_fix(stdout: &[u8], scan_id: &str) -> ModuleResult {
     result
 }
 
-/// Fetch a location fix from `termux-location -p <provider> -r once`.
-async fn fetch_fix(provider: &str, timeout_ms: u64, scan_id: &str) -> ModuleResult {
+/// Fetch a location fix from `termux-location -p <provider> -r <request>`.
+/// A `last` request reads the OS's passively-cached last-known location (no
+/// fresh lock, near-instant); those entities are tagged `fix-age:last-known` so
+/// a cached position is never mistaken for a fresh sensor lock.
+async fn fetch_fix(provider: &str, request: &str, timeout_ms: u64, scan_id: &str) -> ModuleResult {
     match termux_cmd(
         "termux-location",
-        &["-p", provider, "-r", "once"],
+        &["-p", provider, "-r", request],
         timeout_ms,
     )
     .await
     {
-        Some(stdout) => parse_fix(&stdout, scan_id),
+        Some(stdout) => {
+            let mut r = parse_fix(&stdout, scan_id);
+            if request == "last" {
+                for e in &mut r.entities {
+                    e.tag("fix-age:last-known");
+                }
+            }
+            r
+        }
         None => ModuleResult::new(),
     }
 }
 
-/// Attempt GPS fix (12 s), fall back to network fix (8 s).
+/// Establish a device location fix from passive on-device signals, most precise
+/// first and degrading to the OS's passively-cached last-known location so a
+/// position is STILL established when no fresh lock is available this sweep —
+/// the radar never depends on a single clean GPS fix, and needs no input. The
+/// stages, in order: a fresh GPS lock (12 s), a fresh network (cell/Wi-Fi) fix
+/// (8 s), the last-known GPS fix, then the last-known network fix (both
+/// near-instant, read straight from the phone's location cache). Every stage
+/// reads only the phone's own sensors/cache — no seed, no input.
 pub(super) async fn scan_gps(scan_id: &str) -> ModuleResult {
-    let gps = fetch_fix("gps", 12_000, scan_id).await;
-    if !gps.is_empty() {
-        return gps;
+    const STAGES: &[(&str, &str, u64)] = &[
+        ("gps", "once", 12_000),
+        ("network", "once", 8_000),
+        ("gps", "last", 3_000),
+        ("network", "last", 3_000),
+    ];
+    for &(provider, request, timeout_ms) in STAGES {
+        let r = fetch_fix(provider, request, timeout_ms, scan_id).await;
+        if !r.is_empty() {
+            return r;
+        }
     }
-    fetch_fix("network", 8_000, scan_id).await
+    ModuleResult::new()
 }
 
 #[cfg(test)]

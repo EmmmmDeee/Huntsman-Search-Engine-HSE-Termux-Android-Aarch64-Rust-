@@ -240,3 +240,234 @@ pub(in crate::core::correlator) fn rule_au_061_family_geo_corroboration(
         ts,
     )]
 }
+
+/// Australian mobile country code (ITU E.212 / ACMA) — the MCC every Australian
+/// cellular network advertises.
+const AU_MCC: &str = "505";
+
+/// Pluralising suffix for a count — `""` for one, `"s"` otherwise.
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+/// Join a list with commas and a closing "and" (`a`, `a and b`, `a, b and c`).
+fn join_and(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [head @ .., last] => format!("{} and {last}", head.join(", ")),
+    }
+}
+
+/// One passively-collected device location fix, with the fields that order it.
+/// (Contributing fix uids are gathered separately into the finding's uid set.)
+struct SelfFix {
+    is_gps: bool,
+    accuracy_m: f64,
+    confidence: f64,
+    lat: f64,
+    lon: f64,
+}
+
+/// The `accuracy:<n>m` tag a device-sensor fix carries, in metres; a fix with no
+/// accuracy tag is treated as very coarse so a tagged fix always outranks it.
+fn device_fix_accuracy_m(e: &Entity) -> f64 {
+    e.tags
+        .iter()
+        .find_map(|t| {
+            t.strip_prefix("accuracy:")
+                .and_then(|s| s.strip_suffix('m'))
+                .and_then(|n| n.parse::<f64>().ok())
+        })
+        .unwrap_or(100_000.0)
+}
+
+/// A roaming / spoofed-GPS note when the best fix's country (AU vs not) disagrees
+/// with the serving/visible cells' MCC — an Interpol-grade cross-check that the
+/// GPS fix and the radio network agree on the country. Empty when consistent or
+/// undeterminable.
+fn cell_country_note(fix_in_au: bool, cells: &[&Entity]) -> String {
+    let mut saw_au = false;
+    let mut foreign: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for c in cells {
+        // The cell DeviceId is `mcc-mnc-lac-cid`; the first segment is the MCC.
+        if let Some(mcc) = c.value.split('-').next() {
+            if mcc == AU_MCC {
+                saw_au = true;
+            } else if !mcc.is_empty() {
+                foreign.insert(mcc);
+            }
+        }
+    }
+    if fix_in_au && !saw_au && !foreign.is_empty() {
+        format!(
+            " Serving cell MCC {} is non-Australian — roaming or a relocated SIM, worth a second look.",
+            foreign.into_iter().collect::<Vec<_>>().join("/")
+        )
+    } else if !fix_in_au && saw_au {
+        " The fix is outside Australia yet the serving cell is Australian (MCC 505) — \
+         inconsistent, possible spoofed GPS."
+            .to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// AU-103 — Autonomous device self-location (radar self-fix).
+///
+/// The radar's autonomous geolocation output: it fuses ONLY the passively
+/// collected on-device signals — the GPS/network location fix, visible Wi-Fi
+/// APs, the serving/visible cell towers, Bluetooth devices and LAN neighbours —
+/// into the operator device's own position, with no seed and no subject input.
+/// This is what makes the radar 100% autonomous: even with no precise fix this
+/// sweep, the surrounding RF establishes the device's presence and live context.
+///
+/// * a best fix is chosen from the `device-sensor` `Coordinates` (a GPS lock
+///   outranks a network fix, then tighter accuracy, then higher confidence) and
+///   reverse-geocoded offline to an AU locality + state (no network call);
+/// * the visible Wi-Fi APs, cells, Bluetooth devices and LAN neighbours
+///   corroborate presence at that place and time;
+/// * the serving cell's MCC is cross-checked against the fix's country — a GPS
+///   fix in Australia served by a foreign cell (or vice-versa) is surfaced as a
+///   roaming / spoofed-GPS inconsistency.
+///
+/// High when a GPS-grade fix anchors it, Medium for a network-grade fix only,
+/// Low when there is no fix but the device sits in a live RF environment
+/// (presence/location-context without a precise point). Keys exclusively on the
+/// on-device sensor tags, so it concerns only the operator's own device and
+/// never a remote subject. Pure over the confirmed set.
+pub(in crate::core::correlator) fn rule_au_103_device_self_location(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // Best passive on-device location fix.
+    let mut best: Option<SelfFix> = None;
+    let mut fix_uids: Vec<String> = Vec::new();
+    for e in entities {
+        if e.kind != EntityKind::Coordinates || !e.has_tag("device-sensor") {
+            continue;
+        }
+        let Some((lat, lon)) = crate::util::geohash::parse_coords(&e.value) else {
+            continue;
+        };
+        fix_uids.push(e.uid.clone());
+        let cand = SelfFix {
+            is_gps: e.has_tag("provider:gps"),
+            accuracy_m: device_fix_accuracy_m(e),
+            confidence: e.confidence,
+            lat,
+            lon,
+        };
+        let better = match &best {
+            None => true,
+            // GPS over network, then tighter accuracy, then higher confidence.
+            Some(b) => {
+                (cand.is_gps, -cand.accuracy_m, cand.confidence)
+                    > (b.is_gps, -b.accuracy_m, b.confidence)
+            }
+        };
+        if better {
+            best = Some(cand);
+        }
+    }
+
+    // Corroborating passive presence signals (each independent of the fix).
+    let mut wifi = 0usize;
+    let mut bt = 0usize;
+    let mut lan = 0usize;
+    let mut cells: Vec<&Entity> = Vec::new();
+    let mut corro_uids: Vec<String> = Vec::new();
+    for e in entities {
+        if e.has_tag("wifi-ap") {
+            wifi += 1;
+        } else if e.has_tag("bluetooth") {
+            bt += 1;
+        } else if e.has_tag("cell-tower") {
+            cells.push(e);
+        } else if e.has_tag("arp-neighbor") {
+            lan += 1;
+        } else {
+            continue;
+        }
+        corro_uids.push(e.uid.clone());
+    }
+
+    let has_presence = wifi > 0 || bt > 0 || lan > 0 || !cells.is_empty();
+    if best.is_none() && !has_presence {
+        return Vec::new(); // nothing passive to report this sweep
+    }
+
+    // Corroboration phrase (only the non-zero classes).
+    let mut corro: Vec<String> = Vec::new();
+    if wifi > 0 {
+        corro.push(format!("{wifi} Wi-Fi AP{}", plural(wifi)));
+    }
+    if !cells.is_empty() {
+        corro.push(format!("{} cell{}", cells.len(), plural(cells.len())));
+    }
+    if bt > 0 {
+        corro.push(format!("{bt} Bluetooth device{}", plural(bt)));
+    }
+    if lan > 0 {
+        corro.push(format!("{lan} LAN neighbour{}", plural(lan)));
+    }
+
+    let mut uids = fix_uids;
+    uids.extend(corro_uids);
+    uids.sort_unstable();
+    uids.dedup();
+
+    let (severity, description) = if let Some(b) = &best {
+        let fix_in_au = crate::util::geo::au_state_for_coords(b.lat, b.lon).is_some();
+        let place = match crate::util::geo::nearest_au_locality(b.lat, b.lon) {
+            Some((name, st, km)) => format!(" — near {name}, {st} (≈{km:.0} km)"),
+            None if fix_in_au => " — within Australia".to_string(),
+            None => " — outside the AU gazetteer".to_string(),
+        };
+        let grade = if b.is_gps { "GPS" } else { "network" };
+        let acc = if b.accuracy_m < 100_000.0 {
+            format!(", ±{:.0} m", b.accuracy_m)
+        } else {
+            String::new()
+        };
+        let corro_note = if corro.is_empty() {
+            String::new()
+        } else {
+            format!(" Corroborated by {}.", join_and(&corro))
+        };
+        let cell_note = cell_country_note(fix_in_au, &cells);
+        let severity = if b.is_gps {
+            Severity::High
+        } else {
+            Severity::Medium
+        };
+        (
+            severity,
+            format!(
+                "Autonomous device self-location: {:.5},{:.5}{place} ({grade} fix{acc}).{corro_note}{cell_note} \
+                 Established from passive on-device sensors alone — no seed input.",
+                b.lat, b.lon
+            ),
+        )
+    } else {
+        (
+            Severity::Low,
+            format!(
+                "Autonomous device presence: no precise fix this sweep, but the device sits in a live \
+                 RF environment ({}). Established from passive on-device sensors alone — no seed input.",
+                join_and(&corro)
+            ),
+        )
+    };
+
+    vec![Correlation::new(
+        "AU-103",
+        "Autonomous device self-location",
+        severity,
+        description,
+        uids,
+        scan_id,
+        ts,
+    )]
+}
