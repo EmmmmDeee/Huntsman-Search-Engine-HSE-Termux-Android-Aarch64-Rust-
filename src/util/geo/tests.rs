@@ -85,6 +85,12 @@ use super::*;
         // Outside Australia → None.
         assert!(nearest_au_locality(40.71, -74.0).is_none()); // New York
         assert!(nearest_au_locality(-36.8485, 174.7633).is_none()); // Auckland
+        // Metro suburb anchors sharpen a fix below city grain: a Parramatta
+        // coordinate resolves to Parramatta, not "Sydney".
+        assert_eq!(
+            nearest_au_locality(-33.8150, 151.0011).map(|(n, s, _)| (n, s)),
+            Some(("Parramatta", "NSW"))
+        );
     }
 
     #[test]

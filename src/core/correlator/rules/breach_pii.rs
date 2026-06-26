@@ -856,9 +856,11 @@ pub(in crate::core::correlator) fn rule_au_093_au_address_from_breach(
 /// The consensus state is the one the most classes support; a tie or a dissenting
 /// minority is surfaced, never hidden. Three or more independent classes agreeing
 /// is a Verified-grade residency (High); two is strong (Medium). One class alone
-/// never fires here — the single-signal rules already cover it. This is the
-/// gold-standard geolocation finding: a jurisdiction asserted by independent
-/// corroboration, with its confidence shown. Pure over the confirmed set.
+/// never fires here — the single-signal rules already cover it. When a
+/// consensus-state coordinate is present the verdict is sharpened from state to
+/// **locality** via the offline reverse geocoder (AU-099) — "QLD, near Brisbane".
+/// This is the gold-standard geolocation finding: a jurisdiction asserted by
+/// independent corroboration, with its confidence shown. Pure over the set.
 pub(in crate::core::correlator) fn rule_au_098_residency_consensus(
     entities: &[Entity],
     scan_id: &str,
@@ -946,13 +948,29 @@ pub(in crate::core::correlator) fn rule_au_098_residency_consensus(
         format!(" dissenting minority: {}", minority.join("/"))
     };
 
+    // Sharpen the verdict from state grain to a locality: the nearest AU
+    // population centre to whichever consensus-state coordinate fix is closest to
+    // an anchor (offline reverse geocode). Turns "QLD" into "QLD, near Brisbane".
+    let locality_note = entities
+        .iter()
+        .filter(|e| {
+            e.kind == EntityKind::Coordinates && super::geo::coord_state(e) == Some(consensus)
+        })
+        .filter_map(|e| {
+            crate::util::geohash::parse_coords(&e.value)
+                .and_then(|(lat, lon)| crate::util::geo::nearest_au_locality(lat, lon))
+        })
+        .min_by(|a, b| a.2.total_cmp(&b.2))
+        .map(|(name, _, km)| format!(", near {name} (≈{km:.0} km)"))
+        .unwrap_or_default();
+
     vec![Correlation::new(
         "AU-098",
         "Multi-source residency consensus",
         severity,
         format!(
-            "Residency consensus: {consensus} — {n} of {active_classes} independent location \
-             signal classes agree ({});{dissent}. A cross-corroborated jurisdiction verdict.",
+            "Residency consensus: {consensus}{locality_note} — {n} of {active_classes} independent \
+             location signal classes agree ({});{dissent}. A cross-corroborated jurisdiction verdict.",
             agreeing.join(", ")
         ),
         uids.into_iter().collect(),

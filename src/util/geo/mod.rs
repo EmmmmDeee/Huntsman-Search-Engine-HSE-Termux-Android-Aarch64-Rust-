@@ -246,6 +246,43 @@ const AU_LOCALITY_ANCHORS: &[(&str, &str, f64, f64)] = &[
     ("Alice Springs", "NT", -23.6980, 133.8807),
     ("Palmerston", "NT", -12.4861, 130.9833),
     ("Katherine", "NT", -14.4652, 132.2635),
+    // Metro suburbs — tighter labels where most of the population lives. The
+    // nearest-anchor search means each only sharpens (never coarsens) a fix that
+    // would otherwise resolve to the city centroid.
+    // Greater Sydney
+    ("Parramatta", "NSW", -33.8150, 151.0011),
+    ("Penrith", "NSW", -33.7511, 150.6942),
+    ("Liverpool", "NSW", -33.9203, 150.9233),
+    ("Blacktown", "NSW", -33.7715, 150.9063),
+    ("Bondi", "NSW", -33.8915, 151.2767),
+    ("Chatswood", "NSW", -33.7969, 151.1803),
+    ("Hornsby", "NSW", -33.7048, 151.0993),
+    ("Campbelltown", "NSW", -34.0650, 150.8142),
+    ("Cronulla", "NSW", -34.0577, 151.1543),
+    ("Bankstown", "NSW", -33.9171, 151.0349),
+    // Greater Melbourne
+    ("Dandenong", "VIC", -37.9810, 145.2150),
+    ("Frankston", "VIC", -38.1413, 145.1226),
+    ("Box Hill", "VIC", -37.8197, 145.1242),
+    ("Footscray", "VIC", -37.8000, 144.9000),
+    ("Werribee", "VIC", -37.9000, 144.6614),
+    ("Ringwood", "VIC", -37.8140, 145.2300),
+    ("Sunshine", "VIC", -37.7880, 144.8330),
+    // Greater Brisbane
+    ("Ipswich", "QLD", -27.6171, 152.7600),
+    ("Logan Central", "QLD", -27.6390, 153.1090),
+    ("Redcliffe", "QLD", -27.2300, 153.1100),
+    ("Chermside", "QLD", -27.3850, 153.0330),
+    ("Mount Gravatt", "QLD", -27.5400, 153.0800),
+    // Greater Perth
+    ("Joondalup", "WA", -31.7448, 115.7661),
+    ("Rockingham", "WA", -32.2769, 115.7297),
+    ("Fremantle", "WA", -32.0569, 115.7439),
+    ("Mandurah", "WA", -32.5269, 115.7217),
+    // Greater Adelaide
+    ("Elizabeth", "SA", -34.7120, 138.6710),
+    ("Noarlunga", "SA", -35.1390, 138.4960),
+    ("Salisbury", "SA", -34.7590, 138.6410),
 ];
 
 /// Great-circle distance between two coordinates in kilometres (haversine,

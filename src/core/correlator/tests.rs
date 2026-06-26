@@ -2872,6 +2872,12 @@ fn au098_three_classes_agree_is_high_consensus() {
     assert!(r[0].description.contains("QLD"));
     assert!(r[0].description.contains("3 of 3"));
     assert!(r[0].description.contains("no dissenting signal"));
+    // The Brisbane coordinate sharpens the state verdict to a locality.
+    assert!(
+        r[0].description.contains("near Brisbane"),
+        "consensus sharpened to locality: {}",
+        r[0].description
+    );
 }
 
 #[test]
