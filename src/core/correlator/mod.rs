@@ -315,6 +315,9 @@ const RULES: &[RuleFn] = &[
     // AU-088: subject confirmed by N authoritative AU public registers (AHPRA,
     // ASIC, electoral, property, AustLII, ACNC, ABR) — government-grounded ID.
     rule_au_088_authoritative_register_confirmation,
+    // AU-089: ≥2 distinct registered AU companies (checksum-valid ACN/company-
+    // ABN) in the graph — an officeholder/controller corporate-network footprint.
+    rule_au_089_corporate_network,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

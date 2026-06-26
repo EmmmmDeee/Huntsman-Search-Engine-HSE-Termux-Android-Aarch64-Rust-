@@ -113,6 +113,12 @@ fn core_does_not_import_util_directly() {
                 // number in the unified-scan auto-detector.
                 && !line.contains("util::abn::is_valid_abn")
                 && !line.contains("util::abn::is_valid_acn")
+                // Pure, dependency-free company-ACN extractor (no state, no I/O),
+                // same leaf category as the ABN/ACN checksums above. AU-089 uses
+                // it to fold a company ABN onto its embedded ACN so an ABN and
+                // its derived ACN count as one company in the corporate-network
+                // rule.
+                && !line.contains("util::abn::derive_acn")
                 // Pure, dependency-free address locality dedup key — same leaf
                 // category as the ABN checksums: no state, no I/O. The engine's
                 // finalise step uses it to collapse postcode-variant Address

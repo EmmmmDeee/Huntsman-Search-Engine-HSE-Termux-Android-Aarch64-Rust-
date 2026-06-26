@@ -90,6 +90,53 @@ use super::*;
     }
 
     #[test]
+    fn derive_acn_recovers_company_number_only_for_company_abns() {
+        // A company ABN is its ACN prefixed by a two-digit checksum; the ABN
+        // 53004085616 carries the ASIC-valid ACN 004085616.
+        assert_eq!(derive_acn("53004085616").as_deref(), Some("004085616"));
+        assert_eq!(derive_acn("53 004 085 616").as_deref(), Some("004085616"));
+        // A valid ABN whose trailing nine digits are NOT a valid ACN belongs to
+        // a non-company (sole trader / trust / partnership / super fund) — the
+        // ATO's own 51824753556 is exactly this case.
+        assert_eq!(derive_acn("51824753556"), None);
+        // A bare ACN is not an ABN, so nothing is derived (no ABN to peel).
+        assert_eq!(derive_acn("004085616"), None);
+        // An invalid ABN (last digit flipped) derives nothing even though its
+        // tail might otherwise look ACN-shaped.
+        assert_eq!(derive_acn("53004085617"), None);
+        // Garbage in, None out.
+        assert_eq!(derive_acn("not-an-abn"), None);
+    }
+
+    /// Cross-check: for every ABN that `derive_acn` claims is a company, the
+    /// derived ACN must itself validate and be the literal trailing nine digits
+    /// — and the ABN must of course be valid. Proves the function never invents
+    /// an ACN that isn't both present and checksum-correct.
+    #[test]
+    fn derived_acn_is_always_valid_and_is_the_abn_tail() {
+        let mut state: u64 = 0x0123_4567_89AB_CDEF;
+        let mut companies = 0usize;
+        for _ in 0..50_000 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            let n = state % 100_000_000_000; // 11 digits
+            let s = format!("{n:011}");
+            if let Some(acn) = derive_acn(&s) {
+                assert!(is_valid_abn(&s), "derive_acn returned for invalid ABN {s}");
+                assert!(is_valid_acn(&acn), "derived ACN {acn} is itself invalid");
+                assert_eq!(acn, &s[2..], "derived ACN is not the ABN's trailing nine");
+                companies += 1;
+            }
+        }
+        // ~1 in 10 valid ABNs are companies; the sweep must hit several.
+        assert!(
+            companies > 0,
+            "expected to derive at least one company ACN in the sweep"
+        );
+    }
+
+    #[test]
     fn company_names_splits_real_joint_syndicates() {
         // Real owner strings from the QLD register (q="Pty Ltd").
         assert_eq!(

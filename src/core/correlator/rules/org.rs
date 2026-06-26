@@ -549,3 +549,75 @@ pub(in crate::core::correlator) fn rule_au_087_shared_org_email_domain(
     }
     out
 }
+
+/// AU-089 — Australian corporate network (multiple registered companies).
+///
+/// Counts the **distinct registered companies** the subject's graph touches,
+/// where a company is evidenced by a checksum-valid company identifier: a bare
+/// nine-digit ACN, or an eleven-digit ABN whose trailing nine digits are
+/// themselves a valid ACN (the ASIC company-ABN form, decoded by
+/// [`crate::util::abn::derive_acn`]). An ABN and the ACN embedded in it collapse
+/// to **one** company — dedup is by the canonical ACN — so a single company, or
+/// a company seen as both its ABN and its derived ACN, never fires this rule
+/// (that single link is already covered by AU-033/AU-088).
+///
+/// Two or more *distinct* companies is the signal worth surfacing: a person tied
+/// to a web of registered companies — an officeholder / controller footprint
+/// that matters for asset tracing and corporate-structure (shell) mapping,
+/// beyond any single ABN↔organisation link. Severity escalates at three.
+///
+/// Non-company ABNs (sole traders, trusts, partnerships, super funds) are
+/// deliberately excluded: they carry no ACN and are not the controllable
+/// corporate vehicles this rule is about. Pure over the confirmed entity set.
+pub(in crate::core::correlator) fn rule_au_089_corporate_network(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::BTreeMap;
+
+    // canonical ACN → contributing entity uids (one company per distinct ACN).
+    let mut companies: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for e in entities.iter().filter(|e| e.kind == EntityKind::AbnAcn) {
+        let canonical = crate::util::abn::derive_acn(&e.value).or_else(|| {
+            let digits: String = e.value.chars().filter(char::is_ascii_digit).collect();
+            (digits.len() == 9 && crate::util::abn::is_valid_acn(&digits)).then_some(digits)
+        });
+        if let Some(acn) = canonical {
+            companies.entry(acn).or_default().push(e.uid.clone());
+        }
+    }
+
+    if companies.len() < 2 {
+        return Vec::new();
+    }
+
+    let n = companies.len();
+    let acn_list = companies
+        .keys()
+        .map(|a| format!("{} {} {}", &a[0..3], &a[3..6], &a[6..9]))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut uids: Vec<String> = companies.into_values().flatten().collect();
+    uids.sort_unstable();
+    uids.dedup();
+
+    let severity = if n >= 3 {
+        Severity::High
+    } else {
+        Severity::Medium
+    };
+    vec![Correlation::new(
+        "AU-089",
+        "Australian corporate network (multiple registered companies)",
+        severity,
+        format!(
+            "Subject's graph touches {n} distinct registered Australian companies \
+             (checksum-valid ACN/company-ABN): {acn_list} — an officeholder / controller \
+             footprint for asset tracing and corporate-structure mapping"
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}

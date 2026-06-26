@@ -3373,6 +3373,54 @@ fn au088_non_register_sources_do_not_fire() {
     );
 }
 
+// ─── Australian corporate network (AU-089) ───────────────────────────────────
+
+#[test]
+fn au089_two_distinct_companies_fire_medium() {
+    // ACN 004085616 and the company ABN 53004085616 are the SAME company → must
+    // collapse to one; add a second, distinct company (ACN 000000019) to fire.
+    let a = Entity::new(EntityKind::AbnAcn, "53004085616", 0.80, "s"); // company ABN
+    let b = Entity::new(EntityKind::AbnAcn, "004085616", 0.80, "s"); // its ACN (same co.)
+    let c = Entity::new(EntityKind::AbnAcn, "000000019", 0.80, "s"); // a 2nd company
+    let hits = super::rules::rule_au_089_corporate_network(&[a, b, c], "s", 0);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].rule_id, "AU-089");
+    assert_eq!(hits[0].severity, super::Severity::Medium);
+    // Exactly two distinct companies, ABN+ACN of the first deduped to one.
+    assert!(hits[0].description.contains("2 distinct"));
+    assert!(hits[0].description.contains("004 085 616"));
+    assert!(hits[0].description.contains("000 000 019"));
+}
+
+#[test]
+fn au089_single_company_does_not_fire() {
+    // A company seen as both its ABN and its derived ACN is still ONE company.
+    let a = Entity::new(EntityKind::AbnAcn, "53004085616", 0.80, "s");
+    let b = Entity::new(EntityKind::AbnAcn, "004085616", 0.80, "s");
+    assert!(super::rules::rule_au_089_corporate_network(&[a, b], "s", 0).is_empty());
+}
+
+#[test]
+fn au089_three_companies_escalate_to_high() {
+    let a = Entity::new(EntityKind::AbnAcn, "004085616", 0.80, "s");
+    let b = Entity::new(EntityKind::AbnAcn, "000000019", 0.80, "s");
+    // A third distinct, checksum-valid ACN (prefix 01000000 → check digit 3).
+    let c = Entity::new(EntityKind::AbnAcn, "010000003", 0.80, "s");
+    let hits = super::rules::rule_au_089_corporate_network(&[a, b, c], "s", 0);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].severity, super::Severity::High);
+    assert!(hits[0].description.contains("3 distinct"));
+}
+
+#[test]
+fn au089_non_company_abn_is_excluded() {
+    // 51824753556 is a valid ABN but NOT a company (no embedded ACN), so it is
+    // not a corporate vehicle — one real company alongside it must not fire.
+    let sole = Entity::new(EntityKind::AbnAcn, "51824753556", 0.80, "s");
+    let company = Entity::new(EntityKind::AbnAcn, "004085616", 0.80, "s");
+    assert!(super::rules::rule_au_089_corporate_network(&[sole, company], "s", 0).is_empty());
+}
+
 // ─── Geo convex footprint (AU-052) ───────────────────────────────────────────
 
 #[cfg(test)]

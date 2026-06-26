@@ -81,6 +81,52 @@ pub fn is_valid_acn(s: &str) -> bool {
     digits[8] == complement
 }
 
+/// Derive the nine-digit Australian Company Number (ACN) embedded in a
+/// **company's** ABN.
+///
+/// Every body corporate registered with ASIC is issued an ABN that is its
+/// nine-digit ACN prefixed by a two-digit checksum, so the ACN is simply the
+/// ABN's trailing nine digits — but *only* for companies. Sole traders, trusts,
+/// partnerships and super funds also hold ABNs whose trailing nine digits are
+/// **not** an ACN. This function returns the ACN **iff** `s` is a checksum-valid
+/// ABN whose trailing nine digits are *themselves* a checksum-valid ACN, which
+/// is exactly the discriminating test for "this ABN belongs to a registered
+/// company". A `Some` result therefore both (a) classifies the ABN as a company
+/// and (b) surfaces the ACN as a first-class pivot for ASIC / ASX / court
+/// records that key on the ACN, not the ABN.
+///
+/// The returned ACN is **bare** (nine digits, no separators) so it can be fed
+/// straight to the ACN-consuming resolvers.
+///
+/// # Guarantees
+/// - Returns `Some(acn)` iff [`is_valid_abn`]`(s)` holds and [`is_valid_acn`]
+///   holds on the trailing nine digits; `None` otherwise (a non-company ABN, an
+///   invalid ABN, or the wrong length).
+/// - Non-digit bytes are ignored, matching [`is_valid_abn`] — so spaced/grouped
+///   forms resolve.
+/// - Pure and total: no panics, no I/O.
+///
+/// ```
+/// use huntsman_search_engine::util::abn::derive_acn;
+///
+/// // A company ABN → its embedded, independently-valid ACN.
+/// assert_eq!(derive_acn("53 004 085 616").as_deref(), Some("004085616"));
+/// // A valid ABN that is NOT a company (its trailing 9 fail the ACN checksum).
+/// assert_eq!(derive_acn("51824753556"), None);
+/// // Not an ABN at all.
+/// assert_eq!(derive_acn("004085616"), None);
+/// ```
+pub fn derive_acn(s: &str) -> Option<String> {
+    if !is_valid_abn(s) {
+        return None;
+    }
+    // `is_valid_abn` guarantees exactly 11 decimal digits, so the trailing nine
+    // are well defined.
+    let digits: String = s.chars().filter(char::is_ascii_digit).collect();
+    let acn = &digits[digits.len() - 9..];
+    is_valid_acn(acn).then(|| acn.to_string())
+}
+
 /// Heuristic: does `name` carry an Australian corporate legal-form suffix?
 ///
 /// Recognises `PTY LTD`, `LIMITED`, `LTD`, `PTY`, `INC`/`INCORPORATED`, `NL`,
