@@ -91,6 +91,16 @@ use super::*;
             nearest_au_locality(-33.8150, 151.0011).map(|(n, s, _)| (n, s)),
             Some(("Parramatta", "NSW"))
         );
+        // Regional/outer anchors: a Caboolture fix resolves to Caboolture, not
+        // "Brisbane"; a Maitland fix to Maitland, not "Newcastle".
+        assert_eq!(
+            nearest_au_locality(-27.0850, 152.9510).map(|(n, s, _)| (n, s)),
+            Some(("Caboolture", "QLD"))
+        );
+        assert_eq!(
+            nearest_au_locality(-32.7316, 151.5566).map(|(n, s, _)| (n, s)),
+            Some(("Maitland", "NSW"))
+        );
     }
 
     #[test]
