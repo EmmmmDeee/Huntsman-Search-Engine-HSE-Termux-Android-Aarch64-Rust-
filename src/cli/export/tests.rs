@@ -159,6 +159,64 @@ fn debug_bundle_includes_dossier_sequence_and_audit() {
 }
 
 #[test]
+fn debug_bundle_correlation_histogram_surfaces_a_dominant_rule() {
+    use crate::core::correlator::{Correlation, Severity};
+    use crate::core::entity::{Entity, EntityKind};
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("debug_histo.db");
+    let store = Store::open(db.to_str().unwrap()).unwrap();
+
+    let scan = Scan::new("scan-histo", Target::new(TargetKind::Email, "x@y.com"));
+    store.upsert_scan(&scan).unwrap();
+    store
+        .upsert_entities_batch(&[Entity::new(EntityKind::Email, "x@y.com", 0.8, "scan-histo")])
+        .unwrap();
+    // Three AU-099 hits and one AU-076 hit — AU-099 dominates the histogram.
+    for i in 0..3 {
+        store
+            .upsert_correlation(&Correlation::new(
+                "AU-099",
+                "Coordinate reverse-geocode",
+                Severity::Medium,
+                format!("fix {i}"),
+                vec![format!("u{i}")],
+                "scan-histo",
+                0,
+            ))
+            .unwrap();
+    }
+    store
+        .upsert_correlation(&Correlation::new(
+            "AU-076",
+            "Email-username local-part identity bridge",
+            Severity::High,
+            "bridge".to_string(),
+            vec!["u9".to_string()],
+            "scan-histo",
+            0,
+        ))
+        .unwrap();
+
+    let out = render_debug_bundle(&store, "scan-histo").unwrap();
+    assert!(
+        out.contains("rule histogram"),
+        "the debug bundle must include a correlation rule histogram"
+    );
+    // The dominant rule (3 of 4 = 75%) is rendered with its share.
+    assert!(
+        out.contains("AU-099") && out.contains("75.0%"),
+        "the histogram must show the dominant rule's share: {out}"
+    );
+    // Histogram is frequency-ordered: AU-099 (3) appears before AU-076 (1).
+    let hi = out.find("rule histogram").unwrap();
+    let tail = &out[hi..];
+    assert!(
+        tail.find("AU-099").unwrap() < tail.find("AU-076").unwrap(),
+        "histogram must be ordered by frequency (AU-099 before AU-076)"
+    );
+}
+
+#[test]
 fn debug_bundle_is_deterministic() {
     // DETERMINISM REQUIREMENT (evidence, not assertion): re-exporting the
     // same immutable stored scan must be byte-identical, so the artifact is

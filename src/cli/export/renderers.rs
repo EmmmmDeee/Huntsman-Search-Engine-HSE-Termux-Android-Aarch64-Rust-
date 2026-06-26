@@ -325,6 +325,35 @@ pub(crate) fn render_debug_bundle(
     if correlations.is_empty() {
         let _ = writeln!(s, "  (no correlator rules fired)");
     }
+    // Rule histogram (rule_id × count, sorted by frequency) — surfaces, at a
+    // glance, a single rule dominating the output (the permutation-flood failure
+    // mode: a name seed firing one identity-bridge per email×username pair). It is
+    // the fastest anomaly signal for a diagnosing tool (human or Claude): a rule
+    // at a large share of the total is the first thing to investigate when a
+    // dossier reads noisy. Deterministic (count desc, then rule_id asc).
+    if !correlations.is_empty() {
+        let mut by_rule: BTreeMap<String, (usize, String)> = BTreeMap::new();
+        for c in &correlations {
+            let e = by_rule
+                .entry(c.rule_id.clone())
+                .or_insert((0, c.rule_name.clone()));
+            e.0 += 1;
+        }
+        let mut ranked: Vec<(String, usize, String)> = by_rule
+            .into_iter()
+            .map(|(id, (n, name))| (id, n, name))
+            .collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let total = correlations.len().max(1);
+        let _ = writeln!(
+            s,
+            "  rule histogram (rule_id  count  share — investigate any rule with an outsized share):"
+        );
+        for (id, n, name) in &ranked {
+            let pct = (*n as f64) * 100.0 / (total as f64);
+            let _ = writeln!(s, "    {id:10} {n:>5}  {pct:>5.1}%  {name}");
+        }
+    }
     for c in &correlations {
         let _ = writeln!(
             s,

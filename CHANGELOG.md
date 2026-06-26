@@ -10,6 +10,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+- **Debug bundle: correlation rule histogram.** The CORRELATIONS section now opens
+  with a `rule_id × count × share` histogram, sorted by frequency, so a single rule
+  dominating the output (the permutation-flood failure mode) is visible at a glance
+  instead of needing a manual grep — the fastest anomaly signal for a diagnosing
+  tool (human or Claude). Deterministic; the byte-reproducibility guarantee holds.
+
 ### Changed
 - **AU-076 (email↔username local-part bridge) is consolidated by canonical
   handle.** A name seed derives many email permutations and many username forms
