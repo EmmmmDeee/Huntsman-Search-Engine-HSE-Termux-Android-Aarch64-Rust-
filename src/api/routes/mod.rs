@@ -161,6 +161,9 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             post(scan_handlers::scan_create).get(scan_handlers::scan_list),
         )
         .route("/scans/batch", post(scan_handlers::scan_batch))
+        // Fully autonomous investigation: NO seed input — the platform auto-selects
+        // the highest cross-investigation-leverage entity from its base and scans it.
+        .route("/scan/auto", post(scan_handlers::scan_auto))
         // Forward-only scan-plan preview: which modules a seed engages, no scan run.
         .route("/plan", get(scan_handlers::plan_preview))
         // Live-radar button: ONE autonomous device-sensor sweep, no target seed.

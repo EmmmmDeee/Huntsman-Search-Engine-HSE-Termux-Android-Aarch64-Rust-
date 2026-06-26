@@ -637,6 +637,9 @@ const API = {
   gaps:       id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/gaps'),
   auditScan: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/audit'),
   create:    body=>API._req('/api/v1/scans',{method:'POST',body}),
+  // Fully autonomous scan — NO seed input; the server auto-selects the highest
+  // cross-investigation-leverage entity from the local base and investigates it.
+  autoScan:  ()=>API._req('/api/v1/scan/auto',{method:'POST'}),
   // Forward-only scan-plan preview: which modules a seed engages, before scanning.
   plan:      value=>API._req('/api/v1/plan?value='+encodeURIComponent(value)),
   // Raw-text upload (not JSON): POST a dossier file's contents to be parsed and
@@ -1099,6 +1102,21 @@ async function renderNewScan(v){
     <h2>New Scan</h2>
     <hr style="margin:8px 0 14px 0">
 
+    <div class="panel panel-default" style="border-color:#d43f3a;margin-bottom:14px">
+      <div class="panel-heading" style="background:#fdecea"><b><i class="glyphicon glyphicon-flash" style="color:#d43f3a"></i>&nbsp;Autonomous investigation</b>
+        <span class="text-muted" style="font-weight:400">— no input required</span></div>
+      <div class="panel-body">
+        <p class="text-muted" style="margin:0 0 10px 0;font-size:12px">
+          One tap. The platform ranks every entity it has already collected by cross-investigation
+          leverage, auto-selects the highest-value one, and investigates it with the comprehensive
+          defaults — no seed, no target type, nothing to choose. The manual form below stays available
+          as an optional refinement; it is never required.
+        </p>
+        <button id="auto-go" class="btn btn-danger" type="button" onclick="autoInvestigate()"><i class="glyphicon glyphicon-flash"></i>&nbsp;Auto-Investigate</button>
+        <span id="auto-status" class="text-muted" style="margin-left:10px;font-style:italic">zero input — investigates the highest-value known entity</span>
+      </div>
+    </div>
+
     <div class="alert alert-info" style="padding:10px 12px;margin-bottom:14px">
       <b><i class="glyphicon glyphicon-import"></i>&nbsp;Import a file</b>
       — upload a breach/dossier compilation (<code>Entry #N</code> + a
@@ -1484,6 +1502,29 @@ function buildWizardOptions(){
   const notesStr = ($('#w-notes')||{}).value||'';
   if (notesStr.trim()) opts.notes = notesStr.trim();
   return opts;
+}
+
+/* Fully autonomous investigation — NO input. The server ranks the entities the
+   platform has already collected by cross-investigation leverage, auto-selects
+   the strongest, and scans it. Navigates to the resulting scan's live log. */
+async function autoInvestigate(){
+  const btn = $('#auto-go'), st = $('#auto-status');
+  if (btn){ btn.disabled = true; btn.innerHTML = '<i class="glyphicon glyphicon-refresh glyphicon-spin"></i>&nbsp;Selecting…'; }
+  if (st) st.textContent = 'ranking known entities and selecting the highest-value seed…';
+  try {
+    const r = await API.autoScan();
+    const seed = r.selected_seed ? `${r.selected_seed.kind} = ${r.selected_seed.value}` : 'auto-selected entity';
+    toast('Autonomous scan queued — investigating '+seed);
+    nav(`#/scaninfo?id=${encodeURIComponent(r.scan_id)}&tab=log`);
+  } catch(e){
+    if (btn){ btn.disabled = false; btn.innerHTML = '<i class="glyphicon glyphicon-flash"></i>&nbsp;Auto-Investigate'; }
+    // A 422 means the base is empty — guide the operator to seed it once.
+    const msg = (e && e.message) ? e.message : 'autonomous scan failed';
+    if (st) st.textContent = '';
+    if (typeof alertify !== 'undefined') alertify.error(msg.includes('nothing to investigate')
+      ? 'No data yet — run one scan or import a file to seed the intelligence base, then Auto-Investigate.'
+      : msg);
+  }
 }
 
 async function submitWizard(){

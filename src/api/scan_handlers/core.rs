@@ -36,6 +36,91 @@ pub async fn scan_create(
         .into_response()
 }
 
+/// The operator-local default seed (`HUNTSMAN_DEFAULT_SEED`), with its kind
+/// auto-detected from the value — the autonomous scan's fallback when the local
+/// intelligence base is still empty.
+fn default_seed_from_env() -> Option<(crate::core::scan::TargetKind, String)> {
+    let v = std::env::var("HUNTSMAN_DEFAULT_SEED")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())?;
+    Some((crate::core::scan::TargetKind::detect(&v), v))
+}
+
+/// `POST /api/v1/scan/auto` — fully autonomous investigation, NO seed input.
+///
+/// The platform discovers, prioritises and investigates on its own: it ranks the
+/// entities it has already collected by cross-investigation leverage (the
+/// identifier whose enrichment most empowers the rest of the intelligence base),
+/// selects the strongest pivotable one, and runs a comprehensive scan on it — so
+/// the operator never has to choose a seed. Falls back to `HUNTSMAN_DEFAULT_SEED`
+/// when the base is empty, and returns a clear 422 (not an error) only when there
+/// is genuinely nothing to investigate yet. The response names the seed it chose.
+pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    use std::collections::HashSet;
+
+    // Assemble the candidate pool from recent scans (everything the platform has
+    // discovered) and rank it by cross-investigation leverage — all store work on
+    // the blocking pool so the async workers stay free.
+    let store = Arc::clone(&s.store);
+    let selected = tokio::task::spawn_blocking(
+        move || -> crate::core::error::Result<Option<(crate::core::scan::TargetKind, String)>> {
+            let scans = store.list_scans(50)?;
+            let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
+            let mut seen: HashSet<String> = HashSet::new();
+            for sc in &scans {
+                for e in store.entities_for_scan(&sc.id)? {
+                    if seen.insert(e.uid.clone()) {
+                        pool.push(e);
+                    }
+                }
+            }
+            let ranked = crate::core::engine::rank_enrichment_leverage(store.as_ref(), &pool, 64);
+            Ok(crate::core::engine::autonomous_seed(&ranked))
+        },
+    )
+    .await;
+
+    let from_base = match selected {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&crate::core::error::Error::Other(e.to_string())),
+    };
+
+    let Some((kind, value)) = from_base.or_else(default_seed_from_env) else {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({
+                "error": "nothing to investigate autonomously yet",
+                "detail": "the local intelligence base holds no high-leverage identifier; \
+                           run one seeded scan to seed it, or set HUNTSMAN_DEFAULT_SEED",
+                "mode": "autonomous",
+            })),
+        )
+            .into_response();
+    };
+
+    let target = Target::new(kind, value.clone());
+    let sid = scan_id(kind.canonical_str(), &value);
+    let scan = Scan::new(sid.clone(), target.clone())
+        .with_options(crate::core::scan::default_scan_options());
+    if let Err(e) = s.store.upsert_scan(&scan) {
+        return internal_error(&e);
+    }
+    spawn_scan(&s, scan, target);
+    info!(scan_id = %sid, kind = ?kind, "autonomous scan queued — seed auto-selected");
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "scan_id": sid,
+            "status": "queued",
+            "mode": "autonomous",
+            "selected_seed": { "kind": kind.canonical_str(), "value": value },
+        })),
+    )
+        .into_response()
+}
+
 pub async fn scan_cancel(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,

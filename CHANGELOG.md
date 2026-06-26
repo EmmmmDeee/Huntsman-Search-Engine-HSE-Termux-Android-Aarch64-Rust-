@@ -11,6 +11,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Fully autonomous investigation — no seed input required.** The New Scan UI no
+  longer forces the operator to choose a target: a new "Auto-Investigate" button
+  (and `POST /api/v1/scan/auto`) ranks every entity the platform has already
+  collected by cross-investigation leverage, auto-selects the highest-value
+  pivotable identifier, and runs a comprehensive scan on it — zero input. Falls
+  back to `HUNTSMAN_DEFAULT_SEED`, and returns a clear 422 with guidance (never an
+  error) only when the intelligence base is genuinely empty. The manual seed form
+  remains as an optional refinement, never required. The seed selector
+  (`autonomous_seed`) is pure and deterministic.
 - **Single-signal best-location estimate — a headline geolocation answer for
   every scan.** The cross-class synergy fix (AU-059) only fires on ≥2 coordinates
   across ≥2 source classes, so the COMMON single-signal scan got no headline

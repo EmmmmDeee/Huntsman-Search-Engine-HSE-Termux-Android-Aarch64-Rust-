@@ -1957,5 +1957,27 @@ pub fn rank_enrichment_leverage(
     out
 }
 
+/// Select the single best entity to investigate with **no operator input** — the
+/// autonomous-operation seed.
+///
+/// Given the leverage ranking ([`rank_enrichment_leverage`], strongest-first),
+/// pick the highest-leverage identifier that maps to a scan target. This is what
+/// lets the platform investigate on its own: rather than waiting for a seed, it
+/// reaches for the entity it already knows the most about across investigations —
+/// the one whose enrichment most empowers the rest of the intelligence base. Every
+/// cross-scan-candidate identifier (email / phone / username / full-name person /
+/// specific address / crypto) is a valid scan target, so in practice this is the
+/// top entry; the `find_map` only skips a (rare) non-pivotable kind. Pure and
+/// deterministic. `None` only when the local intelligence base holds no pivotable
+/// high-leverage identifier yet (a fresh install with no prior scans).
+#[must_use]
+pub fn autonomous_seed(
+    ranked: &[LeverageRanked],
+) -> Option<(crate::core::scan::TargetKind, String)> {
+    ranked.iter().find_map(|r| {
+        crate::core::scan::TargetKind::from_entity_kind(&r.kind).map(|tk| (tk, r.value.clone()))
+    })
+}
+
 #[cfg(test)]
 mod tests;

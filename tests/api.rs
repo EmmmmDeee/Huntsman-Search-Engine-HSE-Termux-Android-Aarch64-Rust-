@@ -510,6 +510,27 @@ async fn continuous_radar_activates_with_zero_input_by_default() {
     );
 }
 
+#[tokio::test]
+async fn autonomous_scan_requires_no_input() {
+    // `POST /api/v1/scan/auto` takes NO body, NO seed — the platform selects its
+    // own target by ranking what it already knows. On a fresh store it either
+    // auto-selects from HUNTSMAN_DEFAULT_SEED (202) or, with an empty base and no
+    // default, cleanly declines with a 422 + guidance — never a 500. Either way the
+    // response is tagged the autonomous mode.
+    let app = test_app("auto");
+    let resp = app
+        .oneshot(post_json("/api/v1/scan/auto", ""))
+        .await
+        .unwrap();
+    let status = resp.status();
+    assert!(
+        status == http::StatusCode::ACCEPTED || status == http::StatusCode::UNPROCESSABLE_ENTITY,
+        "autonomous scan must accept (202) or cleanly decline (422), got {status}"
+    );
+    let body = body_json(resp).await;
+    assert_eq!(body["mode"], "autonomous");
+}
+
 // ── 5c. Subject network synthesis ─────────────────────────────────────────
 
 #[tokio::test]
@@ -1576,6 +1597,10 @@ async fn spa_references_only_registered_api_endpoints() {
             // Not Allowed), not the fallback's 404; the assertion below only
             // requires "not 404", which confirms the route is registered.
             "radar" => "/api/v1/radar".to_string(),
+            // Autonomous investigation (`POST /api/v1/scan/auto`) — POST-only, so a
+            // bare GET returns 405, not the fallback 404; the assertion only needs
+            // "not 404", confirming the route is registered.
+            "scan" => "/api/v1/scan/auto".to_string(),
             // Forward-only scan-plan preview — parameter-driven; a bare value
             // exercises the registered route (returns 200, never the fallback 404).
             "plan" => "/api/v1/plan?value=example.com".to_string(),
