@@ -3753,6 +3753,51 @@ fn au096_flags_osint_practitioner_with_tradecraft() {
 }
 
 #[test]
+fn au097_consumer_isp_is_medium_residency_signal() {
+    // An IP whose `isp` evidence names an Australian consumer ISP.
+    let mut ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.8, "s");
+    ip.add_evidence(
+        Evidence::new("ip_geo", "geo")
+            .with_attr("isp", "Telstra")
+            .with_attr("as", "AS1221 Telstra"),
+    );
+    let r = super::rules::rule_au_097_au_isp_network(&[ip], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-097");
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(r[0].description.contains("Telstra"));
+    assert!(r[0].description.contains("consumer ISP"));
+}
+
+#[test]
+fn au097_aarnet_is_high_academic_affiliation() {
+    // An ASN entity valued with AARNet → academic/research network.
+    let asn = Entity::new(EntityKind::Asn, "AS7575 AARNet", 0.8, "s");
+    let r = super::rules::rule_au_097_au_isp_network(&[asn], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].severity, super::Severity::High);
+    assert!(r[0].description.contains("AARNet"));
+    assert!(r[0].description.contains("academic"));
+}
+
+#[test]
+fn au097_ignores_foreign_and_non_network_entities() {
+    // A foreign ISP must not fire; a non-IP/ASN entity is ignored.
+    let mut foreign = Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.8, "s");
+    foreign.add_evidence(Evidence::new("ip_geo", "geo").with_attr("isp", "Google LLC"));
+    let person = Entity::new(EntityKind::Person, "Telstra Smith", 0.8, "s"); // name, not a network
+    assert!(super::rules::rule_au_097_au_isp_network(&[foreign, person], "s", 0).is_empty());
+}
+
+#[test]
+fn au097_short_token_needs_word_boundary() {
+    // "tpg" must not match inside a longer word (no false AU attribution).
+    let mut ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.8, "s");
+    ip.add_evidence(Evidence::new("ripestat", "asn").with_attr("descr", "ACMETPGENETICS LIMITED"));
+    assert!(super::rules::rule_au_097_au_isp_network(&[ip], "s", 0).is_empty());
+}
+
+#[test]
 fn au096_ignores_non_osint_keys() {
     // A plain infra key (no osint-practitioner tag) must not trigger AU-096.
     let mut aws = Entity::new(EntityKind::ApiKey, "AKIAxxxx", 0.8, "s");

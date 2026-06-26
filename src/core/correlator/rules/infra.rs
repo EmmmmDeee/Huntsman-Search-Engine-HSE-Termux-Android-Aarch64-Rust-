@@ -470,3 +470,162 @@ pub(in crate::core::correlator) fn rule_au_031_malicious_adjacency(
     }
     out
 }
+
+/// Australian network operator: a brand token (lowercase) → its canonical name
+/// and connection class. Consumer ISPs anchor a person to a domestic Australian
+/// connection; AARNet (the academic & research network) marks a university /
+/// research / government user — a strong institutional affiliation. Only
+/// distinctive, unambiguously-Australian operator names are listed, so a token
+/// in an `isp`/`org`/`as` value is a reliable AU signal, not a coincidence.
+const AU_NETWORKS: &[(&str, &str, AuNetKind)] = &[
+    ("telstra", "Telstra", AuNetKind::Consumer),
+    ("optus", "Optus", AuNetKind::Consumer),
+    ("tpg", "TPG", AuNetKind::Consumer),
+    ("iinet", "iiNet", AuNetKind::Consumer),
+    ("internode", "Internode", AuNetKind::Consumer),
+    ("aussie broadband", "Aussie Broadband", AuNetKind::Consumer),
+    ("aussiebb", "Aussie Broadband", AuNetKind::Consumer),
+    ("vocus", "Vocus", AuNetKind::Consumer),
+    ("dodo", "Dodo", AuNetKind::Consumer),
+    ("iprimus", "iPrimus", AuNetKind::Consumer),
+    ("belong", "Belong", AuNetKind::Consumer),
+    ("superloop", "Superloop", AuNetKind::Consumer),
+    ("launtel", "Launtel", AuNetKind::Consumer),
+    ("exetel", "Exetel", AuNetKind::Consumer),
+    ("myrepublic", "MyRepublic", AuNetKind::Consumer),
+    ("spintel", "SpinTel", AuNetKind::Consumer),
+    ("aapt", "AAPT", AuNetKind::Consumer),
+    ("amaysim", "amaysim", AuNetKind::Consumer),
+    ("tangerine", "Tangerine", AuNetKind::Consumer),
+    ("aarnet", "AARNet", AuNetKind::Academic),
+];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AuNetKind {
+    /// A domestic consumer ISP / mobile carrier — a person on an Australian
+    /// connection.
+    Consumer,
+    /// AARNet — Australia's academic & research network.
+    Academic,
+}
+
+/// True if `token` occurs in `hay` (already lowercased) as a whole word — bounded
+/// by a non-alphanumeric byte or a string edge on each side, so a short brand
+/// (`tpg`) cannot match inside a longer word. Multi-word tokens are matched
+/// verbatim. Pure.
+fn au_net_word_in(hay: &str, token: &str) -> bool {
+    let bytes = hay.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = hay[from..].find(token) {
+        let at = from + rel;
+        let end = at + token.len();
+        let left_ok = at == 0 || !bytes[at - 1].is_ascii_alphanumeric();
+        let right_ok = end == bytes.len() || !bytes[end].is_ascii_alphanumeric();
+        if left_ok && right_ok {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
+}
+
+/// The Australian network an `IpAddress`/`Asn` entity names, read from its value
+/// (`AS1221 Telstra`) and its network attributes (`isp`/`org`/`as`/`descr`/…).
+/// `None` for a non-AU / unrecognised network. Pure.
+fn au_network_of(e: &Entity) -> Option<(&'static str, AuNetKind)> {
+    const KEYS: &[&str] = &[
+        "isp",
+        "org",
+        "as",
+        "asn",
+        "as_name",
+        "asname",
+        "as_org",
+        "descr",
+        "network",
+        "org_name",
+        "isp_name",
+        "carrier",
+        "connection_org",
+    ];
+    let mut hay = e.value.to_ascii_lowercase();
+    for ev in &e.evidence {
+        for (k, v) in &ev.attributes {
+            if KEYS.iter().any(|key| k.eq_ignore_ascii_case(key)) {
+                hay.push(' ');
+                hay.push_str(&v.to_ascii_lowercase());
+            }
+        }
+    }
+    AU_NETWORKS
+        .iter()
+        .find(|(tok, _, _)| au_net_word_in(&hay, tok))
+        .map(|(_, canon, kind)| (*canon, *kind))
+}
+
+/// AU-097 — Australian ISP / network attribution.
+///
+/// When a subject's `IpAddress`/`Asn` belongs to an Australian network operator
+/// — read from the `isp`/`org`/`as` data the IP modules already collect — that
+/// is an independent **network-layer** residency signal, orthogonal to the
+/// address/coordinate/breach-field geo: a domestic consumer ISP (Telstra, Optus,
+/// TPG, iiNet, Aussie Broadband, …) places a *person* on an Australian
+/// connection (not foreign or hosting infrastructure), and AARNet marks a
+/// university / research / government user — a strong institutional affiliation.
+///
+/// One finding per distinct network. Consumer ISP → Medium (residency/connection
+/// signal); AARNet → High (specific affiliation). Pure over the confirmed set.
+pub(in crate::core::correlator) fn rule_au_097_au_isp_network(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut found: BTreeMap<&'static str, (AuNetKind, BTreeSet<String>)> = BTreeMap::new();
+    for e in entities
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::IpAddress | EntityKind::Asn))
+    {
+        if let Some((name, kind)) = au_network_of(e) {
+            found
+                .entry(name)
+                .or_insert_with(|| (kind, BTreeSet::new()))
+                .1
+                .insert(e.uid.clone());
+        }
+    }
+
+    found
+        .into_iter()
+        .map(|(name, (kind, uids))| {
+            let (severity, description) = match kind {
+                AuNetKind::Academic => (
+                    Severity::High,
+                    format!(
+                        "Subject's IP/ASN is on {name} — Australia's academic & research network: \
+                         a university / research / government user, a strong institutional \
+                         affiliation"
+                    ),
+                ),
+                AuNetKind::Consumer => (
+                    Severity::Medium,
+                    format!(
+                        "Subject's IP/ASN belongs to {name}, an Australian consumer ISP — a \
+                         network-layer AU residency/connection signal (a person on a domestic \
+                         network, not foreign or hosting infrastructure)"
+                    ),
+                ),
+            };
+            Correlation::new(
+                "AU-097",
+                "Australian ISP / network attribution",
+                severity,
+                description,
+                uids.into_iter().collect(),
+                scan_id,
+                ts,
+            )
+        })
+        .collect()
+}

@@ -244,6 +244,9 @@ const RULES: &[RuleFn] = &[
     rule_au_019_temporal_breach_cluster,
     rule_au_020_person_entity_cluster,
     rule_au_021_api_key_exposure,
+    // AU-097: subject's IP/ASN belongs to an Australian ISP (Telstra/Optus/TPG/…)
+    // or AARNet — a network-layer AU residency/affiliation signal.
+    rule_au_097_au_isp_network,
     // AU-095: ranked exposure-intelligence portfolio over all harvested ApiKey
     // entities (provider × criticality × detection) — a revoke-first priority
     // order, complementing AU-021's flat per-key findings. Catalogue-only.
