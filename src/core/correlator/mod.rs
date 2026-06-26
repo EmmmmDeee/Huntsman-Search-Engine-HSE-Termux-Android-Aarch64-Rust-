@@ -270,6 +270,10 @@ const RULES: &[RuleFn] = &[
     rule_au_073_subject_date_of_birth,
     rule_au_074_au_government_id_exposure,
     rule_au_075_named_associate,
+    // AU-090: the subject's AU state/territory mined from a breach `state` /
+    // state-of-issue field — a residency/jurisdiction geo anchor (sits with the
+    // AU-073/074/075 breach-field family it shares breach_pii.rs with).
+    rule_au_090_au_jurisdiction,
     // Free, offline identity-resolution rules — require no API keys.
     // AU-076: email local-part ↔ username canonical match (zero-API bridge).
     // AU-077: name-derived username independently confirmed on a platform.

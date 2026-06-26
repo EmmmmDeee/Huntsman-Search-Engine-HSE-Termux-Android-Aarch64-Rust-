@@ -14,8 +14,13 @@
 //! * [`rule_au_075_named_associate`] — a named relative/associate carried in a
 //!   breach or stealer record (spouse, next-of-kin, emergency contact, the
 //!   stealer-log owner), linking real people to the subject.
+//! * [`rule_au_090_au_jurisdiction`] — the subject's Australian state/territory
+//!   asserted by a breach `state` / state-of-issue field (the Optus/Medibank
+//!   licence + address dumps carry it), resolved to a canonical AU jurisdiction
+//!   and cross-checked for agreement vs conflict — a people-centric geo anchor
+//!   that complements the entity-level cross-checks (AU-056/085).
 //!
-//! All three run on the confirmed (candidate-filtered, quarantine-excluded)
+//! All run on the confirmed (candidate-filtered, quarantine-excluded)
 //! view, so breach co-occurrence strangers never leak in. See `super`
 //! (rules/mod.rs) for the shared helpers.
 
@@ -333,6 +338,97 @@ pub(in crate::core::correlator) fn rule_au_075_named_associate(
             scan_id: scan_id.into(),
             ts,
             rank: 0.0,
+        })
+        .collect()
+}
+
+// ── AU-090 — Australian jurisdiction from a breach/record state field ─────────
+
+/// Breach/record evidence keys that assert an Australian state or territory —
+/// either the subject's residential state or the issuing state of a state-issued
+/// identity document (driver licence, proof-of-age card). Deliberately specific:
+/// the bare ambiguous keys (`region`, `area`) are excluded, and every value is
+/// re-resolved through [`crate::util::address_au::state_code`], which only
+/// returns a code for a genuine AU state/abbreviation/postcode — so a non-AU
+/// `state` field (a US "California", a status flag) yields nothing rather than a
+/// false jurisdiction.
+const JURISDICTION_KEYS: &[&str] = &[
+    "state",
+    "state_territory",
+    "address_state",
+    "state_of_residence",
+    "residential_state",
+    "state_of_issue",
+    "stateofissue",
+    "issuing_state",
+    "issue_state",
+    "licence_state",
+    "license_state",
+    "dl_state",
+    "card_state",
+];
+
+/// AU-090 — the subject's Australian state/territory, asserted by a breach record.
+///
+/// AU breach and identity-document dumps (the Optus/Medibank licence + address
+/// class) carry an explicit `state` / state-of-issue field that sits unused
+/// alongside the licence number AU-074 already surfaces. This resolves each such
+/// field to a canonical AU jurisdiction and emits it as a people-centric geo
+/// anchor: two or more independent sources naming the same state is a
+/// Verified-grade residency signal (High); a single source is a lead (Medium).
+///
+/// Each distinct state emits its own finding, so a recent interstate move — or a
+/// merged same-name namesake — shows up as a *second* jurisdiction claim rather
+/// than being silently averaged away. This complements the entity-level
+/// jurisdiction cross-checks (AU-056 coordinate-vs-address, AU-085 phone-region)
+/// by mining the structured field directly, reaching state assertions that never
+/// became an `Address` entity. Runs on the confirmed view.
+pub(in crate::core::correlator) fn rule_au_090_au_jurisdiction(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // canonical AU state code → (distinct sources, uids), ordered for determinism.
+    let mut by_state: BTreeMap<&'static str, SourcesAndUids> = BTreeMap::new();
+    for (raw, source, uid) in scan_evidence(entities, JURISDICTION_KEYS) {
+        let Some(state) = crate::util::address_au::state_code(&raw) else {
+            continue; // not a recognisable Australian state/territory
+        };
+        let entry = by_state.entry(state).or_default();
+        entry.0.insert(source.to_string());
+        entry.1.insert(uid.to_string());
+    }
+
+    let multi = by_state.len() > 1;
+    by_state
+        .into_iter()
+        .map(|(state, (sources, uids))| {
+            let n = sources.len();
+            let severity = if n >= 2 {
+                Severity::High
+            } else {
+                Severity::Medium
+            };
+            let note = if multi {
+                " (one of multiple state claims — interstate move or same-name namesake)"
+            } else {
+                ""
+            };
+            Correlation {
+                rule_id: "AU-090".into(),
+                rule_name: "Australian jurisdiction from breach record".into(),
+                severity,
+                description: format!(
+                    "Subject's Australian jurisdiction {state} — asserted by {n} breach \
+                     record source(s) ({}){note}; a residency/issuing-state geo anchor \
+                     that cross-checks the address/coordinate footprint",
+                    sources.iter().cloned().collect::<Vec<_>>().join(", ")
+                ),
+                entity_uids: uids.into_iter().collect(),
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            }
         })
         .collect()
 }

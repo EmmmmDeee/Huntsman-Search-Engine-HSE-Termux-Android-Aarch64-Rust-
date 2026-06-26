@@ -2618,6 +2618,54 @@ fn au075_named_associate_from_breach_record() {
 }
 
 #[test]
+fn au090_jurisdiction_two_sources_agree_is_high() {
+    let mut e = Entity::new(EntityKind::Person, "Cindy Haynes", 0.9, "s");
+    e.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("state", "QLD"));
+    e.add_evidence(Evidence::new("see_know", "breach").with_attr("address_state", "Queensland"));
+    let r = super::rules::rule_au_090_au_jurisdiction(&[e], "s", 0);
+    assert_eq!(r.len(), 1, "QLD and Queensland resolve to one jurisdiction");
+    assert_eq!(r[0].rule_id, "AU-090");
+    assert_eq!(r[0].severity, super::Severity::High);
+    assert!(r[0].description.contains("QLD"));
+    assert!(r[0].description.contains("2 breach record source"));
+}
+
+#[test]
+fn au090_single_source_is_medium() {
+    let mut e = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    e.add_evidence(Evidence::new("see_know", "breach").with_attr("licence_state", "VIC"));
+    let r = super::rules::rule_au_090_au_jurisdiction(&[e], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(r[0].description.contains("VIC"));
+}
+
+#[test]
+fn au090_conflicting_states_each_surface_with_move_note() {
+    let mut e = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    e.add_evidence(Evidence::new("see_know", "breach").with_attr("state", "NSW"));
+    e.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("licence_state", "VIC"));
+    let r = super::rules::rule_au_090_au_jurisdiction(&[e], "s", 0);
+    assert_eq!(r.len(), 2, "each distinct state surfaces independently");
+    assert!(r.iter().all(|c| c.rule_id == "AU-090"));
+    assert!(r.iter().any(|c| c.description.contains("NSW")));
+    assert!(r.iter().any(|c| c.description.contains("VIC")));
+    assert!(
+        r.iter().all(|c| c.description.contains("interstate move")),
+        "multiple state claims must carry the move/namesake note"
+    );
+}
+
+#[test]
+fn au090_non_au_or_missing_state_yields_nothing() {
+    let mut e = Entity::new(EntityKind::Person, "John Doe", 0.9, "s");
+    // A US state and a status-style value — neither resolves to an AU jurisdiction.
+    e.add_evidence(Evidence::new("dehashed", "breach").with_attr("state", "California"));
+    e.add_evidence(Evidence::new("dehashed", "breach").with_attr("state", "active"));
+    assert!(super::rules::rule_au_090_au_jurisdiction(&[e], "s", 0).is_empty());
+}
+
+#[test]
 fn au046_resolves_an_alias_to_platform_exposed_identifiers() {
     // The alias confirmed across two platform families (npm=code, reddit=forum),
     // plus an email its npm account exposed → AU-046 links handle to identity.
