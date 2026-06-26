@@ -616,6 +616,124 @@ pub(in crate::core::correlator) fn rule_au_021_api_key_exposure(
         .collect()
 }
 
+/// AU-095 — Exposed API-key portfolio (ranked exposure intelligence).
+///
+/// AU-021 surfaces each leaked key individually; on a productive stealer-log
+/// scan that is dozens of flat "Critical" findings with no order. This rule
+/// reads the intelligence the harvester already stamps on every `ApiKey` entity
+/// — its provider (`service:`), exposure **criticality** (`key-criticality:`,
+/// what the key can do if abused) and **detection** confidence (`detection:`) —
+/// and rolls the whole harvest into one *prioritised* portfolio: how many keys,
+/// across how many providers, how many high-criticality, how many outright
+/// exploitable (e.g. an unsigned `alg:none` JWT), and a revoke-this-first order.
+///
+/// This is exposure analysis only: the keys are retained and ranked so the
+/// operator (or the exposed party) can act — they are never reused for HSE's own
+/// calls. Keys minted by the core `found_keys` sink carry no criticality tag and
+/// rank as `unrated`, still counted. Critical when any high-criticality key is
+/// present, else High. One summary finding per scan.
+pub(in crate::core::correlator) fn rule_au_095_exposed_key_portfolio(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::BTreeMap;
+
+    fn tag_suffix<'a>(e: &'a Entity, prefix: &str) -> Option<&'a str> {
+        e.tags.iter().find_map(|t| t.strip_prefix(prefix))
+    }
+    fn provider(e: &Entity) -> &str {
+        tag_suffix(e, "service:").unwrap_or("unknown")
+    }
+    // Graver criticality / firmer detection sort first; `unrated`/absent last.
+    fn crit_rank(e: &Entity) -> u8 {
+        match tag_suffix(e, "key-criticality:") {
+            Some("critical") => 4,
+            Some("high") => 3,
+            Some("medium") => 2,
+            Some("low") => 1,
+            _ => 0,
+        }
+    }
+    fn detection_rank(e: &Entity) -> u8 {
+        match tag_suffix(e, "detection:") {
+            Some("proven") => 3,
+            Some("probable") => 2,
+            Some("potential") => 1,
+            _ => 0,
+        }
+    }
+
+    let keys: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::ApiKey)
+        .collect();
+    if keys.is_empty() {
+        return Vec::new();
+    }
+
+    let mut by_provider: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut high_value = 0usize;
+    let mut exploitable = 0usize;
+    for &k in &keys {
+        *by_provider.entry(provider(k)).or_default() += 1;
+        if k.has_tag("high-value") || crit_rank(k) >= 3 {
+            high_value += 1;
+        }
+        if k.has_tag("vulnerable") {
+            exploitable += 1;
+        }
+    }
+
+    // Revoke-first order: criticality desc, then detection desc, then provider.
+    let mut rows: Vec<(u8, u8, &Entity)> = keys
+        .iter()
+        .map(|&e| (crit_rank(e), detection_rank(e), e))
+        .collect();
+    rows.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(b.1.cmp(&a.1))
+            .then(provider(a.2).cmp(provider(b.2)))
+    });
+    let top: Vec<String> = rows
+        .iter()
+        .take(5)
+        .map(|(_, _, e)| {
+            let crit = tag_suffix(e, "key-criticality:").unwrap_or("unrated");
+            let det = tag_suffix(e, "detection:").unwrap_or("n/a");
+            format!("{} ({crit}/{det})", provider(e))
+        })
+        .collect();
+
+    let n = keys.len();
+    let providers = by_provider.len();
+    let severity = if high_value > 0 {
+        Severity::Critical
+    } else {
+        Severity::High
+    };
+    let exploit_note = if exploitable > 0 {
+        format!(", {exploitable} outright exploitable (e.g. unsigned JWT / known-bad)")
+    } else {
+        String::new()
+    };
+
+    vec![Correlation::new(
+        "AU-095",
+        "Exposed API-key portfolio",
+        severity,
+        format!(
+            "{n} exposed API key(s) across {providers} provider(s) retained as exposure \
+             intelligence — {high_value} high-criticality{exploit_note}. Revoke-first priority: \
+             {}. (Exposure scoring only — harvested keys are catalogued, not reused.)",
+            top.join("; ")
+        ),
+        keys.iter().map(|e| e.uid.clone()).collect(),
+        scan_id,
+        ts,
+    )]
+}
+
 /// AU-037 — Plaintext credential exposure.
 ///
 /// The single most actionable OSINT finding: an actual leaked secret. The

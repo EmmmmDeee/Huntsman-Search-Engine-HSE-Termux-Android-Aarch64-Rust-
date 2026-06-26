@@ -3662,6 +3662,67 @@ fn au089_non_company_abn_is_excluded() {
     assert!(super::rules::rule_au_089_corporate_network(&[sole, company], "s", 0).is_empty());
 }
 
+#[cfg(test)]
+fn api_key_ent(value: &str, service: &str, criticality: &str, detection: &str) -> Entity {
+    let mut e = Entity::new(EntityKind::ApiKey, value, 0.80, "s");
+    e.tag("api-key");
+    e.tag(format!("service:{service}"));
+    e.tag(format!("key-criticality:{criticality}"));
+    e.tag(format!("detection:{detection}"));
+    if matches!(criticality, "critical" | "high") {
+        e.tag("high-value");
+    }
+    e
+}
+
+#[test]
+fn au095_ranks_portfolio_critical_first() {
+    let aws = api_key_ent("AKIA_aws_secret", "aws", "critical", "proven");
+    let analytics = api_key_ent("ph_low_token", "posthog", "low", "probable");
+    let r = super::rules::rule_au_095_exposed_key_portfolio(&[analytics, aws], "s", 0);
+    assert_eq!(r.len(), 1, "one portfolio summary");
+    assert_eq!(r[0].rule_id, "AU-095");
+    assert_eq!(r[0].severity, super::Severity::Critical); // a high-value key present
+    assert!(r[0].description.contains("2 exposed API key"));
+    assert!(r[0].description.contains("2 provider"));
+    assert!(r[0].description.contains("1 high-criticality"));
+    // The critical AWS key must lead the revoke-first list, before the low one.
+    let aws_pos = r[0].description.find("aws").expect("aws listed");
+    let ph_pos = r[0].description.find("posthog").expect("posthog listed");
+    assert!(
+        aws_pos < ph_pos,
+        "critical key ranked before low-criticality key"
+    );
+    assert!(
+        r[0].description.contains("not reused"),
+        "states the no-reuse policy"
+    );
+}
+
+#[test]
+fn au095_flags_exploitable_and_handles_unrated() {
+    let mut jwt = api_key_ent("eyJ.none.token", "jwt_token", "low", "potential");
+    jwt.tag("vulnerable"); // e.g. alg:none
+    // A found_keys-path key with no criticality tag → counts, ranks unrated.
+    let mut bare = Entity::new(EntityKind::ApiKey, "foreignkey123", 0.7, "s");
+    bare.tag("api-key");
+    bare.tag("foreign-key");
+    let r = super::rules::rule_au_095_exposed_key_portfolio(&[jwt, bare], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].severity, super::Severity::High); // no high-criticality key
+    assert!(r[0].description.contains("outright exploitable"));
+    assert!(
+        r[0].description.contains("unrated"),
+        "untagged key ranks unrated"
+    );
+}
+
+#[test]
+fn au095_no_keys_no_finding() {
+    let p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    assert!(super::rules::rule_au_095_exposed_key_portfolio(&[p], "s", 0).is_empty());
+}
+
 #[test]
 fn au094_non_company_abn_is_a_sole_trader_signal() {
     // 51824753556 — valid ABN, no embedded ACN → a non-company (sole trader/trust).

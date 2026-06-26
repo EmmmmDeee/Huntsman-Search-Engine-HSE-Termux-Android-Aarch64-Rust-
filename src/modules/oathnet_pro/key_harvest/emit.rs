@@ -93,11 +93,24 @@ pub(super) fn emit_key_with(
     if roi == crate::util::key_roi::KeyRoi::Multiplier {
         entity.tag("force-multiplier");
     }
+    // Exposure CRITICALITY (orthogonal to ROI and detection): how grave the leak
+    // is if abused — an AWS root secret or a live Stripe key dwarfs a low-impact
+    // analytics token. The classifier already computes this tier (it drives the
+    // entity confidence); stamping it as an explicit tag makes the retained-key
+    // intelligence sortable in the web UI and lets the correlator rank the
+    // exposure portfolio (AU-095) — a revoke-this-first order rather than a flat
+    // list. No new classification: same `key_value_tier` single source of truth.
+    let value_tier = key_value_tier(service);
+    entity.tag(format!("key-criticality:{}", value_tier.as_str()));
+    if value_tier.is_high_value() {
+        entity.tag("high-value");
+    }
     entity.add_evidence(
         Evidence::new(SRC, format!("API key ({service}) from {source}"))
             .with_attr("service", service)
             .with_attr("detection_confidence", detection.as_str())
             .with_attr("roi_tier", roi.label())
+            .with_attr("key_criticality", value_tier.as_str())
             .with_attr(
                 "key_prefix",
                 crate::util::str_util::truncate_safe(key_val, 8),

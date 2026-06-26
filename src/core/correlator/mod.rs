@@ -244,6 +244,10 @@ const RULES: &[RuleFn] = &[
     rule_au_019_temporal_breach_cluster,
     rule_au_020_person_entity_cluster,
     rule_au_021_api_key_exposure,
+    // AU-095: ranked exposure-intelligence portfolio over all harvested ApiKey
+    // entities (provider × criticality × detection) — a revoke-first priority
+    // order, complementing AU-021's flat per-key findings. Catalogue-only.
+    rule_au_095_exposed_key_portfolio,
     rule_au_022_organisation_with_breach,
     rule_au_023_cross_platform_identity,
     rule_au_024_email_fraud_signal,
