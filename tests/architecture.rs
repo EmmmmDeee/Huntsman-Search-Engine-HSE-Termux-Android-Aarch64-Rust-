@@ -205,6 +205,15 @@ fn core_does_not_import_util_directly() {
                 // same-site subdomains and exclude privacy-proxy registrants.
                 && !line.contains("util::domains::is_proxy_registrant")
                 && !line.contains("util::domains::registrable_domain")
+                // Pure, dependency-free freemail-domain membership test (a small
+                // embedded list; no I/O), same leaf category as the other
+                // `util::domains` predicates. AU-100 uses it to exclude personal
+                // webmail when inferring an employer from a work-email domain.
+                && !line.contains("util::domains::is_freemail")
+                // Pure, dependency-free `.au` second-level-domain registrant
+                // classifier (no I/O), same leaf category as `state_code`. AU-100
+                // uses it to type the subject's organisational email domain.
+                && !line.contains("util::address_au::au_domain_registrant")
         })
         .collect();
     assert!(

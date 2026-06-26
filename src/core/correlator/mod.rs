@@ -356,6 +356,9 @@ const RULES: &[RuleFn] = &[
     // centric complement to AU-089, tying a natural person to an operating
     // business. The majority of AU ABN holders are non-company.
     rule_au_094_sole_trader_abn,
+    // AU-100: the subject's employer/affiliation from their own AU organisational
+    // email domain (.com.au/.gov.au/.edu.au/…), classified by registrant type.
+    rule_au_100_au_employer_affiliation,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

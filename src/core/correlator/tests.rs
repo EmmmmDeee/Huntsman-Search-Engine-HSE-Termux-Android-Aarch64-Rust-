@@ -3928,6 +3928,48 @@ fn au094_dedups_and_counts_distinct_non_company_abns() {
     assert!(r[0].description.contains("2 non-company"));
 }
 
+#[test]
+fn au100_work_email_surfaces_employer_affiliation() {
+    // A .com.au work email → commercial employer; a .gov.au → government.
+    let e1 = Entity::new(EntityKind::Email, "j.citizen@acme-widgets.com.au", 0.7, "s");
+    let e2 = Entity::new(EntityKind::Email, "officer@health.nsw.gov.au", 0.7, "s");
+    let r = super::rules::rule_au_100_au_employer_affiliation(&[e1, e2], "s", 0);
+    assert_eq!(r.len(), 2);
+    assert!(r.iter().all(|c| c.rule_id == "AU-100"));
+    let commercial = r
+        .iter()
+        .find(|c| c.description.contains("acme-widgets.com.au"))
+        .unwrap();
+    assert!(commercial.description.contains("commercial"));
+    assert!(commercial.description.contains("ABN/ACN"));
+    let gov = r
+        .iter()
+        .find(|c| c.description.contains("health.nsw.gov.au"))
+        .unwrap();
+    assert!(gov.description.contains("government"));
+}
+
+#[test]
+fn au100_excludes_freemail_personal_and_foreign() {
+    // Freemail, a personal .id.au domain, and a foreign .com must NOT fire.
+    let gmail = Entity::new(EntityKind::Email, "subject@gmail.com", 0.8, "s");
+    let personal = Entity::new(EntityKind::Email, "me@haigen.id.au", 0.8, "s");
+    let foreign = Entity::new(EntityKind::Email, "x@example.com", 0.8, "s");
+    assert!(
+        super::rules::rule_au_100_au_employer_affiliation(&[gmail, personal, foreign], "s", 0)
+            .is_empty()
+    );
+}
+
+#[test]
+fn au100_dedups_multiple_emails_on_one_domain() {
+    let e1 = Entity::new(EntityKind::Email, "a@acme.com.au", 0.7, "s");
+    let e2 = Entity::new(EntityKind::Email, "b@acme.com.au", 0.7, "s");
+    let r = super::rules::rule_au_100_au_employer_affiliation(&[e1, e2], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert!(r[0].description.contains("2 email(s)"));
+}
+
 // ─── Geo convex footprint (AU-052) ───────────────────────────────────────────
 
 #[cfg(test)]

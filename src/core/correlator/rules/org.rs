@@ -692,3 +692,79 @@ pub(in crate::core::correlator) fn rule_au_094_sole_trader_abn(
         ts,
     )]
 }
+
+/// AU-100 — Australian employer / organisational affiliation (from work email).
+///
+/// A person's own non-freemail email domain is one of the strongest people-centric
+/// pivots there is: where they work or study. This surfaces the subject's
+/// Australian organisational email domains — a `.com.au`/`.net.au` (a commercial
+/// entity that must hold an ABN), `.gov.au` (a public servant), `.edu.au` (a
+/// student / academic), `.org.au` (a non-profit) or `.asn.au` (an association) —
+/// classified by registrant type via [`crate::util::address_au::au_domain_registrant`].
+///
+/// Freemail (`gmail`/`outlook`/…) is excluded ([`crate::util::domains::is_freemail`]),
+/// as is a personal `.id.au` domain (not an employer). The affiliation is both an
+/// identity anchor (which org) and a pivot — to colleagues (AU-087 finds others on
+/// the same domain) and to the registered AU entity behind the domain. Severity
+/// Medium; one finding per distinct organisational domain. Pure over the set.
+pub(in crate::core::correlator) fn rule_au_100_au_employer_affiliation(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    // domain -> (registrant category, contributing uids, distinct emails).
+    let mut by_domain: BTreeMap<String, (&'static str, BTreeSet<String>, BTreeSet<String>)> =
+        BTreeMap::new();
+    for e in entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email && e.confidence >= 0.50)
+    {
+        let Some(domain) = e.value.rsplit('@').next() else {
+            continue;
+        };
+        let domain = domain.trim().to_ascii_lowercase();
+        if domain.is_empty() || crate::util::domains::is_freemail(&domain) {
+            continue;
+        }
+        // AU organisational domain only; `.id.au` is a personal domain, not an
+        // employer, so it is excluded.
+        let Some((category, _)) = crate::util::address_au::au_domain_registrant(&domain) else {
+            continue;
+        };
+        if category == "individual" {
+            continue;
+        }
+        let entry = by_domain
+            .entry(domain)
+            .or_insert_with(|| (category, BTreeSet::new(), BTreeSet::new()));
+        entry.1.insert(e.uid.clone());
+        entry.2.insert(e.value.clone());
+    }
+
+    by_domain
+        .into_iter()
+        .map(|(domain, (category, uids, emails))| {
+            let abn_note = if category == "commercial" {
+                " (a com.au/net.au registrant holds an Australian ABN/ACN)"
+            } else {
+                ""
+            };
+            Correlation::new(
+                "AU-100",
+                "Australian employer / organisational affiliation",
+                Severity::Medium,
+                format!(
+                    "Subject uses {} email(s) on the Australian organisational domain '{domain}' \
+                     (a {category} registrant){abn_note} — a likely employer / institutional \
+                     affiliation, and a pivot to colleagues and the registered AU entity",
+                    emails.len()
+                ),
+                uids.into_iter().collect(),
+                scan_id,
+                ts,
+            )
+        })
+        .collect()
+}
