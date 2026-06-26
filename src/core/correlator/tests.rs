@@ -3101,6 +3101,60 @@ fn best_location_does_not_misread_a_coordinate_value_as_a_postcode() {
 }
 
 #[test]
+fn best_location_uses_a_landline_area_code_region_when_nothing_finer() {
+    use super::best_au_location_estimate;
+    // A subject known only by a Queensland geographic landline (`07…`) — no
+    // coordinate, address or postcode. The coarsest rung resolves the area code to
+    // its ACMA region centroid (Brisbane), a region-grain fix.
+    let phone = Entity::new(EntityKind::Phone, "+61 7 3739 4511", 0.7, "s");
+    let est = best_au_location_estimate(&[phone]).expect("a QLD landline yields a region fix");
+    assert_eq!(est.basis, "landline area-code region");
+    assert_eq!(est.state, "QLD");
+    assert!(
+        est.radius_km >= 600.0,
+        "a region fix carries an honestly large radius, got {}",
+        est.radius_km
+    );
+    assert!(
+        est.confidence > 0.0 && est.confidence <= 0.35,
+        "region grain is a weak, capped fix, got {}",
+        est.confidence
+    );
+}
+
+#[test]
+fn best_location_ignores_a_mobile_number_with_no_region() {
+    use super::best_au_location_estimate;
+    // A mobile (`04…`) is fully portable and carries NO geographic area code, so it
+    // must not yield a location fix — only geographic fixed lines do.
+    let mobile = Entity::new(EntityKind::Phone, "+61 412 345 678", 0.8, "s");
+    assert!(best_au_location_estimate(&[mobile]).is_none());
+}
+
+#[test]
+fn best_location_prefers_any_finer_signal_over_a_landline_region() {
+    use super::best_au_location_estimate;
+    // A Brisbane coordinate AND a NSW (`02…`) landline: the coordinate (rung 2) must
+    // win over the region rung, so a precise fix is never masked by a coarse one.
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.7, "s");
+    coord.add_evidence(Evidence::new("geocode", "Brisbane fix"));
+    let phone = Entity::new(EntityKind::Phone, "+61 2 9876 5432", 0.9, "s");
+    let est = best_au_location_estimate(&[coord, phone]).unwrap();
+    assert_eq!(est.basis, "confirmed coordinate");
+    assert_eq!(est.state, "QLD");
+}
+
+#[test]
+fn best_location_excludes_a_platform_infra_tagged_landline() {
+    use super::best_au_location_estimate;
+    // A landline scraped from a third-party page (a business footer, say) is tagged
+    // platform-infra — not subject-owned, so it must not anchor the subject.
+    let mut phone = Entity::new(EntityKind::Phone, "+61 7 3739 4511", 0.7, "s");
+    phone.tag("platform-infra");
+    assert!(best_au_location_estimate(&[phone]).is_none());
+}
+
+#[test]
 fn au099_reverse_geocodes_coordinate_to_locality() {
     // A Brisbane fix → "Brisbane, QLD" with a small distance.
     let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");

@@ -601,6 +601,28 @@ pub(crate) struct AuLocationEstimate {
     pub uids: Vec<String>,
 }
 
+/// Offline anchor for an Australian fixed-line **area-code region**: the
+/// population-weighted centre (the dominant capital, where the overwhelming
+/// majority of the region's landlines sit) and an honest precision radius that
+/// bounds the region's populated extent. Keyed by the region slug from
+/// [`crate::util::address_au::au_area_code_region`]. The radius is large by
+/// design — a geographic area code locates a line only to its ACMA region, so
+/// this is the coarsest, lowest-priority location signal; the wide radius keeps
+/// the region-grain estimate honest rather than implying a precise point. Pure.
+fn au_phone_region_anchor(slug: &str) -> Option<(f64, f64, f64)> {
+    match slug {
+        // NSW + ACT — Sydney centre; bounds the populated east coast and the ACT.
+        "central-east" => Some((-33.8688, 151.2093, 650.0)),
+        // VIC + TAS — Melbourne centre; reaches across Bass Strait to Tasmania.
+        "south-east" => Some((-37.8136, 144.9631, 600.0)),
+        // QLD — Brisbane centre; the state spans to the far north, hence wide.
+        "north-east" => Some((-27.4698, 153.0251, 1200.0)),
+        // SA + WA + NT — Adelaide centre; the largest region, an honest wide radius.
+        "central-west" => Some((-34.9285, 138.6007, 1700.0)),
+        _ => None,
+    }
+}
+
 /// The `accuracy:<n>m` tag a device-sensor coordinate carries, in kilometres.
 fn coord_accuracy_km(e: &Entity) -> Option<f64> {
     e.tags.iter().find_map(|t| {
@@ -620,7 +642,10 @@ fn coord_accuracy_km(e: &Entity) -> Option<f64> {
 /// 1. the multi-source cross-class synergy fix ([`au059_synergy_fix`]) — strongest;
 /// 2. the most-confident single AU person-anchored coordinate (a GPS/sensor fix);
 /// 3. an `exact-name-match` address resolved to its postcode-region centroid;
-/// 4. any breach/register postcode resolved to its centroid.
+/// 4. any breach/register postcode resolved to its centroid;
+/// 5. an Australian geographic landline's area-code region centroid — coarsest, a
+///    region-grain fix ([`au_phone_region_anchor`]) used only when nothing finer
+///    exists, so a subject known only by a fixed-line number still yields a fix.
 ///
 /// `None` only when the scan has no resolvable AU location signal at all.
 pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocationEstimate> {
@@ -699,6 +724,45 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
             },
             confidence: e.c_effective(),
             geohash: crate::util::geohash::geohash(lat, lon, 6),
+            uids: vec![e.uid.clone()],
+        });
+    }
+
+    // 5. Coarsest rung — an Australian geographic landline's area code locates the
+    //    line to its ACMA region. Mobiles (`04…`), VoIP and service numbers carry
+    //    no region (`au_phone_region` returns None) and are skipped. Only fires when
+    //    every finer rung above produced nothing; the wide anchor radius keeps the
+    //    region-grain estimate honest. A `platform-infra`-tagged number (scraped
+    //    from a third-party page) is excluded as not subject-owned.
+    let best_phone = entities
+        .iter()
+        .filter(|e| {
+            e.kind == EntityKind::Phone && e.confidence >= 0.40 && !e.has_tag("platform-infra")
+        })
+        .filter_map(|e| {
+            let (slug, _name, _states) = crate::util::address_au::au_phone_region(&e.value)?;
+            let (lat, lon, radius_km) = au_phone_region_anchor(slug)?;
+            Some((e, lat, lon, radius_km))
+        })
+        .max_by(|a, b| {
+            a.0.c_effective()
+                .partial_cmp(&b.0.c_effective())
+                .unwrap_or(std::cmp::Ordering::Equal)
+                // Equal confidence: smaller UID wins (reverse compare → "greater").
+                .then_with(|| b.0.uid.cmp(&a.0.uid))
+        });
+    if let Some((e, lat, lon, radius_km)) = best_phone {
+        return Some(AuLocationEstimate {
+            lat,
+            lon,
+            radius_km,
+            state: crate::util::geo::au_state_for_coords(lat, lon).unwrap_or("AU"),
+            locality: locality_of(lat, lon),
+            basis: "landline area-code region",
+            // Region grain is a weak fix: down-weight hard and cap low so it can
+            // never rival a true point fix in any downstream confidence read.
+            confidence: (e.c_effective() * 0.5).min(0.35),
+            geohash: crate::util::geohash::geohash(lat, lon, 4),
             uids: vec![e.uid.clone()],
         });
     }
