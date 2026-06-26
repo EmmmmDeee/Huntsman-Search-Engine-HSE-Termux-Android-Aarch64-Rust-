@@ -3723,6 +3723,44 @@ fn au095_no_keys_no_finding() {
     assert!(super::rules::rule_au_095_exposed_key_portfolio(&[p], "s", 0).is_empty());
 }
 
+#[cfg(test)]
+fn osint_key_ent(value: &str, service: &str, category: &str) -> Entity {
+    let mut e = Entity::new(EntityKind::ApiKey, value, 0.80, "s");
+    e.tag("api-key");
+    e.tag(format!("service:{service}"));
+    e.tag("osint-practitioner");
+    e.tag(format!("osint-category:{category}"));
+    e
+}
+
+#[test]
+fn au096_flags_osint_practitioner_with_tradecraft() {
+    let shodan = osint_key_ent(
+        "shodankey32xxxxxxxxxxxxxxxxxxxxxx",
+        "shodan",
+        "attack-surface",
+    );
+    let dehashed = osint_key_ent("dehashedkey", "dehashed", "breach-leak");
+    let r = super::rules::rule_au_096_osint_practitioner(&[shodan, dehashed], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-096");
+    assert_eq!(r[0].severity, super::Severity::High);
+    assert!(r[0].description.contains("2 OSINT/recon-provider API key"));
+    assert!(r[0].description.contains("shodan") && r[0].description.contains("dehashed"));
+    assert!(
+        r[0].description.contains("attack-surface") && r[0].description.contains("breach-leak")
+    );
+}
+
+#[test]
+fn au096_ignores_non_osint_keys() {
+    // A plain infra key (no osint-practitioner tag) must not trigger AU-096.
+    let mut aws = Entity::new(EntityKind::ApiKey, "AKIAxxxx", 0.8, "s");
+    aws.tag("api-key");
+    aws.tag("service:aws");
+    assert!(super::rules::rule_au_096_osint_practitioner(&[aws], "s", 0).is_empty());
+}
+
 #[test]
 fn au094_non_company_abn_is_a_sole_trader_signal() {
     // 51824753556 — valid ABN, no embedded ACN → a non-company (sole trader/trust).

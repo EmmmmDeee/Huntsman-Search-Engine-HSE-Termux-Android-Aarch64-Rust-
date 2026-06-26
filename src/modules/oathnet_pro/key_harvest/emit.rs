@@ -105,12 +105,27 @@ pub(super) fn emit_key_with(
     if value_tier.is_high_value() {
         entity.tag("high-value");
     }
+    // OSINT-practitioner attribution: a key for a recon/breach/threat-intel
+    // provider (Shodan, Dehashed, IntelX, Maltego, Hunter …) found on a victim
+    // identifies its owner as an OSINT operator — the provider category IS the
+    // pivot (their tradecraft, tooling, intent). Tag it so the correlator can
+    // flag practitioners and the operator can compare against their own keys.
+    // Classification only — the key is never used to authenticate.
+    let osint_category = super::osint_catalogue::osint_category(service);
+    if let Some(category) = osint_category {
+        entity.tag("osint-practitioner");
+        entity.tag(format!("osint-category:{}", category.slug()));
+    }
     entity.add_evidence(
         Evidence::new(SRC, format!("API key ({service}) from {source}"))
             .with_attr("service", service)
             .with_attr("detection_confidence", detection.as_str())
             .with_attr("roi_tier", roi.label())
             .with_attr("key_criticality", value_tier.as_str())
+            .with_attr(
+                "osint_category",
+                osint_category.map_or("none", |c| c.slug()),
+            )
             .with_attr(
                 "key_prefix",
                 crate::util::str_util::truncate_safe(key_val, 8),

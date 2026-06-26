@@ -180,6 +180,85 @@ pub(super) const API_SERVICE_DOMAINS: &[(&str, &str)] = &[
     // OSINT / validation (complete coverage)
     ("opencellid.org", "opencellid"),
     ("unwiredlabs.com", "opencellid"),
+    // ── OSINT-practitioner tooling (expanded catalogue) ─────────────────────
+    // A key for any of these found on a victim flags them as an OSINT operator;
+    // every service tag here is classified in `osint_catalogue`. Domains are the
+    // most reliable signal in stealer logs (which carry the URL the key was used
+    // against). Real provider domains only — a wrong length/domain is a safe miss.
+    // Breach / leak:
+    ("hudsonrock.com", "hudsonrock"),
+    ("cavalier.hudsonrock.com", "hudsonrock"),
+    ("scatteredsecrets.com", "scatteredsecrets"),
+    ("xposedornot.com", "xposedornot"),
+    ("api.xposedornot.com", "xposedornot"),
+    ("proxynova.com", "proxynova"),
+    ("leakbase.io", "leakbase"),
+    // Attack-surface scanners:
+    ("hunter.how", "hunter_how"),
+    ("quake.360.net", "quake"),
+    // Threat intel:
+    ("otx.alienvault.com", "alienvault_otx"),
+    ("hybrid-analysis.com", "hybrid_analysis"),
+    ("maltiverse.com", "maltiverse"),
+    ("polyswarm.network", "polyswarm"),
+    ("polyswarm.io", "polyswarm"),
+    ("threatminer.org", "threatminer"),
+    ("any.run", "anyrun"),
+    ("app.any.run", "anyrun"),
+    ("exchange.xforce.ibmcloud.com", "xforce"),
+    // Email / people search:
+    ("snov.io", "snov"),
+    ("app.snov.io", "snov"),
+    ("apollo.io", "apollo"),
+    ("app.apollo.io", "apollo"),
+    ("rocketreach.co", "rocketreach"),
+    ("pipl.com", "pipl"),
+    ("tomba.io", "tomba"),
+    ("clearbit.com", "clearbit"),
+    ("fullcontact.com", "fullcontact"),
+    ("peopledatalabs.com", "peopledatalabs"),
+    ("dropcontact.com", "dropcontact"),
+    ("anymailfinder.com", "anymailfinder"),
+    ("voilanorbert.com", "voilanorbert"),
+    ("predictasearch.com", "predictasearch"),
+    ("osint.industries", "osint_industries"),
+    ("skymem.info", "skymem"),
+    // Phone intelligence:
+    ("numlookupapi.com", "numlookup"),
+    ("veriphone.io", "veriphone"),
+    ("hlr-lookups.com", "hlr_lookups"),
+    ("abstractapi.com", "abstractapi_phone"),
+    // IP geolocation:
+    ("ipinfo.io", "ipinfo"),
+    ("ip2location.com", "ip2location"),
+    ("ip2location.io", "ip2location"),
+    ("ipgeolocation.io", "ipgeolocation"),
+    ("ipstack.com", "ipstack"),
+    ("ipdata.co", "ipdata"),
+    ("ipregistry.co", "ipregistry"),
+    ("maxmind.com", "maxmind"),
+    ("ipquery.io", "ipquery"),
+    // Search / SERP / scraping recon:
+    ("serper.dev", "serper"),
+    ("zenserp.com", "zenserp"),
+    ("exa.ai", "exa"),
+    ("search.brave.com", "brave_search"),
+    ("api.search.brave.com", "brave_search"),
+    ("dataforseo.com", "dataforseo"),
+    ("scraperapi.com", "scraperapi"),
+    ("scrapingbee.com", "scrapingbee"),
+    // Domain / WHOIS / DNS / cert:
+    ("whoxy.com", "whoxy"),
+    ("domaintools.com", "domaintools"),
+    ("ip2whois.com", "ip2whois"),
+    ("viewdns.info", "viewdns"),
+    ("dnsdumpster.com", "dnsdumpster"),
+    // Social / username link-analysis:
+    ("sociallinks.io", "sociallinks"),
+    ("maltego.com", "maltego"),
+    ("lampyre.io", "lampyre"),
+    ("spiderfoot.net", "spiderfoot"),
+    ("hx.spiderfoot.net", "spiderfoot"),
 ];
 
 pub(super) fn identify_service_from_url(url: &str) -> &'static str {

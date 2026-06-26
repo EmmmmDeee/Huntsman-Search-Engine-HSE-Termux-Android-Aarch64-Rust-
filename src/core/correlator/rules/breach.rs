@@ -734,6 +734,83 @@ pub(in crate::core::correlator) fn rule_au_095_exposed_key_portfolio(
     )]
 }
 
+/// AU-096 — OSINT practitioner (holds recon/breach/threat-intel API keys).
+///
+/// A harvested key for an OSINT provider — Shodan, Dehashed, IntelX, Maltego,
+/// Hunter, … — is more than a credential: by possession its owner *runs OSINT*.
+/// The harvester tags such keys `osint-practitioner` + `osint-category:<slug>`
+/// (classified by `key_harvest::osint_catalogue`). This rule reads those tags
+/// and surfaces the attribution: the subject is an OSINT operator, with the
+/// provider list and the tradecraft categories (breach-hunting vs attack-surface
+/// mapping vs people-search …) that the key portfolio reveals.
+///
+/// This is the pivot the operator asked for — the key's *provider* is the
+/// intelligence, not the secret it contains; the key is never used to
+/// authenticate. Severity High (a strong, specific attribution): a single OSINT
+/// key is a lead, several across categories is a profile. One finding per scan.
+pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut providers: BTreeSet<&str> = BTreeSet::new();
+    // category slug → distinct providers in it, for a tradecraft breakdown.
+    let mut by_category: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    let mut uids: Vec<String> = Vec::new();
+
+    for e in entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::ApiKey && e.has_tag("osint-practitioner"))
+    {
+        let provider = e
+            .tags
+            .iter()
+            .find_map(|t| t.strip_prefix("service:"))
+            .unwrap_or("unknown");
+        let category = e
+            .tags
+            .iter()
+            .find_map(|t| t.strip_prefix("osint-category:"))
+            .unwrap_or("uncategorised");
+        providers.insert(provider);
+        by_category.entry(category).or_default().insert(provider);
+        uids.push(e.uid.clone());
+    }
+
+    if providers.is_empty() {
+        return Vec::new();
+    }
+
+    let tradecraft = by_category
+        .iter()
+        .map(|(cat, provs)| {
+            format!(
+                "{cat} ({})",
+                provs.iter().copied().collect::<Vec<_>>().join(", ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    vec![Correlation::new(
+        "AU-096",
+        "OSINT practitioner (recon-tool API keys)",
+        Severity::High,
+        format!(
+            "Subject holds {} OSINT/recon-provider API key(s) across {} provider(s) — by \
+             possession an OSINT practitioner. Tradecraft: {tradecraft}. The provider is the \
+             pivot (tooling, intent); keys are catalogued, not used.",
+            uids.len(),
+            providers.len()
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
 /// AU-037 — Plaintext credential exposure.
 ///
 /// The single most actionable OSINT finding: an actual leaked secret. The
