@@ -164,6 +164,41 @@ fn offline_fallback(postcode: &str) -> Vec<Locality> {
         "4178" => vec![mk("Wynnum", -27.4378, 153.1616)],
         "4205" => vec![mk("Beenleigh", -27.7114, 153.2005)],
         "4209" => vec![mk("Coomera", -27.8892, 153.3022)],
+        // Major REGIONAL cities — where a large share of non-metro Australians
+        // live. Centroids reused verbatim from the trusted CITIES gazetteer in
+        // `crate::util::city_coords` (already ground-truth in this repo), so
+        // these add reach without a second, independently-guessed coordinate.
+        // NSW regional
+        "2300" => vec![mk("Newcastle", -32.9283, 151.7817)],
+        "2500" => vec![mk("Wollongong", -34.4278, 150.8931)],
+        "2650" => vec![mk("Wagga Wagga", -35.1083, 147.3598)],
+        "2640" => vec![mk("Albury", -36.0737, 146.9135)],
+        "2340" => vec![mk("Tamworth", -31.0833, 150.9167)],
+        "2830" => vec![mk("Dubbo", -32.2569, 148.6011)],
+        "2800" => vec![mk("Orange", -33.2833, 149.1000)],
+        "2795" => vec![mk("Bathurst", -33.4167, 149.5833)],
+        // VIC regional
+        "3220" => vec![mk("Geelong", -38.1499, 144.3617)],
+        "3630" => vec![mk("Shepparton", -36.3833, 145.3833)],
+        // QLD regional
+        "4700" => vec![mk("Rockhampton", -23.3791, 150.5100)],
+        "4740" => vec![mk("Mackay", -21.1411, 149.1861)],
+        "4670" => vec![mk("Bundaberg", -24.8661, 152.3489)],
+        "4655" => vec![mk("Hervey Bay", -25.2881, 152.8411)],
+        // SA regional
+        "5290" => vec![mk("Mount Gambier", -37.8307, 140.7828)],
+        "5700" => vec![mk("Port Augusta", -32.4939, 137.7650)],
+        // WA regional
+        "6210" => vec![mk("Mandurah", -32.5264, 115.7239)],
+        "6230" => vec![mk("Bunbury", -33.3258, 115.6397)],
+        "6330" => vec![mk("Albany", -35.0269, 117.8836)],
+        "6430" => vec![mk("Kalgoorlie", -30.7490, 121.4658)],
+        "6530" => vec![mk("Geraldton", -28.7744, 114.6153)],
+        // TAS regional
+        "7310" => vec![mk("Devonport", -41.1769, 146.3506)],
+        "7320" => vec![mk("Burnie", -41.0553, 145.9058)],
+        // NT regional
+        "0870" => vec![mk("Alice Springs", -23.6980, 133.8807)],
         _ => Vec::new(),
     }
 }
