@@ -311,6 +311,12 @@ const RULES: &[RuleFn] = &[
     rule_au_087_employer_address_corroboration,
     rule_au_088_cross_register_identity,
     rule_au_089_tpb_professional_dual_reg,
+    // AU-090: ASIC banned person × active ASIC director — Corporations Act §206 breach signal.
+    // AU-091: ASIC FSR adviser × AFSA current insolvency — fit-and-proper conflict.
+    // AU-092: IP Australia trademark owner × ASIC entity — cross-register corporate identity.
+    rule_au_090_asic_banned_director_conflict,
+    rule_au_091_fsr_insolvency_conflict,
+    rule_au_092_trademark_company_pivot,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

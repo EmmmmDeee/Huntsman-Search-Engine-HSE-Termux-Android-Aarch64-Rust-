@@ -9,6 +9,9 @@
 //! * [`rule_au_087_employer_address_corroboration`] (AU-087) — Seek listing ↔ registered address
 //! * [`rule_au_088_cross_register_identity`]    (AU-088) — person in 3+ AU federal registers
 //! * [`rule_au_089_tpb_professional_dual_reg`]  (AU-089) — TPB agent + AHPRA/ASIC dual-registration
+//! * [`rule_au_090_asic_banned_director_conflict`] (AU-090) — ASIC banned + active ASIC director
+//! * [`rule_au_091_fsr_insolvency_conflict`]    (AU-091) — ASIC FSR adviser + AFSA insolvency
+//! * [`rule_au_092_trademark_company_pivot`]    (AU-092) — IP Australia trademark + ASIC company
 
 use super::*;
 
@@ -454,6 +457,282 @@ pub(in crate::core::correlator) fn rule_au_089_tpb_professional_dual_reg(
                     tpb.value
                 ),
                 entity_uids: vec![tpb.uid.clone(), other.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            });
+        }
+    }
+
+    out
+}
+
+// ── AU-090 — ASIC banned person × active ASIC director conflict ───────────────
+
+/// AU-090 — A person in the ASIC banned/disqualified register also appears as
+/// an active ASIC company director.
+///
+/// Under the Corporations Act 2001 §206A–206F, a person banned or disqualified
+/// by ASIC is legally prohibited from managing a corporation. Detecting the same
+/// name across the ASIC banned register and the ASIC directors register in the
+/// same scan is a CRITICAL compliance signal — either the person is in breach of
+/// a court or ASIC order, the directorship predates the ban, or there is a name
+/// collision requiring investigation.
+pub(in crate::core::correlator) fn rule_au_090_asic_banned_director_conflict(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let banned: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person && e.has_tag("asic-banned"))
+        .collect();
+
+    if banned.is_empty() {
+        return Vec::new();
+    }
+
+    let directors: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| {
+            e.kind == EntityKind::Person
+                && e.evidence_sources().iter().any(|s| *s == "asic_director")
+        })
+        .collect();
+
+    if directors.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+
+    for ban_person in &banned {
+        let ban_lc = ban_person.value.to_ascii_lowercase();
+        let ban_tokens: Vec<&str> = ban_lc.split_whitespace().filter(|t| t.len() >= 3).collect();
+
+        for director in &directors {
+            let dir_lc = director.value.to_ascii_lowercase();
+            let overlap = ban_tokens
+                .iter()
+                .filter(|&&tok| dir_lc.contains(tok))
+                .count();
+            if overlap < 2 {
+                continue;
+            }
+
+            let ban_type = ban_person
+                .tags
+                .iter()
+                .map(String::as_str)
+                .find(|t| t.starts_with("asic:banned") || t.starts_with("asic:disqualified"))
+                .unwrap_or("asic:banned");
+
+            out.push(Correlation {
+                rule_id: "AU-090".into(),
+                rule_name: "ASIC banned person × active ASIC director conflict".into(),
+                severity: Severity::Critical,
+                description: format!(
+                    "'{}' appears in both the ASIC Banned Register ({ban_type}) and the ASIC \
+                     Directors Register — potential breach of Corporations Act §206A–206F \
+                     prohibition on managing corporations",
+                    ban_person.value
+                ),
+                entity_uids: vec![ban_person.uid.clone(), director.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            });
+        }
+    }
+
+    out
+}
+
+// ── AU-091 — ASIC FSR adviser × AFSA insolvency conflict ─────────────────────
+
+/// AU-091 — A person registered on the ASIC Financial Services Register also
+/// appears in the AFSA National Personal Insolvency Index.
+///
+/// ASIC's fit-and-proper requirements under the Corporations Act 2001 and the
+/// National Credit Act 2009 require financial advisers and credit licensees to
+/// be financially sound. An active insolvency record (undischarged bankruptcy or
+/// current debt agreement) co-occurring with an FSR listing is a CRITICAL flag
+/// — ASIC may not be aware of the insolvency, or the person has failed to notify
+/// their licensee. Cross-register name overlap produces actionable intelligence
+/// for regulatory referral.
+pub(in crate::core::correlator) fn rule_au_091_fsr_insolvency_conflict(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let fsr_persons: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person && e.has_tag("asic-fsr"))
+        .collect();
+
+    if fsr_persons.is_empty() {
+        return Vec::new();
+    }
+
+    let insolvent: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| {
+            e.kind == EntityKind::Person
+                && e.has_tag("afsa-npii")
+                && e.has_tag("insolvency:current")
+        })
+        .collect();
+
+    if insolvent.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+
+    for fsr in &fsr_persons {
+        let fsr_lc = fsr.value.to_ascii_lowercase();
+        let fsr_tokens: Vec<&str> = fsr_lc.split_whitespace().filter(|t| t.len() >= 3).collect();
+
+        for ins in &insolvent {
+            let ins_lc = ins.value.to_ascii_lowercase();
+            let overlap = fsr_tokens
+                .iter()
+                .filter(|&&tok| ins_lc.contains(tok))
+                .count();
+            if overlap < 2 {
+                continue;
+            }
+
+            let admin_type = ins
+                .tags
+                .iter()
+                .map(String::as_str)
+                .find(|t| t.starts_with("insolvency:") && *t != "insolvency:current")
+                .unwrap_or("insolvency:unknown");
+
+            let fsr_role = fsr
+                .tags
+                .iter()
+                .map(String::as_str)
+                .find(|t| t.starts_with("asic-fsr:"))
+                .map_or("financial-adviser", |t| t.trim_start_matches("asic-fsr:"));
+
+            out.push(Correlation {
+                rule_id: "AU-091".into(),
+                rule_name: "ASIC FSR adviser × AFSA current insolvency conflict".into(),
+                severity: Severity::Critical,
+                description: format!(
+                    "'{}' is registered on the ASIC FSR as a {fsr_role} but also has a current \
+                     insolvency record ({admin_type}) in the AFSA NPII — potential breach of \
+                     fit-and-proper requirements under Corporations Act and National Credit Act",
+                    fsr.value
+                ),
+                entity_uids: vec![fsr.uid.clone(), ins.uid.clone()],
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            });
+        }
+    }
+
+    out
+}
+
+// ── AU-092 — IP Australia trademark owner × ASIC company pivot ───────────────
+
+/// AU-092 — A trade mark owner from the IP Australia register overlaps with an
+/// ASIC-registered company or director in the same scan.
+///
+/// Trade mark registrations in Australia require the owner's legal name — for
+/// companies this is the exact ASIC-registered company name; for individuals it
+/// is their legal name. When the same name appears in both the IP Australia
+/// trade marks register and an ASIC register (director, company, or FSR), this
+/// confirms corporate identity and reveals the trading name ↔ legal entity
+/// relationship. High confidence for corporate due-diligence and asset-
+/// tracing (trade marks are legal property registered against the entity).
+pub(in crate::core::correlator) fn rule_au_092_trademark_company_pivot(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let trademark_owners: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| {
+            (e.kind == EntityKind::Organisation || e.kind == EntityKind::Person)
+                && e.has_tag("ip-australia")
+        })
+        .collect();
+
+    if trademark_owners.is_empty() {
+        return Vec::new();
+    }
+
+    // ASIC-sourced entities: directors, FSR registrants, or company listings.
+    let asic_entities: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| {
+            (e.kind == EntityKind::Organisation || e.kind == EntityKind::Person)
+                && (e
+                    .evidence_sources()
+                    .iter()
+                    .any(|s| *s == "asic_director" || *s == "asic_fsr" || *s == "asic_banned")
+                    || e.has_tag("asic-fsr")
+                    || e.has_tag("asic-banned"))
+        })
+        .collect();
+
+    if asic_entities.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+
+    for tm in &trademark_owners {
+        let tm_lc = tm.value.to_ascii_lowercase();
+        let tm_tokens: Vec<&str> = tm_lc.split_whitespace().filter(|t| t.len() >= 3).collect();
+
+        for asic in &asic_entities {
+            let asic_lc = asic.value.to_ascii_lowercase();
+            let overlap = tm_tokens
+                .iter()
+                .filter(|&&tok| asic_lc.contains(tok))
+                .count();
+            if overlap < 2 {
+                continue;
+            }
+
+            let pair = (tm.uid.clone(), asic.uid.clone());
+            if !seen.insert(pair) {
+                continue;
+            }
+
+            let asic_register = if asic.has_tag("asic-fsr") {
+                "ASIC FSR"
+            } else if asic.has_tag("asic-banned") {
+                "ASIC Banned Register"
+            } else {
+                "ASIC Directors Register"
+            };
+
+            let tm_status = tm
+                .tags
+                .iter()
+                .map(String::as_str)
+                .find(|t| t.starts_with("trademark-status:"))
+                .map_or("unknown", |t| t.trim_start_matches("trademark-status:"));
+
+            out.push(Correlation {
+                rule_id: "AU-092".into(),
+                rule_name: "IP Australia trademark owner × ASIC entity pivot".into(),
+                severity: Severity::High,
+                description: format!(
+                    "'{}' appears as an IP Australia trademark owner (status: {tm_status}) and \
+                     also in the {asic_register} — corporate identity confirmed across independent \
+                     federal registers; strong asset-tracing anchor",
+                    tm.value
+                ),
+                entity_uids: vec![tm.uid.clone(), asic.uid.clone()],
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,

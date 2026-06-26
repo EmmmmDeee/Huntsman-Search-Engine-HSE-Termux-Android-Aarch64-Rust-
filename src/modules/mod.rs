@@ -12,7 +12,9 @@ pub mod acnc_charities;
 pub mod afsa_insolvency;
 pub mod ahpra;
 pub mod api_key_probe;
+pub mod asic_banned;
 pub mod asic_director;
+pub mod asic_fsr;
 pub mod ato_tax_agents;
 pub mod au_electoral;
 pub mod au_people;
@@ -75,6 +77,7 @@ pub mod huggingface_user;
 pub mod hunter_io;
 pub mod intelx;
 pub mod ip2location;
+pub mod ip_australia;
 pub mod ip_geo;
 pub mod ip_registry;
 pub mod ip_reputation;
@@ -408,6 +411,9 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(au_unclaimed::AuUnclaimed),
         Arc::new(au_people::AuPeople),
         Arc::new(asic_director::AsicDirector),
+        Arc::new(asic_banned::AsicBanned),
+        Arc::new(asic_fsr::AsicFsr),
+        Arc::new(ip_australia::IpAustralia),
         Arc::new(au_electoral::AuElectoral),
         Arc::new(au_property::AuProperty),
         Arc::new(acnc_charities::AcncCharities),

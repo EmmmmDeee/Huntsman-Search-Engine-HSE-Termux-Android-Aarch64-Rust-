@@ -275,3 +275,56 @@ use crate::core::entity::Evidence;
         let results = rule_au_089_tpb_professional_dual_reg(&[tpb, ahpra], "scan-au089", 0);
         assert_eq!(results.len(), 1, "tpb professional dual reg must fire when TPB registrant and AHPRA person share name tokens");
     }
+
+    // ── rule_au_090_asic_banned_director_conflict ─────────────────────────────
+
+    #[test]
+    fn au_090_asic_banned_director_conflict_fires_on_name_overlap() {
+        use super::au_registers::rule_au_090_asic_banned_director_conflict;
+        use crate::core::entity::Evidence;
+        let mut banned = Entity::new(EntityKind::Person, "Michael James Harrison", 0.88, "scan-au090");
+        banned.tags.push("asic-banned".into());
+        banned.tags.push("asic:banned-financial".into());
+        banned.tags.push("asic:permanent".into());
+        banned.add_evidence(Evidence::new("asic_banned", "ASIC banned register record"));
+        let mut director = Entity::new(EntityKind::Person, "Michael James Harrison", 0.80, "scan-au090");
+        director.add_evidence(Evidence::new("asic_director", "ASIC director record"));
+        let results = rule_au_090_asic_banned_director_conflict(&[banned, director], "scan-au090", 0);
+        assert_eq!(results.len(), 1, "asic banned director conflict must fire when banned person and ASIC director share name tokens");
+    }
+
+    // ── rule_au_091_fsr_insolvency_conflict ───────────────────────────────────
+
+    #[test]
+    fn au_091_fsr_insolvency_conflict_fires_on_fsr_and_current_insolvency() {
+        use super::au_registers::rule_au_091_fsr_insolvency_conflict;
+        use crate::core::entity::Evidence;
+        let mut fsr_person = Entity::new(EntityKind::Person, "Patricia Anne Nguyen", 0.83, "scan-au091");
+        fsr_person.tags.push("asic-fsr".into());
+        fsr_person.tags.push("asic-fsr:financial-adviser".into());
+        fsr_person.add_evidence(Evidence::new("asic_fsr", "ASIC FSR financial adviser record"));
+        let mut insolvent = Entity::new(EntityKind::Person, "Patricia Anne Nguyen", 0.82, "scan-au091");
+        insolvent.tags.push("afsa-npii".into());
+        insolvent.tags.push("insolvency:current".into());
+        insolvent.tags.push("insolvency:bankruptcy".into());
+        insolvent.add_evidence(Evidence::new("afsa_insolvency", "AFSA NPII bankruptcy record"));
+        let results = rule_au_091_fsr_insolvency_conflict(&[fsr_person, insolvent], "scan-au091", 0);
+        assert_eq!(results.len(), 1, "fsr insolvency conflict must fire when ASIC FSR person and current AFSA insolvency share name tokens");
+    }
+
+    // ── rule_au_092_trademark_company_pivot ──────────────────────────────────
+
+    #[test]
+    fn au_092_trademark_company_pivot_fires_on_trademark_and_asic_overlap() {
+        use super::au_registers::rule_au_092_trademark_company_pivot;
+        use crate::core::entity::Evidence;
+        let mut tm_owner = Entity::new(EntityKind::Organisation, "Bluestone Capital Management Pty Ltd", 0.78, "scan-au092");
+        tm_owner.tags.push("ip-australia".into());
+        tm_owner.tags.push("trademark".into());
+        tm_owner.tags.push("trademark-status:registered".into());
+        tm_owner.add_evidence(Evidence::new("ip_australia", "IP Australia trademark registration"));
+        let mut asic_dir = Entity::new(EntityKind::Person, "Bluestone Capital Management Director", 0.80, "scan-au092");
+        asic_dir.add_evidence(Evidence::new("asic_director", "ASIC director record for Bluestone Capital Management"));
+        let results = rule_au_092_trademark_company_pivot(&[tm_owner, asic_dir], "scan-au092", 0);
+        assert_eq!(results.len(), 1, "trademark company pivot must fire when IP Australia owner and ASIC entity share name tokens");
+    }

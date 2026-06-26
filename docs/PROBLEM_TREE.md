@@ -3050,3 +3050,18 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   has_a_firing_test` architecture guard passes. Multiple clippy fixes (`find_map`→`find`,
   `map_or`, `String::as_str`, let-chain collapsing). `docs/MODULES.md` + README updated
   (145→148 across all module-count mentions). **Paired:** `SOLUTION_TREE` — same commit.
+- **2026-06-26** — **Three new AU enforcement/IP modules and three AU-register correlation
+  rules (148→151 modules, rules AU-090–AU-092).** Delivered `asic_banned` (ASIC Banned &
+  Disqualified Persons register — `FullName`/`Organisation` → `Person`; ban-type tags
+  `asic:banned-financial`, `asic:banned-credit`, `asic:disqualified`, permanence tags; free,
+  priority 110, People; 5 tests); `asic_fsr` (ASIC Financial Services Register — AFS/credit
+  licensees, financial advisers, credit representatives → `Person`, `Organisation`, `Address`;
+  free, priority 106, People; 5 tests); `ip_australia` (IP Australia Trade Marks Register —
+  trademark owner → `Organisation`, `Address`; trademark-status tags; free, priority 75,
+  Corporate; 5 tests). Three correlation rules in `src/core/correlator/rules/au_registers.rs`:
+  **AU-090** ASIC banned person × active ASIC director — Corporations Act §206A–206F breach
+  signal (CRITICAL); **AU-091** ASIC FSR adviser × AFSA current insolvency — fit-and-proper
+  conflict under Corporations Act / National Credit Act (CRITICAL); **AU-092** IP Australia
+  trademark owner × ASIC entity — cross-register corporate identity confirmed (HIGH). Firing
+  tests for all three in `rules/tests.rs`. Architecture guards all pass. `docs/MODULES.md` +
+  README updated (148→151 across all counts). **Paired:** `SOLUTION_TREE` — same commit.

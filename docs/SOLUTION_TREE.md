@@ -2252,3 +2252,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   SOL-CORR rule-gap fill advanced (AU-085–089 delivered; first-class timeline + further
   rules remain); SOL-AU-MOAT stays `[~]`. Gate green: 3,845 lib tests + 24 arch + 82
   smoke, 0 failures. **Paired:** `PROBLEM_TREE` — same commit.
+- **2026-06-26** — **SOL-AU-MOAT + SOL-CORR advance: three AU enforcement/IP modules +
+  three AU-register rules.** Delivered `asic_banned` (ASIC Banned & Disqualified Persons
+  register — federal enforcement records; `Person` + ban-type tags `asic:banned-financial` /
+  `asic:banned-credit` / `asic:disqualified` + permanence tags; free, People, priority 110;
+  5 tests); `asic_fsr` (ASIC Financial Services Register — AFS licensees, credit licensees,
+  financial advisers, credit representatives; `Person`, `Organisation`, `Address`; free,
+  People, priority 106; 5 tests); `ip_australia` (IP Australia Trade Marks Register —
+  trademark owner identity + address; `Organisation`, `Address`; trademark-status tags;
+  free, Corporate, priority 75; 5 tests). Three correlation rules in `au_registers.rs`:
+  **AU-090** (ASIC banned × ASIC director — Corporations Act §206 breach, CRITICAL);
+  **AU-091** (ASIC FSR adviser × AFSA current insolvency — fit-and-proper breach, CRITICAL);
+  **AU-092** (IP Australia trademark × ASIC entity — cross-register corporate identity,
+  HIGH). Architecture firing-test guard passes for all three. `docs/MODULES.md` + README
+  synced (148→151, 115→118 free). **S→P gap refresh:** SOL-AU-MOAT advances (`[~]`);
+  SOL-CORR rule-gap fill continues (AU-085–092 delivered; further cross-register rules
+  remain open). Gate green: all tests pass, 0 failures. **Paired:** `PROBLEM_TREE` — same
+  commit.
