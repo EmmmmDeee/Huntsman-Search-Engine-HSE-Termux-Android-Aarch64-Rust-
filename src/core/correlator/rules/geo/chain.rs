@@ -392,13 +392,22 @@ pub(in crate::core::correlator) fn rule_au_057_synthesised_location_fix(
     };
     let uids: Vec<String> = candidates.iter().map(|(e, _)| e.uid.clone()).collect();
 
+    // Name the synthesised primary location: reverse-geocode the median to its
+    // nearest AU population centre (offline). The raw coordinate is the precise
+    // estimate; the locality is the human "where does this person live" answer.
+    let place = crate::util::geo::nearest_au_locality(lat, lon)
+        .map(|(name, state, km)| {
+            format!(" — estimated primary location near {name}, {state} (≈{km:.0} km)")
+        })
+        .unwrap_or_default();
+
     vec![Correlation::new(
         "AU-057",
         "Synthesised location fix (weighted median)",
         severity,
         format!(
             "Weighted geometric median of {} confirmed coordinate(s): ({lat:.4}, {lon:.4}) \
-             geohash={gh} — MITRE T1591.001",
+             geohash={gh}{place} — MITRE T1591.001",
             candidates.len()
         ),
         uids,

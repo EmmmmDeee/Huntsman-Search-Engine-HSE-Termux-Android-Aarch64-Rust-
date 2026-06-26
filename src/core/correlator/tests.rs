@@ -4333,6 +4333,14 @@ fn au_057_two_brisbane_coords_produce_synthesised_fix() {
     assert_eq!(out[0].severity, super::Severity::Medium);
     assert!(out[0].description.contains("2 confirmed"));
     assert!(out[0].entity_uids.len() == 2);
+    // The synthesised median is named via the offline reverse geocoder.
+    assert!(
+        out[0]
+            .description
+            .contains("primary location near Brisbane, QLD"),
+        "synthesised fix is reverse-geocoded: {}",
+        out[0].description
+    );
 }
 
 #[test]
