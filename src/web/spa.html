@@ -667,10 +667,13 @@ const API = {
   liveList:   ()=>API._req('/api/v1/live'),
   liveCreate: body=>API._req('/api/v1/live',{method:'POST',body}),
   liveStop:   id=>API._req('/api/v1/live/'+encodeURIComponent(id),{method:'DELETE'}),
-  // Live Signal Radar: ONE autonomous on-device sensor sweep, NO target. This is
-  // the sole activation path for the live sensors (signal_radar, device_sensors,
-  // wifi_intel, cell_intel, local_net) — an ordinary scan never runs them. The
-  // only input is an optional seed *type* (coordinates|mac_address).
+  // Live Signal Radar — the sole activation path for the on-device live sensors
+  // (signal_radar, device_sensors, wifi_intel, cell_intel, local_net); an ordinary
+  // scan never runs them. Both take NO input whatsoever.
+  //   radarLive():  CONTINUOUS autonomous radar — a zero-input live session that
+  //                 re-enumerates the device's passive signals in real time.
+  //   radarSweep(): ONE autonomous sweep (kept for API back-compat; optional seed).
+  radarLive: ()=>API._req('/api/v1/radar/live',{method:'POST'}),
   radarSweep: seed=>API._req('/api/v1/radar'+(seed?('?seed='+encodeURIComponent(seed)):''),{method:'POST'}),
   selftest:     ()=>API._req('/api/v1/selftest'),
   logsUrl:      ()=>'/api/v1/logs',
@@ -3466,17 +3469,19 @@ async function renderLive(v){
     <hr style="margin:8px 0 14px 0">
     <div class="panel panel-default" style="border-color:#07aef1">
       <div class="panel-heading" style="background:#eaf7fd"><b><i class="glyphicon glyphicon-record" style="color:#07aef1"></i>&nbsp;Live Signal Radar</b>
-        <span class="text-muted" style="font-weight:400">— autonomous ambient-signal sweep of <i>this device</i></span></div>
+        <span class="text-muted" style="font-weight:400">— continuous autonomous enumeration of <i>this device's</i> passive signals</span></div>
       <div class="panel-body">
         <p class="text-muted" style="margin:0 0 10px 0;font-size:12px">
-          Surveys the signals <b>around the device</b> — Wi-Fi access points, Bluetooth, cell towers, a GPS fix and the local network —
-          using only the on-device live sensors (<code>signal_radar</code>, <code>device_sensors</code>, <code>wifi_intel</code>,
-          <code>cell_intel</code>, <code>local_net</code>). It takes <b>no target</b> and is entirely separate from target seed scanning:
-          these sensors run on <i>no other scan</i>, so this button is their only activation.
+          Continuously enumerates the signals <b>around the device</b> in real time — Wi-Fi access points, Bluetooth, cell towers,
+          the GPS/last-known fix and the local network — using only the on-device passive sensors (<code>signal_radar</code>,
+          <code>device_sensors</code>, <code>wifi_intel</code>, <code>cell_intel</code>, <code>local_net</code>). It requires
+          <b>no input whatsoever</b>: no target, no seed, no interval — just one tap. It is entirely separate from target seed
+          scanning (those sensors run on <i>no other scan</i>), and re-sweeps on a loop so new signals surface as they appear or the
+          device moves.
         </p>
         <div class="form-inline">
-          <button id="radar-go" class="btn btn-info"><i class="glyphicon glyphicon-record"></i>&nbsp;Activate Radar Sweep</button>
-          <span class="text-muted" style="margin-left:8px;font-style:italic">no input required — one tap surveys every on-device signal</span>
+          <button id="radar-go" class="btn btn-info"><i class="glyphicon glyphicon-record"></i>&nbsp;Activate Live Radar</button>
+          <span class="text-muted" style="margin-left:8px;font-style:italic">zero input — one tap starts a continuous passive-signal sweep</span>
           <span id="radar-status" class="text-muted" style="margin-left:10px"></span>
         </div>
       </div>
@@ -3522,20 +3527,20 @@ async function renderLive(v){
     } catch(e){ if (typeof alertify !== 'undefined') alertify.error('Start failed: '+e.message); }
   });
   // Live Signal Radar — the single, deliberate button that activates the on-device
-  // sensors. Fully autonomous: NO input whatsoever (no target, no seed type). The
-  // server runs every on-device sensor and establishes the device's own location
-  // from passive signals alone. Navigates to the resulting sweep's live log so the
-  // operator watches the ambient signals stream.
+  // sensors. Fully autonomous: NO input whatsoever (no target, no seed, no interval).
+  // Starts a CONTINUOUS live radar session, server-configured, that re-enumerates the
+  // device's passive signals in real time. Re-renders so the new session appears in
+  // "Active sessions", where its iteration count climbs live.
   $('#radar-go').addEventListener('click', async ()=>{
     const btn = $('#radar-go'), st = $('#radar-status');
-    btn.disabled = true; btn.innerHTML = '<i class="glyphicon glyphicon-refresh glyphicon-spin"></i>&nbsp;Sweeping…';
-    if (st) st.textContent = 'Activating live sensors…';
+    btn.disabled = true; btn.innerHTML = '<i class="glyphicon glyphicon-refresh glyphicon-spin"></i>&nbsp;Starting…';
+    if (st) st.textContent = 'Activating continuous passive-signal radar…';
     try {
-      const r = await API.radarSweep();
-      toast('Radar sweep queued');
-      nav(`#/scaninfo?id=${encodeURIComponent(r.scan_id)}&tab=log`);
+      await API.radarLive();
+      toast('Continuous radar started — enumerating passive signals');
+      render();
     } catch(e){
-      btn.disabled = false; btn.innerHTML = '<i class="glyphicon glyphicon-record"></i>&nbsp;Activate Radar Sweep';
+      btn.disabled = false; btn.innerHTML = '<i class="glyphicon glyphicon-record"></i>&nbsp;Activate Live Radar';
       if (st) st.textContent = '';
       if (typeof alertify !== 'undefined') alertify.error('Radar failed: '+e.message);
     }

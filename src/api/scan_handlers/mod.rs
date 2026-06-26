@@ -27,7 +27,7 @@ pub use analysis::{
     scan_network, scan_relations,
 };
 pub use core::{
-    plan_preview, radar_sweep, scan_batch, scan_cancel, scan_create, scan_delete,
+    plan_preview, radar_live, radar_sweep, scan_batch, scan_cancel, scan_create, scan_delete,
     scan_events_history, scan_get, scan_import, scan_list, scan_rerun,
 };
 pub use diagnostics::{

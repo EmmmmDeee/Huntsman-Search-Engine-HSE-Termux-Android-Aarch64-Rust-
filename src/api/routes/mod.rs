@@ -165,6 +165,9 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/plan", get(scan_handlers::plan_preview))
         // Live-radar button: ONE autonomous device-sensor sweep, no target seed.
         .route("/radar", post(scan_handlers::radar_sweep))
+        // Continuous autonomous radar: a zero-input live session that re-runs only
+        // the on-device passive sensors, enumerating ambient signals in real time.
+        .route("/radar/live", post(scan_handlers::radar_live))
         .route(
             "/scans/import",
             // Raise this route's body cap from axum's 2 MB default to the import

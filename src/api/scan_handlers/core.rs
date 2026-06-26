@@ -358,6 +358,51 @@ pub async fn radar_sweep(
         .into_response()
 }
 
+/// `POST /api/v1/radar/live` — start a CONTINUOUS autonomous live-sensor radar.
+///
+/// The single-button, zero-input radar: it takes **no body, no target, no seed,
+/// no interval** — every parameter is fixed server-side. It starts a live
+/// session that re-runs ONLY the on-device passive sensors
+/// (`signal_radar`, `device_sensors`, `wifi_intel`, `cell_intel`, `local_net`)
+/// on a loop, so the device's ambient signals — Wi-Fi APs, Bluetooth, cell
+/// towers, the GPS/last-known fix and the local network — are enumerated in
+/// real time as they appear and change (e.g. as the device moves). Purely
+/// passive: depth 0 means no pivoting onto external/active modules, so nothing
+/// but the device's own sensors ever runs. Returns the `live_id` to watch.
+///
+/// Same activation wall as the one-shot sweep: gated behind `feature.live_radar`
+/// and `allow_live_sensors` (set here, server-side), so an ordinary scan can
+/// neither reach nor accidentally start it.
+pub async fn radar_live(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    if !crate::util::settings::live_radar_enabled() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "live radar disabled",
+                "detail": "the live-sensor radar is off by default and separate from scans; \
+                           enable it deliberately before use",
+                "enable": "set the feature.live_radar toggle on (CLI: hse config feature.live_radar on)",
+            })),
+        )
+            .into_response();
+    }
+    // No seed: the autonomous ambient survey. The sensors ignore the sentinel.
+    let (target, opts) = radar_scan_spec(None);
+    // Continuous, uncapped, radar-mode (one shared ledger across sweeps). The
+    // interval is the product default — no operator input.
+    let live = crate::core::live::LiveOptions {
+        radar: true,
+        ..Default::default()
+    };
+    let live_id = s.live.start(target, opts, live);
+    info!(live_id = %live_id, "continuous radar started — autonomous passive-sensor enumeration");
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({ "live_id": live_id, "status": "running", "mode": "radar" })),
+    )
+        .into_response()
+}
+
 /// `GET /api/v1/plan?value=<seed>` — forward-only scan-plan PREVIEW.
 pub async fn plan_preview(
     Query(params): Query<std::collections::HashMap<String, String>>,

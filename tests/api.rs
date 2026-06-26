@@ -488,6 +488,23 @@ async fn radar_sweep_is_refused_until_live_radar_is_enabled() {
     );
 }
 
+#[tokio::test]
+async fn continuous_radar_is_refused_until_live_radar_is_enabled() {
+    // The continuous, zero-input radar (`POST /api/v1/radar/live`) shares the same
+    // activation wall as the one-shot sweep: refused until `feature.live_radar` is
+    // deliberately enabled. It takes no body — a bare POST is the entire request.
+    let app = test_app("radar_live");
+    let resp = app
+        .oneshot(post_json("/api/v1/radar/live", ""))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        http::StatusCode::FORBIDDEN,
+        "continuous radar must be refused until manually enabled, separate from scans"
+    );
+}
+
 // ── 5c. Subject network synthesis ─────────────────────────────────────────
 
 #[tokio::test]

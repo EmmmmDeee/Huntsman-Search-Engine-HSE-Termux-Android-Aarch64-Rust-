@@ -10,6 +10,31 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+## [1.12.0] — 2026-06-26
+
+### Added
+- **Continuous autonomous Live Signal Radar** — the radar is now a single,
+  zero-input button. `POST /api/v1/radar/live` starts a continuous live session
+  that re-runs only the on-device passive sensors (`signal_radar`,
+  `device_sensors`, `wifi_intel`, `cell_intel`, `local_net`), enumerating the
+  device's ambient signals (Wi-Fi APs, Bluetooth, cell towers, GPS/last-known
+  fix, local network) in real time as they appear and change. No target, no
+  seed, no interval — every parameter is fixed server-side; same `feature.live_radar`
+  activation wall as the one-shot sweep (kept for API back-compat).
+- Radar GPS sensors degrade to the phone's passively-cached last-known location
+  (`-r last`) so a fix is established with no fresh lock; cached fixes are tagged
+  `fix-age:last-known`.
+- AU-103 — autonomous device self-location: fuses the passively-collected
+  on-device signals into the operator device's own position (offline
+  reverse-geocoded), with a roaming / spoofed-GPS cross-check; no seed input.
+- AU-101 — identity-resolution breadth; AU-102 + `util::address_au::au_phone_line_type`
+  — portability-proof phone line-type intelligence; AU-104 + `util::bsb` —
+  Australian bank-account / institution exposure from an exposed BSB.
+
+### Changed
+- Web UI: removed the radar's forced "Seed type" choice — the Live Signal Radar
+  requires no input whatsoever; one tap starts the continuous passive-signal sweep.
+
 ## [1.11.0] — 2026-06-25
 
 ### Added
