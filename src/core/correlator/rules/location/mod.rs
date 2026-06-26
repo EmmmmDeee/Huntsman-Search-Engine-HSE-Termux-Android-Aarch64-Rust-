@@ -668,8 +668,11 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
 
     // 3 & 4. Postcode-grain: a name-matched address outranks a bare breach/register
     // postcode. Among equal-rank candidates the most-confident wins; deterministic.
+    // `Coordinates` are EXCLUDED — their `lat,lon` value's digits would be misread
+    // as a postcode (e.g. `…,151.2093` → "2093"); a coordinate's location is rung 2.
     let mut pc: Vec<(u8, f64, &Entity, f64, f64)> = entities
         .iter()
+        .filter(|e| e.kind != EntityKind::Coordinates)
         .filter_map(|e| {
             let pcode = crate::core::geo_family::au_postcode(e)?;
             let (lat, lon) = crate::util::city_coords::city_coords(&pcode)?;

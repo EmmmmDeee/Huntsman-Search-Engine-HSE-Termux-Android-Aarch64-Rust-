@@ -197,14 +197,31 @@ use super::*;
     }
 
     #[test]
-    fn extract_au_location_fix_is_null_without_au_059() {
+    fn extract_au_location_fix_falls_back_to_single_signal_without_au_059() {
+        use crate::core::entity::{Entity, EntityKind};
+        // Two AU coordinates that don't reach the AU-059 ≥2-orthogonal-class gate
+        // still yield a headline fix via the single-signal fallback — the API
+        // surface now always carries a best-location answer when any AU signal
+        // exists, with its precision radius and the basis it was derived from.
         let ents = vec![
             au_sighting("-33.8688,151.2093", 0.80, "abn_lookup", "NSW"),
             au_sighting("-33.8700,151.2100", 0.75, "acnc_charities", "NSW"),
         ];
         let corrs = crate::core::correlator::correlate_entities(&ents, "s");
-        assert_eq!(extract_au_location_fix(&corrs, &ents), serde_json::Value::Null);
-        assert_eq!(extract_au_location_fix(&[], &ents), serde_json::Value::Null);
+        let fix = extract_au_location_fix(&corrs, &ents);
+        assert!(fix.is_object(), "single-signal fallback must produce a fix");
+        assert_eq!(fix["source"], "single-signal");
+        assert_eq!(fix["state"], "NSW");
+        assert!(fix["basis"].is_string());
+        assert!(fix["radius_km"].as_f64().unwrap() > 0.0);
+
+        // But with NO location signal at all (an email only), it stays Null —
+        // the fallback never fabricates a location out of nothing.
+        let no_geo = vec![Entity::new(EntityKind::Email, "x@y.com", 0.9, "s")];
+        assert_eq!(
+            extract_au_location_fix(&[], &no_geo),
+            serde_json::Value::Null
+        );
     }
 
     /// The structured fields come from the **entities**, not the finding prose —

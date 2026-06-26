@@ -215,6 +215,8 @@ pub(crate) fn extract_au_location_fix(
     correlations: &[crate::core::correlator::Correlation],
     entities: &[crate::core::entity::Entity],
 ) -> serde_json::Value {
+    // Primary: the AU-059 multi-source cross-class synergy fix (strongest). The
+    // structured fields are recomputed from the entities, never parsed from prose.
     let best = correlations
         .iter()
         .filter(|c| c.rule_id == "AU-059")
@@ -223,27 +225,42 @@ pub(crate) fn extract_au_location_fix(
                 .partial_cmp(&b.rank)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-    let Some(c) = best else {
-        return serde_json::Value::Null;
-    };
-    // Recompute the structured fix from the same entities and gate the rule used.
-    let Some(fix) = crate::core::correlator::au059_synergy_fix(entities) else {
-        return serde_json::Value::Null;
-    };
+    if let Some(c) = best
+        && let Some(fix) = crate::core::correlator::au059_synergy_fix(entities)
+    {
+        return json!({
+            "lat": fix.lat,
+            "lon": fix.lon,
+            "radius_km": fix.radius_km,
+            "geohash": fix.geohash,
+            "state": fix.state,
+            "synergy_confidence": fix.synergy_confidence,
+            "severity": c.severity.as_canonical(),
+            "rank": c.rank,
+            "source_count": fix.count,
+            "class_count": fix.class_names.len(),
+            "rule_id": "AU-059",
+        });
+    }
 
-    json!({
-        "lat": fix.lat,
-        "lon": fix.lon,
-        "radius_km": fix.radius_km,
-        "geohash": fix.geohash,
-        "state": fix.state,
-        "synergy_confidence": fix.synergy_confidence,
-        "severity": c.severity.as_canonical(),
-        "rank": c.rank,
-        "source_count": fix.count,
-        "class_count": fix.class_names.len(),
-        "rule_id": "AU-059",
-    })
+    // Fallback: the single-signal best-location estimate, so the web/JSON surface
+    // carries a headline fix whenever ANY AU location signal exists — not only the
+    // ≥2-class synergy case. Carries the precision radius, nearest locality, and
+    // the basis it was derived from. `Null` only when there is no AU location at all.
+    match crate::core::correlator::best_au_location_estimate(entities) {
+        Some(est) => json!({
+            "lat": est.lat,
+            "lon": est.lon,
+            "radius_km": est.radius_km,
+            "geohash": est.geohash,
+            "state": est.state,
+            "locality": est.locality,
+            "confidence": est.confidence,
+            "basis": est.basis,
+            "source": "single-signal",
+        }),
+        None => serde_json::Value::Null,
+    }
 }
 
 pub async fn scan_export_gexf(

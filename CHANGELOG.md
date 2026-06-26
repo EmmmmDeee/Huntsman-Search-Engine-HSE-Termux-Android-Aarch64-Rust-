@@ -20,7 +20,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   — each with its precision radius, nearest locality, state, and the basis it was
   derived from. Surfaced in the dossier's GEO INTELLIGENCE as the single-signal
   fallback so every located subject gets an Interpol-style "where, and how
-  precisely" answer. Pure and deterministic.
+  precisely" answer. Pure and deterministic. Also wired into the API/JSON geo
+  export (`best_location`), so the web/JSON surface carries the same headline fix
+  (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
+
+### Fixed
+- **best-location estimate: a coordinate's `lat,lon` digits are no longer
+  misread as a postcode.** The postcode rung excluded a token like `…,151.2093`
+  → "2093"; `Coordinates` are now excluded from that rung (a coordinate's location
+  is the dedicated coordinate rung), so a lat/lon can never produce a bogus
+  residential-postcode fix in the dossier or the API export.
 - **Breach-candidate geo re-promotion — "return to old data when downstream adds
   credibility" for breach records.** A name search quarantines every same-name
   breach/stealer row as a `candidate` (it may be a namesake). When a later round

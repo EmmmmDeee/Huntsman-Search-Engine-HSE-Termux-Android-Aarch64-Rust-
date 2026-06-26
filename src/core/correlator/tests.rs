@@ -3090,6 +3090,17 @@ fn best_location_is_none_without_any_location_signal() {
 }
 
 #[test]
+fn best_location_does_not_misread_a_coordinate_value_as_a_postcode() {
+    use super::best_au_location_estimate;
+    // A coordinate from a non-anchoring source (so NOT person-anchored) whose
+    // longitude digits ("…151.2093") contain a postcode-shaped token ("2093").
+    // It must yield no fix — coordinates are excluded from the postcode rung, so
+    // the digits of a lat/lon are never misread as a residential postcode.
+    let coord = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.8, "s");
+    assert!(best_au_location_estimate(&[coord]).is_none());
+}
+
+#[test]
 fn au099_reverse_geocodes_coordinate_to_locality() {
     // A Brisbane fix → "Brisbane, QLD" with a small distance.
     let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
