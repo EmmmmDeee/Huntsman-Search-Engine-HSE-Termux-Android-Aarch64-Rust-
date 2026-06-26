@@ -2859,6 +2859,45 @@ fn au093_dedups_same_address_across_sources() {
 }
 
 #[test]
+fn au098_three_classes_agree_is_high_consensus() {
+    // Brisbane coordinate (QLD) + a QLD address + a breach state=QLD → 3 classes.
+    let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
+    let addr = Entity::new(EntityKind::Address, "Spring Hill QLD 4000", 0.7, "s");
+    let mut person = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    person.add_evidence(Evidence::new("see_know", "breach").with_attr("state", "Queensland"));
+    let r = super::rules::rule_au_098_residency_consensus(&[coord, addr, person], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-098");
+    assert_eq!(r[0].severity, super::Severity::High);
+    assert!(r[0].description.contains("QLD"));
+    assert!(r[0].description.contains("3 of 3"));
+    assert!(r[0].description.contains("no dissenting signal"));
+}
+
+#[test]
+fn au098_two_classes_medium_and_surfaces_dissent() {
+    // A QLD coordinate + a QLD phone (07) agree; a lone VIC address dissents.
+    let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
+    let phone = Entity::new(EntityKind::Phone, "+61731234567", 0.7, "s"); // 07 → QLD
+    let addr = Entity::new(EntityKind::Address, "Melbourne VIC 3000", 0.7, "s");
+    let r = super::rules::rule_au_098_residency_consensus(&[coord, phone, addr], "s", 0);
+    assert_eq!(r.len(), 1);
+    // QLD is supported by 2 classes (coordinate + phone) → Medium; the lone VIC
+    // address is the dissenting minority.
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(r[0].description.contains("2 of 3"));
+    assert!(r[0].description.contains("QLD"));
+    assert!(r[0].description.contains("dissenting minority: VIC"));
+}
+
+#[test]
+fn au098_single_class_does_not_fire() {
+    // Only a coordinate — one class — is the single-signal rules' job, not AU-098.
+    let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
+    assert!(super::rules::rule_au_098_residency_consensus(&[coord], "s", 0).is_empty());
+}
+
+#[test]
 fn au046_resolves_an_alias_to_platform_exposed_identifiers() {
     // The alias confirmed across two platform families (npm=code, reddit=forum),
     // plus an email its npm account exposed → AU-046 links handle to identity.

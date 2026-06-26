@@ -30,6 +30,10 @@
 //!   full residential address) from the co-located street/suburb/state/postcode
 //!   fields of one breach record, offline-geocoded — the dwelling-grade locator
 //!   the single-field AU-090/091 rules can't reach.
+//! * [`rule_au_098_residency_consensus`] — fuses every independent state-grain
+//!   location class (coordinate, address, breach record, phone area code) into a
+//!   single jurisdiction verdict, scored by cross-class agreement — the
+//!   gold-standard, corroborated geolocation finding.
 //!
 //! All run on the confirmed (candidate-filtered, quarantine-excluded)
 //! view, so breach co-occurrence strangers never leak in. See `super`
@@ -830,4 +834,129 @@ pub(in crate::core::correlator) fn rule_au_093_au_address_from_breach(
             }
         })
         .collect()
+}
+
+// ── AU-098 — Multi-source residency consensus (jurisdiction verdict) ──────────
+
+/// AU-098 — the authoritative, multi-source verdict on where the subject lives.
+///
+/// The individual geo rules each speak for one signal class — AU-056 reconciles a
+/// coordinate against an address, AU-085 a phone region, AU-090/091 the breach
+/// `state`/`postcode` fields, AU-092 breach-vs-footprint. This rule fuses **all**
+/// of the independent state-grain signal classes into a single jurisdiction
+/// verdict and scores it by how many classes agree — the cross-corroboration an
+/// investigator would do by hand, made explicit:
+///
+/// * **Coordinate** — every `Coordinates` fix's state ([`super::geo::coord_state`]).
+/// * **Address** — every confident `Address`'s parsed state.
+/// * **Breach record** — the `state`/`postcode` fields (the AU-090/091 signal).
+/// * **Phone area code** — the state(s) a geographic AU fixed line spans
+///   ([`crate::util::address_au::au_phone_region`]).
+///
+/// The consensus state is the one the most classes support; a tie or a dissenting
+/// minority is surfaced, never hidden. Three or more independent classes agreeing
+/// is a Verified-grade residency (High); two is strong (Medium). One class alone
+/// never fires here — the single-signal rules already cover it. This is the
+/// gold-standard geolocation finding: a jurisdiction asserted by independent
+/// corroboration, with its confidence shown. Pure over the confirmed set.
+pub(in crate::core::correlator) fn rule_au_098_residency_consensus(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    type StateMap = BTreeMap<&'static str, BTreeSet<String>>;
+
+    // Coordinate class.
+    let mut coord: StateMap = BTreeMap::new();
+    // Address class.
+    let mut addr: StateMap = BTreeMap::new();
+    // Phone-area-code class (a geographic line can span 1-3 states).
+    let mut phone: StateMap = BTreeMap::new();
+    for e in entities {
+        if let Some(state) = super::geo::coord_state(e) {
+            coord.entry(state).or_default().insert(e.uid.clone());
+        } else if e.kind == EntityKind::Address
+            && e.confidence >= 0.50
+            && let Some(state) = crate::util::address_au::state_code(&e.value)
+        {
+            addr.entry(state).or_default().insert(e.uid.clone());
+        } else if e.kind == EntityKind::Phone
+            && let Some((_, _, states)) = crate::util::address_au::au_phone_region(&e.value)
+        {
+            for s in states {
+                phone.entry(s).or_default().insert(e.uid.clone());
+            }
+        }
+    }
+    // Breach-record class (state + postcode fields).
+    let breach: StateMap = breach_field_states(entities);
+
+    let classes: [(&str, &StateMap); 4] = [
+        ("coordinate", &coord),
+        ("address", &addr),
+        ("breach record", &breach),
+        ("phone area code", &phone),
+    ];
+    let active_classes = classes.iter().filter(|(_, m)| !m.is_empty()).count();
+
+    // state -> the labels of the classes that support it.
+    let mut support: BTreeMap<&'static str, Vec<&'static str>> = BTreeMap::new();
+    for (label, map) in &classes {
+        for state in map.keys() {
+            support.entry(state).or_default().push(label);
+        }
+    }
+
+    // Consensus = the state the most classes support. Deterministic tie-break by
+    // the BTreeMap's key order (state code).
+    let Some((&consensus, agreeing)) = support
+        .iter()
+        .max_by(|a, b| a.1.len().cmp(&b.1.len()).then(b.0.cmp(a.0)))
+    else {
+        return Vec::new();
+    };
+    let n = agreeing.len();
+    if n < 2 {
+        return Vec::new(); // a single class is the single-signal rules' job
+    }
+
+    // Dissenting minority states (supported by a class, but not the consensus).
+    let minority: Vec<&str> = support
+        .keys()
+        .copied()
+        .filter(|s| *s != consensus)
+        .collect();
+
+    // Contributing entity uids: every class's entities that named the consensus.
+    let mut uids: BTreeSet<String> = BTreeSet::new();
+    for (_, map) in &classes {
+        if let Some(set) = map.get(consensus) {
+            uids.extend(set.iter().cloned());
+        }
+    }
+
+    let severity = if n >= 3 {
+        Severity::High
+    } else {
+        Severity::Medium
+    };
+    let dissent = if minority.is_empty() {
+        " no dissenting signal".to_string()
+    } else {
+        format!(" dissenting minority: {}", minority.join("/"))
+    };
+
+    vec![Correlation::new(
+        "AU-098",
+        "Multi-source residency consensus",
+        severity,
+        format!(
+            "Residency consensus: {consensus} — {n} of {active_classes} independent location \
+             signal classes agree ({});{dissent}. A cross-corroborated jurisdiction verdict.",
+            agreeing.join(", ")
+        ),
+        uids.into_iter().collect(),
+        scan_id,
+        ts,
+    )]
 }

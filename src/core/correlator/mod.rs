@@ -297,6 +297,10 @@ const RULES: &[RuleFn] = &[
     // co-located fields of one breach record, offline-geocoded — the dwelling-
     // grade locator AU-090/091 (single-field) can't reach.
     rule_au_093_au_address_from_breach,
+    // AU-098: the multi-source residency verdict — fuses coordinate + address +
+    // breach-record + phone-area-code into one jurisdiction, scored by how many
+    // independent signal classes agree. The gold-standard geolocation finding.
+    rule_au_098_residency_consensus,
     // Free, offline identity-resolution rules — require no API keys.
     // AU-076: email local-part ↔ username canonical match (zero-API bridge).
     // AU-077: name-derived username independently confirmed on a platform.
