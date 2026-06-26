@@ -38,8 +38,17 @@ use super::*;
 
     #[test]
     fn unknown_postcode_returns_none() {
-        assert!(city_coords("9999").is_none());
+        // "0100" is below the NT 08xx span and in no assigned AU range, so it has
+        // no offline fix at all — neither the exact gazetteer nor the region/
+        // capital fallback resolves it.
+        assert!(city_coords("0100").is_none());
+        assert!(postcode_coords("0100").is_none());
+        // 9999 is the top of the QLD 9xxx large-volume-receiver range: NOT in the
+        // exact gazetteer (postcode_coords stays None), but a real assigned
+        // postcode that now resolves to the Brisbane region via the capital
+        // fallback rather than vanishing from the geo footprint.
         assert!(postcode_coords("9999").is_none());
+        assert!(city_coords("9999").is_some());
     }
 
     #[test]
@@ -67,6 +76,22 @@ use super::*;
         }
         assert!(au_postcode_region("12").is_none());
         assert!(au_postcode_region("abcd").is_none());
+
+        // The non-geographic large-volume-receiver / PO-box ranges and the sparse
+        // state tails used to return None (no offline fix at all); the capital
+        // fallback now resolves them so the WHOLE assigned AU postcode space
+        // geocodes offline. Each lands in the right state's capital region.
+        let near_capital = |pc: &str, clat: f64, clon: f64| {
+            let (la, lo) = au_postcode_region(pc).expect("LVR / tail postcode resolves");
+            haversine_km(la, lo, clat, clon) < 60.0
+        };
+        assert!(near_capital("1234", -33.87, 151.21), "NSW 1xxx → Sydney");
+        assert!(near_capital("8000", -37.81, 144.96), "VIC 8xxx → Melbourne");
+        assert!(near_capital("9000", -27.47, 153.03), "QLD 9xxx → Brisbane");
+        assert!(near_capital("3777", -37.81, 144.96), "VIC 37xx alpine/fringe → Melbourne");
+        assert!(near_capital("7112", -42.88, 147.33), "TAS 71xx → Hobart");
+        // A leading digit in no AU range still yields nothing (no false fix).
+        assert!(au_postcode_region("0000").is_none());
     }
 
     #[test]

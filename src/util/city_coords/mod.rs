@@ -128,10 +128,29 @@ pub fn au_postcode_region(postcode: &str) -> Option<(f64, f64)> {
         ("09", -19.65, 134.19),
     ];
     let prefix = &pc[..2];
-    REGIONS
-        .iter()
-        .find(|(pre, _, _)| *pre == prefix)
-        .map(|&(_, lat, lon)| (lat, lon))
+    if let Some(&(_, lat, lon)) = REGIONS.iter().find(|(pre, _, _)| *pre == prefix) {
+        return Some((lat, lon));
+    }
+    // Capital fallback for the ranges with no dedicated region row: the
+    // non-geographic large-volume-receiver / PO-box spans (NSW 1xxx, VIC 8xxx,
+    // QLD 9xxx) and the sparse state tails (e.g. VIC 37xx alpine, SA 58/59xx, WA
+    // 68/69xx, TAS 71/74–79xx). These are all allocated from the state capital,
+    // so the capital centroid is the correct coarse fix — and resolving to it
+    // (rather than `None`) makes the documented promise that the WHOLE AU
+    // postcode space geocodes offline literally true, so no AU address silently
+    // drops out of the geo footprint. Only reached after the 2-digit miss, so it
+    // never overrides a more precise region row.
+    let capital = match pc.as_bytes()[0] {
+        b'1' => (-33.87, 151.21), // NSW large-volume receiver → Sydney
+        b'3' => (-37.81, 144.96), // VIC alpine / fringe tail → Melbourne
+        b'5' => (-34.93, 138.60), // SA tail → Adelaide
+        b'6' => (-31.95, 115.86), // WA tail → Perth
+        b'7' => (-42.88, 147.33), // TAS tail → Hobart
+        b'8' => (-37.81, 144.96), // VIC large-volume receiver → Melbourne
+        b'9' => (-27.47, 153.03), // QLD large-volume receiver → Brisbane
+        _ => return None,
+    };
+    Some(capital)
 }
 
 /// Extract the AU postcode embedded in a free-text address string.
