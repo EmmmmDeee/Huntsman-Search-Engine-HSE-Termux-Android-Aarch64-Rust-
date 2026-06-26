@@ -3662,6 +3662,43 @@ fn au089_non_company_abn_is_excluded() {
     assert!(super::rules::rule_au_089_corporate_network(&[sole, company], "s", 0).is_empty());
 }
 
+#[test]
+fn au094_non_company_abn_is_a_sole_trader_signal() {
+    // 51824753556 — valid ABN, no embedded ACN → a non-company (sole trader/trust).
+    let sole = Entity::new(EntityKind::AbnAcn, "51 824 753 556", 0.80, "s");
+    let r = super::rules::rule_au_094_sole_trader_abn(&[sole], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-094");
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(
+        r[0].description.contains("51 824 753 556"),
+        "ABN shown grouped"
+    );
+    assert!(r[0].description.contains("sole-trader"));
+}
+
+#[test]
+fn au094_excludes_companies_and_acns() {
+    // A company ABN (53004085616) and a bare ACN are companies — AU-089's domain,
+    // not AU-094's. Neither must fire the sole-trader rule.
+    let company_abn = Entity::new(EntityKind::AbnAcn, "53004085616", 0.80, "s");
+    let acn = Entity::new(EntityKind::AbnAcn, "004085616", 0.80, "s");
+    assert!(super::rules::rule_au_094_sole_trader_abn(&[company_abn, acn], "s", 0).is_empty());
+}
+
+#[test]
+fn au094_dedups_and_counts_distinct_non_company_abns() {
+    // Same ABN in two formats collapses; a second distinct non-company ABN counts.
+    let a1 = Entity::new(EntityKind::AbnAcn, "51824753556", 0.80, "s");
+    let a1_spaced = Entity::new(EntityKind::AbnAcn, "51 824 753 556", 0.80, "s");
+    // 18123456789 — a second valid ABN whose trailing nine (123456789) fail the
+    // ACN check, so it is genuinely non-company.
+    let a2 = Entity::new(EntityKind::AbnAcn, "18123456789", 0.80, "s");
+    let r = super::rules::rule_au_094_sole_trader_abn(&[a1, a1_spaced, a2], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert!(r[0].description.contains("2 non-company"));
+}
+
 // ─── Geo convex footprint (AU-052) ───────────────────────────────────────────
 
 #[cfg(test)]

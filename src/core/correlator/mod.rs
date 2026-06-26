@@ -334,6 +334,10 @@ const RULES: &[RuleFn] = &[
     // AU-089: ≥2 distinct registered AU companies (checksum-valid ACN/company-
     // ABN) in the graph — an officeholder/controller corporate-network footprint.
     rule_au_089_corporate_network,
+    // AU-094: a non-company ABN (sole trader / trust / partnership) — the people-
+    // centric complement to AU-089, tying a natural person to an operating
+    // business. The majority of AU ABN holders are non-company.
+    rule_au_094_sole_trader_abn,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

@@ -621,3 +621,74 @@ pub(in crate::core::correlator) fn rule_au_089_corporate_network(
         ts,
     )]
 }
+
+/// AU-094 — Australian sole-trader / individual ABN holder (non-company).
+///
+/// The people-centric complement to AU-089. AU-089 surfaces *companies* — the
+/// ACN-bearing registrations. But the majority of Australian ABN holders are
+/// **not** companies: sole traders, trusts, partnerships and super funds, whose
+/// 11-digit ABN carries no embedded ACN (its trailing nine digits fail the ASIC
+/// company check — [`crate::util::abn::derive_acn`] returns `None`). This rule
+/// surfaces those non-company ABNs, which AU-089 deliberately excludes.
+///
+/// A non-company ABN tied to the subject is a direct natural-person ↔ operating-
+/// business link: a sole trader (a contractor, tradesperson, freelancer — the
+/// single most common ABN class) *is* an individual trading under that number.
+/// Severity Medium — a solid identity/livelihood tie and a lead into the ABR /
+/// the GST and business-name registers, short of the asset-mapping weight of a
+/// multi-company controller footprint. Pure over the confirmed entity set.
+pub(in crate::core::correlator) fn rule_au_094_sole_trader_abn(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::BTreeSet;
+
+    // Group as `NN NNN NNN NNN` for display; passthrough if not 11 digits. Pure.
+    fn fmt_abn(a: &str) -> String {
+        if a.len() == 11 {
+            format!("{} {} {} {}", &a[0..2], &a[2..5], &a[5..8], &a[8..11])
+        } else {
+            a.to_string()
+        }
+    }
+
+    // Distinct non-company ABNs (canonical bare-digit form) and their entities.
+    let mut abns: BTreeSet<String> = BTreeSet::new();
+    let mut uids: BTreeSet<String> = BTreeSet::new();
+    for e in entities.iter().filter(|e| e.kind == EntityKind::AbnAcn) {
+        let digits: String = e.value.chars().filter(char::is_ascii_digit).collect();
+        if digits.len() == 11
+            && crate::util::abn::is_valid_abn(&digits)
+            && crate::util::abn::derive_acn(&digits).is_none()
+        {
+            abns.insert(digits);
+            uids.insert(e.uid.clone());
+        }
+    }
+
+    if abns.is_empty() {
+        return Vec::new();
+    }
+
+    let n = abns.len();
+    let list = abns
+        .iter()
+        .map(|a| fmt_abn(a))
+        .collect::<Vec<_>>()
+        .join(", ");
+    vec![Correlation::new(
+        "AU-094",
+        "Australian sole-trader / individual ABN holder",
+        Severity::Medium,
+        format!(
+            "Subject linked to {n} non-company Australian business number(s) ({list}) — an \
+             individual/sole-trader, trust or partnership registration (no embedded ACN, so not \
+             an incorporated company); a sole-trader ABN ties a natural person directly to an \
+             operating business"
+        ),
+        uids.into_iter().collect(),
+        scan_id,
+        ts,
+    )]
+}
