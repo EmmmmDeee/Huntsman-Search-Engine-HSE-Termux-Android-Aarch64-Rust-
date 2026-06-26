@@ -1979,5 +1979,122 @@ pub fn autonomous_seed(
     })
 }
 
+/// Intrinsic pivot value of an identifier kind — how much investigative reach a
+/// scan seeded on it tends to unlock, independent of how many investigations have
+/// already touched it. The ordering encodes Interpol-style tradecraft: a unique
+/// strong selector (email, phone) resolves an individual and fans out to accounts,
+/// breaches and devices; a username pivots across platforms; a person name anchors
+/// people-centric correlation; a specific address / ABN-ACN / organisation anchors
+/// geo and registry; crypto addresses chain on-ledger; coordinates and network
+/// infrastructure are weak roots (coarse, shared, or non-attributable). The scale
+/// is `0.0..=1.0`; values are relative weights, not probabilities. Pure and total —
+/// every [`crate::core::entity::EntityKind`] maps, unknown/weak kinds fall to the
+/// `0.12` floor so they can still seed when nothing stronger exists.
+#[must_use]
+pub fn kind_pivot_value(kind: &crate::core::entity::EntityKind) -> f64 {
+    use crate::core::entity::EntityKind;
+    match kind {
+        EntityKind::Email => 1.00,
+        EntityKind::Phone => 0.95,
+        EntityKind::Person => 0.85,
+        EntityKind::Username => 0.80,
+        EntityKind::Address => 0.72,
+        EntityKind::AbnAcn => 0.66,
+        EntityKind::Organisation => 0.58,
+        EntityKind::CryptoAddress => 0.52,
+        EntityKind::Coordinates => 0.40,
+        EntityKind::Domain => 0.34,
+        EntityKind::IpAddress | EntityKind::Asn | EntityKind::Cidr => 0.22,
+        _ => 0.12,
+    }
+}
+
+/// One entity ranked as a candidate for fully autonomous investigation — the
+/// output of [`rank_autonomous_targets`]. Carries everything the
+/// no-operator-input scan loop needs to dispatch a scan and explain *why* this
+/// target was chosen, without re-deriving the score.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct AutonomousTarget {
+    /// SHA-256 UID of the chosen identifier.
+    pub uid: String,
+    /// The resolved scan-target kind (always pivotable — non-pivotable kinds are
+    /// filtered out before ranking).
+    pub kind: crate::core::scan::TargetKind,
+    /// The identifier value to seed the scan with.
+    pub value: String,
+    /// Composite priority score (pivot-value × cross-investigation leverage ×
+    /// effective confidence). Strictly higher = investigate sooner.
+    pub score: f64,
+    /// Distinct prior investigations that observed this value — the realised
+    /// cross-scan degree fed into the leverage factor.
+    pub cross_scan_degree: usize,
+}
+
+/// Composite autonomous-investigation priority for one identifier.
+///
+/// Three orthogonal factors multiply, so a target must score on *all three* to
+/// rise — none can be faked by maxing a single axis:
+/// 1. **Pivot value** ([`kind_pivot_value`]) — intrinsic reach of the kind.
+/// 2. **Cross-investigation leverage** — `1 + ln(1 + degree)`. A log curve so the
+///    first few corroborating investigations matter a lot (1→1.69, 4→2.61) but a
+///    runaway-popular value can't dominate purely on count; degree `0` yields the
+///    neutral `1.0` (no leverage, no penalty).
+/// 3. **Effective confidence** — `c_eff`, clamped to `0.0..=1.0`, so a speculative
+///    candidate is down-weighted versus a corroborated fact of the same kind.
+///
+/// Pure, total and deterministic. Higher is better.
+#[must_use]
+pub fn autonomous_target_score(
+    kind: &crate::core::entity::EntityKind,
+    cross_scan_degree: usize,
+    c_eff: f64,
+) -> f64 {
+    let leverage = 1.0 + (1.0 + cross_scan_degree as f64).ln();
+    kind_pivot_value(kind) * leverage * c_eff.clamp(0.0, 1.0)
+}
+
+/// Rank entities for fully autonomous investigation — the multi-factor successor
+/// to [`autonomous_seed`] that a continuous, no-operator-input loop drives.
+///
+/// Unlike `autonomous_seed` (leverage-only, single pick), this scores every
+/// pivotable [`history::is_cross_scan_candidate`] identifier by
+/// [`autonomous_target_score`] (pivot-value × leverage × confidence), letting the
+/// platform *classify and prioritise* the whole working set, then work down it.
+/// `degree_of` supplies each UID's cross-investigation degree (typically
+/// [`StoragePort::observation_count`]); `exclude` holds UIDs already investigated
+/// this cycle, so the loop never re-seeds the same target and converges. Results
+/// are strongest-first, ties broken by UID for determinism, truncated to `limit`.
+/// Pure given `degree_of` — no I/O of its own.
+pub fn rank_autonomous_targets<F: Fn(&str) -> usize>(
+    entities: &[Entity],
+    degree_of: F,
+    exclude: &std::collections::HashSet<String>,
+    limit: usize,
+) -> Vec<AutonomousTarget> {
+    let mut out: Vec<AutonomousTarget> = entities
+        .iter()
+        .filter(|e| !exclude.contains(&e.uid) && history::is_cross_scan_candidate(e))
+        .filter_map(|e| {
+            let kind = crate::core::scan::TargetKind::from_entity_kind(&e.kind)?;
+            let degree = degree_of(&e.uid);
+            Some(AutonomousTarget {
+                uid: e.uid.clone(),
+                kind,
+                value: e.value.clone(),
+                score: autonomous_target_score(&e.kind, degree, e.c_effective()),
+                cross_scan_degree: degree,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+    out.truncate(limit);
+    out
+}
+
 #[cfg(test)]
 mod tests;

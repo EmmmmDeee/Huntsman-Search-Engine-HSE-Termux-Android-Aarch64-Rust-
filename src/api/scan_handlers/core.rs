@@ -60,11 +60,12 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     use std::collections::HashSet;
 
     // Assemble the candidate pool from recent scans (everything the platform has
-    // discovered) and rank it by cross-investigation leverage — all store work on
-    // the blocking pool so the async workers stay free.
+    // discovered) and rank it by the multi-factor autonomous priority (pivot-value
+    // × cross-investigation leverage × confidence) — all store work on the blocking
+    // pool so the async workers stay free.
     let store = Arc::clone(&s.store);
     let selected = tokio::task::spawn_blocking(
-        move || -> crate::core::error::Result<Option<(crate::core::scan::TargetKind, String)>> {
+        move || -> crate::core::error::Result<Option<crate::core::engine::AutonomousTarget>> {
             let scans = store.list_scans(50)?;
             let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
@@ -75,8 +76,18 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
                     }
                 }
             }
-            let ranked = crate::core::engine::rank_enrichment_leverage(store.as_ref(), &pool, 64);
-            Ok(crate::core::engine::autonomous_seed(&ranked))
+            // Degree from the realised cross-scan observation count; a store error
+            // on a point lookup degrades to 0 (neutral leverage) rather than failing
+            // the whole selection. Nothing is excluded — every pivotable candidate
+            // competes on its composite score.
+            let exclude = HashSet::new();
+            let ranked = crate::core::engine::rank_autonomous_targets(
+                &pool,
+                |uid| store.observation_count(uid).unwrap_or(0),
+                &exclude,
+                64,
+            );
+            Ok(ranked.into_iter().next())
         },
     )
     .await;
@@ -87,7 +98,12 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         Err(e) => return internal_error(&crate::core::error::Error::Other(e.to_string())),
     };
 
-    let Some((kind, value)) = from_base.or_else(default_seed_from_env) else {
+    // The composite ranker yields a scored target; flatten to (kind, value, score)
+    // and fall back to the configured default seed (score 0.0) when the base is bare.
+    let chosen = from_base
+        .map(|t| (t.kind, t.value, t.score))
+        .or_else(|| default_seed_from_env().map(|(k, v)| (k, v, 0.0)));
+    let Some((kind, value, score)) = chosen else {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(json!({
@@ -115,7 +131,11 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
             "scan_id": sid,
             "status": "queued",
             "mode": "autonomous",
-            "selected_seed": { "kind": kind.canonical_str(), "value": value },
+            "selected_seed": {
+                "kind": kind.canonical_str(),
+                "value": value,
+                "priority_score": score,
+            },
         })),
     )
         .into_response()

@@ -2006,3 +2006,98 @@ fn autonomous_seed_skips_non_pivotable_kinds() {
 fn autonomous_seed_is_none_on_an_empty_base() {
     assert_eq!(super::autonomous_seed(&[]), None);
 }
+
+/// The composite autonomous priority must reward all three axes: stronger pivot
+/// kind, more cross-investigation leverage, and higher confidence — and none of
+/// them alone can top a target that is weak on the others.
+#[test]
+fn autonomous_target_score_multiplies_pivot_leverage_and_confidence() {
+    use super::autonomous_target_score;
+    use crate::core::entity::EntityKind;
+
+    // Same leverage + confidence: a stronger pivot kind scores higher.
+    let email = autonomous_target_score(&EntityKind::Email, 2, 0.8);
+    let coord = autonomous_target_score(&EntityKind::Coordinates, 2, 0.8);
+    assert!(
+        email > coord,
+        "email out-pivots a coordinate: {email} > {coord}"
+    );
+
+    // Same kind + confidence: more cross-scan degree lifts the score, but a log
+    // curve keeps it sub-linear (10× the degree is far less than 10× the score).
+    let d0 = autonomous_target_score(&EntityKind::Email, 0, 0.9);
+    let d1 = autonomous_target_score(&EntityKind::Email, 1, 0.9);
+    let d10 = autonomous_target_score(&EntityKind::Email, 10, 0.9);
+    assert!(d1 > d0, "any corroboration beats none");
+    assert!(d10 > d1, "more corroboration ranks higher");
+    assert!(
+        d10 < d1 * 10.0,
+        "leverage is logarithmic, not linear: count can't dominate"
+    );
+
+    // degree 0 is the neutral leverage 1.0 — score collapses to pivot × confidence.
+    let expected = super::kind_pivot_value(&EntityKind::Email) * 0.9;
+    assert!((d0 - expected).abs() < 1e-9, "degree 0 ⇒ neutral leverage");
+
+    // Confidence scales linearly and is clamped to 0..=1.
+    let lo = autonomous_target_score(&EntityKind::Person, 3, 0.2);
+    let hi = autonomous_target_score(&EntityKind::Person, 3, 0.95);
+    assert!(hi > lo, "a corroborated fact out-ranks a speculative one");
+    let clamped = autonomous_target_score(&EntityKind::Person, 3, 5.0);
+    let unit = autonomous_target_score(&EntityKind::Person, 3, 1.0);
+    assert!((clamped - unit).abs() < 1e-9, "confidence clamps at 1.0");
+}
+
+/// `rank_autonomous_targets` classifies and orders the whole working set, honours
+/// the `exclude` set a continuous loop maintains, drops non-pivotable kinds, and
+/// truncates to `limit` — deterministically.
+#[test]
+fn rank_autonomous_targets_orders_excludes_and_truncates() {
+    use super::rank_autonomous_targets;
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::scan::TargetKind;
+    use std::collections::HashSet;
+
+    let entities = vec![
+        Entity::new(EntityKind::Email, "a@b.com", 0.9, "s"),
+        Entity::new(EntityKind::Phone, "+61400111222", 0.9, "s"),
+        Entity::new(EntityKind::Credential, "secret", 0.9, "s"), // not a cross-scan candidate
+        Entity::new(EntityKind::Coordinates, "-33.8,151.2", 0.9, "s"), // coarse geo — gated out
+        Entity::new(EntityKind::Username, "alice", 0.6, "s"),
+    ];
+    // Uniform degree so the ordering is decided by pivot × confidence alone.
+    let degree_of = |_uid: &str| 2usize;
+    let exclude = HashSet::new();
+
+    let ranked = rank_autonomous_targets(&entities, degree_of, &exclude, 10);
+    assert_eq!(
+        ranked.len(),
+        3,
+        "only the cross-scan-candidate pivots (email/phone/username) survive the gate"
+    );
+    assert_eq!(ranked[0].kind, TargetKind::Email, "email pivots strongest");
+    assert_eq!(ranked[1].kind, TargetKind::Phone, "phone next");
+    assert!(
+        ranked.iter().all(|t| t.value != "secret"),
+        "no non-pivotable target survives"
+    );
+    assert!(
+        ranked[0].score >= ranked[1].score && ranked[1].score >= ranked[2].score,
+        "strongest-first ordering"
+    );
+
+    // Excluding the top UID removes it; the next-strongest becomes the head.
+    let mut ex = HashSet::new();
+    ex.insert(ranked[0].uid.clone());
+    let after = rank_autonomous_targets(&entities, degree_of, &ex, 10);
+    assert_eq!(after.len(), 2, "the excluded target is gone");
+    assert!(
+        after.iter().all(|t| t.uid != ranked[0].uid),
+        "a loop never re-seeds an excluded target"
+    );
+
+    // `limit` caps the queue to the strongest candidates.
+    let top1 = rank_autonomous_targets(&entities, degree_of, &exclude, 1);
+    assert_eq!(top1.len(), 1);
+    assert_eq!(top1[0].kind, TargetKind::Email);
+}
