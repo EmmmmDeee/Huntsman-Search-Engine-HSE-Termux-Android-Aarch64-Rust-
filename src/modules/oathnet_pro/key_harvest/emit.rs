@@ -111,7 +111,7 @@ pub(super) fn emit_key_with(
     // pivot (their tradecraft, tooling, intent). Tag it so the correlator can
     // flag practitioners and the operator can compare against their own keys.
     // Classification only — the key is never used to authenticate.
-    let osint_category = super::osint_catalogue::osint_category(service);
+    let osint_category = crate::util::osint_providers::osint_category(service);
     if let Some(category) = osint_category {
         entity.tag("osint-practitioner");
         entity.tag(format!("osint-category:{}", category.slug()));

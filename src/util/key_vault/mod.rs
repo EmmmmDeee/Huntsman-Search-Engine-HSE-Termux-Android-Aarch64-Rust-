@@ -11,6 +11,13 @@
 //!     one seen once.
 //!   * **Provenance-complete** — stores the service vendor, the module/endpoint
 //!     that discovered the key, and the query value that triggered the hit.
+//!   * **Categorised** — every entry is classified on read via
+//!     [`crate::util::osint_providers`]: an OSINT/recon provider's key
+//!     ([`VaultEntry::is_osint`]) flags its holder as an OSINT practitioner, and
+//!     [`osint_entries`] / [`osint_provider_census`] give a sorted, maintained
+//!     view of exactly those first-class pivots.
+//!   * **Retention-only** — the vault is never read back into the dispatch
+//!     environment; keys are kept as intelligence, not used to authenticate.
 //!   * **Deduplication-safe** — primary key is the key value itself (text); an
 //!     `INSERT OR IGNORE` followed by an UPDATE accumulates discovery_count and
 //!     extends last_seen in one round trip.
@@ -162,6 +169,25 @@ pub struct VaultEntry {
     pub last_seen_at: u64,
 }
 
+impl VaultEntry {
+    /// The OSINT category slug of this key's provider, or `None` when the
+    /// provider is not catalogued OSINT/recon tooling (generic infra). Derived
+    /// from `service` via [`crate::util::osint_providers`] — the single source of
+    /// truth — so the bank is categorised without storing a redundant column.
+    #[must_use]
+    pub fn osint_category(&self) -> Option<&'static str> {
+        crate::util::osint_providers::osint_category(&self.service)
+            .map(crate::util::osint_providers::OsintCategory::slug)
+    }
+
+    /// True when this key belongs to an OSINT/recon provider — its holder is, by
+    /// possession, an OSINT practitioner.
+    #[must_use]
+    pub fn is_osint(&self) -> bool {
+        self.osint_category().is_some()
+    }
+}
+
 /// Return all vault entries, ordered by `last_seen_at DESC`. Returns an empty
 /// Vec when the vault file does not yet exist.
 pub fn all_entries() -> Vec<VaultEntry> {
@@ -195,6 +221,42 @@ fn query_all(conn: &Connection) -> rusqlite::Result<Vec<VaultEntry>> {
         })
     })?;
     rows.collect()
+}
+
+/// All vault entries whose provider is catalogued OSINT/recon tooling, ordered
+/// OSINT-category then most-recently-seen. These are the keys that identify
+/// their holders as OSINT practitioners — the operator's testing focus and the
+/// highest-value pivots. Empty when the vault does not exist.
+pub fn osint_entries() -> Vec<VaultEntry> {
+    let mut v: Vec<VaultEntry> = all_entries()
+        .into_iter()
+        .filter(VaultEntry::is_osint)
+        .collect();
+    v.sort_by(|a, b| {
+        a.osint_category()
+            .cmp(&b.osint_category())
+            .then(b.last_seen_at.cmp(&a.last_seen_at))
+            .then(a.service.cmp(&b.service))
+    });
+    v
+}
+
+/// Distinct OSINT providers in the vault, each with how many keys it holds,
+/// grouped by category — a maintained, sorted census of the practitioner-tool
+/// keys retained. `(category_slug, service, key_count)`, sorted by category then
+/// service. Empty when the vault does not exist.
+pub fn osint_provider_census() -> Vec<(&'static str, String, usize)> {
+    use std::collections::BTreeMap;
+    let mut counts: BTreeMap<(&'static str, String), usize> = BTreeMap::new();
+    for e in all_entries() {
+        if let Some(cat) = e.osint_category() {
+            *counts.entry((cat, e.service.clone())).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .map(|((cat, svc), n)| (cat, svc, n))
+        .collect()
 }
 
 /// Total count of distinct key values stored in the vault. Returns 0 when the
@@ -273,5 +335,30 @@ mod tests {
         assert_eq!(stripe.discovery_count, 2);
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn entry(service: &str) -> VaultEntry {
+        VaultEntry {
+            key_value: "k".into(),
+            service: service.into(),
+            provider: "p".into(),
+            first_scan_id: "s".into(),
+            last_scan_id: "s".into(),
+            discovery_count: 1,
+            first_seen_at: 0,
+            last_seen_at: 0,
+        }
+    }
+
+    #[test]
+    fn classifies_osint_providers_and_excludes_infra() {
+        // OSINT/recon providers are flagged with their category.
+        assert_eq!(entry("shodan").osint_category(), Some("attack-surface"));
+        assert_eq!(entry("dehashed").osint_category(), Some("breach-leak"));
+        assert!(entry("maltego").is_osint());
+        // Generic infra keys are retained but NOT flagged as practitioner tooling.
+        assert!(!entry("aws_access_key").is_osint());
+        assert!(!entry("stripe_live").is_osint());
+        assert_eq!(entry("openai").osint_category(), None);
     }
 }

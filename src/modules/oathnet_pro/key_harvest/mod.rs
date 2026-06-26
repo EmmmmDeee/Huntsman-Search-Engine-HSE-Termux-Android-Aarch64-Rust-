@@ -10,7 +10,6 @@ use crate::util::oathnet::val_str;
 use super::SRC;
 
 mod crypto;
-mod osint_catalogue;
 mod osint_keys;
 mod patterns;
 mod service_domains;

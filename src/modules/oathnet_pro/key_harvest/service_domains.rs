@@ -182,7 +182,7 @@ pub(super) const API_SERVICE_DOMAINS: &[(&str, &str)] = &[
     ("unwiredlabs.com", "opencellid"),
     // ── OSINT-practitioner tooling (expanded catalogue) ─────────────────────
     // A key for any of these found on a victim flags them as an OSINT operator;
-    // every service tag here is classified in `osint_catalogue`. Domains are the
+    // every service tag here is classified in `util::osint_providers`. Domains are the
     // most reliable signal in stealer logs (which carry the URL the key was used
     // against). Real provider domains only — a wrong length/domain is a safe miss.
     // Breach / leak:

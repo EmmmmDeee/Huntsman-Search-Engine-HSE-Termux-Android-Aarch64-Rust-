@@ -22,7 +22,7 @@
 /// `osint-category:<slug>` tag and lets the correlator describe a holder's
 /// tradecraft (breach-hunting vs attack-surface mapping vs people-search …).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum OsintCategory {
+pub enum OsintCategory {
     /// Breach / leak / stealer-credential databases.
     BreachLeak,
     /// Internet-wide host / port / attack-surface scanners.
@@ -49,7 +49,7 @@ pub(super) enum OsintCategory {
 
 impl OsintCategory {
     /// Stable slug for the `osint-category:<slug>` tag.
-    pub(super) fn slug(self) -> &'static str {
+    pub fn slug(self) -> &'static str {
         match self {
             Self::BreachLeak => "breach-leak",
             Self::AttackSurface => "attack-surface",
@@ -70,12 +70,12 @@ use OsintCategory::*;
 
 /// The authoritative OSINT-provider catalogue: `(service_tag, category)`.
 ///
-/// Service tags match the vocabulary the rest of the harvester emits
-/// ([`super::service_domains`] / [`super::osint_keys`] / [`super::patterns`]),
-/// so a key attributed by *any* path (prefix, context+shape, or URL domain) is
-/// classified consistently. Sorted within each category for readability; the
-/// order is not load-bearing (lookup is by exact tag).
-pub(super) const OSINT_SERVICES: &[(&str, OsintCategory)] = &[
+/// Service tags match the vocabulary the harvester emits (the `service_domains`
+/// / `osint_keys` / `patterns` tables in `key_harvest`) and the `service` field
+/// the `key_vault` stores, so a key attributed by *any* path (prefix,
+/// context+shape, or URL domain) is classified consistently. Sorted within each
+/// category for readability; the order is not load-bearing (lookup is by tag).
+pub const OSINT_SERVICES: &[(&str, OsintCategory)] = &[
     // ── Breach / leak / stealer-credential databases ────────────────────────
     ("oathnet", BreachLeak),
     ("see_know", BreachLeak),
@@ -208,7 +208,7 @@ pub(super) const OSINT_SERVICES: &[(&str, OsintCategory)] = &[
 /// The OSINT category of `service`, or `None` when it is not an OSINT/recon
 /// provider (generic infra, AI, payment, dev tooling). Exact-tag match — the
 /// service tags are a fixed, snake-case vocabulary. Pure.
-pub(super) fn osint_category(service: &str) -> Option<OsintCategory> {
+pub fn osint_category(service: &str) -> Option<OsintCategory> {
     OSINT_SERVICES
         .iter()
         .find(|(s, _)| *s == service)
