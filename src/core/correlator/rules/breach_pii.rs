@@ -26,6 +26,10 @@
 //!   state implied by the breach `state`/`postcode` fields (AU-090/091) against
 //!   the geolocated coordinate/address footprint: agreement corroborates
 //!   residency, disjoint states flag stale data / a move / a namesake.
+//! * [`rule_au_093_au_address_from_breach`] — assembles the subject's suburb (or
+//!   full residential address) from the co-located street/suburb/state/postcode
+//!   fields of one breach record, offline-geocoded — the dwelling-grade locator
+//!   the single-field AU-090/091 rules can't reach.
 //!
 //! All run on the confirmed (candidate-filtered, quarantine-excluded)
 //! view, so breach co-occurrence strangers never leak in. See `super`
@@ -688,4 +692,142 @@ pub(in crate::core::correlator) fn rule_au_092_breach_locality_footprint_crossch
         }
     };
     vec![correlation]
+}
+
+// ── AU-093 — Australian suburb / residential address assembled from a record ──
+
+/// Breach/record keys naming the locality (suburb/city). `city` is included but
+/// only ever assembled together with a co-located AU state/postcode in the same
+/// record, so a non-AU city never fires this on its own.
+const SUBURB_KEYS: &[&str] = &["suburb", "locality", "town", "suburb_town", "city"];
+
+/// Breach/record keys naming the street line of a residential address — the
+/// component that lifts a suburb-grade locality to a dwelling-grade one.
+const STREET_KEYS: &[&str] = &[
+    "street",
+    "street_address",
+    "streetaddress",
+    "street_name",
+    "address_line_1",
+    "addressline1",
+    "address1",
+    "residential_address",
+    "home_address",
+];
+
+/// First non-empty attribute value whose key matches (ASCII case-insensitively)
+/// any of `keys`, within a single evidence record. Trimmed.
+fn record_attr<'a>(attrs: &'a BTreeMap<String, String>, keys: &[&str]) -> Option<&'a str> {
+    attrs.iter().find_map(|(k, v)| {
+        if keys.iter().any(|key| k.eq_ignore_ascii_case(key)) {
+            let t = v.trim();
+            (!t.is_empty()).then_some(t)
+        } else {
+            None
+        }
+    })
+}
+
+/// AU-093 — the subject's Australian suburb (or full residential address),
+/// assembled from the co-located fields of a single breach record.
+///
+/// AU-090/091 surface the state and postcode in isolation; this adds the
+/// component they ignore — the **suburb/city name** — and, when the record also
+/// carries a street line, assembles a full **dwelling-grade** address. Because
+/// the parts are taken from the *same* evidence record they describe one place,
+/// not a merge of two. The result is resolved to an offline gazetteer coordinate
+/// ([`crate::util::city_coords::city_coords`], no network) so it lands on a map.
+///
+/// * **Street present** → a residential address (High — the highest-value free
+///   people-locator there is).
+/// * **Suburb only** → a suburb-level locality (Medium — still far finer than the
+///   bare state/postcode of AU-090/091).
+///
+/// Each distinct assembled address emits once, with its corroborating sources.
+/// A suburb is required (so this never merely restates AU-090/091), together
+/// with a state or postcode from the same record. Runs on the confirmed view.
+/// (Per the AU-091 note, a 4-digit postcode in an assigned AU range is read as
+/// Australian; the suburb requirement further constrains the match.)
+pub(in crate::core::correlator) fn rule_au_093_au_address_from_breach(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // assembled address → (has_street, distinct sources, uids).
+    let mut by_addr: BTreeMap<String, (bool, BTreeSet<String>, BTreeSet<String>)> = BTreeMap::new();
+    for e in entities {
+        for ev in &e.evidence {
+            let attrs = &ev.attributes;
+            let Some(suburb) =
+                record_attr(attrs, SUBURB_KEYS).filter(|s| s.chars().any(char::is_alphabetic))
+            else {
+                continue;
+            };
+            // State: an explicit state field wins; else derive it from a postcode.
+            let pc = record_attr(attrs, POSTCODE_KEYS).and_then(au_postcode_and_state);
+            let Some(state) = record_attr(attrs, JURISDICTION_KEYS)
+                .and_then(crate::util::address_au::state_code)
+                .or(pc.as_ref().map(|(_, s)| *s))
+            else {
+                continue;
+            };
+            let street =
+                record_attr(attrs, STREET_KEYS).filter(|s| s.chars().any(char::is_alphabetic));
+
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(st) = street {
+                parts.push(st.to_string());
+            }
+            parts.push(suburb.to_string());
+            parts.push(match pc.as_ref() {
+                Some((p, _)) => format!("{state} {p}"),
+                None => state.to_string(),
+            });
+            let addr = parts.join(", ");
+
+            let entry = by_addr
+                .entry(addr)
+                .or_insert_with(|| (false, BTreeSet::new(), BTreeSet::new()));
+            entry.0 |= street.is_some();
+            entry.1.insert(ev.source.clone());
+            entry.2.insert(e.uid.clone());
+        }
+    }
+
+    by_addr
+        .into_iter()
+        .map(|(addr, (has_street, sources, uids))| {
+            let coord = crate::util::city_coords::city_coords(&addr)
+                .map(|(lat, lon)| format!(" ≈ {lat:.3},{lon:.3} (offline)"))
+                .unwrap_or_default();
+            let (name, severity, grade) = if has_street {
+                (
+                    "Australian residential address from breach record",
+                    Severity::High,
+                    "a dwelling-grade locator",
+                )
+            } else {
+                (
+                    "Australian suburb locality from breach record",
+                    Severity::Medium,
+                    "a suburb-level locality, finer than the bare state/postcode",
+                )
+            };
+            Correlation {
+                rule_id: "AU-093".into(),
+                rule_name: name.into(),
+                severity,
+                description: format!(
+                    "Subject's Australian locality {addr}{coord} — assembled from {} breach \
+                     record source(s) ({}); {grade}",
+                    sources.len(),
+                    sources.iter().cloned().collect::<Vec<_>>().join(", ")
+                ),
+                entity_uids: uids.into_iter().collect(),
+                scan_id: scan_id.into(),
+                ts,
+                rank: 0.0,
+            }
+        })
+        .collect()
 }

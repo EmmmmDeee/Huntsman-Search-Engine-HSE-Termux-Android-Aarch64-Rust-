@@ -2781,6 +2781,84 @@ fn au092_requires_both_sides() {
 }
 
 #[test]
+fn au093_full_street_address_is_high_and_geocoded() {
+    // Street + suburb + state + postcode in ONE record → dwelling-grade address.
+    let mut p = Entity::new(EntityKind::Person, "Cindy Haynes", 0.9, "s");
+    p.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("street", "12 Smith St")
+            .with_attr("suburb", "Maleny")
+            .with_attr("state", "QLD")
+            .with_attr("postcode", "4552"),
+    );
+    let r = super::rules::rule_au_093_au_address_from_breach(&[p], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-093");
+    assert_eq!(r[0].severity, super::Severity::High);
+    assert!(r[0].rule_name.contains("residential address"));
+    assert!(r[0].description.contains("12 Smith St"));
+    assert!(r[0].description.contains("Maleny"));
+    assert!(r[0].description.contains("QLD 4552"));
+    assert!(
+        r[0].description.contains("offline"),
+        "postcode 4552 geocodes offline"
+    );
+}
+
+#[test]
+fn au093_suburb_only_is_medium_with_postcode_derived_state() {
+    // No street; suburb + postcode (state derived from the postcode).
+    let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    p.add_evidence(
+        Evidence::new("see_know", "breach")
+            .with_attr("city", "Brisbane")
+            .with_attr("postcode", "4000"),
+    );
+    let r = super::rules::rule_au_093_au_address_from_breach(&[p], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(r[0].rule_name.contains("suburb"));
+    assert!(r[0].description.contains("Brisbane"));
+    assert!(r[0].description.contains("QLD 4000"));
+}
+
+#[test]
+fn au093_requires_suburb_plus_state_or_postcode() {
+    // A suburb with no state/postcode anywhere in the record → nothing (that is
+    // AU-090/091 territory, not an assembled locality).
+    let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    p.add_evidence(Evidence::new("see_know", "breach").with_attr("suburb", "Maleny"));
+    assert!(super::rules::rule_au_093_au_address_from_breach(&[p], "s", 0).is_empty());
+    // A state with no suburb → nothing (AU-090 already covers a bare state).
+    let mut q = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    q.add_evidence(Evidence::new("see_know", "breach").with_attr("state", "QLD"));
+    assert!(super::rules::rule_au_093_au_address_from_breach(&[q], "s", 0).is_empty());
+}
+
+#[test]
+fn au093_dedups_same_address_across_sources() {
+    // Two sources naming the same dwelling collapse to one finding (2 sources).
+    let mut p = Entity::new(EntityKind::Person, "Cindy Haynes", 0.9, "s");
+    p.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("street", "12 Smith St")
+            .with_attr("suburb", "Maleny")
+            .with_attr("state", "QLD")
+            .with_attr("postcode", "4552"),
+    );
+    p.add_evidence(
+        Evidence::new("see_know", "breach")
+            .with_attr("street", "12 Smith St")
+            .with_attr("suburb", "Maleny")
+            .with_attr("state", "QLD")
+            .with_attr("postcode", "4552"),
+    );
+    let r = super::rules::rule_au_093_au_address_from_breach(&[p], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert!(r[0].description.contains("2 breach record source"));
+}
+
+#[test]
 fn au046_resolves_an_alias_to_platform_exposed_identifiers() {
     // The alias confirmed across two platform families (npm=code, reddit=forum),
     // plus an email its npm account exposed → AU-046 links handle to identity.

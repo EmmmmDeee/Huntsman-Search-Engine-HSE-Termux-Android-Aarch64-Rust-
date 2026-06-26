@@ -282,6 +282,10 @@ const RULES: &[RuleFn] = &[
     // the geolocated coordinate/address footprint — agreement corroborates
     // residency, a disjoint state flags stale data / a move / a namesake.
     rule_au_092_breach_locality_footprint_crosscheck,
+    // AU-093: assembles the subject's suburb / full residential address from the
+    // co-located fields of one breach record, offline-geocoded — the dwelling-
+    // grade locator AU-090/091 (single-field) can't reach.
+    rule_au_093_au_address_from_breach,
     // Free, offline identity-resolution rules — require no API keys.
     // AU-076: email local-part ↔ username canonical match (zero-API bridge).
     // AU-077: name-derived username independently confirmed on a platform.
