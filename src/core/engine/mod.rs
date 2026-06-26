@@ -681,7 +681,14 @@ impl ScanEngine {
             // Best-effort: a relation that fails to persist is logged, never
             // fatal to the scan.
             {
-                let derived = crate::core::relation::derive_all(&entities, &scan.id);
+                // Bounded derivation: stop starting new passes past the budget
+                // so a pathological (max_entities-filled) graph can't run the
+                // super-linear pass chain for minutes and get SIGKILLed before
+                // the dossier is written. Partial relations still persist.
+                let derive_deadline =
+                    Some(Instant::now() + crate::core::relation::DERIVE_BUDGET);
+                let derived =
+                    crate::core::relation::derive_all_within(&entities, &scan.id, derive_deadline);
                 if !lineage_relations.is_empty() || !derived.is_empty() {
                     let mut rel_persisted = 0usize;
                     for r in lineage_relations.iter().chain(derived.iter()) {
@@ -1188,6 +1195,16 @@ impl ScanEngine {
         const MAX_PROBES: usize = 8;
 
         if !crate::util::settings::get_bool(crate::util::settings::GAP_FILL_FEATURE, true) {
+            return 0;
+        }
+
+        // A cancelled scan (operator stop OR the wall-time watchdog) must do NO
+        // further collection — return before the snapshot + `derive_all` below,
+        // which is itself super-linear on a large graph. Without this guard a
+        // wall-timed-out `--full` scan paid a full gap-analysis derivation pass
+        // AFTER its deadline, pushing finalise past any external timeout. The
+        // per-probe loop already checks cancel, but the costly setup ran first.
+        if ctx.cancel.is_cancelled() {
             return 0;
         }
 

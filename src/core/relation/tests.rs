@@ -403,6 +403,67 @@ fn derive_all_aggregates_every_structural_derivation() {
 }
 
 #[test]
+fn derive_all_within_budget_stops_starting_new_passes_past_the_deadline() {
+    use std::time::{Duration, Instant};
+    // Same mixed set as the aggregation test: a subdomain edge (structural,
+    // FIRST pass) plus identity edges from later passes. The budget must cut
+    // the chain AFTER a completed pass, never mid-pass, so the result is always
+    // a coherent prefix of the full edge set.
+    let parent = ent(EntityKind::Domain, "acme.com", 0.7);
+    let sub = ent(EntityKind::Domain, "mail.acme.com", 0.6);
+    let person = ent(EntityKind::Person, "Jane Smith", 0.6);
+    let mut handle = ent(EntityKind::Username, "jsmith", 0.38);
+    handle.tag("name-derived");
+    handle.add_evidence(
+        crate::core::entity::Evidence::new("name_intel", "derived")
+            .with_attr("source_name", "Jane Smith"),
+    );
+    let ents = vec![parent, sub, person, handle];
+
+    // `None` is exactly `derive_all` — the wrapper adds no edges and drops none.
+    assert_eq!(
+        derive_all_within(&ents, "s", None).len(),
+        derive_all(&ents, "s").len(),
+        "unbudgeted derive_all_within is identical to derive_all"
+    );
+
+    // A far-future deadline never trips: full union, same as `None`.
+    let future = Some(Instant::now() + Duration::from_secs(3600));
+    assert_eq!(
+        derive_all_within(&ents, "s", future).len(),
+        derive_all(&ents, "s").len(),
+        "a deadline that can't be reached runs the whole chain"
+    );
+
+    // A deadline of `now` is already spent by the time the first pass finishes,
+    // so derivation returns exactly the FIRST pass (structural) and skips the
+    // rest — the structural subdomain edge survives, the later identity edges
+    // do not. This is the SIGKILL-avoidance guarantee: a pathological graph
+    // still finalises a coherent partial relation set instead of nothing.
+    let now = Some(Instant::now());
+    let partial = derive_all_within(&ents, "s", now);
+    let structural = derive_structural(&ents, "s");
+    assert_eq!(
+        partial.len(),
+        structural.len(),
+        "a spent budget returns exactly the first (structural) pass"
+    );
+    assert!(
+        partial.iter().any(|r| r.kind == RelationKind::SubdomainOf),
+        "the structural subdomain edge is in the partial set"
+    );
+    assert!(
+        !partial.iter().any(|r| r.kind == RelationKind::IdentifiedBy),
+        "a later-pass identity edge is dropped once the budget is spent"
+    );
+    // The budget can only ever SHRINK the result, never grow it.
+    assert!(partial.len() <= derive_all(&ents, "s").len());
+
+    // The shipped budget is a positive, finite duration (sanity on the const).
+    assert!(DERIVE_BUDGET >= Duration::from_secs(1));
+}
+
+#[test]
 fn person_scan_entities_anchor_a_relation_graph() {
     // Regression guard for the live-bundle "relations: 0" symptom. The diagnosis
     // was that the empty graph reflected an infrastructure-dominated, name-attr-poor

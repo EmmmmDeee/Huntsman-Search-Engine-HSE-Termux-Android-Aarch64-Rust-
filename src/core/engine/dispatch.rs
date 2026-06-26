@@ -1012,6 +1012,18 @@ impl super::ScanEngine {
         }
 
         while let Some(joined) = set.join_next().await {
+            // Operator/wall-time cancel during the drain: abort the remaining
+            // in-flight modules so a single dispatch's post-cancel tail is
+            // bounded to near-zero instead of up to one module-timeout (8
+            // modules × a 20 s timeout is 20 s of dead wait per candidate after
+            // the deadline). The just-joined result below is still finalised —
+            // we keep everything already collected; the aborted tasks come back
+            // as cancelled joins on the next iterations and are skipped.
+            // `abort_all` is idempotent and a no-op on tasks that already
+            // finished, so re-calling it each iteration is harmless.
+            if ctx.cancel.is_cancelled() {
+                set.abort_all();
+            }
             let outcome = match joined {
                 Ok(o) => o,
                 Err(e) if e.is_cancelled() => {
