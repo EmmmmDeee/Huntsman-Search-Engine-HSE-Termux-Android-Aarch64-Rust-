@@ -2898,6 +2898,28 @@ fn au098_single_class_does_not_fire() {
 }
 
 #[test]
+fn au099_reverse_geocodes_coordinate_to_locality() {
+    // A Brisbane fix → "Brisbane, QLD" with a small distance.
+    let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
+    let r = super::rules::rule_au_099_coordinate_reverse_geocode(&[coord], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-099");
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(r[0].description.contains("Brisbane"));
+    assert!(r[0].description.contains("QLD"));
+    assert!(r[0].description.contains("reverse geocode"));
+}
+
+#[test]
+fn au099_ignores_foreign_and_weak_coordinates() {
+    // A New York coordinate is not in Australia → no locality.
+    let ny = Entity::new(EntityKind::Coordinates, "40.7128,-74.0060", 0.8, "s");
+    // A weak (candidate) AU coordinate is below the 0.50 confidence gate.
+    let weak = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.40, "s");
+    assert!(super::rules::rule_au_099_coordinate_reverse_geocode(&[ny, weak], "s", 0).is_empty());
+}
+
+#[test]
 fn au046_resolves_an_alias_to_platform_exposed_identifiers() {
     // The alias confirmed across two platform families (npm=code, reddit=forum),
     // plus an email its npm account exposed → AU-046 links handle to identity.

@@ -174,6 +174,123 @@ pub fn au_state_for_coords(lat: f64, lon: f64) -> Option<&'static str> {
     None
 }
 
+/// Curated reverse-geocoding anchors: the Australian capitals and major regional
+/// centres, `(locality, state, lat, lon)`. Together they cover the overwhelming
+/// majority of the AU population, so the nearest anchor to a coordinate is a
+/// genuine, human-readable place label — `(-26.73, 152.76)` → "near Maleny" is
+/// what an investigator wants from a bare GPS fix, not just "QLD". Coordinates
+/// are well-known city centroids; an outback fix simply resolves to its nearest
+/// regional centre (the distance, reported alongside, keeps that honest).
+const AU_LOCALITY_ANCHORS: &[(&str, &str, f64, f64)] = &[
+    // NSW + ACT
+    ("Sydney", "NSW", -33.8688, 151.2093),
+    ("Newcastle", "NSW", -32.9283, 151.7817),
+    ("Wollongong", "NSW", -34.4248, 150.8931),
+    ("Central Coast (Gosford)", "NSW", -33.4269, 151.3431),
+    ("Wagga Wagga", "NSW", -35.1082, 147.3598),
+    ("Albury", "NSW", -36.0737, 146.9135),
+    ("Port Macquarie", "NSW", -31.4333, 152.9000),
+    ("Tamworth", "NSW", -31.0927, 150.9290),
+    ("Orange", "NSW", -33.2839, 149.1000),
+    ("Dubbo", "NSW", -32.2569, 148.6011),
+    ("Coffs Harbour", "NSW", -30.2963, 153.1135),
+    ("Bathurst", "NSW", -33.4193, 149.5780),
+    ("Lismore", "NSW", -28.8136, 153.2773),
+    ("Broken Hill", "NSW", -31.9560, 141.4675),
+    ("Canberra", "ACT", -35.2809, 149.1300),
+    // VIC
+    ("Melbourne", "VIC", -37.8136, 144.9631),
+    ("Geelong", "VIC", -38.1499, 144.3617),
+    ("Ballarat", "VIC", -37.5622, 143.8503),
+    ("Bendigo", "VIC", -36.7570, 144.2794),
+    ("Shepparton", "VIC", -36.3805, 145.3989),
+    ("Mildura", "VIC", -34.1855, 142.1625),
+    ("Warrnambool", "VIC", -38.3818, 142.4880),
+    ("Traralgon", "VIC", -38.1957, 146.5407),
+    ("Wodonga", "VIC", -36.1214, 146.8880),
+    // QLD
+    ("Brisbane", "QLD", -27.4698, 153.0251),
+    ("Gold Coast", "QLD", -28.0167, 153.4000),
+    ("Sunshine Coast (Maroochydore)", "QLD", -26.6500, 153.0667),
+    ("Townsville", "QLD", -19.2590, 146.8169),
+    ("Cairns", "QLD", -16.9203, 145.7710),
+    ("Toowoomba", "QLD", -27.5598, 151.9507),
+    ("Mackay", "QLD", -21.1413, 149.1860),
+    ("Rockhampton", "QLD", -23.3781, 150.5100),
+    ("Bundaberg", "QLD", -24.8661, 152.3489),
+    ("Hervey Bay", "QLD", -25.2986, 152.8535),
+    ("Gladstone", "QLD", -23.8489, 151.2566),
+    ("Mount Isa", "QLD", -20.7256, 139.4927),
+    ("Maleny", "QLD", -26.7290, 152.7554),
+    // SA
+    ("Adelaide", "SA", -34.9285, 138.6007),
+    ("Mount Gambier", "SA", -37.8294, 140.7828),
+    ("Whyalla", "SA", -33.0333, 137.5667),
+    ("Port Augusta", "SA", -32.4925, 137.7659),
+    // WA
+    ("Perth", "WA", -31.9505, 115.8605),
+    ("Bunbury", "WA", -33.3271, 115.6414),
+    ("Geraldton", "WA", -28.7744, 114.6153),
+    ("Kalgoorlie", "WA", -30.7490, 121.4658),
+    ("Albany", "WA", -35.0228, 117.8814),
+    ("Broome", "WA", -17.9614, 122.2359),
+    ("Karratha", "WA", -20.7364, 116.8460),
+    ("Port Hedland", "WA", -20.3107, 118.6080),
+    // TAS
+    ("Hobart", "TAS", -42.8821, 147.3272),
+    ("Launceston", "TAS", -41.4332, 147.1441),
+    ("Devonport", "TAS", -41.1769, 146.3506),
+    ("Burnie", "TAS", -41.0553, 145.9058),
+    // NT
+    ("Darwin", "NT", -12.4634, 130.8456),
+    ("Alice Springs", "NT", -23.6980, 133.8807),
+    ("Palmerston", "NT", -12.4861, 130.9833),
+    ("Katherine", "NT", -14.4652, 132.2635),
+];
+
+/// Great-circle distance between two coordinates in kilometres (haversine,
+/// mean Earth radius 6371 km). Pure.
+#[must_use]
+pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    const R: f64 = 6371.0;
+    let (p1, p2) = (lat1.to_radians(), lat2.to_radians());
+    let dlat = (lat2 - lat1).to_radians();
+    let dlon = (lon2 - lon1).to_radians();
+    let a = (dlat / 2.0).sin().powi(2) + p1.cos() * p2.cos() * (dlon / 2.0).sin().powi(2);
+    2.0 * R * a.sqrt().asin()
+}
+
+/// Offline **reverse geocode**: the nearest Australian population centre to
+/// `(lat, lon)`, as `(locality, state, distance_km)`, or `None` when the point
+/// is outside Australia ([`is_in_australia`]).
+///
+/// This turns a bare coordinate — an EXIF fix, a GPS sensor sample, a geocoded
+/// address — into a human place label with **no network**, the companion to the
+/// forward postcode gazetteer. The distance is returned so the caller can be
+/// honest about precision: `~2 km` is "in Maleny", `~140 km` is "nearest centre
+/// is Alice Springs". Anchors cover the capitals and major regional centres
+/// (most of the AU population); pair with [`au_state_for_coords`] for the
+/// authoritative state of a remote point between anchors.
+///
+/// ```
+/// use huntsman_search_engine::util::geo::nearest_au_locality;
+///
+/// let (name, state, km) = nearest_au_locality(-27.47, 153.02).unwrap(); // Brisbane CBD
+/// assert_eq!((name, state), ("Brisbane", "QLD"));
+/// assert!(km < 5.0);
+/// assert!(nearest_au_locality(40.71, -74.0).is_none()); // New York → not AU
+/// ```
+#[must_use]
+pub fn nearest_au_locality(lat: f64, lon: f64) -> Option<(&'static str, &'static str, f64)> {
+    if !is_in_australia(lat, lon) {
+        return None;
+    }
+    AU_LOCALITY_ANCHORS
+        .iter()
+        .map(|&(name, state, alat, alon)| (name, state, haversine_km(lat, lon, alat, alon)))
+        .min_by(|a, b| a.2.total_cmp(&b.2))
+}
+
 /// Tag `entity` with its Australian state and `country:AU` when `(lat, lon)`
 /// falls inside an AU state/territory; a no-op otherwise. Coordinate-emitting
 /// modules apply this exact AU-relevance pair (`au-state:{STATE}` + `country:AU`)

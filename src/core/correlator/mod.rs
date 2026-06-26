@@ -330,6 +330,9 @@ const RULES: &[RuleFn] = &[
     rule_au_054_data_broker_exposure,
     rule_au_055_primary_source_accounts,
     rule_au_056_jurisdiction_cross_check,
+    // AU-099: reverse-geocode a coordinate fix to its nearest AU population
+    // centre (offline) — a human locality label for a bare GPS/EXIF lat-long.
+    rule_au_099_coordinate_reverse_geocode,
     rule_au_057_synthesised_location_fix,
     rule_au_058_professional_profile_geo,
     rule_au_059_cross_seed_geo_synergy,

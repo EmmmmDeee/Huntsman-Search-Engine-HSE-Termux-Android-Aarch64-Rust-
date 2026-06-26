@@ -147,6 +147,11 @@ fn core_does_not_import_util_directly() {
                 // restrict the cross-seed geo-synergy fix to Australian
                 // coordinates when the `au-state:`/`country:AU` tag is absent.
                 && !line.contains("util::geo::is_in_australia")
+                // Pure, dependency-free offline reverse geocoder (coordinate →
+                // nearest AU population centre, by haversine over a curated
+                // anchor set; no I/O), same leaf category as `au_state_for_coords`.
+                // AU-099 uses it to label a bare coordinate with a human locality.
+                && !line.contains("util::geo::nearest_au_locality")
                 // Pure, dependency-free offline coordinate parser (no I/O, no
                 // network), same leaf category as `geohash`/`geometry`. The
                 // target auto-detector (`core::scan`) uses it to recognise

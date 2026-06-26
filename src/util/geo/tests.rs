@@ -73,6 +73,30 @@ use super::*;
     }
 
     #[test]
+    fn nearest_au_locality_labels_capitals_and_rejects_foreign() {
+        let (name, state, km) = nearest_au_locality(-27.47, 153.02).unwrap();
+        assert_eq!((name, state), ("Brisbane", "QLD"));
+        assert!(km < 5.0, "Brisbane CBD within 5km of the anchor, got {km}");
+        // A regional fix resolves to its nearest centre.
+        let (name, state, _) = nearest_au_locality(-26.729, 152.7554).unwrap();
+        assert_eq!((name, state), ("Maleny", "QLD"));
+        // Perth.
+        assert_eq!(nearest_au_locality(-31.95, 115.86).map(|(n, s, _)| (n, s)), Some(("Perth", "WA")));
+        // Outside Australia → None.
+        assert!(nearest_au_locality(40.71, -74.0).is_none()); // New York
+        assert!(nearest_au_locality(-36.8485, 174.7633).is_none()); // Auckland
+    }
+
+    #[test]
+    fn haversine_km_matches_known_distances() {
+        // Sydney ↔ Melbourne ≈ 714 km (great-circle).
+        let d = haversine_km(-33.8688, 151.2093, -37.8136, 144.9631);
+        assert!((700.0..730.0).contains(&d), "Sydney-Melbourne ≈ 714km, got {d}");
+        // Zero distance.
+        assert!(haversine_km(-27.47, 153.02, -27.47, 153.02) < 0.001);
+    }
+
+    #[test]
     fn plausible_provider_coord_keeps_real_fixes() {
         assert!(is_plausible_provider_coord(-27.4766, 153.0166)); // Brisbane
         assert!(is_plausible_provider_coord(51.5074, -0.1278)); // London

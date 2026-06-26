@@ -39,6 +39,59 @@ pub(super) fn coord_state(e: &Entity) -> Option<&'static str> {
         .and_then(|(lat, lon)| crate::util::geo::au_state_for_coords(lat, lon))
 }
 
+/// AU-099 — reverse-geocode the subject's coordinate fix to a human AU locality.
+///
+/// `coord_state` (and AU-056/098) resolve a coordinate to its *state*; a bare
+/// `(-26.73, 152.76)` is still opaque to read. This labels each confirmed
+/// `Coordinates` fix with the **nearest Australian population centre** — offline,
+/// via [`crate::util::geo::nearest_au_locality`] — so an EXIF/GPS/geocoded fix
+/// reads as "Maleny, QLD (~2 km)" instead of a lat/long. The distance is shown so
+/// the precision is honest: a metro fix lands on its suburb/city, a remote one on
+/// its nearest regional centre. Deduplicated per locality; Medium (a derived,
+/// human-readable label on a coordinate the graph already holds). Offline, pure.
+pub(in crate::core::correlator) fn rule_au_099_coordinate_reverse_geocode(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    // locality -> (state, nearest km seen, contributing coordinate uids).
+    let mut by_loc: BTreeMap<&'static str, (&'static str, f64, BTreeSet<String>)> = BTreeMap::new();
+    for e in entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates && e.confidence >= 0.50)
+    {
+        if let Some((lat, lon)) = crate::util::geohash::parse_coords(&e.value)
+            && let Some((name, state, km)) = crate::util::geo::nearest_au_locality(lat, lon)
+        {
+            let entry = by_loc.entry(name).or_insert((state, km, BTreeSet::new()));
+            if km < entry.1 {
+                entry.1 = km;
+            }
+            entry.2.insert(e.uid.clone());
+        }
+    }
+
+    by_loc
+        .into_iter()
+        .map(|(name, (state, km, uids))| {
+            Correlation::new(
+                "AU-099",
+                "Coordinate reverse-geocoded to AU locality",
+                Severity::Medium,
+                format!(
+                    "Subject's coordinate fix resolves to {name}, {state} (≈{km:.0} km, offline \
+                     reverse geocode) — a human-readable locality for a bare GPS/EXIF fix"
+                ),
+                uids.into_iter().collect(),
+                scan_id,
+                ts,
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
