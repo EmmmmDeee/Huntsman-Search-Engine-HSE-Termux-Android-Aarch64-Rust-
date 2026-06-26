@@ -34,6 +34,25 @@ const CORROBORATING_FAMILIES: &[&str] = &[
     "email_intel",
 ];
 
+/// A single-route link is surfaced as its own detailed AU-063 finding only when
+/// at least one endpoint is this confident — i.e. it is a connection actually
+/// worth corroborating. A link between two low-confidence, name-derived
+/// permutation candidates (the bulk of a broad name scan) is not individually
+/// actionable; it is consolidated into the summary finding instead. Probable
+/// tier, so a corroborated/real endpoint always earns its detail.
+const AU063_DETAIL_MIN_CONF: f64 = 0.40;
+
+/// Cap on individually-surfaced AU-063 gap findings (strongest endpoints first).
+/// Beyond this the gaps are consolidated, so a name seed that derives dozens of
+/// permutation links can't drown the dossier in hundreds of near-identical Low
+/// notices — the single biggest source of correlation noise observed in the
+/// field (a `full_name` scan fired 400+ AU-063 rows, 80% of all correlations).
+const AU063_DETAIL_CAP: usize = 25;
+
+/// Cap on the contributing entity uids attached to the consolidated summary
+/// finding — enough to pivot from, bounded so the row stays small.
+const AU063_SUMMARY_UID_CAP: usize = 50;
+
 /// One identity pair joined by exactly ONE transitive route (≥2 hops) — a
 /// fragile, single-pathway link no independent route corroborates. The shared
 /// core of the AU-063 gap lead and the engine's cross-scan gap resolution, so
@@ -171,7 +190,19 @@ pub(in crate::core::correlator) fn rule_au_063_corroboration_gap(
             .unwrap_or_default()
     };
 
-    let mut out = Vec::new();
+    // One detail candidate per fragile link: the finding itself, the priority
+    // that decides which gaps are worth surfacing in full (the stronger
+    // endpoint's effective confidence — corroborate the real leads first), the
+    // orthogonal families it needs (for the consolidated summary), and its
+    // endpoints (for the summary's pivot set).
+    struct Candidate {
+        priority: f64,
+        corr: Correlation,
+        absent: Vec<&'static str>,
+        a: String,
+        b: String,
+    }
+    let mut cands: Vec<Candidate> = Vec::new();
     for link in single_route_identity_links(entities, relations) {
         let (a, b) = (link.a_uid.as_str(), link.b_uid.as_str());
 
@@ -187,7 +218,7 @@ pub(in crate::core::correlator) fn rule_au_063_corroboration_gap(
 
         // The fill: the strongest orthogonal families NOT yet on the link — the
         // logical requirement that would corroborate it independently.
-        let absent: Vec<&str> = CORROBORATING_FAMILIES
+        let absent: Vec<&'static str> = CORROBORATING_FAMILIES
             .iter()
             .copied()
             .filter(|f| !present.contains(f))
@@ -207,7 +238,7 @@ pub(in crate::core::correlator) fn rule_au_063_corroboration_gap(
         let mut entity_uids: Vec<String> = nodes.into_iter().collect();
         entity_uids.sort_unstable();
 
-        out.push(Correlation::new(
+        let corr = Correlation::new(
             "AU-063",
             "Single-pathway corroboration gap",
             Severity::Low,
@@ -224,6 +255,82 @@ pub(in crate::core::correlator) fn rule_au_063_corroboration_gap(
                 absent.join(" or "),
             ),
             entity_uids,
+            scan_id,
+            now,
+        );
+        cands.push(Candidate {
+            // A link is only as credible as its WEAKER endpoint: a confident hub
+            // (a real email) joined to a speculative name-permutation username via
+            // shared infra is itself a weak, infra-only link — not worth a detailed
+            // finding. Using the min keeps the detailed gaps to genuine
+            // strong-to-strong connections and consolidates the permutation tail.
+            priority: ea.c_effective().min(eb.c_effective()),
+            corr,
+            absent,
+            a: a.to_string(),
+            b: b.to_string(),
+        });
+    }
+    if cands.is_empty() {
+        return Vec::new();
+    }
+
+    // Surface the gaps most worth corroborating first (strongest endpoint), then
+    // consolidate the rest. A broad name scan derives dozens of low-confidence
+    // permutation links; emitting one Low finding each buries the handful of real
+    // gaps under near-identical noise (observed: 400+ AU-063 rows, 80% of all
+    // correlations). Detail the top, aggregate the remainder — no gap is lost,
+    // the dossier stays Interpol-grade readable. Deterministic order (priority
+    // desc, then uid set) so the output is reproducible across runs.
+    cands.sort_by(|x, y| {
+        y.priority
+            .partial_cmp(&x.priority)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| x.corr.entity_uids.cmp(&y.corr.entity_uids))
+    });
+    let detail_n = cands
+        .iter()
+        .filter(|c| c.priority >= AU063_DETAIL_MIN_CONF)
+        .count()
+        .min(AU063_DETAIL_CAP);
+
+    let mut out: Vec<Correlation> = Vec::with_capacity(detail_n + 1);
+    let mut tally: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut remainder_uids: BTreeSet<String> = BTreeSet::new();
+    let mut remainder = 0usize;
+    for (i, c) in cands.into_iter().enumerate() {
+        if i < detail_n {
+            out.push(c.corr);
+        } else {
+            remainder += 1;
+            for f in c.absent {
+                *tally.entry(f).or_default() += 1;
+            }
+            remainder_uids.insert(c.a);
+            remainder_uids.insert(c.b);
+        }
+    }
+    if remainder > 0 {
+        // The orthogonal family that would corroborate the most of the remainder
+        // — the single highest-leverage angle to pursue for the whole tail.
+        let top_family = tally
+            .into_iter()
+            .max_by(|x, y| x.1.cmp(&y.1).then_with(|| y.0.cmp(x.0)))
+            .map_or("an orthogonal source", |(f, _)| f);
+        let mut uids: Vec<String> = remainder_uids.into_iter().collect();
+        uids.sort_unstable();
+        uids.truncate(AU063_SUMMARY_UID_CAP);
+        out.push(Correlation::new(
+            "AU-063",
+            "Single-pathway corroboration gaps (consolidated)",
+            Severity::Low,
+            format!(
+                "{remainder} further identity link(s) each rest on a single, uncorroborated \
+                 pathway (mostly low-confidence name-derived candidates); a pathway through an \
+                 orthogonal source ({top_family}) would corroborate the most of them. Surfaced in \
+                 aggregate so the detailed gaps above stay readable — none is lost."
+            ),
+            uids,
             scan_id,
             now,
         ));
@@ -333,5 +440,71 @@ mod tests {
         let b = id(EntityKind::Username, "bob");
         let rels = [rel(&a, &b, RelationKind::AliasOf)];
         assert!(rule_au_063_corroboration_gap(&[a, b], &rels, "s", 0).is_empty());
+    }
+
+    #[test]
+    fn au063_consolidates_a_flood_of_low_confidence_permutation_gaps() {
+        // A broad name scan: many low-confidence name-derived username candidates,
+        // each joined to the next only through a shared infra domain (a single
+        // transitive route). Emitting one Low finding per pair would flood the
+        // dossier; the rule must detail at most AU063_DETAIL_CAP and consolidate
+        // the rest into ONE summary — so the total stays bounded and readable.
+        let d = sourced(EntityKind::Domain, "shared.example", "dns_intel"); // infra hub
+        let mut ents: Vec<Entity> = vec![d.clone()];
+        let mut rels: Vec<Relation> = Vec::new();
+        for i in 0..60 {
+            // Low confidence (0.20) — a speculative permutation, below the detail floor.
+            let mut u = Entity::new(EntityKind::Username, format!("cand{i}"), 0.20, "s");
+            u.add_evidence(Evidence::new("name_intel", "permutation"));
+            rels.push(rel(&u, &d, RelationKind::DerivedFrom));
+            ents.push(u);
+        }
+        let out = rule_au_063_corroboration_gap(&ents, &rels, "s", 0);
+        // Bounded: never one-per-link. At least one consolidated summary present.
+        assert!(
+            out.len() <= AU063_DETAIL_CAP + 1,
+            "AU-063 must cap detailed gaps + one summary, got {}",
+            out.len()
+        );
+        assert!(
+            out.iter().any(|c| c.rule_name.contains("consolidated")),
+            "the speculative remainder must be consolidated into a summary finding"
+        );
+        // Every detailed finding outranks the summary by being individually named.
+        assert!(out.iter().all(|c| c.rule_id == "AU-063"));
+    }
+
+    #[test]
+    fn au063_details_confident_gaps_and_summarises_only_the_weak_tail() {
+        // One genuinely confident link (a real email↔username via infra) plus a
+        // tail of weak permutation links sharing the same hub. The confident gap
+        // is detailed individually; the weak tail is consolidated.
+        let d = sourced(EntityKind::Domain, "hub.example", "dns_intel");
+        let email = id(EntityKind::Email, "real@hub.example"); // conf 0.8 → detailed
+        let user = id(EntityKind::Username, "realuser"); // conf 0.8 → detailed
+        let mut ents = vec![d.clone(), email.clone(), user.clone()];
+        let mut rels = vec![
+            rel(&email, &d, RelationKind::BelongsToDomain),
+            rel(&d, &user, RelationKind::DerivedFrom),
+        ];
+        for i in 0..40 {
+            let mut u = Entity::new(EntityKind::Username, format!("weak{i}"), 0.20, "s");
+            u.add_evidence(Evidence::new("name_intel", "permutation"));
+            rels.push(rel(&u, &d, RelationKind::DerivedFrom));
+            ents.push(u);
+        }
+        let out = rule_au_063_corroboration_gap(&ents, &rels, "s", 0);
+        // The confident email↔user gap is surfaced in detail (names both values).
+        assert!(
+            out.iter().any(|c| {
+                !c.rule_name.contains("consolidated")
+                    && c.description.contains("realuser")
+                    && c.description.contains("real@hub.example")
+            }),
+            "the confident gap must be detailed individually"
+        );
+        // The weak tail is consolidated, not emitted one-by-one.
+        assert!(out.iter().any(|c| c.rule_name.contains("consolidated")));
+        assert!(out.len() <= AU063_DETAIL_CAP + 1);
     }
 }

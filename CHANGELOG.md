@@ -10,6 +10,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Changed
+- **AU-063 (single-pathway corroboration gap) is consolidated — Interpol-grade
+  signal-to-noise.** It emitted one Low finding per fragile link, so a broad name
+  scan's dozens of low-confidence permutation links flooded the dossier (observed:
+  404 AU-063 rows, 80% of all correlations). It now details only the gaps worth
+  corroborating first (the weaker endpoint at ≥0.40, capped at 25, strongest
+  first) and consolidates the speculative tail into ONE summary naming how many
+  remain and the orthogonal source that would corroborate the most — no gap is
+  lost. Validated end-to-end: the same `Matthew Diegmann` scan dropped AU-063 from
+  404 → 22 and total correlations 501 → 119.
+
 ### Fixed
 - **Scans no longer freeze at the seed→expansion boundary.** The live per-round
   correlation pass was unbudgeted on the assumption the working set is "small";
