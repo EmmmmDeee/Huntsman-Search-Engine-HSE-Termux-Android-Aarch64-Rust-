@@ -42,7 +42,14 @@ impl Module for GeoDomainClassifier {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::Url)
+        // Email too: a `@uni.edu.au` / `@*.gov.au` address geolocates the person
+        // who uses it (see the institutional gate in `process`). Domain/Url
+        // classify fully; an email classifies ONLY when its domain is an
+        // education / government institution.
+        matches!(
+            t.kind,
+            TargetKind::Domain | TargetKind::Url | TargetKind::Email
+        )
     }
 
     fn category(&self) -> ModuleCategory {
@@ -61,6 +68,13 @@ impl Module for GeoDomainClassifier {
             TargetKind::Url => crate::util::url_util::host_from_url(&target.value)
                 .map(|h| h.to_lowercase())
                 .unwrap_or_default(),
+            // The domain part of the address (after the last `@`).
+            TargetKind::Email => target
+                .value
+                .rsplit('@')
+                .next()
+                .map(|d| d.trim().to_lowercase())
+                .unwrap_or_default(),
             _ => target.value.trim().to_lowercase(),
         };
 
@@ -68,7 +82,28 @@ impl Module for GeoDomainClassifier {
             return Ok(result);
         }
 
-        if let Some(geo) = classify_domain(&domain) {
+        // Domain / Url classify fully (jurisdiction → service → ccTLD). An EMAIL
+        // geolocates the person ONLY when its domain is an education / government
+        // INSTITUTION — `@uni.edu.au` places a student/staff/alumnus in that
+        // city, `@*.gov.au` a public servant in that jurisdiction — via the
+        // precise jurisdiction + known-service paths. The ccTLD country-grain is
+        // deliberately skipped for emails (an `@x.com` is not "in the United
+        // States") and the country-grain known-service rows ("Australia") add no
+        // location an AU scan doesn't already assume, so a freemail or generic
+        // corporate email yields nothing rather than a misleading fix.
+        let classification = if target.kind == TargetKind::Email {
+            if is_institutional_domain(&domain) {
+                classify_au_jurisdiction_domain(&domain)
+                    .or_else(|| classify_by_known_service(&domain))
+                    .filter(|g| g.location != "Australia")
+            } else {
+                None
+            }
+        } else {
+            classify_domain(&domain)
+        };
+
+        if let Some(geo) = classification {
             let mut e = Entity::new(
                 EntityKind::Address,
                 geo.location,
@@ -78,6 +113,13 @@ impl Module for GeoDomainClassifier {
             e.tag("geoint");
             e.tag("coarse");
             e.tag("domain-inferred");
+            // Distinguish a location inferred from an email's institutional
+            // domain (a `@uni.edu.au` / `@*.gov.au` affiliation) from one read off
+            // a bare domain/url, so downstream consumers can weight it as the
+            // affiliation signal it is.
+            if target.kind == TargetKind::Email {
+                e.tag("email-affiliation");
+            }
             // A `*.{state}.gov.au` domain pins the jurisdiction: tag the state so
             // the jurisdiction cross-checks (AU-056 / AU-085) read it, and mark it
             // a government affiliation for filtering.
@@ -175,6 +217,24 @@ fn classify_au_jurisdiction_domain(domain: &str) -> Option<GeoClassification> {
         method: "au_gov_domain",
         au_state: Some(state),
     })
+}
+
+/// True for an education or government domain — the email domains that reliably
+/// place the person who uses them: a `@uni.edu.au` student / staff / alumnus, a
+/// `@*.gov.au` public servant, an academic `@*.ac.*`. Generic corporate and
+/// freemail domains are excluded, so an email only geolocates when its domain is
+/// a real institution (the `process` email gate). Matches on the registrable
+/// shape, not a fixed list, so a new university / agency domain is covered
+/// without a table edit.
+fn is_institutional_domain(domain: &str) -> bool {
+    let d = domain.strip_prefix("www.").unwrap_or(domain);
+    d.ends_with(".edu.au")
+        || d.ends_with(".gov.au")
+        || d.ends_with(".edu")
+        || d.ends_with(".gov")
+        || d.contains(".edu.")
+        || d.contains(".gov.")
+        || d.contains(".ac.")
 }
 
 fn classify_by_known_service(domain: &str) -> Option<GeoClassification> {

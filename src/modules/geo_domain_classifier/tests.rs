@@ -42,11 +42,13 @@ fn classifies_known_australian_service() {
     }
 
     #[tokio::test]
-    async fn module_accepts_domain_and_url() {
+    async fn module_accepts_domain_url_and_email() {
         let m = GeoDomainClassifier;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com.au")));
         assert!(m.accepts(&Target::new(TargetKind::Url, "https://example.com.au")));
-        assert!(!m.accepts(&Target::new(TargetKind::Email, "test@example.com")));
+        // Email is now accepted — its domain geolocates the person when it is an
+        // education / government institution (gated inside `process`).
+        assert!(m.accepts(&Target::new(TargetKind::Email, "test@example.com")));
     }
 
     #[tokio::test]
@@ -67,6 +69,82 @@ fn classifies_known_australian_service() {
         assert_eq!(r.entities[0].kind, EntityKind::Address);
         assert_eq!(r.entities[0].value, "Australia");
         assert!(r.entities[0].has_tag("domain-inferred"));
+    }
+
+    #[cfg(test)]
+    fn test_ctx() -> ModuleContext {
+        let (bus, _rx) = tokio::sync::broadcast::channel(8);
+        ModuleContext {
+            scan_id: "test".into(),
+            bus,
+            http: reqwest::Client::new(),
+            keys: Default::default(),
+            cancel: Default::default(),
+            proxy_pool: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn university_email_geolocates_person_to_city() {
+        // A `@uni.edu.au` address places the person in that university's city —
+        // finer than the bare `.edu.au` country/state grain.
+        let m = GeoDomainClassifier;
+        let r = m
+            .process(&Target::new(TargetKind::Email, "j.citizen@uq.edu.au"), &test_ctx())
+            .await
+            .unwrap();
+        let addr = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Address)
+            .expect("an institutional email yields a location");
+        assert_eq!(addr.value, "Brisbane, Australia");
+        assert!(addr.has_tag("email-affiliation"), "tagged as an email-derived affiliation");
+        assert!(addr.has_tag("geoint"));
+    }
+
+    #[tokio::test]
+    async fn state_gov_email_geolocates_to_jurisdiction() {
+        // A `@*.{state}.gov.au` address pins the public servant's state.
+        let m = GeoDomainClassifier;
+        let r = m
+            .process(
+                &Target::new(TargetKind::Email, "officer@health.nsw.gov.au"),
+                &test_ctx(),
+            )
+            .await
+            .unwrap();
+        let addr = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Address)
+            .expect("a state-gov email yields a jurisdiction");
+        assert_eq!(addr.value, "New South Wales, Australia");
+        assert!(addr.has_tag("au-state:NSW"));
+        assert!(addr.has_tag("email-affiliation"));
+    }
+
+    #[tokio::test]
+    async fn freemail_corporate_and_federal_emails_yield_no_geo() {
+        // Only an EDUCATION / GOVERNMENT institution domain locates the person.
+        // Freemail, generic corporate, a country-grain AU service, and a
+        // non-state federal agency all yield nothing rather than a misleading fix.
+        let m = GeoDomainClassifier;
+        for addr in [
+            "person@gmail.com",        // freemail
+            "person@randomcorp.com",   // generic corporate
+            "person@telstra.com.au",   // AU service, but country-grain only
+            "person@ato.gov.au",       // federal (no state) → not pinpointable
+        ] {
+            let r = m
+                .process(&Target::new(TargetKind::Email, addr), &test_ctx())
+                .await
+                .unwrap();
+            assert!(
+                r.entities.is_empty(),
+                "{addr} must not produce a location"
+            );
+        }
     }
 
     #[test]
