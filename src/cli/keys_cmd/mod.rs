@@ -1,9 +1,15 @@
 //! `hse keys` — manage the global API-key pool.
 //!
-//! Subcommands: add / list / validate / remove / status / services /
+//! Subcommands: add / list / validate / remove / status / bank / services /
 //! import-tsv. The pool lives at $HOME/.huntsman_keys.json (mode 0600)
 //! and is shared across scans; every `identify_api_key` discovery and
 //! `hse set-key` mutation lands here.
+//!
+//! `bank` is different: it reads the persistent **retention bank**
+//! (`util::key_vault`, `~/.huntsman/key_vault.db`) — every API key ever found in
+//! a victim/stealer query, categorised and OSINT-providers-first. The bank is
+//! retention-only (never used to authenticate); it is the operator-facing view
+//! of harvested keys as OSINT intelligence.
 
 use clap::Subcommand;
 
@@ -95,6 +101,27 @@ pub enum KeysAction {
     },
     /// Show pool status summary.
     Status,
+    /// Show the persistent retention **BANK** (`key_vault`) — every API key ever
+    /// found in a victim/stealer query, categorised, OSINT-providers first (★).
+    ///
+    /// This is the catalogue of harvested keys as OSINT intelligence: it is
+    /// **retention-only**, never used to authenticate, and is distinct from the
+    /// rotation pool shown by `list`/`status`. Use it to compare detected OSINT
+    /// keys against your own and to identify other OSINT practitioners.
+    Bank {
+        /// Show only OSINT/recon-provider keys (the practitioner-identifying set).
+        #[arg(long)]
+        osint: bool,
+        /// Filter by service name (e.g. shodan, dehashed).
+        #[arg(long)]
+        service: Option<String>,
+        /// Reveal full key values (default: masked). Output is a secret.
+        #[arg(long)]
+        reveal: bool,
+        /// Print a per-category OSINT-provider census instead of each key.
+        #[arg(long)]
+        census: bool,
+    },
     /// List supported service names and their categories.
     Services,
     /// Import candidate keys/credentials from a TSV file.
@@ -382,6 +409,80 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             println!("Pool file: {}", key_pool::pool_path().display());
         }
 
+        KeysAction::Bank {
+            osint,
+            service,
+            reveal,
+            census,
+        } => {
+            use crate::util::key_vault;
+
+            if census {
+                let rows = key_vault::osint_provider_census();
+                if rows.is_empty() {
+                    println!("No OSINT-provider keys banked yet.");
+                } else {
+                    println!("OSINT-provider key census (retained, never used):");
+                    let mut last_cat = "";
+                    for (cat, svc, n) in &rows {
+                        if *cat != last_cat {
+                            println!("\n[{cat}]");
+                            last_cat = cat;
+                        }
+                        println!("  {svc:<22} {n:>4} key(s)");
+                    }
+                }
+                println!("\nBank file: {}", key_vault::vault_path().display());
+                return Ok(());
+            }
+
+            let mut entries = if osint {
+                key_vault::osint_entries()
+            } else {
+                key_vault::all_entries()
+            };
+            if let Some(ref s) = service {
+                let lower = s.to_lowercase();
+                entries.retain(|e| e.service.to_lowercase() == lower);
+            }
+            // Full list: OSINT providers first, then by category / frequency.
+            if !osint {
+                entries.sort_by(|a, b| {
+                    b.is_osint()
+                        .cmp(&a.is_osint())
+                        .then(a.osint_category().cmp(&b.osint_category()))
+                        .then(b.discovery_count.cmp(&a.discovery_count))
+                        .then(a.service.cmp(&b.service))
+                });
+            }
+
+            if entries.is_empty() {
+                println!("Key bank is empty (no keys found in scans yet).");
+                println!("Bank file: {}", key_vault::vault_path().display());
+                return Ok(());
+            }
+
+            let osint_n = entries.iter().filter(|e| e.is_osint()).count();
+            if reveal {
+                eprintln!(
+                    "# WARNING: --reveal prints PLAINTEXT keys. Treat the output as a secret."
+                );
+            }
+            println!(
+                "BANK — {} retained key(s), {osint_n} OSINT-provider (★). Retention-only; never reused.\n",
+                entries.len()
+            );
+            println!(
+                "{:<2} {:<20} {:<18} {:<24} {:<9} SOURCE",
+                "", "CATEGORY", "SERVICE", "KEY", "SEEN"
+            );
+            println!("{}", "-".repeat(86));
+            for e in &entries {
+                println!("{}", bank_row(e, reveal));
+            }
+            println!("\nBank file: {}", key_vault::vault_path().display());
+        }
+
         KeysAction::Services => {
             let defs = key_pool::service_defs();
             println!(
@@ -532,6 +633,25 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
 /// the byte-indexing panic on multi-byte UTF-8 values.
 fn char_prefix(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
+}
+
+/// Format one retention-bank entry as a display row. OSINT-provider keys are
+/// marked `★` and show their category; infrastructure keys show `infrastructure`.
+/// The key is masked unless `reveal`. Pure (no I/O) so it is unit-tested.
+fn bank_row(e: &crate::util::key_vault::VaultEntry, reveal: bool) -> String {
+    let cat = e.osint_category().unwrap_or("infrastructure");
+    let mark = if e.is_osint() { "★" } else { " " };
+    let key = if reveal {
+        e.key_value.clone()
+    } else {
+        mask_key(&e.key_value)
+    };
+    format!(
+        "{mark:<2} {cat:<20} {svc:<18} {key:<24} {seen:<9} {prov}",
+        svc = e.service,
+        seen = format!("×{}", e.discovery_count),
+        prov = e.provider,
+    )
 }
 
 /// Char-aware masked key display: `ABCD…WXYZ` for values longer than
