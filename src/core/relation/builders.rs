@@ -1607,6 +1607,98 @@ pub fn derive_profile_links(entities: &[Entity], scan_id: &str) -> Vec<Relation>
     out
 }
 
+/// Minimum [`crate::core::coref::resolve_coreferences`] score for a co-reference
+/// hypothesis to be **promoted into a graph edge**. Far above the read-only view's
+/// emission floor: a reported hypothesis is a lead for an analyst to weigh, but a
+/// graph edge is consumed by clustering, network synthesis and the autonomous
+/// prioritiser, so only a *strong* same-individual match (an exact-handle match,
+/// or several independent corroborating signals) earns one.
+const COREF_PROMOTE_MIN_SCORE: f64 = 0.80;
+
+/// Promote strong cross-identifier **co-reference** hypotheses
+/// ([`crate::core::coref::resolve_coreferences`]) into typed identity relations,
+/// so the same-individual links the scorer finds become first-class graph edges
+/// the clustering, network and autonomous layers all consume — not just a
+/// read-only view. Each promoted pair maps to the edge that fits its kinds:
+///   * **Person ↔ identifier** → [`IdentifiedBy`](RelationKind::IdentifiedBy)
+///     (Person → Email/Username/Phone) — the person owns the selector;
+///   * **Person ↔ Person** → [`SameAs`](RelationKind::SameAs) — two name records
+///     of one individual;
+///   * **identifier ↔ identifier** → [`AliasOf`](RelationKind::AliasOf) — two
+///     selectors of one persona.
+///
+/// **Strictly additive**: an edge already present in `existing` (same
+/// `from|kind|to`) is never re-emitted, so this pass can only *add* links and can
+/// never lower the confidence of an edge a higher-trust builder (handles /
+/// identity-ownership / canonical-identities) already produced. Confidence is the
+/// match score damped by the weaker endpoint's trust (`score × min(conf)`), so an
+/// inferred co-reference edge never outranks a structural one. Deterministic
+/// (sorted); deduped per `(from, kind, to)`.
+pub fn derive_coreferences(
+    entities: &[Entity],
+    existing: &[Relation],
+    scan_id: &str,
+) -> Vec<Relation> {
+    use std::collections::HashSet;
+
+    // Index the edges already built this finalise so we only ever ADD, never
+    // restate (and so never churn a stronger builder's confidence on upsert).
+    let prior: HashSet<(&str, &str, &str)> = existing
+        .iter()
+        .map(|r| (r.from_uid.as_str(), r.kind.as_str(), r.to_uid.as_str()))
+        .collect();
+    // UID → confidence, to damp each promoted edge by its weaker endpoint.
+    let conf_of: std::collections::HashMap<&str, f64> = entities
+        .iter()
+        .map(|e| (e.uid.as_str(), e.confidence))
+        .collect();
+    let kind_of: std::collections::HashMap<&str, EntityKind> = entities
+        .iter()
+        .map(|e| (e.uid.as_str(), e.kind.clone()))
+        .collect();
+
+    let mut seen: HashSet<(String, String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for c in crate::core::coref::resolve_coreferences(entities, COREF_PROMOTE_MIN_SCORE, 512) {
+        let (Some(ka), Some(kb)) = (kind_of.get(c.uid_a.as_str()), kind_of.get(c.uid_b.as_str()))
+        else {
+            continue;
+        };
+        let a_person = *ka == EntityKind::Person;
+        let b_person = *kb == EntityKind::Person;
+        // Choose the typed edge and its canonical direction for the pair's kinds.
+        let (from, to, kind) = match (a_person, b_person) {
+            // Person → identifier (the person owns the selector).
+            (true, false) => (&c.uid_a, &c.uid_b, RelationKind::IdentifiedBy),
+            (false, true) => (&c.uid_b, &c.uid_a, RelationKind::IdentifiedBy),
+            // Two persons: one individual, two name records. Smaller-UID → larger.
+            (true, true) => (&c.uid_a, &c.uid_b, RelationKind::SameAs),
+            // Two identifiers: aliases of one persona. Smaller-UID → larger.
+            (false, false) => (&c.uid_a, &c.uid_b, RelationKind::AliasOf),
+        };
+        if prior.contains(&(from.as_str(), kind.as_str(), to.as_str())) {
+            continue; // a higher-trust builder already emitted this exact edge
+        }
+        if !seen.insert((from.clone(), kind.as_str().to_string(), to.clone())) {
+            continue;
+        }
+        let min_conf = conf_of
+            .get(from.as_str())
+            .copied()
+            .unwrap_or(0.0)
+            .min(conf_of.get(to.as_str()).copied().unwrap_or(0.0));
+        out.push(Relation::new(
+            from.as_str(),
+            to.as_str(),
+            kind,
+            c.score * min_conf,
+            scan_id,
+        ));
+    }
+    sort_edges(&mut out);
+    out
+}
+
 /// Derive every deterministic, evidence-grounded relation the engine knows how
 /// to reconstruct from a persisted entity set alone — the infrastructure layer
 /// (structural ownership, geo co-location, DNS resolution, WHOIS registration,
@@ -1714,6 +1806,14 @@ pub fn derive_all_within(
     // the reflexive self-pairing that makes a seed and its variants one traversable node.
     out.extend(derive_canonical_identities(entities, scan_id));
     budget_spent!(out, "canonical_identities");
+    // Co-reference promotion AFTER every structural identity builder, reading the
+    // edges built so far so it only ADDS the same-individual links they missed
+    // (name-token / substring / multi-breach co-occurrence) and never restates one
+    // they already emitted. The graph-enriching counterpart to the read-only
+    // `/identities` view.
+    let coref = derive_coreferences(entities, &out, scan_id);
+    out.extend(coref);
+    budget_spent!(out, "coreferences");
     // Declared associations LAST so a `(from, kind, to)` edge a surname guess or a
     // co-residence inference already emitted is re-emitted here at full (declared)
     // confidence — the later, higher-trust edge wins on idempotent upsert.

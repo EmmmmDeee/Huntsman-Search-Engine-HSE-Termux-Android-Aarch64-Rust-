@@ -992,6 +992,84 @@ fn identity_ownership_fingerprint_only_binds_the_subject() {
 }
 
 #[test]
+fn coreference_promotion_emits_typed_identity_edges() {
+    // A username, a matching email, and the person's name — all canonicalising to
+    // "johnsmith". Co-reference promotion must wire them with the edge that fits
+    // each pair's kinds: AliasOf (identifier↔identifier), IdentifiedBy (person→id).
+    let user = ent(EntityKind::Username, "johnsmith", 0.8);
+    let email = ent(EntityKind::Email, "johnsmith@gmail.com", 0.8);
+    let person = ent(EntityKind::Person, "John Smith", 0.8);
+
+    let rels = derive_coreferences(&[user.clone(), email.clone(), person.clone()], &[], "s");
+    assert!(
+        !rels.is_empty(),
+        "strong co-references must promote to edges"
+    );
+
+    // Username↔Email → AliasOf, canonical direction.
+    let alias = rels
+        .iter()
+        .find(|r| r.kind == RelationKind::AliasOf)
+        .expect("the two identifiers alias one persona");
+    assert!(alias.from_uid <= alias.to_uid, "canonical direction");
+
+    // Person↔identifier → IdentifiedBy, Person is always the `from` endpoint.
+    for r in rels.iter().filter(|r| r.kind == RelationKind::IdentifiedBy) {
+        assert_eq!(r.from_uid, person.uid, "Person owns the selector");
+    }
+    // Confidence is the match score damped by the weaker endpoint (never > min conf).
+    for r in &rels {
+        assert!(r.confidence <= 0.8 + 1e-9, "damped by endpoint trust");
+        assert!(r.confidence > 0.0);
+    }
+}
+
+#[test]
+fn coreference_promotion_is_strictly_additive() {
+    // An edge already present in `existing` for the same (from, kind, to) must NOT
+    // be re-emitted — the pass can only ADD links, never restate a higher-trust
+    // builder's edge (which would churn its confidence on upsert).
+    let user = ent(EntityKind::Username, "johnsmith", 0.8);
+    let email = ent(EntityKind::Email, "johnsmith@gmail.com", 0.8);
+    let ents = vec![user.clone(), email.clone()];
+
+    // First, what the pass would emit unconstrained.
+    let fresh = derive_coreferences(&ents, &[], "s");
+    let alias = fresh
+        .iter()
+        .find(|r| r.kind == RelationKind::AliasOf)
+        .expect("an alias edge");
+
+    // Now pre-seed that exact edge as "already built" — the pass must skip it.
+    let prior = vec![Relation::new(
+        alias.from_uid.as_str(),
+        alias.to_uid.as_str(),
+        RelationKind::AliasOf,
+        0.95, // a stronger builder's confidence — must be preserved (not restated)
+        "s",
+    )];
+    let after = derive_coreferences(&ents, &prior, "s");
+    assert!(
+        !after
+            .iter()
+            .any(|r| r.from_uid == alias.from_uid && r.kind == RelationKind::AliasOf),
+        "a pre-existing edge is never re-emitted"
+    );
+}
+
+#[test]
+fn coreference_promotion_ignores_weak_hypotheses() {
+    // Two unrelated people sharing only a first name never reach the high
+    // promotion threshold, so no spurious identity edge is created.
+    let a = ent(EntityKind::Person, "John Smith", 0.8);
+    let b = ent(EntityKind::Person, "John Citizen", 0.8);
+    assert!(
+        derive_coreferences(&[a, b], &[], "s").is_empty(),
+        "namesakes must not be fused into one identity"
+    );
+}
+
+#[test]
 fn residency_links_person_to_place_by_owner_and_tag() {
     use crate::core::entity::Evidence;
     // Owner-named address (qld_unclaimed style) → LocatedAt to that Person.
