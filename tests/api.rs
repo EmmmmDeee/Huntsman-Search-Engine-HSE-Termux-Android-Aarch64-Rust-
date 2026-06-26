@@ -625,6 +625,39 @@ async fn scan_network_synthesises_subject_graph() {
     }
 }
 
+#[tokio::test]
+async fn scan_identities_resolves_coreferences() {
+    // Unknown scan → 404, like the other `/scans/{id}/...` sub-resources.
+    let app = test_app("identities_nf");
+    let resp = app
+        .oneshot(get("/api/v1/scans/nope/identities"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    // A known scan → 200 with the co-reference envelope. The async engine may not
+    // have produced entities yet, but the shape is always present and well-formed.
+    let (app, sid) = create_scan("identities_ok").await;
+    let resp = app
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/identities?min_score=0.6"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = body_json(resp).await;
+    assert!(
+        body.get("coreferences")
+            .is_some_and(serde_json::Value::is_array),
+        "carries a coreferences array"
+    );
+    assert!(
+        body.get("count").is_some_and(serde_json::Value::is_u64),
+        "carries a count"
+    );
+    assert_eq!(body["min_score"], 0.6, "echoes the requested threshold");
+}
+
 // ── 5d. Proactive leads ───────────────────────────────────────────────────
 
 #[tokio::test]

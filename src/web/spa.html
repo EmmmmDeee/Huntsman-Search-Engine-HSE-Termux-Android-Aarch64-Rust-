@@ -616,6 +616,9 @@ const API = {
   // Subject network: the seed hub + its connections grouped/ranked server-side
   // (people, identifiers, aliases, locations, infrastructure) — the analyst view.
   network:   id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/network'),
+  // People-centric co-reference: which selectors (email/username/phone/person)
+  // name the same individual, scored by cross-identifier record linkage.
+  identities: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/identities'),
   // Proactive leads: ranked untapped pivots the scan surfaced but didn't pursue,
   // each a one-click follow-up scan.
   leads:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/leads'),

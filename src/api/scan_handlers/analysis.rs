@@ -228,3 +228,52 @@ pub async fn scan_network(
     let network = crate::core::network::synthesize(&entities, &relations);
     (StatusCode::OK, Json(network)).into_response()
 }
+
+/// `GET /api/v1/scans/{id}/identities` — people-centric **co-reference**
+/// resolution over the scan's entities.
+///
+/// Scores every pair of identity-bearing selectors (email / username / phone /
+/// person) by how strongly they appear to name the **same individual**
+/// ([`crate::core::coref::resolve_coreferences`]) — the cross-identifier
+/// record-linkage layer that complements the same-identifier dedup and the
+/// relation-graph clustering. Read-only; suggests, never mutates. Optional query
+/// params: `min_score` (emission threshold, default
+/// [`crate::core::coref::DEFAULT_MIN_SCORE`]) and `limit` (default 200, capped
+/// 1000).
+pub async fn scan_identities(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if let Some(resp) = super::scan_missing(&s, &id) {
+        return resp;
+    }
+    let min_score = params
+        .get("min_score")
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(crate::core::coref::DEFAULT_MIN_SCORE);
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(200)
+        .clamp(1, 1000);
+
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await;
+    let entities = match loaded {
+        Ok(Ok(ents)) => ents,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let corefs = crate::core::coref::resolve_coreferences(&entities, min_score, limit);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "min_score": min_score,
+            "count": corefs.len(),
+            "coreferences": corefs,
+        })),
+    )
+        .into_response()
+}

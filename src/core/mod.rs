@@ -10,6 +10,7 @@ pub mod classifier;
 pub mod classify_module;
 pub mod community;
 pub mod convex;
+pub mod coref;
 pub mod correlator;
 pub mod crypto;
 pub mod data_broker;

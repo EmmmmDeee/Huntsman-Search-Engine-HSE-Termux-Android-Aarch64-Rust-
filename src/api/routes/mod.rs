@@ -219,6 +219,12 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/scans/{id}/relations", get(scan_handlers::scan_relations))
         // Subject-centric relationship synthesis — powers the web UI Network view.
         .route("/scans/{id}/network", get(scan_handlers::scan_network))
+        // People-centric co-reference resolution — scores which selectors name the
+        // same individual (cross-identifier record linkage).
+        .route(
+            "/scans/{id}/identities",
+            get(scan_handlers::scan_identities),
+        )
         // Proactive next-best-action leads — powers the web UI Leads view.
         .route("/scans/{id}/leads", get(scan_handlers::scan_leads))
         // Chronological footprint reconstruction — powers the web UI Timeline view.
