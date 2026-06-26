@@ -30,18 +30,17 @@ pub(super) async fn cmd_radar(
 ) -> Result<()> {
     use std::collections::HashSet;
 
-    // Live radar is completely disabled until deliberately enabled in a place
-    // wholly separate from seed scans (the `feature.live_radar` toggle). It
-    // sweeps the operator's OWN device/surroundings — never a seed target — so a
-    // seed scan can neither reach nor accidentally activate it; only this manual
-    // opt-in can.
+    // The radar is armed by default — running `hse radar` IS the deliberate
+    // activation, so no prior opt-in is needed. The `feature.live_radar` toggle is
+    // now a kill-switch: it only refuses here if the operator has explicitly set it
+    // OFF. (Seed scans can never activate the sensors regardless — they hard-set
+    // `allow_live_sensors:false`; this gate only governs the radar command itself.)
     if !crate::util::settings::live_radar_enabled() {
         return Err(crate::core::error::Error::Other(
-            "live radar is disabled. It sweeps this device's own surroundings (WiFi / \
-             Bluetooth / cell / GPS / LAN), not a seed target, so it is off by default and \
-             kept separate from scans. Enable it deliberately:\n    \
-             hse config feature.live_radar on\nthen re-run `hse radar`  (disable again: \
-             hse config feature.live_radar off)."
+            "live radar is switched OFF. It sweeps this device's own surroundings (WiFi / \
+             Bluetooth / cell / GPS / LAN), not a seed target. It is armed by default; you have \
+             disabled it. Re-arm it:\n    \
+             hse config feature.live_radar on\nthen re-run `hse radar`."
                 .to_string(),
         ));
     }

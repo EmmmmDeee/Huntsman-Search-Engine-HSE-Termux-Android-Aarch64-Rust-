@@ -34,6 +34,11 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ### Changed
 - Web UI: removed the radar's forced "Seed type" choice — the Live Signal Radar
   requires no input whatsoever; one tap starts the continuous passive-signal sweep.
+- `feature.live_radar` now defaults **ON** (armed): the radar is the operator's own
+  deliberate action, so it needs no prior opt-in — a single button press runs it.
+  The toggle is now a kill-switch (set OFF to refuse the radar). The safety
+  invariant is unchanged: seed scans never set `allow_live_sensors`, so they can
+  never run the device sensors regardless of this default.
 
 ## [1.11.0] — 2026-06-25
 

@@ -328,17 +328,17 @@ pub async fn radar_sweep(
     State(s): State<Arc<AppState>>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    // Completely disabled until deliberately enabled in a place separate from
-    // seed scans (`feature.live_radar`). The radar surveys the host device's own
-    // surroundings, so it stays walled off from target scanning until opted in.
+    // Armed by default: hitting this endpoint IS the deliberate activation. The
+    // `feature.live_radar` toggle is a kill-switch — it only refuses here if the
+    // operator has explicitly switched the radar OFF. (Seed scans can never run the
+    // sensors regardless — they hard-set `allow_live_sensors:false`.)
     if !crate::util::settings::live_radar_enabled() {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({
-                "error": "live radar disabled",
-                "detail": "the live-sensor radar is off by default and separate from scans; \
-                           enable it deliberately before use",
-                "enable": "set the feature.live_radar toggle on (CLI: hse config feature.live_radar on)",
+                "error": "live radar switched off",
+                "detail": "the live-sensor radar is armed by default but has been switched off",
+                "enable": "re-arm it: set the feature.live_radar toggle on (CLI: hse config feature.live_radar on)",
             })),
         )
             .into_response();
@@ -370,18 +370,18 @@ pub async fn radar_sweep(
 /// passive: depth 0 means no pivoting onto external/active modules, so nothing
 /// but the device's own sensors ever runs. Returns the `live_id` to watch.
 ///
-/// Same activation wall as the one-shot sweep: gated behind `feature.live_radar`
-/// and `allow_live_sensors` (set here, server-side), so an ordinary scan can
-/// neither reach nor accidentally start it.
+/// Armed by default: this endpoint is the deliberate activation, so no prior
+/// opt-in is required. `allow_live_sensors` is set here (server-side); the
+/// `feature.live_radar` toggle is a kill-switch that only refuses if explicitly
+/// switched off. An ordinary scan can neither reach nor accidentally start it.
 pub async fn radar_live(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     if !crate::util::settings::live_radar_enabled() {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({
-                "error": "live radar disabled",
-                "detail": "the live-sensor radar is off by default and separate from scans; \
-                           enable it deliberately before use",
-                "enable": "set the feature.live_radar toggle on (CLI: hse config feature.live_radar on)",
+                "error": "live radar switched off",
+                "detail": "the live-sensor radar is armed by default but has been switched off",
+                "enable": "re-arm it: set the feature.live_radar toggle on (CLI: hse config feature.live_radar on)",
             })),
         )
             .into_response();

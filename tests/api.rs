@@ -472,27 +472,26 @@ async fn scan_create_rejects_invalid_target() {
 // ── 5b. Live Signal Radar (button activation) ─────────────────────────────
 
 #[tokio::test]
-async fn radar_sweep_is_refused_until_live_radar_is_enabled() {
-    // The live-sensor radar is completely disabled by default and walled off from
-    // seed scans: the radar button (`POST /api/v1/radar`) is refused until the
-    // operator deliberately turns on `feature.live_radar` in the separate
-    // settings surface — never via a scan. (What a *permitted* sweep queues —
-    // sensors only, a non-target seed, `allow_live_sensors` set — is covered by
-    // the `radar_scan_spec_activates_only_the_live_sensors` unit test.)
+async fn radar_sweep_activates_with_zero_input_by_default() {
+    // The live-sensor radar is armed by default: a bare `POST /api/v1/radar` with
+    // no body, no seed, no prior opt-in queues a sweep (the button press IS the
+    // activation). What a sweep queues — sensors only, a non-target seed,
+    // `allow_live_sensors` set — is covered by the
+    // `radar_scan_spec_activates_only_the_live_sensors` unit test.
     let app = test_app("radar");
     let resp = app.oneshot(post_json("/api/v1/radar", "")).await.unwrap();
     assert_eq!(
         resp.status(),
-        http::StatusCode::FORBIDDEN,
-        "live radar must be refused until manually enabled, separate from scans"
+        http::StatusCode::ACCEPTED,
+        "the radar must activate on a single request with no prior setup"
     );
 }
 
 #[tokio::test]
-async fn continuous_radar_is_refused_until_live_radar_is_enabled() {
-    // The continuous, zero-input radar (`POST /api/v1/radar/live`) shares the same
-    // activation wall as the one-shot sweep: refused until `feature.live_radar` is
-    // deliberately enabled. It takes no body — a bare POST is the entire request.
+async fn continuous_radar_activates_with_zero_input_by_default() {
+    // The continuous, zero-input radar (`POST /api/v1/radar/live`) takes no body,
+    // no target, no seed, no interval — a bare POST is the entire request — and
+    // starts a live session by default (armed, no prior opt-in).
     let app = test_app("radar_live");
     let resp = app
         .oneshot(post_json("/api/v1/radar/live", ""))
@@ -500,8 +499,14 @@ async fn continuous_radar_is_refused_until_live_radar_is_enabled() {
         .unwrap();
     assert_eq!(
         resp.status(),
-        http::StatusCode::FORBIDDEN,
-        "continuous radar must be refused until manually enabled, separate from scans"
+        http::StatusCode::ACCEPTED,
+        "the continuous radar must start on a single request with no prior setup"
+    );
+    let body = body_json(resp).await;
+    assert_eq!(body["mode"], "radar");
+    assert!(
+        body["live_id"].is_string(),
+        "a continuous radar returns a live_id to watch"
     );
 }
 

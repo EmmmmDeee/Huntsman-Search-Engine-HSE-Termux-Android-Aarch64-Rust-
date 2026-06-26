@@ -88,13 +88,17 @@ pub fn overrides() -> BTreeMap<String, bool> {
 /// `PUT /settings/toggles` validator all agree on what `feature.*` keys exist.
 pub const FEATURE_TOGGLES: &[(&str, bool)] = &[
     // Live-sensor radar (the device's own WiFi/Bluetooth/cell/GPS/LAN sweep, via
-    // `hse radar` and `POST /api/v1/radar`). Default OFF and **completely
-    // disabled** — it scans the operator's own surroundings, not a seed target,
-    // so it is deliberately walled off from seed-originated scans and must be
-    // enabled in this separate place before it will run anywhere:
-    // `hse config feature.live_radar on`. Seed scans never enable live sensors
-    // regardless of this toggle (`cli::scan` hard-sets `allow_live_sensors:false`).
-    ("feature.live_radar", false),
+    // `hse radar`, `POST /api/v1/radar` and `POST /api/v1/radar/live`). Default ON
+    // and armed: the radar is the operator's own deliberate action (the button /
+    // the command IS the activation), so it requires no prior opt-in — a single
+    // press runs it. This toggle is now a **kill-switch**: set it OFF
+    // (`hse config feature.live_radar off`) to refuse the radar entirely. The real
+    // safety invariant is independent of this toggle: seed scans NEVER enable live
+    // sensors (`cli::scan` hard-sets `allow_live_sensors:false`, and the engine
+    // dispatch gates the sensor modules on that per-scan flag, which only the radar
+    // spec sets), so an ordinary scan can never attribute the operator's own
+    // location/RF to a remote subject regardless of this default.
+    ("feature.live_radar", true),
     // Autonomous region-scoped search augmentation. Default OFF (queries stay
     // geolocation-neutral). Turning it on makes regional the baseline for every
     // scan; the per-scan `--regional` flag still forces it on for one scan.
@@ -130,13 +134,15 @@ pub const GAP_FILL_FEATURE: &str = "feature.gap_fill";
 /// key string so the CLI gate, the API gate, and the toggle registry can't drift.
 pub const LIVE_RADAR_FEATURE: &str = "feature.live_radar";
 
-/// Whether the live-sensor radar has been manually enabled. **Off by default**:
-/// the radar (`hse radar` / `POST /api/v1/radar`) scans the operator's own
-/// surroundings, so it is completely disabled until a deliberate opt-in here,
-/// kept separate from any seed-scan path. Both radar entry points consult this.
+/// Whether the live-sensor radar is armed. **On by default** — the radar is the
+/// operator's own deliberate action (the button / `hse radar` command IS the
+/// activation), so it needs no prior opt-in; this is a kill-switch that an
+/// operator can set OFF to refuse the radar entirely. Independent of the real
+/// safety invariant (seed scans never set `allow_live_sensors`, so they can never
+/// run the sensors regardless of this default). All radar entry points consult it.
 #[must_use]
 pub fn live_radar_enabled() -> bool {
-    get_bool(LIVE_RADAR_FEATURE, false)
+    get_bool(LIVE_RADAR_FEATURE, true)
 }
 
 /// The feature toggles with their current effective state (override else
