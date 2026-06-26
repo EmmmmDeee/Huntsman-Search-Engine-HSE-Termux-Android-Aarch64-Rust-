@@ -531,6 +531,36 @@ async fn autonomous_scan_requires_no_input() {
     assert_eq!(body["mode"], "autonomous");
 }
 
+#[tokio::test]
+async fn autonomous_plan_previews_the_queue_without_dispatching() {
+    // `GET /api/v1/scan/auto/plan` is read-only: it returns the diversity-aware
+    // investigation queue the platform would work down, dispatching nothing. On a
+    // fresh store the base is empty, so the queue is empty — but the envelope is
+    // always well-formed (mode + coverage counts + queue array), never a 500.
+    let app = test_app("auto_plan");
+    let resp = app
+        .oneshot(get("/api/v1/scan/auto/plan?limit=5&diversity=0.5"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = body_json(resp).await;
+    assert_eq!(body["mode"], "autonomous");
+    assert!(
+        body.get("queue").is_some_and(serde_json::Value::is_array),
+        "plan carries a queue array"
+    );
+    for k in ["considered", "kinds_covered"] {
+        assert!(
+            body.get(k).is_some_and(serde_json::Value::is_u64),
+            "plan carries a {k} count"
+        );
+    }
+    assert!(
+        body["queue"].as_array().is_some_and(|q| q.len() <= 5),
+        "the limit param caps the queue length"
+    );
+}
+
 // ── 5c. Subject network synthesis ─────────────────────────────────────────
 
 #[tokio::test]

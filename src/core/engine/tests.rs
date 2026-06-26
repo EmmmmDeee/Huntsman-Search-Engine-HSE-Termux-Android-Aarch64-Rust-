@@ -2101,3 +2101,94 @@ fn rank_autonomous_targets_orders_excludes_and_truncates() {
     assert_eq!(top1.len(), 1);
     assert_eq!(top1[0].kind, TargetKind::Email);
 }
+
+/// With `diversity = 0` the sweep planner reproduces the pure score ranking; with
+/// positive diversity it interleaves kinds so the loop doesn't tunnel a whole
+/// budget on the single most-represented kind.
+#[test]
+fn plan_autonomous_sweep_interleaves_kinds_under_diversity() {
+    use super::{DEFAULT_SWEEP_DIVERSITY, plan_autonomous_sweep, rank_autonomous_targets};
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::scan::TargetKind;
+    use std::collections::HashSet;
+
+    // Three emails (strongest pivot) and one phone. Pure score order would place
+    // the phone last (behind all three emails); diversity should pull it forward.
+    let entities = vec![
+        Entity::new(EntityKind::Email, "a@x.com", 0.9, "s"),
+        Entity::new(EntityKind::Email, "b@x.com", 0.85, "s"),
+        Entity::new(EntityKind::Email, "c@x.com", 0.8, "s"),
+        Entity::new(EntityKind::Phone, "+61400111222", 0.9, "s"),
+    ];
+    let degree_of = |_uid: &str| 1usize;
+    let exclude = HashSet::new();
+
+    // diversity = 0 ⇒ identical order to the pure ranker.
+    let flat = plan_autonomous_sweep(&entities, degree_of, &exclude, 10, 0.0);
+    let ranked = rank_autonomous_targets(&entities, degree_of, &exclude, 10);
+    assert_eq!(flat.considered, 4);
+    assert_eq!(flat.kinds_covered, 2, "email + phone represented");
+    assert_eq!(
+        flat.queue.iter().map(|t| t.kind).collect::<Vec<_>>(),
+        ranked.iter().map(|t| t.kind).collect::<Vec<_>>(),
+        "zero diversity must match pure score order"
+    );
+
+    // Positive diversity ⇒ the phone is promoted ahead of the weaker emails.
+    let spread = plan_autonomous_sweep(&entities, degree_of, &exclude, 10, DEFAULT_SWEEP_DIVERSITY);
+    assert_eq!(
+        spread.queue[0].kind,
+        TargetKind::Email,
+        "strongest still first"
+    );
+    let phone_pos = spread
+        .queue
+        .iter()
+        .position(|t| t.kind == TargetKind::Phone)
+        .expect("phone is in the queue");
+    assert!(
+        phone_pos < 3,
+        "diversity pulls the lone phone ahead of the third email (pos {phone_pos})"
+    );
+    // Every candidate is still present — diversity reorders, never drops.
+    assert_eq!(spread.queue.len(), 4);
+}
+
+/// The sweep planner honours `exclude` (loop convergence) and the `limit` cap, and
+/// reports coverage honestly.
+#[test]
+fn plan_autonomous_sweep_respects_exclude_and_limit() {
+    use super::plan_autonomous_sweep;
+    use crate::core::entity::{Entity, EntityKind};
+    use std::collections::HashSet;
+
+    let entities = vec![
+        Entity::new(EntityKind::Email, "a@x.com", 0.9, "s"),
+        Entity::new(EntityKind::Phone, "+61400111222", 0.9, "s"),
+        Entity::new(EntityKind::Username, "alice", 0.7, "s"),
+    ];
+    let degree_of = |_uid: &str| 1usize;
+
+    // Exclude the top email: it must not reappear, and coverage drops accordingly.
+    let top = plan_autonomous_sweep(&entities, degree_of, &HashSet::new(), 10, 0.5);
+    let mut ex = HashSet::new();
+    ex.insert(top.queue[0].uid.clone());
+    let after = plan_autonomous_sweep(&entities, degree_of, &ex, 10, 0.5);
+    assert_eq!(
+        after.considered, 2,
+        "the excluded target is not even considered"
+    );
+    assert!(
+        after.queue.iter().all(|t| t.uid != top.queue[0].uid),
+        "a loop never re-seeds an excluded target"
+    );
+
+    // `limit` caps the queue; kinds_covered reflects only what was queued.
+    let capped = plan_autonomous_sweep(&entities, degree_of, &HashSet::new(), 2, 0.5);
+    assert_eq!(capped.queue.len(), 2);
+    assert_eq!(
+        capped.considered, 3,
+        "all three were considered, two were queued"
+    );
+    assert!(capped.kinds_covered <= 2);
+}

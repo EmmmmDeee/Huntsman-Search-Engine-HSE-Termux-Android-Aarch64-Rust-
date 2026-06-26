@@ -141,6 +141,78 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         .into_response()
 }
 
+/// `GET /api/v1/scan/auto/plan` — preview the autonomous investigation queue
+/// **without dispatching anything**.
+///
+/// The read-only counterpart to [`scan_auto`]: it ranks the collected base with
+/// the same multi-factor priority, then applies diversity-aware
+/// ([`crate::core::engine::plan_autonomous_sweep`]) selection so the queue spreads
+/// effort across identifier kinds instead of tunnelling on the single
+/// most-represented one. Lets the operator (or the SPA) see exactly what the
+/// platform would investigate next, and in what order, before committing. Optional
+/// query params: `limit` (queue length, default 20, capped at 200) and `diversity`
+/// (0.0 = pure score order, higher interleaves kinds; default
+/// [`crate::core::engine::DEFAULT_SWEEP_DIVERSITY`]).
+pub async fn scan_auto_plan(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    use std::collections::HashSet;
+
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(20)
+        .clamp(1, 200);
+    let diversity = params
+        .get("diversity")
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(crate::core::engine::DEFAULT_SWEEP_DIVERSITY);
+
+    let store = Arc::clone(&s.store);
+    let planned = tokio::task::spawn_blocking(
+        move || -> crate::core::error::Result<crate::core::engine::AutonomousPlan> {
+            let scans = store.list_scans(50)?;
+            let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
+            let mut seen: HashSet<String> = HashSet::new();
+            for sc in &scans {
+                for e in store.entities_for_scan(&sc.id)? {
+                    if seen.insert(e.uid.clone()) {
+                        pool.push(e);
+                    }
+                }
+            }
+            let exclude = HashSet::new();
+            Ok(crate::core::engine::plan_autonomous_sweep(
+                &pool,
+                |uid| store.observation_count(uid).unwrap_or(0),
+                &exclude,
+                limit,
+                diversity,
+            ))
+        },
+    )
+    .await;
+
+    let plan = match planned {
+        Ok(Ok(p)) => p,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&crate::core::error::Error::Other(e.to_string())),
+    };
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "mode": "autonomous",
+            "diversity": diversity,
+            "considered": plan.considered,
+            "kinds_covered": plan.kinds_covered,
+            "queue": plan.queue,
+        })),
+    )
+        .into_response()
+}
+
 pub async fn scan_cancel(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,

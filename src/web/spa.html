@@ -640,6 +640,9 @@ const API = {
   // Fully autonomous scan — NO seed input; the server auto-selects the highest
   // cross-investigation-leverage entity from the local base and investigates it.
   autoScan:  ()=>API._req('/api/v1/scan/auto',{method:'POST'}),
+  // Read-only preview of the diversity-aware autonomous investigation queue — what
+  // the platform would investigate next, in order. Dispatches nothing.
+  autoPlan:  (limit,diversity)=>API._req('/api/v1/scan/auto/plan?limit='+(limit||20)+'&diversity='+(diversity==null?0.5:diversity)),
   // Forward-only scan-plan preview: which modules a seed engages, before scanning.
   plan:      value=>API._req('/api/v1/plan?value='+encodeURIComponent(value)),
   // Raw-text upload (not JSON): POST a dossier file's contents to be parsed and

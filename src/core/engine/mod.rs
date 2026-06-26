@@ -2096,5 +2096,108 @@ pub fn rank_autonomous_targets<F: Fn(&str) -> usize>(
     out
 }
 
+/// Default diversity weight for [`plan_autonomous_sweep`]. `0.0` reproduces the
+/// pure score ordering of [`rank_autonomous_targets`]; larger values spread
+/// investigative effort across more identifier kinds. `0.5` balances "investigate
+/// the single strongest target" against "don't tunnel a whole budget on one kind".
+pub const DEFAULT_SWEEP_DIVERSITY: f64 = 0.5;
+
+/// A diversity-aware autonomous investigation plan — the ordered queue the
+/// continuous, no-operator-input loop works down, plus the coverage it achieves.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct AutonomousPlan {
+    /// Ordered investigation queue, strongest marginal value first.
+    pub queue: Vec<AutonomousTarget>,
+    /// Total pivotable candidates considered before the `limit` cut.
+    pub considered: usize,
+    /// Distinct identifier kinds represented in `queue` — the breadth of the
+    /// intelligence base this plan develops.
+    pub kinds_covered: usize,
+}
+
+/// Build a diversity-aware autonomous investigation plan over `entities`.
+///
+/// [`rank_autonomous_targets`] orders by raw composite score, so a base dominated
+/// by one kind (say a leaked list of forty emails) would have the loop burn its
+/// whole budget on emails before ever pivoting a phone or username. A real
+/// investigator spreads effort to maximise the breadth of leads developed per unit
+/// of work. This planner does the same with a Maximal-Marginal-Relevance–style
+/// greedy selection: at each step it takes the candidate maximising
+/// `score / (1 + diversity × already_selected_of_that_kind)`, so each additional
+/// target of an already-represented kind is progressively discounted while a fresh
+/// kind keeps its full score. `diversity = 0.0` reproduces pure score order; larger
+/// values interleave kinds harder.
+///
+/// Same gates as [`rank_autonomous_targets`] — only pivotable
+/// [`history::is_cross_scan_candidate`] identifiers, with `exclude` honoured so the
+/// continuous loop converges. Deterministic: ties broken by raw score then UID.
+/// Truncated to `limit`. Pure given `degree_of` — no I/O of its own. A negative
+/// `diversity` is floored to `0.0`.
+pub fn plan_autonomous_sweep<F: Fn(&str) -> usize>(
+    entities: &[Entity],
+    degree_of: F,
+    exclude: &std::collections::HashSet<String>,
+    limit: usize,
+    diversity: f64,
+) -> AutonomousPlan {
+    // 1) Score every eligible candidate once (same gate as rank_autonomous_targets).
+    let mut pool: Vec<AutonomousTarget> = entities
+        .iter()
+        .filter(|e| !exclude.contains(&e.uid) && history::is_cross_scan_candidate(e))
+        .filter_map(|e| {
+            let kind = crate::core::scan::TargetKind::from_entity_kind(&e.kind)?;
+            let degree = degree_of(&e.uid);
+            Some(AutonomousTarget {
+                uid: e.uid.clone(),
+                kind,
+                value: e.value.clone(),
+                score: autonomous_target_score(&e.kind, degree, e.c_effective()),
+                cross_scan_degree: degree,
+            })
+        })
+        .collect();
+    let considered = pool.len();
+    let div = diversity.max(0.0);
+    let cap = limit.min(considered);
+
+    // 2) Greedy MMR selection: take the best marginal value, discount its kind, repeat.
+    let mut queue: Vec<AutonomousTarget> = Vec::with_capacity(cap);
+    let mut per_kind: HashMap<crate::core::scan::TargetKind, usize> = HashMap::new();
+    while queue.len() < cap && !pool.is_empty() {
+        let mut best_idx = 0usize;
+        let mut best_marginal = f64::NEG_INFINITY;
+        let mut best_score = f64::NEG_INFINITY;
+        let mut best_uid: &str = "";
+        for (i, c) in pool.iter().enumerate() {
+            let seen = per_kind.get(&c.kind).copied().unwrap_or(0);
+            let marginal = c.score / (1.0 + div * seen as f64);
+            // Deterministic precedence: higher marginal, then higher raw score, then
+            // lexicographically smaller UID.
+            let better = if (marginal - best_marginal).abs() > f64::EPSILON {
+                marginal > best_marginal
+            } else if (c.score - best_score).abs() > f64::EPSILON {
+                c.score > best_score
+            } else {
+                c.uid.as_str() < best_uid
+            };
+            if best_marginal == f64::NEG_INFINITY || better {
+                best_idx = i;
+                best_marginal = marginal;
+                best_score = c.score;
+                best_uid = c.uid.as_str();
+            }
+        }
+        let chosen = pool.swap_remove(best_idx);
+        *per_kind.entry(chosen.kind).or_insert(0) += 1;
+        queue.push(chosen);
+    }
+
+    AutonomousPlan {
+        queue,
+        considered,
+        kinds_covered: per_kind.len(),
+    }
+}
+
 #[cfg(test)]
 mod tests;
