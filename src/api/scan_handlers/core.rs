@@ -213,6 +213,127 @@ pub async fn scan_auto_plan(
         .into_response()
 }
 
+/// `POST /api/v1/scan/auto/sweep` — fully autonomous **multi-target** investigation,
+/// NO seed input.
+///
+/// The capstone of the autonomous loop: where [`scan_auto`] dispatches the single
+/// strongest target, this plans the diversity-aware queue
+/// ([`crate::core::engine::plan_autonomous_sweep`]) and dispatches its top
+/// `breadth` targets in one input-free call — so a single activation investigates a
+/// *spread* of the highest-value leads across identifier kinds, not just one. Each
+/// dispatched scan is an ordinary comprehensive scan (so cancel / rerun / export all
+/// work identically); the multi-dispatch mirrors the established
+/// [`scan_batch`] path. Bounded by `breadth` (default 5,
+/// capped at 25) so it can never flood a low-RAM device. Optional query params:
+/// `breadth` and `diversity` (see [`scan_auto_plan`]). Returns 202 with the
+/// dispatched scans, or a clean 422 (never a 500) when the base holds nothing to
+/// investigate yet.
+pub async fn scan_auto_sweep(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    use std::collections::HashSet;
+
+    let breadth = params
+        .get("breadth")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(5)
+        .clamp(1, 25);
+    let diversity = params
+        .get("diversity")
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(crate::core::engine::DEFAULT_SWEEP_DIVERSITY);
+
+    let store = Arc::clone(&s.store);
+    let planned = tokio::task::spawn_blocking(
+        move || -> crate::core::error::Result<crate::core::engine::AutonomousPlan> {
+            let scans = store.list_scans(50)?;
+            let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
+            let mut seen: HashSet<String> = HashSet::new();
+            for sc in &scans {
+                for e in store.entities_for_scan(&sc.id)? {
+                    if seen.insert(e.uid.clone()) {
+                        pool.push(e);
+                    }
+                }
+            }
+            let exclude = HashSet::new();
+            Ok(crate::core::engine::plan_autonomous_sweep(
+                &pool,
+                |uid| store.observation_count(uid).unwrap_or(0),
+                &exclude,
+                breadth,
+                diversity,
+            ))
+        },
+    )
+    .await;
+
+    let plan = match planned {
+        Ok(Ok(p)) => p,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&crate::core::error::Error::Other(e.to_string())),
+    };
+
+    if plan.queue.is_empty() {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({
+                "error": "nothing to investigate autonomously yet",
+                "detail": "the local intelligence base holds no high-leverage identifier; \
+                           run one seeded scan to seed it, or set HUNTSMAN_DEFAULT_SEED",
+                "mode": "autonomous",
+            })),
+        )
+            .into_response();
+    }
+
+    // Dispatch each planned target as an ordinary comprehensive scan, de-duplicating
+    // by derived scan id so two queue entries that resolve to the same scan don't
+    // double-spawn (idempotent like rerun).
+    let mut dispatched = Vec::with_capacity(plan.queue.len());
+    let mut spawned: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &plan.queue {
+        let target = Target::new(t.kind, t.value.clone());
+        let sid = scan_id(t.kind.canonical_str(), &t.value);
+        if !spawned.insert(sid.clone()) {
+            continue;
+        }
+        let scan = Scan::new(sid.clone(), target.clone())
+            .with_options(crate::core::scan::default_scan_options());
+        if let Err(e) = s.store.upsert_scan(&scan) {
+            dispatched.push(json!({ "error": e.to_string(), "value": t.value }));
+            continue;
+        }
+        spawn_scan(&s, scan, target);
+        dispatched.push(json!({
+            "scan_id": sid,
+            "status": "queued",
+            "kind": t.kind.canonical_str(),
+            "value": t.value,
+            "priority_score": t.score,
+        }));
+    }
+
+    info!(
+        count = dispatched.len(),
+        kinds_covered = plan.kinds_covered,
+        "autonomous sweep queued — multi-target, no seed input"
+    );
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "mode": "autonomous",
+            "diversity": diversity,
+            "considered": plan.considered,
+            "kinds_covered": plan.kinds_covered,
+            "dispatched": dispatched,
+            "count": dispatched.len(),
+        })),
+    )
+        .into_response()
+}
+
 pub async fn scan_cancel(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,

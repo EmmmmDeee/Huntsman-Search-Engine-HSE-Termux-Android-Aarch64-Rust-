@@ -167,6 +167,9 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // Read-only preview of the diversity-aware autonomous investigation queue:
         // what the platform would investigate next, in order — dispatches nothing.
         .route("/scan/auto/plan", get(scan_handlers::scan_auto_plan))
+        // Fully autonomous MULTI-target sweep: plan the diversity-aware queue and
+        // dispatch its top `breadth` targets in one input-free call (NO seed).
+        .route("/scan/auto/sweep", post(scan_handlers::scan_auto_sweep))
         // Forward-only scan-plan preview: which modules a seed engages, no scan run.
         .route("/plan", get(scan_handlers::plan_preview))
         // Live-radar button: ONE autonomous device-sensor sweep, no target seed.

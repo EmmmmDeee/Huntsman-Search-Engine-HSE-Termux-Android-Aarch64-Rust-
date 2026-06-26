@@ -561,6 +561,37 @@ async fn autonomous_plan_previews_the_queue_without_dispatching() {
     );
 }
 
+#[tokio::test]
+async fn autonomous_sweep_dispatches_without_input() {
+    // `POST /api/v1/scan/auto/sweep` takes NO body, NO seed — the platform plans the
+    // diversity-aware queue and dispatches its top `breadth` targets in one call. On
+    // a fresh store with an empty base it cleanly declines (422 + guidance), never a
+    // 500; either way the response is tagged the autonomous mode and is well-formed.
+    let app = test_app("auto_sweep");
+    let resp = app
+        .oneshot(post_json("/api/v1/scan/auto/sweep?breadth=3", ""))
+        .await
+        .unwrap();
+    let status = resp.status();
+    assert!(
+        status == http::StatusCode::ACCEPTED || status == http::StatusCode::UNPROCESSABLE_ENTITY,
+        "autonomous sweep must accept (202) or cleanly decline (422), got {status}"
+    );
+    let body = body_json(resp).await;
+    assert_eq!(body["mode"], "autonomous");
+    if status == http::StatusCode::ACCEPTED {
+        assert!(
+            body.get("dispatched")
+                .is_some_and(serde_json::Value::is_array),
+            "an accepted sweep lists the scans it dispatched"
+        );
+        assert!(
+            body["dispatched"].as_array().is_some_and(|d| d.len() <= 3),
+            "the breadth param bounds how many scans are dispatched"
+        );
+    }
+}
+
 // ── 5c. Subject network synthesis ─────────────────────────────────────────
 
 #[tokio::test]
