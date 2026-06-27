@@ -389,6 +389,12 @@ const MEGA_DOMAINS: &[&str] = &[
     "realestate.com.au",
     "seek.com.au",
     "yellowpages.com.au",
+    "carsales.com.au",
+    "domain.com.au",
+    "gumtree.com.au",
+    "ozbargain.com.au",
+    "truelocal.com.au",
+    "whirlpool.net.au",
     // Additional global platforms
     "archive.org",
     "mastodon.social",
