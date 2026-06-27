@@ -25,6 +25,26 @@ pub(super) fn push_stealer_entity(
     result.push(e);
 }
 
+/// Expand one OathNet stealer-log record into its actionable leads.
+///
+/// From a single infostealer row this mints, each gated on an objective check
+/// and deduplicated through `seen`:
+///   * the **login `Url`** — where the credentials were captured, the most
+///     actionable pivot — but deliberately NOT its host as a `Domain` (a
+///     third-party service the subject merely has an account on, whose
+///     enumeration is noise; see the inline note);
+///   * any `email` array values, pushed as target-true `Email`s (the row came
+///     from a search on the subject's own identity);
+///   * a `username` that is itself an email, so it re-enters the email
+///     pipeline (HIBP/emailrep/epieos);
+///   * `domain` array values that pass [`looks_like_domain`](crate::util::domains::looks_like_domain),
+///     filtering out reverse-DNS app packages and bare IPs;
+///   * a `username@url` `Credential` pairing.
+///
+/// A redacted `UPGRADE_TO_SEE` password is never emitted verbatim — only a
+/// first/last-character hint (taken char-wise so a multi-byte value can't
+/// panic the slice) and a `password_redacted` marker. Shared evidence carries
+/// the `api_key_origin` fingerprint for provenance.
 pub(super) fn extract_stealer_entities(
     item: &Value,
     scan_id: &str,
