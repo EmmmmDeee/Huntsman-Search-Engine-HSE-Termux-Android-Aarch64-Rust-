@@ -7,7 +7,9 @@
 //!
 //! Workflow when a `Url` target arrives:
 //!   1. Skip non-image URLs by file extension (`.jpg`, `.jpeg`,
-//!      `.png`, `.tif`, `.tiff`, `.webp`, `.heic`).
+//!      `.tif`, `.tiff`, `.webp`, `.heic`). `.png` is deliberately
+//!      excluded (see [`IMAGE_EXTS`]): PNGs almost never carry EXIF GPS,
+//!      so fetching them only wastes quota.
 //!   2. Fetch the bytes via `ctx.http` (capped at 8 MB so a
 //!      misclassified video URL doesn't drain memory).
 //!   3. Parse with `kamadak-exif`. Returns nothing if no EXIF tags or
