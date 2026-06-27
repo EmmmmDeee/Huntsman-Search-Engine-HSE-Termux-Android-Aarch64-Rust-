@@ -61,19 +61,24 @@ pub(super) fn primary_entities(
         if !occ.is_empty() {
             ev = ev.with_attr("occupation_qids", occ.join(","));
         }
-        // P39: position held — the politically-exposed-person (PEP) signal. A P39
-        // claim means the subject currently or formerly held a prominent public
-        // office (member of parliament, minister, judge, ambassador, central-bank
-        // governor, head of state, …) — the FATF definition of a PEP, and exactly
-        // the property OpenSanctions itself uses to derive PEP status. Flag the
-        // person so an investigator applies elevated due diligence and the graph
-        // can prioritise the lead; the position Q-IDs are kept for resolution.
-        // This is an OSINT SIGNAL for verification, never a sanctions determination.
+        // PEP (politically-exposed-person) signal, from the two Wikidata sources
+        // OpenSanctions itself uses to derive PEP status:
+        //   * P39 "position held" — the subject currently/formerly held a prominent
+        //     public office (member of parliament, minister, judge, ambassador,
+        //     central-bank governor, head of state, …) — the FATF PEP definition;
+        //   * P106 "occupation" == Q82955 (politician) — catches a politician whose
+        //     specific office isn't recorded as a P39 (Wikidata stubs, between terms).
+        // On either, flag the person for elevated due diligence and lead priority,
+        // keeping the position Q-IDs for resolution. An OSINT SIGNAL for an analyst
+        // to verify, never a sanctions determination.
         let positions = claim_entity_ids(entity, "P39");
-        if !positions.is_empty() {
+        let is_politician = occ.iter().any(|q| q == "Q82955");
+        if !positions.is_empty() || is_politician {
             head.tag("pep");
             head.tag("politically-exposed");
-            ev = ev.with_attr("position_held_qids", positions.join(","));
+            if !positions.is_empty() {
+                ev = ev.with_attr("position_held_qids", positions.join(","));
+            }
         }
     }
 

@@ -236,6 +236,36 @@ fn person_with_position_held_is_flagged_pep() {
 }
 
 #[test]
+fn politician_occupation_is_flagged_pep_even_without_position() {
+    // P106 occupation == Q82955 (politician) with NO P39 position still flags the
+    // person PEP — covers a politician between terms or a Wikidata stub. No P39 ⇒
+    // no `position_held_qids` attribute, but the pep tags are present.
+    let body = serde_json::json!({
+        "labels": {"en": {"value": "Sam Member"}},
+        "claims": {
+            "P31": [{"mainsnak": {"datavalue": {"value": {"id": "Q5"}}}}],
+            "P106": [{"mainsnak": {"datavalue": {"value": {"id": "Q82955"}}}}]
+        }
+    });
+    let ents = primary_entities("Q3", "Sam Member", &body, TargetKind::FullName, "s");
+    let head = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("a Person head entity");
+    assert!(
+        head.tags.iter().any(|t| t == "pep"),
+        "tags: {:?}",
+        head.tags
+    );
+    assert!(head.tags.iter().any(|t| t == "politically-exposed"));
+    assert!(
+        !head.evidence[0]
+            .attributes
+            .contains_key("position_held_qids")
+    );
+}
+
+#[test]
 fn person_without_position_held_is_not_pep() {
     let body = serde_json::json!({
         "labels": {"en": {"value": "Jane Citizen"}},
