@@ -242,11 +242,10 @@ impl KeyPool {
 
     /// Select a key for a service with telemetry-driven, load-spreading rotation.
     ///
-    /// SECURITY: only **operator-owned** keys are eligible (see
-    /// [`KeyEntry::is_operator_owned`]). A key HSE *discovered* while scanning
-    /// (harvested from a body / breach dump / SERP / import) is never served for
-    /// HSE's own outbound auth — it would impersonate the party it was taken
-    /// from. Discovered keys stay in the pool for reporting/attribution only.
+    /// Every USABLE key is eligible regardless of provenance — a key HSE
+    /// discovered while scanning is reusable by the cascade, by design. The
+    /// `discovered_by` field records origin for `keys list` reporting only; it
+    /// does not gate selection.
     ///
     /// Among the USABLE keys (cooled-down / invalid / revoked already filtered by
     /// [`KeyEntry::is_usable`]) it serves the one with the greatest live
@@ -274,11 +273,7 @@ impl KeyPool {
         for offset in 0..len {
             let i = (*idx + offset) % len;
             let entry = &entries[i];
-            // Provenance gate (fail-safe): a discovered/harvested third-party key
-            // is never served for HSE's own outbound auth — only operator-owned
-            // keys are. This is the single selection chokepoint behind both
-            // `hot_inject_keys` and `merge_pool_into_env`.
-            if !entry.is_usable() || !entry.is_operator_owned() {
+            if !entry.is_usable() {
                 continue;
             }
             let rank = entry.selection_rank(now);

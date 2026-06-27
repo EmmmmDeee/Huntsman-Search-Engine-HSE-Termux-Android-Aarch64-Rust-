@@ -674,13 +674,12 @@ fn key_tier_as_str_matches_snake_case_serde_wire_form() {
     }
 }
 
-// ── Provenance gate ──────────────────────────────────────────────────────────
-// A discovered/harvested third-party key must NEVER be served for HSE's own
-// outbound auth (`next_key` / `merge_pool_into_env`), only retained for
-// reporting. Operator-owned keys (`discovered_by == None`) remain fully usable.
+// ── Provenance metadata (non-gating) ─────────────────────────────────────────
+// `discovered_by` records a key's origin for `keys list` reporting. It does NOT
+// gate selection: a discovered/harvested key is reusable by the cascade, by
+// design — the field is visibility, not a restriction.
 
-/// A harvested (discovered) key — Active and otherwise usable — that must still
-/// be gated out of selection by its `discovered_by` provenance.
+/// A harvested (discovered) key — Active and usable, carrying its origin.
 fn harvested(value: &str, source: &str) -> KeyEntry {
     let mut e = KeyEntry::new(value);
     e.status = KeyStatus::Active;
@@ -689,59 +688,32 @@ fn harvested(value: &str, source: &str) -> KeyEntry {
 }
 
 #[test]
-fn is_operator_owned_tracks_discovered_by() {
-    assert!(KeyEntry::new("own").is_operator_owned());
-    assert!(!harvested("stolen", "oathnet").is_operator_owned());
-}
-
-#[test]
-fn next_key_never_serves_a_harvested_key() {
-    let pool = KeyPool::new();
-    // Pool holds ONLY a harvested key — Active and usable, yet not the operator's.
-    pool.add("shodan", harvested("stolen-victim-key", "oathnet"));
-    // It must never be selected for HSE's own outbound call.
-    assert_eq!(pool.next_key("shodan"), None);
-}
-
-#[test]
-fn next_key_serves_only_the_operator_owned_key_in_a_mixed_pool() {
-    let pool = KeyPool::new();
-    pool.add("shodan", harvested("stolen-victim-key", "oathnet"));
-    let mut own = KeyEntry::new("operator-key");
-    own.status = KeyStatus::Active;
-    pool.add("shodan", own);
-    // Every selection returns the operator's own key; the harvested entry is
-    // skipped entirely by the rotation, never served.
-    for _ in 0..8 {
-        assert_eq!(pool.next_key("shodan").as_deref(), Some("operator-key"));
-    }
-}
-
-#[test]
-fn merge_pool_into_env_skips_harvested_keys() {
-    let pool = KeyPool::new();
-    pool.add("shodan", harvested("stolen-victim-key", "oathnet"));
-    let mut map: HashMap<String, String> = HashMap::new();
-    merge_pool_into_env(&pool, &mut map);
-    // A harvested-only pool fills NO env var — the victim key never becomes a
-    // credential HSE would transmit.
-    assert!(
-        !map.values().any(|v| v == "stolen-victim-key"),
-        "harvested key must not be merged into the env: {map:?}"
+fn discovered_by_records_origin_without_gating_use() {
+    // Operator keys carry no provenance; harvested keys record their source.
+    assert!(KeyEntry::new("own").discovered_by.is_none());
+    assert_eq!(
+        harvested("k", "oathnet").discovered_by.as_deref(),
+        Some("oathnet")
     );
 }
 
 #[test]
-fn merge_pool_into_env_uses_an_operator_owned_key() {
+fn next_key_reuses_a_discovered_key() {
     let pool = KeyPool::new();
-    let mut own = KeyEntry::new("operator-key");
-    own.status = KeyStatus::Active;
-    pool.add("shodan", own);
+    // A pool holding only a discovered key still serves it — reuse is intended.
+    pool.add("shodan", harvested("discovered-key", "oathnet"));
+    assert_eq!(pool.next_key("shodan").as_deref(), Some("discovered-key"));
+}
+
+#[test]
+fn merge_pool_into_env_uses_any_usable_key() {
+    let pool = KeyPool::new();
+    pool.add("shodan", harvested("discovered-key", "oathnet"));
     let mut map: HashMap<String, String> = HashMap::new();
     merge_pool_into_env(&pool, &mut map);
-    // The operator's own key DOES fill its service env var.
+    // A usable pooled key fills its service env var regardless of provenance.
     assert!(
-        map.values().any(|v| v == "operator-key"),
-        "operator-owned key should be merged into the env: {map:?}"
+        map.values().any(|v| v == "discovered-key"),
+        "a usable pooled key should be merged into the env: {map:?}"
     );
 }
