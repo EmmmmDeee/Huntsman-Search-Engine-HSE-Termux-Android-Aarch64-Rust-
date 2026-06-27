@@ -395,6 +395,16 @@ const MEGA_DOMAINS: &[&str] = &[
     "ozbargain.com.au",
     "truelocal.com.au",
     "whirlpool.net.au",
+    // AU news mastheads — a subject named/quoted in the press is co-occurrence
+    // noise, not their own domain.
+    "afr.com",
+    "couriermail.com.au",
+    "dailytelegraph.com.au",
+    "heraldsun.com.au",
+    "sbs.com.au",
+    "theage.com.au",
+    "theaustralian.com.au",
+    "thewest.com.au",
     // Additional global platforms
     "archive.org",
     "mastodon.social",
