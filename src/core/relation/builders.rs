@@ -903,6 +903,77 @@ pub fn derive_kinship(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     out
 }
 
+/// Confidence damp for a geo-corroborated common-surname family lead — a shared
+/// surname AND a shared AU town is meaningful corroboration, but a populous
+/// postcode can still hold unrelated namesakes, so it stays a damped candidate
+/// lead (just below the distinctive-surname [`KINSHIP_DAMP`]).
+const REGIONAL_KINSHIP_DAMP: f64 = 0.45;
+
+/// Derive `AssociatedWith` kinship-candidate edges between same-surname Person
+/// entities that [`derive_kinship`] deliberately drops — those sharing a **COMMON**
+/// surname — when a shared **Australian town** (identical postcode,
+/// [`crate::core::geo_family::au_postcode`]) corroborates the link.
+///
+/// `derive_kinship` skips common surnames (Smith, Nguyen, Wang…) because pairing
+/// every stranger who carries one would manufacture O(n²) false edges — but that
+/// silently drops the genuine families of the *majority* of Australians, whose
+/// surnames are common. A shared specific postcode is the corroboration that makes
+/// the link safe: two `Smith`s in the same town are a real associate lead, where
+/// two `Smith`s in different states are not. This is the geo-gated complement that
+/// recovers those families without reintroducing the false-positive flood.
+///
+/// **Strictly additive / disjoint**: it fires *only* for common surnames (exactly
+/// the set `derive_kinship` skips) and only on a shared postcode, so it never
+/// touches an edge `derive_kinship` emitted. Distinct people only (different UID
+/// and folded name); symmetric, canonically directed, deduped, deterministic.
+pub fn derive_regional_kinship(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use std::collections::{HashMap, HashSet};
+
+    // Index common-surname Persons that carry an AU postcode, keyed by
+    // (surname, postcode) — i.e. same family name AND same town.
+    let mut by_town: HashMap<(String, String), Vec<&Entity>> = HashMap::new();
+    for p in entities.iter().filter(|e| e.kind == EntityKind::Person) {
+        let Some(surname) = surname_key(&p.value) else {
+            continue;
+        };
+        if !crate::util::surnames::is_common(&surname) {
+            continue; // distinctive surnames are derive_kinship's job (disjoint)
+        }
+        let Some(postcode) = crate::core::geo_family::au_postcode(p) else {
+            continue; // no AU town anchor → no geo corroboration → skip
+        };
+        by_town.entry((surname, postcode)).or_default().push(p);
+    }
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for group in by_town.values() {
+        for i in 0..group.len() {
+            for j in (i + 1)..group.len() {
+                let (a, b) = (group[i], group[j]);
+                if a.uid == b.uid
+                    || crate::core::scan::identity_norm(&a.value)
+                        == crate::core::scan::identity_norm(&b.value)
+                {
+                    continue; // same person / two spellings of one name
+                }
+                let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
+                if seen.insert((from.uid.clone(), to.uid.clone())) {
+                    out.push(Relation::new(
+                        from.uid.as_str(),
+                        to.uid.as_str(),
+                        RelationKind::AssociatedWith,
+                        from.confidence.min(to.confidence) * REGIONAL_KINSHIP_DAMP,
+                        scan_id,
+                    ));
+                }
+            }
+        }
+    }
+    sort_edges(&mut out);
+    out
+}
+
 /// Evidence attribute keys whose value names another person this entity is
 /// explicitly related/associated to — a people-search relative (`related_to`), a
 /// joint register owner (`co_owner` / `joint_owner`), etc. A DECLARED link, so
@@ -1785,6 +1856,11 @@ pub fn derive_all_within(
     budget_spent!(out, "residency");
     out.extend(derive_kinship(entities, scan_id));
     budget_spent!(out, "kinship");
+    // Geo-gated kinship: recover the COMMON-surname families derive_kinship drops,
+    // corroborated by a shared AU town. Disjoint from kinship (common surnames
+    // only), so it only ADDS the family links the commonness discount would miss.
+    out.extend(derive_regional_kinship(entities, scan_id));
+    budget_spent!(out, "regional_kinship");
     // Co-residence after kinship: an evidence-grounded household edge (×0.8)
     // outranks a surname guess (×0.5) on the same pair, and links the
     // DIFFERENT-surname household members kinship can't reach.
