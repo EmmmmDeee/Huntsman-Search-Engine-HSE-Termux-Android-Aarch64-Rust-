@@ -529,6 +529,23 @@ async fn autonomous_scan_requires_no_input() {
     );
     let body = body_json(resp).await;
     assert_eq!(body["mode"], "autonomous");
+    // When a seed is selected, the response carries the identity-cluster context
+    // the identity-aware ranker resolves (>= 1 for the chosen individual).
+    if status == http::StatusCode::ACCEPTED {
+        let seed = &body["selected_seed"];
+        assert!(
+            seed["identity_cluster_size"]
+                .as_u64()
+                .is_some_and(|n| n >= 1),
+            "an accepted autonomous seed reports its identity cluster size"
+        );
+        assert!(
+            seed["identity_distinct_kinds"]
+                .as_u64()
+                .is_some_and(|n| n >= 1),
+            "an accepted autonomous seed reports its identity's distinct kinds"
+        );
+    }
 }
 
 #[tokio::test]

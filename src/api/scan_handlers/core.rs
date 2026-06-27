@@ -60,29 +60,41 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     use std::collections::HashSet;
 
     // Assemble the candidate pool from recent scans (everything the platform has
-    // discovered) and rank it by the multi-factor autonomous priority (pivot-value
-    // × cross-investigation leverage × confidence) — all store work on the blocking
-    // pool so the async workers stay free.
+    // discovered) — entities AND relations — and rank it by RESOLVED IDENTITY: the
+    // co-reference clusters collapse each person's selectors to one target whose
+    // score aggregates the whole identity's leverage, so the platform investigates
+    // the individual it knows the most about (not three handles of one person).
+    // Identity-aware ranking is a strict generalisation of the flat ranker — with
+    // no relations it yields the same order — so this is fully backward-compatible.
+    // All store work on the blocking pool so the async workers stay free.
     let store = Arc::clone(&s.store);
     let selected = tokio::task::spawn_blocking(
-        move || -> crate::core::error::Result<Option<crate::core::engine::AutonomousTarget>> {
+        move || -> crate::core::error::Result<Option<crate::core::engine::ClusteredTarget>> {
             let scans = store.list_scans(50)?;
             let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
+            let mut rels: Vec<crate::core::relation::Relation> = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
+            let mut rel_seen: HashSet<String> = HashSet::new();
             for sc in &scans {
                 for e in store.entities_for_scan(&sc.id)? {
                     if seen.insert(e.uid.clone()) {
                         pool.push(e);
                     }
                 }
+                for r in store.relations_for_scan(&sc.id)? {
+                    if rel_seen.insert(r.id.clone()) {
+                        rels.push(r);
+                    }
+                }
             }
             // Degree from the realised cross-scan observation count; a store error
             // on a point lookup degrades to 0 (neutral leverage) rather than failing
             // the whole selection. Nothing is excluded — every pivotable candidate
-            // competes on its composite score.
+            // competes on its composite (identity-aggregated) score.
             let exclude = HashSet::new();
-            let ranked = crate::core::engine::rank_autonomous_targets(
+            let ranked = crate::core::engine::rank_identity_aware_targets(
                 &pool,
+                &rels,
                 |uid| store.observation_count(uid).unwrap_or(0),
                 &exclude,
                 64,
@@ -98,12 +110,21 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         Err(e) => return internal_error(&crate::core::error::Error::Other(e.to_string())),
     };
 
-    // The composite ranker yields a scored target; flatten to (kind, value, score)
-    // and fall back to the configured default seed (score 0.0) when the base is bare.
+    // The identity-aware ranker yields a clustered target; flatten to its
+    // representative selector + the cluster context, falling back to the configured
+    // default seed (a singleton, score 0.0) when the base is bare.
     let chosen = from_base
-        .map(|t| (t.kind, t.value, t.score))
-        .or_else(|| default_seed_from_env().map(|(k, v)| (k, v, 0.0)));
-    let Some((kind, value, score)) = chosen else {
+        .map(|t| {
+            (
+                t.representative.kind,
+                t.representative.value,
+                t.representative.score,
+                t.cluster_size,
+                t.distinct_kinds,
+            )
+        })
+        .or_else(|| default_seed_from_env().map(|(k, v)| (k, v, 0.0, 1, 1)));
+    let Some((kind, value, score, cluster_size, distinct_kinds)) = chosen else {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(json!({
@@ -135,6 +156,10 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
                 "kind": kind.canonical_str(),
                 "value": value,
                 "priority_score": score,
+                // Identity context: how many co-referent selectors / distinct kinds
+                // the chosen individual is resolved across (1 = a singleton seed).
+                "identity_cluster_size": cluster_size,
+                "identity_distinct_kinds": distinct_kinds,
             },
         })),
     )
