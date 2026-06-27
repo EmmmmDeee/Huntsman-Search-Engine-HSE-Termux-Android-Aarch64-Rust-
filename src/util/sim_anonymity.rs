@@ -161,7 +161,6 @@ const PREPAID_MVNO: &[&str] = &[
     "total wireless",
     "us mobile",
     "consumer cellular",
-    "boost mobile",
     "republic wireless",
     "ting",
     "h2o wireless",
@@ -171,15 +170,11 @@ const PREPAID_MVNO: &[&str] = &[
     "twigby",
     "visible",
     // UK
-    "lebara uk",
     "giffgaff",
     "tesco mobile",
     "id mobile",
     "smarty",
     "voxi",
-    // Other common mvnos
-    "freedompop",
-    "lycamobile",
 ];
 
 #[cfg(test)]
@@ -200,6 +195,17 @@ mod tests {
         assert_eq!(
             classify_carrier("Boost Mobile"),
             Some(SimAnonymity::PrepaidMvno)
+        );
+        // Carriers whose redundant table entries were removed still classify via
+        // the subsuming needle ("lyca"/"lebara"/"boost") or the VoIP table.
+        assert_eq!(
+            classify_carrier("Lycamobile"),
+            Some(SimAnonymity::PrepaidMvno)
+        );
+        assert_eq!(classify_carrier("Lebara UK"), Some(SimAnonymity::PrepaidMvno));
+        assert_eq!(
+            classify_carrier("FreedomPop"),
+            Some(SimAnonymity::VoipVirtual)
         );
         // Major identity-linked carriers and unknowns are deliberately unclassified.
         assert_eq!(classify_carrier("Telstra"), None);
