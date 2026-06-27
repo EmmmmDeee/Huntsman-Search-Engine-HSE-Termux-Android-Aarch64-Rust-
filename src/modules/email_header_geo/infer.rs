@@ -2,16 +2,19 @@
 
 use super::tables::{CCTLD_REGIONS, REGIONAL_PROVIDERS};
 
+/// A region inferred from an email domain, with the confidence and the human
+/// `reason` that produced it (for the emitted evidence).
 pub(super) struct DomainGeo {
     pub(super) region: &'static str,
     pub(super) confidence: f64,
     pub(super) reason: &'static str,
 }
 
+/// Infer a region from an email domain's **country-code TLD** (`.com.au` → AU,
+/// etc.). AU ccTLDs are weighted `0.52` — deliberately above the 0.50 expansion
+/// floor so the inferred region feeds the geo-correlation chain — versus `0.48`
+/// for other ccTLDs. `None` when the domain carries no recognised ccTLD.
 pub(super) fn infer_geo_from_email_domain(domain: &str) -> Option<DomainGeo> {
-    // AU ccTLDs (.com.au, .net.au, .org.au, .edu.au, .gov.au) are strong country
-    // signals — raised from 0.48 to 0.52 so they cross the 0.50 expansion floor
-    // and feed the geo-correlation chain.
     CCTLD_REGIONS
         .iter()
         .find(|&&(tld, _)| domain.ends_with(tld))
@@ -22,6 +25,11 @@ pub(super) fn infer_geo_from_email_domain(domain: &str) -> Option<DomainGeo> {
         })
 }
 
+/// Map a domain whose host carries a **regional ISP/provider brand**
+/// (`bigpond` → Telstra/AU, `tpg` → TPG/AU, …) to its `(provider, region)`, even
+/// when the brand uses a generic TLD. Brand-prefix matched ([`domain_has_label_prefix`])
+/// so `campbell.net` is not mistaken for `bell.net`. `None` for an unrecognised
+/// provider.
 pub(super) fn detect_corporate_provider(domain: &str) -> Option<(&'static str, &'static str)> {
     REGIONAL_PROVIDERS
         .iter()

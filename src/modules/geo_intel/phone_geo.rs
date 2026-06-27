@@ -53,6 +53,12 @@ pub(super) async fn process_phone_prefix_only(
 
 // ─── Phone prefix -> country ────────────────────────────────────────────────
 
+/// Resolve an E.164 phone number's dialling prefix to a country-centroid fix:
+/// `(country_name, ISO-3166, lat, lon)`, or `None` when no prefix matches. Scans
+/// longest-prefix-first (3→2→1 digits). Caribbean NANP territories (`+1242`,
+/// `+1876`, …) share `+1` with the US but are delegated to `phone_intl` so they
+/// return `None` rather than a misleading US-centroid fix. Non-ASCII input is
+/// rejected up front.
 pub(super) fn phone_prefix_to_country(
     phone: &str,
 ) -> Option<(&'static str, &'static str, f64, f64)> {
