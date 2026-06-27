@@ -294,8 +294,12 @@ pub fn write_keys(updates: &BTreeMap<String, String>, deletes: &[String]) -> Res
 /// * Keys in `deletes` are removed entirely.
 ///
 /// Write is atomic: temp-file + rename, with mode 0600 set on the temp
-/// file before rename. Symlink handling is left to the OS — if the user
-/// has symlinked `.huntsman.env` somewhere else, the rename follows it.
+/// file before rename. Symlinks are **not** followed: `rename(2)` replaces the
+/// name at `path` with the new regular file, so a symlinked `.huntsman.env` is
+/// overwritten in place by a real file and the symlink's former target is left
+/// untouched. This is intentional — the crash-safety guarantee relies on the
+/// temp file and the destination sharing one directory (one filesystem), which
+/// following a symlink to another location would break.
 pub fn write_keys_at(
     path: &Path,
     updates: &BTreeMap<String, String>,
