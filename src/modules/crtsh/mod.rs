@@ -25,9 +25,14 @@ const SRC: &str = "crtsh";
 
 /// Shortest SAN email we'll surface (`a@b.c` is 5 chars).
 const MIN_EMAIL_LEN: usize = 5;
-/// Cap on entities returned from one CT search — a popular apex can have tens of
-/// thousands of certs; the highest-confidence 200 are plenty to pivot on.
-const MAX_ENTITIES: usize = 200;
+/// Full-fidelity ceiling on entities returned from one CT search. A popular apex
+/// can have tens of thousands of certs; this is raised well past any real-world
+/// distinct-name count (was 200) so the module no longer silently drops
+/// lower-confidence Domain/Email/Organisation pivots. What remains is a DoS
+/// backstop only — it bounds a pathological or hostile response, not genuine
+/// coverage. Entities are confidence-sorted before this applies, so a real
+/// truncation (if it ever triggers) sheds the weakest leads last.
+const MAX_ENTITIES: usize = 5000;
 
 /// Build the crt.sh query for a target, or `None` for a kind/URL we can't key on.
 /// **Pure**: a `Domain` becomes a `%.domain` wildcard subdomain search, an

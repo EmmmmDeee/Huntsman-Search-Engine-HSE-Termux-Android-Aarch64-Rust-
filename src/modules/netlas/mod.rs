@@ -282,7 +282,10 @@ impl Module for Netlas {
                 all_emails.extend(emails.iter().cloned());
             }
             if let Some(cves) = &data.cve {
-                for cve in cves.iter().take(5) {
+                // Full fidelity: collect every reported CVE (a host can carry
+                // dozens). The 128 ceiling is a DoS backstop on a hostile
+                // response, not a coverage limit.
+                for cve in cves.iter().take(128) {
                     if let Some(n) = &cve.name {
                         cve_list.push(n.clone());
                     }
@@ -310,7 +313,7 @@ impl Module for Netlas {
                 "open_ports",
                 port_list
                     .iter()
-                    .take(20)
+                    .take(256)
                     .cloned()
                     .collect::<Vec<_>>()
                     .join(","),
@@ -327,7 +330,7 @@ impl Module for Netlas {
                 "cves",
                 cve_list
                     .iter()
-                    .take(5)
+                    .take(128)
                     .cloned()
                     .collect::<Vec<_>>()
                     .join(","),
@@ -340,7 +343,7 @@ impl Module for Netlas {
                 "technologies",
                 tech_list
                     .iter()
-                    .take(10)
+                    .take(256)
                     .cloned()
                     .collect::<Vec<_>>()
                     .join(","),
@@ -372,7 +375,7 @@ impl Module for Netlas {
         // Deduplicate and skip values that match the ISP already emitted.
         cert_orgs.sort();
         cert_orgs.dedup();
-        for cert_org in cert_orgs.iter().take(3) {
+        for cert_org in cert_orgs.iter().take(64) {
             let org_lc = cert_org.trim().to_ascii_lowercase();
             if org_lc.len() < 3 || isp_lc.as_deref() == Some(&org_lc) {
                 continue;
@@ -429,7 +432,7 @@ impl Module for Netlas {
         // SSL/TLS SAN domains → Domain entities for BFS.
         all_cert_domains.sort();
         all_cert_domains.dedup();
-        for dom in all_cert_domains.iter().take(20) {
+        for dom in all_cert_domains.iter().take(256) {
             let dom = dom.trim().trim_start_matches('*').trim_start_matches('.');
             if dom.len() >= 4 && dom.contains('.') && !dom.contains(char::is_whitespace) {
                 let mut de = Entity::new(EntityKind::Domain, dom, 0.70, &ctx.scan_id);
@@ -446,7 +449,7 @@ impl Module for Netlas {
         // Extracted emails → Email entities for BFS.
         all_emails.sort();
         all_emails.dedup();
-        for email in all_emails.iter().take(10) {
+        for email in all_emails.iter().take(128) {
             let email = email.to_lowercase();
             if crate::util::extract::looks_like_email(&email) {
                 let mut e = Entity::new(EntityKind::Email, &email, 0.65, &ctx.scan_id);
