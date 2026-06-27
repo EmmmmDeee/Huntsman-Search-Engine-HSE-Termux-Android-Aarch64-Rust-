@@ -223,6 +223,19 @@ use super::*;
     }
 
     #[test]
+    fn build_queries_base_crypto_emits_abuse_and_explorer_dorks() {
+        use crate::core::scan::Target;
+        let q = build_queries_base(&Target::new(TargetKind::CryptoAddress, "bc1qexampleaddr0000"));
+        assert!(!q.is_empty());
+        // Abuse / scam attribution registries.
+        assert!(q.iter().any(|s| s.contains("site:chainabuse.com")), "{q:?}");
+        // Block explorers.
+        assert!(q.iter().any(|s| s.contains("site:etherscan.io")), "{q:?}");
+        // Fraud-context co-mentions.
+        assert!(q.iter().any(|s| s.contains("scam OR fraud")), "{q:?}");
+    }
+
+    #[test]
     fn build_queries_base_organisation_emits_registry_dork() {
         use crate::core::scan::Target;
         // Organisation value keeps its original case (trim-only normalisation).

@@ -682,6 +682,22 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
                 format!("\"{base}\" -site:google.com -site:googletagmanager.com"),
             ]
         }
+        TargetKind::CryptoAddress => vec![
+            // Any indexed mention of the address (forums, posts, paste leaks).
+            format!("\"{v}\""),
+            // Abuse / scam attribution registries — has the address been reported?
+            format!(
+                "\"{v}\" site:chainabuse.com OR site:bitcoinwhoswho.com \
+                 OR site:cryptoscamdb.org OR site:bitcoinabuse.com"
+            ),
+            // Block explorers — public label / tag / first-seen context.
+            format!(
+                "\"{v}\" site:etherscan.io OR site:blockchair.com \
+                 OR site:blockchain.com OR site:oxt.me"
+            ),
+            // Fraud-context co-mentions on forums and report sites.
+            format!("\"{v}\" scam OR fraud OR phishing OR ransomware OR \"stolen funds\""),
+        ],
         _ => Vec::new(),
     }
 }
