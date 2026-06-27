@@ -15,7 +15,15 @@ fn au_sydney_landline() {
 #[test]
 fn au_melbourne_landline() {
     let geo = lookup_area_code("61312345678").unwrap();
-    assert_eq!(geo.location, "Melbourne / VIC / TAS");
+    assert_eq!(geo.location, "Melbourne / VIC");
+}
+
+#[test]
+fn au_tasmania_landline_resolves_to_tas_not_vic() {
+    // 03 6234 5678 — the 03 6x block is exclusively Tasmania, so it must beat
+    // the "3" Victoria catch-all rather than fall through to it.
+    let geo = lookup_area_code("61362345678").unwrap();
+    assert_eq!(geo.location, "Hobart / TAS");
 }
 
 #[test]

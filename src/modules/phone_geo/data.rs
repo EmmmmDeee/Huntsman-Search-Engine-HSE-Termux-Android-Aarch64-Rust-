@@ -60,7 +60,13 @@ pub(super) fn country_name(cc: &str) -> &'static str {
 
 const AU_AREAS: &[(&str, &str, &str)] = &[
     ("2", "Sydney / NSW / ACT", "AU"),
-    ("3", "Melbourne / VIC / TAS", "AU"),
+    // 03 6x is exclusively Tasmania (Hobart/Launceston/Devonport/Burnie); the
+    // rest of 03 is Victoria. The "36" entry precedes the "3" catch-all so the
+    // more-specific prefix wins under `lookup_area_code`'s first-match scan.
+    // (02 and 08 are NOT split: 02 6x mixes ACT with border NSW, and 08's 8x
+    // mixes SA with NT, so a finer label there would be a wrong attribution.)
+    ("36", "Hobart / TAS", "AU"),
+    ("3", "Melbourne / VIC", "AU"),
     ("7", "Brisbane / QLD", "AU"),
     ("8", "Perth / SA / NT", "AU"),
 ];
