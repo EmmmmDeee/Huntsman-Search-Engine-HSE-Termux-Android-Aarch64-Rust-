@@ -347,13 +347,14 @@ impl KeyPool {
             .map(|e| e.status)
     }
 
-    /// Remove keys with error rates above the threshold. Returns the number
-    /// of keys pruned.
+    /// Remove low-value keys whose [`KeyEntry::success_rate`] has fallen below
+    /// `min_success_rate` (i.e. their error rate is too high), once they have at
+    /// least `min_uses` recorded uses to judge by. Returns the number pruned.
     ///
     /// High-value keys (Standard/Premium tier) are **always retained**: a scarce,
     /// expensive credential isn't discarded over a transient error streak — the
     /// operator revokes those deliberately. Trial/Basic keys prune normally.
-    pub fn prune_degraded(&self, max_error_rate: f64, min_uses: u64) -> usize {
+    pub fn prune_degraded(&self, min_success_rate: f64, min_uses: u64) -> usize {
         let mut data = self.data.lock();
         let mut pruned = 0;
         for entries in data.services.values_mut() {
@@ -361,7 +362,7 @@ impl KeyPool {
             entries.retain(|e| {
                 e.tier >= KeyTier::Standard
                     || e.use_count < min_uses
-                    || e.success_rate() >= max_error_rate
+                    || e.success_rate() >= min_success_rate
             });
             pruned += before - entries.len();
         }
