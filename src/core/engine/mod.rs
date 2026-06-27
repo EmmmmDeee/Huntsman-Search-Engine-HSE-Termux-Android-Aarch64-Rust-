@@ -2199,5 +2199,177 @@ pub fn plan_autonomous_sweep<F: Fn(&str) -> usize>(
     }
 }
 
+/// Standard hop bound for identity-cluster resolution in the autonomous ranker —
+/// matches the dossier and the AU correlator so the autonomous view agrees with
+/// what the analyst sees.
+const IDENTITY_CLUSTER_MAX_HOPS: usize = 4;
+/// Weakest-link confidence floor for a co-reference cluster to bind (matches the
+/// dossier / correlator): one tenuous edge can't fuse two strong sub-identities.
+const IDENTITY_CLUSTER_MIN_CONF: f64 = 0.50;
+/// How hard identity *breadth* lifts a clustered target: a person resolved across
+/// `k` distinct identifier kinds is more actionable than one known by a single
+/// selector. Multiplier is `1 + WEIGHT × ln(distinct_kinds)`, so a singleton
+/// (`ln 1 = 0`) is unchanged and a 3-kind identity gets `1 + 0.5·ln3 ≈ 1.55`.
+const IDENTITY_BREADTH_WEIGHT: f64 = 0.5;
+
+/// One **identity-resolved** investigation target: a representative selector that
+/// stands for a whole co-referent cluster — the output of
+/// [`rank_identity_aware_targets`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ClusteredTarget {
+    /// The selector to actually seed the scan with (the cluster's strongest
+    /// pivotable member). Its `score` and `cross_scan_degree` carry the *cluster's*
+    /// aggregated priority, not the lone member's.
+    pub representative: AutonomousTarget,
+    /// Co-referent members present in the working set (sorted UIDs; includes the
+    /// representative). `1` for a singleton identity.
+    pub member_uids: Vec<String>,
+    /// `member_uids.len()` — the resolved identity's breadth in selectors.
+    pub cluster_size: usize,
+    /// Distinct identifier *kinds* among the eligible members — the breadth signal
+    /// that lifts a well-resolved identity over a single repeated selector.
+    pub distinct_kinds: usize,
+}
+
+/// Rank fully-autonomous investigation targets **by resolved identity, not by raw
+/// selector** — the people-centric successor to [`rank_autonomous_targets`] that
+/// consumes the co-reference graph.
+///
+/// Where [`rank_autonomous_targets`] scores every selector independently, this
+/// first resolves the identity clusters of the relation graph
+/// ([`crate::core::relation::resolve_identity_clusters`] — the same clustering the
+/// dossier and correlator use, now fed by the promoted co-reference edges), then
+/// collapses each cluster to ONE target so the loop never spends investigative
+/// breadth on three selectors of the same person. The surviving target is the
+/// cluster's strongest pivotable member, but scored with the **whole identity's**
+/// weight: leverage aggregated across every member's cross-scan degree, lifted by
+/// a breadth bonus for the number of distinct identifier kinds the identity spans
+/// ([`IDENTITY_BREADTH_WEIGHT`]) — so the person the platform knows the most about
+/// is investigated first.
+///
+/// A singleton identity (an entity in no cluster) scores *exactly* as
+/// [`rank_autonomous_targets`] would (`ln 1 = 0` breadth bonus, degree unchanged),
+/// so this is a strict, additive generalisation. `exclude` is honoured per member
+/// (an all-excluded cluster yields nothing, so a continuous loop converges).
+/// Deterministic; strongest-first, UID tie-break, truncated to `limit`.
+pub fn rank_identity_aware_targets<F: Fn(&str) -> usize>(
+    entities: &[Entity],
+    relations: &[Relation],
+    degree_of: F,
+    exclude: &std::collections::HashSet<String>,
+    limit: usize,
+) -> Vec<ClusteredTarget> {
+    // Map each clustered UID to its cluster key (the cluster's first member UID);
+    // an entity in no cluster keys to its own UID (a singleton identity). Also keep
+    // every present member UID per cluster for honest `member_uids` reporting.
+    let clusters = crate::core::relation::resolve_identity_clusters(
+        entities,
+        relations,
+        IDENTITY_CLUSTER_MAX_HOPS,
+        IDENTITY_CLUSTER_MIN_CONF,
+    );
+    let mut cluster_of: HashMap<&str, &str> = HashMap::new();
+    for c in &clusters {
+        if let Some(first) = c.members.first() {
+            for m in &c.members {
+                cluster_of.insert(m.as_str(), first.as_str());
+            }
+        }
+    }
+
+    // Per cluster key: the eligible (pivotable, cross-scan-candidate, not-excluded)
+    // member targets, plus the full set of present member UIDs for reporting.
+    struct Group<'a> {
+        eligible: Vec<(AutonomousTarget, crate::core::entity::EntityKind, f64)>,
+        members: HashSet<&'a str>,
+    }
+    let mut groups: HashMap<&str, Group> = HashMap::new();
+
+    for e in entities {
+        let key = cluster_of
+            .get(e.uid.as_str())
+            .copied()
+            .unwrap_or(e.uid.as_str());
+        let g = groups.entry(key).or_insert_with(|| Group {
+            eligible: Vec::new(),
+            members: HashSet::new(),
+        });
+        g.members.insert(e.uid.as_str());
+        if exclude.contains(&e.uid) || !history::is_cross_scan_candidate(e) {
+            continue;
+        }
+        let Some(kind) = crate::core::scan::TargetKind::from_entity_kind(&e.kind) else {
+            continue;
+        };
+        let degree = degree_of(&e.uid);
+        let individual = autonomous_target_score(&e.kind, degree, e.c_effective());
+        g.eligible.push((
+            AutonomousTarget {
+                uid: e.uid.clone(),
+                kind,
+                value: e.value.clone(),
+                score: individual,
+                cross_scan_degree: degree,
+            },
+            e.kind.clone(),
+            e.c_effective(),
+        ));
+    }
+
+    let mut out: Vec<ClusteredTarget> = Vec::new();
+    for g in groups.values() {
+        if g.eligible.is_empty() {
+            continue; // no investigable selector in this identity
+        }
+        // Representative = strongest individual member (deterministic UID tie-break).
+        let rep = g
+            .eligible
+            .iter()
+            .max_by(|a, b| {
+                a.0.score
+                    .partial_cmp(&b.0.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| b.0.uid.cmp(&a.0.uid)) // smaller UID wins
+            })
+            .expect("non-empty");
+        // Aggregate the identity's reach: total cross-scan degree across selectors,
+        // and the count of distinct identifier kinds it spans.
+        let aggregated_degree: usize = g.eligible.iter().map(|m| m.0.cross_scan_degree).sum();
+        let distinct_kinds = g
+            .eligible
+            .iter()
+            .map(|m| &m.1)
+            .collect::<HashSet<_>>()
+            .len();
+        let breadth = 1.0 + IDENTITY_BREADTH_WEIGHT * (distinct_kinds as f64).ln();
+        let score = autonomous_target_score(&rep.1, aggregated_degree, rep.2) * breadth;
+
+        let mut member_uids: Vec<String> = g.members.iter().copied().map(str::to_string).collect();
+        member_uids.sort_unstable();
+        out.push(ClusteredTarget {
+            representative: AutonomousTarget {
+                uid: rep.0.uid.clone(),
+                kind: rep.0.kind,
+                value: rep.0.value.clone(),
+                score,
+                cross_scan_degree: aggregated_degree,
+            },
+            cluster_size: member_uids.len(),
+            distinct_kinds,
+            member_uids,
+        });
+    }
+
+    out.sort_by(|a, b| {
+        b.representative
+            .score
+            .partial_cmp(&a.representative.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.representative.uid.cmp(&b.representative.uid))
+    });
+    out.truncate(limit);
+    out
+}
+
 #[cfg(test)]
 mod tests;

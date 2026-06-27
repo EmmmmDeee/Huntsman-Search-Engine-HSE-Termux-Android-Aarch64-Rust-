@@ -2192,3 +2192,138 @@ fn plan_autonomous_sweep_respects_exclude_and_limit() {
     );
     assert!(capped.kinds_covered <= 2);
 }
+
+/// Identity-aware ranking collapses a co-referent cluster (email + username of
+/// one person, joined by an AliasOf edge) to a SINGLE target, and scores it with
+/// the identity's aggregated leverage + breadth bonus — so it outranks an equally-
+/// confident lone selector of the same kind.
+#[test]
+fn identity_aware_ranking_collapses_clusters_and_aggregates_leverage() {
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::relation::{Relation, RelationKind};
+    use std::collections::HashSet;
+
+    // One person's two selectors, joined as aliases → one identity cluster.
+    let email = Entity::new(EntityKind::Email, "jsmith@gmail.com", 0.8, "s");
+    let user = Entity::new(EntityKind::Username, "jsmith", 0.8, "s");
+    // An unrelated lone email of the same kind/confidence, in no cluster.
+    let lone = Entity::new(EntityKind::Email, "solo@example.com", 0.8, "s");
+    let ents = vec![email.clone(), user.clone(), lone.clone()];
+    let (lo, hi) = if email.uid <= user.uid {
+        (&email, &user)
+    } else {
+        (&user, &email)
+    };
+    let rels = vec![Relation::new(
+        lo.uid.clone(),
+        hi.uid.clone(),
+        RelationKind::AliasOf,
+        0.8,
+        "s",
+    )];
+
+    // Each selector observed in 2 scans → degree 2.
+    let degree_of = |_uid: &str| 2usize;
+    let exclude = HashSet::new();
+    let ranked = rank_identity_aware_targets(&ents, &rels, degree_of, &exclude, 10);
+
+    // Two identities: the {email,username} cluster and the lone email.
+    assert_eq!(
+        ranked.len(),
+        2,
+        "the cluster is one target, plus the singleton"
+    );
+    let cluster = ranked
+        .iter()
+        .find(|t| t.cluster_size == 2)
+        .expect("the co-referent pair collapses to one target");
+    assert_eq!(cluster.distinct_kinds, 2, "email + username");
+    assert_eq!(
+        cluster.member_uids.len(),
+        2,
+        "both selectors are reported as members"
+    );
+    assert_eq!(
+        cluster.representative.cross_scan_degree, 4,
+        "leverage is aggregated across the identity (2 + 2)"
+    );
+    // The resolved identity outranks the equally-confident lone selector.
+    assert_eq!(
+        ranked[0].cluster_size, 2,
+        "the richer identity is investigated first"
+    );
+    let solo = ranked.iter().find(|t| t.cluster_size == 1).unwrap();
+    assert!(cluster.representative.score > solo.representative.score);
+}
+
+/// A singleton identity scores EXACTLY as `rank_autonomous_targets` would — the
+/// identity-aware ranker is a strict additive generalisation.
+#[test]
+fn identity_aware_ranking_matches_flat_ranking_for_singletons() {
+    use crate::core::entity::{Entity, EntityKind};
+    use std::collections::HashSet;
+
+    let ents = vec![
+        Entity::new(EntityKind::Email, "a@b.com", 0.9, "s"),
+        Entity::new(EntityKind::Username, "alice", 0.6, "s"),
+    ];
+    let degree_of = |_uid: &str| 3usize;
+    let exclude = HashSet::new();
+
+    // No relations → no clusters → every entity is its own singleton identity.
+    let aware = rank_identity_aware_targets(&ents, &[], degree_of, &exclude, 10);
+    let flat = rank_autonomous_targets(&ents, degree_of, &exclude, 10);
+    assert_eq!(aware.len(), flat.len());
+    for (a, f) in aware.iter().zip(flat.iter()) {
+        assert_eq!(a.representative.uid, f.uid, "same order");
+        assert_eq!(a.cluster_size, 1, "no cluster ⇒ singleton");
+        assert!(
+            (a.representative.score - f.score).abs() < 1e-9,
+            "singleton score is identical to the flat ranker"
+        );
+    }
+}
+
+/// `exclude` is honoured per member: excluding the representative falls to the
+/// next-best member; excluding ALL of a cluster's members drops it (convergence).
+#[test]
+fn identity_aware_ranking_honours_exclude_per_member() {
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::relation::{Relation, RelationKind};
+    use std::collections::HashSet;
+
+    let email = Entity::new(EntityKind::Email, "jsmith@gmail.com", 0.9, "s");
+    let user = Entity::new(EntityKind::Username, "jsmith", 0.6, "s");
+    let ents = vec![email.clone(), user.clone()];
+    let (lo, hi) = if email.uid <= user.uid {
+        (&email, &user)
+    } else {
+        (&user, &email)
+    };
+    let rels = vec![Relation::new(
+        lo.uid.clone(),
+        hi.uid.clone(),
+        RelationKind::AliasOf,
+        0.8,
+        "s",
+    )];
+    let degree_of = |_uid: &str| 1usize;
+
+    // Exclude the email (the stronger pivot): the cluster survives via the username.
+    let mut ex = HashSet::new();
+    ex.insert(email.uid.clone());
+    let one = rank_identity_aware_targets(&ents, &rels, degree_of, &ex, 10);
+    assert_eq!(
+        one.len(),
+        1,
+        "the cluster still yields its non-excluded member"
+    );
+    assert_eq!(one[0].representative.uid, user.uid);
+
+    // Exclude both members → the identity drops out entirely.
+    ex.insert(user.uid.clone());
+    assert!(
+        rank_identity_aware_targets(&ents, &rels, degree_of, &ex, 10).is_empty(),
+        "an all-excluded identity is gone, so the loop converges"
+    );
+}
