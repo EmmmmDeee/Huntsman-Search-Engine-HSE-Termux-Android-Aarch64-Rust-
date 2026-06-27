@@ -216,8 +216,10 @@ pub fn wigle_credentials(ctx: &crate::core::module::ModuleContext) -> (&str, &st
 
 /// Every API-key/token value HSE uses to authenticate its OWN queries: the
 /// embedded defaults, every superseded default (so a rotated-out auth key is
-/// never reported as a finding), and every live `HUNTSMAN_*_KEY` / `*_TOKEN` /
-/// `*_USER` value in the process environment. Used by `util::found_keys` to
+/// never reported as a finding), and every live credential-bearing `HUNTSMAN_*`
+/// value in the process environment (suffixes `_KEY` / `_TOKEN` / `_USER` /
+/// `_SECRET` / `_ID` / `_GUID` — the last three cover the Censys ID+secret pair
+/// and the ABR GUID, which are auth credentials too). Used by `util::found_keys` to
 /// EXCLUDE our own credentials when identifying keys leaked in endpoint data —
 /// the operator already has these; only third-party keys in the data are
 /// findings. Values are returned verbatim (lower-cased copies are added too, so
@@ -247,8 +249,20 @@ pub fn own_api_keys() -> std::collections::HashSet<String> {
     // Live overrides: any HUNTSMAN_* secret the operator configured (env or
     // ~/.huntsman.env, which `populate_and_load` has already exported).
     for (k, v) in std::env::vars() {
+        // Credential-bearing suffixes. `_SECRET`/`_ID`/`_GUID` are NOT optional:
+        // HUNTSMAN_CENSYS_SECRET (a real secret) and HUNTSMAN_CENSYS_ID together
+        // are Censys's HTTP-Basic credentials, and HUNTSMAN_ABR_GUID authenticates
+        // the ABR lookup — without these suffixes our own Censys secret / ABR GUID
+        // could be echoed by an upstream and mis-reported as a foreign finding.
+        // Excluding a non-key HUNTSMAN_* var is harmless (it is never a foreign
+        // key), so erring inclusive here is strictly safer than missing one.
         if k.starts_with("HUNTSMAN_")
-            && (k.ends_with("_KEY") || k.ends_with("_TOKEN") || k.ends_with("_USER"))
+            && (k.ends_with("_KEY")
+                || k.ends_with("_TOKEN")
+                || k.ends_with("_USER")
+                || k.ends_with("_SECRET")
+                || k.ends_with("_ID")
+                || k.ends_with("_GUID"))
         {
             add(&v);
         }
