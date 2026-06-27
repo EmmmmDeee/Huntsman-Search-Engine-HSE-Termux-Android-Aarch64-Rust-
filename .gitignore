@@ -4,6 +4,13 @@
 # Generated delivery package (git archive of the tree — circular to commit)
 /huntsman_refactored.zip
 
+# Generated monolithic whole-repo snapshot (regenerate: scripts/pack_monolith.py).
+# Excluded for the same reason as the zip above — it is a derived, ~10 MiB
+# aggregate of the tree, and bundling every key-detector test fixture into one
+# new file trips GitHub secret-scanning push protection on the repo's own
+# SYNTHETIC AWS-key fixtures (e.g. AKIAIOSFODNN7EXAMPLE in *_tests.rs).
+/HSE_MONOLITH.glm5.txt
+
 # IDE / editor
 .idea/
 .vscode/
