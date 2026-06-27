@@ -134,10 +134,18 @@ pub(super) fn budget_try_increment() -> bool {
     BUDGET.try_increment()
 }
 
+/// True once the SeekNow daily quota has been tripped, so callers skip remaining
+/// billable lookups for the rest of the session rather than retry into a known-
+/// exhausted cap. Mirrors `oathnet::is_quota_exhausted`.
+#[must_use]
 pub fn is_quota_exhausted() -> bool {
     BUDGET.is_exhausted()
 }
 
+/// Reset SeekNow's per-scan budget at the start of every scan (long-lived
+/// `hse serve` / `hse live` would otherwise accumulate across scans), and clear
+/// the latched key-invalid / quota-probed flags so a scan re-tests a key the
+/// operator may have fixed and re-probes the quota — see the inline notes.
 pub fn reset_budget() {
     BUDGET.reset_scan();
     // Re-test the key each scan: if the operator fixed it (UI Settings /

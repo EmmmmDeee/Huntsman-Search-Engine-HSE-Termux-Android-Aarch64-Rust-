@@ -65,6 +65,10 @@ pub(super) fn base_url() -> String {
         .unwrap_or_else(|_| "https://see-know.eu/api/v1".to_string())
 }
 
+/// The SeekNow API key to use for a request: the per-scan context key `ctx_key`
+/// when the operator supplied one, otherwise the built-in default
+/// ([`crate::util::keys::resolve_or_default`]). Mirrors `oathnet::resolve_key`.
+#[must_use]
 pub fn resolve_key(ctx_key: Option<&str>) -> &str {
     crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
 }

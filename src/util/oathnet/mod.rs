@@ -70,6 +70,11 @@ fn budget_try_increment() -> bool {
     BUDGET.try_increment()
 }
 
+/// True once the OathNet daily quota has been tripped — a quota/`402` response
+/// latched it via `mark_quota_exhausted`. Callers gate on this to skip remaining
+/// billable queries cleanly rather than fire them into a cap that will only reject
+/// (and still bill) them.
+#[must_use]
 pub fn is_quota_exhausted() -> bool {
     BUDGET.is_exhausted()
 }
@@ -113,6 +118,10 @@ fn base_url() -> String {
     std::env::var("HUNTSMAN_OATHNET_BASE").unwrap_or_else(|_| "https://oathnet.org/api".to_string())
 }
 
+/// The OathNet API key to use for a request: the per-scan context key `ctx_key`
+/// when the operator supplied one, otherwise the built-in default
+/// ([`crate::util::keys::resolve_or_default`]). Mirrors `see_know::resolve_key`.
+#[must_use]
 pub fn resolve_key(ctx_key: Option<&str>) -> &str {
     crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
 }
