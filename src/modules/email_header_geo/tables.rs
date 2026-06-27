@@ -68,6 +68,8 @@ pub(super) const REGIONAL_PROVIDERS: &[(&str, &str, &str)] = &[
     ("iinet", "iiNet", "Australia"),
     ("internode", "Internode", "Australia"),
     ("tpg.com", "TPG", "Australia"),
+    ("ozemail", "OzEmail", "Australia"),
+    ("y7mail", "Yahoo7", "Australia"),
     ("btinternet", "BT Internet", "United Kingdom"),
     ("sky.com", "Sky UK", "United Kingdom"),
     ("virginmedia", "Virgin Media", "United Kingdom"),
