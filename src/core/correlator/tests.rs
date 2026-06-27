@@ -3086,6 +3086,62 @@ fn au104_silent_for_unresolvable_or_absent_bsb() {
     assert!(super::rules::rule_au_104_bank_account_exposure(&[p2], "s", 0).is_empty());
 }
 
+#[test]
+fn au105_flags_plaintext_password_reused_across_breaches() {
+    // The same plaintext password across three distinct breaches → High, and the
+    // finding NEVER echoes the secret.
+    let mut email = Entity::new(EntityKind::Email, "j@x.com", 0.9, "s");
+    for db in ["pemiblanc.com", "gamigo.com", "2844databases"] {
+        email.add_evidence(
+            Evidence::new("see_know", "breach")
+                .with_attr("dbname", db)
+                .with_attr("password", "mnimp316895007"),
+        );
+    }
+    let r = super::rules::rule_au_105_credential_reuse(&[email], "s", 0);
+    assert_eq!(r.len(), 1, "one reuse finding");
+    assert_eq!(r[0].rule_id, "AU-105");
+    assert_eq!(r[0].severity, Severity::High, "plaintext reuse is High");
+    assert!(r[0].description.contains("3 distinct breaches"));
+    assert!(
+        !r[0].description.contains("mnimp316895007"),
+        "the secret value must never be echoed"
+    );
+}
+
+#[test]
+fn au105_groups_a_hash_case_insensitively_across_sources() {
+    // The same hash dumped UPPER-case by one source and lower-case by another is
+    // ONE reused secret (Medium) — case must not split it.
+    let mut a = Entity::new(EntityKind::Email, "a@x.com", 0.9, "s");
+    a.add_evidence(
+        Evidence::new("snusbase", "breach")
+            .with_attr("dbname", "teg.com.au")
+            .with_attr("password_hash", "00346D91DD87"),
+    );
+    let mut b = Entity::new(EntityKind::Email, "a@x.com", 0.9, "s");
+    b.add_evidence(
+        Evidence::new("oathnet", "breach")
+            .with_attr("dbname", "ticketek.com.au")
+            .with_attr("password_hash", "00346d91dd87"),
+    );
+    let r = super::rules::rule_au_105_credential_reuse(&[a, b], "s", 0);
+    assert_eq!(r.len(), 1, "case variants of one hash = one reuse");
+    assert_eq!(r[0].severity, Severity::Medium, "hash reuse is Medium");
+}
+
+#[test]
+fn au105_silent_for_a_single_use_secret() {
+    // A password seen in only ONE breach is not reuse → no finding.
+    let mut e = Entity::new(EntityKind::Email, "s@x.com", 0.9, "s");
+    e.add_evidence(
+        Evidence::new("see_know", "breach")
+            .with_attr("dbname", "onlyone.com")
+            .with_attr("password", "uniquepass1"),
+    );
+    assert!(super::rules::rule_au_105_credential_reuse(&[e], "s", 0).is_empty());
+}
+
 // ─── best_au_location_estimate (single-signal headline geolocation) ──────────
 
 #[test]

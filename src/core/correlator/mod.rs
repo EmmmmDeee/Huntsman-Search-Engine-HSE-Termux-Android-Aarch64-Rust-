@@ -379,6 +379,9 @@ const RULES: &[RuleFn] = &[
     // allocation), escalating to a full account-credential finding when a bank
     // account number co-occurs — financial attribution for almost every AU adult.
     rule_au_104_bank_account_exposure,
+    // AU-105: the same secret reused across >=2 distinct breaches — the subject's
+    // credential-stuffing / account-takeover surface, never echoing the secret.
+    rule_au_105_credential_reuse,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

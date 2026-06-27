@@ -42,6 +42,9 @@
 //!   to its financial institution (the AusPayNet allocation), escalating to a
 //!   full account-credential finding when a bank account number co-occurs — a
 //!   people-centric financial-attribution signal for almost every AU adult.
+//! * [`rule_au_105_credential_reuse`] — the same secret reused across two or more
+//!   distinct breaches: the subject's credential-stuffing / account-takeover
+//!   surface, surfaced without ever echoing the secret value.
 //!
 //! All run on the confirmed (candidate-filtered, quarantine-excluded)
 //! view, so breach co-occurrence strangers never leak in. See `super`
@@ -1222,6 +1225,100 @@ pub(in crate::core::correlator) fn rule_au_104_bank_account_exposure(
                     "Subject banks with {bank} — an Australian BSB exposed across {n} source(s) \
                      ({}); {exposure}.",
                     sources.iter().cloned().collect::<Vec<_>>().join(", ")
+                ),
+                uids.into_iter().collect(),
+                scan_id,
+                ts,
+            )
+        })
+        .collect()
+}
+
+/// Breach evidence keys carrying a reusable secret, split by representation: a
+/// plaintext `password` is directly stuffable, a `password_hash`/`hash` only
+/// proves reuse (it must be cracked first).
+const PLAINTEXT_PW_KEYS: &[&str] = &["password"];
+const HASH_PW_KEYS: &[&str] = &["password_hash", "hash"];
+
+/// AU-105 — Credential reuse across breaches.
+///
+/// The same secret appearing in two or more DISTINCT breach databases proves the
+/// subject reuses credentials, so one cracked password opens every account — the
+/// credential-stuffing / account-takeover surface, and one of the most actionable
+/// people-centric findings for a breach-exposed subject (the majority of them).
+///
+/// The finding NEVER echoes the secret value — only the breach names and the reuse
+/// count — so the report stays safe to share. Hashes are grouped case-insensitively
+/// (the same hash is dumped upper- and lower-case across sources) and kept in a
+/// namespace separate from case-sensitive plaintext, so the two never conflate. A
+/// value containing `@` (a mis-stored email) is skipped. Plaintext reuse is High
+/// (immediately exploitable); hash reuse is Medium. Runs on the confirmed view, so
+/// a co-occurrence stranger's reused password never fires it. Deterministic.
+pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // grouping key (`p:`/`h:` namespaced) -> (plaintext?, distinct breaches, uids).
+    let mut by_secret: BTreeMap<String, (bool, BTreeSet<String>, BTreeSet<String>)> =
+        BTreeMap::new();
+    for e in entities {
+        for ev in &e.evidence {
+            // The breach this record came from — the unit reuse is measured across.
+            let breach = ev
+                .attributes
+                .get("dbname")
+                .or_else(|| ev.attributes.get("breach"))
+                .map_or(ev.source.as_str(), String::as_str)
+                .to_string();
+            for k in PLAINTEXT_PW_KEYS {
+                if let Some(v) = ev.attributes.get(*k) {
+                    let s = v.trim();
+                    if s.len() >= 4 && !s.contains('@') {
+                        let entry = by_secret.entry(format!("p:{s}")).or_insert((
+                            true,
+                            BTreeSet::new(),
+                            BTreeSet::new(),
+                        ));
+                        entry.1.insert(breach.clone());
+                        entry.2.insert(e.uid.clone());
+                    }
+                }
+            }
+            for k in HASH_PW_KEYS {
+                if let Some(v) = ev.attributes.get(*k) {
+                    let s = v.trim();
+                    if s.len() >= 8 && !s.contains('@') {
+                        let entry = by_secret
+                            .entry(format!("h:{}", s.to_lowercase()))
+                            .or_insert((false, BTreeSet::new(), BTreeSet::new()));
+                        entry.1.insert(breach.clone());
+                        entry.2.insert(e.uid.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    by_secret
+        .into_values()
+        .filter(|(_, breaches, _)| breaches.len() >= 2)
+        .map(|(plaintext, breaches, uids)| {
+            let n = breaches.len();
+            let (kind, severity) = if plaintext {
+                ("password", Severity::High)
+            } else {
+                ("password hash", Severity::Medium)
+            };
+            Correlation::new(
+                "AU-105",
+                "Credential reuse across breaches",
+                severity,
+                format!(
+                    "A {kind} is reused across {n} distinct breaches ({}) — the subject reuses \
+                     credentials, so one cracked secret opens every account (the credential-stuffing \
+                     / account-takeover surface). MITRE T1110.004",
+                    breaches.iter().cloned().collect::<Vec<_>>().join(", ")
                 ),
                 uids.into_iter().collect(),
                 scan_id,

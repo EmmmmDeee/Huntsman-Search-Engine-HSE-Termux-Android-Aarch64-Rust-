@@ -169,6 +169,12 @@ fn core_does_not_import_util_directly() {
                 // anchor set; no I/O), same leaf category as `au_state_for_coords`.
                 // AU-099 uses it to label a bare coordinate with a human locality.
                 && !line.contains("util::geo::nearest_au_locality")
+                // Pure, dependency-free great-circle distance (haversine; no I/O,
+                // no deps), same leaf category as `nearest_au_locality`. The
+                // multi-source location-corroboration scorer
+                // (`au_location_corroboration`) uses it to cluster AU location
+                // signals that agree on one locality.
+                && !line.contains("util::geo::haversine_km")
                 // Pure, dependency-free offline coordinate parser (no I/O, no
                 // network), same leaf category as `geohash`/`geometry`. The
                 // target auto-detector (`core::scan`) uses it to recognise
