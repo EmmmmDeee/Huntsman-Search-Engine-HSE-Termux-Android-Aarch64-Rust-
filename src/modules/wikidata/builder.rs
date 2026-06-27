@@ -61,6 +61,20 @@ pub(super) fn primary_entities(
         if !occ.is_empty() {
             ev = ev.with_attr("occupation_qids", occ.join(","));
         }
+        // P39: position held — the politically-exposed-person (PEP) signal. A P39
+        // claim means the subject currently or formerly held a prominent public
+        // office (member of parliament, minister, judge, ambassador, central-bank
+        // governor, head of state, …) — the FATF definition of a PEP, and exactly
+        // the property OpenSanctions itself uses to derive PEP status. Flag the
+        // person so an investigator applies elevated due diligence and the graph
+        // can prioritise the lead; the position Q-IDs are kept for resolution.
+        // This is an OSINT SIGNAL for verification, never a sanctions determination.
+        let positions = claim_entity_ids(entity, "P39");
+        if !positions.is_empty() {
+            head.tag("pep");
+            head.tag("politically-exposed");
+            ev = ev.with_attr("position_held_qids", positions.join(","));
+        }
     }
 
     head.add_evidence(ev);
