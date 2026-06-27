@@ -3155,6 +3155,42 @@ fn best_location_excludes_a_platform_infra_tagged_landline() {
 }
 
 #[test]
+fn best_location_uses_a_breach_login_ip_city_when_nothing_finer() {
+    use super::best_au_location_estimate;
+    // A subject located only by their breach login IP (geolocation-lead → ip_geo
+    // Brisbane) still gets a city-grain headline fix — the common breach-victim
+    // case with no GPS, address or postcode.
+    let mut ip = Entity::new(EntityKind::IpAddress, "1.132.97.84", 0.6, "s");
+    ip.tag("geolocation-lead");
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4683,153.0322", 0.6, "s");
+    coord.add_evidence(Evidence::new("ip_geo", "g").with_attr("ip", "1.132.97.84"));
+
+    let est = best_au_location_estimate(&[ip, coord]).expect("a login-IP city fix");
+    assert_eq!(est.basis, "breach login-IP city");
+    assert_eq!(est.state, "QLD");
+    assert!(est.confidence <= 0.50, "city/IP grain is capped low");
+    assert!(est.radius_km <= 25.0 + 1e-9, "fixed-line city grain");
+}
+
+#[test]
+fn best_location_prefers_a_postcode_over_a_breach_login_ip() {
+    use super::best_au_location_estimate;
+    // A name-matched postcode (suburb grain) outranks a coarser login-IP city.
+    let mut addr = Entity::new(EntityKind::Address, "Spring Hill QLD 4000", 0.7, "s");
+    addr.tag("exact-name-match");
+    let mut ip = Entity::new(EntityKind::IpAddress, "1.132.97.84", 0.6, "s");
+    ip.tag("geolocation-lead");
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4683,153.0322", 0.6, "s");
+    coord.add_evidence(Evidence::new("ip_geo", "g").with_attr("ip", "1.132.97.84"));
+
+    let est = best_au_location_estimate(&[addr, ip, coord]).unwrap();
+    assert_eq!(
+        est.basis, "name-matched address (postcode grain)",
+        "a postcode is finer than an IP city"
+    );
+}
+
+#[test]
 fn location_corroboration_counts_independent_classes() {
     use super::au_location_corroboration;
     // Two INDEPENDENT methods (electoral roll + unclaimed-money directory) place

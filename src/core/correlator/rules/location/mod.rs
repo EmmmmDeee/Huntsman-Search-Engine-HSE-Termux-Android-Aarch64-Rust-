@@ -151,6 +151,49 @@ fn person_anchored_coords(entities: &[Entity]) -> Vec<(&Entity, (f64, f64))> {
         .collect()
 }
 
+/// AU `Coordinates` that geolocate a person's own **breach/stealer login IP**
+/// (their network connection) rather than infrastructure — parsed to `(lat, lon)`.
+///
+/// A breach record's `lastip`/`ip` is the subject's connection at login, which the
+/// breach modules surface as an `IpAddress` tagged `geolocation-lead`; `ip_geo`
+/// then geolocates it to a `Coordinates` carrying an `ip` evidence attribute. A
+/// coordinate whose `ip` matches one of those leads, and which is NOT a
+/// hosting/proxy/`platform-infra` (datacenter) fix, locates the *person* — coarse
+/// (ISP/cell-tower grain) but real. This is the ONE definition shared by
+/// [`best_au_location_estimate`] (a precedence rung) and [`au_location_corroboration`]
+/// (an independent corroborating class), so the two never disagree on what counts
+/// as a person login-IP fix. Pure; offline.
+fn person_login_ip_coords(entities: &[Entity]) -> Vec<(&Entity, (f64, f64))> {
+    let login_ips: std::collections::HashSet<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress && e.has_tag("geolocation-lead"))
+        .map(|e| e.value.as_str())
+        .collect();
+    if login_ips.is_empty() {
+        return Vec::new();
+    }
+    entities
+        .iter()
+        .filter(|e| {
+            e.kind == EntityKind::Coordinates
+                && !e.has_tag("hosting")
+                && !e.has_tag("proxy")
+                && !e.has_tag("platform-infra")
+        })
+        .filter(|e| {
+            e.evidence.iter().any(|ev| {
+                ev.attributes
+                    .get("ip")
+                    .is_some_and(|ip| login_ips.contains(ip.as_str()))
+            })
+        })
+        .filter_map(|e| {
+            let (lat, lon) = crate::util::geohash::parse_coords(&e.value)?;
+            crate::util::geo::is_in_australia(lat, lon).then_some((e, (lat, lon)))
+        })
+        .collect()
+}
+
 /// Number of distinct corroborating sources across a set of admissible
 /// coordinates. The multi-source gate (≥2) ensures a single device's own GPS
 /// track can't assert a footprint; AU-052 also reports the count.
@@ -648,7 +691,11 @@ fn coord_accuracy_km(e: &Entity) -> Option<f64> {
 /// 2. the most-confident single AU person-anchored coordinate (a GPS/sensor fix);
 /// 3. an `exact-name-match` address resolved to its postcode-region centroid;
 /// 4. any breach/register postcode resolved to its centroid;
-/// 5. an Australian geographic landline's area-code region centroid — coarsest, a
+/// 5. a person's breach/stealer login IP geolocated to a city
+///    ([`person_login_ip_coords`]) — city/ISP/cell grain, below a postcode but
+///    person-linked, so a breach victim known only by their login IP still
+///    locates;
+/// 6. an Australian geographic landline's area-code region centroid — coarsest, a
 ///    region-grain fix ([`au_phone_region_anchor`]) used only when nothing finer
 ///    exists, so a subject known only by a fixed-line number still yields a fix.
 ///
@@ -733,7 +780,36 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
         });
     }
 
-    // 5. Coarsest rung — an Australian geographic landline's area code locates the
+    // 5. A person's breach/stealer LOGIN IP geolocated to a city
+    //    ([`person_login_ip_coords`]) — coarser than a postcode (city / ISP / cell
+    //    grain) but person-linked, so it ranks below the postcode rungs and above
+    //    the region-grain landline. The most-confident such fix wins; a `mobile`
+    //    IP gets a wider (cell-tower) radius than a fixed line. Confidence is
+    //    down-weighted and capped (≤ 0.50) so a coarse IP city never rivals a
+    //    suburb-grain postcode in any downstream read.
+    let best_login_ip = person_login_ip_coords(entities).into_iter().max_by(|a, b| {
+        a.0.c_effective()
+            .partial_cmp(&b.0.c_effective())
+            .unwrap_or(std::cmp::Ordering::Equal)
+            // Equal confidence: smaller UID wins (reverse compare → "greater").
+            .then_with(|| b.0.uid.cmp(&a.0.uid))
+    });
+    if let Some((e, (lat, lon))) = best_login_ip {
+        let radius_km = if e.has_tag("mobile") { 50.0 } else { 25.0 };
+        return Some(AuLocationEstimate {
+            lat,
+            lon,
+            radius_km,
+            state: crate::util::geo::au_state_for_coords(lat, lon).unwrap_or("AU"),
+            locality: locality_of(lat, lon),
+            basis: "breach login-IP city",
+            confidence: (e.c_effective() * 0.7).min(0.50),
+            geohash: crate::util::geohash::geohash(lat, lon, 5),
+            uids: vec![e.uid.clone()],
+        });
+    }
+
+    // 6. Coarsest rung — an Australian geographic landline's area code locates the
     //    line to its ACMA region. Mobiles (`04…`), VoIP and service numbers carry
     //    no region (`au_phone_region` returns None) and are skipped. Only fires when
     //    every finer rung above produced nothing; the wide anchor radius keeps the
@@ -880,44 +956,15 @@ pub(crate) fn au_location_corroboration(entities: &[Entity]) -> Option<LocationC
         });
     }
     // The person's own breach/stealer LOGIN IP, geolocated to a city — their
-    // network connection, not infrastructure. The breach modules tag a login IP
-    // `geolocation-lead`; ip_geo then resolves it to an AU `Coordinates` carrying
-    // an `ip` evidence attribute. A coordinate whose `ip` is one of those leads,
-    // and which is not a datacenter/proxy IP, is a coarse but person-linked fix —
-    // exactly the signal a breach dump's `lastip` provides for most AU victims.
-    let login_ips: HashSet<&str> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::IpAddress && e.has_tag("geolocation-lead"))
-        .map(|e| e.value.as_str())
-        .collect();
-    if !login_ips.is_empty() {
-        for e in entities.iter().filter(|e| {
-            e.kind == EntityKind::Coordinates
-                && !e.has_tag("hosting")
-                && !e.has_tag("proxy")
-                && !e.has_tag("platform-infra")
-        }) {
-            let is_login_ip_geo = e.evidence.iter().any(|ev| {
-                ev.attributes
-                    .get("ip")
-                    .is_some_and(|ip| login_ips.contains(ip.as_str()))
-            });
-            if !is_login_ip_geo {
-                continue;
-            }
-            let Some((lat, lon)) = crate::util::geohash::parse_coords(&e.value) else {
-                continue;
-            };
-            if !crate::util::geo::is_in_australia(lat, lon) {
-                continue;
-            }
-            sigs.push(Sig {
-                lat,
-                lon,
-                class: GeoSourceClass::NetworkIp,
-                uid: e.uid.clone(),
-            });
-        }
+    // network connection, not infrastructure ([`person_login_ip_coords`]). Exactly
+    // the signal a breach dump's `lastip` provides for most AU victims.
+    for (e, (lat, lon)) in person_login_ip_coords(entities) {
+        sigs.push(Sig {
+            lat,
+            lon,
+            class: GeoSourceClass::NetworkIp,
+            uid: e.uid.clone(),
+        });
     }
     if sigs.is_empty() {
         return None;
