@@ -208,16 +208,27 @@ impl Module for AcmaRrl {
                     .with_attr("source", "acma.gov.au"),
             );
 
-            // If there's an ABN in the HTML, emit it too
-            if let Some(abn) = extract_abn_from_html(&html) {
-                let mut abn_entity = Entity::new(EntityKind::AbnAcn, &abn, 0.70, &ctx.scan_id);
-                abn_entity.tag("acma");
-                abn_entity
-                    .add_evidence(Evidence::new(SRC, format!("ABN for {name} from ACMA RRL")));
-                result.push(abn_entity);
-            }
-
             result.push(org);
+        }
+
+        // The RRL page carries at most ONE ABN (a single page-level field), so it
+        // must be extracted and emitted exactly once — not re-extracted inside the
+        // per-licensee loop above, which re-attributed the same ABN to every row.
+        // Attribute it to the licensee only when the result is unambiguous (one
+        // row); with multiple rows record it page-level so it isn't falsely bound
+        // to a single name.
+        if !licences.is_empty()
+            && let Some(abn) = extract_abn_from_html(&html)
+        {
+            let mut abn_entity = Entity::new(EntityKind::AbnAcn, &abn, 0.70, &ctx.scan_id);
+            abn_entity.tag("acma");
+            let note = if licences.len() == 1 {
+                format!("ABN for {} from ACMA RRL", licences[0].0)
+            } else {
+                "ABN listed on ACMA RRL licence page".to_string()
+            };
+            abn_entity.add_evidence(Evidence::new(SRC, note));
+            result.push(abn_entity);
         }
 
         Ok(result)

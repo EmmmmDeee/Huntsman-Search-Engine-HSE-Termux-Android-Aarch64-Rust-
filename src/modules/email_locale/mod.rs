@@ -64,7 +64,15 @@ impl Module for EmailLocale {
         // when the local-part pattern has no match. Common non-geographic TLDs
         // used as generic branding (.io, .ai, .co, .tv, .app, .ly, .me) are
         // excluded — they carry no reliable country signal.
-        let cctld_geo = domain.rsplit('.').next().and_then(|tld| cctld_country(tld));
+        // Lowercase the label before the lookup: DNS is case-insensitive and a
+        // seed can carry an upper/mixed-case TLD (`user@example.DE`), but
+        // `cctld_country`'s table is keyed on lowercase, so an unnormalised
+        // `"DE"` would silently miss the country signal.
+        let cctld_geo = domain
+            .rsplit('.')
+            .next()
+            .map(str::to_ascii_lowercase)
+            .and_then(|tld| cctld_country(&tld));
         if let Some((country, locale_code)) = cctld_geo {
             let ev = Evidence::new(
                 SRC,

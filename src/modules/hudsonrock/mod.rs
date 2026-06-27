@@ -279,14 +279,19 @@ fn compute_confidence(stealers: &[Stealer]) -> f64 {
 fn parse_iso_epoch(s: &str) -> Option<u64> {
     let date_part = s.split('T').next()?;
     let mut parts = date_part.split('-');
-    let year: u64 = parts.next()?.parse().ok()?;
-    let month: u64 = parts.next()?.parse().ok()?;
-    let day: u64 = parts.next()?.parse().ok()?;
+    let year: i64 = parts.next()?.parse().ok()?;
+    let month: i64 = parts.next()?.parse().ok()?;
+    let day: i64 = parts.next()?.parse().ok()?;
     if year < 2000 || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }
-    let days_approx = (year - 1970) * 365 + (month - 1) * 30 + day;
-    Some(days_approx * 86400)
+    // Exact day count (Howard Hinnant via core::timeline) — the previous
+    // `(year-1970)*365 + (month-1)*30 + day` approximation ignored leap days and
+    // assumed 30-day months, under-counting by ~2 weeks for recent dates. Since
+    // compute_confidence compares this against a *real* unix-epoch cutoff, that
+    // skew mis-classified records near the 90-day freshness boundary.
+    let days = crate::core::timeline::days_from_civil(year, month, day);
+    u64::try_from(days).ok().map(|d| d * 86400)
 }
 
 #[cfg(test)]

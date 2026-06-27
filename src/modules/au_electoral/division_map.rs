@@ -127,8 +127,13 @@ pub(super) fn infer_state_from_division(division: &str) -> Option<&'static str> 
         Some("SA")
     } else if lc.contains("hobart") || lc.contains("launceston") {
         Some("TAS")
-    } else if lc.contains("canberra") || lc.contains("darwin") {
+    } else if lc.contains("canberra") {
         Some("ACT")
+    } else if lc.contains("darwin") {
+        // Darwin is the capital of the Northern Territory, not the ACT — the
+        // offline centroid table above correctly maps its divisions (Lingiari,
+        // Solomon) to NT, and this fallback must agree.
+        Some("NT")
     } else {
         None
     }

@@ -394,7 +394,7 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
                      OR site:spokeo.com OR site:pipl.com"
                 ));
                 q.push(format!(
-                    "{local} site:soundcloud.com OR site:instagram.com \
+                    "\"{local}\" site:soundcloud.com OR site:instagram.com \
                      OR site:youtube.com OR site:tiktok.com"
                 ));
                 q.push(format!("\"{local}\" address OR location OR city"));

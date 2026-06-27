@@ -159,13 +159,24 @@ pub fn classify_au_phone(national: &str) -> Option<AuLine> {
         return Some(AuLine::simple(LineType::LocalRate));
     }
 
-    // Geographic / mobile / VoIP by leading digit (standard 9-digit national).
-    match national.as_bytes()[0] {
-        b'4' => Some(AuLine::simple(LineType::Mobile)),
-        b'5' => Some(AuLine::simple(LineType::Voip)),
-        b'2' | b'3' | b'7' | b'8' => Some(AuLine::geographic(national.as_bytes()[0] as char)),
-        _ => Some(AuLine::simple(LineType::Unknown)),
+    // Geographic / mobile / VoIP are all EXACTLY 9 digits in national form per the
+    // ACMA Numbering Plan. Gate on that length so a 4/5/2/3/7/8-leading number of
+    // any other length — a truncated or over-long value that slipped past the loose
+    // 6..=10 bound (which exists only for the `13xxxx` shortcode handled above) — is
+    // not reported as a confident Mobile/VoIP/landline.
+    if national.len() == 9 {
+        match national.as_bytes()[0] {
+            b'4' => return Some(AuLine::simple(LineType::Mobile)),
+            b'5' => return Some(AuLine::simple(LineType::Voip)),
+            b'2' | b'3' | b'7' | b'8' => {
+                return Some(AuLine::geographic(national.as_bytes()[0] as char));
+            }
+            _ => {}
+        }
     }
+    // In-bounds, but not a recognised service prefix nor a 9-digit
+    // geographic/mobile/VoIP shape: an AU-number-like value of unknown type.
+    Some(AuLine::simple(LineType::Unknown))
 }
 
 /// Reduce a target's phone value to its AU national number (country code and any
