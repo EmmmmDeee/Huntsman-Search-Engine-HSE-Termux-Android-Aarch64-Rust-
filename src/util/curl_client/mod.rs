@@ -141,6 +141,12 @@ impl CurlClient {
         cmd.args(["-s", "-L", "--max-time", &secs, "-A", DEFAULT_UA]);
         // Protocol/redirect/size hardening, single-sourced so this keyed-API
         // path and the free-function curl path can never drift apart.
+        //
+        // Unlike `curl::curl_exec`, this path applies no in-process private-IP
+        // `ssrf_resolve_pin`: every `url` here targets a hardcoded paid-provider
+        // API base (OathNet, SeekNow, …) declared by the provider module, with
+        // discovered values confined to the path/query — the host is never
+        // attacker-controlled, so there is no rebinding target to pin.
         cmd.args(crate::util::curl::FETCH_HARDENING_ARGS);
         if let Some(ref h) = auth_header {
             cmd.args(["-H", h]);
@@ -186,7 +192,13 @@ impl CurlClient {
             };
             return Err(Error::module(self.module, detail));
         }
-        String::from_utf8(output.stdout).map_err(|e| Error::module(self.module, e.to_string()))
+        // Lossy decode (matching the free `curl::curl_exec` path): a paid-API
+        // response with a stray non-UTF-8 byte (e.g. a Latin-1 char in an error
+        // string) must still yield a usable body rather than being dropped as a
+        // hard failure — full-fidelity policy. Downstream `serde_json` still
+        // validates the JSON structure, so a genuinely malformed body is caught
+        // there, not silently here.
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 }
 
