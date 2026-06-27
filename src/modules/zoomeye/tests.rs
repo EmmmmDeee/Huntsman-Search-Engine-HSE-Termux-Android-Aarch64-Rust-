@@ -18,11 +18,53 @@ fn sample_match() -> Value {
 }
 
 #[test]
-fn accepts_ip_and_domain_only() {
+fn accepts_host_and_set_returning_facets() {
     assert!(ZoomEye.accepts(&Target::new(TargetKind::IpAddress, "8.8.8.8")));
     assert!(ZoomEye.accepts(&Target::new(TargetKind::Domain, "example.com")));
+    // Set-returning facets (cidr: / asn: / org:).
+    assert!(ZoomEye.accepts(&Target::new(TargetKind::Cidr, "8.8.8.0/24")));
+    assert!(ZoomEye.accepts(&Target::new(TargetKind::Asn, "AS15169")));
+    assert!(ZoomEye.accepts(&Target::new(TargetKind::Organisation, "Google LLC")));
+    // Kinds ZoomEye can't select on.
     assert!(!ZoomEye.accepts(&Target::new(TargetKind::Email, "a@b.com")));
     assert!(!ZoomEye.accepts(&Target::new(TargetKind::Username, "bob")));
+}
+
+#[test]
+fn selector_dork_emits_native_zoomeye_grammar() {
+    // ip: / hostname: / cidr: are verbatim facets.
+    assert_eq!(
+        selector_dork(&Target::new(TargetKind::IpAddress, "8.8.8.8")).as_deref(),
+        Some("ip:8.8.8.8")
+    );
+    assert_eq!(
+        selector_dork(&Target::new(TargetKind::Domain, "example.com")).as_deref(),
+        Some("hostname:example.com")
+    );
+    assert_eq!(
+        selector_dork(&Target::new(TargetKind::Cidr, "8.8.8.0/24")).as_deref(),
+        Some("cidr:8.8.8.0/24")
+    );
+    // asn: normalises the seed to the bare number ZoomEye expects, with or
+    // without the `AS` prefix.
+    assert_eq!(
+        selector_dork(&Target::new(TargetKind::Asn, "AS15169")).as_deref(),
+        Some("asn:15169")
+    );
+    assert_eq!(
+        selector_dork(&Target::new(TargetKind::Asn, "15169")).as_deref(),
+        Some("asn:15169")
+    );
+    // A malformed ASN yields no dork (clean miss, not a bogus query).
+    assert!(selector_dork(&Target::new(TargetKind::Asn, "not-an-asn")).is_none());
+    // org: quotes the name so its spaces stay one phrase.
+    assert_eq!(
+        selector_dork(&Target::new(TargetKind::Organisation, "Google LLC")).as_deref(),
+        Some("org:\"Google LLC\"")
+    );
+    // Unsupported kind and empty value → None.
+    assert!(selector_dork(&Target::new(TargetKind::Email, "a@b.com")).is_none());
+    assert!(selector_dork(&Target::new(TargetKind::IpAddress, "   ")).is_none());
 }
 
 #[test]

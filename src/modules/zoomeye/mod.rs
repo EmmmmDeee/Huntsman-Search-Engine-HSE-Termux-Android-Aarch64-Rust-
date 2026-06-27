@@ -5,8 +5,11 @@
 //! Auth:     `API-KEY: {key}` request header (per ZoomEye docs / the service def
 //! the key-probe already validates against `…/resources-info`).
 //!
-//! Given an IP it dorks `ip:{ip}`; given a domain, `hostname:{domain}` (the hosts
-//! ZoomEye has indexed serving that name). Each match carries `portinfo` (the open
+//! Given an IP it dorks `ip:{ip}`; a domain, `hostname:{domain}` (the hosts
+//! ZoomEye has indexed serving that name); a CIDR, ASN, or organisation, the
+//! corresponding set-returning facet (`cidr:{range}` / `asn:{n}` / `org:"{name}"`)
+//! that enumerates the hosts in that block / autonomous system / operator. Each
+//! match carries `portinfo` (the open
 //! port / service / banner) and `geoinfo` (country / city / coordinates / operator
 //! org / ISP / ASN). The parser is deliberately schema-tolerant — ZoomEye varies
 //! field shapes across plans, and a passive enrichment must degrade to "fewer
@@ -15,8 +18,8 @@
 //! From the result set it surfaces: the host's coordinates (suppressed for a
 //! CDN/anycast edge IP, as `ip_geo` does), a city/country `Address`, the AS
 //! operator `Organisation` and `Asn`, the exposed ports/services tagged onto the
-//! seed IP, and — for a domain dork — the hosting `IpAddress` entities. Mirrors
-//! the shodan/censys/onyphe surface and ATT&CK mapping.
+//! seed IP, and — for a set-returning dork — the member/hosting `IpAddress`
+//! entities. Mirrors the shodan/censys/onyphe surface and ATT&CK mapping.
 
 #[cfg(test)]
 mod tests;
@@ -42,7 +45,8 @@ const SRC: &str = "zoomeye";
 const MAX_MATCHES: usize = 50;
 /// Cap distinct exposed ports tagged onto the seed IP.
 const MAX_PORTS: usize = 32;
-/// Cap hosting IPs emitted for a domain dork.
+/// Cap member/hosting IPs emitted for a set-returning dork
+/// (`hostname:`/`cidr:`/`asn:`/`org:`).
 const MAX_IPS: usize = 32;
 
 #[derive(Deserialize, Default)]
@@ -62,7 +66,7 @@ impl Module for ZoomEye {
     }
 
     fn description(&self) -> &'static str {
-        "ZoomEye host/service search: exposed ports, banners, geoloc, ASN/operator for an IP or domain (key-gated)"
+        "ZoomEye host/service search: exposed ports, banners, geoloc, ASN/operator for an IP, domain, CIDR, ASN, or organisation (key-gated)"
     }
 
     fn priority(&self) -> u8 {
@@ -98,7 +102,17 @@ impl Module for ZoomEye {
     }
 
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::IpAddress | TargetKind::Domain)
+        // Five ZoomEye-native selector facets: a single host (`ip:`), a name
+        // (`hostname:`), or three set-returning facets that enumerate the hosts
+        // in a block / autonomous system / operator (`cidr:` / `asn:` / `org:`).
+        matches!(
+            t.kind,
+            TargetKind::IpAddress
+                | TargetKind::Domain
+                | TargetKind::Cidr
+                | TargetKind::Asn
+                | TargetKind::Organisation
+        )
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -112,15 +126,12 @@ impl Module for ZoomEye {
         };
 
         let value = target.value.trim();
-        if value.is_empty() {
-            return Ok(ModuleResult::new());
-        }
-        // The selector dork: an IP is queried verbatim; a domain is queried by
-        // hostname so ZoomEye returns the hosts it has indexed for that name.
-        let dork = match target.kind {
-            TargetKind::IpAddress => format!("ip:{value}"),
-            TargetKind::Domain => format!("hostname:{value}"),
-            _ => return Ok(ModuleResult::new()),
+        // The selector dork (pure, unit-tested below). A kind ZoomEye can't
+        // select on — or an empty / malformed value — yields no dork and a
+        // clean empty result rather than a bogus query.
+        let dork = match selector_dork(target) {
+            Some(d) => d,
+            None => return Ok(ModuleResult::new()),
         };
         let url = format!(
             "https://api.zoomeye.org/host/search?query={}&page=1",
@@ -221,9 +232,17 @@ impl Module for ZoomEye {
                 ports.push(label);
             }
 
-            // ── Hosting IPs (domain dork) ───────────────────────────────────
-            if matches!(target.kind, TargetKind::Domain)
-                && ips_emitted < MAX_IPS
+            // ── Member / hosting IPs (set-returning dorks) ──────────────────
+            // `hostname:`/`cidr:`/`asn:`/`org:` each return a *set* of distinct
+            // hosts; surfacing every member IP is the actionable pivot (the
+            // value the domain dork has always provided). An `ip:` dork has a
+            // single seed and skips this. `ip != value` is a no-op for the
+            // non-domain facets (their seed value is never an IP), kept so the
+            // domain dork still excludes its own seed.
+            if matches!(
+                target.kind,
+                TargetKind::Domain | TargetKind::Cidr | TargetKind::Asn | TargetKind::Organisation
+            ) && ips_emitted < MAX_IPS
                 && let Some(ip) = vstr(m, "ip")
                 && ip != value
                 && seen.insert(format!("@ip:{ip}"))
@@ -251,6 +270,35 @@ impl Module for ZoomEye {
         }
 
         Ok(result)
+    }
+}
+
+/// Build the ZoomEye `host/search` selector dork for a seed target, or `None`
+/// for a kind ZoomEye can't select on (the module then returns no result).
+///
+/// Each facet is ZoomEye-native grammar:
+/// - `ip:{ip}`           — the single host (queried verbatim).
+/// - `hostname:{domain}` — hosts ZoomEye has indexed serving that name.
+/// - `cidr:{range}`      — every indexed host in the address block.
+/// - `asn:{n}`           — every indexed host in the autonomous system. The
+///   seed is normalised through [`crate::util::str_util::parse_asn`] to the
+///   bare number ZoomEye expects (`AS15169`/`15169` → `15169`); a malformed
+///   ASN yields `None`.
+/// - `org:"{name}"`      — hosts whose AS operator/organisation matches. The
+///   name is quoted so its spaces stay a single phrase rather than splitting
+///   into separate terms.
+fn selector_dork(target: &Target) -> Option<String> {
+    let value = target.value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    match target.kind {
+        TargetKind::IpAddress => Some(format!("ip:{value}")),
+        TargetKind::Domain => Some(format!("hostname:{value}")),
+        TargetKind::Cidr => Some(format!("cidr:{value}")),
+        TargetKind::Asn => crate::util::str_util::parse_asn(value).map(|n| format!("asn:{n}")),
+        TargetKind::Organisation => Some(format!("org:\"{value}\"")),
+        _ => None,
     }
 }
 
