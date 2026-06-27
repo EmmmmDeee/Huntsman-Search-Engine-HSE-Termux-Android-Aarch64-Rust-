@@ -237,6 +237,9 @@ impl Module for EmailParse {
     }
 }
 
+/// Upper-case the first character of `s`, leaving the rest untouched — turns a
+/// lowercased email local-part token (`"jane"`) into a display name component
+/// (`"Jane"`) for the inferred `Person` entity. Empty input yields `""`.
 pub(super) fn capitalise(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {

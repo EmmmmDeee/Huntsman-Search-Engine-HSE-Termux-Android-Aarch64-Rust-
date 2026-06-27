@@ -113,6 +113,12 @@ struct NetlasCve {
     name: Option<String>,
 }
 
+/// Build the Netlas search expression for a target, picking the right field
+/// per kind: an IP queries `ip:`, a domain `host:`, and an email
+/// `certificate.subject.email:` (the cert-pivot that makes this module a
+/// bridge from infrastructure back to identity). Unknown kinds fall back to
+/// `ip:`. The value is URL-encoded so a stray character can't corrupt the
+/// query string. Pure — unit-testable without a key or network.
 pub(super) fn netlas_query(target: &Target) -> String {
     let val = crate::util::http::urlencode(target.value.trim());
     match target.kind {

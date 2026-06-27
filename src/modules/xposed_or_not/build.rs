@@ -29,6 +29,12 @@ pub(super) const NOTABLE_BREACHES: &[&str] = &[
     "evite",
 ];
 
+/// Map a breach hit-count to the exposure entity's confidence.
+///
+/// One or two appearances already confirm the email is real and leaked
+/// (0.80); each further breach raises corroboration toward a 0.95 ceiling. A
+/// zero count is 0.0 — the caller treats that as "no finding" and emits
+/// nothing.
 pub(super) fn confidence_for_count(count: usize) -> f64 {
     match count {
         0 => 0.0,
