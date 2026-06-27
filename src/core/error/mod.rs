@@ -23,6 +23,9 @@ pub enum Error {
 }
 
 impl Error {
+    /// Construct a [`Error::Module`] error attributed to a named module — the form
+    /// a module returns so a failure is reported as `[module] message`, naming the
+    /// source rather than a bare string.
     pub fn module(module: impl Into<String>, message: impl Into<String>) -> Self {
         Self::Module {
             module: module.into(),

@@ -18,6 +18,8 @@ pub struct Event {
 }
 
 impl Event {
+    /// A scan event of `kind`, timestamped now ([`unix_now`]) — the form the
+    /// engine publishes on the [`EventBus`] and persists to the event log.
     pub fn new(scan_id: impl Into<String>, kind: EventKind) -> Self {
         Self {
             scan_id: scan_id.into(),
@@ -108,6 +110,10 @@ pub enum EventKind {
 }
 
 impl EventKind {
+    /// The variant's stable snake_case tag — identical to the serde `type` field,
+    /// so a consumer can switch on the event type without deserialising. One source
+    /// for both the wire form and in-process matching.
+    #[must_use]
     pub fn event_type_str(&self) -> &'static str {
         match self {
             Self::ScanStart { .. } => "scan_start",
