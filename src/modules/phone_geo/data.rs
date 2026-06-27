@@ -25,6 +25,11 @@ pub(super) struct AreaCodeGeo {
     pub(super) confidence: f64,
 }
 
+/// Resolve a phone number's geographic **area code** to a city-grain fix
+/// (`AreaCodeGeo`: city, country, ISO, area code, 0.58 confidence), or `None` when
+/// no country prefix + area code matches. The phone-number locality signal — for
+/// an AU landline its `02/03/07/08` area code names the region; the tables are
+/// scanned by dialling prefix, so any covered country resolves.
 pub(super) fn lookup_area_code(digits: &str) -> Option<AreaCodeGeo> {
     // First country whose dialling prefix the number carries AND whose table has
     // a matching area code; a prefix match with no area hit falls through to the
@@ -45,6 +50,8 @@ pub(super) fn lookup_area_code(digits: &str) -> Option<AreaCodeGeo> {
         })
 }
 
+/// The country name for an ISO-3166 alpha-2 code, or `"Unknown"`. Delegates to the
+/// canonical shared ISO→name table rather than keep a divergent copy.
 pub(super) fn country_name(cc: &str) -> &'static str {
     // Reuse the canonical ISO→name table (55 countries) rather than maintain a
     // divergent 8-entry copy; every ISO this module's area tables use is covered.
@@ -180,6 +187,11 @@ pub(super) struct CarrierInfo {
     pub(super) network_hint: &'static str,
 }
 
+/// Identify the mobile carrier behind an E.164 number from its allocation
+/// prefix — **Australian** mobiles (`+61 4…`) first via [`au_carrier`], then UK
+/// (`+44 7…`) via [`uk_carrier`]; `None` for any other number. Carrier is a
+/// network-class signal that survives number portability only at the allocation
+/// (prefix) level, so it is a hint, not a hard fact.
 pub(super) fn identify_carrier(digits: &str) -> Option<CarrierInfo> {
     if let Some(national) = digits.strip_prefix("61")
         && national.starts_with('4')
@@ -196,6 +208,10 @@ pub(super) fn identify_carrier(digits: &str) -> Option<CarrierInfo> {
     None
 }
 
+/// The original-allocation carrier for an Australian mobile from its 3-digit
+/// national prefix (`4xx`) under the ACMA Numbering Plan (Telstra / Optus /
+/// Vodafone / …). The allocation predates number portability, so it names who the
+/// number was *issued* by, not necessarily the current carrier.
 pub(super) fn au_carrier(prefix_3: &str) -> Option<CarrierInfo> {
     let carrier = match prefix_3 {
         "400" | "401" | "402" | "403" | "404" | "405" | "406" => "Telstra",
@@ -221,6 +237,9 @@ pub(super) fn au_carrier(prefix_3: &str) -> Option<CarrierInfo> {
     })
 }
 
+/// The original-allocation carrier for a UK mobile from its 4-digit prefix
+/// (`7xxx`) under the Ofcom plan — the global counterpart to [`au_carrier`], so a
+/// non-AU number still yields a carrier hint. Same portability caveat applies.
 pub(super) fn uk_carrier(prefix_4: &str) -> Option<CarrierInfo> {
     let carrier = match prefix_4 {
         "7400" | "7401" | "7402" | "7403" | "7404" | "7405" => "EE",
