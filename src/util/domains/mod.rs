@@ -96,6 +96,8 @@ const FREEMAIL: &[&str] = &[
     "westnet.com.au",
     "adam.com.au",
     "dodo.com.au",
+    "ozemail.com.au",
+    "y7mail.com",
     // US ISP webmail (common in US-breach data)
     "comcast.net",
     "verizon.net",

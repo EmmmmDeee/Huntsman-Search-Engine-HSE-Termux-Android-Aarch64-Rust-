@@ -370,6 +370,8 @@ const MEGA_DOMAINS: &[&str] = &[
     "iinet.net.au",
     "tpg.com.au",
     "internode.on.net",
+    "ozemail.com.au",
+    "y7mail.com",
     // DNS / IP lookup tools
     "dnschecker.org",
     "domaintools.com",
