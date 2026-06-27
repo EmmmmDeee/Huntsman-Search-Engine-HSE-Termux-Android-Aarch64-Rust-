@@ -21,6 +21,14 @@ const SRC: &str = "ahpra";
 
 pub struct Ahpra;
 
+/// Scrape the AHPRA register search-results table into
+/// `(name, profession, registration_number)` rows.
+///
+/// A dependency-free `<tr>`/`<td>` walk (no scraper crate, in keeping with the
+/// lean Termux build): each cell's text is taken via [`strip_tags`] and rows
+/// with at least three cells are kept. The header row (`Name`/`Practitioner`)
+/// and nameless rows are dropped, so the result is data-only. Pure given
+/// `html` — unit-testable against a captured response.
 pub(super) fn parse_ahpra_html(html: &str) -> Vec<(String, String, String)> {
     // Returns Vec<(name, profession, registration_number)>
     // Parse simple table rows from AHPRA search results HTML.
@@ -66,6 +74,9 @@ pub(super) fn parse_ahpra_html(html: &str) -> Vec<(String, String, String)> {
     results
 }
 
+/// Remove HTML tags from a table cell, returning its visible text — a
+/// single-pass character filter that drops everything between `<` and `>`.
+/// Sufficient for the flat, well-formed AHPRA cells; the caller trims.
 fn strip_tags(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
     let mut in_tag = false;
