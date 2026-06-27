@@ -222,6 +222,66 @@ pub fn online_tenure(events: &[TimelineEvent]) -> Option<OnlineTenure> {
     })
 }
 
+/// How current the subject's online footprint is, by the age of its most recent
+/// dated activity — the difference between a live subject and a long-dormant one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FootprintStatus {
+    /// Activity within the last year — a live, current footprint.
+    Active,
+    /// 1–3 years — recently active.
+    Recent,
+    /// 3–7 years — going cold.
+    Aging,
+    /// Over 7 years since any dated activity — a dormant/historical footprint.
+    Dormant,
+}
+
+impl FootprintStatus {
+    /// Stable snake_case label (matches the serde wire form).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Recent => "recent",
+            Self::Aging => "aging",
+            Self::Dormant => "dormant",
+        }
+    }
+}
+
+/// The recency of the subject's footprint: how long since its most recent dated
+/// activity, and the resulting [`FootprintStatus`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FootprintRecency {
+    /// Whole years since the latest presence event.
+    pub years_since_latest: u32,
+    pub status: FootprintStatus,
+}
+
+/// Classify how current a footprint is from its `latest_ts` (the most recent
+/// presence instant, e.g. [`OnlineTenure::latest_ts`]) relative to `now_unix`.
+///
+/// A recent footprint matters operationally: a current account / fresh breach
+/// means the subject's exposed credentials are likely still in use (live
+/// account-takeover risk), whereas a decade-dormant footprint is historical.
+/// Pure; thresholds are whole-year bands (mean Gregorian year). A future
+/// `latest_ts` clamps to zero years ([`FootprintStatus::Active`]).
+#[must_use]
+pub fn footprint_recency(latest_ts: i64, now_unix: i64) -> FootprintRecency {
+    let years = u32::try_from((now_unix - latest_ts).max(0) / 31_556_952).unwrap_or(u32::MAX);
+    let status = match years {
+        0 => FootprintStatus::Active,
+        1..=2 => FootprintStatus::Recent,
+        3..=6 => FootprintStatus::Aging,
+        _ => FootprintStatus::Dormant,
+    };
+    FootprintRecency {
+        years_since_latest: years,
+        status,
+    }
+}
+
 // ─── Dependency-free date parsing ────────────────────────────────────────────
 
 /// Days from the civil date 1970-01-01 to `y-m-d` (Howard Hinnant's algorithm).

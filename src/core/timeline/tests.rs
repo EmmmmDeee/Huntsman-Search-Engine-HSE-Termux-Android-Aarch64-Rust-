@@ -315,3 +315,34 @@ use super::*;
         let events = reconstruct(&[p]);
         assert!(online_tenure(&events).is_none());
     }
+
+    #[test]
+    fn footprint_recency_classifies_by_age() {
+        const YEAR: i64 = 31_556_952;
+        let now: i64 = 100 * YEAR; // arbitrary "now"
+        // Latest activity 0 / 2 / 5 / 10 years ago → Active / Recent / Aging / Dormant.
+        assert_eq!(
+            footprint_recency(now, now).status,
+            FootprintStatus::Active
+        );
+        assert_eq!(
+            footprint_recency(now - 2 * YEAR, now).status,
+            FootprintStatus::Recent
+        );
+        assert_eq!(
+            footprint_recency(now - 5 * YEAR, now).status,
+            FootprintStatus::Aging
+        );
+        let dormant = footprint_recency(now - 10 * YEAR, now);
+        assert_eq!(dormant.status, FootprintStatus::Dormant);
+        assert_eq!(dormant.years_since_latest, 10);
+    }
+
+    #[test]
+    fn footprint_recency_clamps_a_future_latest_to_active() {
+        const YEAR: i64 = 31_556_952;
+        let now: i64 = 50 * YEAR;
+        let r = footprint_recency(now + 3 * YEAR, now); // latest after now
+        assert_eq!(r.years_since_latest, 0);
+        assert_eq!(r.status, FootprintStatus::Active);
+    }

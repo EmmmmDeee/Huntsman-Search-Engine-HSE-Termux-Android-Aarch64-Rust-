@@ -68,6 +68,12 @@ pub async fn scan_timeline(
     // surface the online-tenure summary — the span and breach-depth of the
     // subject's digital footprint ("online since 2008, 17 years, 9 breaches").
     let tenure = crate::core::timeline::online_tenure(&events);
+    // Footprint recency: how current the latest activity is (active vs dormant) —
+    // a live footprint means exposed credentials are likely still in use.
+    let now = i64::try_from(crate::core::entity::unix_now()).unwrap_or(i64::MAX);
+    let recency = tenure
+        .as_ref()
+        .map(|t| crate::core::timeline::footprint_recency(t.latest_ts, now));
     let count = events.len();
     (
         StatusCode::OK,
@@ -75,6 +81,7 @@ pub async fn scan_timeline(
             "events": events,
             "count": count,
             "tenure": tenure,
+            "recency": recency,
         })),
     )
         .into_response()
